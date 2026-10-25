@@ -86,7 +86,6 @@
   import { onPageZoom } from "../lib/desktop/zoom.js";
   import Grip from "./Grip.svelte";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
-  import ProjectFolderSetting from "./settings/ProjectFolderSetting.svelte";
   import DesktopOnly from "./DesktopOnly.svelte";
   import { anonymousIdentity, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import Avatar from "./Avatar.svelte";
@@ -1505,41 +1504,36 @@
   // local project, and the only thing that knows what the folder holds.
   let localProject = null;
 
-  // A granted project folder mirrors the project. Any change to the files
-  // pokes the scheduler, which writes the folder once the person pauses.
-  function folderBinding() {
-    const id = hasDesktop ? localQuarto.bindingId() : "";
-    return id && id !== localQuarto.HOSTED_BINDING ? id : "";
-  }
-  const folderSync = createFolderSync({
-    ready: () => Boolean(hasDesktop && mayEdit && session && folderBinding()),
+  // A local project's folder mirrors the project. Any change to the files
+  // pokes the scheduler, which writes the folder once the person pauses. A
+  // web project has no folder, so it has no sync.
+  const folderSync = LOCAL ? createFolderSync({
+    ready: () => Boolean(hasDesktop && mayEdit && session),
     run: async () => {
       scopeLocalApp();
-      const binding = folderBinding();
       const captured = capturePreviewTree(liveTreeNow());
       // Files deleted on disk while they held unsaved edits are not sent, so
       // the folder does not bring them back before the person decides.
-      const tree = LOCAL ? localProject.withoutHeld(captured) : captured;
+      const tree = localProject.withoutHeld(captured);
       if (Object.keys(tree.digests || {}).length) {
         const { held, missing } = await gatherFigures(tree.digests);
         if (missing.length) throw new Error(`could not fetch ${missing.join(", ")}`);
         tree.assets = held.assets;
       }
-      const result = await localQuarto.syncFolder({ tree, bindingId: binding, encode: LOCAL ? localProject.encode : undefined });
-      if (LOCAL && result) localProject?.wrote(tree);
+      const result = await localQuarto.syncFolder({ tree, bindingId: LOCAL_ID, encode: localProject.encode });
+      if (result) localProject?.wrote(tree);
       for (const kept of result?.kept || []) {
         const name = String(kept.path || "").split("/").pop();
         say(`Your copy of ${name} was kept as ${String(kept.copy || "").split("/").pop()}.`, { kind: "note", id: `reader:folder-kept:${kept.path}` });
       }
     },
     onError: (error) => say(`The project folder could not be updated: ${error?.message || "unknown error"}`, { kind: "problem", id: "reader:folder-sync" }),
-  });
-  $effect(() => () => folderSync.dispose());
-  // The document opens with a saved folder, or the editor becomes ready.
-  // A local project opens with one sync that sends nothing, because the
+  }) : null;
+  $effect(() => () => folderSync?.dispose());
+  // The editor becomes ready. A local project opens with one sync that sends nothing, because the
   // client was told what the folder holds. It makes every file managed.
   $effect(() => {
-    if (session && mayEdit) untrack(() => folderSync.poke());
+    if (session && mayEdit) untrack(() => folderSync?.poke());
   });
 
   // Outline reads the same live text as the editor. The revision dependency
@@ -1984,6 +1978,8 @@
   // after every await, and the few effects it cannot perform itself.
   const renderPreview = createPreviewRenderer({
     slug: SLUG,
+    // A web project renders in the hosted workspace; a local project in its folder.
+    bindingId: LOCAL ? LOCAL_ID : localQuarto.HOSTED_BINDING,
     coordinator: renderCoordinator,
     status: renderStatus,
     framePreview: {
@@ -2228,7 +2224,6 @@
   // point opens the same dialog on the category it is about.
   let settingsOpen = $state(untrack(() => initialSettings === "tools"));
   let settingsCategory = $state(untrack(() => initialSettings || "editor"));
-  let projectFolderOpen = $state(false);
   let savingTemplate = $state(false);
   let templateModalOpen = $state(false);
   let templateName = $state("");
@@ -2540,7 +2535,6 @@
   async function chooseFileCommand(value) {
     if (value === "settings") return openSettings("editor");
     if (value === "quit") return void localQuarto.shellAction("quit").catch((error) => say(error.message || "The desktop app could not quit.", { kind: "problem", id: "reader:quit" }));
-    if (value === "project-folder") return void (projectFolderOpen = true);
     if (value === "compile") return compileNow();
     if (value === "download") return downloadTree();
     if (value === "download-source") return downloadSource();
@@ -3004,7 +2998,7 @@
     // four maps, not one.
     if (active.directoryChanged(events)) refreshFiles();
     if (needsSourceRefresh(events)) {
-      folderSync.poke();
+      folderSync?.poke();
       sourceChanged();
       scheduleTargetUpdate();
     }
@@ -3481,7 +3475,6 @@
   async function bootLocal() {
     try {
       scopeLocalApp();
-      localQuarto.setBindingId(LOCAL_ID);
       const [config, collab] = await Promise.all([loadConfig(), import("../lib/collab.js")]);
       if (readerDisposed) return;
       localProject = createLocalProject({
@@ -3493,7 +3486,7 @@
         onConflict: askAboutDisk,
         onResend: (paths) => {
           localQuarto.forgetAcknowledged(paths);
-          folderSync.poke();
+          folderSync?.poke();
         },
         onProblem: (message) => say(message, { kind: "problem", id: "reader:folder-read" }),
       });
@@ -3891,9 +3884,6 @@
   <hr class="hr my-1" />
   {#if mayEdit && sourceFormat === "latex" && compilesHere}
     <Menu.Item value="compile" class="menuitem"><span class="menuitem-label">Compile now</span>{#if MENU_KEYS.compile}<span class="menuitem-keys">{MENU_KEYS.compile}</span>{/if}</Menu.Item>
-  {/if}
-  {#if mayEdit && !LOCAL && ["typst", "markdown", "quarto"].includes(sourceFormat)}
-    <Menu.Item value="project-folder" class="menuitem">Project folder…</Menu.Item>
   {/if}
   <Menu.Item value="settings" class="menuitem"><span class="menuitem-label">Settings…</span>{#if MENU_KEYS.settings}<span class="menuitem-keys">{MENU_KEYS.settings}</span>{/if}</Menu.Item>
   {#if hasDesktop}
@@ -4507,10 +4497,6 @@
                 userId={buildUserId}
                 onbuildpreferences={(format, next) => { if (format === sourceFormat) setBuildPreferences(next); }}
                 account={me} />
-
-<Modal bind:open={projectFolderOpen} title="Project folder">
-  <ProjectFolderSetting {sourceFormat} main={previewPath} {mayEdit} onbindingid={(id) => { localQuarto.setBindingId(id); folderSync.poke(); }} />
-</Modal>
 
 <!-- A file changed on disk while the editor held unsaved edits to it. -->
 <Modal bind:open={diskConflictOpen} title="File changed on disk"

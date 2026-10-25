@@ -48,6 +48,7 @@
  */
 export function createPreviewRenderer({
   slug,
+  bindingId = "hosted",
   coordinator,
   status,
   framePreview,
@@ -271,7 +272,7 @@ export function createPreviewRenderer({
       // drawn by this browser's own renderer, and a document never runs on
       // this computer without consent.
       const build = current.localExecution ? current.buildPreferences : { ...current.buildPreferences, backend: "browser" };
-      rendered = await renderers.render(source, title, { ...options, buildPreferences: build, project: slug });
+      rendered = await renderers.render(source, title, { ...options, buildPreferences: build, project: slug, bindingId });
       debug("preview: result", Boolean(rendered?.pdf), rendered?.ok, rendered?.failure?.message || "");
       if (facts().disposed) return;
       if (format === "latex" && !htmlPreview) status.recordLatex(rendered);

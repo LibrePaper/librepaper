@@ -8,13 +8,6 @@ import { formOf } from "../helpers/form-body.mjs";
 
 globalThis.location = { origin: "https://app.test" };
 
-const values = new Map();
-const storage = {
-  getItem: (key) => values.get(key) || null,
-  setItem: (key, value) => values.set(key, String(value)),
-  removeItem: (key) => values.delete(key),
-};
-
 function response(status, body, bytes = null) {
   return {
     ok: status >= 200 && status < 300,
@@ -33,7 +26,7 @@ const text = (value) => new TextEncoder().encode(value);
 
 globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
 client._testing.reset();
-client._testing.inject({ storage, wait: () => Promise.resolve() });
+client._testing.inject({ wait: () => Promise.resolve() });
 client.configure({ project: "paper", origin: "https://app.test" });
 
 // A fake desktop app that answers one render with the given files.
@@ -67,6 +60,10 @@ assert.equal(submitted.output, "pdf");
 assert.equal(submitted.entrypoint, "main.typ");
 assert.equal(submitted.binding_id, "hosted");
 assert.deepEqual([...compiled.pdf], [...pdf]);
+// A local project passes its local id, which names its folder.
+answer({ files: { artifact: pdf, log: text("compiled") } });
+await renderers.render(typst, "Test", { project: "paper", bindingId: "local-1", buildPreferences: { backend: "local", output: "pdf" } });
+assert.equal(submitted.binding_id, "local-1");
 assert.equal(compiled.html, null);
 assert.equal(compiled.log, "compiled");
 assert.deepEqual(compiled.diagnostics, []);

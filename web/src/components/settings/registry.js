@@ -62,7 +62,6 @@ export const CATEGORIES = [
     entries: [
       { id: "tools-programs", says: "Programs", terms: "tools tool status version available missing rescan scan local latexmk quarto typst zotero" },
       { id: "tools-zotero", says: "Zotero", terms: "zotero citations bibliography library references local api" },
-      { id: "tools-folders", says: "Project folders", terms: "folders bindings project authorization revoke" },
       { id: "tools-activity", says: "Activity", terms: "jobs sessions cancel stop running" },
     ],
   },

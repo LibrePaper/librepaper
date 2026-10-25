@@ -175,7 +175,6 @@ try {
   assert.equal(await b.evaluate('document.querySelector("#tray-enabled") === null'), true, "there is no tray preference");
   assert.equal(await b.evaluate(`document.querySelector("#agents-list-heading") === null`), true, "agents have their own category");
   assert.equal(await b.evaluate('document.body.innerText.includes("Tool search folders")'), false, "tool search folders are not configurable");
-  assert.equal(await b.evaluate('document.querySelector("#tools-folders") === null'), true, "with no project-folder grants there is no Project folders section");
 
   for (const path of ["/companion", "/companion/", "/companion/index.html", "/companion/app.js", "/companion/style.css"]) {
     const response = await fetch(`${companionAddress.replace(/\/$/, "")}${path}`);

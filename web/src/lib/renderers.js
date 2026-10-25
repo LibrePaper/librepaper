@@ -187,7 +187,7 @@ function localDiagnostics(format, result, tree) {
 /// A render carries `html` or `pdf`, never both, and the caller posts
 /// whichever it has: flow documents are painted into the shell and paged
 /// documents into the PDF frame, and that is the whole difference here.
-export async function render(tree, title, { manual = false, format: requestedFormat = "pdf", configuration = null, buildPreferences = null, project = "" } = {}) {
+export async function render(tree, title, { manual = false, format: requestedFormat = "pdf", configuration = null, buildPreferences = null, project = "", bindingId = localBridge.HOSTED_BINDING } = {}) {
   const source = tree.texts?.[tree.main] ?? "";
   const format = previewFormatOf(tree.main);
   // A format set to this computer renders there, through the command Settings
@@ -201,7 +201,7 @@ export async function render(tree, title, { manual = false, format: requestedFor
     activeLocalAbort?.abort();
     const abort = new AbortController();
     activeLocalAbort = abort;
-    const result = await localBridge.runRender({ job, tree, format, output, entrypoint: tree.main, bindingId: localBridge.bindingId() }, { signal: abort.signal });
+    const result = await localBridge.runRender({ job, tree, format, output, entrypoint: tree.main, bindingId }, { signal: abort.signal });
     return {
       artifact: result.artifact,
       artifactKind: output,

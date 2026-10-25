@@ -24,7 +24,7 @@ for (const signedIn of [true, false]) {
   }
 }
 assert.doesNotMatch(registryText, /id: "desktop"/);
-for (const query of ["rescan", "project folders", "zotero", "server address", "remote connection", "disconnected sync"]) {
+for (const query of ["rescan", "zotero", "server address", "remote connection", "disconnected sync"]) {
   assert.ok(search(query, { signedIn: false })?.length, `settings search finds ${query}`);
 }
 

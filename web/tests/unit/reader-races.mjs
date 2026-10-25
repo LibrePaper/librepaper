@@ -402,7 +402,7 @@ console.log("reader-races: all checks passed");
   assert.equal(refreshes, 0, "an edit inside a file does not rebuild the directory");
   assert.equal(changes, 1, "but it does repaint the preview");
   assert.equal(targets, 1, "and it asks for the preview target to be worked out again");
-  assert.equal(pokes, 1, "and it tells the project folder to catch up");
+  assert.equal(pokes, 1, "and it tells the folder sync to catch up");
   ctx.events = [{ target: openText.id }];
   vm.runInContext("filesChanged(events)", ctx);
   assert.equal(changes, 2, "an edit to the open file is heard here too, since no watcher is bound to it");

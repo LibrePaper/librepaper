@@ -11,7 +11,7 @@
   let { format, output } = $props();
 
   const TITLES = { pdf: "PDF command", html: "HTML command", docx: "Word command" };
-  const HELP = "{input} is the main file and {stem} is its path without the extension. The command runs in the project folder.";
+  const HELP = "{input} is the main file and {stem} is its path without the extension. The command runs in the folder that holds the project files.";
 
   let settingsError = $state("");
   let pendingDialogAction = $state(false);

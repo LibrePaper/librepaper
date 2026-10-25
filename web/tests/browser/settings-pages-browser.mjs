@@ -1,7 +1,6 @@
 // Where a setting lives, in the dialog itself. Where a format renders and the
 // command that renders it are configured on the Rendering page; the Tools page
-// holds the programs on this computer, the project folders the app is bound to
-// and, only while something runs, its activity; and the Account page carries
+// holds the programs on this computer and, only while something runs, its activity; and the Account page carries
 // the server.
 import assert from "node:assert/strict";
 import { build } from "vite";
@@ -48,7 +47,6 @@ writeFileSync(clientMock, `
 export const INSTALL_URL = "https://librepaper.org/desktop-app.html";
 export const DESKTOP_ONLY_MESSAGE = "This needs the LibrePaper desktop app.";
 export const desktop = () => window.__LIBREPAPER_DESKTOP__ ?? null;
-export function chooseFolderBinding() { return Promise.resolve({ id: "folder", entrypoint: "main.qmd" }); }
 export const LOCAL_OUTPUTS = { latex: ["pdf"], typst: ["pdf"], markdown: ["html", "pdf", "docx"], quarto: ["html", "pdf", "docx"] };
 export const rendererKey = (format, output) => format + "." + output;
 export async function setRenderer() { return {}; }
@@ -60,7 +58,7 @@ export async function desktopReport() { return "Desktop app test report"; }
 export async function manage(path) {
   if (path !== "/state") throw new Error("unexpected management call " + path);
   return {
-    version: "1.0.0", jobs: [], sessions: [], bindings: [],
+    version: "1.0.0", jobs: [], sessions: [],
     settings: { renderers: {
       "latex.pdf": { command: ["latexmk", "-pdf", "{input}"], result: "{stem}.pdf", edited: false, found: true, version: "4.85" },
       "typst.pdf": { command: ["typst", "compile", "{input}", "{stem}.pdf"], result: "{stem}.pdf", edited: false, found: true, version: "0.13.0" },
@@ -146,7 +144,7 @@ try {
   };
   const everything = ["render-latex-preview", "render-latex-engine", "render-latex-where", "render-latex-files", "render-typst-preview", "render-typst-where", "render-markdown-preview", "render-markdown-where", "render-quarto-preview", "render-quarto-html", "render-quarto-pdf", "render-quarto-docx", "render-typst-pdf",
     "tools-programs", "tools-latexmk", "tools-typst", "tools-quarto", "tools-zotero",
-    "tools-folders", "tools-activity", "diagnostics-report",
+    "tools-activity", "diagnostics-report",
     "remote-status", "remote-address", "storage-account", "account-erase"];
   // Every format is in the browser, so only Quarto, which has no browser engine, shows its commands.
   const renderingRows = ["render-latex-preview", "render-latex-engine", "render-latex-where", "render-latex-files", "render-typst-preview", "render-typst-where", "render-markdown-preview", "render-markdown-where", "render-quarto-preview", "render-quarto-html", "render-quarto-pdf", "render-quarto-docx"];
@@ -229,8 +227,8 @@ try {
   await show("tools", "quarto", "Tools");
   await until("the program rows", () => present(["tools-zotero"]).then((found) => found.length === 1), 5000);
   await capture("tools");
-  assert.deepEqual(await present(everything), ["tools-programs", "tools-latexmk", "tools-typst", "tools-quarto", "tools-zotero"], "no bindings, so no folders; nothing runs, so no Activity section");
-  assert.deepEqual(await subheads(), ["Programs"], "no bindings and nothing running, so only Programs");
+  assert.deepEqual(await present(everything), ["tools-programs", "tools-latexmk", "tools-typst", "tools-quarto", "tools-zotero"], "nothing runs, so no Activity section");
+  assert.deepEqual(await subheads(), ["Programs"], "nothing running, so only Programs");
   assert.equal(await b.evaluate(`document.querySelector(".settings-scope")?.textContent.trim()`), "Version 1.0.0 · This computer");
   assert.match(await b.evaluate(`document.querySelector("#tools-zotero .setting-status-pill")?.textContent`), /Available · 7\.0/);
   assert.match(await b.evaluate(`document.querySelector("#tools-typst .setting-status-pill")?.textContent`), /Available · 0\.13\.0/);
