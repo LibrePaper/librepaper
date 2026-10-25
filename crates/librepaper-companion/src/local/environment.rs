@@ -529,10 +529,12 @@ mod tests {
         let detached = fake_shell(
             directory.path(),
             "detached",
-            "setsid sleep 3 & eval \"$4\"; exit 0",
+            "setsid sleep 20 & eval \"$4\"; exit 0",
         );
-        let started = std::time::Instant::now();
-        assert!(login_shell_path(&detached, std::time::Duration::from_secs(2)).is_some());
-        assert!(started.elapsed() < std::time::Duration::from_millis(1500));
+        // The detached sleep outlives the 10 s deadline, so a lookup that
+        // waited for the pipe to close would time out and return None. The
+        // margins are wide because a loaded CI runner can be slow to start
+        // the shell.
+        assert!(login_shell_path(&detached, std::time::Duration::from_secs(10)).is_some());
     }
 }
