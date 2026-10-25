@@ -544,6 +544,56 @@ export async function runRender({ job = {}, tree, format, output, entrypoint = "
   };
 }
 
+// The digests the desktop app last acknowledged for one project folder. A new
+// binding, or any answer that is not a 200, starts the next call from nothing,
+// so the next upload sends every file again.
+let acknowledged = { key: "", digests: new Map() };
+
+function folderForm(manifest, files) {
+  const form = new FormData();
+  form.append("manifest", new Blob([JSON.stringify({ manifest })], { type: "application/json" }), "manifest.json");
+  for (const [path, bytes] of files) form.append("file", new Blob([toArrayBuffer(bytes)]), path);
+  return form;
+}
+
+/** Bring the granted project folder in step with the project. The manifest
+ * lists every file, and the bytes go only for files the desktop app has not
+ * acknowledged yet. Resolves with the desktop app's answer (`kept`, `trashed`,
+ * `renamed`), or null after forgetting a folder that is no longer granted.
+ * @param {{ tree: DesktopTree, bindingId: string }} input
+ * @param {{ signal?: AbortSignal }} [options] */
+export async function syncFolder({ tree, bindingId: binding }, { signal } = {}) {
+  const id = String(binding || "");
+  if (!id || id === HOSTED_BINDING) throw new Error("no project folder is granted");
+  const files = collectTreeFiles(tree);
+  const manifest = await manifestOf(files);
+  const key = `${projectKey()}|${id}`;
+  if (acknowledged.key !== key) acknowledged = { key, digests: new Map() };
+  const known = acknowledged.digests;
+  const path = `folder?project=${encodeURIComponent(current.project || "")}&binding=${encodeURIComponent(id)}`;
+  const changed = new Set(manifest.filter((entry) => known.get(entry.path) !== entry.sha256).map((entry) => entry.path));
+  const upload = (paths) => send("PUT", path, { formBody: folderForm(manifest, files.filter(([name]) => paths.has(name))), signal });
+  let response;
+  try {
+    try {
+      response = await upload(changed);
+    } catch (error) {
+      if (error?.name !== "Refused" || error?.status !== 409) throw error;
+      const missing = new Set(Array.isArray(error.body?.missing) ? error.body.missing : []);
+      response = await upload(missing);
+    }
+  } catch (error) {
+    acknowledged = { key: "", digests: new Map() };
+    if (error?.name === "Refused" && [403, 404].includes(error?.status)) {
+      setBindingId("");
+      return null;
+    }
+    throw error;
+  }
+  acknowledged = { key, digests: new Map(manifest.map((entry) => [entry.path, entry.sha256])) };
+  return response.json();
+}
+
 /** Change the command that renders one output. The desktop app shows the
  * whole command in its own dialog and refuses with 403 when the person
  * cancels. @param {string} key @param {{ command: string[], result: string }} record */

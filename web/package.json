@@ -31,6 +31,7 @@
     "check:latex-html-browser": "node tests/browser/latex-html-browser.mjs",
     "check:latex-browser": "node tests/browser/latex-browser.mjs both",
     "check:build-local": "node tests/integration/build-local.mjs",
+    "check:folder-sync": "node tests/integration/folder-sync.mjs && node tests/unit/folder-sync.mjs",
     "check:agent-browser": "node tests/browser/agent-browser.mjs",
     "check:responsive-browser": "node tests/browser/responsive-browser.mjs",
     "check:accessibility": "node tests/browser/accessibility-browser.mjs",
