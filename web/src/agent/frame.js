@@ -60,8 +60,12 @@ import { watchPinch } from "../lib/pinch.js";
   // typst's generated rules remain untouched. adoptStyles keeps it appended
   // after the document styles and it only applies while previewing flow HTML.
   const previewCanvasStyle = `
-    html.librepaper-preview.librepaper-flow { background: #fff; }
+    /* The paper is light whatever the reader's own theme is, so its ink is
+       set here too: a dark reader would otherwise hand the body light text
+       on the white page. */
+    html.librepaper-preview.librepaper-flow { background: #fff; color: #000; }
     html.librepaper-preview.librepaper-flow body {
+      color: #000;
       box-sizing: border-box;
       width: 100%;
       max-width: none;
