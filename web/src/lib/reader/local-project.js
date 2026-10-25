@@ -471,7 +471,11 @@ export function createLocalProject({
     const tree = await folder.projectTree(id);
     if (closed) return;
     const listed = managed(tree.files);
-    for (const path of [...disk.keys()]) if (!listed.has(path)) gone(path);
+    // A file under an entry the desktop could not read is not gone, only
+    // unseen. Dropping it here would let the next save trash it.
+    const unreadable = (tree.skipped || []).filter((entry) => entry.reason === "unreadable").map((entry) => entry.path);
+    const unseen = (path) => unreadable.some((entry) => path === entry || path.startsWith(`${entry}/`));
+    for (const path of [...disk.keys()]) if (!listed.has(path) && !unseen(path)) gone(path);
     const changed = [...listed.values()].filter((file) => {
       const known = disk.get(file.path);
       return !known || known.sha === null || known.sha !== file.sha256;
