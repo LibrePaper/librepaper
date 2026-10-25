@@ -15,6 +15,7 @@ pub mod connections;
 pub mod credentials;
 pub mod environment;
 pub mod folder;
+pub(crate) mod git;
 pub mod lifecycle;
 pub mod native;
 pub mod paths;

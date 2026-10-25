@@ -144,7 +144,7 @@ pub(super) enum WalkError {
 }
 
 /// Why a directory entry named `name` is never listed, when it is not.
-fn skip_reason(name: &str) -> Option<&'static str> {
+pub(super) fn skip_reason(name: &str) -> Option<&'static str> {
     if name.starts_with('.') {
         Some("hidden")
     } else if IGNORED_NAMES.contains(&name) {

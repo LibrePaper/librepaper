@@ -57,6 +57,7 @@ pub(crate) fn normalized_server(raw: &str) -> Result<String, String> {
     control::normalized_server(raw)
 }
 
+mod git;
 mod jobs;
 mod projects;
 mod sync;
@@ -652,6 +653,9 @@ async fn dispatch(
         ["projects", "keep"] if *method == Method::POST => {
             sync::handle_keep(inner, headers, origin, request).await
         }
+        ["projects", "clone"] if *method == Method::POST => {
+            git::handle_clone(inner, headers, origin, request).await
+        }
         ["projects"] if *method == Method::GET => {
             projects::handle_list(inner, headers, origin).await
         }
@@ -695,6 +699,45 @@ async fn dispatch(
         }
         ["projects", id, "sync", "push"] if *method == Method::POST => {
             sync::handle_push(inner, headers, origin, id, request).await
+        }
+        ["projects", id, "git"] if *method == Method::GET => {
+            git::handle_status(inner, headers, origin, id).await
+        }
+        ["projects", id, "git", "init"] if *method == Method::POST => {
+            git::handle_init(inner, headers, origin, id).await
+        }
+        ["projects", id, "git", "diff"] if *method == Method::GET => {
+            git::handle_diff(inner, headers, origin, id, request).await
+        }
+        ["projects", id, "git", "commit"] if *method == Method::POST => {
+            git::handle_commit(inner, headers, origin, id, request).await
+        }
+        ["projects", id, "git", "identity"] if *method == Method::POST => {
+            git::handle_identity(inner, headers, origin, id, request).await
+        }
+        ["projects", id, "git", "branches"] if *method == Method::GET => {
+            git::handle_branches(inner, headers, origin, id).await
+        }
+        ["projects", id, "git", "switch"] if *method == Method::POST => {
+            git::handle_switch(inner, headers, origin, id, request).await
+        }
+        ["projects", id, "git", "branch"] if *method == Method::POST => {
+            git::handle_branch(inner, headers, origin, id, request).await
+        }
+        ["projects", id, "git", "remote"] if *method == Method::POST => {
+            git::handle_remote(inner, headers, origin, id, request).await
+        }
+        ["projects", id, "git", "fetch"] if *method == Method::POST => {
+            git::handle_fetch(inner, headers, origin, id).await
+        }
+        ["projects", id, "git", "pull"] if *method == Method::POST => {
+            git::handle_pull(inner, headers, origin, id).await
+        }
+        ["projects", id, "git", "push"] if *method == Method::POST => {
+            git::handle_push(inner, headers, origin, id).await
+        }
+        ["projects", id, "git", "sync"] if *method == Method::POST => {
+            git::handle_sync(inner, headers, origin, id, request).await
         }
         ["folder"] if *method == Method::PUT => {
             jobs::handle_folder_put(inner, headers, origin, request).await
