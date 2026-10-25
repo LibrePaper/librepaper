@@ -97,6 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(target_os = "macos")]
         RunEvent::Reopen {
             has_visible_windows: false,
+            ..
         } => tray::show_windows(app),
         _ => {}
     });
