@@ -85,8 +85,8 @@ try {
   assert.equal(listed.approvals, undefined, "the state lists no browser approvals");
   assert.equal(listed.standalone, undefined, "the state does not report standalone");
 
-  const bindings = await fetch(`${base}/bindings?project=paper`, { headers: shell });
-  assert.equal((await bindings.json()).bindings.length, 0, "no folder chooser has created a binding");
+  // Render bindings went with project folders for web projects; the route is gone.
+  assert.equal((await fetch(`${base}/bindings?project=paper`, { headers: shell })).status, 404, "bindings is gone");
 
   // `stop` then `endpoint` is the restart sequence. Each start mints a new
   // credential, which is why the shell reads the endpoint again after a 401.
