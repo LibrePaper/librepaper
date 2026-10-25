@@ -37,8 +37,8 @@ const linked = (extra = {}) => ({ signed_in: true, linked: true, site: "https://
 // does to it, and the answers a pull or a push gives in turn. Signing in is
 // the desktop app's code, the page's approval of it, and the finish, which
 // refuses while the code is pending for as many tries as the scene asks. A
-// scene with `session: false` is a page with no session on the server: the code
-// is then approved in another tab, and `hold` is the promise that the wait
+// scene with session false is a page with no session on the server: the code
+// is then approved in another tab, and hold is the promise that the wait
 // between two asks of the finish stays in until the scene releases it.
 const scene = () => window.scene;
 const refusal = (failure) => Object.assign(new Error(failure.message || failure.body?.error || "The desktop app refused the request."), { name: "Refused", status: failure.status, body: failure.body });
