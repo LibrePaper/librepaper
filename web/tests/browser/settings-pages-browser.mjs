@@ -1,7 +1,8 @@
-// Where a setting lives, in the dialog itself. A tool that builds the
-// document is configured on the Rendering page; the Tools page holds the
-// programs on this computer, the project folders the app is bound to and, only
-// while something runs, its activity; and the Account page carries the server.
+// Where a setting lives, in the dialog itself. Where a format renders and the
+// command that renders it are configured on the Rendering page; the Tools page
+// holds the programs on this computer, the project folders the app is bound to
+// and, only while something runs, its activity; and the Account page carries
+// the server.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -40,7 +41,6 @@ writeFileSync(harness, `
 </script>
 <SettingsDialog bind:open bind:category userId="user"
                 onbuildpreferences={(format, next) => { window.applied.push(next); }}
-                onquartooptions={(next) => { window.applied.push(next); }}
                 remoteConnected={true} />
 `);
 
@@ -49,6 +49,10 @@ export const INSTALL_URL = "https://librepaper.org/desktop-app.html";
 export const DESKTOP_ONLY_MESSAGE = "This needs the LibrePaper desktop app.";
 export const desktop = () => window.__LIBREPAPER_DESKTOP__ ?? null;
 export function chooseFolderBinding() { return Promise.resolve({ id: "folder", entrypoint: "main.qmd" }); }
+export const LOCAL_OUTPUTS = { latex: ["pdf"], typst: ["pdf"], markdown: ["html", "pdf", "docx"], quarto: ["html", "pdf", "docx"] };
+export const rendererKey = (format, output) => format + "." + output;
+export async function setRenderer() { return {}; }
+export async function resetRenderer() { return {}; }
 export async function capabilities() { return {}; }
 export function forgetCapabilities() {}
 export async function shellAction() {}
@@ -56,13 +60,16 @@ export async function desktopReport() { return "Desktop app test report"; }
 export async function manage(path) {
   if (path !== "/state") throw new Error("unexpected management call " + path);
   return {
-    version: "1.0.0", jobs: [], previews: [], sessions: [], bindings: [],
-    settings: { integrations: { quarto: { path: null, args: [] }, calepin: { path: null, args: [] } } },
+    version: "1.0.0", jobs: [], sessions: [], bindings: [],
+    settings: { renderers: {
+      "latex.pdf": { command: ["latexmk", "-pdf", "{input}"], result: "{stem}.pdf", edited: false, found: true, version: "4.85" },
+      "typst.pdf": { command: ["typst", "compile", "{input}", "{stem}.pdf"], result: "{stem}.pdf", edited: false, found: true, version: "0.13.0" },
+      "quarto.html": { command: ["quarto", "render", "{input}", "--to", "html"], result: "{stem}.html", edited: false, found: true, version: "1.6.0" },
+      "quarto.pdf": { command: ["quarto", "render", "{input}", "--to", "pdf"], result: "{stem}.pdf", edited: false, found: true, version: "1.6.0" },
+      "quarto.docx": { command: ["quarto", "render", "{input}", "--to", "docx"], result: "{stem}.docx", edited: false, found: true, version: "1.6.0" },
+    } },
     tools: {
-      tools: { quarto: { available: true, version: "1.6.0" } },
-      calepin: { available: true, version: "0.3.0" },
       zotero: { available: true, version: "7.0" },
-      builders: [{ id: "quarto", available: true, version: "1.6.0", outputs: ["html", "pdf"], operations: [{ kind: "build", workspace_modes: ["snapshot"] }] }],
     },
   };
 }
@@ -137,11 +144,12 @@ try {
     }
     await b.resize(1280, 900);
   };
-  const everything = ["render-latex-preview", "render-latex-engine", "render-latex-files", "render-typst-preview", "render-markdown-preview", "render-markdown-tool", "render-quarto-preview", "rendering-profile", "rendering-parameters",
-    "tools-programs", "tools-quarto", "tools-calepin", "tools-zotero", "quarto-executable", "quarto-arguments",
+  const everything = ["render-latex-preview", "render-latex-engine", "render-latex-where", "render-latex-files", "render-typst-preview", "render-typst-where", "render-markdown-preview", "render-markdown-where", "render-quarto-preview", "render-quarto-html", "render-quarto-pdf", "render-quarto-docx", "render-typst-pdf",
+    "tools-programs", "tools-latexmk", "tools-typst", "tools-quarto", "tools-zotero",
     "tools-folders", "tools-activity", "diagnostics-report",
     "remote-status", "remote-address", "storage-account", "account-erase"];
-  const renderingRows = ["render-latex-preview", "render-latex-engine", "render-latex-files", "render-typst-preview", "render-markdown-preview", "render-markdown-tool", "render-quarto-preview", "rendering-profile", "rendering-parameters"];
+  // Every format is in the browser, so only Quarto, which has no browser engine, shows its commands.
+  const renderingRows = ["render-latex-preview", "render-latex-engine", "render-latex-where", "render-latex-files", "render-typst-preview", "render-typst-where", "render-markdown-preview", "render-markdown-where", "render-quarto-preview", "render-quarto-html", "render-quarto-pdf", "render-quarto-docx"];
   const renderingSections = ["LaTeX", "Typst", "Markdown", "Quarto"];
 
   // The navigation, in order, for a visitor on a Quarto document.
@@ -167,52 +175,66 @@ try {
   await show("rendering", "quarto", "Rendering");
 
   // Rendering shows one section per format, with the global build options visible in each.
-  await until("the Quarto profile rows", () => present(["rendering-profile"]).then((found) => found.length === 1), 5000);
+  await until("the Quarto command rows", () => present(["render-quarto-docx"]).then((found) => found.length === 1), 5000);
   assert.deepEqual(await present(everything), renderingRows);
   assert.deepEqual(await subheads(), renderingSections);
   assert.equal(await b.evaluate(`document.querySelector(".settings-group-title") === null`), true);
   // The programs the desktop app finds live on the Tools page, not here.
   assert.equal(await b.evaluate(`[...document.querySelectorAll(".settings-body .setting-status-pill")].some((pill) => /Running|Not running|Needs approval|Blocked|Update needed/.test(pill.textContent))`), false, "Rendering has no program status pill");
-  assert.equal(await b.evaluate(`document.querySelector("#quarto-executable") === null`), true, "Rendering has no executable fields");
   await capture("rendering-connected");
   if (screenshotDir) {
     await b.evaluate("document.querySelector('.settings-body').scrollTop = document.querySelector('.settings-body').scrollHeight");
     await capture("rendering-bottom");
     await b.evaluate("document.querySelector('.settings-body').scrollTop = 0");
   }
-  // Quarto profile and parameters are stored globally, not per document.
-  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').value`), "");
-  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').value`), "");
+  // Quarto has no browser engine, so it has no choice of where to render, and
+  // its commands show with whether the program was found. The profile and
+  // parameters are part of the command now.
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto renders in"]') === null`), true);
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]') === null && document.querySelector('[aria-label="Quarto parameters"]') === null`), true);
+  await until("the Quarto commands load", () => b.evaluate(`document.querySelector('#render-quarto-html [aria-label="HTML command for quarto"]')?.value === "quarto render {input} --to html"`), 5000);
+  assert.match(await b.evaluate(`document.querySelector("#render-quarto-pdf .setting-status-pill")?.textContent`), /Found · 1\.6\.0/);
+  assert.equal(await b.evaluate(`document.querySelector("#render-quarto-html").textContent.includes("The tool may download packages")`), false, "the note is once for the format");
+  assert.match(await b.evaluate(`document.querySelector(".settings-body").textContent`), /The tool may download packages on its own\./);
+
+  // The other formats start in the browser, and choosing this computer shows
+  // one command row for each output the format has.
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Typst renders in"]').value`), "browser");
+  assert.equal(await b.evaluate(`document.querySelector("#render-typst-pdf") === null`), true, "no command row while Typst renders in the browser");
+  const applied = await b.evaluate("window.applied.length");
+  await b.evaluate(`(() => { const select = document.querySelector('[aria-label="Typst renders in"]'); select.value = "local"; select.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+  await until("the Typst command row", () => present(["render-typst-pdf"]).then((found) => found.length === 1), 5000);
+  assert.equal(await b.evaluate("window.applied.length"), applied + 1, "the choice reaches the reader");
+  assert.equal(await b.evaluate("window.applied.at(-1).backend"), "local");
+  assert.equal(await b.evaluate(`document.querySelector("#render-latex-pdf") === null`), true, "LaTeX is still in the browser");
+  await b.evaluate(`(() => { const select = document.querySelector('[aria-label="Typst renders in"]'); select.value = "browser"; select.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+  await until("the Typst command row goes", () => present(["render-typst-pdf"]).then((found) => found.length === 0), 5000);
 
   // The same sections remain visible for all formats.
   await show("rendering", "typst", "Rendering");
   assert.deepEqual(await present(everything), renderingRows);
   assert.deepEqual(await subheads(), renderingSections);
-  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').disabled`), false);
   await show("rendering", "latex", "Rendering");
   await until("the LaTeX rows", () => present(["render-latex-files"]).then((found) => found.length === 1), 5000);
   assert.deepEqual(await present(everything), renderingRows);
   assert.deepEqual(await subheads(), renderingSections);
-  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').disabled`), false);
   await show("rendering", "html", "Rendering");
   assert.deepEqual(await subheads(), renderingSections);
   assert.ok((await present(everything)).includes("render-latex-files"));
 
-  // The Tools page is the programs on this computer. Zotero feeds a document
-  // without building it, and has no command of its own. Quarto lists its
-  // executable and arguments behind Details. The version sits beside the title.
+  // The Tools page is the programs on this computer: the ones the render
+  // commands start, and Zotero, which feeds a document without building it.
+  // The commands themselves are on the Rendering page. The version sits
+  // beside the title.
   await show("tools", "quarto", "Tools");
   await until("the program rows", () => present(["tools-zotero"]).then((found) => found.length === 1), 5000);
   await capture("tools");
-  assert.deepEqual(await present(everything), ["tools-programs", "tools-quarto", "tools-calepin", "tools-zotero"], "no bindings, so no folders; nothing runs, so no Activity section");
+  assert.deepEqual(await present(everything), ["tools-programs", "tools-latexmk", "tools-typst", "tools-quarto", "tools-zotero"], "no bindings, so no folders; nothing runs, so no Activity section");
   assert.deepEqual(await subheads(), ["Programs"], "no bindings and nothing running, so only Programs");
   assert.equal(await b.evaluate(`document.querySelector(".settings-scope")?.textContent.trim()`), "Version 1.0.0 · This computer");
   assert.match(await b.evaluate(`document.querySelector("#tools-zotero .setting-status-pill")?.textContent`), /Available · 7\.0/);
-  assert.equal(await b.evaluate(`document.querySelector("#tools-zotero .tool-row-toggle")`), null, "Zotero has no command to edit");
-  assert.equal(await b.evaluate(`document.querySelector("#quarto-executable") === null`), true, "the executable row starts hidden");
-  await b.evaluate(`document.querySelector("#tools-quarto .tool-row-toggle").click()`);
-  await until("the Quarto command rows", () => present(["quarto-executable", "quarto-arguments"]).then((found) => found.length === 2), 5000);
-  assert.deepEqual(await present(everything), ["tools-programs", "tools-quarto", "tools-calepin", "tools-zotero", "quarto-executable", "quarto-arguments"]);
+  assert.match(await b.evaluate(`document.querySelector("#tools-typst .setting-status-pill")?.textContent`), /Available · 0\.13\.0/);
+  assert.equal(await b.evaluate(`document.querySelector(".tool-row-toggle")`), null, "no program has a command to edit here");
 
   // The desktop app offers its Diagnostics page with Open logs among the buttons.
   await show("diagnostics", "quarto", "Diagnostics");
@@ -234,15 +256,16 @@ try {
   assert.deepEqual(await subheads(), renderingSections);
   await until("browser rendering settings", () => present(["render-latex-engine"]).then((found) => found.length === 1), 5000);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="LaTeX engine"]').disabled`), false);
-  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').disabled`), false);
-  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').disabled`), false);
+  // This computer is not an option in a browser, and Quarto's commands cannot be edited.
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Typst renders in"]') === null`), true);
+  assert.equal(await b.evaluate(`document.querySelector("#render-quarto-html") === null`), true);
   for (const [pageId, says] of [["tools", "Tools"], ["agents", "AI agents"], ["backups", "Backups"]]) {
     await show(pageId, "quarto", says);
     await until(`the browser notice on ${says}`, () => b.evaluate(`Boolean(document.querySelector(".settings-body .desktop-only a"))`), 5000);
     assert.equal(await b.evaluate(`document.querySelector(".settings-body .desktop-only-message").textContent.trim()`), "This needs the LibrePaper desktop app.");
     assert.equal(await b.evaluate(`document.querySelector(".settings-body .desktop-only a")?.getAttribute("href")`), "https://librepaper.org/desktop-app.html", `${says} links the install page`);
     assert.match(await b.evaluate(`document.querySelector(".settings-body .desktop-only a[href^='librepaper://open?url=']")?.textContent || ""`), /Open in the desktop app/);
-    assert.equal(await b.evaluate(`document.querySelector("#quarto-executable") === null`), true, `${says} shows no command fields in a browser`);
+    assert.equal(await b.evaluate(`document.querySelector("#render-quarto-html") === null`), true, `${says} shows no command fields in a browser`);
   }
   await capture("tools-browser");
 
@@ -252,7 +275,7 @@ try {
   await b.evaluate(`document.querySelector("#diagnostics-report details summary").click()`);
   await until("the report fills", () => b.evaluate(`/## App/.test(document.querySelector("#diagnostics-report textarea").value) && /## Environment/.test(document.querySelector("#diagnostics-report textarea").value)`), 5000);
 
-  console.log("settings-pages-browser: Rendering shows one section per format with a default preview, Tools lists the programs with Quarto commands behind Details, a browser gets one notice on each desktop page, and a browser has a Diagnostics page");
+  console.log("settings-pages-browser: Rendering shows one section per format with a default preview and, in the desktop app, where it renders and its commands, Tools lists the programs, a browser gets one notice on each desktop page, and a browser has a Diagnostics page");
 } finally {
   if (b) await b.close();
   server.close();

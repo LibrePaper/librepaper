@@ -87,34 +87,34 @@ async function testMultipartBuildBody() {
   setup({ storage, fetchImpl: async (url, init) => {
     if (url.endsWith("/jobs") && init.method === "POST") { capturedInit = init; return jsonResponse(202, { id: "job1", status: "queued" }); }
     if (url.endsWith("/jobs/job1")) return jsonResponse(200, { id: "job1", status: "done", exit: 0, outputs: {
-      pdf: { size: pdf.byteLength, sha256: await sha256hex(pdf) },
+      artifact: { size: pdf.byteLength, sha256: await sha256hex(pdf) },
       log: { size: log.byteLength, sha256: await sha256hex(log) },
-    }, provenance: { tools: { typst: "0.13" } } });
-    if (url.endsWith("/files/pdf")) return bytesResponse(200, pdf);
+    } });
+    if (url.endsWith("/files/artifact")) return bytesResponse(200, pdf);
     if (url.endsWith("/files/log")) return bytesResponse(200, log);
     throw new Error(`unexpected ${url}`);
   } });
   local.configure({ project: "proj1", origin: "https://app.example" });
-  const result = await local.runBuild({
+  const result = await local.runRender({
     job: { snapshot: "snap1", generation: 1 },
     tree: {
       main: "main.typ",
       texts: { "main.typ": "= Title" },
       assets: { "assets/weird.bin": nonUtf8 },
     },
-    builder: "typst",
+    format: "typst",
     output: "pdf",
   });
-  check("runBuild resolves ok on a clean done job", result.ok === true, JSON.stringify({ ok: result.ok, error: result.error }));
-  check("the builder is carried into provenance", result.provenance.builder === "typst", JSON.stringify(result.provenance));
+  check("runRender resolves ok on a clean done job", result.ok === true, JSON.stringify({ ok: result.ok, error: result.error }));
+  check("the format is carried into provenance", result.provenance.format === "typst", JSON.stringify(result.provenance));
   check("the body is multipart", String(capturedInit?.headers?.["Content-Type"] || "").startsWith("multipart/form-data"));
   const capturedForm = await formOf(capturedInit);
   const jobPart = capturedForm.get("job");
   check("the job part is present", jobPart != null);
   const jobJson = JSON.parse(await jobPart.text());
-  check("the job part parses to a protocol 2 build request", jobJson.protocol === 2 && jobJson.kind === "build" && jobJson.builder === "typst", JSON.stringify(jobJson));
+  check("the job part parses to a protocol 3 render request", jobJson.protocol === 3 && jobJson.format === "typst" && jobJson.output === "pdf", JSON.stringify(jobJson));
   check("the entrypoint is the tree's main file", jobJson.entrypoint === "main.typ", jobJson.entrypoint);
-  check("a snapshot workspace is requested", jobJson.workspace?.mode === "snapshot", JSON.stringify(jobJson.workspace));
+  check("the hosted workspace is requested", jobJson.binding_id === "hosted", JSON.stringify(jobJson.binding_id));
   check("every input is named in the manifest", jobJson.manifest.some((m) => m.path === "main.typ") && jobJson.manifest.some((m) => m.path === "assets/weird.bin"), JSON.stringify(jobJson.manifest));
   const fileParts = capturedForm.getAll("file");
   check("every input became a file part", fileParts.length === 2, `got ${fileParts.length}`);
@@ -137,14 +137,14 @@ async function testOutputDigestIsVerified() {
   setup({ storage, fetchImpl: async (url, init) => {
     if (url.endsWith("/jobs") && init.method === "POST") return jsonResponse(202, { id: "job2", status: "queued" });
     if (url.endsWith("/jobs/job2")) return jsonResponse(200, { id: "job2", status: "done", exit: 0, outputs: {
-      pdf: { size: served.byteLength, sha256: await sha256hex(announced) },
-    }, provenance: {} });
-    if (url.endsWith("/files/pdf")) return bytesResponse(200, served);
+      artifact: { size: served.byteLength, sha256: await sha256hex(announced) },
+    } });
+    if (url.endsWith("/files/artifact")) return bytesResponse(200, served);
     throw new Error(`unexpected ${url}`);
   } });
   local.configure({ project: "proj1", origin: "https://app.example" });
   await rejects(
-    local.runBuild({ job: { snapshot: "s", generation: 1 }, tree: { main: "main.typ", texts: { "main.typ": "x" } }, builder: "typst", output: "pdf" }),
+    local.runRender({ job: { snapshot: "s", generation: 1 }, tree: { main: "main.typ", texts: { "main.typ": "x" } }, format: "typst", output: "pdf" }),
     "Refused",
     "a mismatched output digest is refused",
   );
@@ -166,15 +166,14 @@ async function testPollingIntervals() {
         if (url.endsWith("/jobs/j1")) {
           polls += 1;
           if (polls < 25) return jsonResponse(200, { id: "j1", status: "running" });
-          return jsonResponse(200, { id: "j1", status: "done", exit: 0, outputs: { bbl: { size: 1 }, blg: { size: 1 } }, provenance: {} });
+          return jsonResponse(200, { id: "j1", status: "done", exit: 0, outputs: { artifact: { size: 1, sha256: await sha256hex(new Uint8Array([1])) } } });
         }
-        if (url.endsWith("/files/bbl")) return bytesResponse(200, new Uint8Array([1]));
-        if (url.endsWith("/files/blg")) return bytesResponse(200, new Uint8Array([2]));
+        if (url.endsWith("/files/artifact")) return bytesResponse(200, new Uint8Array([1]));
         throw new Error(`unexpected ${url}`);
       };
     })(),
   });
-  await local.runBuild({ job: { snapshot: "s", generation: 1 }, tree: { main: "main.typ", texts: { "main.typ": "x" } }, builder: "typst", output: "pdf" });
+  await local.runRender({ job: { snapshot: "s", generation: 1 }, tree: { main: "main.typ", texts: { "main.typ": "x" } }, format: "typst", output: "pdf" });
   check("polling starts at 500ms", waits[0] === 500, `${waits[0]}`);
   check("polling switches to 1000ms after 10s elapsed", waits.some((w) => w === 1000), JSON.stringify(waits));
 }
@@ -195,7 +194,7 @@ async function testCancelViaAbort() {
     },
   });
   await rejects(
-    local.runBuild({ job: { snapshot: "s", generation: 1 }, tree: { main: "main.typ", texts: { "main.typ": "x" } }, builder: "typst", output: "pdf" }, { signal: controller.signal }),
+    local.runRender({ job: { snapshot: "s", generation: 1 }, tree: { main: "main.typ", texts: { "main.typ": "x" } }, format: "typst", output: "pdf" }, { signal: controller.signal }),
     "Canceled",
     "an aborted signal cancels the job and rejects",
   );

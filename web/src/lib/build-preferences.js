@@ -5,7 +5,9 @@ export const PREFIX = "librepaper-build-v3";
 const ANONYMOUS_KEY = `${PREFIX}:anonymous-id`;
 let anonymousId;
 
-const DEFAULTS = Object.freeze({ selection: "automatic", backend: "auto", output: "" });
+// `selection` is the LaTeX engine choice and `backend` is where the format
+// renders.
+const DEFAULTS = Object.freeze({ selection: "automatic", backend: "browser", output: "" });
 
 function storage() { return typeof localStorage === "undefined" ? null : localStorage; }
 export function anonymousIdentity() {
@@ -25,33 +27,16 @@ function key({ origin = globalThis.location?.origin || "", user = "anonymous" } 
 // HTML is the default for every format. Each person can set their own default
 // per format in Settings > Rendering, kept in its own record. The View menu's
 // choice lasts for the visit and is never written.
-export function defaults(format = "") { return { ...DEFAULTS, format, output: "html" }; }
+export function defaults(format = "") { return { ...DEFAULTS, format, output: "html", backend: backendOf(format, "browser") }; }
 
-// The Quarto profile and parameters. Markdown rendered by Quarto takes the
-// same ones as a Quarto document, so they are kept once, beside the formats.
-const QUARTO_OPTIONS = "quarto-options";
-// The local tools each format can be built with. Any other stored local
-// choice, such as Pandoc, which now runs in the browser, reads back as the default.
-const LOCAL_TOOLS = { markdown: ["quarto"], quarto: ["quarto"], typst: ["calepin"] };
-const takesQuartoOptions = (format) => format === "markdown" || format === "quarto";
+// Where each format renders: in this browser or, in the desktop app, on this
+// computer with the command set in Settings. Quarto has no browser engine of
+// its own, so it always asks for this computer and Run code decides.
+export const LOCAL_FORMATS = Object.freeze(["latex", "typst", "markdown", "quarto"]);
 
-export function readQuartoOptions(scope) {
-  try {
-    const value = JSON.parse(storage()?.getItem(key(scope, QUARTO_OPTIONS)) || "null");
-    if (value && typeof value === "object") return { profile: value.profile || null, parameters: value.parameters || {} };
-  } catch { /* unreadable: the defaults */ }
-  return { profile: null, parameters: {} };
-}
-
-/** @param {unknown} scope @param {{profile?: string|null, parameters?: Record<string, unknown>}} [options] */
-export function writeQuartoOptions(scope, { profile, parameters } = {}) {
-  const value = { profile: profile || null, parameters: parameters || {} };
-  try { storage()?.setItem(key(scope, QUARTO_OPTIONS), JSON.stringify(value)); } catch { /* private mode/quota */ }
-  return value;
-}
-
-function withQuartoOptions(scope, format, preference) {
-  return takesQuartoOptions(format) ? { ...preference, ...readQuartoOptions(scope) } : preference;
+function backendOf(format, backend) {
+  if (format === "quarto") return "local";
+  return backend === "local" && LOCAL_FORMATS.includes(format) ? "local" : "browser";
 }
 
 const defaultPreview = (format) => `default-preview:${format}`;
@@ -69,10 +54,6 @@ export function writeDefaultPreview(scope, format, value) {
 }
 
 export function read(scope, format = "") {
-  return withQuartoOptions(scope, format, stored(scope, format));
-}
-
-function stored(scope, format) {
   const output = readDefaultPreview(scope, format);
   const fallback = { ...defaults(format), output };
   try {
@@ -80,47 +61,29 @@ function stored(scope, format) {
     if (!raw) return fallback;
     const value = JSON.parse(raw);
     if (!value || typeof value !== "object") return fallback;
-    const allowed = ["automatic", "tool"];
-    if (!allowed.includes(value.selection)) return fallback;
-    if (value.backend && !["auto", "browser", "local"].includes(value.backend)) return fallback;
-    const result = { ...fallback, ...value, format: format || value.format || "", output };
-    // LaTeX has no local builder. A stored preference from another format, or
-    // from an older build of the app, is read back as the browser engine
-    // rather than as a choice the menu can no longer offer.
-    if (format === "latex") {
-      result.backend = result.backend === "local" ? "browser" : result.backend;
-      if (result.tool !== "tex") { result.tool = "tex"; }
-    }
-    // Nor has Typst: the local choice is Calepin.
-    if (format === "typst" && result.backend === "local" && result.tool === "typst") result.backend = "browser";
-    if (result.backend === "local" && !(LOCAL_TOOLS[format] || []).includes(result.tool)) return fallback;
-    return result;
+    if (!["automatic", "tool"].includes(value.selection)) return fallback;
+    delete value.tool;
+    return { ...fallback, ...value, format: format || value.format || "", output, backend: backendOf(format, value.backend) };
   } catch { return fallback; }
 }
 
 function write(scope, format, next) {
-  const value = { ...next };
+  const value = { ...next, backend: backendOf(format, next.backend) };
   delete value.user;
   // The output is the View menu's choice for this visit: what is stored leaves
   // it out, and what is handed back keeps it, because the caller is about to
-  // render with the choice that was just made. The default preview and the
-  // Quarto options have their own records.
+  // render with the choice that was just made. The default preview has its
+  // own record.
   const kept = { ...value };
   delete kept.output;
-  delete kept.profile;
-  delete kept.parameters;
   try { storage()?.setItem(key(scope, format), JSON.stringify(kept)); } catch { /* private mode/quota */ }
-  return withQuartoOptions(scope, format, value);
+  return value;
 }
 
 export function update(scope, format, patch) {
   const current = read(scope, format);
-  const changingTool = patch.selection === "tool" && patch.tool && (patch.tool !== current.tool || patch.backend !== current.backend);
-  const next = { ...(changingTool || patch.selection === "automatic" ? { ...defaults(format), output: current.output } : current), ...patch, format };
-  if (next.selection === "automatic") {
-    delete next.tool;
-    delete next.engine;
-    next.backend = "auto";
-  }
+  const base = patch.selection === "automatic" ? { ...defaults(format), backend: current.backend, output: current.output } : current;
+  const next = { ...base, ...patch, format };
+  if (next.selection === "automatic") delete next.engine;
   return write(scope, format, next);
 }

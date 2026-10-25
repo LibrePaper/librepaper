@@ -83,27 +83,23 @@
   import PreviewControls from "./PreviewControls.svelte";
   import { onPageZoom } from "../lib/desktop/zoom.js";
   import Grip from "./Grip.svelte";
-  import { parseRenderOptions } from "../lib/quarto-options.js";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
   import ProjectFolderSetting from "./settings/ProjectFolderSetting.svelte";
   import DesktopOnly from "./DesktopOnly.svelte";
-  import { anonymousIdentity, read as readBuildPreferences, update as updateBuildPreferences, writeQuartoOptions } from "../lib/build-preferences.js";
+  import { anonymousIdentity, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import Avatar from "./Avatar.svelte";
   import { extractOutline } from "../lib/outline.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
   import { rememberPreview, lastPreview, flushAll } from "../lib/reader/preview-cache.js";
-  import { stamp as stampLive, matches as liveMatches, shouldStartLive, holding as liveHolding } from "../lib/reader/live-cache.js";
   import { previewTarget, rendersAlone, openingFile, includersOf } from "../lib/opening.js";
   import { createFrameOverlays } from "../lib/reader/frame-overlays.js";
   import { createRenderDiagnostics } from "../lib/reader/render-diagnostics.js";
   import { createRenderCoordinator } from "../lib/reader/render-coordinator.js";
-  import { createGeneration } from "../lib/reader/generation.js";
   import { createRenderStatus } from "../lib/reader/render-status.svelte.js";
   import { provide } from "../lib/support/providers.js";
   import { createSteadyBusy } from "../lib/reader/steady-busy.js";
   import { waitStageOf } from "../lib/reader/wait-stage.js";
   import PreviewWaiting from "./reader/PreviewWaiting.svelte";
-  import { createLocalPreview } from "../lib/reader/local-preview.svelte.js";
   import { previewNotes } from "../lib/reader/preview-notes.js";
   import { HIGHLIGHT_COLORS, colorName } from "../lib/annotation-colors.js";
   import { recenteredLeft, placeBar as placeSelectionBar } from "../lib/annotation-bar.js";
@@ -230,42 +226,21 @@
   // update from starting while the first is still in flight.
 
   let preview = $state(null);
-  // Both Quarto's own live preview and a Typst document previewed through
-  // Calepin run the same `createLocalPreview` lifecycle
-  // (`../lib/reader/local-preview.svelte.js`) against the same local app.
-  // Each controller owns what it is doing -- running, starting, re-rendering,
-  // and the last thing that went wrong -- and the aliases further down read
-  // it, rather than the page keeping a copy of each and a callback to keep
-  // the copy honest.
-  let localConnectionError = $state("");
-  let quartoLiveSyncTimer = null;
-  let calepinSyncTimer = null;
-  let quartoBindingId = $state("");
   // The desktop app is there or it is not; this page never changes its mind.
   const hasDesktop = Boolean(localQuarto.desktop());
-  // Whether the desktop app found the calepin command, read once the Typst
-  // preview asks for it.
-  let calepinFound = $state(false);
 
   /// Which document this browser tab is about, as far as the desktop app is
   /// concerned. It picks up whatever binding the client already remembers for
   /// it. Nothing is asked of the desktop app here.
   ///
-  /// Deliberately not behind a format check. It used to live inside the
-  /// Quarto binding lookup below, which meant an HTML or LaTeX document never
-  /// scoped the client at all, and anything else that wanted the local app
-  /// for that document -- the agent panel -- asked with a null project and
-  /// was refused. Rendering locally and using the desktop app are different
-  /// questions about the same document.
+  /// Deliberately not behind a format check: anything that wants the local
+  /// app for this document, such as the agent panel, would otherwise ask with
+  /// a null project and be refused. Rendering locally and using the desktop
+  /// app are different questions about the same document.
   function scopeLocalApp() {
     localQuarto.configure({ project: SLUG, origin: location.origin });
   }
 
-  /// The Quarto project binding this document already has, if any. This one
-  /// really is format-specific: only a locally renderable project has one.
-  function readQuartoBinding() {
-    quartoBindingId = localQuarto.bindingId();
-  }
   // Which engine draws each format, and what it produces, belong to the
   // build settings along with the preference they follow from; the aliases
   // are further down, where that module is built. Whether this document's
@@ -277,7 +252,7 @@
     const next = format === "html" ? "html" : "pdf";
     if (latexOutput === next) return;
     buildSettings.state.latexOutput = next;
-    setBuildPreferences(updateBuildPreferences(buildScope(), "latex", { ...(next === "html" ? { selection: "tool", backend: "browser", tool: "tex" } : {}), output: next }));
+    setBuildPreferences(updateBuildPreferences(buildScope(), "latex", { output: next }));
     navigationGeneration += 1;
     renderers.cancelPreview({ keepWarm: true });
     latex.cancel();
@@ -293,84 +268,22 @@
     if (!readerDisposed) void paintPreview();
   }
 
-  // Switching between the browser's Markdown draft and Quarto's own preview
-  // is a choice of tool, not of output. The browser draft is HTML and nothing
-  // else, so that direction pins the output; the other keeps whatever output
-  // was already asked for, or a PDF preview would quietly become an HTML one
-  // at the moment local rendering was enabled to produce it.
-  async function setQuartoPreviewMode(mode) {
-    setBuildPreferences(updateBuildPreferences(buildScope(), "quarto", { selection: "tool", backend: mode === "markdown" ? "browser" : "local", tool: mode === "markdown" ? "markdown" : "quarto", output: mode === "markdown" ? "html" : (buildPreferences.output || "html") }));
+  // Run code is the consent to run a document's code on this computer. It is
+  // off whenever a document opens and is never remembered. While it is on, a
+  // format set to this computer renders there; the pane is drawn again
+  // because the renderer that draws it changes hands.
+  function toggleLocalExecution() {
+    localExecution = !localExecution;
+    stopRendering();
+    void paintPreview();
+  }
+
+  // Everything in flight stops: a render that finishes after the renderer, or
+  // the reader, has changed must not reach the pane.
+  function stopRendering() {
     navigationGeneration += 1;
-    buildSettings.state.quartoPreviewMode = mode === "markdown" ? "markdown" : "quarto";
-    if (quartoPreviewMode === "markdown") {
-      await quartoPreviewController.stop();
-      void paintPreview();
-    }
-  }
-
-  // The formats whose local tool runs the document rather than only typesets
-  // it. Running is off whenever a document opens and is never remembered: the
-  // toggle is the consent, and it is given again each time.
-  const localExecutionRelevant = $derived.by(() => ["quarto", "typst"].includes(sourceFormat) && mayEdit);
-
-  // Turning it on puts this format's engine on the local tool and uses the
-  // desktop app. A browser without the desktop app says so and stays off.
-  async function startLocalExecution() {
-    if (!hasDesktop) { say(localQuarto.DESKTOP_ONLY_MESSAGE, { kind: "problem", id: "reader:desktop-only" }); return; }
-    localExecution = true;
-    if (!localExecutionRelevant) return;
-    if (sourceFormat === "quarto") {
-      await setQuartoPreviewMode("quarto");
-      await ensureLocalApp();
-    } else if (sourceFormat === "typst") {
-      await setTypstPreviewMode("calepin");
-    }
-  }
-
-  // Turning it off puts the browser's own renderer back and stops whatever
-  // the desktop app was running for this document.
-  async function stopLocalExecution() {
-    localExecution = false;
-    if (sourceFormat === "quarto") await setQuartoPreviewMode("markdown");
-    else if (sourceFormat === "typst") await setTypstPreviewMode("typst");
-  }
-
-  const toggleLocalExecution = () => {
-    if (localExecution) void stopLocalExecution();
-    else void startLocalExecution();
-  };
-
-  // A document always opens with its code off. A build preference saved
-  // while it was running must not turn it back on, so the preview starts on
-  // the browser's own renderer.
-  $effect(() => {
-    SLUG;
-    untrack(() => {
-      localExecution = false;
-      if (quartoPreviewMode === "quarto") void setQuartoPreviewMode("markdown");
-      if (typstPreviewMode === "calepin") void setTypstPreviewMode("typst");
-    });
-  });
-
-  // Pointing the preview at a file in the other executable format, while Run
-  // code is on, puts the desktop app behind that one too.
-  $effect(() => {
-    if (!localExecution || !localExecutionRelevant) return;
-    const running = sourceFormat === "quarto" ? quartoPreviewMode === "quarto" : typstPreviewMode === "calepin";
-    if (running) return;
-    untrack(() => void startLocalExecution());
-  });
-
-  async function setTypstPreviewMode(mode) {
-    setBuildPreferences(updateBuildPreferences(buildScope(), "typst", { selection: "tool", backend: mode === "calepin" ? "local" : "browser", tool: mode === "calepin" ? "calepin" : "typst" }));
-    navigationGeneration += 1;
-    buildSettings.state.typstPreviewMode = mode === "calepin" ? "calepin" : "typst";
-    if (typstPreviewMode === "calepin") {
-      if (await ensureLocalApp() && calepinActive) await calepinPreviewController.start();
-    } else {
-      await calepinPreviewController.stop();
-      void paintPreview();
-    }
+    renderers.cancelPreview({ keepWarm: true });
+    latex.cancel();
   }
 
   async function setTypstOutput(format) {
@@ -378,10 +291,9 @@
     if (typstOutput === next) return;
     buildSettings.state.typstOutput = next;
     setBuildPreferences(updateBuildPreferences(buildScope(), "typst", { output: typstOutput }));
-    // Invalidate every pending delivery before stopping Calepin. A PDF that
-    // finishes after this gesture must never replace the HTML frame.
+    // Invalidate every pending delivery. A PDF that finishes after this
+    // gesture must never replace the HTML frame.
     navigationGeneration += 1;
-    if (typstOutput === "html") await calepinPreviewController.stop();
     void paintPreview();
   }
 
@@ -403,22 +315,6 @@
     previewTimer = null;
     await tick();
     if (!readerDisposed) void paintPreview();
-  }
-
-  function quartoTargetFormat(tree = treeNow()) {
-    const main = tree?.main || previewPath || "main.qmd";
-    const source = tree?.texts?.[main] || "";
-    const value = quarto.parseQuarto(source, { path: main }).metadata?.format;
-    const named = typeof value === "string" ? value : value && typeof value === "object" ? Object.keys(value)[0] : "html";
-    const format = String(named || "html").trim().toLowerCase().split(/[+:]/, 1)[0];
-    return ["html", "pdf", "docx", "revealjs"].includes(format) ? format : "html";
-  }
-  function quartoRenderContext(tree = null) {
-    return {
-      format: quartoTargetFormat(tree || treeNow()),
-      profiles: buildPreferences.profile ? [buildPreferences.profile] : [],
-      parameters: { ...buildPreferences.parameters },
-    };
   }
 
   const tell = (message, transfer) => preview?.tell(message, transfer);
@@ -1342,9 +1238,9 @@
   let mayEdit = $state(false);
   let sourceFormat = $state("");
 
-  // Where the toggle is offered: every editable Quarto document, and an
-  // editable Typst document when the desktop app found Calepin.
-  const runCodeOffered = $derived(mayEdit && (sourceFormat === "quarto" || (sourceFormat === "typst" && hasDesktop && calepinFound)));
+  // Where the toggle is offered: in the desktop app, for every editable
+  // document whose format is set to this computer.
+  const runCodeOffered = $derived(mayEdit && hasDesktop && buildPreferences.backend === "local");
   let peers = $state(1);
   let participants = $state([]);
   let linked = $state(read(LINKED, false) === true);
@@ -1372,19 +1268,6 @@
     return doc.title || (await renderers.titleOf(tree)) || "Untitled";
   }
 
-  // Scopes the desktop client to this document and says so in Diagnostics
-  // when this is a browser.
-  function ensureLocalApp() {
-    localConnectionError = "";
-    if (!hasDesktop) {
-      localConnectionError = localQuarto.DESKTOP_ONLY_MESSAGE;
-      showPanel("diagnostics");
-      return false;
-    }
-    localQuarto.configure({ project: SLUG, origin: location.origin });
-    return true;
-  }
-
   /* --------------------------------------------------------- the timeline */
 
   // What this document used to say, and when. The manifest is fetched when the
@@ -1395,281 +1278,6 @@
   // every value a focused controller getter rather than a Reader-owned bag.
   // The label being shown in the document pane, whole -- its tree and its
   // texts -- or null for the document as it stands.
-
-  // Whether this browser should be running Quarto's own live preview rather
-  // than showing its own draft rendering: Quarto preview mode chosen, ready,
-  // connected, editable, and not looking at history. `editing` (the source
-  // pane) is not required -- an editor who has not opened it yet still gets
-  // the live pane the moment they are able to edit.
-  const quartoLiveActive = $derived.by(() =>
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution && (!buildPreferences.output || ["html", "pdf"].includes(buildPreferences.output)) && (buildPreferences.selection === "automatic" || (buildPreferences.backend === "local" && buildPreferences.tool === "quarto")) && mayEdit && hasDesktop,
-  );
-
-  // Whether this browser should be showing a Typst document's chunks run by
-  // Calepin on this computer rather than this browser's own Typst rendering:
-  // the calepin mode chosen, ready, the calepin command itself
-  // found, editable, and not looking at history.
-  const calepinActive = $derived.by(() =>
-    sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && buildPreferences.backend === "local" && buildPreferences.tool === "calepin" && mayEdit && hasDesktop && calepinFound,
-  );
-
-  async function localPreviewTreeNow() {
-    const tree = treeNow();
-    if (!Object.keys(tree.digests || {}).length) return tree;
-    const { held, missing } = await gatherFigures(tree.digests);
-    if (missing.length) throw new Error(`Local preview is missing ${missing.join(", ")}`);
-    return { ...tree, assets: held.assets };
-  }
-
-  // A sync can forget a folder the desktop app no longer grants. Mirroring that
-  // here restarts the preview in the hosted workspace.
-  const previewClient = {
-    ...localQuarto,
-    syncWorkspace: async (input) => {
-      const result = await localQuarto.syncWorkspace(input);
-      const id = localQuarto.bindingId();
-      if (id !== quartoBindingId) quartoBindingId = id;
-      return result;
-    },
-  };
-
-  // The last page each live preview published, per file, for this visit, with
-  // the identity of the source it was rendered from. The newest is last. Each
-  // page with an identity is also kept in the preview cache, so a later visit
-  // can show it without starting the engine.
-  const LIVE_PAGES_KEPT = 8;
-  const livePages = new Map();
-  // The file each live preview is serving, and whether it has published a
-  // page for it yet.
-  const liveServing = { quarto: "", calepin: "" };
-  let liveTargets = { quarto: "", calepin: "" };
-  let liveShown = $state({ quarto: false, calepin: false });
-  // The digest of the source each engine's workspace was last synced to, for
-  // the current target. A page the engine publishes is taken to be a render
-  // of it.
-  const syncedDigest = { quarto: "", calepin: "" };
-  const liveSyncs = { quarto: 0, calepin: 0 };
-  // The file whose kept page is on screen in place of a running live preview,
-  // and the file whose kept page is being looked for. Neither lets the live
-  // preview start.
-  let liveHeld = $state("");
-  let liveLookup = $state("");
-  let liveLookupGeneration = 0;
-
-  function liveCopy(payload) {
-    return payload.kind === "pdf" ? { ...payload, bytes: payload.bytes.slice() } : { ...payload };
-  }
-
-  // The engine that would own the pane for the open file, or "".
-  function liveEngineHere() {
-    if (sourceFormat === "quarto" && quartoLiveActive) return "quarto";
-    if (sourceFormat === "typst" && calepinActive) return "calepin";
-    return "";
-  }
-
-  function liveIdentity(engine, digest) {
-    return stampLive(engine, engine === "quarto" ? buildPreferences.output : "", digest);
-  }
-
-  async function noteSynced(engine, tree) {
-    const mine = ++liveSyncs[engine];
-    const digest = await renderers.snapshotDigest(tree);
-    if (mine === liveSyncs[engine]) syncedDigest[engine] = digest;
-  }
-
-  function publishLive(engine, payload) {
-    const path = liveServing[engine];
-    // The copy is taken first because publishing transfers the PDF buffer.
-    if (path && (payload?.kind === "html" || (payload?.kind === "pdf" && payload.bytes))) {
-      const page = liveCopy(payload);
-      const identity = liveIdentity(engine, syncedDigest[engine]);
-      livePages.delete(path);
-      livePages.set(path, { page, identity });
-      while (livePages.size > LIVE_PAGES_KEPT) livePages.delete(livePages.keys().next().value);
-      if (identity) rememberPreview(previewCacheKey(path), liveCopy(page), identity);
-    }
-    if (!liveShown[engine]) liveShown[engine] = true;
-    return framePreview.publish(payload);
-  }
-
-  // Leaves the held state and cancels a lookup in flight. The live preview
-  // then starts for the open file.
-  function releaseLive() {
-    liveLookupGeneration += 1;
-    liveHeld = "";
-    liveLookup = "";
-  }
-
-  // Looks for a kept page of this file that was rendered from the source as it
-  // is now. One that matches is shown and held, and the live preview does not
-  // start. Otherwise the last page the live preview made for the file stands
-  // in while it starts.
-  async function holdLive(path, { quiet = false } = {}) {
-    const engine = liveEngineHere();
-    if (!engine) return;
-    const mine = ++liveLookupGeneration;
-    liveLookup = path;
-    const current = () => !readerDisposed && mine === liveLookupGeneration && previewPath === path;
-    let found = null;
-    let standIn = null;
-    try {
-      const identity = liveIdentity(engine, await renderers.snapshotDigest(treeNow()));
-      const kept = livePages.get(path);
-      standIn = kept?.page || null;
-      if (kept && liveMatches({ ...kept.page, identity: kept.identity }, identity)) found = kept.page;
-      else if (current()) {
-        const saved = await lastPreview(previewCacheKey(path));
-        if (liveMatches(saved, identity)) found = saved.kind === "pdf" ? { kind: "pdf", sha: null, bytes: saved.bytes.slice() } : { kind: "html", html: saved.html, presentation: "document" };
-      }
-    } catch { /* a failed lookup is a miss */ }
-    if (!current()) return;
-    liveLookup = "";
-    if (found) {
-      liveHeld = path;
-      if (!quiet) framePreview.publish(liveCopy(found));
-    } else if (standIn && !quiet) {
-      framePreview.publish(liveCopy(standIn));
-    }
-  }
-
-  // A source event while a page is held asks again rather than letting go:
-  // hydration and edits to unrelated files leave the held page current, and
-  // only a source that no longer matches it starts the live preview. The page
-  // on screen is already the right one, so nothing is painted again.
-  function recheckLive() {
-    const path = previewPath;
-    const held = liveHeld === path;
-    if (!path || (!held && liveLookup !== path)) return;
-    releaseLive();
-    void holdLive(path, { quiet: held });
-  }
-
-  const quartoPreviewController = createLocalPreview({
-    local: previewClient,
-    engine: "quarto",
-    label: "Quarto",
-    publish: (payload) => publishLive("quarto", payload),
-    treeNow: localPreviewTreeNow,
-    onSynced: (tree) => void noteSynced("quarto", tree),
-    entrypointOf: (tree) => tree.main,
-    optionsOf: (tree) => {
-      const context = quartoRenderContext(tree);
-      // Managed Quarto preview serves a single HTML or PDF artifact. DOCX is
-      // export-only and therefore never activates this controller.
-      return { format: buildPreferences.output || (context.format === "revealjs" ? "revealjs" : "html"), profile: buildPreferences.profile || context.profiles[0] || null, parameters: buildPreferences.parameters || context.parameters };
-    },
-    // syncWorkspace writes the browser's tree to the project's binding, the
-    // chosen project folder when there is one, and the preview runs in that same place.
-    jobOf: () => ({ binding: localQuarto.bindingId() }),
-    isDisposed: () => readerDisposed,
-    // A managed preview taking the pane invalidates whatever this browser
-    // was rendering into it.
-    onStartingChange: (value) => { if (value) navigationGeneration += 1; },
-    onEnded: () => void paintPreview(),
-  });
-
-  const calepinPreviewController = createLocalPreview({
-    local: previewClient,
-    engine: "calepin",
-    label: "Calepin",
-    publish: (payload) => publishLive("calepin", payload),
-    treeNow: localPreviewTreeNow,
-    onSynced: (tree) => void noteSynced("calepin", tree),
-    entrypointOf: (tree) => tree.main,
-    optionsOf: () => ({ format: "pdf" }),
-    jobOf: () => ({ binding: localQuarto.bindingId() }),
-    isDisposed: () => readerDisposed,
-    onEnded: () => void paintPreview(),
-  });
-
-  // What each controller says about itself, read where the page used to read
-  // its own copy.
-  const quartoPreview = $derived(quartoPreviewController.state.session);
-  const quartoPreviewStarting = $derived(quartoPreviewController.state.starting);
-  // Whether the bridge says Quarto is currently re-rendering the live preview
-  // -- carried on every response of the page route (200, 304, 404 alike),
-  // never just the ones with new HTML. Drives the "Rendering…" badge and the
-  // faster poll cadence while true.
-  const quartoRendering = $derived(quartoPreviewController.state.rendering);
-  const quartoPreviewError = $derived(quartoPreviewController.state.error);
-  const quartoPreviewKept = $derived(quartoPreviewController.state.kept);
-  const calepinPreview = $derived(calepinPreviewController.state.session);
-  const calepinPreviewStarting = $derived(calepinPreviewController.state.starting);
-  const calepinRendering = $derived(calepinPreviewController.state.rendering);
-  const calepinPreviewError = $derived(calepinPreviewController.state.error);
-  const calepinPreviewKept = $derived(calepinPreviewController.state.kept);
-
-  // Drives the whole automatic mode for each engine: starts the managed
-  // preview the moment its conditions are met, and tears it down (falling
-  // back to the ordinary rendering, no retry) the moment any of them stop
-  // holding.
-  const localPreviewSwitches = createGeneration();
-  // Run code, the output format and the binding decide what a kept page was
-  // rendered by, so a change to any of them leaves the held state and looks
-  // again. An engine that is already running is not interrupted by a kept page.
-  $effect(() => {
-    void quartoLiveActive;
-    void calepinActive;
-    void buildPreferences.output;
-    void quartoBindingId;
-    untrack(() => {
-      releaseLive();
-      if (previewPath && !quartoPreview && !quartoPreviewStarting && !calepinPreview && !calepinPreviewStarting) void holdLive(previewPath);
-    });
-  });
-  $effect(() => {
-    // The binding is part of the target so choosing a folder restarts the preview there.
-    // The output format is too, because Quarto reads it only when it starts, so
-    // switching View between HTML and PDF restarts the preview.
-    const quartoTarget = quartoLiveActive && previewPath && shouldStartLive({ held: liveHeld, lookup: liveLookup, path: previewPath }) && `${previewPath}|${quartoBindingId}|${buildPreferences.output || ""}`;
-    const calepinTarget = calepinActive && previewPath && shouldStartLive({ held: liveHeld, lookup: liveLookup, path: previewPath }) && `${previewPath}|${quartoBindingId}`;
-    const stale = localPreviewSwitches.begin();
-    untrack(async () => {
-      // Both engines use the same workspace. Release its old watcher before
-      // asking the other engine to watch it, including during rapid switches.
-      await Promise.all([
-        quartoTarget ? Promise.resolve() : quartoPreviewController.reconcile(false),
-        calepinTarget ? Promise.resolve() : calepinPreviewController.reconcile(false),
-      ]);
-      if (readerDisposed || stale()) return;
-      if (quartoTarget) {
-        liveServing.quarto = previewPath;
-        if (liveTargets.quarto !== quartoTarget) { liveTargets.quarto = quartoTarget; liveShown.quarto = false; liveSyncs.quarto += 1; syncedDigest.quarto = ""; }
-        await quartoPreviewController.reconcile(quartoTarget);
-      }
-      if (calepinTarget) {
-        liveServing.calepin = previewPath;
-        if (liveTargets.calepin !== calepinTarget) { liveTargets.calepin = calepinTarget; liveShown.calepin = false; liveSyncs.calepin += 1; syncedDigest.calepin = ""; }
-        await calepinPreviewController.reconcile(calepinTarget);
-      }
-    });
-  });
-
-  // Calepin is found by the desktop app, not by this page, so it is asked
-  // when a Typst document opens there. Whether it is found decides whether
-  // the Typst document offers the toggle.
-  $effect(() => {
-    if (!hasDesktop || sourceFormat !== "typst" || !mayEdit) return;
-    let stale = false;
-    localQuarto.calepinAvailable().then((found) => { if (!stale) calepinFound = found; }, () => { if (!stale) calepinFound = false; });
-    return () => { stale = true; };
-  });
-
-  // The profile and parameters, applied from Settings: kept for every Quarto
-  // build in this browser, and the live preview -- which reads them only as
-  // it starts -- restarted so the page shows the new ones rather than the
-  // old until the next reconnect. A preview still starting reads the options after its
-  // workspace sync, so it picks them up on its own.
-  async function applyRenderOptions(next) {
-    const options = parseRenderOptions({ ...next, format: "default" });
-    writeQuartoOptions(buildScope(), { profile: options.profile || null, parameters: options.parameters || {} });
-    if (sourceFormat === "markdown" || sourceFormat === "quarto") {
-      setBuildPreferences(readBuildPreferences(buildScope(), sourceFormat));
-    }
-    if (!quartoLiveActive) return;
-    await quartoPreviewController.stop();
-    if (quartoLiveActive) await quartoPreviewController.start();
-  }
 
   // The manifest, and whether the last read of it succeeded, belong to the
   // timeline; the comparison below owns everything about a selected version.
@@ -2103,25 +1711,13 @@
   const buildSettings = createBuildSettings({
     slug: SLUG,
     origin: location.origin,
-    interrupt: (next) => {
-      navigationGeneration += 1;
-      renderers.cancelPreview({ keepWarm: true });
-      latex.cancel();
-      // A local preview survives only a choice that keeps using it. `next` is
-      // null when the reader changed rather than the preference, and then
-      // neither does.
-      const local = next?.selection === "tool" && next?.backend === "local";
-      if (sourceFormat === "quarto" && !(local && next.tool === "quarto")) void quartoPreviewController?.stop?.();
-      if (sourceFormat === "typst" && !(local && next.tool === "calepin")) void calepinPreviewController?.stop?.();
-    },
+    interrupt: stopRendering,
     paint: () => void paintPreview(),
   });
   const buildPreferences = $derived(buildSettings.state.preferences);
   const latexOutput = $derived(buildSettings.state.latexOutput);
   const typstOutput = $derived(buildSettings.state.typstOutput);
   const markdownOutput = $derived(buildPreferences.output === "pdf" ? "pdf" : "html");
-  const quartoPreviewMode = $derived(buildSettings.state.quartoPreviewMode);
-  const typstPreviewMode = $derived(buildSettings.state.typstPreviewMode);
   const buildScope = () => buildSettings.scopeFor(buildUserId);
   $effect(() => {
     const format = sourceFormat;
@@ -2144,7 +1740,6 @@
   // read, so it applies to exactly the one compile it was meant for.
   let manualCompile = false;
   function compileNow() {
-    releaseLive();
     manualCompile = true;
     paintPreview();
   }
@@ -2173,31 +1768,12 @@
       : renderState.failure ? renderState.failureReason || "The build failed without reporting why." : "",
   );
 
-  // Quarto preview mode chosen, but this is a browser: the pane
-  // shows the draft, and Diagnostics explains why.
-  const quartoNeedsLocalApp = $derived(
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution && mayEdit &&
-      !hasDesktop,
-  );
-  // The same two banner cases, for a Typst document with Calepin preview
-  // chosen: this is a browser, or the desktop app has no calepin command.
-  const typstNeedsLocalApp = $derived(
-    sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && mayEdit &&
-      !hasDesktop,
-  );
-  const typstNeedsCalepinCommand = $derived(
-    sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && mayEdit &&
-      hasDesktop && !calepinFound,
-  );
+  // A Quarto document is drawn as the Markdown it is until Run code is on,
+  // so the desktop app says what turns the real render on.
+  const quartoNeedsRunCode = $derived(sourceFormat === "quarto" && hasDesktop && mayEdit && !localExecution);
 
   const localAppDiagnostics = $derived([
-    !hasDesktop ? { severity: "error", message: localConnectionError } : null,
-    quartoNeedsLocalApp && !localConnectionError ? { severity: "warning", message: "The Markdown preview is shown. Running code needs the LibrePaper desktop app." } : null,
-    typstNeedsCalepinCommand ? { severity: "warning", message: "Calepin preview needs the calepin command on this computer." } : null,
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution ? { severity: "error", message: quartoPreviewError } : null,
-    ...(sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution ? quartoPreviewKept : []).map((note) => ({ severity: "warning", message: note.charAt(0).toUpperCase() + note.slice(1) + "." })),
-    sourceFormat === "typst" && typstPreviewMode === "calepin" && localExecution ? { severity: "error", message: calepinPreviewError } : null,
-    ...(sourceFormat === "typst" && typstPreviewMode === "calepin" && localExecution ? calepinPreviewKept : []).map((note) => ({ severity: "warning", message: note.charAt(0).toUpperCase() + note.slice(1) + "." })),
+    quartoNeedsRunCode ? { severity: "warning", message: "Turn on Run code to render on this computer." } : null,
   // An item with no message is dropped. An empty error would show as a blank
   // entry and would hide the failed render's own message.
   ].filter((item) => item?.message).map((item) => ({ ...item, source: "local-app" })));
@@ -2211,15 +1787,6 @@
       : "";
     return message ? [{ severity: "warning", message, source: "backups" }] : [];
   });
-  // What the Diagnostics panel names when a preview here needs the desktop
-  // app and this is a browser. Empty when nothing needs it.
-  const desktopNeeds = $derived(
-    hasDesktop ? ""
-      : quartoNeedsLocalApp ? "Quarto preview"
-      : typstNeedsLocalApp ? "Calepin preview"
-      : localConnectionError ? "This preview"
-      : "",
-  );
   $effect(() => {
     void localAppDiagnostics;
     void backupDiagnostics;
@@ -2327,7 +1894,7 @@
 
   const compiling = $derived(Boolean(
     (sourceFormat === "latex" && !latexHtmlPreview && ["loading", "compiling", "browser-biber"].includes(latexPhase))
-      || renderState.compiling || quartoPreviewStarting || quartoRendering || calepinRendering,
+      || renderState.compiling,
   ));
   // The preview pane's progress line shows this flag. A Typst or Markdown
   // render finishes in tens of milliseconds, and a control that mounts and
@@ -2399,13 +1966,6 @@
       buildPreferences,
       localExecution,
       projectDigest: mayEdit ? "" : currentProject?.project_digest || "",
-      // A local tool's own preview owns the pane while it is running or
-      // starting. Answered here because only this page knows which of the two
-      // local previews a given format would be using.
-      livePreviewOwnsPane:
-        (sourceFormat === "quarto" && quartoLiveActive && Boolean(quartoPreview || quartoPreviewStarting))
-        || (sourceFormat === "typst" && calepinActive && Boolean(calepinPreview || calepinPreviewStarting))
-        || (liveEngineHere() !== "" && liveHolding({ held: liveHeld, lookup: liveLookup, path: previewPath })),
     }),
     tree: () => treeNow(),
     gather: (digests) => gatherFigures(digests),
@@ -2438,17 +1998,8 @@
     if (readerDisposed) return;
     sourceGeneration += 1;
     historyLiveVersion += 1;
-    recheckLive();
     refreshReview();
     outlineRevision += 1;
-    if (typeof quartoLiveActive !== "undefined" && quartoLiveActive && typeof quartoPreview !== "undefined" && (quartoPreview || quartoPreviewStarting)) {
-      clearTimeout(quartoLiveSyncTimer);
-      quartoLiveSyncTimer = setTimeout(() => void quartoPreviewController.sync(), 500);
-    }
-    if (typeof calepinActive !== "undefined" && calepinActive && typeof calepinPreview !== "undefined" && calepinPreview) {
-      clearTimeout(calepinSyncTimer);
-      calepinSyncTimer = setTimeout(() => void calepinPreviewController.sync(), 500);
-    }
     if (sourceFormat === "quarto" && session && previewPath) {
       const main = previewPath;
       const parsed = quarto.parseQuarto(String(session.textOf(session.idOf(main))?.toString?.() ?? ""), { path: main });
@@ -2985,9 +2536,7 @@
       const tree = capturePreviewTree(treeNow());
       const format = displayedFormat;
       const preview = framePreview.preview();
-      const localQuarto = format === "quarto" && localExecution && hasDesktop && mayEdit
-        ? { profile: buildPreferences.profile || null, parameters: buildPreferences.parameters || null }
-        : null;
+      const local = localExecution && hasDesktop && mayEdit && buildPreferences.backend === "local";
       if (Object.keys(tree.digests || {}).length) {
         const { held, missing } = await gatherFigures(tree.digests);
         if (target !== "html" && missing.length) {
@@ -3007,10 +2556,10 @@
         previewCurrent: Boolean(renderedIdentity) && renderedIdentity === await renderers.snapshotDigest(tree),
         render: renderers.render,
         run: pandoc,
-        localQuarto,
+        local,
       });
       saveBlob(file.blob, file.name);
-      if (!localQuarto && unrunCells(format, tree) > 0) {
+      if (!local && unrunCells(format, tree) > 0) {
         say("Code cells were not run. Turn on Run code in the LibrePaper desktop app to include their results.", { id });
       } else {
         toaster.dismiss(id);
@@ -3315,15 +2864,12 @@
     sourceFormat = format;
     configureLatex(format, session || readerProjectOwner);
     warmEngine(format);
-    if (mayEdit && ["quarto", "typst", "markdown"].includes(format)) readQuartoBinding();
     if (!previous) {
       // The first file the preview is given is rendered now. Waiting for the
       // typing pause would hold it for a second or more while the project
       // loads, since every hydration step restarts that timer.
       clearTimeout(previewTimer);
       previewTimer = null;
-      releaseLive();
-      void holdLive(path);
       void tick().then(() => {
         if (!readerDisposed && previewPath === path) void paintPreview();
       });
@@ -3345,8 +2891,6 @@
     // two files of the same kind keeps it, so switching files in the list does
     // not pay for a frame load before the cached page can be shown.
     if (docsOrigin) navigateFrame();
-    releaseLive();
-    void holdLive(path);
     void tick().then(() => {
       if (!readerDisposed && mine === navigationGeneration) void paintPreview();
     });
@@ -3433,7 +2977,6 @@
     pageDelivered: pdfOutput && everPaintedShown,
     latexPhase: sourceFormat === "latex" && !latexHtmlPreview ? latexPhase : "",
     latexScope: sourceFormat === "latex" && !latexHtmlPreview ? String(latexState.progress?.scope || "") : "",
-    liveStarting: !previewPath || liveHeld === previewPath ? "" : quartoLiveActive && !liveShown.quarto ? "quarto" : calepinActive && !liveShown.calepin ? "calepin" : "",
     engineLoading: engineLoading && engineLoading === sourceFormat ? engineLoading : "",
     compiling,
   }));
@@ -3788,7 +3331,6 @@
       (document_.execution_engine === "quarto" ? "quarto" : "");
     sourceFormat = format;
     scopeLocalApp();
-    if (["quarto", "typst", "markdown"].includes(format)) readQuartoBinding();
     // Every reader compiles from source when the browser has the engine. A
     // missing engine produces an actionable local-tool message below.
     if (format && !renderers.outputKind(format)) {
@@ -3901,8 +3443,6 @@
       projectRefreshTimer = null;
       previewTimer = null;
       boot.dispose();
-      void quartoPreviewController.stop();
-      void calepinPreviewController.stop();
       framePreview.dispose();
       stopLatex();
       pendingChat?.dispose();
@@ -4445,14 +3985,13 @@
   {/snippet}
 
   {#snippet diagnosticsPanel()}
-    <Diagnostics {diagnostics} localAppProblem={localAppDiagnostics.length > 0} {desktopNeeds}
-      onretrylocal={() => localExecutionRelevant ? startLocalExecution() : ensureLocalApp()}
+    <Diagnostics {diagnostics}
       entry={previewPath}
       canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
       provenance={renderState.lastLatexResult?.provenance || null}
       attempts={renderState.lastLatexResult?.attempts || []}
       onagent={agentOffered ? askDiagnostic : undefined}
-      log={renderState.lastLatexResult?.log || (quartoPreviewError && quartoPreviewController.state.log) || (calepinPreviewError && calepinPreviewController.state.log) || renderState.lastLog || ""}
+      log={renderState.lastLatexResult?.log || renderState.lastLog || ""}
       logOpen={renderState.lastLatexResult ? undefined : false} />
   {/snippet}
 
@@ -4819,11 +4358,10 @@
                 commands={commandContext}
                 userId={buildUserId}
                 onbuildpreferences={(format, next) => { if (format === sourceFormat) setBuildPreferences(next); }}
-                onquartooptions={applyRenderOptions}
                 account={me} />
 
 <Modal bind:open={projectFolderOpen} title="Project folder">
-  <ProjectFolderSetting {sourceFormat} main={previewPath} {mayEdit} onbindingid={(id) => { quartoBindingId = id; localQuarto.setBindingId(id); }} />
+  <ProjectFolderSetting {sourceFormat} main={previewPath} {mayEdit} onbindingid={(id) => localQuarto.setBindingId(id)} />
 </Modal>
 
 <Modal bind:open={templateModalOpen} title="Save as template"

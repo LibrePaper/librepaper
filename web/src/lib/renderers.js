@@ -2,6 +2,8 @@ import { needsBibliography } from "./bibliography-engine.js";
 import { formatOf, previewFormatOf } from "./formats.js";
 import { textPage } from "./text-page.js";
 import { typstTree } from "./pandoc/typst.js";
+import { parse as parseLatexLog } from "./latex/log.js";
+import { parse as parseTypstLog } from "./typst-log.js";
 // The renderers, loaded into the editor.
 //
 // The modules come from the same pinned renderer releases as the native
@@ -149,6 +151,26 @@ export function diff(oldText, newText, format = "markdown") {
 
 export { formatOf, previewFormatOf } from "./formats.js";
 
+// The output a local render of this document produces, or "" when the format
+// has no command for what is asked: the commands for LaTeX and Typst make a
+// PDF only, so an HTML preview of either stays in the browser.
+function localOutput(format, buildPreferences, requestedFormat) {
+  if (format === "latex" || format === "typst") return requestedFormat === "html" ? "" : "pdf";
+  if (format !== "markdown" && format !== "quarto") return "";
+  const chosen = buildPreferences?.output;
+  return chosen === "pdf" || chosen === "docx" ? chosen : "html";
+}
+
+// A command on this computer returns a log and nothing else about errors, so
+// the page reads the diagnostics out of it. Only LaTeX and Typst have a log
+// format worth reading; the others show the log itself.
+function localDiagnostics(format, result, tree) {
+  const paths = [...Object.keys(tree.texts || {}), ...Object.keys(tree.assets || {})];
+  if (format === "latex") return parseLatexLog(result.log, { main: tree.main, paths });
+  if (format === "typst" && !result.ok) return parseTypstLog(result.log, { paths });
+  return [];
+}
+
 /// Renders a document into the page a save would store, and says what the
 /// compiler had to say about it.
 ///
@@ -168,29 +190,30 @@ export { formatOf, previewFormatOf } from "./formats.js";
 export async function render(tree, title, { manual = false, format: requestedFormat = "pdf", configuration = null, buildPreferences = null, project = "" } = {}) {
   const source = tree.texts?.[tree.main] ?? "";
   const format = previewFormatOf(tree.main);
-  // LaTeX is never dispatched to the desktop app from here. It builds in the
-  // browser, and its one local path is the automatic Biber and native
-  // fallback that `latex.js` routes for itself.
-  if (buildPreferences?.selection === "tool" && buildPreferences.backend === "local" && format !== "latex" && format !== "text") {
+  // A format set to this computer renders there, through the command Settings
+  // holds for its output. The caller has already turned that off while Run
+  // code is off, so a document never runs without consent.
+  const output = localOutput(format, buildPreferences, requestedFormat);
+  if (output && buildPreferences?.backend === "local") {
     localBridge.configure({ project, origin: globalThis.location?.origin || "" });
     const digest = await snapshotDigest(tree);
-    const usesWorkspace = ["quarto", "calepin"].includes(buildPreferences.tool);
-    // Snapshot builds can use the desktop app hosted workspace populated
-    // from this request's complete manifest. A user-granted folder is only
-    // needed when the document deliberately depends on unshared local files.
-    const job = { snapshot: digest, generation: Date.now(), binding: usesWorkspace ? localBridge.bindingId() : "", inputRevision: digest };
-    const output = buildPreferences.output || "html";
+    const job = { snapshot: digest, generation: Date.now() };
     activeLocalAbort?.abort();
     const abort = new AbortController();
     activeLocalAbort = abort;
-    let result;
-    if (buildPreferences.tool === "quarto") {
-      const options = { ...(buildPreferences.options || {}), ...(buildPreferences.profile ? { profile: buildPreferences.profile } : {}), ...(buildPreferences.parameters ? { parameters: buildPreferences.parameters } : {}), ...(buildPreferences.policy ? { policy: buildPreferences.policy } : {}) };
-      result = await localBridge.runBuild({ job, tree, builder: "quarto", output, options, bindingId: job.binding }, { signal: abort.signal });
-      return { artifact: result.artifact, artifactKind: result.kind, html: result.kind === "html" && result.artifact ? new TextDecoder().decode(result.artifact) : null, pdf: result.kind === "pdf" ? result.artifact : null, diagnostics: result.diagnostics || [], log: ("log" in result ? result.log : result.logs) || "", provenance: result.provenance, ok: result.ok, failure: result.ok ? null : { kind: "local", message: result.error || "Local Quarto build failed" } };
-    }
-    result = await localBridge.runBuild({ job, tree, builder: buildPreferences.tool, output, options: buildPreferences.options || {}, bindingId: job.binding }, { signal: abort.signal });
-    return { artifact: result.artifact, artifactKind: output, html: output === "html" && result.artifact ? new TextDecoder().decode(result.artifact) : null, pdf: output === "pdf" ? result.artifact : null, diagnostics: result.diagnostics || [], log: ("log" in result ? result.log : "") || "", provenance: result.provenance, ok: result.ok, failure: result.ok ? null : { kind: "local", message: result.error || `Local ${buildPreferences.tool} build failed` } };
+    const result = await localBridge.runRender({ job, tree, format, output, entrypoint: tree.main, bindingId: localBridge.bindingId() }, { signal: abort.signal });
+    return {
+      artifact: result.artifact,
+      artifactKind: output,
+      html: output === "html" && result.artifact ? new TextDecoder().decode(result.artifact) : null,
+      pdf: output === "pdf" ? result.artifact : null,
+      synctex: result.synctex,
+      diagnostics: localDiagnostics(format, result, tree),
+      log: result.log,
+      provenance: result.provenance,
+      ok: result.ok,
+      failure: result.ok ? null : { kind: "local", message: result.error || `Rendering ${format} on this computer failed.` },
+    };
   }
   // A historical render receives a configuration snapshot resolved before
   // its cache lookup. Use its module URLs, not mutable shell globals, so the
