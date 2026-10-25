@@ -763,7 +763,7 @@ test("dry run stages the pinned mirrors, hashes both mirrors and skips SOPS, eve
     const output = execFileSync(process.execPath, ['tools/assets/mirror.mjs', 'publish'], { encoding: "utf8", env: { ...process.env,
       PATH: `${bin}:${process.env.PATH}`, MIRRORS_DRY_RUN: "1", ASSETS_DIR: paths.assets, ASSETS_LOCK: paths.lock, MIRROR: paths.latex,
       SOPS_CALLED: join(root, "sops-called") } });
-    assert.match(output, /Validated wasm: 5 files/);
+    assert.match(output, /Validated wasm: 6 files/);
     assert.match(output, /Validated fonts: 14 files/);
     assert.match(output, /Validated latex: 6 files/);
     await assert.rejects(readFile(join(root, "sops-called")));

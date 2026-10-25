@@ -38,6 +38,7 @@ const PINS: &[Pin] = &[
     pin("citations.wasm", "wasm"),
     pin("typst.wasm", "wasm"),
     pin("pandoc.wasm", "wasm"),
+    pin("harper.wasm", "wasm"),
     pin("jetbrains-mono.woff2", "fonts"),
     pin("jetbrains-mono-italic.woff2", "fonts"),
     pin("jetbrains-mono-semibold.woff2", "fonts"),
@@ -263,13 +264,20 @@ mod shell_tests {
         let sha = "a".repeat(64);
         let json = modules_json("https://assets.example/", &lock(&sha)).unwrap();
         let modules: serde_json::Value = serde_json::from_str(&json).unwrap();
-        for name in ["markdown", "bibliography", "citations", "typst", "pandoc"] {
+        for name in [
+            "markdown",
+            "bibliography",
+            "citations",
+            "typst",
+            "pandoc",
+            "harper",
+        ] {
             assert_eq!(
                 modules[name],
                 format!("https://assets.example/wasm/{sha}/{name}.wasm")
             );
         }
-        assert_eq!(modules.as_object().unwrap().len(), 5);
+        assert_eq!(modules.as_object().unwrap().len(), 6);
     }
 
     #[test]

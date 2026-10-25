@@ -16,12 +16,23 @@
 // this one does not, so every one of them is checked against what is on
 // offer now rather than trusted.
 
-import { EDITOR_BRACKETS, EDITOR_CHECK, EDITOR_COMPLETION, EDITOR_SPELLCHECK, KEYMAP, SOURCE_SIDE, read, write } from "../storage.js";
+import { EDITOR_BRACKETS, EDITOR_CHECK, EDITOR_COMPLETION, EDITOR_DIALECT, EDITOR_SPELLCHECK, KEYMAP, SOURCE_SIDE, read, write } from "../storage.js";
 import { PANES, remember, stored } from "../panes.js";
 
 const KEYMAPS = ["vim", "emacs"];
+const PROOFING = ["off", "browser", "harper"];
+const DIALECTS = ["american", "british", "canadian", "australian", "indian"];
 
 const oneOf = (options, value, fallback) => (options.includes(value) ? value : fallback);
+
+// Stored true is the old switch being on, and stored false is it being off.
+// Anything else is a choice this version may or may not offer, so it is checked.
+const readProofing = () => {
+  const value = read(EDITOR_SPELLCHECK, true);
+  if (value === true) return "browser";
+  if (value === false) return "off";
+  return oneOf(PROOFING, value, "browser");
+};
 
 export function createPreferences() {
   const state = $state({
@@ -30,7 +41,8 @@ export function createPreferences() {
     // On unless a stored false says otherwise, so a first visit gets all three.
     completion: read(EDITOR_COMPLETION, true) !== false,
     brackets: read(EDITOR_BRACKETS, true) !== false,
-    spellcheck: read(EDITOR_SPELLCHECK, true) !== false,
+    proofing: readProofing(),
+    dialect: oneOf(DIALECTS, read(EDITOR_DIALECT, "american"), "american"),
     check: read(EDITOR_CHECK, true) !== false,
     // The source and the document are kept as a share of what they have
     // between them; the comment column is kept in pixels. Two units because
@@ -61,9 +73,13 @@ export function createPreferences() {
       state.brackets = Boolean(on);
       write(EDITOR_BRACKETS, Boolean(on));
     },
-    setSpellcheck(on) {
-      state.spellcheck = Boolean(on);
-      write(EDITOR_SPELLCHECK, Boolean(on));
+    setProofing(value) {
+      state.proofing = oneOf(PROOFING, value, "browser");
+      write(EDITOR_SPELLCHECK, state.proofing);
+    },
+    setDialect(value) {
+      state.dialect = oneOf(DIALECTS, value, "american");
+      write(EDITOR_DIALECT, state.dialect);
     },
     setCheck(on) {
       state.check = Boolean(on);
