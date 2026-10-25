@@ -18,7 +18,7 @@ File > Download offers Source, PDF, HTML and DOCX for every format. Each file is
 - HTML: each format's own HTML renderer. Authored HTML is downloaded as written.
 - DOCX: Pandoc reads the HTML rendering.
 
-Pandoc is the official `pandoc.wasm` build, pinned in `assets.lock` and fetched from the mirror on the first PDF or DOCX that needs it. It runs in its own worker. View > PDF for Markdown and Quarto takes the same route, so a PDF needs the desktop app only when Run code is on.
+Pandoc is the official `pandoc.wasm` build, pinned in `assets.lock` and fetched from the mirror on the first PDF or DOCX that needs it. It runs in its own worker. View > PDF for Markdown and Quarto takes the same route, so a PDF needs the desktop app only when Run code is on. Harper's grammar checker is the unmodified slim wasm from the harper.js npm package, pinned in `assets.lock` and fetched from the mirror only when someone picks Harper in Settings, and it runs in its own worker.
 
 ## The live head
 

@@ -9,6 +9,7 @@ export const PINNED_FILES = new Map([
   ["citations.wasm", { repo: "wasm-bibliography", prefix: "wasm" }],
   ["typst.wasm", { repo: "wasm-typst", prefix: "wasm" }],
   ["pandoc.wasm", { repo: "wasm-pandoc", prefix: "wasm" }],
+  ["harper.wasm", { repo: "wasm-harper", prefix: "wasm" }],
   ...["jetbrains-mono", "jetbrains-mono-italic", "jetbrains-mono-semibold", "fira-code", "source-code-pro",
     "source-code-pro-italic", "ibm-plex-mono", "ibm-plex-mono-italic", "ibm-plex-mono-semibold", "cascadia-code",
     "cascadia-code-italic", "opendyslexic", "opendyslexic-italic", "opendyslexic-bold"].map((name) => [`${name}.woff2`, { repo: "editor-fonts", prefix: "fonts" }]),
