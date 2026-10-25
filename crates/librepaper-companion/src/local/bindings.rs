@@ -380,7 +380,9 @@ impl BindingStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(format!(
                 "the entry file {entrypoint} was not uploaded and is not in the project folder"
             )),
-            Err(error) => Err(format!("could not read the entry file {entrypoint}: {error}")),
+            Err(error) => Err(format!(
+                "could not read the entry file {entrypoint}: {error}"
+            )),
         }
     }
 

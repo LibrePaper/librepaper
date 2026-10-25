@@ -297,7 +297,10 @@ fn project_fixture(
 ) -> (Fixture, tempfile::TempDir, PathBuf) {
     let mut fixture = fixture(format, output, entrypoint);
     let folder = tempfile::tempdir().unwrap();
-    let binding = fixture.bindings.open_project(ORIGIN, folder.path()).unwrap();
+    let binding = fixture
+        .bindings
+        .open_project(ORIGIN, folder.path())
+        .unwrap();
     fixture.request.binding_id = binding.id;
     fixture.request.project = binding.project;
     (fixture, folder, binding.root)
@@ -308,7 +311,11 @@ fn project_fixture(
 async fn a_project_render_writes_an_entry_file_the_folder_does_not_hold_yet() {
     let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (fixture, _folder, root) = project_fixture("typst", "pdf", "chapters/new.typ");
-    script("typst.pdf", "cat chapters/new.typ > chapters/new.pdf", "{stem}.pdf");
+    script(
+        "typst.pdf",
+        "cat chapters/new.typ > chapters/new.pdf",
+        "{stem}.pdf",
+    );
     assert!(!root.join("chapters/new.typ").exists());
     // Admission lets the path through before anything is written.
     let request = &fixture.request;
@@ -353,7 +360,11 @@ async fn a_project_render_whose_entry_file_links_outside_the_folder_is_refused()
 async fn a_project_render_whose_entry_file_sits_under_a_linked_folder_is_refused() {
     let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (fixture, _folder, root) = project_fixture("typst", "pdf", "data/paper.typ");
-    script("typst.pdf", "cat data/paper.typ > data/paper.pdf", "{stem}.pdf");
+    script(
+        "typst.pdf",
+        "cat data/paper.typ > data/paper.pdf",
+        "{stem}.pdf",
+    );
     let outside = tempfile::tempdir().unwrap();
     std::os::unix::fs::symlink(outside.path(), root.join("data")).unwrap();
     let outcome = run_fixture(&fixture, false).await;
