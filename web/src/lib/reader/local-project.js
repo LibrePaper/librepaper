@@ -163,7 +163,7 @@ export function createFigureStore() {
  * onSession?: (session: any) => void,
  * onFiles?: (events: any, session: any) => void,
  * onAwareness?: (session: any) => void,
- * onConflict?: (conflict: { path: string, keepMine: () => void, loadDisk: () => void }) => void,
+ * onConflict?: (conflict: { path: string, deleted: boolean, keepMine: () => void, loadDisk: () => void }) => void,
  * onResend?: (paths: string[]) => void,
  * onProblem?: (message: string) => void,
  * wait?: (ms: number, signal?: AbortSignal) => Promise<void>,
@@ -201,6 +201,10 @@ export function createLocalProject({
    * @type {Map<string, { text: string, sha: string | null, item: TextItem }>} */
   const conflicts = new Map();
   let failing = false;
+  /** Files another program deleted while the editor held unsaved edits to
+   * them. They stay in the project and out of the folder sync until the person
+   * answers. @type {Map<string, object>} */
+  const held = new Map();
   /** Where the desktop app's changes resume: the cursor of the latest tree
    * read, so nothing between that read and the next request is skipped. */
   let cursor;
@@ -305,6 +309,7 @@ export function createLocalProject({
     const current = () => !closed && conflicts.get(path) === pending;
     onConflict({
       path,
+      deleted: false,
       keepMine() {
         if (!current()) return;
         conflicts.delete(path);
@@ -325,6 +330,7 @@ export function createLocalProject({
   /** @param {TextItem} item */
   function ingestText(item) {
     const { path, text } = item;
+    held.delete(path);
     const entry = entryOf(path, "text");
     if (!entry) {
       session.addText(path, text);
@@ -359,11 +365,53 @@ export function createLocalProject({
   }
 
   function drop(path) {
+    held.delete(path);
     conflicts.delete(path);
     disk.delete(path);
     const text = entryOf(path, "text");
     if (text) session.removeFile(text.id);
     if (entryOf(path, "asset")) session.removeAsset(path);
+  }
+
+  /// A file that is gone from the disk. With nothing unsaved it leaves the
+  /// project. With unsaved edits it stays, held out of the folder sync, and
+  /// the person is asked. Dismissing the question leaves it held.
+  function gone(path) {
+    if (held.has(path)) return;
+    const entry = entryOf(path, "text");
+    const known = disk.get(path);
+    const unsaved = entry
+      && (conflicts.has(path) || (known?.kind === "text" && session.textOf(entry.id)?.toString() !== known.text));
+    if (!unsaved) {
+      drop(path);
+      return;
+    }
+    const token = {};
+    held.set(path, token);
+    conflicts.delete(path);
+    disk.delete(path);
+    const current = () => !closed && held.get(path) === token;
+    onConflict({
+      path,
+      deleted: true,
+      keepMine() {
+        if (!current()) return;
+        held.delete(path);
+        onResend([path]);
+      },
+      loadDisk() {
+        if (!current()) return;
+        drop(path);
+      },
+    });
+  }
+
+  /// The project as the folder sync should send it: held files are left out,
+  /// so the mirror does not bring a deleted file back.
+  /** @template {{ texts: Record<string, string> }} T @param {T} tree @returns {T} */
+  function withoutHeld(tree) {
+    if (!held.size) return tree;
+    return { ...tree, texts: Object.fromEntries(Object.entries(tree.texts).filter(([path]) => !held.has(path))) };
   }
 
   /// One change from the desktop app. A file that cannot be read now has
@@ -372,7 +420,7 @@ export function createLocalProject({
     const checked = checkPath(rules, change.path);
     if (checked.error) return;
     if (change.kind === "removed") {
-      drop(change.path);
+      gone(change.path);
       return;
     }
     let bytes;
@@ -394,7 +442,7 @@ export function createLocalProject({
     if (closed) return;
     cursor = tree.cursor;
     const listed = managed(tree.files);
-    for (const path of [...disk.keys()]) if (!listed.has(path)) drop(path);
+    for (const path of [...disk.keys()]) if (!listed.has(path)) gone(path);
     const changed = [...listed.values()].filter((file) => {
       const known = disk.get(file.path);
       return !known || known.sha === null || known.sha !== file.sha256;
@@ -515,6 +563,7 @@ export function createLocalProject({
     start,
     close,
     wrote,
+    withoutHeld,
     encode,
     seed,
     // There is no room to write to.
