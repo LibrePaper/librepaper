@@ -1184,6 +1184,9 @@ export function createProjectSession({
       clearPresenceTimer();
       clearPressureTimer();
       pendingPresence.clear();
+      // The presence store expires peers on its own interval, which would
+      // otherwise outlive the session.
+      store.destroy();
       left = true;
       // `left` alone would be enough for the checks, but the gate has to be
       // released too: a caller that leaves one session and opens another on

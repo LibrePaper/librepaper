@@ -9,6 +9,10 @@ import { createFigureStore, createLocalProject, localIdOf, localSlug } from "../
 const tick = async () => {
   for (let turn = 0; turn < 20; turn++) await new Promise((resolve) => setImmediate(resolve));
 };
+// Waits for work that leaves the event loop, such as hashing a figure.
+const until = async (done) => {
+  for (let turn = 0; turn < 200 && !done(); turn++) await new Promise((resolve) => setTimeout(resolve, 5));
+};
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const bytesOf = (value) => (typeof value === "string" ? enc.encode(value) : value);
@@ -304,7 +308,7 @@ const textOf = (session, path) => session.textOf(session.idOf(path)).toString();
     { path: "fig.png", kind: "added" },
     { path: "notes.pdf", kind: "added" },
   );
-  await tick();
+  await until(() => session.list().length === 3);
   assert.deepEqual(session.list().map((file) => file.path), ["a.md", "b.md", "fig.png"]);
   assert.equal(textOf(session, "b.md"), "# b\n");
   assert.equal(session.tree().digests["fig.png"], digest(PNG));
