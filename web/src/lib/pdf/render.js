@@ -138,7 +138,9 @@ async function withDocument(bytes, fn) {
 ///
 /// `options` is `{ mode, spread, sidebarWidth, presenting, density, ongo,
 /// beforeswap, afterswap }`. The result is `null` when a newer render won, otherwise
-/// `{ pages, document, sizes }` with the page sizes in PDF points. The
+/// `{ pages, document, sizes, rastered }` with the page sizes in PDF points.
+/// Every page is in the document when this returns, but only those in view
+/// are drawn; `rastered` settles when the rest are too. The
 /// document is left open for the sidebar; `discard` releases it. A superseded
 /// or failed render releases its own.
 ///
@@ -163,6 +165,9 @@ export async function render(bytes, root, options = {}) {
     const staging = document.createElement("div");
     staging.className = spread ? "pages spread" : "pages";
     const starts = [];
+    // One entry per page, holding what the raster needs: the pdf.js page is
+    // kept open until its canvas is drawn.
+    const entries = [];
     let offset = 0;
 
     // Every page is drawn at one scale, chosen from the widest page: a
@@ -224,13 +229,7 @@ export async function render(bytes, root, options = {}) {
       frame.append(layer);
       staging.append(frame);
 
-      await page.render({
-        canvas,
-        canvasContext: canvas.getContext("2d"),
-        viewport,
-        transform: ratio === 1 ? null : [ratio, 0, 0, ratio, 0, 0],
-      }).promise;
-      if (mine !== generation) return null;
+      entries.push({ number, page, canvas, viewport, ratio, height: viewport.height });
 
       const content = await page.getTextContent();
       const text = new pdfjs.TextLayer({ textContentSource: content, container: layer, viewport });
@@ -255,7 +254,26 @@ export async function render(bytes, root, options = {}) {
       } catch {
         if (mine !== generation) return null;
       }
-      page.cleanup();
+    }
+
+    // Only the pages that will be in view after the swap are rasterized
+    // before it. The rest are frames with their canvases already sized, so
+    // the document the agent reads is complete, and they are drawn after the
+    // swap: drawing into a canvas that is already in place changes no DOM.
+    // The anchor is read once here to choose them and again at the swap to
+    // restore the position, because the reader may have scrolled meanwhile.
+    const hint = beforeswap?.();
+    const target = Math.min(Math.max(1, hint?.page ?? 1), entries.length);
+    const wanted = 2 * document.documentElement.clientHeight * (spread ? 2 : 1);
+    const early = new Set();
+    if (target > 1) early.add(target - 1);
+    for (let number = target, height = 0; number <= entries.length && height < wanted; number++) {
+      early.add(number);
+      height += entries[number - 1].height;
+    }
+    for (const number of [...early].sort((a, b) => a - b)) {
+      await rasterize(entries[number - 1]);
+      if (mine !== generation) return null;
     }
 
     const anchor = beforeswap?.();
@@ -264,9 +282,44 @@ export async function render(bytes, root, options = {}) {
     afterswap?.(anchor);
     loadings.set(document_, loading);
     handedOn = true;
-    return { pages: document_.numPages, document: document_, sizes };
+    const rest = entries.filter((entry) => !early.has(entry.number));
+    return { pages: document_.numPages, document: document_, sizes,
+      rastered: rasterizeRest(rest, () => mine !== generation) };
   } finally {
     if (!handedOn) await closeDocument(document_, loading);
+  }
+}
+
+/// Draw one page into the canvas its frame already holds, then release the
+/// pdf.js page. The canvas keeps its size and place; only its pixels change.
+async function rasterize(entry) {
+  await entry.page.render({
+    canvas: entry.canvas,
+    canvasContext: entry.canvas.getContext("2d"),
+    viewport: entry.viewport,
+    transform: entry.ratio === 1 ? null : [entry.ratio, 0, 0, entry.ratio, 0, 0],
+  }).promise;
+  entry.page.cleanup();
+}
+
+/// Draw the pages left over after the swap, nearest the viewport first. The
+/// promise settles when every page is drawn or a newer render has taken over,
+/// and never rejects: a page that cannot be drawn stays a blank page, as one
+/// whose annotations cannot be read stays a page.
+async function rasterizeRest(entries, superseded) {
+  const middle = innerHeight / 2;
+  const distance = (entry) => {
+    const rect = entry.canvas.getBoundingClientRect();
+    return Math.abs((rect.top + rect.bottom) / 2 - middle);
+  };
+  const order = entries.map((entry) => ({ entry, away: distance(entry) })).sort((a, b) => a.away - b.away);
+  for (const { entry } of order) {
+    if (superseded()) return;
+    try {
+      await rasterize(entry);
+    } catch {
+      /* a newer render may have released the document under this page */
+    }
   }
 }
 

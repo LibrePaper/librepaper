@@ -33,6 +33,33 @@ const CORPUS = join(REPO, "tools", "test", "latex", "corpus");
 const ARTICLE = join(CORPUS, "article", "main.pdf");
 const PAPER = join(CORPUS, "paper", "main.pdf");
 
+// A PDF of many text pages, written here so the check does not depend on a
+// TeX Live: enough pages that drawing all of them takes longer than the
+// message that says the first ones are on screen.
+function longPdf(pages) {
+  const objects = ["<< /Type /Catalog /Pages 2 0 R >>", "", "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"];
+  const kids = [];
+  for (let number = 1; number <= pages; number++) {
+    const body = Array.from({ length: 40 }, (_, line) => `BT /F1 12 Tf 50 ${740 - line * 16} Td (Page ${number} line ${line}) Tj ET`).join("\n");
+    kids.push(`${objects.length + 1} 0 R`);
+    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${objects.length + 2} 0 R >>`);
+    objects.push(`<< /Length ${body.length} >>\nstream\n${body}\nendstream`);
+  }
+  objects[1] = `<< /Type /Pages /Kids [${kids.join(" ")}] /Count ${pages} >>`;
+  let out = "%PDF-1.4\n";
+  const offsets = [];
+  objects.forEach((object, index) => {
+    offsets.push(out.length);
+    out += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xref = out.length;
+  out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets) out += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  out += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(out, "latin1");
+}
+const LONG = longPdf(150);
+
 if (!existsSync(join(SHELL, "viewer.html"))) {
   console.log("viewer: no built shell at web/dist; skipping (run `make web`)");
   process.exit(0);
@@ -88,11 +115,23 @@ addEventListener("message", (event) => {
   if (message.type === "ready") window.seen.ready.push(message.text);
   if (message.type === "selection") window.seen.selection.push(message.selector);
 });
-window.sendPdf = async (path) => {
+window.sendPdf = async (path, frameGeneration = 0) => {
   const bytes = await fetch(path).then((r) => r.arrayBuffer());
   window.seen.ready.length = 0;
-  frame.contentWindow.postMessage({ librepaper: true, type: "preview", pdf: bytes }, "*", [bytes]);
+  frame.contentWindow.postMessage({ librepaper: true, type: "preview", pdf: bytes, frameGeneration }, "*", [bytes]);
 };
+// How many canvases hold pixels. A canvas nothing was drawn into is
+// transparent; pdf.js paints a page on white.
+window.inked = () => [...frame.contentDocument.querySelectorAll(".page canvas")]
+  .filter((canvas) => canvas.getContext("2d").getImageData(0, 0, 1, 1).data[3] > 0).length;
+// The count taken in the same task as the viewer's drawn message.
+window.atDrawn = null;
+addEventListener("message", (event) => {
+  if (event.data?.librepaper === true && event.data.type === "viewer-drawn") {
+    window.atDrawn = { total: frame.contentDocument.querySelectorAll(".page canvas").length, inked: window.inked(),
+      first: frame.contentDocument.querySelector(".page canvas").getContext("2d").getImageData(0, 0, 1, 1).data[3] > 0 };
+  }
+});
 window.text = () => window.seen.ready.at(-1) || "";
 // The sidebar's own job: take a selector, find it in the published text, and
 // send the offsets back for painting. Exactly what \`Reader.svelte\` does.
@@ -115,6 +154,10 @@ const server = createServer((request, response) => {
   }
   if (path === "/pdf/article") return sendFile(response, ARTICLE);
   if (path === "/pdf/paper") return sendFile(response, PAPER);
+  if (path === "/pdf/long") {
+    response.writeHead(200, { "content-type": "application/pdf" }).end(LONG);
+    return;
+  }
   // The sources the harness imports directly -- the anchoring is the module
   // the reader uses, not a copy of it.
   if (path.startsWith("/src/")) return sendFile(response, join(REPO, "web", path.slice(1)));
@@ -427,6 +470,24 @@ async function run() {
     String(second.viewerPages),
   );
 
+  /* --- a long document: the pages in view first --------------------------- */
+
+  await tab.eval(`await window.sendPdf("/pdf/long", 7);`);
+  let atDrawn = null;
+  for (let tries = 0; tries < 200 && !atDrawn; tries++) {
+    await wait(100);
+    atDrawn = await tab.eval("return window.atDrawn");
+  }
+  check(
+    "the viewer reports drawn with the first page inked and later pages still blank",
+    atDrawn && atDrawn.total === 150 && atDrawn.first && atDrawn.inked < atDrawn.total,
+    JSON.stringify(atDrawn),
+  );
+  const rastered = await tab.eval(`
+    await frame.contentWindow.librepaperViewer.rastered;
+    return { total: frame.contentDocument.querySelectorAll(".page canvas").length, inked: window.inked() };
+  `);
+  check("and every page is drawn once the background raster ends", rastered.total === 150 && rastered.inked === 150, JSON.stringify(rastered));
 }
 
 /// Wait for the agent's republish. It debounces its observer by 250 ms, and a

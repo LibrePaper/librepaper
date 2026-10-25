@@ -328,7 +328,8 @@ async function paint(bytes, frameGeneration = 0) {
     // is built here; both need this and nothing else from the viewer, so it
     // is exposed now rather than left for them to reach into the DOM for.
     globalThis.librepaperViewer = { pageForOffset: viewer.pageForOffset,
-      pointFromClient: viewer.pointFromClient, locatePoint: viewer.locatePoint, pages: result.pages };
+      pointFromClient: viewer.pointFromClient, locatePoint: viewer.locatePoint, pages: result.pages,
+      rastered: result.rastered };
     // The agent republishes off its own mutation observer, which the swap in
     // `render` has just tripped: one code path for "the document changed",
     // whether the change was an HTML preview or a page finishing. There is
