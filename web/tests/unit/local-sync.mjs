@@ -6,15 +6,17 @@ import { loadRunes } from "../helpers/runes.mjs";
 
 const { createLocalSync } = await loadRunes(new URL("../../src/lib/reader/local-sync.svelte.js", import.meta.url));
 
-const refused = (status, body, message = "The LibrePaper desktop app refused the request.") =>
+const refused = (status, body, message = body?.error || "The LibrePaper desktop app refused the request.") =>
   Object.assign(new Error(message), { name: "Refused", status, body });
+const pending = () => refused(400, { error: "sign in and approve the code, then retry" });
+const noWait = async () => {};
 
 // A stand-in for the routes. Each answer is a value, an Error to throw, or a
 // function of the call; `calls` records what was asked, project id first.
 function routes(answers) {
   const calls = [];
   const api = {};
-  for (const name of ["syncStatus", "syncLogin", "syncLink", "syncPublish", "syncUnlink", "syncPull", "syncPush"]) {
+  for (const name of ["syncStatus", "syncLogin", "syncLoginComplete", "syncLink", "syncPublish", "syncUnlink", "syncPull", "syncPush"]) {
     api[name] = async (...args) => {
       calls.push([name, ...args]);
       const answer = typeof answers[name] === "function" ? answers[name](...args) : answers[name];
@@ -65,20 +67,90 @@ const today = () => new Date(2026, 9, 25, 12);
   assert.equal(sync.state.status.pulled, 9, "the older read does not replace the newer one");
 }
 
-// Signing in asks the desktop app, then reads the state again.
+// Signing in asks the desktop app for a code, approves it in the page's own
+// session, and finishes with the code's authorization.
 {
-  const scene = { status: { signed_in: false, linked: false } };
+  const order = [];
   const { api, calls } = routes({
-    syncStatus: () => scene.status,
-    syncLogin: () => { scene.status = { signed_in: true, linked: false }; },
+    syncStatus: { signed_in: false, linked: false },
+    syncLogin: () => { order.push("login"); return { authorization_id: "auth-1", user_code: "ABCD-EFGH" }; },
+    syncLoginComplete: () => { order.push("complete"); return { signed_in: true, linked: false }; },
   });
-  const sync = createLocalSync({ id: "f1", api });
+  const sync = createLocalSync({ id: "f1", api, wait: noWait, approve: async (code) => { order.push(`approve ${code}`); } });
   await sync.refresh();
   assert.equal(sync.state.status.signed_in, false);
   await sync.login();
-  assert.deepEqual(calls.map((call) => call[0]), ["syncStatus", "syncLogin", "syncStatus"]);
-  assert.equal(sync.state.status.signed_in, true);
+  assert.deepEqual(order, ["login", "approve ABCD-EFGH", "complete"]);
+  assert.deepEqual(calls.find((call) => call[0] === "syncLoginComplete"), ["syncLoginComplete", "f1", "auth-1"]);
+  assert.equal(sync.state.status.signed_in, true, "the answer to the second call is the new state");
+  assert.equal(sync.state.error, "");
   assert.equal(sync.state.busy, "");
+}
+
+// While the approval has not reached the desktop app the second call is tried again.
+{
+  let attempts = 0;
+  const waits = [];
+  const { api } = routes({
+    syncStatus: { signed_in: false, linked: false },
+    syncLogin: { authorization_id: "auth-1", user_code: "ABCD-EFGH" },
+    syncLoginComplete: () => {
+      attempts += 1;
+      if (attempts < 3) return pending();
+      return { signed_in: true, linked: false };
+    },
+  });
+  const sync = createLocalSync({ id: "f1", api, wait: async (ms) => { waits.push(ms); }, approve: async () => {} });
+  await sync.login();
+  assert.equal(attempts, 3);
+  assert.equal(waits.length, 2, "it waits between the tries");
+  assert.equal(sync.state.status.signed_in, true);
+}
+
+// A code that stays pending is given up on, with the desktop app's words.
+{
+  let attempts = 0;
+  const { api } = routes({
+    syncStatus: { signed_in: false, linked: false },
+    syncLogin: { authorization_id: "auth-1", user_code: "ABCD-EFGH" },
+    syncLoginComplete: () => { attempts += 1; return pending(); },
+  });
+  const sync = createLocalSync({ id: "f1", api, wait: noWait, approve: async () => {} });
+  await sync.refresh();
+  await sync.login();
+  assert.equal(attempts, 5, "a few tries, not forever");
+  assert.match(sync.state.error, /approve the code/);
+  assert.equal(sync.state.status.signed_in, false, "the panel is back at the Sign in button");
+  assert.equal(sync.state.busy, "");
+}
+
+// Any other refusal means the sign-in expired, and is not tried again.
+{
+  let attempts = 0;
+  const { api } = routes({
+    syncStatus: { signed_in: false, linked: false },
+    syncLogin: { authorization_id: "auth-1", user_code: "ABCD-EFGH" },
+    syncLoginComplete: () => { attempts += 1; return refused(400, { error: "that sign-in expired" }); },
+  });
+  const sync = createLocalSync({ id: "f1", api, wait: noWait, approve: async () => {} });
+  await sync.refresh();
+  await sync.login();
+  assert.equal(attempts, 1);
+  assert.equal(sync.state.error, "that sign-in expired");
+  assert.equal(sync.state.status.signed_in, false);
+}
+
+// A code the page could not approve never reaches the second call.
+{
+  const { api, calls } = routes({
+    syncStatus: { signed_in: false, linked: false },
+    syncLogin: { authorization_id: "auth-1", user_code: "ABCD-EFGH" },
+    syncLoginComplete: { signed_in: true },
+  });
+  const sync = createLocalSync({ id: "f1", api, wait: noWait, approve: async () => { throw new Error("Sign in to this server first."); } });
+  await sync.login();
+  assert.equal(calls.some((call) => call[0] === "syncLoginComplete"), false);
+  assert.equal(sync.state.error, "Sign in to this server first.");
 }
 
 // Link and publish send what was typed, trimmed, and read the state again.
@@ -107,8 +179,8 @@ const today = () => new Date(2026, 9, 25, 12);
 {
   const order = [];
   const answers = [
-    { written: 3, trashed: 1, kept: [], conflicts: ["a.tex", "b.tex"], trimmed: false },
-    { written: 1, trashed: 0, kept: [], conflicts: ["b.tex"] },
+    { written: ["x.tex", "y.tex", "z.tex"], trashed: ["old.tex"], kept: [], conflicts: ["a.tex", "b.tex"], trimmed: false },
+    { written: ["a.tex"], trashed: [], kept: [], conflicts: ["b.tex"] },
     { written: ["b.tex"], trashed: [], kept: [], conflicts: [] },
   ];
   const { api, calls } = routes({ syncStatus: linked, syncPull: () => { order.push("pull"); return answers.shift(); } });
@@ -128,12 +200,12 @@ const today = () => new Date(2026, 9, 25, 12);
   await sync.takeTheirs("b.tex");
   assert.deepEqual(calls.filter((call) => call[0] === "syncPull")[2], ["syncPull", "f1", { theirs: ["b.tex"] }]);
   assert.deepEqual(sync.state.conflicts, []);
-  assert.equal(sync.state.pull.written, 5, "a count may come as the list that was counted");
+  assert.equal(sync.state.pull.written, 5);
 }
 
 // A new pull starts its counts over, and says when the history was trimmed.
 {
-  const { api } = routes({ syncStatus: linked, syncPull: { written: 2, trashed: 0, conflicts: [], trimmed: true } });
+  const { api } = routes({ syncStatus: linked, syncPull: { written: ["a.tex", "b.tex"], trashed: [], conflicts: [], trimmed: true } });
   const sync = createLocalSync({ id: "f1", api });
   await sync.pull();
   await sync.pull();
@@ -201,7 +273,7 @@ const today = () => new Date(2026, 9, 25, 12);
   let release;
   const { api, calls } = routes({
     syncStatus: linked,
-    syncPull: () => new Promise((resolve) => { release = () => resolve({ written: 0, trashed: 0, conflicts: [] }); }),
+    syncPull: () => new Promise((resolve) => { release = () => resolve({ written: [], trashed: [], conflicts: [] }); }),
   });
   const sync = createLocalSync({ id: "f1", api });
   const first = sync.pull();

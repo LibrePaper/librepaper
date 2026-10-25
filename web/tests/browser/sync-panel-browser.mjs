@@ -34,16 +34,28 @@ import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modul
 const linked = (extra = {}) => ({ signed_in: true, linked: true, site: "https://app.example/", slug: "paper", pulled: 4, changes: { here: 2, web: true }, ...extra });
 
 // Each scene sets the status the stand-in answers with, what each command
-// does to it, and the answers a pull or a push gives in turn.
+// does to it, and the answers a pull or a push gives in turn. Signing in is
+// the desktop app's code, the page's approval of it, and the finish, which
+// refuses while the code is pending for as many tries as the scene asks.
 const scene = () => window.scene;
-const refusal = (failure) => Object.assign(new Error(failure.message || "The desktop app refused the request."), { name: "Refused", status: failure.status, body: failure.body });
+const refusal = (failure) => Object.assign(new Error(failure.message || failure.body?.error || "The desktop app refused the request."), { name: "Refused", status: failure.status, body: failure.body });
 const settle = (value) => { if (value?.fail) throw refusal(value.fail); return value; };
 const api = {
   syncStatus: async () => { scene().calls.push(["syncStatus"]); return structuredClone(scene().status); },
-  syncLogin: async () => { scene().calls.push(["syncLogin"]); scene().status = scene().afterLogin; },
+  syncLogin: async () => { scene().calls.push(["syncLogin"]); return { authorization_id: "auth-1", user_code: "ABCD-EFGH" }; },
+  syncLoginComplete: async (id, authorizationId) => {
+    scene().calls.push(["syncLoginComplete", authorizationId]);
+    if (scene().pendingTries > 0) {
+      scene().pendingTries -= 1;
+      throw refusal({ status: 400, body: { error: "sign in and approve the code, then retry" } });
+    }
+    if (scene().expired) throw refusal({ status: 400, body: { error: "that sign-in expired" } });
+    scene().status = scene().afterLogin;
+    return structuredClone(scene().status);
+  },
   syncLink: async (id, url) => { scene().calls.push(["syncLink", url]); scene().status = scene().afterLink; },
   syncPublish: async (id, title) => { scene().calls.push(["syncPublish", title]); scene().status = scene().afterLink; },
-  syncUnlink: async () => { scene().calls.push(["syncUnlink"]); scene().status = { signed_in: true, linked: false }; },
+  syncUnlink: async () => { scene().calls.push(["syncUnlink"]); scene().status = { signed_in: true, linked: false, git: Boolean(scene().status.git) }; },
   syncPull: async (id, choices) => { scene().calls.push(["syncPull", choices]); return settle(scene().pulls.shift()); },
   syncPush: async (id, message) => { scene().calls.push(["syncPush", message]); return settle(scene().pushes.shift()); },
 };
@@ -52,7 +64,12 @@ let component;
 const mount = async (next, props = {}) => {
   component?.$destroy();
   window.scene = { calls: [], saves: 0, pulls: [], pushes: [], ...next };
-  const sync = createLocalSync({ id: "f1", api, flush: async () => { scene().saves += 1; return scene().saved !== false; } });
+  const sync = createLocalSync({
+    id: "f1", api,
+    approve: async (code) => { scene().calls.push(["approve", code]); },
+    wait: async () => {},
+    flush: async () => { scene().saves += 1; return scene().saved !== false; },
+  });
   component = createClassComponent({ component: Sync, target: document.getElementById("panel"), props: { sync, open: true, defaultTitle: "thesis", ...props } });
   await tick();
 };
@@ -81,15 +98,29 @@ window.syncPanelCheck = async () => {
   check(text().includes("Sign in to keep this folder"), "a signed-out folder asks for a sign-in: " + text());
   check(!button("Pull") && !button("Link"), "and offers nothing else");
   await press("Sign in");
-  check(calls("syncLogin").length === 1, "Sign in asks the desktop app");
+  check(calls("syncLogin").length === 1 && calls("approve")[0][1] === "ABCD-EFGH", "Sign in gets a code and approves it here: " + JSON.stringify(window.scene.calls));
+  check(calls("syncLoginComplete")[0][1] === "auth-1", "and finishes with the authorization");
   check(text().includes("Link to a project"), "and the panel moves on to linking: " + text());
+
+  // The finish refuses while the approval is still on its way, and the page asks again.
+  await mount({ status: { signed_in: false, linked: false }, afterLogin: { signed_in: true, linked: false }, pendingTries: 2 });
+  await flush();
+  await press("Sign in");
+  check(calls("syncLoginComplete").length === 3 && text().includes("Link to a project"), "a pending code is tried again: " + text());
+
+  // An expired sign-in says so and leaves the Sign in button.
+  await mount({ status: { signed_in: false, linked: false }, afterLogin: { signed_in: true, linked: false }, expired: true });
+  await flush();
+  await press("Sign in");
+  check(text().includes("that sign-in expired") && button("Sign in"), "an expired sign-in goes back to the button: " + text());
 
   /* ------------------------------------------------ signed in, not linked */
 
+  await mount({ status: { signed_in: true, linked: false }, afterLink: linked() });
+  await flush();
   check(button("Link").disabled, "Link waits for an address");
   check(field("Or publish").value === "thesis", "the title offered is the folder's name");
   check(!button("Publish").disabled, "so Publish is ready");
-  window.scene.afterLink = linked();
   await type(field("Link to a project"), "  https://app.example/docs/paper  ");
   await press("Link");
   check(calls("syncLink")[0][1].trim() === "https://app.example/docs/paper", "Link sends the address: " + JSON.stringify(calls("syncLink")));
@@ -118,14 +149,33 @@ window.syncPanelCheck = async () => {
   await flush();
   check(text().includes("1 change here"), "one change is not plural: " + text());
 
+  /* ---------------------------------------------------- a git repository */
+
+  const gitSentence = "This folder is a git repository. Sync it with git in a terminal, or with librepaper pull and push.";
+  await mount({ status: { signed_in: false, linked: false, git: true } });
+  await flush();
+  check(text().includes(gitSentence), "a git folder says to use git: " + text());
+  for (const label of ["Sign in", "Link", "Publish", "Pull", "Push", "Unlink"]) check(!button(label), label + " is not offered in a git folder: " + text());
+  check(!text().includes("Link to a project"), "and there is no link form");
+
+  await mount({ status: linked({ git: true }) });
+  await flush();
+  check(text().includes(gitSentence), "a linked git folder says it too: " + text());
+  check(panel().querySelector(".sync-project a")?.getAttribute("href") === "https://app.example/docs/paper", "and still names its project");
+  check(!button("Pull") && !button("Push") && !button("Publish") && !button("Link") && !field("Message"), "but offers neither pull nor push");
+  check(!text().includes("changes here"), "and says nothing of changes");
+  check(button("Unlink"), "Unlink stays");
+  await press("Unlink");
+  check(calls("syncUnlink").length === 1 && text().includes(gitSentence) && !panel().querySelector(".sync-project"), "Unlink leaves the sentence alone: " + text());
+
   /* ----------------------------------------------------------------- pull */
 
   await mount({
     status: linked(),
     pulls: [
-      { written: 2, trashed: 1, kept: [], conflicts: ["intro.tex", "chapters/long-name.tex"], trimmed: false },
-      { written: 0, trashed: 0, kept: [], conflicts: ["chapters/long-name.tex"] },
-      { written: 1, trashed: 0, kept: [], conflicts: [] },
+      { written: ["a.tex", "b.tex"], trashed: ["old.tex"], kept: [], conflicts: ["intro.tex", "chapters/long-name.tex"], trimmed: false },
+      { written: [], trashed: [], kept: [], conflicts: ["chapters/long-name.tex"] },
+      { written: ["chapters/long-name.tex"], trashed: [], kept: [], conflicts: [] },
     ],
   });
   await flush();
@@ -143,11 +193,11 @@ window.syncPanelCheck = async () => {
   check(JSON.stringify(calls("syncPull")[2][1]) === JSON.stringify({ theirs: ["chapters/long-name.tex"] }), "Take theirs settles the other");
   check(rows().length === 0 && text().includes("Wrote 3 files and moved 1 file to the trash."), "the counts add up: " + text());
 
-  await mount({ status: linked({ changes: { here: 0, web: false } }), pulls: [{ written: 0, trashed: 0, kept: [], conflicts: [] }] });
+  await mount({ status: linked({ changes: { here: 0, web: false } }), pulls: [{ written: [], trashed: [], kept: [], conflicts: [] }] });
   await flush();
   await press("Pull");
   check(text().includes("Nothing new on the web."), "a pull with nothing says so: " + text());
-  await mount({ status: linked(), pulls: [{ written: 1, trashed: 0, conflicts: [], trimmed: true }] });
+  await mount({ status: linked(), pulls: [{ written: ["a.tex"], trashed: [], conflicts: [], trimmed: true }] });
   await flush();
   await press("Pull");
   check(text().includes("was trimmed"), "a trimmed history is said: " + text());
@@ -200,7 +250,7 @@ window.syncPanelCheck = async () => {
 
   await mount({
     status: linked({ slug: "a-project-with-a-name-long-enough-to-need-cutting-short" }),
-    pulls: [{ written: 1, trashed: 0, conflicts: ["chapters/a-rather-long-folder-name/rendering-notes-for-the-appendix.qmd"] }],
+    pulls: [{ written: ["a.tex"], trashed: [], conflicts: ["chapters/a-rather-long-folder-name/rendering-notes-for-the-appendix.qmd"] }],
     pushes: [{ fail: { status: 409, body: { reason: "changed", paths: ["chapters/a-rather-long-folder-name/rendering-notes-for-the-appendix.qmd"] } } }],
   });
   await flush();

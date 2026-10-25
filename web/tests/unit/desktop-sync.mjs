@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import * as client from "../../src/lib/desktop/client.js";
 import { folderProjectHref, keepFolderProject } from "../../src/lib/desktop/projects.js";
-import { syncLink, syncLogin, syncPublish, syncPull, syncPush, syncStatus, syncUnlink } from "../../src/lib/desktop/sync.js";
+import { LOGIN_PENDING, syncLink, syncLogin, syncLoginComplete, syncPublish, syncPull, syncPush, syncStatus, syncUnlink } from "../../src/lib/desktop/sync.js";
 
 globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
 client._testing.reset();
@@ -28,11 +28,28 @@ assert.deepEqual(await syncStatus("f1"), status);
 assert.equal(last().method, "GET");
 assert.ok(last().url.endsWith("projects/f1/sync"));
 
-answer = () => response(204, null);
-await syncLogin("f1");
+// A folder that holds a .git says so, and the panel stops offering the commands.
+answer = () => response(200, { ...status, git: true });
+assert.equal((await syncStatus("f1")).git, true);
+
+// Signing in is two calls: a code handed out at once, then the finish.
+answer = () => response(200, { authorization_id: "auth-1", user_code: "ABCD-EFGH", verification_url: "https://app.example/device" });
+assert.deepEqual(await syncLogin("f1"), { authorization_id: "auth-1", user_code: "ABCD-EFGH", verification_url: "https://app.example/device" });
 assert.equal(last().method, "POST");
 assert.ok(last().url.endsWith("projects/f1/sync/login"));
+assert.deepEqual(last().body, {});
 
+answer = () => response(200, status);
+assert.deepEqual(await syncLoginComplete("f1", "auth-1"), status);
+assert.equal(last().method, "POST");
+assert.ok(last().url.endsWith("projects/f1/sync/login/complete"));
+assert.deepEqual(last().body, { authorization_id: "auth-1" });
+
+// A code that is not approved yet is a 400 with the words the controller waits on.
+answer = () => response(400, { error: "sign in and approve the code, then retry" });
+await assert.rejects(syncLoginComplete("f1", "auth-1"), (error) => error.status === 400 && error.body.error === LOGIN_PENDING);
+
+answer = () => response(204, null);
 await syncLink("f1", "https://app.example/docs/paper");
 assert.ok(last().url.endsWith("projects/f1/sync/link"));
 assert.deepEqual(last().body, { url: "https://app.example/docs/paper" });
@@ -46,7 +63,7 @@ assert.equal(last().method, "POST");
 assert.ok(last().url.endsWith("projects/f1/sync/unlink"));
 
 // A pull sends the answers to a conflict, one path at a time, and nothing else.
-const pulled = { written: 1, trashed: 0, kept: [], conflicts: ["a.tex"], trimmed: false };
+const pulled = { written: ["intro.tex"], trashed: [], kept: [], conflicts: ["a.tex"], trimmed: false };
 answer = () => response(200, pulled);
 assert.deepEqual(await syncPull("f1"), pulled);
 assert.ok(last().url.endsWith("projects/f1/sync/pull"));

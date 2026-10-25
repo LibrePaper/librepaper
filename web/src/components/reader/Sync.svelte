@@ -96,6 +96,24 @@
   </div>
 {/snippet}
 
+{#snippet projectLine()}
+  <p class="sync-project">
+    <Icon name="link" size={14} />
+    {#if projectHref}
+      <a href={projectHref} target="_blank" rel="noopener noreferrer" title={projectHref}>{status.title || status.slug}</a>
+    {:else}
+      <span>{status.title || status.slug}</span>
+    {/if}
+  </p>
+{/snippet}
+
+{#snippet unlinkFoot()}
+  <div class="sync-foot">
+    <button type="button" class="sync-action" disabled={busy} onclick={() => sync.unlink()}>Unlink</button>
+    <p class="panel-meta">Unlinking keeps the folder and the web project as they are.</p>
+  </div>
+{/snippet}
+
 <section class="panel sync-panel" aria-label="Sync">
   <PanelHeader title="Sync" />
   {#if !view.loaded}
@@ -105,11 +123,19 @@
     <div class="sync-row">
       <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => sync.refresh()}>Try again</button>
     </div>
+  {:else if status.git}
+    <!-- Pull, push and publish would write into a repository, so the desktop
+         app refuses them and the panel does not offer them. -->
+    <p class="sync-lead">This folder is a git repository. Sync it with git in a terminal, or with librepaper pull and push.</p>
+    {#if status.linked}
+      {@render projectLine()}
+      {@render unlinkFoot()}
+    {/if}
   {:else if !status.signed_in}
-    <p class="sync-lead">Sign in to keep this folder and a project on the web in step. Your browser opens to finish the sign-in.</p>
+    <p class="sync-lead">Sign in to keep this folder and a project on the web in step. This uses your account on this server.</p>
     <div class="sync-row">
       <button type="button" class="btn btn-sm lp-control-brand" disabled={busy} onclick={() => sync.login()}>
-        {view.busy === "login" ? "Waiting for the browser…" : "Sign in"}
+        {view.busy === "login" ? "Signing in…" : "Sign in"}
       </button>
     </div>
   {:else if !status.linked}
@@ -133,14 +159,7 @@
       </div>
     </form>
   {:else}
-    <p class="sync-project">
-      <Icon name="link" size={14} />
-      {#if projectHref}
-        <a href={projectHref} target="_blank" rel="noopener noreferrer" title={projectHref}>{status.title || status.slug}</a>
-      {:else}
-        <span>{status.title || status.slug}</span>
-      {/if}
-    </p>
+    {@render projectLine()}
     <ul class="sync-facts" aria-label="Where this folder stands">
       <li><Icon name={here ? "pencil" : "check"} size={14} /><span>{hereText}</span></li>
       <li><Icon name={status.changes?.web ? "download" : "check"} size={14} /><span>{webText}</span></li>
@@ -162,10 +181,7 @@
       </div>
     </form>
     {@render results()}
-    <div class="sync-foot">
-      <button type="button" class="sync-action" disabled={busy} onclick={() => sync.unlink()}>Unlink</button>
-      <p class="panel-meta">Unlinking keeps the folder and the web project as they are.</p>
-    </div>
+    {@render unlinkFoot()}
   {/if}
   {#if view.error}
     <p class="lp-text-error sync-error" role="alert">{view.error}</p>

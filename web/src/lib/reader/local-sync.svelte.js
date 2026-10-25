@@ -6,16 +6,27 @@
 // run behind routes, so this file decides nothing about files, only what to
 // ask and how to say the answer. Pull and Push first settle the folder through
 // `flush`, so the disk holds what the editor holds when the command reads it.
+//
+// Signing in is two calls to the desktop app with the page between them. The
+// first hands out a code, `approve` approves it in the page's own session, and
+// the second finishes once the code has been approved.
 import * as routes from "../desktop/sync.js";
 import { day } from "../dates.js";
 
-// A count the desktop app may send as a number or as the list it counted.
+// How often the second call is repeated while the desktop app has not yet seen
+// the approval, and how long to wait between.
+const COMPLETE_ATTEMPTS = 5;
+const COMPLETE_DELAY_MS = 800;
+
+// The files a push sent, as the desktop app counted them or as a list.
 const count = (value) => (Array.isArray(value) ? value.length : Number(value) || 0);
+
+const realWait = (/** @type {number} */ ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** @typedef {{ loaded: boolean, status: any, busy: string, error: string, pull: { written: number, trashed: number, trimmed: boolean } | null, conflicts: string[], refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string } | null, pushed: { nothing: true } | { files: number } | null }} SyncState */
 
-/** @param {{ id: string, api?: typeof routes, flush?: () => Promise<boolean>, now?: () => Date }} options */
-export function createLocalSync({ id, api = routes, flush = async () => true, now = () => new Date() }) {
+/** @param {{ id: string, approve: (userCode: string) => Promise<void>, api?: typeof routes, flush?: () => Promise<boolean>, now?: () => Date, wait?: (ms: number) => Promise<void> }} options */
+export function createLocalSync({ id, approve, api = routes, flush = async () => true, now = () => new Date(), wait = realWait }) {
   /** @type {SyncState} */
   let current = $state.raw({ loaded: false, status: null, busy: "", error: "", pull: null, conflicts: [], refusal: null, pushed: null });
   let generation = 0;
@@ -69,9 +80,27 @@ export function createLocalSync({ id, api = routes, flush = async () => true, no
 
   const forgetResults = () => ({ pull: null, conflicts: [], refusal: null, pushed: null });
 
+  /// Asks the desktop app to finish the sign-in. It refuses while the
+  /// approval has not reached it yet, so that refusal is tried again a few
+  /// times. Any other refusal means the sign-in expired.
+  async function complete(/** @type {string} */ authorizationId) {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await api.syncLoginComplete(id, authorizationId);
+      } catch (error) {
+        const pending = error?.status === 400 && error?.body?.error === routes.LOGIN_PENDING;
+        if (!pending || closed || attempt === COMPLETE_ATTEMPTS) throw error;
+        await wait(COMPLETE_DELAY_MS);
+      }
+    }
+  }
+
   const login = () => run("login", async () => {
-    await api.syncLogin(id);
-    await refresh();
+    const started = await api.syncLogin(id);
+    await approve(started.user_code);
+    const status = await complete(started.authorization_id);
+    generation += 1;
+    set({ status });
   });
 
   const link = (/** @type {string} */ url) => run("link", async () => {
@@ -101,11 +130,11 @@ export function createLocalSync({ id, api = routes, flush = async () => true, no
     const earlier = settling ? current.pull : null;
     set({
       pull: {
-        written: (earlier?.written ?? 0) + count(result?.written),
-        trashed: (earlier?.trashed ?? 0) + count(result?.trashed),
+        written: (earlier?.written ?? 0) + result.written.length,
+        trashed: (earlier?.trashed ?? 0) + result.trashed.length,
         trimmed: Boolean(result?.trimmed) || Boolean(earlier?.trimmed),
       },
-      conflicts: Array.isArray(result?.conflicts) ? result.conflicts.map(String) : [],
+      conflicts: result.conflicts.map(String),
       refusal: null,
       pushed: null,
     });
