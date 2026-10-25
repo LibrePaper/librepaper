@@ -41,7 +41,7 @@ In a git repository the record is the blob at `refs/librepaper/state`, so it liv
 
 ### What a working directory holds
 
-The CLI walks the directory with gitignore semantics (the `ignore` crate: `.gitignore`, `.git/info/exclude`, global excludes, hidden entries skipped). Of what remains, a path is synced when the server's path rules accept it (`paths::check`: no dotfiles, 8 segments, `max_path`) and its extension is in `text_extensions` or `asset_extensions` from `/api/config`. A tracked file with the git attribute `-librepaper` is left out when git is present (`git check-attr`). Everything else is never read, written or deleted. Text files must be UTF-8; a file that is not is reported and skipped. The CLI compares and sends text with LF endings; when it rewrites a file it keeps that file's existing ending, and writes LF for a new file.
+The CLI walks the directory with gitignore semantics (the `ignore` crate: `.gitignore`, `.git/info/exclude`, global excludes, hidden entries skipped). Of what remains, a path is synced when the server's path rules accept it (`paths::check`: no dotfiles, 8 segments, `max_path`), it has no colon (a Windows disk reads `C:/x` as another drive) and its extension is in `text_extensions` or `asset_extensions` from `/api/config`. A tracked file with the git attribute `-librepaper` is left out when git is present (`git check-attr`). Everything else is never read, written or deleted. Text files must be UTF-8; a file that is not is reported and skipped. The CLI compares and sends text with LF endings; when it rewrites a file it keeps that file's existing ending, and writes LF for a new file.
 
 ### pull
 
@@ -51,7 +51,7 @@ The CLI walks the directory with gitignore semantics (the `ignore` crate: `.giti
    - Each version becomes one commit on `refs/librepaper/main`, chained on the previous one: tree = the version's files, author = the version's `by` (`<handle>@<site>` as the address), date = `at`, message = the label, trailer `LibrePaper-Version: <sha>`. A version this directory pushed (see push) is represented by the commit that produced it, so the chain stays related to `main` and nothing is committed twice.
    - Then `git merge librepaper/main` (fast-forward when `main` did not move; a merge commit otherwise). A dirty tree refuses before anything is fetched: commit first. `--no-merge` stops after the fetch. A conflicting merge is left to git exactly as `git pull` leaves it: the person resolves it with their tools.
    - The working tree is otherwise never written by pull; git writes it.
-4. **Outside a repository** (a desktop folder), pull writes the newest version into the folder: files changed only on the web are written, files changed only here are kept, deleted-on-the-web files are moved to the trash. A file changed on both sides is not written; it is listed in the result, and a second call with `--mine` or `--theirs` per path settles it. There is no three-way merge.
+4. **Outside a repository** (a desktop folder), pull writes the newest version into the folder: files changed only on the web are written, files changed only here are kept, deleted-on-the-web files are moved to the trash. A file changed on both sides is not written; it is listed in the result, and a second call with `--mine` or `--theirs` per path settles it. A path the web holds that the folder also has but the walk leaves out (ignored, hidden, not UTF-8) is never written over or trashed; it is listed as skipped and `pulled` stays where it was. There is no three-way merge.
 5. `pulled` moves to the newest version, `files` to its hashes, `head` to the newest commit.
 
 If no listed version has a sequence at or below `pulled`, history was trimmed. Pull then says so, takes the current head as a fresh base, and in a repository makes one commit for it.
@@ -123,7 +123,7 @@ The sidecar is the same binary, so the two commands run in-process behind routes
 
 - `GET projects/<id>/sync`: `{ linked, site, slug, pulled, changes: { here: N, web: bool } }`. The `web` flag comes from `GET /history?after=pulled&limit=1`.
 - `POST sync/link { url }`, `POST sync/publish { title }`, `POST sync/unlink`.
-- `POST sync/pull { mine?: [path], theirs?: [path] }`: the no-git form. Answers `{ written, trashed, kept, conflicts: [path] }`. The page shows conflicts with the existing Keep mine / Load from disk prompt and calls again with the answers. The folder's change poll then reloads the editor.
+- `POST sync/pull { mine?: [path], theirs?: [path] }`: the no-git form. Answers `{ written, trashed, kept, conflicts: [path], skipped: [path] }`. The page shows conflicts with the existing Keep mine / Load from disk prompt and calls again with the answers. The folder's change poll then reloads the editor.
 - `POST sync/push { message }`: the page flushes the folder sync first so disk equals the editor, then calls. `409 changed` and `409 suggestion` are shown as they are.
 
 Authentication: the sidecar holds a device token from the same device flow backups use (`tokens.json`). Kata vhqg's narrower credential applies here too when it lands.

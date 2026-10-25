@@ -600,12 +600,14 @@ async fn run_pull(
             trashed,
             kept,
             conflicts,
+            skipped,
             trimmed,
         } => Ok(json!({
             "written": written,
             "trashed": trashed,
             "kept": kept,
             "conflicts": conflicts,
+            "skipped": skipped,
             "trimmed": trimmed,
         })),
         PullOutcome::UpToDate => Ok(json!({
@@ -613,6 +615,7 @@ async fn run_pull(
             "trashed": [],
             "kept": [],
             "conflicts": [],
+            "skipped": [],
             "trimmed": false,
         })),
         _ => Err(refuse(

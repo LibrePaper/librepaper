@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
-use crate::files::{lf, sha256_hex, FileRecord, Kind};
+use crate::files::{inside, lf, sha256_hex, FileRecord, Kind};
 use crate::git::Git;
 use crate::rules::{normalise, Rules, MAX_SEGMENTS};
 use crate::Error;
@@ -45,6 +45,27 @@ impl Scan {
                     },
                 )
             })
+            .collect()
+    }
+}
+
+impl Scan {
+    /// The paths among `paths` that sit in the directory although the scan
+    /// does not list them: ignored by git, hidden, not UTF-8, not readable.
+    /// The walk never yields what is ignored or hidden, so these are found by
+    /// asking for each path itself.
+    pub(crate) fn left_out<'a>(
+        &self,
+        dir: &Path,
+        paths: impl IntoIterator<Item = &'a String>,
+    ) -> BTreeSet<String> {
+        paths
+            .into_iter()
+            .filter(|path| !self.files.contains_key(path.as_str()))
+            .filter(|path| {
+                inside(dir, path).is_ok_and(|target| std::fs::symlink_metadata(target).is_ok())
+            })
+            .cloned()
             .collect()
     }
 }
@@ -262,6 +283,33 @@ mod tests {
         let changes = compare(&recorded, &scan);
         assert_eq!(changes.added, ["good.tex"]);
         assert!(changes.deleted.is_empty());
+    }
+
+    #[test]
+    fn a_path_the_scan_does_not_list_is_found_when_something_is_there() {
+        let outer = tempfile::tempdir().unwrap();
+        let root = &outer.path().join("folder");
+        write(outer.path(), "secret.tex", b"beside the folder\n");
+        write(root, ".gitignore", b"build/\n*.bib\n");
+        write(root, "main.tex", b"main\n");
+        write(root, "build/out.tex", b"ignored by directory\n");
+        write(root, "refs.bib", b"ignored by pattern\n");
+        write(root, "latin.tex", &[b'c', b'a', b'f', 0xe9]);
+        let scan = scan(root, &Rules::default(), None).unwrap();
+        assert_eq!(names(&scan), ["main.tex"]);
+
+        let asked: Vec<String> = ["main.tex", "build/out.tex", "refs.bib", "latin.tex", "new.tex"]
+            .iter()
+            .map(|path| path.to_string())
+            .collect();
+        let left_out = scan.left_out(root, &asked);
+        assert_eq!(
+            left_out.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["build/out.tex", "latin.tex", "refs.bib"],
+            "listed files and absent ones are not left out"
+        );
+        // A path that climbs out of the directory is never probed.
+        assert!(scan.left_out(root, &["../secret.tex".to_string()]).is_empty());
     }
 
     #[test]
