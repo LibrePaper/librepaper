@@ -1,6 +1,6 @@
 # Local renders
 
-Status: proposed 2026-10-25. Not built.
+Status: building as Kata 0n7d, 2026-10-25.
 
 ## Goal
 
@@ -41,9 +41,12 @@ result  = "{stem}.html"
 command = ["quarto", "render", "{input}", "--to", "pdf"]
 result  = "{stem}.pdf"
 
-[markdown.html]
-command = ["quarto", "render", "{input}", "--to", "html", "--embed-resources", "--standalone"]
-result  = "{stem}.html"
+[quarto.docx]
+command = ["quarto", "render", "{input}", "--to", "docx"]
+result  = "{stem}.docx"
+
+# markdown.html, markdown.pdf and markdown.docx default to the same three
+# Quarto commands.
 ```
 
 - `{input}` is the entry file's path relative to the workspace root, for example `chapters/main.tex`.
@@ -56,13 +59,49 @@ result  = "{stem}.html"
 
 ## The pipeline
 
-1. **Admit.** The page sends `{ project, origin, format, output, entrypoint, binding?, files }`. It never sends a command. The sidecar picks the tool record from `(format, output)`.
-2. **Write.** The files go into the project's persistent workspace. That is the granted project folder when there is one, through `sync_granted_folder` with its `.local` copies, and otherwise the hosted scratch workspace, through `sync_hosted_workspace`. The folder is kept between renders so `.aux`, `.bbl`, Typst and Quarto caches survive and latexmk stays incremental.
-3. **Run.** The command goes through `run_confined_logged`: process group, cancellation, deadline, captured log. A newer job for the same project cancels the one in progress.
-4. **Read.** The sidecar reads `result`. For a PDF it also reads `{stem}.synctex.gz` or `{stem}.synctex` when present. For HTML it reads the local files the page references, through the resource closure now in `quarto/collect.rs`.
-5. **Answer.** `{ ok, kind, artifact, synctex?, resources?, log }`. A missing result file with exit status 0 is a failure whose message names the expected path.
+1. **Admit.** The page sends a job. It never sends a command. The sidecar picks the tool record from `(format, output)`.
+2. **Write.** The files go into the project's persistent workspace. That is the granted project folder when `binding_id` names one, through `sync_granted_folder` with its `.local` copies, and otherwise the hosted workspace (`binding_id` `"hosted"`), through `sync_hosted_workspace`. The folder is kept between renders so `.aux`, `.bbl`, Typst and Quarto caches survive and latexmk stays incremental. The service-owned temporary copy per build is gone.
+3. **Run.** The command goes through `run_confined_logged`: process group, cancellation, deadline, captured log. A new job for the same workspace cancels the one running there, so two commands never share a folder.
+4. **Read.** The sidecar reads `result`. For a PDF it also reads `{stem}.synctex.gz`, or `{stem}.synctex`, when present. HTML is returned as the one file; the default commands embed their resources.
+5. **Answer.** A missing result file with exit status 0 is a failure whose message names the expected path.
 
 Results, the PDF and the build files land in the granted folder too. That is what a local TeX user expects.
+
+## Wire contract
+
+The transport stays as it is: multipart `POST jobs` (a `job` JSON part plus one `file` part per project file, named by its path), `GET jobs/{id}` until `done`, `failed` or `canceled`, `GET jobs/{id}/files/{name}` checked against the size and SHA-256 in `status.outputs`, `POST jobs/{id}/cancel`.
+
+The `job` part:
+
+```json
+{
+  "protocol": 3,
+  "project": "<slug>",
+  "origin": "https://librepaper.org",
+  "snapshot": "<tree digest>",
+  "generation": 1761400000000,
+  "format": "latex",
+  "output": "pdf",
+  "entrypoint": "chapters/main.tex",
+  "binding_id": "hosted",
+  "manifest": [{ "path": "chapters/main.tex", "sha256": "<hex>", "size": 1234 }],
+  "options": { "deadline_seconds": 300 }
+}
+```
+
+- `format` is one of `latex`, `typst`, `markdown`, `quarto`. `output` is one of `pdf`, `html`, `docx`. A pair with no tool record is refused.
+- Protocol 2 requests are refused with a message asking to update the page. There is no compatibility path.
+
+The finished status carries `exit`, `error` and these `outputs`: `artifact` (the result file), `synctex` (when found), `log`. Nothing else: no `diagnostics`, no `provenance` beyond `{ backend: "local", format, output }`, no cells.
+
+Tool records:
+
+- `GET capabilities` reports `renderers`, keyed `"<format>.<output>"`: `{ command, result, edited, found, version }`. `version` is the first line of `argv[0] --version`, or null.
+- `GET state` reports the same map under `settings.renderers`, in place of `settings.integrations`.
+- `PUT renderers/<format>.<output>` with `{ command, result }` saves after the native dialog shows the full command. `{ "reset": true }` returns the record to the built-in default and needs no dialog.
+- `PUT integrations/{name}` is deleted.
+
+`PUT workspace` stays: the editor writes into a granted folder outside renders too.
 
 ## Diagnostics and SyncTeX
 
@@ -94,12 +133,13 @@ Deleted from Settings: the Quarto profile and parameters block, the Calepin sect
 ## Deleted
 
 Rust, in `crates/librepaper-companion/src/local/`:
-- `quarto/` except the workspace sync and resource closure, which move to a new `render/` module.
+- `quarto/` except the workspace sync, which moves to a new `render/` module. The resource closure in `quarto/collect.rs` goes.
 - `quarto_capture.rs`, `preview/`, the preview routes in `service/`.
 - `builders/mod.rs` typed plans and `builders/diagnostics.rs`. `builders/runner.rs` becomes the pipeline's run step.
 - `engine_adapter.rs` dispatch by builder.
 - Quarto job options, render policies, render scope and builder-specific `BuildInputs` in `protocol.rs`.
-- The Quarto bundle and cell results in `crates/librepaper-document` (`results/`, `quarto/`) if nothing else uses them.
+- The Quarto bundle and cell result types in `crates/librepaper-document` (`results/`, `quarto/`). The server still uses `results::document_metadata`, `results::sha256`, `ExecutionEngine` and `DraftFormat`; those stay.
+- The `/api/documents/{slug}/quarto/checkpoint` route and `quarto_checkpoint.rs` in `librepaper-server`. Nothing calls it.
 
 Web:
 - The Quarto request and preview functions in `web/src/lib/desktop/client.js`, `QUARTO_JOB_KINDS`, `quarto-options.js`.
@@ -108,10 +148,10 @@ Web:
 
 Docs: the pages on Quarto profiles, parameters and Calepin.
 
-## Checks before building
+## Checks before building (done 2026-10-25)
 
-1. Confirm nothing user-visible reads Quarto cell results. `exports.js` mentions "the cells' results" and needs reading.
-2. Confirm how Windows resolves `argv[0]` for `quarto`, `latexmk` (a Perl script under TeX Live, `latexmk.exe` under MiKTeX) and `typst`.
+1. Nothing user-visible reads Quarto cell results. The export path in `web/src/lib/reader/exports.js` builds through local Quarto with profile and parameters; it moves to the new job with neither.
+2. Windows resolves `argv[0]` with `PATHEXT`. TeX Live ships `latexmk.exe` wrappers, MiKTeX ships `latexmk.exe`, Quarto and Typst ship `.exe` files.
 
 ## Work split
 
