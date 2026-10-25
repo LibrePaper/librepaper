@@ -1069,7 +1069,10 @@ mod tests {
         // A path kept out because it was synced before and is not here now.
         let mut excluded = BTreeSet::from(["old.tex".to_string()]);
         let held = leave_excluded_out(&mut snapshot, &here, root, &mut excluded);
-        assert_eq!(held, listed, "the state keeps the web's record of every path");
+        assert_eq!(
+            held, listed,
+            "the state keeps the web's record of every path"
+        );
 
         let kept: Vec<&str> = snapshot.files.keys().map(String::as_str).collect();
         assert_eq!(kept, ["main.tex", "new.tex"]);
@@ -1138,7 +1141,9 @@ mod tests {
         assert_eq!(held["a.tex"].sha, sha256_hex(b"the web's\n"));
 
         // With the attribute gone the file is measured against the web's hash.
-        std::fs::remove_file(root.join(".gitattributes")).unwrap();
+        // Git reads a missing working-tree .gitattributes from the index, so
+        // the file leaves both.
+        git.run(&["rm", "-q", ".gitattributes"], None, &[]).unwrap();
         let now = scan(root, &rules, Some(&git)).unwrap();
         let changes = compare(root, &held, &now);
         assert_eq!(changes.changed, ["a.tex"]);
