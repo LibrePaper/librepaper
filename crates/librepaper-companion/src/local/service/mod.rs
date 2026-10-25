@@ -1475,10 +1475,7 @@ mod settings_tests {
         let origin = "https://paper.example";
         let folder = tempfile::tempdir().unwrap();
         std::fs::write(folder.path().join("main.typ"), b"= Title").unwrap();
-        let binding = inner
-            .bindings
-            .open_project(origin, folder.path())
-            .unwrap();
+        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
         let headers = bearer(&inner);
 
         let both: [(&str, &[u8]); 2] = [("main.typ", b"= Title"), ("notes.typ", b"notes")];
@@ -1486,7 +1483,12 @@ mod settings_tests {
             &inner,
             &headers,
             Some(origin),
-            folder_request(&binding.project, &binding.id, &both, &["main.typ", "notes.typ"]),
+            folder_request(
+                &binding.project,
+                &binding.id,
+                &both,
+                &["main.typ", "notes.typ"],
+            ),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -1548,7 +1550,9 @@ mod settings_tests {
         let origin = "https://paper.example";
         let folder = tempfile::tempdir().unwrap();
         // A render binding left in the store by an older version.
-        let store = state_home.path().join("librepaper/local/quarto-bindings.json");
+        let store = state_home
+            .path()
+            .join("librepaper/local/quarto-bindings.json");
         std::fs::create_dir_all(store.parent().unwrap()).unwrap();
         let render = json!({"bindings": [{
             "id": "q-render", "origin": origin, "project": "paper",
@@ -1624,10 +1628,7 @@ mod settings_tests {
         let origin = "https://paper.example";
         let folder = tempfile::tempdir().unwrap();
         std::fs::write(folder.path().join("main.typ"), b"= Title").unwrap();
-        let binding = inner
-            .bindings
-            .open_project(origin, folder.path())
-            .unwrap();
+        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
         tokio::spawn(run_worker(inner.clone()));
 
         let mut job = job_json(&binding.id, b"= Title");

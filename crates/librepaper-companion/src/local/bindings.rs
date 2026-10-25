@@ -382,7 +382,6 @@ impl BindingStore {
             _ => Err("scoped binding root is unavailable or changed".into()),
         }
     }
-
 }
 
 #[cfg(test)]
@@ -494,7 +493,9 @@ mod validation_tests {
         assert!(reloaded
             .get_scoped("q-legacy", "https://example.test", "paper")
             .is_none());
-        assert!(reloaded.touch_project(&project.id, "https://example.test").is_ok());
+        assert!(reloaded
+            .touch_project(&project.id, "https://example.test")
+            .is_ok());
         let saved = std::fs::read_to_string(&reloaded.path).unwrap();
         assert!(!saved.contains("q-render") && !saved.contains("q-legacy"));
     }
@@ -569,7 +570,12 @@ mod validation_tests {
         let hosted = tempfile::tempdir().unwrap();
         let store = BindingStore::new(state.path()).with_hosted_workspaces(hosted.path().into());
         assert!(store
-            .validate_scoped_entrypoint(HOSTED_BINDING, "https://example.test", "paper", "paper.qmd")
+            .validate_scoped_entrypoint(
+                HOSTED_BINDING,
+                "https://example.test",
+                "paper",
+                "paper.qmd"
+            )
             .is_ok());
         assert!(store
             .validate_scoped_entrypoint(
