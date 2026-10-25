@@ -781,11 +781,38 @@ fn invalidate_before_first_write(root: &Path, invalidated: &mut bool) -> Result<
     Ok(())
 }
 
+/// The digests the companion last wrote into the granted folder `record`
+/// names, relative path to sha256 hex.
+pub(crate) fn recorded_digests(record: &Path) -> Result<BTreeMap<String, String>, String> {
+    read_written_record(record)
+}
+
+/// Mark every path in `listed` as managed by recording its current digest.
+/// Entries for other files are kept while those files still exist under
+/// `root` and are dropped once they are gone.
+pub(crate) fn record_listed_digests(
+    record: &Path,
+    root: &Path,
+    listed: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let _guard = GRANTED_SYNC
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = read_written_record(record)?;
+    let mut merged = before.clone();
+    merged.retain(|path, _| exists_on_disk(&root.join(path)));
+    merged.extend(listed.iter().map(|(path, digest)| (path.clone(), digest.clone())));
+    if merged != before {
+        write_written_record(record, &merged)?;
+    }
+    Ok(())
+}
+
 fn sha256(bytes: &[u8]) -> String {
     librepaper_document::results::sha256(bytes)
 }
 
-fn read_file_bounded_to(path: &Path, description: &str, limit: usize) -> Result<Vec<u8>, String> {
+pub(crate) fn read_file_bounded_to(path: &Path, description: &str, limit: usize) -> Result<Vec<u8>, String> {
     let metadata =
         std::fs::symlink_metadata(path).map_err(|error| format!("{description}: {error}"))?;
     if !metadata.file_type().is_file() {

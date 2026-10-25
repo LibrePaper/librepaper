@@ -4,6 +4,9 @@
 
 use std::path::PathBuf;
 
+/// The error every chooser reports when the person closes it without a choice.
+pub const CANCELLED: &str = "Folder selection was cancelled.";
+
 #[cfg(any(target_os = "macos", all(test, unix)))]
 use std::time::Duration;
 
@@ -73,6 +76,11 @@ pub async fn choose_directory(origin: &str, project: &str) -> Result<PathBuf, St
     choose_directory_with_title(&title).await
 }
 
+/// The folder chooser for opening a folder as a LibrePaper project.
+pub async fn choose_project_directory() -> Result<PathBuf, String> {
+    choose_directory_with_title("Open a folder as a LibrePaper project").await
+}
+
 /// The folder chooser for a local Git remote. The title names the page and
 /// project that will sync with the repository.
 pub async fn choose_git_directory(origin: &str, project: &str) -> Result<PathBuf, String> {
@@ -132,7 +140,7 @@ async fn choose_directory_rfd(title: &str) -> Result<PathBuf, String> {
         .await;
 
     let Some(handle) = handle else {
-        return Err("Folder selection was cancelled.".into());
+        return Err(CANCELLED.into());
     };
 
     let path = handle.path().to_path_buf();
@@ -203,7 +211,7 @@ fn decode_picker_response(output: &[u8]) -> Result<PathBuf, String> {
                 Ok(path)
             }
         }
-        PickerResponse::Cancelled => Err("Folder selection was cancelled.".into()),
+        PickerResponse::Cancelled => Err(CANCELLED.into()),
         PickerResponse::Error { message } => Err(message),
     }
 }
@@ -227,7 +235,7 @@ mod picker_protocol_tests {
     fn helper_protocol_handles_cancel_error_and_malformed_output() {
         assert_eq!(
             decode_picker_response(br#"{"result":"cancelled"}"#).unwrap_err(),
-            "Folder selection was cancelled."
+            CANCELLED
         );
         assert_eq!(
             decode_picker_response(br#"{"result":"error","message":"native failure"}"#)
@@ -327,7 +335,7 @@ mod picker_protocol_tests {
             run_picker_process(cancelled, Duration::from_secs(1))
                 .await
                 .unwrap_err(),
-            "Folder selection was cancelled."
+            CANCELLED
         );
 
         let mut failed = tokio::process::Command::new("/bin/sh");
@@ -401,7 +409,7 @@ async fn choose_directory_portal(_title: &str) -> Result<PathBuf, String> {
                 error,
                 ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)
             ) {
-                "Folder selection was cancelled.".to_string()
+                CANCELLED.to_string()
             } else {
                 "Could not open the folder chooser: no desktop portal is running.".to_string()
             }
@@ -410,7 +418,7 @@ async fn choose_directory_portal(_title: &str) -> Result<PathBuf, String> {
         let uri = selected
             .uris()
             .first()
-            .ok_or_else(|| "Folder selection was cancelled.".to_string())?;
+            .ok_or_else(|| CANCELLED.to_string())?;
 
         let path = uri
             .to_file_path()
