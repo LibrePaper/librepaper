@@ -18,8 +18,8 @@
     // the last request for one failed. The panel shows these rather than
     // counting the rows it was handed, which are a prefix.
     page = null, onloadmore, onloadreplies,
-    // Editors only: attaching a selection to a comment, and its moment.
-    onattach = undefined, attachable = false, onmoment = undefined,
+    // Editors only: attaching a selection to a comment.
+    onattach = undefined, attachable = false,
     // The draft being written, which belongs to the Comments tab whatever it
     // will become.
     composing = null, needsLogin = false, signInHref = "", oncommentsend = undefined, oncommentcancel = undefined,
@@ -34,7 +34,7 @@
   const common = () => ({ identity, commentingAs, canModerate, canComment,
     onreveal, onresolve, ondelete, ondeletemany,
     onreply, onedit, onagent, pending, selected,
-    page, onloadmore, onloadreplies, onattach, attachable, onmoment });
+    page, onloadmore, onloadreplies, onattach, attachable });
 </script>
 
 <!-- The strip, its ids and the layout of a pane are PanelTabs', shared with

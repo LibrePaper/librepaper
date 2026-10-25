@@ -81,9 +81,8 @@ export async function read(slug, sha, headers = {}) {
   });
   if (!response.ok) {
     // 410 is a moment before a trim: gone for good, and the error says so.
-    const gone = response.status === 410;
-    const said = gone ? await response.json().catch(() => ({})) : {};
-    throw Object.assign(new Error(said.error || "that label is not readable"), { gone });
+    const said = response.status === 410 ? await response.json().catch(() => ({})) : {};
+    throw new Error(said.error || "that label is not readable");
   }
   const payload = await response.json();
   const files = payload.files && typeof payload.files === "object"

@@ -26,4 +26,4 @@ The preview shows the file you are editing. A chapter that cannot render on its 
 
 ## Comments
 
-A comment follows its passage when the passage is moved by cut and paste or drag and drop, within a file or into another file, and when a rejected tracked deletion brings the passage back. If a passage is gone, its comment shows the passage in words, and an editor can select the passage and choose "Attach to selection". "See it as it was" opens the history at the moment the comment was made.
+A comment follows its passage when the passage is moved by cut and paste or drag and drop, within a file or into another file, and when a rejected tracked deletion brings the passage back. If a passage is gone, its comment shows the passage in words, and an editor can select the passage and choose "Attach to selection".

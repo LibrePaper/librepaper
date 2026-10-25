@@ -14,7 +14,7 @@ import { openingFile } from "../opening.js";
 /// versions, and a minute nobody saved is not one.
 
 export function createHistorySource({ read, currentTree, labels = () => [], preferredPath = () => "" }) {
-  const state = $state({ selected: "", against: "", path: "", loading: false, problem: "", gone: false, result: null });
+  const state = $state({ selected: "", against: "", path: "", loading: false, problem: "", result: null });
   const selections = createGeneration();
   let disposed = false;
 
@@ -64,7 +64,6 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
     state.path = path;
     state.result = null;
     state.problem = "";
-    state.gone = false;
     state.loading = true;
     try {
       // Capture the current source at selection time, before any network
@@ -110,7 +109,6 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
     } catch (error) {
       if (!disposed && !stale()) {
         state.problem = error.message || "Could not load label source.";
-        state.gone = Boolean(error.gone);
       }
     } finally {
       if (!disposed && !stale()) state.loading = false;
@@ -145,7 +143,6 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
     state.result = null;
     state.loading = false;
     state.problem = "";
-    state.gone = false;
   }
   return {
     get selected() { return state.selected; },
@@ -153,8 +150,6 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
     get path() { return state.path; },
     get loading() { return state.loading; },
     get problem() { return state.problem; },
-    /// The last comparison's moment was trimmed away, which the server says with a 410.
-    get gone() { return state.gone; },
     get result() { return state.result; },
     select, selectFile, compareWith, swap, clearBase, close,
     dispose() { close(); disposed = true; },

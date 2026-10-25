@@ -4,7 +4,6 @@
   // about it.
   import { aboutWholeDocument, anchorAll, flatten, placeSources, shownSelector } from "../lib/anchor.js";
   import { ANCHORS_ORIGIN, attachByHand, composeEdits, deriveAttachment, restoreByFragments } from "../lib/anchors.js";
-  import { momentOf } from "../lib/moment.js";
   import { barHiddenAfter, revealOnNavFocus, watchScrolls } from "../lib/bar-scroll.js";
   import * as renderers from "../lib/renderers.js";
   import * as sync from "../lib/sync.js";
@@ -959,21 +958,6 @@
       return;
     }
     annotations.deriveNow();
-  }
-
-  // The History panel at the moment a comment was made on, opened the way a
-  // label's version is. A moment before a trim is gone; the comment's card says
-  // so, from the flag set here.
-  async function openMoment(comment) {
-    const moment = momentOf(comment);
-    if (!moment) return;
-    await showPanel("history");
-    historySource.clearBase();
-    await viewPoint(moment);
-    if (historySource.gone) {
-      comment.momentTrimmed = true;
-      annotations.publish();
-    }
   }
 
   /* -------------------------------------------------------------------- room */
@@ -4434,7 +4418,6 @@
       ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply} onedit={edit}
       onagent={agentOffered ? askCommentAssistant : undefined}
       onattach={mayEdit ? attachComment : undefined} attachable={sourceSelected}
-      onmoment={mayEdit ? openMoment : undefined}
       {composing} {needsLogin} signInHref={signInHref()}
       page={annotations.state.page}
       onloadmore={() => void annotations.loadMore()}

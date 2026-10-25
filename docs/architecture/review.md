@@ -24,7 +24,7 @@ Exact means the passage is where it was. Modified means it is there but edited. 
 
 A commenter's comment is written with its record in one transaction. Deleting a comment deletes its record. Erasing an account anonymizes the comment and keeps the record. When a room opens, each passage comment without a record gets one, which covers comments made before records existed. A comment whose original state can no longer be rebuilt, such as one from before a history trim, gets none and reads as unresolved.
 
-Before a history trim takes its snapshot, the server heals every record whose cursor sits on deleted text. A record whose passage has collapsed is marked detached. "See it as it was" opens the history at the moment a comment was made. After a trim, that moment is gone, and the card says so.
+Before a history trim takes its snapshot, the server heals every record whose cursor sits on deleted text. A record whose passage has collapsed is marked detached.
 
 The server bridges rendered page to source by flattening both with syntax blanked and whitespace collapsed. It looks for selection in the flattened source, mapping positions back. It refuses to locate if a passage reads identically in several places. Locating happens once, when the comment is made.
 
