@@ -643,6 +643,9 @@ async fn dispatch(
         ["zotero", "items", key] if *method == Method::GET => {
             handle_zotero_item(inner, headers, origin, key).await
         }
+        ["folder"] if *method == Method::PUT => {
+            jobs::handle_folder_put(inner, headers, origin, request).await
+        }
         ["jobs"] if *method == Method::POST => {
             jobs::handle_jobs_post(inner, headers, origin, request).await
         }
@@ -1099,10 +1102,15 @@ pub(super) fn authenticate(
 /// The validated `?project=` query parameter, for the routes that carry no
 /// JSON body to name a project in.
 pub(super) fn project_query(uri: &axum::http::Uri) -> Option<String> {
+    query_value(uri, "project").and_then(|value| store::valid_project(&value))
+}
+
+/// The first query parameter called `name`, decoded.
+pub(super) fn query_value(uri: &axum::http::Uri, name: &str) -> Option<String> {
     let query = uri.query()?;
     url::form_urlencoded::parse(query.as_bytes())
-        .find(|(name, _)| name == "project")
-        .and_then(|(_, value)| store::valid_project(&value))
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.into_owned())
 }
 
 /// Whether `entry` belongs to the requesting origin: the whole scope of a
@@ -1506,6 +1514,122 @@ mod settings_tests {
             .await
             .unwrap();
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    }
+
+    /// A multipart `PUT folder` body: the manifest and a file part per upload.
+    fn folder_request(binding: &str, files: &[(&str, &[u8])], uploads: &[&str]) -> Request<Body> {
+        let manifest: Vec<Value> = files
+            .iter()
+            .map(|(path, bytes)| {
+                json!({
+                    "path": path,
+                    "sha256": hex::encode(Sha256::digest(bytes)),
+                    "size": bytes.len(),
+                })
+            })
+            .collect();
+        let upload: Vec<(&str, &[u8])> = files
+            .iter()
+            .filter(|(path, _)| uploads.contains(path))
+            .copied()
+            .collect();
+        let body = job_body(&json!({ "manifest": manifest }), &upload);
+        // `job_body` names the description part `job`; the folder route names it `manifest`.
+        let bytes = futures_util::FutureExt::now_or_never(axum::body::to_bytes(body, 1 << 20))
+            .unwrap()
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes).replacen("name=\"job\"", "name=\"manifest\"", 1);
+        Request::put(format!("/folder?project=paper&binding={binding}"))
+            .header("content-type", "multipart/form-data; boundary=control-test")
+            .body(Body::from(text))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_folder_route_mirrors_a_granted_folder_and_asks_for_missing_bytes() {
+        let (inner, _state_home, _cache_home) = test_inner().await;
+        let origin = "https://paper.example";
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(folder.path().join("main.typ"), b"= Title").unwrap();
+        let binding = inner
+            .bindings
+            .grant(origin, "paper", folder.path(), "main.typ")
+            .unwrap();
+        let headers = bearer(&inner);
+
+        let both: [(&str, &[u8]); 2] = [("main.typ", b"= Title"), ("notes.typ", b"notes")];
+        let response = jobs::handle_folder_put(
+            &inner,
+            &headers,
+            Some(origin),
+            folder_request(&binding.id, &both, &["main.typ", "notes.typ"]),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["trashed"], json!([]));
+        assert_eq!(
+            std::fs::read(folder.path().join("notes.typ")).unwrap(),
+            b"notes"
+        );
+
+        // A new file with no bytes uploaded is asked for, and nothing changes.
+        let more: [(&str, &[u8]); 2] = [("main.typ", b"= Title"), ("fresh.typ", b"fresh")];
+        let response = jobs::handle_folder_put(
+            &inner,
+            &headers,
+            Some(origin),
+            folder_request(&binding.id, &more, &["main.typ"]),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(body_json(response).await["missing"], json!(["fresh.typ"]));
+        assert!(folder.path().join("notes.typ").is_file());
+        assert!(!folder.path().join("fresh.typ").exists());
+
+        // Dropping a file written earlier trashes it.
+        let only: [(&str, &[u8]); 1] = [("main.typ", b"= Title")];
+        let response = jobs::handle_folder_put(
+            &inner,
+            &headers,
+            Some(origin),
+            folder_request(&binding.id, &only, &[]),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["trashed"], json!(["notes.typ"]));
+        assert!(!folder.path().join("notes.typ").exists());
+
+        // Another origin is refused, and an unknown binding is not found.
+        let response = jobs::handle_folder_put(
+            &inner,
+            &headers,
+            Some("https://other.example"),
+            folder_request(&binding.id, &only, &[]),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let response = jobs::handle_folder_put(
+            &inner,
+            &headers,
+            Some(origin),
+            folder_request("nope", &only, &[]),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn the_folder_route_refuses_the_hosted_binding() {
+        let (inner, _state_home, _cache_home) = test_inner().await;
+        let only: [(&str, &[u8]); 1] = [("main.typ", b"= Title")];
+        let response = jobs::handle_folder_put(
+            &inner,
+            &bearer(&inner),
+            Some("https://paper.example"),
+            folder_request("hosted", &only, &["main.typ"]),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
