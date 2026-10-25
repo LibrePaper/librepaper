@@ -578,7 +578,7 @@ impl Server {
             // 30 MB mistake before it is sent rather than after.
             "/api/config" => Some(write_json(
                 200,
-                &config_body(&self.config, self.latex.as_deref()),
+                &config_body(&self.config, self.latex.as_deref(), &arrival.docs_origin()),
             )),
             // The rest of the sign-in routes name their provider in the path.
             other => {
@@ -796,6 +796,7 @@ impl Server {
 fn config_body(
     config: &librepaper_base::config::Configuration,
     latex: Option<&str>,
+    docs_origin: &str,
 ) -> serde_json::Value {
     let mut body = json!(config);
     if let Some(fields) = body.as_object_mut() {
@@ -804,14 +805,27 @@ fn config_body(
         fields.insert("latexMirror".to_string(), json!(latex));
         // The server version, so a diagnostics report can name the build.
         fields.insert("version".to_string(), json!(env!("CARGO_PKG_VERSION")));
+        // The preview frame's origin, for a page with no server document to
+        // read it from, such as a local folder project.
+        fields.insert("docs_origin".to_string(), json!(docs_origin));
     }
     body
 }
 
 #[cfg(test)]
 mod tests {
-    use super::set_cookie;
+    use super::{config_body, set_cookie};
     use librepaper_base::auth::{cookie_name, SESSION_COOKIE};
+
+    #[test]
+    fn config_carries_the_docs_origin() {
+        let body = config_body(
+            &librepaper_base::config::Configuration::default(),
+            None,
+            "https://docs.paper.example",
+        );
+        assert_eq!(body["docs_origin"], "https://docs.paper.example");
+    }
 
     #[test]
     fn https_session_cookie_is_secure_host_only_and_http_only() {
