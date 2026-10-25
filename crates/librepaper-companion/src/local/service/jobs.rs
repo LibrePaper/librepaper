@@ -176,10 +176,7 @@ pub(super) async fn handle_folder_put(
         return write_json(400, &json!({"error": "folder needs a binding"}));
     };
     if binding_id == crate::local::bindings::HOSTED_BINDING {
-        return write_json(
-            400,
-            &json!({"error": "only a granted folder is mirrored"}),
-        );
+        return write_json(400, &json!({"error": "only a granted folder is mirrored"}));
     }
     if !inner
         .bindings

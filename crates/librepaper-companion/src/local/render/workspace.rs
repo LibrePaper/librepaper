@@ -504,11 +504,8 @@ fn resolve_manifest(
         }
         let uploaded = staged.join(&entry.path);
         if std::fs::symlink_metadata(&uploaded).is_ok() {
-            let bytes = read_file_bounded_to(
-                &uploaded,
-                &format!("read {}", entry.path),
-                MAX_UPLOAD_BYTES,
-            )?;
+            let bytes =
+                read_file_bounded_to(&uploaded, &format!("read {}", entry.path), MAX_UPLOAD_BYTES)?;
             if bytes.len() as u64 != entry.size || sha256(&bytes) != entry.sha256 {
                 return Err(format!("manifest digest mismatch: {}", entry.path).into());
             }
@@ -705,7 +702,8 @@ fn remove_emptied_directories(root: &Path, vacated: &BTreeSet<String>) {
     for relative in vacated {
         let mut directory = root.join(relative);
         while directory != root && directory.starts_with(root) {
-            let plain = std::fs::symlink_metadata(&directory).is_ok_and(|metadata| metadata.is_dir());
+            let plain =
+                std::fs::symlink_metadata(&directory).is_ok_and(|metadata| metadata.is_dir());
             if !plain || std::fs::remove_dir(&directory).is_err() {
                 break;
             }
@@ -716,11 +714,7 @@ fn remove_emptied_directories(root: &Path, vacated: &BTreeSet<String>) {
     }
 }
 
-fn write_granted_files(
-    root: &Path,
-    files: &[Resolved],
-    mirror: &mut Mirror,
-) -> Result<(), String> {
+fn write_granted_files(root: &Path, files: &[Resolved], mirror: &mut Mirror) -> Result<(), String> {
     for file in files {
         let path = &file.path;
         let Some(bytes) = &file.bytes else {
@@ -1208,8 +1202,14 @@ mod tests {
                 copy: "paper.qmd.local".into()
             }]
         );
-        assert_eq!(std::fs::read(root.join("paper.qmd.local")).expect("local"), b"by hand");
-        assert_eq!(std::fs::read(root.join("paper.qmd")).expect("paper"), b"# two");
+        assert_eq!(
+            std::fs::read(root.join("paper.qmd.local")).expect("local"),
+            b"by hand"
+        );
+        assert_eq!(
+            std::fs::read(root.join("paper.qmd")).expect("paper"),
+            b"# two"
+        );
     }
 
     #[test]
@@ -1227,7 +1227,10 @@ mod tests {
             panic!("expected a missing list");
         };
         assert_eq!(missing, vec!["new.qmd".to_string()]);
-        assert_eq!(std::fs::read(root.join("paper.qmd")).expect("paper"), b"# one");
+        assert_eq!(
+            std::fs::read(root.join("paper.qmd")).expect("paper"),
+            b"# one"
+        );
         assert!(root.join("old.qmd").is_file());
         assert!(!root.join("new.qmd").exists());
         assert_eq!(std::fs::read(&record).expect("record"), before);

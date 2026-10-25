@@ -1541,7 +1541,7 @@ mod settings_tests {
         let text = String::from_utf8_lossy(&bytes).replacen("name=\"job\"", "name=\"manifest\"", 1);
         Request::put(format!("/folder?project=paper&binding={binding}"))
             .header("content-type", "multipart/form-data; boundary=control-test")
-            .body(Body::from(text.into_owned()))
+            .body(Body::from(text))
             .unwrap()
     }
 
@@ -1567,7 +1567,10 @@ mod settings_tests {
         .await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(body_json(response).await["trashed"], json!([]));
-        assert_eq!(std::fs::read(folder.path().join("notes.typ")).unwrap(), b"notes");
+        assert_eq!(
+            std::fs::read(folder.path().join("notes.typ")).unwrap(),
+            b"notes"
+        );
 
         // A new file with no bytes uploaded is asked for, and nothing changes.
         let more: [(&str, &[u8]); 2] = [("main.typ", b"= Title"), ("fresh.typ", b"fresh")];
