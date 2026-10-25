@@ -59,6 +59,7 @@ pub(crate) fn normalized_server(raw: &str) -> Result<String, String> {
 }
 
 mod jobs;
+mod projects;
 
 pub(super) type Reply = Response<Body>;
 
@@ -340,6 +341,8 @@ pub(super) struct Inner {
     /// Serialises the steps that must not interleave with revoking a binding
     /// or admitting a job: a workspace sync checks its binding.
     admission: Mutex<()>,
+    /// The change pollers of the folder projects being edited.
+    projects: projects::Registry,
 }
 
 /// The running local service: owns the job table and the background worker
@@ -397,6 +400,7 @@ impl LocalService {
             ),
             control,
             admission: Mutex::new(()),
+            projects: projects::Registry::new(projects::Timing::default()),
         });
         tokio::spawn(run_worker(inner.clone()));
         tokio::spawn(run_reaper(inner.clone()));
@@ -642,6 +646,29 @@ async fn dispatch(
         }
         ["zotero", "items", key] if *method == Method::GET => {
             handle_zotero_item(inner, headers, origin, key).await
+        }
+        ["projects", "open"] if *method == Method::POST => {
+            projects::handle_open(inner, headers, origin).await
+        }
+        ["projects"] if *method == Method::GET => {
+            projects::handle_list(inner, headers, origin).await
+        }
+        ["projects", id] if *method == Method::DELETE => {
+            projects::handle_forget(inner, headers, origin, id).await
+        }
+        ["projects", id, "tree"] if *method == Method::GET => {
+            projects::handle_tree(inner, headers, origin, id).await
+        }
+        ["projects", id, "files", name @ ..] if *method == Method::GET => {
+            let encoded_name = name.join("/");
+            let name = match percent_encoding::percent_decode_str(&encoded_name).decode_utf8() {
+                Ok(name) => name.into_owned(),
+                Err(_) => return plain(400, "invalid file name encoding"),
+            };
+            projects::handle_file(inner, headers, origin, id, &name).await
+        }
+        ["projects", id, "changes"] if *method == Method::GET => {
+            projects::handle_changes(inner, headers, origin, id, request).await
         }
         ["folder"] if *method == Method::PUT => {
             jobs::handle_folder_put(inner, headers, origin, request).await
@@ -986,6 +1013,7 @@ async fn read_multipart_upload(
     metadata_part_error: &str,
     metadata_size_error: &str,
     metadata_missing_error: &str,
+    max_files: usize,
 ) -> Result<MultipartUpload, Reply> {
     let content_type = header_str(request.headers(), "content-type").unwrap_or_default();
     if !content_type.contains("multipart/form-data") {
@@ -1039,7 +1067,7 @@ async fn read_multipart_upload(
                         &json!({"error": "that upload is too large"}),
                     ));
                 }
-                if files.len() >= MAX_FILES {
+                if files.len() >= max_files {
                     return Err(write_json(413, &json!({"error": "too many files"})));
                 }
                 files.push((name, bytes.to_vec()));
@@ -1247,6 +1275,7 @@ pub(super) mod test_support {
                 state_home.to_path_buf(),
             ),
             admission: Mutex::new(()),
+            projects: projects::Registry::new(projects::Timing::default()),
         })
     }
 
