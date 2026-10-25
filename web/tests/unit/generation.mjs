@@ -4,9 +4,9 @@
 // What is checked is the thing the hand-rolled copies could get wrong: that a
 // run overtaken by a newer one goes stale and stays stale, that the newest run
 // never calls itself stale, and that `mark()` follows the run in progress
-// rather than starting one -- the distinction local-preview depends on, where
-// `start()` must notice a `stop()` that happened while it was awaiting, but
-// must not invalidate the start it is itself performing.
+// rather than starting one -- the distinction work depends on when it must
+// notice an abandonment that happened while it was awaiting, but must not
+// invalidate the run it is itself performing.
 import assert from "node:assert/strict";
 import { createGeneration } from "../../src/lib/reader/generation.js";
 

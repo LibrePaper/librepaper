@@ -1,25 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { defaults, read, update, readDefaultPreview, writeDefaultPreview, readQuartoOptions, writeQuartoOptions } from "../../src/lib/build-preferences.js";
+import { defaults, read, update, readDefaultPreview, writeDefaultPreview } from "../../src/lib/build-preferences.js";
 
 function store() {
   const values = new Map();
   return { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
 }
 
-test("build preferences are scoped and automatic clears tool options", () => {
+const keyOf = (origin, user, format) => `librepaper-build-v3:${JSON.stringify([origin, user, format])}`;
+
+test("build preferences are scoped and automatic clears the engine", () => {
   const previous = globalThis.localStorage;
   globalThis.localStorage = store();
   try {
     const scope = { origin: "https://a.test", user: "alice", document: "paper" };
-    const selected = update(scope, "latex", { selection: "tool", backend: "browser", tool: "tex", engine: "xelatex" });
-    assert.equal(selected.tool, "tex");
+    const selected = update(scope, "latex", { selection: "tool", engine: "xelatex" });
+    assert.equal(selected.engine, "xelatex");
+    assert.equal(selected.tool, undefined);
     const automatic = update(scope, "latex", { selection: "automatic" });
-    assert.deepEqual(automatic, { selection: "automatic", backend: "auto", output: "html", format: "latex" });
+    assert.deepEqual(automatic, { selection: "automatic", backend: "browser", output: "html", format: "latex" });
     assert.equal(read({ ...scope, user: "bob" }, "latex").selection, "automatic");
-    // Every format starts on HTML, the paged ones included.
-    assert.deepEqual(defaults("typst"), { selection: "automatic", backend: "auto", output: "html", format: "typst" });
-    assert.deepEqual(defaults("markdown"), { selection: "automatic", backend: "auto", output: "html", format: "markdown" });
+    // Every format starts on HTML, the paged ones included, and in the browser.
+    assert.deepEqual(defaults("typst"), { selection: "automatic", backend: "browser", output: "html", format: "typst" });
+    assert.deepEqual(defaults("markdown"), { selection: "automatic", backend: "browser", output: "html", format: "markdown" });
   } finally { globalThis.localStorage = previous; }
 });
 
@@ -33,8 +36,8 @@ test("a paged output lasts the visit and is not read back", () => {
     // comes back.
     assert.equal(chosen.output, "pdf");
     // Entering the project again is entering it on HTML, whatever was chosen
-    // last time -- and the tool beside it is still remembered.
-    update(scope, "latex", { selection: "tool", backend: "browser", tool: "tex", engine: "xelatex", output: "pdf" });
+    // last time, and the engine beside it is still remembered.
+    update(scope, "latex", { selection: "tool", engine: "xelatex", output: "pdf" });
     const again = read(scope, "latex");
     assert.equal(again.output, "html");
     assert.equal(again.engine, "xelatex");
@@ -46,7 +49,7 @@ test("preferences shared across documents, isolated by origin and format", () =>
   globalThis.localStorage = store();
   try {
     const scope = { origin: "https://a.test", user: "github:alice", document: "paper" };
-    update(scope, "latex", { selection: "tool", backend: "browser", tool: "tex", engine: "xelatex", options: { draft: true } });
+    update(scope, "latex", { selection: "tool", engine: "xelatex", options: { draft: true } });
     const saved = read(scope, "latex");
     assert.equal(saved.options.draft, true);
     // Same origin and user with different document: preference is shared
@@ -65,74 +68,86 @@ test("provider handles keep same display names isolated", () => {
   try {
     const alice = { origin: "https://a.test", user: "github:alice", document: "paper" };
     const bob = { origin: "https://a.test", user: "github:bob", document: "paper" };
-    update(alice, "latex", { selection: "tool", backend: "browser", tool: "tex", engine: "xelatex" });
+    update(alice, "latex", { selection: "tool", engine: "xelatex" });
     assert.equal(read(bob, "latex").selection, "automatic");
   } finally { globalThis.localStorage = previous; }
 });
 
-test("quarto options are shared between markdown and quarto, not stored in per-format record", () => {
+test("each format renders in the browser or on this computer", () => {
   const previous = globalThis.localStorage;
   globalThis.localStorage = store();
   try {
     const scope = { origin: "https://a.test", user: "alice", document: "paper" };
-    // Write quarto options
-    const opts = writeQuartoOptions(scope, { profile: "test-profile", parameters: { key: "value" } });
-    assert.deepEqual(opts, { profile: "test-profile", parameters: { key: "value" } });
-    // Read markdown: quarto options are merged in
+    for (const format of ["latex", "typst", "markdown"]) {
+      assert.equal(read(scope, format).backend, "browser");
+      assert.equal(update(scope, format, { backend: "local" }).backend, "local");
+      assert.equal(read(scope, format).backend, "local");
+      assert.equal(update(scope, format, { backend: "browser" }).backend, "browser");
+    }
+    // The choice belongs to the format, the person and the origin.
+    update(scope, "typst", { backend: "local" });
+    assert.equal(read(scope, "latex").backend, "browser");
+    assert.equal(read({ ...scope, user: "bob" }, "typst").backend, "browser");
+    assert.equal(read({ ...scope, origin: "https://other.test" }, "typst").backend, "browser");
+    // A value that is neither choice reads back as the browser.
+    globalThis.localStorage.setItem(keyOf("https://a.test", "alice", "markdown"), JSON.stringify({ selection: "automatic", backend: "somewhere" }));
+    assert.equal(read(scope, "markdown").backend, "browser");
+    // Other formats have no computer to render on.
+    assert.equal(update(scope, "html", { backend: "local" }).backend, "browser");
+  } finally { globalThis.localStorage = previous; }
+});
+
+test("quarto has no browser engine so it is always local", () => {
+  const previous = globalThis.localStorage;
+  globalThis.localStorage = store();
+  try {
+    const scope = { origin: "https://a.test", user: "alice", document: "paper" };
+    assert.equal(defaults("quarto").backend, "local");
+    assert.equal(read(scope, "quarto").backend, "local");
+    assert.equal(update(scope, "quarto", { backend: "browser" }).backend, "local");
+  } finally { globalThis.localStorage = previous; }
+});
+
+test("choosing the engine or going automatic keeps where the format renders", () => {
+  const previous = globalThis.localStorage;
+  globalThis.localStorage = store();
+  try {
+    const scope = { origin: "https://a.test", user: "alice", document: "paper" };
+    update(scope, "latex", { backend: "local" });
+    assert.equal(update(scope, "latex", { selection: "tool", engine: "xelatex" }).backend, "local");
+    assert.equal(update(scope, "latex", { selection: "automatic" }).backend, "local");
+    assert.equal(read(scope, "latex").backend, "local");
+  } finally { globalThis.localStorage = previous; }
+});
+
+test("records from before the tool choice read back by where they render", () => {
+  const previous = globalThis.localStorage;
+  globalThis.localStorage = store();
+  try {
+    const scope = { origin: "https://a.test", user: "alice", document: "paper" };
+    // The old tool name is dropped, and the old "auto" is the browser.
+    globalThis.localStorage.setItem(keyOf("https://a.test", "alice", "markdown"), JSON.stringify({ selection: "tool", backend: "local", tool: "quarto" }));
     const markdown = read(scope, "markdown");
-    assert.equal(markdown.profile, "test-profile");
-    assert.deepEqual(markdown.parameters, { key: "value" });
-    // Read quarto: quarto options are merged in
-    const quarto = read(scope, "quarto");
-    assert.equal(quarto.profile, "test-profile");
-    assert.deepEqual(quarto.parameters, { key: "value" });
-    // Choosing a renderer keeps them in what comes back, and the per-format
-    // record does not hold its own copy.
-    const chosen = update(scope, "quarto", { selection: "tool", backend: "local", tool: "quarto" });
-    assert.equal(chosen.profile, "test-profile");
-    const raw = JSON.parse(globalThis.localStorage.getItem(`librepaper-build-v3:${JSON.stringify(["https://a.test", "alice", "quarto"])}`));
-    assert.equal(raw.tool, "quarto");
-    assert.equal(raw.profile, undefined);
-    assert.equal(raw.parameters, undefined);
+    assert.equal(markdown.backend, "local");
+    assert.equal(markdown.tool, undefined);
+    globalThis.localStorage.setItem(keyOf("https://a.test", "alice", "latex"), JSON.stringify({ selection: "automatic", backend: "auto", tool: "tex" }));
+    const latex = read(scope, "latex");
+    assert.equal(latex.backend, "browser");
+    assert.equal(latex.tool, undefined);
   } finally { globalThis.localStorage = previous; }
 });
 
-test("a stored local pandoc preference reads back as the default", () => {
+test("the profile and parameters are no longer kept", () => {
   const previous = globalThis.localStorage;
   globalThis.localStorage = store();
   try {
     const scope = { origin: "https://a.test", user: "alice", document: "paper" };
-    // Pandoc left the desktop app, so an old stored choice is no longer offered.
-    const key = `librepaper-build-v3:${JSON.stringify(["https://a.test", "alice", "markdown"])}`;
-    globalThis.localStorage.setItem(key, JSON.stringify({
-      selection: "tool",
-      backend: "local",
-      tool: "pandoc",
-    }));
-    const preference = read(scope, "markdown");
-    assert.equal(preference.selection, "automatic");
-    assert.equal(preference.backend, "auto");
-    assert.equal(preference.tool, undefined);
-  } finally { globalThis.localStorage = previous; }
-});
-
-test("local typst preference reads back as browser typst", () => {
-  const previous = globalThis.localStorage;
-  globalThis.localStorage = store();
-  try {
-    const scope = { origin: "https://a.test", user: "alice", document: "paper" };
-    // Simulate a stored old preference with backend "local" and tool "typst"
-    const key = `librepaper-build-v3:${JSON.stringify(["https://a.test", "alice", "typst"])}`;
-    globalThis.localStorage.setItem(key, JSON.stringify({
-      selection: "tool",
-      backend: "local",
-      tool: "typst",
-    }));
-    // Read it back
-    const preference = read(scope, "typst");
-    assert.equal(preference.backend, "browser");
-    assert.equal(preference.tool, "typst");
-    assert.equal(preference.selection, "tool");
+    const chosen = update(scope, "quarto", { output: "pdf" });
+    assert.equal(chosen.profile, undefined);
+    assert.equal(chosen.parameters, undefined);
+    const raw = JSON.parse(globalThis.localStorage.getItem(keyOf("https://a.test", "alice", "quarto")));
+    assert.equal("profile" in raw, false);
+    assert.equal("parameters" in raw, false);
   } finally { globalThis.localStorage = previous; }
 });
 
@@ -153,13 +168,13 @@ test("the default preview is stored per format and the View menu choice is not",
   } finally { globalThis.localStorage = previous; }
 });
 
-test("a stored default preview survives changing the tool and going automatic", () => {
+test("a stored default preview survives changing the engine and going automatic", () => {
   const previous = globalThis.localStorage;
   globalThis.localStorage = store();
   try {
     const scope = { origin: "https://a.test", user: "alice", document: "paper" };
     writeDefaultPreview(scope, "latex", "pdf");
-    const tool = update(scope, "latex", { selection: "tool", backend: "browser", tool: "tex", engine: "xelatex" });
+    const tool = update(scope, "latex", { selection: "tool", engine: "xelatex" });
     assert.equal(tool.output, "pdf");
     const automatic = update(scope, "latex", { selection: "automatic" });
     assert.equal(automatic.output, "pdf");

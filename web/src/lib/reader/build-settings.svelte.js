@@ -1,4 +1,4 @@
-// Which tool builds documents of each format, and with what.
+// Where documents of each format render, and with what.
 //
 // Build selection is deliberately browser-local: the collaborative session
 // supplies source files and never this preference, so two people reading the
@@ -16,34 +16,30 @@
 import { read as readPreferences } from "../build-preferences.js";
 import * as defaultLatex from "../latex.js";
 
-/** @typedef {{ selection: string, backend: string, tool?: string, output?: string, engine?: string, format: string, [key: string]: unknown }} BuildPreference */
+/** @typedef {{ selection: string, backend: string, output?: string, engine?: string, format: string, [key: string]: unknown }} BuildPreference */
 /** @typedef {ReturnType<typeof import("../collab.js").join>} BuildSession */
 
-/** @param {{ slug: string, origin: string, read?: typeof readPreferences, latex?: typeof defaultLatex, interrupt?: (next: BuildPreference | null) => void, paint?: () => void }} options */
+/** @param {{ slug: string, origin: string, read?: typeof readPreferences, latex?: typeof defaultLatex, interrupt?: () => void, paint?: () => void }} options */
 export function createBuildSettings({
   slug,
   origin,
   read = readPreferences,
   latex = defaultLatex,
   // Everything in flight stops when the preference or the reader changes.
-  // Takes the new preference, because which local preview may survive
-  // depends on which tool was chosen.
   interrupt = () => {},
   paint = () => {},
 }) {
   const state = $state({
-    preferences: { selection: "automatic", backend: "auto", format: "" },
+    preferences: { selection: "automatic", backend: "browser", format: "" },
     // What the project says about its LaTeX engine. Redrawn when a change
     // arrives from another collaborator, not only when this browser writes.
     latex: { engine: "auto" },
-    // What each format is currently producing, and which engine is drawing
-    // it. These follow from the preference and are kept beside it: they used
-    // to live in the page, which meant this module had to hand them back
-    // through a callback to set values it had just worked out.
+    // What each format is currently producing. These follow from the
+    // preference and are kept beside it: they used to live in the page, which
+    // meant this module had to hand them back through a callback to set
+    // values it had just worked out.
     latexOutput: "html",
     typstOutput: "html",
-    quartoPreviewMode: "markdown",
-    typstPreviewMode: "typst",
   });
 
   // HTML unless the reader's stored default for this format is PDF or they
@@ -52,22 +48,11 @@ export function createBuildSettings({
   /** @param {BuildPreference} preference */
   const outputOf = (preference) => (preference.output === "pdf" ? "pdf" : "html");
 
-  /// What a preference says about the outputs and preview modes.
-  ///
-  /// The two paths differ, and deliberately. The output format (HTML or PDF)
-  /// is read when a format is loaded for any document. The preview mode of an
-  /// executing tool follows the per-document permission, not a remembered
-  /// preference, and is set only when that permission is chosen by hand.
-  /** @param {BuildPreference} preference @param {string} format @param {"loaded" | "chosen"} how */
-  function apply(preference, format, how) {
+  /// What a preference says about the outputs.
+  /** @param {BuildPreference} preference @param {string} format */
+  function apply(preference, format) {
     if (format === "latex") state.latexOutput = outputOf(preference);
     if (format === "typst") state.typstOutput = outputOf(preference);
-    if (how === "loaded") {
-      return;
-    }
-    const local = preference.selection === "tool" && preference.backend === "local";
-    if (format === "quarto") state.quartoPreviewMode = local && preference.tool === "quarto" ? "quarto" : "markdown";
-    if (format === "typst") state.typstPreviewMode = local && preference.tool === "calepin" ? "calepin" : "typst";
   }
 
   // Which reader's preferences are loaded, and which session's LaTeX
@@ -80,8 +65,7 @@ export function createBuildSettings({
   const engineSettings = (preference) => ({
     ...preference,
     engine: preference.engine || "auto",
-    backend: preference.backend || "auto",
-    tool: preference.tool || "tex",
+    backend: preference.backend || "browser",
     output: preference.output || "html",
   });
 
@@ -93,19 +77,19 @@ export function createBuildSettings({
   /** @param {{ format: string, user: string }} identity */
   function follow({ format, user }) {
     if (!format) return;
-    if (previousUser && previousUser !== user) interrupt(null);
+    if (previousUser && previousUser !== user) interrupt();
     previousUser = user;
     state.preferences = read(scope(user), format);
     if (format === "latex") latex.configure({ project: slug, settings: state.preferences });
-    apply(state.preferences, format, "loaded");
+    apply(state.preferences, format);
   }
 
   /// A preference chosen by hand, from the settings dialog or a menu.
   /** @param {BuildPreference} next @param {string} format */
   function choose(next, format) {
     state.preferences = next;
-    interrupt(next);
-    apply(next, format, "chosen");
+    interrupt();
+    apply(next, format);
     if (format === "latex") {
       state.latex = engineSettings(next);
       latex.configure({ project: slug, settings: state.latex });

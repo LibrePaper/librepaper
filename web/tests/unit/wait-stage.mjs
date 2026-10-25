@@ -11,9 +11,6 @@ assert.equal(waitStageOf({ latexPhase: "compiling", latexScope: "resources" }), 
 assert.equal(waitStageOf({ latexPhase: "compiling" }), "Compiling");
 assert.equal(waitStageOf({ latexPhase: "browser-biber" }), "Updating the bibliography");
 assert.equal(waitStageOf({ latexPhase: "compiling", latexScope: "biber" }), "Updating the bibliography");
-assert.equal(waitStageOf({ liveStarting: "quarto", compiling: true }), "Starting Quarto");
-assert.equal(waitStageOf({ liveStarting: "calepin", compiling: true }), "Starting Calepin");
-assert.equal(waitStageOf({ liveStarting: "", compiling: true }), "Compiling");
 assert.equal(waitStageOf({ compiling: true }), "Compiling");
 assert.equal(waitStageOf({ pageDelivered: true, compiling: true, latexPhase: "compiling" }), "Drawing the pages");
 assert.equal(waitStageOf({ latexPhase: "idle" }), "Preparing the preview");

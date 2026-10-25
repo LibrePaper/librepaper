@@ -6,9 +6,10 @@
 // call directly (see tests/unit/latex-reader.mjs) -- the same reason
 // `latex/status.js` keeps the store apart from `latex.js`.
 //
-// LaTeX is built in the browser and nowhere else, so there is one backend to
-// name and no fallback to explain. Every wording below uses the controller
-// messages verbatim; this file never invents a `status.message`.
+// LaTeX is built in the browser, or on this computer by the command Settings
+// holds, so there are two backends to name and no fallback to explain. Every
+// wording below uses the controller messages verbatim; this file never
+// invents a `status.message`.
 
 const ENGINE_NAMES = { pdflatex: "pdfLaTeX", xelatex: "XeLaTeX", lualatex: "LuaLaTeX" };
 
@@ -30,6 +31,7 @@ function bibliographyName(kind) {
 /// pdfLaTeX (release r1); bibliography via browser Biber."
 export function provenanceSentence(provenance) {
   if (!provenance) return "";
+  if (provenance.backend === "local") return "Rendered on this computer.";
   const engine = engineName(provenance.engine);
   const detail = provenance.release ? ` (release ${provenance.release})` : "";
   const bibliography = provenance.bibliography
