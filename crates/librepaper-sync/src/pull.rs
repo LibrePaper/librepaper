@@ -276,7 +276,12 @@ async fn fetch(
     }
     // The chain goes on from what was fetched last; a repository that has
     // fetched nothing yet starts from the commit it was published at.
-    let before = git.rev(MAIN_REF).or_else(|| state.head.clone());
+    let before = git.rev(MAIN_REF).or_else(|| {
+        state
+            .head
+            .clone()
+            .filter(|head| git.has_commit(head.as_str()))
+    });
     let mut chain = Chain::new(git, &host, before.clone(), known)?;
 
     let mut commits = Vec::new();
