@@ -48,9 +48,12 @@ impl Scan {
 
 impl Scan {
     /// The paths among `paths` that sit in the directory although the scan
-    /// does not list them: ignored by git, hidden, not UTF-8, not readable.
-    /// The walk never yields what is ignored or hidden, so these are found by
-    /// asking for each path itself.
+    /// does not list them: ignored by git, hidden, not UTF-8, not readable,
+    /// or below a directory that cannot be read. The walk never yields what
+    /// is ignored or hidden, so these are found by asking for each path
+    /// itself. A path is absent only when the disk says it is not found; any
+    /// other answer leaves it counted, so a failure to look is never taken
+    /// for a deletion.
     pub(crate) fn left_out<'a>(
         &self,
         dir: &Path,
@@ -59,11 +62,24 @@ impl Scan {
         paths
             .into_iter()
             .filter(|path| !self.files.contains_key(path.as_str()))
-            .filter(|path| {
-                inside(dir, path).is_ok_and(|target| std::fs::symlink_metadata(target).is_ok())
-            })
+            .filter(|path| inside(dir, path).is_ok_and(|target| may_exist(&target)))
             .cloned()
             .collect()
+    }
+}
+
+/// Whether something may be at `path`: false only when the disk answers that
+/// nothing is found there. Any other error (permission denied, an I/O error)
+/// means the path could not be looked at, not that it is empty.
+///
+/// A path below a directory that cannot be searched answers permission denied
+/// on Linux, so a directory made unreadable lands here as present. That was
+/// checked on Linux only; a platform that answered not found through an
+/// unreadable parent would make those paths read as absent there.
+fn may_exist(path: &Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
     }
 }
 
@@ -191,8 +207,9 @@ fn slashed(relative: &Path) -> Option<String> {
 
 /// The paths that are new, different or gone against what was recorded. A
 /// recorded path the scan does not list but that is still in `dir` (ignored,
-/// marked `-librepaper`, not UTF-8, unreadable) has left the sync and is not
-/// gone: excluding a file is not deleting it.
+/// marked `-librepaper`, not UTF-8, unreadable, or in a directory that cannot
+/// be read) has left the sync and is not gone: excluding a file is not
+/// deleting it, and neither is failing to look at it.
 pub(crate) fn compare(
     dir: &Path,
     recorded: &BTreeMap<String, FileRecord>,
@@ -213,6 +230,33 @@ pub(crate) fn compare(
         }
     }
     changes
+}
+
+#[cfg(all(test, unix))]
+pub(crate) mod testing {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+
+    /// A directory with every permission taken away. Dropping it gives them
+    /// back, so the temporary directory can be removed even when a test fails.
+    pub(crate) struct Locked(PathBuf);
+
+    impl Drop for Locked {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    /// Makes `dir` unreadable, or returns `None` when it still reads, as it
+    /// does for root. The test that asked has nothing to prove then.
+    pub(crate) fn lock(dir: &Path) -> Option<Locked> {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let locked = Locked(dir.to_path_buf());
+        if std::fs::read_dir(dir).is_ok() {
+            return None;
+        }
+        Some(locked)
+    }
 }
 
 #[cfg(test)]
@@ -381,6 +425,62 @@ mod tests {
             .filter(|(path, _)| path != "gone.tex")
             .collect();
         assert!(compare(root, &without_gone, &scan).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_recorded_file_in_an_unreadable_directory_is_not_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "main.tex", b"main\n");
+        write(root, "locked/inner.tex", b"inner\n");
+        let record = |text: &str| FileRecord {
+            kind: Kind::Text,
+            sha: sha256_hex(text.as_bytes()),
+        };
+        let recorded = BTreeMap::from([
+            ("main.tex".to_string(), record("main\n")),
+            ("locked/inner.tex".to_string(), record("inner\n")),
+        ]);
+        let Some(_locked) = testing::lock(&root.join("locked")) else {
+            return;
+        };
+        let scan = scan(root, &Rules::default(), None).unwrap();
+        assert_eq!(names(&scan), ["main.tex"]);
+
+        let asked = ["locked/inner.tex".to_string(), "locked/new.tex".to_string()];
+        assert_eq!(
+            scan.left_out(root, &asked)
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["locked/inner.tex", "locked/new.tex"],
+            "a path that cannot be looked at is not an absent one"
+        );
+        let changes = compare(root, &recorded, &scan);
+        assert!(changes.is_empty(), "{changes:?}");
+    }
+
+    #[test]
+    fn a_recorded_file_that_is_not_found_is_deleted_whether_or_not_its_directory_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "main.tex", b"main\n");
+        std::fs::create_dir(root.join("kept")).unwrap();
+        let record = |text: &str| FileRecord {
+            kind: Kind::Text,
+            sha: sha256_hex(text.as_bytes()),
+        };
+        let recorded = BTreeMap::from([
+            ("main.tex".to_string(), record("main\n")),
+            ("kept/gone.tex".to_string(), record("gone\n")),
+            ("vanished/gone.tex".to_string(), record("gone\n")),
+        ]);
+        let scan = scan(root, &Rules::default(), None).unwrap();
+        assert!(scan.left_out(root, recorded.keys()).is_empty());
+        let changes = compare(root, &recorded, &scan);
+        assert_eq!(changes.deleted, ["kept/gone.tex", "vanished/gone.tex"]);
+        assert_eq!(changes.count(), 2);
     }
 
     #[test]
