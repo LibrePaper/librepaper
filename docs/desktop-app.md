@@ -8,7 +8,7 @@ Web browsers run every page in a sandbox, so a website cannot run code or use fi
 
 ## What works where
 
-Writing, previews, collaboration and review work in any web browser. The desktop app adds running code, [AI agents](agents.html), citations from [Zotero](https://www.zotero.org), [Git sync](git.html), [local backups](backups.html) and a project folder on your disk. The [feature table](index.html#features) lists each feature.
+Writing, previews, collaboration and review work in any web browser. The desktop app adds running code, [AI agents](agents.html), citations from [Zotero](https://www.zotero.org), [Git](git.html) with two CLI commands and a GitHub Action, [local backups](backups.html) and a project folder on your disk. The [feature table](index.html#features) lists each feature.
 
 - In a browser, the desktop-only features say they need the desktop app and offer to open it.
 - Nothing runs unasked. Folders are granted one at a time through your system's own chooser. Running a document's code is off whenever a document opens, and you turn it on with the Run code switch.
