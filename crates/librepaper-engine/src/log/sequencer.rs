@@ -2172,6 +2172,24 @@ impl Sequencer {
         .await
     }
 
+    /// The projection at a frontier with each text's pending suggestions
+    /// undone, read from the same fork. The tree keeps the digests of the
+    /// stored texts.
+    pub async fn projection_at_unsuggested(
+        &self,
+        frontier: &Frontiers,
+    ) -> Result<librepaper_document::document::projection::Projected> {
+        self.with_fork_at(frontier, |fork| {
+            let mut projected = librepaper_document::document::projection::project(
+                fork,
+                &librepaper_document::document::paths::rules(&self.config),
+            );
+            librepaper_document::document::track::unsuggest_texts(fork, &mut projected);
+            projected
+        })
+        .await
+    }
+
     /// A document as it stood at a cut, for as long as the closure runs.
     /// The fork reserves the parent's estimate and is discarded after use.
     pub async fn with_fork_at<T>(

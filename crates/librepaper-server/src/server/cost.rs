@@ -459,14 +459,28 @@ async fn middleware_inner(
         return super::graphs::routes::admin(&server, request).await;
     }
     // An owner-issued agent token is refused everywhere by default. The two
-    // document tool routes for the token's own document are the only
-    // exception, so a new route or the socket answers 401 without anyone
-    // having to remember to list it.
+    // document tool routes for the token's own document are open to every
+    // token and the routes a project sync uses to a token with the Edit
+    // role, so a new route or the socket answers 401 without anyone having
+    // to remember to list it.
     if let Some(token) = agent_token_bearer(request.headers()) {
-        if !agent_token_path_allowed(&token, &path, &method) {
+        let admitted = match agent_token_route(&token, &path, &method) {
+            Some(TokenRoute::Tools) => true,
+            Some(TokenRoute::Sync) => match server.agent_token_edits(&token).await {
+                Ok(edits) => edits,
+                Err(_) => {
+                    return write_json(
+                        503,
+                        &json!({"error": "authentication service temporarily unavailable"}),
+                    )
+                }
+            },
+            None => false,
+        };
+        if !admitted {
             return write_json(
                 401,
-                &json!({"error": "an agent token works only on its document's tools"}),
+                &json!({"error": "an agent token works only on its document's tools, and an Edit token also on its history, project, assets and source-change routes"}),
             );
         }
     }
@@ -557,27 +571,43 @@ fn default_cache_control(response: &mut Reply) {
     set(response, "cache-control", "private, no-store");
 }
 
-/// Whether an `lpt_` token may be presented on this request: `GET
-/// /api/documents/{slug}/tools` or `POST /api/documents/{slug}/tools/{name}`,
-/// with the slug the token names.
-fn agent_token_path_allowed(token: &str, path: &str, method: &Method) -> bool {
-    let Some((slug, _)) = parse_agent_token(token) else {
-        return false;
-    };
-    let Some(rest) = path
-        .strip_prefix("/api/documents/")
-        .and_then(|rest| rest.strip_prefix(slug))
-    else {
-        return false;
-    };
-    match rest {
-        "/tools" => method == Method::GET,
-        _ => {
-            method == Method::POST
-                && rest
-                    .strip_prefix("/tools/")
-                    .is_some_and(|name| !name.is_empty() && !name.contains('/'))
+/// Which of its document's routes an `lpt_` token may be presented on, by
+/// the role the route needs.
+#[derive(Debug, PartialEq, Eq)]
+enum TokenRoute {
+    /// `GET /tools` and `POST /tools/{name}`: any token. The tools hold a
+    /// token to its own role.
+    Tools,
+    /// What a project sync uses: the history list and versions, the project,
+    /// the assets and source changes. Only a token with the Edit role.
+    Sync,
+}
+
+/// The kind of route an `lpt_` token may be presented on for this request,
+/// with the slug the token names, or nothing for a route it may not use.
+fn agent_token_route(token: &str, path: &str, method: &Method) -> Option<TokenRoute> {
+    let (slug, _) = parse_agent_token(token)?;
+    let rest = path
+        .strip_prefix("/api/documents/")?
+        .strip_prefix(slug)?;
+    let one_segment = |name: &str| !name.is_empty() && !name.contains('/');
+    match (method, rest) {
+        (&Method::GET, "/tools") => Some(TokenRoute::Tools),
+        (&Method::POST, rest) if rest.strip_prefix("/tools/").is_some_and(one_segment) => {
+            Some(TokenRoute::Tools)
         }
+        (&Method::GET, "/history" | "/project")
+        | (&Method::PUT | &Method::POST, "/assets")
+        | (&Method::POST, "/source-change") => Some(TokenRoute::Sync),
+        (&Method::GET, rest) if rest.strip_prefix("/history/").is_some_and(one_segment) => {
+            Some(TokenRoute::Sync)
+        }
+        (&Method::GET | &Method::HEAD, rest)
+            if rest.strip_prefix("/assets/").is_some_and(one_segment) =>
+        {
+            Some(TokenRoute::Sync)
+        }
+        _ => None,
     }
 }
 
@@ -755,7 +785,9 @@ mod blob_response_tests {
 
 #[cfg(test)]
 mod agent_scope_tests {
-    use super::agent_document_slug;
+    use super::{agent_document_slug, agent_token_route, TokenRoute};
+    use crate::server::agent_token_string;
+    use axum::http::Method;
 
     #[test]
     fn delegated_credentials_are_confined_to_document_and_socket_routes() {
@@ -768,6 +800,86 @@ mod agent_scope_tests {
         assert_eq!(agent_document_slug("/api/account/erase"), None);
         assert_eq!(agent_document_slug("/api/documents"), None);
         assert_eq!(agent_document_slug("/api/documents/"), None);
+    }
+
+    const SHA: &str = "0190b1c2-0000-7000-8000-000000000001";
+
+    #[test]
+    fn a_token_reaches_its_tools_and_the_sync_routes_by_role() {
+        let token = agent_token_string("https://paper.example", "paper", "key");
+        let route = |method: Method, path: &str| agent_token_route(&token, path, &method);
+        let tools = Some(TokenRoute::Tools);
+        let sync = Some(TokenRoute::Sync);
+        assert_eq!(route(Method::GET, "/api/documents/paper/tools"), tools);
+        assert_eq!(
+            route(Method::POST, "/api/documents/paper/tools/document_read"),
+            tools
+        );
+        assert_eq!(route(Method::GET, "/api/documents/paper/history"), sync);
+        assert_eq!(
+            route(Method::GET, &format!("/api/documents/paper/history/{SHA}")),
+            sync
+        );
+        assert_eq!(route(Method::GET, "/api/documents/paper/project"), sync);
+        assert_eq!(
+            route(Method::GET, &format!("/api/documents/paper/assets/{SHA}")),
+            sync
+        );
+        assert_eq!(
+            route(Method::HEAD, &format!("/api/documents/paper/assets/{SHA}")),
+            sync
+        );
+        assert_eq!(route(Method::PUT, "/api/documents/paper/assets"), sync);
+        assert_eq!(route(Method::POST, "/api/documents/paper/assets"), sync);
+        assert_eq!(
+            route(Method::POST, "/api/documents/paper/source-change"),
+            sync
+        );
+    }
+
+    #[test]
+    fn a_token_reaches_nothing_else_and_nothing_of_another_document() {
+        let token = agent_token_string("https://paper.example", "paper", "key");
+        let route = |method: Method, path: &str| agent_token_route(&token, path, &method);
+        for (method, path) in [
+            (Method::GET, "/api/documents/other/history"),
+            (Method::GET, "/api/documents/paper-two/history"),
+            (Method::POST, "/api/documents/paper/tools"),
+            (Method::GET, "/api/documents/paper/tools/document_read"),
+            (Method::POST, "/api/documents/paper/history"),
+            (Method::GET, "/api/documents/paper/history/"),
+            (Method::POST, "/api/documents/paper/history/trim"),
+            (Method::PATCH, &format!("/api/documents/paper/history/{SHA}")),
+            (
+                Method::GET,
+                &format!("/api/documents/paper/history/{SHA}/archive"),
+            ),
+            (Method::POST, "/api/documents/paper/restore"),
+            (Method::PUT, "/api/documents/paper/project"),
+            (Method::GET, "/api/documents/paper/assets"),
+            (
+                Method::DELETE,
+                &format!("/api/documents/paper/assets/{SHA}"),
+            ),
+            (Method::GET, "/api/documents/paper/assets/a/b"),
+            (Method::GET, "/api/documents/paper/source-change"),
+            (Method::GET, "/api/documents/paper/sync"),
+            (Method::GET, "/api/documents/paper/source"),
+            (Method::GET, "/api/documents/paper/share"),
+            (Method::GET, "/api/documents/paper"),
+            (Method::GET, "/api/list"),
+            (Method::GET, "/ws/paper"),
+        ] {
+            assert_eq!(route(method.clone(), path), None, "{method} {path}");
+        }
+        assert_eq!(
+            agent_token_route(
+                "lpt_not-a-token",
+                "/api/documents/paper/history",
+                &Method::GET
+            ),
+            None
+        );
     }
 }
 

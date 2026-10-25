@@ -88,6 +88,23 @@ fn projection_wire(
     })
 }
 
+/// The projection at a frontier, with each text's pending suggestions undone
+/// when `unsuggested` is set.
+async fn projection_for(
+    room: &Room,
+    frontier: &loro::Frontiers,
+    unsuggested: bool,
+) -> Result<
+    librepaper_document::document::projection::Projected,
+    librepaper_engine::log::SequencerError,
+> {
+    if unsuggested {
+        room.log().projection_at_unsuggested(frontier).await
+    } else {
+        room.log().projection_at(frontier).await
+    }
+}
+
 /// A command's request id, cast to the number a batch's `client_seq` column
 /// holds (§7.3). Nothing compares this to another peer's own sequence, so
 /// the exact mapping does not matter -- only that it is stable across a
@@ -525,6 +542,9 @@ impl Server {
     /// for the ordinary read. The archive is the one part that is produced
     /// on request rather than always available, because it is bytes written
     /// to the object store rather than a read of the log.
+    ///
+    /// `?unsuggested=1` answers each text with the pending suggestions of
+    /// that moment undone, which is the text a sync push is checked against.
     pub(super) async fn handle_label_read(
         &self,
         headers: &HeaderMap,
@@ -555,6 +575,11 @@ impl Server {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
         };
+        // `unsuggested=1` answers each text with its pending suggestions
+        // undone, the text a sync change is checked against.
+        let unsuggested = query.is_some_and(|raw| {
+            url::form_urlencoded::parse(raw.as_bytes()).any(|(k, v)| k == "unsuggested" && v == "1")
+        });
         if let Some(encoded) = moment {
             // A comment's own frontier, not a named label: there is no
             // archive to poll or request for it (§8.5 is label-keyed), and
@@ -576,7 +601,7 @@ impl Server {
             let Ok(frontier) = loro::Frontiers::decode(&frontier_bytes) else {
                 return write_json(400, &json!({"error": "the frontier is unreadable"}));
             };
-            let projected = match room.log().projection_at(&frontier).await {
+            let projected = match projection_for(&room, &frontier, unsuggested).await {
                 Ok(projected) => projected,
                 // Before the trim point: the trim dropped the history this
                 // moment is rebuilt from, so it cannot come back.
@@ -663,7 +688,7 @@ impl Server {
                 &json!({"error": "that label's frontier is unreadable"}),
             );
         };
-        let projected = match room.log().projection_at(&frontier).await {
+        let projected = match projection_for(&room, &frontier, unsuggested).await {
             Ok(projected) => projected,
             Err(error) => return sequencer_reply(&error),
         };

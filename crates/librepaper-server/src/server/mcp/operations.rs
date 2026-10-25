@@ -67,8 +67,7 @@ pub(super) fn failure(error: source_change::AgentError) -> Failure {
         source_change::AgentError::Invalid(_) => "invalid_params",
         source_change::AgentError::Conflict(_)
         | source_change::AgentError::Changed(_)
-        | source_change::AgentError::Suggestion { .. }
-        | source_change::AgentError::Hook(_) => "conflict",
+        | source_change::AgentError::Suggestion { .. } => "conflict",
         source_change::AgentError::Storage(_) => "outcome_unknown",
     };
     let message = match &error {
@@ -750,7 +749,6 @@ impl Server {
                         .map(|_| ())
                         .map_err(|error| source_change::AgentError::Conflict(error.message))
                 },
-                None,
             )
             .await
             .map_err(failure)?;

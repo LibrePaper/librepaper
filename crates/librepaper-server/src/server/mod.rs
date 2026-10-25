@@ -95,7 +95,7 @@ mod signin;
 #[cfg(test)]
 mod signin_http_tests;
 mod socket;
-mod sync_link;
+mod source_change;
 pub use librepaper_base::config::socket_budget;
 #[cfg(test)]
 mod trim_http_tests;
@@ -1287,6 +1287,27 @@ impl Server {
             picture: String::new(),
             session_generation: account.session_generation.to_string(),
         })
+    }
+
+    /// Whether an `lpt_` token names a live row with the Edit role. Only the
+    /// row is read: the routes still hold the token to the deployment's
+    /// switches, and an expired or revoked token has no row.
+    async fn agent_token_edits(&self, token: &str) -> Result<bool, AuthenticationFailure> {
+        let Some((slug, key)) = parse_agent_token(token) else {
+            return Ok(false);
+        };
+        let Some(entry) = self
+            .store
+            .get_result(slug)
+            .await
+            .map_err(|_| AuthenticationFailure::Unavailable)?
+        else {
+            return Ok(false);
+        };
+        let now = librepaper_base::util::now_unix();
+        Ok(entry
+            .live_agent(&hash_link_key(key), now)
+            .is_some_and(|row| row.granted().at_least(Role::Editor)))
     }
 
     /// The key a caller's uploads belong to. A signed-in caller is their

@@ -146,6 +146,24 @@ impl Served {
             .as_u16()
     }
 
+    /// One request under a token, with a JSON body or raw bytes when given.
+    async fn send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        token: &str,
+        body: Option<Vec<u8>>,
+    ) -> reqwest::Response {
+        let mut request = reqwest::Client::new()
+            .request(method, format!("{}{path}", self.base))
+            .header("host", "paper.example")
+            .header("authorization", format!("Bearer {token}"));
+        if let Some(body) = body {
+            request = request.body(body);
+        }
+        request.send().await.unwrap()
+    }
+
     async fn tools(&self, token: &str) -> (u16, Vec<String>) {
         let response = reqwest::Client::new()
             .get(format!("{}/api/documents/{}/tools", self.base, self.slug))
@@ -788,4 +806,169 @@ async fn a_comment_refused_for_its_budget_is_reported_as_refused_by_document_res
         looked_up["result"]["error"]["code"], "budget_exceeded",
         "{looked_up}"
     );
+}
+
+/// A valid PNG, small enough to upload.
+fn figure() -> Vec<u8> {
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    out.extend_from_slice(&[0, 0, 0, 13]);
+    out.extend_from_slice(b"IHDR");
+    out.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]);
+    out.extend_from_slice(&[0; 4]);
+    out.extend_from_slice(&[0; 4]);
+    out.extend_from_slice(b"IEND");
+    out.extend_from_slice(&[0; 4]);
+    out
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn only_an_edit_token_reaches_the_routes_a_sync_uses() {
+    use reqwest::Method;
+
+    let Some(served) = serve("token-sync-routes").await else {
+        return;
+    };
+    let slug = served.slug.clone();
+    let history = format!("/api/documents/{slug}/history");
+    let project = format!("/api/documents/{slug}/project");
+    let push = format!("/api/documents/{slug}/source-change");
+    let assets = format!("/api/documents/{slug}/assets");
+    let digest = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(PAPER.as_bytes()));
+    let start = PAPER.find("covers").unwrap();
+    let body = json!({
+        "operation": format!(
+            "v2.{}.{}",
+            librepaper_base::util::now_unix() * 1000,
+            uuid::Uuid::new_v4().simple()
+        ),
+        "change": {
+            "dependencies": [
+                {"path": "paper.md", "file_hash": digest, "start": 0, "end": 0, "exact": ""}
+            ],
+            "patches": [
+                {"path": "paper.md", "start": start, "end": start + 6, "exact": "covers", "replacement": "spans"}
+            ],
+        },
+        "sync": {"provider": "cli", "message": "Tighten the claim"},
+    });
+    let body = serde_json::to_vec(&body).unwrap();
+
+    for role in ["read", "comment"] {
+        let (token, _) = served.mint_token(role, role).await;
+        for (method, path) in [
+            (Method::GET, history.clone()),
+            (Method::GET, project.clone()),
+            (Method::POST, push.clone()),
+            (Method::PUT, assets.clone()),
+            (Method::GET, format!("{history}/{}", uuid::Uuid::new_v4())),
+            (Method::GET, format!("{assets}/{}", "0".repeat(64))),
+        ] {
+            let sent = (method == Method::POST).then(|| body.clone());
+            let response = served.send(method.clone(), &path, &token, sent).await;
+            assert_eq!(response.status().as_u16(), 401, "{role} {method} {path}");
+        }
+    }
+
+    let (edit, _) = served.mint_token("edit", "CI").await;
+    let listed: Value = served
+        .send(Method::GET, &format!("{history}?named=1"), &edit, None)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert!(listed["labels"].is_array(), "{listed}");
+    let read: Value = served
+        .send(Method::GET, &format!("{project}?unsuggested=1"), &edit, None)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(read["texts"]["paper.md"], PAPER, "{read}");
+
+    let response = served
+        .send(Method::POST, &push, &edit, Some(body.clone()))
+        .await;
+    assert_eq!(response.status().as_u16(), 200);
+    let pushed: Value = response.json().await.unwrap();
+    assert_eq!(pushed["receipt"]["replay"], false, "{pushed}");
+    let label = pushed["label"]["sha"]
+        .as_str()
+        .expect("the push names its label")
+        .to_string();
+    let version: Value = served
+        .send(
+            Method::GET,
+            &format!("{history}/{label}?unsuggested=1"),
+            &edit,
+            None,
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        version["texts"]["paper.md"]
+            .as_str()
+            .unwrap()
+            .contains("interval spans the mean"),
+        "{version}"
+    );
+    assert_eq!(version["reason"], "push");
+    assert_eq!(version["label"], "Tighten the claim");
+    assert_eq!(version["by"], "owner", "a push with no author is the account's");
+
+    let response = served
+        .send(Method::PUT, &assets, &edit, Some(figure()))
+        .await;
+    assert_eq!(response.status().as_u16(), 200);
+    let stored: Value = response.json().await.unwrap();
+    let sha = stored["sha"].as_str().expect("the upload names its digest");
+    for method in [Method::GET, Method::HEAD] {
+        let response = served
+            .send(method.clone(), &format!("{assets}/{sha}"), &edit, None)
+            .await;
+        assert_eq!(response.status().as_u16(), 200, "{method}");
+    }
+
+    // Nothing else opens to it.
+    for (method, path) in [
+        (Method::GET, format!("/api/documents/{slug}/share")),
+        (Method::GET, format!("/api/documents/{slug}/source")),
+        (Method::POST, format!("/api/documents/{slug}/restore")),
+        (Method::POST, format!("{history}/trim")),
+        (Method::GET, format!("/api/documents/{slug}/sync")),
+    ] {
+        let response = served.send(method.clone(), &path, &edit, None).await;
+        assert_eq!(response.status().as_u16(), 401, "{method} {path}");
+    }
+
+    // A revoked token reaches nothing.
+    let (revoked, id) = served.mint_token("edit", "revoked").await;
+    let status = served
+        .send(Method::GET, &history, &revoked, None)
+        .await
+        .status()
+        .as_u16();
+    assert_eq!(status, 200);
+    let (status, _) = served.share(json!({"revoke": {"id": id}})).await;
+    assert_eq!(status, 200);
+    let status = served
+        .send(Method::GET, &history, &revoked, None)
+        .await
+        .status()
+        .as_u16();
+    assert_eq!(status, 401);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_token_may_last_a_year() {
+    let Some(served) = serve("token-a-year").await else {
+        return;
+    };
+    let (status, created) = served
+        .share(json!({"create": {"kind": "token", "role": "edit", "name": "CI", "until": "365d"}}))
+        .await;
+    assert_eq!(status, 200, "{created}");
 }

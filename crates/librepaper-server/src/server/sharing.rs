@@ -153,7 +153,7 @@ pub(super) fn parse_token_role(value: &str) -> Option<&'static str> {
 pub(super) fn token_expiry(asked: &str) -> Result<String, String> {
     let asked = asked.trim();
     if asked.is_empty() || asked.eq_ignore_ascii_case("never") {
-        return Err("a token needs an expiry such as 1d, 7d, 30d or 180d".to_string());
+        return Err("a token needs an expiry such as 1d, 7d, 30d, 180d or 365d".to_string());
     }
     link_expiry(asked)
 }
@@ -737,6 +737,19 @@ mod link_expiry_tests {
         assert!(link_expiry("1000000000d").is_err());
         assert!(token_expiry("1000000000d").is_err());
         assert!(token_expiry("180d").is_ok_and(|until| !until.is_empty()));
+    }
+
+    /// A token for a CI job lasts a year.
+    #[test]
+    fn a_token_may_last_a_year() {
+        let before = librepaper_base::util::now_unix();
+        let until = token_expiry("365d").expect("a year is a valid token expiry");
+        let after = librepaper_base::util::now_unix();
+        let until = librepaper_base::util::parse_timestamp(&until).expect("expiry is a timestamp");
+
+        assert!((before + 365 * 24 * 3600..=after + 365 * 24 * 3600).contains(&until));
+        assert!(token_expiry("").is_err());
+        assert!(token_expiry("never").is_err());
     }
 }
 
