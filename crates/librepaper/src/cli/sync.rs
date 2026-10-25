@@ -254,7 +254,7 @@ fn show_pull(outcome: &PullOutcome) -> bool {
             if conflicts.is_empty() {
                 return true;
             }
-            eprintln!("Changed on both sides, so not written:");
+            eprintln!("Conflicts, changed here and on the web, so not written:");
             for path in conflicts {
                 eprintln!("  {path}");
             }
