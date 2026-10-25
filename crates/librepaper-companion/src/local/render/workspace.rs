@@ -801,7 +801,11 @@ pub(crate) fn record_listed_digests(
     let before = read_written_record(record)?;
     let mut merged = before.clone();
     merged.retain(|path, _| exists_on_disk(&root.join(path)));
-    merged.extend(listed.iter().map(|(path, digest)| (path.clone(), digest.clone())));
+    merged.extend(
+        listed
+            .iter()
+            .map(|(path, digest)| (path.clone(), digest.clone())),
+    );
     if merged != before {
         write_written_record(record, &merged)?;
     }
@@ -812,7 +816,11 @@ fn sha256(bytes: &[u8]) -> String {
     librepaper_document::results::sha256(bytes)
 }
 
-pub(crate) fn read_file_bounded_to(path: &Path, description: &str, limit: usize) -> Result<Vec<u8>, String> {
+pub(crate) fn read_file_bounded_to(
+    path: &Path,
+    description: &str,
+    limit: usize,
+) -> Result<Vec<u8>, String> {
     let metadata =
         std::fs::symlink_metadata(path).map_err(|error| format!("{description}: {error}"))?;
     if !metadata.file_type().is_file() {

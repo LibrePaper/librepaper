@@ -313,7 +313,7 @@ impl BindingStore {
             .into_iter()
             .filter(|binding| binding.is_project() && binding.origin == origin)
             .collect();
-        projects.sort_by(|left, right| right.opened_at.cmp(&left.opened_at));
+        projects.sort_by_key(|binding| std::cmp::Reverse(binding.opened_at));
         projects
     }
 
@@ -530,7 +530,9 @@ mod validation_tests {
         std::fs::write(root.path().join("chapters/one.tex"), "x").unwrap();
         std::fs::write(root.path().join("notes.txt"), "x").unwrap();
         let store = BindingStore::new(state.path());
-        let project = store.open_project("https://example.test", root.path()).unwrap();
+        let project = store
+            .open_project("https://example.test", root.path())
+            .unwrap();
         assert_eq!(project.kind, KIND_PROJECT);
         assert!(project.entrypoint.is_empty());
         let validate = |entry: &str| {
@@ -576,16 +578,24 @@ mod validation_tests {
         let root = tempfile::tempdir().unwrap();
         let other = tempfile::tempdir().unwrap();
         let store = BindingStore::new(state.path());
-        let first = store.open_project("https://example.test/", root.path()).unwrap();
+        let first = store
+            .open_project("https://example.test/", root.path())
+            .unwrap();
         assert!(first.project.starts_with("local-"));
         assert!(!first.project.contains("q-"));
-        let again = store.open_project("https://example.test", root.path()).unwrap();
+        let again = store
+            .open_project("https://example.test", root.path())
+            .unwrap();
         assert_eq!(again.id, first.id);
         assert_eq!(store.list_projects("https://example.test").len(), 1);
         // Another origin and another root each get their own project.
-        let foreign = store.open_project("https://other.test", root.path()).unwrap();
+        let foreign = store
+            .open_project("https://other.test", root.path())
+            .unwrap();
         assert_ne!(foreign.id, first.id);
-        let second = store.open_project("https://example.test", other.path()).unwrap();
+        let second = store
+            .open_project("https://example.test", other.path())
+            .unwrap();
         assert_ne!(second.id, first.id);
         assert_eq!(store.list_projects("https://example.test").len(), 2);
         assert!(store.get_project(&first.id, "https://other.test").is_none());

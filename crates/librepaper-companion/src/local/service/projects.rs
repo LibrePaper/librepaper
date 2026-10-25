@@ -14,6 +14,7 @@
 
 use super::*;
 
+use std::collections::BTreeSet;
 use std::time::UNIX_EPOCH;
 
 use crate::local::bindings::ProjectBinding;
@@ -181,8 +182,7 @@ fn read_tree(root: &Path) -> Result<Tree, WalkError> {
         digests: BTreeMap::new(),
     };
     for (path, stat) in walked.files {
-        match workspace::read_file_bounded_to(&root.join(&path), "project file", MAX_UPLOAD_BYTES)
-        {
+        match workspace::read_file_bounded_to(&root.join(&path), "project file", MAX_UPLOAD_BYTES) {
             Ok(bytes) => {
                 let digest = librepaper_document::results::sha256(&bytes);
                 tree.files.push(json!({
@@ -195,7 +195,9 @@ fn read_tree(root: &Path) -> Result<Tree, WalkError> {
             }
             // A file that vanished or grew past the bound since the walk is
             // left out, as if the walk had never seen it.
-            Err(_) => tree.skipped.push(json!({"path": path, "reason": "unreadable"})),
+            Err(_) => tree
+                .skipped
+                .push(json!({"path": path, "reason": "unreadable"})),
         }
     }
     Ok(tree)
@@ -214,9 +216,7 @@ fn project_file(root: &Path, relative: &str) -> Result<PathBuf, (u16, &'static s
     for part in relative.split('/') {
         current.push(part);
         match std::fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err((404, "no such file"))
-            }
+            Ok(metadata) if metadata.file_type().is_symlink() => return Err((404, "no such file")),
             Ok(_) => {}
             Err(_) => return Err((404, "no such file")),
         }
@@ -250,16 +250,50 @@ struct Scan {
     settled: BTreeMap<String, FileStat>,
     /// The stat of every file at the previous look.
     seen: BTreeMap<String, FileStat>,
+    /// The paths the page is believed to hold, so a differing one is
+    /// `changed` rather than `added` and a vanished one is `removed`.
+    known: BTreeSet<String>,
 }
 
 impl Scan {
-    /// Take the tree as it is now as the starting point, reporting nothing.
-    fn baseline(root: &Path) -> Option<Scan> {
+    /// Start from the written record, which holds what the page last read or
+    /// had written. A file whose digest matches the record is settled. A file
+    /// that differs, or that the record lacks, is left unsettled and is
+    /// reported on the next look, once its stat held still. A record entry
+    /// whose file is gone is reported removed on the next look. This catches
+    /// what changed between the page's tree read and this first scan.
+    fn baseline(root: &Path, record: &Path) -> Option<Scan> {
         let walked = walk(root).ok()?;
-        Some(Scan {
-            settled: walked.files.clone(),
-            seen: walked.files,
-        })
+        let recorded = workspace::recorded_digests(record).unwrap_or_default();
+        let mut scan = Scan {
+            settled: BTreeMap::new(),
+            seen: walked.files.clone(),
+            known: BTreeSet::new(),
+        };
+        for (path, stat) in &walked.files {
+            let Some(expected) = recorded.get(path) else {
+                continue;
+            };
+            scan.known.insert(path.clone());
+            let matches = workspace::read_file_bounded_to(
+                &root.join(path),
+                "project file",
+                MAX_UPLOAD_BYTES,
+            )
+            .is_ok_and(|bytes| &librepaper_document::results::sha256(&bytes) == expected);
+            if matches {
+                scan.settled.insert(path.clone(), *stat);
+            }
+        }
+        for path in recorded.keys() {
+            // Entries for files the walk skips on purpose are not the page's.
+            let listable = path.split('/').all(|part| skip_reason(part).is_none());
+            let absent = std::fs::symlink_metadata(root.join(path)).is_err();
+            if listable && absent {
+                scan.known.insert(path.clone());
+            }
+        }
+        Some(scan)
     }
 
     /// Look at the tree once. A file is reported when it held still across
@@ -289,7 +323,7 @@ impl Scan {
             if !own_write {
                 changes.push(Change {
                     path: path.clone(),
-                    kind: if self.settled.contains_key(path) {
+                    kind: if self.known.contains(path) {
                         "changed"
                     } else {
                         "added"
@@ -299,15 +333,17 @@ impl Scan {
                 });
             }
             self.settled.insert(path.clone(), *stat);
+            self.known.insert(path.clone());
         }
         let gone: Vec<String> = self
-            .settled
-            .keys()
+            .known
+            .iter()
             .filter(|path| !now.contains_key(*path))
             .cloned()
             .collect();
         for path in gone {
             self.settled.remove(&path);
+            self.known.remove(&path);
             changes.push(Change {
                 path,
                 kind: "removed",
@@ -536,7 +572,7 @@ async fn run_poller(
             let changes = match scan.as_mut() {
                 Some(scan) => scan.look(&root, &record),
                 None => {
-                    scan = Scan::baseline(&root);
+                    scan = Scan::baseline(&root, &record);
                     Vec::new()
                 }
             };
@@ -562,10 +598,7 @@ fn folder_name(root: &Path) -> String {
 /// The project binding `id` of `origin`, with its folder present.
 #[allow(clippy::result_large_err)]
 fn open_binding(inner: &Inner, origin: Option<&str>, id: &str) -> Result<ProjectBinding, Reply> {
-    let Some(binding) = inner
-        .bindings
-        .get_project(id, origin.unwrap_or_default())
-    else {
+    let Some(binding) = inner.bindings.get_project(id, origin.unwrap_or_default()) else {
         return Err(write_json(404, &json!({"error": "no such folder project"})));
     };
     if !binding.root.is_dir() {
@@ -687,9 +720,7 @@ pub(super) async fn handle_tree(
         Ok(binding) => binding,
         Err(response) => return response,
     };
-    let _ = inner
-        .bindings
-        .touch_project(id, origin.unwrap_or_default());
+    let _ = inner.bindings.touch_project(id, origin.unwrap_or_default());
     let record = inner.bindings.written_record(&binding.id);
     let root = binding.root.clone();
     let read = tokio::task::spawn_blocking(move || {
@@ -742,9 +773,7 @@ pub(super) async fn handle_file(
             set(&mut response, "content-type", "application/octet-stream");
             response
         }
-        Ok(Err(error)) if error.contains("size limit") => {
-            write_json(413, &json!({"error": error}))
-        }
+        Ok(Err(error)) if error.contains("size limit") => write_json(413, &json!({"error": error})),
         Ok(Err(_)) => write_json(404, &json!({"error": "no such file"})),
         Err(_) => write_json(500, &json!({"error": "the file read stopped"})),
     }
@@ -774,7 +803,10 @@ pub(super) async fn handle_changes(
     let shared = inner
         .projects
         .shared_for(&binding, inner.bindings.written_record(&binding.id));
-    write_json(200, &shared.wait(since, inner.projects.timing().long_poll).await)
+    write_json(
+        200,
+        &shared.wait(since, inner.projects.timing().long_poll).await,
+    )
 }
 
 #[cfg(test)]
@@ -904,11 +936,48 @@ mod tests {
         (root, state, record)
     }
 
+    /// Read the tree, which seeds the record as the page's read does, then
+    /// start a scan from that record.
+    fn seeded_scan(root: &Path, record: &Path) -> Scan {
+        let tree = read_tree(root).unwrap();
+        workspace::record_listed_digests(record, root, &tree.digests).unwrap();
+        Scan::baseline(root, record).unwrap()
+    }
+
+    #[test]
+    fn a_change_made_before_the_poller_starts_is_reported_once() {
+        let (root, _state, record) = setup();
+        write(root.path(), "main.tex", "one");
+        write(root.path(), "gone.tex", "two");
+        let tree = read_tree(root.path()).unwrap();
+        workspace::record_listed_digests(&record, root.path(), &tree.digests).unwrap();
+        // The poller starts later than the page's tree read.
+        write(root.path(), "main.tex", "edited in between");
+        write(root.path(), "late.tex", "new");
+        std::fs::remove_file(root.path().join("gone.tex")).unwrap();
+        let mut scan = Scan::baseline(root.path(), &record).unwrap();
+        let mut first = scan.look(root.path(), &record);
+        first.sort_by(|left, right| left.path.cmp(&right.path));
+        let kinds: Vec<(&str, &str)> = first
+            .iter()
+            .map(|change| (change.path.as_str(), change.kind))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("gone.tex", "removed"),
+                ("late.tex", "added"),
+                ("main.tex", "changed")
+            ]
+        );
+        assert!(scan.look(root.path(), &record).is_empty());
+    }
+
     #[test]
     fn an_outside_write_is_reported_once_after_it_holds_still() {
         let (root, _state, record) = setup();
         write(root.path(), "main.tex", "one");
-        let mut scan = Scan::baseline(root.path()).unwrap();
+        let mut scan = seeded_scan(root.path(), &record);
         assert!(scan.look(root.path(), &record).is_empty());
 
         write(root.path(), "main.tex", "changed text");
@@ -936,7 +1005,7 @@ mod tests {
     fn librepapers_own_write_is_not_reported() {
         let (root, _state, record) = setup();
         write(root.path(), "main.tex", "one");
-        let mut scan = Scan::baseline(root.path()).unwrap();
+        let mut scan = seeded_scan(root.path(), &record);
 
         write(root.path(), "main.tex", "written by the editor");
         let mut digests = BTreeMap::new();
@@ -959,7 +1028,7 @@ mod tests {
         let (root, _state, record) = setup();
         write(root.path(), "main.tex", "one");
         write(root.path(), "gone.tex", "two");
-        let mut scan = Scan::baseline(root.path()).unwrap();
+        let mut scan = seeded_scan(root.path(), &record);
         std::fs::remove_file(root.path().join("gone.tex")).unwrap();
         let changes = scan.look(root.path(), &record);
         assert_eq!(changes.len(), 1);
@@ -1052,6 +1121,8 @@ mod tests {
             .unwrap();
         let registry = Registry::new(timing);
         let record = inner.bindings.written_record(&binding.id);
+        let tree = read_tree(&root_path).unwrap();
+        workspace::record_listed_digests(&record, &root_path, &tree.digests).unwrap();
         let shared = registry.shared_for(&binding, record);
         let cursor = shared.wait(None, Duration::ZERO).await["cursor"]
             .as_u64()
@@ -1079,7 +1150,9 @@ mod tests {
 
         let reply = handle_tree(&inner, &headers, Some(origin), &binding.id).await;
         assert_eq!(reply.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(reply.into_body(), 1 << 20).await.unwrap();
+        let bytes = axum::body::to_bytes(reply.into_body(), 1 << 20)
+            .await
+            .unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["files"][0]["path"], "main.tex");
         assert_eq!(body["files"][0]["size"], 5);
@@ -1089,10 +1162,13 @@ mod tests {
         assert!(recorded.contains_key("main.tex"));
 
         // Another origin cannot read it, and a render binding is not a project.
-        let foreign = handle_tree(&inner, &headers, Some("https://other.example"), &binding.id).await;
+        let foreign =
+            handle_tree(&inner, &headers, Some("https://other.example"), &binding.id).await;
         assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
         let file = handle_file(&inner, &headers, Some(origin), &binding.id, "main.tex").await;
-        let bytes = axum::body::to_bytes(file.into_body(), 1 << 20).await.unwrap();
+        let bytes = axum::body::to_bytes(file.into_body(), 1 << 20)
+            .await
+            .unwrap();
         assert_eq!(&bytes[..], b"hello");
         let hidden = handle_file(&inner, &headers, Some(origin), &binding.id, ".git/config").await;
         assert_eq!(hidden.status(), StatusCode::NOT_FOUND);
