@@ -1523,6 +1523,20 @@
   // project's edits wait in memory for the folder write, so the folder is
   // settled first, and a write that fails keeps the person on this page, which
   // holds the only copy of what the folder lacks.
+  // Quitting exits the native app at once, so a local project's pending folder
+  // write is settled first; a write that fails keeps the app open and says so.
+  async function quit() {
+    if (folderSync && !(await folderSync.flush())) {
+      say("The folder could not be saved, so the app stays open.", { kind: "problem", id: "reader:quit" });
+      return;
+    }
+    try {
+      await localQuarto.shellAction("quit");
+    } catch (error) {
+      say(error.message || "The desktop app could not quit.", { kind: "problem", id: "reader:quit" });
+    }
+  }
+
   async function leaveTo(href) {
     if (folderSync && !(await folderSync.flush())) {
       say("The folder could not be saved.", { kind: "problem", id: "reader:folder-leave" });
@@ -2546,7 +2560,7 @@
   // is asked.
   async function chooseFileCommand(value) {
     if (value === "settings") return openSettings("editor");
-    if (value === "quit") return void localQuarto.shellAction("quit").catch((error) => say(error.message || "The desktop app could not quit.", { kind: "problem", id: "reader:quit" }));
+    if (value === "quit") return void quit();
     if (value === "compile") return compileNow();
     if (value === "download") return downloadTree();
     if (value === "download-source") return downloadSource();
