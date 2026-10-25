@@ -98,7 +98,7 @@ The desktop app can work on a folder instead of a web project.
 - **Work in a folder…** in a web project's File menu puts that project's files in an empty folder of your choice and opens that folder as the project. The folder stays linked to the web project.
 - **Settings, then Rendering** chooses, per format, whether a render runs in the browser or on this computer with your own latexmk, Typst or Quarto. Renders on this computer run in the folder and only while Run code is on.
 - **The Git panel** of a folder project links it to a web project, or publishes it as a new one, and moves changes with Pull and Push. The first time, it asks you to sign in to the server. A push is refused for a file that changed on the web since your last pull; a pull leaves a file that changed on both sides alone and lets you choose a copy. Files the folder excludes, such as a PDF a render wrote, are never synced. In a folder that is a git repository, the panel also commits, pulls, pushes, switches branches and sets the remote. Its Sync button does the commit, pull and push in one step.
-- A folder that is a git repository syncs with git instead: see [Git](git.html) for `librepaper pull` and `push` and the GitHub Action.
+- A folder that is a git repository keeps both halves of the panel. Its LibrePaper Pull fetches the web project's versions as commits on `librepaper/main` and merges them, and its Push sends your commits, the way `librepaper pull` and `push` do in a repository; see [Git](git.html).
 
 ## How the desktop app works
 
