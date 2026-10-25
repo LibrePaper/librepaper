@@ -184,6 +184,7 @@ const context = (values) => {
     Uint8Array,
     ArrayBuffer,
     readerDisposed: false,
+    LOCAL: false,
     // Recomputing the changes is part of what an edit does now; the blocks
     // that care override this to count the calls.
     refreshReview: () => {},

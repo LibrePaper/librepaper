@@ -33,6 +33,7 @@
   import { createLiveChat } from "../lib/reader/live-chat.svelte.js";
   import { createReaderCollaboration } from "../lib/reader/collaboration.js";
   import { createWorkspace } from "../lib/reader/workspace.svelte.js";
+  import { createFigureStore, createLocalProject, localIdOf, localSlug } from "../lib/reader/local-project.js";
   import { createBuildSettings } from "../lib/reader/build-settings.svelte.js";
   import { createTimeline } from "../lib/reader/timeline.svelte.js";
   import { createPreviewRenderer } from "../lib/reader/preview-render.js";
@@ -121,14 +122,18 @@
   import Git from "./reader/Git.svelte";
   import PendingAnnotations from "./reader/PendingAnnotations.svelte";
 
-  const SLUG = location.pathname.split("/")[2];
+  // A folder opened in the desktop app arrives as `?local=<id>`. It has no
+  // document on the server and no link key, and its project id is its own.
+  const LOCAL_ID = localIdOf(location.search);
+  const LOCAL = Boolean(LOCAL_ID);
+  const SLUG = LOCAL ? localSlug(LOCAL_ID) : location.pathname.split("/")[2];
 
   // The key a reader arrived with, taken out of the address before anything
   // asks the server a question. From here it is kept under the slug and
   // presented on every request for this document.
   // The sign-in return path carries only the path and query: the key stays in
   // this browser's storage and never travels in a URL the server sees.
-  const KEY = takeLinkKey(SLUG);
+  const KEY = LOCAL ? "" : takeLinkKey(SLUG);
 
   let { initialSettings = "" } = $props();
 
@@ -160,6 +165,10 @@
   let projectUnreadable = $state("");
   // One page is kept per file, so the key names the file as well as the project.
   const previewCacheKey = (path) => `${SLUG}:${doc?.created_at || "unknown"}|${path}`;
+  // A local project keeps no page in this browser: the folder is the only copy
+  // of the project there is.
+  const lastCachedPage = async (path) => (LOCAL ? null : lastPreview(previewCacheKey(path)));
+  const cachePage = (path, page, identity) => { if (!LOCAL) rememberPreview(previewCacheKey(path), page, identity); };
   // Set when the page was opened from this browser's copy because the server
   // could not be reached, so the page says it may be missing newer changes.
   let openedLocally = $state(false);
@@ -179,12 +188,12 @@
   const chatState = liveChat.state;
   let unreadChat = $state(false);
   let pendingChat;
-  let mayChat = $derived(["commenter", "editor", "owner"].includes(doc.role));
+  let mayChat = $derived(!LOCAL && ["commenter", "editor", "owner"].includes(doc.role));
   // Sharing is the owner's; seeing who else is in the room is anyone's who is
   // named on the document. A reader who arrived by link is offered neither,
   // which is most of the point of a blind review.
-  let canSeeSharing = $derived(Boolean(doc.can_see_sharing));
-  let canPublish = $derived(["editor", "owner"].includes(doc.role));
+  let canSeeSharing = $derived(!LOCAL && Boolean(doc.can_see_sharing));
+  let canPublish = $derived(!LOCAL && ["editor", "owner"].includes(doc.role));
 
   // Whether this browser's work is safe, which is a different question from
   // whether the socket is up. `pending` counts the updates the server has not
@@ -1246,6 +1255,7 @@
   // Routine saving stays quiet; losing the connection still needs a warning,
   // and the warning has to say what is happening to the typing meanwhile.
   const connectionNote = $derived.by(() => {
+    if (LOCAL) return "";
     if (connected) return "";
     if (openedLocally) return "Offline. This is the copy saved in this browser, and it may be missing changes made elsewhere.";
     if (!mayEdit || !session) return "Reconnecting…";
@@ -1326,7 +1336,7 @@
   $effect(() => () => gitAuto.dispose());
   $effect(() => {
     const active = session;
-    if (active) untrack(() => gitAuto.attach(active));
+    if (active && !LOCAL) untrack(() => gitAuto.attach(active));
   });
   const gitDiff = createGitDiff();
   // The diff steps aside while a resolution is open.
@@ -1479,12 +1489,21 @@
   /// requested digests the server did not have, so a caller can decide
   /// whether a hole in the result is tolerable or should fail the whole call.
   async function gatherFigures(digests) {
-    const held = await figures.gather(SLUG, digests, authHeaders(KEY));
+    const held = LOCAL
+      ? await localFigures.gather(SLUG, digests)
+      : await figures.gather(SLUG, digests, authHeaders(KEY));
     const missing = Object.keys(digests).filter(
       (path) => !Object.prototype.hasOwnProperty.call(held.assets, path),
     );
     return { held, missing };
   }
+
+  // A local project holds its figures in memory, in place of the server's
+  // asset store.
+  const localFigures = LOCAL ? createFigureStore() : null;
+  // The folder's project while it is open. It is the collaboration object of a
+  // local project, and the only thing that knows what the folder holds.
+  let localProject = null;
 
   // A granted project folder mirrors the project. Any change to the files
   // pokes the scheduler, which writes the folder once the person pauses.
@@ -1504,6 +1523,7 @@
         tree.assets = held.assets;
       }
       const result = await localQuarto.syncFolder({ tree, bindingId: binding });
+      if (LOCAL && result) localProject?.wrote(tree);
       for (const kept of result?.kept || []) {
         const name = String(kept.path || "").split("/").pop();
         say(`Your copy of ${name} was kept as ${String(kept.copy || "").split("/").pop()}.`, { kind: "note", id: `reader:folder-kept:${kept.path}` });
@@ -1513,8 +1533,10 @@
   });
   $effect(() => () => folderSync.dispose());
   // The document opens with a saved folder, or the editor becomes ready.
+  // A local project is not written until it is edited: opening a folder
+  // leaves its files exactly as they were.
   $effect(() => {
-    if (session && mayEdit) untrack(() => folderSync.poke());
+    if (session && mayEdit && !LOCAL) untrack(() => folderSync.poke());
   });
 
   // Outline reads the same live text as the editor. The revision dependency
@@ -1972,8 +1994,8 @@
     parseSynctex,
     // The page this file last drew stands in for an empty pane until the
     // render replaces it.
-    lastPage: (path) => lastPreview(previewCacheKey(path)),
-    rememberPreview: (path, page, identity) => rememberPreview(previewCacheKey(path), page, identity),
+    lastPage: lastCachedPage,
+    rememberPreview: cachePage,
     onRendered: (identity, projectDigest) => {
       renderedIdentity = identity;
       if (!mayEdit) renderedProjectDigest = projectDigest || "";
@@ -2270,7 +2292,7 @@
   }
   // The tabs this browser is offered. Which reader may see which panel is
   // written with the panels, in lib/panels.js; this only says who is asking.
-  const tabs = $derived(tabsFor({ role: doc.role, mayEdit, editing, canSeeSharing, canPublish, desktop: hasDesktop }));
+  const tabs = $derived(tabsFor({ role: doc.role, mayEdit, editing, canSeeSharing, canPublish, desktop: hasDesktop, local: LOCAL }));
   // The robot buttons hand work to the agent. The agent runs only in the
   // desktop app, so in a browser they say so rather than disappear.
   const agentOffered = $derived(tabs.some((tab) => tab.id === "agent"));
@@ -2741,6 +2763,8 @@
     paint: () => paintPreview(),
     retarget: () => updatePreviewTarget(),
     onarrived: (file) => openTheFile(file),
+    upload: localFigures?.upload,
+    gather: localFigures?.gather,
   });
   const ws = workspace.state;
   const files = $derived(ws.files);
@@ -3178,34 +3202,10 @@
     paintPreview();
   }
 
-  // The CRDT is loaded here and nowhere else. A reader with a link to a
-  // published document never joins the source room, so it never asks for the
-  // three megabytes of loro wasm behind it; an editor pays for them once, on
-  // the way in, rather than before the page has drawn.
-  async function startCollaboration(document_, { sourceSync = true } = {}) {
-    collaboration?.close();
-    const collab = sourceSync ? await import("../lib/collab.js") : null;
-    // Awaiting the module gave the reader time to be torn down or replaced.
-    if (readerDisposed) return;
-    collaboration = createReaderCollaboration({
-      slug: SLUG,
-      key: KEY,
-      collab,
-      getIdentity: () => identity,
-      getCanEdit: () => mayEdit,
-      sourceSync,
-      onMessage: receive,
-      onConnected: (up) => {
-        connected = up;
-        if (!up) {
-          pendingChat?.disconnect();
-          outbox.disconnected();
-        }
-        // A publish that happened while this browser was not listening was
-        // announced to nobody: the offer is pushed over this very socket. So
-        // the way back up is where a reader asks whether they missed one.
-        if (up && !mayEdit) void refreshCurrentProject();
-      },
+  // What the Reader hears from a session, whether it is joined to a room or
+  // built from a folder.
+  function sessionEvents() {
+    return {
       onPeers: (count) => { if (!readerDisposed) peers = Math.max(peers, count); },
       onState: (state_) => {
         // Teardown sets this before it closes the collaboration, so a local
@@ -3240,6 +3240,45 @@
       },
       onFiles: filesChanged,
       onAwareness: () => { if (!readerDisposed) refreshPeers(); },
+    };
+  }
+
+  // The CRDT is loaded here and nowhere else. A reader with a link to a
+  // published document never joins the source room, so it never asks for the
+  // three megabytes of loro wasm behind it; an editor pays for them once, on
+  // the way in, rather than before the page has drawn.
+  async function startCollaboration(document_, { sourceSync = true } = {}) {
+    collaboration?.close();
+    if (LOCAL) {
+      // The folder was read before the document was shown, so the project
+      // joins at once and there is no room to connect to.
+      collaboration = localProject;
+      session = localProject.start(document_);
+      return;
+    }
+    const collab = sourceSync ? await import("../lib/collab.js") : null;
+    // Awaiting the module gave the reader time to be torn down or replaced.
+    if (readerDisposed) return;
+    collaboration = createReaderCollaboration({
+      slug: SLUG,
+      key: KEY,
+      collab,
+      getIdentity: () => identity,
+      getCanEdit: () => mayEdit,
+      sourceSync,
+      onMessage: receive,
+      onConnected: (up) => {
+        connected = up;
+        if (!up) {
+          pendingChat?.disconnect();
+          outbox.disconnected();
+        }
+        // A publish that happened while this browser was not listening was
+        // announced to nobody: the offer is pushed over this very socket. So
+        // the way back up is where a reader asks whether they missed one.
+        if (up && !mayEdit) void refreshCurrentProject();
+      },
+      ...sessionEvents(),
       onDocumentChanged: () => {
         location.reload();
       },
@@ -3392,37 +3431,99 @@
     if (mayEdit) startEditing();
   }
 
+  // A document is shown the same way whether the server answered for it or the
+  // folder did.
+  function showDocument(found) {
+    doc = found;
+    document.title = `${found.title} · LibrePaper`;
+    // The server refuses a documents host equal to the app host, so the
+    // page only has to refuse to invent one: falling back to the app's own
+    // origin would hand the sandboxed frame that origin.
+    const separate = Boolean(found.docs_origin);
+    docsOrigin = separate ? found.docs_origin : null;
+    // The frame is an empty page with the agent in it, on the documents
+    // origin. What goes into it is what this browser renders -- or, for a
+    // LaTeX document, a PDF an editor's browser compiled, which needs a
+    // frame that can draw one. Set after `prepare`, which is what settles
+    // the format and so which frame this document wants.
+    void prepare(found);
+    if (!separate) {
+      renderStatus.failed(NO_DOCS_ORIGIN);
+      say(NO_DOCS_ORIGIN, { kind: "problem", id: "reader:no-docs-origin" });
+    }
+  }
+
+  // A file that changed on disk while the editor holds unsaved edits to it
+  // asks which copy wins. The questions are answered one at a time, and
+  // closing the dialog any other way keeps the editor's text.
+  let diskConflicts = $state([]);
+  let diskConflictOpen = $state(false);
+  function askAboutDisk(conflict) {
+    diskConflicts = [...diskConflicts, conflict];
+    diskConflictOpen = true;
+  }
+  function answerDisk(loadDisk) {
+    const [first, ...rest] = diskConflicts;
+    diskConflicts = rest;
+    diskConflictOpen = rest.length > 0;
+    if (!first) return;
+    if (loadDisk) first.loadDisk();
+    else first.keepMine();
+  }
+
+  // Opens the folder behind a local project: its rules, its files, and the
+  // synthetic document that stands where the server's would.
+  async function bootLocal() {
+    try {
+      scopeLocalApp();
+      localQuarto.setBindingId(LOCAL_ID);
+      const [config, collab] = await Promise.all([loadConfig(), import("../lib/collab.js")]);
+      if (readerDisposed) return;
+      localProject = createLocalProject({
+        id: LOCAL_ID,
+        rules: config || {},
+        collab,
+        figures: localFigures,
+        ...sessionEvents(),
+        onConflict: askAboutDisk,
+        onResend: (paths) => {
+          localQuarto.forgetAcknowledged(paths);
+          folderSync.poke();
+        },
+        onProblem: (message) => say(message, { kind: "problem", id: "reader:folder-read" }),
+      });
+      const { name, sourceFormat: opening } = await localProject.load();
+      if (readerDisposed) return;
+      showDocument({
+        title: name,
+        role: "owner",
+        can_edit: true,
+        can_moderate: false,
+        can_see_sharing: false,
+        source_format: opening,
+        renderers: config?.latex ? ["markdown", "latex"] : ["markdown"],
+        docs_origin: config?.docs_origin,
+      });
+    } catch (error) {
+      if (readerDisposed) return;
+      doc = { title: "Folder unavailable" };
+      say(`The folder could not be opened: ${error?.message || "unknown error"}`, { kind: "problem", id: "reader:folder-open" });
+    }
+  }
+
   $effect(() => {
-    markViewed(SLUG);
+    if (!LOCAL) markViewed(SLUG);
     pendingChat = createPendingChat({
       send: (message) => collaboration?.sendLive(message) || { ok: false },
     });
-    const boot = createReaderBoot({
+    const boot = LOCAL ? null : createReaderBoot({
       slug: SLUG,
       key: KEY,
       onIdentity: (who) => {
         me = who;
         if (who.name) session?.rename(who.name);
       },
-      onDocument: (found) => {
-        doc = found;
-        document.title = `${found.title} · LibrePaper`;
-        // The server refuses a documents host equal to the app host, so the
-        // page only has to refuse to invent one: falling back to the app's own
-        // origin would hand the sandboxed frame that origin.
-        const separate = Boolean(found.docs_origin);
-        docsOrigin = separate ? found.docs_origin : null;
-        // The frame is an empty page with the agent in it, on the documents
-        // origin. What goes into it is what this browser renders -- or, for a
-        // LaTeX document, a PDF an editor's browser compiled, which needs a
-        // frame that can draw one. Set after `prepare`, which is what settles
-        // the format and so which frame this document wants.
-        void prepare(found);
-        if (!separate) {
-          renderStatus.failed(NO_DOCS_ORIGIN);
-          say(NO_DOCS_ORIGIN, { kind: "problem", id: "reader:no-docs-origin" });
-        }
-      },
+      onDocument: showDocument,
       // A document answers a stranger exactly as a missing one does, which
       // tells a stranger nothing -- and tells an owner who has not signed in
       // nothing either. That is what this line is for: the page was opened
@@ -3455,7 +3556,8 @@
         }
       },
     });
-    boot.start();
+    if (boot) boot.start();
+    else void bootLocal();
 
     return () => {
       // The session on the server ends when the last person in it
@@ -3475,7 +3577,7 @@
       clearTimeout(projectRefreshTimer);
       projectRefreshTimer = null;
       previewTimer = null;
-      boot.dispose();
+      boot?.dispose();
       framePreview.dispose();
       stopLatex();
       pendingChat?.dispose();
@@ -3484,6 +3586,7 @@
       followAnnotations?.();
       followAnnotations = null;
       collaboration?.close();
+      localProject?.close();
     };
   });
 
@@ -3502,7 +3605,7 @@
   let localCopyRunning = false;
   let localCopyRemembered = false;
   $effect(() => {
-    const ready = mayEdit && !openedLocally && persistence.local && Editor;
+    const ready = !LOCAL && mayEdit && !openedLocally && persistence.local && Editor;
     if (!ready || localCopyRunning || localCopyRemembered) return;
     localCopyRunning = true;
     const server = location.origin;
@@ -3529,6 +3632,12 @@
   // offline Ctrl-S says where the work currently is and what will happen to
   // it, and leaves the word alone. Only the server copy is called saved.
   function reportPersistence() {
+    // A local project is saved to its files by the folder sync, which reports
+    // its own failures.
+    if (LOCAL) {
+      say("Changes are saved to the files in the folder.", { id: "reader:persistence" });
+      return;
+    }
     // A local write that failed or is still in flight is not worth
     // reassuring anybody about; the failure says so on its own.
     if (persistence.localError || persistence.localPending) return;
@@ -3765,7 +3874,7 @@
     <hr class="hr my-1" />
   {/if}
   {@render downloadMenu()}
-  {#if me?.id}<Menu.Item value="save-template" class="menuitem">Save as template…</Menu.Item>{/if}
+  {#if me?.id && !LOCAL}<Menu.Item value="save-template" class="menuitem">Save as template…</Menu.Item>{/if}
   <hr class="hr my-1" />
   {#if tabs.some((tab) => tab.id === "git")}<Menu.Item value="git" class="menuitem">Git…</Menu.Item>{/if}
   {#if canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem">Share…</Menu.Item>{/if}
@@ -3777,7 +3886,7 @@
   {#if mayEdit && sourceFormat === "latex" && compilesHere}
     <Menu.Item value="compile" class="menuitem"><span class="menuitem-label">Compile now</span>{#if MENU_KEYS.compile}<span class="menuitem-keys">{MENU_KEYS.compile}</span>{/if}</Menu.Item>
   {/if}
-  {#if mayEdit && ["typst", "markdown", "quarto"].includes(sourceFormat)}
+  {#if mayEdit && !LOCAL && ["typst", "markdown", "quarto"].includes(sourceFormat)}
     <Menu.Item value="project-folder" class="menuitem">Project folder…</Menu.Item>
   {/if}
   <Menu.Item value="settings" class="menuitem"><span class="menuitem-label">Settings…</span>{#if MENU_KEYS.settings}<span class="menuitem-keys">{MENU_KEYS.settings}</span>{/if}</Menu.Item>
@@ -3872,7 +3981,7 @@
       <CompactPanelMenu tabs={tabs} {panel} {me} {badges} open={shown.comments} onselect={openPanel} onsettings={() => openSettings()}
                         menus={compactMenus} onmenu={(id, anchor) => menubar.show(id, anchor)} />
       {@render faceSwitch()}
-      {#if !connected}<span class="presence-offline" title={connectionNote} aria-label={connectionNote}><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
+      {#if !connected && !LOCAL}<span class="presence-offline" title={connectionNote} aria-label={connectionNote}><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
     {:else}
       <!-- Between 761px and the split's narrow point, the face choice stays in
            the top bar. Compact widths render it beside the hamburger above. -->
@@ -3887,7 +3996,7 @@
           <Avatar name={person.name} key={person.key} colour={person.colour} size={6} />
         {/each}
         {#if participants.length > 3}<span class="presence-more">+{participants.length - 3}</span>{/if}
-        {#if !connected}<span class="presence-offline"><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
+        {#if !connected && !LOCAL}<span class="presence-offline"><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
       </div>
     {/if}
   {/snippet}
@@ -4395,6 +4504,17 @@
 
 <Modal bind:open={projectFolderOpen} title="Project folder">
   <ProjectFolderSetting {sourceFormat} main={previewPath} {mayEdit} onbindingid={(id) => { localQuarto.setBindingId(id); folderSync.poke(); }} />
+</Modal>
+
+<!-- A file changed on disk while the editor held unsaved edits to it. -->
+<Modal bind:open={diskConflictOpen} title="File changed on disk"
+  description={diskConflicts.length ? `${diskConflicts[0].path} changed on disk.` : ""}
+  cancelLabel="Keep mine"
+  onclose={() => answerDisk(false)}
+  confirm={{ label: "Load from disk", onclick: () => answerDisk(true), oncancel: () => answerDisk(false) }}>
+  {#snippet children()}
+    <p class="text-sm">Keep mine writes the editor's text over the file on the next save. Load from disk replaces the editor's text with the file.</p>
+  {/snippet}
 </Modal>
 
 <Modal bind:open={templateModalOpen} title="Save as template"
