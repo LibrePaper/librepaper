@@ -399,7 +399,7 @@ function safeSize(value) {
 
 // Turn a shared tree's `texts`/`assets` maps into `[relativePath, bytes]`
 // pairs, validating and de-duplicating paths.
-/** @param {DesktopTree} tree @returns {Array<[string, Uint8Array]>} */
+/** @param {Pick<DesktopTree, "texts" | "assets">} tree @returns {Array<[string, Uint8Array]>} */
 function collectTreeFiles(tree) {
   const files = [];
   const seen = new Set();
@@ -560,7 +560,7 @@ function folderForm(manifest, files) {
  * lists every file, and the bytes go only for files the desktop app has not
  * acknowledged yet. Resolves with the desktop app's answer (`kept`, `trashed`,
  * `renamed`), or null after forgetting a folder that is no longer granted.
- * @param {{ tree: DesktopTree, bindingId: string }} input
+ * @param {{ tree: Pick<DesktopTree, "texts" | "assets">, bindingId: string }} input
  * @param {{ signal?: AbortSignal }} [options] */
 export async function syncFolder({ tree, bindingId: binding }, { signal } = {}) {
   const id = String(binding || "");

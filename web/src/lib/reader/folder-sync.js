@@ -6,6 +6,7 @@ export const FOLDER_SYNC_PAUSE = 800;
 
 // `run()` performs one sync and may throw. `ready()` says whether syncing
 // applies now. `onError(error)` hears a failed run.
+/** @param {{ run: () => Promise<void>, ready?: () => boolean, onError?: (error: any) => void, pause?: number, timers?: { set: (callback: () => void, ms: number) => unknown, clear: (handle: unknown) => void } }} options */
 export function createFolderSync({ run, ready = () => true, onError = () => {}, pause = FOLDER_SYNC_PAUSE, timers = { set: setTimeout, clear: clearTimeout } }) {
   let timer = null;
   let running = false;
