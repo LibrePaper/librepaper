@@ -406,6 +406,9 @@ pub(crate) struct MirrorReport {
     pub trashed: Vec<String>,
     /// Files moved to a new path because the editor renamed them.
     pub renamed: Vec<Renamed>,
+    /// Recorded paths the project no longer lists that stayed in the folder,
+    /// and in the record, because they could not be opened for reading.
+    pub kept_unreadable: Vec<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -435,7 +438,14 @@ impl MirrorReport {
             .trashed
             .iter()
             .map(|path| format!("moved {path} to the trash"));
-        kept.chain(renamed).chain(trashed).collect()
+        let unreadable = self
+            .kept_unreadable
+            .iter()
+            .map(|path| format!("kept {path} in the folder because it could not be read"));
+        kept.chain(renamed)
+            .chain(trashed)
+            .chain(unreadable)
+            .collect()
     }
 }
 
@@ -661,8 +671,14 @@ fn rename_moved_files(root: &Path, files: &[Resolved], mirror: &mut Mirror) -> R
 }
 
 /// Every recorded path the manifest no longer lists goes to the trash when a
-/// regular file is still there. A symlink or directory is left alone. The
-/// path leaves the record either way.
+/// regular file is still there and can be opened for reading. A symlink or
+/// directory is left alone, and so is a file that is already gone. Those paths
+/// leave the record.
+///
+/// A file that exists but cannot be opened stays on disk and in the record, and
+/// the report names it. The tree lists such a file as unreadable, so the page
+/// never held it, and its absence from the manifest is not a deletion by the
+/// person. It is trashed once it can be read, if the manifest still omits it.
 fn trash_dropped_files(root: &Path, files: &[Resolved], mirror: &mut Mirror) -> Result<(), String> {
     let listed: BTreeSet<&str> = files.iter().map(|file| file.path.as_str()).collect();
     let dropped: Vec<String> = mirror
@@ -676,6 +692,17 @@ fn trash_dropped_files(root: &Path, files: &[Resolved], mirror: &mut Mirror) -> 
         let regular = ensure_hosted_parent(root, &path).is_ok()
             && std::fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.is_file());
         if regular {
+            match File::open(&target) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    mirror.written.remove(&path);
+                    continue;
+                }
+                Err(_) => {
+                    mirror.report.kept_unreadable.push(path);
+                    continue;
+                }
+            }
             invalidate_before_first_write(root, &mut mirror.invalidated)?;
             move_to_trash(&target).map_err(|error| format!("trash {path}: {error}"))?;
             mirror.report.trashed.push(path.clone());
@@ -787,6 +814,23 @@ pub(crate) fn recorded_digests(record: &Path) -> Result<BTreeMap<String, String>
     read_written_record(record)
 }
 
+/// Drop `paths` from the written record `record` names and leave the folder as
+/// it is. The next mirror trashes a recorded path the project no longer lists.
+/// A file a render now writes is the render's, not the project's, so its path
+/// leaves the record and the next mirror leaves the file alone.
+pub(crate) fn forget_recorded(record: &Path, paths: &BTreeSet<String>) -> Result<(), String> {
+    let _guard = GRANTED_SYNC
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut written = read_written_record(record)?;
+    let before = written.len();
+    written.retain(|path, _| !paths.contains(path));
+    if written.len() != before {
+        write_written_record(record, &written)?;
+    }
+    Ok(())
+}
+
 /// Record the current digest of every path in `listed`, as the mirror does
 /// after its own writes. Entries for other files are kept while those files
 /// still exist under `root` and are dropped once they are gone. Tests use it
@@ -812,6 +856,42 @@ pub(crate) fn record_listed_digests(
         write_written_record(record, &merged)?;
     }
     Ok(())
+}
+
+/// A path made unreadable for as long as the guard lives, then restored. Tests
+/// use it for a file or folder the operating system will not let this user open.
+#[cfg(all(test, unix))]
+pub(crate) struct Unreadable {
+    path: std::path::PathBuf,
+    permissions: std::fs::Permissions,
+}
+
+#[cfg(all(test, unix))]
+impl Unreadable {
+    /// `None` when the change does not stop this user from reading the
+    /// path, as for root, so the test has nothing to show.
+    pub(crate) fn new(path: &Path) -> Option<Unreadable> {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = std::fs::metadata(path).unwrap().permissions();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let guard = Unreadable {
+            path: path.to_path_buf(),
+            permissions,
+        };
+        let readable = if path.is_dir() {
+            std::fs::read_dir(path).is_ok()
+        } else {
+            File::open(path).is_ok()
+        };
+        (!readable).then_some(guard)
+    }
+}
+
+#[cfg(all(test, unix))]
+impl Drop for Unreadable {
+    fn drop(&mut self) {
+        let _ = std::fs::set_permissions(&self.path, self.permissions.clone());
+    }
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -1162,6 +1242,79 @@ mod tests {
         let report = mirror(&root, &record, &only, &[]).expect("second");
         assert_eq!(report.trashed, vec!["notes.qmd".to_string()]);
         assert!(!root.join("notes.qmd").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mirror_keeps_a_dropped_file_it_cannot_read_and_keeps_it_recorded() {
+        let project = tempdir().expect("project");
+        let root = std::fs::canonicalize(project.path()).expect("root");
+        let state = tempdir().expect("state");
+        let record = state.path().join("grant.json");
+        let all_three = [
+            ("paper.qmd", "# paper"),
+            ("notes.qmd", "notes"),
+            ("secret.qmd", "private"),
+        ];
+        mirror(&root, &record, &all_three, &all(&all_three)).expect("first");
+        let Some(locked) = Unreadable::new(&root.join("secret.qmd")) else {
+            return;
+        };
+        // The page could not read secret.qmd, so its save omits it. The
+        // readable file it omits as well is still trashed.
+        let only = [("paper.qmd", "# paper")];
+        let report = mirror(&root, &record, &only, &[]).expect("second");
+        assert_eq!(report.trashed, vec!["notes.qmd".to_string()]);
+        assert_eq!(report.kept_unreadable, vec!["secret.qmd".to_string()]);
+        assert_eq!(
+            report.notes(),
+            vec![
+                "moved notes.qmd to the trash".to_string(),
+                "kept secret.qmd in the folder because it could not be read".to_string(),
+            ]
+        );
+        assert!(root.join("secret.qmd").exists());
+        assert!(!root.join("notes.qmd").exists());
+        let recorded = read_written_record(&record).expect("record");
+        assert!(recorded.contains_key("secret.qmd") && !recorded.contains_key("notes.qmd"));
+
+        // Readable again and still omitted: the record held, so it is trashed.
+        drop(locked);
+        let report = mirror(&root, &record, &only, &[]).expect("third");
+        assert_eq!(report.trashed, vec!["secret.qmd".to_string()]);
+        assert!(report.kept_unreadable.is_empty());
+        assert!(!root.join("secret.qmd").exists());
+        assert!(!read_written_record(&record)
+            .expect("record")
+            .contains_key("secret.qmd"));
+    }
+
+    #[test]
+    fn forgetting_a_recorded_path_leaves_the_file_and_the_other_records_alone() {
+        let project = tempdir().expect("project");
+        let root = std::fs::canonicalize(project.path()).expect("root");
+        let state = tempdir().expect("state");
+        let record = state.path().join("grant.json");
+        let both = [("paper.qmd", "# paper"), ("figure.pdf", "%PDF held")];
+        mirror(&root, &record, &both, &all(&both)).expect("first");
+
+        forget_recorded(&record, &BTreeSet::from(["figure.pdf".to_string()])).expect("forget");
+        let recorded = read_written_record(&record).expect("record");
+        assert!(recorded.contains_key("paper.qmd") && !recorded.contains_key("figure.pdf"));
+        assert!(root.join("figure.pdf").is_file());
+
+        // A save that omits it no longer trashes it.
+        let only = [("paper.qmd", "# paper")];
+        let report = mirror(&root, &record, &only, &[]).expect("second");
+        assert!(report.trashed.is_empty());
+        assert_eq!(
+            std::fs::read(root.join("figure.pdf")).expect("figure"),
+            b"%PDF held"
+        );
+        // Forgetting what is not recorded changes nothing, and no record is made.
+        let other = state.path().join("none.json");
+        forget_recorded(&other, &BTreeSet::from(["x".to_string()])).expect("no record");
+        assert!(!other.exists());
     }
 
     #[test]

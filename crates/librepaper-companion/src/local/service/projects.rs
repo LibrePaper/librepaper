@@ -42,8 +42,12 @@
 //!   the project drops them. A poller that stops for want of requests keeps
 //!   them, because the folder's outputs are still not the person's files when
 //!   the project is opened again.
-//! - A recorded file that the page already holds is still reported when it is
-//!   removed, since the page has to drop it.
+//! - A file the page holds that a render then records is the render's from
+//!   then on. The page keeps its copy while the run goes on. When the run ends,
+//!   `finish` forgets the file in the folder's written record without moving
+//!   anything, and the poller reports the file removed so the page drops it. A
+//!   later save that omits it then trashes nothing. A page whose poller has
+//!   stopped is told to read the tree again, which no longer lists the file.
 //!
 //! A file is reported removed only when its absence is confirmed. The folder
 //! can fail to answer for a moment, through permissions or a network drive,
@@ -74,7 +78,8 @@ const MANIFEST_ENTRY_BYTES: usize = 512;
 /// Most bytes the manifest of a folder save may take: every file a folder
 /// project may list, at `MANIFEST_ENTRY_BYTES` each, which is 2.4 MiB. The
 /// fixed bound for other JSON, 64 KiB, holds a few hundred files, and a save
-/// above that answered 413 even with no bytes to upload.
+/// above that answered 413 even with no bytes to upload. The description of a
+/// render job carries the same manifest, so it takes the same bound.
 pub(super) const MAX_FOLDER_MANIFEST_BYTES: usize = MAX_PROJECT_FILES * MANIFEST_ENTRY_BYTES;
 
 /// Most render outputs remembered per project. Once the record is full, later
@@ -390,11 +395,13 @@ impl Scan {
     /// Look at the tree once. A file is reported when it held still across
     /// this look and the one before and differs from what was accepted
     /// earlier; a file that is gone is reported at once, but only when its
-    /// absence is confirmed. A file a render wrote is skipped, and only its
-    /// removal can be reported, when the page holds it. So is a new file named
-    /// for the result of the render running now. A tree that cannot be walked
-    /// this time reports nothing and changes nothing, and neither does a part
-    /// of it that cannot be read: its files stay as the page holds them.
+    /// absence is confirmed. A file a render wrote is skipped, and so is a new
+    /// file named for the result of the render running now. A file the page
+    /// holds that a render has recorded is reported removed once no render is
+    /// running, since the render replaces it and the page must drop it. A tree
+    /// that cannot be walked this time reports nothing and changes nothing, and
+    /// neither does a part of it that cannot be read: its files stay as the
+    /// page holds them.
     fn look(&mut self, root: &Path, record: &Path) -> Vec<Change> {
         let Ok(walked) = walk(root) else {
             return Vec::new();
@@ -402,6 +409,28 @@ impl Scan {
         let (now, skipped) = (walked.files, walked.skipped);
         let mut changes = Vec::new();
         let mut recorded: Option<BTreeMap<String, String>> = None;
+        // A held file that a render has recorded is the render's. The page is
+        // told to drop it only when no render runs, since `finish` forgets it in
+        // the written record before the running state ends, and a save that
+        // omits it while the record still lists it would trash it.
+        if self.running.is_none() {
+            let replaced: Vec<String> = self
+                .digests
+                .keys()
+                .filter(|path| self.render_outputs.contains(*path))
+                .cloned()
+                .collect();
+            for path in replaced {
+                self.settled.remove(&path);
+                self.digests.remove(&path);
+                changes.push(Change {
+                    path,
+                    kind: "removed",
+                    sha256: None,
+                    size: None,
+                });
+            }
+        }
         for (path, stat) in &now {
             if self.render_outputs.contains(path) || self.written_by_running_render(path) {
                 continue;
@@ -847,6 +876,9 @@ pub(super) struct RenderWatch {
     /// credited to the run only when they are named for it. `None` when the
     /// job names no tool record.
     result: Option<String>,
+    /// Every path the command is expected to write: the result and, for a PDF,
+    /// the SyncTeX files. They are recorded before it starts.
+    expected: Vec<String>,
     /// The folder's files before the command ran, or `None` when it could not
     /// be listed, in which case only the expected outputs are recorded.
     before: Option<BTreeMap<String, FileStat>>,
@@ -869,7 +901,7 @@ impl RenderWatch {
         let result = expected.first().cloned();
         let running = inner
             .projects
-            .start_render(&binding.id, result.clone(), expected);
+            .start_render(&binding.id, result.clone(), expected.clone());
         let walked_root = binding.root.clone();
         let before = tokio::task::spawn_blocking(move || listed_files(&walked_root))
             .await
@@ -884,29 +916,49 @@ impl RenderWatch {
                 .map(|entry| entry.path.clone())
                 .collect(),
             result,
+            expected,
             before,
             running,
         })
     }
 
     /// The run is over, however it ended. Record every file it created or
-    /// changed that is named for the result. The project stops counting as
-    /// running last, whichever way this returns, so the poller never sees a
-    /// finished render with its files unrecorded. A render that is cancelled
-    /// or fails comes back from the runner like any other and ends here; if
-    /// the watch is dropped instead, `running` ends the state on its own.
+    /// changed that is named for the result. Every path the run recorded, the
+    /// expected outputs included, is then forgotten in the folder's written
+    /// record, and nothing is trashed or moved. That is not done in `begin`: the
+    /// job's own mirror runs after it and writes the page's copy of any such
+    /// file the project lists, which puts it in the record again. The file is
+    /// the render's now, and a save that omits it must not trash it.
+    ///
+    /// What the page holds is in the poller's scan, and what the mirror last
+    /// wrote is in the record. A file can be in either or both. The record is
+    /// forgotten here whatever the page holds. The poller reports a held file
+    /// removed once the running state ends, and that is the last thing this
+    /// does, whichever way it returns, so the page is never told to drop a file
+    /// the record still lists. A poller that has stopped reports nothing, and
+    /// the page's next `changes` request is answered with a reset, which reads
+    /// the tree again without the file.
     pub(super) async fn finish(self, inner: &Inner) {
         let _running = self.running;
-        let (Some(before), Some(result)) = (self.before, self.result) else {
+        let mut outputs: BTreeSet<String> = self.expected.into_iter().collect();
+        if let (Some(before), Some(result)) = (self.before, self.result) {
+            let root = self.root;
+            let after = tokio::task::spawn_blocking(move || listed_files(&root)).await;
+            if let Ok(Some(after)) = after {
+                let written = written_since(&before, &after, &self.listed, &result);
+                outputs.extend(written.iter().cloned());
+                inner.projects.note_render_outputs(&self.id, written);
+            }
+        }
+        // Past the bound a path is not recorded, and stays the person's.
+        let recorded = inner.projects.render_outputs(&self.id);
+        outputs.retain(|path| recorded.contains(path));
+        if outputs.is_empty() {
             return;
-        };
-        let root = self.root;
-        let after = tokio::task::spawn_blocking(move || listed_files(&root)).await;
-        let Ok(Some(after)) = after else {
-            return;
-        };
-        let written = written_since(&before, &after, &self.listed, &result);
-        inner.projects.note_render_outputs(&self.id, written);
+        }
+        let record = inner.bindings.written_record(&self.id);
+        let forget = move || workspace::forget_recorded(&record, &outputs);
+        let _ = tokio::task::spawn_blocking(forget).await;
     }
 }
 
@@ -1215,6 +1267,9 @@ pub(super) async fn handle_changes(
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    use crate::local::render::workspace::Unreadable;
+
     fn write(root: &Path, relative: &str, content: &str) {
         let path = root.join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1429,41 +1484,6 @@ mod tests {
     }
 
     /* ------------------------------------------- removal needs confirmation */
-
-    /// A path made unreadable for as long as the guard lives, then restored.
-    #[cfg(unix)]
-    struct Unreadable {
-        path: PathBuf,
-        permissions: std::fs::Permissions,
-    }
-
-    #[cfg(unix)]
-    impl Unreadable {
-        /// `None` when the change does not stop this user from reading the
-        /// path, as for root, so the test has nothing to show.
-        fn new(path: &Path) -> Option<Unreadable> {
-            use std::os::unix::fs::PermissionsExt;
-            let permissions = std::fs::metadata(path).unwrap().permissions();
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
-            let guard = Unreadable {
-                path: path.to_path_buf(),
-                permissions,
-            };
-            let readable = if path.is_dir() {
-                std::fs::read_dir(path).is_ok()
-            } else {
-                std::fs::File::open(path).is_ok()
-            };
-            (!readable).then_some(guard)
-        }
-    }
-
-    #[cfg(unix)]
-    impl Drop for Unreadable {
-        fn drop(&mut self) {
-            let _ = std::fs::set_permissions(&self.path, self.permissions.clone());
-        }
-    }
 
     #[cfg(unix)]
     #[test]
@@ -1808,21 +1828,36 @@ mod tests {
     }
 
     #[test]
-    fn a_held_file_that_becomes_a_render_output_is_still_reported_when_removed() {
+    fn a_held_file_a_render_records_is_reported_removed_once_the_run_ends() {
         let (root, _state, record) = setup();
         write(root.path(), "main.tex", "one");
-        write(root.path(), "figure.pdf", "held by the page");
+        write(root.path(), "main.pdf", "%PDF the page imported");
         let mut scan = seeded_scan(root.path(), &record);
-        scan.render_outputs = names(&["figure.pdf"]);
-        write(root.path(), "figure.pdf", "rewritten by a render");
+        scan.running = Some("main.pdf".into());
+        scan.render_outputs = names(&["main.pdf", "main.synctex.gz"]);
+        write(root.path(), "main.pdf", "%PDF the render wrote");
+        // The page keeps its copy while the command runs.
         for _ in 0..3 {
             assert!(scan.look(root.path(), &record).is_empty());
         }
-        std::fs::remove_file(root.path().join("figure.pdf")).unwrap();
+
+        scan.running = None;
         let changes = scan.look(root.path(), &record);
         assert_eq!(changes.len(), 1);
-        assert_eq!(changes[0].path, "figure.pdf");
+        assert_eq!(changes[0].path, "main.pdf");
         assert_eq!(changes[0].kind, "removed");
+        for _ in 0..3 {
+            assert!(scan.look(root.path(), &record).is_empty());
+        }
+
+        // The page no longer holds it, so a later run or a delete is the
+        // render's business and nothing is reported.
+        write(root.path(), "main.pdf", "%PDF the next run wrote");
+        for _ in 0..3 {
+            assert!(scan.look(root.path(), &record).is_empty());
+        }
+        std::fs::remove_file(root.path().join("main.pdf")).unwrap();
+        assert!(scan.look(root.path(), &record).is_empty());
     }
 
     #[test]
@@ -1972,13 +2007,21 @@ mod tests {
     /// when the run ends, so the looks must be slower than the test's write
     /// followed by `finish`.
     async fn quick_inner(state: &Path) -> Arc<Inner> {
+        timed_inner(
+            state,
+            Timing {
+                interval: Duration::from_millis(250),
+                long_poll: Duration::from_millis(1500),
+                idle: Duration::from_secs(30),
+                max_events: 100,
+            },
+        )
+        .await
+    }
+
+    async fn timed_inner(state: &Path, timing: Timing) -> Arc<Inner> {
         let mut inner = test_support::inner(state, state).await;
-        Arc::get_mut(&mut inner).expect("not shared yet").projects = Registry::new(Timing {
-            interval: Duration::from_millis(250),
-            long_poll: Duration::from_millis(1500),
-            idle: Duration::from_secs(30),
-            max_events: 100,
-        });
+        Arc::get_mut(&mut inner).expect("not shared yet").projects = Registry::new(timing);
         inner
     }
 
@@ -2243,5 +2286,162 @@ mod tests {
         assert_eq!(after.running, None);
         // What the command was expected to write stays recorded.
         assert!(after.outputs.contains("main.pdf"));
+    }
+
+    fn digest(text: &str) -> String {
+        librepaper_document::results::sha256(text.as_bytes())
+    }
+
+    /// A save of the page that lists only `main.tex`, with nothing to upload.
+    fn save_of_main_tex_only(root: &Path, record: &Path) -> workspace::MirrorReport {
+        let staged = tempfile::tempdir().unwrap();
+        let manifest = [ManifestEntry {
+            path: "main.tex".into(),
+            sha256: digest("hello"),
+            size: 5,
+        }];
+        workspace::mirror_granted_folder(staged.path(), root, &manifest, record).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_render_replacing_an_imported_file_drops_it_from_the_page_and_the_record() {
+        let state = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        write(&root_path, "main.tex", "hello");
+        write(&root_path, "main.pdf", "%PDF built outside");
+        let inner = quick_inner(state.path()).await;
+        let binding = inner.bindings.open_project(ORIGIN, &root_path).unwrap();
+        let headers = test_support::bearer(&inner);
+
+        // The page opens the folder, imports both files, and saves them.
+        let tree = body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id).await).await;
+        let cursor = tree["cursor"].as_u64().unwrap();
+        let listed: Vec<&Value> = tree["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| &file["path"])
+            .collect();
+        assert_eq!(listed, ["main.pdf", "main.tex"]);
+        let record = inner.bindings.written_record(&binding.id);
+        let saved = BTreeMap::from([
+            ("main.pdf".to_string(), digest("%PDF built outside")),
+            ("main.tex".to_string(), digest("hello")),
+        ]);
+        workspace::record_listed_digests(&record, &root_path, &saved).unwrap();
+
+        let render = RenderWatch::begin(&inner, &render_request(&binding, "main.tex"))
+            .await
+            .expect("a folder project is watched");
+        write(&root_path, "main.pdf", "%PDF the render wrote");
+        render.finish(&inner).await;
+
+        let changes = |since: u64| {
+            let request = Request::get(format!("/changes?since={since}"))
+                .body(Body::empty())
+                .unwrap();
+            handle_changes(&inner, &headers, Some(ORIGIN), &binding.id, request)
+        };
+        let mut answer = body_of(changes(cursor).await).await;
+        for _ in 0..10 {
+            if !answer["changes"].as_array().unwrap().is_empty() {
+                break;
+            }
+            answer = body_of(changes(cursor).await).await;
+        }
+        assert_eq!(
+            answer["changes"],
+            json!([{"path": "main.pdf", "kind": "removed"}])
+        );
+        // The page is told once.
+        let next = body_of(changes(answer["cursor"].as_u64().unwrap()).await).await;
+        assert_eq!(next["changes"], json!([]));
+
+        // The folder no longer manages the file, and the others stay recorded.
+        let recorded = workspace::recorded_digests(&record).unwrap();
+        assert!(!recorded.contains_key("main.pdf"));
+        assert!(recorded.contains_key("main.tex"));
+        // The page dropped it, so its next save omits it and trashes nothing.
+        let report = save_of_main_tex_only(&root_path, &record);
+        assert!(report.trashed.is_empty());
+        assert_eq!(
+            std::fs::read(root_path.join("main.pdf")).unwrap(),
+            b"%PDF the render wrote"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_page_whose_poller_stopped_reads_the_tree_again_and_the_record_is_forgotten() {
+        let state = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        write(&root_path, "main.tex", "hello");
+        write(&root_path, "main.pdf", "%PDF built outside");
+        let inner = timed_inner(
+            state.path(),
+            Timing {
+                interval: Duration::from_millis(40),
+                long_poll: Duration::from_millis(1500),
+                idle: Duration::from_millis(200),
+                max_events: 100,
+            },
+        )
+        .await;
+        let binding = inner.bindings.open_project(ORIGIN, &root_path).unwrap();
+        let headers = test_support::bearer(&inner);
+        let tree = body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id).await).await;
+        let cursor = tree["cursor"].as_u64().unwrap();
+        let record = inner.bindings.written_record(&binding.id);
+        let saved = BTreeMap::from([
+            ("main.pdf".to_string(), digest("%PDF built outside")),
+            ("main.tex".to_string(), digest("hello")),
+        ]);
+        workspace::record_listed_digests(&record, &root_path, &saved).unwrap();
+
+        // Nobody asks for changes, so the poller stops and forgets its scan.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while inner.projects.pollers.lock().unwrap().contains_key(&binding.id) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the poller stops");
+
+        let render = RenderWatch::begin(&inner, &render_request(&binding, "main.tex"))
+            .await
+            .expect("a folder project is watched");
+        write(&root_path, "main.pdf", "%PDF the render wrote");
+        render.finish(&inner).await;
+        assert!(!workspace::recorded_digests(&record)
+            .unwrap()
+            .contains_key("main.pdf"));
+
+        // With no poller to report it, the page is told to read the tree
+        // again, and the tree no longer lists the file.
+        let request = Request::get(format!("/changes?since={cursor}"))
+            .body(Body::empty())
+            .unwrap();
+        let reply = handle_changes(&inner, &headers, Some(ORIGIN), &binding.id, request).await;
+        let answer = body_of(reply).await;
+        assert_eq!(answer["reset"], true);
+        assert_eq!(answer["changes"], json!([]));
+        let tree = body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id).await).await;
+        let listed: Vec<&Value> = tree["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| &file["path"])
+            .collect();
+        assert_eq!(listed, ["main.tex"]);
+        let skipped = json!({"path": "main.pdf", "reason": "render output"});
+        assert!(tree["skipped"].as_array().unwrap().contains(&skipped));
+
+        let report = save_of_main_tex_only(&root_path, &record);
+        assert!(report.trashed.is_empty());
+        assert_eq!(
+            std::fs::read(root_path.join("main.pdf")).unwrap(),
+            b"%PDF the render wrote"
+        );
     }
 }
