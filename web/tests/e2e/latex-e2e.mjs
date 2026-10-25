@@ -57,9 +57,10 @@ async function publish(cookie, fixture) {
   const value = await response.json();
   if (!response.ok || typeof value.share_url !== "string") throw new Error(`publish failed (${response.status}): ${JSON.stringify(value)}`);
   const link = new URL(value.share_url, BASE);
-  const key = new URLSearchParams(link.hash.slice(1)).get("k");
+  // A share link is /docs/<slug>/<key>.
+  const [, slug, key] = link.pathname.split("/").filter(Boolean);
   if (!key) throw new Error(`publish returned no reader key: ${link}`);
-  return { url: link.href, slug: link.pathname.split("/").filter(Boolean).pop(), key };
+  return { url: link.href, slug, key };
 }
 
 async function main() {
