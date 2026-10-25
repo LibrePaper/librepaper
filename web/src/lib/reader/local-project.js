@@ -65,6 +65,19 @@ function decodeText(bytes) {
   }
 }
 
+const encoder = new TextEncoder();
+
+/// The line-ending style of a file's bytes: CRLF when they hold CRLF and no
+/// lone LF, otherwise LF.
+/** @param {Uint8Array} bytes */
+function endingOf(bytes) {
+  const raw = new TextDecoder().decode(bytes);
+  return raw.includes("\r\n") && !raw.replace(/\r\n/g, "").includes("\n") ? "crlf" : "lf";
+}
+
+/** @param {string} text @param {string | undefined} ending */
+const styled = (text, ending) => encoder.encode(ending === "crlf" ? text.replace(/\n/g, "\r\n") : text);
+
 function realWait(ms, signal) {
   return new Promise((resolve) => {
     if (signal?.aborted) {
@@ -183,6 +196,8 @@ export function createLocalProject({
    * @type {Map<string, { text: string, sha: string }>} */
   const conflicts = new Map();
   let failing = false;
+  /** @type {Record<string, string>} */
+  let seeded = {};
 
   const complain = (message) => {
     if (closed) return;
@@ -216,7 +231,13 @@ export function createLocalProject({
   async function interpret({ file, bytes }) {
     if (file.kind === "text") {
       const text = decodeText(bytes);
-      return text === null ? null : { path: file.path, kind: "text", text, sha: file.sha256 ?? null };
+      if (text === null) return null;
+      const ending = endingOf(bytes);
+      // Bytes that the style cannot rebuild (a byte order mark, mixed endings)
+      // are kept, so a file that is not edited is written back as it was.
+      const exact = styled(text, ending);
+      const same = exact.length === bytes.length && exact.every((byte, at) => byte === bytes[at]);
+      return { path: file.path, kind: "text", text, sha: file.sha256 ?? null, ending, raw: same ? undefined : bytes };
     }
     return { path: file.path, kind: "asset", sha: await figures.put(bytes) };
   }
@@ -234,6 +255,7 @@ export function createLocalProject({
       const item = await interpret(one);
       if (item) initial.push(item);
     }
+    seeded = Object.fromEntries(initial.filter((item) => item.sha).map((item) => [item.path, item.sha]));
     const texts = Object.fromEntries(initial.filter((item) => item.kind === "text").map((item) => [item.path, item.text]));
     return { name: name || "Local project", sourceFormat: formatOf(openingFile(texts)) };
   }
@@ -252,16 +274,20 @@ export function createLocalProject({
     session.doc.commit({ origin: DISK_ORIGIN });
   }
 
-  function askAboutText(path, text, sha) {
+  const textRecord = (item) => ({ kind: "text", text: item.text, sha: item.sha, ending: item.ending, raw: item.raw });
+
+  function askAboutText(item) {
+    const { path, text, sha } = item;
     const waiting = conflicts.get(path);
     if (waiting) {
       // The disk moved on again while the question stood. The answer applies
       // to the newest text.
       waiting.text = text;
       waiting.sha = sha;
+      waiting.item = item;
       return;
     }
-    const pending = { text, sha };
+    const pending = { text, sha, item };
     conflicts.set(path, pending);
     const current = () => !closed && conflicts.get(path) === pending;
     onConflict({
@@ -277,33 +303,34 @@ export function createLocalProject({
         const entry = entryOf(path, "text");
         if (entry) replaceText(path, entry, pending.text);
         else session.addText(path, pending.text);
-        disk.set(path, { kind: "text", text: pending.text, sha: pending.sha });
+        disk.set(path, textRecord(pending.item));
       },
     });
   }
 
   /// A text that is new on disk or changed there.
-  function ingestText(path, text, sha) {
+  function ingestText(item) {
+    const { path, text } = item;
     const entry = entryOf(path, "text");
     if (!entry) {
       session.addText(path, text);
-      disk.set(path, { kind: "text", text, sha });
+      disk.set(path, textRecord(item));
       return;
     }
     const mine = session.textOf(entry.id)?.toString();
     if (mine === text) {
       conflicts.delete(path);
-      disk.set(path, { kind: "text", text, sha });
+      disk.set(path, textRecord(item));
       return;
     }
     const known = disk.get(path);
     if (known?.kind === "text" && known.text === mine) {
       conflicts.delete(path);
       replaceText(path, entry, text);
-      disk.set(path, { kind: "text", text, sha });
+      disk.set(path, textRecord(item));
       return;
     }
-    askAboutText(path, text, sha);
+    askAboutText(item);
   }
 
   function ingestAsset(path, sha) {
@@ -312,7 +339,7 @@ export function createLocalProject({
   }
 
   function ingest(item) {
-    if (item.kind === "text") ingestText(item.path, item.text, item.sha);
+    if (item.kind === "text") ingestText(item);
     else ingestAsset(item.path, item.sha);
   }
 
@@ -408,7 +435,7 @@ export function createLocalProject({
     for (const item of initial) {
       if (item.kind === "text") active.addText(item.path, item.text);
       else active.putAsset(item.path, item.sha);
-      disk.set(item.path, item.kind === "text" ? { kind: "text", text: item.text, sha: item.sha } : { kind: "asset", sha: item.sha });
+      disk.set(item.path, item.kind === "text" ? textRecord(item) : { kind: "asset", sha: item.sha });
     }
     initial = [];
     filesCleanup = active.onFiles((events) => { if (!closed) onFiles(events, active); });
@@ -425,8 +452,32 @@ export function createLocalProject({
     for (const path of [...disk.keys()]) {
       if (!written.has(path) && !session?.list().some((file) => file.path === path)) disk.delete(path);
     }
-    for (const [path, text] of Object.entries(texts)) disk.set(path, { kind: "text", text, sha: null });
+    for (const [path, text] of Object.entries(texts)) {
+      const before = disk.get(path);
+      disk.set(path, {
+        kind: "text",
+        text,
+        sha: null,
+        ending: before?.ending,
+        raw: before?.text === text ? before.raw : undefined,
+      });
+    }
     for (const [path, sha] of Object.entries(digests)) disk.set(path, { kind: "asset", sha });
+  }
+
+  /// The bytes of a text as the folder holds them: the style it was read in,
+  /// or exactly the bytes it was read as while it has not been edited.
+  /** @param {string} path @param {string} text */
+  function encode(path, text) {
+    const known = disk.get(path);
+    if (known?.kind === "text" && known.raw && known.text === text) return known.raw;
+    return styled(text, known?.kind === "text" ? known.ending : undefined);
+  }
+
+  /// What the folder holds as the project was read, by path and digest, for
+  /// the first sync to find nothing to send.
+  function seed() {
+    return seeded;
   }
 
   function close() {
@@ -447,6 +498,8 @@ export function createLocalProject({
     start,
     close,
     wrote,
+    encode,
+    seed,
     // There is no room to write to.
     send: () => undefined,
     syncStatus: () => ({}),

@@ -373,4 +373,30 @@ const textOf = (session, path) => session.textOf(session.idOf(path)).toString();
   project.close();
 }
 
+// Line endings: a CRLF file is written back as CRLF, byte for byte when it was
+// not edited, and an outside CRLF change reaches the editor as LF text.
+{
+  const bom = new Uint8Array([0xef, 0xbb, 0xbf, 0x61, 0x0a, 0x62, 0x0d, 0x0a]);
+  const { folder, session, project } = await open({ "w.md": "one\r\ntwo\r\n", "u.md": "x\ny\n", "m.md": bom });
+  const seeded = project.seed();
+  assert.equal(seeded["w.md"], digest("one\r\ntwo\r\n"), "the opening sync can find the folder's own digests");
+  assert.equal(seeded["m.md"], digest(bom));
+  const bytes = (path) => project.encode(path, textOf(session, path));
+  assert.equal(textOf(session, "w.md"), "one\ntwo\n");
+  assert.equal(dec.decode(bytes("w.md")), "one\r\ntwo\r\n", "an unedited CRLF file round-trips");
+  assert.deepEqual([...bytes("m.md")], [...bom], "so does a file the style cannot rebuild");
+  assert.equal(dec.decode(bytes("u.md")), "x\ny\n");
+  session.textOf(session.idOf("w.md")).insert(0, "zero\n");
+  session.doc.commit();
+  assert.equal(dec.decode(bytes("w.md")), "zero\r\none\r\ntwo\r\n", "an edit is written with CRLF");
+  assert.equal(dec.decode(project.encode("new.md", "a\nb")), "a\nb", "a new file is LF");
+
+  folder.files.set("u.md", "p\r\nq\r\n");
+  folder.report({ path: "u.md", kind: "changed" });
+  await tick();
+  assert.equal(textOf(session, "u.md"), "p\nq\n", "disk text is applied as LF");
+  assert.equal(dec.decode(bytes("u.md")), "p\r\nq\r\n", "and the file is now known as CRLF");
+  project.close();
+}
+
 console.log("local-project: routing, standalone session, tree build, outside-change rules");

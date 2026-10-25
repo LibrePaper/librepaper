@@ -1522,7 +1522,7 @@
         if (missing.length) throw new Error(`could not fetch ${missing.join(", ")}`);
         tree.assets = held.assets;
       }
-      const result = await localQuarto.syncFolder({ tree, bindingId: binding });
+      const result = await localQuarto.syncFolder({ tree, bindingId: binding, encode: LOCAL ? localProject.encode : undefined });
       if (LOCAL && result) localProject?.wrote(tree);
       for (const kept of result?.kept || []) {
         const name = String(kept.path || "").split("/").pop();
@@ -1533,10 +1533,10 @@
   });
   $effect(() => () => folderSync.dispose());
   // The document opens with a saved folder, or the editor becomes ready.
-  // A local project is not written until it is edited: opening a folder
-  // leaves its files exactly as they were.
+  // A local project opens with one sync that sends nothing, because the
+  // client was told what the folder holds. It makes every file managed.
   $effect(() => {
-    if (session && mayEdit && !LOCAL) untrack(() => folderSync.poke());
+    if (session && mayEdit) untrack(() => folderSync.poke());
   });
 
   // Outline reads the same live text as the editor. The revision dependency
@@ -3494,6 +3494,7 @@
       });
       const { name, sourceFormat: opening } = await localProject.load();
       if (readerDisposed) return;
+      localQuarto.acknowledge(LOCAL_ID, localProject.seed());
       showDocument({
         title: name,
         role: "owner",

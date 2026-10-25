@@ -400,7 +400,7 @@ function safeSize(value) {
 // Turn a shared tree's `texts`/`assets` maps into `[relativePath, bytes]`
 // pairs, validating and de-duplicating paths.
 /** @param {Pick<DesktopTree, "texts" | "assets">} tree @returns {Array<[string, Uint8Array]>} */
-function collectTreeFiles(tree) {
+function collectTreeFiles(tree, encode) {
   const files = [];
   const seen = new Set();
   const add = (path, bytes) => {
@@ -409,7 +409,7 @@ function collectTreeFiles(tree) {
     seen.add(safe);
     files.push([safe, bytes]);
   };
-  for (const [path, text] of Object.entries(tree?.texts || {})) add(path, bytesOf(text));
+  for (const [path, text] of Object.entries(tree?.texts || {})) add(path, encode ? encode(path, text) : bytesOf(text));
   for (const [path, bytes] of Object.entries(tree?.assets || {})) add(path, bytesOf(bytes));
   return files;
 }
@@ -549,6 +549,16 @@ export async function runRender({ job = {}, tree, format, output, entrypoint = "
 // so the next upload sends every file again.
 let acknowledged = { key: "", digests: new Map() };
 
+/** Tells the client what the desktop app already holds for a folder, so the
+ * next sync sends no bytes for files that still match. `entries` maps a path
+ * to the sha256 of the bytes the folder holds.
+ * @param {string} binding @param {Record<string, string>} entries */
+export function acknowledge(binding, entries) {
+  const key = `${projectKey()}|${binding}`;
+  if (acknowledged.key !== key) acknowledged = { key, digests: new Map() };
+  for (const [path, sha] of Object.entries(entries)) acknowledged.digests.set(path, sha);
+}
+
 /** Makes the next folder sync send these paths again, even though the desktop
  * app already holds bytes with their digest. A person who keeps their copy of
  * a file that changed on disk asks for exactly that.
@@ -568,12 +578,12 @@ function folderForm(manifest, files) {
  * lists every file, and the bytes go only for files the desktop app has not
  * acknowledged yet. Resolves with the desktop app's answer (`kept`, `trashed`,
  * `renamed`), or null after forgetting a folder that is no longer granted.
- * @param {{ tree: Pick<DesktopTree, "texts" | "assets">, bindingId: string }} input
+ * @param {{ tree: Pick<DesktopTree, "texts" | "assets">, bindingId: string, encode?: (path: string, text: string) => Uint8Array }} input
  * @param {{ signal?: AbortSignal }} [options] */
-export async function syncFolder({ tree, bindingId: binding }, { signal } = {}) {
+export async function syncFolder({ tree, bindingId: binding, encode }, { signal } = {}) {
   const id = String(binding || "");
   if (!id || id === HOSTED_BINDING) throw new Error("no project folder is granted");
-  const files = collectTreeFiles(tree);
+  const files = collectTreeFiles(tree, encode);
   const manifest = await manifestOf(files);
   const key = `${projectKey()}|${id}`;
   if (acknowledged.key !== key) acknowledged = { key, digests: new Map() };
