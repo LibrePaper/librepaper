@@ -67,7 +67,12 @@ pub fn resolve_in(argv0: &str, path: &OsStr) -> Option<PathBuf> {
     if has_separator && !Path::new(argv0).is_absolute() {
         return None;
     }
-    which::which_in(argv0, Some(path), std::env::current_dir().unwrap_or_default()).ok()
+    which::which_in(
+        argv0,
+        Some(path),
+        std::env::current_dir().unwrap_or_default(),
+    )
+    .ok()
 }
 
 /// The executable `argv0` names on the process PATH.
@@ -192,7 +197,10 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let tool = executable(directory.path(), "mytool");
         let path = std::env::join_paths([directory.path()]).unwrap();
-        assert_eq!(resolve_in(tool.to_str().unwrap(), OsStr::new("")), Some(tool));
+        assert_eq!(
+            resolve_in(tool.to_str().unwrap(), OsStr::new("")),
+            Some(tool)
+        );
         assert_eq!(resolve_in("./mytool", &path), None);
         assert_eq!(resolve_in("bin/mytool", &path), None);
         assert_eq!(resolve_in("/no/such/tool", &path), None);
@@ -214,7 +222,10 @@ mod tests {
         let tool = directory.path().join("mytool.exe");
         std::fs::write(&tool, b"").unwrap();
         let path = std::env::join_paths([directory.path()]).unwrap();
-        assert_eq!(resolve_in("mytool", &path).map(|found| found.is_file()), Some(true));
+        assert_eq!(
+            resolve_in("mytool", &path).map(|found| found.is_file()),
+            Some(true)
+        );
     }
 
     #[cfg(unix)]
@@ -243,7 +254,10 @@ mod tests {
         };
         assert!(is_stale(&found), "the recorded time is not the file's");
         found.mtime = None;
-        assert!(is_stale(&found), "no recorded time means the cache cannot vouch for it");
+        assert!(
+            is_stale(&found),
+            "no recorded time means the cache cannot vouch for it"
+        );
         found.mtime = mtime_of(found.path.as_ref().unwrap());
         assert!(!is_stale(&found));
         assert!(!is_stale(&Found::default()));

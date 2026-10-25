@@ -571,7 +571,6 @@ mod tests {
         assert!(error.contains("exceeds its size limit"), "{error}");
     }
 
-
     /// Stage uploads the way the job path does: each file's bytes on disk plus the
     /// manifest entry whose digest they must match.
     fn granted_stage(files: &[(&str, &str)]) -> (tempfile::TempDir, Vec<protocol::ManifestEntry>) {
@@ -634,8 +633,8 @@ mod tests {
         let (first, first_manifest) = granted_stage(&[("paper.qmd", "# version one")]);
         sync_granted_folder(first.path(), &root, &first_manifest, &record).expect("first sync");
         let (second, second_manifest) = granted_stage(&[("paper.qmd", "# version two")]);
-        let notes =
-            sync_granted_folder(second.path(), &root, &second_manifest, &record).expect("second sync");
+        let notes = sync_granted_folder(second.path(), &root, &second_manifest, &record)
+            .expect("second sync");
         assert!(notes.is_empty());
         assert_eq!(
             std::fs::read(root.join("paper.qmd")).expect("paper"),
@@ -655,8 +654,8 @@ mod tests {
 
         std::fs::write(root.join("paper.qmd"), b"edited by hand").expect("hand edit");
         let (second, second_manifest) = granted_stage(&[("paper.qmd", "# version two")]);
-        let notes =
-            sync_granted_folder(second.path(), &root, &second_manifest, &record).expect("second sync");
+        let notes = sync_granted_folder(second.path(), &root, &second_manifest, &record)
+            .expect("second sync");
         assert_eq!(
             notes,
             vec!["kept your copy of paper.qmd as paper.qmd.local".to_string()]
@@ -730,8 +729,8 @@ mod tests {
         let (first, first_manifest) = granted_stage(&[("paper.qmd", "# version one")]);
         sync_granted_folder(first.path(), &root, &first_manifest, &record).expect("first sync");
         let (second, second_manifest) = granted_stage(&[("paper.qmd", "# version two")]);
-        let notes =
-            sync_granted_folder(second.path(), &root, &second_manifest, &record).expect("second sync");
+        let notes = sync_granted_folder(second.path(), &root, &second_manifest, &record)
+            .expect("second sync");
         assert!(notes.is_empty());
         assert!(!root.join("paper.qmd.local").exists());
     }

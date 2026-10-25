@@ -210,9 +210,7 @@ pub async fn stop(state_home: &Path) -> Result<(), String> {
         .is_some_and(|s| s.instance == state.instance)
     {
         if tokio::time::Instant::now() >= deadline {
-            return Err(
-                "The local service is still shutting down. Retry shortly.".into(),
-            );
+            return Err("The local service is still shutting down. Retry shortly.".into());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

@@ -139,10 +139,7 @@ pub async fn run(
         .iter()
         .any(|entry| entry.path == request.entrypoint)
     {
-        return failed(
-            &request,
-            "the input inventory must include the entry file",
-        );
+        return failed(&request, "the input inventory must include the entry file");
     }
     let root = match std::fs::canonicalize(&binding.root) {
         Ok(root) if root == binding.root && root.is_dir() => root,
@@ -195,10 +192,15 @@ pub async fn run(
     command.process_group(0);
     let deadline =
         Instant::now() + Duration::from_secs(request.options.deadline_seconds.clamp(1, 3600));
-    let started = SystemTime::now();
+    // File times come from a coarse kernel clock that can trail this one by
+    // a tick, so a result written at once could read as older than the start.
+    let started = SystemTime::now() - Duration::from_secs(1);
     let (outcome, output) = native::run_confined_logged(command, &mut cancel, deadline).await;
 
-    let mut log: Vec<u8> = notes.iter().flat_map(|note| format!("{note}\n").into_bytes()).collect();
+    let mut log: Vec<u8> = notes
+        .iter()
+        .flat_map(|note| format!("{note}\n").into_bytes())
+        .collect();
     log.extend_from_slice(&output);
     let mut status = JobStatus {
         stage: "finished".into(),
@@ -306,7 +308,11 @@ fn failed(request: &JobRequest, error: &str) -> JobOutcome {
 
 /// The bytes of `relative` under `root` when this run wrote it. A file last
 /// modified before `started` was left by an earlier run and counts as absent.
-fn read_result(root: &Path, relative: &str, started: SystemTime) -> Result<Option<Vec<u8>>, String> {
+fn read_result(
+    root: &Path,
+    relative: &str,
+    started: SystemTime,
+) -> Result<Option<Vec<u8>>, String> {
     match std::fs::metadata(root.join(relative)).and_then(|metadata| metadata.modified()) {
         Ok(modified) if modified < started => Ok(None),
         Ok(_) => read_inside(root, relative),

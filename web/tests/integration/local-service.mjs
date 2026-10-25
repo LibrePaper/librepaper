@@ -60,7 +60,7 @@ try {
   assert.equal(found.address, `http://127.0.0.1:${port}/`);
   assert.equal(found.instance, first.instance);
   assert.ok(found.token, "the endpoint carries the local credential");
-  assert.deepEqual(found.protocol, [2]);
+  assert.deepEqual(found.protocol, [3]);
   const base = `${found.address}librepaper/local`;
   const manage = `${found.address}companion/api`;
   const shell = { Authorization: `Bearer ${found.token}`, "X-LibrePaper-Origin": site };

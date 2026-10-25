@@ -1523,7 +1523,10 @@ mod settings_tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let error = body_json(response).await["error"].to_string();
         assert!(error.contains("reload the page"), "{error}");
-        assert!(std::fs::read_dir(&inner.jobs_root).unwrap().next().is_none());
+        assert!(std::fs::read_dir(&inner.jobs_root)
+            .unwrap()
+            .next()
+            .is_none());
     }
 
     #[tokio::test]
@@ -1562,7 +1565,10 @@ mod settings_tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::ACCEPTED);
-        let id = body_json(response).await["id"].as_str().unwrap().to_string();
+        let id = body_json(response).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         let status = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -1672,7 +1678,10 @@ mod settings_tests {
                 r#"{"command":["latexmk"],"result":"../{stem}.pdf"}"#,
             ),
             ("latex.pdf", r#"{"command":["latexmk"]}"#),
-            ("latex.pdf", r#"{"reset":true,"command":["x"],"result":"x"}"#),
+            (
+                "latex.pdf",
+                r#"{"reset":true,"command":["x"],"result":"x"}"#,
+            ),
             ("latex.html", r#"{"reset":true}"#),
             ("pandoc.pdf", r#"{"reset":true}"#),
         ] {
@@ -1765,7 +1774,10 @@ mod supersession_tests {
     #[test]
     fn supersession_spares_other_projects_newer_generations_and_running_jobs() {
         let mut jobs = HashMap::new();
-        jobs.insert("other-project".to_string(), entry("o", "notes", "hosted", 1));
+        jobs.insert(
+            "other-project".to_string(),
+            entry("o", "notes", "hosted", 1),
+        );
         jobs.insert("other-origin".to_string(), entry("p", "paper", "hosted", 1));
         jobs.insert("newer".to_string(), entry("o", "paper", "hosted", 3));
         let mut running = entry("o", "paper", "hosted", 1);
@@ -1790,7 +1802,10 @@ mod supersession_tests {
         };
         let mut jobs = HashMap::new();
         jobs.insert("same".to_string(), running("o", "paper", "hosted"));
-        jobs.insert("other-binding".to_string(), running("o", "paper", "q-folder"));
+        jobs.insert(
+            "other-binding".to_string(),
+            running("o", "paper", "q-folder"),
+        );
         jobs.insert("other-project".to_string(), running("o", "notes", "hosted"));
         jobs.insert("other-origin".to_string(), running("p", "paper", "hosted"));
         jobs.insert("queued".to_string(), entry("o", "paper", "hosted", 1));

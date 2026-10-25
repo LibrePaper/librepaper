@@ -97,7 +97,10 @@ async fn a_run_writes_the_files_runs_the_command_and_returns_the_result() {
     let names: Vec<_> = outcome.status.outputs.keys().cloned().collect();
     assert_eq!(names, ["artifact", "log", "synctex"]);
     for (name, entry) in &outcome.status.outputs {
-        assert_eq!(*entry, protocol::OutputEntry::from_bytes(&outcome.files[name]));
+        assert_eq!(
+            *entry,
+            protocol::OutputEntry::from_bytes(&outcome.files[name])
+        );
     }
     assert_eq!(
         outcome.status.provenance,
@@ -197,7 +200,11 @@ async fn a_result_left_by_an_earlier_run_is_not_returned() {
 async fn a_failing_command_reports_its_status_and_its_log() {
     let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let fixture = fixture("typst", "pdf", "paper.typ");
-    script("typst.pdf", "echo 'error: broken' >&2; exit 3", "{stem}.pdf");
+    script(
+        "typst.pdf",
+        "echo 'error: broken' >&2; exit 3",
+        "{stem}.pdf",
+    );
     let outcome = run_fixture(&fixture, false).await;
     assert_eq!(outcome.status.status, "failed");
     assert_eq!(outcome.status.exit, 3);
@@ -290,7 +297,8 @@ async fn real_quarto_renders_html_with_its_default_command() {
 #[allow(clippy::await_holding_lock)]
 async fn real_typst_renders_a_pdf_with_its_default_command() {
     let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let outcome = render_with_the_default_command("typst", "pdf", "docs/paper.typ", "= Title\n").await;
+    let outcome =
+        render_with_the_default_command("typst", "pdf", "docs/paper.typ", "= Title\n").await;
     assert_eq!(outcome.status.status, "done", "{}", outcome.status.log_tail);
     assert!(outcome.files["artifact"].starts_with(b"%PDF-"));
 }

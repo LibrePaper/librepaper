@@ -79,9 +79,7 @@ pub fn reset(key: Key) -> Result<(), String> {
 
 fn update(key: Key, record: Option<Record>) -> Result<(), String> {
     let mut guard = STATE.write().unwrap_or_else(|poison| poison.into_inner());
-    let state = guard
-        .as_mut()
-        .ok_or("renderers store is not initialised")?;
+    let state = guard.as_mut().ok_or("renderers store is not initialised")?;
     let mut entries = state.entries.clone();
     match record {
         Some(record) => entries.insert(key.to_string(), record),

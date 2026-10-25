@@ -322,7 +322,15 @@ mod tests {
         assert_eq!(key.format, Format::Latex);
         assert_eq!(key.output, Output::Pdf);
         assert_eq!(key.to_string(), "latex.pdf");
-        for bad in ["latex", "latex.", ".pdf", "pandoc.pdf", "latex.odt", "a.b.c", ""] {
+        for bad in [
+            "latex",
+            "latex.",
+            ".pdf",
+            "pandoc.pdf",
+            "latex.odt",
+            "a.b.c",
+            "",
+        ] {
             assert!(Key::parse(bad).is_err(), "{bad:?} parsed");
         }
     }
@@ -451,7 +459,14 @@ mod tests {
 
     #[test]
     fn the_result_must_expand_to_a_safe_relative_path() {
-        for bad in ["", "../out.pdf", "/tmp/out.pdf", "out/../../x.pdf", "a\\b.pdf", "C:/x.pdf"] {
+        for bad in [
+            "",
+            "../out.pdf",
+            "/tmp/out.pdf",
+            "out/../../x.pdf",
+            "a\\b.pdf",
+            "C:/x.pdf",
+        ] {
             assert!(
                 record(&["tool"], bad).validate().is_err(),
                 "{bad:?} was accepted"
@@ -470,7 +485,9 @@ mod tests {
         .validate()
         .is_err());
         assert!(record(&["good", ""], "{stem}.pdf").validate().is_err());
-        assert!(record(&["good", "bad\0arg"], "{stem}.pdf").validate().is_err());
+        assert!(record(&["good", "bad\0arg"], "{stem}.pdf")
+            .validate()
+            .is_err());
         let long = "x".repeat(4097);
         assert!(record(&[long.as_str()], "{stem}.pdf").validate().is_err());
         assert!(Record {
