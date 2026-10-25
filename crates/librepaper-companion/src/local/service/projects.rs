@@ -11,9 +11,31 @@
 //! platform and on network drives. A file is reported once its size and
 //! modification time held still across one poll, and a change whose digest
 //! matches the written record is LibrePaper's own write and is not reported.
+//!
+//! A render in a folder project writes its own files into the folder: the
+//! result, the SyncTeX file and whatever the tool leaves beside them. Those
+//! are not outside changes. Importing one would change the project, which
+//! renders again, and an output that differs on every run would loop forever.
+//! So the job worker records the paths a render wrote, per project, and the
+//! poller and the tree listing leave them out for as long as they stay
+//! recorded. The record lives in memory, so a restart empties it until the
+//! next render in that project.
+//!
+//! - The result and SyncTeX paths are recorded before the command starts.
+//! - Every other file the run created or changed, found by listing the folder
+//!   before and after it, is recorded when it ends. A file the project itself
+//!   lists is the editor's and is never claimed this way, so a command that
+//!   rewrites a source file still shows up as an outside change.
+//! - At most `MAX_RENDER_OUTPUTS` paths are kept per project, and forgetting
+//!   the project drops them. A poller that stops for want of requests keeps
+//!   them, because the folder's outputs are still not the person's files when
+//!   the project is opened again.
+//! - A recorded file that the page already holds is still reported when it is
+//!   removed, since the page has to drop it.
 
 use super::*;
 
+use std::collections::BTreeSet;
 use std::time::UNIX_EPOCH;
 
 use crate::local::bindings::ProjectBinding;
@@ -21,6 +43,10 @@ use crate::local::render::workspace;
 
 /// Most files a folder project may list. A bigger folder answers 413.
 pub(super) const MAX_PROJECT_FILES: usize = 5000;
+
+/// Most render outputs remembered per project. Once the record is full, later
+/// paths are not added; the ones it holds stay.
+const MAX_RENDER_OUTPUTS: usize = 512;
 
 /// Directories and files the project never lists, besides anything hidden.
 const IGNORED_NAMES: [&str; 5] = ["node_modules", "renv", "__pycache__", ".quarto", "_freeze"];
@@ -169,7 +195,9 @@ struct Tree {
     listing: BTreeMap<String, (FileStat, String)>,
 }
 
-fn read_tree(root: &Path) -> Result<Tree, WalkError> {
+/// Read the tree at `root`. A path in `render_outputs` is a file a render
+/// wrote, so it is left out of `files` and named in `skipped`.
+fn read_tree(root: &Path, render_outputs: &BTreeSet<String>) -> Result<Tree, WalkError> {
     let walked = walk(root)?;
     let mut tree = Tree {
         files: Vec::new(),
@@ -181,6 +209,11 @@ fn read_tree(root: &Path) -> Result<Tree, WalkError> {
         listing: BTreeMap::new(),
     };
     for (path, stat) in walked.files {
+        if render_outputs.contains(&path) {
+            tree.skipped
+                .push(json!({"path": path, "reason": "render output"}));
+            continue;
+        }
         match workspace::read_file_bounded_to(&root.join(&path), "project file", MAX_UPLOAD_BYTES) {
             Ok(bytes) => {
                 let digest = librepaper_document::results::sha256(&bytes);
@@ -253,6 +286,9 @@ struct Scan {
     /// when it differs and `removed` when it vanishes; a path outside it is
     /// `added`.
     digests: BTreeMap<String, String>,
+    /// Files a render wrote into the folder. They are never reported as added
+    /// or changed. The poller refreshes this before every look.
+    render_outputs: BTreeSet<String>,
 }
 
 impl Scan {
@@ -271,13 +307,16 @@ impl Scan {
                 .iter()
                 .map(|(path, (_, digest))| (path.clone(), digest.clone()))
                 .collect(),
+            render_outputs: BTreeSet::new(),
         }
     }
 
     /// Look at the tree once. A file is reported when it held still across
     /// this look and the one before and differs from what was accepted
-    /// earlier; a file that is gone is reported at once. A tree that cannot
-    /// be walked this time reports nothing and changes nothing.
+    /// earlier; a file that is gone is reported at once. A file a render
+    /// wrote is skipped, and only its removal can be reported, when the page
+    /// holds it. A tree that cannot be walked this time reports nothing and
+    /// changes nothing.
     fn look(&mut self, root: &Path, record: &Path) -> Vec<Change> {
         let Ok(now) = walk(root).map(|walked| walked.files) else {
             return Vec::new();
@@ -285,6 +324,9 @@ impl Scan {
         let mut changes = Vec::new();
         let mut recorded: Option<BTreeMap<String, String>> = None;
         for (path, stat) in &now {
+            if self.render_outputs.contains(path) {
+                continue;
+            }
             if self.seen.get(path) != Some(stat) || self.settled.get(path) == Some(stat) {
                 continue;
             }
@@ -465,10 +507,17 @@ impl Shared {
     }
 }
 
+/// The files renders wrote into each project's folder, by binding id.
+type RenderOutputs = Arc<std::sync::Mutex<HashMap<String, BTreeSet<String>>>>;
+
 /// The polled projects of this service, by binding id.
 pub(super) struct Registry {
     timing: Timing,
     pollers: Arc<std::sync::Mutex<HashMap<String, Arc<Shared>>>>,
+    /// Kept beside the pollers, not on them: a poller stops when the page goes
+    /// quiet, and the outputs are still not outside changes when the project
+    /// is read again.
+    outputs: RenderOutputs,
 }
 
 impl Registry {
@@ -476,6 +525,7 @@ impl Registry {
         Registry {
             timing,
             pollers: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            outputs: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -516,9 +566,32 @@ impl Registry {
             binding.id.clone(),
             binding.root.clone(),
             record,
+            self.outputs.clone(),
             self.timing,
         ));
         cursor
+    }
+
+    /// Record `paths` as files a render wrote into the folder of project
+    /// `id`, so its poller and its tree leave them out. Paths past
+    /// `MAX_RENDER_OUTPUTS` are dropped rather than pushing out the ones held.
+    pub(super) fn note_render_outputs(&self, id: &str, paths: impl IntoIterator<Item = String>) {
+        let mut outputs = self
+            .outputs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let held = outputs.entry(id.to_string()).or_default();
+        for path in paths {
+            if held.len() >= MAX_RENDER_OUTPUTS {
+                break;
+            }
+            held.insert(path);
+        }
+    }
+
+    /// The paths renders wrote into the folder of project `id`.
+    pub(super) fn render_outputs(&self, id: &str) -> BTreeSet<String> {
+        render_outputs_of(&self.outputs, id)
     }
 
     /// The queue of a polled project, or `None` when no tree was read since
@@ -533,8 +606,13 @@ impl Registry {
         Some(shared.clone())
     }
 
-    /// Stop polling `id`, as when its folder is forgotten.
+    /// Stop polling `id` and drop its render outputs, as when its folder is
+    /// forgotten.
     fn forget(&self, id: &str) {
+        self.outputs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id);
         let removed = self
             .pollers
             .lock()
@@ -547,12 +625,22 @@ impl Registry {
     }
 }
 
+fn render_outputs_of(outputs: &RenderOutputs, id: &str) -> BTreeSet<String> {
+    outputs
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(id)
+        .cloned()
+        .unwrap_or_default()
+}
+
 async fn run_poller(
     shared: Arc<Shared>,
     pollers: Arc<std::sync::Mutex<HashMap<String, Arc<Shared>>>>,
     id: String,
     root: PathBuf,
     record: PathBuf,
+    outputs: RenderOutputs,
     timing: Timing,
 ) {
     let mut scan: Option<Scan> = None;
@@ -584,9 +672,13 @@ async fn run_poller(
             scan = taken;
         }
         let (root, record) = (root.clone(), record.clone());
+        let render_outputs = render_outputs_of(&outputs, &id);
         let looked = tokio::task::spawn_blocking(move || {
             let changes = match scan.as_mut() {
-                Some(scan) => scan.look(&root, &record),
+                Some(scan) => {
+                    scan.render_outputs = render_outputs;
+                    scan.look(&root, &record)
+                }
                 None => Vec::new(),
             };
             (scan, changes)
@@ -598,6 +690,86 @@ async fn run_poller(
         scan = next;
         shared.push(changes);
     }
+}
+
+/* ------------------------------------------------------- render outputs */
+
+/// A render running in a folder project, watched for the files it writes.
+pub(super) struct RenderWatch {
+    id: String,
+    root: PathBuf,
+    /// The paths the project lists. They are the editor's files, so the run
+    /// is never credited with writing one.
+    listed: HashSet<String>,
+    /// The folder's files before the command ran, or `None` when it could not
+    /// be listed, in which case only the expected outputs are recorded.
+    before: Option<BTreeMap<String, FileStat>>,
+}
+
+impl RenderWatch {
+    /// Start watching `request`, which is about to run. `None` unless it
+    /// names a folder project. The result and SyncTeX paths are recorded
+    /// now, so the poller cannot report them while the command is still
+    /// writing.
+    pub(super) async fn begin(inner: &Inner, request: &JobRequest) -> Option<RenderWatch> {
+        let binding = inner
+            .bindings
+            .get_project(&request.binding_id, &request.origin)
+            .filter(|binding| binding.project == request.project)?;
+        let expected = crate::local::render::expected_outputs(request);
+        inner.projects.note_render_outputs(&binding.id, expected);
+        let walked_root = binding.root.clone();
+        let before = tokio::task::spawn_blocking(move || listed_files(&walked_root))
+            .await
+            .ok()
+            .flatten();
+        Some(RenderWatch {
+            id: binding.id,
+            root: binding.root,
+            listed: request
+                .manifest
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect(),
+            before,
+        })
+    }
+
+    /// The run is over, however it ended. Record every file it created or
+    /// changed.
+    pub(super) async fn finish(self, inner: &Inner) {
+        let Some(before) = self.before else {
+            return;
+        };
+        let root = self.root;
+        let after = tokio::task::spawn_blocking(move || listed_files(&root)).await;
+        let Ok(Some(after)) = after else {
+            return;
+        };
+        let written = written_since(&before, &after, &self.listed);
+        inner.projects.note_render_outputs(&self.id, written);
+    }
+}
+
+/// The files the poller would see in `root`, or `None` when the folder cannot
+/// be walked.
+fn listed_files(root: &Path) -> Option<BTreeMap<String, FileStat>> {
+    walk(root).ok().map(|walked| walked.files)
+}
+
+/// The files in `after` that are new or differ from `before`, without the
+/// ones in `listed`. A command that rewrites a file the project lists changed
+/// the editor's file, which the page has to hear about.
+fn written_since(
+    before: &BTreeMap<String, FileStat>,
+    after: &BTreeMap<String, FileStat>,
+    listed: &HashSet<String>,
+) -> Vec<String> {
+    after
+        .iter()
+        .filter(|(path, stat)| before.get(*path) != Some(*stat) && !listed.contains(*path))
+        .map(|(path, _)| path.clone())
+        .collect()
 }
 
 /* ------------------------------------------------------------- handlers */
@@ -751,8 +923,9 @@ pub(super) async fn handle_tree(
     let _ = inner.bindings.touch_project(id, origin.unwrap_or_default());
     let record_path = inner.bindings.written_record(&binding.id);
     let root = binding.root.clone();
+    let render_outputs = inner.projects.render_outputs(&binding.id);
     let read = tokio::task::spawn_blocking(move || {
-        let tree = read_tree(&root).map_err(|error| match error {
+        let tree = read_tree(&root, &render_outputs).map_err(|error| match error {
             WalkError::TooMany => (
                 413,
                 format!("the folder holds more than {MAX_PROJECT_FILES} files"),
@@ -924,7 +1097,7 @@ mod tests {
         write(root.path(), "main.tex", "hello");
         write(root.path(), "a/b.txt", "world");
         write(root.path(), ".git/config", "x");
-        let tree = read_tree(root.path()).unwrap();
+        let tree = read_tree(root.path(), &BTreeSet::new()).unwrap();
         assert_eq!(tree.files.len(), 2);
         assert!(tree.files[0]["mtime"].is_u64());
         assert_eq!(
@@ -942,7 +1115,7 @@ mod tests {
         write(root.path(), "data.csv", "1,2,3");
         let record = state.path().join("record.json");
         // The page lists both files but keeps only main.tex in the project.
-        let tree = read_tree(root.path()).unwrap();
+        let tree = read_tree(root.path(), &BTreeSet::new()).unwrap();
         assert!(tree.listing.contains_key("data.csv"));
         assert!(!record.exists());
         workspace::mirror_granted_folder(staged.path(), root.path(), &[], &record).unwrap();
@@ -977,7 +1150,7 @@ mod tests {
 
     /// Read the tree, as the page does, and start a scan from its listing.
     fn seeded_scan(root: &Path, _record: &Path) -> Scan {
-        Scan::from_listing(&read_tree(root).unwrap().listing)
+        Scan::from_listing(&read_tree(root, &BTreeSet::new()).unwrap().listing)
     }
 
     #[test]
@@ -1150,7 +1323,7 @@ mod tests {
             .unwrap();
         let registry = Registry::new(timing);
         let record = inner.bindings.written_record(&binding.id);
-        let tree = read_tree(&root_path).unwrap();
+        let tree = read_tree(&root_path, &BTreeSet::new()).unwrap();
         // A change between the tree read and the poller's first scan.
         write(&root_path, "main.tex", "edited before the first scan");
         let _ = registry.set_baseline(&binding, record, Scan::from_listing(&tree.listing));
@@ -1259,5 +1432,287 @@ mod tests {
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["changes"][0]["path"], "main.tex");
         assert_eq!(body["changes"][0]["kind"], "changed");
+    }
+
+    /* ------------------------------------------------------ render outputs */
+
+    const ORIGIN: &str = "https://paper.example";
+
+    fn names(items: &[&str]) -> BTreeSet<String> {
+        items.iter().map(|item| (*item).to_string()).collect()
+    }
+
+    #[test]
+    fn a_render_output_is_not_reported_but_an_unrelated_file_is() {
+        let (root, _state, record) = setup();
+        write(root.path(), "main.tex", "one");
+        let mut scan = seeded_scan(root.path(), &record);
+        scan.render_outputs = names(&["main.pdf", "main.synctex.gz"]);
+
+        write(root.path(), "main.pdf", "%PDF first run");
+        write(root.path(), "main.synctex.gz", "sync");
+        write(root.path(), "notes.txt", "written at the same time");
+        assert!(scan.look(root.path(), &record).is_empty());
+        let changes = scan.look(root.path(), &record);
+        let reported: Vec<(&str, &str)> = changes
+            .iter()
+            .map(|change| (change.path.as_str(), change.kind))
+            .collect();
+        assert_eq!(reported, [("notes.txt", "added")]);
+
+        // A later run writes the PDF again with other bytes. Still nothing.
+        write(root.path(), "main.pdf", "%PDF second run, different bytes");
+        for _ in 0..3 {
+            assert!(scan.look(root.path(), &record).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_held_file_that_becomes_a_render_output_is_still_reported_when_removed() {
+        let (root, _state, record) = setup();
+        write(root.path(), "main.tex", "one");
+        write(root.path(), "figure.pdf", "held by the page");
+        let mut scan = seeded_scan(root.path(), &record);
+        scan.render_outputs = names(&["figure.pdf"]);
+        write(root.path(), "figure.pdf", "rewritten by a render");
+        for _ in 0..3 {
+            assert!(scan.look(root.path(), &record).is_empty());
+        }
+        std::fs::remove_file(root.path().join("figure.pdf")).unwrap();
+        let changes = scan.look(root.path(), &record);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "figure.pdf");
+        assert_eq!(changes[0].kind, "removed");
+    }
+
+    #[test]
+    fn the_tree_leaves_render_outputs_out_and_names_them_skipped() {
+        let root = tempfile::tempdir().unwrap();
+        write(root.path(), "main.tex", "hello");
+        write(root.path(), "main.pdf", "%PDF");
+        let tree = read_tree(root.path(), &names(&["main.pdf"])).unwrap();
+        assert_eq!(tree.files.len(), 1);
+        assert_eq!(tree.files[0]["path"], "main.tex");
+        assert!(!tree.listing.contains_key("main.pdf"));
+        let skipped = json!({"path": "main.pdf", "reason": "render output"});
+        assert!(tree.skipped.contains(&skipped));
+    }
+
+    #[test]
+    fn the_files_a_run_wrote_are_the_new_and_changed_ones_the_project_does_not_list() {
+        let stat = |size| FileStat { size, mtime_ns: 5 };
+        let before: BTreeMap<String, FileStat> = [
+            ("main.tex".to_string(), stat(1)),
+            ("old.pdf".to_string(), stat(2)),
+            ("same.png".to_string(), stat(3)),
+        ]
+        .into();
+        let after: BTreeMap<String, FileStat> = [
+            ("main.tex".to_string(), stat(9)),
+            ("new.aux".to_string(), stat(1)),
+            ("old.pdf".to_string(), stat(4)),
+            ("same.png".to_string(), stat(3)),
+        ]
+        .into();
+        let listed: HashSet<String> = ["main.tex".to_string()].into();
+        assert_eq!(written_since(&before, &after, &listed), ["new.aux", "old.pdf"]);
+    }
+
+    #[test]
+    fn the_render_output_record_is_bounded_and_keeps_what_it_holds() {
+        let registry = Registry::new(Timing::default());
+        registry.note_render_outputs("project", ["main.pdf".to_string()]);
+        registry.note_render_outputs(
+            "project",
+            (0..MAX_RENDER_OUTPUTS + 10).map(|index| format!("figure-{index}.png")),
+        );
+        let held = registry.render_outputs("project");
+        assert_eq!(held.len(), MAX_RENDER_OUTPUTS);
+        assert!(held.contains("main.pdf"));
+        assert!(registry.render_outputs("another").is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_poller_task_leaves_render_outputs_out_of_its_changes() {
+        let (root, state, _record) = setup();
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        write(&root_path, "main.tex", "one");
+        let timing = Timing {
+            interval: Duration::from_millis(20),
+            long_poll: Duration::from_secs(5),
+            idle: Duration::from_secs(30),
+            max_events: 100,
+        };
+        let inner = test_support::inner(state.path(), state.path()).await;
+        let binding = inner.bindings.open_project(ORIGIN, &root_path).unwrap();
+        let registry = Registry::new(timing);
+        let record = inner.bindings.written_record(&binding.id);
+        let tree = read_tree(&root_path, &BTreeSet::new()).unwrap();
+        let _ = registry.set_baseline(&binding, record, Scan::from_listing(&tree.listing));
+        let shared = registry.get(&binding.id).unwrap();
+        let cursor = shared.wait(None, Duration::ZERO).await["cursor"]
+            .as_u64()
+            .unwrap();
+
+        let outputs = ["main.pdf", "main.synctex.gz"].map(String::from);
+        registry.note_render_outputs(&binding.id, outputs);
+        write(&root_path, "main.pdf", "%PDF");
+        write(&root_path, "main.synctex.gz", "sync");
+        write(&root_path, "notes.txt", "notes");
+        let answer = shared.wait(Some(cursor), timing.long_poll).await;
+        let paths: Vec<&Value> = answer["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|change| &change["path"])
+            .collect();
+        assert_eq!(paths, ["notes.txt"]);
+        // The outputs settled in the same looks, so they are not still coming.
+        let cursor = answer["cursor"].as_u64().unwrap();
+        let next = shared.wait(Some(cursor), Duration::from_millis(300)).await;
+        assert_eq!(next["changes"], json!([]));
+    }
+
+    /// An `Inner` whose pollers look a few times a second and whose long
+    /// polls end after a second and a half. A file a run created is recorded
+    /// when the run ends, so the looks must be slower than the test's write
+    /// followed by `finish`.
+    async fn quick_inner(state: &Path) -> Arc<Inner> {
+        let mut inner = test_support::inner(state, state).await;
+        Arc::get_mut(&mut inner).expect("not shared yet").projects = Registry::new(Timing {
+            interval: Duration::from_millis(250),
+            long_poll: Duration::from_millis(1500),
+            idle: Duration::from_secs(30),
+            max_events: 100,
+        });
+        inner
+    }
+
+    fn render_request(binding: &ProjectBinding, entrypoint: &str) -> JobRequest {
+        JobRequest {
+            protocol: 3,
+            project: binding.project.clone(),
+            origin: ORIGIN.into(),
+            snapshot: "snapshot".into(),
+            generation: 1,
+            format: "latex".into(),
+            output: "pdf".into(),
+            entrypoint: entrypoint.into(),
+            binding_id: binding.id.clone(),
+            manifest: vec![ManifestEntry {
+                path: entrypoint.into(),
+                sha256: librepaper_document::results::sha256(b"hello"),
+                size: 5,
+            }],
+            options: Default::default(),
+        }
+    }
+
+    async fn body_of(reply: Reply) -> Value {
+        let bytes = axum::body::to_bytes(reply.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_render_in_a_folder_project_is_not_an_outside_change_and_not_in_the_tree() {
+        let state = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        write(&root_path, "main.tex", "hello");
+        let inner = quick_inner(state.path()).await;
+        let binding = inner.bindings.open_project(ORIGIN, &root_path).unwrap();
+        let headers = test_support::bearer(&inner);
+
+        let tree = body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id).await).await;
+        let cursor = tree["cursor"].as_u64().unwrap();
+
+        // The render: the expected outputs and an auxiliary file the run
+        // created, written between `begin` and `finish`.
+        let render = RenderWatch::begin(&inner, &render_request(&binding, "main.tex"))
+            .await
+            .expect("a folder project is watched");
+        // The result and SyncTeX paths are recorded before the command runs.
+        let held = inner.projects.render_outputs(&binding.id);
+        assert!(held.is_superset(&names(&["main.pdf", "main.synctex.gz", "main.synctex"])));
+        write(&root_path, "main.pdf", "%PDF");
+        write(&root_path, "main.synctex.gz", "sync");
+        write(&root_path, "main.aux", "aux");
+        render.finish(&inner).await;
+        // Another program writes an unrelated file next to them.
+        write(&root_path, "notes.txt", "notes");
+
+        let changes = |since: u64| {
+            let request = Request::get(format!("/changes?since={since}"))
+                .body(Body::empty())
+                .unwrap();
+            handle_changes(&inner, &headers, Some(ORIGIN), &binding.id, request)
+        };
+        let mut answer = body_of(changes(cursor).await).await;
+        for _ in 0..10 {
+            if !answer["changes"].as_array().unwrap().is_empty() {
+                break;
+            }
+            answer = body_of(changes(cursor).await).await;
+        }
+        assert_eq!(answer["changes"].as_array().unwrap().len(), 1);
+        assert_eq!(answer["changes"][0]["path"], "notes.txt");
+        assert_eq!(answer["changes"][0]["kind"], "added");
+        // The outputs are not still on their way.
+        let next = body_of(changes(answer["cursor"].as_u64().unwrap()).await).await;
+        assert_eq!(next["changes"], json!([]));
+
+        // A folder opened after the render does not list its own outputs.
+        let tree = body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id).await).await;
+        let listed: Vec<&Value> = tree["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| &file["path"])
+            .collect();
+        assert_eq!(listed, ["main.tex", "notes.txt"]);
+        let skipped: Vec<&Value> = tree["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["reason"] == "render output")
+            .map(|entry| &entry["path"])
+            .collect();
+        assert_eq!(skipped, ["main.aux", "main.pdf", "main.synctex.gz"]);
+    }
+
+    #[tokio::test]
+    async fn only_a_folder_project_render_is_watched() {
+        let state = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let inner = quick_inner(state.path()).await;
+        let binding = inner.bindings.open_project(ORIGIN, root.path()).unwrap();
+        let mut hosted = render_request(&binding, "main.tex");
+        hosted.binding_id = "hosted".into();
+        assert!(RenderWatch::begin(&inner, &hosted).await.is_none());
+        let mut other = render_request(&binding, "main.tex");
+        other.project = "another".into();
+        assert!(RenderWatch::begin(&inner, &other).await.is_none());
+        assert!(inner.projects.render_outputs(&binding.id).is_empty());
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_project_clears_its_render_outputs() {
+        let state = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let inner = quick_inner(state.path()).await;
+        let binding = inner.bindings.open_project(ORIGIN, root.path()).unwrap();
+        let headers = test_support::bearer(&inner);
+        let render = RenderWatch::begin(&inner, &render_request(&binding, "main.tex"))
+            .await
+            .unwrap();
+        render.finish(&inner).await;
+        let held = inner.projects.render_outputs(&binding.id);
+        assert!(held.contains("main.pdf"));
+
+        let reply = handle_forget(&inner, &headers, Some(ORIGIN), &binding.id).await;
+        assert_eq!(reply.status(), StatusCode::OK);
+        assert!(inner.projects.render_outputs(&binding.id).is_empty());
     }
 }

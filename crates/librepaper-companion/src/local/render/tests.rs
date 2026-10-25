@@ -135,6 +135,25 @@ async fn only_a_pdf_run_reads_synctex() {
     assert!(!outcome.files.contains_key("synctex"));
 }
 
+#[test]
+fn the_expected_outputs_are_the_result_and_for_a_pdf_its_synctex_files() {
+    let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let latex = fixture("latex", "pdf", "chapters/main.tex");
+    assert_eq!(
+        expected_outputs(&latex.request),
+        [
+            "chapters/main.pdf",
+            "chapters/main.synctex.gz",
+            "chapters/main.synctex",
+        ]
+    );
+    let quarto = fixture("quarto", "html", "paper.qmd");
+    assert_eq!(expected_outputs(&quarto.request), ["paper.html"]);
+    let mut unknown = fixture("typst", "pdf", "main.typ").request;
+    unknown.output = "docx".into();
+    assert!(expected_outputs(&unknown).is_empty());
+}
+
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn exit_zero_with_no_result_file_fails_and_names_the_expected_path() {

@@ -37,6 +37,7 @@ A folder project is a binding with `kind: "project"`, `project: "local-<id>"`, n
 `GET projects/<id>/tree` answers `{ files: [{ path, size, sha256, mtime }], skipped: [{ path, reason }] }`.
 - It walks the root, skipping `.git`, any hidden file or folder, `node_modules`, `renv`, `__pycache__`, `.quarto`, `_freeze`, symlinks, and files over the upload size bound. At most 5000 files; past that it answers 413.
 - It records every listed file's digest in the binding's written record, so the folder mirror treats every file of the project as managed: a deletion in the editor trashes it, and a rename moves it.
+- A file a local render wrote into the folder (see Outside changes) is left out of `files` and named in `skipped` with the reason "render output".
 - `GET projects/<id>/files/<path>`: the bytes of one file inside the root, checked the same way.
 
 ### Writing
@@ -49,6 +50,7 @@ A folder project is a binding with `kind: "project"`, `project: "local-<id>"`, n
 - A background poller per open project stats the tree (with the same skip rules) every second.
 - A file is reported after its size and modification time held still across one poll, with its new digest.
 - A change whose digest equals the written record's digest for that path is LibrePaper's own write and is not reported.
+- A file a local render wrote into the folder is not reported as added or changed, or the project would import its own PDF and render again. The result and SyncTeX paths are recorded before the command starts. Every other file the run created or changed, found by listing the folder before and after, is recorded when it ends, except a file the project lists. The record is kept in memory, holds at most 512 paths per project, outlives the poller, and is dropped when the folder is forgotten.
 - The poller stops when no `changes` request has arrived for 60 seconds.
 
 ### Server
