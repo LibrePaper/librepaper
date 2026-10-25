@@ -109,6 +109,7 @@ On macOS and with the Windows installer, the app checks for a new version when i
 - Closing the last window keeps the app running in the system tray (the menu bar on macOS).
 - The tray menu shows the window again, opens a new window or quits the app.
 - Quit in the tray (or the File menu) stops the local service.
+- Quit saves the project folder of every window first. If a folder cannot be saved, the app stays open and says so.
 - On Linux, the tray needs AppIndicator support (on GNOME, the AppIndicator extension). Without it, closing the last window quits the app.
 
 ### Help

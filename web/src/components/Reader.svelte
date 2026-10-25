@@ -23,6 +23,7 @@
   import * as localQuarto from "../lib/desktop/client.js";
   import { backups as backupStatusStore } from "../lib/desktop/backups.svelte.js";
   import { folderProjectHref, keepFolderProject } from "../lib/desktop/projects.js";
+  import { listenForQuit } from "../lib/desktop/quit.js";
   import { basename } from "../lib/file-manager.js";
   import { createAnnotations } from "../lib/reader/annotations.svelte.js";
   import { createReaderBoot } from "../lib/reader/boot.js";
@@ -1522,24 +1523,29 @@
     onError: (error) => say(`The project folder could not be updated: ${error?.message || "unknown error"}`, { kind: "problem", id: "reader:folder-sync" }),
   }) : null;
   $effect(() => () => folderSync?.dispose());
-  // Every move this page makes to another page goes through here. A local
-  // project's edits wait in memory for the folder write, so the folder is
-  // settled first, and a write that fails keeps the person on this page, which
-  // holds the only copy of what the folder lacks.
-  // Quitting exits the native app at once, so a local project's pending folder
-  // write is settled first; a write that fails keeps the app open and says so.
+  // Quitting exits the native app, which ends every window. The app asks each
+  // window to settle its folder first and exits when all of them are saved, so
+  // this page only sends the request. Its own folder is settled by the
+  // listener below, the same as the folder of a window it did not quit from.
   async function quit() {
-    if (folderSync && !(await folderSync.flush())) {
-      say("The folder could not be saved, so the app stays open.", { kind: "problem", id: "reader:quit" });
-      return;
-    }
     try {
       await localQuarto.shellAction("quit");
     } catch (error) {
       say(error.message || "The desktop app could not quit.", { kind: "problem", id: "reader:quit" });
     }
   }
+  // A web project answers ok at once. A write that fails answers not ok, the
+  // app stays open, and every window says so.
+  $effect(() => listenForQuit({
+    settle: folderSync ? () => folderSync.flush() : null,
+    answer: (body) => localQuarto.shellAction("quit-ready", body),
+    cancelled: () => say("A project folder could not be saved, so the app stays open.", { kind: "problem", id: "reader:quit" }),
+  }));
 
+  // Every move this page makes to another page goes through here. A local
+  // project's edits wait in memory for the folder write, so the folder is
+  // settled first, and a write that fails keeps the person on this page, which
+  // holds the only copy of what the folder lacks.
   async function leaveTo(href) {
     if (folderSync && !(await folderSync.flush())) {
       say("The folder could not be saved.", { kind: "problem", id: "reader:folder-leave" });
