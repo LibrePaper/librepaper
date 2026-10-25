@@ -99,10 +99,10 @@ pub async fn reports(refresh: bool) -> BTreeMap<String, RendererReport> {
 const SYNCTEX_EXTENSIONS: [&str; 2] = ["synctex.gz", "synctex"];
 
 /// The files a run of `request` is expected to leave in the workspace: the
-/// result path and, for a PDF, the SyncTeX files beside it. Empty when the
-/// job names no tool record. A folder project's change poller is told about
-/// these before the command starts, so it never reports them as outside
-/// changes.
+/// result path, which comes first, and, for a PDF, the SyncTeX files beside
+/// it. Empty when the job names no tool record. A folder project's change
+/// poller is told about these before the command starts, so it never reports
+/// them as outside changes.
 pub fn expected_outputs(request: &JobRequest) -> Vec<String> {
     let Ok(key) = Key::parse_parts(&request.format, &request.output) else {
         return Vec::new();

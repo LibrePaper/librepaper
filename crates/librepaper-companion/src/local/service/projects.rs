@@ -23,9 +23,16 @@
 //!
 //! - The result and SyncTeX paths are recorded before the command starts.
 //! - Every other file the run created or changed, found by listing the folder
-//!   before and after it, is recorded when it ends. A file the project itself
-//!   lists is the editor's and is never claimed this way, so a command that
-//!   rewrites a source file still shows up as an outside change.
+//!   before and after it, is recorded when it ends, but only when it is named
+//!   for the result: it sits in the result's directory or below it, and the
+//!   first name there is the result's stem followed by `.`, `_` or `-`. For
+//!   `main.pdf` that takes `main.aux`, `main_files/libs/x.css` and
+//!   `main-figure0.pdf`, and leaves `refs.bib`, `data/x.csv` and
+//!   `chapters/one.tex` alone. A file another program writes while the render
+//!   runs, such as `refs.bib` arriving through Dropbox, is never claimed,
+//!   because claiming it would silence every later change to it. A file the
+//!   project itself lists is the editor's and is never claimed either, so a
+//!   command that rewrites a source file still shows up as an outside change.
 //! - At most `MAX_RENDER_OUTPUTS` paths are kept per project, and forgetting
 //!   the project drops them. A poller that stops for want of requests keeps
 //!   them, because the folder's outputs are still not the person's files when
@@ -701,6 +708,10 @@ pub(super) struct RenderWatch {
     /// The paths the project lists. They are the editor's files, so the run
     /// is never credited with writing one.
     listed: HashSet<String>,
+    /// The result path the command is expected to write. Other files are
+    /// credited to the run only when they are named for it. `None` when the
+    /// job names no tool record.
+    result: Option<String>,
     /// The folder's files before the command ran, or `None` when it could not
     /// be listed, in which case only the expected outputs are recorded.
     before: Option<BTreeMap<String, FileStat>>,
@@ -717,6 +728,7 @@ impl RenderWatch {
             .get_project(&request.binding_id, &request.origin)
             .filter(|binding| binding.project == request.project)?;
         let expected = crate::local::render::expected_outputs(request);
+        let result = expected.first().cloned();
         inner.projects.note_render_outputs(&binding.id, expected);
         let walked_root = binding.root.clone();
         let before = tokio::task::spawn_blocking(move || listed_files(&walked_root))
@@ -731,14 +743,15 @@ impl RenderWatch {
                 .iter()
                 .map(|entry| entry.path.clone())
                 .collect(),
+            result,
             before,
         })
     }
 
     /// The run is over, however it ended. Record every file it created or
-    /// changed.
+    /// changed that is named for the result.
     pub(super) async fn finish(self, inner: &Inner) {
-        let Some(before) = self.before else {
+        let (Some(before), Some(result)) = (self.before, self.result) else {
             return;
         };
         let root = self.root;
@@ -746,7 +759,7 @@ impl RenderWatch {
         let Ok(Some(after)) = after else {
             return;
         };
-        let written = written_since(&before, &after, &self.listed);
+        let written = written_since(&before, &after, &self.listed, &result);
         inner.projects.note_render_outputs(&self.id, written);
     }
 }
@@ -757,19 +770,49 @@ fn listed_files(root: &Path) -> Option<BTreeMap<String, FileStat>> {
     walk(root).ok().map(|walked| walked.files)
 }
 
-/// The files in `after` that are new or differ from `before`, without the
-/// ones in `listed`. A command that rewrites a file the project lists changed
-/// the editor's file, which the page has to hear about.
+/// The files in `after` that are new or differ from `before` and are named
+/// for `result`, without the ones in `listed`. A command that rewrites a file
+/// the project lists changed the editor's file, which the page has to hear
+/// about. A file that is not named for the result may be another program's,
+/// and recording it would hide every later change to it.
 fn written_since(
     before: &BTreeMap<String, FileStat>,
     after: &BTreeMap<String, FileStat>,
     listed: &HashSet<String>,
+    result: &str,
 ) -> Vec<String> {
     after
         .iter()
-        .filter(|(path, stat)| before.get(*path) != Some(*stat) && !listed.contains(*path))
-        .map(|(path, _)| path.clone())
+        .filter(|(path, stat)| before.get(*path) != Some(*stat))
+        .map(|(path, _)| path)
+        .filter(|path| !listed.contains(*path) && named_for_result(result, path))
+        .cloned()
         .collect()
+}
+
+/// Whether `path` is named for the render result `result`: it sits in the
+/// result's directory or below it, and the first name there is the result's
+/// stem followed by `.`, `_` or `-`. For `chapters/main.pdf` that takes
+/// `chapters/main.aux`, `chapters/main_files/libs/x.css` and
+/// `chapters/main-figure0.pdf`, and leaves `chapters/refs.bib`, `main.aux`
+/// and `data/x.csv` alone.
+fn named_for_result(result: &str, path: &str) -> bool {
+    let stem_path = crate::local::render::tool::stem_of(result);
+    let (directory, stem) = match stem_path.rfind('/') {
+        Some(slash) => stem_path.split_at(slash + 1),
+        None => ("", stem_path),
+    };
+    if stem.is_empty() {
+        return false;
+    }
+    let Some(rest) = path.strip_prefix(directory) else {
+        return false;
+    };
+    let first = rest.split('/').next().unwrap_or_default();
+    let Some(after) = first.strip_prefix(stem) else {
+        return false;
+    };
+    matches!(after.chars().next(), Some('.' | '_' | '-'))
 }
 
 /* ------------------------------------------------------------- handlers */
@@ -1499,23 +1542,77 @@ mod tests {
     }
 
     #[test]
-    fn the_files_a_run_wrote_are_the_new_and_changed_ones_the_project_does_not_list() {
+    fn a_file_is_named_for_the_result_by_its_directory_and_first_name() {
+        for path in [
+            "main.pdf",
+            "main.aux",
+            "main.synctex.gz",
+            "main_files/libs/x.css",
+            "main-figure0.pdf",
+        ] {
+            assert!(named_for_result("main.pdf", path), "{path}");
+        }
+        for path in [
+            "refs.bib",
+            "data/x.csv",
+            "chapters/one.tex",
+            "chapters/main.aux",
+            "mainstream.png",
+            "main",
+            "main/x.png",
+            "sub/main.aux",
+        ] {
+            assert!(!named_for_result("main.pdf", path), "{path}");
+        }
+        // A result in a folder claims that folder and below, and nothing above.
+        for path in [
+            "chapters/main.aux",
+            "chapters/main_files/a.css",
+            "chapters/main-1.pdf",
+        ] {
+            assert!(named_for_result("chapters/main.pdf", path), "{path}");
+        }
+        for path in [
+            "main.aux",
+            "chapters/refs.bib",
+            "chapters/sub/main.aux",
+            "other/main.aux",
+        ] {
+            assert!(!named_for_result("chapters/main.pdf", path), "{path}");
+        }
+    }
+
+    #[test]
+    fn the_files_a_run_wrote_are_the_new_and_changed_ones_named_for_its_result() {
         let stat = |size| FileStat { size, mtime_ns: 5 };
         let before: BTreeMap<String, FileStat> = [
+            ("main.pdf".to_string(), stat(2)),
             ("main.tex".to_string(), stat(1)),
-            ("old.pdf".to_string(), stat(2)),
             ("same.png".to_string(), stat(3)),
         ]
         .into();
         let after: BTreeMap<String, FileStat> = [
+            ("chapters/one.tex".to_string(), stat(1)),
+            ("data/x.csv".to_string(), stat(1)),
+            ("main-figure0.pdf".to_string(), stat(1)),
+            ("main.aux".to_string(), stat(1)),
+            ("main.pdf".to_string(), stat(4)),
             ("main.tex".to_string(), stat(9)),
-            ("new.aux".to_string(), stat(1)),
-            ("old.pdf".to_string(), stat(4)),
+            ("main_files/libs/x.css".to_string(), stat(1)),
+            ("refs.bib".to_string(), stat(1)),
             ("same.png".to_string(), stat(3)),
         ]
         .into();
         let listed: HashSet<String> = ["main.tex".to_string()].into();
-        assert_eq!(written_since(&before, &after, &listed), ["new.aux", "old.pdf"]);
+        assert_eq!(
+            written_since(&before, &after, &listed, "main.pdf"),
+            [
+                "main-figure0.pdf",
+                "main.aux",
+                "main.pdf",
+                "main_files/libs/x.css",
+            ]
+        );
     }
 
     #[test]
@@ -1628,8 +1725,9 @@ mod tests {
         let tree = body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id).await).await;
         let cursor = tree["cursor"].as_u64().unwrap();
 
-        // The render: the expected outputs and an auxiliary file the run
-        // created, written between `begin` and `finish`.
+        // The render: the expected outputs and files the run created, written
+        // between `begin` and `finish`. Another program saves `refs.bib` in
+        // the same window.
         let render = RenderWatch::begin(&inner, &render_request(&binding, "main.tex"))
             .await
             .expect("a folder project is watched");
@@ -1639,9 +1737,9 @@ mod tests {
         write(&root_path, "main.pdf", "%PDF");
         write(&root_path, "main.synctex.gz", "sync");
         write(&root_path, "main.aux", "aux");
+        write(&root_path, "main_files/libs/x.css", "css");
+        write(&root_path, "refs.bib", "@book{key}");
         render.finish(&inner).await;
-        // Another program writes an unrelated file next to them.
-        write(&root_path, "notes.txt", "notes");
 
         let changes = |since: u64| {
             let request = Request::get(format!("/changes?since={since}"))
@@ -1657,7 +1755,7 @@ mod tests {
             answer = body_of(changes(cursor).await).await;
         }
         assert_eq!(answer["changes"].as_array().unwrap().len(), 1);
-        assert_eq!(answer["changes"][0]["path"], "notes.txt");
+        assert_eq!(answer["changes"][0]["path"], "refs.bib");
         assert_eq!(answer["changes"][0]["kind"], "added");
         // The outputs are not still on their way.
         let next = body_of(changes(answer["cursor"].as_u64().unwrap()).await).await;
@@ -1671,7 +1769,7 @@ mod tests {
             .iter()
             .map(|file| &file["path"])
             .collect();
-        assert_eq!(listed, ["main.tex", "notes.txt"]);
+        assert_eq!(listed, ["main.tex", "refs.bib"]);
         let skipped: Vec<&Value> = tree["skipped"]
             .as_array()
             .unwrap()
@@ -1679,7 +1777,15 @@ mod tests {
             .filter(|entry| entry["reason"] == "render output")
             .map(|entry| &entry["path"])
             .collect();
-        assert_eq!(skipped, ["main.aux", "main.pdf", "main.synctex.gz"]);
+        assert_eq!(
+            skipped,
+            [
+                "main.aux",
+                "main.pdf",
+                "main.synctex.gz",
+                "main_files/libs/x.css",
+            ]
+        );
     }
 
     #[tokio::test]
