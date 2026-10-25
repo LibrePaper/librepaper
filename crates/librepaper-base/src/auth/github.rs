@@ -70,6 +70,10 @@ impl GithubApp {
     /// gives the account's public profile, which is the login name, and
     /// nothing else. The PKCE challenge binds the code exchange to this
     /// redirect, as it does for the OpenID Connect providers.
+    ///
+    /// The account picker is always shown, so that someone who just signed out
+    /// can choose another GitHub account. Without it, GitHub hands back the
+    /// account it still remembers.
     pub fn authorize_url(&self, redirect: &str, state: &str, verifier: &str) -> String {
         let mut target = url::Url::parse(GITHUB_AUTHORIZE).expect("a constant URL");
         target
@@ -79,7 +83,8 @@ impl GithubApp {
             .append_pair("scope", "")
             .append_pair("state", state)
             .append_pair("code_challenge", &crate::auth::pkce_challenge(verifier))
-            .append_pair("code_challenge_method", "S256");
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("prompt", "select_account");
         target.to_string()
     }
 
@@ -284,6 +289,22 @@ mod tests {
             axum::serve(listener, router).await.expect("serve stand-in");
         });
         format!("http://{address}")
+    }
+
+    #[test]
+    fn the_authorize_url_asks_github_for_its_account_picker() {
+        let app = GithubApp {
+            client_id: "client".into(),
+            ..GithubApp::default()
+        };
+        let authorize =
+            app.authorize_url("https://example.test/auth/callback", "state", "verifier");
+        let url = url::Url::parse(&authorize).expect("a URL");
+        let prompt = url
+            .query_pairs()
+            .find(|(k, _)| k == "prompt")
+            .map(|(_, v)| v.into_owned());
+        assert_eq!(prompt, Some("select_account".to_string()));
     }
 
     #[tokio::test]
