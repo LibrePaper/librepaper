@@ -4,6 +4,36 @@ title: "Git"
 
 Two commands in the `librepaper` CLI move files between a folder and a web project. `librepaper pull` brings the project's named versions into the folder. `librepaper push` sends the folder's changes back. Git is yours. LibrePaper never merges text, and it never stores a credential for GitHub. A GitHub Action runs the two commands, so a repository and a web project stay in step with nobody's laptop involved.
 
+## In the app
+
+The **Git** panel is the guided way to do what the rest of this page describes by hand. It appears in a web project for its editors and owners, and in a folder project in the desktop app.
+
+### In a web project
+
+The panel shows:
+
+- **Last push.** The newest version pushed from Git, such as "Last pushed by Alice, 2 hours ago: Reword the greeting", or "No push yet".
+- **Token.** The owner sees the project's tokens with the Edit role. **Create token for a repository** makes a token named GitHub Action that expires in 365 days, and shows it once with a Copy button. Revoke removes a token. Other editors see the list and a note that only the owner can create one.
+- **Workflow.** The workflow from the [GitHub Action](#github-action) section, with your project's address filled in, and a Copy button. Save it as `.github/workflows/librepaper.yml`.
+- **Before the first run.** The seeding commands from the same section, with your address filled in, and the note about unrelated histories.
+- **Clone.** The `librepaper pull <address>` line, for a clone on this computer alone.
+
+### In a folder project
+
+The panel has two sections.
+
+- **LibrePaper.** Sign in, then Link the folder to a web project or Publish it as a new one. Pull and Push move changes, and Unlink removes the link.
+- **Repository.** Without a `.git` folder, **Initialize** runs `git init -b main`. With one, the section shows:
+  - the branch, which you can switch or create, and the remote, which you can set;
+  - **Changes**, the files git reports. **Diff** shows a file against `HEAD` in the editor area;
+  - a message and **Commit**, which stages every file unless you untick it;
+  - **Pull** and **Push**, with the ahead and behind counts after a fetch;
+  - **Sync**, which commits with the message "Edits from LibrePaper" when there are changes, then pulls and pushes. It stops at the first step that fails and says which one.
+
+A pull that conflicts leaves git's conflict markers in the files. The panel lists the conflicted files. Resolve them in the editor, then Commit to finish the merge. Git 2.38 or later must be installed. Without it, the section says so.
+
+On the landing page, **Clone a repository…** beside **Open folder…** clones a Git URL into a subfolder of a folder you choose, and opens the clone as a folder project.
+
 ## Requirements
 
 - The `librepaper` command. Install it with a desktop app package: Homebrew, Scoop, the Windows installer, the `.deb` or `.rpm` package, or Nix. See [Install the desktop app](desktop-app.html#install-the-desktop-app). The plain macOS `.dmg` does not put it on your PATH. On a server, [install the command alone](cli.html#install).
@@ -139,9 +169,9 @@ Anyone with push rights on the repository can change the project this way. Each 
 
 1. **Bob and Carol write on the web.** They edit and comment in the browser, and nothing changes for them. Their named versions become commits in the repository.
 2. **Alice backs up a web project.** She pulls the project into a new repository with her token, then pushes the repository and its LibrePaper refs to GitHub (`git push origin main 'refs/librepaper/*'`) and adds the workflow. From then on, the Action adds each new named version as a commit. She can also go the other way. `librepaper push --title` in a repository that holds her paper creates the project.
-3. **Alice works in VS Code, and Bob works in the browser.** Alice adds a token. She runs `librepaper pull` once in her clone and pushes the LibrePaper refs, then adds the workflow. If her repository and the project share no history, she also merges them once, as the Before the first run step shows. Her pushes reach Bob within a minute, as versions in his history under her name. Bob's named versions reach her on her next `git pull`, as commits by Bob. If they both changed a file, the Action's push is refused. A pull request from `librepaper/sync` opens, and Alice merges it in git. Bob sees none of this.
+3. **Alice works in VS Code, and Bob works in the browser.** Alice adds a token. She runs `librepaper pull` once in her clone and pushes the LibrePaper refs, then adds the workflow. If her repository and the project share no history, she also merges them once, as the Before the first run step shows. She can also do the whole setup from the Git panel of the web project. Her pushes reach Bob within a minute, as versions in his history under her name. Bob's named versions reach her on her next `git pull`, as commits by Bob. If they both changed a file, the Action's push is refused. A pull request from `librepaper/sync` opens, and Alice merges it in git. Bob sees none of this.
 4. **Charlie works on GitHub only.** He works in the same repository, with the same Action. He has nothing new to learn.
-5. **Dana works in a folder with no Git.** In the desktop app she opens her web project and chooses Work in a folder from the File menu, which puts the project's files in a folder of her choice and opens it. The Sync tab asks her to sign in once. She edits the folder offline with local TeX and presses Push in the Sync tab. When a file also changed on the web, Pull asks her which copy to keep, file by file.
+5. **Dana works in a folder with no Git.** In the desktop app she opens her web project and chooses Work in a folder from the File menu, which puts the project's files in a folder of her choice and opens it. The Git panel asks her to sign in once. She edits the folder offline with local TeX and presses Push in the Git panel. When a file also changed on the web, Pull asks her which copy to keep, file by file.
 
 ## What syncs
 
