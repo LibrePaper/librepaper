@@ -201,16 +201,6 @@ pub(super) async fn handle(
             let capabilities = inner.runner.capabilities(true).await;
             write_json(200, &json!({"tools":capabilities}))
         }
-        (Some("bindings"), Some(id), None, None) if *method == Method::DELETE => {
-            let _admission = inner.admission.lock().await;
-            match inner.bindings.revoke_any(id) {
-                Ok(revoked) => write_json(200, &json!({"revoked":revoked})),
-                Err(error) => write_json(500, &json!({"error":error})),
-            }
-        }
-        (Some("bindings"), Some("folder"), None, None) if *method == Method::POST => {
-            choose_binding_folder(inner, request).await
-        }
         (Some("jobs"), Some(id), Some("cancel"), None) if *method == Method::POST => {
             cancel_job(inner, id).await
         }
@@ -259,14 +249,6 @@ pub(super) fn apply_headers(mut response: Reply, path: &str) -> Reply {
 async fn state(inner: &Inner) -> Reply {
     let capabilities = inner.runner.capabilities(false).await;
     let renderers = capabilities.renderers.clone();
-    let bindings: Vec<_> = inner
-        .bindings
-        .list_all()
-        .into_iter()
-        .map(|binding| {
-            json!({"id":binding.id,"origin":binding.origin,"project":binding.project,"root":binding.root,"entrypoint":binding.entrypoint,"created_at":binding.created_at,"execution_granted":binding.execution_granted})
-        })
-        .collect();
     let jobs = {
         let jobs = inner.jobs.lock().await;
         let mut entries: Vec<_> = jobs.iter().collect();
@@ -292,7 +274,6 @@ async fn state(inner: &Inner) -> Reply {
         &json!({
             "version":crate::VERSION,
             "tools":capabilities,
-            "bindings":bindings,
             "jobs":jobs,
             "agents":crate::local::acp_agents::detect(&inner.state_home),
             "custom_agents":crate::local::acp_agents::CustomStore::new(&inner.state_home).list().into_iter().map(|(id, agent)| json!({"id":id,"label":agent.label,"command":agent.command})).collect::<Vec<_>>(),
@@ -328,46 +309,6 @@ async fn cancel_session(inner: &Inner, id: &str) -> Reply {
     match inner.assistant_sessions.stop_dashboard_session(id).await {
         Ok(()) => write_json(200, &json!({"stopped":true})),
         Err(error) => write_json(404, &json!({"error":error})),
-    }
-}
-
-#[derive(Deserialize)]
-struct ChooseBindingRequest {
-    origin: String,
-    project: String,
-    entrypoint: String,
-}
-
-async fn choose_binding_folder(inner: &Inner, request: Request<Body>) -> Reply {
-    let body = match read_json_body::<ChooseBindingRequest>(request).await {
-        Ok(body) => body,
-        Err(response) => return response,
-    };
-    let Some(origin) = crate::local::store::valid_origin(&body.origin) else {
-        return write_json(400, &json!({"error":"binding needs a valid site origin"}));
-    };
-    let Some(project) = crate::local::store::valid_project(&body.project) else {
-        return write_json(400, &json!({"error":"binding needs a valid project"}));
-    };
-    if let Err(error) = crate::local::bindings::validate_binding_entrypoint(&body.entrypoint) {
-        return write_json(400, &json!({"error":error}));
-    }
-    let Ok(_dialog) = inner.folder_dialog.try_lock() else {
-        return write_json(
-            409,
-            &json!({"error":"A folder chooser is already open on this computer."}),
-        );
-    };
-    let root = match super::super::folder::choose_directory(&origin, &project).await {
-        Ok(root) => root,
-        Err(error) => return write_json(400, &json!({"error":error})),
-    };
-    match inner
-        .bindings
-        .grant(&origin, &project, &root, &body.entrypoint)
-    {
-        Ok(binding) => write_json(200, &json!({"binding":binding})),
-        Err(error) => write_json(400, &json!({"error":error})),
     }
 }
 

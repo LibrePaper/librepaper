@@ -1176,7 +1176,7 @@ mod tests {
         assert!(!inner.bindings.written_record(&binding.id).exists());
         assert!(inner.projects.get(&binding.id).is_some());
 
-        // Another origin cannot read it, and a render binding is not a project.
+        // Another origin cannot read it.
         let foreign =
             handle_tree(&inner, &headers, Some("https://other.example"), &binding.id).await;
         assert_eq!(foreign.status(), StatusCode::NOT_FOUND);

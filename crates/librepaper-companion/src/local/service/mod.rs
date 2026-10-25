@@ -8,9 +8,9 @@
 //! `health` is bearer-authenticated with the per-instance credential
 //! `librepaper local endpoint` prints, and names the page it speaks for in
 //! `X-LibrePaper-Origin`. Requests that create something name their project
-//! in the body (or, for the bindings list, the query), and a lookup by id is
-//! scoped to that origin, so a request for another origin's job or binding is
-//! answered exactly as a stranger's would be.
+//! in the body, and a lookup by id is scoped to that origin, so a request for
+//! another origin's job or binding is answered exactly as a stranger's would
+//! be.
 //!
 //! The render itself is behind the `Runner` trait so this file never has to
 //! know how a job actually runs. `NativeRunner` calls into the `render`
@@ -587,12 +587,6 @@ async fn dispatch(
 ) -> Reply {
     match segs {
         ["health"] if *method == Method::GET => handle_health(inner, request.uri()),
-        ["bindings"] if *method == Method::GET => {
-            handle_bindings_list(inner, headers, origin, request).await
-        }
-        ["bindings", "folder"] if *method == Method::POST => {
-            handle_binding_folder(inner, headers, origin, request).await
-        }
         ["backups"] if *method == Method::GET => {
             backups::handle_get(inner, headers, origin, request).await
         }
@@ -613,9 +607,6 @@ async fn dispatch(
         }
         ["git", op] if *method == Method::POST => {
             git::handle(inner, headers, origin, op, request).await
-        }
-        ["bindings", id] if *method == Method::DELETE => {
-            handle_binding_revoke(inner, headers, origin, id).await
         }
         // Connecting an agent. Reading what is installed is a GET; every
         // route that acts on a document credential is a POST.
@@ -794,107 +785,6 @@ fn health_challenge(uri: &axum::http::Uri) -> Option<Vec<u8>> {
         return None;
     }
     hex::decode(challenge.as_bytes()).ok()
-}
-
-/* ------------------------------------------------------- folder bindings */
-
-async fn handle_bindings_list(
-    inner: &Inner,
-    headers: &HeaderMap,
-    origin: Option<&str>,
-    request: Request<Body>,
-) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-    let Some(project) = project_query(request.uri()) else {
-        return write_json(
-            400,
-            &json!({"error": "bindings list needs a valid project"}),
-        );
-    };
-    write_json(
-        200,
-        &json!({
-            "bindings": inner.bindings.summaries_scoped(origin.unwrap_or_default(), &project)
-        }),
-    )
-}
-
-async fn handle_binding_revoke(
-    inner: &Inner,
-    headers: &HeaderMap,
-    origin: Option<&str>,
-    id: &str,
-) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-    let _admission = inner.admission.lock().await;
-    let revoked = inner
-        .bindings
-        .revoke_origin_binding(id, origin.unwrap_or_default());
-    match revoked {
-        Ok(revoked) => write_json(200, &json!({"revoked": revoked})),
-        Err(error) => write_json(500, &json!({"error":error})),
-    }
-}
-
-async fn handle_binding_folder(
-    inner: &Inner,
-    headers: &HeaderMap,
-    origin: Option<&str>,
-    request: Request<Body>,
-) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-    let body = match read_json_body::<protocol::FolderBindingRequest>(request).await {
-        Ok(body) => body,
-        Err(response) => return response,
-    };
-    let Some(project) = store::valid_project(&body.project) else {
-        return write_json(400, &json!({"error": "binding needs a valid project"}));
-    };
-    if let Err(error) = crate::local::bindings::validate_binding_entrypoint(&body.entrypoint) {
-        return write_json(400, &json!({"error": error}));
-    }
-    let Ok(_dialog) = inner.folder_dialog.try_lock() else {
-        return write_json(
-            409,
-            &json!({"error": "A folder chooser is already open on this computer."}),
-        );
-    };
-    // Opening a native chooser is itself the local user's explicit gesture;
-    // the endpoint is authenticated and POST-only so a drive-by page cannot
-    // bind an arbitrary directory without the existing grant.
-    let root = match super::folder::choose_directory(origin.unwrap_or_default(), &project).await {
-        Ok(root) => root,
-        Err(error) => return write_json(400, &json!({"error": error})),
-    };
-    let binding = match inner.bindings.grant(
-        origin.unwrap_or_default(),
-        &project,
-        &root,
-        &body.entrypoint,
-    ) {
-        Ok(binding) => binding,
-        Err(_) => {
-            return write_json(
-                400,
-                &json!({"error": "The selected folder must contain the named project entrypoint. Check the filename and choose its project folder again."}),
-            )
-        }
-    };
-    write_json(
-        200,
-        &json!(protocol::FolderBindingResponse {
-            id: binding.id,
-            project: binding.project,
-            entrypoint: binding.entrypoint,
-            created_at: binding.created_at,
-        }),
-    )
 }
 
 async fn handle_capabilities(
@@ -1546,7 +1436,12 @@ mod settings_tests {
     }
 
     /// A multipart `PUT folder` body: the manifest and a file part per upload.
-    fn folder_request(binding: &str, files: &[(&str, &[u8])], uploads: &[&str]) -> Request<Body> {
+    fn folder_request(
+        project: &str,
+        binding: &str,
+        files: &[(&str, &[u8])],
+        uploads: &[&str],
+    ) -> Request<Body> {
         let manifest: Vec<Value> = files
             .iter()
             .map(|(path, bytes)| {
@@ -1568,7 +1463,7 @@ mod settings_tests {
             .unwrap()
             .unwrap();
         let text = String::from_utf8_lossy(&bytes).replacen("name=\"job\"", "name=\"manifest\"", 1);
-        Request::put(format!("/folder?project=paper&binding={binding}"))
+        Request::put(format!("/folder?project={project}&binding={binding}"))
             .header("content-type", "multipart/form-data; boundary=control-test")
             .body(Body::from(text))
             .unwrap()
@@ -1582,7 +1477,7 @@ mod settings_tests {
         std::fs::write(folder.path().join("main.typ"), b"= Title").unwrap();
         let binding = inner
             .bindings
-            .grant(origin, "paper", folder.path(), "main.typ")
+            .open_project(origin, folder.path())
             .unwrap();
         let headers = bearer(&inner);
 
@@ -1591,7 +1486,7 @@ mod settings_tests {
             &inner,
             &headers,
             Some(origin),
-            folder_request(&binding.id, &both, &["main.typ", "notes.typ"]),
+            folder_request(&binding.project, &binding.id, &both, &["main.typ", "notes.typ"]),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -1607,7 +1502,7 @@ mod settings_tests {
             &inner,
             &headers,
             Some(origin),
-            folder_request(&binding.id, &more, &["main.typ"]),
+            folder_request(&binding.project, &binding.id, &more, &["main.typ"]),
         )
         .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
@@ -1621,19 +1516,19 @@ mod settings_tests {
             &inner,
             &headers,
             Some(origin),
-            folder_request(&binding.id, &only, &[]),
+            folder_request(&binding.project, &binding.id, &only, &[]),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(body_json(response).await["trashed"], json!(["notes.typ"]));
         assert!(!folder.path().join("notes.typ").exists());
 
-        // Another origin is refused, and an unknown binding is not found.
+        // Another origin is refused, and so is an unknown binding.
         let response = jobs::handle_folder_put(
             &inner,
             &headers,
             Some("https://other.example"),
-            folder_request(&binding.id, &only, &[]),
+            folder_request(&binding.project, &binding.id, &only, &[]),
         )
         .await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
@@ -1641,10 +1536,36 @@ mod settings_tests {
             &inner,
             &headers,
             Some(origin),
-            folder_request("nope", &only, &[]),
+            folder_request("paper", "nope", &only, &[]),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn the_folder_route_refuses_a_binding_that_is_not_a_project_binding() {
+        let (inner, state_home, _cache_home) = test_inner().await;
+        let origin = "https://paper.example";
+        let folder = tempfile::tempdir().unwrap();
+        // A render binding left in the store by an older version.
+        let store = state_home.path().join("librepaper/local/quarto-bindings.json");
+        std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+        let render = json!({"bindings": [{
+            "id": "q-render", "origin": origin, "project": "paper",
+            "root": folder.path(), "entrypoint": "main.typ", "kind": "render",
+            "execution_granted": true
+        }]});
+        std::fs::write(&store, serde_json::to_vec(&render).unwrap()).unwrap();
+        let files: [(&str, &[u8]); 1] = [("main.typ", b"= Title")];
+        let response = jobs::handle_folder_put(
+            &inner,
+            &bearer(&inner),
+            Some(origin),
+            folder_request("paper", "q-render", &files, &["main.typ"]),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(!folder.path().join("main.typ").exists());
     }
 
     #[tokio::test]
@@ -1655,7 +1576,7 @@ mod settings_tests {
             &inner,
             &bearer(&inner),
             Some("https://paper.example"),
-            folder_request("hosted", &only, &["main.typ"]),
+            folder_request("paper", "hosted", &only, &["main.typ"]),
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -1705,11 +1626,12 @@ mod settings_tests {
         std::fs::write(folder.path().join("main.typ"), b"= Title").unwrap();
         let binding = inner
             .bindings
-            .grant(origin, "paper", folder.path(), "main.typ")
+            .open_project(origin, folder.path())
             .unwrap();
         tokio::spawn(run_worker(inner.clone()));
 
-        let job = job_json(&binding.id, b"= Title");
+        let mut job = job_json(&binding.id, b"= Title");
+        job["project"] = json!(binding.project);
         let response = jobs::handle_jobs_post(
             &inner,
             &bearer(&inner),
