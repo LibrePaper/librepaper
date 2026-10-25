@@ -37,12 +37,13 @@ await client.syncFolder({ tree: tree("two"), bindingId: "folder-1" });
 assert.deepEqual(calls[1].files, ["a.tex"]);
 assert.equal(calls[1].manifest.length, 3);
 
-// A 409 retries once with exactly the missing files.
+// A 409 retries once with the first attempt's changed files plus the missing ones.
 answers = [response(409, { missing: ["b.tex", "fig/dot.png"] })];
 await client.syncFolder({ tree: tree("three"), bindingId: "folder-1" });
 assert.equal(calls.length, 4);
 assert.deepEqual(calls[2].files, ["a.tex"]);
-assert.deepEqual(calls[3].files, ["b.tex", "fig/dot.png"]);
+assert.deepEqual(calls[3].files, ["a.tex", "b.tex", "fig/dot.png"]);
+assert.deepEqual(calls[3].manifest, calls[2].manifest);
 
 // A second 409 is an error, and the next call starts from nothing.
 answers = [response(409, { missing: ["b.tex"] }), response(409, { missing: ["b.tex"] })];

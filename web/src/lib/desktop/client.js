@@ -579,8 +579,8 @@ export async function syncFolder({ tree, bindingId: binding }, { signal } = {}) 
       response = await upload(changed);
     } catch (error) {
       if (error?.name !== "Refused" || error?.status !== 409) throw error;
-      const missing = new Set(Array.isArray(error.body?.missing) ? error.body.missing : []);
-      response = await upload(missing);
+      const missing = Array.isArray(error.body?.missing) ? error.body.missing : [];
+      response = await upload(new Set([...changed, ...missing]));
     }
   } catch (error) {
     acknowledged = { key: "", digests: new Map() };
