@@ -714,13 +714,19 @@ try {
     };
     const first = await send();
     const second = await send();
-    const withoutReplayFlag = (body) => {
+    // A replayed receipt says it is one, and it does not recall the tree the
+    // first attempt started from. The operation, the version and the result
+    // are what must match.
+    const comparable = (body) => {
       const copy = structuredClone(body);
-      if (copy.receipt) delete copy.receipt.replay;
+      if (copy.receipt) {
+        delete copy.receipt.replay;
+        delete copy.receipt.tree_digest_before;
+      }
       return copy;
     };
     assert.ok(first.label?.sha, `the reply names the version it wrote: ${JSON.stringify(first)}`);
-    assert.deepEqual(withoutReplayFlag(second), withoutReplayFlag(first), "the second reply is the first receipt again");
+    assert.deepEqual(comparable(second), comparable(first), "the second reply is the first receipt again");
     assert.equal((await namedVersions()).filter((version) => version.label === message).length, 1, "the change was applied once");
     assert.equal((await projectOf()).texts["appendix.tex"], APPENDIX);
   });
