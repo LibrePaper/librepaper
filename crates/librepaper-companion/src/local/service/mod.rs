@@ -37,8 +37,8 @@ use tokio::sync::{mpsc, watch, Mutex, Notify};
 
 use crate::local::bindings::BindingStore;
 use crate::local::protocol::{
-    self, Capabilities, JobOutcome, JobRequest, JobStatus, ManifestEntry, BASE_PATH, MAX_FILES,
-    MAX_JSON_BYTES, MAX_UPLOAD_BYTES, PROTOCOL_VERSIONS,
+    self, Capabilities, JobOutcome, JobRequest, JobStatus, ManifestEntry, BASE_PATH, MAX_JSON_BYTES,
+    MAX_UPLOAD_BYTES, PROTOCOL_VERSIONS,
 };
 use crate::local::store;
 
@@ -1592,6 +1592,49 @@ mod settings_tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_folder_route_names_a_dropped_file_it_could_not_read_and_keeps_it() {
+        let (inner, _state_home, _cache_home) = test_inner().await;
+        let origin = "https://paper.example";
+        let folder = tempfile::tempdir().unwrap();
+        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
+        let headers = bearer(&inner);
+        let both: [(&str, &[u8]); 2] = [("main.typ", b"= Title"), ("secret.typ", b"private")];
+        let response = jobs::handle_folder_put(
+            &inner,
+            &headers,
+            Some(origin),
+            folder_request(
+                &binding.project,
+                &binding.id,
+                &both,
+                &["main.typ", "secret.typ"],
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let secret = folder.path().join("secret.typ");
+        let Some(_locked) = crate::local::render::workspace::Unreadable::new(&secret) else {
+            return;
+        };
+
+        // The page could not read secret.typ, so its save omits it.
+        let only: [(&str, &[u8]); 1] = [("main.typ", b"= Title")];
+        let response = jobs::handle_folder_put(
+            &inner,
+            &headers,
+            Some(origin),
+            folder_request(&binding.project, &binding.id, &only, &[]),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let answer = body_json(response).await;
+        assert_eq!(answer["trashed"], json!([]));
+        assert_eq!(answer["kept_unreadable"], json!(["secret.typ"]));
+        assert!(folder.path().join("secret.typ").exists());
+    }
+
     #[tokio::test]
     async fn the_folder_route_refuses_a_binding_that_is_not_a_project_binding() {
         let (inner, state_home, _cache_home) = test_inner().await;
@@ -1675,22 +1718,78 @@ mod settings_tests {
     }
 
     #[tokio::test]
-    async fn a_job_description_over_the_json_bound_is_still_refused() {
+    async fn a_job_of_a_thousand_files_is_admitted() {
         let (inner, _state_home, _cache_home) = test_inner().await;
-        let mut job = job_json("hosted", b"= Title");
-        job["padding"] = json!("x".repeat(MAX_JSON_BYTES));
+        let origin = "https://paper.example";
+        let folder = tempfile::tempdir().unwrap();
+        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
+        let mut names = vec!["main.typ".to_string()];
+        names.extend((1..1000).map(|index| format!("notes/{index:04}-{}.txt", "x".repeat(45))));
+        let files: Vec<(&str, &[u8])> = names
+            .iter()
+            .map(|name| (name.as_str(), name.as_bytes()))
+            .collect();
+        let mut job = job_json(&binding.id, b"= Title");
+        job["project"] = json!(binding.project);
+        job["manifest"] = json!(folder_manifest(&files));
+        // More than the fixed bound for JSON and well inside the allowance.
+        let description = job.to_string();
+        assert!(description.len() > MAX_JSON_BYTES);
+        assert!(description.len() < projects::MAX_FOLDER_MANIFEST_BYTES);
+
         let response = jobs::handle_jobs_post(
             &inner,
             &bearer(&inner),
-            Some("https://paper.example"),
-            job_request(job_body(&job, &[("main.typ", b"= Title")])),
+            Some(origin),
+            job_request(job_body(&job, &files)),
         )
         .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+    }
+
+    #[tokio::test]
+    async fn a_job_may_list_as_many_files_as_a_folder_project_and_no_more() {
+        let (inner, _state_home, _cache_home) = test_inner().await;
+        let origin = "https://paper.example";
+        let folder = tempfile::tempdir().unwrap();
+        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
+        let headers = bearer(&inner);
+        let post = |count: usize| {
+            let manifest: Vec<Value> = std::iter::once("main.typ".to_string())
+                .chain((1..count).map(|index| format!("f{index:04}.txt")))
+                .map(|path| json!({"path": path, "sha256": "a".repeat(64), "size": 1}))
+                .collect();
+            let mut job = job_json(&binding.id, b"= Title");
+            job["project"] = json!(binding.project);
+            job["manifest"] = json!(manifest);
+            let request = job_request(job_body(&job, &[]));
+            jobs::handle_jobs_post(&inner, &headers, Some(origin), request)
+        };
+        // Past the 2,000 files a job once carried. Nothing is uploaded, so the
+        // request stops at the check for the bytes, after the count passed.
+        let response = post(projects::MAX_PROJECT_FILES).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let error = body_json(response).await["error"].to_string();
+        assert!(error.contains("never uploaded"), "{error}");
+
+        let response = post(projects::MAX_PROJECT_FILES + 1).await;
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(
             body_json(response).await["error"],
-            "job description is too large"
+            "too many manifest entries"
         );
+    }
+
+    #[tokio::test]
+    async fn a_job_description_over_the_folder_allowance_is_refused_with_413() {
+        let (inner, _state_home, _cache_home) = test_inner().await;
+        let mut job = job_json("hosted", b"= Title");
+        job["padding"] = json!("x".repeat(projects::MAX_FOLDER_MANIFEST_BYTES));
+        let body = multipart_bytes("job", &job, &[("main.typ", b"= Title")]);
+        let line = format!("POST {BASE_PATH}/jobs");
+        let (status, answer) = over_the_wire(&inner, &line, body).await;
+        assert_eq!(status, 413, "{answer}");
+        assert!(answer.contains("job description is too large"), "{answer}");
     }
 
     /// Serves the real router on a loopback port and sends it one multipart

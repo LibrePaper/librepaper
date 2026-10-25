@@ -21,8 +21,6 @@ pub const BASE_PATH: &str = "/librepaper/local";
 pub const MAX_JSON_BYTES: usize = 64 * 1024;
 /// Largest multipart upload accepted, all parts together.
 pub const MAX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
-/// Most files one job may carry.
-pub const MAX_FILES: usize = 2000;
 /// Largest result file the pipeline returns.
 pub const MAX_RESULT_BYTES: usize = 64 * 1024 * 1024;
 /// Largest log kept per stage.

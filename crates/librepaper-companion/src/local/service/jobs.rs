@@ -25,14 +25,17 @@ pub(super) async fn handle_jobs_post(
     }
     let origin = origin.unwrap_or_default().to_string();
 
+    // The description carries the manifest of the whole project, and a folder
+    // project may list as many files as its save does, so it takes the bound
+    // of a folder save's manifest and not the fixed one for other JSON.
     let upload = match read_multipart_upload(
         request,
         "job",
         "bad job part",
         "job description is too large",
         "missing the job part",
-        MAX_FILES,
-        MAX_JSON_BYTES,
+        projects::MAX_PROJECT_FILES,
+        projects::MAX_FOLDER_MANIFEST_BYTES,
     )
     .await
     {
@@ -60,7 +63,7 @@ pub(super) async fn handle_jobs_post(
             &json!({"error": "job scope does not match the request origin"}),
         );
     }
-    if let Err(response) = validate_manifest_shape(&job.manifest, MAX_FILES) {
+    if let Err(response) = validate_manifest_shape(&job.manifest, projects::MAX_PROJECT_FILES) {
         return response;
     }
     // Whether *this* caller holds the binding the job names. The workspace
@@ -252,6 +255,7 @@ pub(super) async fn handle_folder_put(
                 "renamed": report.renamed.iter()
                     .map(|renamed| json!({"from": renamed.from, "to": renamed.to}))
                     .collect::<Vec<_>>(),
+                "kept_unreadable": report.kept_unreadable,
             }),
         ),
         Ok(Err(MirrorError::Missing(missing))) => write_json(409, &json!({"missing": missing})),
