@@ -27,6 +27,11 @@ import { openingFile } from "../opening.js";
 import { toBase64, typeOf } from "../figures.js";
 import * as folderRead from "../desktop/folder-read.js";
 
+/** @typedef {{ path: string, kind: "text", text: string, sha: string | null, ending: string, raw?: Uint8Array }} TextItem */
+/** @typedef {{ path: string, kind: "asset", sha: string }} AssetItem */
+/** @typedef {TextItem | AssetItem} Item */
+/** @typedef {{ kind: "text", text: string, sha: string | null, ending?: string, raw?: Uint8Array } | { kind: "asset", sha: string }} DiskRecord */
+
 /// The origin of a commit that brings the disk's text into the editor. The
 /// prefix is the directory's, which the editor's undo manager leaves alone:
 /// undoing a reload would write the old text back over the file.
@@ -129,7 +134,7 @@ export function createFigureStore() {
       const key = `${type}|${sha}`;
       if (!urls.has(key)) {
         const base = type === "application/pdf"
-          ? URL.createObjectURL(new Blob([body], { type }))
+          ? URL.createObjectURL(new Blob([/** @type {Uint8Array<ArrayBuffer>} */ (body)], { type }))
           : `data:${type};base64,${toBase64(body)}`;
         urls.set(key, base);
       }
@@ -186,14 +191,14 @@ export function createLocalProject({
   let filesCleanup = null;
   let presenceCleanup = null;
   /** The files read by `load`, added to the session when it starts.
-   * @type {Array<{ path: string, kind: "text" | "asset", text?: string, sha: string }>} */
+   * @type {Item[]} */
   let initial = [];
   /** What the folder holds for each path as far as this module knows: the text
    * last read from or written to disk, and the digest of the bytes when it is
-   * known. @type {Map<string, { kind: "text" | "asset", text?: string, sha: string | null }>} */
+   * known. @type {Map<string, DiskRecord>} */
   const disk = new Map();
   /** The disk version of a file the person has not yet answered for.
-   * @type {Map<string, { text: string, sha: string }>} */
+   * @type {Map<string, { text: string, sha: string | null, item: TextItem }>} */
   const conflicts = new Map();
   let failing = false;
   /** Where the desktop app's changes resume: the cursor of the latest tree
@@ -214,7 +219,7 @@ export function createLocalProject({
     const kept = new Map();
     for (const file of listed || []) {
       const checked = checkPath(rules, file.path);
-      if (!checked.error) kept.set(file.path, { ...file, kind: checked.kind });
+      if (!checked.error) kept.set(file.path, { ...file, kind: /** @type {"text" | "asset"} */ (checked.kind) });
     }
     return kept;
   }
@@ -231,6 +236,8 @@ export function createLocalProject({
 
   /// A file's bytes as the project holds them: a text with LF endings, or an
   /// asset's digest. Null for a text that is not UTF-8.
+  /** @param {{ file: { path: string, kind: "text" | "asset", sha256?: string | null }, bytes: Uint8Array }} read
+   * @returns {Promise<Item | null>} */
   async function interpret({ file, bytes }) {
     if (file.kind === "text") {
       const text = decodeText(bytes);
@@ -278,8 +285,10 @@ export function createLocalProject({
     session.doc.commit({ origin: DISK_ORIGIN });
   }
 
+  /** @param {TextItem} item @returns {DiskRecord} */
   const textRecord = (item) => ({ kind: "text", text: item.text, sha: item.sha, ending: item.ending, raw: item.raw });
 
+  /** @param {TextItem} item */
   function askAboutText(item) {
     const { path, text, sha } = item;
     const waiting = conflicts.get(path);
@@ -313,6 +322,7 @@ export function createLocalProject({
   }
 
   /// A text that is new on disk or changed there.
+  /** @param {TextItem} item */
   function ingestText(item) {
     const { path, text } = item;
     const entry = entryOf(path, "text");
@@ -342,6 +352,7 @@ export function createLocalProject({
     disk.set(path, { kind: "asset", sha });
   }
 
+  /** @param {Item} item */
   function ingest(item) {
     if (item.kind === "text") ingestText(item);
     else ingestAsset(item.path, item.sha);
@@ -372,7 +383,7 @@ export function createLocalProject({
       return;
     }
     if (closed) return;
-    const item = await interpret({ file: { path: change.path, kind: checked.kind, sha256: change.sha256 ?? null }, bytes });
+    const item = await interpret({ file: { path: change.path, kind: /** @type {"text" | "asset"} */ (checked.kind), sha256: change.sha256 ?? null }, bytes });
     if (item && !closed) ingest(item);
   }
 
@@ -464,8 +475,8 @@ export function createLocalProject({
         kind: "text",
         text,
         sha: null,
-        ending: before?.ending,
-        raw: before?.text === text ? before.raw : undefined,
+        ending: before?.kind === "text" ? before.ending : undefined,
+        raw: before?.kind === "text" && before.text === text ? before.raw : undefined,
       });
     }
     for (const [path, sha] of Object.entries(digests)) disk.set(path, { kind: "asset", sha });
