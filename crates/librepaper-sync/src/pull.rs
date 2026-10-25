@@ -308,12 +308,15 @@ async fn fetch(
 
     let mut commits = Vec::new();
     let mut taken: Vec<String> = Vec::new();
+    // The newest version's files as the web holds them, the paths left out of
+    // the commit included, so lifting an exclusion later reads as a change
+    // against the web's file and not as a new one.
     let mut newest: Option<(Option<i64>, BTreeMap<String, FileRecord>)> = None;
 
     if found.from_head {
         let mut snapshot = client.head(&slug).await?;
         snapshot.retain_synced(rules);
-        leave_excluded_out(&mut snapshot, &local, git.dir(), &mut excluded);
+        let held = leave_excluded_out(&mut snapshot, &local, git.dir(), &mut excluded);
         let assets = asset_bytes(client, &slug, &local, &snapshot, &chain).await?;
         let meta = Meta {
             by: "LibrePaper",
@@ -339,13 +342,13 @@ async fn fetch(
             });
         }
         state.synced.extend(snapshot.files.keys().cloned());
-        newest = Some((None, snapshot.files));
+        newest = Some((None, held));
     }
     for label in &found.versions {
         let mut snapshot = client.version(&slug, &label.sha).await?;
         // A path the rules refuse never enters the chain, whatever the web holds.
         snapshot.retain_synced(rules);
-        leave_excluded_out(&mut snapshot, &local, git.dir(), &mut excluded);
+        let held = leave_excluded_out(&mut snapshot, &local, git.dir(), &mut excluded);
         let assets = asset_bytes(client, &slug, &local, &snapshot, &chain).await?;
         let name = label.name();
         let meta = Meta {
@@ -376,7 +379,7 @@ async fn fetch(
         });
         taken.push(label.sha.clone());
         state.synced.extend(snapshot.files.keys().cloned());
-        newest = Some((Some(label.sequence), snapshot.files));
+        newest = Some((Some(label.sequence), held));
     }
 
     let Some(tip) = chain.tip().map(str::to_string) else {
@@ -396,16 +399,21 @@ async fn fetch(
 
 /// Drops from the snapshot the paths the working tree keeps out of the sync,
 /// and adds them to `excluded`. Such a path never enters the chain, so the
-/// person's file is not overwritten and its record is not taken in.
+/// person's file is not overwritten. Answers the files the snapshot held
+/// before, which is what the state records: the web's record of an excluded
+/// path stays, so a push made after the exclusion is lifted measures the file
+/// against the web's and sends a patch, not a create over an existing text.
 fn leave_excluded_out(
     snapshot: &mut Snapshot,
     local: &Scan,
     dir: &Path,
     excluded: &mut BTreeSet<String>,
-) {
+) -> BTreeMap<String, FileRecord> {
+    let held = snapshot.files.clone();
     excluded.extend(local.left_out(dir, snapshot.files.keys()));
     snapshot.files.retain(|path, _| !excluded.contains(path));
     snapshot.texts.retain(|path, _| !excluded.contains(path));
+    held
 }
 
 /// The bytes of every asset in the snapshot that git does not have yet, from
@@ -739,6 +747,8 @@ fn move_to_trash(path: &Path) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::testing::{commit_all, repository};
+    use crate::walk::compare;
 
     fn label(sequence: i64) -> Label {
         Label {
@@ -1054,11 +1064,12 @@ mod tests {
                 .keys()
                 .map(|path| (path.clone(), "text\n".to_string()))
                 .collect(),
-            files: listed,
+            files: listed.clone(),
         };
         // A path kept out because it was synced before and is not here now.
         let mut excluded = BTreeSet::from(["old.tex".to_string()]);
-        leave_excluded_out(&mut snapshot, &here, root, &mut excluded);
+        let held = leave_excluded_out(&mut snapshot, &here, root, &mut excluded);
+        assert_eq!(held, listed, "the state keeps the web's record of every path");
 
         let kept: Vec<&str> = snapshot.files.keys().map(String::as_str).collect();
         assert_eq!(kept, ["main.tex", "new.tex"]);
@@ -1068,6 +1079,74 @@ mod tests {
             excluded.iter().map(String::as_str).collect::<Vec<_>>(),
             ["build/out.tex", "old.tex"]
         );
+    }
+
+    #[test]
+    fn lifting_an_exclusion_after_a_pull_leaves_a_change_not_a_new_file() {
+        let Some((_dir, git)) = repository() else {
+            return;
+        };
+        let root = git.dir();
+        std::fs::write(root.join(".gitattributes"), "a.tex -librepaper\n").unwrap();
+        std::fs::write(root.join("a.tex"), "mine\n").unwrap();
+        std::fs::write(root.join("main.tex"), "main\n").unwrap();
+        let base = commit_all(&git, "base");
+        let rules = Rules::default();
+        let here = scan(root, &rules, Some(&git)).unwrap();
+        assert_eq!(here.files.keys().collect::<Vec<_>>(), ["main.tex"]);
+
+        // The web version holds the excluded path under a hash of its own.
+        let listed = BTreeMap::from([
+            ("a.tex".to_string(), text(&sha256_hex(b"the web's\n"))),
+            ("main.tex".to_string(), text(&sha256_hex(b"main\n"))),
+        ]);
+        let mut snapshot = Snapshot {
+            texts: BTreeMap::from([
+                ("a.tex".to_string(), "the web's\n".to_string()),
+                ("main.tex".to_string(), "main\n".to_string()),
+            ]),
+            files: listed.clone(),
+        };
+        let mut excluded = BTreeSet::new();
+        let held = leave_excluded_out(&mut snapshot, &here, root, &mut excluded);
+        let mut chain = Chain::new(&git, "app.example.org", Some(base), BTreeSet::new()).unwrap();
+        let meta = Meta {
+            by: "Bob",
+            at: "2026-10-25T12:00:00Z",
+            message: "Edit a",
+            version: Some("sha-1"),
+            skip_if_unchanged: false,
+        };
+        let tip = chain
+            .commit(
+                &snapshot.files,
+                &snapshot.texts,
+                &HashMap::new(),
+                &meta,
+                None,
+                &excluded,
+            )
+            .unwrap();
+
+        // The chain's tree keeps the person's file, and the state holds the
+        // web's record of it.
+        let shown = git
+            .line(&["show", format!("{tip}:a.tex").as_str()])
+            .unwrap();
+        assert_eq!(shown, "mine");
+        assert_eq!(held, listed);
+        assert_eq!(held["a.tex"].sha, sha256_hex(b"the web's\n"));
+
+        // With the attribute gone the file is measured against the web's hash.
+        std::fs::remove_file(root.join(".gitattributes")).unwrap();
+        let now = scan(root, &rules, Some(&git)).unwrap();
+        let changes = compare(root, &held, &now);
+        assert_eq!(changes.changed, ["a.tex"]);
+        assert!(changes.added.is_empty());
+        assert!(changes.deleted.is_empty());
+        // Recording only what the commit took in made it look new.
+        let changes = compare(root, &snapshot.files, &now);
+        assert_eq!(changes.added, ["a.tex"]);
     }
 
     #[test]
