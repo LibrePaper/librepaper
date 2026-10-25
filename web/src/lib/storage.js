@@ -55,8 +55,12 @@ export const EDITOR_LINE_HEIGHT = "librepaper-editor-line-height";
 export const EDITOR_COMPLETION = "librepaper-editor-completion";
 // Whether typing an opening bracket adds the closing one.
 export const EDITOR_BRACKETS = "librepaper-editor-brackets";
-// Whether the browser underlines misspelled words in the source. Prose files only.
+// Which checker underlines the source: "off", "browser" or "harper". Prose files only. Older builds stored true or false.
 export const EDITOR_SPELLCHECK = "librepaper-editor-spellcheck";
+// The English dialect Harper checks against: "american", "british", "canadian", "australian" or "indian".
+export const EDITOR_DIALECT = "librepaper-editor-dialect";
+// The words the person added to Harper's dictionary, so they stop being underlined.
+export const HARPER_WORDS = "librepaper-harper-words";
 // Whether compiler messages are drawn in the source: underlines and gutter
 // marks. The list of messages stays available either way.
 export const EDITOR_CHECK = "librepaper-editor-check";

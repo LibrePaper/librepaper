@@ -147,7 +147,7 @@ function changedSettings() {
   if (fontId && fontId !== "default") lines.push(["Editor font", String(fontId)]);
   differs("Autocomplete", EDITOR_COMPLETION, true);
   differs("Close brackets", EDITOR_BRACKETS, true);
-  differs("Spellcheck", EDITOR_SPELLCHECK, true);
+  differs("Grammar and spelling", EDITOR_SPELLCHECK, "browser");
   differs("Code check", EDITOR_CHECK, true);
   for (const pane of Object.values(PANES)) {
     const value = read(pane.key, null);

@@ -33,7 +33,8 @@ const got = (key) => JSON.parse(store.get(key));
   assert.equal(prefs.state.keys, "default");
   assert.equal(prefs.state.completion, true);
   assert.equal(prefs.state.brackets, true);
-  assert.equal(prefs.state.spellcheck, true);
+  assert.equal(prefs.state.proofing, "browser");
+  assert.equal(prefs.state.dialect, "american");
   assert.equal(prefs.state.check, true);
   assert.equal(store.size, 0, "reading remembers nothing");
 }
@@ -49,8 +50,22 @@ const got = (key) => JSON.parse(store.get(key));
   const prefs = createPreferences();
   assert.equal(prefs.state.completion, false);
   assert.equal(prefs.state.brackets, false);
-  assert.equal(prefs.state.spellcheck, false);
+  assert.equal(prefs.state.proofing, "off");
   assert.equal(prefs.state.check, true);
+}
+
+// The grammar and spelling choice reads the old switch as it was: true is
+// the browser, and a value that is neither is checked.
+{
+  store.clear();
+  put("librepaper-editor-spellcheck", true);
+  assert.equal(createPreferences().state.proofing, "browser");
+  put("librepaper-editor-spellcheck", "nano");
+  assert.equal(createPreferences().state.proofing, "browser");
+  put("librepaper-editor-spellcheck", "harper");
+  assert.equal(createPreferences().state.proofing, "harper");
+  put("librepaper-editor-dialect", "klingon");
+  assert.equal(createPreferences().state.dialect, "american");
 }
 
 // A value from a version that offered a choice this one does not is checked
@@ -59,9 +74,11 @@ const got = (key) => JSON.parse(store.get(key));
   store.clear();
   put("librepaper-source-side", "middle");
   put("librepaper-keymap", "nano");
+  put("librepaper-editor-spellcheck", "harper");
   const prefs = createPreferences();
   assert.equal(prefs.state.sourceSide, "left");
   assert.equal(prefs.state.keys, "default");
+  assert.equal(prefs.state.proofing, "harper");
 }
 
 // Every setter writes. This is the whole reason the module exists: setting
@@ -89,9 +106,16 @@ const got = (key) => JSON.parse(store.get(key));
   assert.equal(prefs.state.brackets, false);
   assert.equal(got("librepaper-editor-brackets"), false);
 
-  prefs.setSpellcheck(false);
-  assert.equal(prefs.state.spellcheck, false);
-  assert.equal(got("librepaper-editor-spellcheck"), false);
+  prefs.setProofing("harper");
+  assert.equal(prefs.state.proofing, "harper");
+  assert.equal(got("librepaper-editor-spellcheck"), "harper");
+
+  prefs.setProofing("nano");
+  assert.equal(prefs.state.proofing, "browser", "a value outside the choices falls back");
+
+  prefs.setDialect("british");
+  assert.equal(prefs.state.dialect, "british");
+  assert.equal(got("librepaper-editor-dialect"), "british");
 
   prefs.setCheck(false);
   assert.equal(prefs.state.check, false);

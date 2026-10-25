@@ -1628,7 +1628,8 @@
                 keys={preferences.state.keys} onkeys={preferences.setKeys}
                 completion={preferences.state.completion} oncompletion={preferences.setCompletion}
                 brackets={preferences.state.brackets} onbrackets={preferences.setBrackets}
-                spellcheck={preferences.state.spellcheck} onspellcheck={preferences.setSpellcheck}
+                proofing={preferences.state.proofing} onproofing={preferences.setProofing}
+                dialect={preferences.state.dialect} ondialect={preferences.setDialect}
                 check={preferences.state.check} oncheck={preferences.setCheck} />
 
 <Modal open={Boolean(renaming)} title="Rename project"
