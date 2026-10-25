@@ -8,7 +8,7 @@
 // on the desktop app", nothing about routing or fallback order.
 //
 // Every dependency this file needs from the ambient browser -- fetch,
-// storage, wall clock, the wait between polls -- is reached through `deps`
+// wall clock, the wait between polls -- is reached through `deps`
 // rather than the global directly, so `web/tests/integration/build-local.mjs` can run
 // this exact code under Node with no browser at all. `_testing.inject`
 // overrides them; `_testing.reset` restores the defaults and clears every
@@ -17,7 +17,7 @@
 import { bytesOf, toArrayBuffer } from "../bytes.js";
 import { named } from "../latex/errors.js";
 
-/** @typedef {{ fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, storage: Storage | null, now: () => number, wait: (ms: number, signal?: AbortSignal) => Promise<void>, location: () => Location | null, replaceHash: (hash: string) => void }} DesktopDeps */
+/** @typedef {{ fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, now: () => number, wait: (ms: number, signal?: AbortSignal) => Promise<void>, location: () => Location | null, replaceHash: (hash: string) => void }} DesktopDeps */
 /** @typedef {{ generation?: number, deadlineSeconds?: number, snapshot?: string }} DesktopJob */
 /** @typedef {{ main: string, texts?: Record<string, string>, assets?: Record<string, Uint8Array | ArrayBuffer | string>, digests?: Record<string, string>, files?: Record<string, unknown> }} DesktopTree */
 /** @typedef {{ path: string, sha256: string, size: number }} ManifestFile */
@@ -35,8 +35,6 @@ const UNREACHABLE_MESSAGE = "The LibrePaper desktop app could not reach its loca
 // Feature routes and machine management routes, under the desktop base.
 const LOCAL_BASE = "librepaper/local/";
 const MANAGE_BASE = "companion/api/";
-
-const BINDINGS_KEY = "librepaper-local-quarto-bindings";
 
 const POLL_FAST_MS = 500;
 const POLL_SLOW_MS = 1000;
@@ -56,7 +54,6 @@ function realWait(ms, signal) {
 function defaultDeps() {
   return {
     fetch: (input, init) => globalThis.fetch(input, init),
-    storage: typeof localStorage !== "undefined" ? localStorage : null,
     now: () => Date.now(),
     wait: realWait,
     location: () => (typeof location !== "undefined" ? location : null),
@@ -121,61 +118,13 @@ export async function desktopReport() {
   throw new Error(message || `The desktop app could not do that (${response.status}).`);
 }
 
-// -------------------------------------------------------------- storage
-
-function store() {
-  return deps.storage || null;
-}
-
-function readRaw(key) {
-  const s = store();
-  if (!s) return null;
-  // Only a string is a stored value: a storage shim that answers with a
-  // promise or an object would otherwise be read as one.
-  try {
-    const value = s.getItem(key);
-    return typeof value === "string" ? value : null;
-  } catch { return null; }
-}
-
-function writeRaw(key, value) {
-  const s = store();
-  if (!s) return;
-  try { s.setItem(key, value); } catch { /* quota or a disabled store; not fatal */ }
-}
-
-function readJSON(key, fallback) {
-  const raw = readRaw(key);
-  if (!raw) return fallback;
-  try { return JSON.parse(raw); } catch { return fallback; }
-}
-
-function writeJSON(key, value) {
-  writeRaw(key, JSON.stringify(value));
-}
-
-// The binding every document has without anyone granting one: the desktop app
-// renders it in a workspace of its own, written from the files the browser
-// sends with each job. A project folder chosen in the desktop app settings
-// replaces it for a project that keeps data the document does not share.
+// The binding of a web project: the desktop app renders it in a workspace of
+// its own, written from the files the browser sends with each job. A local
+// project uses its local id instead, and its folder is the workspace.
 export const HOSTED_BINDING = "hosted";
 
 function projectKey() {
   return `${current.origin}|${current.project}`;
-}
-
-export function bindingId() {
-  const all = readJSON(BINDINGS_KEY, {});
-  return String(all[projectKey()] || HOSTED_BINDING);
-}
-
-export function setBindingId(id) {
-  const all = readJSON(BINDINGS_KEY, {});
-  const value = String(id || "").trim();
-  if (value) all[projectKey()] = value;
-  else delete all[projectKey()];
-  writeJSON(BINDINGS_KEY, all);
-  return value;
 }
 
 let current = { project: null, origin: "" };
@@ -344,17 +293,6 @@ export async function zoteroItem(key) {
   return response.json();
 }
 
-/** Ask the desktop app to open its native directory chooser and bind the
- * selected project folder. The absolute path never crosses the wire. */
-export async function chooseFolderBinding({ entrypoint = "" } = {}) {
-  const response = await send("POST", "bindings/folder", {
-    jsonBody: { project: current.project, entrypoint: String(entrypoint || "") },
-  });
-  const data = await response.json();
-  if (data?.id) setBindingId(data.id);
-  return data;
-}
-
 /// One typed Git operation of the desktop app's local service, for the
 /// current project. The answer is the parsed JSON. A refusal carries `status`,
 /// `kind` and `body`, so callers can tell a moved branch from a failed login.
@@ -517,17 +455,7 @@ export async function runRender({ job = {}, tree, format, output, entrypoint = "
   };
   const scope = `local ${format}`;
   onProgress?.({ done: 0, total: 1, scope });
-  let finished;
-  try {
-    finished = await submitAndAwait(formOf(request, files), signal);
-  } catch (error) {
-    // A saved folder this desktop app no longer grants (revoked, or another
-    // install) is forgotten, and the render falls back to the hosted
-    // workspace instead of failing every time.
-    if (request.binding_id === HOSTED_BINDING || error?.name !== "Refused" || ![403, 404].includes(error?.status)) throw error;
-    setBindingId("");
-    return runRender({ job, tree, format, output, entrypoint }, { signal, onProgress });
-  }
+  const finished = await submitAndAwait(formOf(request, files), signal);
   const { id, status } = finished;
   const artifact = await fetchVerifiedOutput(id, "artifact", status);
   const synctex = await fetchVerifiedOutput(id, "synctex", status);
@@ -577,12 +505,12 @@ function folderForm(manifest, files) {
 /** Bring the granted project folder in step with the project. The manifest
  * lists every file, and the bytes go only for files the desktop app has not
  * acknowledged yet. Resolves with the desktop app's answer (`kept`, `trashed`,
- * `renamed`), or null after forgetting a folder that is no longer granted.
+ * `renamed`), or the answer as parsed.
  * @param {{ tree: Pick<DesktopTree, "texts" | "assets">, bindingId: string, encode?: (path: string, text: string) => Uint8Array }} input
  * @param {{ signal?: AbortSignal }} [options] */
 export async function syncFolder({ tree, bindingId: binding, encode }, { signal } = {}) {
   const id = String(binding || "");
-  if (!id || id === HOSTED_BINDING) throw new Error("no project folder is granted");
+  if (!id || id === HOSTED_BINDING) throw new Error("only a local project has a folder");
   const files = collectTreeFiles(tree, encode);
   const manifest = await manifestOf(files);
   const key = `${projectKey()}|${id}`;
@@ -602,10 +530,6 @@ export async function syncFolder({ tree, bindingId: binding, encode }, { signal 
     }
   } catch (error) {
     acknowledged = { key: "", digests: new Map() };
-    if (error?.name === "Refused" && [403, 404].includes(error?.status)) {
-      setBindingId("");
-      return null;
-    }
     throw error;
   }
   acknowledged = { key, digests: new Map(manifest.map((entry) => [entry.path, entry.sha256])) };

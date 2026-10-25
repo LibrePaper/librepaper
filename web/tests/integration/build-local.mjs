@@ -3,11 +3,9 @@ import assert from "node:assert/strict";
 import * as client from "../../src/lib/desktop/client.js";
 import { formOf } from "../helpers/form-body.mjs";
 
-const values = new Map();
-const storage = { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, String(value)), removeItem: (key) => values.delete(key) };
 globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
 client._testing.reset();
-client._testing.inject({ storage, wait: () => Promise.resolve() });
+client._testing.inject({ wait: () => Promise.resolve() });
 client.configure({ project: "paper", origin: "https://app.test" });
 
 const hex = async (bytes) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -139,24 +137,21 @@ client._testing.inject({ fetch: async (url, init = {}) => {
 await assert.rejects(client.runRender({ job: {}, tree, format: "latex", output: "pdf" }), /could not reach its local service/);
 assert.equal(submissions, 1);
 
-// A saved folder the desktop app no longer grants is forgotten, and the render
-// runs again in the hosted workspace.
-client.setBindingId("revoked-folder");
+// The binding id comes from the caller. A call that names none renders in the
+// hosted workspace, and a call that names a local project sends its id.
 const bindings = [];
 client._testing.inject({ fetch: async (url, init = {}) => {
   if (url.endsWith("/jobs") && init.method === "POST") {
-    const job = JSON.parse(await (await formOf(init)).get("job").text());
-    bindings.push(job.binding_id);
-    return job.binding_id === "hosted" ? response(202, { id: "job-4" }) : response(404, { error: "unknown folder" });
+    bindings.push(JSON.parse(await (await formOf(init)).get("job").text()).binding_id);
+    return response(202, { id: "job-4" });
   }
   if (url.endsWith("/jobs/job-4")) return response(200, { id: "job-4", status: "done", exit: 0, outputs: { artifact: await descriptor(artifact) } });
   if (url.endsWith("/jobs/job-4/files/artifact")) return response(200, {}, artifact);
-  throw new Error(`unexpected revoked-folder request ${url}`);
+  throw new Error(`unexpected binding request ${url}`);
 } });
-const rerun = await client.runRender({ job: {}, tree, format: "latex", output: "pdf", bindingId: client.bindingId() });
-assert.equal(rerun.ok, true);
-assert.deepEqual(bindings, ["revoked-folder", "hosted"]);
-assert.equal(client.bindingId(), "hosted");
+await client.runRender({ job: {}, tree, format: "latex", output: "pdf" });
+await client.runRender({ job: {}, tree, format: "latex", output: "pdf", bindingId: "local-1" });
+assert.deepEqual(bindings, ["hosted", "local-1"]);
 
 // A command is saved or reset by key, and a reset carries no command.
 const sentRecords = [];

@@ -111,8 +111,11 @@ assert.match(frameSource, /librepaper-flow img \{[\s\S]*?max-width: 100%;[\s\S]*
 // clears the old payload/export and paints an explicit empty state.
 assert.match(previewSource, /if \(!String\(source\.texts\?\.\[source\.main\] \?\? ""\)\.trim\(\)\) \{/);
 assert.match(previewSource, /framePreview\.clear\?\.\(\);[\s\S]*?onEmpty\(\);/);
-// Project folder setting is shown in the File menu for typst, markdown, and quarto.
-assert.match(readerSource, /\{#if mayEdit && !LOCAL && \["typst", "markdown", "quarto"\]\.includes\(sourceFormat\)\}[\s\S]*?<Menu\.Item value="project-folder"[\s\S]*?Project folder/);
+// A web project has no project folder: no File menu item, no modal, and no folder sync.
+assert.doesNotMatch(readerSource, /project-folder|ProjectFolderSetting/);
+assert.match(readerSource, /const folderSync = LOCAL \? createFolderSync\(/);
+// A web project renders in the hosted workspace and a local project in its own folder.
+assert.match(readerSource, /bindingId: LOCAL \? LOCAL_ID : localQuarto\.HOSTED_BINDING/);
 // HTML/PDF output format choice for markdown and quarto in View menu.
 assert.match(readerSource, /\{@const selectableFormat = \["latex", "typst", "markdown", "quarto"\]\.includes\(displayedFormat\)\}/);
 assert.match(readerSource, /async function setMarkdownOutput\(format\)/);

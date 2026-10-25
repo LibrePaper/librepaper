@@ -3,13 +3,10 @@ import assert from "node:assert/strict";
 import * as client from "../../src/lib/desktop/client.js";
 import { formOf } from "../helpers/form-body.mjs";
 
-const values = new Map();
-const storage = { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, String(value)), removeItem: (key) => values.delete(key) };
 globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
 client._testing.reset();
-client._testing.inject({ storage, wait: () => Promise.resolve() });
+client._testing.inject({ wait: () => Promise.resolve() });
 client.configure({ project: "paper", origin: "https://app.test" });
-client.setBindingId("folder-1");
 
 function response(status, body) { return { ok: status >= 200 && status < 300, status, json: async () => body, clone() { return response(status, body); } }; }
 
@@ -51,10 +48,6 @@ await assert.rejects(client.syncFolder({ tree: tree("three"), bindingId: "folder
 await client.syncFolder({ tree: tree("three"), bindingId: "folder-1" });
 assert.deepEqual(calls.at(-1).files, ["a.tex", "b.tex", "fig/dot.png"]);
 
-// A revoked folder is forgotten.
-answers = [response(403, { error: "not granted" })];
-assert.equal(await client.syncFolder({ tree: tree("four"), bindingId: "folder-1" }), null);
-assert.equal(client.bindingId(), client.HOSTED_BINDING);
 // A folder the client was told about sends a manifest and no file parts.
 {
   const { createHash } = await import("node:crypto");

@@ -39,7 +39,6 @@
     return DESCRIPTIONS[key] || "";
   }
 
-  const bindings = $derived(view.list(view.state?.bindings));
   const jobs = $derived(view.list(view.state?.jobs));
   const sessions = $derived(view.list(view.state?.sessions));
   const running = $derived(jobs.length + sessions.length > 0);
@@ -50,10 +49,9 @@
     if (!Number.isFinite(seconds) || seconds < 0) return "";
     return seconds < 60 ? `${Math.round(seconds)} s` : `${Math.floor(seconds / 60)} min ${Math.round(seconds % 60)} s`;
   }
-  const bindingNote = (binding) => [binding.origin || "Connected site", binding.entrypoint || "project folder", binding.execution_granted === false ? "Code execution is not authorized" : ""].filter(Boolean).join(" · ");
 </script>
 
-<DesktopOnly description="Render documents with the programs on your computer, link projects to folders and run their code locally.">
+<DesktopOnly description="Render documents with the programs on your computer, run their code locally.">
 {#if view.error}
   <p class="setting-description desktop-error" role="alert">{view.error}</p>
 {/if}
@@ -74,26 +72,6 @@
       <ToolRow id={`tools-${key}`} {title} description={description(key, title, tool)} status={status(tool)} />
     {/each}
   </section>
-
-  {#if bindings.length}
-    <section id="tools-folders" class="settings-subsection">
-      <div class="settings-section-title">
-        <h4 class="settings-subhead">Project folders</h4>
-      </div>
-      <table class="desktop-table" aria-label="Project folders">
-        <thead><tr><th scope="col">Project folder</th><th scope="col">Details</th><th scope="col"><span class="sr-only">Action</span></th></tr></thead>
-        <tbody>
-          {#each bindings as binding (binding.id)}
-            <tr>
-              <th scope="row">{binding.project || "Authorized folder"}</th>
-              <td>{bindingNote(binding)}</td>
-              <td class="desktop-action"><button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => { if (confirm(`Remove folder authorization for ${binding.project || "this project"}?`)) void view.act(`binding-${binding.id}`, "Folder authorization removed.", `/bindings/${view.id(binding.id)}`, { method: "DELETE" }); }}>Revoke</button></td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </section>
-  {/if}
 
   {#if running}
     <section id="tools-activity" class="settings-subsection">

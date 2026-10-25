@@ -1,4 +1,4 @@
-// Keeps the granted project folder in step with the project. Every change to
+// Keeps a local project's folder in step with the project. Every change to
 // the project calls `poke`. The run starts 800 ms after the last poke, at most
 // one run is in flight, and a poke that arrives during a run schedules one
 // more afterwards.
