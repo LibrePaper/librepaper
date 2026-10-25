@@ -15,7 +15,7 @@ const route = (id, step = "") => `projects/${encodeURIComponent(String(id))}/syn
  * folder holds a `.git`, which the desktop app will not pull into, push from
  * or publish.
  * @param {string} id
- * @returns {Promise<{ signed_in: boolean, linked: boolean, git?: boolean, site?: string, slug?: string, pulled?: number, changes?: { here: number, web: boolean } }>} */
+ * @returns {Promise<{ signed_in: boolean, linked: boolean, git?: boolean, other_site?: boolean, site?: string, slug?: string, pulled?: number, changes?: { here: number, web: boolean }, error?: string }>} */
 export async function syncStatus(id) {
   const response = await send("GET", route(id));
   return response.json();
