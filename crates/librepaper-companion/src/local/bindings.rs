@@ -340,9 +340,12 @@ impl BindingStore {
 
     /// Revalidate the grant and root at each boundary that can follow a queue
     /// delay. A hosted workspace takes the entrypoint the job names. A folder
-    /// project builds any regular file inside its root. File inventory and
-    /// symlink checks remain with the caller, before it reads or executes
-    /// those files.
+    /// project takes any safe relative entrypoint that stays inside its root
+    /// along the path as it exists now, including a file the folder save has
+    /// not written yet: the job's uploads are mirrored into the folder after
+    /// this check, and `require_entrypoint_file` then confirms the file is
+    /// there. File inventory and symlink checks remain with the caller, before
+    /// it reads or executes those files.
     pub(crate) fn validate_scoped_entrypoint(
         &self,
         id: &str,
@@ -354,14 +357,31 @@ impl BindingStore {
         if !protocol::safe_relative_path(entrypoint) {
             return Err("entrypoint must be a safe project-relative path".into());
         }
-        if binding.is_project() {
-            let inside = std::fs::canonicalize(binding.root.join(entrypoint))
-                .is_ok_and(|resolved| resolved.starts_with(&binding.root) && resolved.is_file());
-            if !inside {
-                return Err("entrypoint is not a file inside the project folder".into());
-            }
+        let binding = self.check_root(binding)?;
+        if binding.is_project() && !stays_inside(&binding.root, entrypoint) {
+            return Err("entrypoint resolves outside the project folder".into());
         }
-        self.check_root(binding)
+        Ok(binding)
+    }
+
+    /// After a job's uploads are mirrored into `root`, which is canonical, the
+    /// entry file must be a regular file that resolves inside it. The page
+    /// sends an entry file the folder save may not have written yet, so this
+    /// is the check that it is there.
+    pub(crate) fn require_entrypoint_file(root: &Path, entrypoint: &str) -> Result<(), String> {
+        match std::fs::canonicalize(root.join(entrypoint)) {
+            Ok(resolved) if !resolved.starts_with(root) => Err(format!(
+                "the entry file {entrypoint} resolves outside the project folder"
+            )),
+            Ok(resolved) if !resolved.is_file() => {
+                Err(format!("the entry file {entrypoint} is not a file"))
+            }
+            Ok(_) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(format!(
+                "the entry file {entrypoint} was not uploaded and is not in the project folder"
+            )),
+            Err(error) => Err(format!("could not read the entry file {entrypoint}: {error}")),
+        }
     }
 
     /// Revalidate only the grant and the root, for a route that names no
@@ -380,6 +400,26 @@ impl BindingStore {
         match std::fs::canonicalize(&binding.root) {
             Ok(root) if root == binding.root && root.is_dir() => Ok(binding),
             _ => Err("scoped binding root is unavailable or changed".into()),
+        }
+    }
+}
+
+/// Whether `entrypoint` under `root`, which is canonical, resolves inside it
+/// along the path as it exists now. The deepest ancestor that exists is
+/// resolved, so a symlinked directory that leads out is caught for a file that
+/// is not there yet, and a link at the path itself must resolve inside. A link
+/// that does not resolve is refused rather than read as a file not there yet.
+fn stays_inside(root: &Path, entrypoint: &str) -> bool {
+    let mut candidate = root.join(entrypoint);
+    loop {
+        match std::fs::canonicalize(&candidate) {
+            Ok(resolved) => return resolved.starts_with(root),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if std::fs::symlink_metadata(&candidate).is_ok() || !candidate.pop() {
+                    return false;
+                }
+            }
+            Err(_) => return false,
         }
     }
 }
@@ -411,7 +451,10 @@ mod validation_tests {
         };
         assert!(validate("chapters/one.tex").is_ok());
         assert!(validate("notes.txt").is_ok());
-        assert!(validate("missing.tex").is_err());
+        // A file the folder save has not written yet is admitted; the render
+        // checks for it after the job's uploads are mirrored.
+        assert!(validate("missing.tex").is_ok());
+        assert!(validate("chapters/new/two.tex").is_ok());
         assert!(validate("../escape.tex").is_err());
         assert!(validate("").is_err());
         assert!(store
@@ -429,6 +472,68 @@ mod validation_tests {
             .revoke_origin_binding(&project.id, "https://example.test")
             .unwrap());
         assert!(validate("notes.txt").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_project_entrypoint_that_resolves_outside_the_root_is_refused() {
+        let state = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.tex"), "x").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.tex"),
+            root.path().join("link.tex"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("absent.tex"),
+            root.path().join("dangling.tex"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("data")).unwrap();
+        let store = BindingStore::new(state.path());
+        let project = store
+            .open_project("https://example.test", root.path())
+            .unwrap();
+        let validate = |entry: &str| {
+            store.validate_scoped_entrypoint(
+                &project.id,
+                "https://example.test",
+                &project.project,
+                entry,
+            )
+        };
+        // A link at the path, a dangling one, and a linked directory above a
+        // file that exists or does not yet.
+        assert!(validate("link.tex").is_err());
+        assert!(validate("dangling.tex").is_err());
+        assert!(validate("data/secret.tex").is_err());
+        assert!(validate("data/new.tex").is_err());
+        assert!(validate("fresh.tex").is_ok());
+    }
+
+    #[test]
+    fn the_entry_file_must_be_a_file_inside_the_root_once_the_uploads_are_mirrored() {
+        let root = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(root.path()).unwrap();
+        let missing = BindingStore::require_entrypoint_file(&root, "main.tex").unwrap_err();
+        assert!(missing.contains("main.tex"), "{missing}");
+        assert!(missing.contains("was not uploaded"), "{missing}");
+        std::fs::write(root.join("main.tex"), "x").unwrap();
+        assert!(BindingStore::require_entrypoint_file(&root, "main.tex").is_ok());
+        std::fs::create_dir(root.join("folder")).unwrap();
+        let directory = BindingStore::require_entrypoint_file(&root, "folder").unwrap_err();
+        assert!(directory.contains("is not a file"), "{directory}");
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            std::fs::write(outside.path().join("secret.tex"), "x").unwrap();
+            std::os::unix::fs::symlink(outside.path().join("secret.tex"), root.join("link.tex"))
+                .unwrap();
+            let linked = BindingStore::require_entrypoint_file(&root, "link.tex").unwrap_err();
+            assert!(linked.contains("outside the project folder"), "{linked}");
+        }
     }
 
     #[test]

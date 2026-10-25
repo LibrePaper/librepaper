@@ -25,7 +25,7 @@ All routes sit under the existing `lp-local` service, are authenticated like eve
 
 ### Folder projects
 
-A folder project is a binding with `kind: "project"`, `project: "local-<id>"`, no fixed entrypoint, and the folder root. Existing bindings get `kind: "render"` by default. A project binding passes `validate_scoped_entrypoint` for any safe relative entrypoint inside its root, so renders may build any file.
+A folder project is a binding with `kind: "project"`, `project: "local-<id>"`, no fixed entrypoint, and the folder root. Existing bindings get `kind: "render"` by default. A project binding passes `validate_scoped_entrypoint` for any safe relative entrypoint that resolves inside its root, even a file the folder save has not written yet, so renders may build any file. The render checks that the entry file exists after the job's files are mirrored into the folder.
 
 - `POST projects/open`: shows the native folder chooser ("Open a folder as a LibrePaper project"). Creates the binding, or returns the existing one for the same root and origin. Answers `{ id, project, name, root_name }`, where `name` is the folder's base name. Answers 409 when a chooser is already open, 204 when the person cancels.
 - `GET projects`: the folder projects for this origin, most recently opened first: `[{ id, project, name, opened_at, present }]`. `present` is false when the folder is gone.
