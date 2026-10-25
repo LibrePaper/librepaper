@@ -30,7 +30,7 @@
 </script>
 
 <DesktopOnly feature="The project folder setting" description="Render this project in a folder on your computer.">
-<SettingRow id="render-folder" title="Project folder" description="Renders on this computer run in this folder and leave their files there.">
+<SettingRow id="render-folder" title="Project folder" description="LibrePaper keeps this folder in step with the project. Edits, new files, renames and deletions happen in the folder too. Deleted files go to the system trash. Files that are not part of the project are left alone.">
   <input class="input input-sm setting-input" type="text" aria-label="Project entrypoint" bind:value={entrypoint} disabled={!canChoose} />
   <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={!canChoose || !entrypoint.trim()} onclick={() => void chooseFolder()}>{choosingFolder ? "Choosing…" : "Choose folder…"}</button>
 </SettingRow>

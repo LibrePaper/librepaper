@@ -14,6 +14,7 @@
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
   import { createGitResolver } from "../lib/reader/git-resolver.svelte.js";
   import { createGitAuto } from "../lib/reader/git-auto.svelte.js";
+  import { createFolderSync } from "../lib/reader/folder-sync.js";
   import GitConflictWorkspace from "./reader/GitConflictWorkspace.svelte";
   import { createGitDiff } from "../lib/reader/git-diff.svelte.js";
   import GitDiffWorkspace from "./reader/GitDiffWorkspace.svelte";
@@ -1485,6 +1486,37 @@
     return { held, missing };
   }
 
+  // A granted project folder mirrors the project. Any change to the files
+  // pokes the scheduler, which writes the folder once the person pauses.
+  function folderBinding() {
+    const id = hasDesktop ? localQuarto.bindingId() : "";
+    return id && id !== localQuarto.HOSTED_BINDING ? id : "";
+  }
+  const folderSync = createFolderSync({
+    ready: () => Boolean(hasDesktop && mayEdit && session && folderBinding()),
+    run: async () => {
+      scopeLocalApp();
+      const binding = folderBinding();
+      const tree = capturePreviewTree(liveTreeNow());
+      if (Object.keys(tree.digests || {}).length) {
+        const { held, missing } = await gatherFigures(tree.digests);
+        if (missing.length) throw new Error(`could not fetch ${missing.join(", ")}`);
+        tree.assets = held.assets;
+      }
+      const result = await localQuarto.syncFolder({ tree, bindingId: binding });
+      for (const kept of result?.kept || []) {
+        const name = String(kept.path || "").split("/").pop();
+        say(`Your copy of ${name} was kept as ${String(kept.copy || "").split("/").pop()}.`, { kind: "note", id: `reader:folder-kept:${kept.path}` });
+      }
+    },
+    onError: (error) => say(`The project folder could not be updated: ${error?.message || "unknown error"}`, { kind: "problem", id: "reader:folder-sync" }),
+  });
+  $effect(() => () => folderSync.dispose());
+  // The document opens with a saved folder, or the editor becomes ready.
+  $effect(() => {
+    if (session && mayEdit) untrack(() => folderSync.poke());
+  });
+
   // Outline reads the same live text as the editor. The revision dependency
   // is explicit because document changes happen outside Svelte's normal tracking;
   // both local and remote source observers increment it.
@@ -2945,6 +2977,7 @@
     // four maps, not one.
     if (active.directoryChanged(events)) refreshFiles();
     if (needsSourceRefresh(events)) {
+      folderSync.poke();
       sourceChanged();
       scheduleTargetUpdate();
     }
@@ -4361,7 +4394,7 @@
                 account={me} />
 
 <Modal bind:open={projectFolderOpen} title="Project folder">
-  <ProjectFolderSetting {sourceFormat} main={previewPath} {mayEdit} onbindingid={(id) => localQuarto.setBindingId(id)} />
+  <ProjectFolderSetting {sourceFormat} main={previewPath} {mayEdit} onbindingid={(id) => { localQuarto.setBindingId(id); folderSync.poke(); }} />
 </Modal>
 
 <Modal bind:open={templateModalOpen} title="Save as template"
