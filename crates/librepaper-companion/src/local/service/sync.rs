@@ -465,14 +465,10 @@ pub(super) async fn handle_link(
 
 /// Starts the folder's sync state at `link`: nothing pulled, no file recorded.
 fn record_link(folder: &Folder, link: Link) -> Result<(), Failure> {
-    let state = State {
-        link,
-        pulled: None,
-        head: None,
-        files: BTreeMap::new(),
-        pushed: Vec::new(),
-    };
-    folder.store.save(&state).map_err(|error| failed(&error))
+    folder
+        .store
+        .save(&State::new(link))
+        .map_err(|error| failed(&error))
 }
 
 pub(super) async fn handle_unlink(

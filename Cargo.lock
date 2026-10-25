@@ -952,6 +952,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-deque"
+version = "0.8.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "622f3fc73690be383c7214310406f28a90e6edeadc3cea882f9d71e495b9711a"
+dependencies = [
+ "crossbeam-epoch",
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-epoch"
 version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1791,6 +1801,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "globset"
+version = "0.4.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07c34a9410465b45bd9787443bc7370f37735bad04b0f0cd57ff1a3186c98988"
+dependencies = [
+ "aho-corasick",
+ "bstr",
+ "log",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "governor"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2262,6 +2285,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ignore"
+version = "0.4.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00b69833ed729dc5aa7d19541d96d6cf8e9137194207a04916d658e43168402f"
+dependencies = [
+ "crossbeam-deque",
+ "globset",
+ "log",
+ "memchr",
+ "regex-automata",
+ "same-file",
+ "walkdir",
+ "winapi-util",
+]
+
+[[package]]
 name = "im"
 version = "15.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2621,6 +2660,7 @@ dependencies = [
  "librepaper-room",
  "librepaper-server",
  "librepaper-shell",
+ "librepaper-sync",
  "loro",
  "reqwest",
  "serde",
@@ -2691,9 +2731,9 @@ dependencies = [
  "libc",
  "librepaper-base",
  "librepaper-document",
+ "librepaper-sync",
  "percent-encoding",
  "rand 0.9.5",
- "regex",
  "reqwest",
  "rfd",
  "rmcp",
@@ -2837,6 +2877,27 @@ dependencies = [
  "include_dir",
  "librepaper-base",
  "serde_json",
+]
+
+[[package]]
+name = "librepaper-sync"
+version = "0.0.52"
+dependencies = [
+ "hex",
+ "ignore",
+ "librepaper-base",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "similar",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "trash",
+ "unicode-normalization",
+ "url",
 ]
 
 [[package]]

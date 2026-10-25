@@ -5,7 +5,7 @@
 //! author has just installed and has not noticed is broken; it must not take
 //! discovery or a render with it.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -47,21 +47,6 @@ impl Probe {
             isolated: false,
         }
     }
-}
-
-/// The executable a tool override names, or the first one on `PATH`.
-///
-/// `override_var` wins outright when it names a file: an author who points
-/// the service at a particular build means that one, not whichever came
-/// first on a `PATH` they did not write. Nothing here shells out, so a
-/// directory with a space or a quote in its name is a path and not a
-/// command.
-pub(crate) fn find(override_var: &str, tool: &str) -> Option<PathBuf> {
-    let configured = std::env::var_os(override_var).map(PathBuf::from);
-    if let Some(path) = configured.filter(|path| path.is_file()) {
-        return Some(path);
-    }
-    which::which(tool).ok()
 }
 
 /// The first line of what `path --version` prints, or nothing.
@@ -352,24 +337,5 @@ mod tests {
         .expect("the wrapper can find its helper on the preserved PATH");
         assert!(stdout.contains("helper-version"), "{stdout}");
         assert!(helper.is_file());
-    }
-
-    /// An override that names a file wins over anything on `PATH`.
-    #[test]
-    fn a_tool_override_wins_over_the_search_path() {
-        let directory = tempfile::tempdir().unwrap();
-        let named = directory.path().join("a-particular-build");
-        std::fs::write(&named, b"").unwrap();
-        // Safety: this test is the only user of this variable name, and
-        // `find` reads it synchronously below.
-        unsafe { std::env::set_var("LIBREPAPER_TEST_TOOL_PATH", &named) };
-        assert_eq!(find("LIBREPAPER_TEST_TOOL_PATH", "sh"), Some(named));
-        unsafe { std::env::set_var("LIBREPAPER_TEST_TOOL_PATH", directory.path()) };
-        assert_ne!(
-            find("LIBREPAPER_TEST_TOOL_PATH", "sh"),
-            Some(directory.path().to_path_buf()),
-            "an override that is not a file falls through to the search path"
-        );
-        unsafe { std::env::remove_var("LIBREPAPER_TEST_TOOL_PATH") };
     }
 }

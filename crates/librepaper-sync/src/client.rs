@@ -26,6 +26,13 @@ pub struct Client {
     credentials: Credentials,
 }
 
+/// Names the site only. The credential never reaches a log.
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client").field("site", &self.site).finish()
+    }
+}
+
 /// One row of a project's version list.
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct Label {
@@ -163,9 +170,23 @@ impl Client {
         }
     }
 
-    /// What the deployment accepts.
+    /// What the deployment accepts. The configuration is public, and an agent
+    /// token is admitted only on its document's routes, so this call carries
+    /// no credential.
     pub async fn rules(&self) -> Result<Rules, Error> {
-        let value = self.get_json("/api/config").await?;
+        let (status, raw) = send(
+            Method::GET,
+            &format!("{}/api/config", self.base()),
+            &[("x-librepaper-client", "cli")],
+            None,
+            QUICK,
+        )
+        .await
+        .map_err(Error::Network)?;
+        let value = decode(&raw);
+        if !(200..300).contains(&status) {
+            return Err(refusal(status, &value));
+        }
         serde_json::from_value(value).map_err(|error| {
             Error::Invalid(format!("the deployment's rules are unreadable: {error}"))
         })
