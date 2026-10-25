@@ -83,13 +83,15 @@ import { watchPinch } from "../lib/pinch.js";
         padding: 24px 20px;
       }
     }
-    /* Previews are light paper. Chrome and Firefox answer a frame's
-       prefers-color-scheme from the light page around it, but WebKit follows
-       the system, and LaTeXML's dark block would then paint white text on the
-       white page. Its light rules are restated for a dark system. */
-    html.librepaper-preview { color-scheme: light; }
+    /* Every preview is light paper with dark ink at the root, whatever the
+       system or the reader is set to and whether or not the page is a styled
+       document of its own. The root only sets what is inherited, so a page
+       that colours its own body or text keeps its colours. Chrome and Firefox
+       answer a frame's prefers-color-scheme from the light page around it,
+       but WebKit follows the system, so LaTeXML's dark block is also met with
+       its own light rules restated for a dark system. */
+    html.librepaper-preview { color-scheme: light; background-color: #fff; color: #000; }
     @media (prefers-color-scheme: dark) {
-      html.librepaper-preview { background-color: #fff; color: #000; }
       html.librepaper-preview .ltx_foreignobject_content { color: inherit; }
       html.librepaper-preview [style*="--ltx-fg-color:"] { color: var(--ltx-fg-color); }
       html.librepaper-preview [style*="--ltx-bg-color:"] { background-color: var(--ltx-bg-color); }
