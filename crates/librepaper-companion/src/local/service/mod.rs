@@ -37,8 +37,8 @@ use tokio::sync::{mpsc, watch, Mutex, Notify};
 
 use crate::local::bindings::BindingStore;
 use crate::local::protocol::{
-    self, Capabilities, JobOutcome, JobRequest, JobStatus, ManifestEntry, BASE_PATH, MAX_JSON_BYTES,
-    MAX_UPLOAD_BYTES, PROTOCOL_VERSIONS,
+    self, Capabilities, JobOutcome, JobRequest, JobStatus, ManifestEntry, BASE_PATH,
+    MAX_JSON_BYTES, MAX_UPLOAD_BYTES, PROTOCOL_VERSIONS,
 };
 use crate::local::store;
 

@@ -2401,7 +2401,13 @@ mod tests {
 
         // Nobody asks for changes, so the poller stops and forgets its scan.
         tokio::time::timeout(Duration::from_secs(5), async {
-            while inner.projects.pollers.lock().unwrap().contains_key(&binding.id) {
+            while inner
+                .projects
+                .pollers
+                .lock()
+                .unwrap()
+                .contains_key(&binding.id)
+            {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })

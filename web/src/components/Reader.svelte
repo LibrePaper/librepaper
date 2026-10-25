@@ -1511,6 +1511,9 @@
       }
       const result = await localQuarto.syncFolder({ tree, bindingId: LOCAL_ID, encode: localProject.encode });
       if (result) localProject?.wrote(tree);
+      for (const path of result?.kept_unreadable || []) {
+        say(`${String(path).split("/").pop()} could not be read, so it was left in the folder.`, { kind: "note", id: `reader:folder-unreadable:${path}` });
+      }
       for (const kept of result?.kept || []) {
         const name = String(kept.path || "").split("/").pop();
         say(`Your copy of ${name} was kept as ${String(kept.copy || "").split("/").pop()}.`, { kind: "note", id: `reader:folder-kept:${kept.path}` });

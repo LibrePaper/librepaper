@@ -36,7 +36,7 @@ A folder project is a binding with `kind: "project"`, `project: "local-<id>"`, n
 
 `GET projects/<id>/tree` answers `{ files: [{ path, size, sha256, mtime }], skipped: [{ path, reason }] }`.
 - It walks the root, skipping `.git`, any hidden file or folder, `node_modules`, `renv`, `__pycache__`, `.quarto`, `_freeze`, symlinks, and files over the upload size bound. At most 5000 files; past that it answers 413.
-- It records every listed file's digest in the binding's written record, so the folder mirror treats every file of the project as managed: a deletion in the editor trashes it, and a rename moves it.
+- It records nothing. A file becomes managed, so that a deletion in the editor trashes it and a rename moves it, only once the page has sent it in a save; the page's first save on open sends no bytes and does exactly that.
 - A file a local render wrote into the folder (see Outside changes) is left out of `files` and named in `skipped` with the reason "render output".
 - A directory or file that cannot be read is named in `skipped` with the reason "unreadable".
 - `GET projects/<id>/files/<path>`: the bytes of one file inside the root, checked the same way.
