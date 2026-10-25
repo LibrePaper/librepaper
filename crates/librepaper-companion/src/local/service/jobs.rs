@@ -63,7 +63,9 @@ pub(super) async fn handle_jobs_post(
         return response;
     }
     // Whether *this* caller holds the binding the job names. The workspace
-    // it points at is written to before the command runs.
+    // it points at is written to before the command runs. The entry file may
+    // be one the folder save has not written yet, so only its path is checked
+    // here; the render checks the file itself once the uploads are mirrored.
     if inner
         .bindings
         .validate_scoped_entrypoint(&job.binding_id, &origin, &project, &job.entrypoint)

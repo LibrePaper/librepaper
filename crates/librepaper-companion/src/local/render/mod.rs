@@ -124,7 +124,8 @@ pub async fn run(
     };
     // The binding is checked again here rather than only at admission: the
     // queue delay between the two is long enough for the folder to be moved,
-    // replaced or revoked, and what runs is what is on disk now.
+    // replaced or revoked, and what runs is what is on disk now. The entry
+    // file itself need not be on disk yet; the uploads below put it there.
     let binding = match bindings.validate_scoped_entrypoint(
         &request.binding_id,
         &request.origin,
@@ -170,6 +171,11 @@ pub async fn run(
             Ok(report) => notes = report.notes(),
             Err(error) => return failed(&request, &String::from(error)),
         }
+    }
+    // Admission let through an entry file the folder save may not have written
+    // yet, so the check that it exists comes after the uploads are in place.
+    if let Err(error) = BindingStore::require_entrypoint_file(&root, &request.entrypoint) {
+        return failed(&request, &error);
     }
 
     let _ = progress.send(JobStatus {

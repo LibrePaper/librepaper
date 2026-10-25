@@ -1702,6 +1702,56 @@ mod settings_tests {
     }
 
     #[tokio::test]
+    async fn a_job_for_an_entry_file_the_folder_has_not_saved_yet_is_admitted() {
+        let (inner, _state_home, _cache_home) = test_inner().await;
+        let origin = "https://paper.example";
+        let folder = tempfile::tempdir().unwrap();
+        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
+        let mut job = job_json(&binding.id, b"= Title");
+        job["project"] = json!(binding.project);
+        let response = jobs::handle_jobs_post(
+            &inner,
+            &bearer(&inner),
+            Some(origin),
+            job_request(job_body(&job, &[("main.typ", b"= Title")])),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        // Admission writes nothing into the folder; the render does.
+        assert!(!folder.path().join("main.typ").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_job_whose_entry_file_links_outside_the_folder_is_refused() {
+        let (inner, _state_home, _cache_home) = test_inner().await;
+        let origin = "https://paper.example";
+        let folder = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.typ"), b"secret").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.typ"),
+            folder.path().join("main.typ"),
+        )
+        .unwrap();
+        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
+        let mut job = job_json(&binding.id, b"= Title");
+        job["project"] = json!(binding.project);
+        let response = jobs::handle_jobs_post(
+            &inner,
+            &bearer(&inner),
+            Some(origin),
+            job_request(job_body(&job, &[("main.typ", b"= Title")])),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            std::fs::read(outside.path().join("secret.typ")).unwrap(),
+            b"secret"
+        );
+    }
+
+    #[tokio::test]
     async fn a_job_for_a_binding_the_caller_does_not_hold_is_refused() {
         let (inner, _state_home, _cache_home) = test_inner().await;
         let job = job_json("q-not-granted", b"= Title");
