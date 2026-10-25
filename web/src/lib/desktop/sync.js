@@ -61,7 +61,7 @@ export async function syncUnlink(id) {
 /** Takes in what changed on the web. `mine` and `theirs` settle files that
  * changed on both sides, one path at a time.
  * @param {string} id @param {{ mine?: string[], theirs?: string[] }} [choices]
- * @returns {Promise<{ written: string[], trashed: string[], kept?: unknown, conflicts: string[], trimmed?: boolean }>} */
+ * @returns {Promise<{ written: string[], trashed: string[], kept?: unknown, conflicts: string[], skipped?: string[], trimmed?: boolean }>} */
 export async function syncPull(id, choices = {}) {
   const response = await send("POST", route(id, "pull"), { jsonBody: choices });
   return response.json();

@@ -189,7 +189,7 @@ const today = () => new Date(2026, 9, 25, 12);
   await sync.pull();
   assert.deepEqual(order, ["flush", "pull"], "the folder is saved before the pull reads it");
   assert.deepEqual(calls.find((call) => call[0] === "syncPull"), ["syncPull", "f1", {}]);
-  assert.deepEqual(sync.state.pull, { written: 3, trashed: 1, trimmed: false });
+  assert.deepEqual(sync.state.pull, { written: 3, trashed: 1, skipped: [], trimmed: false });
   assert.deepEqual(sync.state.conflicts, ["a.tex", "b.tex"]);
 
   await sync.keepMine("a.tex");
@@ -209,7 +209,7 @@ const today = () => new Date(2026, 9, 25, 12);
   const sync = createLocalSync({ id: "f1", api });
   await sync.pull();
   await sync.pull();
-  assert.deepEqual(sync.state.pull, { written: 2, trashed: 0, trimmed: true });
+  assert.deepEqual(sync.state.pull, { written: 2, trashed: 0, skipped: [], trimmed: true });
 }
 
 // A folder that could not be saved stops both commands before they run.

@@ -23,7 +23,7 @@ const count = (value) => (Array.isArray(value) ? value.length : Number(value) ||
 
 const realWait = (/** @type {number} */ ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** @typedef {{ loaded: boolean, status: any, busy: string, error: string, pull: { written: number, trashed: number, trimmed: boolean } | null, conflicts: string[], refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string } | null, pushed: { nothing: true } | { files: number } | null }} SyncState */
+/** @typedef {{ loaded: boolean, status: any, busy: string, error: string, pull: { written: number, trashed: number, skipped: string[], trimmed: boolean } | null, conflicts: string[], refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string } | null, pushed: { nothing: true } | { files: number } | null }} SyncState */
 
 /** @param {{ id: string, approve: (userCode: string) => Promise<void>, api?: typeof routes, flush?: () => Promise<boolean>, now?: () => Date, wait?: (ms: number) => Promise<void> }} options */
 export function createLocalSync({ id, approve, api = routes, flush = async () => true, now = () => new Date(), wait = realWait }) {
@@ -132,6 +132,8 @@ export function createLocalSync({ id, approve, api = routes, flush = async () =>
       pull: {
         written: (earlier?.written ?? 0) + result.written.length,
         trashed: (earlier?.trashed ?? 0) + result.trashed.length,
+        // Files excluded here that the web also holds. Left alone, and said so.
+        skipped: [...new Set([...(earlier?.skipped ?? []), ...(result.skipped ?? []).map(String)])],
         trimmed: Boolean(result?.trimmed) || Boolean(earlier?.trimmed),
       },
       conflicts: result.conflicts.map(String),

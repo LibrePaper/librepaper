@@ -62,6 +62,9 @@
       {#if view.pull.trimmed}
         <p class="sync-line panel-meta">The history of the web project was trimmed, so this took its current version as the new base.</p>
       {/if}
+      {#if view.pull.skipped?.length}
+        <p class="sync-line panel-meta">Left as they are, because this folder excludes them (ignored, hidden or not text): {view.pull.skipped.join(", ")}.</p>
+      {/if}
     {/if}
     {#if view.conflicts.length}
       <p class="sync-line">{plural(view.conflicts.length, "file")} changed here and on the web. Choose which to keep.</p>
@@ -138,6 +141,9 @@
         {view.busy === "login" ? "Signing in…" : "Sign in"}
       </button>
     </div>
+  {:else if status.other_site}
+    <p class="sync-lead">This folder is linked to a project on another site. Unlink it to use it with this one.</p>
+    {@render unlinkFoot()}
   {:else if !status.linked}
     <p class="sync-lead">This folder is not linked to a project on the web.</p>
     <form class="sync-block" onsubmit={(event) => { event.preventDefault(); void sync.link(url); }}>
