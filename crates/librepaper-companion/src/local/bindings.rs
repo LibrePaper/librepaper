@@ -238,7 +238,7 @@ impl BindingStore {
         let id = opaque_id();
         let now = now_unix();
         let binding = ProjectBinding {
-            project: format!("local-{}", id.trim_start_matches("q-")),
+            project: format!("local-{id}"),
             id,
             origin,
             root,
@@ -440,8 +440,10 @@ mod validation_tests {
         let first = store
             .open_project("https://example.test/", root.path())
             .unwrap();
-        assert!(first.project.starts_with("local-"));
-        assert!(!first.project.contains("q-"));
+        // The page derives the project id the same way, `local-<id>`, and the
+        // service compares the two on every request that names a project.
+        assert_eq!(first.project, format!("local-{}", first.id));
+        assert!(first.id.starts_with("q-"));
         let again = store
             .open_project("https://example.test", root.path())
             .unwrap();

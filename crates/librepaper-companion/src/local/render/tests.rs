@@ -168,31 +168,65 @@ async fn a_failing_run_still_returns_the_result_it_wrote() {
     );
 }
 
-#[tokio::test]
-#[allow(clippy::await_holding_lock)]
-async fn a_result_left_by_an_earlier_run_is_not_returned() {
-    let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let fixture = fixture("typst", "pdf", "paper.typ");
-    script("typst.pdf", "cat paper.typ > paper.pdf", "{stem}.pdf");
-    let first = run_fixture(&fixture, false).await;
-    assert_eq!(first.status.status, "done", "{:?}", first.status.error);
+/// Dates the files `names` of the workspace a minute back, as an earlier run
+/// leaves them.
+fn age(fixture: &Fixture, names: &[&str]) {
     let root = fixture
         .bindings
         .get_scoped("hosted", ORIGIN, "paper")
         .unwrap()
         .root;
-    std::fs::File::options()
-        .write(true)
-        .open(root.join("paper.pdf"))
-        .unwrap()
-        .set_modified(SystemTime::now() - Duration::from_secs(60))
-        .unwrap();
-    script("typst.pdf", "true", "{stem}.pdf");
+    for name in names {
+        std::fs::File::options()
+            .write(true)
+            .open(root.join(name))
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(60))
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn a_successful_run_that_rewrites_nothing_still_returns_the_result() {
+    let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let fixture = fixture("latex", "pdf", "main.tex");
+    script(
+        "latex.pdf",
+        "cat main.tex > main.pdf; echo sync > main.synctex.gz",
+        "{stem}.pdf",
+    );
+    let first = run_fixture(&fixture, false).await;
+    assert_eq!(first.status.status, "done", "{:?}", first.status.error);
+    age(&fixture, &["main.pdf", "main.synctex.gz"]);
+
+    // latexmk on unchanged inputs: exit 0, nothing written.
+    script("latex.pdf", "true", "{stem}.pdf");
+    let outcome = run_fixture(&fixture, false).await;
+    assert_eq!(outcome.status.status, "done", "{:?}", outcome.status.error);
+    assert_eq!(
+        outcome.files["artifact"],
+        b"\\documentclass{article}".to_vec()
+    );
+    assert_eq!(outcome.files["synctex"], b"sync\n".to_vec());
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn a_failing_run_does_not_return_a_result_an_earlier_run_left() {
+    let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let fixture = fixture("typst", "pdf", "paper.typ");
+    script("typst.pdf", "cat paper.typ > paper.pdf", "{stem}.pdf");
+    let first = run_fixture(&fixture, false).await;
+    assert_eq!(first.status.status, "done", "{:?}", first.status.error);
+    age(&fixture, &["paper.pdf"]);
+
+    script("typst.pdf", "echo 'error: broken' >&2; exit 1", "{stem}.pdf");
     let outcome = run_fixture(&fixture, false).await;
     assert_eq!(outcome.status.status, "failed");
-    let error = outcome.status.error.unwrap();
-    assert!(error.contains("wrote no paper.pdf"), "{error}");
+    assert_eq!(outcome.status.exit, 1);
     assert!(!outcome.files.contains_key("artifact"));
+    assert!(!outcome.files.contains_key("synctex"));
 }
 
 #[tokio::test]
