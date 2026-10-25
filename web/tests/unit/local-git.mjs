@@ -207,8 +207,17 @@ const noFlush = async () => true;
   const git = createLocalGit({ id: "f1", api });
   assert.equal(git.state.branches, null);
   await git.loadBranches();
-  assert.deepEqual(git.state.branches, { current: "main", names: ["main", "draft"] });
+  assert.deepEqual(git.state.branches, { current: "main", names: ["main", "draft"], remote: [] });
   assert.deepEqual(calls, [["gitBranches", "f1"]]);
+}
+
+// Branches that only a remote has are listed apart from the local ones.
+{
+  const { api } = routes({ gitBranches: { current: "main", branches: ["main"], remote: ["review"] } });
+  const git = createLocalGit({ id: "f1", api });
+  await git.loadBranches();
+  assert.deepEqual(git.state.branches.remote, ["review"]);
+  assert.deepEqual(git.state.branches.names, ["main"]);
 }
 
 // Switching saves the folder first, then reads the state and the branches again.
@@ -363,6 +372,16 @@ const noFlush = async () => true;
   assert.deepEqual(git.state.steps, []);
 }
 
+// A repository that is not found is a sign-in problem, because GitHub says so for a private repository.
+{
+  const { api } = routes({ gitStatus: repo, gitPush: refused(502, { reason: "not-found", detail: "Repository not found." }) });
+  const git = createLocalGit({ id: "f1", api });
+  await git.push();
+  assert.deepEqual(git.state.auth, { detail: "Repository not found.", action: "push" });
+  assert.equal(git.state.error, "", "a sign-in problem has its own help, not an error line");
+  assert.equal(git.state.refusal, null);
+}
+
 // A connection that failed carries git's words; a sign-in that failed carries what the help needs.
 {
   const scene = { answer: refused(409, { reason: "network", detail: "Could not resolve host: github.com" }) };
@@ -403,7 +422,7 @@ const noFlush = async () => true;
 // Sync saves the folder, commits with the default words, and lists every step.
 {
   const order = [];
-  const steps = [{ step: "commit", commit: "1a2b3c4d" }, { step: "pull", status: "merged", conflicts: [] }, { step: "push" }];
+  const steps = [{ step: "commit", ok: true, commit: "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b" }, { step: "pull", ok: true, status: "merged" }, { step: "push", ok: true, status: "pushed" }];
   const { api, calls } = routes({ gitStatus: repo, gitSync: () => { order.push("sync"); return { steps }; } });
   const git = createLocalGit({ id: "f1", api, flush: async () => { order.push("flush"); return true; } });
   await git.sync();
@@ -417,6 +436,21 @@ const noFlush = async () => true;
 
   await git.sync("  Reword the greeting ");
   assert.deepEqual(asked(calls, "gitSync")[1], ["gitSync", "f1", "Reword the greeting"]);
+}
+
+// A Sync whose pull conflicts lists the files in the conflicts box, and sets no error.
+{
+  const steps = [
+    { step: "commit", ok: true, commit: "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b" },
+    { step: "pull", ok: false, reason: "conflicts", status: "conflicts", conflicts: ["intro.tex"], detail: "The merge has conflicts in 1 file." },
+  ];
+  const { api } = routes({ gitStatus: repo, gitSync: { steps } });
+  const git = createLocalGit({ id: "f1", api });
+  await git.sync();
+  assert.deepEqual(git.state.conflicts, ["intro.tex"]);
+  assert.equal(git.state.steps.at(-1).failed, true);
+  assert.match(git.state.steps.at(-1).text, /1 file in conflict/);
+  assert.equal(git.state.error, "", "the conflicts box says what to do, so no error line");
 }
 
 // A clean tree commits nothing, and a branch with nothing to send pushes nothing.

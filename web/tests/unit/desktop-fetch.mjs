@@ -76,6 +76,14 @@ function setup(fetch, { inDesktop = true } = {}) {
   await assert.rejects(local.agents(), unreachable);
 }
 
+// A 502 that names a reason is the local service answering a failed remote request: Refused, with its body.
+{
+  setup(async () => response({ reason: "auth", detail: "Permission denied", error: "Permission denied" }, 502));
+  await assert.rejects(local.capabilities(), (error) => error.name === "Refused" && error.status === 502 && error.body.reason === "auth");
+  setup(async () => response({ error: "service unavailable" }, 502));
+  await assert.rejects(local.capabilities(), (error) => error.name === "Unreachable");
+}
+
 // A network failure or 502 during a job is Unreachable and is not replayed.
 {
   for (const failure of [() => { throw new TypeError("Failed to fetch"); }, () => response({}, 502)]) {

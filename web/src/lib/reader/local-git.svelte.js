@@ -26,7 +26,7 @@ const nothingToSettle = async () => true;
 
 /** @typedef {"commit" | "sync"} PendingIdentity */
 /** @typedef {{ step: string, text: string, failed?: boolean }} GitStep */
-/** @typedef {{ loaded: boolean, status: any, busy: string, error: string, branches: { current: string | null, names: string[] } | null, identity: { then: PendingIdentity, message: string, paths?: string[] } | null, steps: GitStep[], conflicts: string[], refusal: { reason: "dirty", paths: string[] } | { reason: "behind" } | { reason: "network", detail: string } | null, auth: { detail: string, action?: "fetch" | "pull" | "push" | "sync" } | null }} GitState */
+/** @typedef {{ loaded: boolean, status: any, busy: string, error: string, branches: { current: string | null, names: string[], remote: string[] } | null, identity: { then: PendingIdentity, message: string, paths?: string[] } | null, steps: GitStep[], conflicts: string[], refusal: { reason: "dirty", paths: string[] } | { reason: "behind" } | { reason: "network", detail: string } | null, auth: { detail: string, action?: "fetch" | "pull" | "push" | "sync" } | null }} GitState */
 
 /** `flush` settles the folder before git reads it and resolves with whether it
  * could.
@@ -73,7 +73,7 @@ export function createLocalGit({ id, api = routes, flush = nothingToSettle }) {
     const request = ++branchGeneration;
     try {
       const answer = await api.gitBranches(id);
-      if (request === branchGeneration) set({ branches: { current: answer?.current ?? null, names: strings(answer?.branches) } });
+      if (request === branchGeneration) set({ branches: { current: answer?.current ?? null, names: strings(answer?.branches), remote: strings(answer?.remote) } });
     } catch (error) {
       if (request === branchGeneration) set({ error: error?.message || "The desktop app could not list the branches." });
     }
@@ -112,7 +112,9 @@ export function createLocalGit({ id, api = routes, flush = nothingToSettle }) {
       case "dirty": set({ refusal: { reason: "dirty", paths: strings(body.paths) } }); return true;
       case "behind": set({ refusal: { reason: "behind" } }); return true;
       case "network": set({ refusal: { reason: "network", detail: String(body.detail ?? "") } }); return true;
-      case "auth": set({ auth: { detail: String(body.detail ?? ""), action } }); return true;
+      // GitHub reports a private repository as not found when the sign-in is missing.
+      case "auth":
+      case "not-found": set({ auth: { detail: String(body.detail ?? ""), action } }); return true;
       default: return false;
     }
   }
@@ -269,6 +271,9 @@ export function createLocalGit({ id, api = routes, flush = nothingToSettle }) {
   /// What one step of a Sync says, and whether it stopped the run.
   function stepOf(/** @type {any} */ step) {
     const name = String(step?.step ?? "");
+    if (name === "pull" && (step?.status === "conflicts" || step?.reason === "conflicts")) {
+      return { step: name, text: `Stopped at pull: ${plural(strings(step.conflicts).length, "file")} in conflict.`, failed: true };
+    }
     if (step?.reason) {
       const said = {
         identity: "git needs your name and email.",
@@ -280,10 +285,7 @@ export function createLocalGit({ id, api = routes, flush = nothingToSettle }) {
       return { step: name, text: `Stopped at ${name}: ${said}`, failed: true };
     }
     if (name === "commit") return { step: name, text: step?.status === "nothing" ? "Nothing to commit." : short(step?.commit) ? `Committed ${short(step.commit)}.` : "Committed." };
-    if (name === "pull") {
-      if (step?.status === "conflicts") return { step: name, text: `Stopped at pull: ${plural(strings(step.conflicts).length, "file")} in conflict.`, failed: true };
-      return { step: name, text: pulledText(step?.status) };
-    }
+    if (name === "pull") return { step: name, text: pulledText(step?.status) };
     if (name === "push") return { step: name, text: step?.status === "up-to-date" ? "Nothing to push." : "Pushed." };
     return { step: name, text: "Done." };
   }
@@ -305,12 +307,13 @@ export function createLocalGit({ id, api = routes, flush = nothingToSettle }) {
     const steps = ran.map(stepOf);
     set({ steps });
     const stopped = ran.find((step) => step?.reason);
+    const conflicted = ran.find((step) => step?.step === "pull" && (step?.status === "conflicts" || step?.reason === "conflicts"));
+    if (conflicted) set({ conflicts: strings(conflicted.conflicts) });
+    // A conflicting pull is shown in the conflicts box, so it sets no error.
     if (stopped?.reason === "identity") set({ identity: { then: "sync", message: text } });
-    else if (stopped) {
+    else if (stopped && stopped.reason !== "conflicts") {
       if (!refused({ body: stopped }, "sync")) set({ error: String(stopped.detail || `Sync stopped at ${stopped.step}.`) });
     }
-    const conflicted = ran.find((step) => step?.step === "pull" && step?.status === "conflicts");
-    if (conflicted) set({ conflicts: strings(conflicted.conflicts) });
     await refresh();
   });
 

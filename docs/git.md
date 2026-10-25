@@ -34,6 +34,10 @@ A pull that conflicts leaves git's conflict markers in the files. The panel list
 
 On the landing page, **Clone a repository…** beside **Open folder…** clones a Git URL into a subfolder of a folder you choose, and opens the clone as a folder project.
 
+### Credentials
+
+Git signs in to the remote with your own credential helper or SSH key. LibrePaper holds no credential for GitHub or any other host. When a pull or a push fails on sign-in, the panel shows the steps for your host and your system, and Try again repeats the command.
+
 ## Requirements
 
 - The `librepaper` command. Install it with a desktop app package: Homebrew, Scoop, the Windows installer, the `.deb` or `.rpm` package, or Nix. See [Install the desktop app](desktop-app.html#install-the-desktop-app). The plain macOS `.dmg` does not put it on your PATH. On a server, [install the command alone](cli.html#install).
