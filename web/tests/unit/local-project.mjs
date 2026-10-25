@@ -354,7 +354,8 @@ const textOf = (session, path) => session.textOf(session.idOf(path)).toString();
   assert.equal(folder.firstSince, "t0", "the first request resumes from the tree's cursor");
   folder.treeCursor = "t1";
   folder.reportReset();
-  await tick();
+  // The reread hashes a figure, which leaves the event loop.
+  await until(() => folder.lastSince === "t1");
   assert.equal(folder.treeReads, 2, "a reset rereads the tree once and no more");
   assert.equal(folder.lastSince, "t1", "and continues from the new tree cursor, not the reset's");
   assert.deepEqual(session.list().map((file) => file.path), ["a.md", "fig.png", "fresh.md", "same.md"]);
