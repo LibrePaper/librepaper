@@ -120,6 +120,11 @@ assert.match(readerSource, /const RENDER_BINDING = LOCAL \? LOCAL_ID : localQuar
 assert.equal(readerSource.match(/bindingId: RENDER_BINDING,/g)?.length, 2, "the preview and the export take the same binding");
 assert.match(readerSource, /const renderPreview = createPreviewRenderer\(\{[\s\S]*?bindingId: RENDER_BINDING,/);
 assert.match(readerSource, /exportFile\(\{[\s\S]*?bindingId: RENDER_BINDING,/);
+// A folder project's render sends each text as the folder sync does, and a web project sends none.
+assert.match(readerSource, /const renderEncode = LOCAL \? \(.*?\) => localProject\.encode\(path, text\) : undefined;/);
+assert.equal(readerSource.match(/encode: renderEncode,/g)?.length, 2, "the preview and the export take the same encoder");
+// A folder project opens offline: its rules come from the last visit when the server cannot be reached, and it says so.
+assert.match(readerSource, /async function bootLocal\(\) \{[\s\S]*?configOrRemembered\(\)[\s\S]*?if \(remembered\) say\(/);
 // HTML/PDF output format choice for markdown and quarto in View menu.
 assert.match(readerSource, /\{@const selectableFormat = \["latex", "typst", "markdown", "quarto"\]\.includes\(displayedFormat\)\}/);
 assert.match(readerSource, /async function setMarkdownOutput\(format\)/);

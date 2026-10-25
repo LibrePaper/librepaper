@@ -4,8 +4,9 @@
 // This module owns that state; the panel only reads it and calls the actions.
 // The desktop app does the work. Pull and Push are the `librepaper` commands
 // run behind routes, so this file decides nothing about files, only what to
-// ask and how to say the answer. Pull and Push first settle the folder through
-// `flush`, so the disk holds what the editor holds when the command reads it.
+// ask and how to say the answer. Pull, Push and Publish first settle the
+// folder through `flush`, so the disk holds what the editor holds when the
+// command reads it.
 //
 // Signing in is two calls to the desktop app with the page between them. The
 // first hands out a code, `approve` approves it in the page's own session, and
@@ -109,7 +110,10 @@ export function createLocalSync({ id, approve, api = routes, flush = async () =>
     await refresh();
   });
 
+  /// Makes a web project from the folder, so the folder is settled first and
+  /// the project is not made from stale files.
   const publish = (/** @type {string} */ title) => run("publish", async () => {
+    if (!(await saved())) return;
     await api.syncPublish(id, title.trim());
     set(forgetResults());
     await refresh();

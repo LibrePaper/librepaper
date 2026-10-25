@@ -31,7 +31,7 @@
 /** @typedef {ReturnType<typeof import("../diagnostics.js").painter>} PreviewDiagnostics */
 
 /** @param {{
- * slug: string, bindingId?: string, coordinator: PreviewCoordinator, status: PreviewStatus, framePreview: PreviewFrame,
+ * slug: string, bindingId?: string, encode?: (path: string, text: string) => Uint8Array, coordinator: PreviewCoordinator, status: PreviewStatus, framePreview: PreviewFrame,
  * diagnostics: PreviewDiagnostics, renderers: PreviewRendererRegistry,
  * snapshotDigest: (tree: PreviewTree) => Promise<string>,
  * diagnosticContext: (item: NonNullable<PreviewResult["diagnostics"]>[number] | {severity: string, message: string}, tree: PreviewTree, identity: string) => NonNullable<PreviewResult["diagnostics"]>[number],
@@ -49,6 +49,9 @@
 export function createPreviewRenderer({
   slug,
   bindingId = "hosted",
+  /// A folder project's bytes for a text, so a render on this computer does
+  /// not rewrite the files of the folder it runs in. A web project has none.
+  encode = undefined,
   coordinator,
   status,
   framePreview,
@@ -272,7 +275,7 @@ export function createPreviewRenderer({
       // drawn by this browser's own renderer, and a document never runs on
       // this computer without consent.
       const build = current.localExecution ? current.buildPreferences : { ...current.buildPreferences, backend: "browser" };
-      rendered = await renderers.render(source, title, { ...options, buildPreferences: build, project: slug, bindingId });
+      rendered = await renderers.render(source, title, { ...options, buildPreferences: build, project: slug, bindingId, ...(encode ? { encode } : {}) });
       debug("preview: result", Boolean(rendered?.pdf), rendered?.ok, rendered?.failure?.message || "");
       if (facts().disposed) return;
       if (format === "latex" && !htmlPreview) status.recordLatex(rendered);

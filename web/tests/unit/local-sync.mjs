@@ -223,6 +223,24 @@ const today = () => new Date(2026, 9, 25, 12);
   assert.equal(sync.state.busy, "");
 }
 
+// Publish settles the folder first, and does not run when the folder could not be saved.
+{
+  const order = [];
+  const scene = { saved: false };
+  const { api, calls } = routes({ syncStatus: linked, syncPublish: () => { order.push("publish"); } });
+  const sync = createLocalSync({ id: "f1", api, flush: async () => { order.push("flush"); return scene.saved; } });
+  await sync.publish("My paper");
+  assert.equal(calls.some((call) => call[0] === "syncPublish"), false, "a failed save stops the publish");
+  assert.match(sync.state.error, /could not be saved/);
+  assert.equal(sync.state.busy, "");
+
+  scene.saved = true;
+  await sync.publish("My paper");
+  assert.deepEqual(order, ["flush", "flush", "publish"], "the folder is saved before the publish reads it");
+  assert.deepEqual(calls.find((call) => call[0] === "syncPublish"), ["syncPublish", "f1", "My paper"]);
+  assert.equal(sync.state.error, "");
+}
+
 // Push sends the message, or today's date, and says what it did.
 {
   const queue = [{ label: { sha: "abc", sequence: 5 }, files: ["a.tex", "b.tex", "c.png"] }, { nothing: true }];

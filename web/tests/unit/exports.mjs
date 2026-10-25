@@ -193,6 +193,19 @@ const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "
   });
 }
 
+// A folder project's encoder reaches every render the export makes, and a web project passes none.
+{
+  const qmdTree = { main: "a.qmd", texts: { "a.qmd": "# t" }, assets: {} };
+  const encode = (_path, text) => new TextEncoder().encode(text);
+  const render = makeRender({ ok: true, pdf: pdfBytes });
+  await exportFile({ ...base, bindingId: "local-1", slug: "t", target: "pdf", format: "quarto", tree: qmdTree, project: "slug-x", render, run: makeRun(), local: true, encode });
+  assert.equal(render.calls[0].options.encode, encode, "the local build takes the folder's bytes");
+  assert.equal(render.calls[0].options.bindingId, "local-1");
+  const web = makeRender({ ok: true, pdf: pdfBytes });
+  await exportFile({ ...base, slug: "t", target: "pdf", format: "quarto", tree: qmdTree, project: "slug-x", render: web, run: makeRun(), local: true });
+  assert.equal("encode" in web.calls[0].options, false, "a web project passes no encoder");
+}
+
 // A format with a command only for some outputs takes the browser route for the rest.
 {
   const texTree = { main: "a.tex", texts: { "a.tex": "x" }, assets: {} };
