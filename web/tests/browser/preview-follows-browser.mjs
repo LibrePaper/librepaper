@@ -110,7 +110,7 @@ try {
   const row = (path) => `.explorer-row[title=${JSON.stringify(path)}]`;
   const exists = (selector) => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(selector)}))`);
   const chip = () => b.evaluate(`document.querySelector('.notice-chip')?.textContent.replace(/\\s+/g, ' ').trim() || ''`);
-  const shownRow = () => b.evaluate(`document.querySelector('.explorer-row .explorer-preview.shown')?.closest('.explorer-row')?.getAttribute('title') || ''`);
+  const shownRow = () => b.evaluate(`document.querySelector('.explorer-row[data-previewed]')?.getAttribute('title') || ''`);
   const cardText = () => b.evaluate(`[...document.querySelectorAll('section.latexpane .notyet p')].map(node => node.textContent.replace(/\\s+/g, ' ').trim()).join(' | ')`);
   const openFile = async (path) => {
     await until(`file ${path}`, () => exists(row(path)), 10000);
@@ -132,7 +132,7 @@ try {
   await click(row("chapters"));
   await openFile("chapters/intro.md");
   await until("the shown-inside chip", async () => (await chip()) === "intro.md, shown inside report.md", 10000);
-  assert.equal(await shownRow(), "report.md", "the eye marks the file the preview shows");
+  assert.equal(await shownRow(), "report.md", "the list knows which file the preview shows");
 
   // A file nothing renders gets a card instead of a page.
   await openFile("refs.bib");

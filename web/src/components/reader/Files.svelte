@@ -338,19 +338,14 @@
   {:else}
     <span class="explorer-name">{node.name}</span>
   {/if}
-  <!-- The eye is the lock. The locked file shows it solid, and pressing it
-       unlocks. The file the preview is showing without a lock shows it solid
-       too, and pressing it locks the preview there. Any other file that
-       renders on its own offers the faint eye, which locks the preview there
-       without opening the file. -->
+  <!-- The eye is the lock. Only the locked file shows it solid, and pressing
+       it unlocks. Every other file that renders on its own offers the faint
+       eye, which locks the preview there without opening the file. The file
+       being previewed without a lock is the open file, which its row already
+       marks. -->
   {#if node.kind !== "folder" && locked && node.path === locked}
     <button type="button" class="explorer-preview shown" aria-label="Unlock the preview" title="Unlock the preview"
       onclick={(event) => { event.stopPropagation(); onunlock?.(); }}
-      ondblclick={(event) => event.stopPropagation()}
-      onkeydown={(event) => event.stopPropagation()}><Icon name="eye" /></button>
-  {:else if node.kind !== "folder" && node.path === preview}
-    <button type="button" class="explorer-preview shown" aria-label="Lock preview on {node.name}" title="Lock the preview on this file"
-      onclick={(event) => { event.stopPropagation(); const entry = entryOf(node); if (entry) onlock?.(entry); }}
       ondblclick={(event) => event.stopPropagation()}
       onkeydown={(event) => event.stopPropagation()}><Icon name="eye" /></button>
   {:else if node.kind === "text" && previewable(node.path)}
@@ -409,6 +404,7 @@
           {#snippet element(attributes)}
             <div {...retargetElementAttributes(attributes)}>
               <TreeView.Item class="explorer-row {open === node.fileId ? 'explorer-open' : ''} {hover === parentPath(node.path) ? 'drop-target' : ''}" title={node.path}
+                data-previewed={node.path === preview ? "" : undefined}
                 {...dragAttrs(node, parentPath(node.path))}>
                 {@render row(node)}
               </TreeView.Item>

@@ -115,11 +115,11 @@ window.filesCheck = async () => {
   await name('Rename renamed-main.tex', 'main.tex');
   check(row('main.tex').getBoundingClientRect().height <= 40, 'compact file rows');
   check(document.querySelector('.explorer-row svg').getBoundingClientRect().width <= 24, 'compact icons');
-  // The file the preview is rendering is marked with a solid eye button, at
-  // the far end of its row, and nowhere else. Pressing it locks the preview.
-  const eye = row('main.tex').querySelector('button.shown[aria-label="Lock preview on main.tex"]');
-  check(eye, 'the previewed file carries a solid eye button');
-  check(document.querySelectorAll('.explorer-preview.shown').length === 1, 'only the previewed file carries one');
+  // Nothing is locked, so no eye is solid. The file the preview is rendering
+  // offers the same faint lock as any other, at the far end of its row.
+  const eye = row('main.tex').querySelector('button[aria-label="Lock preview on main.tex"]');
+  check(eye && !eye.classList.contains('shown'), 'the previewed file offers the faint lock eye');
+  check(document.querySelectorAll('.explorer-preview.shown').length === 0, 'no eye is solid without a lock');
   check(row('main.tex').getBoundingClientRect().right - eye.getBoundingClientRect().right < 16, 'the eye sits at the right edge of its row');
   // The chevron and the guide are the tree machine's own parts, so what they
   // say is what it thinks: a second copy of the expansion kept in this
@@ -144,7 +144,7 @@ window.filesCheck = async () => {
   check(document.querySelectorAll('[aria-label="Unlock the preview"]').length === 1, 'only the locked file carries the unlock eye');
   unlockOne.click(); await flush();
   check(window.locked === '', 'pressing the solid eye unlocks');
-  check(row('main.tex').querySelector('button.shown[aria-label="Lock preview on main.tex"]'), 'the preview is back on the followed file');
+  check(row('main.tex').hasAttribute('data-previewed') && !document.querySelector('.explorer-preview.shown'), 'the preview is back on the followed file, and no eye is solid');
   check(!document.querySelector('[role="menuitem"]') || ![...document.querySelectorAll('[role="menuitem"]')].some((item) => item.textContent.includes('main file')), 'no menu item makes a main file');
   const guide = document.querySelector('.explorer-guide');
   check(guide && guide.dataset.depth === '1', 'an open folder draws the guide at its own depth');
