@@ -2,7 +2,8 @@
 // the project calls `poke`. The run starts 800 ms after the last poke, at most
 // one run is in flight, and a poke that arrives during a run schedules one
 // more afterwards. `flush()` does not wait for the pause: it settles the
-// folder at once, for a caller that is about to read it.
+// folder at once, for a caller that is about to read it. `pending()` says
+// whether the folder may still be behind, for a caller that is about to leave.
 export const FOLDER_SYNC_PAUSE = 800;
 
 // `run()` performs one sync and may throw. `ready()` says whether syncing
@@ -78,11 +79,18 @@ export function createFolderSync({ run, ready = () => true, onError = () => {}, 
     return ok;
   }
 
+  /// Whether the folder may be behind the project: a run is waiting for the
+  /// pause, a run is in flight or owes a follow-up, or the last run failed
+  /// and none has succeeded since.
+  function pending() {
+    return timer !== null || running || again || !ok;
+  }
+
   function dispose() {
     disposed = true;
     if (timer !== null) timers.clear(timer);
     timer = null;
   }
 
-  return { poke, flush, dispose };
+  return { poke, flush, pending, dispose };
 }

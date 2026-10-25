@@ -92,14 +92,17 @@ export function pandocMath(html) {
 ///   `{ kind: "html", html }` or null; reused when its kind is the one
 ///   wanted and `previewCurrent` says it is of the source on screen.
 /// - `project`: the document's slug, which a local build is scoped to.
+/// - `bindingId`: where a local build runs, which is where the preview runs:
+///   the hosted workspace for a web project, the folder for a folder project.
 /// - `render`: `renderers.render`. `run`: Pandoc.
 /// - `local`: whether the desktop app builds the file with the command for
 ///   its format, false for the browser route.
 ///
 /// Resolves `{ blob, name }`; rejects with an Error whose message is a plain
 /// sentence.
-export async function exportFile({ target, format, tree, title, slug, project = "", preview, previewCurrent, render, run, local = false }) {
+export async function exportFile({ target, format, tree, title, slug, project = "", bindingId, preview, previewCurrent, render: renderIn, run, local = false }) {
   const reused = previewCurrent && preview?.kind === target ? preview : null;
+  const render = (source, name, options) => renderIn(source, name, { ...options, bindingId });
 
   // The desktop app builds the target itself, with no Pandoc step. The frame
   // is not reused: its page may predate Run code and lack the cells' results.

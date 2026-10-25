@@ -114,8 +114,12 @@ assert.match(previewSource, /framePreview\.clear\?\.\(\);[\s\S]*?onEmpty\(\);/);
 // A web project has no project folder: no File menu item, no modal, and no folder sync.
 assert.doesNotMatch(readerSource, /project-folder|ProjectFolderSetting/);
 assert.match(readerSource, /const folderSync = LOCAL \? createFolderSync\(/);
-// A web project renders in the hosted workspace and a local project in its own folder.
-assert.match(readerSource, /bindingId: LOCAL \? LOCAL_ID : localQuarto\.HOSTED_BINDING/);
+// A web project renders in the hosted workspace and a local project in its own folder, and an
+// export of either runs where its preview does.
+assert.match(readerSource, /const RENDER_BINDING = LOCAL \? LOCAL_ID : localQuarto\.HOSTED_BINDING;/);
+assert.equal(readerSource.match(/bindingId: RENDER_BINDING,/g)?.length, 2, "the preview and the export take the same binding");
+assert.match(readerSource, /const renderPreview = createPreviewRenderer\(\{[\s\S]*?bindingId: RENDER_BINDING,/);
+assert.match(readerSource, /exportFile\(\{[\s\S]*?bindingId: RENDER_BINDING,/);
 // HTML/PDF output format choice for markdown and quarto in View menu.
 assert.match(readerSource, /\{@const selectableFormat = \["latex", "typst", "markdown", "quarto"\]\.includes\(displayedFormat\)\}/);
 assert.match(readerSource, /async function setMarkdownOutput\(format\)/);

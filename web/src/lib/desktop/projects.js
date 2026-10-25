@@ -16,10 +16,22 @@ export async function openFolderProject() {
  * folder: the desktop app links the folder, pulls the project into it and
  * opens it as a folder project. Resolves to null when the person cancels. A
  * folder that is not empty is refused with "choose an empty folder".
+ *
+ * When the app has no sign-in to pull with, it answers 401 after the folder
+ * was created and linked. The folder project is real, so that answer resolves
+ * with the project and `refused: true` instead of throwing; its Sync panel
+ * offers Sign in.
  * @param {string} url the project page, `https://<site>/docs/<slug>`
- * @returns {Promise<{ id: string, project: string, name: string, root_name: string } | null>} */
+ * @returns {Promise<({ id: string, project: string, name: string, root_name: string } & { refused?: true }) | null>} */
 export async function keepFolderProject(url) {
-  const response = await send("POST", "projects/keep", { jsonBody: { url } });
+  let response;
+  try {
+    response = await send("POST", "projects/keep", { jsonBody: { url } });
+  } catch (error) {
+    const body = /** @type {any} */ (error)?.body;
+    if (typeof body?.id === "string") return { ...body, refused: true };
+    throw error;
+  }
   if (response.status === 204) return null;
   return response.json();
 }

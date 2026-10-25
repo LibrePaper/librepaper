@@ -113,4 +113,15 @@ assert.equal(await keepFolderProject("https://app.example/docs/paper"), null);
 answer = () => response(409, { error: "choose an empty folder" });
 await assert.rejects(keepFolderProject("https://app.example/docs/paper"), (error) => error.status === 409 && error.message === "choose an empty folder");
 
+// With no sign-in the folder was still created and linked, and only the pull was refused. The
+// refusal carries the folder project, so it resolves with it and the page can open it.
+answer = () => response(401, { error: "sign in", ...project });
+assert.deepEqual(await keepFolderProject("https://app.example/docs/paper"), { error: "sign in", ...project, refused: true });
+assert.equal(last().method, "POST");
+assert.ok(last().url.endsWith("projects/keep"));
+
+// A refusal that names no folder project is still a failure.
+answer = () => response(401, { error: "sign in" });
+await assert.rejects(keepFolderProject("https://app.example/docs/paper"), (error) => error.status === 401 && error.message === "sign in");
+
 console.log("desktop-sync: sync routes, pull answers, push refusals and keeping a folder");

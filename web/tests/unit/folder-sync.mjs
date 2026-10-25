@@ -98,4 +98,71 @@ const settle = () => new Promise((resolve) => setImmediate(resolve));
   assert.equal(attempts, 2, "a flush with nothing pending retries a failed folder");
   flaky.dispose();
 }
+
+// pending() says whether the folder may be behind the project, for a page that
+// is about to be left.
+{
+  let fail = false;
+  let finish = null;
+  let runs = 0;
+  const watched = createFolderSync({
+    timers,
+    run: () => new Promise((resolve, reject) => { runs += 1; finish = () => (fail ? reject(new Error("down")) : resolve()); }),
+    onError: () => {},
+  });
+  assert.equal(watched.pending(), false, "a project nobody changed has nothing pending");
+
+  // A save waiting for the pause is pending.
+  watched.poke();
+  assert.equal(watched.pending(), true, "scheduled");
+
+  // So is a save in flight, until it succeeds.
+  const first = fire();
+  assert.equal(runs, 1);
+  assert.equal(watched.pending(), true, "in flight");
+  finish();
+  await first;
+  assert.equal(watched.pending(), false, "a finished save leaves nothing pending");
+
+  // A change made during a run is pending until its own run is done.
+  watched.poke();
+  const second = fire();
+  watched.poke();
+  assert.equal(watched.pending(), true, "a change during a run");
+  finish();
+  await second;
+  assert.equal(watched.pending(), true, "the follow-up is scheduled");
+  const third = fire();
+  assert.equal(runs, 3);
+  finish();
+  await third;
+  assert.equal(watched.pending(), false, "the follow-up is done");
+
+  // A failed save stays pending with nothing scheduled.
+  fail = true;
+  watched.poke();
+  const failed = fire();
+  finish();
+  await failed;
+  assert.equal(queue.length, 0);
+  assert.equal(watched.pending(), true, "failed");
+
+  // A retry that succeeds clears it. A flush is one.
+  fail = false;
+  const retry = watched.flush();
+  assert.equal(watched.pending(), true, "a retry in flight");
+  finish();
+  assert.equal(await retry, true);
+  assert.equal(watched.pending(), false, "after a successful flush");
+
+  // A flush that settles a scheduled save leaves nothing pending either.
+  watched.poke();
+  assert.equal(watched.pending(), true);
+  const settled = watched.flush();
+  finish();
+  assert.equal(await settled, true);
+  assert.equal(watched.pending(), false, "a flush settles what was scheduled");
+  assert.equal(queue.length, 0);
+  watched.dispose();
+}
 console.log("folder-sync unit ok");
