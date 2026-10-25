@@ -1,11 +1,16 @@
 //! Sync routes on a folder project: keep a folder in step with a web project.
 //!
 //! The work is `librepaper_sync`'s, the same pull and push the `librepaper`
-//! command line runs, in the form for a folder that is not a Git repository.
-//! This file authenticates, finds the folder, holds the sign-in the device
-//! flow ends with, and shapes the answers. The link and the hashes of what
-//! was last pulled or pushed live in the state home keyed by the folder, never
-//! in the folder.
+//! command line runs. This file authenticates, finds the folder, holds the
+//! sign-in the device flow ends with, and shapes the answers. The link and the
+//! hashes of what was last pulled or pushed live in the state home keyed by
+//! the folder, never in the folder.
+//!
+//! A folder that is a Git repository syncs through Git, as the command line
+//! does in a repository. Its link and hashes live in the repository, under
+//! `refs/librepaper/state`, and a pull turns the web project's versions into
+//! commits on `refs/librepaper/main` and has git merge them. A git folder's
+//! pull never writes the working tree itself: git does, after the merge.
 //!
 //! A folder may only be linked to a project on the site of the page that asks,
 //! so a page cannot spend the token this computer holds for another site. The
@@ -25,8 +30,8 @@ use super::*;
 
 use librepaper_base::http::Credentials;
 use librepaper_sync::{
-    changes_here, publish, pull, push, web_changed, Client, Error, FileStore, Link, PullOptions,
-    PullOutcome, PushOptions, PushOutcome, State, StateStore,
+    changes_here, publish, pull, push, store_for, web_changed, Client, Error, Link, MergeOutcome,
+    PullOptions, PullOutcome, PushOptions, PushOutcome, State, StateStore, VersionCommit,
 };
 
 use crate::local::bindings::ProjectBinding;
@@ -85,10 +90,11 @@ fn answer(result: Result<Value, Failure>) -> Reply {
     }
 }
 
-/// The folder behind a sync route, with the store that holds its link.
+/// The folder behind a sync route, with the store that holds its link: the
+/// repository's when the folder is a Git work tree, the state home's otherwise.
 struct Folder {
     binding: ProjectBinding,
-    store: FileStore,
+    store: Box<dyn StateStore>,
 }
 
 /// What the state home holds for a folder, as one page sees it.
@@ -103,7 +109,7 @@ enum Stored {
 
 impl Folder {
     fn new(inner: &Inner, binding: ProjectBinding) -> Folder {
-        let store = FileStore::for_dir(&inner.state_home, &binding.root);
+        let store = store_for(&binding.root, &inner.state_home);
         Folder { binding, store }
     }
 
@@ -139,18 +145,6 @@ impl Folder {
             .render_outputs(&self.binding.id)
             .into_iter()
             .collect()
-    }
-
-    /// A folder that is a Git repository syncs through Git. Pull, push and
-    /// publish here are the form for a folder without it.
-    fn refuse_git(&self) -> Result<(), Failure> {
-        if is_git_folder(&self.binding.root) {
-            return Err(refuse(
-                409,
-                "this folder is a Git repository; sync it with Git in a terminal",
-            ));
-        }
-        Ok(())
     }
 }
 
@@ -609,7 +603,6 @@ async fn publish_folder(
     origin: Option<&str>,
     title: &str,
 ) -> Result<Value, Failure> {
-    folder.refuse_git()?;
     if title.is_empty() {
         return Err(refuse(400, "a project needs a title"));
     }
@@ -624,7 +617,7 @@ async fn publish_folder(
     let link = publish(
         &client,
         &folder.binding.root,
-        &folder.store,
+        folder.store.as_ref(),
         title,
         &exclude,
     )
@@ -672,7 +665,9 @@ pub(super) async fn handle_pull(
 }
 
 /// Takes the web project's newest version into the folder. A file changed on
-/// both sides is not written; `mine` and `theirs` settle those, per path.
+/// both sides is not written; `mine` and `theirs` settle those, per path. In a
+/// git folder the versions become commits and git merges them, so `mine` and
+/// `theirs` are not read there.
 async fn run_pull(
     inner: &Inner,
     folder: &Folder,
@@ -680,18 +675,22 @@ async fn run_pull(
     mine: Vec<String>,
     theirs: Vec<String>,
 ) -> Result<Value, Failure> {
-    folder.refuse_git()?;
     let state = folder.linked(origin)?;
     let client = client_for(inner, &state.link.site)?;
     let options = PullOptions {
-        merge: false,
+        merge: true,
         mine,
         theirs,
         exclude: folder.render_outputs(inner),
     };
-    let outcome = pull(&client, &folder.binding.root, &folder.store, &options)
-        .await
-        .map_err(|error| failed(&error))?;
+    let outcome = pull(
+        &client,
+        &folder.binding.root,
+        folder.store.as_ref(),
+        &options,
+    )
+    .await
+    .map_err(|error| failed(&error))?;
     match outcome {
         PullOutcome::Folder {
             written,
@@ -708,6 +707,14 @@ async fn run_pull(
             "skipped": skipped,
             "trimmed": trimmed,
         })),
+        PullOutcome::Repository {
+            versions,
+            merge,
+            trimmed,
+        } => Ok(repository_reply(&versions, &merge, trimmed)),
+        PullOutcome::UpToDate if folder.store.repository().is_some() => {
+            Ok(repository_reply(&[], &MergeOutcome::AlreadyMerged, false))
+        }
         PullOutcome::UpToDate => Ok(json!({
             "written": [],
             "trashed": [],
@@ -716,11 +723,37 @@ async fn run_pull(
             "skipped": [],
             "trimmed": false,
         })),
-        _ => Err(refuse(
-            500,
-            "the pull ended in a way this app does not handle",
-        )),
     }
+}
+
+/// A pull in a git folder as the page reads it: the web versions that became
+/// commits on `refs/librepaper/main`, and what git did with them.
+fn repository_reply(versions: &[VersionCommit], merge: &MergeOutcome, trimmed: bool) -> Value {
+    let merge = match merge {
+        MergeOutcome::Skipped => json!("skipped"),
+        MergeOutcome::FastForward => json!("fast-forward"),
+        MergeOutcome::Merged => json!("merged"),
+        MergeOutcome::AlreadyMerged => json!("already"),
+        MergeOutcome::Conflicts(paths) => json!({"conflicts": paths}),
+        MergeOutcome::DirtyTree(paths) => json!({"dirty": paths}),
+    };
+    let versions: Vec<Value> = versions
+        .iter()
+        .map(|version| {
+            json!({
+                "sha": version.sha,
+                "label": version.label,
+                "by": version.by,
+                "commit": version.commit,
+            })
+        })
+        .collect();
+    json!({
+        "repository": true,
+        "versions": versions,
+        "merge": merge,
+        "trimmed": trimmed,
+    })
 }
 
 #[derive(serde::Deserialize)]
@@ -754,7 +787,6 @@ async fn run_push(
     origin: Option<&str>,
     message: &str,
 ) -> Result<Value, Failure> {
-    folder.refuse_git()?;
     if message.is_empty() {
         return Err(refuse(400, "a push needs a message"));
     }
@@ -765,9 +797,14 @@ async fn run_push(
         author: None,
         exclude: folder.render_outputs(inner),
     };
-    let outcome = push(&client, &folder.binding.root, &folder.store, &options)
-        .await
-        .map_err(|error| failed(&error))?;
+    let outcome = push(
+        &client,
+        &folder.binding.root,
+        folder.store.as_ref(),
+        &options,
+    )
+    .await
+    .map_err(|error| failed(&error))?;
     match outcome {
         PushOutcome::Nothing => Ok(json!({"nothing": true})),
         PushOutcome::Pushed {
@@ -859,6 +896,7 @@ mod tests {
 
     use axum::routing::{get, post};
     use axum::Json;
+    use librepaper_sync::FileStore;
 
     const PAGE: &str = "https://paper.example";
 
@@ -912,6 +950,15 @@ mod tests {
                 Link::parse(url).unwrap(),
             )
             .unwrap();
+        }
+
+        /// Records the commit the folder is based on, as publishing does, so
+        /// the versions a pull fetches are built on it.
+        fn based_on(&self, head: &str) {
+            let folder = Folder::new(&self.inner, self.binding.clone());
+            let mut state = folder.store.load().unwrap().unwrap();
+            state.head = Some(head.to_string());
+            folder.store.save(&state).unwrap();
         }
 
         async fn status(&self) -> (u16, Value) {
@@ -1168,20 +1215,231 @@ mod tests {
         assert_error(&linked, 409, "already linked");
     }
 
-    #[tokio::test]
-    async fn a_git_repository_is_left_to_git() {
-        let fixture = Fixture::new(PAGE).await;
-        std::fs::create_dir(fixture.root().join(".git")).unwrap();
-        fixture.link_to("https://paper.example/docs/abc123");
+    /// Runs git in `root` and answers what it printed, or `None` when git is
+    /// missing or the command fails.
+    fn git(root: &Path, args: &[&str]) -> Option<String> {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
 
-        let (_, body) = fixture.status().await;
+    /// Makes the fixture's folder a git repository on `main` with one commit
+    /// that holds `main.tex`, and answers that commit. `None` when git is not
+    /// installed, so the test that needs one skips.
+    fn init_repository(fixture: &Fixture) -> Option<String> {
+        let root = fixture.root();
+        git(root, &["init", "-q", "-b", "main"])?;
+        std::fs::write(root.join("main.tex"), "main\n").unwrap();
+        git(root, &["add", "-A"])?;
+        let committed = [
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.org",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "First",
+        ];
+        git(root, &committed)?;
+        git(root, &["rev-parse", "HEAD"])
+    }
+
+    fn main_tex(root: &Path) -> String {
+        std::fs::read_to_string(root.join("main.tex")).unwrap()
+    }
+
+    /// A site that serves the path rules and one named version, `v1` by
+    /// Alice, whose `main.tex` reads `text`.
+    async fn one_version_site(text: &str) -> (String, tokio::task::JoinHandle<()>) {
+        let version = json!({
+            "files": {"main.tex": {"kind": "text"}},
+            "texts": {"main.tex": text},
+        });
+        let app = axum::Router::new()
+            .route("/api/config", get(rules_reply))
+            .fallback(move |uri: axum::http::Uri| {
+                let version = version.clone();
+                async move {
+                    match uri.path() {
+                        "/api/documents/abc123/history" => (
+                            StatusCode::OK,
+                            Json(json!({
+                                "labels": [{
+                                    "sha": "v1",
+                                    "sequence": 1,
+                                    "label": "First edit",
+                                    "by": "Alice",
+                                }],
+                                "next_cursor": null,
+                            })),
+                        ),
+                        "/api/documents/abc123/history/v1" => (StatusCode::OK, Json(version)),
+                        _ => (
+                            StatusCode::NOT_FOUND,
+                            Json(json!({"error": "no such file"})),
+                        ),
+                    }
+                }
+            });
+        serve(app).await
+    }
+
+    #[tokio::test]
+    async fn a_git_folder_keeps_its_link_in_the_repository() {
+        let fixture = Fixture::new(PAGE).await;
+        if init_repository(&fixture).is_none() {
+            return;
+        }
+
+        let (status, body) = fixture.link("https://paper.example/docs/abc123").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["linked"], true);
         assert_eq!(body["git"], true);
-        let pull = fixture.pull(json!({})).await;
-        assert_error(&pull, 409, "Git");
-        let push = fixture.push(json!({"message": "Edits"})).await;
-        assert_error(&push, 409, "Git");
-        let publish = fixture.publish(json!({"title": "Paper"})).await;
-        assert_error(&publish, 409, "Git");
+        let (_, body) = fixture.status().await;
+        assert_eq!(body["linked"], true);
+        assert_eq!(body["git"], true);
+
+        // The state is a ref in the repository, and the state home holds none.
+        let root = fixture.root();
+        assert!(git(root, &["rev-parse", "--verify", "refs/librepaper/state"]).is_some());
+        let files = FileStore::for_dir(&fixture.inner.state_home, root);
+        assert!(files.load().unwrap().is_none());
+
+        let (status, body) = fixture.unlink().await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["linked"], false);
+        assert_eq!(body["git"], true);
+        assert!(git(root, &["rev-parse", "--verify", "refs/librepaper/state"]).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_git_folder_pulls_a_version_as_a_commit_and_fast_forwards() {
+        let (site, _task) = one_version_site("main\nedited on the web\n").await;
+        let fixture = Fixture::new(&site).await;
+        let Some(head) = init_repository(&fixture) else {
+            return;
+        };
+        fixture.sign_in("lp_token");
+        fixture.link_to(&format!("{site}/docs/abc123"));
+        fixture.based_on(&head);
+
+        let (status, body) = fixture.pull(json!({})).await;
+        assert_eq!(status, 200, "{body}");
+        let root = fixture.root();
+        let chain = git(root, &["rev-parse", "refs/librepaper/main"]).unwrap();
+        assert_ne!(chain, head);
+        assert_eq!(
+            body,
+            json!({
+                "repository": true,
+                "versions": [{
+                    "sha": "v1",
+                    "label": "First edit",
+                    "by": "Alice",
+                    "commit": chain,
+                }],
+                "merge": "fast-forward",
+                "trimmed": false,
+            })
+        );
+
+        // Git wrote the working tree: the branch moved to the version's commit.
+        assert_eq!(git(root, &["rev-parse", "main"]).unwrap(), chain);
+        assert_eq!(main_tex(root), "main\nedited on the web\n");
+        let (_, body) = fixture.status().await;
+        assert_eq!(body["pulled"], 1);
+
+        // Nothing new on the web: the repository shape answers, with no versions.
+        let (status, body) = fixture.pull(json!({})).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            body,
+            json!({
+                "repository": true,
+                "versions": [],
+                "merge": "already",
+                "trimmed": false,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_git_folder_with_uncommitted_changes_is_not_merged_into() {
+        let (site, _task) = one_version_site("main\nedited on the web\n").await;
+        let fixture = Fixture::new(&site).await;
+        let Some(head) = init_repository(&fixture) else {
+            return;
+        };
+        fixture.sign_in("lp_token");
+        fixture.link_to(&format!("{site}/docs/abc123"));
+        fixture.based_on(&head);
+        let root = fixture.root();
+        std::fs::write(root.join("main.tex"), "main\nedited here\n").unwrap();
+
+        let (status, body) = fixture.pull(json!({})).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            body,
+            json!({
+                "repository": true,
+                "versions": [],
+                "merge": {"dirty": ["main.tex"]},
+                "trimmed": false,
+            })
+        );
+
+        // Nothing was fetched, and the file is as the person left it.
+        assert!(git(root, &["rev-parse", "--verify", "refs/librepaper/main"]).is_none());
+        assert_eq!(git(root, &["rev-parse", "main"]).unwrap(), head);
+        assert_eq!(main_tex(root), "main\nedited here\n");
+    }
+
+    #[tokio::test]
+    async fn a_git_folder_can_be_published() {
+        let uploaded = Arc::new(std::sync::Mutex::new(String::new()));
+        let held = uploaded.clone();
+        let app = axum::Router::new()
+            .route("/api/config", get(rules_reply))
+            .route(
+                "/api/documents",
+                post(move |body: axum::body::Bytes| {
+                    let held = held.clone();
+                    async move {
+                        *held.lock().unwrap() = String::from_utf8_lossy(&body).into_owned();
+                        Json(json!({"slug": "abc123"}))
+                    }
+                }),
+            );
+        let (site, _task) = serve(app).await;
+        let fixture = Fixture::new(&site).await;
+        let Some(head) = init_repository(&fixture) else {
+            return;
+        };
+        fixture.sign_in("lp_token");
+
+        let (status, body) = fixture.publish(json!({"title": "Paper"})).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["url"], format!("{site}/docs/abc123"));
+        assert_eq!(body["linked"], true);
+        assert_eq!(body["git"], true);
+        let sent = uploaded.lock().unwrap().clone();
+        assert!(sent.contains("filename=\"main.tex\""), "{sent}");
+
+        // The link is in the repository, and records the commit it was made at.
+        let stored = store_for(fixture.root(), &fixture.inner.state_home);
+        let state = stored.load().unwrap().unwrap();
+        assert_eq!(state.link.slug, "abc123");
+        assert_eq!(state.head.as_deref(), Some(head.as_str()));
     }
 
     #[tokio::test]
