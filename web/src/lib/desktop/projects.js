@@ -12,6 +12,21 @@ export async function openFolderProject() {
   return response.json();
 }
 
+/** Clone a git repository: the desktop app shows the native chooser for the
+ * parent folder, runs `git clone` into `<parent>/<repository name>`, makes the
+ * folder a project and answers like `openFolderProject`. A repository that
+ * holds LibrePaper state is fetched too, so its LibrePaper section is linked
+ * at once. Resolves to null when the person cancels. A refusal (a URL with a
+ * password, a folder that exists, a clone git could not make) throws with the
+ * service's message.
+ * @param {string} url https, ssh or scp-like, with no password in it
+ * @returns {Promise<{ id: string, project: string, name: string, root_name: string } | null>} */
+export async function cloneRepository(url) {
+  const response = await send("POST", "projects/clone", { jsonBody: { url } });
+  if (response.status === 204) return null;
+  return response.json();
+}
+
 /** Show the native folder chooser and keep a web project in the chosen empty
  * folder: the desktop app links the folder, pulls the project into it and
  * opens it as a folder project. Resolves to null when the person cancels. A
@@ -19,7 +34,7 @@ export async function openFolderProject() {
  *
  * When the app has no sign-in to pull with, it answers 401 after the folder
  * was created and linked. The folder project is real, so that answer resolves
- * with the project and `refused: true` instead of throwing; its Sync panel
+ * with the project and `refused: true` instead of throwing; its Git panel
  * offers Sign in.
  * @param {string} url the project page, `https://<site>/docs/<slug>`
  * @returns {Promise<({ id: string, project: string, name: string, root_name: string } & { refused?: true }) | null>} */

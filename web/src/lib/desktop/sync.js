@@ -12,8 +12,8 @@ export const LOGIN_PENDING = "sign in and approve the code, then retry";
 const route = (id, step = "") => `projects/${encodeURIComponent(String(id))}/sync${step ? `/${step}` : ""}`;
 
 /** Where the folder stands with its web project. `git` is true when the
- * folder holds a `.git`, which the desktop app will not pull into, push from
- * or publish.
+ * folder holds a `.git`: pull and push then run the repository form of the
+ * sync, where versions become commits and git merges them.
  * @param {string} id
  * @returns {Promise<{ signed_in: boolean, linked: boolean, git?: boolean, other_site?: boolean, site?: string, slug?: string, pulled?: number, changes?: { here: number, web: boolean }, error?: string }>} */
 export async function syncStatus(id) {
@@ -59,9 +59,12 @@ export async function syncUnlink(id) {
 }
 
 /** Takes in what changed on the web. `mine` and `theirs` settle files that
- * changed on both sides, one path at a time.
+ * changed on both sides, one path at a time. In a git repository the answer is
+ * the repository form instead: the versions taken as commits and how git
+ * merged them, where `merge` is a word, `{ conflicts: paths }` or
+ * `{ dirty: paths }`.
  * @param {string} id @param {{ mine?: string[], theirs?: string[] }} [choices]
- * @returns {Promise<{ written: string[], trashed: string[], kept?: unknown, conflicts: string[], skipped?: string[], trimmed?: boolean }>} */
+ * @returns {Promise<{ written: string[], trashed: string[], kept?: unknown, conflicts: string[], skipped?: string[], trimmed?: boolean, repository?: undefined } | { repository: true, versions: { sha: string, label: string, by: string, commit: string }[], merge: "fast-forward" | "merged" | "already" | "skipped" | { conflicts: string[] } | { dirty: string[] }, trimmed: boolean }>} */
 export async function syncPull(id, choices = {}) {
   const response = await send("POST", route(id, "pull"), { jsonBody: choices });
   return response.json();

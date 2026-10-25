@@ -25,8 +25,17 @@ try {
     import { mount } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
     const signedIn = new URLSearchParams(location.search).has("in");
     const providers = new URLSearchParams(location.search).has("none") ? [] : [{ id: 'github', kind: 'github', label: 'GitHub' }];
-    globalThis.fetch = async (url) => {
+    globalThis.fetch = async (url, init) => {
       const path = String(url);
+      // The desktop app's clone route: the bodies it was sent are kept across the
+      // navigation that follows, and a cancelled chooser is asked for by the address.
+      if (path.endsWith('/projects/clone')) {
+        const sent = JSON.parse(sessionStorage.getItem('cloned') || '[]');
+        sent.push(JSON.parse(init.body));
+        sessionStorage.setItem('cloned', JSON.stringify(sent));
+        if (sent.at(-1).url.includes('cancel')) return new Response(null, { status: 204 });
+        return Response.json({ id: 'f9', project: 'local-f9', name: 'paper', root_name: 'paper' });
+      }
       if (path === '/api/me') return Response.json(signedIn ? { name: 'Tester', can_publish: true, providers } : { providers });
       if (path.startsWith('/api/list')) return Response.json({ documents: [] });
       return Response.json({});
@@ -74,6 +83,37 @@ try {
   await until("project browser", () => tab.evaluate("Boolean(document.querySelector('.projects'))"));
   assert.equal(await at(), "/desktop/?in", "a signed-in desktop user stays on the project browser");
   assert.equal(await tab.evaluate("Boolean(document.querySelector('.open-link'))"), false, "the project browser has no link field");
+
+  // Clone a repository sits beside Open folder in the desktop app. It asks for an
+  // address, refuses one with a password before anything is sent, leaves the
+  // dialog alone when the chooser is cancelled, and opens the cloned folder.
+  const buttonLabels = () => tab.evaluate("[...document.querySelectorAll('button')].map((node) => node.textContent.trim())");
+  const labels = await buttonLabels();
+  assert.ok(labels.includes("Open folder…") && labels.includes("Clone a repository…"), "the desktop app offers Open folder and Clone a repository: " + labels);
+  await tab.navigate(`${origin}/?in`);
+  await until("project browser in a browser", () => tab.evaluate("Boolean(document.querySelector('.projects'))"));
+  assert.equal((await buttonLabels()).includes("Clone a repository…"), false, "a browser has no Clone a repository");
+  await tab.navigate(`${origin}/desktop/?in`);
+  await until("project browser to clone from", () => tab.evaluate("[...document.querySelectorAll('button')].some((node) => node.textContent.trim() === 'Clone a repository…')"));
+  const submitClone = (value) => tab.evaluate(`(() => {
+    const input = document.querySelector('#clone-repository input');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)});
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#clone-repository').requestSubmit();
+  })()`);
+  const cloned = () => tab.evaluate("JSON.parse(sessionStorage.getItem('cloned') || '[]')");
+  await tab.evaluate("[...document.querySelectorAll('button')].find((node) => node.textContent.trim() === 'Clone a repository…').click()");
+  await until("clone dialog", () => tab.evaluate("Boolean(document.querySelector('#clone-repository input'))"));
+  await submitClone("https://you:secret@github.com/you/paper.git");
+  await until("password refused", () => tab.evaluate("document.querySelector('#clone-repository')?.innerText.includes('password')"));
+  assert.deepEqual(await cloned(), [], "an address with a password is not sent");
+  await submitClone("https://cancel.example/paper.git");
+  await until("cancelled chooser", async () => (await cloned()).length === 1);
+  assert.equal(await at(), "/desktop/?in", "a cancelled chooser stays on the landing page");
+  assert.equal(await tab.evaluate("Boolean(document.querySelector('#clone-repository input'))"), true, "and leaves the dialog open");
+  await submitClone("git@github.com:you/paper.git");
+  await until("cloned folder opened", () => tab.evaluate("location.pathname === '/reader.html' && location.search === '?local=f9'"));
+  assert.deepEqual(await cloned(), [{ url: "https://cancel.example/paper.git" }, { url: "git@github.com:you/paper.git" }], "the addresses were sent as typed");
 
   // The desktop app opens a pasted link from its own server, keys and all, and
   // refuses one from anywhere else.

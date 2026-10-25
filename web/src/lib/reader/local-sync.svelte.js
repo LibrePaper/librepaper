@@ -1,5 +1,6 @@
-// The Sync panel's state for a folder project (SPEC-sync.md): where the folder
-// stands with its web project, and what the last Pull or Push did.
+// The LibrePaper section of the Git panel for a folder project (SPEC-sync.md):
+// where the folder stands with its web project, and what the last Pull or Push
+// did.
 //
 // This module owns that state; the panel only reads it and calls the actions.
 // The desktop app does the work. Pull and Push are the `librepaper` commands
@@ -38,7 +39,14 @@ const realOpen = (/** @type {string} */ url) => { globalThis.open?.(url, "_blank
 /// not been approved yet.
 const isPending = (/** @type {any} */ error) => error?.status === 400 && error?.body?.error === routes.LOGIN_PENDING;
 
-/** @typedef {{ loaded: boolean, status: any, busy: string, error: string, waiting: { userCode: string, url: string } | null, pull: { written: number, trashed: number, skipped: string[], trimmed: boolean } | null, conflicts: string[], refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string } | null, pushed: { nothing: true } | { files: number } | null }} SyncState */
+/** What a pull did. In a plain folder it wrote and trashed files. In a git
+ * repository it fetched web versions as commits and merged them: `versions`
+ * counts the commits, `merge` says how the merge went, and `paths` are the
+ * conflicted files of a merge that conflicted or the uncommitted files that
+ * stopped it.
+ * @typedef {{ repository?: undefined, written: number, trashed: number, skipped: string[], trimmed: boolean } | { repository: true, versions: number, merge: "fast-forward" | "merged" | "already" | "skipped" | "conflicts" | "dirty", paths: string[], trimmed: boolean }} PullResult */
+
+/** @typedef {{ loaded: boolean, status: any, busy: string, error: string, waiting: { userCode: string, url: string } | null, pull: PullResult | null, conflicts: string[], refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string } | null, pushed: { nothing: true } | { files: number } | null }} SyncState */
 
 /** `signedIn` is asked each time Sign in is pressed: whether this page has a
  * session on the server, so the code can be approved here. `open` shows a page
@@ -202,13 +210,35 @@ export function createLocalSync({ id, approve, signedIn = () => true, open = rea
     await refresh();
   });
 
+  /// What a pull in a git repository did, from the desktop app's answer:
+  /// `{ repository: true, versions, merge, trimmed }`, where `merge` is a word
+  /// or `{ conflicts: paths }` or `{ dirty: paths }`.
+  function repositoryPull(/** @type {any} */ result) {
+    const merge = result.merge;
+    const word = typeof merge === "string" ? merge : merge?.conflicts ? "conflicts" : merge?.dirty ? "dirty" : "skipped";
+    return {
+      repository: /** @type {true} */ (true),
+      versions: Array.isArray(result.versions) ? result.versions.length : 0,
+      merge: /** @type {"fast-forward" | "merged" | "already" | "skipped" | "conflicts" | "dirty"} */ (word),
+      paths: Array.isArray(merge?.conflicts) ? merge.conflicts.map(String) : Array.isArray(merge?.dirty) ? merge.dirty.map(String) : [],
+      trimmed: Boolean(result.trimmed),
+    };
+  }
+
   /// Takes in the web project's changes. `choices` settles files that changed
-  /// on both sides, and its counts are added to the pull they belong to.
+  /// on both sides, and its counts are added to the pull they belong to. In a
+  /// git repository there is nothing to settle one file at a time: the
+  /// versions become commits and git merges them.
   const pull = (/** @type {{ mine?: string[], theirs?: string[] }} */ choices = {}) => run("pull", async () => {
     if (!(await saved())) return;
     const settling = Boolean(choices.mine?.length || choices.theirs?.length);
     const result = await api.syncPull(id, choices);
-    const earlier = settling ? current.pull : null;
+    if (result?.repository) {
+      set({ pull: repositoryPull(result), conflicts: [], refusal: null, pushed: null });
+      await refresh();
+      return;
+    }
+    const earlier = settling && !current.pull?.repository ? current.pull : null;
     set({
       pull: {
         written: (earlier?.written ?? 0) + result.written.length,

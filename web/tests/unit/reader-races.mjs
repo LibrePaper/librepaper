@@ -947,7 +947,7 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   let flushes = 0;
   const folderSync = { async flush() { flushes += 1; return saved; } };
   const ctx = context({ LOCAL: true, say: (text, options) => said.push({ text, ...options }), location, folderSync });
-  vm.runInContext(body("  async function leaveTo(href)", "  // The Sync panel of a local project."), ctx);
+  vm.runInContext(body("  async function leaveTo(href)", "  // The LibrePaper section of a local project's Git panel."), ctx);
   await vm.runInContext('leaveTo("/")', ctx);
   assert.equal(flushes, 1);
   assert.equal(location.href, "/reader.html?local=f1", "a folder that could not be written keeps the person here");
@@ -960,7 +960,7 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   // A web project has no folder to write.
   const webLocation = { href: "/docs/paper" };
   const web = context({ say: (text) => said.push({ text }), location: webLocation, folderSync: null });
-  vm.runInContext(body("  async function leaveTo(href)", "  // The Sync panel of a local project."), web);
+  vm.runInContext(body("  async function leaveTo(href)", "  // The LibrePaper section of a local project's Git panel."), web);
   await vm.runInContext('leaveTo("/reader.html?local=f2")', web);
   assert.equal(webLocation.href, "/reader.html?local=f2");
   assert.equal(flushes, 2);

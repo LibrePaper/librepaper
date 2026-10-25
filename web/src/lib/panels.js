@@ -22,9 +22,12 @@ export const TABS = [
   // History is readable by link-holders too: reviewers need the “since”
   // view even when they cannot edit or restore the live source.
   { id: "history", says: "History", icon: "history", when: (who) => !who.local },
-  // A folder on this computer meets its web project here: link it, pull what
-  // changed on the web, push what changed in the folder.
-  { id: "sync", says: "Sync", icon: "refresh-cw", when: (who) => who.mayEdit && who.desktop && who.local },
+  // Every project that can be edited has a Git panel, and it says what git
+  // means for that project. A web project cannot run git: its panel sets up
+  // the GitHub Action that does. A folder on this computer can, so there it
+  // runs git on the folder and holds the link to the project's web twin. A
+  // folder is only meaningful in the desktop app.
+  { id: "git", says: "Git", icon: "git-branch", when: (who) => who.mayEdit && (who.local ? who.desktop : true) },
   { id: "share", says: "Share", icon: "users", when: (who) => !who.local && (who.canSeeSharing || who.canPublish) },
   // Last, because it comes and goes with the source pane: at the end of the
   // rail its arrival moves nothing else.
