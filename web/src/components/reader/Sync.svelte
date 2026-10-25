@@ -182,8 +182,8 @@
   {:else}
     {@render projectLine()}
     <ul class="sync-facts" aria-label="Where this folder stands">
-      <li><Icon name={here ? "pencil" : "check"} size={14} /><span>{hereText}</span></li>
-      <li><Icon name={status.changes?.web ? "download" : "check"} size={14} /><span>{webText}</span></li>
+      <li><Icon name={unknown ? "triangle-alert" : here ? "pencil" : "check"} size={14} /><span>{hereText}</span></li>
+      <li><Icon name={unknown ? "triangle-alert" : status.changes?.web ? "download" : "check"} size={14} /><span>{webText}</span></li>
     </ul>
     <div class="sync-row">
       <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => sync.pull()}>

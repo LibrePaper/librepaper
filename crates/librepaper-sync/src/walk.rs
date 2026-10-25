@@ -260,7 +260,9 @@ pub(crate) fn compare(
     }
     let left_out = scan.left_out(dir, recorded.keys());
     for path in recorded.keys() {
-        if !scan.files.contains_key(path) && !left_out.contains(path) {
+        // An excluded path is outside the sync whether or not it is still on
+        // disk: a render output cleaned away is not a deletion to send.
+        if !scan.files.contains_key(path) && !left_out.contains(path) && !scan.excludes(path) {
             changes.deleted.push(path.clone());
         }
     }

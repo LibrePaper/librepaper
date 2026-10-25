@@ -67,7 +67,9 @@ export function createLocalSync({ id, approve, signedIn = () => true, open = rea
     const request = ++generation;
     try {
       const status = await api.syncStatus(id);
-      if (request === generation) set({ loaded: true, status });
+      // The desktop answers 200 with `error` when the site could not be
+      // reached; the counts are then unknown, not zero.
+      if (request === generation) set({ loaded: true, status, error: typeof status?.error === "string" ? status.error : "" });
     } catch (error) {
       if (request === generation) set({ loaded: true, error: error?.message || "The desktop app could not read the sync state." });
     }
