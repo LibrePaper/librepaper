@@ -507,12 +507,6 @@ pub(crate) fn reconcile(
         let base = recorded.get(path).map(|record| record.sha.as_str());
         let here = local.get(path).map(String::as_str);
         let there = web.get(path).map(|record| record.sha.as_str());
-        if excluded.contains(path) && there.is_some() && there != base {
-            // Absent from `local` is not absent from the folder. Writing over
-            // a file nobody compared would lose it, so it stays as it is.
-            outcome.skipped.push(path.clone());
-            continue;
-        }
         let adopt = |records: &mut BTreeMap<String, FileRecord>| match web.get(path) {
             Some(record) => {
                 records.insert(path.clone(), record.clone());
@@ -521,7 +515,14 @@ pub(crate) fn reconcile(
                 records.remove(path);
             }
         };
-        if here == there {
+        if excluded.contains(path) && there.is_some() && there != base {
+            // Absent from `local` is not absent from the folder. Writing over
+            // a file nobody compared would lose it, so it stays as it is. The
+            // record takes the web version, so the folder is measured against
+            // it from now on and the version counts as taken in.
+            adopt(&mut outcome.records);
+            outcome.skipped.push(path.clone());
+        } else if here == there {
             adopt(&mut outcome.records);
         } else if here == base {
             adopt(&mut outcome.records);
@@ -604,9 +605,9 @@ async fn pull_folder(
     state.files = plan.records;
     let paths: Vec<String> = state.files.keys().cloned().collect();
     state.synced.extend(paths);
-    // With a file unsettled or left alone the same version is met again, so
-    // the next call can settle it once it is back in the scan.
-    if plan.conflicts.is_empty() && plan.skipped.is_empty() {
+    // With a file unsettled the same version is met again, so the next call
+    // can settle it.
+    if plan.conflicts.is_empty() {
         state.pulled = sequence;
     }
     store.save(&state)?;
@@ -869,7 +870,14 @@ mod tests {
         assert!(!plan.records.contains_key("web.tex"));
 
         // Mine keeps the edited file and drops the record, so a push creates it.
-        let plan = reconcile(&recorded, &local, &web, &none(), &["both.tex".to_string()], &[]);
+        let plan = reconcile(
+            &recorded,
+            &local,
+            &web,
+            &none(),
+            &["both.tex".to_string()],
+            &[],
+        );
         assert!(plan.conflicts.is_empty());
         assert!(!plan.records.contains_key("both.tex"));
         assert!(plan.kept.contains(&"both.tex".to_string()));
@@ -886,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn an_excluded_path_keeps_its_record_and_is_never_written() {
+    fn an_excluded_path_takes_the_web_record_and_is_never_written() {
         let recorded = files(&[("changed.tex", "1"), ("same.tex", "1"), ("gone.tex", "1")]);
         let web = files(&[("changed.tex", "2"), ("same.tex", "1"), ("fresh.tex", "1")]);
         let excluded: BTreeSet<String> =
@@ -900,8 +908,11 @@ mod tests {
             ["same.tex"],
             "the web did not change it, so nothing is at stake"
         );
-        assert_eq!(plan.records["changed.tex"].sha, "1", "left as it was");
-        assert!(!plan.records.contains_key("fresh.tex"), "not adopted");
+        assert_eq!(
+            plan.records["changed.tex"].sha, "2",
+            "measured against the web from now on, though the file was not written"
+        );
+        assert_eq!(plan.records["fresh.tex"].sha, "1", "adopted, not written");
         assert!(!plan.records.contains_key("gone.tex"), "the web dropped it");
     }
 
@@ -938,8 +949,8 @@ mod tests {
         assert_eq!(plan.apply, ["new.tex"]);
         assert_eq!(plan.skipped, ["build/out.tex", "latin.tex"]);
         assert!(plan.conflicts.is_empty());
-        assert!(!plan.records.contains_key("build/out.tex"));
-        assert!(!plan.records.contains_key("latin.tex"));
+        assert_eq!(plan.records["build/out.tex"].sha, web["build/out.tex"].sha);
+        assert_eq!(plan.records["latin.tex"].sha, web["latin.tex"].sha);
         assert_eq!(plan.records["main.tex"].sha, same);
 
         // Taking the web version for the path does not write it either.

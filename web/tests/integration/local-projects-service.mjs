@@ -65,7 +65,7 @@ env.LIBREPAPER_LOCAL_PORT = String(port);
 // Seed the binding file the way `open_project` writes it, before the service
 // starts, so the service loads it.
 const id = `q-${randomBytes(16).toString("hex")}`;
-const project = `local-${id.slice(2)}`;
+const project = `local-${id}`;
 const now = Math.floor(Date.now() / 1000);
 const bindingsDir = join(env.XDG_STATE_HOME, "librepaper/local");
 await mkdir(bindingsDir, { recursive: true });

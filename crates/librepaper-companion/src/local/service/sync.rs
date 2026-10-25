@@ -45,7 +45,13 @@ fn refuse(status: u16, error: &str) -> Failure {
 /// Whether the site refused the token this computer holds: it expired, was
 /// revoked, or has no right to the project.
 fn token_refused(error: &Error) -> bool {
-    matches!(error, Error::Http { status: 401 | 403, .. })
+    matches!(
+        error,
+        Error::Http {
+            status: 401 | 403,
+            ..
+        }
+    )
 }
 
 /// A failed call into the sync crate. The crate's message already says what
@@ -82,7 +88,7 @@ struct Folder {
 enum Stored {
     Nothing,
     /// A link to a project on the page's own site.
-    Here(State),
+    Here(Box<State>),
     /// A link to a project on another site. The token this computer holds for
     /// that site is not this page's to spend, so the page sees no link.
     OtherSite,
@@ -101,7 +107,7 @@ impl Folder {
             return Ok(Stored::Nothing);
         };
         Ok(if same_site(&state.link.site, &origin_site(origin)?) {
-            Stored::Here(state)
+            Stored::Here(Box::new(state))
         } else {
             Stored::OtherSite
         })
@@ -110,7 +116,7 @@ impl Folder {
     fn state(&self, origin: Option<&str>) -> Result<Option<State>, Failure> {
         match self.stored(origin)? {
             Stored::Nothing => Ok(None),
-            Stored::Here(state) => Ok(Some(state)),
+            Stored::Here(state) => Ok(Some(*state)),
             Stored::OtherSite => Err(refuse(409, OTHER_SITE)),
         }
     }
@@ -202,7 +208,7 @@ async fn folder_status(
 ) -> Result<Value, Failure> {
     let (state, other_site) = match folder.stored(origin)? {
         Stored::Nothing => (None, false),
-        Stored::Here(state) => (Some(Arc::new(state)), false),
+        Stored::Here(state) => (Some(Arc::new(*state)), false),
         Stored::OtherSite => (None, true),
     };
     let site = match &state {
@@ -1422,7 +1428,10 @@ mod tests {
         }
         assert_eq!(
             failed(&Error::NotLinked),
-            (409, json!({"error": "link this folder to a web project first"}))
+            (
+                409,
+                json!({"error": "link this folder to a web project first"})
+            )
         );
         assert_eq!(
             failed(&Error::Rules("too many files".to_string())),

@@ -298,10 +298,16 @@ mod tests {
         let scan = scan(root, &Rules::default(), None).unwrap();
         assert_eq!(names(&scan), ["main.tex"]);
 
-        let asked: Vec<String> = ["main.tex", "build/out.tex", "refs.bib", "latin.tex", "new.tex"]
-            .iter()
-            .map(|path| path.to_string())
-            .collect();
+        let asked: Vec<String> = [
+            "main.tex",
+            "build/out.tex",
+            "refs.bib",
+            "latin.tex",
+            "new.tex",
+        ]
+        .iter()
+        .map(|path| path.to_string())
+        .collect();
         let left_out = scan.left_out(root, &asked);
         assert_eq!(
             left_out.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -309,7 +315,9 @@ mod tests {
             "listed files and absent ones are not left out"
         );
         // A path that climbs out of the directory is never probed.
-        assert!(scan.left_out(root, &["../secret.tex".to_string()]).is_empty());
+        assert!(scan
+            .left_out(root, &["../secret.tex".to_string()])
+            .is_empty());
     }
 
     #[test]

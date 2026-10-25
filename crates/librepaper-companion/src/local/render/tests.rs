@@ -221,7 +221,11 @@ async fn a_failing_run_does_not_return_a_result_an_earlier_run_left() {
     assert_eq!(first.status.status, "done", "{:?}", first.status.error);
     age(&fixture, &["paper.pdf"]);
 
-    script("typst.pdf", "echo 'error: broken' >&2; exit 1", "{stem}.pdf");
+    script(
+        "typst.pdf",
+        "echo 'error: broken' >&2; exit 1",
+        "{stem}.pdf",
+    );
     let outcome = run_fixture(&fixture, false).await;
     assert_eq!(outcome.status.status, "failed");
     assert_eq!(outcome.status.exit, 1);
