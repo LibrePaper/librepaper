@@ -33,8 +33,11 @@
 
   const plural = (count, noun) => `${count} ${noun}${count === 1 ? "" : "s"}`;
   const here = $derived(Number(status?.changes?.here) || 0);
-  const hereText = $derived(here === 0 ? "No changes here" : `${plural(here, "change")} here`);
-  const webText = $derived(status?.changes?.web ? "The web project changed" : "Up to date");
+  // With the site out of reach the counts were never read, so they are not
+  // shown as zero.
+  const unread = $derived(typeof status?.error === "string" && status.error !== "");
+  const hereText = $derived(unread ? "Changes here unknown" : here === 0 ? "No changes here" : `${plural(here, "change")} here`);
+  const webText = $derived(unread ? "The web project could not be reached" : status?.changes?.web ? "The web project changed" : "Up to date");
   const projectHref = $derived(status?.site && status?.slug ? `${String(status.site).replace(/\/+$/, "")}/docs/${status.slug}` : "");
 
   // One sentence for what a pull did.
