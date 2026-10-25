@@ -66,6 +66,8 @@
     const names = view.branches?.names ?? [];
     return status?.branch && !names.includes(status.branch) ? [status.branch, ...names] : names;
   });
+  // Branches that only a remote has. Choosing one checks it out as a local branch.
+  const remoteNames = $derived((view.branches?.remote ?? []).filter((name) => !branchNames.includes(name)));
 
   // A commit takes everything unless a file was left out.
   const included = $derived(changes.filter((change) => !left.includes(change.path)).map((change) => change.path));
@@ -175,9 +177,9 @@
     <div class="git-row">
       <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => git.refresh()}>Try again</button>
     </div>
-  {:else if !status.git?.found}
+  {:else if !status.git?.found || status.git?.supported === false}
     <p class="git-lead">
-      {status.git?.version
+      {status.git?.found && status.git?.version
         ? `Git ${status.git.version} is installed, and LibrePaper needs Git 2.38 or later.`
         : "Git was not found on this computer, and LibrePaper needs Git 2.38 or later."}
     </p>
@@ -204,6 +206,11 @@
         <select class="select git-select" aria-label="Branch" value={status.branch ?? ""} disabled={busy || !branchNames.length} onchange={pickBranch}>
           {#if !status.branch}<option value="">No branch</option>{/if}
           {#each branchNames as name (name)}<option value={name}>{name}</option>{/each}
+          {#if remoteNames.length}
+            <optgroup label="On the remote">
+              {#each remoteNames as name (name)}<option value={name}>{name}</option>{/each}
+            </optgroup>
+          {/if}
         </select>
         <button type="button" class="git-action" disabled={busy} onclick={() => (creating = true)}>New branch</button>
       {/if}

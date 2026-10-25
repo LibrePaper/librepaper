@@ -153,17 +153,19 @@ async function sha256hex(bytes) {
   return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-// The shell answers 502 when the local service cannot be reached, which is
-// `Unreachable`; any other non-2xx is `Refused`, carrying the service's own
-// JSON `error` message when it gave one, plus its `status` and the parsed
-// `body`.
+// The shell answers 502 with only an `error` when the local service cannot be
+// reached, which is `Unreachable`. A 502 whose JSON body names a string
+// `reason` is the local service answering a request that failed remotely (a
+// Git fetch, pull, push or clone), so it is `Refused` like any other non-2xx.
+// Any other non-2xx is `Refused`, carrying the service's own JSON `error`
+// message when it gave one, plus its `status` and the parsed `body`.
 async function throwOnFailure(response) {
   if (response.ok) return;
   let data = null;
   try {
     data = await response.clone().json();
   } catch { /* not a JSON body; keep the generic message */ }
-  if (response.status === 502) throw unavailable();
+  if (response.status === 502 && typeof data?.reason !== "string") throw unavailable();
   const message = typeof data?.error === "string"
     ? data.error
     : `The LibrePaper desktop app refused the request (${response.status})`;
@@ -171,8 +173,8 @@ async function throwOnFailure(response) {
 }
 
 /// The one place a feature request is sent to the desktop app. A network
-/// failure or a 502 is `Unreachable`, any other non-2xx is `Refused` with the
-/// service's own message when it gave one.
+/// failure or a 502 without a `reason` is `Unreachable`, any other non-2xx is
+/// `Refused` with the service's own message when it gave one.
 /** @param {string} method @param {string} path @param {{ jsonBody?: unknown, formBody?: FormData, signal?: AbortSignal }} [options] */
 export async function send(method, path, { jsonBody, formBody, signal } = {}) {
   const shell = requireDesktop();

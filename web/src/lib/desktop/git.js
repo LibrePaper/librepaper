@@ -8,9 +8,9 @@ import { send } from "./client.js";
 const route = (id, step = "") => `projects/${encodeURIComponent(String(id))}/git${step ? `/${step}` : ""}`;
 
 /** @typedef {{ path: string, kind: "added" | "modified" | "deleted" | "renamed" | "conflicted", from?: string }} GitChange */
-/** @typedef {{ repository: boolean, git: { found: boolean, version?: string }, branch?: string, upstream?: string, ahead?: number, behind?: number, remotes: { name: string, url: string }[], changes: GitChange[], merging: boolean, identity: boolean }} GitStatus */
+/** @typedef {{ repository: boolean, git: { found: boolean, version?: string, supported?: boolean }, branch?: string, upstream?: string, ahead?: number, behind?: number, remotes: { name: string, url: string }[], changes: GitChange[], merging: boolean, identity: boolean, detached?: boolean }} GitStatus */
 /** @typedef {{ status: "fast-forward" | "merged" | "up-to-date" | "conflicts", conflicts: string[] }} GitPull */
-/** @typedef {{ step: "commit" | "pull" | "push", reason?: string, paths?: string[], detail?: string, commit?: string, status?: string, conflicts?: string[] }} GitSyncStep */
+/** @typedef {{ step: "commit" | "pull" | "push", ok?: boolean, reason?: string, paths?: string[], detail?: string, commit?: string, status?: string, conflicts?: string[] }} GitSyncStep */
 
 /** Where the folder's repository stands: whether there is one, its branch,
  * remotes and changes.
@@ -51,9 +51,11 @@ export async function gitIdentity(id, name, email) {
   await send("POST", route(id, "identity"), { jsonBody: { name, email } });
 }
 
-/** The local branches and the one checked out.
+/** The local branches and the one checked out. `remote` lists the branches
+ * that only a remote has, by name; `gitSwitch` checks one out as a new local
+ * branch that tracks it.
  * @param {string} id
- * @returns {Promise<{ current: string | null, branches: string[] }>} */
+ * @returns {Promise<{ current: string | null, branches: string[], remote: string[] }>} */
 export async function gitBranches(id) {
   const response = await send("GET", route(id, "branches"));
   return response.json();
