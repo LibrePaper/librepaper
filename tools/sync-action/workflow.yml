@@ -1,0 +1,23 @@
+# Keeps this repository and a LibrePaper project in step.
+# Copy to .github/workflows/librepaper.yml and store the project token as the
+# repository secret LIBREPAPER_TOKEN.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "*/15 * * * *"
+concurrency: librepaper            # one run at a time per repository
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: LibrePaper/sync-action@v1
+        with:
+          project: https://app.librepaper.org/docs/<slug>
+          token: ${{ secrets.LIBREPAPER_TOKEN }}
