@@ -78,8 +78,8 @@ Changed:
 
 - `POST /api/documents/{slug}/source-change` takes `sync: { provider: "cli", message: string, author?: string }` and no longer needs a sync-link row, a `revision`, `connection_id`, `checkpoint` or `synced_paths`. `Origin::Sync { provider: "cli" }`, `unchanged_dependencies` required, agent caps off as for any sync. The label it writes is named `message`, with reason `push`, `author_label` = `author` when given (the git author), otherwise the caller's attribution, and the account behind the token in `author_account_id`. History shows "Pushed by Alice". The reply includes `{ label: { sha, sequence } }`.
 - `?unsuggested=1` on `GET /history/{sha}` as well as `GET /project` (px27 commit 024999e2 adds it to `/project`; the same `track::unsuggested` applies on the forked document). Pull reads versions with it, so recorded hashes equal what a push is checked against.
-- `lpt_` token admission (`agent_token_path_allowed`) widens: Read and above on `GET /history`, `GET /history/{sha}`, `GET /project`, `GET`/`HEAD /assets/{sha}`; Edit on `POST /source-change` and `PUT /assets`. Nothing else. `GET /history` admits a Read token here where it is editor-only for sessions, because a pull-only CI needs the list; it returns labels, not content.
-- Token expiry: the Share dialog's choices gain 1 year, for CI.
+- `lpt_` token admission (`agent_token_path_allowed`) widens for the Edit role only: `GET /history`, `GET /history/{sha}`, `GET /project`, `GET`/`HEAD /assets/{sha}`, `PUT`/`POST /assets`, `POST /source-change`. Read and Comment tokens keep the tools routes alone. One rule: syncing needs Edit, in CI as on the web.
+- Token expiry: `365d` is accepted and the Share dialog offers it as "1 year", for CI. No token lives without an expiry.
 
 Deleted, hard cutover (no users of web-project Git sync): `GET/PUT/DELETE /api/documents/{slug}/sync`, `sync_link.rs`'s git form and link hook, `storage/postgres/sync_links.rs`, the `sync_links` table by a new migration `0015_drop_sync_links.sql`, `Origin::Sync { provider: "git" }`'s only constructor. `routes.rs:67-71`, `server/mod.rs:99`, `engine/storage/postgres/mod.rs:25,55`, `engine/testing.rs:32` edited accordingly. `History.svelte` says "Pushed" where it said "Pulled from Git".
 
@@ -174,12 +174,13 @@ About 8,100 production lines and 7,700 test lines, measured on main on 2026-10-2
 | Desktop routes and Sync section | +300 to 400 |
 | Action repository | about +120, YAML and shell |
 
-## Open decisions
+## Decisions taken at build time (2026-10-25)
 
-1. Token expiry for CI: add 1 year to the Share choices, or allow "no expiry" for Edit tokens.
-2. The `author` field: accept a caller-supplied name, or always attribute to the account behind the token and put the git author in the message.
-3. Whether `librepaper pull` in a repository merges by default or only fetches (`git pull` semantics, or `git fetch` with the merge left to the person). The spec says merge with `--no-merge` available.
-4. Whether the Git tab for folders (`SPEC-folder-git.md`) follows in the same release or later.
+1. Token expiry for CI: `365d` joins the choices. No token without an expiry.
+2. The `author` field is a caller-supplied name, as in git. The account behind the token is recorded beside it in `author_account_id`.
+3. `librepaper pull` in a repository merges by default, as `git pull` does. `--no-merge` fetches only.
+4. The Git tab for folders (`SPEC-folder-git.md`) follows later. This set ships plain git plus the two commands.
+5. The Action's files live in `tools/sync-action/` in this repository and are published as `LibrePaper/sync-action` by the maintainer; the README has the commands.
 
 ## Out of scope
 
