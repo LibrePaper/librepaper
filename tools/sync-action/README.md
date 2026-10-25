@@ -5,7 +5,7 @@ A composite action that keeps a Git repository and a LibrePaper web project in s
 ## What it does
 
 - On a push to the branch, it sends the pushed commit to the project as one named version. The commit subject and author name the version.
-- On a schedule, or a manual run, it takes the web project's newer versions and merges them into the branch. It pushes the merge when there is one.
+- On a schedule, or a manual run, it takes the web project's newer versions and merges them into the branch. It pushes the merge when there is one. If the branch moved during the run, the push fails, the state is not published, and the next run repeats the pull from the same point.
 - When a file changed on both sides, it does not guess. It opens a pull request from `librepaper/sync` and the run fails. A person merges the pull request in git.
 - It keeps the sync state under `refs/librepaper/*` on origin, so the state survives between runners.
 
