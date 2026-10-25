@@ -1,6 +1,6 @@
 <script>
   // The document's history as a list of events, not of raw versions. An event
-  // is a stretch of editing, a pull from Git, a restore, a bookmark or the
+  // is a stretch of editing, a push, a restore, a bookmark or the
   // creation of the document, and it says what that stretch was and when. Its
   // versions open under it on request, so a long editing session is one line.
   //
@@ -134,7 +134,7 @@
     restore: "Restored",
     superseded: "Replaced by a restore",
     recovered: "Recovered",
-    git: "Pulled from Git",
+    push: "Pushed",
   };
   const said = (point) => point.label || WHY[point.why] || "";
   const told = (point) => said(point) || "Synced";
@@ -142,19 +142,24 @@
   const TITLE = {
     editing: "Editing session",
     collaborative: "Collaborative session",
-    git: "Pulled from Git",
     restore: "Restored version",
     created: "Created",
   };
   const ICON = {
     editing: "pencil",
     collaborative: "users",
-    git: "git-branch",
+    push: "upload",
     restore: "history",
     saved: "bookmark",
     created: "file-plus",
   };
-  const titleOf = (event) => (event.type === "saved" ? event.points[0].label : TITLE[event.type]);
+  // A push is named by its message, and says who pushed it: the author the
+  // caller gave, or the account behind the token.
+  const titleOf = (event) => {
+    if (event.type === "saved") return event.points[0].label;
+    if (event.type === "push") return event.authors.length ? `Pushed by ${event.authors[0]}` : "Pushed";
+    return TITLE[event.type];
+  };
 
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   // Who made a version, where the manifest can say. A machine save names
@@ -201,7 +206,7 @@
       `${event.points.length} versions`,
     ].filter(Boolean).join(" · ");
   const soloLine = (event) =>
-    [clock(event.points[0].at), event.authors.length === 1 ? event.authors[0] : ""]
+    [clock(event.points[0].at), event.type === "push" ? event.points[0].label : event.authors.length === 1 ? event.authors[0] : ""]
       .filter(Boolean).join(" · ");
 
   // A saved version in the saved list: the date, with the year only when it

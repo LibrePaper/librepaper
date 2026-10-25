@@ -13,7 +13,6 @@ import { day as dayOf } from "./dates.js";
 /// passing the same name in `options`.
 export const HISTORY_DEFAULTS = {
   sessionGapMinutes: 30, // inactivity that ends an editing session
-  gitGapMinutes: 5, // consecutive git points within this gap form one Git event
   recentDays: 7, // today and the six days before it each get a day group
   flattenEvents: 4, // a month/rest/year group holding at most this many events lists them directly
   openYesterdayEvents: 6, // "yesterday" starts open when it holds at most this many events
@@ -35,13 +34,14 @@ export function shiftDay(day, days) {
   return at.toISOString().slice(0, 10);
 }
 
-/// What a point is for, as the panel groups it. A saved point is always its
-/// own event, whatever else it is.
-/** @param {object} point @returns {"saved" | "restore" | "git" | "created" | "edit"} */
+/// What a point is for, as the panel groups it. A pushed point carries the
+/// push message as its label, so it is told apart before the label is read.
+/// A saved point is always its own event, whatever else it is.
+/** @param {object} point @returns {"saved" | "restore" | "push" | "created" | "edit"} */
 export function eventKind(point) {
+  if (point?.why === "push") return "push";
   if (point?.label) return "saved";
   if (point?.why === "restore" || point?.why === "superseded") return "restore";
-  if (point?.why === "git") return "git";
   if (point?.why === "created") return "created";
   return "edit";
 }
@@ -81,13 +81,12 @@ export function buildEvents(points, timeZone, options = {}) {
 }
 
 // Only the group the previous point belongs to can take this point, so any
-// other point in between ends the run. Saved, created and restore points never
-// join anything.
+// other point in between ends the run. Saved, pushed, created and restore
+// points never join anything.
 function joins(tail, item, o) {
   if (tail.day !== item.day) return false;
   const last = tail.items[tail.items.length - 1];
   const gap = item.ms - last.ms;
-  if (item.kind === "git") return tail.kind === "git" && gap <= o.gitGapMinutes * MINUTE;
   if (item.kind === "edit") return tail.kind === "edit" && gap <= o.sessionGapMinutes * MINUTE;
   return false;
 }

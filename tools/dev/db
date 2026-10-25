@@ -29,7 +29,6 @@ Commands:
   url                Print the dev database URL
   wipe               Drop and recreate the dev database
   test               Run PostgreSQL-gated tests in a throwaway container
-  git-test           Run the Git sync end-to-end and randomized tests in a throwaway container
   sync-test          Run the librepaper push and pull end-to-end test in a throwaway container
   sqlx-check         Fail if crates/librepaper-engine/.sqlx/ no longer matches the queries in the tree
   sqlx-prepare       Regenerate crates/librepaper-engine/.sqlx/ after changing any query or migration
@@ -178,7 +177,7 @@ cmd_test() {
 
 # Run the Node end-to-end tests that start a real `librepaper admin serve`
 # against a throwaway container. They need a built librepaper binary (make
-# git-test and make sync-test build it) and git 2.38 or later. psql runs inside
+# sync-test builds it) and git 2.38 or later. psql runs inside
 # the container, so the host needs no PostgreSQL client. The first argument
 # names the container; the rest are the test files, run one at a time.
 run_node_end_to_end() {
@@ -191,13 +190,6 @@ run_node_end_to_end() {
     export LIBREPAPER_TEST_PSQL="docker exec -i $POSTGRES_CONTAINER psql"
     export LIBREPAPER_TEST_PSQL_URL="postgresql://postgres:test@127.0.0.1:5432/postgres"
     cd web && node --test --test-concurrency=1 "$@"
-}
-
-# The Git sync end-to-end tests, the hand-written scenarios and the seeded
-# random walk. The random walk reads LIBREPAPER_GIT_FUZZ_SEED,
-# LIBREPAPER_GIT_FUZZ_SEEDS and LIBREPAPER_GIT_FUZZ_ROUNDS.
-cmd_git_test() {
-    run_node_end_to_end git tests/integration/git-sync.mjs tests/integration/git-sync-fuzz.mjs
 }
 
 # The librepaper push and pull commands against a real server: publish, pull,
@@ -222,9 +214,6 @@ main() {
             ;;
         test)
             cmd_test
-            ;;
-        git-test)
-            cmd_git_test
             ;;
         sync-test)
             cmd_sync_test

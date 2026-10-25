@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 
-import { textPatches } from "../../src/lib/gitsync/patches.js";
+import { textPatches } from "../../src/lib/text-patches.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -51,4 +51,4 @@ for (const [from, to] of [["a😀b😀c", "a😁b😁c"], ["😀😀😀", "😁
   assert.equal(applied(from, textPatches("a.md", from, to)), to);
 }
 
-console.log("gitsync patches ok");
+console.log("text patches ok");

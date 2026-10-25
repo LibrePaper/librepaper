@@ -574,7 +574,7 @@ try {
   assert.deepEqual(menuPanels.map(item => [item.id,item.label,item.text]), [
     ['files','Files','Files'],['outline','Outline','Outline'],
     ['collaboration','Collaboration','Collaboration'],
-    ['changes','Changes','Changes'],['agent','Agent','Agent'],['history','History','History'],['git','Git','Git'],
+    ['changes','Changes','Changes'],['agent','Agent','Agent'],['history','History','History'],
     ['share','Share','Share'],['diagnostics','Diagnostics','Diagnostics']
   ], 'the Panels menu names every allowed workspace panel');
   const workspaceActions = await b.evaluate(`(() => {

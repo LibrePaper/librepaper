@@ -4,7 +4,7 @@ export const ROLES = [
   { id: "commenter", label: "Comment" },
   { id: "editor", label: "Edit" },
 ];
-export const EXPIRIES = [["1d", "1 day"], ["7d", "7 days"], ["30d", "30 days"], ["180d", "6 months"], ["never", "Never"]];
+export const EXPIRIES = [["1d", "1 day"], ["7d", "7 days"], ["30d", "30 days"], ["180d", "6 months"], ["365d", "1 year"], ["never", "Never"]];
 
 export const roleLabel = (role) => ROLES.find((entry) => entry.id === role)?.label || role;
 export const dateOf = (iso) => new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });

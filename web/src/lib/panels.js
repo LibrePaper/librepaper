@@ -22,8 +22,9 @@ export const TABS = [
   // History is readable by link-holders too: reviewers need the “since”
   // view even when they cannot edit or restore the live source.
   { id: "history", says: "History", icon: "history", when: (who) => !who.local },
-  // Offered to editors in the desktop app, which holds the Git repository.
-  { id: "git", says: "Git", icon: "git-branch", when: (who) => who.mayEdit && who.desktop && !who.local },
+  // A folder on this computer meets its web project here: link it, pull what
+  // changed on the web, push what changed in the folder.
+  { id: "sync", says: "Sync", icon: "refresh-cw", when: (who) => who.mayEdit && who.desktop && who.local },
   { id: "share", says: "Share", icon: "users", when: (who) => !who.local && (who.canSeeSharing || who.canPublish) },
   // Last, because it comes and goes with the source pane: at the end of the
   // rail its arrival moves nothing else.

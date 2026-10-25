@@ -12,12 +12,8 @@
   import * as history from "../lib/history.js";
   import { createHistorySource } from "../lib/reader/history-source.svelte.js";
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
-  import { createGitResolver } from "../lib/reader/git-resolver.svelte.js";
-  import { createGitAuto } from "../lib/reader/git-auto.svelte.js";
   import { createFolderSync } from "../lib/reader/folder-sync.js";
-  import GitConflictWorkspace from "./reader/GitConflictWorkspace.svelte";
-  import { createGitDiff } from "../lib/reader/git-diff.svelte.js";
-  import GitDiffWorkspace from "./reader/GitDiffWorkspace.svelte";
+  import { createLocalSync } from "../lib/reader/local-sync.svelte.js";
   import { diagnosticContext } from "../lib/assistant-review.js";
   import { sourcePassage } from "../lib/assistant.js";
   import { candidateTree, capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
@@ -26,6 +22,7 @@
   import { parse as parseSynctex, lineAt as synctexLineAt } from "../lib/synctex.js";
   import * as localQuarto from "../lib/desktop/client.js";
   import { backups as backupStatusStore } from "../lib/desktop/backups.svelte.js";
+  import { folderProjectHref, keepFolderProject } from "../lib/desktop/projects.js";
   import { basename } from "../lib/file-manager.js";
   import { createAnnotations } from "../lib/reader/annotations.svelte.js";
   import { createReaderBoot } from "../lib/reader/boot.js";
@@ -116,9 +113,9 @@
   import Collaboration from "./reader/Collaboration.svelte";
   import Changes from "./reader/Changes.svelte";
   import Share from "./reader/Share.svelte";
+  import Sync from "./reader/Sync.svelte";
   import Diagnostics from "./reader/Diagnostics.svelte";
   import History from "./reader/History.svelte";
-  import Git from "./reader/Git.svelte";
   import PendingAnnotations from "./reader/PendingAnnotations.svelte";
 
   // A folder opened in the desktop app arrives as `?local=<id>`. It has no
@@ -1328,23 +1325,6 @@
   const historyHeading = $derived(historySelectedSha ? timeline.describe(historySelectedSha) : "");
   let historyLiveVersion = $state(0);
   $effect(() => () => historySource.dispose());
-  const gitResolver = createGitResolver();
-  const resolving = $derived(gitResolver.state.active);
-  $effect(() => () => gitResolver.dispose());
-  const gitAuto = createGitAuto(() => ({ slug: SLUG, key: KEY, session, rules, me: { name: me.name, handle: me.handle }, title: doc.title }));
-  $effect(() => () => gitAuto.dispose());
-  $effect(() => {
-    const active = session;
-    if (active && !LOCAL) untrack(() => gitAuto.attach(active));
-  });
-  const gitDiff = createGitDiff();
-  // The diff steps aside while a resolution is open.
-  const diffing = $derived(gitDiff.state.active && !gitResolver.state.active);
-  // A Git workspace fills the editor area.
-  const gitWorkspace = $derived(resolving || diffing);
-  $effect(() => {
-    if (gitResolver.state.active) gitDiff.close();
-  });
   $effect(() => {
     if (panel !== "history" || historySource.selected) return;
     void historyLiveVersion;
@@ -1530,6 +1510,10 @@
     onError: (error) => say(`The project folder could not be updated: ${error?.message || "unknown error"}`, { kind: "problem", id: "reader:folder-sync" }),
   }) : null;
   $effect(() => () => folderSync?.dispose());
+  // The Sync panel of a local project. A push first settles the folder, so
+  // the disk holds what the editor holds when the command reads it.
+  const localSync = LOCAL ? createLocalSync({ id: LOCAL_ID, flush: () => folderSync.flush() }) : null;
+  $effect(() => () => localSync?.dispose());
   // The editor becomes ready. A local project opens with one sync that sends nothing, because the
   // client was told what the folder holds. It makes every file managed.
   $effect(() => {
@@ -2376,12 +2360,8 @@
   let unit = $state(measure());
   const compact = $derived(width <= 760);
   const activeMobileView = $derived(panel === "history" && mobileView === "document" ? "source"
-    : mobileView === "source" && !editing && panel !== "history" && !gitWorkspace ? "document"
+    : mobileView === "source" && !editing && panel !== "history" ? "document"
     : mobileView === "sidebar" && !panel ? "document" : mobileView);
-  // A resolution takes the editor area, which on a phone is shown alone.
-  $effect(() => {
-    if (gitWorkspace && compact) mobileView = "source";
-  });
   const splitTight = $derived(width < px(ACTIVITY_WIDTH, unit) + px(PANES.editor.min, unit)
     + px(DOCUMENT_MIN, unit) + px(GRIP, unit)
     + (panel ? px(PANES.sidebar.min, unit) + px(GRIP, unit) : 0));
@@ -2390,7 +2370,7 @@
   // switch between the two faces in the bar; only the phone loses the rail
   // beside the column, and reaches the panels from the Menu in the top bar.
   const adapted = $derived(compact || (splitTight && layout === "split"));
-  const effectiveLayout = $derived(!compact && (gitWorkspace || panel === "history")
+  const effectiveLayout = $derived(!compact && panel === "history"
     ? "source"
     : compact
     ? (activeMobileView === "source" ? "source" : "document")
@@ -2403,7 +2383,7 @@
   const panes = $derived({
     layout: effectiveLayout,
     comments: Boolean(panel),
-    editing: editing || panel === "history" || gitWorkspace,
+    editing: editing || panel === "history",
     sourceSide,
     sizes,
     width,
@@ -2413,7 +2393,7 @@
     unit,
   });
   const shown = $derived(compact ? {
-    source: (editing || panel === "history" || gitWorkspace) && activeMobileView === "source",
+    source: (editing || panel === "history") && activeMobileView === "source",
     document: activeMobileView === "document",
     comments: activeMobileView === "sidebar",
   } : showing(panes));
@@ -2542,13 +2522,29 @@
     if (value === "download-source") return downloadSource();
     if (value === "download-comments") return downloadComments();
     if (value === "download-pdf" || value === "download-html" || value === "download-docx") return downloadAs(value.slice(9));
-    if (value === "share" || value === "history" || value === "git") return openPanel(value);
+    if (value === "share" || value === "history" || value === "sync") return openPanel(value);
+    if (value === "keep-folder") return keepFolder();
     if (value === "save-template") return openSaveTemplateModal();
     if (!["new-file", "new-folder", "upload"].includes(value)) return;
     await openPanel("files");
     await tick();
     if (value === "upload") fileList?.choose();
     else fileList?.start(value === "new-file" ? "file" : "folder");
+  }
+
+  // Keeps this web project in a folder on this computer. The desktop app asks
+  // for an empty folder, links it to this project, pulls the files into it and
+  // answers with the folder project, which opens the way Open folder does.
+  async function keepFolder() {
+    try {
+      const project = await keepFolderProject(`${location.origin}/docs/${SLUG}`);
+      if (project) location.href = folderProjectHref(project.id);
+    } catch (error) {
+      // A folder that is not empty is a choice to make again, not a failure.
+      const refused = error?.status === 409 && error?.message;
+      const text = refused ? `${error.message[0].toUpperCase()}${error.message.slice(1)}.` : error?.message || "The desktop app could not keep a folder for this project.";
+      say(text, { kind: refused ? "note" : "problem", id: "reader:keep-folder" });
+    }
   }
 
   // Which exports the File menu can honour, for the file being previewed.
@@ -2828,7 +2824,7 @@
       : `${name} is part of a larger document.`;
   });
   const canLockPreview = $derived(Boolean(openTextPath && aloneSet.has(openTextPath) && lockedFile !== openFile));
-  // The server checks every path again, but Git sync refuses to run without
+  // The server checks every path again, but a folder project opens only with
   // the rules, so a failed load is tried again until it lands.
   let configRetry = null;
   function loadRules() {
@@ -3885,8 +3881,9 @@
   {/if}
   {@render downloadMenu()}
   {#if me?.id && !LOCAL}<Menu.Item value="save-template" class="menuitem">Save as template…</Menu.Item>{/if}
+  {#if hasDesktop && !LOCAL && mayEdit}<Menu.Item value="keep-folder" class="menuitem">Keep a folder on this computer…</Menu.Item>{/if}
   <hr class="hr my-1" />
-  {#if tabs.some((tab) => tab.id === "git")}<Menu.Item value="git" class="menuitem">Git…</Menu.Item>{/if}
+  {#if tabs.some((tab) => tab.id === "sync")}<Menu.Item value="sync" class="menuitem">Sync…</Menu.Item>{/if}
   {#if canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem">Share…</Menu.Item>{/if}
   <!-- Only where the panel behind it is one this reader is offered: a menu
        that opens a column the rail does not have is the second list of who
@@ -4128,9 +4125,8 @@
       onclose={() => showPanel("")} />
   {/snippet}
 
-  {#snippet gitPanel()}
-    <Git open={panel === "git" && shown.comments} slug={SLUG} key={KEY} {session} {rules}
-      me={{ name: me.name, handle: me.handle }} resolver={gitResolver} differ={gitDiff} auto={gitAuto} />
+  {#snippet syncPanel()}
+    <Sync sync={localSync} open={panel === "sync" && shown.comments} defaultTitle={doc.title || ""} />
   {/snippet}
 
   {#snippet diagnosticsPanel()}
@@ -4175,7 +4171,7 @@
     label="Document"
     panels={{ files: filesPanel, outline: outlinePanel, agent: agentPanel,
               collaboration: collaborationPanel, changes: changesPanel,
-              share: sharePanel, git: gitPanel, diagnostics: diagnosticsPanel, history: historyPanel }}
+              share: sharePanel, sync: syncPanel, diagnostics: diagnosticsPanel, history: historyPanel }}
     panes={panes} sidebarPane={PANES.sidebar}
     onselectpanel={selectPanel} ondrop={dropped}
     onsize={(size) => setSize(PANES.sidebar, size)} onguide={(where) => (guide = where)}
@@ -4197,18 +4193,14 @@
     {/snippet}
   </Sidebar>
 
-  {#if editing || panel === "history" || gitWorkspace}
+  {#if editing || panel === "history"}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <section id="reader-source" class="editorpane" class:away={!shown.source}
              ondragover={(event) => event.preventDefault()} ondrop={dropped}>
       <!-- A figure has no editor. Choosing one shows it: an image as itself,
            a PDF through the browser's own viewer, which shows the first page
            without this application carrying a PDF renderer of its own. -->
-      {#if resolving}
-        <GitConflictWorkspace resolver={gitResolver} />
-      {:else if diffing}
-        <GitDiffWorkspace differ={gitDiff} />
-      {:else if panel === "history"}
+      {#if panel === "history"}
         <HistoryWorkspace source={historySource} heading={historyHeading} canEdit={mayEdit} onrestore={restoreLabel}
           ondownload={downloadArchive}
           downloading={downloadingSha === historySource.selected ? downloadingSha : ""}

@@ -181,6 +181,7 @@ window.sharePanelCheck = async () => {
   check(!document.querySelector('[aria-label^="Copy"]'), "a token has no copy button");
   check([...rows()[0].querySelectorAll(".share-actions button")].map((node) => node.getAttribute("aria-label")).join("|") === "Revoke Paul's assistant", "a token has only trash");
   check(rows()[0].querySelector("svg"), "and an icon");
+  check(text().includes("A token with the Edit role is also what the librepaper command line and the GitHub Action use"), "the tokens tab says what an Edit token is for: " + text());
   await press(document.querySelector("[data-share-new]"));
   check(button("Create token").disabled, "a token needs a name");
   check(![...document.querySelectorAll(".share-form option")].some((node) => node.textContent === "Never"), "and cannot be made to last forever");
@@ -189,6 +190,8 @@ window.sharePanelCheck = async () => {
   check(tokenForm.closest(".share-scroll"), "the new form scrolls with the list, so a short panel reaches its buttons");
   await type(tokenForm.querySelector("input[type=text]"), "Codex");
   const roleSelect = tokenForm.querySelectorAll("select")[0];
+  const expiries = [...tokenForm.querySelectorAll("select")[1].options].map((node) => node.textContent).join("|");
+  check(expiries === "1 day|7 days|30 days|6 months|1 year", "a token can last up to a year: " + expiries);
   const permissions = [...roleSelect.options].map((node) => node.textContent).join("|");
   check(permissions === "Read|Comment|Edit", "the token permissions: " + permissions);
   check(!text().includes("Edit lets the agent change the project directly, without review."), "no warning until Edit is chosen");

@@ -1,0 +1,262 @@
+// Browser regression check for the Sync panel of a folder project: the states
+// it moves through (signed out, signed in and not linked, linked), what Pull
+// and Push say back, the files that changed on both sides with their two
+// answers, and the refusals of a push.
+//
+// The desktop app is stubbed rather than run: what is under test is the panel
+// and its controller, so the stand-in follows the sync routes' contract and
+// records what it was asked. The controller is the real one.
+import assert from "node:assert/strict";
+import { build } from "vite";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { createServer } from "node:http";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
+import { assertFreshDist } from "../helpers/fresh-dist.mjs";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const root = dirname(dirname(dirname(here)));
+const temporary = mkdtempSync(join(tmpdir(), "librepaper-sync-panel-check-"));
+const output = join(temporary, "build");
+const profile = join(temporary, "browser");
+const entry = join(temporary, "entry.js");
+
+const source = `
+import Sync from ${JSON.stringify(join(root, "web/src/components/reader/Sync.svelte"))};
+import { createLocalSync } from ${JSON.stringify(join(root, "web/src/lib/reader/local-sync.svelte.js"))};
+import { day } from ${JSON.stringify(join(root, "web/src/lib/dates.js"))};
+import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
+import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
+
+const linked = (extra = {}) => ({ signed_in: true, linked: true, site: "https://app.example/", slug: "paper", pulled: 4, changes: { here: 2, web: true }, ...extra });
+
+// Each scene sets the status the stand-in answers with, what each command
+// does to it, and the answers a pull or a push gives in turn.
+const scene = () => window.scene;
+const refusal = (failure) => Object.assign(new Error(failure.message || "The desktop app refused the request."), { name: "Refused", status: failure.status, body: failure.body });
+const settle = (value) => { if (value?.fail) throw refusal(value.fail); return value; };
+const api = {
+  syncStatus: async () => { scene().calls.push(["syncStatus"]); return structuredClone(scene().status); },
+  syncLogin: async () => { scene().calls.push(["syncLogin"]); scene().status = scene().afterLogin; },
+  syncLink: async (id, url) => { scene().calls.push(["syncLink", url]); scene().status = scene().afterLink; },
+  syncPublish: async (id, title) => { scene().calls.push(["syncPublish", title]); scene().status = scene().afterLink; },
+  syncUnlink: async () => { scene().calls.push(["syncUnlink"]); scene().status = { signed_in: true, linked: false }; },
+  syncPull: async (id, choices) => { scene().calls.push(["syncPull", choices]); return settle(scene().pulls.shift()); },
+  syncPush: async (id, message) => { scene().calls.push(["syncPush", message]); return settle(scene().pushes.shift()); },
+};
+
+let component;
+const mount = async (next, props = {}) => {
+  component?.$destroy();
+  window.scene = { calls: [], saves: 0, pulls: [], pushes: [], ...next };
+  const sync = createLocalSync({ id: "f1", api, flush: async () => { scene().saves += 1; return scene().saved !== false; } });
+  component = createClassComponent({ component: Sync, target: document.getElementById("panel"), props: { sync, open: true, defaultTitle: "thesis", ...props } });
+  await tick();
+};
+const today = () => day(new Date());
+const flush = async () => { await tick(); await new Promise((resolve) => setTimeout(resolve, 60)); await tick(); };
+window.ready = true;
+`;
+
+const checks = `
+const check = (condition, message) => { if (!condition) throw new Error(message); };
+const squash = (node) => node.innerText.replace(/\\s+/g, " ").trim();
+const text = () => squash(document.getElementById("panel"));
+const panel = () => document.querySelector(".sync-panel");
+const button = (label) => [...document.querySelectorAll("#panel button")].find((node) => node.textContent.trim() === label) ?? null;
+const press = async (label) => { const node = button(label); check(node, "missing button " + label + ": " + text()); node.click(); await flush(); };
+const type = async (node, value) => { node.value = value; node.dispatchEvent(new Event("input", { bubbles: true })); await flush(); };
+const field = (label) => [...document.querySelectorAll("#panel label")].find((node) => node.textContent.trim().startsWith(label))?.querySelector("input");
+const calls = (name) => window.scene.calls.filter((call) => call[0] === name);
+const overflows = () => panel().scrollWidth > panel().clientWidth + 1;
+
+window.syncPanelCheck = async () => {
+  /* ------------------------------------------------------ signed out */
+
+  await mount({ status: { signed_in: false, linked: false }, afterLogin: { signed_in: true, linked: false } });
+  await flush();
+  check(text().includes("Sign in to keep this folder"), "a signed-out folder asks for a sign-in: " + text());
+  check(!button("Pull") && !button("Link"), "and offers nothing else");
+  await press("Sign in");
+  check(calls("syncLogin").length === 1, "Sign in asks the desktop app");
+  check(text().includes("Link to a project"), "and the panel moves on to linking: " + text());
+
+  /* ------------------------------------------------ signed in, not linked */
+
+  check(button("Link").disabled, "Link waits for an address");
+  check(field("Or publish").value === "thesis", "the title offered is the folder's name");
+  check(!button("Publish").disabled, "so Publish is ready");
+  window.scene.afterLink = linked();
+  await type(field("Link to a project"), "  https://app.example/docs/paper  ");
+  await press("Link");
+  check(calls("syncLink")[0][1].trim() === "https://app.example/docs/paper", "Link sends the address: " + JSON.stringify(calls("syncLink")));
+  check(text().includes("paper"), "and the linked project shows: " + text());
+
+  await mount({ status: { signed_in: true, linked: false }, afterLink: linked({ changes: { here: 0, web: false } }) });
+  await flush();
+  await type(field("Or publish"), "A different title");
+  await press("Publish");
+  check(calls("syncPublish")[0][1] === "A different title", "Publish sends the title: " + JSON.stringify(calls("syncPublish")));
+
+  /* --------------------------------------------------------------- linked */
+
+  await mount({ status: linked() });
+  await flush();
+  const link = panel().querySelector(".sync-project a");
+  check(link && link.getAttribute("href") === "https://app.example/docs/paper" && link.textContent.trim() === "paper", "the project is a link to its page: " + (link && link.getAttribute("href")));
+  check(text().includes("2 changes here") && text().includes("The web project changed"), "the state is said in two lines: " + text());
+  check(button("Pull") && button("Push") && button("Unlink"), "Pull, Push and Unlink are there");
+  check(field("Message").value === today(), "the message starts as today's date: " + field("Message").value);
+
+  await mount({ status: linked({ changes: { here: 0, web: false } }) });
+  await flush();
+  check(text().includes("No changes here") && text().includes("Up to date") && !text().includes("The web project changed"), "a quiet folder says so: " + text());
+  await mount({ status: linked({ changes: { here: 1, web: false } }) });
+  await flush();
+  check(text().includes("1 change here"), "one change is not plural: " + text());
+
+  /* ----------------------------------------------------------------- pull */
+
+  await mount({
+    status: linked(),
+    pulls: [
+      { written: 2, trashed: 1, kept: [], conflicts: ["intro.tex", "chapters/long-name.tex"], trimmed: false },
+      { written: 0, trashed: 0, kept: [], conflicts: ["chapters/long-name.tex"] },
+      { written: 1, trashed: 0, kept: [], conflicts: [] },
+    ],
+  });
+  await flush();
+  await press("Pull");
+  check(window.scene.saves === 1, "the folder is saved before the pull");
+  check(text().includes("Wrote 2 files and moved 1 file to the trash."), "the pull says what it did: " + text());
+  check(text().includes("2 files changed here and on the web"), "and what needs an answer: " + text());
+  const rows = () => [...document.querySelectorAll(".sync-conflict")];
+  check(rows().length === 2 && rows()[0].textContent.includes("intro.tex"), "each file has a row");
+  check(rows().every((row) => [...row.querySelectorAll("button")].map((node) => node.textContent.trim()).join("|") === "Keep mine|Take theirs"), "with the two answers");
+  await press("Keep mine");
+  check(JSON.stringify(calls("syncPull")[1][1]) === JSON.stringify({ mine: ["intro.tex"] }), "Keep mine settles that file: " + JSON.stringify(calls("syncPull")));
+  check(rows().length === 1 && rows()[0].textContent.includes("long-name.tex"), "and the row goes");
+  await press("Take theirs");
+  check(JSON.stringify(calls("syncPull")[2][1]) === JSON.stringify({ theirs: ["chapters/long-name.tex"] }), "Take theirs settles the other");
+  check(rows().length === 0 && text().includes("Wrote 3 files and moved 1 file to the trash."), "the counts add up: " + text());
+
+  await mount({ status: linked({ changes: { here: 0, web: false } }), pulls: [{ written: 0, trashed: 0, kept: [], conflicts: [] }] });
+  await flush();
+  await press("Pull");
+  check(text().includes("Nothing new on the web."), "a pull with nothing says so: " + text());
+  await mount({ status: linked(), pulls: [{ written: 1, trashed: 0, conflicts: [], trimmed: true }] });
+  await flush();
+  await press("Pull");
+  check(text().includes("was trimmed"), "a trimmed history is said: " + text());
+  await mount({ status: linked(), pulls: [{ fail: { status: 401, body: { error: "sign in" }, message: "sign in" } }] });
+  await flush();
+  await press("Pull");
+  check(text().includes("Sign in to the web project to continue.") && button("Sign in"), "a lost sign-in goes back to the Sign in button: " + text());
+
+  /* ----------------------------------------------------------------- push */
+
+  await mount({
+    status: linked(),
+    pushes: [
+      { label: { sha: "abc", sequence: 5 }, files: 2 },
+      { fail: { status: 409, body: { reason: "changed", paths: ["intro.tex", "fig/a.png"] } } },
+      { fail: { status: 409, body: { reason: "suggestion", path: "intro.tex" } } },
+      { nothing: true },
+    ],
+  });
+  await flush();
+  await type(field("Message"), "Fix the abstract");
+  await press("Push");
+  check(window.scene.saves === 1, "the folder is saved before the push");
+  check(calls("syncPush")[0][1] === "Fix the abstract", "Push sends the message");
+  check(text().includes("Pushed 2 files."), "and says what went: " + text());
+  check(field("Message").value === today(), "the message goes back to the date for the next push: " + field("Message").value);
+  await press("Push");
+  check(calls("syncPush")[1][1] === today(), "an unnamed push is named by the date");
+  check(text().includes("changed these files since your last pull") && text().includes("fig/a.png") && text().includes("Pull first."), "a push over changed files lists them and says to pull first: " + text());
+  check(!text().includes("Pushed 2 files."), "the earlier result is gone");
+  await press("Push");
+  check(text().includes("pending suggestion in intro.tex") && text().includes("on the web"), "a suggestion is named and left to the web: " + text());
+  check(!text().includes("Pull first."), "the earlier refusal is gone");
+  await press("Push");
+  check(text().includes("Nothing to push."), "an empty push says so: " + text());
+
+  await mount({ status: linked(), saved: false });
+  await flush();
+  await press("Push");
+  check(calls("syncPush").length === 0 && text().includes("could not be saved"), "a folder that cannot be saved stops the push: " + text());
+
+  /* --------------------------------------------------------------- unlink */
+
+  await mount({ status: linked() });
+  await flush();
+  await press("Unlink");
+  check(calls("syncUnlink").length === 1 && text().includes("Link to a project"), "Unlink goes back to linking: " + text());
+
+  /* ---------------------------------------------------------- narrow panel */
+
+  await mount({
+    status: linked({ slug: "a-project-with-a-name-long-enough-to-need-cutting-short" }),
+    pulls: [{ written: 1, trashed: 0, conflicts: ["chapters/a-rather-long-folder-name/rendering-notes-for-the-appendix.qmd"] }],
+    pushes: [{ fail: { status: 409, body: { reason: "changed", paths: ["chapters/a-rather-long-folder-name/rendering-notes-for-the-appendix.qmd"] } } }],
+  });
+  await flush();
+  await press("Pull");
+  await press("Push");
+  for (const width of [260, 320, 400, 600]) {
+    document.documentElement.style.setProperty("--panel-width", width + "px");
+    await flush();
+    check(!overflows(), "no sideways scrolling at " + width + "px");
+  }
+  check(!/[\\u2013\\u2014]/.test(text()), "no dashes in the panel text");
+  return true;
+};
+`;
+
+writeFileSync(entry, `${source}${checks}`);
+let server;
+let tab;
+try {
+  await build({ configFile: false, root: join(root, "web"), plugins: [svelte()], logLevel: "error",
+    build: { outDir: output, emptyOutDir: true, lib: { entry, formats: ["es"], fileName: () => "sync-panel-check.js", cssFileName: "style" } } });
+  assertFreshDist("sync-panel-browser");
+  // The built shell's stylesheet carries the theme every colour and step of
+  // spacing the panel uses.
+  const built = join(root, "web/dist/assets");
+  const theme = readdirSync(built)
+    .filter((name) => name.endsWith(".css"))
+    .map((name) => readFileSync(join(built, name), "utf8"))
+    .filter((text) => text.includes("--color-sidebar"))
+    .join("\n");
+  if (!theme) throw new Error("no built theme stylesheet: run `bun run build` in web/ first");
+  server = createServer((request, response) => {
+    if (request.url === "/theme.css") {
+      response.setHeader("Content-Type", "text/css");
+      return response.end(theme);
+    }
+    const file = join(output, request.url.slice(1));
+    if (request.url !== "/" && existsSync(file)) {
+      response.setHeader("Content-Type", request.url.endsWith(".css") ? "text/css" : "text/javascript");
+      return response.end(readFileSync(file));
+    }
+    response.setHeader("Content-Type", "text/html");
+    response.end('<!doctype html><html data-theme="librepaper"><head><meta charset="utf-8">'
+      + '<link rel="stylesheet" href="/theme.css"><link rel="stylesheet" href="/style.css">'
+      + '<style>body{margin:0;background:var(--color-sidebar)}#panel{width:var(--panel-width,320px);display:flex;flex-direction:column}</style></head>'
+      + '<body><div id="panel"></div><script type="module" src="/sync-panel-check.js"></script></body></html>');
+  });
+  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  tab = await browser("chromium", profile, 24000 + Math.floor(Math.random() * 1000));
+  await tab.resize(700, 900);
+  await tab.navigate(`http://127.0.0.1:${port}/`);
+  await until("sync panel component", () => tab.evaluate("Boolean(window.ready)"));
+  assert.equal(await tab.evaluate("window.syncPanelCheck()"), true);
+  console.log("sync panel: sign-in, link and publish, linked state, pull with conflicts, push and its refusals, unlink");
+} finally {
+  await tab?.close(); server?.close(); removeTemporary(temporary);
+}
