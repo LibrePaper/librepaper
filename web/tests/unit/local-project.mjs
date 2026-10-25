@@ -124,12 +124,78 @@ function fakeFolder(initial) {
   return folder;
 }
 
+// A folder that numbers its changes the way the desktop app does: `since` is
+// the newest change handled, every later one is answered in order (the same
+// ones again until the cursor moves), and a `since` below `dropped` is a reset.
+// A read of a path in `failures` fails that many times first.
+function numberedFolder(initial) {
+  const folder = fakeFolder(initial);
+  const events = [];
+  let dropped = 0;
+  let waiter = null;
+  folder.sinces = [];
+  folder.reads = [];
+  folder.failures = new Map();
+  folder.projectTree = async function projectTree() {
+    folder.treeReads += 1;
+    return {
+      cursor: events.length,
+      files: [...folder.files].map(([path, value]) => ({ path, size: bytesOf(value).length, sha256: digest(value), mtime: 0 })),
+      skipped: [],
+    };
+  };
+  const readFile = folder.projectFile;
+  folder.projectFile = async function projectFile(given, path) {
+    folder.reads.push(path);
+    const left = folder.failures.get(path) || 0;
+    if (left > 0) {
+      folder.failures.set(path, left - 1);
+      throw Object.assign(new Error("busy"), { name: "Refused", status: 404 });
+    }
+    return readFile(given, path);
+  };
+  folder.projectChanges = function projectChanges(_id, since, { signal } = {}) {
+    folder.sinces.push(since);
+    const answer = () => {
+      if (since < dropped) return { cursor: events.length, reset: true, changes: [] };
+      const later = events.filter((event) => event.id > since).map((event) => event.change);
+      return later.length ? { cursor: events.length, changes: later } : null;
+    };
+    const now = answer();
+    if (now) return Promise.resolve(now);
+    return new Promise((resolve, reject) => {
+      waiter = () => { const next = answer(); if (next) { waiter = null; resolve(next); } };
+      signal?.addEventListener("abort", () => reject(Object.assign(new Error("Canceled"), { name: "Canceled" })), { once: true });
+    });
+  };
+  folder.emit = (...changes) => {
+    for (const change of changes) events.push({ id: events.length + 1, change });
+    waiter?.();
+  };
+  // The desktop app drops its queue: every cursor handed out before is stale.
+  folder.lose = () => {
+    events.push({ id: events.length + 1, change: null });
+    dropped = events.length;
+    waiter?.();
+  };
+  return folder;
+}
+
+// A wait the test lets go of itself, one retry at a time.
+function gatedWait() {
+  const gates = [];
+  const wait = () => new Promise((resolve) => gates.push(resolve));
+  wait.gates = gates;
+  wait.release = () => gates.shift()?.();
+  return wait;
+}
+
 const RULES = { text_extensions: [".tex", ".md", ".bib"], asset_extensions: [".png"], derived_extensions: [".log"] };
 const MAIN = "\\documentclass{article}\n\\begin{document}\nHello world.\n\\input{chapters/one}\n\\end{document}\n";
 const PNG = new Uint8Array([137, 80, 78, 71, 1, 2, 3]);
 
 async function open(initial, extra = {}) {
-  const folder = fakeFolder(initial);
+  const folder = extra.folder ?? fakeFolder(initial);
   const conflicts = [];
   const resends = [];
   const problems = [];
@@ -364,6 +430,115 @@ const textOf = (session, path) => session.textOf(session.idOf(path)).toString();
   assert.equal(textOf(session, "fresh.md"), "fresh\n");
   assert.equal(session.tree().digests["fig.png"], digest(new Uint8Array([4, 5])));
   assert.equal(conflicts.length, 0);
+  project.close();
+}
+
+// A file that cannot be read keeps the cursor where it was. The batch comes
+// again on the next poll, and what was applied before the failure is not applied
+// a second time.
+{
+  const wait = gatedWait();
+  const folder = numberedFolder({ "a.md": "a\n", "b.md": "b\n", "c.md": "c\n" });
+  const { session, conflicts, problems, project } = await open({}, { folder, wait });
+  folder.reads.length = 0;
+  const edit = (path) => {
+    session.textOf(session.idOf(path)).insert(0, "mine ");
+    session.doc.commit();
+  };
+  edit("a.md");
+  folder.files.delete("a.md");
+  folder.files.set("b.md", "b from disk\n");
+  folder.files.set("c.md", "c from disk\n");
+  folder.failures.set("b.md", 1);
+  folder.emit(
+    { path: "a.md", kind: "removed" },
+    { path: "b.md", kind: "changed" },
+    { path: "c.md", kind: "changed" },
+  );
+  await tick();
+  assert.deepEqual(folder.sinces, [0], "the first poll resumes from the tree's cursor");
+  assert.equal(textOf(session, "b.md"), "b\n", "the failed read changed nothing");
+  assert.equal(textOf(session, "c.md"), "c\n", "the batch stops at the file it could not read");
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /Could not read b\.md/);
+  assert.equal(conflicts.length, 1, "the removal was applied and the person was asked");
+  assert.equal(conflicts[0].deleted, true);
+  assert.equal(wait.gates.length, 1, "the loop waits before asking again");
+
+  // The person answers while the batch is outstanding. Applying the removal a
+  // second time would now drop the file they chose to keep.
+  conflicts[0].keepMine();
+  wait.release();
+  await tick();
+  assert.equal(folder.sinces[1], 0, "the cursor did not move, so the batch came again");
+  assert.deepEqual(folder.reads, ["b.md", "b.md", "c.md"], "only the unread files were read again");
+  assert.equal(textOf(session, "b.md"), "b from disk\n", "the retried read was applied");
+  assert.equal(textOf(session, "c.md"), "c from disk\n");
+  assert.equal(conflicts.length, 1, "the removal was applied once, not twice");
+  assert.equal(textOf(session, "a.md"), "mine a\n", "the kept file is still there");
+  assert.equal(problems.length, 1, "the same failure is said once");
+  assert.deepEqual(folder.sinces, [0, 0, 3], "once the batch is applied in full the cursor is the batch's");
+  folder.files.set("d.md", "d\n");
+  folder.emit({ path: "d.md", kind: "added" });
+  await tick();
+  assert.equal(textOf(session, "d.md"), "d\n");
+  assert.equal(folder.treeReads, 1, "a retry that works never rereads the tree");
+  project.close();
+}
+
+// Failures that go on end in a reread of the whole tree, which finds the
+// content the poller will not report again.
+{
+  const wait = gatedWait();
+  const folder = numberedFolder({ "a.md": "a\n", "b.md": "b\n" });
+  const { session, problems, project } = await open({}, { folder, wait });
+  folder.files.set("a.md", "a from disk\n");
+  folder.files.set("b.md", "b from disk\n");
+  folder.failures.set("a.md", 3);
+  folder.emit({ path: "a.md", kind: "changed" }, { path: "b.md", kind: "changed" });
+  await tick();
+  assert.equal(folder.treeReads, 1);
+  wait.release();
+  await tick();
+  assert.equal(folder.treeReads, 1, "two failures in a row are still retried");
+  wait.release();
+  await tick();
+  assert.equal(folder.treeReads, 2, "the third failure rereads the tree");
+  assert.equal(textOf(session, "a.md"), "a from disk\n");
+  assert.equal(textOf(session, "b.md"), "b from disk\n");
+  assert.deepEqual(folder.sinces, [0, 0, 0, 2], "the loop goes on from the tree's cursor");
+  folder.files.set("z.md", "z\n");
+  folder.emit({ path: "z.md", kind: "added" });
+  await tick();
+  assert.equal(folder.sinces.at(-1), 3);
+  assert.equal(textOf(session, "z.md"), "z\n");
+  assert.equal(problems.length, 1, "and said so once");
+  assert.equal(wait.gates.length, 0);
+  project.close();
+}
+
+// A reset whose reread cannot read a file leaves the cursor and tries again.
+{
+  const wait = gatedWait();
+  const folder = numberedFolder({ "a.md": "a\n", "b.md": "b\n" });
+  const { session, problems, project } = await open({}, { folder, wait });
+  folder.files.set("a.md", "a from disk\n");
+  folder.files.delete("b.md");
+  folder.failures.set("a.md", 1);
+  folder.lose();
+  await tick();
+  assert.deepEqual(folder.sinces, [0]);
+  assert.equal(folder.treeReads, 2, "the reset read the tree");
+  assert.equal(textOf(session, "a.md"), "a\n", "the failed read changed no text");
+  assert.equal(problems.length, 1);
+  assert.equal(wait.gates.length, 1);
+  wait.release();
+  await tick();
+  assert.deepEqual(folder.sinces, [0, 0, 1], "the cursor stayed, the reset came again, and the second tree read moved it");
+  assert.equal(folder.treeReads, 3);
+  assert.equal(textOf(session, "a.md"), "a from disk\n");
+  assert.deepEqual(session.list().map((file) => file.path), ["a.md"]);
+  assert.equal(problems.length, 1, "the same failure is said once");
   project.close();
 }
 
