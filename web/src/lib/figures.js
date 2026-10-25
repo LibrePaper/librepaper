@@ -68,7 +68,7 @@ export function toBase64(bytes) {
 /// What MIME type to use for these bytes. The store answers every figure as
 /// octet-stream -- it knows a digest and not a filename -- so the type is
 /// worked out here, from the name the document gave it.
-function typeOf(path) {
+export function typeOf(path) {
   const lower = path.toLowerCase();
   if (lower.endsWith(".png")) return "image/png";
   if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";

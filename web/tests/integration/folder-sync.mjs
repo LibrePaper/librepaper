@@ -55,4 +55,24 @@ assert.deepEqual(calls.at(-1).files, ["a.tex", "b.tex", "fig/dot.png"]);
 answers = [response(403, { error: "not granted" })];
 assert.equal(await client.syncFolder({ tree: tree("four"), bindingId: "folder-1" }), null);
 assert.equal(client.bindingId(), client.HOSTED_BINDING);
+// A folder the client was told about sends a manifest and no file parts.
+{
+  const { createHash } = await import("node:crypto");
+  const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
+  const crlf = (text) => new TextEncoder().encode(text.replace(/\n/g, "\r\n"));
+  const encode = (path, text) => (path === "w.tex" ? crlf(text) : new TextEncoder().encode(text));
+  const open = { main: "w.tex", texts: { "w.tex": "one\ntwo\n", "b.tex": "b\n" }, assets: {} };
+  client.acknowledge("folder-2", { "w.tex": sha(crlf("one\ntwo\n")), "b.tex": sha(new TextEncoder().encode("b\n")) });
+  const before = calls.length;
+  await client.syncFolder({ tree: open, bindingId: "folder-2", encode });
+  assert.deepEqual(calls[before].files, [], "an untouched folder is sent no bytes");
+  assert.equal(calls[before].manifest.find((file) => file.path === "w.tex").sha256, sha(crlf("one\ntwo\n")), "the digest is of the CRLF bytes");
+
+  // An edit elsewhere leaves the CRLF file alone; an edit to it is sent with CRLF.
+  await client.syncFolder({ tree: { ...open, texts: { ...open.texts, "b.tex": "b2\n" } }, bindingId: "folder-2", encode });
+  assert.deepEqual(calls.at(-1).files, ["b.tex"]);
+  await client.syncFolder({ tree: { ...open, texts: { "w.tex": "one\nthree\n", "b.tex": "b2\n" } }, bindingId: "folder-2", encode });
+  assert.deepEqual(calls.at(-1).files, ["w.tex"]);
+  assert.equal(calls.at(-1).manifest.find((file) => file.path === "w.tex").sha256, sha(crlf("one\nthree\n")));
+}
 console.log("folder-sync integration ok");
