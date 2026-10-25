@@ -233,12 +233,13 @@ export function createLocalSync({ id, approve, signedIn = () => true, open = rea
     if (!(await saved())) return;
     const settling = Boolean(choices.mine?.length || choices.theirs?.length);
     const result = await api.syncPull(id, choices);
-    if (result?.repository) {
+    if (result.repository === true) {
       set({ pull: repositoryPull(result), conflicts: [], refusal: null, pushed: null });
       await refresh();
       return;
     }
-    const earlier = settling && !current.pull?.repository ? current.pull : null;
+    const previous = current.pull;
+    const earlier = settling && previous && previous.repository !== true ? previous : null;
     set({
       pull: {
         written: (earlier?.written ?? 0) + result.written.length,

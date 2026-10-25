@@ -1585,9 +1585,6 @@
   // A web project's Git panel: the last push and the tokens for the Action.
   const webGit = LOCAL ? null : createWebGit();
   $effect(() => () => webGit?.dispose());
-  // The comparison of a changed file fills the editor area while the Git panel
-  // is open, and gives it back when the panel is left.
-  const gitDiffing = $derived(Boolean(gitDiff?.state.active) && panel === "git");
   function openGitDiff(change) {
     void gitDiff.show(change.path, change.kind);
     void startEditing().then(() => showMobileView("source"));
@@ -2259,6 +2256,9 @@
   // not kept.
   let layout = $state("split");
   let panel = $state("files");
+  // The comparison of a changed file fills the editor area while the Git panel
+  // is open, and gives it back when the panel is left.
+  const gitDiffing = $derived(Boolean(gitDiff?.state.active) && panel === "git");
   let mobileView = $state("document");
   let preferredPane = $state("document");
   let collaborationTab = $state("comments");
