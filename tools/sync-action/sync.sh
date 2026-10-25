@@ -11,10 +11,16 @@ set -euo pipefail
 
 # Scratch space for the CLI and its output. On every exit, the LibrePaper
 # state under refs/librepaper/* goes to origin so the next runner has it.
+# The state records which web versions a pull merged into the branch, so it
+# goes out only when that branch went out too. A failed branch push clears
+# PUBLISH_STATE. Otherwise the next runner would start from the older branch,
+# never merge those versions again, and a later push could send the older
+# files over the web's changes.
+PUBLISH_STATE=1
 WORK=$(mktemp -d)
 LOG="$WORK/cli.log"
 finish() {
-  if [[ -n "$(git for-each-ref refs/librepaper/)" ]]; then
+  if [[ "$PUBLISH_STATE" -eq 1 && -n "$(git for-each-ref refs/librepaper/)" ]]; then
     git push --quiet origin '+refs/librepaper/*:refs/librepaper/*' ||
       echo "::warning::could not push refs/librepaper/* to origin"
   fi
@@ -110,7 +116,11 @@ schedule | workflow_dispatch)
     exit "$status"
   fi
   if [[ "$(git rev-parse HEAD)" != "$before" ]]; then
-    git push origin HEAD:"$BRANCH"
+    if ! git push origin HEAD:"$BRANCH"; then
+      PUBLISH_STATE=0
+      echo "::error::could not push $BRANCH; the LibrePaper state was not published and the next run fetches again" >&2
+      exit 1
+    fi
   fi
   exit 0
   ;;
