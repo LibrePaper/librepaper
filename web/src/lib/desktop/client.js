@@ -228,7 +228,7 @@ async function throwOnFailure(response) {
 /// failure or a 502 is `Unreachable`, any other non-2xx is `Refused` with the
 /// service's own message when it gave one.
 /** @param {string} method @param {string} path @param {{ jsonBody?: unknown, formBody?: FormData, signal?: AbortSignal }} [options] */
-async function send(method, path, { jsonBody, formBody, signal } = {}) {
+export async function send(method, path, { jsonBody, formBody, signal } = {}) {
   const shell = requireDesktop();
   const headers = { Accept: "application/json" };
   let body;
