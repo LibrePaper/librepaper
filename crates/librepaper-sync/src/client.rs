@@ -420,8 +420,14 @@ mod tests {
             "main.tex": {"kind": "text"},
             ".git/config.txt": {"kind": "text"},
             "notes.docx": {"kind": "text"},
+            "C:/outside/paper.tex": {"kind": "text"},
         });
-        let texts = json!({"main.tex": "a\n", ".git/config.txt": "b\n", "notes.docx": "c\n"});
+        let texts = json!({
+            "main.tex": "a\n",
+            ".git/config.txt": "b\n",
+            "notes.docx": "c\n",
+            "C:/outside/paper.tex": "d\n",
+        });
         let mut snapshot = Snapshot::parse(Some(&files), Some(&texts)).unwrap();
         snapshot.retain_synced(&Rules::default());
         assert_eq!(snapshot.files.keys().collect::<Vec<_>>(), ["main.tex"]);

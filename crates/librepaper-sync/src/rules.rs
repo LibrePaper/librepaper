@@ -47,8 +47,10 @@ impl Rules {
         }
     }
 
-    /// Why the server would refuse this path whatever its extension, or
-    /// `None` when its shape is fine.
+    /// Why this path is not one to sync whatever its extension, or `None`
+    /// when its shape is fine. The server's rules apply, and a colon is also
+    /// refused, because a disk may read `C:/outside/paper.tex` as a place
+    /// outside the folder the path is written under.
     pub fn refusal(&self, path: &str) -> Option<String> {
         if path.is_empty() {
             return Some("a file needs a name".into());
@@ -62,11 +64,17 @@ impl Rules {
                 self.max_path
             ));
         }
-        if path.starts_with('/') {
+        let rooted = std::path::Path::new(path);
+        if path.starts_with('/') || rooted.has_root() || rooted.is_absolute() {
             return Some(format!("{path}: a path is relative"));
         }
         if path.contains('\\') {
             return Some(format!("{path}: paths are separated by /"));
+        }
+        if path.contains(':') {
+            return Some(format!(
+                "{path}: a name cannot carry a colon, which Windows reads as a drive"
+            ));
         }
         if path.chars().any(|c| (c as u32) < 0x20 || c == '\u{7f}') {
             return Some(format!("{path:?}: a path cannot carry control characters"));
@@ -141,6 +149,25 @@ mod tests {
             assert!(rules.check(bad).is_err(), "{bad:?} should be refused");
         }
         assert_eq!(rules.check("a/b/c/d/e/f/g/h.tex"), Ok(Kind::Text));
+    }
+
+    #[test]
+    fn a_drive_or_a_colon_is_never_synced() {
+        // The server accepts these, but a Windows disk reads the first as
+        // another drive, so no platform counts them as synced.
+        let rules = Rules::default();
+        for bad in [
+            "C:/outside/paper.tex",
+            "c:paper.tex",
+            "chapters/C:/paper.tex",
+            "chapters/a:b.tex",
+            "fig/plot.png:stream",
+        ] {
+            let why = rules.check(bad).unwrap_err();
+            assert!(why.contains(bad), "{why}");
+            assert!(rules.refusal(bad).is_some(), "{bad:?} should be refused");
+        }
+        assert_eq!(rules.check("chapters/a-b.tex"), Ok(Kind::Text));
     }
 
     #[test]

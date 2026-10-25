@@ -10,7 +10,7 @@ use std::path::Path;
 
 use crate::chain::{Chain, Meta, MAIN_REF};
 use crate::client::{Client, Label, Snapshot};
-use crate::files::{line_ending, sha256_hex, with_ending, FileRecord, Kind};
+use crate::files::{inside, line_ending, sha256_hex, with_ending, FileRecord, Kind};
 use crate::git::Git;
 use crate::rules::Rules;
 use crate::state::{Fetched, State, StateStore};
@@ -85,6 +85,9 @@ pub enum PullOutcome {
         kept: Vec<String>,
         /// Files changed on both sides and not settled by `mine` or `theirs`.
         conflicts: Vec<String>,
+        /// Files the web holds that the folder also has but the scan leaves
+        /// out (ignored, hidden, not UTF-8): neither written nor trashed.
+        skipped: Vec<String>,
         trimmed: bool,
     },
 }
@@ -327,6 +330,7 @@ async fn fetch(
     }
     for label in &found.versions {
         let mut snapshot = client.version(&slug, &label.sha).await?;
+        // A path the rules refuse never enters the chain, whatever the web holds.
         snapshot.retain_synced(rules);
         let assets = asset_bytes(client, &slug, &local, &snapshot, &chain).await?;
         let name = label.name();
@@ -472,16 +476,21 @@ pub(crate) struct Reconciliation {
     /// Paths changed only here, or on both sides and settled as mine.
     pub kept: Vec<String>,
     pub conflicts: Vec<String>,
+    /// Paths the web changed that the folder holds but the scan leaves out.
+    /// Their records stay as they were.
+    pub skipped: Vec<String>,
     /// The recorded files once `apply` is done.
     pub records: BTreeMap<String, FileRecord>,
 }
 
 /// Compares the recorded files, the folder and the web version, path by path.
-/// `local` is the hash of each file in the folder.
+/// `local` is the hash of each file in the folder, and `excluded` the paths
+/// that are in the folder although `local` does not list them.
 pub(crate) fn reconcile(
     recorded: &BTreeMap<String, FileRecord>,
     local: &BTreeMap<String, String>,
     web: &BTreeMap<String, FileRecord>,
+    excluded: &BTreeSet<String>,
     mine: &[String],
     theirs: &[String],
 ) -> Reconciliation {
@@ -498,6 +507,12 @@ pub(crate) fn reconcile(
         let base = recorded.get(path).map(|record| record.sha.as_str());
         let here = local.get(path).map(String::as_str);
         let there = web.get(path).map(|record| record.sha.as_str());
+        if excluded.contains(path) && there.is_some() && there != base {
+            // Absent from `local` is not absent from the folder. Writing over
+            // a file nobody compared would lose it, so it stays as it is.
+            outcome.skipped.push(path.clone());
+            continue;
+        }
         let adopt = |records: &mut BTreeMap<String, FileRecord>| match web.get(path) {
             Some(record) => {
                 records.insert(path.clone(), record.clone());
@@ -548,8 +563,11 @@ async fn pull_folder(
         ),
         None => (client.head(&slug).await?, None),
     };
+    // The rules apply to what comes in as to what goes out: a path they refuse
+    // is dropped here, so it is never written.
     web.retain_synced(rules);
     let here = scan(dir, rules, None)?;
+    let excluded = here.left_out(dir, web.files.keys());
     let hashes: BTreeMap<String, String> = here
         .files
         .iter()
@@ -559,6 +577,7 @@ async fn pull_folder(
         &state.files,
         &hashes,
         &web.files,
+        &excluded,
         &options.mine,
         &options.theirs,
     );
@@ -572,6 +591,8 @@ async fn pull_folder(
                 written.push(path.clone());
             }
             None => {
+                // `file.file` came from the walk of `dir`, which follows no
+                // link, so it is inside the folder.
                 if let Some(file) = here.files.get(path) {
                     move_to_trash(&file.file)?;
                     trashed.push(path.clone());
@@ -583,9 +604,9 @@ async fn pull_folder(
     state.files = plan.records;
     let paths: Vec<String> = state.files.keys().cloned().collect();
     state.synced.extend(paths);
-    // With a file unsettled the same version is met again, so the next call
-    // can settle it.
-    if plan.conflicts.is_empty() {
+    // With a file unsettled or left alone the same version is met again, so
+    // the next call can settle it once it is back in the scan.
+    if plan.conflicts.is_empty() && plan.skipped.is_empty() {
         state.pulled = sequence;
     }
     store.save(&state)?;
@@ -594,6 +615,7 @@ async fn pull_folder(
         trashed,
         kept: plan.kept,
         conflicts: plan.conflicts,
+        skipped: plan.skipped,
         trimmed: found.trimmed,
     })
 }
@@ -628,7 +650,9 @@ async fn write_remote(
 /// Replaces a file in one step, so an editor watching the folder never sees
 /// half of it.
 fn write_file(dir: &Path, relative: &str, bytes: &[u8]) -> Result<(), Error> {
-    let target = dir.join(relative);
+    // Before anything is created: a path that is not plain names below `dir`
+    // could land anywhere, as `C:/x` does on Windows.
+    let target = inside(dir, relative)?;
     let parent = target.parent().unwrap_or(dir);
     std::fs::create_dir_all(parent).map_err(|error| Error::io(parent, error))?;
     // A link anywhere on the way in could lead out of the directory.
@@ -758,6 +782,10 @@ mod tests {
             .collect()
     }
 
+    fn none() -> BTreeSet<String> {
+        BTreeSet::new()
+    }
+
     fn hashes(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
         entries
             .iter()
@@ -785,7 +813,7 @@ mod tests {
             ("same.tex", "1"),
             ("new.tex", "1"),
         ]);
-        let plan = reconcile(&recorded, &local, &web, &[], &[]);
+        let plan = reconcile(&recorded, &local, &web, &none(), &[], &[]);
         assert_eq!(plan.apply, ["gone.tex", "new.tex", "web.tex"]);
         assert_eq!(plan.kept, ["here.tex"]);
         assert!(plan.conflicts.is_empty());
@@ -804,7 +832,7 @@ mod tests {
         let local = hashes(&[("a.tex", "2"), ("b.tex", "2"), ("c.tex", "2")]);
         let web = files(&[("a.tex", "3"), ("b.tex", "3"), ("c.tex", "3")]);
 
-        let open = reconcile(&recorded, &local, &web, &[], &[]);
+        let open = reconcile(&recorded, &local, &web, &none(), &[], &[]);
         assert_eq!(open.conflicts, ["a.tex", "b.tex", "c.tex"]);
         assert!(open.apply.is_empty());
         assert_eq!(open.records, recorded, "nothing is confirmed");
@@ -813,6 +841,7 @@ mod tests {
             &recorded,
             &local,
             &web,
+            &none(),
             &["b.tex".to_string()],
             &["a.tex".to_string()],
         );
@@ -833,14 +862,14 @@ mod tests {
         // Deleted on the web only, here only, and here with an edit on the web.
         let local = hashes(&[("web.tex", "1"), ("both.tex", "2")]);
         let web = files(&[("here.tex", "1")]);
-        let plan = reconcile(&recorded, &local, &web, &[], &[]);
+        let plan = reconcile(&recorded, &local, &web, &none(), &[], &[]);
         assert_eq!(plan.apply, ["web.tex"]);
         assert_eq!(plan.kept, ["here.tex"]);
         assert_eq!(plan.conflicts, ["both.tex"]);
         assert!(!plan.records.contains_key("web.tex"));
 
         // Mine keeps the edited file and drops the record, so a push creates it.
-        let plan = reconcile(&recorded, &local, &web, &["both.tex".to_string()], &[]);
+        let plan = reconcile(&recorded, &local, &web, &none(), &["both.tex".to_string()], &[]);
         assert!(plan.conflicts.is_empty());
         assert!(!plan.records.contains_key("both.tex"));
         assert!(plan.kept.contains(&"both.tex".to_string()));
@@ -850,10 +879,115 @@ mod tests {
     fn a_first_pull_into_a_folder_with_the_same_files_confirms_them() {
         let local = hashes(&[("a.tex", "1"), ("b.tex", "2")]);
         let web = files(&[("a.tex", "1"), ("b.tex", "3"), ("c.tex", "1")]);
-        let plan = reconcile(&BTreeMap::new(), &local, &web, &[], &[]);
+        let plan = reconcile(&BTreeMap::new(), &local, &web, &none(), &[], &[]);
         assert_eq!(plan.conflicts, ["b.tex"]);
         assert_eq!(plan.apply, ["c.tex"]);
         assert_eq!(plan.records["a.tex"].sha, "1");
+    }
+
+    #[test]
+    fn an_excluded_path_keeps_its_record_and_is_never_written() {
+        let recorded = files(&[("changed.tex", "1"), ("same.tex", "1"), ("gone.tex", "1")]);
+        let web = files(&[("changed.tex", "2"), ("same.tex", "1"), ("fresh.tex", "1")]);
+        let excluded: BTreeSet<String> =
+            BTreeSet::from(["changed.tex", "same.tex", "gone.tex", "fresh.tex"].map(String::from));
+        let plan = reconcile(&recorded, &hashes(&[]), &web, &excluded, &[], &[]);
+        assert_eq!(plan.skipped, ["changed.tex", "fresh.tex"]);
+        assert!(plan.apply.is_empty());
+        assert!(plan.conflicts.is_empty());
+        assert_eq!(
+            plan.kept,
+            ["same.tex"],
+            "the web did not change it, so nothing is at stake"
+        );
+        assert_eq!(plan.records["changed.tex"].sha, "1", "left as it was");
+        assert!(!plan.records.contains_key("fresh.tex"), "not adopted");
+        assert!(!plan.records.contains_key("gone.tex"), "the web dropped it");
+    }
+
+    #[test]
+    fn a_folder_file_the_scan_skips_is_not_written_over_by_the_web() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join(".gitignore"), "build/\n").unwrap();
+        std::fs::create_dir_all(root.join("build")).unwrap();
+        std::fs::write(root.join("build/out.tex"), "mine\n").unwrap();
+        std::fs::write(root.join("latin.tex"), [b'c', b'a', b'f', 0xe9]).unwrap();
+        std::fs::write(root.join("main.tex"), "same\n").unwrap();
+
+        let same = sha256_hex(b"same\n");
+        let web = files(&[
+            ("build/out.tex", "1"),
+            ("latin.tex", "1"),
+            ("main.tex", same.as_str()),
+            ("new.tex", "1"),
+        ]);
+        let here = scan(root, &Rules::default(), None).unwrap();
+        let excluded = here.left_out(root, web.keys());
+        assert_eq!(
+            excluded.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["build/out.tex", "latin.tex"]
+        );
+        let local: BTreeMap<String, String> = here
+            .files
+            .iter()
+            .map(|(path, file)| (path.clone(), file.sha.clone()))
+            .collect();
+
+        let plan = reconcile(&BTreeMap::new(), &local, &web, &excluded, &[], &[]);
+        assert_eq!(plan.apply, ["new.tex"]);
+        assert_eq!(plan.skipped, ["build/out.tex", "latin.tex"]);
+        assert!(plan.conflicts.is_empty());
+        assert!(!plan.records.contains_key("build/out.tex"));
+        assert!(!plan.records.contains_key("latin.tex"));
+        assert_eq!(plan.records["main.tex"].sha, same);
+
+        // Taking the web version for the path does not write it either.
+        let theirs = ["build/out.tex".to_string()];
+        let plan = reconcile(&BTreeMap::new(), &local, &web, &excluded, &[], &theirs);
+        assert_eq!(plan.apply, ["new.tex"]);
+        assert_eq!(plan.skipped, ["build/out.tex", "latin.tex"]);
+    }
+
+    #[test]
+    fn a_path_that_is_not_plain_names_is_refused_before_anything_is_made() {
+        let outer = tempfile::tempdir().unwrap();
+        let dir = outer.path().join("folder");
+        std::fs::create_dir(&dir).unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let absolute = elsewhere.path().join("abs.tex");
+        for bad in [
+            "../escape.tex",
+            "chapters/../../escape.tex",
+            "./one.tex",
+            absolute.to_str().unwrap(),
+        ] {
+            let error = write_file(&dir, bad, b"x").unwrap_err().to_string();
+            assert!(error.ends_with("leaves the folder"), "{bad}: {error}");
+        }
+        assert!(!outer.path().join("escape.tex").exists());
+        assert!(!absolute.exists());
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "nothing was created"
+        );
+
+        write_file(&dir, "chapters/part/one.tex", b"x").unwrap();
+        assert_eq!(
+            std::fs::read(dir.join("chapters/part/one.tex")).unwrap(),
+            b"x"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_drive_letter_path_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        for bad in ["C:/outside/paper.tex", "C:paper.tex"] {
+            let error = write_file(dir.path(), bad, b"x").unwrap_err().to_string();
+            assert!(error.ends_with("leaves the folder"), "{bad}: {error}");
+        }
     }
 
     #[test]

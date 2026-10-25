@@ -239,18 +239,28 @@ fn show_pull(outcome: &PullOutcome) -> bool {
             trashed,
             kept,
             conflicts,
+            skipped,
             trimmed,
         } => {
             if *trimmed {
                 println!("The web history was trimmed; started again from its newest version.");
             }
-            if written.is_empty() && trashed.is_empty() && kept.is_empty() && conflicts.is_empty() {
+            if written.is_empty()
+                && trashed.is_empty()
+                && kept.is_empty()
+                && conflicts.is_empty()
+                && skipped.is_empty()
+            {
                 println!("Up to date.");
                 return true;
             }
             list("Wrote:", written);
             list("Moved to the trash:", trashed);
             list("Kept, changed only here:", kept);
+            list(
+                "Excluded here (ignored, hidden or not text), so left alone though the web has them:",
+                skipped,
+            );
             if conflicts.is_empty() {
                 return true;
             }
@@ -382,6 +392,7 @@ mod tests {
             trashed: Vec::new(),
             kept: Vec::new(),
             conflicts: Vec::new(),
+            skipped: Vec::new(),
             trimmed: false,
         }));
         assert!(!show_pull(&PullOutcome::Folder {
@@ -389,6 +400,16 @@ mod tests {
             trashed: Vec::new(),
             kept: Vec::new(),
             conflicts: vec!["a.tex".into()],
+            skipped: Vec::new(),
+            trimmed: false,
+        }));
+        // Files left alone are told, and are not something to settle.
+        assert!(show_pull(&PullOutcome::Folder {
+            written: Vec::new(),
+            trashed: Vec::new(),
+            kept: Vec::new(),
+            conflicts: Vec::new(),
+            skipped: vec!["build/out.tex".into()],
             trimmed: false,
         }));
     }

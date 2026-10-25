@@ -1,7 +1,10 @@
 use std::borrow::Cow;
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use crate::Error;
 
 /// Whether a path names a file people edit or bytes nobody edits in place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +33,21 @@ pub(crate) fn lf(text: &str) -> Cow<'_, str> {
         return Cow::Borrowed(text);
     }
     Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
+}
+
+/// Where `relative` is below `dir`. Every part of it must be a plain name: a
+/// root, a drive or `..` would lead out of the folder, and joining an absolute
+/// path replaces the folder altogether.
+pub(crate) fn inside(dir: &Path, relative: &str) -> Result<PathBuf, Error> {
+    let path = Path::new(relative);
+    let plain = path
+        .components()
+        .all(|part| matches!(part, Component::Normal(_)));
+    let target = dir.join(path);
+    if relative.is_empty() || !plain || !target.starts_with(dir) {
+        return Err(Error::Invalid(format!("{relative} leaves the folder")));
+    }
+    Ok(target)
 }
 
 /// The line ending a file already uses, LF when it has no line ending.
@@ -65,6 +83,37 @@ mod tests {
         assert_eq!(line_ending(b"no ending"), "\n");
         assert_eq!(with_ending("a\nb\n", "\r\n"), "a\r\nb\r\n");
         assert_eq!(with_ending("a\nb\n", "\n"), "a\nb\n");
+    }
+
+    #[test]
+    fn a_path_is_inside_only_when_every_part_is_a_plain_name() {
+        let dir = Path::new("folder");
+        assert_eq!(
+            inside(dir, "chapters/one.tex").unwrap(),
+            dir.join("chapters").join("one.tex")
+        );
+        let outside = std::env::temp_dir().join("x.tex");
+        for bad in [
+            "",
+            "..",
+            "../x.tex",
+            "chapters/../../x.tex",
+            "./x.tex",
+            "/x.tex",
+            outside.to_str().unwrap(),
+        ] {
+            let error = inside(dir, bad).unwrap_err().to_string();
+            assert!(error.ends_with("leaves the folder"), "{bad:?}: {error}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_drive_or_a_share_is_not_inside() {
+        let dir = Path::new("folder");
+        for bad in ["C:/x.tex", "C:x.tex", "\\\\server\\share\\x.tex"] {
+            assert!(inside(dir, bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
