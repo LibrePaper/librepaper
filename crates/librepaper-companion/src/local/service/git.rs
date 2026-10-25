@@ -1137,17 +1137,28 @@ struct SyncBody {
     message: Option<String>,
 }
 
-/// Records the outcome of one step and says whether the next one may run.
-fn record(steps: &mut Vec<Value>, step: &str, outcome: Result<String, Failure>) -> bool {
+/// Records the outcome of one step and says whether the next one may run. A
+/// successful step carries the fields its closure answers with. A failed one
+/// carries its reason and detail, and the paths, conflicts and status that the
+/// refusal names when it has them.
+fn record(steps: &mut Vec<Value>, step: &str, outcome: Result<Value, Failure>) -> bool {
     match outcome {
-        Ok(detail) => {
-            steps.push(json!({"step": step, "ok": true, "detail": detail}));
+        Ok(fields) => {
+            let mut entry = json!({"step": step, "ok": true});
+            if let Some(fields) = fields.as_object() {
+                for (key, value) in fields {
+                    entry[key] = value.clone();
+                }
+            }
+            steps.push(entry);
             true
         }
         Err((_, body)) => {
             let mut entry = json!({"step": step, "ok": false});
-            if let Some(reason) = body.get("reason") {
-                entry["reason"] = reason.clone();
+            for key in ["reason", "paths", "conflicts", "status"] {
+                if let Some(value) = body.get(key) {
+                    entry[key] = value.clone();
+                }
             }
             let detail = body
                 .get("detail")
@@ -1162,7 +1173,9 @@ fn record(steps: &mut Vec<Value>, step: &str, outcome: Result<String, Failure>) 
 }
 
 /// Commits when the tree is dirty, pulls, then pushes, and stops at the first
-/// step that fails. A tree with nothing to commit has no commit step.
+/// step that fails. A tree with nothing to commit has no commit step. A step
+/// that succeeds answers the commit's full id, or the status of the pull or
+/// the push.
 async fn run_sync(
     root: &Path,
     render_outputs: &BTreeSet<String>,
@@ -1177,10 +1190,7 @@ async fn run_sync(
             .map(str::trim)
             .filter(|message| !message.is_empty())
             .unwrap_or(SYNC_MESSAGE);
-        let committed = run_commit(root, message, None).await.map(|body| {
-            let id = body["commit"].as_str().unwrap_or_default();
-            id.chars().take(7).collect::<String>()
-        });
+        let committed = run_commit(root, message, None).await;
         if !record(&mut steps, "commit", committed) {
             return Ok(json!({"steps": steps}));
         }
@@ -1193,15 +1203,20 @@ async fn run_sync(
             } else {
                 format!("{count} files")
             };
-            Err(refuse_because(
+            Err((
                 409,
-                "conflicts",
-                &format!(
-                    "The merge has conflicts in {files}. Resolve them in the editor, then commit."
-                ),
+                json!({
+                    "reason": "conflicts",
+                    "status": "conflicts",
+                    "conflicts": body["conflicts"],
+                    "error": format!(
+                        "The merge has conflicts in {files}. \
+                         Resolve them in the editor, then commit."
+                    ),
+                }),
             ))
         } else {
-            Ok(body["status"].as_str().unwrap_or_default().to_string())
+            Ok(json!({"status": body["status"]}))
         }
     });
     if !record(&mut steps, "pull", pulled) {
@@ -1209,7 +1224,7 @@ async fn run_sync(
     }
     let pushed = run_push(root)
         .await
-        .map(|body| body["status"].as_str().unwrap_or_default().to_string());
+        .map(|body| json!({"status": body["status"]}));
     record(&mut steps, "push", pushed);
     Ok(json!({"steps": steps}))
 }
@@ -2079,8 +2094,8 @@ mod tests {
         assert_eq!(
             body,
             json!({"steps": [
-                {"step": "pull", "ok": true, "detail": "up-to-date"},
-                {"step": "push", "ok": true, "detail": "up-to-date"},
+                {"step": "pull", "ok": true, "status": "up-to-date"},
+                {"step": "push", "ok": true, "status": "up-to-date"},
             ]})
         );
 
@@ -2102,8 +2117,14 @@ mod tests {
             names,
             vec![("commit", true), ("pull", true), ("push", true)]
         );
-        assert_eq!(steps[1]["detail"], "up-to-date");
-        assert_eq!(steps[2]["detail"], "pushed");
+        let commit = steps[0]["commit"].as_str().unwrap();
+        assert_eq!(commit.len(), 40, "{commit}");
+        assert!(commit.chars().all(|c| c.is_ascii_hexdigit()), "{commit}");
+        assert_eq!(commit, plain_git(fixture.root(), &["rev-parse", "HEAD"]));
+        assert_eq!(steps[1]["status"], "up-to-date");
+        assert_eq!(steps[2]["status"], "pushed");
+        assert!(steps[1].get("detail").is_none());
+        assert!(steps[2].get("detail").is_none());
         assert_eq!(
             plain_git(&bare, &["log", "-1", "--format=%s", "main"]),
             "Mine"
@@ -2158,6 +2179,8 @@ mod tests {
             .collect();
         assert_eq!(names, vec![("commit", true), ("pull", false)]);
         assert_eq!(steps[1]["reason"], "conflicts");
+        assert_eq!(steps[1]["status"], "conflicts");
+        assert_eq!(steps[1]["conflicts"], json!(["a.txt"]));
         assert!(steps[1]["detail"].as_str().unwrap().contains("1 file"));
         assert_eq!(fixture.status().await["merging"], true);
 
