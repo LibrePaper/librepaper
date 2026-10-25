@@ -1448,11 +1448,46 @@
     },
   };
 
+  // The last page each live preview published, per file, for this visit. It
+  // stands in for the file when the preview returns to it, while the live
+  // preview restarts. The newest page is last, and nothing is persisted.
+  const LIVE_PAGES_KEPT = 8;
+  const livePages = new Map();
+  // The file each live preview is serving, and whether it has published a
+  // page for it yet.
+  const liveServing = { quarto: "", calepin: "" };
+  let liveTargets = { quarto: "", calepin: "" };
+  let liveShown = $state({ quarto: false, calepin: false });
+
+  function liveCopy(payload) {
+    return payload.kind === "pdf" ? { ...payload, bytes: payload.bytes.slice() } : { ...payload };
+  }
+
+  function publishLive(engine, payload) {
+    const path = liveServing[engine];
+    // The copy is taken first because publishing transfers the PDF buffer.
+    if (path && (payload?.kind === "html" || (payload?.kind === "pdf" && payload.bytes))) {
+      livePages.delete(path);
+      livePages.set(path, liveCopy(payload));
+      while (livePages.size > LIVE_PAGES_KEPT) livePages.delete(livePages.keys().next().value);
+    }
+    if (!liveShown[engine]) liveShown[engine] = true;
+    return framePreview.publish(payload);
+  }
+
+  // Shows the last page a live preview made for this file, if it will own the
+  // pane for it, until the live preview publishes its own.
+  function publishLiveStandIn(path) {
+    const live = (sourceFormat === "quarto" && quartoLiveActive) || (sourceFormat === "typst" && calepinActive);
+    const page = live && livePages.get(path);
+    if (page) framePreview.publish(liveCopy(page));
+  }
+
   const quartoPreviewController = createLocalPreview({
     local: previewClient,
     engine: "quarto",
     label: "Quarto",
-    publish: (payload) => framePreview.publish(payload),
+    publish: (payload) => publishLive("quarto", payload),
     treeNow: localPreviewTreeNow,
     entrypointOf: (tree) => tree.main,
     optionsOf: (tree) => {
@@ -1475,7 +1510,7 @@
     local: previewClient,
     engine: "calepin",
     label: "Calepin",
-    publish: (payload) => framePreview.publish(payload),
+    publish: (payload) => publishLive("calepin", payload),
     treeNow: localPreviewTreeNow,
     entrypointOf: (tree) => tree.main,
     optionsOf: () => ({ format: "pdf" }),
@@ -1521,8 +1556,16 @@
         calepinTarget ? Promise.resolve() : calepinPreviewController.reconcile(false),
       ]);
       if (readerDisposed || stale()) return;
-      if (quartoTarget) await quartoPreviewController.reconcile(quartoTarget);
-      if (calepinTarget) await calepinPreviewController.reconcile(calepinTarget);
+      if (quartoTarget) {
+        liveServing.quarto = previewPath;
+        if (liveTargets.quarto !== quartoTarget) { liveTargets.quarto = quartoTarget; liveShown.quarto = false; }
+        await quartoPreviewController.reconcile(quartoTarget);
+      }
+      if (calepinTarget) {
+        liveServing.calepin = previewPath;
+        if (liveTargets.calepin !== calepinTarget) { liveTargets.calepin = calepinTarget; liveShown.calepin = false; }
+        await calepinPreviewController.reconcile(calepinTarget);
+      }
     });
   });
 
@@ -3191,6 +3234,7 @@
       // loads, since every hydration step restarts that timer.
       clearTimeout(previewTimer);
       previewTimer = null;
+      publishLiveStandIn(path);
       void tick().then(() => {
         if (!readerDisposed && previewPath === path) void paintPreview();
       });
@@ -3212,6 +3256,7 @@
     // two files of the same kind keeps it, so switching files in the list does
     // not pay for a frame load before the cached page can be shown.
     if (docsOrigin) navigateFrame();
+    publishLiveStandIn(path);
     void tick().then(() => {
       if (!readerDisposed && mine === navigationGeneration) void paintPreview();
     });
@@ -3298,7 +3343,7 @@
     pageDelivered: pdfOutput && everPaintedShown,
     latexPhase: sourceFormat === "latex" && !latexHtmlPreview ? latexPhase : "",
     latexScope: sourceFormat === "latex" && !latexHtmlPreview ? String(latexState.progress?.scope || "") : "",
-    quartoStarting: quartoPreviewStarting,
+    liveStarting: previewPath && quartoLiveActive && !liveShown.quarto ? "quarto" : previewPath && calepinActive && !liveShown.calepin ? "calepin" : "",
     engineLoading: engineLoading && engineLoading === sourceFormat ? engineLoading : "",
     compiling,
   }));
