@@ -1,10 +1,9 @@
 <script>
-  // The Sync panel of a folder project: sign in, link the folder to a web
-  // project or publish it as one, then pull what changed on the web and push
-  // what changed here. The state and the actions belong to the controller
-  // (lib/reader/local-sync.svelte.js); this draws them.
-  import PanelHeader from "../PanelHeader.svelte";
-  import Icon from "../Icon.svelte";
+  // The LibrePaper section of a folder project's Git panel: sign in, link the
+  // folder to a web project or publish it as one, then pull what changed on
+  // the web and push what changed here. The state and the actions belong to
+  // the controller (lib/reader/local-sync.svelte.js); this draws them.
+  import Icon from "../../Icon.svelte";
 
   let { sync, open = false, defaultTitle = "" } = $props();
 
@@ -40,6 +39,11 @@
   const webText = $derived(unread ? "The web project could not be reached" : status?.changes?.web ? "The web project changed" : "Up to date");
   const projectHref = $derived(status?.site && status?.slug ? `${String(status.site).replace(/\/+$/, "")}/docs/${status.slug}` : "");
 
+  // What a pull in a git repository did: the web versions it took in as
+  // commits, then how git merged them.
+  const MERGED = { "fast-forward": "Fast-forwarded", merged: "Merged", already: "Already merged", skipped: "Not merged" };
+  const versionsText = (count) => (count === 0 ? "No new versions on the web." : `${plural(count, "version")} fetched as commits.`);
+
   // One sentence for what a pull did.
   function pulledText(pull, conflicts) {
     const parts = [];
@@ -59,7 +63,23 @@
 
 {#snippet results()}
   <div class="sync-results" role="status" aria-live="polite">
-    {#if view.pull}
+    {#if view.pull?.repository}
+      <p class="sync-line">{versionsText(view.pull.versions)}</p>
+      {#if view.pull.merge === "conflicts"}
+        <div class="sync-box" role="alert">
+          <p>Merge conflicts in {view.pull.paths.join(", ")}. Resolve them in the editor, then Commit in the Repository section.</p>
+        </div>
+      {:else if view.pull.merge === "dirty"}
+        <div class="sync-box" role="alert">
+          <p>Commit your changes first: {view.pull.paths.join(", ")}</p>
+        </div>
+      {:else}
+        <p class="sync-line">{MERGED[view.pull.merge]}.</p>
+      {/if}
+      {#if view.pull.trimmed}
+        <p class="sync-line panel-meta">The history of the web project was trimmed, so this took its current version as the new base.</p>
+      {/if}
+    {:else if view.pull}
       {@const said = pulledText(view.pull, view.conflicts)}
       {#if said}<p class="sync-line">{said}</p>{/if}
       {#if view.pull.trimmed}
@@ -120,8 +140,8 @@
   </div>
 {/snippet}
 
-<section class="panel sync-panel" aria-label="Sync">
-  <PanelHeader title="Sync" />
+<section class="git-block sync-panel" aria-labelledby="git-librepaper-title">
+  <h3 id="git-librepaper-title" class="panel-section-title">LibrePaper</h3>
   {#if !view.loaded}
     <p class="panel-muted" role="status">Loading…</p>
   {:else if !status}
@@ -129,14 +149,6 @@
     <div class="sync-row">
       <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => sync.refresh()}>Try again</button>
     </div>
-  {:else if status.git}
-    <!-- Pull, push and publish would write into a repository, so the desktop
-         app refuses them and the panel does not offer them. -->
-    <p class="sync-lead">This folder is a git repository. Sync it with git in a terminal, or with librepaper pull and push.</p>
-    {#if status.linked}
-      {@render projectLine()}
-      {@render unlinkFoot()}
-    {/if}
   {:else if status.other_site}
     <!-- Before the sign-in question: unlinking needs no token, and signing in
          to this site would not change whose link it is. -->
@@ -188,6 +200,9 @@
       <li><Icon name={unread ? "triangle-alert" : here ? "pencil" : "check"} size={14} /><span>{hereText}</span></li>
       <li><Icon name={unread ? "triangle-alert" : status.changes?.web ? "download" : "check"} size={14} /><span>{webText}</span></li>
     </ul>
+    {#if status.git}
+      <p class="sync-line panel-meta sync-git">This folder is a git repository, so a pull takes each web version in as a commit and git merges it.</p>
+    {/if}
     <div class="sync-row">
       <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => sync.pull()}>
         {view.busy === "pull" ? "Pulling…" : "Pull"}
@@ -227,6 +242,7 @@
   .sync-facts { display: grid; grid-template-columns: minmax(0, 1fr); gap: calc(var(--spacing) * 1); margin: calc(var(--spacing) * 3) 0 0; padding: 0; list-style: none; }
   .sync-facts li { display: flex; align-items: center; gap: calc(var(--spacing) * 2); }
   .sync-facts :global(svg) { flex: none; color: var(--color-text-muted); }
+  .sync-git { margin: calc(var(--spacing) * 3) 0 0; }
   .sync-results { margin-top: calc(var(--spacing) * 4); }
   .sync-results:empty { display: none; }
   .sync-line { margin: 0 0 calc(var(--spacing) * 2); overflow-wrap: anywhere; }

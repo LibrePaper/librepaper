@@ -14,6 +14,9 @@
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
   import { createFolderSync } from "../lib/reader/folder-sync.js";
   import { createLocalSync } from "../lib/reader/local-sync.svelte.js";
+  import { createLocalGit } from "../lib/reader/local-git.svelte.js";
+  import { createGitDiff } from "../lib/reader/git-diff.svelte.js";
+  import { createWebGit } from "../lib/reader/web-git.svelte.js";
   import { diagnosticContext } from "../lib/assistant-review.js";
   import { sourcePassage } from "../lib/assistant.js";
   import { candidateTree, capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
@@ -116,7 +119,8 @@
   import Collaboration from "./reader/Collaboration.svelte";
   import Changes from "./reader/Changes.svelte";
   import Share from "./reader/Share.svelte";
-  import Sync from "./reader/Sync.svelte";
+  import Git from "./reader/Git.svelte";
+  import GitDiffWorkspace from "./reader/GitDiffWorkspace.svelte";
   import Diagnostics from "./reader/Diagnostics.svelte";
   import History from "./reader/History.svelte";
   import PendingAnnotations from "./reader/PendingAnnotations.svelte";
@@ -1556,13 +1560,13 @@
     }
     location.href = href;
   }
-  // The Sync panel of a local project. Signing in approves the desktop app's
-  // code in this page's own session, as the backups sign-in does. A folder
-  // project can open without a session on the server and never reads `me`, so
-  // the account is asked at the moment of signing in; with no session the panel
-  // sends the person to the server's approval page instead. A pull or a push
-  // first settles the folder, so the disk holds what the editor holds when the
-  // command reads it.
+  // The LibrePaper section of a local project's Git panel. Signing in approves
+  // the desktop app's code in this page's own session, as the backups sign-in
+  // does. A folder project can open without a session on the server and never
+  // reads `me`, so the account is asked at the moment of signing in; with no
+  // session the panel sends the person to the server's approval page instead. A
+  // pull or a push first settles the folder, so the disk holds what the editor
+  // holds when the command reads it.
   const localSync = LOCAL ? createLocalSync({
     id: LOCAL_ID,
     approve: (userCode) => post("/api/auth/device/approve", { user_code: userCode }),
@@ -1570,6 +1574,24 @@
     flush: () => folderSync.flush(),
   }) : null;
   $effect(() => () => localSync?.dispose());
+  // The same panel's Repository section: the folder's own git repository, run
+  // by the desktop app. It settles the folder before it commits, pulls,
+  // switches or syncs, for the same reason. The differ reads one changed file
+  // for the editor area to show.
+  const localGit = LOCAL ? createLocalGit({ id: LOCAL_ID, flush: () => folderSync.flush() }) : null;
+  $effect(() => () => localGit?.dispose());
+  const gitDiff = LOCAL ? createGitDiff({ id: LOCAL_ID }) : null;
+  $effect(() => () => gitDiff?.dispose());
+  // A web project's Git panel: the last push and the tokens for the Action.
+  const webGit = LOCAL ? null : createWebGit();
+  $effect(() => () => webGit?.dispose());
+  // The comparison of a changed file fills the editor area while the Git panel
+  // is open, and gives it back when the panel is left.
+  const gitDiffing = $derived(Boolean(gitDiff?.state.active) && panel === "git");
+  function openGitDiff(change) {
+    void gitDiff.show(change.path, change.kind);
+    void startEditing().then(() => showMobileView("source"));
+  }
   // The editor becomes ready. A local project opens with one sync that sends nothing, because the
   // client was told what the folder holds. It makes every file the page holds managed, and it is
   // the opening save, so the desktop app stops tracking a file the page does not hold.
@@ -2382,6 +2404,7 @@
   // throughout.
   function showPanel(name) {
     if (panel === "history" && name !== "history") historySource.close();
+    if (panel === "git" && name !== "git") gitDiff?.close();
     // Reopening starts at the current source.
     const enteringHistory = name === "history" && panel !== "history";
     panel = name;
@@ -2579,7 +2602,7 @@
     if (value === "download-source") return downloadSource();
     if (value === "download-comments") return downloadComments();
     if (value === "download-pdf" || value === "download-html" || value === "download-docx") return downloadAs(value.slice(9));
-    if (value === "share" || value === "history" || value === "sync") return openPanel(value);
+    if (value === "share" || value === "history" || value === "git") return openPanel(value);
     if (value === "keep-folder") return keepFolder();
     if (value === "save-template") return openSaveTemplateModal();
     if (!["new-file", "new-folder", "upload"].includes(value)) return;
@@ -2593,7 +2616,7 @@
   // for an empty folder, links it to this project, pulls the files into it and
   // answers with the folder project, which opens the way Open folder does.
   // Without a sign-in the app has made the folder and only the pull is
-  // refused; that answer is still a folder project, and its Sync panel offers
+  // refused; that answer is still a folder project, and its Git panel offers
   // Sign in, so it opens the same way.
   async function keepFolder() {
     try {
@@ -3962,7 +3985,7 @@
   {#if me?.id && !LOCAL}<Menu.Item value="save-template" class="menuitem">Save as template…</Menu.Item>{/if}
   {#if hasDesktop && !LOCAL && mayEdit}<Menu.Item value="keep-folder" class="menuitem">Work in a folder…</Menu.Item>{/if}
   <hr class="hr my-1" />
-  {#if tabs.some((tab) => tab.id === "sync")}<Menu.Item value="sync" class="menuitem">Sync…</Menu.Item>{/if}
+  {#if tabs.some((tab) => tab.id === "git")}<Menu.Item value="git" class="menuitem">Git…</Menu.Item>{/if}
   {#if canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem">Share…</Menu.Item>{/if}
   <!-- Only where the panel behind it is one this reader is offered: a menu
        that opens a column the rail does not have is the second list of who
@@ -4205,8 +4228,10 @@
       onclose={() => showPanel("")} />
   {/snippet}
 
-  {#snippet syncPanel()}
-    <Sync sync={localSync} open={panel === "sync" && shown.comments} defaultTitle={doc.title || ""} />
+  {#snippet gitPanel()}
+    <Git local={LOCAL} open={panel === "git" && shown.comments}
+      web={webGit} slug={SLUG} owner={doc.role === "owner"} linkKey={KEY}
+      sync={localSync} git={localGit} differ={gitDiff} defaultTitle={doc.title || ""} ondiff={openGitDiff} />
   {/snippet}
 
   {#snippet diagnosticsPanel()}
@@ -4251,7 +4276,7 @@
     label="Document"
     panels={{ files: filesPanel, outline: outlinePanel, agent: agentPanel,
               collaboration: collaborationPanel, changes: changesPanel,
-              share: sharePanel, sync: syncPanel, diagnostics: diagnosticsPanel, history: historyPanel }}
+              share: sharePanel, git: gitPanel, diagnostics: diagnosticsPanel, history: historyPanel }}
     panes={panes} sidebarPane={PANES.sidebar}
     onselectpanel={selectPanel} ondrop={dropped}
     onsize={(size) => setSize(PANES.sidebar, size)} onguide={(where) => (guide = where)}
@@ -4279,14 +4304,16 @@
     {/snippet}
   </Sidebar>
 
-  {#if editing || panel === "history"}
+  {#if editing || panel === "history" || gitDiffing}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <section id="reader-source" class="editorpane" class:away={!shown.source}
              ondragover={(event) => event.preventDefault()} ondrop={dropped}>
       <!-- A figure has no editor. Choosing one shows it: an image as itself,
            a PDF through the browser's own viewer, which shows the first page
            without this application carrying a PDF renderer of its own. -->
-      {#if panel === "history"}
+      {#if gitDiffing}
+        <GitDiffWorkspace differ={gitDiff} />
+      {:else if panel === "history"}
         <HistoryWorkspace source={historySource} heading={historyHeading} canEdit={mayEdit} onrestore={restoreLabel}
           ondownload={downloadArchive}
           downloading={downloadingSha === historySource.selected ? downloadingSha : ""}

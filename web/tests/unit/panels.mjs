@@ -32,25 +32,34 @@ assert.deepEqual(
 // pane: those stand beside a source pane, which a link holder does not have.
 for (const role of ["reader", "commenter"]) {
   const list = offered({ role, mayEdit: false, editing: false, canSeeSharing: false, canPublish: false });
-  for (const forbidden of ["outline", "agent", "history", "diagnostics", "share"]) {
+  for (const forbidden of ["outline", "agent", "history", "diagnostics", "share", "git"]) {
     assert.ok(!list.includes(forbidden), `${role} is not offered ${forbidden}`);
   }
 }
 
-// The Sync panel is for a folder on this computer, and only in the desktop app.
+// Every project that can be edited has a Git panel. A web project's is the
+// GitHub Action's setup, so a browser is offered it with or without the
+// desktop app; a folder's runs git on the folder, so it needs the desktop app.
 assert.ok(
-  !offered({ role: "editor", mayEdit: true, editing: true, canSeeSharing: false, canPublish: true, desktop: true }).includes("sync"),
-  "a web project has no Sync panel",
+  offered({ role: "editor", mayEdit: true, editing: true, canSeeSharing: false, canPublish: true }).includes("git"),
+  "a web project's editor is offered the Git panel in a browser",
 );
 assert.ok(
-  !offered({ role: "owner", mayEdit: true, editing: true, canSeeSharing: true, canPublish: true, local: true }).includes("sync"),
-  "no desktop app, no Sync panel",
+  offered({ role: "editor", mayEdit: true, editing: true, canSeeSharing: false, canPublish: true, desktop: true }).includes("git"),
+  "and in the desktop app",
+);
+assert.ok(
+  !offered({ role: "owner", mayEdit: true, editing: true, canSeeSharing: true, canPublish: true, local: true }).includes("git"),
+  "a folder with no desktop app has no Git panel",
+);
+assert.ok(
+  !offered({ role: "editor", mayEdit: false, editing: false, canSeeSharing: false, canPublish: false }).includes("git"),
+  "somebody who cannot edit is not offered it, whatever their role",
 );
 
 // An editor keeps everything the conditions allow; the role rules take nothing
-// away from somebody who can work here. Sync belongs to folders, so a web
-// project is offered every panel but that one.
-const webPanels = TABS.map((tab) => tab.id).filter((id) => id !== "sync");
+// away from somebody who can work here.
+const webPanels = TABS.map((tab) => tab.id);
 assert.deepEqual(
   offered({ role: "editor", mayEdit: true, editing: true, canSeeSharing: false, canPublish: true, desktop: true }),
   webPanels,
@@ -72,13 +81,13 @@ assert.ok(
 
 // A folder on this computer has no server behind it: collaboration, the agent,
 // history and sharing are not offered, whatever else the reader may do. It is
-// offered Sync, which is how it meets a web project.
+// offered Git, which is how it meets a web project and runs git on its folder.
 {
   const list = offered({ role: "owner", mayEdit: true, editing: true, canSeeSharing: true, canPublish: true, desktop: true, local: true });
   for (const hidden of ["collaboration", "agent", "history", "share"]) {
     assert.ok(!list.includes(hidden), `a local project is not offered ${hidden}`);
   }
-  assert.deepEqual(list, ["files", "outline", "changes", "sync", "diagnostics"], "a local project keeps the files, outline, changes, sync and diagnostics");
+  assert.deepEqual(list, ["files", "outline", "changes", "git", "diagnostics"], "a local project keeps the files, outline, changes, git and diagnostics");
 }
 
 // Before the document has answered there is no role, and the rail stays empty
