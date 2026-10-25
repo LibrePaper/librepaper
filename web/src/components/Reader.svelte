@@ -101,6 +101,8 @@
   import { createRenderStatus } from "../lib/reader/render-status.svelte.js";
   import { provide } from "../lib/support/providers.js";
   import { createSteadyBusy } from "../lib/reader/steady-busy.js";
+  import { waitStageOf } from "../lib/reader/wait-stage.js";
+  import PreviewWaiting from "./reader/PreviewWaiting.svelte";
   import { createLocalPreview } from "../lib/reader/local-preview.svelte.js";
   import { previewNotes } from "../lib/reader/preview-notes.js";
   import { HIGHLIGHT_COLORS, colorName } from "../lib/annotation-colors.js";
@@ -283,6 +285,7 @@
     deliveredKind = "";
     everPainted = false;
     everPaintedShown = false;
+    pageDrawn = false;
     renderStatus.resetFailure();
     clearTimeout(previewTimer);
     previewTimer = null;
@@ -394,6 +397,7 @@
     deliveredKind = "";
     everPainted = false;
     everPaintedShown = false;
+    pageDrawn = false;
     renderStatus.resetFailure();
     clearTimeout(previewTimer);
     previewTimer = null;
@@ -543,6 +547,7 @@
         }
         break;
       case "viewer-state":
+        if (message.drawn) pageDrawn = true;
         viewerView = message.drawn
           ? {
               mode: String(message.mode || "auto"), scale: Number(message.scale) || null,
@@ -1794,6 +1799,10 @@
   // nowhere near one -- and a reader's "not yet rendered" is the one place
   // the question is asked from the template.
   let everPaintedShown = $state(false);
+  // Whether the page for the current target is on the screen. For a PDF that
+  // is the viewer saying it drew; a page that is only delivered is still
+  // blank in a viewer that is loading. Reset wherever `everPaintedShown` is.
+  let pageDrawn = $state(false);
 
   const errorCount = $derived(diagnostics.filter((d) => d.severity !== "warning" && d.severity !== "info").length);
   const warningCount = $derived(diagnostics.filter((d) => d.severity === "warning").length);
@@ -1999,8 +2008,11 @@
   // Readers use the same source renderer as editors. A missing compiler is
   // reported as a tool requirement instead of opening a retained result.
   const compilesHere = $derived(renderers.compilerAvailable(sourceFormat));
-  const unrendered = $derived(pdfOutput && !everPaintedShown && !renderState.failure);
-  const failedBeforeRender = $derived(renderState.failure && !everPaintedShown);
+  // A failure is reported once the render has settled as failed. One that a
+  // retry is already superseding is not.
+  const failedBeforeRender = $derived(renderState.failure && !everPaintedShown && !compiling);
+  // Nothing can be drawn here, so there is nothing to wait for.
+  const noCompiler = $derived(pdfOutput && !everPaintedShown && !renderState.failure && !compilesHere);
 
   // The LaTeX compile status: idle, running, or failed, with progress and
   // messages. Used by Diagnostics and the preview's progress line.
@@ -2124,6 +2136,7 @@
       // it loads. Until then the controls go away rather than describing the
       // document that just left.
       viewerView = null;
+      pageDrawn = false;
       viewerTool = "select";
       invertSent = false;
       densitySent = false;
@@ -2184,6 +2197,34 @@
   });
   $effect(() => () => steadyBusy.stop());
 
+  // The one waiting display. It stands in for the pane until the page for the
+  // current target is drawn, whatever the format. A stand-in page from the
+  // cache is drawn like any other, so a recompile under one never lands here.
+  const pageIsUp = $derived(pdfOutput ? pageDrawn : everPaintedShown);
+  const waiting = $derived(Boolean(
+    shown.document && previewPath && compilesHere && !pageIsUp
+      && !documentNeedsSignIn && !heldFile && !projectUnreadable && !projectEmpty && !previewCard
+      && !failedBeforeRender,
+  ));
+  const waitStage = $derived(waitStageOf({
+    pageDelivered: pdfOutput && everPaintedShown,
+    latexPhase: sourceFormat === "latex" && !latexHtmlPreview ? latexPhase : "",
+    latexScope: sourceFormat === "latex" && !latexHtmlPreview ? String(latexState.progress?.scope || "") : "",
+    quartoStarting: quartoPreviewStarting,
+    compiling,
+  }));
+  const waitProgress = $derived(sourceFormat === "latex" && !latexHtmlPreview && latexState.progress?.total ? latexState.progress : null);
+  // The block is held to reading speed as a whole: it does not appear for a
+  // quick render and does not blink off between stages once it is up.
+  let waitingShown = $state(false);
+  const steadyWaiting = createSteadyBusy({ onchange: (shown) => (waitingShown = shown) });
+  $effect(() => {
+    steadyWaiting.set(waiting);
+  });
+  $effect(() => () => steadyWaiting.stop());
+  // What keeps the frame out of sight: the block is up or about to be.
+  const waitingUp = $derived(waiting || waitingShown);
+
   let previousConnected = null;
   $effect(() => {
     previousConnected = connected;
@@ -2221,6 +2262,7 @@
       deliveredKind = "";
       everPainted = false;
       everPaintedShown = false;
+      pageDrawn = false;
       activeSynctex = null;
     },
     facts: () => ({
@@ -3100,6 +3142,7 @@
     deliveredKind = "";
     everPainted = false;
     everPaintedShown = false;
+    pageDrawn = false;
     activeSynctex = null;
     renderStatus.resetFailure();
     renderStatus.clearDocx();
@@ -3161,6 +3204,7 @@
     activeSynctex = null;
     everPainted = false;
     everPaintedShown = false;
+    pageDrawn = false;
     renderStatus.resetFailure();
     // The frame is reloaded only when the kind of page changes. Moving between
     // two files of the same kind keeps it, so switching files in the list does
@@ -4445,20 +4489,24 @@
         {/if}
       </div>
     </section>
-  {:else if shown.document && unrendered}
+  {:else if shown.document && noCompiler}
     <section class="latexpane">
       <div class="notyet">
-        <h2 class="h4">{#if previewBusy}<span class="spinner"></span>{/if}Not yet rendered</h2>
+        <h2 class="h4">Not rendered</h2>
         <p class="lp-text-secondary text-sm">
-          This {sourceFormat === "typst" ? "Typst" : "paged"} document is being rendered from source in this browser.
+          This browser cannot render this {sourceFormat === "typst" ? "Typst" : "paged"} document from source.
         </p>
-        {#if !compilesHere && session && previewPath}
+        {#if session && previewPath}
           <details open>
             <summary>View source · {previewPath}</summary>
             <pre>{String(session.textOf(session.idOf(previewPath))?.toString?.() ?? "")}</pre>
           </details>
         {/if}
       </div>
+    </section>
+  {:else if waitingUp && shown.document}
+    <section class="latexpane waitpane">
+      <PreviewWaiting stage={waitStage} progress={waitProgress} />
     </section>
   {/if}
 
@@ -4502,9 +4550,9 @@
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
            controls={previewControls}
            notice={previewChip ? previewNotice : undefined}
-           busy={previewBusy}
-           progress={sourceFormat === "latex" && !latexHtmlPreview && latexState.progress?.total ? latexState.progress : null}
-           away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || unrendered || failedBeforeRender || Boolean(projectUnreadable) || Boolean(previewCard)} />
+           busy={previewBusy && !waitingUp}
+           progress={!waitingUp ? waitProgress : null}
+           away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || noCompiler || waitingUp || failedBeforeRender || Boolean(projectUnreadable) || Boolean(previewCard)} />
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
        so the split can be seen moving without the iframe reflowing on every
