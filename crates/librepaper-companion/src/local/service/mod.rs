@@ -44,7 +44,6 @@ use crate::local::store;
 
 mod backups;
 mod control;
-mod git;
 
 pub(crate) fn control_token_for_instance(state_home: &Path, instance: &str) -> Option<String> {
     control::token_for_instance(state_home, instance)
@@ -320,8 +319,6 @@ pub(super) struct Inner {
     pub(super) state_home: PathBuf,
     folder_dialog: Mutex<()>,
     backups: Arc<backups::BackupManager>,
-    /// The private Git repositories behind desktop Git sync.
-    git: crate::local::git::GitManager,
     instance: String,
     port: u16,
     bindings: BindingStore,
@@ -386,7 +383,6 @@ impl LocalService {
             state_home: state_home.to_path_buf(),
             folder_dialog: Mutex::new(()),
             backups: Arc::new(backups::BackupManager::new(state_home)),
-            git: crate::local::git::GitManager::new(state_home),
             instance,
             port,
             bindings,
@@ -604,9 +600,6 @@ async fn dispatch(
         }
         ["backups", "authorize", "complete"] if *method == Method::POST => {
             backups::handle_authorize_complete(inner, headers, origin, request).await
-        }
-        ["git", op] if *method == Method::POST => {
-            git::handle(inner, headers, origin, op, request).await
         }
         // Connecting an agent. Reading what is installed is a GET; every
         // route that acts on a document credential is a POST.
@@ -1151,7 +1144,6 @@ pub(super) mod test_support {
             state_home: state_home.to_path_buf(),
             folder_dialog: Mutex::new(()),
             backups: Arc::new(backups::BackupManager::new(state_home)),
-            git: crate::local::git::GitManager::new(state_home),
             control: control::ControlAuth::create(state_home, &instance).unwrap(),
             instance,
             port: PORT,
