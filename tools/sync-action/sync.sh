@@ -41,9 +41,15 @@ fi
 tar -xJf "$WORK/$asset" -C "$WORK" "librepaper-x86_64-unknown-linux-musl/librepaper"
 export PATH="$WORK/librepaper-x86_64-unknown-linux-musl:$PATH"
 
-# Take the LibrePaper state from origin. The first run finds none, which is fine.
+# Take the LibrePaper state from origin.
 git fetch --quiet origin '+refs/librepaper/*:refs/librepaper/*' ||
   echo "::notice::no refs/librepaper/* fetched from origin"
+# Without the state every project file looks new, so the push would be refused.
+# A person seeds the state once from a clone, as the README's "Before the first run" describes.
+if ! git rev-parse -q --verify refs/librepaper/state >/dev/null; then
+  echo "::error::this repository has no LibrePaper state yet. Seed it once from a clone on your computer, then run the workflow again:%0A  librepaper pull https://app.librepaper.org/docs/<slug>%0A  git merge --allow-unrelated-histories librepaper/main  (only when the repository and the project share no history)%0A  git push origin main 'refs/librepaper/*'" >&2
+  exit 1
+fi
 # Merges the runner makes need an author.
 git config user.name "LibrePaper"
 git config user.email "noreply@librepaper.org"

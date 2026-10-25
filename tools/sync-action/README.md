@@ -30,6 +30,21 @@ Revoke the token in Share to stop the sync.
 
 In the repository settings, enable "Allow GitHub Actions to create and approve pull requests". Otherwise a refused push cannot open its pull request.
 
+## Before the first run
+
+Seed the LibrePaper state once, from a clone of the repository on your computer:
+
+```sh
+# Once, on your computer, in a clone of the repository
+librepaper pull https://app.librepaper.org/docs/<slug>   # links the clone and fetches the project as commits
+git merge --allow-unrelated-histories librepaper/main    # only when the repository and the project share no history
+git push origin main 'refs/librepaper/*'                 # the Action starts from this state
+```
+
+A repository that started as a web project (`librepaper pull` into an empty repository) or a project that started as a repository (`librepaper push --title`) already share history, so the merge line is not needed. A repository and a project that grew separately need it once.
+
+The Action refuses to run until `refs/librepaper/state` exists on GitHub, and after that it keeps that state current itself.
+
 ## Workflow
 
 Copy this into `.github/workflows/librepaper.yml`. Replace `<slug>` with the project's slug.
