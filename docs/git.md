@@ -125,7 +125,7 @@ Anyone with push rights on the repository can change the project this way. Each 
 2. **Alice backs up a web project.** She pulls the project into a new repository with her token, then pushes the repository to GitHub. From then on, the Action adds each new named version as a commit. She can also go the other way. `librepaper push --title` in a repository that holds her paper creates the project.
 3. **Alice works in VS Code, and Bob works in the browser.** Alice adds the workflow and a token. Her pushes reach Bob within a minute, as versions in his history under her name. Bob's named versions reach her on her next `git pull`, as commits by Bob. If they both changed a file, the Action's push is refused. A pull request from `librepaper/sync` opens, and Alice merges it in git. Bob sees none of this.
 4. **Charlie works on GitHub only.** He works in the same repository, with the same Action. He has nothing new to learn.
-5. **Dana works in a folder with no Git.** In the desktop app, she chooses Keep a folder on this computer from the File menu. She edits the folder offline with local TeX and presses Push. When a file also changed on the web, Pull asks her which copy to keep, file by file.
+5. **Dana works in a folder with no Git.** In the desktop app, she chooses Keep a folder from the File menu. She edits the folder offline with local TeX and presses Push. When a file also changed on the web, Pull asks her which copy to keep, file by file.
 
 ## What syncs
 
