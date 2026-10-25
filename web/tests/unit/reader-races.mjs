@@ -280,6 +280,7 @@ const preview = (values = {}) => {
     diagnostics: [],
     sent: [],
     synctex: [],
+    remembered: [],
     refreshed: 0,
     tree: values.tree || (() => ({ main: "main.md", texts: { "main.md": "x" }, digests: {} })),
   };
@@ -306,6 +307,8 @@ const preview = (values = {}) => {
     heading: values.heading || (async () => "Title"),
     takeManual: values.takeManual,
     manualPending: values.manualPending,
+    lastPage: values.lastPage,
+    rememberPreview: (path, page, identity) => harness.remembered.push({ path, page, identity }),
     onsynctex: (parsed) => harness.synctex.push(parsed),
     send: (message) => harness.sent.push(message),
     refreshFrame: () => harness.refreshed++,
@@ -451,7 +454,6 @@ console.log("reader-races: all checks passed");
     openTextPath: "paper.tex", lockedPath: "", aloneSet: new Set(), visitorFile: "",
     liveTreeNow: () => ({ texts: { "paper.tex": "\\documentclass{article}" }, digests: {} }),
     previewTarget, rendersAlone, openingFile, includersOf, readerProjectOwner: {},
-    restoreLastPreview: () => {},
     tick: async () => ({ then: () => {} }), paintPreview: () => {},
     navigationGeneration: 0, everPainted: false, everPaintedShown: false,
     docsOrigin: null, navigateFrame: () => {},
@@ -1110,7 +1112,6 @@ for (const latest of [
     viewing: null, editing: true, editor: { text: () => null },
     liveTreeNow: () => ({ texts, digests: {} }),
     previewTarget, rendersAlone, openingFile, includersOf, readerProjectOwner: {},
-    restoreLastPreview: () => {},
     renderers: { formatOf: p => p.endsWith('.tex') ? 'latex' : '', previewFormatOf: p => p.endsWith('.tex') ? 'latex' : '', warm: () => {} },
     configureLatex: f => configured.push(f),
     localQuarto: { configure: () => {}, bindingId: () => 'hosted', probe: async () => {} },
@@ -1335,3 +1336,56 @@ console.log('reader-races: a restore is confirmed against the project it will re
   assert.equal(compiles, 4, "A comes back without a compile");
 }
 console.log("reader-races: an unchanged file is painted from memory");
+
+// An empty frame is given the stored page for the file, unless the frame is
+// already painted or the compile paints first.
+{
+  const stored = { kind: "html", html: "<p>old</p>" };
+  const make = (extra, values = {}) => {
+    const stand = deferred();
+    const harness = preview({
+      facts: { format: "typst", ...extra },
+      tree: () => ({ main: "a.typ", texts: { "a.typ": "alpha" }, digests: {} }),
+      lastPage: () => stand.promise,
+      renderers: {
+        formatOf: () => "typst", previewFormatOf: () => "typst",
+        producesPdf: () => false,
+        render: values.render || (async () => ({ html: "<p>new</p>", ok: true, diagnostics: [] })),
+        failurePage: async () => "",
+      },
+    });
+    return { harness, stand };
+  };
+
+  // The stored page arrives while the compile is still running.
+  {
+    const compile = deferred();
+    const { harness, stand } = make({}, { render: () => compile.promise });
+    const pending = harness.paint();
+    await new Promise((r) => setTimeout(r, 0));
+    stand.resolve(stored);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.deepEqual(harness.published, [stored], "an empty frame gets the stored page");
+    compile.resolve({ html: "<p>new</p>", ok: true, diagnostics: [] });
+    await pending;
+    assert.equal(harness.published.length, 2, "and the compile replaces it");
+    assert.equal(harness.remembered.length, 1, "the finished render is kept once");
+    assert.equal(harness.remembered[0].path, "a.typ");
+  }
+  // A painted frame is left alone.
+  {
+    const { harness, stand } = make({ everPainted: true });
+    stand.resolve(stored);
+    await harness.paint();
+    assert.deepEqual(harness.published.map((p) => p.html), ["<p>new</p>"], "a painted frame gets no stand-in");
+  }
+  // The compile paints first, so the late stand-in is dropped.
+  {
+    const { harness, stand } = make({});
+    await harness.paint();
+    stand.resolve(stored);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.deepEqual(harness.published.map((p) => p.html), ["<p>new</p>"], "a late stand-in is dropped");
+  }
+}
+console.log("reader-races: an empty frame gets the stored page as a stand-in");

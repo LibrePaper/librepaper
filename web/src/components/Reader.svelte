@@ -2142,24 +2142,6 @@
   });
 
 
-  /// Puts the last page this browser drew for this file into the frame, if
-  /// nothing newer has reached it since the preview moved here.
-  async function restoreLastPreview(path) {
-    // The renderer holds a finished render of this file and paints it, or
-    // the stale page as a stand-in, within a tick. A second delivery of the
-    // same page makes the PDF viewer draw twice.
-    if (renderPreview.holds(path)) return;
-    const mine = navigationGeneration;
-    const remembered = await lastPreview(previewCacheKey(path));
-    // A compile can beat this; IndexedDB is fast but it is not free. The
-    // cached page is only ever a stand-in for an empty pane, and a preview
-    // that has moved on since is no place for it.
-    if (!remembered || readerDisposed || mine !== navigationGeneration || everPainted || !paintsTheFrame) return;
-    framePreview.publish(remembered.kind === "pdf"
-      ? { kind: "pdf", sha: remembered.identity, bytes: new Uint8Array(remembered.bytes).slice() }
-      : { kind: "html", html: remembered.html });
-  }
-
   const navigateFrame = (force = false) => framePreview.navigate(force);
   const replayPreview = () => paintsTheFrame && framePreview.replay();
   const frameLoaded = () => {
@@ -2227,12 +2209,10 @@
     snapshotDigest: renderers.snapshotDigest,
     diagnosticContext,
     parseSynctex,
-    // A render that is no longer for this file never reaches here: the
-    // coordinator drops it when the preview has moved, so the file shown now
-    // is the file the page was drawn for.
-    rememberPreview: (page, identity) => {
-      if (previewPath) rememberPreview(previewCacheKey(previewPath), page, identity);
-    },
+    // The page this file last drew stands in for an empty pane until the
+    // render replaces it.
+    lastPage: (path) => lastPreview(previewCacheKey(path)),
+    rememberPreview: (path, page, identity) => rememberPreview(previewCacheKey(path), page, identity),
     onRendered: (identity, projectDigest) => {
       renderedIdentity = identity;
       if (!mayEdit) renderedProjectDigest = projectDigest || "";
@@ -3170,10 +3150,7 @@
     configureLatex(format, session || readerProjectOwner);
     renderers.warm(format);
     if (mayEdit && ["quarto", "typst", "markdown"].includes(format)) readQuartoBinding();
-    if (!previous) {
-      void restoreLastPreview(path);
-      return;
-    }
+    if (!previous) return;
     // Invalidate both running compiles and replayed pages, even when the
     // two selected files use the same renderer or both produce PDFs.
     navigationGeneration += 1;
@@ -3189,8 +3166,6 @@
     // two files of the same kind keeps it, so switching files in the list does
     // not pay for a frame load before the cached page can be shown.
     if (docsOrigin) navigateFrame();
-    // The page this file last drew stands in until the render replaces it.
-    void restoreLastPreview(path);
     void tick().then(() => {
       if (!readerDisposed && mine === navigationGeneration) void paintPreview();
     });

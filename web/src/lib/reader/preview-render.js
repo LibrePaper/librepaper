@@ -36,7 +36,8 @@
  * snapshotDigest: (tree: PreviewTree) => Promise<string>,
  * diagnosticContext: (item: NonNullable<PreviewResult["diagnostics"]>[number] | {severity: string, message: string}, tree: PreviewTree, identity: string) => NonNullable<PreviewResult["diagnostics"]>[number],
  * parseSynctex?: (data: Uint8Array | string, files: string[]) => Promise<unknown>,
- * rememberPreview?: (page: { kind: "html", html: string } | { kind: "pdf", sha: string, bytes: Uint8Array }, identity: string) => void,
+ * rememberPreview?: (path: string, page: { kind: "html", html: string } | { kind: "pdf", sha: string, bytes: Uint8Array }, identity: string) => void,
+ * lastPage?: (path: string) => Promise<{ kind: string, identity?: string, bytes?: Uint8Array, html?: string } | null>,
  * onRendered?: (identity: string, projectDigest: string) => void, onEmpty?: () => void,
  * facts: () => PreviewFacts, tree: () => PreviewTree,
  * gather: (digests: Record<string, string>) => Promise<{ held: { assets: Record<string, Uint8Array>, urls: Record<string, string> }, missing: string[] }>,
@@ -55,9 +56,12 @@ export function createPreviewRenderer({
   snapshotDigest,
   diagnosticContext,
   parseSynctex,
-  /// Keeps the page that was just drawn, so the next visit to this document
-  /// has something to show while its engine loads and its source compiles.
-  rememberPreview = (_page, _identity) => {},
+  /// Writes the page that was just drawn for an entry path to the store that
+  /// outlives this visit.
+  rememberPreview = (_path, _page, _identity) => {},
+  /// The page that store holds for an entry path, or null. The next visit to
+  /// a document shows it while its engine loads and its source compiles.
+  lastPage = async (_path) => null,
   onRendered = (_identity) => {},
   onEmpty = () => {},
   /// Everything about the page that a render has to re-read after an await.
@@ -91,23 +95,38 @@ export function createPreviewRenderer({
 }) {
   /// The renders that finished during this visit, by entry path, newest last.
   /// A file whose source has not changed since comes back from here without a
-  /// compile. Nothing is persisted: the stand-in page in IndexedDB covers the
-  /// next visit, and this covers switching back and forth within one.
-  const keep = 8;
+  /// compile. The store behind `rememberPreview` covers the next visit; this
+  /// covers switching back and forth within one.
+  const most = 8;
   /** @type {Map<string, { key: string, page: any, diagnostics: any[], latex: any, log: string, synctex: unknown }>} */
   const finished = new Map();
-  /** @param {string} path @param {{ key: string, page: any, diagnostics: any[], latex: any, log: string, synctex: unknown }} entry */
-  const remember = (path, entry) => {
+  /// The one place a finished render is kept, in memory and in the store.
+  /** @param {string} path @param {{ key: string, page: any, diagnostics: any[], latex: any, log: string, synctex: unknown }} done @param {string} identity */
+  const keep = (path, done, identity) => {
     // Delete first so the map's order is recency, then drop the oldest.
     finished.delete(path);
-    finished.set(path, entry);
-    while (finished.size > keep) finished.delete(finished.keys().next().value);
+    finished.set(path, done);
+    while (finished.size > most) finished.delete(finished.keys().next().value);
+    rememberPreview(path, done.page, identity);
   };
   /// A page that can be handed to the frame again. Publishing transfers the
   /// buffer of a PDF, so every delivery gets its own copy.
   const fresh = (page) => (page.kind === "pdf"
     ? { ...page, bytes: new Uint8Array(page.bytes).slice() }
     : page);
+  /// The one way a finished render reaches the frame, whether it was just
+  /// compiled or kept from earlier.
+  const show = (done, { identity, capturedProjectDigest, capturedSource }) => {
+    status.succeeded();
+    if (done.page.kind === "pdf") {
+      onsynctex(done.synctex);
+      framePreview.publish(fresh(done.page));
+    } else framePreview.publish(done.page);
+    onRendered(identity, capturedProjectDigest);
+    if (capturedSource === facts().source) {
+      diagnostics.rendered({ page: done.page.kind === "pdf" ? false : Boolean(done.page.html), diagnostics: done.diagnostics });
+    }
+  };
 
   /// Render once. `ticket` is the coordinator's; every guard below is against
   /// it and against the navigation and source captured at the start.
@@ -191,27 +210,25 @@ export function createPreviewRenderer({
           coordinator.commit(ticket);
           if (held.latex) status.recordLatex(held.latex);
           else status.recordLog(held.log);
-          status.succeeded();
           status.clearDocx();
-          if (held.page.kind === "pdf") {
-            onsynctex(held.synctex);
-            framePreview.publish(fresh(held.page));
-            onRendered(early, capturedProjectDigest);
-            if (capturedSource === facts().source) {
-              diagnostics.rendered({ page: false, diagnostics: held.diagnostics });
-            }
-          } else {
-            framePreview.publish(held.page);
-            onRendered(early, capturedProjectDigest);
-            if (capturedSource === facts().source) {
-              diagnostics.rendered({ page: Boolean(held.page.html), diagnostics: held.diagnostics });
-            }
-          }
+          show(held, { identity: early, capturedProjectDigest, capturedSource });
           return;
         }
-        // The source changed since. The old page is still better than an empty
-        // pane while the new one compiles.
-        if (!facts().everPainted) framePreview.publish(fresh(held.page));
+      }
+      // An empty pane gets the last page this file drew rather than nothing
+      // while the new one compiles. The stored page is not awaited here, so a
+      // fast render is never delayed by it.
+      if (!facts().everPainted) {
+        if (held) framePreview.publish(fresh(held.page));
+        else {
+          void lastPage(source.main).then((record) => {
+            const at = facts();
+            if (!record || at.disposed || capturedNavigation !== at.navigation || at.everPainted || !at.paintsTheFrame) return;
+            framePreview.publish(record.kind === "pdf"
+              ? { kind: "pdf", sha: record.identity, bytes: new Uint8Array(record.bytes).slice() }
+              : { kind: "html", html: record.html });
+          }, () => {});
+        }
       }
       // A LaTeX compile takes seconds rather than milliseconds, so the pane
       // says one is running. The last page that compiled stays up under it:
@@ -303,37 +320,33 @@ export function createPreviewRenderer({
         });
       } else if (artifactKind !== "docx") status.clearDocx();
       // A render carries `html` or `pdf`, and the reader posts whichever it
-      // has. The bytes are transferred rather than copied: a PDF is megabytes
-      // and this page has no further use for it once the frame has it.
-      if (pdf) {
-        status.succeeded();
-        const buffer = pdf.buffer ? pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength) : pdf;
-        onsynctex(null);
-        const page = { kind: /** @type {const} */ ("pdf"), sha: identity, bytes: new Uint8Array(buffer.slice(0)) };
-        framePreview.publish(page);
-        rememberPreview(page, identity);
-        onRendered(identity, capturedProjectDigest);
-        if (capturedSource === facts().source) {
-          diagnostics.rendered({ page: false, diagnostics: contextual });
-        }
-        const key = keyOf(identity);
-        const entry = {
-          key,
-          page: { kind: /** @type {const} */ ("pdf"), sha: identity, bytes: new Uint8Array(buffer.slice(0)) },
+      // has. The page is what the document says now, so every error said
+      // about an earlier state of it is cleared at once, and the warnings that
+      // came with it are painted on the same slow schedule the errors are, so
+      // that a font name half typed does not flash a badge on every
+      // keystroke.
+      if (pdf || typeof html === "string") {
+        const buffer = pdf?.buffer ? pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength) : pdf;
+        const done = {
+          key: keyOf(identity),
+          page: pdf
+            ? { kind: /** @type {const} */ ("pdf"), sha: identity, bytes: new Uint8Array(buffer.slice(0)) }
+            : { kind: /** @type {const} */ ("html"), html },
           diagnostics: contextual,
           latex: format === "latex" && !htmlPreview ? rendered : null,
           log: rendered?.log || "",
           synctex: null,
         };
-        if (rendered.ok !== false) remember(source.main, entry);
+        show(done, { identity, capturedProjectDigest, capturedSource });
+        if (rendered.ok !== false) keep(source.main, done, identity);
         // SyncTeX is navigation metadata, not part of the rendered page.
         // Large maps can take long enough to decompress and index that
         // awaiting them here left a finished PDF behind the placeholder.
-        if (format === "latex" && synctex && parseSynctex) {
+        if (pdf && format === "latex" && synctex && parseSynctex) {
           void parseSynctex(synctex, Object.keys(source.texts || {})).then((parsed) => {
             // The same map serves the next visit, if this render is still the
             // one kept for the file.
-            if (finished.get(capturedMain) === entry) entry.synctex = parsed;
+            if (finished.get(capturedMain) === done) done.synctex = parsed;
             const at = facts();
             if (!at.disposed && coordinator.isCommitted(ticket)
                 && capturedNavigation === at.navigation && capturedSource === at.source) {
@@ -341,31 +354,6 @@ export function createPreviewRenderer({
             }
           }).catch(() => {
             // The PDF remains useful when optional source mapping is invalid.
-          });
-        }
-        return;
-      }
-      if (typeof html === "string") {
-        status.succeeded();
-        // The page is what the document says now, so every error said about an
-        // earlier state of it is cleared at once. The warnings that came with
-        // this page are painted on the same slow schedule the errors are, so
-        // that a font name half typed does not flash a badge on every
-        // keystroke.
-        framePreview.publish({ kind: "html", html });
-        rememberPreview({ kind: "html", html }, identity);
-        onRendered(identity, capturedProjectDigest);
-        if (capturedSource === facts().source) {
-          diagnostics.rendered({ page: Boolean(html), diagnostics: contextual });
-        }
-        if (rendered.ok !== false) {
-          remember(source.main, {
-            key: keyOf(identity),
-            page: { kind: "html", html },
-            diagnostics: contextual,
-            latex: format === "latex" && !htmlPreview ? rendered : null,
-            log: rendered?.log || "",
-            synctex: null,
           });
         }
         return;
@@ -427,8 +415,5 @@ export function createPreviewRenderer({
       if ((paged || htmlPreview) && coordinator.atLeastCommitted(ticket)) status.finish();
     }
   }
-  /// Whether a finished render of this entry path is held, so that it will be
-  /// painted from memory within a tick and needs no stand-in from elsewhere.
-  render.holds = (/** @type {string} */ path) => finished.has(path);
   return render;
 }
