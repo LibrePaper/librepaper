@@ -141,6 +141,10 @@ import { watchPinch } from "../lib/pinch.js";
       }
     }
     document.documentElement.classList.add("librepaper-preview");
+    // Light paper for themes that follow the system too. Calepin's Pico, like
+    // many themes, turns its text light on a dark system unless the root
+    // names a theme, and the page would then be light text on white.
+    if (!document.documentElement.hasAttribute("data-theme")) document.documentElement.dataset.theme = "light";
     document.documentElement.classList.toggle("librepaper-flow", presentation !== "document" && !parsed.body.querySelector(":scope > svg.typst-doc"));
     const wanted = [...parsed.head.querySelectorAll("style, link[rel~='stylesheet' i]")];
     const markup = wanted.map((node) => node.outerHTML).join("");
