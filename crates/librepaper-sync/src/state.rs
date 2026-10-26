@@ -347,14 +347,19 @@ mod tests {
         let Some((dir, _git)) = repository() else {
             return;
         };
+        // A plain folder holds no head.
+        let state = State {
+            head: None,
+            ..sample()
+        };
         FileStore::for_dir(home.path(), dir.path())
-            .save(&sample())
+            .save(&state)
             .unwrap();
         let store = store_for(dir.path(), home.path());
-        assert_eq!(store.load().unwrap(), Some(sample()));
+        assert_eq!(store.load().unwrap(), Some(state.clone()));
         assert_eq!(
             GitRefStore::open(dir.path()).unwrap().load().unwrap(),
-            Some(sample())
+            Some(state)
         );
         assert_eq!(
             FileStore::for_dir(home.path(), dir.path()).load().unwrap(),
