@@ -2,12 +2,15 @@
   // A web project's Git panel. The project cannot run git, so this panel runs
   // nothing on the project itself. What the server knows (the last push) belongs
   // to the controller (lib/reader/web-git.svelte.js). In the desktop app the
-  // panel also connects a git repository on this computer: the clone or the
-  // folder is made by the app, and the reader is taken to the folder project.
-  // The GitHub Action that keeps a repository in step is described in the docs.
+  // panel also connects the project to a git repository: the desktop app keeps
+  // a clone on this computer, and Pull and Push move changes between the clone
+  // and the project. That state belongs to lib/reader/web-connection.svelte.js;
+  // this draws it. The GitHub Action that keeps a repository in step is
+  // described in the docs.
   import { untrack } from "svelte";
   import { since } from "../../../lib/dates.js";
   import { remoteUrlProblem } from "../../../lib/git-url.js";
+  import GitSignInHelp from "./GitSignInHelp.svelte";
 
   let {
     web,
@@ -15,19 +18,31 @@
     linkKey = "",
     open = false,
     desktop = false,
-    // Each throws with the message the panel shows when the desktop app refuses.
-    onclone,
+    // The desktop app's connection to a repository. An editor in the desktop app has one.
+    connection = null,
+    // Keeps a folder on this computer. It throws with the message the panel shows.
     onfolder,
   } = $props();
 
   const DOCS = "/docs/git.html";
+  // The name a push gives its version when the person does not name it.
+  const VERSION = "Edits from LibrePaper";
   const view = $derived(web.state);
+  const link = $derived(connection?.state);
+  const status = $derived(link?.status ?? null);
+  const busy = $derived(Boolean(link?.busy));
+  const merging = $derived(Boolean(status?.merging));
 
-  // The address that is typed, the problem with it, and the action that is
-  // running ("clone" or "folder"), so both controls wait for it.
+  // The address that is typed, and the problem with it. A Use a folder action
+  // that is running holds its own button.
   let address = $state("");
-  let running = $state("");
   let failure = $state("");
+  let folderBusy = $state(false);
+  let folderFailure = $state("");
+  // What the person typed as the version name. Until they type, it shows its
+  // default, and a push that goes through puts the default back.
+  let typedVersion = $state(null);
+  const version = $derived(typedVersion ?? VERSION);
 
   $effect(() => {
     if (!open) return;
@@ -36,6 +51,18 @@
     untrack(() => { void web.refresh(project, options); });
     const timer = setInterval(() => {
       if (document.visibilityState !== "hidden") void web.refresh(project, options);
+    }, 30_000);
+    return () => clearInterval(timer);
+  });
+
+  // The connection is read when the panel opens and then again every half
+  // minute while it stays open and the window is showing, because the repository
+  // and the project change under it.
+  $effect(() => {
+    if (!open || !desktop || !connection) return;
+    untrack(() => { void connection.refresh(); });
+    const timer = setInterval(() => {
+      if (document.visibilityState !== "hidden") void connection.refresh();
     }, 30_000);
     return () => clearInterval(timer);
   });
@@ -51,36 +78,121 @@
 
   async function connect(event) {
     event.preventDefault();
-    if (running) return;
-    const problem = remoteUrlProblem(address);
-    if (problem) {
-      failure = problem;
-      return;
-    }
-    running = "clone";
-    failure = "";
-    try {
-      await onclone(address.trim());
-    } catch (error) {
-      failure = error?.message || "The desktop app could not clone that repository.";
-    } finally {
-      running = "";
-    }
+    if (busy) return;
+    failure = remoteUrlProblem(address);
+    if (failure) return;
+    await connection.connect(address);
+    if (connection.state.status?.connected) address = "";
+  }
+
+  async function submitPush(event) {
+    event.preventDefault();
+    await connection.push(version.trim() || VERSION);
+    const after = connection.state;
+    if (!after.problem && !after.refusal && !after.signInHelp) typedVersion = null;
   }
 
   async function chooseFolder() {
-    if (running) return;
-    running = "folder";
-    failure = "";
+    if (folderBusy || busy) return;
+    folderBusy = true;
+    folderFailure = "";
     try {
       await onfolder();
     } catch (error) {
-      failure = error?.message || "The desktop app could not keep a folder for this project.";
+      folderFailure = error?.message || "The desktop app could not keep a folder for this project.";
     } finally {
-      running = "";
+      folderBusy = false;
     }
   }
 </script>
+
+{#snippet signIn()}
+  <p class="git-lead">Sign in so the desktop app can reach this project.</p>
+  <div class="git-row">
+    <button type="button" class="btn btn-sm lp-control-brand" disabled={busy} onclick={() => connection.login()}>
+      {link.busy === "login" ? "Signing in…" : "Sign in"}
+    </button>
+  </div>
+{/snippet}
+
+{#snippet connectForm()}
+  <form class="git-form" onsubmit={connect}>
+    <label class="git-field panel-meta">Repository address
+      <input class="input git-input" type="text" placeholder="https://github.com/owner/repo.git" autocomplete="off" spellcheck="false"
+             bind:value={address} disabled={busy} />
+    </label>
+    <div class="git-row">
+      <button type="submit" class="btn btn-sm lp-control-tonal-brand" disabled={busy}>
+        {link.busy === "connect" ? "Connecting…" : "Connect"}
+      </button>
+    </div>
+  </form>
+  <div class="git-row">
+    <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy || folderBusy} onclick={chooseFolder}>Use a folder on this computer…</button>
+  </div>
+  <p class="panel-meta git-note">To edit in a clone you already have, or in a new empty folder.</p>
+  {#if folderFailure}<p class="lp-text-error git-error" role="alert">{folderFailure}</p>{/if}
+{/snippet}
+
+{#snippet connected()}
+  <p class="git-remote" title={status.url}>{status.url}, branch {status.branch}</p>
+  {#if !status.signed_in}
+    {@render signIn()}
+  {:else}
+    <form class="git-form" onsubmit={submitPush}>
+      <label class="git-field panel-meta">Version name
+        <input class="input git-input" type="text" value={version} maxlength="200" disabled={busy}
+               oninput={(event) => (typedVersion = event.currentTarget.value)} />
+      </label>
+      <div class="git-row">
+        <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy || merging} onclick={() => connection.pull()}>
+          {link.busy === "pull" ? "Pulling…" : "Pull"}
+        </button>
+        <button type="submit" class="btn btn-sm lp-control-brand" disabled={busy || merging}>
+          {link.busy === "push" ? "Pushing…" : "Push"}
+        </button>
+      </div>
+      <p class="panel-meta git-note">Pull brings the repository's commits into this project. Push names this version and sends it to the repository.</p>
+    </form>
+  {/if}
+
+  {#if link.result}<p class="git-line" role="status">{link.result}</p>{/if}
+  {#if link.refusal?.reason === "changed"}
+    <div class="git-box" role="alert">
+      <p>The project changed these files since the last pull:</p>
+      <ul class="git-list">{#each link.refusal.paths as path (path)}<li>{path}</li>{/each}</ul>
+      <p>Pull again.</p>
+    </div>
+  {:else if link.refusal?.reason === "suggestion"}
+    <div class="git-box" role="alert">
+      <p>A pending suggestion in {link.refusal.path || "a file"} stops the {link.refusal.action}. Accept or reject it, then {link.refusal.action} again.</p>
+    </div>
+  {/if}
+
+  {#if status.merging}
+    <div class="git-box">
+      <p>These files changed in both the project and the repository. Choose which version to keep.</p>
+      <ul class="git-conflicts" aria-label="Files that changed on both sides">
+        {#each status.merging.conflicts as path (path)}
+          <li class="git-conflict">
+            <span class="git-path" title={path}>{path}</span>
+            <span class="git-choices">
+              <button type="button" class="git-action" disabled={busy} onclick={() => connection.resolve(path, "project")}>Keep project's</button>
+              <button type="button" class="git-action" disabled={busy} onclick={() => connection.resolve(path, "repository")}>Take repository's</button>
+            </span>
+          </li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
+
+  <div class="git-foot">
+    <button type="button" class="git-action" disabled={busy} onclick={() => connection.disconnect()}>
+      {link.busy === "disconnect" ? "Disconnecting…" : "Disconnect"}
+    </button>
+    <p class="panel-meta">Disconnecting forgets the copy on this computer. The repository and the project stay as they are.</p>
+  </div>
+{/snippet}
 
 <div class="git-web">
   <section class="git-block" aria-labelledby="git-web-repository">
@@ -91,26 +203,23 @@
     {/if}
   </section>
 
-  {#if desktop}
+  {#if desktop && connection}
     <section class="git-block" aria-labelledby="git-web-connect">
-      <h3 id="git-web-connect" class="panel-section-title">Connect a repository</h3>
-      <p class="git-lead">Work on this project in a git repository on this computer. Git uses your own sign-in.</p>
-      <form class="git-form" onsubmit={connect}>
-        <label class="git-field panel-meta">Repository address
-          <input class="input git-input" type="text" placeholder="https://github.com/owner/repo.git" autocomplete="off" spellcheck="false"
-                 bind:value={address} disabled={running !== ""} />
-        </label>
-        <div class="git-row">
-          <button type="submit" class="btn btn-sm lp-control-tonal-brand" disabled={running !== ""}>
-            {running === "clone" ? "Cloning…" : "Clone and connect…"}
-          </button>
-        </div>
-      </form>
-      <div class="git-row">
-        <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={running !== ""} onclick={chooseFolder}>Use a folder on this computer…</button>
-      </div>
-      <p class="panel-meta git-note">An empty folder, or a clone you already have.</p>
-      {#if failure}<p class="lp-text-error git-error" role="alert">{failure}</p>{/if}
+      <h3 id="git-web-connect" class="panel-section-title">{status?.connected ? "Connected repository" : "Connect a repository"}</h3>
+      {#if !link.loaded}
+        <p class="panel-muted" role="status">Loading…</p>
+      {:else if status?.connected}
+        {@render connected()}
+      {:else if status}
+        <p class="git-lead">Connect this project to a git repository. Git uses your own sign-in.</p>
+        {#if !status.signed_in}{@render signIn()}{/if}
+        {@render connectForm()}
+      {/if}
+      {#if failure || link.problem}<p class="lp-text-error git-error" role="alert">{failure || link.problem}</p>{/if}
+      {#if link.signInHelp}
+        <GitSignInHelp remote={link.signInHelp.remote} detail={link.signInHelp.detail} {busy}
+                       onretry={() => connection.retry()} ondismiss={() => connection.dismiss()} />
+      {/if}
     </section>
   {/if}
 
@@ -123,10 +232,26 @@
   .git-lead { margin: calc(var(--spacing) * 1.5) 0 0; overflow-wrap: anywhere; }
   .git-note { margin: calc(var(--spacing) * 1.5) 0 0; overflow-wrap: anywhere; }
   .git-push { margin: calc(var(--spacing) * 2) 0 0; font-weight: 500; overflow-wrap: anywhere; }
+  .git-remote { margin: calc(var(--spacing) * 1.5) 0 0; font-weight: 500; overflow-wrap: anywhere; }
+  .git-line { margin: calc(var(--spacing) * 3) 0 0; overflow-wrap: anywhere; }
   .git-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: calc(var(--spacing) * 2); margin-top: calc(var(--spacing) * 2); }
   .git-row { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 2); margin-top: calc(var(--spacing) * 2); }
   .git-field { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--spacing); }
   .git-input { width: 100%; min-width: 0; }
+  .git-box { margin-top: calc(var(--spacing) * 3); padding: calc(var(--spacing) * 2); border-radius: var(--radius-base); background: var(--color-row-hover); overflow-wrap: anywhere; }
+  .git-box p { margin: 0 0 calc(var(--spacing) * 1.5); }
+  .git-box p:last-child { margin-bottom: 0; }
+  .git-list { margin: 0 0 calc(var(--spacing) * 1.5); padding-inline-start: calc(var(--spacing) * 4); font-size: var(--panel-meta-size); }
+  .git-conflicts { margin: calc(var(--spacing) * 2) 0 0; padding: 0; list-style: none; border-top: 1px solid var(--color-divider); }
+  .git-conflict { display: grid; grid-template-columns: minmax(0, 1fr); gap: calc(var(--spacing) * .5); padding-block: calc(var(--spacing) * 1.5); border-bottom: 1px solid var(--color-divider); }
+  .git-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .git-choices { display: flex; flex-wrap: wrap; gap: calc(var(--spacing) * 1); margin-inline-start: calc(var(--spacing) * -1.5); }
+  .git-action { padding: .15rem .35rem; border: 0; border-radius: .25rem; background: none; color: var(--color-link); font: inherit; cursor: pointer; }
+  .git-action:hover:not(:disabled) { background: var(--color-row-hover); }
+  .git-action:disabled { opacity: .5; cursor: default; }
+  .git-foot { margin-top: calc(var(--spacing) * 6); padding-top: calc(var(--spacing) * 3); border-top: 1px solid var(--color-divider); }
+  .git-foot .git-action { margin-inline-start: calc(var(--spacing) * -1.5); }
+  .git-foot p { margin: calc(var(--spacing) * 1) 0 0; }
   .git-error { margin: calc(var(--spacing) * 2) 0 0; overflow-wrap: anywhere; }
   .git-web a { color: var(--color-link); }
 </style>
