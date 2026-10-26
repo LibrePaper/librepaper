@@ -302,8 +302,8 @@ async fn conflicted_paths(root: &Path) -> Result<Vec<String>, Failure> {
     Ok(paths)
 }
 
-/// The remote a fetch, a pull or a first push talks to: the one the branch
-/// follows, else `origin`, else the first one.
+/// The remote a fetch, a pull or a push talks to: the one the branch follows,
+/// else `origin`, else the first one.
 async fn pick_remote(
     root: &Path,
     status: &Status,
@@ -410,6 +410,11 @@ async fn describe(root: &Path) -> Result<Value, Failure> {
         merge_in_progress(root)
     );
     let (status, remotes, identity, merging) = (status?, remotes?, identity?, merging?);
+    let remote = if remotes.is_empty() {
+        None
+    } else {
+        Some(pick_remote(root, &status, &remotes).await?)
+    };
     let remotes: Vec<Value> = remotes
         .iter()
         .map(|(name, url)| json!({"name": name, "url": url}))
@@ -425,6 +430,9 @@ async fn describe(root: &Path) -> Result<Value, Failure> {
     if let Some(branch) = &status.branch {
         body["branch"] = json!(branch);
     }
+    if let Some(remote) = remote {
+        body["remote"] = json!(remote);
+    }
     if status.detached {
         body["detached"] = json!(true);
     }
@@ -432,6 +440,9 @@ async fn describe(root: &Path) -> Result<Value, Failure> {
     Ok(body)
 }
 
+/// The answer to `GET git`. `remote` names the remote a fetch, a pull or a push
+/// uses, so the panel names the one the routes will use. It is left out when
+/// the repository has no remote.
 pub(super) async fn handle_status(
     inner: &Arc<Inner>,
     headers: &HeaderMap,
@@ -1958,6 +1969,43 @@ mod tests {
             (200, &json!("up-to-date")),
             "{body}"
         );
+    }
+
+    #[tokio::test]
+    async fn the_status_names_the_remote_the_routes_will_use() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        fixture.init().await;
+        assert!(fixture.status().await.get("remote").is_none());
+
+        fixture.write("a.txt", "one\n");
+        fixture.commit_all("First").await;
+        plain_git(
+            fixture.scratch.path(),
+            &["init", "--bare", "-b", "main", "upstream.git"],
+        );
+        plain_git(
+            fixture.scratch.path(),
+            &["init", "--bare", "-b", "main", "origin.git"],
+        );
+        let upstream = fixture.scratch.path().join("upstream.git");
+        let origin = fixture.scratch.path().join("origin.git");
+        plain_git(
+            fixture.root(),
+            &["remote", "add", "upstream", text(&upstream)],
+        );
+        plain_git(fixture.root(), &["remote", "add", "origin", text(&origin)]);
+
+        // Upstream was added first, but the routes use origin.
+        assert_eq!(fixture.status().await["remote"], "origin");
+
+        // A push that sets the upstream to the other remote moves the choice.
+        plain_git(fixture.root(), &["push", "-u", "upstream", "main"]);
+        let status = fixture.status().await;
+        assert_eq!(status["upstream"], "upstream/main");
+        assert_eq!(status["remote"], "upstream");
     }
 
     #[tokio::test]
