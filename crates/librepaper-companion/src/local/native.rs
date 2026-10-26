@@ -171,8 +171,6 @@ pub(crate) struct Captured {
     pub stderr: Vec<u8>,
     /// Whether stdout produced more than its bound.
     pub stdout_truncated: bool,
-    /// Whether stderr produced more than its bound.
-    pub stderr_truncated: bool,
 }
 
 /// Why a captured command did not run to an exit status.
@@ -248,14 +246,13 @@ pub(crate) async fn run_captured(
     // A descendant outside the group, such as an SSH multiplexer, can keep the
     // pipes open after the command exits. Each reader gets two seconds, and
     // then it is dropped.
-    let ((stdout, stdout_truncated), (stderr, stderr_truncated)) =
+    let ((stdout, stdout_truncated), (stderr, _)) =
         tokio::join!(join_reader(stdout), join_reader(stderr));
     Ok(Captured {
         code: status.code().unwrap_or(-1),
         stdout,
         stderr,
         stdout_truncated,
-        stderr_truncated,
     })
 }
 
@@ -484,7 +481,7 @@ mod tests {
             .expect("sh runs");
         assert_eq!(captured.code, 0);
         assert_eq!(captured.stdout, b"round trip");
-        assert!(!captured.stdout_truncated && !captured.stderr_truncated);
+        assert!(!captured.stdout_truncated);
     }
 
     /// Output past the bound is drained rather than left to block the child,
@@ -506,7 +503,6 @@ mod tests {
         assert_eq!(captured.code, 0);
         assert_eq!(captured.stdout, b"first-bytes");
         assert!(captured.stdout_truncated);
-        assert!(!captured.stderr_truncated);
     }
 
     #[test]

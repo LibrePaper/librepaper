@@ -222,7 +222,6 @@ pub async fn run(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    native::prepare(&mut command);
     let deadline =
         Instant::now() + Duration::from_secs(request.options.deadline_seconds.clamp(1, 3600));
     // File times come from a coarse kernel clock that can trail this one by
