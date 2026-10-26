@@ -2237,8 +2237,8 @@
 
   function followDocumentClick(offset, pdfPoint = null) {
     if (!linked || !editing || docText === null || !editor) return;
-    // The words clicked in the document may belong to any file: a reader
-    // clicking a paragraph of chapter three is asking for chapter three, not
+    // The words double-clicked in the document may belong to any file: a reader
+    // double-clicking a paragraph of chapter three is asking for chapter three, not
     // for the file that happens to be on screen. So the whole directory is
     // searched, and the file the words are in is opened.
     const tree = treeNow();

@@ -667,15 +667,19 @@ import { watchPinch } from "../lib/pinch.js";
     window.open(url.href, "_blank", "noopener");
   }, { capture: true });
 
-  // A click in the document, reported as an offset into the published text, so
-  // the editor can put its caret in the same place. Only the position is sent;
-  // a click that lands on nothing textual says nothing.
+  // A click that is not on a mark clears the ring; mark clicks are handled by mark.onclick.
+  // A single click does nothing else, so reading or focusing the preview leaves the source alone.
   document.addEventListener("click", (event) => {
-    // A click that is not on a mark clears the ring; mark clicks are handled by mark.onclick.
     if (selectedId && !(event.target instanceof Element && event.target.closest("mark[data-librepaper]"))) {
       select("");
       post({ type: "unfocus" });
     }
+  });
+
+  // A double-click in the document, reported as an offset into the published text, so
+  // the editor can put its caret in the same place. Only the position is sent;
+  // a double-click that lands on nothing textual says nothing.
+  document.addEventListener("dblclick", (event) => {
     const pdf = globalThis.librepaperViewer?.pointFromClient?.(event.clientX, event.clientY) || null;
     if (!table.nodes.length) {
       if (pdf) post({ type: "pdf-caret", pdf });

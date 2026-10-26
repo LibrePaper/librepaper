@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 
 const frame = readFileSync(new URL("../../src/agent/frame.js", import.meta.url), "utf8");
 const start = frame.indexOf("  // A link in the document never navigates the preview. It opens in a new");
-const end = frame.indexOf("  // A click in the document, reported as an offset into the published text, so", start);
+const end = frame.indexOf("  // A click that is not on a mark clears the ring;", start);
 assert.notEqual(start, -1, "frame link handling is present");
 assert.notEqual(end, -1, "frame link handling has a boundary");
 const linkHandling = frame.slice(start, end);
