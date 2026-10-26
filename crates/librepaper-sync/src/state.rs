@@ -218,12 +218,24 @@ impl StateStore for FileStore {
     }
 }
 
-/// The store a directory should use: git's when it is a repository.
+/// The store a directory should use: git's when it is a repository. A folder
+/// linked before it became a repository keeps its link: its state moves from
+/// the state home into the repository's refs, where it travels with the
+/// repository as it does for every other one. Any error leaves the state where
+/// it is and returns git's store.
 pub fn store_for(dir: &Path, state_home: &Path) -> Box<dyn StateStore> {
-    match GitRefStore::open(dir) {
-        Some(store) => Box::new(store),
-        None => Box::new(FileStore::for_dir(state_home, dir)),
+    let Some(store) = GitRefStore::open(dir) else {
+        return Box::new(FileStore::for_dir(state_home, dir));
+    };
+    if let Ok(None) = store.load() {
+        let file = FileStore::for_dir(state_home, dir);
+        if let Ok(Some(state)) = file.load() {
+            if store.save(&state).is_ok() {
+                let _ = file.clear();
+            }
+        }
     }
+    Box::new(store)
 }
 
 #[cfg(test)]
@@ -327,5 +339,26 @@ mod tests {
             return;
         };
         assert!(store_for(dir.path(), home.path()).repository().is_some());
+    }
+
+    #[test]
+    fn a_folder_that_became_a_repository_keeps_its_link() {
+        let home = tempfile::tempdir().unwrap();
+        let Some((dir, _git)) = repository() else {
+            return;
+        };
+        FileStore::for_dir(home.path(), dir.path())
+            .save(&sample())
+            .unwrap();
+        let store = store_for(dir.path(), home.path());
+        assert_eq!(store.load().unwrap(), Some(sample()));
+        assert_eq!(
+            GitRefStore::open(dir.path()).unwrap().load().unwrap(),
+            Some(sample())
+        );
+        assert_eq!(
+            FileStore::for_dir(home.path(), dir.path()).load().unwrap(),
+            None
+        );
     }
 }
