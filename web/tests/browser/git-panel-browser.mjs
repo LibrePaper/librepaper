@@ -508,6 +508,15 @@ window.gitPanelCheck = async () => {
   await press("Commit", repo());
   check(JSON.stringify(calls("gitCommit")[0][2]) === JSON.stringify(["intro.tex"]), "a file left out is not committed: " + JSON.stringify(calls("gitCommit")));
 
+  // A renamed file that is committed sends its old name too, so the deletion goes with it.
+  await mountFolder({ repo: repoStatus({ changes: [{ path: "new.tex", kind: "renamed", from: "old.tex" }, { path: "intro.tex", kind: "modified" }] }) });
+  await flush();
+  boxes()[1].checked = false;
+  boxes()[1].dispatchEvent(new Event("change", { bubbles: true }));
+  await type(field("Message", repo()), "Rename the chapter");
+  await press("Commit", repo());
+  check(JSON.stringify(calls("gitCommit")[0][2]) === JSON.stringify(["new.tex", "old.tex"]), "a renamed file in a partial commit sends its old name: " + JSON.stringify(calls("gitCommit")));
+
   // The first commit in a repository with no identity asks for one.
   await mountFolder({
     repo: repoStatus({ identity: false }),

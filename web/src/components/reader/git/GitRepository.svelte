@@ -69,9 +69,11 @@
   // Branches that only a remote has. Choosing one checks it out as a local branch.
   const remoteNames = $derived((view.branches?.remote ?? []).filter((name) => !branchNames.includes(name)));
 
-  // A commit takes everything unless a file was left out.
-  const included = $derived(changes.filter((change) => !left.includes(change.path)).map((change) => change.path));
-  const partial = $derived(!merging && included.length < changes.length);
+  // A commit takes everything unless a file was left out. A renamed file sends
+  // its old name too, so the deletion of that name is committed with the new one.
+  const chosen = $derived(changes.filter((change) => !left.includes(change.path)));
+  const included = $derived(chosen.flatMap((change) => (change.from ? [change.path, change.from] : [change.path])));
+  const partial = $derived(!merging && chosen.length < changes.length);
   const canCommit = $derived(!busy && message.trim() !== "" && (merging || included.length > 0));
 
   const upstreamText = $derived.by(() => {
