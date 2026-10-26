@@ -1415,11 +1415,15 @@
     preferredPane = view.editing ? view.preferredPane : "document";
     mobileView = view.mobileView === "source" && !view.editing ? "document" : view.mobileView;
     viewing = view.viewing;
-    ws.openFile = view.openFile;
-    ws.figure = view.figure;
+    // A file deleted while the comparison was open is not put back: the
+    // workspace has already chosen another, and the editor cannot show a file
+    // the project no longer holds.
+    const present = (id) => Boolean(id) && ws.files.some((file) => file.id === id);
+    if (present(view.openFile)) ws.openFile = view.openFile;
+    if (!view.figure || present(view.figure.id)) ws.figure = view.figure;
     // The caret is put back once the editor is mounted again. A Git comparison
     // unmounts it while it is open.
-    if (!view.caret || !view.editing) return;
+    if (!view.caret || !view.editing || !present(view.caret.file)) return;
     await tick();
     if (readerDisposed) return;
     editor?.goToIn(view.caret.file, view.caret.at);
