@@ -10,14 +10,18 @@ The **Git** panel is the guided way to do what the rest of this page describes b
 
 ### In a web project
 
-The panel shows:
+The panel shows the **last push**, the newest version pushed from Git, such as "Last pushed by Alice, 2 hours ago: Reword the greeting", or "No push yet".
 
-- **Last push.** The newest version pushed from Git, such as "Last pushed by Alice, 2 hours ago: Reword the greeting", or "No push yet".
-- **Connect a repository.** This section appears in the desktop app only. It has two buttons.
-  - **Clone and connect…** asks for an address, then for the place to put the clone.
-  - **Use a folder on this computer…** takes an empty folder, or a clone you already have.
+In the desktop app, the panel also connects the project to a git repository.
 
-  Either way, the desktop app links the folder to the project, pulls the project into it, and opens it as a folder project. There, the Git panel's Pull and Push work as described below.
+- **Connect** takes the repository's address. The desktop app keeps a copy of the repository on your computer, out of sight.
+- **Pull** brings the repository's commits into the project.
+- **Push** names the current version, then sends the project's named versions to the repository.
+- When a file changed in both the project and the repository, the panel lists it. Choose **Keep project's** or **Take repository's** for each file, then Pull or Push again.
+- **Disconnect** forgets the copy on your computer. The repository and the project stay as they are.
+- **Use a folder on this computer…** is for editing on disk instead. Choose an empty folder or a clone you already have. The desktop app links it to the project, pulls the project into it, and opens it as a folder project.
+
+The connection belongs to this computer. A coauthor on another computer connects on their own.
 
 In the browser, the panel says to open the project in the desktop app. Git signs in with your own credential helper or SSH key.
 
@@ -166,7 +170,7 @@ Anyone with push rights on the repository can change the project this way. Each 
 
 1. **Bob and Carol write on the web.** They edit and comment in the browser, and nothing changes for them. Their named versions become commits in the repository.
 2. **Alice backs up a web project.** She pulls the project into a new repository with her token, pushes the repository to GitHub, and adds the token and the workflow. The first run does the rest. From then on, the Action adds each new named version as a commit. She can also go the other way. `librepaper push --title` in a repository that holds her paper creates the project.
-3. **Alice works in VS Code, and Bob works in the browser.** Alice adds a token and the workflow, and the first run does the rest. She can also connect her clone from the web project's Git panel in the desktop app. Her pushes reach Bob within a minute, as versions in his history under her name. Bob's named versions reach her on her next `git pull`, as commits by Bob. If they both changed a file, the Action's push is refused. A pull request from `librepaper/sync` opens, and Alice merges it in git. Bob sees none of this.
+3. **Alice works in VS Code, and Bob works in the browser.** Alice adds a token and the workflow, and the first run does the rest. Without the Action, she can connect the repository in the web project's Git panel in the desktop app, and press Pull and Push herself. Her pushes reach Bob within a minute, as versions in his history under her name. Bob's named versions reach her on her next `git pull`, as commits by Bob. If they both changed a file, the Action's push is refused. A pull request from `librepaper/sync` opens, and Alice merges it in git. Bob sees none of this.
 4. **Charlie works on GitHub only.** He works in the same repository, with the same Action. He has nothing new to learn.
 5. **Dana works in a folder with no Git.** In the desktop app she opens her web project and chooses Work in a folder from the File menu, which puts the project's files in a folder of her choice and opens it. The Git panel asks her to sign in once. She edits the folder offline with local TeX and presses Push in the Git panel. When a file also changed on the web, Pull asks her which copy to keep, file by file.
 

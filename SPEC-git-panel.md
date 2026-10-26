@@ -2,7 +2,7 @@
 
 Status: proposed 2026-10-25 as Kata vwce, after the operator saw no git surface in the merged app. Builds on SPEC-sync.md (the two CLI commands and the GitHub Action) and takes the Git tab from SPEC-folder-git.md (branch kata/355w-folder-git). Replaces the Sync tab.
 
-Revised 2026-10-26: the web project's panel connects a repository through the desktop app. The workflow and the token setup live in docs/git.md only, and the Action seeds its own state.
+Revised 2026-10-26: in the desktop app, the web project's panel connects a repository through a clone the app keeps out of sight, with Pull and Push. The workflow and the token setup live in docs/git.md only, and the Action seeds its own state.
 
 ## Principle
 
@@ -17,10 +17,13 @@ The rules from SPEC-sync.md stand: LibrePaper never merges text, never holds a f
 
 Shown to editors and owners (`!who.local && who.mayEdit`); readers and commenters do not see it. Sections, top to bottom:
 
-1. **Repository.** "This project syncs with a git repository through its GitHub Action. Nothing runs on this computer." One line of status from the server: the newest version with reason `push` ("Last pushed by Alice, 2 hours ago: Reword the greeting") or "No push yet". This comes from `GET /history?named=1` as the History panel reads it; no new route.
-2. **Connect a repository.** Shown in the desktop app only (`who.desktop`). Two buttons:
-   - **Clone and connect…** takes an address and a place for the clone. It posts `projects/clone { url, project }`, which clones, links the clone to the project and pulls.
-   - **Use a folder on this computer…** posts `projects/keep { url }`. The folder may be empty or a git repository. A folder already linked to another project is refused with 409 reason `linked`.
+1. **Repository.** One line of status from the server: the newest version with reason `push` ("Last pushed by Alice, 2 hours ago: Reword the greeting") or "No push yet". This comes from `GET /history?named=1` as the History panel reads it; no new route.
+2. **Connect a repository.** Shown in the desktop app only (`who.desktop`), driven by `lib/reader/web-connection.svelte.js` over `lib/desktop/connections.js`.
+   - Not connected: an address and **Connect**. The desktop app clones the repository into `<state home>/connections/<key>/repo`, where the key is the first 32 hex digits of the SHA-256 of the project's address. The person never sees the clone. A repository whose LibrePaper state links another project is refused with 409 reason `linked`.
+   - Connected: the address and branch, a version name, **Pull** and **Push**, and **Disconnect**. Pull runs `git pull`, then the sync crate's pull (so the project's new versions are the base), then its push. Push names the current version, then runs the sync crate's pull, `git pull` and `git push`. Both stop at the first conflict.
+   - While a merge is open in the clone, each conflicted file gets **Keep project's** and **Take repository's**. The side is read from `MERGE_HEAD`: `refs/librepaper/main` is the project. The last choice commits the merge.
+   - Sign in uses the same device flow as a folder project, approved by the page when it has a session.
+   - **Use a folder on this computer…** posts `projects/keep { url }` for editing on disk. The folder may be empty or a git repository, and it opens as a folder project. A folder already linked to another project is refused with 409 reason `linked`.
 
    In the browser, one sentence says to open the project in the desktop app.
 3. **Docs.** A link to `docs/git.md`, which holds the workflow, the token setup and the GitHub Action.
@@ -65,7 +68,8 @@ Routes under a folder project, origin-scoped like the others, each running in th
 - `POST projects/<id>/git/pull`: refuses 409 `{ reason: "dirty", paths }` on tracked changes to project files; otherwise `git pull --no-rebase`; answers `{ status: "fast-forward" | "merged" | "up-to-date" | "conflicts", conflicts: [paths] }`.
 - `POST projects/<id>/git/push`: sets the upstream on the first push; 409 `{ reason: "behind" }` when non-fast-forward; auth and network failures carry `{ reason: "auth" | "network", detail }` for the sign-in help.
 - `POST projects/<id>/git/sync { message? }`: commit when dirty, pull, push; answers each step's outcome and stops at the first failure.
-- `POST projects/clone { url, project }`: the native chooser, `git clone`, the link to `project`, the pull; answers like `projects/open`.
+- `POST projects/clone { url }`: the native chooser, `git clone`, the folder project binding, the fetch of `refs/librepaper/*`; answers like `projects/open`.
+- `GET connections?project=`, `POST connections { project, url }`, `POST connections/pull`, `connections/push`, `connections/resolve { project, path, keep }`, `connections/disconnect`, `connections/login` and `connections/login/complete`: the hidden connection of a web project. Each answers a status `{ connected, signed_in, url?, branch?, merging: null | { side, conflicts } }`. One operation runs at a time per connection; another is refused with 409 reason `busy`.
 - `POST projects/keep { url }`: accepts an empty folder or a git repository; a folder already linked to another project is refused with 409 reason `linked`.
 
 The folder's change poller treats what git writes as outside changes, as it does today, so a pull or a switch shows up in the editor. The render-output record and the opening-save rule are untouched.
