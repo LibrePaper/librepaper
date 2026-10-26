@@ -12,6 +12,8 @@
   import * as history from "../lib/history.js";
   import { createHistorySource } from "../lib/reader/history-source.svelte.js";
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
+  import ComparisonBar from "./reader/ComparisonBar.svelte";
+  import { createComparison } from "../lib/reader/comparison.svelte.js";
   import { createFolderSync } from "../lib/reader/folder-sync.js";
   import { createLocalSync } from "../lib/reader/local-sync.svelte.js";
   import { createLocalGit } from "../lib/reader/local-git.svelte.js";
@@ -1334,14 +1336,7 @@
   });
   const historySelectedSha = $derived(historySource.selected);
   const historyHeading = $derived(historySelectedSha ? timeline.describe(historySelectedSha) : "");
-  let historyLiveVersion = $state(0);
   $effect(() => () => historySource.dispose());
-  $effect(() => {
-    if (panel !== "history" || historySource.selected) return;
-    void historyLiveVersion;
-    if (!session) return;
-    untrack(() => { void historySource.select(""); });
-  });
   let navigationGeneration = 0;
   // Which file the reader arrived asking for, when the landing page's search
   // found the project by one of its files. Honoured once the directory has
@@ -1354,9 +1349,57 @@
   // version compares it with the current source and nothing else: the
   // document pane always shows the document as it stands.
   function viewPoint(sha) {
+    beginComparison("history");
     const pending = historySource.select(sha);
     if (compact) showMobileView("source");
     return pending;
+  }
+
+  // A comparison is the editor area showing a version or a changed file in
+  // place of the source. Choosing one starts it and saves the editor area as it
+  // is; leaving its panel, or Close, ends it and puts that back. Opening a panel
+  // shows only its list.
+  const comparison = createComparison();
+  const comparing = $derived(comparison.kind);
+  const comparisonSays = $derived(comparing === "history"
+    ? `Comparing ${historySource.path} with ${historyHeading || "the current version"}`
+    : comparing === "git" ? `Changes in ${gitDiff?.state.path} since the last commit` : "");
+  function editorAreaView() {
+    return {
+      editing,
+      layout,
+      preferredPane,
+      mobileView,
+      viewing,
+      openFile: ws.openFile,
+      figure: ws.figure,
+      caret: editor && !ws.figure ? { file: ws.openFile, at: editor.caret() } : null,
+    };
+  }
+  function beginComparison(kind) {
+    comparison.begin(kind, editorAreaView);
+  }
+  function endComparison() {
+    if (comparison.kind === "git") gitDiff?.close();
+    if (comparison.kind === "history") historySource.close();
+    const view = comparison.end();
+    if (view) void restoreEditorArea(view);
+  }
+  async function restoreEditorArea(view) {
+    // Editing does not end once it has begun, so a source pane that was closed
+    // is closed by the arrangement and the face that hide it.
+    layout = view.editing ? view.layout : "document";
+    preferredPane = view.editing ? view.preferredPane : "document";
+    mobileView = view.mobileView === "source" && !view.editing ? "document" : view.mobileView;
+    viewing = view.viewing;
+    ws.openFile = view.openFile;
+    ws.figure = view.figure;
+    // The caret is put back once the editor is mounted again. A Git comparison
+    // unmounts it while it is open.
+    if (!view.caret || !view.editing) return;
+    await tick();
+    if (readerDisposed) return;
+    editor?.goToIn(view.caret.file, view.caret.at);
   }
 
   const restoreBusy = $derived(timeline.state.restoreBusy);
@@ -1616,8 +1659,14 @@
     };
   });
   function openGitDiff(change) {
+    beginComparison("git");
+    // The comparison takes the editor area, so an arrangement with no source
+    // pane makes room for one.
+    if (!compact && layout === "document") layout = "split";
     void gitDiff.show(change.path, change.kind, change.from);
-    void startEditing().then(() => showMobileView("source"));
+    void startEditing().then(() => {
+      if (comparison.kind === "git") showMobileView("source");
+    });
   }
   // The editor becomes ready. A local project opens with one sync that sends nothing, because the
   // client was told what the folder holds. It makes every file the page holds managed, and it is
@@ -2140,7 +2189,6 @@
   function sourceChanged() {
     if (readerDisposed) return;
     sourceGeneration += 1;
-    historyLiveVersion += 1;
     refreshReview();
     outlineRevision += 1;
     if (sourceFormat === "quarto" && session && previewPath) {
@@ -2286,9 +2334,9 @@
   // not kept.
   let layout = $state("split");
   let panel = $state("files");
-  // The comparison of a changed file fills the editor area while the Git panel
-  // is open, and gives it back when the panel is left.
-  const gitDiffing = $derived(Boolean(gitDiff?.state.active) && panel === "git");
+  // The comparison of a changed file fills the editor area while it is open,
+  // and gives it back when it ends.
+  const gitDiffing = $derived(Boolean(gitDiff?.state.active) && comparing === "git");
   let mobileView = $state("document");
   let preferredPane = $state("document");
   let collaborationTab = $state("comments");
@@ -2366,7 +2414,7 @@
       : visitedPanels,
   );
   function showMobileView(view) {
-    if (view === "source" && !editing && panel !== "history") view = "document";
+    if (view === "source" && !sourceOpen) view = "document";
     mobileView = view;
     if (view !== "sidebar") preferredPane = view;
     if (!compact && view !== "sidebar" && layout !== "split") layout = view;
@@ -2433,20 +2481,9 @@
   // panel ever held -- the document pane shows the current document
   // throughout.
   function showPanel(name) {
-    if (panel === "history" && name !== "history") historySource.close();
-    if (panel === "git" && name !== "git") gitDiff?.close();
-    // Reopening starts at the current source.
-    const enteringHistory = name === "history" && panel !== "history";
+    // Leaving the panel a comparison belongs to ends the comparison.
+    if (comparison.kind && comparison.kind !== name) endComparison();
     panel = name;
-    if (enteringHistory) void historySource.select("");
-    // Changes is a source-review queue. On desktop, opening it establishes a
-    // source-only workspace; on compact screens the sidebar remains visible
-    // until the reviewer chooses a row, which then moves to source.
-    if (name === "changes" && mayEdit && !compact) {
-      void startEditing().then(() => {
-        if (panel === "changes") showMobileView("source");
-      });
-    }
     if (compact) mobileView = name ? "sidebar" : "document";
     if (name !== "history") return Promise.resolve();
     return loadHistory();
@@ -2469,8 +2506,11 @@
   // worked out again when it does.
   let unit = $state(measure());
   const compact = $derived(width <= 760);
-  const activeMobileView = $derived(panel === "history" && mobileView === "document" ? "source"
-    : mobileView === "source" && !editing && panel !== "history" ? "document"
+  // The source pane is open when the reader is editing, or a comparison is
+  // showing in its place.
+  const sourceOpen = $derived(editing || comparing !== "");
+  const activeMobileView = $derived(comparing === "history" && mobileView === "document" ? "source"
+    : mobileView === "source" && !sourceOpen ? "document"
     : mobileView === "sidebar" && !panel ? "document" : mobileView);
   const splitTight = $derived(width < px(ACTIVITY_WIDTH, unit) + px(PANES.editor.min, unit)
     + px(DOCUMENT_MIN, unit) + px(GRIP, unit)
@@ -2480,7 +2520,7 @@
   // switch between the two faces in the bar; only the phone loses the rail
   // beside the column, and reaches the panels from the Menu in the top bar.
   const adapted = $derived(compact || (splitTight && layout === "split"));
-  const effectiveLayout = $derived(!compact && panel === "history"
+  const effectiveLayout = $derived(!compact && comparing === "history"
     ? "source"
     : compact
     ? (activeMobileView === "source" ? "source" : "document")
@@ -2493,7 +2533,7 @@
   const panes = $derived({
     layout: effectiveLayout,
     comments: Boolean(panel),
-    editing: editing || panel === "history",
+    editing: sourceOpen,
     sourceSide,
     sizes,
     width,
@@ -2503,7 +2543,7 @@
     unit,
   });
   const shown = $derived(compact ? {
-    source: (editing || panel === "history") && activeMobileView === "source",
+    source: sourceOpen && activeMobileView === "source",
     document: activeMobileView === "document",
     comments: activeMobileView === "sidebar",
   } : showing(panes));
@@ -3940,6 +3980,10 @@
     if (event.key === "Escape") {
       if (palette) { palette = false; return; }
       if (bar.shown) { bar = { ...bar, shown: false }; return; }
+      // A comparison closes on Escape, unless the focus is in a field, or the
+      // editable side of a merge, where Escape is somebody else's.
+      const typing = event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable='true']");
+      if (comparing && !typing) endComparison();
       return;
     }
     // Everything else is the registry's. `commandFor` answers with a command
@@ -4095,7 +4139,7 @@
   <div class="face-switch" role="group" aria-label="Workspace view">
     <IconButton icon="eye" label="Preview" visibleLabel={compact ? "Preview" : null} pressed={shown.document}
                 onclick={() => showMobileView("document")} />
-    {#if editing || panel === "history"}
+    {#if sourceOpen}
       <IconButton icon="writing-hand" label="Source" visibleLabel={compact ? "Source" : null} pressed={shown.source}
                   onclick={() => showMobileView("source")} />
     {/if}
@@ -4127,7 +4171,7 @@
     {:else}
       <!-- Between 761px and the split's narrow point, the face choice stays in
            the top bar. Compact widths render it beside the hamburger above. -->
-      {#if adapted && (editing || panel === "history")}
+      {#if adapted && sourceOpen}
         {@render faceSwitch()}
       {/if}
       <!-- The build's state is told by the preview pane's progress line and
@@ -4288,7 +4332,7 @@
       saved={timeline.state.saved} savedLoaded={timeline.state.savedLoaded}
       savedLoading={timeline.state.savedLoading} savedProblem={timeline.state.savedProblem}
       onview={viewPoint}
-      oncompare={(sha) => historySource.compareWith(sha)}
+      oncompare={(sha) => { beginComparison("history"); return historySource.compareWith(sha); }}
       onname={nameLabel} onretry={loadHistory}
       onloadmore={() => timeline.loadMore()}
       onloaduntil={(iso) => timeline.loadUntil(iso)}
@@ -4340,16 +4384,19 @@
     {/snippet}
   </Sidebar>
 
-  {#if editing || panel === "history" || gitDiffing}
+  {#if sourceOpen}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <section id="reader-source" class="editorpane" class:away={!shown.source}
+    <section id="reader-source" class="editorpane" class:away={!shown.source} class:comparing={comparing !== ""}
              ondragover={(event) => event.preventDefault()} ondrop={dropped}>
       <!-- A figure has no editor. Choosing one shows it: an image as itself,
            a PDF through the browser's own viewer, which shows the first page
            without this application carrying a PDF renderer of its own. -->
+      {#if comparing}
+        <ComparisonBar says={comparisonSays} onclose={endComparison} />
+      {/if}
       {#if gitDiffing}
         <GitDiffWorkspace differ={gitDiff} />
-      {:else if panel === "history"}
+      {:else if comparing === "history"}
         <HistoryWorkspace source={historySource} heading={historyHeading} canEdit={mayEdit} onrestore={restoreLabel}
           ondownload={downloadArchive}
           downloading={downloadingSha === historySource.selected ? downloadingSha : ""}
@@ -4726,6 +4773,7 @@
 <Toasts />
 
 <style>
+  .editorpane.comparing { grid-template-rows: auto minmax(0, 1fr); }
   .menuitem-chevron { display: inline-flex; margin-left: auto; padding-left: calc(var(--spacing) * 2); }
   .export-reason { flex: 0 0 auto; margin-left: auto; max-width: 12rem; overflow: hidden; color: var(--color-text-secondary); font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
   .run-code-toggle { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1.5); cursor: pointer; font-size: var(--text-sm); white-space: nowrap; }
