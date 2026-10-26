@@ -249,6 +249,24 @@ const nameVersion = async (message) => { named.push(message); };
   assert.deepEqual(web.state.status, { connected: false, signed_in: true });
 }
 
+// A status read that started before Disconnect and lands after it is dropped, and no
+// read starts while an action runs.
+{
+  let land = () => {};
+  let reads = 0;
+  const { api } = routes({
+    connectionStatus: () => { reads += 1; return new Promise((resolve) => { land = () => resolve(connected); }); },
+    disconnectConnection: { connected: false, signed_in: true },
+  });
+  const web = createWebConnection({ api, project, nameVersion });
+  const reading = web.refresh();
+  await web.disconnect();
+  land();
+  await reading;
+  assert.deepEqual(web.state.status, { connected: false, signed_in: true });
+  assert.equal(reads, 1);
+}
+
 // An answer that lands after the panel is gone is dropped.
 {
   let finish;

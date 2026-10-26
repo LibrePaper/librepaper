@@ -24,15 +24,16 @@ use super::git::{
 };
 use super::sync::{
     answer, begin_login, client_for, failed, finish_login, parse_link, project_url, refuse,
-    same_site, Failure,
+    same_site, token_refused, Failure,
 };
 
 use crate::local::credentials;
 use crate::local::git::{validate, Limit, Output};
 
+use librepaper_base::http::Credentials;
 use librepaper_sync::{
-    commit_summary, pull, push, store_for, Error, Link, MergeOutcome, PullOptions, PullOutcome,
-    PushOptions, PushOutcome, State,
+    commit_summary, pull, push, store_for, web_changed, Client, Error, Link, MergeOutcome,
+    PullOptions, PullOutcome, PushOptions, PushOutcome, State,
 };
 
 /// The folder of every connection, under the state home.
@@ -194,10 +195,29 @@ async fn merge_side(repo: &Path) -> Result<&'static str, Failure> {
     })
 }
 
+/// Whether the token this computer holds for the project's site still works.
+/// A connected project asks the site, as a folder project's status does, so a
+/// revoked or expired token reads as signed out. Any other failure to reach
+/// the site leaves the answer to the pull or push that meets it.
+async fn token_works(inner: &Inner, connection: &Connection, token: &str) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+    if !connection.connected() {
+        return true;
+    }
+    let store = store_for(&connection.repo(), &inner.state_home);
+    let Ok(Some(state)) = store.load() else {
+        return true;
+    };
+    let client = Client::new(connection.link.site.clone(), Credentials::token(token));
+    !matches!(web_changed(&client, &state).await, Err(error) if token_refused(&error))
+}
+
 /// The status object every route answers with.
 async fn status_of(inner: &Inner, connection: &Connection) -> Result<Value, Failure> {
     let token = credentials::stored_token_at(&inner.state_home, connection.link.site.as_str());
-    let signed_in = !token.is_empty();
+    let signed_in = token_works(inner, connection, &token).await;
     if !connection.connected() {
         return Ok(json!({"connected": false, "signed_in": signed_in}));
     }
@@ -350,13 +370,18 @@ async fn clone_for(inner: &Inner, connection: &Connection, url: &str) -> Result<
         return Err(remote_failure(&cloned));
     }
     // The state is there only when the repository was kept with LibrePaper
-    // before, and a clone without it is just as good.
-    let _ = run(
+    // before. A fetch that matches nothing succeeds, so a failure here is the
+    // network or the credential, and the state it would have read could link
+    // the repository to another project.
+    let fetched = run(
         &partial,
         Limit::Transport,
         &["fetch", "--", url, "+refs/librepaper/*:refs/librepaper/*"],
     )
-    .await;
+    .await?;
+    if !fetched.success() {
+        return Err(remote_failure(&fetched));
+    }
 
     let store = store_for(&partial, &inner.state_home);
     match store.load().map_err(|error| failed(&error))? {
@@ -389,6 +414,27 @@ async fn clone_for(inner: &Inner, connection: &Connection, url: &str) -> Result<
 }
 
 /* ----------------------------------------------------- pull and push */
+
+/// The remote's commits taken into the clone's branch, as `git pull` takes
+/// them. A remote that does not have the branch yet, such as a new empty
+/// repository, has nothing to give, so the first push can make the branch.
+/// The fetch runs first so that a remote out of reach still says so.
+async fn pull_remote(repo: &Path) -> Result<Value, Failure> {
+    let fetched = run(repo, Limit::Transport, &["fetch", "origin"]).await?;
+    if !fetched.success() {
+        return Err(remote_failure(&fetched));
+    }
+    let upstream = run(
+        repo,
+        Limit::Local,
+        &["rev-parse", "-q", "--verify", "@{upstream}"],
+    )
+    .await?;
+    if !upstream.success() {
+        return Ok(json!({"status": "up-to-date", "conflicts": []}));
+    }
+    run_pull(repo, &BTreeSet::new()).await
+}
 
 /// The project's named versions taken into the clone, merged into its branch.
 async fn web_pull(inner: &Inner, connection: &Connection) -> Result<PullOutcome, Failure> {
@@ -507,7 +553,7 @@ async fn pull_from_repository(
     if merge_in_progress(&repo).await? {
         return Err(merging(inner, &connection).await);
     }
-    let fetched = run_pull(&repo, &BTreeSet::new()).await?;
+    let fetched = pull_remote(&repo).await?;
     if fetched["status"] == "conflicts" {
         return stopped(inner, &connection).await;
     }
@@ -558,7 +604,7 @@ async fn push_to_repository(
     if merge_stopped(&web_pull(inner, &connection).await?)? {
         return stopped(inner, &connection).await;
     }
-    let fetched = run_pull(&repo, &BTreeSet::new()).await?;
+    let fetched = pull_remote(&repo).await?;
     if fetched["status"] == "conflicts" {
         return stopped(inner, &connection).await;
     }
@@ -946,6 +992,27 @@ mod tests {
         .unwrap();
         let status = status_of(&fixture.inner, &connection).await.unwrap();
         assert_eq!(status["url"], json!("https://github.com/o/r.git"));
+    }
+
+    #[tokio::test]
+    async fn an_empty_remote_has_nothing_to_pull_and_one_out_of_reach_says_so() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let scratch = fixture.scratch.path();
+        plain_git(scratch, &["init", "--bare", "-b", "main", "empty.git"]);
+        let empty = scratch.join("empty.git");
+        let connection = fixture.connection(PROJECT);
+        run_connect(&fixture.inner, &connection, text(&empty))
+            .await
+            .unwrap();
+
+        let pulled = pull_remote(&connection.repo()).await.unwrap();
+        assert_eq!(pulled["status"], json!("up-to-date"), "{pulled}");
+
+        std::fs::remove_dir_all(&empty).unwrap();
+        assert!(pull_remote(&connection.repo()).await.is_err());
     }
 
     #[tokio::test]

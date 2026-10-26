@@ -56,7 +56,7 @@ pub(super) fn refuse(status: u16, error: &str) -> Failure {
 
 /// Whether the site refused the token this computer holds: it expired, was
 /// revoked, or has no right to the project.
-fn token_refused(error: &Error) -> bool {
+pub(super) fn token_refused(error: &Error) -> bool {
     matches!(
         error,
         Error::Http {

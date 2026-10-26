@@ -61,8 +61,10 @@ export function createWebConnection({ api = routes, project, nameVersion, signed
   };
 
   /// Reads where the project stands. An answer that arrives after a newer
-  /// request was made is dropped.
+  /// request was made is dropped, and so is one that overlaps an action, whose
+  /// own answer is newer. No read starts while an action runs.
   async function refresh() {
+    if (current.busy) return;
     const request = ++generation;
     try {
       const status = await api.connectionStatus(project);
@@ -78,6 +80,7 @@ export function createWebConnection({ api = routes, project, nameVersion, signed
   async function run(/** @type {WebConnectionState["busy"]} */ name, /** @type {() => Promise<void>} */ work) {
     if (current.busy || closed) return;
     again = () => run(name, work);
+    generation += 1;
     set({ busy: name, problem: "", signInHelp: null });
     try {
       await work();
