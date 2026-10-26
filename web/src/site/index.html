@@ -386,7 +386,8 @@
         margin: 0;
       }
 
-      .shot-frame img {
+      .shot-frame img,
+      .shot-frame video {
         width: 100%;
         height: auto;
         display: block;
@@ -414,42 +415,6 @@
         aspect-ratio: 16 / 10;
         object-fit: cover;
         border: none;
-      }
-
-      /* Screenshot link and its Expand badge. */
-      .shot {
-        position: relative;
-        display: block;
-        width: 100%;
-        margin-inline: auto;
-        overflow: hidden;
-        cursor: zoom-in;
-        border-radius: 6px;
-      }
-
-      .shot-badge {
-        position: absolute;
-        right: 0.625rem;
-        bottom: 0.625rem;
-        display: inline-flex;
-        align-items: center;
-        gap: 0.375rem;
-        padding: 0.3rem 0.6rem;
-        border-radius: 4px;
-        font-size: 0.8125rem;
-        line-height: 1;
-        color: #fff;
-        background: rgb(0 0 0 / 0.6);
-        transition: background 120ms ease;
-      }
-
-      .shot:hover .shot-badge, .shot:focus-visible .shot-badge {
-        background: rgb(0 0 0 / 0.85);
-      }
-
-      .shot-badge svg {
-        width: 0.875rem;
-        height: 0.875rem;
       }
 
       /* Short side-by-side columns, each a heading over a paragraph. */
@@ -621,65 +586,13 @@
           width: 4.25rem;
         }
 
-        .hero-shot img {
+        .hero-shot video {
           aspect-ratio: 4 / 3;
           object-fit: cover;
           object-position: 20% top;
         }
       }
 
-      /* The lightbox: a :target overlay, opened by a link to its id. */
-      .lightbox {
-        display: none;
-      }
-
-      .lightbox:target {
-        display: grid;
-        place-items: center;
-        position: fixed;
-        inset: 0;
-        z-index: 60;
-        padding: 2rem;
-        background: rgb(0 0 0 / 0.75);
-      }
-
-      .lightbox img {
-        max-width: min(96vw, 1600px);
-        max-height: 92vh;
-        width: auto;
-        height: auto;
-        border-radius: 0.5rem;
-      }
-
-      .lightbox-dismiss {
-        position: absolute;
-        inset: 0;
-        cursor: zoom-out;
-      }
-
-      .lightbox-close {
-        position: absolute;
-        top: 1rem;
-        right: 1rem;
-        z-index: 1;
-        display: grid;
-        place-items: center;
-        width: 2.5rem;
-        height: 2.5rem;
-        border-radius: 999px;
-        color: #fff;
-        background: rgb(0 0 0 / 0.55);
-        transition: background 120ms ease;
-      }
-
-      .lightbox-close:hover, .lightbox-close:focus-visible {
-        background: rgb(0 0 0 / 0.85);
-      }
-
-      .lightbox-close svg {
-        width: 1.125rem;
-        height: 1.125rem;
-      }
     </style>
   </head>
   <!-- web/tools/build-site.mjs copies this file, unchanged, to
@@ -719,18 +632,7 @@
             </p>
           </div>
           <figure class="shot-frame hero-shot">
-            <a class="shot" href="#editor" aria-label="See the editor larger">
-              <picture>
-                <source type="image/webp" srcset="/images/editor-latex-960.webp 960w, /images/editor-latex-1600.webp 1600w, /images/editor-latex-2852.webp 2852w" sizes="(min-width: 80rem) 77rem, calc(100vw - 2rem)">
-                <img src="/images/editor-latex.png" width="2852" height="1487" fetchpriority="high" alt="The LibrePaper editor with LaTeX source on the left and the compiled paper, with its figure, equation and table, on the right." />
-              </picture>
-              <span class="shot-badge" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M9 3H3v6" /><path d="m3 3 7 7" /><path d="M15 21h6v-6" /><path d="m21 21-7-7" />
-                </svg>
-                Expand
-              </span>
-            </a>
+            <video src="/images/landing-demo.webm" poster="/images/landing-demo-poster.webp" width="1202" height="720" autoplay muted loop playsinline preload="auto" aria-label="The LibrePaper editor: Typst source on the left and its live preview on the right, updating as the document is edited."></video>
           </figure>
         </div>
       </section>
@@ -1124,45 +1026,6 @@
       </div>
     </footer>
 
-    <!-- The lightbox container. It sits outside the hero so the overlay is not
-         inside a centered, padded column when it covers the window. -->
-    <div class="lightbox" id="editor">
-      <a class="lightbox-dismiss" href="#" aria-label="Close the larger view"></a>
-      <a class="lightbox-close" href="#" aria-label="Close the larger view">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-          <path d="M18 6 6 18" /><path d="m6 6 12 12" />
-        </svg>
-      </a>
-      <picture>
-        <source type="image/webp" srcset="/images/editor-latex-960.webp 960w, /images/editor-latex-1600.webp 1600w, /images/editor-latex-2852.webp 2852w" sizes="96vw">
-        <img src="/images/editor-latex.png" width="2852" height="1487" loading="lazy" alt="The LibrePaper editor with LaTeX source on the left and the compiled paper, with its figure, equation and table, on the right." />
-      </picture>
-    </div>
-
-    <!-- Escape closes any larger view. The overlay itself is CSS, so it opens
-         and closes without this; what a script adds is the key a reader
-         expects, and nothing else depends on it. Closing is a step back
-         through history when this page opened the view, which is the same
-         thing the browser Back button does and leaves no entry behind. A
-         reader who arrived on the link directly has no such entry, so that
-         case clears the fragment instead. -->
-    <script>
-      (function () {
-        var opened = false;
-        document.addEventListener("click", function (event) {
-          if (event.target.closest && event.target.closest("a.shot")) opened = true;
-        });
-        document.addEventListener("keydown", function (event) {
-          if (event.key !== "Escape" || !document.querySelector(".lightbox:target")) return;
-          if (opened) {
-            opened = false;
-            history.back();
-          } else {
-            location.hash = "";
-          }
-        });
-      })();
-    </script>
     <script type="module" src="../../web/src/site/index.js"></script>
   </body>
 </html>
