@@ -34,10 +34,6 @@ export function createJumps({ limit = 50 } = {}) {
       return null;
     },
 
-    clear() {
-      places = [];
-    },
-
     /// Whether there is a place to return to, as far as the stack knows. It
     /// does not ask `exists`, so it can say yes when `back` will say null.
     get canGoBack() {

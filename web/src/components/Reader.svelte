@@ -663,7 +663,9 @@
   // the editor already is. An undefined offset is a line the editor finds
   // itself, so that jump always counts as a new place.
   function rememberPlace(file, offset) {
-    if (!editing || !shown.source || !editor || !ws.openFile) return;
+    // The editor stays mounted while a narrow window shows the sidebar, so a
+    // jump from there is remembered too.
+    if (!editing || !editor || !ws.openFile) return;
     const here = { file: ws.openFile, offset: editor.caret() };
     if (here.file === file && here.offset === offset) return;
     jumps.remember(here);
@@ -2915,13 +2917,10 @@
   });
   const ws = workspace.state;
   const files = $derived(ws.files);
-  // Where the editor was before each jump, for Back. A new session is a new
-  // project, and its places mean nothing in it.
+  // Where the editor was before each jump, for Back. Another project is another
+  // page, so the places last as long as this one. A session that is replaced
+  // on a reconnect keeps its file ids, and a place whose file is gone is skipped.
   const jumps = createJumps();
-  $effect(() => {
-    session;
-    jumps.clear();
-  });
   const fileExists = (id) => Boolean(session?.paths?.get(id));
   const backLabel = $derived(jumps.last
     ? `Back to ${session?.paths?.get(jumps.last.file) ?? "the previous place"}`
@@ -3985,6 +3984,8 @@
     // registry does not read. It is refused in a dialog, and in a field that
     // takes text; the source is a field too, and Back is for the source.
     if (isBackChord(event, APPLE)) {
+      // Without the source on screen the chord is the browser's.
+      if (!editing || !shown.source) return;
       if (captured(event.target)) return;
       if (writing(event.target) && !event.target.closest(".cm-editor")) return;
       event.preventDefault();

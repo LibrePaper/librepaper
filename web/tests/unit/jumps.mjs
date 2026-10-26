@@ -59,13 +59,13 @@ const place = (file, offset) => ({ file, offset });
   assert.equal(count, 50);
 }
 
-// Back on an empty stack is null, and so is Back after clear.
+// Back on an empty stack is null, and so is Back once the stack is used up.
 {
   const jumps = createJumps();
   assert.equal(jumps.back(), null);
   assert.equal(jumps.canGoBack, false);
   jumps.remember(place("a", 1));
-  jumps.clear();
+  jumps.back();
   assert.equal(jumps.canGoBack, false);
   assert.equal(jumps.back(), null);
 }
