@@ -787,6 +787,18 @@ window.gitPanelCheck = async () => {
   await press("Done");
   check(!panel().querySelector('textarea[aria-label="Text to copy by hand"]'), "Done clears it");
 
+  // Closing the panel forgets a token offered by hand, and opening it again does not bring it back.
+  await press("Create token for a repository");
+  navigator.clipboard.writeText = async () => { throw new Error("blocked"); };
+  await press("Copy token");
+  check(panel().querySelector('textarea[aria-label="Text to copy by hand"]')?.value === "lpt_minted_t5", "a blocked copy offers the next token by hand");
+  navigator.clipboard.writeText = clipboard;
+  component.$set({ open: false });
+  await flush();
+  component.$set({ open: true });
+  await flush();
+  check(!panel().querySelector('textarea[aria-label="Text to copy by hand"]') && !text().includes("lpt_minted_t5"), "closing the panel forgets the token: " + text());
+
   // Revoking asks first.
   const trash = () => [...panel().querySelectorAll('button[aria-label^="Revoke"]')].find((node) => node.getAttribute("aria-label") === "Revoke Laptop");
   check(trash(), "a token has a Revoke button");

@@ -17,7 +17,8 @@
   const busy = $derived(view.busy !== "");
   const address = $derived(`${location.origin}/docs/${slug}`);
 
-  // The token is shown while the panel is open and never afterwards.
+  // The token, and the text offered for copying by hand, are shown while the
+  // panel is open and never afterwards.
   $effect(() => {
     if (!open) return;
     const project = slug;
@@ -28,7 +29,7 @@
     }, 30_000);
     return () => {
       clearInterval(timer);
-      web.hide();
+      done();
     };
   });
 
@@ -48,13 +49,17 @@
   let copyTimer;
   $effect(() => () => clearTimeout(copyTimer));
   async function copy(text, which) {
+    // The panel may have closed while the clipboard was being written. Its
+    // token is forgotten then, so nothing is shown for it.
     try {
       await navigator.clipboard.writeText(text);
+      if (!open) return;
       copied = which;
       copyFallback = "";
       clearTimeout(copyTimer);
       copyTimer = setTimeout(() => (copied = ""), 1800);
     } catch {
+      if (!open) return;
       copied = "";
       copyFallback = text;
     }
@@ -71,7 +76,8 @@
     if (item) await web.revoke(item.id);
   }
   const select = (event) => event.currentTarget.select();
-  // The next token starts with its own Copy button, not the last one's "Copied".
+  // Forgets the token: Done does this, and so does leaving the panel. The next
+  // token starts with its own Copy button, not the last one's "Copied".
   function done() {
     web.hide();
     copyFallback = "";
