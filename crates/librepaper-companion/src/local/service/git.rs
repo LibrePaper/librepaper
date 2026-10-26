@@ -230,7 +230,10 @@ async fn read_remotes(root: &Path) -> Result<Vec<(String, String)>, Failure> {
         else {
             continue;
         };
-        if !remotes.iter().any(|(seen, _)| seen == name) {
+        // A name the config spells with anything but letters, digits, dots,
+        // dashes and underscores is left out: the panel puts names into a
+        // command the person copies.
+        if validate::valid_remote_name(name) && !remotes.iter().any(|(seen, _)| seen == name) {
             remotes.push((name.to_string(), validate::display_url(url)));
         }
     }

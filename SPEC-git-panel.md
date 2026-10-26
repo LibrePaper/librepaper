@@ -53,9 +53,9 @@ On the desktop landing page, beside **Open folder…**: **Clone a repository…*
 
 Routes under a folder project, origin-scoped like the others, each running in the project's root with the hardened runtime recovered from `crates/librepaper-companion/src/local/git/mod.rs` at 1e9e003b (finding git, the version gate, bounded execution, the non-interactive environment) and the URL validation and error classification from `validate.rs` and `remote.rs` there. Nothing from `objects.rs` or `storage.rs` comes back.
 
-- `GET projects/<id>/git`: `{ repository: bool, git: { found: bool, version?: string }, branch?, upstream?, ahead?, behind?, remotes: [{ name, url }], changes: [{ path, kind: "added" | "modified" | "deleted" | "renamed" | "conflicted", from? }], merging: bool, identity: bool }`.
+- `GET projects/<id>/git`: `{ repository: bool, git: { found: bool, version?: string, supported?: bool }, branch?, detached?, upstream?, ahead?, behind?, remote? (the one fetch, pull and push use), remotes: [{ name, url }], changes: [{ path, kind: "added" | "modified" | "deleted" | "renamed" | "conflicted", from? }], merging: bool, identity: bool }`.
 - `POST projects/<id>/git/init`.
-- `GET projects/<id>/git/diff?path=`: `{ head: string | null, work: string | null, binary: bool }`.
+- `GET projects/<id>/git/diff?path=&from=`: `from` names the path `HEAD` is read at for a renamed file; `{ head: string | null, work: string | null, binary: bool }`.
 - `POST projects/<id>/git/commit { message, paths? }`: answers the commit id, or 409 `{ reason: "identity" }` when the identity is missing; `POST projects/<id>/git/identity { name, email }` sets it in the repository config.
 - `GET projects/<id>/git/branches`, `POST projects/<id>/git/switch { branch }`, `POST projects/<id>/git/branch { branch }`.
 - `POST projects/<id>/git/remote { name, url }` (validated).
