@@ -3,7 +3,7 @@
 // with which method and body, and how a refusal arrives.
 import assert from "node:assert/strict";
 import * as client from "../../src/lib/desktop/client.js";
-import { folderProjectHref, keepFolderProject } from "../../src/lib/desktop/projects.js";
+import { cloneRepository, folderProjectHref, keepFolderProject } from "../../src/lib/desktop/projects.js";
 import { LOGIN_PENDING, syncLink, syncLogin, syncLoginComplete, syncPublish, syncPull, syncPush, syncStatus, syncUnlink } from "../../src/lib/desktop/sync.js";
 
 globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
@@ -116,8 +116,8 @@ answer = () => response(204, null);
 assert.equal(await keepFolderProject("https://app.example/docs/paper"), null);
 
 // A folder with files in it is refused in the service's words.
-answer = () => response(409, { error: "choose an empty folder" });
-await assert.rejects(keepFolderProject("https://app.example/docs/paper"), (error) => error.status === 409 && error.message === "choose an empty folder");
+answer = () => response(409, { error: "choose an empty folder or a git repository" });
+await assert.rejects(keepFolderProject("https://app.example/docs/paper"), (error) => error.status === 409 && error.message === "choose an empty folder or a git repository");
 
 // With no sign-in the folder was still created and linked, and only the pull was refused. The
 // refusal carries the folder project, so it resolves with it and the page can open it.
@@ -129,5 +129,17 @@ assert.ok(last().url.endsWith("projects/keep"));
 // A refusal that names no folder project is still a failure.
 answer = () => response(401, { error: "sign in" });
 await assert.rejects(keepFolderProject("https://app.example/docs/paper"), (error) => error.status === 401 && error.message === "sign in");
+
+// A folder linked to another project is refused, even though the folder project exists.
+answer = () => response(409, { reason: "linked", error: "this repository is linked to another LibrePaper project", ...project });
+await assert.rejects(keepFolderProject("https://app.example/docs/paper"), (error) => error.status === 409 && error.message === "this repository is linked to another LibrePaper project");
+
+// Cloning for a web project sends the project page with the address.
+answer = () => response(200, project);
+assert.deepEqual(await cloneRepository("https://github.com/o/paper.git", "https://app.example/docs/paper"), project);
+assert.ok(last().url.endsWith("projects/clone"));
+assert.deepEqual(last().body, { url: "https://github.com/o/paper.git", project: "https://app.example/docs/paper" });
+answer = () => response(401, { error: "sign in", ...project });
+assert.deepEqual(await cloneRepository("https://github.com/o/paper.git", "https://app.example/docs/paper"), { error: "sign in", ...project, refused: true });
 
 console.log("desktop-sync: sync routes, pull answers, push refusals and keeping a folder");

@@ -49,7 +49,9 @@ export function keepFolderProject(url) {
 
 /** Sends a request that makes a folder project. An error whose body carries an
  * `id` means the folder project exists and only the pull was refused, so it
- * resolves with `refused: true`; any other error throws.
+ * resolves with `refused: true`. A folder linked to another project is refused
+ * outright, since opening it would show that other project. Any other error
+ * throws.
  * @param {string} path
  * @param {Record<string, string>} body
  * @returns {Promise<any>} */
@@ -59,7 +61,7 @@ async function answerOrRefusal(path, body) {
     response = await send("POST", path, { jsonBody: body });
   } catch (error) {
     const failure = /** @type {any} */ (error)?.body;
-    if (typeof failure?.id === "string") return { ...failure, refused: true };
+    if (typeof failure?.id === "string" && failure.reason !== "linked") return { ...failure, refused: true };
     throw error;
   }
   if (response.status === 204) return null;

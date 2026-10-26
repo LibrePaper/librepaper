@@ -6,8 +6,8 @@
   // desktop app, connects a git repository on this computer (git/GitWeb.svelte).
   // A folder project has a folder, so the panel runs git on it: the link to its
   // web project that the Sync tab used to hold, then the folder's own
-  // repository (git/GitLibrePaper.svelte, git/GitRepository.svelte). The state of each belongs to a controller in
-  // lib/reader; this lays the sections out.
+  // repository (git/GitLibrePaper.svelte, git/GitRepository.svelte). The state
+  // of each belongs to a controller in lib/reader; this lays the sections out.
   import PanelHeader from "../PanelHeader.svelte";
   import GitWeb from "./git/GitWeb.svelte";
   import GitLibrePaper from "./git/GitLibrePaper.svelte";

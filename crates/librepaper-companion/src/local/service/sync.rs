@@ -911,15 +911,13 @@ pub(super) async fn handle_keep(
         Ok(link) => link,
         Err((status, body)) => return write_json(status, &body),
     };
-    let root = match projects::choose_root(
-        inner,
-        "Choose an empty folder or a clone of the repository",
-    )
-    .await
-    {
-        Ok(root) => root,
-        Err(response) => return response,
-    };
+    let root =
+        match projects::choose_root(inner, "Choose an empty folder or a clone of the repository")
+            .await
+        {
+            Ok(root) => root,
+            Err(response) => return response,
+        };
     if !is_keepable_folder(&root) {
         return write_json(
             409,
