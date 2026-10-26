@@ -19,16 +19,10 @@ export async function openFolderProject() {
  * at once. Resolves to null when the person cancels. A refusal (a URL with a
  * password, a folder that exists, a clone git could not make) throws with the
  * service's message.
- *
- * With `project`, the page URL of a web project, the clone is also linked to
- * that project and pulled into it. A pull the app refuses (no sign-in, for
- * example) still leaves the clone as a folder project, so it resolves with
- * `refused: true` as `keepFolderProject` does.
  * @param {string} url https, ssh or scp-like, with no password in it
- * @param {string} [project] the web project's page, `https://<site>/docs/<slug>`
  * @returns {Promise<({ id: string, project: string, name: string, root_name: string } & { refused?: true }) | null>} */
-export function cloneRepository(url, project) {
-  return answerOrRefusal("projects/clone", project ? { url, project } : { url });
+export function cloneRepository(url) {
+  return answerOrRefusal("projects/clone", { url });
 }
 
 /** Show the native folder chooser and keep a web project in the chosen empty

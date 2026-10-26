@@ -3,7 +3,7 @@
 // with which method and body, and how a refusal arrives.
 import assert from "node:assert/strict";
 import * as client from "../../src/lib/desktop/client.js";
-import { cloneRepository, folderProjectHref, keepFolderProject } from "../../src/lib/desktop/projects.js";
+import { folderProjectHref, keepFolderProject } from "../../src/lib/desktop/projects.js";
 import { LOGIN_PENDING, syncLink, syncLogin, syncLoginComplete, syncPublish, syncPull, syncPush, syncStatus, syncUnlink } from "../../src/lib/desktop/sync.js";
 
 globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
@@ -133,13 +133,5 @@ await assert.rejects(keepFolderProject("https://app.example/docs/paper"), (error
 // A folder linked to another project is refused, even though the folder project exists.
 answer = () => response(409, { reason: "linked", error: "this repository is linked to another LibrePaper project", ...project });
 await assert.rejects(keepFolderProject("https://app.example/docs/paper"), (error) => error.status === 409 && error.message === "this repository is linked to another LibrePaper project");
-
-// Cloning for a web project sends the project page with the address.
-answer = () => response(200, project);
-assert.deepEqual(await cloneRepository("https://github.com/o/paper.git", "https://app.example/docs/paper"), project);
-assert.ok(last().url.endsWith("projects/clone"));
-assert.deepEqual(last().body, { url: "https://github.com/o/paper.git", project: "https://app.example/docs/paper" });
-answer = () => response(401, { error: "sign in", ...project });
-assert.deepEqual(await cloneRepository("https://github.com/o/paper.git", "https://app.example/docs/paper"), { error: "sign in", ...project, refused: true });
 
 console.log("desktop-sync: sync routes, pull answers, push refusals and keeping a folder");

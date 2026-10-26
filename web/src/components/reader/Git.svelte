@@ -3,7 +3,8 @@
   // git means for that project.
   //
   // A web project cannot run git, so its panel shows the last push and, in the
-  // desktop app, connects a git repository on this computer (git/GitWeb.svelte).
+  // desktop app, connects the project to a git repository kept on this computer
+  // (git/GitWeb.svelte).
   // A folder project has a folder, so the panel runs git on it: the link to its
   // web project that the Sync tab used to hold, then the folder's own
   // repository (git/GitLibrePaper.svelte, git/GitRepository.svelte). The state
@@ -20,9 +21,9 @@
     web = null,
     slug = "",
     linkKey = "",
-    // The desktop app connects a repository: the clone of an address, or a folder.
+    // The desktop app connects a repository: its connection, and a folder to keep.
     desktop = false,
-    onclone = undefined,
+    connection = null,
     onfolder = undefined,
     // A folder project: the two controllers, the differ the editor area shows,
     // and the title offered when the folder is published.
@@ -42,7 +43,7 @@
       <GitRepository {git} {differ} {open} {ondiff} />
     </div>
   {:else}
-    <GitWeb {web} {slug} {linkKey} {open} {desktop} {onclone} {onfolder} />
+    <GitWeb {web} {slug} {linkKey} {open} {desktop} {connection} {onfolder} />
   {/if}
 </section>
 

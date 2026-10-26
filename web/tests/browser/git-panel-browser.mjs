@@ -7,8 +7,9 @@
 // change list, commit and the identity prompt, branches, pull and push with
 // their refusals and the sign-in help, Sync, and the Diff button.
 //
-// A web project: the last push, and in the desktop app the connect form: a
-// clone of an address, a folder, the refusals and the waiting while one runs.
+// A web project: the last push, and in the desktop app the connection to a
+// repository: the connect form and its refusals, a folder, Pull and Push with
+// the version name, the merge settled file by file, and the sign-in.
 //
 // Both modes are drawn from 260 to 600 px wide without sideways scrolling.
 //
@@ -39,6 +40,7 @@ import { createLocalSync } from ${JSON.stringify(join(root, "web/src/lib/reader/
 import { createLocalGit } from ${JSON.stringify(join(root, "web/src/lib/reader/local-git.svelte.js"))};
 import { createGitDiff } from ${JSON.stringify(join(root, "web/src/lib/reader/git-diff.svelte.js"))};
 import { createWebGit } from ${JSON.stringify(join(root, "web/src/lib/reader/web-git.svelte.js"))};
+import { createWebConnection } from ${JSON.stringify(join(root, "web/src/lib/reader/web-connection.svelte.js"))};
 import { day } from ${JSON.stringify(join(root, "web/src/lib/dates.js"))};
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
@@ -118,6 +120,38 @@ const gitApi = {
   gitSync: async (id, message) => { record("gitSync", message); return settle(scene().syncs.shift()); },
 };
 
+// The desktop app's connection of the web project: the status it keeps, and what
+// the routes do to it. Pull and push answer what the scene sets; a connect that
+// fails throws the refusal the desktop app gives for a repository linked elsewhere.
+const connectionApi = {
+  connectionStatus: async () => { record("connectionStatus"); return structuredClone(scene().connection); },
+  connectRepository: async (project, url) => {
+    record("connectRepository", url);
+    if (scene().connectFails) throw refusal({ message: "this repository is linked to another LibrePaper project", status: 409, body: { reason: "linked" } });
+    scene().connection = structuredClone(scene().afterConnect);
+    return structuredClone(scene().connection);
+  },
+  pullConnection: async () => { record("pullConnection"); return settle(scene().pullAnswer); },
+  pushConnection: async () => { record("pushConnection"); return settle(scene().pushAnswer); },
+  resolveConnection: async (project, path, keep) => {
+    record("resolveConnection", path, keep);
+    const left = scene().connection.merging.conflicts.filter((entry) => entry !== path);
+    scene().connection = { ...scene().connection, merging: left.length ? { side: "repository", conflicts: left } : null };
+    return structuredClone(scene().connection);
+  },
+  loginConnection: async () => { record("loginConnection"); return { authorization_id: "auth-1", user_code: "ABCD-EFGH" }; },
+  loginConnectionComplete: async (project, authorizationId) => {
+    record("loginConnectionComplete", authorizationId);
+    scene().connection = { ...scene().connection, signed_in: true };
+    return structuredClone(scene().connection);
+  },
+  disconnectConnection: async () => {
+    record("disconnectConnection");
+    scene().connection = { connected: false, signed_in: scene().connection.signed_in };
+    return structuredClone(scene().connection);
+  },
+};
+
 const webApi = {
   history: async (slug, key, after) => {
     record("history", slug, key, after);
@@ -132,10 +166,11 @@ Object.defineProperty(navigator, "clipboard", {
 });
 
 let component;
-const destroy = () => { component?.$destroy(); component = null; };
+let connection;
+const destroy = () => { component?.$destroy(); component = null; connection?.dispose(); connection = null; };
 const defaults = () => ({
   calls: [], saves: 0, pulls: [], pushes: [], gitPulls: [], gitPushes: [], commits: [], syncs: [],
-  status: { signed_in: false, linked: false }, repo: noRepo(), branches: { current: "main", branches: ["main"] },
+  status: { signed_in: false, linked: false }, connection: { connected: false, signed_in: true }, repo: noRepo(), branches: { current: "main", branches: ["main"] },
   pages: [{ cursor: null, next: null, labels: [] }],
 });
 
@@ -163,9 +198,17 @@ const mountFolder = async (next = {}, props = {}) => {
 const mountWeb = async (next = {}, props = {}) => {
   destroy();
   window.scene = { ...defaults(), ...next };
+  connection = createWebConnection({
+    api: connectionApi, project: "https://app.example/docs/paper",
+    nameVersion: async (message) => { record("nameVersion", message); },
+    signedIn: async () => scene().session !== false,
+    approve: async (code) => { record("approve", code); },
+    open: (url) => { record("open", url); },
+    wait: async () => {},
+  });
   component = createClassComponent({ component: Git, target: document.getElementById("panel"), props: {
     local: false, open: true, web: createWebGit({ api: webApi }), slug: "paper", linkKey: "",
-    desktop: false, onclone: async () => {}, onfolder: async () => {}, ...props,
+    desktop: false, connection, onfolder: async () => {}, ...props,
   } });
   await tick();
 };
@@ -730,7 +773,7 @@ window.gitPanelCheck = async () => {
   check(text().includes("Last pushed by Alice, 20 min ago: Reword the greeting"), "it names the last push: " + text());
   check(calls("history").length === 1 && calls("history")[0][1] === "paper", "from the history");
   check(text().includes("To connect a git repository, open this project in the LibrePaper desktop app."), "the browser says where to connect: " + text());
-  check(!panel().querySelector("pre") && !button("Clone and connect…") && !button("Use a folder on this computer…"), "the browser shows no commands and no connect form");
+  check(!panel().querySelector("pre") && !button("Connect") && !button("Use a folder on this computer…"), "the browser shows no commands and no connect form");
   const docs = [...panel().querySelectorAll("a")].find((node) => node.getAttribute("href") === "/docs/git.html");
   check(docs && docs.textContent.trim() === "Read the Git docs" && docs.target === "_blank" && docs.rel.includes("noopener"), "the docs are one link away");
   const action = [...panel().querySelectorAll("a")].find((node) => node.getAttribute("href") === "/docs/git.html#github-action");
@@ -745,46 +788,76 @@ window.gitPanelCheck = async () => {
   await flush();
   check(text().includes("The last push could not be read."), "a history that cannot be read is said: " + text());
 
-  // In the desktop app the panel connects a repository: the address is checked, trimmed and cloned.
-  const cloned = [];
+  // In the desktop app and not connected, the panel connects the project: the address is checked and trimmed, and a folder can be kept instead.
+  const connectedStatus = { connected: true, signed_in: true, url: "https://github.com/you/paper.git", branch: "main", merging: null };
   let folders = 0;
-  await mountWeb({}, { desktop: true, onclone: async (url) => { cloned.push(url); }, onfolder: async () => { folders += 1; } });
+  await mountWeb({ connection: { connected: false, signed_in: true }, afterConnect: connectedStatus }, { desktop: true, onfolder: async () => { folders += 1; } });
   await flush();
   check(headings() === "Repository|Connect a repository", "the desktop app adds the connect section: " + headings());
-  check(text().includes("Work on this project in a git repository on this computer. Git uses your own sign-in."), "and says what it does: " + text());
+  check(text().includes("Connect this project to a git repository. Git uses your own sign-in."), "and says what it does: " + text());
   check(field("Repository address")?.placeholder === "https://github.com/owner/repo.git", "an address field with an example");
-  check(text().includes("An empty folder, or a clone you already have."), "the folder choice says what it takes");
+  check(text().includes("To edit in a clone you already have, or in a new empty folder."), "the folder choice says what it takes");
   await widths("with the connect form");
 
   await type(field("Repository address"), "https://user:secret@github.com/you/paper.git");
-  await press("Clone and connect…");
-  check(alert().includes("That address contains a password") && cloned.length === 0, "an address with a password is refused here, and not sent: " + alert());
+  await press("Connect");
+  check(alert().includes("That address contains a password") && calls("connectRepository").length === 0, "an address with a password is refused here, and not sent: " + alert());
 
-  await type(field("Repository address"), "   https://github.com/you/paper.git  ");
-  await press("Clone and connect…");
-  check(cloned.length === 1 && cloned[0] === "https://github.com/you/paper.git", "the trimmed address is cloned: " + JSON.stringify(cloned));
   await press("Use a folder on this computer…");
   check(folders === 1, "the folder button calls onfolder");
 
-  // A clone that is still running holds both controls, and a refused one says why.
-  let finish;
-  await mountWeb({}, { desktop: true, onclone: () => new Promise((resolve) => { finish = resolve; }) });
-  await flush();
-  await type(field("Repository address"), "git@github.com:you/paper.git");
-  await press("Clone and connect…");
-  check(button("Cloning…")?.disabled && button("Use a folder on this computer…")?.disabled, "while a clone runs, both controls wait: " + text());
-  finish();
-  await flush();
-  check(button("Clone and connect…") && !button("Clone and connect…").disabled, "and they are free again when it ends");
+  await type(field("Repository address"), "   https://github.com/you/paper.git  ");
+  await press("Connect");
+  check(calls("connectRepository").length === 1 && calls("connectRepository")[0][1] === "https://github.com/you/paper.git", "the trimmed address is connected: " + JSON.stringify(calls("connectRepository")));
+  check(headings() === "Repository|Connected repository" && text().includes("https://github.com/you/paper.git, branch main"), "and the connected repository is shown: " + text());
 
-  await mountWeb({}, { desktop: true, onclone: async () => { throw new Error("The desktop app could not reach that host."); }, onfolder: async () => { throw new Error("choose an empty folder or a git repository"); } });
+  // A connect the desktop app refuses says why, and the form stays.
+  await mountWeb({ connection: { connected: false, signed_in: true }, connectFails: true }, { desktop: true });
   await flush();
-  await type(field("Repository address"), "https://github.com/you/missing.git");
-  await press("Clone and connect…");
-  check(alert() === "The desktop app could not reach that host.", "a rejected clone shows its message: " + alert());
-  await press("Use a folder on this computer…");
-  check(alert() === "choose an empty folder or a git repository", "a rejected folder shows its message: " + alert());
+  await type(field("Repository address"), "https://github.com/you/paper.git");
+  await press("Connect");
+  check(alert() === "this repository is linked to another LibrePaper project" && button("Connect") && !button("Connecting…"), "a refused connect shows its message: " + alert());
   await widths("with a refusal shown");
+
+  // Connected and signed in: Pull writes what came in, and Push names the version before it sends it.
+  await mountWeb({ connection: connectedStatus, afterConnect: connectedStatus, pullAnswer: { status: connectedStatus, pushed: { files: 2 } }, pushAnswer: { status: connectedStatus, pushed: "pushed" } }, { desktop: true });
+  await flush();
+  check(headings() === "Repository|Connected repository", "a connected project shows its repository: " + headings());
+  check(text().includes("Pull brings the repository's commits into this project. Push names this version and sends it to the repository."), "and says what Pull and Push do: " + text());
+  check(field("Version name")?.value === "Edits from LibrePaper", "the version name starts with its default");
+  await widths("with a connected repository");
+
+  await press("Pull");
+  check(calls("pullConnection").length === 1 && text().includes("Pulled 2 files into the project."), "Pull says what came in: " + text());
+  await type(field("Version name"), "Tighter abstract");
+  await press("Push");
+  check(calls("nameVersion").length === 1 && calls("nameVersion")[0][1] === "Tighter abstract", "the version is named first: " + JSON.stringify(calls("nameVersion")));
+  check(calls("pushConnection").length === 1 && text().includes("Pushed to main."), "then the push is sent and says so: " + text());
+  check(field("Version name").value === "Edits from LibrePaper", "the default name comes back after a push");
+
+  await press("Disconnect");
+  check(calls("disconnectConnection").length === 1 && headings() === "Repository|Connect a repository", "Disconnect forgets the copy and shows the connect form: " + headings());
+
+  // Merging: the two files are settled one at a time, and Pull and Push wait until the merge is done.
+  const merging = { ...connectedStatus, merging: { side: "repository", conflicts: ["intro.tex", "chapters/outline.tex"] } };
+  await mountWeb({ connection: merging }, { desktop: true });
+  await flush();
+  check(text().includes("These files changed in both the project and the repository. Choose which version to keep."), "a merge says what to choose: " + text());
+  check(button("Pull")?.disabled && button("Push")?.disabled, "while merging, Pull and Push wait: " + text());
+  await press("Keep project's");
+  check(calls("resolveConnection").length === 1 && calls("resolveConnection")[0][1] === "intro.tex" && calls("resolveConnection")[0][2] === "project", "Keep project's keeps the project's file: " + JSON.stringify(calls("resolveConnection")));
+  check(!text().includes("The merge is done."), "the merge is not done while a file is left");
+  await press("Take repository's");
+  check(calls("resolveConnection").length === 2 && calls("resolveConnection")[1][1] === "chapters/outline.tex" && calls("resolveConnection")[1][2] === "repository", "Take repository's takes the repository's file: " + JSON.stringify(calls("resolveConnection")));
+  check(text().includes("The merge is done. Pull or Push again."), "after the last file the merge is done: " + text());
+
+  // Not signed in: the panel asks for the sign-in, which approves the code here.
+  await mountWeb({ connection: { connected: true, signed_in: false, url: "https://github.com/you/paper.git", branch: "main", merging: null } }, { desktop: true });
+  await flush();
+  check(text().includes("Sign in so the desktop app can reach this project.") && !button("Pull"), "a project not signed in asks for the sign-in: " + text());
+  await press("Sign in");
+  check(calls("loginConnection").length === 1 && calls("approve")[0][1] === "ABCD-EFGH", "Sign in gets a code and approves it here: " + JSON.stringify(window.scene.calls));
+  check(button("Pull") && !text().includes("Sign in so the desktop app can reach this project."), "and the repository is shown once signed in: " + text());
 
   check(!/[\\u2013\\u2014]/.test(document.getElementById("panel").innerText), "no dashes in the panel text");
   return true;
@@ -831,7 +904,7 @@ try {
   await tab.navigate(`http://127.0.0.1:${port}/`);
   await until("git panel component", () => tab.evaluate("Boolean(window.ready)"));
   assert.equal(await tab.evaluate("window.gitPanelCheck()"), true);
-  console.log("git panel: folder mode (sign-in, link, pull, push, repository section, commit, branches, remote, sync, diff) and web mode (last push, connect a repository), narrow widths");
+  console.log("git panel: folder mode (sign-in, link, pull, push, repository section, commit, branches, remote, sync, diff) and web mode (last push, connection to a repository), narrow widths");
 } finally {
   await tab?.close(); server?.close(); removeTemporary(temporary);
 }

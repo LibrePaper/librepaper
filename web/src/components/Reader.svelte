@@ -17,6 +17,7 @@
   import { createLocalGit } from "../lib/reader/local-git.svelte.js";
   import { createGitDiff } from "../lib/reader/git-diff.svelte.js";
   import { createWebGit } from "../lib/reader/web-git.svelte.js";
+  import { createWebConnection } from "../lib/reader/web-connection.svelte.js";
   import { diagnosticContext } from "../lib/assistant-review.js";
   import { sourcePassage } from "../lib/assistant.js";
   import { candidateTree, capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
@@ -25,7 +26,7 @@
   import { parse as parseSynctex, lineAt as synctexLineAt } from "../lib/synctex.js";
   import * as localQuarto from "../lib/desktop/client.js";
   import { backups as backupStatusStore } from "../lib/desktop/backups.svelte.js";
-  import { cloneRepository, folderProjectHref, keepFolderProject } from "../lib/desktop/projects.js";
+  import { folderProjectHref, keepFolderProject } from "../lib/desktop/projects.js";
   import { listenForQuit } from "../lib/desktop/quit.js";
   import { basename } from "../lib/file-manager.js";
   import { createAnnotations } from "../lib/reader/annotations.svelte.js";
@@ -1585,6 +1586,28 @@
   // A web project's Git panel: the last push.
   const webGit = LOCAL ? null : createWebGit();
   $effect(() => () => webGit?.dispose());
+  // The desktop app's connection of this project to a git repository, for an
+  // editor. It is made once the session says the person may edit, which is
+  // after this script runs. A version is named before a push sends it, and the
+  // history timeline is read again when it is open, so the new name shows.
+  let webConnection = $state(null);
+  $effect(() => {
+    if (LOCAL || !hasDesktop || !mayEdit) return;
+    const connection = createWebConnection({
+      project: `${location.origin}/docs/${SLUG}`,
+      nameVersion: async (message) => {
+        await history.label(SLUG, "current", message, keyHeaders(KEY), crypto.randomUUID());
+        if (timeline.state.loaded) void timeline.load();
+      },
+      signedIn: async () => Boolean((await whoami())?.provider),
+      approve: (userCode) => post("/api/auth/device/approve", { user_code: userCode }),
+    });
+    webConnection = connection;
+    return () => {
+      connection.dispose();
+      webConnection = null;
+    };
+  });
   function openGitDiff(change) {
     void gitDiff.show(change.path, change.kind, change.from);
     void startEditing().then(() => showMobileView("source"));
@@ -2633,14 +2656,6 @@
       const text = refused ? `${error.message[0].toUpperCase()}${error.message.slice(1)}.` : error?.message || "The desktop app could not keep a folder for this project.";
       say(text, { kind: refused ? "note" : "problem", id: "reader:keep-folder" });
     }
-  }
-
-  // The Git panel connects a repository: the desktop app clones the address
-  // into a folder chosen by the person, links the clone to this project and
-  // pulls into it. The folder project then opens. Errors throw, for the panel.
-  async function cloneIntoFolder(url) {
-    const project = await cloneRepository(url, `${location.origin}/docs/${SLUG}`);
-    if (project) await leaveTo(folderProjectHref(project.id));
   }
 
   // Whether the desktop app builds exports with the command for this format:
@@ -4244,7 +4259,7 @@
   {#snippet gitPanel()}
     <Git local={LOCAL} open={panel === "git" && shown.comments}
       web={webGit} slug={SLUG} linkKey={KEY} desktop={hasDesktop}
-      onclone={cloneIntoFolder} onfolder={keepFolderFromPanel}
+      connection={webConnection} onfolder={keepFolderFromPanel}
       sync={localSync} git={localGit} differ={gitDiff} defaultTitle={doc.title || ""} ondiff={openGitDiff} />
   {/snippet}
 
