@@ -624,8 +624,10 @@ fn pathspec_list(paths: &[String]) -> Vec<u8> {
 }
 
 /// Stages and commits. Everything changed is committed unless `paths` names
-/// the files to commit, which are then the only ones. A merge in progress is
-/// finished with all of its changes. Answers the new commit's id.
+/// the files to commit, which are then the only ones. A chosen path that is in
+/// neither the index nor the working tree, such as the old name of a staged
+/// rename, is committed as a deletion. A merge in progress is finished with all
+/// of its changes. Answers the new commit's id.
 async fn run_commit(
     root: &Path,
     message: &str,
@@ -677,15 +679,45 @@ async fn run_commit(
     let committed = match paths.filter(|_| !merging) {
         Some(paths) => {
             let list = pathspec_list(paths);
-            let staged = run_input(
+            let known = run_input(
                 root,
                 Limit::Local,
-                &["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+                &[
+                    "ls-files",
+                    "-z",
+                    "--pathspec-from-file=-",
+                    "--pathspec-file-nul",
+                ],
                 list.clone(),
             )
             .await?;
-            if !staged.success() {
-                return Err(declined(&staged));
+            if !known.success() {
+                return Err(declined(&known));
+            }
+            let listed = String::from_utf8_lossy(&known.stdout);
+            let tracked: BTreeSet<&str> = listed.split('\0').collect();
+            // A chosen path in neither the index nor the working tree, such as
+            // the old name of a staged rename, is left to the commit, which
+            // records its deletion.
+            let stage: Vec<String> = paths
+                .iter()
+                .filter(|path| {
+                    tracked.contains(path.as_str())
+                        || std::fs::symlink_metadata(root.join(path)).is_ok()
+                })
+                .cloned()
+                .collect();
+            if !stage.is_empty() {
+                let staged = run_input(
+                    root,
+                    Limit::Local,
+                    &["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+                    pathspec_list(&stage),
+                )
+                .await?;
+                if !staged.success() {
+                    return Err(declined(&staged));
+                }
             }
             run_input(
                 root,
@@ -1080,7 +1112,9 @@ pub(super) async fn handle_pull(
 /* ----------------------------------------------------------------- push */
 
 /// `git push` of the current branch, never forced and never after a pull. The
-/// first push of a branch sets its upstream.
+/// push names one refspec: the local branch, to the branch its upstream points
+/// at. The repository's `push.default` and `remote.<name>.push` settings do not
+/// choose what goes. The first push of a branch sets its upstream.
 async fn run_push(root: &Path) -> Result<Value, Failure> {
     require_repository(root)?;
     let status = read_status(root).await?;
@@ -1089,10 +1123,21 @@ async fn run_push(root: &Path) -> Result<Value, Failure> {
     };
     let remotes = read_remotes(root).await?;
     let remote = pick_remote(root, &status, &remotes).await?;
+    let prefix = format!("{remote}/");
+    let target = match status
+        .upstream
+        .as_deref()
+        .and_then(|upstream| upstream.strip_prefix(prefix.as_str()))
+    {
+        Some(rest) => rest,
+        None => branch.as_str(),
+    };
+    let refspec = format!("refs/heads/{branch}:refs/heads/{target}");
     let mut args = vec!["push"];
     if status.upstream.is_none() {
-        args.extend(["-u", remote.as_str(), branch.as_str()]);
+        args.push("-u");
     }
+    args.extend(["--", remote.as_str(), refspec.as_str()]);
     let output = run(root, Limit::Transport, &args).await?;
     if output.success() {
         let state = if output
@@ -1711,6 +1756,47 @@ mod tests {
         }
     }
 
+    /// A repository with `a.tex` and `b.tex` committed, then `a.tex` renamed to
+    /// `c.tex` in the index and `b.tex` edited in the working tree.
+    async fn with_staged_rename() -> Fixture {
+        let fixture = Fixture::new().await;
+        fixture.init().await;
+        fixture.write("a.tex", "one\n");
+        fixture.write("b.tex", "two\n");
+        fixture.commit_all("First").await;
+        plain_git(fixture.root(), &["mv", "a.tex", "c.tex"]);
+        fixture.write("b.tex", "two and more\n");
+        fixture
+    }
+
+    #[tokio::test]
+    async fn a_partial_commit_can_name_both_sides_of_a_staged_rename() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = with_staged_rename().await;
+        let both = json!({"message": "Rename a", "paths": ["c.tex", "a.tex"]});
+        let (status, body) = fixture.post("/commit", both).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            plain_git(fixture.root(), &["ls-tree", "--name-only", "HEAD"]),
+            "b.tex\nc.tex"
+        );
+        assert_eq!(
+            fixture.status().await["changes"],
+            json!([{"path": "b.tex", "kind": "modified"}])
+        );
+
+        let fixture = with_staged_rename().await;
+        let new_name = json!({"message": "Rename a", "paths": ["c.tex"]});
+        let (status, body) = fixture.post("/commit", new_name).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            plain_git(fixture.root(), &["ls-tree", "--name-only", "HEAD"]),
+            "a.tex\nb.tex\nc.tex"
+        );
+    }
+
     #[tokio::test]
     async fn status_names_what_changed() {
         if !git_ready().await {
@@ -1898,6 +1984,32 @@ mod tests {
             plain_git(&bare, &["rev-parse", "main"]),
             plain_git(fixture.root(), &["rev-parse", "HEAD"])
         );
+    }
+
+    #[tokio::test]
+    async fn a_push_stays_refused_when_the_repository_configures_a_forced_refspec() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let bare = fixture.with_remote().await;
+        let other = fixture.other(&bare);
+        commit_elsewhere(&other, "b.txt", "two\n", "Add b");
+        let remote_commit = plain_git(&other, &["rev-parse", "HEAD"]);
+        fixture.write("c.txt", "three\n");
+        fixture.commit_all("Add c").await;
+        plain_git(
+            fixture.root(),
+            &[
+                "config",
+                "remote.origin.push",
+                "+refs/heads/main:refs/heads/main",
+            ],
+        );
+
+        let (status, body) = fixture.post_empty("/push").await;
+        assert_eq!((status, &body["reason"]), (409, &json!("behind")), "{body}");
+        assert_eq!(plain_git(&bare, &["rev-parse", "main"]), remote_commit);
     }
 
     #[tokio::test]
