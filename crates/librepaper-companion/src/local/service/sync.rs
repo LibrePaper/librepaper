@@ -612,16 +612,17 @@ async fn publish_folder(
             "this folder is already linked to a web project",
         ));
     }
-    let client = client_for(inner, &origin_site(origin)?)?;
+    let client = Arc::new(client_for(inner, &origin_site(origin)?)?);
     let exclude = folder.render_outputs(inner);
-    let link = publish(
-        &client,
-        &folder.binding.root,
-        folder.store.as_ref(),
-        title,
-        &exclude,
-    )
+    let (root, state_home) = (folder.binding.root.clone(), inner.state_home.clone());
+    let title = title.to_owned();
+    let handle = tokio::runtime::Handle::current();
+    let link = tokio::task::spawn_blocking(move || {
+        let store = store_for(&root, &state_home);
+        handle.block_on(publish(&client, &root, store.as_ref(), &title, &exclude))
+    })
     .await
+    .map_err(|_| refuse(500, "the publish stopped"))?
     .map_err(|error| failed(&error))?;
     let mut body = folder_status(inner, folder, origin).await?;
     body["url"] = Value::String(project_url(&link));
@@ -676,20 +677,21 @@ async fn run_pull(
     theirs: Vec<String>,
 ) -> Result<Value, Failure> {
     let state = folder.linked(origin)?;
-    let client = client_for(inner, &state.link.site)?;
+    let client = Arc::new(client_for(inner, &state.link.site)?);
     let options = PullOptions {
         merge: true,
         mine,
         theirs,
         exclude: folder.render_outputs(inner),
     };
-    let outcome = pull(
-        &client,
-        &folder.binding.root,
-        folder.store.as_ref(),
-        &options,
-    )
+    let (root, state_home) = (folder.binding.root.clone(), inner.state_home.clone());
+    let handle = tokio::runtime::Handle::current();
+    let outcome = tokio::task::spawn_blocking(move || {
+        let store = store_for(&root, &state_home);
+        handle.block_on(pull(&client, &root, store.as_ref(), &options))
+    })
     .await
+    .map_err(|_| refuse(500, "the pull stopped"))?
     .map_err(|error| failed(&error))?;
     match outcome {
         PullOutcome::Folder {
@@ -791,19 +793,20 @@ async fn run_push(
         return Err(refuse(400, "a push needs a message"));
     }
     let state = folder.linked(origin)?;
-    let client = client_for(inner, &state.link.site)?;
+    let client = Arc::new(client_for(inner, &state.link.site)?);
     let options = PushOptions {
         message: message.to_owned(),
         author: None,
         exclude: folder.render_outputs(inner),
     };
-    let outcome = push(
-        &client,
-        &folder.binding.root,
-        folder.store.as_ref(),
-        &options,
-    )
+    let (root, state_home) = (folder.binding.root.clone(), inner.state_home.clone());
+    let handle = tokio::runtime::Handle::current();
+    let outcome = tokio::task::spawn_blocking(move || {
+        let store = store_for(&root, &state_home);
+        handle.block_on(push(&client, &root, store.as_ref(), &options))
+    })
     .await
+    .map_err(|_| refuse(500, "the push stopped"))?
     .map_err(|error| failed(&error))?;
     match outcome {
         PushOutcome::Nothing => Ok(json!({"nothing": true})),
