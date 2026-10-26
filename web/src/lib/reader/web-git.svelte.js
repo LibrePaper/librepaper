@@ -85,15 +85,17 @@ export function createWebGit({ api = server } = {}) {
   async function change(/** @type {string} */ name, /** @type {unknown} */ body) {
     if (current.busy || closed || !target.owner) return null;
     const { slug } = target;
-    const request = generation;
+    // A read still in flight was asked before this change, so its list may
+    // predate it. It is dropped when it lands.
+    generation += 1;
     set({ busy: name, error: "" });
     try {
       const answer = await api.change(slug, body);
-      if (slug !== target.slug || request !== generation) return null;
+      if (slug !== target.slug || closed) return null;
       set({ tokens: (answer?.tokens ?? []).filter(isEdit) });
       return answer;
     } catch (error) {
-      if (request === generation) set({ error: error?.message || "The tokens could not be changed." });
+      if (slug === target.slug) set({ error: error?.message || "The tokens could not be changed." });
       return null;
     } finally {
       set({ busy: "" });

@@ -227,4 +227,28 @@ const edit = (id, name = "GitHub Action") => ({ id, role: "editor", name, until:
   assert.equal(web.state.reveal, null, "a token that arrives after the panel is gone is not kept");
 }
 
+// A read that starts while Create waits does not lose the token that Create makes.
+{
+  const answers = [];
+  const api = {
+    history: async () => ({ labels: [], next: null }),
+    sharing: async () => sharing([edit("t1")]),
+    change: () => new Promise((resolve) => answers.push(resolve)),
+  };
+  const web = createWebGit({ api });
+  await web.refresh("paper", { owner: true });
+  assert.deepEqual(web.state.tokens.map((token) => token.id), ["t1"]);
+
+  const created = web.create();
+  await idle();
+  assert.equal(web.state.busy, "create");
+  // The read lands before the answer. Its list predates the new token.
+  await web.refresh("paper", { owner: true });
+  answers.shift()({ ...sharing([edit("t1"), edit("t9")]), created: { id: "t9", kind: "token", token: "lpt_fresh" } });
+  await created;
+  assert.deepEqual(web.state.reveal, { token: "lpt_fresh" }, "the token made while a read was in flight is shown");
+  assert.deepEqual(web.state.tokens.map((token) => token.id), ["t1", "t9"], "and the list kept is the answer's, not the read's");
+  assert.equal(web.state.busy, "");
+}
+
 console.log("web-git: the last push, the Edit tokens, creating one shown once, and revoking it");
