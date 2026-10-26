@@ -679,18 +679,9 @@ async fn run_commit(
     let committed = match paths.filter(|_| !merging) {
         Some(paths) => {
             let list = pathspec_list(paths);
-            let known = run_input(
-                root,
-                Limit::Local,
-                &[
-                    "ls-files",
-                    "-z",
-                    "--pathspec-from-file=-",
-                    "--pathspec-file-nul",
-                ],
-                list.clone(),
-            )
-            .await?;
+            // `ls-files` takes no pathspec file, and the index is small, so the
+            // whole of it is read.
+            let known = run(root, Limit::Local, &["ls-files", "-z"]).await?;
             if !known.success() {
                 return Err(declined(&known));
             }
