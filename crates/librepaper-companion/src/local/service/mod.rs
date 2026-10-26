@@ -57,6 +57,7 @@ pub(crate) fn normalized_server(raw: &str) -> Result<String, String> {
     control::normalized_server(raw)
 }
 
+mod connection;
 mod git;
 mod jobs;
 mod projects;
@@ -344,6 +345,8 @@ pub(super) struct Inner {
     projects: projects::Registry,
     /// The sign-ins of folder projects waiting for their code to be approved.
     sync_logins: sync::Logins,
+    /// The connections with a git operation running.
+    connections: connection::Busy,
 }
 
 /// The running local service: owns the job table and the background worker
@@ -402,6 +405,7 @@ impl LocalService {
             admission: Mutex::new(()),
             projects: projects::Registry::new(projects::Timing::default()),
             sync_logins: sync::Logins::new(),
+            connections: connection::Busy::default(),
         });
         tokio::spawn(run_worker(inner.clone()));
         tokio::spawn(run_reaper(inner.clone()));
@@ -649,6 +653,30 @@ async fn dispatch(
         }
         ["projects", "open"] if *method == Method::POST => {
             projects::handle_open(inner, headers, origin).await
+        }
+        ["connections"] if *method == Method::GET => {
+            connection::handle_status(inner, headers, origin, request).await
+        }
+        ["connections"] if *method == Method::POST => {
+            connection::handle_connect(inner, headers, origin, request).await
+        }
+        ["connections", "pull"] if *method == Method::POST => {
+            connection::handle_pull(inner, headers, origin, request).await
+        }
+        ["connections", "push"] if *method == Method::POST => {
+            connection::handle_push(inner, headers, origin, request).await
+        }
+        ["connections", "resolve"] if *method == Method::POST => {
+            connection::handle_resolve(inner, headers, origin, request).await
+        }
+        ["connections", "disconnect"] if *method == Method::POST => {
+            connection::handle_disconnect(inner, headers, origin, request).await
+        }
+        ["connections", "login"] if *method == Method::POST => {
+            connection::handle_login(inner, headers, origin, request).await
+        }
+        ["connections", "login", "complete"] if *method == Method::POST => {
+            connection::handle_login_complete(inner, headers, origin, request).await
         }
         ["projects", "keep"] if *method == Method::POST => {
             sync::handle_keep(inner, headers, origin, request).await
@@ -1248,6 +1276,7 @@ pub(super) mod test_support {
             admission: Mutex::new(()),
             projects: projects::Registry::new(projects::Timing::default()),
             sync_logins: sync::Logins::new(),
+            connections: connection::Busy::default(),
         })
     }
 

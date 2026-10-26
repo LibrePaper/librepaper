@@ -48,9 +48,9 @@ const NOT_LINKED: &str = "link this folder to a web project first";
 const OTHER_SITE: &str = "this folder is linked to a project on another site";
 
 /// A refusal: the status and the JSON body to answer with.
-type Failure = (u16, Value);
+pub(super) type Failure = (u16, Value);
 
-fn refuse(status: u16, error: &str) -> Failure {
+pub(super) fn refuse(status: u16, error: &str) -> Failure {
     (status, json!({"error": error}))
 }
 
@@ -72,7 +72,7 @@ fn token_refused(error: &Error) -> bool {
 /// answering badly is a 502; a mistake in what was asked is a 400; and the
 /// folder, the state record or git failing here is a 500. A merge that is still
 /// in progress is a 409 with the reason `merging`.
-fn failed(error: &Error) -> Failure {
+pub(super) fn failed(error: &Error) -> Failure {
     if token_refused(error) {
         return refuse(401, "sign in");
     }
@@ -88,7 +88,7 @@ fn failed(error: &Error) -> Failure {
     }
 }
 
-fn answer(result: Result<Value, Failure>) -> Reply {
+pub(super) fn answer(result: Result<Value, Failure>) -> Reply {
     match result {
         Ok(body) => write_json(200, &body),
         Err((status, body)) => write_json(status, &body),
@@ -176,12 +176,12 @@ fn site_text(site: &url::Url) -> &str {
 }
 
 /// The site the requesting page was served from.
-fn origin_site(origin: Option<&str>) -> Result<url::Url, Failure> {
+pub(super) fn origin_site(origin: Option<&str>) -> Result<url::Url, Failure> {
     url::Url::parse(&store::normalize_origin(origin.unwrap_or_default()))
         .map_err(|_| refuse(400, "missing or invalid X-LibrePaper-Origin header"))
 }
 
-fn same_site(left: &url::Url, right: &url::Url) -> bool {
+pub(super) fn same_site(left: &url::Url, right: &url::Url) -> bool {
     store::normalize_origin(left.as_str()) == store::normalize_origin(right.as_str())
 }
 
@@ -194,13 +194,13 @@ pub(super) fn parse_link(raw: &str, origin: Option<&str>) -> Result<Link, Failur
     Ok(link)
 }
 
-fn project_url(link: &Link) -> String {
+pub(super) fn project_url(link: &Link) -> String {
     format!("{}/docs/{}", site_text(&link.site), link.slug)
 }
 
 /// A client for `site` with the token this computer holds for it, or the 401
 /// that asks the page to sign in.
-fn client_for(inner: &Inner, site: &url::Url) -> Result<Client, Failure> {
+pub(super) fn client_for(inner: &Inner, site: &url::Url) -> Result<Client, Failure> {
     let token = credentials::stored_token_at(&inner.state_home, site.as_str());
     if token.is_empty() {
         return Err(refuse(401, "sign in"));
@@ -298,7 +298,8 @@ pub(super) async fn handle_status(
 
 struct PendingLogin {
     origin: String,
-    binding: String,
+    /// The folder's binding id, or `connection:<key>` for a connection.
+    owner: String,
     site: url::Url,
     device_code: String,
     expires: Instant,
@@ -373,30 +374,44 @@ pub(super) async fn handle_login(
         Ok(body) => body,
         Err(response) => return response,
     };
-    answer(begin_login(inner, &folder, origin, body.site).await)
+    let begun = async {
+        let site = folder_site(&folder, origin, body.site)?;
+        begin_login(inner, origin, site, &folder.binding.id).await
+    };
+    answer(begun.await)
 }
 
-/// Asks the site for a code. A linked folder signs in to its project's site;
-/// an unlinked one to the page's own, or to `site` when that names it.
-async fn begin_login(
-    inner: &Inner,
+/// The site a folder's sign-in is for: the site of its project when it is
+/// linked, else the page's own, or `site` when that names it.
+fn folder_site(
     folder: &Folder,
     origin: Option<&str>,
     site: Option<String>,
-) -> Result<Value, Failure> {
+) -> Result<url::Url, Failure> {
     let page = origin_site(origin)?;
-    let site = match (folder.state(origin)?, site) {
-        (Some(state), _) => state.link.site,
-        (None, None) => page,
+    match (folder.state(origin)?, site) {
+        (Some(state), _) => Ok(state.link.site),
+        (None, None) => Ok(page),
         (None, Some(raw)) => {
             let site =
                 url::Url::parse(raw.trim()).map_err(|_| refuse(400, "that site is not a URL"))?;
             if !same_site(&site, &page) {
                 return Err(refuse(400, "that is not the site of this page"));
             }
-            site
+            Ok(site)
         }
-    };
+    }
+}
+
+/// Asks `site` for a code on behalf of `owner`, a folder's binding id or
+/// `connection:<key>`, and answers the code the page shows. A newer sign-in
+/// for the same owner replaces the one before it.
+pub(super) async fn begin_login(
+    inner: &Inner,
+    origin: Option<&str>,
+    site: url::Url,
+    owner: &str,
+) -> Result<Value, Failure> {
     let (status, reply) = device_post(&site, "/api/auth/device", &json!({}))
         .await
         .map_err(|error| refuse(502, &format!("could not start the sign-in: {error}")))?;
@@ -412,8 +427,7 @@ async fn begin_login(
     let authorization_id = librepaper_base::util::random_token();
     {
         let mut pending = inner.sync_logins.live();
-        // A newer request for this folder replaces the one before it.
-        pending.retain(|_, login| login.binding != folder.binding.id);
+        pending.retain(|_, login| login.owner != owner);
         if pending.len() >= MAX_PENDING_LOGINS {
             return Err(refuse(
                 429,
@@ -424,7 +438,7 @@ async fn begin_login(
             authorization_id.clone(),
             PendingLogin {
                 origin: store::normalize_origin(origin.unwrap_or_default()),
-                binding: folder.binding.id.clone(),
+                owner: owner.to_owned(),
                 site: site.clone(),
                 device_code: device_code.to_owned(),
                 expires: Instant::now() + LOGIN_TTL,
@@ -458,18 +472,23 @@ pub(super) async fn handle_login_complete(
         Ok(body) => body,
         Err(response) => return response,
     };
-    answer(finish_login(inner, &folder, origin, &body.authorization_id).await)
+    let finished = async {
+        finish_login(inner, origin, &folder.binding.id, &body.authorization_id).await?;
+        folder_status(inner, &folder, origin).await
+    };
+    answer(finished.await)
 }
 
-/// Claims the token once the page has approved the code, stores it under the
-/// site's origin as the backups and the command line do, and answers the
-/// folder's status. A code not yet approved is a 400 the page retries.
-async fn finish_login(
+/// Claims the token once the page has approved the code for `owner`, stores it
+/// under the site's origin as the backups and the command line do, and answers
+/// the site it was stored for. A code not yet approved is a 400 the page
+/// retries.
+pub(super) async fn finish_login(
     inner: &Inner,
-    folder: &Folder,
     origin: Option<&str>,
+    owner: &str,
     authorization_id: &str,
-) -> Result<Value, Failure> {
+) -> Result<url::Url, Failure> {
     let (site, device_code) = {
         let pending = inner.sync_logins.live();
         let Some(login) = pending.get(authorization_id) else {
@@ -479,7 +498,7 @@ async fn finish_login(
             ));
         };
         if login.origin != store::normalize_origin(origin.unwrap_or_default())
-            || login.binding != folder.binding.id
+            || login.owner != owner
         {
             return Err(refuse(400, "the sign-in does not belong to this folder"));
         }
@@ -518,7 +537,7 @@ async fn finish_login(
     .map_err(|error| refuse(500, &format!("could not save the sign-in: {error}")))?
     .map_err(|error| refuse(500, &error))?;
     inner.sync_logins.live().remove(authorization_id);
-    folder_status(inner, folder, origin).await
+    Ok(site)
 }
 
 /* ---------------------------------------------------------- link, unlink */

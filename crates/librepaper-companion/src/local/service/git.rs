@@ -23,14 +23,12 @@ use super::*;
 
 use std::collections::BTreeSet;
 
-use super::sync::{link_and_pull, parse_link};
-
 use crate::local::bindings::ProjectBinding;
 use crate::local::git::status::{self, Status};
 use crate::local::git::{self, remote, validate, Limit, Output, RunError};
 
 /// The message `sync` commits with when the request names none.
-const SYNC_MESSAGE: &str = "Edits from LibrePaper";
+pub(super) const SYNC_MESSAGE: &str = "Edits from LibrePaper";
 /// The longest commit message taken.
 const MAX_MESSAGE_BYTES: usize = 16 * 1024;
 /// The largest side of a diff, in bytes.
@@ -41,11 +39,11 @@ const BINARY_PROBE_BYTES: usize = 8000;
 /// A refusal: the status and the JSON body to answer with.
 type Failure = (u16, Value);
 
-fn refuse(status: u16, error: &str) -> Failure {
+pub(super) fn refuse(status: u16, error: &str) -> Failure {
     (status, json!({"error": error}))
 }
 
-fn refuse_because(status: u16, reason: &str, error: &str) -> Failure {
+pub(super) fn refuse_because(status: u16, reason: &str, error: &str) -> Failure {
     (status, json!({"reason": reason, "error": error}))
 }
 
@@ -84,7 +82,7 @@ async fn optional_body<T: for<'de> serde::Deserialize<'de> + Default>(
 
 /// Runs Git in `root`. A Git that is missing or too old, or a command that
 /// ran out of time, is already the answer to send.
-async fn run(root: &Path, limit: Limit, args: &[&str]) -> Result<Output, Failure> {
+pub(super) async fn run(root: &Path, limit: Limit, args: &[&str]) -> Result<Output, Failure> {
     git::run(root, limit, args)
         .await
         .map_err(|error| run_failure(error, limit))
@@ -133,7 +131,7 @@ fn words(output: &Output) -> String {
 }
 
 /// Git refused, and the reason is its own words.
-fn declined(output: &Output) -> Failure {
+pub(super) fn declined(output: &Output) -> Failure {
     refuse(422, &words(output))
 }
 
@@ -147,7 +145,7 @@ fn network_failure(kind: remote::Kind, detail: &str) -> Failure {
 
 /// A failed command that talks to a remote: the remote's doing when what Git
 /// said shows it, else Git's own refusal.
-fn remote_failure(output: &Output) -> Failure {
+pub(super) fn remote_failure(output: &Output) -> Failure {
     match remote::classify(&output.said()) {
         Some(kind) => network_failure(kind, &words(output)),
         None => declined(output),
@@ -271,7 +269,7 @@ async fn identity_set(root: &Path) -> Result<bool, Failure> {
 }
 
 /// Whether a merge was started and not finished.
-async fn merge_in_progress(root: &Path) -> Result<bool, Failure> {
+pub(super) async fn merge_in_progress(root: &Path) -> Result<bool, Failure> {
     let output = run(
         root,
         Limit::Local,
@@ -288,7 +286,7 @@ async fn head_id(root: &Path) -> Result<Option<String>, Failure> {
 }
 
 /// The files with unresolved conflicts.
-async fn conflicted_paths(root: &Path) -> Result<Vec<String>, Failure> {
+pub(super) async fn conflicted_paths(root: &Path) -> Result<Vec<String>, Failure> {
     let output = run(
         root,
         Limit::Local,
@@ -1047,7 +1045,10 @@ pub(super) async fn handle_fetch(
 /// first, and a merge in progress must be finished. A branch with no upstream
 /// pulls the branch of that name from its remote, and finds nothing to pull
 /// when the remote has none.
-async fn run_pull(root: &Path, render_outputs: &BTreeSet<String>) -> Result<Value, Failure> {
+pub(super) async fn run_pull(
+    root: &Path,
+    render_outputs: &BTreeSet<String>,
+) -> Result<Value, Failure> {
     require_repository(root)?;
     let status = read_status(root).await?;
     if merge_in_progress(root).await? {
@@ -1125,7 +1126,7 @@ pub(super) async fn handle_pull(
 /// its own name. The repository's `push.default` and `remote.<name>.push`
 /// settings do not choose what goes. The first push of a branch sets its
 /// upstream.
-async fn run_push(root: &Path) -> Result<Value, Failure> {
+pub(super) async fn run_push(root: &Path) -> Result<Value, Failure> {
     require_repository(root)?;
     let status = read_status(root).await?;
     let Some(branch) = status.branch.clone() else {
@@ -1316,9 +1317,6 @@ pub(super) async fn handle_sync(
 #[derive(serde::Deserialize)]
 struct CloneBody {
     url: String,
-    /// The web project's page URL, `https://<site>/docs/<slug>`, when the clone
-    /// is to be linked to that project and pulled.
-    project: Option<String>,
 }
 
 /// Clones `url` into `<parent>/<name>`, fetches the state LibrePaper keeps in
@@ -1358,9 +1356,7 @@ async fn run_clone(
 }
 
 /// Clones a repository into a parent folder the person chooses and opens the
-/// clone as a project of the page's origin. With `project`, the clone is then
-/// linked to that web project and pulled, as `projects/keep` does for a folder.
-/// A `project` on another site is refused before the chooser opens.
+/// clone as a project of the page's origin.
 pub(super) async fn handle_clone(
     inner: &Arc<Inner>,
     headers: &HeaderMap,
@@ -1384,26 +1380,13 @@ pub(super) async fn handle_clone(
             &json!({"error": "A folder name cannot be made from that URL."}),
         );
     };
-    let link = match body
-        .project
-        .as_deref()
-        .map(|project| parse_link(project, origin))
-        .transpose()
-    {
-        Ok(link) => link,
-        Err((status, failure)) => return write_json(status, &failure),
-    };
     let parent = match projects::choose_root(inner, "Choose where to put the clone").await {
         Ok(parent) => parent,
         Err(response) => return response,
     };
-    let binding = match run_clone(inner, origin, &url, &name, &parent).await {
-        Ok(binding) => binding,
-        Err((status, failure)) => return write_json(status, &failure),
-    };
-    match link {
-        Some(link) => link_and_pull(inner, binding, origin, link).await,
-        None => write_json(200, &projects::opened(&binding)),
+    match run_clone(inner, origin, &url, &name, &parent).await {
+        Ok(binding) => write_json(200, &projects::opened(&binding)),
+        Err((status, failure)) => write_json(status, &failure),
     }
 }
 
@@ -2642,20 +2625,6 @@ mod tests {
         assert!(!parent.join("nothing").exists());
         let projects = fixture.inner.bindings.list_projects(PAGE);
         assert_eq!(projects.len(), 1, "only the fixture's own folder");
-    }
-
-    #[tokio::test]
-    async fn a_clone_for_a_project_on_another_site_is_refused_before_a_folder_is_asked_for() {
-        let fixture = Fixture::new().await;
-        let headers = test_support::bearer(&fixture.inner);
-        let request = json_request(json!({
-            "url": "https://github.com/o/r.git",
-            "project": "https://other.example/docs/abc123",
-        }));
-        let reply = handle_clone(&fixture.inner, &headers, Some(PAGE), request).await;
-        let (status, body) = read(reply).await;
-        assert_eq!(status, 400, "{body}");
-        assert!(body["error"].as_str().unwrap().contains("another site"));
     }
 
     #[tokio::test]
