@@ -9,6 +9,10 @@ pub enum Error {
     /// The directory has no recorded link to a project.
     #[error("this directory is not linked to a project")]
     NotLinked,
+    /// The repository has a merge in progress, so its files may hold conflict
+    /// markers.
+    #[error("a merge is in progress; resolve the conflicts and commit, then push")]
+    Merging,
     /// The server answered with a failure status.
     #[error("{detail} ({status})")]
     Http { status: u16, detail: String },
