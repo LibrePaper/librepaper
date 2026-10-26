@@ -1209,19 +1209,27 @@ fn record(steps: &mut Vec<Value>, step: &str, outcome: Result<Value, Failure>) -
 }
 
 /// Commits when the tree is dirty, pulls, then pushes, and stops at the first
-/// step that fails. A tree with nothing to commit has no commit step. A step
-/// that succeeds answers the commit's full id, or the status of the pull or
-/// the push.
+/// step that fails. A tree with nothing to commit has no commit step. A merge
+/// still in progress refuses before any step runs. Its conflicts belong to the
+/// person, who resolves them and commits, so Sync never commits them. A step
+/// that succeeds answers the commit's full id, or the status of the pull or the
+/// push.
 async fn run_sync(
     root: &Path,
     render_outputs: &BTreeSet<String>,
     message: Option<&str>,
 ) -> Result<Value, Failure> {
     require_repository(root)?;
+    if merge_in_progress(root).await? {
+        return Err(refuse_because(
+            409,
+            "merging",
+            "A merge is in progress. Resolve the conflicts in the editor, then Commit. Sync can run after that.",
+        ));
+    }
     let status = read_status(root).await?;
-    let merging = merge_in_progress(root).await?;
     let mut steps: Vec<Value> = Vec::new();
-    if !status.changes.is_empty() || merging {
+    if !status.changes.is_empty() {
         let message = message
             .map(str::trim)
             .filter(|message| !message.is_empty())
@@ -2286,6 +2294,19 @@ mod tests {
         assert_eq!(steps[1]["conflicts"], json!(["a.txt"]));
         assert!(steps[1]["detail"].as_str().unwrap().contains("1 file"));
         assert_eq!(fixture.status().await["merging"], true);
+
+        // Sync again: the markers are not committed or pushed, and the merge
+        // stays for the person to finish.
+        let head = plain_git(fixture.root(), &["rev-parse", "HEAD"]);
+        let main = plain_git(&bare, &["rev-parse", "main"]);
+        let (status, body) = fixture.post("/sync", json!({})).await;
+        assert_eq!(
+            (status, &body["reason"]),
+            (409, &json!("merging")),
+            "{body}"
+        );
+        assert_eq!(plain_git(fixture.root(), &["rev-parse", "HEAD"]), head);
+        assert_eq!(plain_git(&bare, &["rev-parse", "main"]), main);
 
         // No remote: the push fails after the commit and the pull.
         let fixture = Fixture::new().await;

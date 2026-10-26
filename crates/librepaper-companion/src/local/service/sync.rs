@@ -1377,6 +1377,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_linked_folder_that_becomes_a_repository_merges_on_its_first_pull() {
+        let (site, _task) = one_version_site("main\nedited on the web\n").await;
+        let fixture = Fixture::new(&site).await;
+        fixture.sign_in("lp_token");
+        fixture.link_to(&format!("{site}/docs/abc123"));
+        if init_repository(&fixture).is_none() {
+            return;
+        }
+
+        // The repository and the project share no commit, so the first merge
+        // joins them, and main.tex differs on both sides.
+        let (status, body) = fixture.pull(json!({})).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["repository"], true);
+        assert_eq!(body["merge"], json!({"conflicts": ["main.tex"]}));
+        let root = fixture.root();
+        assert!(git(root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_some());
+    }
+
+    #[tokio::test]
     async fn a_git_folder_with_uncommitted_changes_is_not_merged_into() {
         let (site, _task) = one_version_site("main\nedited on the web\n").await;
         let fixture = Fixture::new(&site).await;

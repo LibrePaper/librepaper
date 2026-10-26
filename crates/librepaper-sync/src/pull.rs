@@ -464,9 +464,35 @@ async fn asset_bytes(
     Ok(bytes)
 }
 
+/// What git wrote to stdout and stderr, trimmed.
+fn said(output: &std::process::Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+    .trim()
+    .to_string()
+}
+
 fn merge_fetched(git: &Git) -> Result<MergeOutcome, Error> {
     let before = git.rev("HEAD");
-    let output = git.output(&["merge", "--no-edit", MAIN_REF], None, &[])?;
+    let mut output = git.output(&["merge", "--no-edit", MAIN_REF], None, &[])?;
+    if !output.status.success() && said(&output).contains("unrelated histories") {
+        // The repository and the project describe the same project, so the
+        // first merge joins their histories. Git still reports each file that
+        // differs on both sides as a conflict.
+        output = git.output(
+            &[
+                "merge",
+                "--no-edit",
+                "--allow-unrelated-histories",
+                MAIN_REF,
+            ],
+            None,
+            &[],
+        )?;
+    }
     if output.status.success() {
         let after = git.rev("HEAD");
         return Ok(if after == before {
@@ -481,18 +507,7 @@ fn merge_fetched(git: &Git) -> Result<MergeOutcome, Error> {
     if !unmerged.is_empty() {
         return Ok(MergeOutcome::Conflicts(unmerged));
     }
-    let said = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let said = said.trim();
-    if said.contains("unrelated histories") {
-        return Err(Error::Git(format!(
-            "this repository and the project share no history; to join them, run: git merge --allow-unrelated-histories {MAIN_REF}"
-        )));
-    }
-    Err(Error::Git(format!("merge: {said}")))
+    Err(Error::Git(format!("merge: {}", said(&output))))
 }
 
 /// Makes a fetched version the one the directory is based on.
@@ -1343,5 +1358,111 @@ mod tests {
             0,
             "nothing was made outside the folder"
         );
+    }
+
+    /// Gives the test repository the identity a merge commit needs.
+    fn identify(git: &Git) {
+        git.run(&["config", "user.name", "Test"], None, &[])
+            .unwrap();
+        git.run(&["config", "user.email", "test@example.org"], None, &[])
+            .unwrap();
+        git.run(&["config", "commit.gpgsign", "false"], None, &[])
+            .unwrap();
+    }
+
+    fn write(git: &Git, path: &str, text: &str) {
+        std::fs::write(git.dir().join(path), text).unwrap();
+    }
+
+    /// Writes `MAIN_REF` the way a first pull does: one commit per version,
+    /// the first with no parent, so the chain shares no history with the
+    /// repository it is merged into.
+    fn project_versions(git: &Git, versions: &[Vec<(&str, &str)>]) {
+        let known: BTreeSet<String> = versions
+            .iter()
+            .flatten()
+            .map(|(path, _)| path.to_string())
+            .collect();
+        let mut chain = Chain::new(git, "app.example.org", None, known).unwrap();
+        let mut tip = None;
+        for entries in versions {
+            let files: BTreeMap<String, FileRecord> = entries
+                .iter()
+                .map(|(path, text)| {
+                    let record = FileRecord {
+                        kind: Kind::Text,
+                        sha: sha256_hex(text.as_bytes()),
+                    };
+                    (path.to_string(), record)
+                })
+                .collect();
+            let texts: BTreeMap<String, String> = entries
+                .iter()
+                .map(|(path, text)| (path.to_string(), text.to_string()))
+                .collect();
+            let meta = Meta {
+                by: "Bob Jones",
+                at: "2026-10-25T12:00:00Z",
+                message: "Edit",
+                version: None,
+                skip_if_unchanged: false,
+            };
+            tip = Some(
+                chain
+                    .commit(
+                        &files,
+                        &texts,
+                        &HashMap::new(),
+                        &meta,
+                        None,
+                        &BTreeSet::new(),
+                    )
+                    .unwrap(),
+            );
+        }
+        let tip = tip.unwrap();
+        git.run(&["update-ref", MAIN_REF, tip.as_str()], None, &[])
+            .unwrap();
+    }
+
+    #[test]
+    fn a_first_merge_joins_a_repository_with_the_project_it_is_linked_to() {
+        let Some((_dir, git)) = repository() else {
+            return;
+        };
+        identify(&git);
+        write(&git, "notes.txt", "mine\n");
+        commit_all(&git, "Mine");
+        project_versions(
+            &git,
+            &[
+                vec![("a.tex", "one\n")],
+                vec![("a.tex", "two\n"), ("b.tex", "added\n")],
+            ],
+        );
+
+        assert_eq!(merge_fetched(&git).unwrap(), MergeOutcome::Merged);
+        assert_eq!(git.line(&["show", "HEAD:notes.txt"]).unwrap(), "mine");
+        assert_eq!(git.line(&["show", "HEAD:a.tex"]).unwrap(), "two");
+        assert_eq!(git.line(&["show", "HEAD:b.tex"]).unwrap(), "added");
+        assert!(git.is_ancestor(MAIN_REF, "HEAD"));
+        assert!(!git.succeeds(&["rev-parse", "-q", "--verify", "MERGE_HEAD"]));
+    }
+
+    #[test]
+    fn a_first_merge_leaves_a_file_changed_on_both_sides_as_a_conflict() {
+        let Some((_dir, git)) = repository() else {
+            return;
+        };
+        identify(&git);
+        write(&git, "a.tex", "mine\n");
+        commit_all(&git, "Mine");
+        project_versions(&git, &[vec![("a.tex", "theirs\n")]]);
+
+        assert_eq!(
+            merge_fetched(&git).unwrap(),
+            MergeOutcome::Conflicts(vec!["a.tex".into()])
+        );
+        assert!(git.succeeds(&["rev-parse", "-q", "--verify", "MERGE_HEAD"]));
     }
 }
