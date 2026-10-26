@@ -830,9 +830,12 @@
   /// what a click in the document does when the two are kept in step.
   export function goTo(at) {
     if (!view) return;
+    // A place remembered earlier may lie past the end of a file that has
+    // shrunk since, and CodeMirror throws on a selection outside the text.
+    const place = Math.min(Math.max(Number(at) || 0, 0), view.state.doc.length);
     view.dispatch({
-      selection: { anchor: at },
-      effects: EditorView.scrollIntoView(at, { y: "center" }),
+      selection: { anchor: place },
+      effects: EditorView.scrollIntoView(place, { y: "center" }),
     });
     view.focus();
   }

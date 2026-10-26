@@ -1648,6 +1648,12 @@
   const localGit = LOCAL ? createLocalGit({ id: LOCAL_ID, flush: () => folderSync.flush() }) : null;
   $effect(() => () => localGit?.dispose());
   const gitDiff = LOCAL ? createGitDiff({ id: LOCAL_ID }) : null;
+  // The diff closes by its own buttons too, and any way it closes ends the
+  // comparison, so the editor area comes back the same way. `show` marks the
+  // diff active at once, so a comparison that is opening is not ended here.
+  $effect(() => {
+    if (comparing === "git" && gitDiff && !gitDiff.state.active) untrack(endComparison);
+  });
   // What the comparison bar says is compared.
   const comparisonSays = $derived(comparing === "history"
     ? `Comparing ${historySource.path} with ${historyHeading || "the current version"}`
@@ -4022,7 +4028,8 @@
       // A comparison closes on Escape, unless the focus is in a field, or the
       // editable side of a merge, where Escape is somebody else's.
       const typing = event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable='true']");
-      if (comparing && !typing) endComparison();
+      // An Escape a dialog or a menu already took is theirs, not the comparison's.
+      if (comparing && !typing && !event.defaultPrevented && !captured(event.target)) endComparison();
       return;
     }
     // Back is not in the registry: its chord is Ctrl+Minus on a Mac, which the
