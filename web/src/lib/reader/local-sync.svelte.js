@@ -44,7 +44,7 @@ const isPending = (/** @type {any} */ error) => error?.status === 400 && error?.
  * counts the commits, `merge` says how the merge went, and `paths` are the
  * conflicted files of a merge that conflicted or the uncommitted files that
  * stopped it.
- * @typedef {{ repository?: undefined, written: number, trashed: number, skipped: string[], trimmed: boolean } | { repository: true, versions: number, merge: "fast-forward" | "merged" | "already" | "skipped" | "conflicts" | "dirty", paths: string[], trimmed: boolean }} PullResult */
+ * @typedef {{ repository?: false, written: number, trashed: number, skipped: string[], trimmed: boolean } | { repository: true, versions: number, merge: "fast-forward" | "merged" | "already" | "skipped" | "conflicts" | "dirty", paths: string[], trimmed: boolean }} PullResult */
 
 /** @typedef {{ loaded: boolean, status: any, busy: string, error: string, waiting: { userCode: string, url: string } | null, pull: PullResult | null, conflicts: string[], refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string } | null, pushed: { nothing: true } | { files: number } | null }} SyncState */
 

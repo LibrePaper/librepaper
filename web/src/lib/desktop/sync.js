@@ -64,7 +64,7 @@ export async function syncUnlink(id) {
  * merged them, where `merge` is a word, `{ conflicts: paths }` or
  * `{ dirty: paths }`.
  * @param {string} id @param {{ mine?: string[], theirs?: string[] }} [choices]
- * @returns {Promise<{ written: string[], trashed: string[], kept?: unknown, conflicts: string[], skipped?: string[], trimmed?: boolean, repository?: undefined } | { repository: true, versions: { sha: string, label: string, by: string, commit: string }[], merge: "fast-forward" | "merged" | "already" | "skipped" | { conflicts: string[] } | { dirty: string[] }, trimmed: boolean }>} */
+ * @returns {Promise<{ written: string[], trashed: string[], kept?: unknown, conflicts: string[], skipped?: string[], trimmed?: boolean, repository?: false } | { repository: true, versions: { sha: string, label: string, by: string, commit: string }[], merge: "fast-forward" | "merged" | "already" | "skipped" | { conflicts: string[] } | { dirty: string[] }, trimmed: boolean }>} */
 export async function syncPull(id, choices = {}) {
   const response = await send("POST", route(id, "pull"), { jsonBody: choices });
   return response.json();
