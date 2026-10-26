@@ -25,7 +25,7 @@
   import { parse as parseSynctex, lineAt as synctexLineAt } from "../lib/synctex.js";
   import * as localQuarto from "../lib/desktop/client.js";
   import { backups as backupStatusStore } from "../lib/desktop/backups.svelte.js";
-  import { folderProjectHref, keepFolderProject } from "../lib/desktop/projects.js";
+  import { cloneRepository, folderProjectHref, keepFolderProject } from "../lib/desktop/projects.js";
   import { listenForQuit } from "../lib/desktop/quit.js";
   import { basename } from "../lib/file-manager.js";
   import { createAnnotations } from "../lib/reader/annotations.svelte.js";
@@ -1582,7 +1582,7 @@
   $effect(() => () => localGit?.dispose());
   const gitDiff = LOCAL ? createGitDiff({ id: LOCAL_ID }) : null;
   $effect(() => () => gitDiff?.dispose());
-  // A web project's Git panel: the last push and the tokens for the Action.
+  // A web project's Git panel: the last push.
   const webGit = LOCAL ? null : createWebGit();
   $effect(() => () => webGit?.dispose());
   function openGitDiff(change) {
@@ -2613,21 +2613,34 @@
   }
 
   // Keeps this web project in a folder on this computer. The desktop app asks
-  // for an empty folder, links it to this project, pulls the files into it and
-  // answers with the folder project, which opens the way Open folder does.
-  // Without a sign-in the app has made the folder and only the pull is
-  // refused; that answer is still a folder project, and its Git panel offers
-  // Sign in, so it opens the same way.
+  // for an empty folder or a clone of the repository, links it to this project,
+  // pulls the files into it and answers with the folder project, which opens
+  // the way Open folder does. Without a sign-in the app has made the folder and
+  // only the pull is refused; that answer is still a folder project, and its
+  // Git panel offers Sign in, so it opens the same way. Errors throw, for the
+  // caller to show.
+  async function keepFolderFromPanel() {
+    const project = await keepFolderProject(`${location.origin}/docs/${SLUG}`);
+    if (project) await leaveTo(folderProjectHref(project.id));
+  }
+
   async function keepFolder() {
     try {
-      const project = await keepFolderProject(`${location.origin}/docs/${SLUG}`);
-      if (project) await leaveTo(folderProjectHref(project.id));
+      await keepFolderFromPanel();
     } catch (error) {
       // A folder that is not empty is a choice to make again, not a failure.
       const refused = error?.status === 409 && error?.message;
       const text = refused ? `${error.message[0].toUpperCase()}${error.message.slice(1)}.` : error?.message || "The desktop app could not keep a folder for this project.";
       say(text, { kind: refused ? "note" : "problem", id: "reader:keep-folder" });
     }
+  }
+
+  // The Git panel connects a repository: the desktop app clones the address
+  // into a folder chosen by the person, links the clone to this project and
+  // pulls into it. The folder project then opens. Errors throw, for the panel.
+  async function cloneIntoFolder(url) {
+    const project = await cloneRepository(url, `${location.origin}/docs/${SLUG}`);
+    if (project) await leaveTo(folderProjectHref(project.id));
   }
 
   // Whether the desktop app builds exports with the command for this format:
@@ -4230,7 +4243,8 @@
 
   {#snippet gitPanel()}
     <Git local={LOCAL} open={panel === "git" && shown.comments}
-      web={webGit} slug={SLUG} owner={doc.role === "owner"} linkKey={KEY}
+      web={webGit} slug={SLUG} linkKey={KEY} desktop={hasDesktop}
+      onclone={cloneIntoFolder} onfolder={keepFolderFromPanel}
       sync={localSync} git={localGit} differ={gitDiff} defaultTitle={doc.title || ""} ondiff={openGitDiff} />
   {/snippet}
 

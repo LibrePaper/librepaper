@@ -13,10 +13,13 @@ The **Git** panel is the guided way to do what the rest of this page describes b
 The panel shows:
 
 - **Last push.** The newest version pushed from Git, such as "Last pushed by Alice, 2 hours ago: Reword the greeting", or "No push yet".
-- **Token.** The owner sees the project's tokens with the Edit role. **Create token for a repository** makes a token named GitHub Action that expires in 365 days, and shows it once with a Copy button. Revoke removes a token. Other editors see the list and a note that only the owner can create one.
-- **Workflow.** The workflow from the [GitHub Action](#github-action) section, with your project's address filled in, and a Copy button. Save it as `.github/workflows/librepaper.yml`.
-- **Before the first run.** The seeding commands from the same section, with your address filled in.
-- **Clone.** The `librepaper pull <address>` line, for a clone on this computer alone.
+- **Connect a repository.** This section appears in the desktop app only. It has two buttons.
+  - **Clone and connect…** asks for an address, then for the place to put the clone.
+  - **Use a folder on this computer…** takes an empty folder, or a clone you already have.
+
+  Either way, the desktop app links the folder to the project, pulls the project into it, and opens it as a folder project. There, the Git panel's Pull and Push work as described below.
+
+In the browser, the panel says to open the project in the desktop app. Git signs in with your own credential helper or SSH key.
 
 ### In a folder project
 
@@ -113,19 +116,7 @@ Push takes these options. Pull takes `--dir` and `--token` too.
 The Action runs `pull` and `push` for a repository on GitHub. Nothing has to run on your laptop.
 
 1. Add a project token as a repository secret named `LIBREPAPER_TOKEN`. Use Settings, then Secrets and variables, then Actions. A token for one project keeps the Action away from every other project.
-2. **Before the first run,** seed the LibrePaper state once. Run these in a clone of the repository on your computer.
-
-```sh
-# Once, on your computer, in a clone of the repository
-librepaper pull https://app.librepaper.org/docs/<slug>   # links the clone and fetches the project as commits
-git push origin main 'refs/librepaper/*'                 # the Action starts from this state
-```
-
-The first pull merges the project's versions into your branch itself, even when the repository and the project share no history. A file that differs on both sides is left as a git conflict to resolve before you push.
-
-The Action refuses to run until `refs/librepaper/state` exists on GitHub, and after that it keeps that state current itself.
-
-3. Save this workflow as `.github/workflows/librepaper.yml`. Put your project's address in `project`.
+2. Save this workflow as `.github/workflows/librepaper.yml`. Put your project's address in `project`.
 
 ```yaml
 on:
@@ -157,6 +148,8 @@ The Action takes two inputs.
 
 GitHub gives each run its own `GITHUB_TOKEN`. The `permissions` line lets it write to the repository and open pull requests. You do not add it.
 
+On its first run, the Action links the repository to the project itself. It pulls the project's versions into the branch, pushes the branch, and pushes the repository's files that the project lacks. If a file differs on both sides, the run stops with an error. A person then merges it once on a computer.
+
 What happens:
 
 - **On a push to `main`**, the Action pushes the new commit to the project. The commit's subject names the version, and its author becomes the version's author.
@@ -172,8 +165,8 @@ Anyone with push rights on the repository can change the project this way. Each 
 ## Common workflows
 
 1. **Bob and Carol write on the web.** They edit and comment in the browser, and nothing changes for them. Their named versions become commits in the repository.
-2. **Alice backs up a web project.** She pulls the project into a new repository with her token, then pushes the repository and its LibrePaper refs to GitHub (`git push origin main 'refs/librepaper/*'`) and adds the workflow. From then on, the Action adds each new named version as a commit. She can also go the other way. `librepaper push --title` in a repository that holds her paper creates the project.
-3. **Alice works in VS Code, and Bob works in the browser.** Alice adds a token. She runs `librepaper pull` once in her clone and pushes the LibrePaper refs, then adds the workflow. She can also do the whole setup from the Git panel of the web project. Her pushes reach Bob within a minute, as versions in his history under her name. Bob's named versions reach her on her next `git pull`, as commits by Bob. If they both changed a file, the Action's push is refused. A pull request from `librepaper/sync` opens, and Alice merges it in git. Bob sees none of this.
+2. **Alice backs up a web project.** She pulls the project into a new repository with her token, pushes the repository to GitHub, and adds the token and the workflow. The first run does the rest. From then on, the Action adds each new named version as a commit. She can also go the other way. `librepaper push --title` in a repository that holds her paper creates the project.
+3. **Alice works in VS Code, and Bob works in the browser.** Alice adds a token and the workflow, and the first run does the rest. She can also connect her clone from the web project's Git panel in the desktop app. Her pushes reach Bob within a minute, as versions in his history under her name. Bob's named versions reach her on her next `git pull`, as commits by Bob. If they both changed a file, the Action's push is refused. A pull request from `librepaper/sync` opens, and Alice merges it in git. Bob sees none of this.
 4. **Charlie works on GitHub only.** He works in the same repository, with the same Action. He has nothing new to learn.
 5. **Dana works in a folder with no Git.** In the desktop app she opens her web project and chooses Work in a folder from the File menu, which puts the project's files in a folder of her choice and opens it. The Git panel asks her to sign in once. She edits the folder offline with local TeX and presses Push in the Git panel. When a file also changed on the web, Pull asks her which copy to keep, file by file.
 

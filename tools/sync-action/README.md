@@ -30,19 +30,11 @@ Revoke the token in Share to stop the sync.
 
 In the repository settings, enable "Allow GitHub Actions to create and approve pull requests". Otherwise a refused push cannot open its pull request.
 
-## Before the first run
+## The first run
 
-Seed the LibrePaper state once, from a clone of the repository on your computer:
+The first run links the repository to the project. It pulls the project's versions into the branch, pushes the branch, and pushes the repository's own files that the project lacks. Nothing needs seeding by hand.
 
-```sh
-# Once, on your computer, in a clone of the repository
-librepaper pull https://app.librepaper.org/docs/<slug>   # links the clone and fetches the project as commits
-git push origin main 'refs/librepaper/*'                 # the Action starts from this state
-```
-
-The first pull merges the project's versions into your branch itself, even when the repository and the project share no history. A file that differs on both sides is left as a git conflict to resolve before you push.
-
-The Action refuses to run until `refs/librepaper/state` exists on GitHub, and after that it keeps that state current itself.
+If a file differs on both sides, the first run stops with an error. A person then merges it once on a computer: open the project in the LibrePaper desktop app and use Connect a repository in its Git panel, or run `librepaper pull <project>` in a clone. Then push the branch and `refs/librepaper/*`.
 
 ## Workflow
 
