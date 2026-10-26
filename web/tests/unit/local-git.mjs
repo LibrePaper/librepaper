@@ -482,8 +482,9 @@ const noFlush = async () => true;
       check: (state) => { assert.deepEqual(state.conflicts, ["intro.tex"]); assert.equal(state.steps[1].failed, true); assert.equal(state.steps.length, 2, "push never ran"); },
     },
     {
-      steps: [{ step: "commit", status: "nothing" }, { step: "pull", status: "up-to-date" }, { step: "push", reason: "hook", detail: "pre-push hook failed" }],
-      check: (state) => { assert.equal(state.error, "pre-push hook failed"); assert.equal(state.steps[2].failed, true); },
+      // A hook's refusal has no reason, only git's words.
+      steps: [{ step: "commit", status: "nothing" }, { step: "pull", status: "up-to-date" }, { step: "push", ok: false, detail: "pre-push hook failed" }],
+      check: (state) => { assert.equal(state.error, "pre-push hook failed"); assert.equal(state.steps[2].failed, true); assert.match(state.steps[2].text, /Stopped at push: pre-push hook failed/); },
     },
   ];
   for (const { steps, check } of cases) {

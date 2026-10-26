@@ -274,7 +274,8 @@ export function createLocalGit({ id, api = routes, flush = nothingToSettle }) {
     if (name === "pull" && (step?.status === "conflicts" || step?.reason === "conflicts")) {
       return { step: name, text: `Stopped at pull: ${plural(strings(step.conflicts).length, "file")} in conflict.`, failed: true };
     }
-    if (step?.reason) {
+    // A refusal by git itself, such as a hook, carries no reason, only its words.
+    if (step?.reason || step?.ok === false) {
       const said = {
         identity: "git needs your name and email.",
         dirty: "uncommitted changes are in the way.",
@@ -306,7 +307,7 @@ export function createLocalGit({ id, api = routes, flush = nothingToSettle }) {
     }
     const steps = ran.map(stepOf);
     set({ steps });
-    const stopped = ran.find((step) => step?.reason);
+    const stopped = ran.find((step) => step?.reason || step?.ok === false);
     const conflicted = ran.find((step) => step?.step === "pull" && (step?.status === "conflicts" || step?.reason === "conflicts"));
     if (conflicted) set({ conflicts: strings(conflicted.conflicts) });
     // A conflicting pull is shown in the conflicts box, so it sets no error.
