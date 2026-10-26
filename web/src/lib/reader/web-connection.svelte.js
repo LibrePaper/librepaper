@@ -136,7 +136,7 @@ export function createWebConnection({ api = routes, project, nameVersion, signed
   /// section then settles one file at a time.
   const pull = () => run("pull", async () => {
     set({ refusal: null, result: null });
-    let answer;
+    let answer = /** @type {any} */ (null);
     try {
       answer = await api.pullConnection(project);
     } catch (error) {
@@ -150,7 +150,7 @@ export function createWebConnection({ api = routes, project, nameVersion, signed
   const push = (/** @type {string} */ message) => run("push", async () => {
     set({ refusal: null, result: null });
     await nameVersion(message);
-    let answer;
+    let answer = /** @type {any} */ (null);
     try {
       answer = await api.pushConnection(project);
     } catch (error) {

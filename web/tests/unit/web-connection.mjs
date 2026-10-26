@@ -190,7 +190,7 @@ const nameVersion = async (message) => { named.push(message); };
   const web = createWebConnection({ api, project, nameVersion, signedIn: () => true, approve: async (code) => { approved.push(code); }, wait: noWait });
   await web.login();
   assert.deepEqual(approved, ["ABCD-EFGH"]);
-  assert.deepEqual(calls.slice(1), [["loginConnection", project], ["loginConnectionComplete", project, "auth-1"]]);
+  assert.deepEqual(calls, [["loginConnection", project], ["loginConnectionComplete", project, "auth-1"]]);
   assert.deepEqual(web.state.status, { connected: false, signed_in: true });
 }
 
@@ -215,7 +215,7 @@ const nameVersion = async (message) => { named.push(message); };
     loginConnection: { authorization_id: "auth-1", user_code: "ABCD-EFGH" },
     loginConnectionComplete: () => { polls += 1; if (polls < 2) throw pending(); return { connected: false, signed_in: true }; },
   });
-  const web = createWebConnection({ api, project, nameVersion, signedIn: () => false, open: (url) => opened.push(url), wait: noWait });
+  const web = createWebConnection({ api, project, nameVersion, signedIn: () => false, open: (url) => opened.push(url), origin: "https://app.example", wait: noWait });
   await web.login();
   assert.deepEqual(opened, ["https://app.example/auth/device?code=ABCD-EFGH"]);
   assert.equal(polls, 2);
