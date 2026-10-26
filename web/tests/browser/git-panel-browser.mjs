@@ -517,6 +517,19 @@ window.gitPanelCheck = async () => {
   await press("Commit", repo());
   check(JSON.stringify(calls("gitCommit")[0][2]) === JSON.stringify(["new.tex", "old.tex"]), "a renamed file in a partial commit sends its old name: " + JSON.stringify(calls("gitCommit")));
 
+  // A file written again at the old name of a rename has a box of its own. Left
+  // out, it is not sent with the rename. With both boxes ticked, every file goes.
+  await mountFolder({ repo: repoStatus({ changes: [{ path: "new.tex", kind: "renamed", from: "old.tex" }, { path: "old.tex", kind: "added" }] }) });
+  await flush();
+  boxes()[1].checked = false;
+  boxes()[1].dispatchEvent(new Event("change", { bubbles: true }));
+  await type(field("Message", repo()), "Rename the chapter");
+  await press("Commit", repo());
+  check(JSON.stringify(calls("gitCommit")[0][2]) === JSON.stringify(["new.tex"]), "a file written again at the old name is left out with its box: " + JSON.stringify(calls("gitCommit")));
+  await type(field("Message", repo()), "Rename and keep the new file");
+  await press("Commit", repo());
+  check(calls("gitCommit").length === 2 && calls("gitCommit")[1][2] === undefined, "with both ticked, the commit takes every file, old name included: " + JSON.stringify(calls("gitCommit")));
+
   // The first commit in a repository with no identity asks for one.
   await mountFolder({
     repo: repoStatus({ identity: false }),

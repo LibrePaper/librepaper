@@ -72,8 +72,10 @@
 
   // A commit takes everything unless a file was left out. A renamed file sends
   // its old name too, so the deletion of that name is committed with the new one.
+  // When another change sits at the old name, that change has its own box, so a
+  // file written again in place of the old one stays out when its box is unticked.
   const chosen = $derived(changes.filter((change) => !left.includes(change.path)));
-  const included = $derived(chosen.flatMap((change) => (change.from ? [change.path, change.from] : [change.path])));
+  const included = $derived(chosen.flatMap((change) => (change.from && !changes.some((other) => other.path === change.from) ? [change.path, change.from] : [change.path])));
   const partial = $derived(!merging && chosen.length < changes.length);
   const canCommit = $derived(!busy && message.trim() !== "" && (merging || included.length > 0));
 
