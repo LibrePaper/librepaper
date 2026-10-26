@@ -71,9 +71,12 @@
     if (item) await web.revoke(item.id);
   }
   const select = (event) => event.currentTarget.select();
+  // The next token starts with its own Copy button, not the last one's "Copied".
   function done() {
     web.hide();
     copyFallback = "";
+    copied = "";
+    clearTimeout(copyTimer);
   }
 </script>
 

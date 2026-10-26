@@ -444,7 +444,7 @@ window.gitPanelCheck = async () => {
   const setup = [...repo().querySelectorAll("a")].find((node) => node.getAttribute("href") === "/docs/git.html");
   check(setup && setup.target === "_blank", "and names the docs");
   check(!button("Initialize", repo()) && !button("Commit", repo()), "and offers nothing to run");
-  await mountFolder({ repo: noRepo({ git: { found: false, version: "2.30.0" } }) });
+  await mountFolder({ repo: noRepo({ git: { found: true, version: "2.30.0", supported: false } }) });
   await flush();
   check(text(repo()).includes("Git 2.30.0 is installed, and LibrePaper needs Git 2.38 or later."), "an old git is named: " + text(repo()));
 

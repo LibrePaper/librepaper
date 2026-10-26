@@ -52,6 +52,8 @@ try {
     const path = url.pathname;
     if (path === "/" || path === "/desktop/") { response.setHeader("content-type", "text/html"); response.end(shell(path === "/desktop/")); return; }
     if (path === "/auth/login") { response.setHeader("content-type", "text/html"); response.end("<!doctype html><title>Sign in</title><p id=signin>sign in</p>"); return; }
+    // The page a cloned folder opens on. The test only checks that the landing page went there.
+    if (path === "/reader.html") { response.setHeader("content-type", "text/html"); response.end("<!doctype html><title>Reader</title><p id=reader>reader</p>"); return; }
     try { response.setHeader("content-type", path.endsWith(".css") ? "text/css" : "text/javascript"); response.end(readFileSync(join(out, path.split("/").pop()))); }
     catch { response.statusCode = 404; response.end(); }
   });

@@ -575,7 +575,7 @@ try {
     ['files','Files','Files'],['outline','Outline','Outline'],
     ['collaboration','Collaboration','Collaboration'],
     ['changes','Changes','Changes'],['agent','Agent','Agent'],['history','History','History'],
-    ['share','Share','Share'],['diagnostics','Diagnostics','Diagnostics']
+    ['git','Git','Git'],['share','Share','Share'],['diagnostics','Diagnostics','Diagnostics']
   ], 'the Panels menu names every allowed workspace panel');
   const workspaceActions = await b.evaluate(`(() => {
     const menu=document.querySelector(${JSON.stringify(panelMenu)});
