@@ -735,8 +735,8 @@ window.gitPanelCheck = async () => {
   check(yaml.includes("project: " + address + "\\n") && yaml.includes("LibrePaper/sync-action@v1") && yaml.includes("secrets.LIBREPAPER_TOKEN") && !yaml.includes("<slug>"), "the workflow carries the project's address: " + yaml);
   check(text().includes(".github/workflows/librepaper.yml"), "and the file it is saved as");
   const seeding = panel().querySelector('pre[aria-label="The commands to run once"]').textContent;
-  check(seeding.includes("librepaper pull " + address + "   #") && seeding.includes("git merge --allow-unrelated-histories librepaper/main") && seeding.includes("git push origin main 'refs/librepaper/*'"), "the seeding commands carry it too: " + seeding);
-  check(text().includes("grew separately and share no history"), "with the sentence about unrelated histories");
+  check(seeding.includes("librepaper pull " + address + "   #") && seeding.includes("git push origin main 'refs/librepaper/*'"), "the seeding commands carry it too: " + seeding);
+  check(!seeding.includes("git merge") && !text().includes("merge line"), "and no merge to run by hand");
   check(panel().querySelector('pre[aria-label="The command for a clone"]').textContent === "librepaper pull " + address, "a clone is one command");
   const docs = [...panel().querySelectorAll("a")].find((node) => node.getAttribute("href") === "/docs/git.html");
   check(docs && docs.target === "_blank" && docs.rel.includes("noopener"), "and the docs are one link away");

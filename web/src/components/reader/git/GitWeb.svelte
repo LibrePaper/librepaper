@@ -155,7 +155,6 @@
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -- a scrolling block is reached by keyboard to be read -->
     <pre class="git-code" tabindex="0" aria-label="The commands to run once">{seeding}</pre>
     <div class="git-row">{@render copyButton(seeding, "seeding", "Copy commands")}</div>
-    <p class="panel-meta git-note">The merge line is needed only when the repository and the project grew separately and share no history.</p>
   </section>
 
   <section class="git-block" aria-labelledby="git-web-alone">
