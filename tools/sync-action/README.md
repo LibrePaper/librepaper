@@ -40,7 +40,7 @@ librepaper pull https://app.librepaper.org/docs/<slug>   # links the clone and f
 git push origin main 'refs/librepaper/*'                 # the Action starts from this state
 ```
 
-A repository that started as a web project (`librepaper pull` into an empty repository) or a project that started as a repository (`librepaper push --title`) already share history, so the merge line is not needed. A repository and a project that grew separately need it once.
+The first pull merges the project's versions into your branch itself, even when the repository and the project share no history. A file that differs on both sides is left as a git conflict to resolve before you push.
 
 The Action refuses to run until `refs/librepaper/state` exists on GitHub, and after that it keeps that state current itself.
 
