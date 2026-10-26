@@ -111,7 +111,7 @@ jobs:
 
 What the action does:
 
-- Fetches `refs/librepaper/*` from origin, so the state survives runners. It refuses to run until that state exists: a person seeds it once from a clone (`librepaper pull`, then `git push origin main 'refs/librepaper/*'`), and the Action keeps it current from then on.
+- Fetches `refs/librepaper/*` from origin, so the state survives runners. When the state is missing, it seeds it on that run: a first pull, a push of the branch, then a push of the repository's files. It stops with an error when both sides hold different versions of a file.
 - On `push`: `librepaper push` with the pushed commit's subject and author. On `409 changed` it runs `librepaper pull --no-merge`, commits `librepaper/main`'s tree to a branch `librepaper/sync`, pushes it, opens or updates one pull request "LibrePaper changed files you also changed", and exits 1 so the run is visibly red. A person merges that PR in git; the next push event pushes the merged result.
 - On `schedule`: `librepaper pull`. A clean merge or fast-forward is pushed to `main`. A conflicting merge is aborted and handled as above. Nothing to pull exits 0 with no commit.
 - Always: `git push origin refs/librepaper/*`.

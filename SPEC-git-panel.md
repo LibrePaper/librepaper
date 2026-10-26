@@ -2,11 +2,13 @@
 
 Status: proposed 2026-10-25 as Kata vwce, after the operator saw no git surface in the merged app. Builds on SPEC-sync.md (the two CLI commands and the GitHub Action) and takes the Git tab from SPEC-folder-git.md (branch kata/355w-folder-git). Replaces the Sync tab.
 
+Revised 2026-10-26: the web project's panel connects a repository through the desktop app. The workflow and the token setup live in docs/git.md only, and the Action seeds its own state.
+
 ## Principle
 
 Every project has one **Git** panel in the side panel, and it shows what git means for that project.
 
-- A **web project** cannot run git itself; its repository is on GitHub and the Action does the work. The panel is where that is set up and seen: the token, the workflow, the seeding step, and what the server knows about pushes.
+- A **web project** cannot run git itself; its repository is on GitHub and the Action does the work. The panel is where a repository is connected and seen: the link to the desktop app, and what the server knows about pushes.
 - A **folder project** in the desktop app has a folder, so the panel runs git on it: status, commit, pull, push, branches and remotes, plus the LibrePaper link that today's Sync tab holds.
 
 The rules from SPEC-sync.md stand: LibrePaper never merges text, never holds a forge credential, and never serves git. The panel runs the person's own git on the person's own repository.
@@ -16,12 +18,12 @@ The rules from SPEC-sync.md stand: LibrePaper never merges text, never holds a f
 Shown to editors and owners (`!who.local && who.mayEdit`); readers and commenters do not see it. Sections, top to bottom:
 
 1. **Repository.** "This project syncs with a git repository through its GitHub Action. Nothing runs on this computer." One line of status from the server: the newest version with reason `push` ("Last pushed by Alice, 2 hours ago: Reword the greeting") or "No push yet". This comes from `GET /history?named=1` as the History panel reads it; no new route.
-2. **Token.** The owner sees the project tokens with the Edit role (from `GET /share`), each with its name and expiry, a **Create token for a repository** button that posts `{ create: { kind: "token", role: "edit", name: "GitHub Action", until: "365d" } }` to `/share` and shows the token once with Copy, as the Share panel does, and Revoke. An editor who is not the owner sees "Only the owner can create a token" and the rest of the panel.
-3. **Workflow.** The workflow YAML from `docs/git.md` with the project's own address filled in, a Copy button, and the file name `.github/workflows/librepaper.yml`.
-4. **Before the first run.** The seeding commands from `docs/git.md`, with the address filled in. The first pull merges unrelated histories itself.
-5. **Alone on this computer.** `librepaper pull <address>` for someone who only wants a clone, with a link to the Git docs.
+2. **Connect a repository.** Shown in the desktop app only (`who.desktop`). Two buttons:
+   - **Clone and connect…** takes an address and a place for the clone. It posts `projects/clone { url, project }`, which clones, links the clone to the project and pulls.
+   - **Use a folder on this computer…** posts `projects/keep { url }`. The folder may be empty or a git repository. A folder already linked to another project is refused with 409 reason `linked`.
 
-The Share panel's token tab stays as it is; this panel is a guided path to the same rows.
+   In the browser, one sentence says to open the project in the desktop app.
+3. **Docs.** A link to `docs/git.md`, which holds the workflow, the token setup and the GitHub Action.
 
 ## The panel in a folder project
 
@@ -63,7 +65,8 @@ Routes under a folder project, origin-scoped like the others, each running in th
 - `POST projects/<id>/git/pull`: refuses 409 `{ reason: "dirty", paths }` on tracked changes to project files; otherwise `git pull --no-rebase`; answers `{ status: "fast-forward" | "merged" | "up-to-date" | "conflicts", conflicts: [paths] }`.
 - `POST projects/<id>/git/push`: sets the upstream on the first push; 409 `{ reason: "behind" }` when non-fast-forward; auth and network failures carry `{ reason: "auth" | "network", detail }` for the sign-in help.
 - `POST projects/<id>/git/sync { message? }`: commit when dirty, pull, push; answers each step's outcome and stops at the first failure.
-- `POST projects/clone { url }`: the native chooser, `git clone`, the folder project binding, the fetch of `refs/librepaper/*`; answers like `projects/open`.
+- `POST projects/clone { url, project }`: the native chooser, `git clone`, the link to `project`, the pull; answers like `projects/open`.
+- `POST projects/keep { url }`: accepts an empty folder or a git repository; a folder already linked to another project is refused with 409 reason `linked`.
 
 The folder's change poller treats what git writes as outside changes, as it does today, so a pull or a switch shows up in the editor. The render-output record and the opening-save rule are untouched.
 
