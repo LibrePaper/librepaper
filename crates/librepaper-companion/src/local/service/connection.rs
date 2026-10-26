@@ -225,7 +225,7 @@ async fn status_of(inner: &Inner, connection: &Connection) -> Result<Value, Fail
     Ok(json!({
         "connected": true,
         "signed_in": signed_in,
-        "url": record.url,
+        "url": validate::display_url(&record.url),
         "branch": branch,
         "merging": merging,
     }))
@@ -933,6 +933,19 @@ mod tests {
             (409, &json!("connected")),
             "{body}"
         );
+
+        // A token in an address is never shown back to the page.
+        let record = Record {
+            project: PROJECT.to_owned(),
+            url: "https://ghp_secret@github.com/o/r.git".to_owned(),
+        };
+        std::fs::write(
+            connection.dir.join(RECORD),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        let status = status_of(&fixture.inner, &connection).await.unwrap();
+        assert_eq!(status["url"], json!("https://github.com/o/r.git"));
     }
 
     #[tokio::test]

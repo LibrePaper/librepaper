@@ -122,11 +122,29 @@ const nameVersion = async (message) => { named.push(message); };
   assert.equal(web.state.result, "The repository was already up to date.");
 }
 
-// A pull that finds the project changed on the files keeps the paths and says to pull again.
+// A pull refused over unnamed edits names them and pulls once more, which brings the
+// conflict into the merge.
 {
+  const names = [];
+  let pulls = 0;
+  const { api } = routes({
+    pullConnection: () => { pulls += 1; return pulls === 1 ? refused(409, { reason: "changed", paths: ["intro.tex"] }) : { stopped: "conflicts", status: merging }; },
+  });
+  const web = createWebConnection({ api, project, nameVersion: async (message) => { names.push(message); } });
+  await web.pull("Edits before the pull");
+  assert.deepEqual(names, ["Edits before the pull"]);
+  assert.equal(pulls, 2);
+  assert.deepEqual(web.state.status, merging);
+  assert.equal(web.state.refusal, null);
+}
+
+// A pull still refused after naming keeps the paths and says so.
+{
+  const names = [];
   const { api } = routes({ pullConnection: refused(409, { reason: "changed", paths: ["intro.tex"] }) });
-  const web = createWebConnection({ api, project, nameVersion });
-  await web.pull();
+  const web = createWebConnection({ api, project, nameVersion: async (message) => { names.push(message); } });
+  await web.pull("m");
+  assert.deepEqual(names, ["m"]);
   assert.deepEqual(web.state.refusal, { reason: "changed", paths: ["intro.tex"] });
   assert.equal(web.state.problem, "");
   assert.equal(web.state.busy, "");

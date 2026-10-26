@@ -134,17 +134,33 @@ export function createWebConnection({ api = routes, project, nameVersion, signed
 
   /// Takes in the repository's changes. Stops at a conflict, which the merge
   /// section then settles one file at a time.
-  const pull = () => run("pull", async () => {
+  //
+  // The repository only meets the project's named versions. When the project
+  // has unnamed edits to a file the repository also changed, the desktop app
+  // refuses with `changed`, and pulling again would fetch nothing new. So the
+  // edits are named as `message` and the pull runs once more, which brings
+  // them into the merge, where the conflict is settled file by file.
+  const pull = (/** @type {string} */ message) => run("pull", async () => {
     set({ refusal: null, result: null });
     let answer = /** @type {any} */ (null);
     try {
-      answer = await api.pullConnection(project);
+      answer = await pullNaming(message);
     } catch (error) {
       if (refused(error, "pull")) return;
       throw error;
     }
     set({ status: statusOf(answer), result: answer.stopped ? null : pulledLine(answer.pushed) });
   });
+
+  async function pullNaming(/** @type {string} */ message) {
+    try {
+      return await api.pullConnection(project);
+    } catch (error) {
+      if (error?.status !== 409 || error.body?.reason !== "changed") throw error;
+    }
+    await nameVersion(message);
+    return api.pullConnection(project);
+  }
 
   /// Names the version, then sends the project's versions to the repository.
   const push = (/** @type {string} */ message) => run("push", async () => {

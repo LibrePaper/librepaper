@@ -107,6 +107,10 @@ fi
 # the project lacks. The state is published by the EXIT trap only when all of
 # that went through.
 if ! git rev-parse -q --verify refs/librepaper/state >/dev/null; then
+  # The pull records the link before it fetches, so a failure at any step
+  # below could leave a state that makes the next run skip this one. The
+  # state is published only once every step went through.
+  PUBLISH_STATE=0
   before=$(git rev-parse HEAD)
   status=0
   run_cli pull "$PROJECT" || status=$?
@@ -118,7 +122,6 @@ if ! git rev-parse -q --verify refs/librepaper/state >/dev/null; then
       if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
         git merge --abort
       fi
-      PUBLISH_STATE=0
       echo "::error::the repository and the project hold different versions of the same files. Merge them once on a computer: open the project in the LibrePaper desktop app and use Connect a repository in its Git panel, or run librepaper pull <project> in a clone. Then push the branch and refs/librepaper/*." >&2
     fi
     exit "$status"
@@ -126,7 +129,6 @@ if ! git rev-parse -q --verify refs/librepaper/state >/dev/null; then
   # A pull that merges moves HEAD. The merge goes to the branch before the state does.
   if [[ "$(git rev-parse HEAD)" != "$before" ]]; then
     if ! git push origin HEAD:"$BRANCH"; then
-      PUBLISH_STATE=0
       echo "::error::could not push $BRANCH; the LibrePaper state was not published and the next run fetches again" >&2
       exit 1
     fi
@@ -140,6 +142,7 @@ if ! git rev-parse -q --verify refs/librepaper/state >/dev/null; then
     fi
     exit "$status"
   fi
+  PUBLISH_STATE=1
   exit 0
 fi
 

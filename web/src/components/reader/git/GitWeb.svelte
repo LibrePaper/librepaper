@@ -145,7 +145,7 @@
                oninput={(event) => (typedVersion = event.currentTarget.value)} />
       </label>
       <div class="git-row">
-        <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy || merging} onclick={() => connection.pull()}>
+        <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy || merging} onclick={() => connection.pull(version.trim() || VERSION)}>
           {link.busy === "pull" ? "Pulling…" : "Pull"}
         </button>
         <button type="submit" class="btn btn-sm lp-control-brand" disabled={busy || merging}>
