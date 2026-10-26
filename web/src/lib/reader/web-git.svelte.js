@@ -92,6 +92,9 @@ export function createWebGit({ api = server } = {}) {
     try {
       const answer = await api.change(slug, body);
       if (slug !== target.slug || closed) return null;
+      // A read that started during the change may still land with a list the
+      // server made before applying it. The answer's list is the current one.
+      generation += 1;
       set({ tokens: (answer?.tokens ?? []).filter(isEdit) });
       return answer;
     } catch (error) {
