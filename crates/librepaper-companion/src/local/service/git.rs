@@ -1118,9 +1118,11 @@ pub(super) async fn handle_pull(
 /* ----------------------------------------------------------------- push */
 
 /// `git push` of the current branch, never forced and never after a pull. The
-/// push names one refspec: the local branch, to the branch its upstream points
-/// at. The repository's `push.default` and `remote.<name>.push` settings do not
-/// choose what goes. The first push of a branch sets its upstream.
+/// push names one refspec: the local branch, to the branch on the remote that
+/// `branch.<name>.merge` names. A branch with no upstream goes to the branch of
+/// its own name. The repository's `push.default` and `remote.<name>.push`
+/// settings do not choose what goes. The first push of a branch sets its
+/// upstream.
 async fn run_push(root: &Path) -> Result<Value, Failure> {
     require_repository(root)?;
     let status = read_status(root).await?;
@@ -1129,16 +1131,16 @@ async fn run_push(root: &Path) -> Result<Value, Failure> {
     };
     let remotes = read_remotes(root).await?;
     let remote = pick_remote(root, &status, &remotes).await?;
-    let prefix = format!("{remote}/");
-    let target = match status
-        .upstream
-        .as_deref()
-        .and_then(|upstream| upstream.strip_prefix(prefix.as_str()))
-    {
-        Some(rest) => rest,
-        None => branch.as_str(),
-    };
-    let refspec = format!("refs/heads/{branch}:refs/heads/{target}");
+    let mut destination = format!("refs/heads/{branch}");
+    if status.upstream.is_some() {
+        let key = format!("branch.{branch}.merge");
+        let configured = run(root, Limit::Local, &["config", "--get", &key]).await?;
+        let merged = configured.text();
+        if configured.success() && !merged.is_empty() {
+            destination = merged;
+        }
+    }
+    let refspec = format!("refs/heads/{branch}:{destination}");
     let mut args = vec!["push"];
     if status.upstream.is_none() {
         args.push("-u");
@@ -2061,6 +2063,45 @@ mod tests {
         let (status, body) = fixture.post_empty("/push").await;
         assert_eq!((status, &body["reason"]), (409, &json!("behind")), "{body}");
         assert_eq!(plain_git(&bare, &["rev-parse", "main"]), remote_commit);
+    }
+
+    #[tokio::test]
+    async fn a_push_goes_to_the_branch_the_merge_setting_names() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let bare = fixture.with_remote().await;
+        plain_git(
+            fixture.root(),
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/origin/review/*",
+            ],
+        );
+        plain_git(fixture.root(), &["fetch", "origin"]);
+        plain_git(fixture.root(), &["config", "branch.main.remote", "origin"]);
+        plain_git(
+            fixture.root(),
+            &["config", "branch.main.merge", "refs/heads/main"],
+        );
+        // The upstream's tracking name now reads origin/review/main, while the
+        // branch still follows refs/heads/main on origin.
+        assert_eq!(fixture.status().await["upstream"], "origin/review/main");
+
+        fixture.write("c.txt", "three\n");
+        let id = fixture.commit_all("Add c").await;
+        let (status, body) = fixture.post_empty("/push").await;
+        assert_eq!((status, &body["status"]), (200, &json!("pushed")), "{body}");
+        assert_eq!(plain_git(&bare, &["rev-parse", "main"]), id);
+        assert_eq!(
+            plain_git(
+                &bare,
+                &["for-each-ref", "--format=%(refname)", "refs/heads"]
+            ),
+            "refs/heads/main"
+        );
     }
 
     #[tokio::test]
