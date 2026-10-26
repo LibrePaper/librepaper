@@ -13,12 +13,12 @@
 //! message instead of waiting for input nobody can give.
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
+
+use crate::local::native::{self, Bounds, CaptureError};
 
 pub(crate) mod remote;
 pub(crate) mod status;
@@ -174,7 +174,7 @@ async fn probe(exe: &Path) -> Option<(String, bool)> {
         command.env_remove(name);
     }
     command.env("LC_ALL", "C");
-    let output = exec(command, None, PROBE_TIMEOUT).await.ok()?;
+    let output = run_to_output(command, None, PROBE_TIMEOUT).await.ok()?;
     if output.code != 0 {
         return None;
     }
@@ -238,7 +238,7 @@ async fn batch_ssh(exe: &Path, dir: &Path, command: &mut Command) {
     }
     let mut probe = build_command(exe, dir);
     probe.args(["config", "--get", "core.sshCommand"]);
-    let configured = match exec(probe, None, PROBE_TIMEOUT).await {
+    let configured = match run_to_output(probe, None, PROBE_TIMEOUT).await {
         Ok(output) => output.code == 0 && !output.text().is_empty(),
         Err(_) => false,
     };
@@ -274,108 +274,41 @@ pub(crate) async fn run_input(
         Limit::Local => LOCAL_TIMEOUT,
         Limit::Transport => TRANSPORT_TIMEOUT,
     };
-    exec(command, stdin, timeout).await
+    run_to_output(command, stdin, timeout).await
 }
 
-/// Spawns `command`, feeds it `stdin`, and collects its output within `limit`.
-/// The child leads its own process group on Unix and is killed with that group
-/// when the time runs out.
-async fn exec(
-    mut command: Command,
+/// Runs `command` through the shared process runner with Git's bounds, and
+/// reports the result in Git's terms. The child is killed with its process
+/// group when the time runs out.
+async fn run_to_output(
+    command: Command,
     stdin: Option<Vec<u8>>,
     limit: Duration,
 ) -> Result<Output, RunError> {
-    command
-        .stdin(if stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    crate::local::native::hide_console(command.as_std_mut());
-    #[cfg(unix)]
-    command.process_group(0);
-    let mut child = command
-        .spawn()
-        .map_err(|error| RunError::Spawn(format!("could not start git: {error}")))?;
-    let pid = child.id();
-    if let (Some(bytes), Some(mut pipe)) = (stdin, child.stdin.take()) {
-        tokio::spawn(async move {
-            let _ = pipe.write_all(&bytes).await;
-            let _ = pipe.shutdown().await;
-        });
-    }
-    let stdout = child
-        .stdout
-        .take()
-        .map(|pipe| tokio::spawn(read_bounded(pipe, MAX_STDOUT_BYTES)));
-    let stderr = child
-        .stderr
-        .take()
-        .map(|pipe| tokio::spawn(read_bounded(pipe, MAX_STDERR_BYTES)));
-    let status = match tokio::time::timeout(limit, child.wait()).await {
-        Ok(Ok(status)) => status,
-        Ok(Err(error)) => {
-            crate::local::native::kill_tree(pid);
-            return Err(RunError::Spawn(format!("could not wait for git: {error}")));
-        }
-        Err(_) => {
-            crate::local::native::kill_tree(pid);
-            let _ = child.kill().await;
-            if let Some(task) = stdout {
-                task.abort();
-            }
-            if let Some(task) = stderr {
-                task.abort();
-            }
-            return Err(RunError::Timeout);
-        }
+    let bounds = Bounds {
+        timeout: limit,
+        stdout_bytes: MAX_STDOUT_BYTES,
+        stderr_bytes: MAX_STDERR_BYTES,
+        reap_on_exit: false,
     };
-    // A descendant such as an SSH multiplexer can keep the pipes open after
-    // Git exits, so the readers are given a moment and then dropped.
-    let (stdout, overflow) = join_reader(stdout).await;
-    let (stderr, _) = join_reader(stderr).await;
-    if overflow {
+    let captured = native::run_captured(command, stdin, bounds)
+        .await
+        .map_err(runner_error)?;
+    if captured.stdout_truncated {
         return Err(RunError::TooLarge);
     }
     Ok(Output {
-        code: status.code().unwrap_or(-1),
-        stdout,
-        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        code: captured.code,
+        stdout: captured.stdout,
+        stderr: String::from_utf8_lossy(&captured.stderr).into_owned(),
     })
 }
 
-/// Keeps the first `cap` bytes of `reader` and drains the rest, so the child
-/// never blocks on a full pipe. The flag says whether anything was dropped.
-async fn read_bounded<R: AsyncRead + Unpin>(mut reader: R, cap: usize) -> (Vec<u8>, bool) {
-    let mut kept = Vec::new();
-    let mut overflow = false;
-    let mut chunk = [0u8; 16 * 1024];
-    loop {
-        match reader.read(&mut chunk).await {
-            Ok(0) | Err(_) => return (kept, overflow),
-            Ok(count) => {
-                let room = cap.saturating_sub(kept.len());
-                if count > room {
-                    overflow = true;
-                }
-                kept.extend_from_slice(&chunk[..count.min(room)]);
-            }
-        }
-    }
-}
-
-async fn join_reader(task: Option<tokio::task::JoinHandle<(Vec<u8>, bool)>>) -> (Vec<u8>, bool) {
-    let Some(mut task) = task else {
-        return (Vec::new(), false);
-    };
-    match tokio::time::timeout(Duration::from_secs(2), &mut task).await {
-        Ok(result) => result.unwrap_or_default(),
-        Err(_) => {
-            task.abort();
-            (Vec::new(), false)
-        }
+/// Git's words for a command that could not run to an exit status.
+fn runner_error(error: CaptureError) -> RunError {
+    match error {
+        CaptureError::Spawn(error) => RunError::Spawn(format!("could not start git: {error}")),
+        CaptureError::Wait(error) => RunError::Spawn(format!("could not wait for git: {error}")),
+        CaptureError::TimedOut => RunError::Timeout,
     }
 }
