@@ -199,7 +199,8 @@
     <h3 id="git-web-repository" class="panel-section-title">Repository</h3>
     <p class="git-push" role="status" title={pushTitle}>{pushText}</p>
     {#if !desktop}
-      <p class="git-lead">To connect a git repository, open this project in the LibrePaper desktop app.</p>
+      <p class="git-lead">To push and pull with git, open this project in the LibrePaper desktop app.</p>
+      <p class="git-lead">You can also keep a GitHub repository in sync with this project through a <a href="{DOCS}#github-action" target="_blank" rel="noopener noreferrer">GitHub Action</a>, with no desktop app. <a href={DOCS} target="_blank" rel="noopener noreferrer">Read the Git docs</a> to set it up.</p>
     {/if}
   </section>
 
@@ -223,7 +224,9 @@
     </section>
   {/if}
 
-  <p class="panel-meta git-note"><a href={DOCS} target="_blank" rel="noopener noreferrer">Read the Git docs</a>. The docs also show a <a href="{DOCS}#github-action" target="_blank" rel="noopener noreferrer">GitHub Action</a> that keeps a repository in step without this computer.</p>
+  {#if desktop}
+    <p class="panel-meta git-note"><a href={DOCS} target="_blank" rel="noopener noreferrer">Read the Git docs</a>. The docs also show a <a href="{DOCS}#github-action" target="_blank" rel="noopener noreferrer">GitHub Action</a> that keeps a repository in step without this computer.</p>
+  {/if}
 </div>
 
 <style>
