@@ -214,6 +214,21 @@ async fn token_works(inner: &Inner, connection: &Connection, token: &str) -> boo
     !matches!(web_changed(&client, &state).await, Err(error) if token_refused(&error))
 }
 
+/// Whether a merge in the clone still needs the page. A merge whose files are
+/// all settled but whose commit failed, to a hook or a signing key, is
+/// committed again here, so Pull or Push is the way to retry it. A commit that
+/// fails again says why.
+async fn unfinished_merge(repo: &Path) -> Result<bool, Failure> {
+    if !merge_in_progress(repo).await? {
+        return Ok(false);
+    }
+    if !conflicted_paths(repo).await?.is_empty() {
+        return Ok(true);
+    }
+    must(repo, Limit::Local, &["commit", "--no-edit"]).await?;
+    Ok(false)
+}
+
 /// The status object every route answers with.
 async fn status_of(inner: &Inner, connection: &Connection) -> Result<Value, Failure> {
     let token = credentials::stored_token_at(&inner.state_home, connection.link.site.as_str());
@@ -550,7 +565,7 @@ async fn pull_from_repository(
     let connection = open_connection(inner, origin, project)?;
     let _hold = inner.connections.claim(&connection.key)?;
     let repo = require_connected(&connection)?;
-    if merge_in_progress(&repo).await? {
+    if unfinished_merge(&repo).await? {
         return Err(merging(inner, &connection).await);
     }
     let fetched = pull_remote(&repo).await?;
@@ -598,7 +613,7 @@ async fn push_to_repository(
     let connection = open_connection(inner, origin, project)?;
     let _hold = inner.connections.claim(&connection.key)?;
     let repo = require_connected(&connection)?;
-    if merge_in_progress(&repo).await? {
+    if unfinished_merge(&repo).await? {
         return Err(merging(inner, &connection).await);
     }
     if merge_stopped(&web_pull(inner, &connection).await?)? {
@@ -1093,6 +1108,53 @@ mod tests {
             plain_git(&repo, &["log", "-1", "--format=%s"]),
             "Merge branch 'side'"
         );
+    }
+
+    #[tokio::test]
+    async fn a_merge_whose_commit_failed_is_committed_on_the_next_try() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let bare = bare_remote(fixture.scratch.path());
+        let connection = fixture.connection(PROJECT);
+        run_connect(&fixture.inner, &connection, text(&bare))
+            .await
+            .unwrap();
+        let repo = connection.repo();
+        std::fs::write(repo.join("main.tex"), "ours\n").unwrap();
+        plain_git(&repo, &["commit", "-am", "Ours"]);
+        plain_git(&repo, &["checkout", "-b", "side", "HEAD~1"]);
+        std::fs::write(repo.join("main.tex"), "theirs\n").unwrap();
+        plain_git(&repo, &["commit", "-am", "Theirs"]);
+        plain_git(&repo, &["checkout", "main"]);
+        assert!(!plain_git_output(&repo, &["merge", "side"]).status.success());
+
+        // A hook refuses the commit that settles the last file.
+        let hook = repo.join(".git/hooks/commit-msg");
+        std::fs::write(&hook, "#!/bin/sh\necho refused >&2\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let body = ResolveBody {
+            project: PROJECT.to_string(),
+            path: "main.tex".to_string(),
+            keep: "repository".to_string(),
+        };
+        assert!(resolve(&fixture.inner, Some(PAGE), &body).await.is_err());
+        assert!(repo.join(".git/MERGE_HEAD").exists());
+        assert!(
+            unfinished_merge(&repo).await.is_err(),
+            "the hook still refuses"
+        );
+
+        std::fs::remove_file(&hook).unwrap();
+        assert!(!unfinished_merge(&repo).await.unwrap());
+        assert!(!repo.join(".git/MERGE_HEAD").exists());
+        let status = status_of(&fixture.inner, &connection).await.unwrap();
+        assert_eq!(status["merging"], Value::Null, "{status}");
     }
 
     #[tokio::test]

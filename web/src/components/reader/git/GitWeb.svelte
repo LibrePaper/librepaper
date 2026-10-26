@@ -31,7 +31,9 @@
   const link = $derived(connection?.state);
   const status = $derived(link?.status ?? null);
   const busy = $derived(Boolean(link?.busy));
-  const merging = $derived(Boolean(status?.merging));
+  // A merge blocks Pull and Push only while a file waits for a choice. One
+  // whose files are settled but whose commit failed is retried by either.
+  const merging = $derived(Boolean(status?.merging?.conflicts?.length));
 
   // The address that is typed, and the problem with it. A Use a folder action
   // that is running holds its own button.
@@ -169,7 +171,9 @@
     </div>
   {/if}
 
-  {#if status.merging}
+  {#if status.merging && !merging}
+    <p class="git-lead" role="status">The files are settled, but the merge could not be committed. Pull or Push to try again.</p>
+  {:else if status.merging}
     <div class="git-box">
       <p>These files changed in both the project and the repository. Choose which version to keep.</p>
       <ul class="git-conflicts" aria-label="Files that changed on both sides">

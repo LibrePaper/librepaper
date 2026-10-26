@@ -1596,6 +1596,13 @@
     const connection = createWebConnection({
       project: `${location.origin}/docs/${SLUG}`,
       nameVersion: async (message) => {
+        // The server names what it holds, so the editor's edits must reach it
+        // first. A session that is reconnecting is waited for, briefly.
+        const deadline = Date.now() + 10000;
+        while (!readerDisposed && (!persistence.joined || persistence.pending) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        if (!persistence.joined || persistence.pending) throw new Error("Your latest edits have not reached the server yet. Try again once they are saved.");
         await history.label(SLUG, "current", message, keyHeaders(KEY), crypto.randomUUID());
         if (timeline.state.loaded) void timeline.load();
       },
