@@ -18,7 +18,7 @@ Shown to editors and owners (`!who.local && who.mayEdit`); readers and commenter
 1. **Repository.** "This project syncs with a git repository through its GitHub Action. Nothing runs on this computer." One line of status from the server: the newest version with reason `push` ("Last pushed by Alice, 2 hours ago: Reword the greeting") or "No push yet". This comes from `GET /history?named=1` as the History panel reads it; no new route.
 2. **Token.** The owner sees the project tokens with the Edit role (from `GET /share`), each with its name and expiry, a **Create token for a repository** button that posts `{ create: { kind: "token", role: "edit", name: "GitHub Action", until: "365d" } }` to `/share` and shows the token once with Copy, as the Share panel does, and Revoke. An editor who is not the owner sees "Only the owner can create a token" and the rest of the panel.
 3. **Workflow.** The workflow YAML from `docs/git.md` with the project's own address filled in, a Copy button, and the file name `.github/workflows/librepaper.yml`.
-4. **Before the first run.** The three seeding commands from `docs/git.md`, with the address filled in, and the sentence about unrelated histories.
+4. **Before the first run.** The seeding commands from `docs/git.md`, with the address filled in. The first pull merges unrelated histories itself.
 5. **Alone on this computer.** `librepaper pull <address>` for someone who only wants a clone, with a link to the Git docs.
 
 The Share panel's token tab stays as it is; this panel is a guided path to the same rows.

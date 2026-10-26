@@ -15,7 +15,7 @@ The panel shows:
 - **Last push.** The newest version pushed from Git, such as "Last pushed by Alice, 2 hours ago: Reword the greeting", or "No push yet".
 - **Token.** The owner sees the project's tokens with the Edit role. **Create token for a repository** makes a token named GitHub Action that expires in 365 days, and shows it once with a Copy button. Revoke removes a token. Other editors see the list and a note that only the owner can create one.
 - **Workflow.** The workflow from the [GitHub Action](#github-action) section, with your project's address filled in, and a Copy button. Save it as `.github/workflows/librepaper.yml`.
-- **Before the first run.** The seeding commands from the same section, with your address filled in, and the note about unrelated histories.
+- **Before the first run.** The seeding commands from the same section, with your address filled in.
 - **Clone.** The `librepaper pull <address>` line, for a clone on this computer alone.
 
 ### In a folder project
@@ -80,6 +80,7 @@ librepaper pull --mine intro.tex
 
 - In a repository, pull fetches each named version as a commit on `librepaper/main`. Then it merges that into your branch.
 - If the merge conflicts, git leaves the conflict for you. Resolve it with your tools.
+- The first pull into a repository that shares no history with the project merges the two histories itself. Files that differ on both sides are left as conflicts.
 - In a repository, pull refuses to start with uncommitted changes. Commit first.
 - Outside a repository, pull writes the newest version into the folder. A file that changed only on the web is written. A file that changed only in the folder is kept. A file deleted on the web goes to the trash.
 - A file that changed on both sides is not written. Pull lists it. Run pull again with `--mine PATH` to keep your copy, or `--theirs PATH` to take the web copy.
@@ -117,11 +118,10 @@ The Action runs `pull` and `push` for a repository on GitHub. Nothing has to run
 ```sh
 # Once, on your computer, in a clone of the repository
 librepaper pull https://app.librepaper.org/docs/<slug>   # links the clone and fetches the project as commits
-git merge --allow-unrelated-histories librepaper/main    # only when the repository and the project share no history
 git push origin main 'refs/librepaper/*'                 # the Action starts from this state
 ```
 
-A repository that started as a web project (`librepaper pull` into an empty repository) or a project that started as a repository (`librepaper push --title`) already share history, so the merge line is not needed. A repository and a project that grew separately need it once.
+The first pull merges the project's versions into your branch itself, even when the repository and the project share no history. A file that differs on both sides is left as a git conflict to resolve before you push.
 
 The Action refuses to run until `refs/librepaper/state` exists on GitHub, and after that it keeps that state current itself.
 
@@ -173,7 +173,7 @@ Anyone with push rights on the repository can change the project this way. Each 
 
 1. **Bob and Carol write on the web.** They edit and comment in the browser, and nothing changes for them. Their named versions become commits in the repository.
 2. **Alice backs up a web project.** She pulls the project into a new repository with her token, then pushes the repository and its LibrePaper refs to GitHub (`git push origin main 'refs/librepaper/*'`) and adds the workflow. From then on, the Action adds each new named version as a commit. She can also go the other way. `librepaper push --title` in a repository that holds her paper creates the project.
-3. **Alice works in VS Code, and Bob works in the browser.** Alice adds a token. She runs `librepaper pull` once in her clone and pushes the LibrePaper refs, then adds the workflow. If her repository and the project share no history, she also merges them once, as the Before the first run step shows. She can also do the whole setup from the Git panel of the web project. Her pushes reach Bob within a minute, as versions in his history under her name. Bob's named versions reach her on her next `git pull`, as commits by Bob. If they both changed a file, the Action's push is refused. A pull request from `librepaper/sync` opens, and Alice merges it in git. Bob sees none of this.
+3. **Alice works in VS Code, and Bob works in the browser.** Alice adds a token. She runs `librepaper pull` once in her clone and pushes the LibrePaper refs, then adds the workflow. She can also do the whole setup from the Git panel of the web project. Her pushes reach Bob within a minute, as versions in his history under her name. Bob's named versions reach her on her next `git pull`, as commits by Bob. If they both changed a file, the Action's push is refused. A pull request from `librepaper/sync` opens, and Alice merges it in git. Bob sees none of this.
 4. **Charlie works on GitHub only.** He works in the same repository, with the same Action. He has nothing new to learn.
 5. **Dana works in a folder with no Git.** In the desktop app she opens her web project and chooses Work in a folder from the File menu, which puts the project's files in a folder of her choice and opens it. The Git panel asks her to sign in once. She edits the folder offline with local TeX and presses Push in the Git panel. When a file also changed on the web, Pull asks her which copy to keep, file by file.
 
@@ -235,15 +235,6 @@ Someone changed a file on the web. Pull, resolve any conflict, then push again.
 ### Push says a suggestion is pending
 
 Accept or reject the suggestion on the web. Then push again.
-
-### Git refuses the first merge
-
-The repository and the project share no commits. This happens when you link an existing repository to an existing project. Allow the merge once.
-
-```sh
-# Allow one merge between histories that share no commits
-git merge --allow-unrelated-histories librepaper/main
-```
 
 ### The CLI or the Action cannot sign in
 

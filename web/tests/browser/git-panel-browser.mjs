@@ -735,8 +735,8 @@ window.gitPanelCheck = async () => {
   check(yaml.includes("project: " + address + "\\n") && yaml.includes("LibrePaper/sync-action@v1") && yaml.includes("secrets.LIBREPAPER_TOKEN") && !yaml.includes("<slug>"), "the workflow carries the project's address: " + yaml);
   check(text().includes(".github/workflows/librepaper.yml"), "and the file it is saved as");
   const seeding = panel().querySelector('pre[aria-label="The commands to run once"]').textContent;
-  check(seeding.includes("librepaper pull " + address + "   #") && seeding.includes("git merge --allow-unrelated-histories librepaper/main") && seeding.includes("git push origin main 'refs/librepaper/*'"), "the seeding commands carry it too: " + seeding);
-  check(text().includes("grew separately and share no history"), "with the sentence about unrelated histories");
+  check(seeding.includes("librepaper pull " + address + "   #") && seeding.includes("git push origin main 'refs/librepaper/*'"), "the seeding commands carry it too: " + seeding);
+  check(!seeding.includes("git merge") && !text().includes("merge line"), "and no merge to run by hand");
   check(panel().querySelector('pre[aria-label="The command for a clone"]').textContent === "librepaper pull " + address, "a clone is one command");
   const docs = [...panel().querySelectorAll("a")].find((node) => node.getAttribute("href") === "/docs/git.html");
   check(docs && docs.target === "_blank" && docs.rel.includes("noopener"), "and the docs are one link away");
@@ -786,6 +786,18 @@ window.gitPanelCheck = async () => {
   navigator.clipboard.writeText = clipboard;
   await press("Done");
   check(!panel().querySelector('textarea[aria-label="Text to copy by hand"]'), "Done clears it");
+
+  // Closing the panel forgets a token offered by hand, and opening it again does not bring it back.
+  await press("Create token for a repository");
+  navigator.clipboard.writeText = async () => { throw new Error("blocked"); };
+  await press("Copy token");
+  check(panel().querySelector('textarea[aria-label="Text to copy by hand"]')?.value === "lpt_minted_t5", "a blocked copy offers the next token by hand");
+  navigator.clipboard.writeText = clipboard;
+  component.$set({ open: false });
+  await flush();
+  component.$set({ open: true });
+  await flush();
+  check(!panel().querySelector('textarea[aria-label="Text to copy by hand"]') && !text().includes("lpt_minted_t5"), "closing the panel forgets the token: " + text());
 
   // Revoking asks first.
   const trash = () => [...panel().querySelectorAll('button[aria-label^="Revoke"]')].find((node) => node.getAttribute("aria-label") === "Revoke Laptop");
