@@ -1586,7 +1586,7 @@
   const webGit = LOCAL ? null : createWebGit();
   $effect(() => () => webGit?.dispose());
   function openGitDiff(change) {
-    void gitDiff.show(change.path, change.kind);
+    void gitDiff.show(change.path, change.kind, change.from);
     void startEditing().then(() => showMobileView("source"));
   }
   // The editor becomes ready. A local project opens with one sync that sends nothing, because the

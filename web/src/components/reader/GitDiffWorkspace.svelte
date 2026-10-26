@@ -24,8 +24,12 @@
   });
 
   // A side that is not there says so in its label, so an added or a deleted
-  // file reads as itself rather than as an empty pane.
-  const baseline = $derived(view.head === null ? "HEAD (not in the last commit)" : "HEAD");
+  // file reads as itself rather than as an empty pane. A renamed file names the
+  // path it had in HEAD.
+  const baseline = $derived.by(() => {
+    if (view.from) return `HEAD (${view.from})`;
+    return view.head === null ? "HEAD (not in the last commit)" : "HEAD";
+  });
   const target = $derived(view.work === null ? "Working tree (file deleted)" : "Working tree");
 </script>
 

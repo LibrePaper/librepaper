@@ -4,12 +4,12 @@
 // state. The view only reads state and calls these methods.
 import * as routes from "../desktop/git.js";
 
-/** @typedef {{ active: boolean, loading: boolean, error: string, path: string, kind: string, head: string | null, work: string | null, binary: boolean }} GitDiffState */
+/** @typedef {{ active: boolean, loading: boolean, error: string, path: string, kind: string, from: string, head: string | null, work: string | null, binary: boolean }} GitDiffState */
 
 /** @param {{ id: string, api?: typeof routes }} options */
 export function createGitDiff({ id, api = routes }) {
   /** @type {GitDiffState} */
-  let current = $state.raw({ active: false, loading: false, error: "", path: "", kind: "", head: null, work: null, binary: false });
+  let current = $state.raw({ active: false, loading: false, error: "", path: "", kind: "", from: "", head: null, work: null, binary: false });
   // Bumped by every show, refresh and close, so a read that finishes late is ignored.
   let generation = 0;
   let closed = false;
@@ -19,12 +19,13 @@ export function createGitDiff({ id, api = routes }) {
   };
 
   /// Reads `path` and shows it. `kind` is how the change list calls it (added,
-  /// modified, deleted, renamed or conflicted), which the bar says.
-  async function show(/** @type {string} */ path, /** @type {string} */ kind = "") {
+  /// modified, deleted, renamed or conflicted), which the bar says. `from` is
+  /// the old path of a renamed file, and its `HEAD` side is read at that path.
+  async function show(/** @type {string} */ path, /** @type {string} */ kind = "", /** @type {string} */ from = "") {
     const request = ++generation;
-    set({ active: true, loading: true, error: "", path, kind, head: null, work: null, binary: false });
+    set({ active: true, loading: true, error: "", path, kind, from, head: null, work: null, binary: false });
     try {
-      const answer = await api.gitDiff(id, path);
+      const answer = await api.gitDiff(id, path, from);
       if (request !== generation) return;
       set({ loading: false, head: answer?.head ?? null, work: answer?.work ?? null, binary: Boolean(answer?.binary) });
     } catch (error) {
@@ -33,7 +34,7 @@ export function createGitDiff({ id, api = routes }) {
   }
 
   /// Reads the file on show again, for after an edit.
-  const refresh = () => (current.active ? show(current.path, current.kind) : Promise.resolve());
+  const refresh = () => (current.active ? show(current.path, current.kind, current.from) : Promise.resolve());
 
   function close() {
     generation += 1;

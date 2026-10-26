@@ -28,11 +28,13 @@ export async function gitInit(id) {
 }
 
 /** One file as `HEAD` has it and as the working tree has it. A side that does
- * not exist is null; `binary` says there is no text to show.
- * @param {string} id @param {string} path
+ * not exist is null; `binary` says there is no text to show. A renamed file
+ * passes its old path as `from`, and `HEAD` is read at that path.
+ * @param {string} id @param {string} path @param {string} [from]
  * @returns {Promise<{ head: string | null, work: string | null, binary: boolean }>} */
-export async function gitDiff(id, path) {
-  const response = await send("GET", `${route(id, "diff")}?path=${encodeURIComponent(path)}`);
+export async function gitDiff(id, path, from) {
+  const old = from ? `&from=${encodeURIComponent(from)}` : "";
+  const response = await send("GET", `${route(id, "diff")}?path=${encodeURIComponent(path)}${old}`);
   return response.json();
 }
 

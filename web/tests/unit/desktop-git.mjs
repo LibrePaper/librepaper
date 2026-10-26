@@ -49,6 +49,11 @@ assert.equal(last().method, "GET");
 assert.ok(last().url.endsWith("projects/f1/git/diff?path=chapters%2Fa%20b.tex"));
 answer = () => response(200, { head: null, work: "new\n", binary: false });
 assert.equal((await gitDiff("f1", "new.tex")).head, null, "a file that was not in the last commit has no head");
+assert.ok(!last().url.includes("from="), "without an old path the query has no from");
+
+// A renamed file names its old path, which HEAD is read at.
+await gitDiff("f1", "new.tex", "old.tex");
+assert.ok(last().url.endsWith("projects/f1/git/diff?path=new.tex&from=old.tex"));
 
 // A commit sends the message, and the paths only when some were left out.
 answer = () => response(200, { commit: "1a2b3c4d5e6f" });
