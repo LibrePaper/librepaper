@@ -73,8 +73,10 @@ function githubHelp() {
 
 function httpsHelp(host, name, platform) {
   const title = `Git could not sign in to ${host}.`;
-  // The probe names the remote and never its address. A remote's name has no shell syntax in it.
-  const probe = `git ls-remote ${name}`;
+  // The probe names the remote and never its address. A name is plain letters,
+  // digits, dots, dashes and underscores; anything else falls back to origin, so
+  // no shell syntax reaches the command.
+  const probe = `git ls-remote ${/^[A-Za-z0-9._-]+$/.test(name) ? name : "origin"}`;
   if (platform === "windows") {
     return {
       title,

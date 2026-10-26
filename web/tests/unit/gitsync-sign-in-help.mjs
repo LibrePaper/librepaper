@@ -65,4 +65,9 @@ assert.deepEqual(signInHelp("not a remote", "linux"), {
   steps: [{ text: "Set up a credential helper or an SSH key for this remote, then try again.", href: "/docs/git.html#credentials" }],
 });
 
+// A remote name a repository config made up never reaches the command.
+const hostileName = signInHelp("https://example.com/o/r.git", "linux", "x;$(id)");
+assert.ok(hostileName.steps.some((step) => step.command === "git ls-remote origin"), JSON.stringify(hostileName.steps));
+assert.ok(!JSON.stringify(hostileName.steps).includes("$(id)"));
+
 console.log("gitsync sign-in help ok");
