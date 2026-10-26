@@ -1080,7 +1080,9 @@ pub(super) async fn handle_pull(
 /* ----------------------------------------------------------------- push */
 
 /// `git push` of the current branch, never forced and never after a pull. The
-/// first push of a branch sets its upstream.
+/// push names one refspec: the local branch, to the branch its upstream points
+/// at. The repository's `push.default` and `remote.<name>.push` settings do not
+/// choose what goes. The first push of a branch sets its upstream.
 async fn run_push(root: &Path) -> Result<Value, Failure> {
     require_repository(root)?;
     let status = read_status(root).await?;
@@ -1089,10 +1091,21 @@ async fn run_push(root: &Path) -> Result<Value, Failure> {
     };
     let remotes = read_remotes(root).await?;
     let remote = pick_remote(root, &status, &remotes).await?;
+    let prefix = format!("{remote}/");
+    let target = match status
+        .upstream
+        .as_deref()
+        .and_then(|upstream| upstream.strip_prefix(prefix.as_str()))
+    {
+        Some(rest) => rest,
+        None => branch.as_str(),
+    };
+    let refspec = format!("refs/heads/{branch}:refs/heads/{target}");
     let mut args = vec!["push"];
     if status.upstream.is_none() {
-        args.extend(["-u", remote.as_str(), branch.as_str()]);
+        args.push("-u");
     }
+    args.extend(["--", remote.as_str(), refspec.as_str()]);
     let output = run(root, Limit::Transport, &args).await?;
     if output.success() {
         let state = if output
@@ -1898,6 +1911,32 @@ mod tests {
             plain_git(&bare, &["rev-parse", "main"]),
             plain_git(fixture.root(), &["rev-parse", "HEAD"])
         );
+    }
+
+    #[tokio::test]
+    async fn a_push_stays_refused_when_the_repository_configures_a_forced_refspec() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let bare = fixture.with_remote().await;
+        let other = fixture.other(&bare);
+        commit_elsewhere(&other, "b.txt", "two\n", "Add b");
+        let remote_commit = plain_git(&other, &["rev-parse", "HEAD"]);
+        fixture.write("c.txt", "three\n");
+        fixture.commit_all("Add c").await;
+        plain_git(
+            fixture.root(),
+            &[
+                "config",
+                "remote.origin.push",
+                "+refs/heads/main:refs/heads/main",
+            ],
+        );
+
+        let (status, body) = fixture.post_empty("/push").await;
+        assert_eq!((status, &body["reason"]), (409, &json!("behind")), "{body}");
+        assert_eq!(plain_git(&bare, &["rev-parse", "main"]), remote_commit);
     }
 
     #[tokio::test]
