@@ -1,36 +1,43 @@
 <script>
   // A web project's Git panel. The project cannot run git, so this panel runs
-  // nothing: it is where the GitHub Action that keeps a repository and the
-  // project in step is set up and seen. What the server knows (the last push,
-  // the Edit tokens) belongs to the controller (lib/reader/web-git.svelte.js);
-  // the workflow and the commands are the ones docs/git.md prints.
+  // nothing on the project itself. What the server knows (the last push) belongs
+  // to the controller (lib/reader/web-git.svelte.js). In the desktop app the
+  // panel also connects a git repository on this computer: the clone or the
+  // folder is made by the app, and the reader is taken to the folder project.
+  // The GitHub Action that keeps a repository in step is described in the docs.
   import { untrack } from "svelte";
-  import Modal from "../../Modal.svelte";
-  import ShareRow from "../share/ShareRow.svelte";
   import { since } from "../../../lib/dates.js";
-  import { WORKFLOW_FILE, seedingCommands, workflowYaml } from "../../../lib/git-workflow.js";
+  import { remoteUrlProblem } from "../../../lib/git-url.js";
 
-  let { web, slug, owner = false, linkKey = "", open = false } = $props();
+  let {
+    web,
+    slug,
+    linkKey = "",
+    open = false,
+    desktop = false,
+    // Each throws with the message the panel shows when the desktop app refuses.
+    onclone,
+    onfolder,
+  } = $props();
 
   const DOCS = "/docs/git.html";
   const view = $derived(web.state);
-  const busy = $derived(view.busy !== "");
-  const address = $derived(`${location.origin}/docs/${slug}`);
 
-  // The token, and the text offered for copying by hand, are shown while the
-  // panel is open and never afterwards.
+  // The address that is typed, the problem with it, and the action that is
+  // running ("clone" or "folder"), so both controls wait for it.
+  let address = $state("");
+  let running = $state("");
+  let failure = $state("");
+
   $effect(() => {
     if (!open) return;
     const project = slug;
-    const options = { key: linkKey, owner };
+    const options = { key: linkKey };
     untrack(() => { void web.refresh(project, options); });
     const timer = setInterval(() => {
       if (document.visibilityState !== "hidden") void web.refresh(project, options);
     }, 30_000);
-    return () => {
-      clearInterval(timer);
-      done();
-    };
+    return () => clearInterval(timer);
   });
 
   const pushText = $derived.by(() => {
@@ -42,143 +49,73 @@
   });
   const pushTitle = $derived(view.push?.at ? new Date(view.push.at).toLocaleString() : "");
 
-  // What was last copied, so its button can say so for a moment, and the text
-  // to select by hand when the browser blocked the clipboard.
-  let copied = $state("");
-  let copyFallback = $state("");
-  let copyTimer;
-  $effect(() => () => clearTimeout(copyTimer));
-  async function copy(text, which) {
-    // The panel may have closed while the clipboard was being written. Its
-    // token is forgotten then, so nothing is shown for it.
+  async function connect(event) {
+    event.preventDefault();
+    if (running) return;
+    const problem = remoteUrlProblem(address);
+    if (problem) {
+      failure = problem;
+      return;
+    }
+    running = "clone";
+    failure = "";
     try {
-      await navigator.clipboard.writeText(text);
-      if (!open) return;
-      copied = which;
-      copyFallback = "";
-      clearTimeout(copyTimer);
-      copyTimer = setTimeout(() => (copied = ""), 1800);
-    } catch {
-      if (!open) return;
-      copied = "";
-      copyFallback = text;
+      await onclone(address.trim());
+    } catch (error) {
+      failure = error?.message || "The desktop app could not clone that repository.";
+    } finally {
+      running = "";
     }
   }
 
-  const workflow = $derived(workflowYaml(address));
-  const seeding = $derived(seedingCommands(address));
-  const aloneCommand = $derived(`librepaper pull ${address}`);
-
-  let confirming = $state(null);
-  async function confirmRevoke() {
-    const item = confirming;
-    confirming = null;
-    if (item) await web.revoke(item.id);
-  }
-  const select = (event) => event.currentTarget.select();
-  // Forgets the token: Done does this, and so does leaving the panel. The next
-  // token starts with its own Copy button, not the last one's "Copied".
-  function done() {
-    web.hide();
-    copyFallback = "";
-    copied = "";
-    clearTimeout(copyTimer);
+  async function chooseFolder() {
+    if (running) return;
+    running = "folder";
+    failure = "";
+    try {
+      await onfolder();
+    } catch (error) {
+      failure = error?.message || "The desktop app could not keep a folder for this project.";
+    } finally {
+      running = "";
+    }
   }
 </script>
-
-{#snippet copyButton(text, which, label)}
-  <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => copy(text, which)}>
-    {copied === which ? "Copied" : label}
-  </button>
-{/snippet}
 
 <div class="git-web">
   <section class="git-block" aria-labelledby="git-web-repository">
     <h3 id="git-web-repository" class="panel-section-title">Repository</h3>
-    <p class="git-lead">This project syncs with a git repository through its GitHub Action. Nothing runs on this computer.</p>
     <p class="git-push" role="status" title={pushTitle}>{pushText}</p>
+    {#if !desktop}
+      <p class="git-lead">To connect a git repository, open this project in the LibrePaper desktop app.</p>
+    {/if}
   </section>
 
-  <section class="git-block" aria-labelledby="git-web-token">
-    <h3 id="git-web-token" class="panel-section-title">Token</h3>
-    {#if !owner}
-      <p class="git-lead">Only the owner can create a token.</p>
-    {:else if view.reveal}
-      <div class="git-reveal">
-        <p class="git-warning" role="alert">Copy this token now. You won't be able to view it again.</p>
-        <label class="git-field panel-meta">Token
-          <input class="input git-code-input" type="text" readonly aria-label="Token for the GitHub Action" value={view.reveal.token} onclick={select} />
+  {#if desktop}
+    <section class="git-block" aria-labelledby="git-web-connect">
+      <h3 id="git-web-connect" class="panel-section-title">Connect a repository</h3>
+      <p class="git-lead">Work on this project in a git repository on this computer. Git uses your own sign-in.</p>
+      <form class="git-form" onsubmit={connect}>
+        <label class="git-field panel-meta">Repository address
+          <input class="input git-input" type="text" placeholder="https://github.com/owner/repo.git" autocomplete="off" spellcheck="false"
+                 bind:value={address} disabled={running !== ""} />
         </label>
         <div class="git-row">
-          {@render copyButton(view.reveal.token, "token", "Copy token")}
+          <button type="submit" class="btn btn-sm lp-control-tonal-brand" disabled={running !== ""}>
+            {running === "clone" ? "Cloning…" : "Clone and connect…"}
+          </button>
         </div>
-        <p class="panel-meta">Save it as a repository secret named <code>LIBREPAPER_TOKEN</code>. Use Settings, then Secrets and variables, then Actions.</p>
-        <div class="git-row">
-          <button type="button" class="btn btn-sm lp-control-brand" onclick={done}>Done</button>
-        </div>
-      </div>
-    {:else}
-      <p class="panel-meta git-note">The Action needs a token with the Edit role. A token for one project keeps the Action away from every other project.</p>
-      {#if view.tokensProblem}
-        <p class="lp-text-error" role="alert">{view.tokensProblem}</p>
-      {:else if !view.loaded}
-        <p class="panel-muted" role="status">Loading…</p>
-      {:else if view.tokens.length}
-        <ul class="git-tokens" aria-label="Tokens with the Edit role">
-          {#each view.tokens as item (item.id)}
-            <ShareRow kind="token" {item} {busy} copied="" oncopy={() => {}} onrevoke={() => (confirming = item)} />
-          {/each}
-        </ul>
-      {:else}
-        <p class="panel-meta git-note">No token with the Edit role yet.</p>
-      {/if}
+      </form>
       <div class="git-row">
-        <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy || !view.loaded} onclick={() => web.create()}>
-          {view.busy === "create" ? "Creating…" : "Create token for a repository"}
-        </button>
+        <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={running !== ""} onclick={chooseFolder}>Use a folder on this computer…</button>
       </div>
-    {/if}
-    {#if view.error}<p class="lp-text-error git-error" role="alert">{view.error}</p>{/if}
-  </section>
-
-  <section class="git-block" aria-labelledby="git-web-workflow">
-    <h3 id="git-web-workflow" class="panel-section-title">Workflow</h3>
-    <p class="git-lead">Save this as <code>{WORKFLOW_FILE}</code> in the repository.</p>
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex -- a scrolling block is reached by keyboard to be read -->
-    <pre class="git-code" tabindex="0" aria-label="The workflow file">{workflow}</pre>
-    <div class="git-row">{@render copyButton(workflow, "workflow", "Copy workflow")}</div>
-  </section>
-
-  <section class="git-block" aria-labelledby="git-web-seed">
-    <h3 id="git-web-seed" class="panel-section-title">Before the first run</h3>
-    <p class="git-lead">Run these once, in a clone of the repository on your computer. The Action refuses to run until the LibrePaper state exists on GitHub.</p>
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex -- a scrolling block is reached by keyboard to be read -->
-    <pre class="git-code" tabindex="0" aria-label="The commands to run once">{seeding}</pre>
-    <div class="git-row">{@render copyButton(seeding, "seeding", "Copy commands")}</div>
-  </section>
-
-  <section class="git-block" aria-labelledby="git-web-alone">
-    <h3 id="git-web-alone" class="panel-section-title">Alone on this computer</h3>
-    <p class="git-lead">To keep only a clone of this project, with no GitHub, run this.</p>
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex -- a scrolling block is reached by keyboard to be read -->
-    <pre class="git-code" tabindex="0" aria-label="The command for a clone">{aloneCommand}</pre>
-    <div class="git-row">{@render copyButton(aloneCommand, "alone", "Copy command")}</div>
-    <p class="panel-meta git-note"><a href={DOCS} target="_blank" rel="noopener noreferrer">Read the Git docs</a></p>
-  </section>
-
-  {#if copyFallback}
-    <p class="panel-meta git-note" role="alert">Copy was blocked. Select this text and copy it by hand.</p>
-    <textarea class="git-fallback" readonly rows="4" aria-label="Text to copy by hand" value={copyFallback} onclick={select}></textarea>
+      <p class="panel-meta git-note">An empty folder, or a clone you already have.</p>
+      {#if failure}<p class="lp-text-error git-error" role="alert">{failure}</p>{/if}
+    </section>
   {/if}
-</div>
 
-{#if confirming}
-  <Modal open title="Revoke token?"
-         confirm={{ label: "Revoke token", tone: "error", oncancel: () => (confirming = null), onclick: confirmRevoke }}
-         onclose={() => (confirming = null)}>
-    <p>This token will stop working. The GitHub Action that uses it can no longer sync this project.</p>
-  </Modal>
-{/if}
+  <p class="panel-meta git-note"><a href={DOCS} target="_blank" rel="noopener noreferrer">Read the Git docs</a>. The docs also show a <a href="{DOCS}#github-action" target="_blank" rel="noopener noreferrer">GitHub Action</a> that keeps a repository in step without this computer.</p>
+</div>
 
 <style>
   .git-web { display: grid; grid-template-columns: minmax(0, 1fr); gap: calc(var(--spacing) * 5); }
@@ -186,16 +123,10 @@
   .git-lead { margin: calc(var(--spacing) * 1.5) 0 0; overflow-wrap: anywhere; }
   .git-note { margin: calc(var(--spacing) * 1.5) 0 0; overflow-wrap: anywhere; }
   .git-push { margin: calc(var(--spacing) * 2) 0 0; font-weight: 500; overflow-wrap: anywhere; }
+  .git-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: calc(var(--spacing) * 2); margin-top: calc(var(--spacing) * 2); }
   .git-row { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 2); margin-top: calc(var(--spacing) * 2); }
-  .git-tokens { margin: calc(var(--spacing) * 2) 0 0; padding: 0; list-style: none; border-top: 1px solid var(--color-divider); }
-  .git-reveal { display: grid; grid-template-columns: minmax(0, 1fr); gap: calc(var(--spacing) * 2); margin-top: calc(var(--spacing) * 2); }
-  .git-reveal p, .git-reveal .git-row { margin: 0; }
-  .git-warning { font-size: 13px; font-weight: 500; }
   .git-field { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--spacing); }
-  .git-code-input { width: 100%; min-width: 0; font-family: var(--font-mono, monospace); font-size: 12px; }
-  .git-code { max-width: 100%; margin: calc(var(--spacing) * 2) 0 0; padding: calc(var(--spacing) * 2); overflow: auto; border-radius: var(--radius-base); background: var(--color-row-hover); font-family: var(--font-mono, monospace); font-size: 12px; line-height: 1.5; white-space: pre; }
-  .git-web code { font-family: var(--font-mono, monospace); overflow-wrap: anywhere; }
+  .git-input { width: 100%; min-width: 0; }
   .git-error { margin: calc(var(--spacing) * 2) 0 0; overflow-wrap: anywhere; }
-  .git-fallback { width: 100%; min-width: 0; border: 0; background: transparent; resize: none; color: var(--color-text-muted); font-size: var(--panel-meta-size); }
-  a { color: var(--color-link); }
+  .git-web a { color: var(--color-link); }
 </style>

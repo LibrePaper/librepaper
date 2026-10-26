@@ -19,18 +19,23 @@ export async function openFolderProject() {
  * at once. Resolves to null when the person cancels. A refusal (a URL with a
  * password, a folder that exists, a clone git could not make) throws with the
  * service's message.
+ *
+ * With `project`, the page URL of a web project, the clone is also linked to
+ * that project and pulled into it. A pull the app refuses (no sign-in, for
+ * example) still leaves the clone as a folder project, so it resolves with
+ * `refused: true` as `keepFolderProject` does.
  * @param {string} url https, ssh or scp-like, with no password in it
- * @returns {Promise<{ id: string, project: string, name: string, root_name: string } | null>} */
-export async function cloneRepository(url) {
-  const response = await send("POST", "projects/clone", { jsonBody: { url } });
-  if (response.status === 204) return null;
-  return response.json();
+ * @param {string} [project] the web project's page, `https://<site>/docs/<slug>`
+ * @returns {Promise<({ id: string, project: string, name: string, root_name: string } & { refused?: true }) | null>} */
+export function cloneRepository(url, project) {
+  return answerOrRefusal("projects/clone", project ? { url, project } : { url });
 }
 
 /** Show the native folder chooser and keep a web project in the chosen empty
- * folder: the desktop app links the folder, pulls the project into it and
- * opens it as a folder project. Resolves to null when the person cancels. A
- * folder that is not empty is refused with "choose an empty folder".
+ * folder or in a clone of the repository: the desktop app links the folder,
+ * pulls the project into it and opens it as a folder project. Resolves to null
+ * when the person cancels. A folder that is neither empty nor a git repository
+ * is refused with "choose an empty folder or a git repository".
  *
  * When the app has no sign-in to pull with, it answers 401 after the folder
  * was created and linked. The folder project is real, so that answer resolves
@@ -38,13 +43,23 @@ export async function cloneRepository(url) {
  * offers Sign in.
  * @param {string} url the project page, `https://<site>/docs/<slug>`
  * @returns {Promise<({ id: string, project: string, name: string, root_name: string } & { refused?: true }) | null>} */
-export async function keepFolderProject(url) {
+export function keepFolderProject(url) {
+  return answerOrRefusal("projects/keep", { url });
+}
+
+/** Sends a request that makes a folder project. An error whose body carries an
+ * `id` means the folder project exists and only the pull was refused, so it
+ * resolves with `refused: true`; any other error throws.
+ * @param {string} path
+ * @param {Record<string, string>} body
+ * @returns {Promise<any>} */
+async function answerOrRefusal(path, body) {
   let response;
   try {
-    response = await send("POST", "projects/keep", { jsonBody: { url } });
+    response = await send("POST", path, { jsonBody: body });
   } catch (error) {
-    const body = /** @type {any} */ (error)?.body;
-    if (typeof body?.id === "string") return { ...body, refused: true };
+    const failure = /** @type {any} */ (error)?.body;
+    if (typeof failure?.id === "string") return { ...failure, refused: true };
     throw error;
   }
   if (response.status === 204) return null;

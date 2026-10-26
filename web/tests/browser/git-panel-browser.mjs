@@ -7,9 +7,8 @@
 // change list, commit and the identity prompt, branches, pull and push with
 // their refusals and the sign-in help, Sync, and the Diff button.
 //
-// A web project: the last push, the token for the Action made and shown once,
-// the workflow and the commands with the project's own address, and the
-// owner-only rule.
+// A web project: the last push, and in the desktop app the connect form: a
+// clone of an address, a folder, the refusals and the waiting while one runs.
 //
 // Both modes are drawn from 260 to 600 px wide without sideways scrolling.
 //
@@ -126,18 +125,6 @@ const webApi = {
     const page = scene().pages.find((entry) => entry.cursor === after);
     return { labels: structuredClone(page.labels), next: page.next };
   },
-  sharing: async (slug) => { record("sharing", slug); return { links: [], tokens: structuredClone(scene().tokens), can_share: true }; },
-  change: async (slug, body) => {
-    record("change", slug, body);
-    let created;
-    if (body.create) {
-      const row = { id: "t" + (scene().tokens.length + 1), role: "editor", name: body.create.name, until: new Date(Date.now() + 365 * 86400000).toISOString() };
-      scene().tokens.push(row);
-      created = { id: row.id, kind: "token", token: "lpt_minted_" + row.id };
-    }
-    if (body.revoke) scene().tokens = scene().tokens.filter((row) => row.id !== body.revoke.id);
-    return { links: [], tokens: structuredClone(scene().tokens), can_share: true, ...(created ? { created } : {}) };
-  },
 };
 
 Object.defineProperty(navigator, "clipboard", {
@@ -149,7 +136,7 @@ const destroy = () => { component?.$destroy(); component = null; };
 const defaults = () => ({
   calls: [], saves: 0, pulls: [], pushes: [], gitPulls: [], gitPushes: [], commits: [], syncs: [],
   status: { signed_in: false, linked: false }, repo: noRepo(), branches: { current: "main", branches: ["main"] },
-  pages: [{ cursor: null, next: null, labels: [] }], tokens: [],
+  pages: [{ cursor: null, next: null, labels: [] }],
 });
 
 const mountFolder = async (next = {}, props = {}) => {
@@ -177,7 +164,8 @@ const mountWeb = async (next = {}, props = {}) => {
   destroy();
   window.scene = { ...defaults(), ...next };
   component = createClassComponent({ component: Git, target: document.getElementById("panel"), props: {
-    local: false, open: true, web: createWebGit({ api: webApi }), slug: "paper", owner: false, linkKey: "", ...props,
+    local: false, open: true, web: createWebGit({ api: webApi }), slug: "paper", linkKey: "",
+    desktop: false, onclone: async () => {}, onfolder: async () => {}, ...props,
   } });
   await tick();
 };
@@ -726,42 +714,27 @@ window.gitPanelCheck = async () => {
 
   /* ============================================================ WEB MODE */
 
-  const origin = location.origin;
-  const address = origin + "/docs/paper";
   const minutesAgo = (minutes) => new Date(Date.now() - minutes * 60000).toISOString();
   const push = (by, label, at) => ({ sha: "p1", seq: 7, at, by, label, why: "push" });
+  const headings = () => [...panel().querySelectorAll("h3")].map((node) => node.textContent.trim()).join("|");
+  const alert = () => panel().querySelector('[role="alert"]')?.textContent.trim() ?? "";
 
-  // An editor who is not the owner sees what the server knows and the Action's setup, but no token.
+  // In the browser the panel shows the last push and says where to connect a repository. It shows no commands.
   await mountWeb({ pages: [{ cursor: null, next: null, labels: [
     { sha: "s2", seq: 9, at: minutesAgo(5), by: "Bob", label: "Saved", why: "cli" },
     push("Alice", "Reword the greeting", minutesAgo(20)),
   ] }] });
   await flush();
   check(panel().getAttribute("aria-label") === "Git", "the web panel is called Git too");
-  const headings = [...panel().querySelectorAll("h3")].map((node) => node.textContent.trim()).join("|");
-  check(headings === "Repository|Token|Workflow|Before the first run|Alone on this computer", "five sections, in order: " + headings);
-  check(text().includes("This project syncs with a git repository through its GitHub Action. Nothing runs on this computer."), "the first section says what the panel is: " + text());
+  check(headings() === "Repository", "one section in the browser: " + headings());
   check(text().includes("Last pushed by Alice, 20 min ago: Reword the greeting"), "it names the last push: " + text());
   check(calls("history").length === 1 && calls("history")[0][1] === "paper", "from the history");
-  check(text().includes("Only the owner can create a token.") && !button("Create token for a repository") && calls("sharing").length === 0, "an editor who is not the owner is told so, and asks for no tokens: " + text());
-  const yaml = panel().querySelector('pre[aria-label="The workflow file"]').textContent;
-  check(yaml.includes("project: " + address + "\\n") && yaml.includes("LibrePaper/sync-action@v1") && yaml.includes("secrets.LIBREPAPER_TOKEN") && !yaml.includes("<slug>"), "the workflow carries the project's address: " + yaml);
-  check(text().includes(".github/workflows/librepaper.yml"), "and the file it is saved as");
-  const seeding = panel().querySelector('pre[aria-label="The commands to run once"]').textContent;
-  check(seeding.includes("librepaper pull " + address + "   #") && seeding.includes("git push origin main 'refs/librepaper/*'"), "the seeding commands carry it too: " + seeding);
-  check(!seeding.includes("git merge") && !text().includes("merge line"), "and no merge to run by hand");
-  check(panel().querySelector('pre[aria-label="The command for a clone"]').textContent === "librepaper pull " + address, "a clone is one command");
+  check(text().includes("To connect a git repository, open this project in the LibrePaper desktop app."), "the browser says where to connect: " + text());
+  check(!panel().querySelector("pre") && !button("Clone and connect…") && !button("Use a folder on this computer…"), "the browser shows no commands and no connect form");
   const docs = [...panel().querySelectorAll("a")].find((node) => node.getAttribute("href") === "/docs/git.html");
-  check(docs && docs.target === "_blank" && docs.rel.includes("noopener"), "and the docs are one link away");
-  await press("Copy workflow");
-  check(window.copied === yaml && text().includes("Copied"), "Copy workflow copies the file: " + window.copied);
-  await press("Copy commands");
-  check(window.copied === seeding, "Copy commands copies the commands");
-  const clipboard = navigator.clipboard.writeText;
-  navigator.clipboard.writeText = async () => { throw new Error("blocked"); };
-  await press("Copy command");
-  check(panel().querySelector('textarea[aria-label="Text to copy by hand"]')?.value === "librepaper pull " + address, "a blocked copy offers the text to copy by hand");
-  navigator.clipboard.writeText = clipboard;
+  check(docs && docs.textContent.trim() === "Read the Git docs" && docs.target === "_blank" && docs.rel.includes("noopener"), "the docs are one link away");
+  const action = [...panel().querySelectorAll("a")].find((node) => node.getAttribute("href") === "/docs/git.html#github-action");
+  check(action && action.textContent.trim() === "GitHub Action", "and the GitHub Action is in the docs: " + text());
   await widths("in a web project");
 
   // No push yet, and a history that cannot be read.
@@ -772,63 +745,46 @@ window.gitPanelCheck = async () => {
   await flush();
   check(text().includes("The last push could not be read."), "a history that cannot be read is said: " + text());
 
-  // The owner sees the Edit tokens, makes one, sees it once, and revokes it.
-  await mountWeb({ tokens: [{ id: "t1", role: "editor", name: "Laptop", until: "2027-03-17T00:00:00Z" }, { id: "t2", role: "reader", name: "Reader bot", until: "2027-03-17T00:00:00Z" }] }, { owner: true });
+  // In the desktop app the panel connects a repository: the address is checked, trimmed and cloned.
+  const cloned = [];
+  let folders = 0;
+  await mountWeb({}, { desktop: true, onclone: async (url) => { cloned.push(url); }, onfolder: async () => { folders += 1; } });
   await flush();
-  const tokenRows = () => [...panel().querySelectorAll(".share-row")];
-  check(tokenRows().length === 1 && squash(tokenRows()[0]).includes("Laptop") && squash(tokenRows()[0]).includes("Edit"), "the owner sees the tokens with the Edit role and no others: " + text());
-  check(calls("sharing").length === 1 && calls("sharing")[0][1] === "paper", "from the share route");
-  check(!text().includes("Only the owner can create a token.") && button("Create token for a repository"), "and the button");
-  await press("Create token for a repository");
-  const made = calls("change");
-  check(made.length === 1 && JSON.stringify(made[0][2]) === JSON.stringify({ create: { kind: "token", role: "edit", name: "GitHub Action", until: "365d" } }), "Create posts the call the panel promises: " + JSON.stringify(made));
-  const shown = panel().querySelector('input[aria-label="Token for the GitHub Action"]');
-  check(shown && shown.value === "lpt_minted_t3" && text().includes("Copy this token now. You won't be able to view it again."), "the token is shown once: " + text());
-  check(text().includes("LIBREPAPER_TOKEN"), "with the name of the secret to put it in");
-  await press("Copy token");
-  check(window.copied === "lpt_minted_t3", "Copy token copies it");
-  await press("Done");
-  check(!panel().querySelector('input[aria-label="Token for the GitHub Action"]') && !text().includes("lpt_minted_t3"), "Done forgets it: " + text());
-  check(tokenRows().length === 2 && tokenRows().some((row) => squash(row).includes("GitHub Action")), "and the new token is in the list: " + text());
+  check(headings() === "Repository|Connect a repository", "the desktop app adds the connect section: " + headings());
+  check(text().includes("Work on this project in a git repository on this computer. Git uses your own sign-in."), "and says what it does: " + text());
+  check(field("Repository address")?.placeholder === "https://github.com/owner/repo.git", "an address field with an example");
+  check(text().includes("An empty folder, or a clone you already have."), "the folder choice says what it takes");
+  await widths("with the connect form");
 
-  // A blocked copy offers the token to copy by hand, and Done takes it away.
-  await press("Create token for a repository");
-  navigator.clipboard.writeText = async () => { throw new Error("blocked"); };
-  await press("Copy token");
-  check(panel().querySelector('textarea[aria-label="Text to copy by hand"]')?.value === "lpt_minted_t4", "a blocked copy offers the token by hand");
-  navigator.clipboard.writeText = clipboard;
-  await press("Done");
-  check(!panel().querySelector('textarea[aria-label="Text to copy by hand"]'), "Done clears it");
+  await type(field("Repository address"), "https://user:secret@github.com/you/paper.git");
+  await press("Clone and connect…");
+  check(alert().includes("That address contains a password") && cloned.length === 0, "an address with a password is refused here, and not sent: " + alert());
 
-  // Closing the panel forgets a token offered by hand, and opening it again does not bring it back.
-  await press("Create token for a repository");
-  navigator.clipboard.writeText = async () => { throw new Error("blocked"); };
-  await press("Copy token");
-  check(panel().querySelector('textarea[aria-label="Text to copy by hand"]')?.value === "lpt_minted_t5", "a blocked copy offers the next token by hand");
-  navigator.clipboard.writeText = clipboard;
-  component.$set({ open: false });
-  await flush();
-  component.$set({ open: true });
-  await flush();
-  check(!panel().querySelector('textarea[aria-label="Text to copy by hand"]') && !text().includes("lpt_minted_t5"), "closing the panel forgets the token: " + text());
+  await type(field("Repository address"), "   https://github.com/you/paper.git  ");
+  await press("Clone and connect…");
+  check(cloned.length === 1 && cloned[0] === "https://github.com/you/paper.git", "the trimmed address is cloned: " + JSON.stringify(cloned));
+  await press("Use a folder on this computer…");
+  check(folders === 1, "the folder button calls onfolder");
 
-  // Revoking asks first.
-  const trash = () => [...panel().querySelectorAll('button[aria-label^="Revoke"]')].find((node) => node.getAttribute("aria-label") === "Revoke Laptop");
-  check(trash(), "a token has a Revoke button");
-  trash().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }));
-  trash().click();
+  // A clone that is still running holds both controls, and a refused one says why.
+  let finish;
+  await mountWeb({}, { desktop: true, onclone: () => new Promise((resolve) => { finish = resolve; }) });
   await flush();
-  check(confirmFor("Revoke token") && document.body.innerText.includes("Revoke token?"), "Revoke asks first");
-  await pressDialog("Revoke token");
-  const revoked = calls("change").at(-1);
-  check(JSON.stringify(revoked[2]) === JSON.stringify({ revoke: { id: "t1" } }), "and then sends the id: " + JSON.stringify(revoked));
-  check(!tokenRows().some((row) => squash(row).includes("Laptop")), "the row goes: " + text());
+  await type(field("Repository address"), "git@github.com:you/paper.git");
+  await press("Clone and connect…");
+  check(button("Cloning…")?.disabled && button("Use a folder on this computer…")?.disabled, "while a clone runs, both controls wait: " + text());
+  finish();
+  await flush();
+  check(button("Clone and connect…") && !button("Clone and connect…").disabled, "and they are free again when it ends");
 
-  // An owner with no token is told, and the panel still fits.
-  await mountWeb({ tokens: [] }, { owner: true });
+  await mountWeb({}, { desktop: true, onclone: async () => { throw new Error("The desktop app could not reach that host."); }, onfolder: async () => { throw new Error("choose an empty folder or a git repository"); } });
   await flush();
-  check(text().includes("No token with the Edit role yet."), "an owner with no tokens is told: " + text());
-  await widths("for the owner");
+  await type(field("Repository address"), "https://github.com/you/missing.git");
+  await press("Clone and connect…");
+  check(alert() === "The desktop app could not reach that host.", "a rejected clone shows its message: " + alert());
+  await press("Use a folder on this computer…");
+  check(alert() === "choose an empty folder or a git repository", "a rejected folder shows its message: " + alert());
+  await widths("with a refusal shown");
 
   check(!/[\\u2013\\u2014]/.test(document.getElementById("panel").innerText), "no dashes in the panel text");
   return true;
@@ -875,7 +831,7 @@ try {
   await tab.navigate(`http://127.0.0.1:${port}/`);
   await until("git panel component", () => tab.evaluate("Boolean(window.ready)"));
   assert.equal(await tab.evaluate("window.gitPanelCheck()"), true);
-  console.log("git panel: folder mode (sign-in, link, pull, push, repository section, commit, branches, remote, sync, diff) and web mode (last push, token, workflow, commands), narrow widths");
+  console.log("git panel: folder mode (sign-in, link, pull, push, repository section, commit, branches, remote, sync, diff) and web mode (last push, connect a repository), narrow widths");
 } finally {
   await tab?.close(); server?.close(); removeTemporary(temporary);
 }
