@@ -317,7 +317,7 @@
     </div>
     {@render results()}
     {#if view.auth}
-      <GitSignInHelp remote={remote?.url ?? ""} detail={view.auth.detail} {busy}
+      <GitSignInHelp remote={remote?.url ?? ""} name={remote?.name ?? "origin"} detail={view.auth.detail} {busy}
                      onretry={() => git.retrySignIn()} ondismiss={() => git.dismiss()} />
     {/if}
   {/if}

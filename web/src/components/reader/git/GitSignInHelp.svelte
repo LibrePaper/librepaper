@@ -6,9 +6,9 @@
   import IconButton from "../../IconButton.svelte";
   import { currentPlatform, signInHelp } from "../../../lib/gitsync/sign-in-help.js";
 
-  let { remote = "", detail = "", busy = false, onretry, ondismiss } = $props();
+  let { remote = "", name = "origin", detail = "", busy = false, onretry, ondismiss } = $props();
 
-  const help = $derived(signInHelp(remote, currentPlatform()));
+  const help = $derived(signInHelp(remote, currentPlatform(), name));
   let copied = $state("");
   let copyTimer;
 

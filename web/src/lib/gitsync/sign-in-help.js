@@ -1,7 +1,10 @@
 /// The steps to take when Git could not sign in to a remote. `remote` is the
 /// remote as typed or as the connection stores it: a URL without credentials,
 /// or scp-style `host:path`. `platform` is "mac", "windows" or "linux".
-export function signInHelp(remote, platform) {
+/// `name` is the remote's name, such as "origin". The commands use it in place
+/// of the address, so the address never ends up in a command to run. It
+/// defaults to "origin".
+export function signInHelp(remote, platform, name = "origin") {
   const text = String(remote || "").trim();
   const target = parseRemote(text);
   if (!target) {
@@ -12,7 +15,7 @@ export function signInHelp(remote, platform) {
   }
   if (target.transport === "ssh") return sshHelp(target.host, platform);
   if (target.host === "github.com") return githubHelp();
-  return httpsHelp(target.host, text, platform);
+  return httpsHelp(target.host, name, platform);
 }
 
 /// The platform of this computer: "mac", "windows" or "linux".
@@ -68,9 +71,10 @@ function githubHelp() {
   };
 }
 
-function httpsHelp(host, remote, platform) {
+function httpsHelp(host, name, platform) {
   const title = `Git could not sign in to ${host}.`;
-  const probe = `git ls-remote ${remote}`;
+  // The probe names the remote and never its address. A remote's name has no shell syntax in it.
+  const probe = `git ls-remote ${name}`;
   if (platform === "windows") {
     return {
       title,

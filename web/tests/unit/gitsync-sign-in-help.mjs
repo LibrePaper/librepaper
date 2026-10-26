@@ -33,7 +33,7 @@ assert.deepEqual(githubWindows, {
 });
 assert.ok(!JSON.stringify(githubWindows).includes("ls-remote"));
 
-// HTTPS GitLab on a Mac: the keychain helper, then ls-remote with the URL.
+// HTTPS GitLab on a Mac: the keychain helper, then ls-remote with the remote's name.
 const gitlabMac = signInHelp("https://gitlab.com/group/repo.git", "mac");
 assert.equal(gitlabMac.title, "Git could not sign in to gitlab.com.");
 assert.deepEqual(gitlabMac.steps[0], {
@@ -42,7 +42,7 @@ assert.deepEqual(gitlabMac.steps[0], {
 });
 assert.deepEqual(gitlabMac.steps[1], {
   text: "Sign in once from a terminal. Use an access token from gitlab.com as the password.",
-  command: "git ls-remote https://gitlab.com/group/repo.git",
+  command: "git ls-remote origin",
 });
 assert.deepEqual(gitlabMac.steps[2], { text: "Then try again." });
 
@@ -53,7 +53,11 @@ assert.deepEqual(codebergLinux.steps[0], {
   text: "Install Git Credential Manager, which stores sign-ins in the system keyring.",
   href: "https://github.com/git-ecosystem/git-credential-manager",
 });
-assert.equal(codebergLinux.steps[1].command, "git ls-remote https://codeberg.org/owner/repo.git");
+assert.equal(codebergLinux.steps[1].command, "git ls-remote origin");
+
+// A URL with shell syntax in it gives a probe with the remote's name only.
+const hostile = signInHelp("https://example.com/o/r$(id).git", "linux");
+assert.ok(!hostile.steps[1].command.includes("$("));
 
 // A value that is neither SSH nor HTTPS gets the generic steps.
 assert.deepEqual(signInHelp("not a remote", "linux"), {
