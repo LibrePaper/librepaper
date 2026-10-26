@@ -31,12 +31,9 @@ function harness({ selectedId = "", nodes = [], index = new Map(), starts = [], 
     "document", "Element", "Node", "table", "post",
     `let selectedId = ${JSON.stringify(selectedId)};\nconst select = (id) => { selectedId = id; };\n${caretHandling}\nreturn true;`,
   );
+  // The listener reads the viewer when the event arrives, so it stays set until the next harness.
   globalThis.librepaperViewer = pdf ? { pointFromClient: () => pdf } : undefined;
-  try {
-    install(document, Element, Node, table, (message) => posts.push(message));
-  } finally {
-    globalThis.librepaperViewer = undefined;
-  }
+  install(document, Element, Node, table, (message) => posts.push(message));
   return { listeners, posts };
 }
 
