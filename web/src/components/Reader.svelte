@@ -35,6 +35,7 @@
   import { createLiveChat } from "../lib/reader/live-chat.svelte.js";
   import { createReaderCollaboration } from "../lib/reader/collaboration.js";
   import { createWorkspace } from "../lib/reader/workspace.svelte.js";
+  import { createJumps, isBackChord } from "../lib/reader/jumps.svelte.js";
   import { createFigureStore, createLocalProject, localIdOf, localSlug } from "../lib/reader/local-project.js";
   import { createBuildSettings } from "../lib/reader/build-settings.svelte.js";
   import { createTimeline } from "../lib/reader/timeline.svelte.js";
@@ -64,7 +65,7 @@
   import { localDataForgotten } from "../lib/signed-out.js";
   import { ACTIVITY_WIDTH, DOCUMENT_MIN, GRIP, PANES, RATIOS, clamp, measure, pixels, px, showing } from "../lib/panes.js";
   import { slotId, tabsFor } from "../lib/panels.js";
-  import { APPLE, availability, commandFor, menuKeys } from "../lib/commands.js";
+  import { APPLE, availability, captured, commandFor, menuKeys, writing } from "../lib/commands.js";
   // Aliased because this file has its own setSize for the pane sizes.
   import { size as textSize, setSize as setTextSize, DEFAULT_SIZE } from "../lib/editor-type.js";
 
@@ -657,6 +658,27 @@
     card?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
+  // Remembers the editor's place before a jump to `file` at `offset`. Nothing
+  // is remembered when the editor would not move, or when the jump lands where
+  // the editor already is. An undefined offset is a line the editor finds
+  // itself, so that jump always counts as a new place.
+  function rememberPlace(file, offset) {
+    if (!editing || !shown.source || !editor || !ws.openFile) return;
+    const here = { file: ws.openFile, offset: editor.caret() };
+    if (here.file === file && here.offset === offset) return;
+    jumps.remember(here);
+  }
+
+  // Back is not a jump, so the place it leaves is not remembered. It does
+  // nothing when the source is not shown, and keeps the place for later.
+  function goBack() {
+    if (!editing || !shown.source || !editor) return;
+    const place = jumps.back(fileExists);
+    if (!place) return;
+    ws.openFile = place.file;
+    editor.goToIn(place.file, place.offset);
+  }
+
   async function revealAnnotation(comment) {
     selectedAnnotation = String(comment.id);
     if (comment.start != null) {
@@ -669,6 +691,7 @@
     }
     if (shown.source && comment.sourceStart != null && editing && editor) {
       const id = session.idOf(comment.sourcePath);
+      rememberPlace(id, comment.sourceStart);
       if (id) { ws.openFile = id; editor.goToIn(id, comment.sourceStart); }
       else editor.goTo(comment.sourceStart);
     }
@@ -1001,6 +1024,7 @@
     showMobileView("source");
     await tick();
     if (shown.source && editor) {
+      rememberPlace(row.file_id, row.position);
       ws.openFile = row.file_id;
       editor.goToIn(row.file_id, row.position);
     }
@@ -1745,6 +1769,7 @@
   async function openDiagnostic(item) {
     const file = diagnosticFile(item);
     if (!file) return;
+    rememberPlace(file.id);
     openTheFile(file);
     await tick();
     editor?.openAt?.(file.id, item.line, item.column || 1);
@@ -2249,6 +2274,7 @@
     });
     if (!found) return;
     const id = session.idOf(found.path);
+    rememberPlace(id, found.at);
     if (id) {
       ws.openFile = id;
       editor.goToIn(id, found.at);
@@ -2263,6 +2289,7 @@
     const precise = activeSynctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y));
     const id = precise && session.idOf(precise.path);
     if (!id) return false;
+    rememberPlace(id);
     ws.openFile = id;
     editor.openAt(id, precise.line, 1);
     return true;
@@ -2888,6 +2915,17 @@
   });
   const ws = workspace.state;
   const files = $derived(ws.files);
+  // Where the editor was before each jump, for Back. A new session is a new
+  // project, and its places mean nothing in it.
+  const jumps = createJumps();
+  $effect(() => {
+    session;
+    jumps.clear();
+  });
+  const fileExists = (id) => Boolean(session?.paths?.get(id));
+  const backLabel = $derived(jumps.last
+    ? `Back to ${session?.paths?.get(jumps.last.file) ?? "the previous place"}`
+    : "Back to the previous place");
   // Whether there is a text to edit yet. The directory arrives after the
   // session joins, and the editor has nothing to bind to before then.
   const sourceBound = $derived(Boolean(session && persistence.joined && files.some((file) => file.kind === "text")));
@@ -3228,6 +3266,7 @@
     const id = openFile;
     const file = files.find((entry) => entry.id === id && entry.kind === "text");
     if (!file) return;
+    rememberPlace(id, heading.from);
     outlineActiveFrom = heading.from;
     const revision = outlineRevision;
     openTheFile(file);
@@ -3942,6 +3981,16 @@
       if (bar.shown) { bar = { ...bar, shown: false }; return; }
       return;
     }
+    // Back is not in the registry: its chord is Ctrl+Minus on a Mac, which the
+    // registry does not read. It is refused in a dialog, and in a field that
+    // takes text; the source is a field too, and Back is for the source.
+    if (isBackChord(event, APPLE)) {
+      if (captured(event.target)) return;
+      if (writing(event.target) && !event.target.closest(".cm-editor")) return;
+      event.preventDefault();
+      goBack();
+      return;
+    }
     // Everything else is the registry's. `commandFor` answers with a command
     // only when the chord is bound, the focus is somewhere a workspace command
     // may act, and the command has a target right now; the key is cancelled
@@ -4334,6 +4383,9 @@
         <IconButton icon={ARRANGEMENTS[layout].icon}
           label={`Layout: ${ARRANGEMENTS[layout].says}. Switch to ${ARRANGEMENTS[ARRANGEMENTS[layout].next].says}`}
           onclick={cycleLayout} />
+      {/if}
+      {#if editing && shown.source}
+        <IconButton icon="arrow-left" label={backLabel} disabled={!jumps.canGoBack} onclick={goBack} />
       {/if}
       <IconButton icon="settings" label="Settings" tone="plain"
                   onclick={() => openSettings()} />
