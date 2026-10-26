@@ -302,8 +302,8 @@ async fn conflicted_paths(root: &Path) -> Result<Vec<String>, Failure> {
     Ok(paths)
 }
 
-/// The remote a fetch, a pull or a first push talks to: the one the branch
-/// follows, else `origin`, else the first one.
+/// The remote a fetch, a pull or a push talks to: the one the branch follows,
+/// else `origin`, else the first one.
 async fn pick_remote(
     root: &Path,
     status: &Status,
@@ -410,6 +410,11 @@ async fn describe(root: &Path) -> Result<Value, Failure> {
         merge_in_progress(root)
     );
     let (status, remotes, identity, merging) = (status?, remotes?, identity?, merging?);
+    let remote = if remotes.is_empty() {
+        None
+    } else {
+        Some(pick_remote(root, &status, &remotes).await?)
+    };
     let remotes: Vec<Value> = remotes
         .iter()
         .map(|(name, url)| json!({"name": name, "url": url}))
@@ -425,6 +430,9 @@ async fn describe(root: &Path) -> Result<Value, Failure> {
     if let Some(branch) = &status.branch {
         body["branch"] = json!(branch);
     }
+    if let Some(remote) = remote {
+        body["remote"] = json!(remote);
+    }
     if status.detached {
         body["detached"] = json!(true);
     }
@@ -432,6 +440,9 @@ async fn describe(root: &Path) -> Result<Value, Failure> {
     Ok(body)
 }
 
+/// The answer to `GET git`. `remote` names the remote a fetch, a pull or a push
+/// uses, so the panel names the one the routes will use. It is left out when
+/// the repository has no remote.
 pub(super) async fn handle_status(
     inner: &Arc<Inner>,
     headers: &HeaderMap,
@@ -542,17 +553,15 @@ fn text_of(bytes: Option<Vec<u8>>) -> Result<Option<String>, ()> {
 
 /// `HEAD` against the working tree for one file. The committed side goes
 /// through the conversions Git applies on checkout, so a project with
-/// `core.autocrlf` does not show every line changed.
-async fn run_diff(root: &Path, path: &str) -> Result<Value, Failure> {
+/// `core.autocrlf` does not show every line changed. `from` is the path the
+/// file had in `HEAD` when Git staged it as renamed: the committed side is
+/// read there, and the working tree side is always `path`.
+async fn run_diff(root: &Path, path: &str, from: Option<&str>) -> Result<Value, Failure> {
     require_repository(root)?;
-    if !protocol::safe_relative_path(path)
-        || path
-            .split('/')
-            .any(|part| part.eq_ignore_ascii_case(".git"))
-    {
+    if !project_path(path) || from.is_some_and(|from| !project_path(from)) {
         return Err(refuse(400, "unsafe file path"));
     }
-    let spec = format!("HEAD:{path}");
+    let spec = format!("HEAD:{}", from.unwrap_or(path));
     let at_head = run(root, Limit::Local, &["cat-file", "--filters", &spec]).await?;
     let head = if at_head.success() {
         Some(at_head.stdout)
@@ -577,6 +586,8 @@ async fn run_diff(root: &Path, path: &str) -> Result<Value, Failure> {
     })
 }
 
+/// The answer to `GET git/diff?path=&from=`, where `from` is optional and names
+/// the old path of a staged rename. See `run_diff`.
 pub(super) async fn handle_diff(
     inner: &Arc<Inner>,
     headers: &HeaderMap,
@@ -591,7 +602,8 @@ pub(super) async fn handle_diff(
     let Some(path) = query_value(request.uri(), "path") else {
         return write_json(400, &json!({"error": "a diff needs a path"}));
     };
-    answer(run_diff(&binding.root, &path).await)
+    let from = query_value(request.uri(), "from");
+    answer(run_diff(&binding.root, &path, from.as_deref()).await)
 }
 
 /* --------------------------------------------------------------- commit */
@@ -603,9 +615,9 @@ struct CommitBody {
     paths: Option<Vec<String>>,
 }
 
-/// Whether `path` may be named in a commit: a project path that is not inside
-/// Git's own directory.
-fn committable(path: &str) -> bool {
+/// Whether `path` may be named to Git for a commit or a diff: a project path
+/// that is not inside Git's own directory.
+fn project_path(path: &str) -> bool {
     protocol::safe_relative_path(path)
         && !path
             .split('/')
@@ -642,7 +654,7 @@ async fn run_commit(
         return Err(refuse(400, "That commit message cannot be used."));
     }
     if let Some(paths) = paths {
-        if !paths.iter().all(|path| committable(path)) {
+        if !paths.iter().all(|path| project_path(path)) {
             return Err(refuse(400, "unsafe file path"));
         }
         if paths.is_empty() {
@@ -1961,6 +1973,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_status_names_the_remote_the_routes_will_use() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        fixture.init().await;
+        assert!(fixture.status().await.get("remote").is_none());
+
+        fixture.write("a.txt", "one\n");
+        fixture.commit_all("First").await;
+        plain_git(
+            fixture.scratch.path(),
+            &["init", "--bare", "-b", "main", "upstream.git"],
+        );
+        plain_git(
+            fixture.scratch.path(),
+            &["init", "--bare", "-b", "main", "origin.git"],
+        );
+        let upstream = fixture.scratch.path().join("upstream.git");
+        let origin = fixture.scratch.path().join("origin.git");
+        plain_git(
+            fixture.root(),
+            &["remote", "add", "upstream", text(&upstream)],
+        );
+        plain_git(fixture.root(), &["remote", "add", "origin", text(&origin)]);
+
+        // Upstream was added first, but the routes use origin.
+        assert_eq!(fixture.status().await["remote"], "origin");
+
+        // A push that sets the upstream to the other remote moves the choice.
+        plain_git(fixture.root(), &["push", "-u", "upstream", "main"]);
+        let status = fixture.status().await;
+        assert_eq!(status["upstream"], "upstream/main");
+        assert_eq!(status["remote"], "upstream");
+    }
+
+    #[tokio::test]
     async fn a_push_behind_the_remote_is_refused_until_the_branch_is_pulled() {
         if !git_ready().await {
             return;
@@ -2364,6 +2413,30 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn a_diff_of_a_staged_rename_reads_the_old_name_in_head() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        fixture.init().await;
+        fixture.write("old.tex", "one\n");
+        fixture.commit_all("First").await;
+        plain_git(fixture.root(), &["mv", "old.tex", "new.tex"]);
+        fixture.write("new.tex", "one\ntwo\n");
+
+        let (status, body) = fixture.get("/diff?path=new.tex&from=old.tex").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            body,
+            json!({"head": "one\n", "work": "one\ntwo\n", "binary": false})
+        );
+        let (status, body) = fixture.get("/diff?path=new.tex").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["head"], Value::Null);
+        assert_eq!(fixture.get("/diff?path=new.tex&from=../x").await.0, 400);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn a_diff_does_not_read_through_a_link() {
@@ -2609,9 +2682,9 @@ mod tests {
     fn a_pathspec_list_matches_each_path_as_typed() {
         let list = pathspec_list(&["a [1].txt".to_string(), "*.tex".to_string()]);
         assert_eq!(list, b":(literal)a [1].txt\0:(literal)*.tex\0".to_vec());
-        assert!(committable("dir/a.txt"));
-        assert!(!committable(".git/config"));
-        assert!(!committable("a/.GIT/x"));
-        assert!(!committable("../x"));
+        assert!(project_path("dir/a.txt"));
+        assert!(!project_path(".git/config"));
+        assert!(!project_path("a/.GIT/x"));
+        assert!(!project_path("../x"));
     }
 }

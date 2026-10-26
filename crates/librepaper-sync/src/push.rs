@@ -166,8 +166,15 @@ pub async fn push(
         return Err(Error::Invalid("a push needs a message".into()));
     }
     let mut state = store.load()?.ok_or(Error::NotLinked)?;
-    let rules = client.rules().await?;
     let git = store.repository().map(Git::at);
+    // A merge that stopped with conflicts leaves markers in the files.
+    if git
+        .as_ref()
+        .is_some_and(|git| git.succeeds(&["rev-parse", "-q", "--verify", "MERGE_HEAD"]))
+    {
+        return Err(Error::Merging);
+    }
+    let rules = client.rules().await?;
     if let Some(git) = &git {
         if settle(git, &mut state) {
             store.save(&state)?;
@@ -459,6 +466,7 @@ mod tests {
     use super::*;
     use crate::git::testing::{commit_all, repository};
     use crate::link::Link;
+    use crate::state::GitRefStore;
 
     fn write(dir: &Path, path: &str, bytes: &[u8]) {
         let target = dir.join(path);
@@ -727,5 +735,43 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = State::new(Link::parse("https://app.librepaper.org/docs/paper").unwrap());
         assert_eq!(commit_summary(dir.path(), &state), None);
+    }
+
+    #[tokio::test]
+    async fn a_push_is_refused_while_a_merge_is_in_progress() {
+        let Some((dir, git)) = repository() else {
+            return;
+        };
+        write(dir.path(), "a.tex", b"base\n");
+        commit_all(&git, "Base");
+        git.run(&["branch", "theirs"], None, &[]).unwrap();
+        write(dir.path(), "a.tex", b"mine\n");
+        commit_all(&git, "Mine");
+        git.run(&["checkout", "-q", "theirs"], None, &[]).unwrap();
+        write(dir.path(), "a.tex", b"theirs\n");
+        commit_all(&git, "Theirs");
+        git.run(&["checkout", "-q", "-"], None, &[]).unwrap();
+        // The merge stops with a conflict in a.tex, and MERGE_HEAD is left.
+        assert!(!git
+            .output(&["merge", "--no-edit", "theirs"], None, &[])
+            .unwrap()
+            .status
+            .success());
+        assert!(git.succeeds(&["rev-parse", "-q", "--verify", "MERGE_HEAD"]));
+
+        let store = GitRefStore::open(dir.path()).unwrap();
+        let state = State::new(Link::parse("https://app.librepaper.org/docs/paper").unwrap());
+        store.save(&state).unwrap();
+        // Nothing listens on this port, so a request would fail as a network
+        // error rather than as a merge.
+        let site = url::Url::parse("http://127.0.0.1:9").unwrap();
+        let client = Client::new(site, librepaper_base::http::Credentials::token("lp_token"));
+        let options = PushOptions {
+            message: "Edits".into(),
+            author: None,
+            exclude: Vec::new(),
+        };
+        let outcome = push(&client, dir.path(), &store, &options).await;
+        assert!(matches!(outcome, Err(Error::Merging)), "{outcome:?}");
     }
 }

@@ -70,13 +70,18 @@ fn token_refused(error: &Error) -> bool {
 /// went wrong in plain words. A refused token is the page's cue to sign in
 /// again, so it answers 401 like a missing one; the site being unreachable or
 /// answering badly is a 502; a mistake in what was asked is a 400; and the
-/// folder, the state record or git failing here is a 500.
+/// folder, the state record or git failing here is a 500. A merge that is still
+/// in progress is a 409 with the reason `merging`.
 fn failed(error: &Error) -> Failure {
     if token_refused(error) {
         return refuse(401, "sign in");
     }
     match error {
         Error::NotLinked => refuse(409, NOT_LINKED),
+        Error::Merging => (
+            409,
+            json!({"reason": "merging", "error": error.to_string()}),
+        ),
         Error::Link(_) | Error::Rules(_) | Error::Invalid(_) => refuse(400, &error.to_string()),
         Error::Network(_) | Error::Http { .. } | Error::Trimmed => refuse(502, &error.to_string()),
         Error::Io { .. } | Error::Git(_) | Error::State(_) => refuse(500, &error.to_string()),
@@ -1394,6 +1399,15 @@ mod tests {
         assert_eq!(body["merge"], json!({"conflicts": ["main.tex"]}));
         let root = fixture.root();
         assert!(git(root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_some());
+
+        // The conflict markers are in main.tex, so the push is refused before
+        // it asks the site for anything. The fake site does not count requests.
+        let (status, body) = fixture.push(json!({"message": "Edits"})).await;
+        assert_eq!(
+            (status, &body["reason"]),
+            (409, &json!("merging")),
+            "{body}"
+        );
     }
 
     #[tokio::test]
