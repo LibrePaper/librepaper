@@ -23,6 +23,8 @@ use super::*;
 
 use std::collections::BTreeSet;
 
+use super::sync::{link_and_pull, parse_link};
+
 use crate::local::bindings::ProjectBinding;
 use crate::local::git::status::{self, Status};
 use crate::local::git::{self, remote, validate, Limit, Output, RunError};
@@ -1314,18 +1316,21 @@ pub(super) async fn handle_sync(
 #[derive(serde::Deserialize)]
 struct CloneBody {
     url: String,
+    /// The web project's page URL, `https://<site>/docs/<slug>`, when the clone
+    /// is to be linked to that project and pulled.
+    project: Option<String>,
 }
 
 /// Clones `url` into `<parent>/<name>`, fetches the state LibrePaper keeps in
 /// `refs/librepaper/*` when the remote has any, and opens the new folder as a
-/// project of `origin`. Answers like `projects/open`.
+/// project of `origin`.
 async fn run_clone(
     inner: &Inner,
     origin: Option<&str>,
     url: &str,
     name: &str,
     parent: &Path,
-) -> Result<Value, Failure> {
+) -> Result<ProjectBinding, Failure> {
     let target = parent.join(name);
     if std::fs::symlink_metadata(&target).is_ok() {
         return Err(refuse_because(
@@ -1346,13 +1351,16 @@ async fn run_clone(
         &["fetch", "--", url, "+refs/librepaper/*:refs/librepaper/*"],
     )
     .await;
-    let binding = inner
+    inner
         .bindings
         .open_project(origin.unwrap_or_default(), &target)
-        .map_err(|error| refuse(400, &error))?;
-    Ok(projects::opened(&binding))
+        .map_err(|error| refuse(400, &error))
 }
 
+/// Clones a repository into a parent folder the person chooses and opens the
+/// clone as a project of the page's origin. With `project`, the clone is then
+/// linked to that web project and pulled, as `projects/keep` does for a folder.
+/// A `project` on another site is refused before the chooser opens.
 pub(super) async fn handle_clone(
     inner: &Arc<Inner>,
     headers: &HeaderMap,
@@ -1376,11 +1384,27 @@ pub(super) async fn handle_clone(
             &json!({"error": "A folder name cannot be made from that URL."}),
         );
     };
+    let link = match body
+        .project
+        .as_deref()
+        .map(|project| parse_link(project, origin))
+        .transpose()
+    {
+        Ok(link) => link,
+        Err((status, failure)) => return write_json(status, &failure),
+    };
     let parent = match projects::choose_root(inner, "Choose where to put the clone").await {
         Ok(parent) => parent,
         Err(response) => return response,
     };
-    answer(run_clone(inner, origin, &url, &name, &parent).await)
+    let binding = match run_clone(inner, origin, &url, &name, &parent).await {
+        Ok(binding) => binding,
+        Err((status, failure)) => return write_json(status, &failure),
+    };
+    match link {
+        Some(link) => link_and_pull(inner, binding, origin, link).await,
+        None => write_json(200, &projects::opened(&binding)),
+    }
 }
 
 #[cfg(test)]
@@ -2557,9 +2581,10 @@ mod tests {
         let parent = fixture.scratch.path().join("projects");
         std::fs::create_dir(&parent).unwrap();
 
-        let opened = run_clone(&fixture.inner, Some(PAGE), text(&bare), "paper", &parent)
+        let cloned = run_clone(&fixture.inner, Some(PAGE), text(&bare), "paper", &parent)
             .await
             .unwrap();
+        let opened = projects::opened(&cloned);
         assert_eq!(opened["name"], "paper");
         assert_eq!(opened["root_name"], "paper");
         let id = opened["id"].as_str().unwrap();
@@ -2617,6 +2642,20 @@ mod tests {
         assert!(!parent.join("nothing").exists());
         let projects = fixture.inner.bindings.list_projects(PAGE);
         assert_eq!(projects.len(), 1, "only the fixture's own folder");
+    }
+
+    #[tokio::test]
+    async fn a_clone_for_a_project_on_another_site_is_refused_before_a_folder_is_asked_for() {
+        let fixture = Fixture::new().await;
+        let headers = test_support::bearer(&fixture.inner);
+        let request = json_request(json!({
+            "url": "https://github.com/o/r.git",
+            "project": "https://other.example/docs/abc123",
+        }));
+        let reply = handle_clone(&fixture.inner, &headers, Some(PAGE), request).await;
+        let (status, body) = read(reply).await;
+        assert_eq!(status, 400, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("another site"));
     }
 
     #[tokio::test]

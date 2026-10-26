@@ -186,7 +186,7 @@ fn same_site(left: &url::Url, right: &url::Url) -> bool {
 }
 
 /// A project link that names the requesting page's own site.
-fn parse_link(raw: &str, origin: Option<&str>) -> Result<Link, Failure> {
+pub(super) fn parse_link(raw: &str, origin: Option<&str>) -> Result<Link, Failure> {
     let link = Link::parse(raw.trim()).map_err(|error| refuse(400, &error.to_string()))?;
     if !same_site(&link.site, &origin_site(origin)?) {
         return Err(refuse(400, "that project is on another site"));
@@ -841,10 +841,59 @@ fn is_empty_dir(root: &Path) -> bool {
     std::fs::read_dir(root).is_ok_and(|mut entries| entries.next().is_none())
 }
 
-/// Keeps a web project in a new folder: asks for an empty one, opens it as a
-/// folder project, links it and pulls. Once the folder is opened, a failure
-/// still answers with the folder's `id`, so the page can open it and try again
-/// from its Sync section, or sign in first.
+/// Whether a folder the person chose can take a project: an empty folder, or a
+/// Git repository whose state the link is read from.
+fn is_keepable_folder(root: &Path) -> bool {
+    is_empty_dir(root) || is_git_folder(root)
+}
+
+/// Links the folder of `binding` to `link` and pulls it. A folder with no link
+/// takes `link`. A folder already linked to the same project is pulled as it
+/// stands, with its recorded state, and is not linked again. A folder linked to
+/// another project is refused with the reason `linked` and not pulled. Once the
+/// folder is opened, a failure still answers with the folder's `id`, so the page
+/// can open it and try again from its Sync section, or sign in first.
+pub(super) async fn link_and_pull(
+    inner: &Inner,
+    binding: ProjectBinding,
+    origin: Option<&str>,
+    link: Link,
+) -> Reply {
+    let mut opened = projects::opened(&binding);
+    let folder = Folder::new(inner, binding);
+    let pulled = async {
+        match folder.stored(origin)? {
+            Stored::Nothing => record_link(&folder, link)?,
+            Stored::Here(state) if state.link.slug == link.slug => {}
+            Stored::Here(_) | Stored::OtherSite => {
+                return Err((
+                    409,
+                    json!({
+                        "reason": "linked",
+                        "error": "this repository is linked to another LibrePaper project",
+                    }),
+                ));
+            }
+        }
+        run_pull(inner, &folder, origin, Vec::new(), Vec::new()).await
+    };
+    match pulled.await {
+        Ok(pulled) => {
+            opened["pull"] = pulled;
+            write_json(200, &opened)
+        }
+        Err((status, mut failure)) => {
+            if let (Some(into), Some(from)) = (failure.as_object_mut(), opened.as_object()) {
+                into.extend(from.clone());
+            }
+            write_json(status, &failure)
+        }
+    }
+}
+
+/// Keeps a web project in a folder the person chooses, an empty one or a clone
+/// of the repository, opens it as a folder project, links it and pulls. The
+/// link and the pull are `link_and_pull`'s.
 pub(super) async fn handle_keep(
     inner: &Arc<Inner>,
     headers: &HeaderMap,
@@ -862,12 +911,20 @@ pub(super) async fn handle_keep(
         Ok(link) => link,
         Err((status, body)) => return write_json(status, &body),
     };
-    let root = match projects::choose_root(inner, "Choose an empty folder for the project").await {
+    let root = match projects::choose_root(
+        inner,
+        "Choose an empty folder or a clone of the repository",
+    )
+    .await
+    {
         Ok(root) => root,
         Err(response) => return response,
     };
-    if !is_empty_dir(&root) {
-        return write_json(409, &json!({"error": "choose an empty folder"}));
+    if !is_keepable_folder(&root) {
+        return write_json(
+            409,
+            &json!({"error": "choose an empty folder or a git repository"}),
+        );
     }
     let binding = match inner
         .bindings
@@ -876,24 +933,7 @@ pub(super) async fn handle_keep(
         Ok(binding) => binding,
         Err(error) => return write_json(400, &json!({"error": error})),
     };
-    let mut opened = projects::opened(&binding);
-    let folder = Folder::new(inner, binding);
-    let pulled = async {
-        record_link(&folder, link)?;
-        run_pull(inner, &folder, origin, Vec::new(), Vec::new()).await
-    };
-    match pulled.await {
-        Ok(pulled) => {
-            opened["pull"] = pulled;
-            write_json(200, &opened)
-        }
-        Err((status, mut failure)) => {
-            if let (Some(into), Some(from)) = (failure.as_object_mut(), opened.as_object()) {
-                into.extend(from.clone());
-            }
-            write_json(status, &failure)
-        }
-    }
+    link_and_pull(inner, binding, origin, link).await
 }
 
 #[cfg(test)]
@@ -1512,6 +1552,57 @@ mod tests {
         let request = json_request(json!({"url": "https://other.example/docs/abc123"}));
         let reply = handle_keep(&fixture.inner, &fixture.headers, fixture.origin(), request).await;
         assert_error(&read(reply).await, 400, "another site");
+    }
+
+    #[test]
+    fn a_kept_folder_is_empty_or_a_git_repository() {
+        let folder = tempfile::tempdir().unwrap();
+        assert!(is_keepable_folder(folder.path()));
+        std::fs::write(folder.path().join("main.tex"), "x").unwrap();
+        assert!(!is_keepable_folder(folder.path()));
+        std::fs::create_dir(folder.path().join(".git")).unwrap();
+        assert!(is_keepable_folder(folder.path()));
+
+        // A worktree's `.git` is a file.
+        let worktree = tempfile::tempdir().unwrap();
+        std::fs::write(worktree.path().join("main.tex"), "x").unwrap();
+        std::fs::write(worktree.path().join(".git"), "gitdir: elsewhere\n").unwrap();
+        assert!(is_keepable_folder(worktree.path()));
+    }
+
+    #[tokio::test]
+    async fn a_folder_linked_to_another_project_is_refused_and_one_linked_to_this_is_pulled() {
+        let fixture = Fixture::new(PAGE).await;
+        fixture.link_to("https://paper.example/docs/abc123");
+
+        let other = Link::parse("https://paper.example/docs/def456").unwrap();
+        let reply = link_and_pull(
+            &fixture.inner,
+            fixture.binding.clone(),
+            fixture.origin(),
+            other,
+        )
+        .await;
+        let (status, body) = read(reply).await;
+        assert_eq!((status, &body["reason"]), (409, &json!("linked")), "{body}");
+        assert_eq!(body["id"], json!(fixture.id()));
+        assert_eq!(
+            body["error"],
+            json!("this repository is linked to another LibrePaper project")
+        );
+
+        // The same project is pulled, and the pull needs a sign-in.
+        let same = Link::parse("https://paper.example/docs/abc123").unwrap();
+        let reply = link_and_pull(
+            &fixture.inner,
+            fixture.binding.clone(),
+            fixture.origin(),
+            same,
+        )
+        .await;
+        let (status, body) = read(reply).await;
+        assert_eq!((status, &body["error"]), (401, &json!("sign in")), "{body}");
+        assert_eq!(body["id"], json!(fixture.id()));
     }
 
     /// The site's device flow: the code is approved when `approved` is set.
