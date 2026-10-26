@@ -57,7 +57,7 @@ git fetch --quiet origin '+refs/librepaper/*:refs/librepaper/*' || {
 # Without the state every project file looks new, so the push would be refused.
 # A person seeds the state once from a clone, as the README's "Before the first run" describes.
 if ! git rev-parse -q --verify refs/librepaper/state >/dev/null; then
-  echo "::error::this repository has no LibrePaper state yet. Seed it once from a clone on your computer, then run the workflow again:%0A  librepaper pull https://app.librepaper.org/docs/<slug>%0A  git merge --allow-unrelated-histories librepaper/main  (only when the repository and the project share no history)%0A  git push origin main 'refs/librepaper/*'" >&2
+  echo "::error::this repository has no LibrePaper state yet. Seed it once from a clone on your computer, then run the workflow again:%0A  librepaper pull https://app.librepaper.org/docs/<slug>%0A  git push origin main 'refs/librepaper/*'" >&2
   exit 1
 fi
 # Merges the runner makes need an author.

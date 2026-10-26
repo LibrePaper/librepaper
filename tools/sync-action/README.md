@@ -37,7 +37,6 @@ Seed the LibrePaper state once, from a clone of the repository on your computer:
 ```sh
 # Once, on your computer, in a clone of the repository
 librepaper pull https://app.librepaper.org/docs/<slug>   # links the clone and fetches the project as commits
-git merge --allow-unrelated-histories librepaper/main    # only when the repository and the project share no history
 git push origin main 'refs/librepaper/*'                 # the Action starts from this state
 ```
 

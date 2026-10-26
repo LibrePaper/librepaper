@@ -67,7 +67,7 @@ If no listed version has a sequence at or below `pulled`, history was trimmed. P
 
 `--message` defaults to the `HEAD` commit subject in a repository (with "and N more" when several commits were pushed since `head`), `--author` to that commit's author name. Outside a repository the message is required and the author is the account.
 
-A directory with no link and `--title` publishes: `POST /api/documents` (multipart, one part per synced file) creates the project, the reply's slug is recorded, and in a repository `head` is set to `HEAD` so the first pull is related history. A clone of a web project that starts empty does `pull` into an initialized repository; `refs/librepaper/main` becomes `main`. Linking an existing repository to an existing web project is the one case with unrelated histories; the first `git merge` needs `--allow-unrelated-histories`, and the docs say so.
+A directory with no link and `--title` publishes: `POST /api/documents` (multipart, one part per synced file) creates the project, the reply's slug is recorded, and in a repository `head` is set to `HEAD` so the first pull is related history. A clone of a web project that starts empty does `pull` into an initialized repository; `refs/librepaper/main` becomes `main`. Linking an existing repository to an existing web project is the one case with unrelated histories; the first pull merges them itself with `--allow-unrelated-histories`, and files that differ on both sides are left as conflicts.
 
 Bounds: the body is capped by the log quota (32 MiB), `max_files` by the server, one upload admission per asset per hour as today. No other limit.
 
@@ -111,7 +111,7 @@ jobs:
 
 What the action does:
 
-- Fetches `refs/librepaper/*` from origin, so the state survives runners. It refuses to run until that state exists: a person seeds it once from a clone (`librepaper pull`, a merge when the histories are unrelated, `git push origin main 'refs/librepaper/*'`), and the Action keeps it current from then on.
+- Fetches `refs/librepaper/*` from origin, so the state survives runners. It refuses to run until that state exists: a person seeds it once from a clone (`librepaper pull`, then `git push origin main 'refs/librepaper/*'`), and the Action keeps it current from then on.
 - On `push`: `librepaper push` with the pushed commit's subject and author. On `409 changed` it runs `librepaper pull --no-merge`, commits `librepaper/main`'s tree to a branch `librepaper/sync`, pushes it, opens or updates one pull request "LibrePaper changed files you also changed", and exits 1 so the run is visibly red. A person merges that PR in git; the next push event pushes the merged result.
 - On `schedule`: `librepaper pull`. A clean merge or fast-forward is pushed to `main`. A conflicting merge is aborted and handled as above. Nothing to pull exits 0 with no commit.
 - Always: `git push origin refs/librepaper/*`.
