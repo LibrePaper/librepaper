@@ -348,10 +348,6 @@
         mask: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>') center / contain no-repeat;
       }
 
-      .feature-aside .details {
-        margin-top: 0;
-      }
-
       @media (min-width: 960px) {
         .feature {
           grid-template-columns: 5fr 7fr;
@@ -365,15 +361,6 @@
 
         .feature.reverse .feature-copy {
           order: 2;
-        }
-
-        .feature:has(> .feature-aside) {
-          align-items: start;
-        }
-
-        /* Holds a section's list beside its copy when the section has no screenshot. */
-        .feature-aside {
-          padding-top: 3.25rem;
         }
 
         .closing .feature {
@@ -651,6 +638,16 @@
         border-radius: 0.5rem;
       }
 
+      /* The video sits above the dismiss layer so its controls take clicks. */
+      .lightbox video {
+        position: relative;
+        width: min(96vw, 1600px, calc(92vh * 1204 / 720));
+        height: auto;
+        aspect-ratio: 1204 / 720;
+        border-radius: 0.5rem;
+        background: #000;
+      }
+
       .lightbox-dismiss {
         position: absolute;
         inset: 0;
@@ -852,17 +849,32 @@
               <h2>Work with AI</h2>
               <p>Bring your own AI agent into your writing. The desktop app starts the coding agent you already use, such as Claude Code, Codex, Pi or opencode, and gives it tools to read your document, comment on it and propose tracked changes.</p>
               <p>Your API keys stay with you, not on LibrePaper's servers. No model runs on the LibrePaper server, and you need no additional subscription.</p>
-              <p class="links"><a href="/agents.html">Set up an agent</a></p>
-            </div>
-            <div class="feature-aside">
               <ul class="details">
                 <li>Select a passage to run a writing or review task.</li>
                 <li>Ask for changes in the sidebar chat.</li>
                 <li>Decide whether an agent may read, comment or edit.</li>
                 <li>Accept or reject every change an agent proposes.</li>
               </ul>
+              <p class="links"><a href="/agents.html">Set up an agent</a></p>
             </div>
-            <!-- shot needed: the agent sidebar in the desktop app -->
+            <figure class="shot-frame">
+              <a class="shot" href="#agent-video" aria-label="Play a video of an agent fixing typos">
+                <img
+                  src="/images/agent-sidebar.webp"
+                  alt="The agent sidebar in LibrePaper: asked to fix the typos in a document, the agent has added a tracked change for each one."
+                  width="1204"
+                  height="720"
+                  loading="lazy"
+                  decoding="async"
+                />
+                <span class="shot-badge" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                    <path d="M7 4.5v15l12.5-7.5z" />
+                  </svg>
+                  Play
+                </span>
+              </a>
+            </figure>
           </div>
         </div>
       </section>
@@ -1139,13 +1151,24 @@
       </picture>
     </div>
 
+    <div class="lightbox" id="agent-video">
+      <a class="lightbox-dismiss" href="#" aria-label="Close the video"></a>
+      <a class="lightbox-close" href="#" aria-label="Close the video">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+        </svg>
+      </a>
+      <video src="/images/agent-sidebar.webm" poster="/images/agent-sidebar.webp" width="1204" height="720" controls muted playsinline preload="none"></video>
+    </div>
+
     <!-- Escape closes any larger view. The overlay itself is CSS, so it opens
          and closes without this; what a script adds is the key a reader
          expects, and nothing else depends on it. Closing is a step back
          through history when this page opened the view, which is the same
          thing the browser Back button does and leaves no entry behind. A
          reader who arrived on the link directly has no such entry, so that
-         case clears the fragment instead. -->
+         case clears the fragment instead. A video plays when its view opens
+         and pauses when it closes, however it closed. -->
     <script>
       (function () {
         var opened = false;
@@ -1161,6 +1184,17 @@
             location.hash = "";
           }
         });
+        function syncVideos() {
+          document.querySelectorAll(".lightbox video").forEach(function (video) {
+            if (video.closest(".lightbox:target")) {
+              video.play().catch(function () {});
+            } else {
+              video.pause();
+            }
+          });
+        }
+        window.addEventListener("hashchange", syncVideos);
+        syncVideos();
       })();
     </script>
     <script type="module" src="../../web/src/site/index.js"></script>
