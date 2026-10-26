@@ -631,16 +631,13 @@ for (const invalidate of [null, "navigation", "main"]) {
   assert.equal(harness.coordinator.running, false);
 }
 
-// A peer's edit advances the source generation the history panel reads, so a
-// comparison against "current" knows it was taken before that edit.
-//
-// It also refreshes the rows of the Changes panel, because an edit can move
-// or remove the change it lands in.
+// A peer's edit advances the source generation and refreshes the rows of the
+// Changes panel, because an edit can move or remove the change it lands in.
 {
   let reviewed = 0;
   let rescheduled = 0;
   const ctx = context({
-    sourceGeneration: 0, historyLiveVersion: 0, mayEdit: true, publishedBundle: null,
+    sourceGeneration: 0, mayEdit: true, publishedBundle: null,
     outlineRevision: 0, sourceFormat: "", editing: false,
     previewTimer: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
     setTimeout: () => 1, clearTimeout: () => {}, paintPreview: () => {},
@@ -651,7 +648,6 @@ for (const invalidate of [null, "navigation", "main"]) {
   vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   vm.runInContext("sourceChanged()", ctx);
   assert.equal(ctx.sourceGeneration, 1);
-  assert.equal(ctx.historyLiveVersion, 1);
   assert.equal(reviewed, 1, "an edit refreshes the rows of the Changes panel");
   assert.equal(rescheduled, 0, "an edit never schedules a stored reader rendition");
 }
@@ -688,7 +684,7 @@ for (const invalidate of [null, "navigation", "main"]) {
 {
   let scheduled = 0;
   const ctx = context({
-    sourceGeneration: 0, historyLiveVersion: 0, editing: true, sourceFormat: "markdown", pdfOutput: false, mayEdit: true, publishedBundle: null,
+    sourceGeneration: 0, editing: true, sourceFormat: "markdown", pdfOutput: false, mayEdit: true, publishedBundle: null,
     previewTimer: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
     diagnosticPainter: { typed: () => {} },
     setTimeout: (fn, ms) => {
@@ -707,7 +703,7 @@ for (const invalidate of [null, "navigation", "main"]) {
 {
   let scheduled = 0;
   const ctx = context({
-    sourceGeneration: 0, historyLiveVersion: 0, editing: true, sourceFormat: "typst", pdfOutput: true, compilesHere: true,
+    sourceGeneration: 0, editing: true, sourceFormat: "typst", pdfOutput: true, compilesHere: true,
     previewTimer: null, diagnosticPainter: { typed: () => {} },
     setTimeout: (fn, ms) => {
       assert.ok(ms <= 50, "Typst starts rendering within 50 ms of an edit");
@@ -727,7 +723,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   let inEditorUpdate = true;
   let paintedDiagnostics = 0;
   const ctx = context({
-    sourceGeneration: 0, historyLiveVersion: 0, quartoFreshnessSerial: 0, sourceFormat: "quarto", quartoView: "draft",
+    sourceGeneration: 0, quartoFreshnessSerial: 0, sourceFormat: "quarto", quartoView: "draft",
     previewPath: "main.qmd",
     session: {
       idOf: () => "main", textOf: () => ({ toString: () => "# Draft\n" }),

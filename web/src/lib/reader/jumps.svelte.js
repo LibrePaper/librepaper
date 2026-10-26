@@ -25,6 +25,7 @@ export function createJumps({ limit = 50 } = {}) {
 
     /// Takes the newest place that `exists` accepts, and removes it with any
     /// newer places that were skipped. Null when there is none left.
+    /** @param {(file: string) => boolean} [exists] */
     back(exists = () => true) {
       while (places.length) {
         const place = places.at(-1);

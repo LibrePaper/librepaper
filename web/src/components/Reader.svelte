@@ -1387,9 +1387,6 @@
   // shows only its list.
   const comparison = createComparison();
   const comparing = $derived(comparison.kind);
-  const comparisonSays = $derived(comparing === "history"
-    ? `Comparing ${historySource.path} with ${historyHeading || "the current version"}`
-    : comparing === "git" ? `Changes in ${gitDiff?.state.path} since the last commit` : "");
   function editorAreaView() {
     return {
       editing,
@@ -1651,6 +1648,10 @@
   const localGit = LOCAL ? createLocalGit({ id: LOCAL_ID, flush: () => folderSync.flush() }) : null;
   $effect(() => () => localGit?.dispose());
   const gitDiff = LOCAL ? createGitDiff({ id: LOCAL_ID }) : null;
+  // What the comparison bar says is compared.
+  const comparisonSays = $derived(comparing === "history"
+    ? `Comparing ${historySource.path} with ${historyHeading || "the current version"}`
+    : comparing === "git" ? `Changes in ${gitDiff?.state.path} since the last commit` : "");
   $effect(() => () => gitDiff?.dispose());
   // A web project's Git panel: the last push.
   const webGit = LOCAL ? null : createWebGit();
