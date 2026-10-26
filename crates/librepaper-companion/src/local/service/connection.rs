@@ -28,11 +28,11 @@ use super::sync::{
 };
 
 use crate::local::credentials;
-use crate::local::git::{self, validate, Limit, Output};
+use crate::local::git::{validate, Limit, Output};
 
 use librepaper_sync::{
     commit_summary, pull, push, store_for, Error, Link, MergeOutcome, PullOptions, PullOutcome,
-    PushOptions, PushOutcome, State, StateStore,
+    PushOptions, PushOutcome, State,
 };
 
 /// The folder of every connection, under the state home.
@@ -139,7 +139,11 @@ fn read_record(dir: &Path) -> Result<Record, Failure> {
 }
 
 /// The connection of `project`, which must be a project on the page's site.
-fn open_connection(inner: &Inner, origin: Option<&str>, project: &str) -> Result<Connection, Failure> {
+fn open_connection(
+    inner: &Inner,
+    origin: Option<&str>,
+    project: &str,
+) -> Result<Connection, Failure> {
     Ok(Connection::open(inner, parse_link(project, origin)?))
 }
 
@@ -169,9 +173,13 @@ async fn must(root: &Path, limit: Limit, args: &[&str]) -> Result<Output, Failur
 /// Which side the merge in progress brought in: `project` when MERGE_HEAD is
 /// the web project's version on `refs/librepaper/main`, else `repository`.
 async fn merge_side(repo: &Path) -> Result<&'static str, Failure> {
-    let incoming = run(repo, Limit::Local, &["rev-parse", "-q", "--verify", "MERGE_HEAD"])
-        .await?
-        .text();
+    let incoming = run(
+        repo,
+        Limit::Local,
+        &["rev-parse", "-q", "--verify", "MERGE_HEAD"],
+    )
+    .await?
+    .text();
     let project = run(
         repo,
         Limit::Local,
@@ -195,7 +203,12 @@ async fn status_of(inner: &Inner, connection: &Connection) -> Result<Value, Fail
     }
     let repo = connection.repo();
     let record = read_record(&connection.dir)?;
-    let branch = run(&repo, Limit::Local, &["symbolic-ref", "--short", "-q", "HEAD"]).await?;
+    let branch = run(
+        &repo,
+        Limit::Local,
+        &["symbolic-ref", "--short", "-q", "HEAD"],
+    )
+    .await?;
     let branch = if branch.success() {
         json!(branch.text())
     } else {
@@ -247,11 +260,6 @@ async fn ensure_identity(repo: &Path) -> Result<(), Failure> {
 }
 
 /* ------------------------------------------------------------ status */
-
-#[derive(serde::Deserialize)]
-struct ProjectBody {
-    project: String,
-}
 
 /// The status of the connection of the `project` named in the query.
 pub(super) async fn handle_status(
@@ -327,11 +335,17 @@ async fn run_connect(inner: &Inner, connection: &Connection, url: &str) -> Resul
 /// The clone behind `run_connect`. The clone is made under `PARTIAL` and
 /// renamed last, once the state and the record are in place.
 async fn clone_for(inner: &Inner, connection: &Connection, url: &str) -> Result<(), Failure> {
-    let unwritable = |error: std::io::Error| refuse(500, &format!("could not make the connection: {error}"));
+    let unwritable =
+        |error: std::io::Error| refuse(500, &format!("could not make the connection: {error}"));
     std::fs::create_dir_all(&connection.dir).map_err(unwritable)?;
     let partial = connection.dir.join(PARTIAL);
     let _ = std::fs::remove_dir_all(&partial);
-    let cloned = run(&connection.dir, Limit::Transport, &["clone", "--", url, PARTIAL]).await?;
+    let cloned = run(
+        &connection.dir,
+        Limit::Transport,
+        &["clone", "--", url, PARTIAL],
+    )
+    .await?;
     if !cloned.success() {
         return Err(remote_failure(&cloned));
     }
@@ -367,7 +381,8 @@ async fn clone_for(inner: &Inner, connection: &Connection, url: &str) -> Result<
         project: project_url(&connection.link),
         url: url.to_owned(),
     };
-    let bytes = serde_json::to_vec_pretty(&record).map_err(|error| refuse(500, &error.to_string()))?;
+    let bytes =
+        serde_json::to_vec_pretty(&record).map_err(|error| refuse(500, &error.to_string()))?;
     std::fs::write(connection.dir.join(RECORD), bytes).map_err(unwritable)?;
     std::fs::rename(&partial, connection.repo()).map_err(unwritable)?;
     Ok(())
@@ -581,15 +596,26 @@ pub(super) async fn handle_resolve(
     answer(resolve(inner, origin, &body).await)
 }
 
-async fn resolve(inner: &Inner, origin: Option<&str>, body: &ResolveBody) -> Result<Value, Failure> {
+async fn resolve(
+    inner: &Inner,
+    origin: Option<&str>,
+    body: &ResolveBody,
+) -> Result<Value, Failure> {
     let connection = open_connection(inner, origin, &body.project)?;
     let _hold = inner.connections.claim(&connection.key)?;
     let repo = require_connected(&connection)?;
     if !merge_in_progress(&repo).await? {
-        return Err(refuse_because(409, "not-merging", "no merge is in progress"));
+        return Err(refuse_because(
+            409,
+            "not-merging",
+            "no merge is in progress",
+        ));
     }
     if body.keep != "project" && body.keep != "repository" {
-        return Err(refuse(400, "keep names the side to keep: project or repository"));
+        return Err(refuse(
+            400,
+            "keep names the side to keep: project or repository",
+        ));
     }
     if !conflicted_paths(&repo).await?.contains(&body.path) {
         return Err(refuse(400, "that file is not in conflict"));
@@ -673,7 +699,13 @@ pub(super) async fn handle_login(
     };
     let begun = async {
         let connection = open_connection(inner, origin, &body.project)?;
-        begin_login(inner, origin, connection.link.site.clone(), &connection.owner()).await
+        begin_login(
+            inner,
+            origin,
+            connection.link.site.clone(),
+            &connection.owner(),
+        )
+        .await
     };
     answer(begun.await)
 }
@@ -709,6 +741,7 @@ pub(super) async fn handle_login_complete(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::local::git;
 
     const PAGE: &str = "https://paper.example";
     const PROJECT: &str = "https://paper.example/docs/abc123";
@@ -802,7 +835,7 @@ mod tests {
 
         /// One request through the router, as the desktop shell sends it.
         async fn send(&self, method: Method, tail: &str, body: Option<Value>) -> (u16, Value) {
-            let mut builder = Request::builder()
+            let builder = Request::builder()
                 .method(method)
                 .uri(format!("{BASE_PATH}/{tail}"))
                 .header("host", format!("127.0.0.1:{}", test_support::PORT))
@@ -844,7 +877,8 @@ mod tests {
     async fn a_connection_lives_in_a_folder_named_by_its_project_address() {
         let fixture = Fixture::new().await;
         let connection = fixture.connection(PROJECT);
-        let key = hex::encode(Sha256::digest(b"https://paper.example/docs/abc123"))[..32].to_string();
+        let key =
+            hex::encode(Sha256::digest(b"https://paper.example/docs/abc123"))[..32].to_string();
         assert_eq!(connection.key, key);
         assert_eq!(connection.key.len(), 32);
         let folder = fixture.inner.state_home.join("connections").join(&key);
@@ -884,14 +918,21 @@ mod tests {
         let store = store_for(&connection.repo(), &fixture.inner.state_home);
         assert_eq!(store.load().unwrap().unwrap().link.slug, "abc123");
         assert_eq!(
-            plain_git(&connection.repo(), &["config", "user.email"]),
+            plain_git(
+                &connection.repo(),
+                &["config", "--file", ".git/config", "user.email"]
+            ),
             MERGE_EMAIL
         );
 
         let (status, body) = run_connect(&fixture.inner, &connection, text(&bare))
             .await
             .unwrap_err();
-        assert_eq!((status, &body["reason"]), (409, &json!("connected")), "{body}");
+        assert_eq!(
+            (status, &body["reason"]),
+            (409, &json!("connected")),
+            "{body}"
+        );
     }
 
     #[tokio::test]
@@ -908,7 +949,10 @@ mod tests {
         store_for(&seed, &fixture.inner.state_home)
             .save(&State::new(other))
             .unwrap();
-        plain_git(&seed, &["push", "origin", "refs/librepaper/*:refs/librepaper/*"]);
+        plain_git(
+            &seed,
+            &["push", "origin", "refs/librepaper/*:refs/librepaper/*"],
+        );
 
         let connection = fixture.connection(PROJECT);
         let (status, body) = run_connect(&fixture.inner, &connection, text(&bare))
@@ -952,7 +996,11 @@ mod tests {
 
         let status = status_of(&fixture.inner, &connection).await.unwrap();
         assert_eq!(status["merging"]["side"], json!("repository"), "{status}");
-        assert_eq!(status["merging"]["conflicts"], json!(["main.tex"]), "{status}");
+        assert_eq!(
+            status["merging"]["conflicts"],
+            json!(["main.tex"]),
+            "{status}"
+        );
 
         let status = resolve(&fixture.inner, Some(PAGE), &body).await.unwrap();
         assert_eq!(status["merging"], Value::Null, "{status}");
@@ -1009,11 +1057,7 @@ mod tests {
     async fn the_router_dispatches_the_connection_routes() {
         let fixture = Fixture::new().await;
         let (status, body) = fixture
-            .send(
-                Method::GET,
-                &format!("connections?project={PROJECT}"),
-                None,
-            )
+            .send(Method::GET, &format!("connections?project={PROJECT}"), None)
             .await;
         assert_eq!((status, &body["connected"]), (200, &json!(false)), "{body}");
 
@@ -1048,9 +1092,7 @@ mod tests {
             "connections/login",
             "connections/login/complete",
         ] {
-            let (status, _) = fixture
-                .send(Method::POST, path, Some(json!({})))
-                .await;
+            let (status, _) = fixture.send(Method::POST, path, Some(json!({}))).await;
             assert_ne!(status, 404, "{path}");
         }
         let (status, _) = fixture.send(Method::POST, "connections/other", None).await;
