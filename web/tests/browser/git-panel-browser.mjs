@@ -48,7 +48,7 @@ const linked = (extra = {}) => ({ signed_in: true, linked: true, site: "https://
 const noRepo = (extra = {}) => ({ repository: false, git: { found: true, version: "2.43.0" }, remotes: [], changes: [], merging: false, identity: false, ...extra });
 const repoStatus = (extra = {}) => ({
   repository: true, git: { found: true, version: "2.43.0" }, branch: "main", upstream: "origin/main", ahead: 0, behind: 0,
-  remotes: [{ name: "origin", url: "https://github.com/you/paper.git" }],
+  remotes: [{ name: "origin", url: "https://github.com/you/paper.git" }], remote: "origin",
   changes: [{ path: "intro.tex", kind: "modified" }, { path: "chapters/outline.tex", kind: "added" }],
   merging: false, identity: true, ...extra,
 });
@@ -112,7 +112,7 @@ const gitApi = {
     scene().repo = { ...scene().repo, branch };
     scene().branches = { current: branch, branches: [...scene().branches.branches, branch] };
   },
-  gitRemote: async (id, name, url) => { record("gitRemote", name, url); scene().repo = { ...scene().repo, remotes: [{ name, url }] }; },
+  gitRemote: async (id, name, url) => { record("gitRemote", name, url); scene().repo = { ...scene().repo, remotes: [{ name, url }], remote: name }; },
   gitFetch: async () => { record("gitFetch"); return settle(scene().fetched ?? { ahead: 0, behind: 0 }); },
   gitPull: async () => { record("gitPull"); return settle(scene().gitPulls.shift() ?? { status: "up-to-date", conflicts: [] }); },
   gitPush: async () => { record("gitPush"); return settle(scene().gitPushes.shift()); },
@@ -643,7 +643,7 @@ window.gitPanelCheck = async () => {
 
   // The help is for the host the remote is on, and for how it is reached.
   await mountFolder({
-    repo: repoStatus({ remotes: [{ name: "origin", url: "git@gitlab.com:group/paper.git" }] }),
+    repo: repoStatus({ remotes: [{ name: "origin", url: "git@gitlab.com:group/paper.git" }], remote: "origin" }),
     gitPushes: [{ fail: { status: 409, body: { reason: "auth", detail: "Permission denied (publickey)." } } }],
   });
   await flush();
@@ -687,7 +687,7 @@ window.gitPanelCheck = async () => {
     repo: repoStatus({
       branch: "feature/a-branch-with-a-name-that-keeps-going-and-going-and-going",
       upstream: "origin/feature/a-branch-with-a-name-that-keeps-going-and-going-and-going", ahead: 12, behind: 345,
-      remotes: [{ name: "origin", url: "https://example-forge.example/organisation/a-very-long-repository-name-that-keeps-going.git" }],
+      remotes: [{ name: "origin", url: "https://example-forge.example/organisation/a-very-long-repository-name-that-keeps-going.git" }], remote: "origin",
       changes: [
         { path: "chapters/a-rather-long-folder-name/rendering-notes-for-the-appendix.qmd", kind: "modified" },
         { path: "a-file-with-a-very-long-name-and-no-folder-at-all-to-cut-it-short.tex", kind: "renamed", from: "old.tex" },

@@ -30,7 +30,7 @@ const asked = (calls, name) => calls.filter((call) => call[0] === name);
 
 const repo = {
   repository: true, git: { found: true, version: "2.43.0" }, branch: "main", upstream: "origin/main", ahead: 0, behind: 0,
-  remotes: [{ name: "origin", url: "https://github.com/you/paper.git" }],
+  remotes: [{ name: "origin", url: "https://github.com/you/paper.git" }], remote: "origin",
   changes: [{ path: "intro.tex", kind: "modified" }, { path: "fig/a.png", kind: "added" }],
   merging: false, identity: true,
 };

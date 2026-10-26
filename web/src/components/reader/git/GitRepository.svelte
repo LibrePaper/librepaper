@@ -60,8 +60,9 @@
   });
   const merging = $derived(Boolean(status?.merging));
   const remotes = $derived(Array.isArray(status?.remotes) ? status.remotes : []);
-  // The remote the branch follows, else the first one.
-  const remote = $derived(remotes.find((entry) => status?.upstream?.startsWith(`${entry.name}/`)) ?? remotes[0] ?? null);
+  // The remote that Fetch, Pull and Push use. The desktop app names it in the
+  // status, and it is null when the repository has no remote.
+  const remote = $derived(remotes.find((entry) => entry.name === status?.remote) ?? null);
   const branchNames = $derived.by(() => {
     const names = view.branches?.names ?? [];
     return status?.branch && !names.includes(status.branch) ? [status.branch, ...names] : names;

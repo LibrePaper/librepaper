@@ -8,7 +8,7 @@ import { send } from "./client.js";
 const route = (id, step = "") => `projects/${encodeURIComponent(String(id))}/git${step ? `/${step}` : ""}`;
 
 /** @typedef {{ path: string, kind: "added" | "modified" | "deleted" | "renamed" | "conflicted", from?: string }} GitChange */
-/** @typedef {{ repository: boolean, git: { found: boolean, version?: string, supported?: boolean }, branch?: string, upstream?: string, ahead?: number, behind?: number, remotes: { name: string, url: string }[], changes: GitChange[], merging: boolean, identity: boolean, detached?: boolean }} GitStatus */
+/** @typedef {{ repository: boolean, git: { found: boolean, version?: string, supported?: boolean }, branch?: string, upstream?: string, ahead?: number, behind?: number, remotes: { name: string, url: string }[], remote?: string, changes: GitChange[], merging: boolean, identity: boolean, detached?: boolean }} GitStatus */
 /** @typedef {{ status: "fast-forward" | "merged" | "up-to-date" | "conflicts", conflicts: string[] }} GitPull */
 /** @typedef {{ step: "commit" | "pull" | "push", ok?: boolean, reason?: string, paths?: string[], detail?: string, commit?: string, status?: string, conflicts?: string[] }} GitSyncStep */
 
