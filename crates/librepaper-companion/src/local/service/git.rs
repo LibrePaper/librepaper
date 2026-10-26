@@ -624,8 +624,10 @@ fn pathspec_list(paths: &[String]) -> Vec<u8> {
 }
 
 /// Stages and commits. Everything changed is committed unless `paths` names
-/// the files to commit, which are then the only ones. A merge in progress is
-/// finished with all of its changes. Answers the new commit's id.
+/// the files to commit, which are then the only ones. A chosen path that is in
+/// neither the index nor the working tree, such as the old name of a staged
+/// rename, is committed as a deletion. A merge in progress is finished with all
+/// of its changes. Answers the new commit's id.
 async fn run_commit(
     root: &Path,
     message: &str,
@@ -677,15 +679,45 @@ async fn run_commit(
     let committed = match paths.filter(|_| !merging) {
         Some(paths) => {
             let list = pathspec_list(paths);
-            let staged = run_input(
+            let known = run_input(
                 root,
                 Limit::Local,
-                &["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+                &[
+                    "ls-files",
+                    "-z",
+                    "--pathspec-from-file=-",
+                    "--pathspec-file-nul",
+                ],
                 list.clone(),
             )
             .await?;
-            if !staged.success() {
-                return Err(declined(&staged));
+            if !known.success() {
+                return Err(declined(&known));
+            }
+            let listed = String::from_utf8_lossy(&known.stdout);
+            let tracked: BTreeSet<&str> = listed.split('\0').collect();
+            // A chosen path in neither the index nor the working tree, such as
+            // the old name of a staged rename, is left to the commit, which
+            // records its deletion.
+            let stage: Vec<String> = paths
+                .iter()
+                .filter(|path| {
+                    tracked.contains(path.as_str())
+                        || std::fs::symlink_metadata(root.join(path)).is_ok()
+                })
+                .cloned()
+                .collect();
+            if !stage.is_empty() {
+                let staged = run_input(
+                    root,
+                    Limit::Local,
+                    &["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+                    pathspec_list(&stage),
+                )
+                .await?;
+                if !staged.success() {
+                    return Err(declined(&staged));
+                }
             }
             run_input(
                 root,
@@ -1722,6 +1754,47 @@ mod tests {
                 assert_eq!(answer["reason"], reason);
             }
         }
+    }
+
+    /// A repository with `a.tex` and `b.tex` committed, then `a.tex` renamed to
+    /// `c.tex` in the index and `b.tex` edited in the working tree.
+    async fn with_staged_rename() -> Fixture {
+        let fixture = Fixture::new().await;
+        fixture.init().await;
+        fixture.write("a.tex", "one\n");
+        fixture.write("b.tex", "two\n");
+        fixture.commit_all("First").await;
+        plain_git(fixture.root(), &["mv", "a.tex", "c.tex"]);
+        fixture.write("b.tex", "two and more\n");
+        fixture
+    }
+
+    #[tokio::test]
+    async fn a_partial_commit_can_name_both_sides_of_a_staged_rename() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = with_staged_rename().await;
+        let both = json!({"message": "Rename a", "paths": ["c.tex", "a.tex"]});
+        let (status, body) = fixture.post("/commit", both).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            plain_git(fixture.root(), &["ls-tree", "--name-only", "HEAD"]),
+            "b.tex\nc.tex"
+        );
+        assert_eq!(
+            fixture.status().await["changes"],
+            json!([{"path": "b.tex", "kind": "modified"}])
+        );
+
+        let fixture = with_staged_rename().await;
+        let new_name = json!({"message": "Rename a", "paths": ["c.tex"]});
+        let (status, body) = fixture.post("/commit", new_name).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            plain_git(fixture.root(), &["ls-tree", "--name-only", "HEAD"]),
+            "a.tex\nb.tex\nc.tex"
+        );
     }
 
     #[tokio::test]
