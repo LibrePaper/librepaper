@@ -184,9 +184,20 @@ try {
   await tab.evaluate(`[...document.querySelectorAll(".history-source-bar button")].find(b => b.textContent.trim() === "Compare with current").click()`);
   await expectDiff(sources[0], current);
   console.log("history reader: two versions against each other");
+  // The bar names the comparison. Close, and then Escape, end it and give the
+  // editor area back as it was.
+  assert.match(await tab.evaluate(`document.querySelector('.comparison-bar')?.textContent || ""`), /^Comparing .* with /);
+  await tab.evaluate(`[...document.querySelectorAll('.comparison-bar button')].find(b => b.textContent.trim() === 'Close').click()`);
+  await until('closing a comparison restores the live source', () => tab.evaluate(`!document.querySelector('.history-workspace') && !document.querySelector('.comparison-bar') && document.querySelectorAll('.cm-content').length === 1 && document.querySelector('.cm-content').textContent === ${JSON.stringify(current)}`), 4000);
+  await select(1); await expectDiff(sources[1], current);
+  await tab.evaluate(`document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+  await until('Escape closes a comparison', () => tab.evaluate(`!document.querySelector('.comparison-bar') && !document.querySelector('.history-workspace')`), 4000);
+  console.log("history reader: close and Escape restore the editor area");
   await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="Files"]').click()`);
   await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="History"]').click()`);
-  await until('reopening history starts at the current source', () => tab.evaluate(`document.querySelectorAll('.cm-content').length === 1 && document.querySelector('.cm-content').textContent === ${JSON.stringify(current)}`), 4000);
+  // Opening history shows its list and leaves the editor area alone: the live
+  // source stays, and no comparison is started until a version is chosen.
+  await until('reopening history leaves the live source alone', () => tab.evaluate(`!document.querySelector('.history-workspace') && !document.querySelector('.comparison-bar') && document.querySelectorAll('.cm-content').length === 1 && document.querySelector('.cm-content').textContent === ${JSON.stringify(current)}`), 4000);
   // The last three of these are autosaves in a row, which the panel gathers
   // into one editing session. Opening it is how the rest of them are reached.
   // That grouping is the panel's own and is checked in history-panel-browser.mjs.
