@@ -30,6 +30,28 @@ pub struct Fetched {
     pub files: BTreeMap<String, FileRecord>,
 }
 
+/// A web push saved before it is posted, so a retry after a lost answer sends
+/// the same request under the same key and applies the effects recorded here,
+/// never ones read again from a working tree that has moved on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingPush {
+    /// The operation key the request was first sent with.
+    pub request_key: String,
+    /// A nonsecret fingerprint of the principal that sent it.
+    pub actor: String,
+    /// The source-change request body, as posted.
+    pub request: serde_json::Value,
+    /// Paths and records `files` takes once the push is accepted.
+    #[serde(default)]
+    pub upsert_files: BTreeMap<String, FileRecord>,
+    /// Paths `files` drops once the push is accepted.
+    #[serde(default)]
+    pub deleted_paths: Vec<String>,
+    /// `HEAD` when the push was planned, in a repository.
+    #[serde(default)]
+    pub commit: Option<String>,
+}
+
 /// One record per working directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct State {
@@ -47,6 +69,13 @@ pub struct State {
     /// Every path this directory has ever synced, so one the web later drops
     /// is dropped from the chain's tree too.
     pub synced: BTreeSet<String>,
+    /// In a repository, the one branch this state syncs. `None` until a
+    /// transfer binds it explicitly.
+    pub branch: Option<String>,
+    /// The project's head identity when its files were last read or written.
+    pub web_head: Option<String>,
+    /// A web push posted and not yet known to have been settled.
+    pub pending: Option<PendingPush>,
 }
 
 /// The state file's shape: the link flattened beside the rest.
@@ -64,6 +93,12 @@ struct Record {
     fetched: Option<Fetched>,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     synced: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    web_head: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending: Option<PendingPush>,
 }
 
 impl State {
@@ -77,6 +112,9 @@ impl State {
             pushed: Vec::new(),
             fetched: None,
             synced: BTreeSet::new(),
+            branch: None,
+            web_head: None,
+            pending: None,
         }
     }
 
@@ -90,6 +128,9 @@ impl State {
             pushed: self.pushed.clone(),
             fetched: self.fetched.clone(),
             synced: self.synced.clone(),
+            branch: self.branch.clone(),
+            web_head: self.web_head.clone(),
+            pending: self.pending.clone(),
         };
         serde_json::to_vec_pretty(&record).map_err(|error| Error::State(error.to_string()))
     }
@@ -107,6 +148,9 @@ impl State {
             pushed: record.pushed,
             fetched: record.fetched,
             synced: record.synced,
+            branch: record.branch,
+            web_head: record.web_head,
+            pending: record.pending,
         })
     }
 }

@@ -36,4 +36,4 @@ pub use push::{
     PushOutcome,
 };
 pub use rules::Rules;
-pub use state::{store_for, Fetched, FileStore, GitRefStore, Pushed, State, StateStore};
+pub use state::{store_for, Fetched, FileStore, GitRefStore, PendingPush, Pushed, State, StateStore};
