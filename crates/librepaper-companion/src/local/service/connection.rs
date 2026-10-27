@@ -442,7 +442,7 @@ async fn pull_remote(repo: &Path) -> Result<Value, Failure> {
     )
     .await?;
     if !upstream.success() {
-        return Ok(json!({"status": "up-to-date", "conflicts": []}));
+        return Ok(json!({"status": protocol::PullOutcome::UpToDate, "conflicts": []}));
     }
     run_pull(repo).await
 }

@@ -195,12 +195,36 @@ pub struct Provenance {
     pub output: String,
 }
 
+/// The state of a job. The wire spelling is the lowercase variant name.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum JobState {
+    #[default]
+    Queued,
+    Running,
+    Done,
+    Failed,
+    Canceled,
+}
+
+/// How a pull from the repository came to rest. The wire spelling is
+/// kebab-case. A conflicting pull reports its paths in a separate
+/// `conflicts` array beside the status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum PullOutcome {
+    FastForward,
+    Merged,
+    UpToDate,
+    Conflicts,
+}
+
 /// `GET jobs/<id>`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct JobStatus {
     pub id: String,
-    /// `queued`, `running`, `done`, `failed`, `canceled`.
-    pub status: String,
+    /// Where the job is. See `JobState`.
+    pub status: JobState,
     /// `staging`, `build`, `finished`.
     #[serde(default)]
     pub stage: String,
@@ -373,5 +397,32 @@ mod tests {
         let mut raw = job_json(3);
         raw["options"] = serde_json::json!({"deadline_seconds": 7200});
         assert!(JobRequest::decode(raw).is_err());
+    }
+
+    #[test]
+    fn job_states_serialize_to_their_wire_strings() {
+        let cases = [
+            (JobState::Queued, "queued"),
+            (JobState::Running, "running"),
+            (JobState::Done, "done"),
+            (JobState::Failed, "failed"),
+            (JobState::Canceled, "canceled"),
+        ];
+        for (state, text) in cases {
+            assert_eq!(serde_json::to_value(state).unwrap(), serde_json::json!(text));
+        }
+    }
+
+    #[test]
+    fn pull_outcomes_serialize_to_their_wire_strings() {
+        let cases = [
+            (PullOutcome::FastForward, "fast-forward"),
+            (PullOutcome::Merged, "merged"),
+            (PullOutcome::UpToDate, "up-to-date"),
+            (PullOutcome::Conflicts, "conflicts"),
+        ];
+        for (outcome, text) in cases {
+            assert_eq!(serde_json::to_value(outcome).unwrap(), serde_json::json!(text));
+        }
     }
 }

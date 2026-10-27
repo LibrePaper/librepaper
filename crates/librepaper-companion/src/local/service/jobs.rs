@@ -104,7 +104,7 @@ pub(super) async fn handle_jobs_post(
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let status = JobStatus {
         id: id.clone(),
-        status: "queued".to_string(),
+        status: JobState::Queued,
         stage: "staging".to_string(),
         snapshot: job.snapshot.clone(),
         generation: job.generation,
@@ -157,7 +157,7 @@ pub(super) async fn handle_jobs_post(
     drop(jobs);
     inner.work.notify_one();
 
-    write_json(202, &json!({"id": id, "status": "queued"}))
+    write_json(202, &json!({"id": id, "status": JobState::Queued}))
 }
 
 /// Every manifest entry has a bounded count, safe path, and total size.
@@ -332,7 +332,7 @@ pub(super) async fn handle_cancel(
         // Never handed to the runner, so there is nothing for it to observe
         // cancelling: settle it here and drop it from the queue directly.
         entry.queued = false;
-        entry.status.status = "canceled".to_string();
+        entry.status.status = JobState::Canceled;
         entry.status.stage = "finished".to_string();
         entry.finished_at = Some(Instant::now());
         drop(jobs);
