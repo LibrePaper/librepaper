@@ -328,7 +328,9 @@ window.gitPanelCheck = async () => {
   await press("Preview link");
   check(calls("syncPreview")[0][1] === "https://app.example/docs/paper" && calls("syncLink").length === 0, "the preview sends the address and links nothing: " + JSON.stringify(window.scene.calls));
   check(text().includes("1 file is only in the project. It will be added to this folder.") && text().includes("1 file is only in this folder. It stays here until you send it.") && text().includes("2 files are in both with different contents. You choose which version to keep.") && text().includes("1 file is not transferred."), "the preview says what it found in sentences: " + text());
-  check(text().includes("big.bin: it is too large") && text().includes("both.tex") && !text().includes("in both with the same contents"), "with the paths and the reason, and no empty group: " + text());
+  // The path lists sit in closed groups, which innerText leaves out.
+  const listed = base().querySelector(".sync-preview")?.textContent ?? "";
+  check(listed.includes("big.bin: it is too large") && listed.includes("both.tex") && !text().includes("in both with the same contents"), "with the paths and the reason, and no empty group: " + listed);
   check(button("Link") && button("Cancel"), "and offers Link and Cancel");
   await press("Cancel");
   check(calls("syncLink").length === 0 && button("Preview link"), "Cancel links nothing and returns to the address: " + text());
@@ -548,17 +550,17 @@ window.gitPanelCheck = async () => {
   check(button("Commit", repo()).disabled, "Commit waits for a message");
   check(button("Pull from remote", repo()) && button("Push to remote", repo()) && button("Fetch from remote", repo()) && button("Sync with remote", repo()), "Pull from remote, Push to remote, Fetch from remote and Sync with remote are there");
   check(!button("Pull from remote", repo()).disabled, "and ready");
-  check(text(repo()).includes("Commits, pulls and pushes."), "Sync says what it does");
+  check(text(repo()).includes("Commit, then pull from remote, then push to remote."), "Sync says what it does");
 
   await mountFolder({ repo: repoStatus({ ahead: 2, behind: 1 }) });
   await flush();
   check(text(repo()).includes("2 ahead, 1 behind origin/main."), "ahead and behind are counted: " + text(repo()));
   await mountFolder({ repo: repoStatus({ upstream: undefined, ahead: undefined, behind: undefined }) });
   await flush();
-  check(text(repo()).includes("No upstream branch yet. The first push sets it."), "a branch with no upstream says the first push sets it: " + text(repo()));
+  check(text(repo()).includes("No upstream branch yet. The first push to remote sets it."), "a branch with no upstream says the first push sets it: " + text(repo()));
   await mountFolder({ repo: repoStatus({ remotes: [], upstream: undefined }) });
   await flush();
-  check(text(repo()).includes("No remote yet. Set one to pull and push.") && text(repo()).includes("No remote"), "no remote is said: " + text(repo()));
+  check(text(repo()).includes("No remote yet. Set one to pull from and push to it.") && text(repo()).includes("No remote"), "no remote is said: " + text(repo()));
   check(button("Pull from remote", repo()).disabled && button("Push to remote", repo()).disabled && button("Sync with remote", repo()).disabled && !button("Set remote", repo()).disabled, "and there is nothing to pull from or push to");
   check(changeRows().length === 2, "the changes are still listed");
 
@@ -688,7 +690,7 @@ window.gitPanelCheck = async () => {
   check([...repo().querySelectorAll(".git-list li")].map((node) => node.textContent).join("|") === "intro.tex|chapters/refs.bib", "and lists the files");
   check(!text(repo()).includes("Pulled and merged."), "the earlier result is gone");
   await press("Pull from remote", repo());
-  check(text(repo()).includes("not committed") && text(repo()).includes("notes.tex") && text(repo()).includes("Commit them, then pull again."), "uncommitted files are listed and stop the pull: " + text(repo()));
+  check(text(repo()).includes("not committed") && text(repo()).includes("notes.tex") && text(repo()).includes("Commit them, then pull from remote again."), "uncommitted files are listed and stop the pull: " + text(repo()));
 
   // A merge in progress: Commit finishes it, every file goes in, and the message is git's.
   await mountFolder({ repo: repoStatus({ merging: true, changes: [{ path: "intro.tex", kind: "conflicted" }, { path: "refs.bib", kind: "modified" }] }) });
@@ -828,10 +830,10 @@ window.gitPanelCheck = async () => {
   // No push yet, and a history that cannot be read.
   await mountWeb();
   await flush();
-  check(text().includes("No push yet."), "a project nobody pushed to says so: " + text());
+  check(text().includes("No changes sent from a repository yet."), "a project nobody pushed to says so: " + text());
   await mountWeb({ historyFails: true });
   await flush();
-  check(text().includes("The last push could not be read."), "a history that cannot be read is said: " + text());
+  check(text().includes("The last change sent from a repository could not be read."), "a history that cannot be read is said: " + text());
 
   // In the desktop app and not connected, the panel connects the project: the address is checked and trimmed, and a folder can be kept instead.
   const connectedStatus = { connected: true, signed_in: true, url: "https://github.com/you/paper.git", branch: "main", merging: null };
@@ -880,6 +882,7 @@ window.gitPanelCheck = async () => {
     connection: connectedStatus, afterConnect: connectedStatus,
     pullAnswer: { fail: { status: 409, body: { reason: "pending", error: interrupted } } },
     retryAnswer: { status: connectedStatus, pushed: { files: 1 } },
+    pushAnswer: { status: connectedStatus, pushed: "pushed" },
   }, { desktop: true });
   await flush();
   await press("Get repository changes");
@@ -888,7 +891,7 @@ window.gitPanelCheck = async () => {
   check(calls("retryConnection").length === 1 && calls("pullConnection").length === 1, "the retry runs the send alone: " + JSON.stringify(window.scene.calls));
   check(text().includes("The interrupted send finished: 1 file reached the project.") && !button("Retry interrupted transfer"), "and says it finished: " + text());
   await press("Send project changes");
-  check(calls("flush").length === 1 && calls("pushConnection").length === 1 && text().includes("Sent to repository branch main."), "a push settles the editor first, then sends and says so: " + text());
+  check(calls("flush").length === 2 && calls("pushConnection").length === 1 && text().includes("Sent to repository branch main."), "each transfer settles the editor first; a push, then sends and says so: " + text());
 
   await press("Disconnect");
   check(calls("disconnectConnection").length === 1 && headings() === "Repository|Connect a repository", "Disconnect forgets the copy and shows the connect form: " + headings());
