@@ -1742,13 +1742,14 @@
   const outlineSections = $derived.by(() => panel === "outline" && mayEdit
     ? sectionWords(outlineSource, outlineFormat, outlineHeadings) : []);
   // The Word count dialog: the open file's document with its includes, and
-  // the selection in the open file. Nothing is counted while the dialog is shut.
+  // the selection in the open file. A preview lock does not change the count.
+  // Nothing is counted while the dialog is shut.
   let wordCountOpen = $state(false);
   const wordCount = $derived.by(() => {
     void outlineRevision;
     if (!wordCountOpen || !mayEdit || !toolbarPath) return null;
     const texts = liveTreeNow().texts;
-    const root = previewTarget({ open: toolbarPath, locked: lockedPath || null, texts }).path || toolbarPath;
+    const root = previewTarget({ open: toolbarPath, locked: null, texts }).path || toolbarPath;
     const range = editor?.selection?.();
     return {
       document: documentWords(root, texts),

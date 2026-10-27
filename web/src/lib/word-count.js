@@ -10,6 +10,18 @@ import { includesOf } from "./opening.js";
 const WORD = /[\p{L}\p{M}\p{N}]+(?:['\u2019-][\p{L}\p{M}\p{N}]+)*/gu;
 // Han, Hiragana and Katakana have no spaces, so each character is a word.
 const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/gu;
+// An ordered-list marker at the start of a line, such as "1." or "2)". Its
+// digits are a number, not a word. Bullets hold no letters or digits.
+const LIST_MARKER = /^[ \t]*\d+[.)](?=[ \t])/gm;
+
+// The blanked prose that counting reads. In Markdown and Quarto the list
+// markers are blanked too. Blanking keeps every offset and newline, so slices
+// of the result line up with the source.
+function countedProse(text, format) {
+  const prose = proseText(text, format).text;
+  if (format !== "markdown" && format !== "quarto") return prose;
+  return prose.replace(LIST_MARKER, (marker) => " ".repeat(marker.length));
+}
 
 // The number of words in text that has already been blanked.
 function countTokens(prose) {
@@ -25,7 +37,7 @@ function countTokens(prose) {
  * @returns {number}
  */
 export function countWords(text, format) {
-  return countTokens(proseText(text, format).text);
+  return countTokens(countedProse(text, format));
 }
 
 /**
@@ -39,7 +51,7 @@ export function countWords(text, format) {
  * @returns {number}
  */
 export function countWordsIn(text, format, from, to) {
-  return countTokens(proseText(text, format).text.slice(from, to));
+  return countTokens(countedProse(text, format).slice(from, to));
 }
 
 /**
@@ -52,7 +64,7 @@ export function countWordsIn(text, format, from, to) {
  */
 export function sectionWords(text, format, headings) {
   // Blanking once keeps the cost linear in the text, not in the headings.
-  const prose = proseText(text, format).text;
+  const prose = countedProse(text, format);
   return headings.map((heading, i) => {
     const to = i + 1 < headings.length ? headings[i + 1].from : text.length;
     return countTokens(prose.slice(heading.from, to));

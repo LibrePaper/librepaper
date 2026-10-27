@@ -30,6 +30,13 @@ import { includesOf } from "../../src/lib/opening.js";
   assert.equal(countWords("Don't stop: it's well-known.\n", "markdown"), 4);
 }
 
+// Ordered-list markers are not words, but numbers inside the prose still count.
+{
+  assert.equal(countWords("1. Alpha\n2. Beta", "markdown"), 2);
+  assert.equal(countWords("In 2020 we ran 3 trials.", "markdown"), 6);
+  assert.equal(countWords("1) Alpha\n2) Beta", "quarto"), 2);
+}
+
 // HTML: tags are skipped and the text between them counts.
 {
   assert.equal(countWords("<p>Hello <b>big</b> world</p>", "html"), 3);
@@ -97,4 +104,10 @@ import { includesOf } from "../../src/lib/opening.js";
   assert.deepEqual(includesOf("main.tex", texts), ["b.tex", "a.tex"]);
   assert.deepEqual(includesOf("a.tex", texts), []);
   assert.deepEqual(includesOf("notes.txt", texts), []);
+}
+
+// Includes of different commands come back in source order.
+{
+  const texts = { "main.tex": "\\include{a}\n\\input{b}", "a.tex": "", "b.tex": "" };
+  assert.deepEqual(includesOf("main.tex", texts), ["a.tex", "b.tex"]);
 }
