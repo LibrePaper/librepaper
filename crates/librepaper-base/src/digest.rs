@@ -120,7 +120,10 @@ mod tests {
     fn round_trips() {
         let digest = Digest::of(b"abc");
         assert_eq!(digest.to_string().parse::<Digest>().unwrap(), digest);
-        assert_eq!(Digest::try_from(digest.as_bytes().as_slice()).unwrap(), digest);
+        assert_eq!(
+            Digest::try_from(digest.as_bytes().as_slice()).unwrap(),
+            digest
+        );
         let json = serde_json::to_string(&digest).unwrap();
         assert_eq!(json, format!("\"{ABC}\""));
         assert_eq!(serde_json::from_str::<Digest>(&json).unwrap(), digest);

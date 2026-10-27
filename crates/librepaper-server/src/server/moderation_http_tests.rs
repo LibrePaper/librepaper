@@ -212,9 +212,9 @@ async fn deployment_mode_with_policy(
                     .digest()
                     .to_hex(),
             )
-                .unwrap()
-                .try_into()
-                .unwrap(),
+            .unwrap()
+            .try_into()
+            .unwrap(),
             "moderation HTTP reader".into(),
             None,
             None,
@@ -233,9 +233,9 @@ async fn deployment_mode_with_policy(
                     .digest()
                     .to_hex(),
             )
-                .unwrap()
-                .try_into()
-                .unwrap(),
+            .unwrap()
+            .try_into()
+            .unwrap(),
             "moderation HTTP commenter".into(),
             None,
             None,

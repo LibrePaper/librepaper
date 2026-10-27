@@ -84,7 +84,10 @@ pub(crate) async fn run_backup(
         return Err("backup requires an authenticated account".into());
     }
     let normalized_server = normalize_server(server)?;
-    let namespace_id = librepaper_base::digest::Digest::of(format!("{}\0{}", normalized_server, account_id).as_bytes()).to_hex();
+    let namespace_id = librepaper_base::digest::Digest::of(
+        format!("{}\0{}", normalized_server, account_id).as_bytes(),
+    )
+    .to_hex();
     let root = destination.join(MANAGED_DIR).join(namespace_id);
     create_managed_directories(destination)?;
     create_private_directory(&destination.join(MANAGED_DIR))?;
@@ -457,7 +460,8 @@ async fn list_documents(
             .await
             .map_err(|error| format!("document listing failed: {error}"))?;
         let status = response.status();
-        let payload = response_json(response, BACKUP_RESPONSE_MAX_BYTES, "document listing").await?;
+        let payload =
+            response_json(response, BACKUP_RESPONSE_MAX_BYTES, "document listing").await?;
         if status != reqwest::StatusCode::OK {
             return Err(format!(
                 "document listing failed ({}): {}",
@@ -576,7 +580,9 @@ async fn materialize_snapshot(
                 (text_bytes, false)
             }
             "asset" => match previous_files.get(path.to_str().unwrap_or_default()) {
-                Some(previous) if librepaper_base::digest::Digest::of(previous).to_hex() == entry.digest => {
+                Some(previous)
+                    if librepaper_base::digest::Digest::of(previous).to_hex() == entry.digest =>
+                {
                     (previous.clone(), true)
                 }
                 _ => (
@@ -1756,7 +1762,10 @@ mod tests {
         let output = tempfile::tempdir().unwrap();
         let server = "https://paper.example";
         let account = "account-one";
-        let namespace_id = librepaper_base::digest::Digest::of(format!("{}\0{}", normalize_server(server).unwrap(), account).as_bytes()).to_hex();
+        let namespace_id = librepaper_base::digest::Digest::of(
+            format!("{}\0{}", normalize_server(server).unwrap(), account).as_bytes(),
+        )
+        .to_hex();
         create_managed_directories(output.path()).unwrap();
         let managed = output.path().join(MANAGED_DIR);
         create_private_directory(&managed).unwrap();

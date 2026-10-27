@@ -2725,7 +2725,8 @@ impl Sequencer {
                 &librepaper_document::document::paths::rules(&self.config),
             )
             .projection
-            .digest().to_hex()
+            .digest()
+            .to_hex()
         });
         // Set unconditionally: keeping this on the success path alone meant a
         // cold document never engaged the one-per-second throttle, so every
@@ -2734,7 +2735,8 @@ impl Sequencer {
         inner.source_changed_owed = false;
         let payload = json!({"type": "source-changed", "digest": digest}).to_string();
         fan_out(inner, false, |_, subscriber| {
-            (subscriber.role == SubscriberClass::Reader).then(|| Outgoing::shared_text(payload.clone()))
+            (subscriber.role == SubscriberClass::Reader)
+                .then(|| Outgoing::shared_text(payload.clone()))
         });
     }
 }

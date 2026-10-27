@@ -2,8 +2,8 @@
 
 use uuid::Uuid;
 
-use librepaper_base::role::Role;
 use super::super::{NewAccount, NewDocument, PostgresCatalog, PostgresOptions};
+use librepaper_base::role::Role;
 
 async fn test_catalog() -> PostgresCatalog {
     let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
@@ -224,10 +224,7 @@ async fn visible_listing_preserves_access_deduplication_and_tied_timestamp_pagin
     let inactive = document(&catalog, viewer, "owned").await;
     let hidden = document(&catalog, owner, "owned").await;
     for id in [overlap, shared, inactive] {
-        catalog
-            .set_grant(id, viewer, Role::Reader)
-            .await
-            .unwrap();
+        catalog.set_grant(id, viewer, Role::Reader).await.unwrap();
     }
     catalog.mark_document_deleting(inactive).await.unwrap();
 

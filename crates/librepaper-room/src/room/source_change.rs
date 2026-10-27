@@ -21,9 +21,9 @@ use uuid::Uuid;
 
 use super::agent::{AgentAuthority, OperationKey};
 use crate::room::Room;
-use librepaper_document::document::anchors::{self, OperationFile};
 use librepaper_base::paths::{self, Kind, Rules};
 use librepaper_base::text::LineEnding;
+use librepaper_document::document::anchors::{self, OperationFile};
 use librepaper_document::document::session;
 use librepaper_document::document::track;
 use librepaper_engine::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
@@ -299,7 +299,8 @@ pub fn validate_source_change(
             };
             let moved = !dependency.file_id.is_empty() && dependency.file_id != file.file_id;
             let rewritten = !dependency.file_hash.is_empty()
-                && dependency.file_hash != librepaper_base::digest::Digest::of(file.text.as_bytes()).to_hex();
+                && dependency.file_hash
+                    != librepaper_base::digest::Digest::of(file.text.as_bytes()).to_hex();
             if moved
                 || rewritten
                 || !range_matches(

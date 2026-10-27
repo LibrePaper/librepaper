@@ -32,8 +32,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use loro::{Container, LoroDoc, LoroMap, LoroValue, ValueOrContainer};
 use librepaper_base::util::{token, Encoding};
+use loro::{Container, LoroDoc, LoroMap, LoroValue, ValueOrContainer};
 
 // The document's four roots, from the crate that owns the schema. They were declared here as well, with the same
 // four strings, which is a schema defined in two places that nothing would

@@ -50,7 +50,9 @@ pub use librepaper_companion::automation::peer;
 /// (`tools/test/fuzz/fuzz_targets/paths.rs`) runs every one of these on whatever
 /// libFuzzer produces.
 pub mod paths {
-    pub use librepaper_base::paths::{admit, collision_key, kind_of, normalise, Rules, MAX_SEGMENTS};
+    pub use librepaper_base::paths::{
+        admit, collision_key, kind_of, normalise, Rules, MAX_SEGMENTS,
+    };
     pub use librepaper_document::document::paths::{placeholder, suffixed};
 }
 

@@ -280,10 +280,7 @@ fn validate_manifest_shape(manifest: &[ManifestEntry], max_files: usize) -> Resu
             &json!({"error": "too many manifest entries"}),
         ));
     }
-    if manifest
-        .iter()
-        .any(|entry| !RelPath::is_valid(&entry.path))
-    {
+    if manifest.iter().any(|entry| !RelPath::is_valid(&entry.path)) {
         return Err(write_json(400, &json!({"error": "unsafe manifest path"})));
     }
     let total = manifest

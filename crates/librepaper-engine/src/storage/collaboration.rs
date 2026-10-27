@@ -57,7 +57,10 @@ impl CollaborationStorage {
         };
         let encoded = self.blobs.get(&base.snapshot_key).await?;
         if encoded.len() as i64 != base.snapshot_bytes
-            || librepaper_base::digest::Digest::of(&encoded).as_bytes().as_slice() != base.snapshot_digest
+            || librepaper_base::digest::Digest::of(&encoded)
+                .as_bytes()
+                .as_slice()
+                != base.snapshot_digest
         {
             return Err(Error::Invalid(
                 "collaboration base failed integrity verification".into(),

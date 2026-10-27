@@ -329,10 +329,12 @@ pub fn decode(bytes: &[u8], limits: ArchiveLimits) -> Result<SourceArchive, Arch
                 bytes,
                 media_type,
             } => {
-                let digest = *digest.parse::<Digest>().map_err(|_| {
-                    ArchiveError::Invalid(format!("asset {path:?} has an invalid digest"))
-                })?
-                .as_bytes();
+                let digest = *digest
+                    .parse::<Digest>()
+                    .map_err(|_| {
+                        ArchiveError::Invalid(format!("asset {path:?} has an invalid digest"))
+                    })?
+                    .as_bytes();
                 files.push(SourceFile::Asset {
                     path,
                     asset_id,

@@ -1633,7 +1633,11 @@ mod tests {
         assert_eq!(changes[0].kind, "changed");
         assert_eq!(
             changes[0].sha256.as_deref(),
-            Some(librepaper_base::digest::Digest::of(b"changed text").to_hex().as_str())
+            Some(
+                librepaper_base::digest::Digest::of(b"changed text")
+                    .to_hex()
+                    .as_str()
+            )
         );
         assert_eq!(changes[0].size, Some(12));
         assert!(scan.look(root.path(), &record).is_empty());

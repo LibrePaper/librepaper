@@ -436,7 +436,8 @@ async fn render_with_the_default_command(
     let fixture = fixture(format, output, entrypoint);
     std::fs::write(fixture.staged.path().join(entrypoint), source).unwrap();
     let mut fixture = fixture;
-    fixture.request.manifest[0].sha256 = librepaper_base::digest::Digest::of(source.as_bytes()).to_hex();
+    fixture.request.manifest[0].sha256 =
+        librepaper_base::digest::Digest::of(source.as_bytes()).to_hex();
     fixture.request.manifest[0].size = source.len() as u64;
     run_fixture(&fixture, false).await
 }

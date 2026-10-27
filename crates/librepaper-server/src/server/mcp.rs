@@ -188,10 +188,14 @@ fn require_live_identity(who: &Viewer) -> Result<(), Failure> {
 
 fn actor_scope(slug: &str, who: &Viewer, author: &str) -> String {
     // Bind cached views to authority as well as attribution. No raw key survives.
-    librepaper_base::digest::Digest::of(format!(
-        "{slug}\0{author}\0{}\0{}\0{}\0{}\0{:?}",
-        who.id.id, who.key, who.link, who.id.session_generation, who.role
-    ).as_bytes()).to_hex()
+    librepaper_base::digest::Digest::of(
+        format!(
+            "{slug}\0{author}\0{}\0{}\0{}\0{}\0{:?}",
+            who.id.id, who.key, who.link, who.id.session_generation, who.role
+        )
+        .as_bytes(),
+    )
+    .to_hex()
 }
 
 impl Server {
@@ -905,14 +909,14 @@ impl Server {
         result["expires_at"] = json!(view.expires_at);
         result["schema_version"] = json!(2);
         result["authorization_epoch"] = json!(actor);
-        result["schema_digest"] = json!(librepaper_base::digest::Digest::of(include_bytes!(
-            "mcp/tools.json"
-        )).to_hex());
+        result["schema_digest"] =
+            json!(librepaper_base::digest::Digest::of(include_bytes!("mcp/tools.json")).to_hex());
         // `mcp_recheck` rechecks access around every tool call already; a
         // second recheck here only re-served the same permissions computed
         // moments earlier from `who`.
         let caps = Capabilities::from(who.rung());
-        result["permissions"] = json!({"read":caps.read,"suggest":caps.edit,"comment":caps.comment,"apply":caps.edit});
+        result["permissions"] =
+            json!({"read":caps.read,"suggest":caps.edit,"comment":caps.comment,"apply":caps.edit});
         result["limits"] = json!({"control_bytes":MCP_MESSAGE_MAX_BYTES,"source_bytes":self.config.log_quota_bytes,"queries":8,"patches":100,"view_lifetime_seconds":3600,"concurrent_reads":8,"concurrent_effects":8,"concurrent_results":4});
         // The only place a final size is computed: inserting
         // `returned_bytes`/`estimated_tokens` changes the serialized size,

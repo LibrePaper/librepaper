@@ -16,9 +16,9 @@ use librepaper_base::digest::Digest;
 use crate::files::{inside, FileRecord, Kind};
 use crate::git::Git;
 use crate::rules::Rules;
+use crate::Error;
 use librepaper_base::paths::{nfc, MAX_SEGMENTS};
 use librepaper_base::text::LineEnding;
-use crate::Error;
 
 /// One synced file as it is on disk now.
 pub(crate) struct Local {

@@ -1,5 +1,5 @@
-use sqlx::{FromRow, Row};
 use librepaper_base::role::Role;
+use sqlx::{FromRow, Row};
 use time::OffsetDateTime;
 use uuid::Uuid;
 

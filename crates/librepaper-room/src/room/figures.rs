@@ -109,7 +109,12 @@ impl Room {
                 .get(&key)
                 .await
                 .map_err(|e| WriteError::Storage(e.to_string()))?;
-            if stored.len() as i64 != size || librepaper_base::digest::Digest::of(&stored).as_bytes().as_slice() != digest {
+            if stored.len() as i64 != size
+                || librepaper_base::digest::Digest::of(&stored)
+                    .as_bytes()
+                    .as_slice()
+                    != digest
+            {
                 return Err(WriteError::Storage(
                     "asset failed immutable verification".into(),
                 ));

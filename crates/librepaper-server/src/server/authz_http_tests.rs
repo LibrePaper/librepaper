@@ -71,15 +71,14 @@ async fn mint_editor_link(deployment: &Deployment) -> String {
             Uuid::parse_str(&entry.storage_id).unwrap(),
             Role::Editor,
             hex::decode(
-                key
-                    .parse::<librepaper_base::ids::LinkKey>()
+                key.parse::<librepaper_base::ids::LinkKey>()
                     .unwrap()
                     .digest()
                     .to_hex(),
             )
-                .unwrap()
-                .try_into()
-                .unwrap(),
+            .unwrap()
+            .try_into()
+            .unwrap(),
             "authz editor".into(),
             None,
             None,
@@ -249,15 +248,15 @@ async fn a_listing_cursor_cannot_probe_a_slug_the_caller_cannot_read() {
     let entry_id = Uuid::parse_str(&entry.storage_id).unwrap();
     let guest_key = format!("reader-{}", Uuid::new_v4().simple());
     let guest_hash: [u8; 32] = hex::decode(
-                guest_key
-                    .parse::<librepaper_base::ids::LinkKey>()
-                    .unwrap()
-                    .digest()
-                    .to_hex(),
-            )
-        .unwrap()
-        .try_into()
-        .unwrap();
+        guest_key
+            .parse::<librepaper_base::ids::LinkKey>()
+            .unwrap()
+            .digest()
+            .to_hex(),
+    )
+    .unwrap()
+    .try_into()
+    .unwrap();
     deployment
         .catalog
         .create_share_link(

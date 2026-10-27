@@ -418,7 +418,11 @@ async fn a_token_key_opens_no_browser_link() {
         .await
         .unwrap()
         .unwrap();
-    let hash = key.parse::<librepaper_base::ids::LinkKey>().unwrap().digest().to_hex();
+    let hash = key
+        .parse::<librepaper_base::ids::LinkKey>()
+        .unwrap()
+        .digest()
+        .to_hex();
     let now = librepaper_base::util::now_unix();
     assert!(entry.live_link(&hash, now).is_none());
     assert!(entry.link_role(&hash, now).is_none());

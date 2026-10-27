@@ -553,7 +553,13 @@ async fn a_dependent_update_is_refused_alone_accepted_together_and_survives_comp
     let sequencer2 = deployment.sequencer(&registry2).await;
 
     let joined = sequencer2
-        .join(2, SubscriberClass::Editor, "account:reader", subscriber(), None)
+        .join(
+            2,
+            SubscriberClass::Editor,
+            "account:reader",
+            subscriber(),
+            None,
+        )
         .await
         .expect("join succeeds");
     let fresh = reconstruct(&joined.base, &joined.batches);
@@ -659,7 +665,13 @@ async fn offline_work_is_absent_from_a_join_reply_until_sent_and_durable_once_it
     // The editor reopens and joins. A join reply says only what the server
     // already has, which is nothing: the offline edit is not in it.
     let joined = sequencer2
-        .join(1, SubscriberClass::Editor, "account:editor", subscriber(), None)
+        .join(
+            1,
+            SubscriberClass::Editor,
+            "account:editor",
+            subscriber(),
+            None,
+        )
         .await
         .expect("join succeeds");
     assert!(
@@ -689,7 +701,13 @@ async fn offline_work_is_absent_from_a_join_reply_until_sent_and_durable_once_it
     let registry3 = deployment.registry();
     let sequencer3 = deployment.sequencer(&registry3).await;
     let fresh_join = sequencer3
-        .join(2, SubscriberClass::Editor, "account:fresh", subscriber(), None)
+        .join(
+            2,
+            SubscriberClass::Editor,
+            "account:fresh",
+            subscriber(),
+            None,
+        )
         .await
         .unwrap();
     let fresh = reconstruct(&fresh_join.base, &fresh_join.batches);
@@ -718,12 +736,24 @@ async fn a_tab_killed_mid_relay_reconciles_on_reopening_with_no_row_skipped() {
     let (_tab_a_tx, _tab_a_rx) = (subscriber(), ());
     let tab_a_sender = subscriber();
     sequencer
-        .join(1, SubscriberClass::Editor, "account:tab-a", tab_a_sender, None)
+        .join(
+            1,
+            SubscriberClass::Editor,
+            "account:tab-a",
+            tab_a_sender,
+            None,
+        )
         .await
         .unwrap();
     let tab_b_sender = subscriber();
     sequencer
-        .join(2, SubscriberClass::Editor, "account:tab-b", tab_b_sender, None)
+        .join(
+            2,
+            SubscriberClass::Editor,
+            "account:tab-b",
+            tab_b_sender,
+            None,
+        )
         .await
         .unwrap();
 
@@ -934,8 +964,20 @@ async fn a_durable_projection_is_stable_and_command_bundles_or_writes_nothing() 
         .expect("the room for the document just created");
 
     // -- (a) a reader projection is stable ---------------------------------
-    let first = room.projection().await.unwrap().projection.digest().to_hex();
-    let second = room.projection().await.unwrap().projection.digest().to_hex();
+    let first = room
+        .projection()
+        .await
+        .unwrap()
+        .projection
+        .digest()
+        .to_hex();
+    let second = room
+        .projection()
+        .await
+        .unwrap()
+        .projection
+        .digest()
+        .to_hex();
     assert_eq!(
         first, second,
         "unchanged durable state projects to the same digest"

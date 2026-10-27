@@ -1354,7 +1354,9 @@ mod tests {
         let adopted = put_or_adopt_archive(&blobs, Uuid::new_v4(), key, [7; 32], encoded)
             .await
             .expect("adopt existing immutable bytes");
-        let expected_digest = librepaper_base::digest::Digest::of(&old_bytes).as_bytes().to_vec();
+        let expected_digest = librepaper_base::digest::Digest::of(&old_bytes)
+            .as_bytes()
+            .to_vec();
 
         assert_eq!(adopted.byte_length, old_bytes.len() as i64);
         assert_eq!(

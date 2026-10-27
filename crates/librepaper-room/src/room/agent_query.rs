@@ -1789,7 +1789,10 @@ mod tests {
         let text = by_path("main.md");
         assert_eq!(text["kind"], json!("text"));
         assert_eq!(text["file_id"], json!("file-1"));
-        assert_eq!(text["file_hash"], json!(Digest::of(main.as_bytes()).to_hex()));
+        assert_eq!(
+            text["file_hash"],
+            json!(Digest::of(main.as_bytes()).to_hex())
+        );
         assert_eq!(text["bytes"], json!(main.len()));
 
         let asset = by_path("figures/plot.png");

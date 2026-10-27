@@ -32,7 +32,9 @@ use uuid::Uuid;
 
 use librepaper_base::config::Configuration;
 use librepaper_base::role::Role;
-use librepaper_engine::log::sequencer::{Command, CommandError, Joined, SequencerError, SubscriberClass};
+use librepaper_engine::log::sequencer::{
+    Command, CommandError, Joined, SequencerError, SubscriberClass,
+};
 use librepaper_engine::log::{FlushReason, Ingested, Registry, Sequencer};
 use librepaper_engine::storage::blob::BlobStore;
 use librepaper_engine::storage::postgres::{Authority, PostgresCatalog};
@@ -275,11 +277,15 @@ impl Room {
     }
 
     pub async fn broadcast_editors_except(&self, skip: Option<u64>, payload: &Value) {
-        self.log.broadcast(Some(SubscriberClass::Editor), skip, payload).await;
+        self.log
+            .broadcast(Some(SubscriberClass::Editor), skip, payload)
+            .await;
     }
 
     pub async fn broadcast_readers_except(&self, skip: Option<u64>, payload: &Value) {
-        self.log.broadcast(Some(SubscriberClass::Reader), skip, payload).await;
+        self.log
+            .broadcast(Some(SubscriberClass::Reader), skip, payload)
+            .await;
     }
 
     /// Whether this socket may send another chat frame this minute. Chat is

@@ -38,8 +38,8 @@ use uuid::Uuid;
 
 use crate::log::budget::DEFAULT_EXPANSION;
 use crate::log::sequencer::{
-    ack_targets, max_update_bytes, FlushReason, Ingested, LogCatalog, SubscriberClass, Sequencer,
-    SequencerError, FLUSH_MAX_AGE, FLUSH_QUIET, FLUSH_TRIGGER_BYTES,
+    ack_targets, max_update_bytes, FlushReason, Ingested, LogCatalog, Sequencer, SequencerError,
+    SubscriberClass, FLUSH_MAX_AGE, FLUSH_QUIET, FLUSH_TRIGGER_BYTES,
 };
 use crate::log::{frame, Budget};
 use crate::storage::blob::{BlobStore, FsStore};
@@ -1189,7 +1189,13 @@ async fn a_join_reports_head_and_durable_vectors_separately_while_a_flush_is_pen
         Ingested::Accepted
     ));
     let joined = sequencer
-        .join(2, SubscriberClass::Editor, "account:reconnected", subscriber(), None)
+        .join(
+            2,
+            SubscriberClass::Editor,
+            "account:reconnected",
+            subscriber(),
+            None,
+        )
         .await
         .expect("reconnect join succeeds");
 
@@ -1209,7 +1215,13 @@ async fn a_successful_flush_notifies_every_editor_but_not_readers_of_the_committ
     let (peer_tx, mut peer_rx) = Sender::channel(64, 1 << 20, None, None);
     let (reader_tx, mut reader_rx) = Sender::channel(64, 1 << 20, None, None);
     sequencer
-        .join(1, SubscriberClass::Editor, "account:writer", writer_tx, None)
+        .join(
+            1,
+            SubscriberClass::Editor,
+            "account:writer",
+            writer_tx,
+            None,
+        )
         .await
         .expect("writer join succeeds");
     sequencer
@@ -1217,7 +1229,13 @@ async fn a_successful_flush_notifies_every_editor_but_not_readers_of_the_committ
         .await
         .expect("peer join succeeds");
     sequencer
-        .join(3, SubscriberClass::Reader, "account:reader", reader_tx, None)
+        .join(
+            3,
+            SubscriberClass::Reader,
+            "account:reader",
+            reader_tx,
+            None,
+        )
         .await
         .expect("reader join succeeds");
     let mut outbox = Outbox::new();
@@ -1328,7 +1346,13 @@ async fn a_failed_flush_does_not_advance_or_broadcast_durable_coverage() {
         "a failed write cannot claim a durable vector"
     );
     let joined = sequencer
-        .join(2, SubscriberClass::Editor, "account:reconnected", subscriber(), None)
+        .join(
+            2,
+            SubscriberClass::Editor,
+            "account:reconnected",
+            subscriber(),
+            None,
+        )
         .await
         .expect("join succeeds after the failed flush");
     assert_eq!(joined.durable_vector, VersionVector::default().encode());
@@ -1430,7 +1454,13 @@ async fn a_join_from_an_empty_vector_gets_the_base_and_every_row() {
     let fixture = join_fixture();
     let joined = fixture
         .sequencer
-        .join(1, SubscriberClass::Editor, "account:reader", subscriber(), None)
+        .join(
+            1,
+            SubscriberClass::Editor,
+            "account:reader",
+            subscriber(),
+            None,
+        )
         .await
         .expect("join succeeds");
     assert_eq!(joined.vector, fixture.v2.encode());
@@ -1668,7 +1698,13 @@ async fn a_base_activation_waits_for_a_join_that_is_already_reading_the_log() {
         let sequencer = sequencer.clone();
         tokio::spawn(async move {
             sequencer
-                .join(1, SubscriberClass::Editor, "account:reader", subscriber(), None)
+                .join(
+                    1,
+                    SubscriberClass::Editor,
+                    "account:reader",
+                    subscriber(),
+                    None,
+                )
                 .await
         })
     };
@@ -1743,7 +1779,13 @@ async fn a_base_activated_with_nothing_serialising_it_answers_a_join_with_no_byt
         let sequencer = sequencer.clone();
         tokio::spawn(async move {
             sequencer
-                .join(1, SubscriberClass::Editor, "account:reader", subscriber(), None)
+                .join(
+                    1,
+                    SubscriberClass::Editor,
+                    "account:reader",
+                    subscriber(),
+                    None,
+                )
                 .await
         })
     };
@@ -1871,7 +1913,13 @@ async fn every_sequencer_read_refuses_after_compaction_fence() {
     ));
     assert!(matches!(
         sequencer
-            .join(999, SubscriberClass::Editor, "fenced-reader", subscriber(), None)
+            .join(
+                999,
+                SubscriberClass::Editor,
+                "fenced-reader",
+                subscriber(),
+                None
+            )
             .await,
         Err(SequencerError::Fenced(_))
     ));

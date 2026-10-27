@@ -135,8 +135,11 @@ impl GithubApp {
         struct Reply {
             user: GithubUser,
         }
-        let basic = base64::engine::general_purpose::STANDARD
-            .encode(format!("{}:{}", self.client_id, self.client_secret.expose()));
+        let basic = base64::engine::general_purpose::STANDARD.encode(format!(
+            "{}:{}",
+            self.client_id,
+            self.client_secret.expose()
+        ));
         let response = provider_client()
             .post(self.check_url.replace("{id}", &self.client_id))
             .timeout(PROVIDER_HTTP_TIMEOUT)

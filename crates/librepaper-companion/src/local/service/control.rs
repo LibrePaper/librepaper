@@ -8,8 +8,8 @@
 
 use super::*;
 use hmac::{Hmac, Mac};
-use serde::{Deserialize, Serialize};
 use librepaper_base::util::{token, Encoding};
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 const TOKEN_FILE: &str = "control-token.json";
@@ -102,7 +102,9 @@ impl ControlAuth {
         self.instance == instance
             && librepaper_base::util::constant_time_eq(
                 self.token_hash.as_bytes(),
-                librepaper_base::digest::Digest::of(token.as_bytes()).to_hex().as_bytes(),
+                librepaper_base::digest::Digest::of(token.as_bytes())
+                    .to_hex()
+                    .as_bytes(),
             )
     }
 }

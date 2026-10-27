@@ -298,8 +298,8 @@ fn date(at: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use librepaper_base::digest::Digest;
     use crate::git::testing::{commit_all, repository};
+    use librepaper_base::digest::Digest;
 
     fn version(
         entries: &[(&str, &str)],

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use librepaper_base::paths::RelPath;
 pub use librepaper_base::paths::Kind;
+use librepaper_base::paths::RelPath;
 use serde::{Deserialize, Serialize};
 
 use crate::Error;

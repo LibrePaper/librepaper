@@ -10,9 +10,7 @@ use loro::LoroDoc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::source_change::{
-    client_seq_of, label_for_request, AgentError, Patch, SourceChange,
-};
+use super::source_change::{client_seq_of, label_for_request, AgentError, Patch, SourceChange};
 use librepaper_base::text::LineEnding;
 use librepaper_document::document::anchors::{self, FragmentRange, OperationFile};
 use librepaper_document::document::session;

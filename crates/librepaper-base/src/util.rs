@@ -244,7 +244,9 @@ mod tests {
     fn hex_tokens_have_two_characters_per_byte() {
         let text = token::<16>(Encoding::Hex);
         assert_eq!(text.len(), 32);
-        assert!(text.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+        assert!(text
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
     }
 
     #[test]

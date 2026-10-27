@@ -563,7 +563,8 @@ fn text_of(bytes: Option<Vec<u8>>) -> Result<Option<String>, ()> {
 async fn run_diff(root: &Path, path: &str, from: Option<&str>) -> Result<Value, Failure> {
     require_repository(root)?;
     if RepoPath::try_from(path).is_err()
-        || from.is_some_and(|from| RepoPath::try_from(from).is_err()) {
+        || from.is_some_and(|from| RepoPath::try_from(from).is_err())
+    {
         return Err(refuse(400, "unsafe file path"));
     }
     let spec = format!("HEAD:{}", from.unwrap_or(path));
@@ -650,7 +651,10 @@ async fn run_commit(
         return Err(refuse(400, "That commit message cannot be used."));
     }
     if let Some(paths) = paths {
-        if !paths.iter().all(|path| RepoPath::try_from(path.as_str()).is_ok()) {
+        if !paths
+            .iter()
+            .all(|path| RepoPath::try_from(path.as_str()).is_ok())
+        {
             return Err(refuse(400, "unsafe file path"));
         }
         if paths.is_empty() {

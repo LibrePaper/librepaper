@@ -115,9 +115,9 @@ async fn fixture(slug: &str) -> Option<Fixture> {
                     .digest()
                     .to_hex(),
             )
-                .unwrap()
-                .try_into()
-                .unwrap(),
+            .unwrap()
+            .try_into()
+            .unwrap(),
             "chat reader".into(),
             None,
             None,
@@ -137,9 +137,9 @@ async fn fixture(slug: &str) -> Option<Fixture> {
                     .digest()
                     .to_hex(),
             )
-                .unwrap()
-                .try_into()
-                .unwrap(),
+            .unwrap()
+            .try_into()
+            .unwrap(),
             "chat commenter".into(),
             None,
             None,

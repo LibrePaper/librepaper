@@ -637,7 +637,9 @@ mod tests {
         assert!(plan.create.is_empty());
         assert_eq!(
             plan.put_binary,
-            [json!({"path": "fig/new.png", "hash": Digest::of(b"new-figure").to_hex(), "expect": null})]
+            [
+                json!({"path": "fig/new.png", "hash": Digest::of(b"new-figure").to_hex(), "expect": null})
+            ]
         );
         assert_eq!(plan.uploads.len(), 1);
     }

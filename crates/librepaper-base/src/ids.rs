@@ -251,7 +251,10 @@ mod tests {
         assert!(key.expose().bytes().all(|b| b.is_ascii_hexdigit()));
         assert_ne!(key.expose(), LinkKey::mint().expose());
         assert_eq!(format!("{key:?}"), "LinkKey([redacted])");
-        assert_eq!(key.expose().parse::<LinkKey>().unwrap().digest(), key.digest());
+        assert_eq!(
+            key.expose().parse::<LinkKey>().unwrap().digest(),
+            key.digest()
+        );
     }
 
     #[test]
@@ -274,7 +277,10 @@ mod tests {
         assert_eq!(token.origin, "http://localhost:8081");
         assert_eq!(token.slug.as_str(), "paper");
         assert_eq!(token.key, "abcd1234");
-        assert_eq!(token.digest(), "abcd1234".parse::<LinkKey>().unwrap().digest());
+        assert_eq!(
+            token.digest(),
+            "abcd1234".parse::<LinkKey>().unwrap().digest()
+        );
         assert_eq!(
             token.to_string(),
             "lpt_aHR0cDovL2xvY2FsaG9zdDo4MDgx.paper.abcd1234"
@@ -326,7 +332,9 @@ mod tests {
 
     #[test]
     fn an_agent_token_debug_hides_the_key() {
-        let token: AgentToken = token_of("https://paper.example", "paper", KEY).parse().unwrap();
+        let token: AgentToken = token_of("https://paper.example", "paper", KEY)
+            .parse()
+            .unwrap();
         assert!(!format!("{token:?}").contains(KEY));
     }
 }

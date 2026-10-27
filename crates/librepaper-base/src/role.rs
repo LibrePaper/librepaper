@@ -225,7 +225,11 @@ mod tests {
         for ((edit, comment), expected) in rows {
             let ceiling = Ceiling { edit, comment };
             for (granted, want) in LADDER.iter().zip(expected) {
-                assert_eq!(ceiling.clamp(*granted), want, "{edit} {comment} {granted:?}");
+                assert_eq!(
+                    ceiling.clamp(*granted),
+                    want,
+                    "{edit} {comment} {granted:?}"
+                );
             }
         }
     }

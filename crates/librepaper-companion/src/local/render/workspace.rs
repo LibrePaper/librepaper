@@ -887,7 +887,9 @@ fn write_granted_files(root: &Path, files: &[Resolved], mirror: &mut Mirror) -> 
         if current.as_deref() == Some(bytes.as_slice()) {
             // Record a match too, so a folder that already held the editor's
             // copy does not read as edited outside LibrePaper on the next change.
-            mirror.written.insert(path.clone(), Digest::of(bytes).to_hex());
+            mirror
+                .written
+                .insert(path.clone(), Digest::of(bytes).to_hex());
             continue;
         }
         if let Some(current) = current {
@@ -904,7 +906,9 @@ fn write_granted_files(root: &Path, files: &[Resolved], mirror: &mut Mirror) -> 
         invalidate_before_first_write(root, &mut mirror.invalidated)?;
         write_hosted_new_input(&target, bytes)
             .map_err(|error| format!("write granted folder file {path}: {error}"))?;
-        mirror.written.insert(path.clone(), Digest::of(bytes).to_hex());
+        mirror
+            .written
+            .insert(path.clone(), Digest::of(bytes).to_hex());
     }
     Ok(())
 }
@@ -1055,7 +1059,10 @@ mod tests {
         assert_eq!(digest_reads(), before + 1);
         // A new size is a new read, whatever the modification time says.
         std::fs::write(&path, b"three").expect("rewrite");
-        assert_eq!(cached_digest(&path, read), Some((5, Digest::of(b"three").to_hex())));
+        assert_eq!(
+            cached_digest(&path, read),
+            Some((5, Digest::of(b"three").to_hex()))
+        );
         assert_eq!(digest_reads(), before + 2);
     }
 

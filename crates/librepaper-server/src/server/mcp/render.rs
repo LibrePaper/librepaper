@@ -199,7 +199,10 @@ fn manifest(
         };
         let bytes = text.as_bytes();
         entry.insert("kind".into(), json!("text"));
-        entry.insert("sha".into(), json!(librepaper_base::digest::Digest::of(bytes).to_hex()));
+        entry.insert(
+            "sha".into(),
+            json!(librepaper_base::digest::Digest::of(bytes).to_hex()),
+        );
         entry.insert("size".into(), json!(bytes.len()));
     }
     let dependency_hash = librepaper_base::digest::Digest::of(

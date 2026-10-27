@@ -879,7 +879,8 @@ impl Server {
 
     /// The shared slug syntax first, then the deployment's own pattern on top.
     pub(super) fn valid_slug(&self, slug: &str) -> bool {
-        slug.parse::<librepaper_base::ids::Slug>().is_ok() && slug_pattern(&self.config).is_match(slug)
+        slug.parse::<librepaper_base::ids::Slug>().is_ok()
+            && slug_pattern(&self.config).is_match(slug)
     }
 
     /// Answers a browser asking for a page with the 404 page, and anything

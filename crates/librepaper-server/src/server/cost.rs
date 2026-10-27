@@ -786,8 +786,8 @@ mod blob_response_tests {
 #[cfg(test)]
 mod agent_scope_tests {
     use super::{agent_document_slug, agent_token_route, TokenRoute};
-    use librepaper_base::ids::AgentToken;
     use axum::http::Method;
+    use librepaper_base::ids::AgentToken;
 
     #[test]
     fn delegated_credentials_are_confined_to_document_and_socket_routes() {

@@ -25,9 +25,9 @@ use crate::storage::postgres::{
     PostgresCatalog as Catalog, TagRecord, FAVORITES_COLOUR, FAVORITES_NAME,
 };
 use librepaper_base::config::Configuration;
+use librepaper_base::paths::{admit, Kind};
 use librepaper_base::role::{Ceiling, Role};
 use librepaper_base::util::parse_timestamp;
-use librepaper_base::paths::{admit, Kind};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct IndexEntry {
@@ -1409,9 +1409,7 @@ impl Store {
             .map_err(|error| PutError::Storage(error.to_string()))?;
             let assets = asset_files
                 .iter()
-                .map(|file| {
-                    (file.path.clone(), Digest::of(&file.bytes).to_hex())
-                })
+                .map(|file| (file.path.clone(), Digest::of(&file.bytes).to_hex()))
                 .collect();
             (assets, staged_assets)
         };
@@ -1654,7 +1652,11 @@ async fn entries_from_documents(
             let mut account_grants = HashMap::new();
             for grant in grants_by_document.remove(&document.id).unwrap_or_default() {
                 let Some(hash) = grant.source_link_hash else {
-                    if let Some(role) = grant.role.as_deref().and_then(|word| word.parse::<Role>().ok()) {
+                    if let Some(role) = grant
+                        .role
+                        .as_deref()
+                        .and_then(|word| word.parse::<Role>().ok())
+                    {
                         account_grants.insert(grant.account_id.to_string(), role);
                     }
                     continue;

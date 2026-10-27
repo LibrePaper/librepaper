@@ -376,16 +376,16 @@ mod tests {
     use time::{Duration, OffsetDateTime};
 
     use super::*;
-    use librepaper_base::role::Role;
     use crate::log::sequencer::LogCatalog;
     use crate::log::{
-        Budget, Command, CommandError, Evidence, Head, PreparedSource, SubscriberClass, Sequencer,
+        Budget, Command, CommandError, Evidence, Head, PreparedSource, Sequencer, SubscriberClass,
     };
     use crate::storage::annotation::{CommentTarget, OriginalAnchor, PresentationContext};
     use crate::storage::blob::{BlobStore, FsStore};
     use crate::storage::collaboration::CollaborationStorage;
     use crate::storage::maintenance::Maintenance;
     use crate::storage::outgoing::Sender;
+    use librepaper_base::role::Role;
 
     /// §8.4 step 5 end to end, for the catalogue tests that only care about
     /// where a base and its rows end up. Production splits these two -- the
@@ -541,12 +541,7 @@ mod tests {
             .await
             .unwrap();
         catalog
-            .pin_link_guest(
-                document.id,
-                named.id,
-                Role::Commenter,
-                direct_link_hash,
-            )
+            .pin_link_guest(document.id, named.id, Role::Commenter, direct_link_hash)
             .await
             .unwrap();
         let direct = catalog
@@ -670,12 +665,7 @@ mod tests {
             .await
             .unwrap();
         catalog
-            .pin_link_guest(
-                document.id,
-                named.id,
-                Role::Reader,
-                expiring_hash,
-            )
+            .pin_link_guest(document.id, named.id, Role::Reader, expiring_hash)
             .await
             .unwrap();
         let expired_at = now - Duration::seconds(1);
@@ -3202,7 +3192,13 @@ mod tests {
         // after it, so the reply carries the base by reference and every row
         // behind it -- here, the single remaining row.
         let from_empty = sequencer
-            .join(1, SubscriberClass::Editor, "peer-empty", sender.clone(), None)
+            .join(
+                1,
+                SubscriberClass::Editor,
+                "peer-empty",
+                sender.clone(),
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(from_empty.vector, v3.encode());
@@ -3236,7 +3232,13 @@ mod tests {
         // and the reply carries neither a base nor rows.
         let head_vector = v3.encode();
         let from_head = sequencer
-            .join(3, SubscriberClass::Editor, "peer-head", sender, Some(&head_vector))
+            .join(
+                3,
+                SubscriberClass::Editor,
+                "peer-head",
+                sender,
+                Some(&head_vector),
+            )
             .await
             .unwrap();
         assert!(from_head.base.is_none());

@@ -1702,10 +1702,7 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         &c.sources,
         "limits.pending_scratch_mib",
         "pending_scratch_mib",
-        &c.config
-            .pending_scratch_bytes
-            .div_ceil(mib(1))
-            .to_string(),
+        &c.config.pending_scratch_bytes.div_ceil(mib(1)).to_string(),
     );
     value(
         &mut out,
@@ -2204,10 +2201,7 @@ mod tests {
         let scratch_mib = Configuration::default()
             .pending_scratch_bytes
             .div_ceil(mib(1));
-        assert_eq!(
-            loaded.config.pending_scratch_bytes,
-            mib(scratch_mib)
-        );
+        assert_eq!(loaded.config.pending_scratch_bytes, mib(scratch_mib));
         assert!(
             loaded.config.pending_scratch_bytes >= Configuration::default().pending_scratch_bytes
         );
@@ -2340,10 +2334,7 @@ client_secret = { file = "missing-oauth-secret" }
         std::fs::write(&p, text).unwrap();
         let loaded = load(&p).unwrap();
         assert_eq!(loaded.config.log_quota_bytes, mib(28) as usize);
-        assert_eq!(
-            loaded.config.pending_scratch_bytes,
-            mib(old_default_mib)
-        );
+        assert_eq!(loaded.config.pending_scratch_bytes, mib(old_default_mib));
     }
     #[test]
     fn the_inactive_account_window_is_read_from_retention() {

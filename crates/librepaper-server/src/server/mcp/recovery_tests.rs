@@ -125,9 +125,9 @@ async fn deployment(slug: &str) -> Option<Deployment> {
                     .digest()
                     .to_hex(),
             )
-                .unwrap()
-                .try_into()
-                .unwrap(),
+            .unwrap()
+            .try_into()
+            .unwrap(),
             "recovery test commenter".into(),
             None,
             None,
@@ -146,9 +146,9 @@ async fn deployment(slug: &str) -> Option<Deployment> {
                     .digest()
                     .to_hex(),
             )
-                .unwrap()
-                .try_into()
-                .unwrap(),
+            .unwrap()
+            .try_into()
+            .unwrap(),
             "recovery test editor".into(),
             None,
             None,

@@ -869,7 +869,10 @@ impl Server {
             dependencies.push(source_change::Dependency {
                 path: path.to_string(),
                 file_id: tree.files[path].file_id.to_string(),
-                file_hash: librepaper_base::digest::Digest::of(view.snapshot.texts()[path].as_bytes()).to_hex(),
+                file_hash: librepaper_base::digest::Digest::of(
+                    view.snapshot.texts()[path].as_bytes(),
+                )
+                .to_hex(),
                 start,
                 end,
                 exact: view.snapshot.texts()[path][start..end].to_string(),
@@ -919,7 +922,10 @@ impl Server {
             dependencies.push(source_change::Dependency {
                 path: path.to_string(),
                 file_id: tree.files[path].file_id.to_string(),
-                file_hash: librepaper_base::digest::Digest::of(view.snapshot.texts()[path].as_bytes()).to_hex(),
+                file_hash: librepaper_base::digest::Digest::of(
+                    view.snapshot.texts()[path].as_bytes(),
+                )
+                .to_hex(),
                 start,
                 end,
                 exact: view.snapshot.texts()[path][start..end].to_string(),
@@ -1004,10 +1010,10 @@ impl Server {
         };
         let candidate_id = format!(
             "candidate_{}",
-            librepaper_base::digest::Digest::of(format!(
-                "{actor}\0{}\0{digest}",
-                key.scoped_request_id("")
-            ).as_bytes()).to_hex()
+            librepaper_base::digest::Digest::of(
+                format!("{actor}\0{}\0{digest}", key.scoped_request_id("")).as_bytes()
+            )
+            .to_hex()
         );
         self.mcp_store(
             slug,

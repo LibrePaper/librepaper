@@ -16,10 +16,10 @@ use crate::client::{Client, Label, Snapshot};
 use crate::files::{inside, FileRecord, Kind};
 use crate::git::Git;
 use crate::rules::Rules;
-use librepaper_base::text::LineEnding;
 use crate::state::{Fetched, State, StateStore};
 use crate::walk::{scan, Local, Scan};
 use crate::Error;
+use librepaper_base::text::LineEnding;
 
 /// How to pull.
 #[derive(Clone, Debug)]
@@ -761,10 +761,7 @@ fn write_file(dir: &Path, relative: &str, bytes: &[u8]) -> Result<(), Error> {
         }
     }
     std::fs::create_dir_all(parent).map_err(|error| Error::io(parent, error))?;
-    let temporary = parent.join(format!(
-        ".librepaper-{}.tmp",
-        token::<16>(Encoding::Hex)
-    ));
+    let temporary = parent.join(format!(".librepaper-{}.tmp", token::<16>(Encoding::Hex)));
     std::fs::write(&temporary, bytes).map_err(|error| Error::io(&temporary, error))?;
     if let Ok(meta) = std::fs::metadata(&target) {
         let _ = std::fs::set_permissions(&temporary, meta.permissions());
@@ -1222,8 +1219,14 @@ mod tests {
 
         // The web version holds the excluded path under a hash of its own.
         let listed = BTreeMap::from([
-            ("a.tex".to_string(), text(&Digest::of(b"the web's\n").to_hex())),
-            ("main.tex".to_string(), text(&Digest::of(b"main\n").to_hex())),
+            (
+                "a.tex".to_string(),
+                text(&Digest::of(b"the web's\n").to_hex()),
+            ),
+            (
+                "main.tex".to_string(),
+                text(&Digest::of(b"main\n").to_hex()),
+            ),
         ]);
         let mut snapshot = Snapshot {
             texts: BTreeMap::from([

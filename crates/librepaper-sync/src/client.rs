@@ -405,7 +405,10 @@ mod tests {
         let snapshot = Snapshot::parse(Some(&files), Some(&texts)).unwrap();
         assert_eq!(snapshot.files.len(), 2);
         assert_eq!(snapshot.texts["main.tex"], "one\ntwo\n");
-        assert_eq!(snapshot.files["main.tex"].sha, Digest::of(b"one\ntwo\n").to_hex());
+        assert_eq!(
+            snapshot.files["main.tex"].sha,
+            Digest::of(b"one\ntwo\n").to_hex()
+        );
         assert_eq!(snapshot.files["fig/a.png"].sha, "a".repeat(64));
         assert_eq!(snapshot.files["fig/a.png"].kind, Kind::Asset);
     }

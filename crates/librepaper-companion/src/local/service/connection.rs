@@ -16,7 +16,6 @@ use super::*;
 
 use std::collections::BTreeSet;
 
-
 use super::git::{
     conflicted_paths, declined, merge_in_progress, refuse_because, remote_failure, run, run_pull,
     run_push, SYNC_MESSAGE,
@@ -937,8 +936,9 @@ mod tests {
     async fn a_connection_lives_in_a_folder_named_by_its_project_address() {
         let fixture = Fixture::new().await;
         let connection = fixture.connection(PROJECT);
-        let key =
-            librepaper_base::digest::Digest::of(b"https://paper.example/docs/abc123").to_hex()[..32].to_string();
+        let key = librepaper_base::digest::Digest::of(b"https://paper.example/docs/abc123")
+            .to_hex()[..32]
+            .to_string();
         assert_eq!(connection.key, key);
         assert_eq!(connection.key.len(), 32);
         let folder = fixture.inner.state_home.join("connections").join(&key);
