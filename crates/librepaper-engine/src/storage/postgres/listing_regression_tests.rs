@@ -2,7 +2,8 @@
 
 use uuid::Uuid;
 
-use super::super::{AccessRole, NewAccount, NewDocument, PostgresCatalog, PostgresOptions};
+use librepaper_base::role::Role;
+use super::super::{NewAccount, NewDocument, PostgresCatalog, PostgresOptions};
 
 async fn test_catalog() -> PostgresCatalog {
     let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
@@ -104,7 +105,7 @@ async fn shared_visibility_is_a_private_persistent_mark_and_preserves_other_mark
     let viewer = account(&catalog).await;
     let paper = document(&catalog, owner, "owned").await;
     catalog
-        .set_grant(paper, viewer, AccessRole::Reader)
+        .set_grant(paper, viewer, Role::Reader)
         .await
         .unwrap();
 
@@ -143,7 +144,7 @@ async fn shared_visibility_is_a_private_persistent_mark_and_preserves_other_mark
             .access_role(paper, Some(viewer), None, time::OffsetDateTime::now_utc())
             .await
             .unwrap(),
-        Some(AccessRole::Reader)
+        Some(Role::Reader)
     );
     assert!(catalog
         .visible_documents(Some(viewer), None, 200, false)
@@ -167,7 +168,7 @@ async fn shared_visibility_is_a_private_persistent_mark_and_preserves_other_mark
     let other_viewer = account(&catalog).await;
     let never_opened = document(&catalog, owner, "owned").await;
     catalog
-        .set_grant(never_opened, other_viewer, AccessRole::Reader)
+        .set_grant(never_opened, other_viewer, Role::Reader)
         .await
         .unwrap();
     assert!(catalog
@@ -224,7 +225,7 @@ async fn visible_listing_preserves_access_deduplication_and_tied_timestamp_pagin
     let hidden = document(&catalog, owner, "owned").await;
     for id in [overlap, shared, inactive] {
         catalog
-            .set_grant(id, viewer, AccessRole::Reader)
+            .set_grant(id, viewer, Role::Reader)
             .await
             .unwrap();
     }
@@ -237,11 +238,11 @@ async fn visible_listing_preserves_access_deduplication_and_tied_timestamp_pagin
         hash[..16].copy_from_slice(id.as_bytes());
         hash[31] = index as u8;
         let link = catalog
-            .create_share_link(id, AccessRole::Reader, hash, state.to_string(), None, None)
+            .create_share_link(id, Role::Reader, hash, state.to_string(), None, None)
             .await
             .unwrap();
         catalog
-            .pin_link_guest(id, viewer, AccessRole::Reader, hash)
+            .pin_link_guest(id, viewer, Role::Reader, hash)
             .await
             .unwrap();
         if *state == "revoked" {

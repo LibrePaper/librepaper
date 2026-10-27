@@ -22,7 +22,8 @@ use uuid::Uuid;
 
 use crate::server::origins::Origins;
 use librepaper_base::auth::{sign_device, Identity, PROVIDER_GITHUB};
-use librepaper_engine::storage::postgres::{AccessRole, NewAccount};
+use librepaper_base::role::Role;
+use librepaper_engine::storage::postgres::NewAccount;
 use librepaper_engine::storage::store::DocumentInput;
 
 use super::http_test_support::{deployment as http_deployment, Deployment};
@@ -106,7 +107,7 @@ async fn fixture(slug: &str) -> Option<Fixture> {
     catalog
         .create_share_link(
             document_id,
-            AccessRole::Reader,
+            Role::Reader,
             hex::decode(crate::server::sharing::hash_link_key(&reader_key))
                 .unwrap()
                 .try_into()
@@ -122,7 +123,7 @@ async fn fixture(slug: &str) -> Option<Fixture> {
     catalog
         .create_share_link(
             document_id,
-            AccessRole::Commenter,
+            Role::Commenter,
             hex::decode(crate::server::sharing::hash_link_key(&commenter_key))
                 .unwrap()
                 .try_into()

@@ -31,7 +31,8 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use librepaper_base::config::Configuration;
-use librepaper_engine::log::sequencer::{Command, CommandError, Joined, Role, SequencerError};
+use librepaper_base::role::Role;
+use librepaper_engine::log::sequencer::{Command, CommandError, Joined, SequencerError, SubscriberClass};
 use librepaper_engine::log::{FlushReason, Ingested, Registry, Sequencer};
 use librepaper_engine::storage::blob::BlobStore;
 use librepaper_engine::storage::postgres::{Authority, PostgresCatalog};
@@ -209,14 +210,18 @@ impl Room {
     pub async fn join(
         &self,
         socket: u64,
-        may_edit: bool,
+        role: Role,
         peer_key: &str,
         tx: Sender,
         vector: Option<&[u8]>,
     ) -> Result<Joined, SequencerError> {
         self.peers.lock().await.entry(socket).or_default();
-        let role = if may_edit { Role::Editor } else { Role::Reader };
-        self.log.join(socket, role, peer_key, tx, vector).await
+        let class = if role.at_least(Role::Editor) {
+            SubscriberClass::Editor
+        } else {
+            SubscriberClass::Reader
+        };
+        self.log.join(socket, class, peer_key, tx, vector).await
     }
 
     /// Leaves. The last subscriber leaving is one of the flush triggers of
@@ -270,11 +275,11 @@ impl Room {
     }
 
     pub async fn broadcast_editors_except(&self, skip: Option<u64>, payload: &Value) {
-        self.log.broadcast(Some(Role::Editor), skip, payload).await;
+        self.log.broadcast(Some(SubscriberClass::Editor), skip, payload).await;
     }
 
     pub async fn broadcast_readers_except(&self, skip: Option<u64>, payload: &Value) {
-        self.log.broadcast(Some(Role::Reader), skip, payload).await;
+        self.log.broadcast(Some(SubscriberClass::Reader), skip, payload).await;
     }
 
     /// Whether this socket may send another chat frame this minute. Chat is

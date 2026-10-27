@@ -1541,7 +1541,7 @@ impl Server {
             }
         };
         let role = who.role;
-        let owned = role.at_least(Role::Editor);
+        let caps = Capabilities::from(role);
         // Every path in the directory, for the landing page's search: a
         // project is found by the files in it as well as by its title.
         // Paths only -- the digests are the timeline's business. An
@@ -1552,7 +1552,7 @@ impl Server {
         // the editor never reads. The editor's own tree comes from the
         // CRDT session; only the landing page's search asks with
         // `files=1`.
-        let files: Option<Vec<String>> = if owned && wants_files {
+        let files: Option<Vec<String>> = if caps.edit && wants_files {
             Some(
                 room.projection()
                     .await
@@ -1634,22 +1634,22 @@ impl Server {
             // 404 to anyone who is not the owner, and offering a
             // button to a route that refuses would be worse than not
             // offering one.
-            "can_share": role.at_least(Role::Owner),
-            "can_see_sharing": role.at_least(Role::Owner),
+            "can_share": caps.share,
+            "can_see_sharing": caps.share,
             // Whether this caller may replace the document, which is what
             // an editor does on save.
-            "can_edit": owned,
+            "can_edit": caps.edit,
             // Where the reader should frame this document from, and the
             // only origin it will accept messages from.
             "docs_origin": arrival.docs_origin(),
             // Whether this caller may delete anyone's comment here, per
             // rule G.
-            "can_moderate": owned,
+            "can_moderate": caps.moderate,
         });
         // Paths and source format are project metadata. They are useful to
         // editors and local source rendering, but have no place in a
         // reader's response, which sees only the projection (§2.2).
-        if owned {
+        if caps.edit {
             body["sha"] = json!(entry.sha);
             body["execution_engine"] = json!(metadata.execution_engine);
             body["draft_format"] = json!(metadata.draft_format);

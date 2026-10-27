@@ -98,19 +98,6 @@ pub(super) struct RevokeRequest {
     pub(super) id: String,
 }
 
-/// The words a link's role may be spelled with. The document stores the long
-/// form, but the panel and the command line offer the short verb too.
-/// `read`, `comment` and `edit` are what somebody asking to share a document
-/// actually types.
-pub(super) fn parse_role_word(value: &str) -> Option<Role> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "read" | "reader" => Some(Role::Reader),
-        "comment" | "commenter" => Some(Role::Commenter),
-        "edit" | "editor" => Some(Role::Editor),
-        _ => None,
-    }
-}
-
 /// When a new link stops working. Absent means the default, `never` means it
 /// does not expire, and anything else is a duration the retention flag already
 /// knows how to read.
@@ -135,17 +122,6 @@ pub(super) fn link_expiry(asked: &str) -> Result<String, String> {
         .map(librepaper_base::util::format_unix)
         .filter(|until| !until.is_empty())
         .ok_or_else(|| "that expiry is too far away".to_string())
-}
-
-/// A token's role word, as the stored role it maps to: the same three words
-/// a share link takes.
-pub(super) fn parse_token_role(value: &str) -> Option<&'static str> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "read" | "reader" => Some("reader"),
-        "comment" | "commenter" => Some("commenter"),
-        "edit" | "editor" => Some("editor"),
-        _ => None,
-    }
 }
 
 /// When a new token stops working. A token must expire, so an absent expiry
@@ -396,7 +372,7 @@ impl Server {
 
         let now = librepaper_base::util::now_unix();
         let Ok(mutation_actor) =
-            current_who.authority(librepaper_engine::storage::store::Ceiling {
+            current_who.authority(librepaper_base::role::Ceiling {
                 comment: self.commenters.allows(&current_who.id),
                 edit: self.publishers.allows(&current_who.id),
             })
@@ -485,20 +461,24 @@ impl Server {
         };
         let shown = match wanted.kind.trim() {
             "link" => {
-                let role = parse_role_word(&wanted.role)
-                    .ok_or("a link is 'reader', 'commenter' or 'editor'")?;
+                let role = wanted
+                    .role
+                    .parse::<Role>()
+                    .map_err(|_| "a link is 'reader', 'commenter' or 'editor'")?;
                 grant.role = role.as_str().to_string();
                 grant.until = link_expiry(&wanted.until)?;
                 grant.sealed = seal_link_key(&self.key, &key);
                 json!({"id": grant.id(), "kind": "link", "url": format!("/docs/{slug}/{key}")})
             }
             "token" => {
-                let role = parse_token_role(&wanted.role)
-                    .ok_or("a token is 'read', 'comment' or 'edit'")?;
+                let role = wanted
+                    .role
+                    .parse::<Role>()
+                    .map_err(|_| "a token is 'read', 'comment' or 'edit'")?;
                 if name.is_empty() {
                     return Err("a token needs a name".to_string());
                 }
-                grant.role = role.to_string();
+                grant.role = role.as_str().to_string();
                 grant.until = token_expiry(&wanted.until)?;
                 grant.kind = LinkKind::Agent;
                 grant.owner_generation = owner.id.session_generation.clone();

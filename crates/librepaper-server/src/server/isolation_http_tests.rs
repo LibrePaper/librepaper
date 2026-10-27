@@ -17,9 +17,10 @@ use librepaper_base::auth::{
     sign_device, sign_session, GithubApp, Identity, Policy, PROVIDER_GITHUB,
 };
 use librepaper_base::config::Configuration;
+use librepaper_base::role::Role;
 use librepaper_engine::log::Registry;
 use librepaper_engine::storage::blob::FsStore;
-use librepaper_engine::storage::postgres::{AccessRole, Authority, NewAccount, PostgresCatalog};
+use librepaper_engine::storage::postgres::{Authority, NewAccount, PostgresCatalog};
 use librepaper_engine::storage::store::{DocumentInput, Store};
 use librepaper_room::room::Rooms;
 
@@ -467,7 +468,7 @@ async fn shared_visibility_routes_enforce_account_and_access_boundaries() {
     for account_id in [viewer.id, peer.id] {
         deployment
             .catalog
-            .set_grant(deployment.document_id, account_id, AccessRole::Reader)
+            .set_grant(deployment.document_id, account_id, Role::Reader)
             .await
             .unwrap();
     }
@@ -583,7 +584,7 @@ async fn shared_visibility_routes_enforce_account_and_access_boundaries() {
             )
             .await
             .unwrap(),
-        Some(AccessRole::Reader),
+        Some(Role::Reader),
         "hiding must not change read access"
     );
     let readable = client

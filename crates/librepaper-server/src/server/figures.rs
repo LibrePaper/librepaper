@@ -111,7 +111,7 @@ impl Server {
                 return plain(error.status(), &error.client_message());
             }
         };
-        let Ok(mutation_actor) = who.authority(librepaper_engine::storage::store::Ceiling {
+        let Ok(mutation_actor) = who.authority(librepaper_base::role::Ceiling {
             comment: self.commenters.allows(&who.id),
             edit: self.publishers.allows(&who.id),
         }) else {

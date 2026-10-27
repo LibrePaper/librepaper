@@ -20,7 +20,8 @@ use super::http_test_support::{deployment as http_deployment, owner_bearer, Depl
 use super::Server;
 use crate::server::origins::Origins;
 use librepaper_base::auth::{sign_device, Identity, PROVIDER_GITHUB};
-use librepaper_engine::storage::postgres::{AccessRole, Authority, NewAccount, WriterLease};
+use librepaper_base::role::Role;
+use librepaper_engine::storage::postgres::{Authority, NewAccount, WriterLease};
 use librepaper_engine::storage::store::{digest_of_bytes, DocumentInput};
 
 /// The app origin the requests name in their `host` header; the fixture's
@@ -121,7 +122,7 @@ async fn reader_bearer(deployment: &Deployment, document_id: Uuid) -> String {
         .unwrap();
     deployment
         .catalog
-        .set_grant(document_id, account.id, AccessRole::Reader)
+        .set_grant(document_id, account.id, Role::Reader)
         .await
         .unwrap();
     let identity = Identity {

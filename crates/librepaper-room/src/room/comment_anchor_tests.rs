@@ -424,7 +424,7 @@ async fn a_comment_reaches_the_other_editor_and_the_public_channel_live() {
     let (reader_tx, mut reader_rx) = tokio::sync::mpsc::channel(8);
     room.join(
         1,
-        true,
+        Role::Editor,
         "editor-1",
         librepaper_engine::storage::outgoing::Sender::from_raw(editor_tx.clone()),
         None,
@@ -433,7 +433,7 @@ async fn a_comment_reaches_the_other_editor_and_the_public_channel_live() {
     .unwrap();
     room.join(
         2,
-        true,
+        Role::Editor,
         "editor-2",
         librepaper_engine::storage::outgoing::Sender::from_raw(editor_tx),
         None,
@@ -442,7 +442,7 @@ async fn a_comment_reaches_the_other_editor_and_the_public_channel_live() {
     .unwrap();
     room.join(
         3,
-        false,
+        Role::Reader,
         "reader-3",
         librepaper_engine::storage::outgoing::Sender::from_raw(reader_tx),
         None,
@@ -518,7 +518,7 @@ async fn a_snapshot_states_the_list_each_peer_may_see() {
     let (reader_tx, mut reader_rx) = tokio::sync::mpsc::channel(8);
     room.join(
         1,
-        true,
+        Role::Editor,
         "editor-1",
         librepaper_engine::storage::outgoing::Sender::from_raw(editor_tx),
         None,
@@ -527,7 +527,7 @@ async fn a_snapshot_states_the_list_each_peer_may_see() {
     .unwrap();
     room.join(
         2,
-        false,
+        Role::Reader,
         "reader-2",
         librepaper_engine::storage::outgoing::Sender::from_raw(reader_tx),
         None,

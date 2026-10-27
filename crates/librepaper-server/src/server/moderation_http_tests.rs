@@ -24,10 +24,11 @@ use librepaper_base::auth::{
     VISITOR_COOKIE,
 };
 use librepaper_base::config::Configuration;
+use librepaper_base::role::Role;
 use librepaper_engine::log::Registry;
 use librepaper_engine::storage::blob::FsStore;
 use librepaper_engine::storage::postgres::{
-    AccessRole, Authority, NewAccount, PostgresCatalog, PostgresOptions, StoragePolicy,
+    Authority, NewAccount, PostgresCatalog, PostgresOptions, StoragePolicy,
 };
 use librepaper_engine::storage::store::{DocumentInput, Store};
 use librepaper_room::room::Rooms;
@@ -203,7 +204,7 @@ async fn deployment_mode_with_policy(
     catalog
         .create_share_link(
             document_id,
-            AccessRole::Reader,
+            Role::Reader,
             hex::decode(crate::server::sharing::hash_link_key(&share_key))
                 .unwrap()
                 .try_into()
@@ -218,7 +219,7 @@ async fn deployment_mode_with_policy(
     catalog
         .create_share_link(
             document_id,
-            AccessRole::Commenter,
+            Role::Commenter,
             hex::decode(crate::server::sharing::hash_link_key(&commenter_link_key))
                 .unwrap()
                 .try_into()

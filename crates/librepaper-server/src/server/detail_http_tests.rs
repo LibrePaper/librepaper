@@ -14,7 +14,8 @@ use uuid::Uuid;
 use crate::server::origins::Origins;
 use crate::server::RequestContext;
 use librepaper_base::auth::{Identity, PROVIDER_GITHUB};
-use librepaper_engine::storage::postgres::{AccessRole, NewAccount};
+use librepaper_base::role::Role;
+use librepaper_engine::storage::postgres::NewAccount;
 use librepaper_engine::storage::store::DocumentInput;
 
 use super::http_test_support::{deployment as http_deployment, Deployment};
@@ -73,7 +74,7 @@ async fn reader_identity(deployment: &Deployment) -> Identity {
         .set_grant(
             Uuid::parse_str(&entry.storage_id).unwrap(),
             reader.id,
-            AccessRole::Reader,
+            Role::Reader,
         )
         .await
         .unwrap();

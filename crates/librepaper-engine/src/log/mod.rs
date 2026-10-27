@@ -41,7 +41,7 @@ pub use frame::Batch;
 pub use pending::{PendingBudget, Pressure};
 pub use sequencer::{
     Command, CommandError, Evidence, FlushReason, Head, Ingested, Joined, LogState, PreparedSource,
-    Retry, Role, Sequencer, SequencerError,
+    Retry, Sequencer, SequencerError, SubscriberClass,
 };
 
 use crate::storage::blob::BlobStore;
