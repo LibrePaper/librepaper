@@ -191,6 +191,31 @@ impl Git {
     }
 
     /// Of `paths`, those that carry the attribute `-librepaper`.
+    /// The paths of `paths` that git's ignore rules exclude, tracked or not, as
+    /// the walk of a working tree leaves them out.
+    pub(crate) fn ignored(&self, paths: &[String]) -> Result<BTreeSet<String>, Error> {
+        if paths.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        let mut input = Vec::new();
+        for path in paths {
+            input.extend_from_slice(path.as_bytes());
+            input.push(0);
+        }
+        let args = ["check-ignore", "--no-index", "--stdin", "-z"];
+        let output = self.output(&args, Some(&input), &[])?;
+        // Git answers 1 when no path is ignored.
+        match output.status.code() {
+            Some(0) | Some(1) => Ok(output
+                .stdout
+                .split(|byte| *byte == 0)
+                .filter(|path| !path.is_empty())
+                .map(|path| String::from_utf8_lossy(path).into_owned())
+                .collect()),
+            _ => Err(Error::Git(complaint(&args, &output))),
+        }
+    }
+
     pub(crate) fn unset_librepaper(&self, paths: &[String]) -> Result<BTreeSet<String>, Error> {
         if paths.is_empty() {
             return Ok(BTreeSet::new());

@@ -308,6 +308,9 @@ pub async fn push(
             store.save(&state)?;
         }
     }
+    // The commit a push from a commit reads. The pending push records this
+    // one, not whatever HEAD is once the network has answered.
+    let mut source_commit = None;
     let found = match &options.from_commit {
         Some(commit) => {
             let git = git.as_ref().ok_or_else(|| {
@@ -319,7 +322,9 @@ pub async fn push(
             let commit = git.rev(commit).ok_or_else(|| {
                 Error::Invalid(format!("{commit} is not a commit in this repository"))
             })?;
-            scan_commit(git, &commit, &rules, &options.exclude)?
+            let found = scan_commit(git, &commit, &rules, &options.exclude)?;
+            source_commit = Some(commit);
+            found
         }
         None => scan(dir, &rules, git.as_ref(), &options.exclude)?,
     };
@@ -396,7 +401,7 @@ pub async fn push(
         request,
         upsert_files,
         deleted_paths: changes.deleted.clone(),
-        commit: git.as_ref().and_then(|git| git.rev("HEAD")),
+        commit: source_commit.or_else(|| git.as_ref().and_then(|git| git.rev("HEAD"))),
     };
     // Saved before the post, so an answer that never arrives can be settled
     // by the next push. When the save fails nothing has been sent.
@@ -1373,6 +1378,54 @@ mod tests {
         let delete = posted[0]["change"]["delete"].as_array().unwrap();
         assert_eq!(delete.len(), 1, "{posted:?}");
         assert_eq!(delete[0]["path"], "b.tex");
+    }
+
+    #[tokio::test]
+    async fn a_push_from_an_older_commit_records_that_commit() {
+        let server = Fake::start().await;
+        server.script(vec![accepted("l1", 1)]);
+        let Some((dir, git, store)) = on_main(server.link(), Some("main")) else {
+            return;
+        };
+        let mut state = store.load().unwrap().unwrap();
+        state.files = BTreeMap::from([("a.tex".to_string(), record(Kind::Text, b"one\n"))]);
+        store.save(&state).unwrap();
+        write(dir.path(), "b.tex", b"two\n");
+        let older = commit_all(&git, "Older");
+        write(dir.path(), "c.tex", b"three\n");
+        let newer = commit_all(&git, "Newer");
+
+        let options = PushOptions {
+            from_commit: Some("HEAD~1".into()),
+            ..options(Some("main"))
+        };
+        let sent = push(&server.client(), dir.path(), &store, &options).await;
+        assert!(matches!(sent, Ok(PushOutcome::Pushed { .. })), "{sent:?}");
+        let head = store.load().unwrap().unwrap().head;
+        assert_eq!(head.as_deref(), Some(older.as_str()));
+        assert_ne!(head.as_deref(), Some(newer.as_str()));
+        let paths: Vec<String> = created(&server).into_iter().map(|item| item.0).collect();
+        assert_eq!(paths, ["b.tex"]);
+    }
+
+    #[tokio::test]
+    async fn a_push_from_a_commit_leaves_out_a_committed_file_git_now_ignores() {
+        let server = Fake::start().await;
+        server.script(vec![accepted("l1", 1)]);
+        let Some((dir, git, store)) = on_main(server.link(), Some("main")) else {
+            return;
+        };
+        write(dir.path(), "private.tex", b"secret\n");
+        write(dir.path(), "shared.tex", b"open\n");
+        commit_all(&git, "Both");
+        write(dir.path(), ".gitignore", b"private.tex\n");
+        commit_all(&git, "Ignore private");
+
+        let sent = push(&server.client(), dir.path(), &store, &from_head()).await;
+        assert!(matches!(sent, Ok(PushOutcome::Pushed { .. })), "{sent:?}");
+        let paths: Vec<String> = created(&server).into_iter().map(|item| item.0).collect();
+        assert!(paths.contains(&"shared.tex".to_string()), "{paths:?}");
+        assert!(!paths.contains(&"private.tex".to_string()), "{paths:?}");
     }
 
     #[tokio::test]

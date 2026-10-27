@@ -356,9 +356,12 @@ pub(crate) fn scan_commit(
         found.push((path, spelled.to_string(), oid.to_string(), kind));
     }
 
+    // The walk of a working tree skips what git ignores, a tracked file
+    // included, and so does a commit.
     let spelled: Vec<String> = found.iter().map(|item| item.1.clone()).collect();
+    let ignored = git.ignored(&spelled)?;
     let unset = git.unset_librepaper(&spelled)?;
-    found.retain(|item| !unset.contains(&item.1));
+    found.retain(|item| !ignored.contains(&item.1) && !unset.contains(&item.1));
 
     let mut files = BTreeMap::new();
     for (path, _, oid, kind) in found {
