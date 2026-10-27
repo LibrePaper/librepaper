@@ -2,6 +2,7 @@
 //! and the shell pages the reader's origin serves.
 
 use super::*;
+use librepaper_base::pages::ListingCursor;
 use axum::extract::{Extension, Path, State};
 use axum::middleware::Next;
 use axum::routing::{any, get, patch, post, put};
@@ -843,7 +844,7 @@ pub(super) fn rfind(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// The page size and keyset cursor a listing request asks for. A missing or
 /// malformed limit is 200, which is also the most a page holds.
-fn listing_page(query: Option<&str>) -> (u32, Option<(String, String)>) {
+fn listing_page(query: Option<&str>) -> (u32, Option<ListingCursor>) {
     let query: HashMap<String, String> = query
         .map(|raw| {
             url::form_urlencoded::parse(raw.as_bytes())
@@ -851,15 +852,8 @@ fn listing_page(query: Option<&str>) -> (u32, Option<(String, String)>) {
                 .collect()
         })
         .unwrap_or_default();
-    let limit = query
-        .get("limit")
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or(200)
-        .clamp(1, 200);
-    let cursor = query
-        .get("after_updated")
-        .zip(query.get("after_slug"))
-        .map(|(updated, slug)| (updated.clone(), slug.clone()));
+    let limit = pages::clamp_limit(query.get("limit").map(String::as_str), 200, 200);
+    let cursor = ListingCursor::from_query(|name| query.get(name).map(String::as_str));
     (limit, cursor)
 }
 
@@ -1360,7 +1354,7 @@ impl Server {
         let (listing_limit, listing_cursor) = listing_page(query);
         let listing_cursor = listing_cursor
             .as_ref()
-            .map(|(updated, slug)| (updated.as_str(), slug.as_str()));
+            .map(|cursor| (cursor.after_updated.as_str(), cursor.after_slug.as_str()));
         let entries = match self
             .store
             .visible_page_with_options(
@@ -1423,10 +1417,11 @@ impl Server {
         let mut body = json!({"documents": documents, "tags": account_tags});
         if entries.len() == listing_limit as usize {
             if let Some(last) = entries.last() {
-                body["next_cursor"] = json!({
-                    "after_updated": last.updated_at,
-                    "after_slug": last.slug,
-                });
+                body["next_cursor"] = ListingCursor {
+                    after_updated: last.updated_at.clone(),
+                    after_slug: last.slug.clone(),
+                }
+                .to_json();
             }
         }
         write_json(200, &body)
@@ -1463,7 +1458,7 @@ impl Server {
         let (listing_limit, listing_cursor) = listing_page(query);
         let listing_cursor = listing_cursor
             .as_ref()
-            .map(|(updated, slug)| (updated.as_str(), slug.as_str()));
+            .map(|cursor| (cursor.after_updated.as_str(), cursor.after_slug.as_str()));
         let entries = match self
             .store
             .visible_page_with_options(Some(&account_id), listing_cursor, listing_limit, true)
@@ -1489,10 +1484,11 @@ impl Server {
         let mut body = json!({"documents": documents});
         if entries.len() == listing_limit as usize {
             if let Some(last) = entries.last() {
-                body["next_cursor"] = json!({
-                    "after_updated": last.updated_at,
-                    "after_slug": last.slug,
-                });
+                body["next_cursor"] = ListingCursor {
+                    after_updated: last.updated_at.clone(),
+                    after_slug: last.slug.clone(),
+                }
+                .to_json();
             }
         }
         write_json(200, &body)
