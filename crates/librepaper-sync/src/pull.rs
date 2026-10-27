@@ -111,7 +111,9 @@ pub async fn pull(
 ) -> Result<PullOutcome, Error> {
     let mut state = store.load()?.ok_or(Error::NotLinked)?;
     state.refuse_while_pending()?;
-    state.pin_branch(store.repository(), options.branch.as_deref())?;
+    if state.pin_branch(store.repository(), options.branch.as_deref())? {
+        store.save(&state)?;
+    }
     let rules = client.rules().await?;
     match store.repository() {
         Some(root) => pull_repository(client, root, store, options, state, &rules).await,
@@ -1672,6 +1674,41 @@ mod tests {
         assert_eq!(outcome, PullOutcome::UpToDate);
         assert_eq!(fake.count("/project"), 1);
         assert_eq!(chain_length(&git), 1);
+    }
+
+    #[tokio::test]
+    async fn a_quiet_first_pull_still_keeps_the_branch_it_was_given() {
+        let Some((_dir, git)) = repository() else {
+            return;
+        };
+        let fake = Fake::start().await;
+        let store = GitRefStore::open(git.dir()).unwrap();
+        fake.name(1, fake::files(&[("a.tex", "one\n")]));
+        fake.set_current(fake::files(&[("a.tex", "one\n")]));
+        fake.set_head(Some("h1"));
+        let mut state = State::new(fake.link());
+        state.pulled = Some(1);
+        state.web_head = Some("h1".into());
+        store.save(&state).unwrap();
+        let branch = git.branch().unwrap();
+
+        let given = PullOptions {
+            branch: Some(branch.clone()),
+            ..fetch_only()
+        };
+        let outcome = pull(&fake.client(), git.dir(), &store, &given)
+            .await
+            .unwrap();
+        assert_eq!(outcome, PullOutcome::UpToDate);
+        assert_eq!(
+            store.load().unwrap().unwrap().branch.as_deref(),
+            Some(branch.as_str())
+        );
+
+        let outcome = pull(&fake.client(), git.dir(), &store, &fetch_only())
+            .await
+            .unwrap();
+        assert_eq!(outcome, PullOutcome::UpToDate);
     }
 
     #[tokio::test]

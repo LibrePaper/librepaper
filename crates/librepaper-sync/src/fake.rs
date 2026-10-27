@@ -1,7 +1,7 @@
 //! A project server that answers the read calls sync makes, from memory, and
 //! remembers what it was asked.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use librepaper_base::http::Credentials;
@@ -23,6 +23,18 @@ pub(crate) fn files(entries: &[(&str, &str)]) -> Files {
         .collect()
 }
 
+/// What the fake deployment does with one source change.
+pub(crate) enum Answer {
+    Reply(u16, Value),
+    /// Reads the request and closes the connection without answering.
+    Drop,
+}
+
+/// A source change accepted as a new named version.
+pub(crate) fn accepted(sha: &str, sequence: i64) -> Answer {
+    Answer::Reply(200, json!({"label": {"sha": sha, "sequence": sequence}}))
+}
+
 #[derive(Default)]
 struct Data {
     /// Oldest first: sequence, files.
@@ -32,6 +44,10 @@ struct Data {
     requests: Vec<String>,
     /// What the project holds once a source change lands.
     after_push: Files,
+    /// Answers to source changes, used before the default acceptance.
+    script: VecDeque<Answer>,
+    /// The body of every source change that came in.
+    posted: Vec<Value>,
 }
 
 pub(crate) struct Fake {
@@ -54,7 +70,12 @@ impl Fake {
     }
 
     pub(crate) fn client(&self) -> Client {
-        Client::new(self.site.clone(), Credentials::token("lp_token"))
+        self.client_as("lp_token")
+    }
+
+    /// A client signed in with another token.
+    pub(crate) fn client_as(&self, token: &str) -> Client {
+        Client::new(self.site.clone(), Credentials::token(token))
     }
 
     /// The link a directory is linked with.
@@ -77,6 +98,17 @@ impl Fake {
     /// is recorded as the next named version, and the head identity moves.
     pub(crate) fn set_after_push(&self, files: Files) {
         self.data.lock().unwrap().after_push = files;
+    }
+
+    /// Queues answers to the next source changes. Once they are used up, a
+    /// source change is accepted as `set_after_push` says.
+    pub(crate) fn script(&self, answers: Vec<Answer>) {
+        self.data.lock().unwrap().script.extend(answers);
+    }
+
+    /// The body of every source change that came in, oldest first.
+    pub(crate) fn posted(&self) -> Vec<Value> {
+        self.data.lock().unwrap().posted.clone()
     }
 
     /// The head identity the history page carries; `None` is an older server.
@@ -111,9 +143,18 @@ fn query<'a>(target: &'a str, key: &str) -> Option<&'a str> {
         .find_map(|pair| pair.strip_prefix(key)?.strip_prefix('='))
 }
 
-fn reply(data: &mut Data, method: &str, target: &str) -> (u16, Value) {
+/// The answer to one request, or `None` to close the connection without one.
+fn reply(data: &mut Data, method: &str, target: &str, sent: &[u8]) -> Option<(u16, Value)> {
     let path = target.split('?').next().unwrap_or("");
     if method == "POST" && path.ends_with("/source-change") {
+        data.posted
+            .push(serde_json::from_slice(sent).unwrap_or(Value::Null));
+        if let Some(answer) = data.script.pop_front() {
+            return match answer {
+                Answer::Reply(status, body) => Some((status, body)),
+                Answer::Drop => None,
+            };
+        }
         let sequence = data.versions.last().map_or(1, |(sequence, _)| sequence + 1);
         data.versions.push((sequence, data.after_push.clone()));
         data.current = data.after_push.clone();
@@ -121,10 +162,10 @@ fn reply(data: &mut Data, method: &str, target: &str) -> (u16, Value) {
             head.push('+');
         }
         let sha = format!("sha-{sequence}");
-        return (200, json!({"label": {"sha": sha, "sequence": sequence}}));
+        return Some((200, json!({"label": {"sha": sha, "sequence": sequence}})));
     }
     if path == "/api/config" {
-        return (200, json!({}));
+        return Some((200, json!({})));
     }
     if path.ends_with("/history") {
         let limit = query(target, "limit")
@@ -150,7 +191,7 @@ fn reply(data: &mut Data, method: &str, target: &str) -> (u16, Value) {
         if let Some(head) = &data.head {
             body["head"] = json!(head);
         }
-        return (200, body);
+        return Some((200, body));
     }
     if let Some((_, sha)) = path.split_once("/history/") {
         let found = data
@@ -158,15 +199,15 @@ fn reply(data: &mut Data, method: &str, target: &str) -> (u16, Value) {
             .iter()
             .find(|(sequence, _)| format!("sha-{sequence}") == sha);
         return match found {
-            Some((_, files)) => (200, json!({"files": listing(files), "texts": files})),
-            None => (404, json!({"error": "no such version"})),
+            Some((_, files)) => Some((200, json!({"files": listing(files), "texts": files}))),
+            None => Some((404, json!({"error": "no such version"}))),
         };
     }
     if path.ends_with("/project") {
         let body = json!({"tree": {"files": listing(&data.current)}, "texts": data.current});
-        return (200, body);
+        return Some((200, body));
     }
-    (404, json!({"error": "no such route"}))
+    Some((404, json!({"error": "no such route"})))
 }
 
 async fn answer(mut stream: TcpStream, data: Arc<Mutex<Data>>) {
@@ -200,10 +241,13 @@ async fn answer(mut stream: TcpStream, data: Arc<Mutex<Data>>) {
     let mut parts = text.lines().next().unwrap_or("").split_whitespace();
     let method = parts.next().unwrap_or("GET").to_string();
     let target = parts.next().unwrap_or("/").to_string();
-    let (status, body) = {
+    let answer = {
         let mut data = data.lock().unwrap();
         data.requests.push(target.clone());
-        reply(&mut data, &method, &target)
+        reply(&mut data, &method, &target, &request[end..])
+    };
+    let Some((status, body)) = answer else {
+        return;
     };
     let body = body.to_string();
     let head = format!(

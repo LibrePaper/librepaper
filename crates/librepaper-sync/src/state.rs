@@ -128,18 +128,19 @@ impl State {
     }
 
     /// Checks the checkout against the branch this state syncs and the one the
-    /// caller asked for, and binds the branch when none is bound yet. The
-    /// binding is held in memory and saved with the next write. A plain folder
-    /// has no branch, and never switches one.
+    /// caller asked for, and binds the branch when none is bound yet. Returns
+    /// whether it bound one just now. The binding is held in memory, so the
+    /// caller saves the state when this is true. A plain folder has no branch,
+    /// and never switches one.
     pub(crate) fn pin_branch(
         &mut self,
         repository: Option<&Path>,
         requested: Option<&str>,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         let Some(root) = repository else {
             return match requested {
                 Some(_) => Err(Error::BranchNeedsRepository),
-                None => Ok(()),
+                None => Ok(false),
             };
         };
         let checked_out = Git::at(root).branch()?;
@@ -152,7 +153,7 @@ impl State {
             }),
             (None, Some(requested)) => {
                 self.branch = Some(requested.to_string());
-                Ok(())
+                Ok(true)
             }
             (Some(bound), Some(requested)) if bound != requested => Err(Error::BranchRebind {
                 bound: bound.to_string(),
@@ -162,7 +163,7 @@ impl State {
                 expected: bound.to_string(),
                 checked_out,
             }),
-            (Some(_), _) => Ok(()),
+            (Some(_), _) => Ok(false),
         }
     }
 
@@ -486,12 +487,12 @@ mod tests {
             state.pin_branch(Some(dir.path()), Some("main")),
             Err(Error::BranchMismatch { .. })
         ));
-        state.pin_branch(Some(dir.path()), Some("trunk")).unwrap();
+        assert!(state.pin_branch(Some(dir.path()), Some("trunk")).unwrap());
         assert_eq!(state.branch.as_deref(), Some("trunk"));
-        state.pin_branch(Some(dir.path()), None).unwrap();
+        assert!(!state.pin_branch(Some(dir.path()), None).unwrap());
 
         let mut plain = branch_state();
-        plain.pin_branch(None, None).unwrap();
+        assert!(!plain.pin_branch(None, None).unwrap());
         assert!(matches!(
             plain.pin_branch(None, Some("main")),
             Err(Error::BranchNeedsRepository)
