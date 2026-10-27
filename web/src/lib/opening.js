@@ -159,6 +159,20 @@ export function includersOf(texts) {
   return out;
 }
 
+/// The files `path` includes directly, in the order the source names them,
+/// each once. Only paths present in `texts` appear, and never `path` itself.
+export function includesOf(path, texts) {
+  const format = formatOf(path);
+  if (!format || !Object.hasOwn(texts, path)) return [];
+  const out = [];
+  for (const name of includedNames(format, texts[path])) {
+    const target = resolve(format, path, name, texts);
+    if (target === null || target === path || out.includes(target)) continue;
+    out.push(target);
+  }
+  return out;
+}
+
 /// Whether `path` renders on its own: it is a document and nothing makes it a
 /// part of another one. A file with no document format never does.
 export function rendersAlone(path, texts, includers = includersOf(texts)) {
