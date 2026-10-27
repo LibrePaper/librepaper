@@ -43,11 +43,12 @@ use std::collections::{HashMap, HashSet};
 
 use loro::{
     cursor::{Cursor, PosType, Side as CursorSide},
-    Container, ContainerTrait, LoroDoc, LoroMap, LoroText, LoroValue, ValueOrContainer,
+    ContainerTrait, LoroDoc, LoroMap, LoroText, LoroValue, ValueOrContainer,
 };
 
 use crate::document::passage::{unique_occurrence, Occurrence};
-use crate::document::session::{Edit, CHANGES, FILES};
+use crate::document::roots::Roots;
+use crate::document::session::Edit;
 use crate::document::text_index::{Span, TextIndex, Utf16};
 
 pub const ANCHORS: &str = "anchors";
@@ -617,15 +618,6 @@ fn after_delete(p: usize, ef: usize, et: usize) -> usize {
 
 // ---------------------------------------------------------------------------
 // Loro layer
-
-/// The text at `file_id`, when the file is a text.
-fn text_of(doc: &LoroDoc, file_id: &str) -> Option<LoroText> {
-    match doc.get_map(FILES).get(file_id)? {
-        ValueOrContainer::Container(Container::Text(t)) => Some(t),
-        _ => None,
-    }
-}
-
 /// A file's text and its body, read once for a pass over its records.
 struct Live {
     text: LoroText,
@@ -633,7 +625,7 @@ struct Live {
 }
 
 fn live_of(doc: &LoroDoc, file_id: &str) -> Option<Live> {
-    let text = text_of(doc, file_id)?;
+    let text = Roots::new(doc).text_by_id(file_id)?;
     let body = text.to_string();
     Some(Live { text, body })
 }
@@ -800,20 +792,6 @@ fn span_of(doc: &LoroDoc, live: &Live, place: &Place) -> Option<(usize, usize)> 
 }
 
 /// The record `id` of a records root, when it is a map container.
-pub(super) fn record_map(root: &LoroMap, id: &str) -> Option<LoroMap> {
-    match root.get(id)? {
-        ValueOrContainer::Container(Container::Map(m)) => Some(m),
-        _ => None,
-    }
-}
-
-pub(super) fn str_of(m: &LoroMap, key: &str) -> Option<String> {
-    match m.get(key)? {
-        ValueOrContainer::Value(LoroValue::String(s)) => Some(s.to_string()),
-        _ => None,
-    }
-}
-
 pub(super) fn bytes_of(m: &LoroMap, key: &str) -> Option<Vec<u8>> {
     match m.get(key)? {
         ValueOrContainer::Value(LoroValue::Binary(b)) => Some(b.to_vec()),
@@ -857,9 +835,9 @@ fn record_fields(record: &LoroMap, id: &str, place: &Place) -> Anchor {
         fragment: place.fragment.clone(),
         offset: place.offset,
         length: place.length,
-        exact: str_of(record, "exact").unwrap_or_default(),
-        prefix: str_of(record, "prefix").unwrap_or_default(),
-        suffix: str_of(record, "suffix").unwrap_or_default(),
+        exact: Roots::string_at(record, "exact").unwrap_or_default(),
+        prefix: Roots::string_at(record, "prefix").unwrap_or_default(),
+        suffix: Roots::string_at(record, "suffix").unwrap_or_default(),
         collapsed: false,
         unresolved: false,
     }
@@ -922,7 +900,7 @@ impl<'a> Reader<'a> {
     pub fn resolve(&mut self, id: &str) -> Option<Anchor> {
         let doc = self.doc;
         let map = doc.get_map(ANCHORS);
-        let record = record_map(&map, id)?;
+        let record = Roots::record_in(&map, id)?;
         let place = Place::read(&record)?;
         let live = self.live(&place.file);
         Some(record_anchor(doc, id, &record, &place, live))
@@ -936,10 +914,7 @@ impl<'a> Reader<'a> {
         }
         if anchor.detached {
             let pending = anchor.fragment.as_deref().is_some_and(|fragment| {
-                matches!(
-                    doc.get_map(CHANGES).get(fragment),
-                    Some(ValueOrContainer::Container(Container::Map(_)))
-                )
+                Roots::record_in(&Roots::new(doc).changes(), fragment).is_some()
             });
             return if pending {
                 Status::PendingDeletion
@@ -982,7 +957,7 @@ pub fn resolve_anchors(doc: &LoroDoc, file_id: &str) -> Vec<Anchor> {
     let mut out = Vec::new();
     for key in map.keys() {
         let id = key.to_string();
-        let Some(record) = record_map(&map, &id) else {
+        let Some(record) = Roots::record_in(&map, &id) else {
             continue;
         };
         let Some(place) = Place::read(&record).filter(|p| p.file == file_id) else {
@@ -1117,7 +1092,7 @@ pub fn write_anchors(doc: &LoroDoc, planned: &[PlannedFile]) -> Vec<String> {
             if pa.state != PlanState::Set || (!a.detached && !pa.touched) {
                 continue;
             }
-            let Some(record) = record_map(&map, &a.id) else {
+            let Some(record) = Roots::record_in(&map, &a.id) else {
                 continue;
             };
             let place = if a.detached {
@@ -1182,7 +1157,7 @@ pub fn mark_collapsed(doc: &LoroDoc, file_id: &str) -> Vec<String> {
         if !a.collapsed {
             continue;
         }
-        let Some(record) = record_map(&map, &a.id) else {
+        let Some(record) = Roots::record_in(&map, &a.id) else {
             continue;
         };
         let Some(mut place) = Place::read(&record) else {
@@ -1204,16 +1179,12 @@ pub fn mark_collapsed(doc: &LoroDoc, file_id: &str) -> Vec<String> {
 /// The id of every text in the files map. A text is listed whether or not a
 /// path still names it, since a record can point at a text no path names.
 pub fn text_file_ids(doc: &LoroDoc) -> Vec<String> {
-    let files = doc.get_map(FILES);
-    files
+    let roots = Roots::new(doc);
+    roots
+        .files()
         .keys()
         .map(|key| key.to_string())
-        .filter(|id| {
-            matches!(
-                files.get(id.as_str()),
-                Some(ValueOrContainer::Container(Container::Text(_)))
-            )
-        })
+        .filter(|id| roots.text_by_id(id).is_some())
         .collect()
 }
 
@@ -1244,7 +1215,7 @@ pub fn heal_stale(doc: &LoroDoc, file_id: &str) -> Vec<String> {
         if a.detached || a.unresolved {
             continue;
         }
-        let Some(record) = record_map(&map, &a.id) else {
+        let Some(record) = Roots::record_in(&map, &a.id) else {
             continue;
         };
         let Some(mut place) = Place::read(&record) else {
@@ -1293,7 +1264,7 @@ fn detached_elsewhere(doc: &LoroDoc, named: &[OperationFile]) -> Vec<OperationFi
     let mut groups: Vec<(String, Vec<Anchor>)> = Vec::new();
     for key in map.keys() {
         let id = key.to_string();
-        let Some(record) = record_map(&map, &id) else {
+        let Some(record) = Roots::record_in(&map, &id) else {
             continue;
         };
         let Some(place) = Place::read(&record) else {
@@ -1422,7 +1393,7 @@ pub fn restore_by_fragments(doc: &LoroDoc, file_id: &str, restored: &[Restored])
     let mut repins: Vec<(String, LoroMap, Place)> = Vec::new();
     for key in map.keys() {
         let id = key.to_string();
-        let Some(record) = record_map(&map, &id) else {
+        let Some(record) = Roots::record_in(&map, &id) else {
             continue;
         };
         let Some(place) = Place::read(&record) else {
@@ -1477,7 +1448,7 @@ pub fn restore_by_fragments(doc: &LoroDoc, file_id: &str, restored: &[Restored])
 pub fn has_legacy_records(doc: &LoroDoc) -> bool {
     let map = doc.get_map(ANCHORS);
     let legacy = map.keys().any(|key| {
-        record_map(&map, key.as_ref()).is_some_and(|record| record.get("file").is_some())
+        Roots::record_in(&map, key.as_ref()).is_some_and(|record| record.get("file").is_some())
     });
     legacy
 }
@@ -1498,19 +1469,19 @@ pub fn upgrade_records(doc: &LoroDoc) -> Vec<String> {
     let mut legacy: Vec<(String, LoroMap, Option<Place>)> = Vec::new();
     for key in map.keys() {
         let id = key.to_string();
-        let Some(record) = record_map(&map, &id) else {
+        let Some(record) = Roots::record_in(&map, &id) else {
             continue;
         };
         if record.get("file").is_none() {
             continue;
         }
-        let place = str_of(&record, "file").map(|file| Place {
+        let place = Roots::string_at(&record, "file").map(|file| Place {
             file,
             start: bytes_of(&record, "start"),
             end: bytes_of(&record, "end"),
             detached: is_true(&record, "detached"),
             length: count_of(&record, "length"),
-            fragment: str_of(&record, "fragment"),
+            fragment: Roots::string_at(&record, "fragment"),
             offset: count_of(&record, "offset"),
         });
         legacy.push((id, record, place));
@@ -1538,6 +1509,7 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::*;
+    use crate::document::session::CHANGES;
     use crate::document::session::{apply_text_edits, new_doc, put_text};
     use crate::document::track::{self, Author};
 
@@ -2173,12 +2145,12 @@ mod tests {
     }
 
     fn body(doc: &LoroDoc, file: &str) -> String {
-        text_of(doc, file).unwrap().to_string()
+        Roots::new(doc).text_by_id(file).unwrap().to_string()
     }
 
     fn record_file(doc: &LoroDoc, id: &str) -> Option<String> {
         let root = doc.get_map(ANCHORS);
-        Some(Place::read(&record_map(&root, id)?)?.file)
+        Some(Place::read(&Roots::record_in(&root, id)?)?.file)
     }
 
     fn sync(a: &LoroDoc, b: &LoroDoc) {
@@ -2195,9 +2167,9 @@ mod tests {
             .keys()
             .map(|k| k.to_string())
             .find(|k| {
-                record_map(&root, k).is_some_and(|m| {
-                    str_of(&m, "kind").as_deref() == Some("fragment")
-                        && str_of(&m, "change").as_deref() == Some(change)
+                Roots::record_in(&root, k).is_some_and(|m| {
+                    Roots::string_at(&m, "kind").as_deref() == Some("fragment")
+                        && Roots::string_at(&m, "change").as_deref() == Some(change)
                 })
             })
             .unwrap();
@@ -2233,7 +2205,7 @@ mod tests {
             delete,
             insert: insert.to_string(),
         };
-        let text = text_of(doc, file).unwrap();
+        let text = Roots::new(doc).text_by_id(file).unwrap();
         assert!(apply_text_edits(&text, std::slice::from_ref(&edit)));
         let plan = record_operation(
             doc,
@@ -2324,7 +2296,7 @@ mod tests {
         assert_eq!(after[0].length, Some(4));
         assert_eq!(after[0].fragment.as_deref(), Some("frag1"));
         assert_eq!(after[0].offset, Some(1));
-        let record = record_map(&doc.get_map(ANCHORS), "c1").unwrap();
+        let record = Roots::record_in(&doc.get_map(ANCHORS), "c1").unwrap();
         assert!(record.get("file").is_none());
         assert!(record.get("detached").is_none());
         assert!(record.get("length").is_none());
@@ -2349,13 +2321,13 @@ mod tests {
         let mut memory_b = MoveMemory::new(32);
         edit_and_record(&a, &file, &mut memory_a, 6, 1, "");
         edit_and_record(&b, &file, &mut memory_b, 9, 1, "");
-        let place_a = Place::read(&record_map(&a.get_map(ANCHORS), "c1").unwrap()).unwrap();
-        let place_b = Place::read(&record_map(&b.get_map(ANCHORS), "c1").unwrap()).unwrap();
+        let place_a = Place::read(&Roots::record_in(&a.get_map(ANCHORS), "c1").unwrap()).unwrap();
+        let place_b = Place::read(&Roots::record_in(&b.get_map(ANCHORS), "c1").unwrap()).unwrap();
         assert_ne!(place_a, place_b);
         sync(&a, &b);
 
-        let merged_a = Place::read(&record_map(&a.get_map(ANCHORS), "c1").unwrap()).unwrap();
-        let merged_b = Place::read(&record_map(&b.get_map(ANCHORS), "c1").unwrap()).unwrap();
+        let merged_a = Place::read(&Roots::record_in(&a.get_map(ANCHORS), "c1").unwrap()).unwrap();
+        let merged_b = Place::read(&Roots::record_in(&b.get_map(ANCHORS), "c1").unwrap()).unwrap();
         assert_eq!(merged_a, merged_b);
         assert!(merged_a == place_a || merged_a == place_b);
 
@@ -2478,7 +2450,7 @@ mod tests {
             .unwrap();
 
         // Each peer deletes one half of the passage: "be" on one, "ta" on the other.
-        let text_a = text_of(&a, &file).unwrap();
+        let text_a = Roots::new(&a).text_by_id(&file).unwrap();
         assert!(apply_text_edits(
             &text_a,
             &[Edit {
@@ -2488,7 +2460,7 @@ mod tests {
             }]
         ));
         a.commit();
-        let text_b = text_of(&b, &file).unwrap();
+        let text_b = Roots::new(&b).text_by_id(&file).unwrap();
         assert!(apply_text_edits(
             &text_b,
             &[Edit {
@@ -2510,7 +2482,7 @@ mod tests {
         assert!(marked[0].detached);
         assert_eq!(status_of(&a, &marked[0]), Status::Deleted);
         let root = a.get_map(ANCHORS);
-        let record = record_map(&root, "c1").unwrap();
+        let record = Roots::record_in(&root, "c1").unwrap();
         assert!(Place::read(&record).unwrap().detached);
     }
 
@@ -2626,7 +2598,7 @@ mod tests {
         ));
         doc.commit();
         // "ta" goes, and the end cursor's character with it.
-        let text = text_of(&doc, &file).unwrap();
+        let text = Roots::new(&doc).text_by_id(&file).unwrap();
         assert!(apply_text_edits(
             &text,
             &[Edit {

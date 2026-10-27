@@ -21,12 +21,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use loro::{
     cursor::{Cursor, PosType, Side},
-    Container, ContainerTrait, LoroDoc, LoroMap, LoroText, LoroValue, ValueOrContainer,
+    ContainerTrait, LoroDoc, LoroMap, LoroText, LoroValue, ValueOrContainer,
 };
 
-use crate::document::anchors::{bytes_of, record_map, str_of};
+use crate::document::anchors::bytes_of;
 use crate::document::projection::Projected;
-use crate::document::session::{apply_text_edits, Edit, CHANGES, FILES};
+use crate::document::roots::Roots;
+use crate::document::session::{apply_text_edits, Edit};
 use crate::document::text_index::{TextIndex, Utf16};
 
 /// Who is making an edit: the stable key and the name comments show.
@@ -687,10 +688,10 @@ fn plan_one(
 
 /// Every map record of the `changes` root. Plain values are left out.
 fn records(doc: &LoroDoc) -> Vec<(String, LoroMap)> {
-    let root = doc.get_map(CHANGES);
+    let root = Roots::new(doc).changes();
     let ids: Vec<String> = root.keys().map(|k| k.to_string()).collect();
     ids.into_iter()
-        .filter_map(|id| record_map(&root, &id).map(|m| (id, m)))
+        .filter_map(|id| Roots::record_in(&root, &id).map(|m| (id, m)))
         .collect()
 }
 
@@ -790,8 +791,8 @@ struct Resolved {
 /// Reads a fragment record. Left out when its cursor, text or change is missing.
 fn read_fragment(doc: &LoroDoc, text: &LoroText, id: &str, m: &LoroMap) -> Option<Stored> {
     let start = bytes_of(m, "start")?;
-    let change = str_of(m, "change")?;
-    let body = str_of(m, "text")?;
+    let change = Roots::string_at(m, "change")?;
+    let body = Roots::string_at(m, "text")?;
     if body.is_empty() {
         return None;
     }
@@ -807,9 +808,9 @@ fn read_fragment(doc: &LoroDoc, text: &LoroText, id: &str, m: &LoroMap) -> Optio
         },
         authorship: Authorship {
             id: id.to_string(),
-            who: str_of(m, "who"),
-            author: str_of(m, "author"),
-            run: str_of(m, "run"),
+            who: Roots::string_at(m, "who"),
+            author: Roots::string_at(m, "author"),
+            run: Roots::string_at(m, "run"),
             at: num_of(m, "at").map(|v| v as i64),
         },
     })
@@ -817,8 +818,8 @@ fn read_fragment(doc: &LoroDoc, text: &LoroText, id: &str, m: &LoroMap) -> Optio
 
 /// Reads a change record. Left out when its author fields or cursors are missing.
 fn read_change(doc: &LoroDoc, text: &LoroText, id: &str, m: &LoroMap) -> Option<ChangeRecord> {
-    let who = str_of(m, "who")?;
-    let author = str_of(m, "author")?;
+    let who = Roots::string_at(m, "who")?;
+    let author = Roots::string_at(m, "author")?;
     let mut from = 0;
     let mut to = 0;
     let mut stale = false;
@@ -842,7 +843,7 @@ fn read_change(doc: &LoroDoc, text: &LoroText, id: &str, m: &LoroMap) -> Option<
         id: id.to_string(),
         who,
         author,
-        run: str_of(m, "run"),
+        run: Roots::string_at(m, "run"),
         at: num_of(m, "at").map_or(0, |v| v as i64),
         from,
         to,
@@ -859,7 +860,7 @@ fn read_change(doc: &LoroDoc, text: &LoroText, id: &str, m: &LoroMap) -> Option<
 /// change of its own, under its own id, when it has author fields; without
 /// them it is left out. Records without a known `kind` are ignored.
 fn resolve_file(doc: &LoroDoc, file_id: &str) -> Resolved {
-    let Some(text) = text_of(doc, file_id) else {
+    let Some(text) = Roots::new(doc).text_by_id(file_id) else {
         return Resolved::default();
     };
     let mut changes: Vec<ChangeRecord> = Vec::new();
@@ -914,10 +915,10 @@ fn resolve_file(doc: &LoroDoc, file_id: &str) -> Resolved {
         });
     }
     for (id, m) in records(doc) {
-        if str_of(&m, "file").as_deref() != Some(file_id) {
+        if Roots::string_at(&m, "file").as_deref() != Some(file_id) {
             continue;
         }
-        match str_of(&m, "kind").as_deref() {
+        match Roots::string_at(&m, "kind").as_deref() {
             Some("fragment") => stored.extend(read_fragment(doc, &text, &id, &m)),
             Some("change") => changes.extend(read_change(doc, &text, &id, &m)),
             _ => {}
@@ -1038,13 +1039,6 @@ struct LegacyChange {
     end: Option<Vec<u8>>,
 }
 
-fn plain_str(v: &LoroValue) -> Option<String> {
-    match v {
-        LoroValue::String(s) => Some(s.to_string()),
-        _ => None,
-    }
-}
-
 fn plain_bytes(v: &LoroValue) -> Option<Vec<u8>> {
     match v {
         LoroValue::Binary(b) => Some(b.to_vec()),
@@ -1063,17 +1057,17 @@ fn plain_num(v: &LoroValue) -> Option<f64> {
 /// The plain-value records of the earlier model that belong to `file_id`, by id.
 /// Their point offsets are converted from UTF-16 to code points.
 fn legacy_records(doc: &LoroDoc, file_id: &str) -> BTreeMap<String, LegacyRecord> {
-    let root = doc.get_map(CHANGES);
-    let ids: Vec<String> = root.keys().map(|k| k.to_string()).collect();
+    let roots = Roots::new(doc);
+    let ids: Vec<String> = roots.changes().keys().map(|k| k.to_string()).collect();
     let mut out = BTreeMap::new();
     for id in ids {
-        let Some(ValueOrContainer::Value(LoroValue::Map(m))) = root.get(&id) else {
+        let Some(m) = roots.plain_record(&id) else {
             continue;
         };
-        if m.get("file").and_then(plain_str).as_deref() != Some(file_id) {
+        if m.get("file").and_then(Roots::string_of).as_deref() != Some(file_id) {
             continue;
         }
-        let Some(deleted) = m.get("deleted").and_then(plain_str) else {
+        let Some(deleted) = m.get("deleted").and_then(Roots::string_of) else {
             continue;
         };
         let Some(start) = m.get("start").and_then(plain_bytes) else {
@@ -1094,7 +1088,7 @@ fn legacy_records(doc: &LoroDoc, file_id: &str) -> BTreeMap<String, LegacyRecord
                             |_| deleted[..index.utf8_ceil(units).0].chars().count(),
                             |point| point.0,
                         );
-                        Some((p.get("id").and_then(plain_str)?, at))
+                        Some((p.get("id").and_then(Roots::string_of)?, at))
                     }
                     _ => None,
                 })
@@ -1105,9 +1099,9 @@ fn legacy_records(doc: &LoroDoc, file_id: &str) -> BTreeMap<String, LegacyRecord
             id,
             LegacyRecord {
                 end: m.get("end").and_then(plain_bytes),
-                who: m.get("who").and_then(plain_str).unwrap_or_default(),
-                author: m.get("author").and_then(plain_str).unwrap_or_default(),
-                run: m.get("run").and_then(plain_str),
+                who: m.get("who").and_then(Roots::string_of).unwrap_or_default(),
+                author: m.get("author").and_then(Roots::string_of).unwrap_or_default(),
+                run: m.get("run").and_then(Roots::string_of),
                 at: m.get("at").and_then(plain_num).map_or(0, |v| v as i64),
                 deleted,
                 start,
@@ -1253,7 +1247,7 @@ fn convert_legacy(doc: &LoroDoc, file_id: &str, id: &str) -> bool {
         .iter()
         .map(|&i| (expanded[i].0.id.as_str(), &expanded[i].0))
         .collect();
-    let root = doc.get_map(CHANGES);
+    let root = Roots::new(doc).changes();
     for &i in &group {
         let c = &expanded[i].0;
         root.delete(&c.id).ok();
@@ -1317,8 +1311,8 @@ fn legacy_prefix(id: &str) -> Option<&str> {
 /// Makes record `id` a container before it is written: converts the legacy
 /// record it is, or the one its fragment id names.
 fn materialize(doc: &LoroDoc, file_id: &str, id: &str) {
-    let root = doc.get_map(CHANGES);
-    if record_map(&root, id).is_some() {
+    let root = Roots::new(doc).changes();
+    if Roots::record_in(&root, id).is_some() {
         return;
     }
     let legacy_id = if root.get(id).is_some() {
@@ -1331,9 +1325,9 @@ fn materialize(doc: &LoroDoc, file_id: &str, id: &str) {
 
 /// Converts the legacy record `id`, when it is one, before a decision reads it.
 fn convert_plain(doc: &LoroDoc, id: &str) {
-    let root = doc.get_map(CHANGES);
-    if let Some(ValueOrContainer::Value(LoroValue::Map(m))) = root.get(id) {
-        if let Some(file) = m.get("file").and_then(plain_str) {
+    let root = Roots::new(doc).changes();
+    if let Some(m) = Roots::new(doc).plain_record(id) {
+        if let Some(file) = m.get("file").and_then(Roots::string_of) {
             convert_legacy(doc, &file, id);
         }
     }
@@ -1416,8 +1410,8 @@ fn write_change(doc: &LoroDoc, text: &LoroText, file: &str, c: &ChangeRecord, he
         None
     };
     materialize(doc, file, &c.id);
-    let root = doc.get_map(CHANGES);
-    let m = match record_map(&root, &c.id) {
+    let root = Roots::new(doc).changes();
+    let m = match Roots::record_in(&root, &c.id) {
         Some(m) => m,
         None => {
             let Ok(m) = root.insert_container(&c.id, LoroMap::new()) else {
@@ -1581,8 +1575,8 @@ fn write_fragment(
     owner: Option<&ChangeRecord>,
     heal: bool,
 ) {
-    let root = doc.get_map(CHANGES);
-    if record_map(&root, id).is_none() {
+    let root = Roots::new(doc).changes();
+    if Roots::record_in(&root, id).is_none() {
         if let Some(legacy_id) = legacy_prefix(id) {
             let records = legacy_records(doc, file);
             if let Some(legacy) = records.get(legacy_id) {
@@ -1606,7 +1600,7 @@ fn write_fragment(
             }
         }
     }
-    let m = match record_map(&root, id) {
+    let m = match Roots::record_in(&root, id) {
         Some(m) => m,
         None => {
             let Ok(m) = root.insert_container(id, LoroMap::new()) else {
@@ -1680,10 +1674,10 @@ fn write_gap(
 /// Writes a plan against the file's current text. Does not commit. Returns the
 /// ids of the change records it set.
 pub fn write_planned(doc: &LoroDoc, file_id: &str, plan: &Plan) -> Vec<String> {
-    let Some(text) = text_of(doc, file_id) else {
+    let Some(text) = Roots::new(doc).text_by_id(file_id) else {
         return Vec::new();
     };
-    let root = doc.get_map(CHANGES);
+    let root = Roots::new(doc).changes();
     let live: HashSet<String> = plan
         .gaps
         .iter()
@@ -1728,13 +1722,6 @@ pub fn write_planned(doc: &LoroDoc, file_id: &str, plan: &Plan) -> Vec<String> {
     written
 }
 
-fn text_of(doc: &LoroDoc, file_id: &str) -> Option<LoroText> {
-    match doc.get_map(FILES).get(file_id)? {
-        ValueOrContainer::Container(Container::Text(t)) => Some(t),
-        _ => None,
-    }
-}
-
 /// A random version 4 UUID in its hyphenated form.
 fn mint_uuid() -> String {
     let mut b = librepaper_base::util::random_bytes(16);
@@ -1765,7 +1752,7 @@ fn apply_planned(
     now_ms: i64,
     untracked: bool,
 ) -> Result<Option<Plan>, String> {
-    let text = text_of(doc, file_id).ok_or_else(|| "the file does not exist".to_string())?;
+    let text = Roots::new(doc).text_by_id(file_id).ok_or_else(|| "the file does not exist".to_string())?;
     let before = text.to_string();
     // Resolved before the text moves: the cursors are read where they stand.
     let state = resolve_file(doc, file_id).state;
@@ -1924,7 +1911,7 @@ fn restore_group(
         flush(doc, text, file, pos, &mut pending);
         pos += n;
         if let Some(fid) = &f.id {
-            doc.get_map(CHANGES).delete(fid).ok();
+            Roots::new(doc).changes().delete(fid).ok();
         }
     }
     flush(doc, text, file, pos, &mut pending);
@@ -1981,14 +1968,14 @@ fn restore_change(doc: &LoroDoc, text: &LoroText, file: &str, id: &str) {
 /// Whether `id` names a record a decision applies to: a change record, or a
 /// fragment record whose change is gone, which is read as a change of its own.
 fn decidable(root: &LoroMap, id: &str) -> bool {
-    let Some(m) = record_map(root, id) else {
+    let Some(m) = Roots::record_in(root, id) else {
         return false;
     };
-    match str_of(&m, "kind").as_deref() {
+    match Roots::string_at(&m, "kind").as_deref() {
         Some("change") => true,
-        Some("fragment") => !str_of(&m, "change")
-            .and_then(|parent| record_map(root, &parent))
-            .is_some_and(|p| str_of(&p, "kind").as_deref() == Some("change")),
+        Some("fragment") => !Roots::string_at(&m, "change")
+            .and_then(|parent| Roots::record_in(root, &parent))
+            .is_some_and(|p| Roots::string_at(&p, "kind").as_deref() == Some("change")),
         _ => false,
     }
 }
@@ -1998,13 +1985,13 @@ fn decidable(root: &LoroMap, id: &str) -> bool {
 /// change record nor a fragment read as one. Does not commit.
 pub fn accept(doc: &LoroDoc, id: &str) -> bool {
     convert_plain(doc, id);
-    let root = doc.get_map(CHANGES);
+    let root = Roots::new(doc).changes();
     if !decidable(&root, id) {
         return false;
     }
     for (fid, m) in records(doc) {
-        if str_of(&m, "kind").as_deref() == Some("fragment")
-            && str_of(&m, "change").as_deref() == Some(id)
+        if Roots::string_at(&m, "kind").as_deref() == Some("fragment")
+            && Roots::string_at(&m, "change").as_deref() == Some(id)
         {
             root.delete(&fid).ok();
         }
@@ -2019,19 +2006,19 @@ pub fn accept(doc: &LoroDoc, id: &str) -> bool {
 /// read as one. Does not commit.
 pub fn reject(doc: &LoroDoc, id: &str) -> bool {
     convert_plain(doc, id);
-    let root = doc.get_map(CHANGES);
+    let root = Roots::new(doc).changes();
     if !decidable(&root, id) {
         return false;
     }
-    let file = record_map(&root, id).and_then(|m| str_of(&m, "file"));
+    let file = Roots::record_in(&root, id).and_then(|m| Roots::string_at(&m, "file"));
     if let Some(file) = file {
-        if let Some(text) = text_of(doc, &file) {
+        if let Some(text) = Roots::new(doc).text_by_id(&file) {
             restore_change(doc, &text, &file, id);
         }
     }
     for (fid, m) in records(doc) {
-        if str_of(&m, "kind").as_deref() == Some("fragment")
-            && str_of(&m, "change").as_deref() == Some(id)
+        if Roots::string_at(&m, "kind").as_deref() == Some("fragment")
+            && Roots::string_at(&m, "change").as_deref() == Some(id)
         {
             root.delete(&fid).ok();
         }
@@ -2084,16 +2071,16 @@ pub fn prune(doc: &LoroDoc) -> usize {
 /// file with no text are dropped. Returns the number of records deleted. Does
 /// not commit.
 pub fn prune_at(doc: &LoroDoc, now: i64) -> usize {
-    let root = doc.get_map(CHANGES);
+    let root = Roots::new(doc).changes();
     let files: BTreeSet<String> = records(doc)
         .iter()
-        .filter_map(|(_, m)| str_of(m, "file"))
+        .filter_map(|(_, m)| Roots::string_at(m, "file"))
         .collect();
     let mut removed = 0;
     for file in files {
-        let Some(text) = text_of(doc, &file) else {
+        let Some(text) = Roots::new(doc).text_by_id(&file) else {
             for (id, m) in records(doc) {
-                if str_of(&m, "file").as_deref() == Some(file.as_str()) {
+                if Roots::string_at(&m, "file").as_deref() == Some(file.as_str()) {
                     root.delete(&id).ok();
                     removed += 1;
                 }
@@ -2115,7 +2102,7 @@ pub fn prune_at(doc: &LoroDoc, now: i64) -> usize {
             )
             .collect();
         for (id, m) in records(doc) {
-            if str_of(&m, "file").as_deref() != Some(file.as_str()) {
+            if Roots::string_at(&m, "file").as_deref() != Some(file.as_str()) {
                 continue;
             }
             if live.contains(&id) {
@@ -2147,7 +2134,7 @@ pub fn prune_at(doc: &LoroDoc, now: i64) -> usize {
         // last edit: the author may be moving that very end of the span in a
         // session that has not synced yet, and the heal would race it.
         let stale_settled = |id: &str| -> bool {
-            let Some(m) = record_map(&root, id) else {
+            let Some(m) = Roots::record_in(&root, id) else {
                 return true;
             };
             match num_of(&m, "stale") {
@@ -2159,7 +2146,7 @@ pub fn prune_at(doc: &LoroDoc, now: i64) -> usize {
             }
         };
         let unmark = |id: &str| {
-            if let Some(m) = record_map(&root, id) {
+            if let Some(m) = Roots::record_in(&root, id) {
                 if m.get("stale").is_some() {
                     m.delete("stale").ok();
                 }
@@ -2239,7 +2226,7 @@ pub struct Unsuggested {
 /// ranges of it back onto the stored text. `None` when there is no text file
 /// with this id.
 pub fn unsuggested(doc: &LoroDoc, file_id: &str) -> Option<Unsuggested> {
-    let stored = text_of(doc, file_id)?.to_string();
+    let stored = Roots::new(doc).text_by_id(file_id)?.to_string();
     let state = resolve_file(doc, file_id).state;
     let chars: Vec<char> = stored.chars().collect();
     let n = chars.len();
@@ -2371,7 +2358,7 @@ impl Unsuggested {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::session::{new_doc, put_text};
+    use crate::document::session::{new_doc, put_text, CHANGES, FILES};
     use serde::Deserialize;
 
     const FIXTURES: &str = include_str!("../../../../web/tests/fixtures/track-changes.json");
@@ -2669,7 +2656,7 @@ mod tests {
     }
 
     fn body(doc: &LoroDoc, id: &str) -> String {
-        text_of(doc, id).unwrap().to_string()
+        Roots::new(doc).text_by_id(id).unwrap().to_string()
     }
 
     fn edit(at: usize, delete: usize, insert: &str) -> Edit {
@@ -2871,8 +2858,8 @@ mod tests {
         assert_eq!(prune(&doc), 1);
         doc.commit();
         let root = doc.get_map(CHANGES);
-        assert!(record_map(&root, "empty").is_some());
-        record_map(&root, "empty")
+        assert!(Roots::record_in(&root, "empty").is_some());
+        Roots::record_in(&root, "empty")
             .unwrap()
             .insert("emptied", LoroValue::Double(0.0))
             .unwrap();
@@ -3647,7 +3634,7 @@ mod tests {
         empty_record(&doc, "old", &id, 1.0);
         // The old one was first seen empty long ago.
         let root = doc.get_map(CHANGES);
-        record_map(&root, "old")
+        Roots::record_in(&root, "old")
             .unwrap()
             .insert("emptied", LoroValue::Double(1.0))
             .unwrap();
@@ -3669,7 +3656,7 @@ mod tests {
         assert_eq!(prune(&doc), 0);
         doc.commit();
         let root = doc.get_map(CHANGES);
-        let m = record_map(&root, "empty").expect("kept by the first prune");
+        let m = Roots::record_in(&root, "empty").expect("kept by the first prune");
         assert!(num_of(&m, "emptied").is_some());
         m.insert("emptied", LoroValue::Double(0.0)).unwrap();
         doc.commit();
@@ -3719,7 +3706,7 @@ mod tests {
         let root = a.get_map(CHANGES);
         let keys: Vec<String> = root.keys().map(|k| k.to_string()).collect();
         for k in &keys {
-            if let Some(m) = record_map(&root, k) {
+            if let Some(m) = Roots::record_in(&root, k) {
                 m.insert("at", LoroValue::Double(0.0)).unwrap();
             }
         }
@@ -3797,7 +3784,7 @@ mod tests {
     /// Stores a fragment "X" of bob's at offset 1 of `file`, whose change record
     /// is gone: only its author fields remain.
     fn orphan_fragment(doc: &LoroDoc, file: &str) {
-        let text = text_of(doc, file).unwrap();
+        let text = Roots::new(doc).text_by_id(file).unwrap();
         let cursor = text.get_cursor(1, Side::Left).unwrap().encode();
         let frag = doc
             .get_map(CHANGES)
@@ -3838,7 +3825,7 @@ mod tests {
         assert_eq!(prune(&doc), 0);
         doc.commit();
         let root = doc.get_map(CHANGES);
-        assert!(record_map(&root, "frag").unwrap().get("emptied").is_none());
+        assert!(Roots::record_in(&root, "frag").unwrap().get("emptied").is_none());
         assert!(reject(&doc, "frag"));
         doc.commit();
         assert_eq!(body(&doc, &id), "aXbc");
@@ -3883,7 +3870,7 @@ mod tests {
         );
         let mut kinds: Vec<String> = records(&doc)
             .iter()
-            .filter_map(|(_, m)| str_of(m, "kind"))
+            .filter_map(|(_, m)| Roots::string_at(m, "kind"))
             .collect();
         kinds.sort();
         assert_eq!(kinds, ["change", "fragment", "fragment"]);
@@ -4048,7 +4035,7 @@ mod tests {
         // same character of "ae".
         let build = || {
             let (doc, id) = setup("ae");
-            let anchor = text_of(&doc, &id)
+            let anchor = Roots::new(&doc).text_by_id(&id)
                 .unwrap()
                 .get_cursor(1, Side::Left)
                 .unwrap()
@@ -4114,8 +4101,8 @@ mod tests {
             let mut kinds: Vec<String> = Vec::new();
             let mut plain = 0;
             for k in root.keys().map(|k| k.to_string()).collect::<Vec<String>>() {
-                match record_map(&root, &k) {
-                    Some(m) => kinds.push(str_of(&m, "kind").unwrap_or_default()),
+                match Roots::record_in(&root, &k) {
+                    Some(m) => kinds.push(Roots::string_at(&m, "kind").unwrap_or_default()),
                     None => plain += 1,
                 }
             }
@@ -4137,7 +4124,7 @@ mod tests {
         let (doc, id) = setup("abcdef");
         apply_tracked_edits(&doc, &id, &[edit(2, 1, "")], &who_of("p"), None, 1).unwrap();
         doc.commit();
-        text_of(&doc, &id).unwrap().delete(2, 1).unwrap();
+        Roots::new(&doc).text_by_id(&id).unwrap().delete(2, 1).unwrap();
         doc.commit();
         let before = resolve_file(&doc, &id).state.gaps;
         assert!(before[0].stale);
@@ -4146,14 +4133,14 @@ mod tests {
         let now = now_ms();
         prune_at(&doc, now);
         doc.commit();
-        assert!(num_of(&record_map(&root, &fid).unwrap(), "stale").is_some());
+        assert!(num_of(&Roots::record_in(&root, &fid).unwrap(), "stale").is_some());
         assert!(resolve_file(&doc, &id).state.gaps[0].stale);
         prune_at(&doc, now + 120_000);
         doc.commit();
         let after = resolve_file(&doc, &id).state.gaps;
         assert!(!after[0].stale);
         assert_eq!(after[0].at, 2);
-        assert!(record_map(&root, &fid).unwrap().get("stale").is_none());
+        assert!(Roots::record_in(&root, &fid).unwrap().get("stale").is_none());
     }
 
     #[derive(Deserialize)]

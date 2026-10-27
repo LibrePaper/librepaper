@@ -23,8 +23,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use librepaper_base::digest::Digest;
 use librepaper_base::paths::{self, Kind, Rules};
-use loro::{Container, LoroDoc, LoroValue, ValueOrContainer};
+use loro::{LoroDoc, LoroValue, ValueOrContainer};
 use serde::{Deserialize, Serialize};
+
+use crate::document::roots::Roots;
 
 pub const ROOTS: [&str; 4] = [FILES, PATHS, ASSETS, META];
 
@@ -219,18 +221,19 @@ pub fn project(doc: &LoroDoc, rules: &Rules) -> Projected {
     let mut candidates = Vec::new();
 
     // 1. Collect candidates.
-    let files = doc.get_map(FILES);
-    let path_map = doc.get_map(PATHS);
-    let assets = doc.get_map(ASSETS);
+    let roots = Roots::new(doc);
+    let files = roots.files();
+    let path_map = roots.paths();
+    let assets = roots.assets();
 
     let mut named: HashMap<String, String> = HashMap::new();
     for key in path_map.keys() {
         let id = key.to_string();
-        match path_map.get(&id) {
-            Some(ValueOrContainer::Value(LoroValue::String(path))) => {
-                named.insert(id, path.to_string());
+        match Roots::string_at(&path_map, &id) {
+            Some(path) => {
+                named.insert(id, path);
             }
-            _ => diagnostics.push(Diagnostic::Unnamed { id }),
+            None => diagnostics.push(Diagnostic::Unnamed { id }),
         }
     }
 
@@ -238,7 +241,7 @@ pub fn project(doc: &LoroDoc, rules: &Rules) -> Projected {
     file_ids.sort();
     let mut text_ids: HashSet<String> = HashSet::new();
     for id in file_ids {
-        let Some(ValueOrContainer::Container(Container::Text(text))) = files.get(&id) else {
+        let Some(text) = roots.text_by_id(&id) else {
             diagnostics.push(Diagnostic::NotAText { id });
             continue;
         };
