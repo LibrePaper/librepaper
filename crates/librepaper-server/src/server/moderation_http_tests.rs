@@ -205,7 +205,13 @@ async fn deployment_mode_with_policy(
         .create_share_link(
             document_id,
             Role::Reader,
-            hex::decode(crate::server::sharing::hash_link_key(&share_key))
+            hex::decode(
+                share_key
+                    .parse::<librepaper_base::ids::LinkKey>()
+                    .unwrap()
+                    .digest()
+                    .to_hex(),
+            )
                 .unwrap()
                 .try_into()
                 .unwrap(),
@@ -220,7 +226,13 @@ async fn deployment_mode_with_policy(
         .create_share_link(
             document_id,
             Role::Commenter,
-            hex::decode(crate::server::sharing::hash_link_key(&commenter_link_key))
+            hex::decode(
+                commenter_link_key
+                    .parse::<librepaper_base::ids::LinkKey>()
+                    .unwrap()
+                    .digest()
+                    .to_hex(),
+            )
                 .unwrap()
                 .try_into()
                 .unwrap(),

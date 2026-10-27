@@ -1,3 +1,4 @@
+use librepaper_base::ids::Slug;
 use url::Url;
 
 use crate::Error;
@@ -29,7 +30,7 @@ impl Link {
         }
         let slug = segments
             .next()
-            .filter(|slug| is_slug(slug))
+            .filter(|slug| slug.parse::<Slug>().is_ok())
             .ok_or_else(bad)?;
         Ok(Link::at(&url, slug.to_string()))
     }
@@ -52,14 +53,6 @@ impl Link {
     pub fn project_url(&self) -> String {
         format!("{}/docs/{}", self.origin(), self.slug)
     }
-}
-
-fn is_slug(text: &str) -> bool {
-    !text.is_empty()
-        && text.len() <= 200
-        && text
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 #[cfg(test)]

@@ -108,7 +108,13 @@ async fn fixture(slug: &str) -> Option<Fixture> {
         .create_share_link(
             document_id,
             Role::Reader,
-            hex::decode(crate::server::sharing::hash_link_key(&reader_key))
+            hex::decode(
+                reader_key
+                    .parse::<librepaper_base::ids::LinkKey>()
+                    .unwrap()
+                    .digest()
+                    .to_hex(),
+            )
                 .unwrap()
                 .try_into()
                 .unwrap(),
@@ -124,7 +130,13 @@ async fn fixture(slug: &str) -> Option<Fixture> {
         .create_share_link(
             document_id,
             Role::Commenter,
-            hex::decode(crate::server::sharing::hash_link_key(&commenter_key))
+            hex::decode(
+                commenter_key
+                    .parse::<librepaper_base::ids::LinkKey>()
+                    .unwrap()
+                    .digest()
+                    .to_hex(),
+            )
                 .unwrap()
                 .try_into()
                 .unwrap(),

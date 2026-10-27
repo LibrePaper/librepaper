@@ -70,7 +70,13 @@ async fn mint_editor_link(deployment: &Deployment) -> String {
         .create_share_link(
             Uuid::parse_str(&entry.storage_id).unwrap(),
             Role::Editor,
-            hex::decode(crate::server::sharing::hash_link_key(&key))
+            hex::decode(
+                key
+                    .parse::<librepaper_base::ids::LinkKey>()
+                    .unwrap()
+                    .digest()
+                    .to_hex(),
+            )
                 .unwrap()
                 .try_into()
                 .unwrap(),
@@ -242,7 +248,13 @@ async fn a_listing_cursor_cannot_probe_a_slug_the_caller_cannot_read() {
     // it is a valid cursor for them.
     let entry_id = Uuid::parse_str(&entry.storage_id).unwrap();
     let guest_key = format!("reader-{}", Uuid::new_v4().simple());
-    let guest_hash: [u8; 32] = hex::decode(crate::server::sharing::hash_link_key(&guest_key))
+    let guest_hash: [u8; 32] = hex::decode(
+                guest_key
+                    .parse::<librepaper_base::ids::LinkKey>()
+                    .unwrap()
+                    .digest()
+                    .to_hex(),
+            )
         .unwrap()
         .try_into()
         .unwrap();

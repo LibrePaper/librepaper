@@ -118,7 +118,13 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         .create_share_link(
             document_id,
             Role::Commenter,
-            hex::decode(crate::server::sharing::hash_link_key(&commenter_link_key))
+            hex::decode(
+                commenter_link_key
+                    .parse::<librepaper_base::ids::LinkKey>()
+                    .unwrap()
+                    .digest()
+                    .to_hex(),
+            )
                 .unwrap()
                 .try_into()
                 .unwrap(),
@@ -133,7 +139,13 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         .create_share_link(
             document_id,
             Role::Editor,
-            hex::decode(crate::server::sharing::hash_link_key(&owner_link_key))
+            hex::decode(
+                owner_link_key
+                    .parse::<librepaper_base::ids::LinkKey>()
+                    .unwrap()
+                    .digest()
+                    .to_hex(),
+            )
                 .unwrap()
                 .try_into()
                 .unwrap(),
