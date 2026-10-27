@@ -546,6 +546,20 @@ mod tests {
     }
 
     #[test]
+    fn round_trips_a_name_with_a_c1_character() {
+        let archive = SourceArchive {
+            source_format: "latex".into(),
+            files: vec![SourceFile::Inline {
+                path: "a\u{85}b.tex".into(),
+                bytes: b"\\documentclass{article}\n".to_vec(),
+            }],
+        };
+        let encoded = encode(archive.clone(), ArchiveLimits::default()).unwrap();
+        let decoded = decode(&encoded.bytes, ArchiveLimits::default()).unwrap();
+        assert_eq!(decoded.files, archive.files);
+    }
+
+    #[test]
     fn rejects_malformed_and_expanding_archives() {
         let valid = encode(fixture(), ArchiveLimits::default()).unwrap();
         let tar_bytes = zstd::stream::decode_all(Cursor::new(valid.bytes)).unwrap();

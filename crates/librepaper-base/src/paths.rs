@@ -50,11 +50,18 @@ impl std::error::Error for PathRefusal {}
 pub struct RelPath(String);
 
 impl RelPath {
-    /// The structure, plus the one rule a path named on a local disk needs:
-    /// it cannot begin with a drive, since Windows would read it as a drive.
+    /// The structure, plus the rules a path named on a local disk needs: no
+    /// control character at all, C1 included, and no leading drive, since
+    /// Windows would read it as one.
     /// Used for paths written to or named on a real filesystem.
     pub fn local(path: &str) -> Result<RelPath, PathRefusal> {
         let relative = RelPath::try_from(path)?;
+        if path.chars().any(char::is_control) {
+            return Err(PathRefusal::new(
+                path,
+                "a path cannot carry control characters",
+            ));
+        }
         let bytes = path.as_bytes();
         if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
             return Err(PathRefusal::new(path, "a path cannot begin with a drive"));
@@ -106,7 +113,9 @@ impl TryFrom<&str> for RelPath {
         if path.contains('\\') {
             return refuse("paths are separated by /, not by \\");
         }
-        if path.contains('\0') || path.chars().any(char::is_control) {
+        // The same characters admission refuses, so every admitted path has
+        // the structure. The wider C1 range is `RelPath::local`'s rule.
+        if path.chars().any(|c| (c as u32) < 0x20 || c == '\u{7f}') {
             return refuse("a path cannot carry control characters");
         }
         if path
@@ -411,6 +420,32 @@ mod tests {
         assert!(!RelPath::is_local("c:paper.tex"));
         assert!(RelPath::is_local("chapters/c:paper.tex"));
         assert!(RepoPath::try_from("c:paper.tex").is_err());
+    }
+
+    #[test]
+    fn every_admitted_path_has_the_structure() {
+        let text = strings(&[".tex"]);
+        let rules = rules(&text, &[]);
+        for path in [
+            "c:paper.tex",
+            "notes:2026.tex",
+            "a\u{85}b.tex",
+            "a\u{9f}b.tex",
+            " spaced.tex ",
+            "caf\u{e9}.tex",
+            "chapters/\u{1f600}.tex",
+            "asset:x.tex",
+        ] {
+            if admit(&rules, path).is_ok() {
+                assert!(
+                    RelPath::try_from(normalise(path).as_str()).is_ok(),
+                    "{path:?} is admitted but has no structure"
+                );
+            }
+        }
+        // A C1 character is structure, and refused only on a local disk.
+        assert!(admit(&rules, "a\u{85}b.tex").is_ok());
+        assert!(RelPath::local("a\u{85}b.tex").is_err());
     }
 
     #[test]

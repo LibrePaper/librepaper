@@ -26,6 +26,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_admitted_name_with_a_c1_character_stays_inside() {
+        let dir = Path::new("folder");
+        assert_eq!(
+            inside(dir, "a\u{85}b.tex").unwrap(),
+            dir.join("a\u{85}b.tex")
+        );
+    }
+
+    #[test]
     fn a_path_is_inside_only_when_every_part_is_a_plain_name() {
         let dir = Path::new("folder");
         assert_eq!(
