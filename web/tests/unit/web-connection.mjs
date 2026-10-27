@@ -159,6 +159,14 @@ const merging = { ...connected, merging: { side: "repository", conflicts: ["a.te
   assert.equal(web.state.result, "Nothing new to send to repository branch main.");
 }
 
+// A send in a local repository only takes the project in, and says so by what came in.
+for (const [pulled, line] of [[true, "Sent to repository branch main."], [false, "Nothing new to send to repository branch main."]]) {
+  const { api } = routes({ pushConnection: { status: connected, pulled } });
+  const web = createWebConnection({ api, project });
+  await web.push();
+  assert.equal(web.state.result, line);
+}
+
 // A pull refused over the project's changed files keeps the paths, asks for no second
 // pull, and says so.
 {

@@ -140,7 +140,7 @@ export function createWebConnection({ api = routes, project, flush = async () =>
     return files ? `${from}: ${plural(files, "file")} into the project.` : `${from}: nothing new.`;
   };
 
-  const sentLine = (/** @type {any} */ answer) => (answer.pushed === "pushed"
+  const sentLine = (/** @type {any} */ answer) => ((typeof answer.pulled === "boolean" ? answer.pulled : answer.pushed === "pushed")
     ? `Sent to repository${branchOf(answer)}.`
     : `Nothing new to send to repository${branchOf(answer)}.`);
 

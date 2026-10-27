@@ -732,6 +732,53 @@ async fn web_pull(inner: &Inner, connection: &Connection) -> Result<PullOutcome,
     Ok(outcome)
 }
 
+/// The refusal for tracked files holding changes that are not committed.
+fn dirty_refusal(paths: &[String]) -> Failure {
+    (
+        409,
+        json!({
+            "reason": "dirty",
+            "paths": paths,
+            "error": "Commit your changes to tracked files first.",
+        }),
+    )
+}
+
+/// Refuses a local connection whose tracked files hold uncommitted changes.
+/// The web pull answers up to date before it looks at the tree, and a push
+/// uploads the working tree, so both would send edits the person has not
+/// committed. A remote connection works in the app's own clone and is not
+/// checked.
+async fn refuse_uncommitted(connection: &Connection, repo: &Path) -> Result<(), Failure> {
+    if connection.local_root().is_none() {
+        return Ok(());
+    }
+    let output = must(
+        repo,
+        Limit::Local,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=no"],
+    )
+    .await?;
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut paths = Vec::new();
+    let mut entries = text.split('\0');
+    while let Some(entry) = entries.next() {
+        if entry.len() < 4 {
+            continue;
+        }
+        paths.push(entry[3..].to_owned());
+        // A rename or copy carries its source as a second entry.
+        if matches!(entry.as_bytes()[0], b'R' | b'C') {
+            entries.next();
+        }
+    }
+    if paths.is_empty() {
+        Ok(())
+    } else {
+        Err(dirty_refusal(&paths))
+    }
+}
+
 /// Whether a web pull left a merge to resolve. A clone holding changes the
 /// merge cannot be made over is refused.
 fn merge_stopped(outcome: &PullOutcome) -> Result<bool, Failure> {
@@ -743,14 +790,7 @@ fn merge_stopped(outcome: &PullOutcome) -> Result<bool, Failure> {
         PullOutcome::Repository {
             merge: MergeOutcome::DirtyTree(paths),
             ..
-        } => Err((
-            409,
-            json!({
-                "reason": "dirty",
-                "paths": paths,
-                "error": "Commit your changes to tracked files first.",
-            }),
-        )),
+        } => Err(dirty_refusal(paths)),
         _ => Ok(false),
     }
 }
@@ -830,6 +870,7 @@ async fn pull_from_repository(
     if open_merge(&connection, &repo).await? {
         return Err(merging(inner, &connection).await);
     }
+    refuse_uncommitted(&connection, &repo).await?;
     if connection.local_root().is_none() {
         let fetched = pull_remote(&repo).await?;
         if fetched["status"] == "conflicts" {
@@ -880,13 +921,15 @@ async fn push_to_repository(
     if open_merge(&connection, &repo).await? {
         return Err(merging(inner, &connection).await);
     }
-    if merge_stopped(&web_pull(inner, &connection).await?)? {
+    refuse_uncommitted(&connection, &repo).await?;
+    let pulled = web_pull(inner, &connection).await?;
+    if merge_stopped(&pulled)? {
         return stopped(inner, &connection).await;
     }
     if connection.local_root().is_some() {
         return Ok(json!({
             "status": status_of(inner, &connection).await?,
-            "pulled": true,
+            "pulled": !matches!(pulled, PullOutcome::UpToDate),
         }));
     }
     let fetched = pull_remote(&repo).await?;
@@ -931,6 +974,7 @@ async fn retry_interrupted(
     if open_merge(&connection, &repo).await? {
         return Err(merging(inner, &connection).await);
     }
+    refuse_uncommitted(&connection, &repo).await?;
     let outcome = web_push(inner, &connection).await?;
     if let Some(refusal) = pushed_refusal(&outcome) {
         return Err(refusal);
@@ -1939,6 +1983,47 @@ mod tests {
         assert_eq!(body["status"]["merging"], Value::Null, "{body}");
         assert!(repo.join("extra.tex").exists());
         assert_eq!(site.posted(), 0);
+    }
+
+    #[tokio::test]
+    async fn uncommitted_edits_in_a_local_repository_are_never_sent() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let repo = local_repository(fixture.scratch.path());
+        let site = Site::start(&[("main.tex", "hello\n")]).await;
+        let connection = fixture.connection_on(&site);
+        connect_local(&fixture.inner, &connection, &repo)
+            .await
+            .unwrap();
+        let origin = Some(site.url.as_str());
+        let project = site.project();
+        pull_from_repository(&fixture.inner, origin, &project)
+            .await
+            .unwrap();
+        let posted = site.posted();
+
+        std::fs::write(repo.join("main.tex"), "edited\n").unwrap();
+        for failure in [
+            pull_from_repository(&fixture.inner, origin, &project)
+                .await
+                .unwrap_err(),
+            push_to_repository(&fixture.inner, origin, &project)
+                .await
+                .unwrap_err(),
+            retry_interrupted(&fixture.inner, origin, &project)
+                .await
+                .unwrap_err(),
+        ] {
+            assert_eq!(
+                (failure.0, &failure.1["reason"], &failure.1["paths"]),
+                (409, &json!("dirty"), &json!(["main.tex"])),
+                "{}",
+                failure.1
+            );
+        }
+        assert_eq!(site.posted(), posted);
     }
 
     #[tokio::test]
