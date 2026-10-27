@@ -10,9 +10,10 @@ use std::path::Path;
 
 use crate::chain::{Chain, Meta, MAIN_REF};
 use crate::client::{Client, Label, Snapshot};
-use crate::files::{inside, line_ending, sha256_hex, with_ending, FileRecord, Kind};
+use crate::files::{inside, sha256_hex, FileRecord, Kind};
 use crate::git::Git;
 use crate::rules::Rules;
+use librepaper_base::text::LineEnding;
 use crate::state::{Fetched, State, StateStore};
 use crate::walk::{scan, Local, Scan};
 use crate::Error;
@@ -722,8 +723,8 @@ async fn write_remote(
                 .ok_or_else(|| Error::Invalid(format!("the version has no text for {path}")))?;
             let ending = existing
                 .and_then(|file| std::fs::read(&file.file).ok())
-                .map_or("\n", |current| line_ending(&current));
-            with_ending(text, ending).into_bytes()
+                .map_or(LineEnding::Lf, |current| LineEnding::detect(&current));
+            ending.apply(text).into_bytes()
         }
         Kind::Asset => client.asset(slug, &record.sha).await?,
     };

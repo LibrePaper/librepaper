@@ -35,6 +35,7 @@ time.workspace = true
 tokio.workspace = true
 url.workspace = true
 uuid.workspace = true
+unicode-normalization.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

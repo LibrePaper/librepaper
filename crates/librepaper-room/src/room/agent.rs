@@ -14,6 +14,7 @@ use uuid::Uuid;
 use super::source_change::{
     client_seq_of, label_for_request, parse_digest, AgentError, Patch, SourceChange,
 };
+use librepaper_base::text::LineEnding;
 use librepaper_document::document::anchors::{self, FragmentRange, OperationFile};
 use librepaper_document::document::session;
 use librepaper_document::document::track;
@@ -495,7 +496,7 @@ impl AgentTrackedCommand {
                         .push(session::Edit {
                             at: text[..start].encode_utf16().count(),
                             delete: edit.exact.encode_utf16().count(),
-                            insert: session::line_feeds(&edit.replacement).into_owned(),
+                            insert: LineEnding::normalise(&edit.replacement).into_owned(),
                         });
                 }
             }
@@ -527,7 +528,7 @@ impl AgentTrackedCommand {
                         .push(session::Edit {
                             at: text[..patch.start].encode_utf16().count(),
                             delete: patch.exact.encode_utf16().count(),
-                            insert: session::line_feeds(&patch.replacement).into_owned(),
+                            insert: LineEnding::normalise(&patch.replacement).into_owned(),
                         });
                 }
             }

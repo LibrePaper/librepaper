@@ -6,7 +6,7 @@
 //! project instead requests that label's archive and downloads it once the
 //! background worker has built it.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 
 use crate::cli::{resolve_identifier, server_or_die};
 use librepaper_base::http::{detail_of, get_as, send, Credentials};
+use librepaper_base::paths::RelPath;
 use librepaper_base::util::die;
 use librepaper_engine::storage::source_archive::{self, ArchiveLimits, SourceFile};
 
@@ -140,7 +141,7 @@ async fn fetch_live_project(
     }
     let mut files = Vec::with_capacity(snapshot.tree.files.len());
     for (path, entry) in &snapshot.tree.files {
-        let relative = safe_relative_path(path)?;
+        let relative = output_path(path)?;
         let bytes = match entry.kind.as_str() {
             "text" => snapshot
                 .texts
@@ -272,7 +273,7 @@ async fn unpack_archive(
         .map_err(|error| format!("label archive is not readable: {error}"))?;
     let mut files = Vec::with_capacity(archive.files.len());
     for file in archive.files {
-        let relative = safe_relative_path(file.path())?;
+        let relative = output_path(file.path())?;
         let bytes = match file {
             SourceFile::Inline { bytes, .. } => bytes,
             SourceFile::Asset { digest, .. } => {
@@ -292,12 +293,8 @@ async fn unpack_archive(
     Ok(files)
 }
 
-fn safe_relative_path(path: &str) -> Result<PathBuf, String> {
-    let relative = PathBuf::from(path);
-    for component in relative.components() {
-        if !matches!(component, Component::Normal(_)) {
-            return Err(format!("path {} contains a dangerous component", path));
-        }
-    }
-    Ok(relative)
+fn output_path(path: &str) -> Result<PathBuf, String> {
+    RelPath::try_from(path)
+        .map(|path| PathBuf::from(path.as_str()))
+        .map_err(|refusal| refusal.to_string())
 }

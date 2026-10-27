@@ -14,10 +14,10 @@
 
 use std::path::{Path, PathBuf};
 
+use librepaper_base::paths::RelPath;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::protocol;
 use librepaper_base::util::now_unix;
 
 // Binding updates are infrequent, and store instances for the same path can
@@ -354,7 +354,7 @@ impl BindingStore {
         entrypoint: &str,
     ) -> Result<ProjectBinding, String> {
         let binding = self.resolve_scoped(id, origin, project)?;
-        if !protocol::safe_relative_path(entrypoint) {
+        if !RelPath::is_valid(entrypoint) {
             return Err("entrypoint must be a safe project-relative path".into());
         }
         let binding = self.check_root(binding)?;

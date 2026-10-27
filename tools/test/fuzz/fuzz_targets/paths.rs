@@ -3,7 +3,7 @@
 //! idempotent, and a name that passes keeps passing once it is stored.
 #![no_main]
 
-use librepaper::paths::{check, collision_key, kind_of, normalise, placeholder, suffixed};
+use librepaper::paths::{admit, collision_key, kind_of, normalise, placeholder, suffixed};
 use librepaper_fuzz::{configuration, rules};
 use libfuzzer_sys::fuzz_target;
 
@@ -25,11 +25,11 @@ fuzz_target!(|input: (&str, u8)| {
     let _ = placeholder(path);
     let _ = suffixed(path, usize::from(nth));
 
-    if let Ok(kind) = check(&rules, path) {
+    if let Ok(kind) = admit(&rules, path) {
         // What is stored is the normalised form, and it is checked again by
         // every route and by the repair pass: it has to pass the same way.
         assert_eq!(
-            check(&rules, &once),
+            admit(&rules, &once),
             Ok(kind),
             "a stored path stops passing"
         );
@@ -43,7 +43,7 @@ fuzz_target!(|input: (&str, u8)| {
             "a suffix changed the kind"
         );
         assert!(
-            check(&rules, &aside).is_ok() || aside.len() > rules.max_path,
+            admit(&rules, &aside).is_ok() || aside.len() > rules.max_path,
             "{aside:?}: moving a file aside made it a name the rules refuse"
         );
     }

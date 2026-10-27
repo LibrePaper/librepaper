@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::local::protocol::safe_relative_path;
+use librepaper_base::paths::RelPath;
 
 /// Most arguments a command may hold.
 const MAX_ARGUMENTS: usize = 64;
@@ -257,7 +257,7 @@ impl Record {
             .map(|argument| expand_template(argument, input, stem))
             .collect::<Result<Vec<_>, _>>()?;
         let result = expand_template(&self.result, input, stem)?;
-        if !safe_relative_path(&result) {
+        if !RelPath::is_valid(&result) {
             return Err(format!(
                 "the result path must be a safe relative path, not {result}"
             ));

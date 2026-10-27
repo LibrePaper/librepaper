@@ -27,6 +27,7 @@
 //! keeps, in memory, per folder project.
 
 use super::*;
+use librepaper_base::paths::RelPath;
 
 use librepaper_base::http::Credentials;
 use librepaper_sync::{
@@ -682,7 +683,7 @@ pub(super) async fn handle_pull(
     if !mine
         .iter()
         .chain(&theirs)
-        .all(|path| protocol::safe_relative_path(path))
+        .all(|path| RelPath::is_valid(path))
     {
         return write_json(400, &json!({"error": "unsafe file path"}));
     }

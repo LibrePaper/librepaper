@@ -68,6 +68,7 @@
 //! a directory took its place. Anything else leaves it as it is.
 
 use super::*;
+use librepaper_base::paths::RelPath;
 
 use std::collections::BTreeSet;
 use std::io::ErrorKind;
@@ -264,7 +265,7 @@ fn walk_limited(
                 };
                 if metadata.len() > MAX_UPLOAD_BYTES as u64 {
                     result.skipped.push((relative, "too large"));
-                } else if !protocol::safe_relative_path(&relative) {
+                } else if !RelPath::is_valid(&relative) {
                     result.skipped.push((relative, "name"));
                 } else {
                     let mtime_ns = metadata
@@ -386,7 +387,7 @@ fn read_project_file(path: &Path) -> Option<Vec<u8>> {
 /// Resolve `relative` to a regular file inside `root`. The path must be safe,
 /// name nothing hidden or ignored, and cross no symlink.
 fn project_file(root: &Path, relative: &str) -> Result<PathBuf, (u16, &'static str)> {
-    if !protocol::safe_relative_path(relative) {
+    if !RelPath::is_valid(relative) {
         return Err((400, "unsafe file path"));
     }
     if relative.split('/').any(|part| skip_reason(part).is_some()) {

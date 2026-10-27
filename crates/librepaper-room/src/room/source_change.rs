@@ -23,7 +23,8 @@ use uuid::Uuid;
 use super::agent::{AgentAuthority, OperationKey};
 use crate::room::Room;
 use librepaper_document::document::anchors::{self, OperationFile};
-use librepaper_document::document::projection::paths::{self, Kind, Rules};
+use librepaper_base::paths::{self, Kind, Rules};
+use librepaper_base::text::LineEnding;
 use librepaper_document::document::session;
 use librepaper_document::document::track;
 use librepaper_engine::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
@@ -474,7 +475,7 @@ fn require_kind(rules: &Rules<'_>, path: &str, want: Kind) -> Result<(), AgentEr
             "invalid source path: {path:?}"
         )));
     }
-    match paths::check(rules, path) {
+    match paths::admit(rules, path) {
         Ok(kind) if kind == want => Ok(()),
         Ok(_) => Err(AgentError::Invalid(format!(
             "{path}: this operation does not apply to that kind of file"
@@ -638,7 +639,7 @@ fn apply_patch_edits(
             .map(|patch| session::Edit {
                 at: byte_to_utf16(original.text, patch.start),
                 delete: byte_to_utf16(&original.text[patch.start..], patch.end - patch.start),
-                insert: session::line_feeds(&patch.replacement).into_owned(),
+                insert: LineEnding::normalise(&patch.replacement).into_owned(),
             })
             .collect();
         files.push((

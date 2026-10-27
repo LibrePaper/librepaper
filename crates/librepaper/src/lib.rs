@@ -50,9 +50,8 @@ pub use librepaper_companion::automation::peer;
 /// (`tools/test/fuzz/fuzz_targets/paths.rs`) runs every one of these on whatever
 /// libFuzzer produces.
 pub mod paths {
-    pub use librepaper_document::document::paths::{
-        check, collision_key, kind_of, normalise, placeholder, suffixed, Rules,
-    };
+    pub use librepaper_base::paths::{admit, collision_key, kind_of, normalise, Rules, MAX_SEGMENTS};
+    pub use librepaper_document::document::paths::{placeholder, suffixed};
 }
 
 /// The shared document. Its bytes come from a browser, so what reads them
@@ -71,7 +70,7 @@ pub mod session {
 /// (`tools/test/fuzz/fuzz_targets/document.rs`) hold it to its definition.
 pub mod projection {
     pub use librepaper_document::document::projection::{
-        paths::MAX_SEGMENTS, project, Entry, Projected, Projection, ROOTS,
+        project, Entry, Projected, Projection, ROOTS,
     };
 }
 
@@ -90,7 +89,8 @@ pub mod annotation {
 /// The loopback service takes requests from any page in the browser, and a
 /// request there becomes files on the author's own machine.
 pub mod protocol {
-    pub use librepaper_companion::local::protocol::{safe_relative_path, JobRequest};
+    pub use librepaper_base::paths::RelPath;
+    pub use librepaper_companion::local::protocol::JobRequest;
 }
 
 /// What a version's bytes travel in, encoded and decoded by
