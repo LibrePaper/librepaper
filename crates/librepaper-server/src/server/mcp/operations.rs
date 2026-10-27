@@ -62,14 +62,11 @@ enum RefusalRecord {
     Recorded,
 }
 
+/// An agent change's refusal as an MCP failure. The code and the commit
+/// state come from the refusal. The wording is MCP's own: the error's
+/// description, with the moved files named, which a plain HTTP caller does
+/// not get.
 pub(super) fn failure(error: source_change::AgentError) -> Failure {
-    let code = match error {
-        source_change::AgentError::Invalid(_) => "invalid_params",
-        source_change::AgentError::Conflict(_)
-        | source_change::AgentError::Changed(_)
-        | source_change::AgentError::Suggestion { .. } => "conflict",
-        source_change::AgentError::Storage(_) => "outcome_unknown",
-    };
     let message = match &error {
         source_change::AgentError::Changed(paths) => {
             format!(
@@ -79,7 +76,9 @@ pub(super) fn failure(error: source_change::AgentError) -> Failure {
         }
         other => other.to_string(),
     };
-    Failure::new(code, message)
+    let mut failure = crate::server::refusal::mcp(&Refusal::from(&error));
+    failure.message = message;
+    failure
 }
 
 /// What identifies "this operation, sent again": the tool and its arguments,
@@ -137,18 +136,6 @@ fn independent_child_digests(
             operation_digest(tool, &child)
         })
         .collect()
-}
-
-fn definite_noncommit_code(code: &str) -> bool {
-    matches!(
-        code,
-        "invalid_params"
-            | "invalid_range"
-            | "not_found"
-            | "conflict"
-            | "permission_changed"
-            | "budget_exceeded"
-    )
 }
 
 pub(super) fn tree_of_view(view: &View) -> Result<SourceTree<'_>, Failure> {
@@ -392,7 +379,7 @@ impl Server {
             .mcp_operation_inner(slug, actor, who, headers, arrival, name, args, "")
             .await;
         if let Err(error) = &result {
-            if name != "document_result" && definite_noncommit_code(error.code) {
+            if name != "document_result" && error.committed == Committed::No {
                 if let Ok(key) = serde_json::from_value::<OperationKey>(args["operation"].clone()) {
                     let digest = operation_digest(name, args);
                     self.mcp_record_definite_refusal(slug, actor, who, &key, name, &digest, error)
@@ -511,7 +498,7 @@ impl Server {
                         ))
                         .await;
                         if let Err(error) = &outcome {
-                            if definite_noncommit_code(error.code) {
+                            if error.committed == Committed::No {
                                 let child_digest = operation_digest(name, &child);
                                 match self
                                     .mcp_record_definite_refusal(
@@ -551,7 +538,7 @@ impl Server {
                         }
                         items.push(match outcome {
                             Ok(result) => json!({"index":index,"status":result["status"],"candidate_id":result["candidate_id"],"effects":result["effects"],"replay":result["replay"]}),
-                            Err(error) => json!({"index":index,"status":if definite_noncommit_code(error.code){"refused"}else{"outcome_unknown"},"error":{"code":error.code,"message":error.message}}),
+                            Err(error) => json!({"index":index,"status":if error.committed == Committed::No {"refused"}else{"outcome_unknown"},"error":{"code":error.code,"message":error.message}}),
                         });
                     }
                     // `independent` means each patch is its own command with

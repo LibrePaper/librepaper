@@ -12,6 +12,7 @@ use super::*;
 use librepaper_room::room;
 use librepaper_room::room::agent::OperationKey;
 use librepaper_room::room::comments::validate_existing_action;
+use librepaper_room::room::refusal::Kind;
 
 /// The id a newly created annotation gets.
 ///
@@ -42,7 +43,7 @@ pub(super) fn parse_uuid(value: &str, what: &str) -> Result<uuid::Uuid, Failure>
 
 /// A refused command as an MCP failure.
 ///
-/// The classification is the same table every other transport reads
+/// The classification is the same refusal every other transport reads
 /// (`reply::classify_command`), so a conflict is a conflict and a storage
 /// failure is retryable here too. Only the envelope is MCP's: a code an
 /// agent matches on, and the stale-selection digest under the name the tool
@@ -64,17 +65,19 @@ pub(crate) fn command_failure(error: librepaper_engine::log::sequencer::CommandE
         )
         .with_data(json!({"current_tree_digest": digest}));
     }
-    let code = if error.is_temporary() {
-        "unavailable"
-    } else {
-        match error.status() {
-            404 => "not_found",
-            409 => "conflict",
-            400 => "invalid_params",
-            _ => "conflict",
-        }
-    };
-    Failure::new(code, error.client_message())
+    let refusal = Refusal::from(&error);
+    let mut failure = crate::server::refusal::mcp(&refusal);
+    // The comment tools have always spelled any refusal about this moment
+    // "unavailable", whether or not the write may have landed. The commit
+    // state stays as the refusal has it, so a recorded operation never
+    // treats one of these as a definite refusal.
+    if failure.code == "outcome_unknown" {
+        failure.code = "unavailable";
+    }
+    if refusal.kind == Kind::Unavailable {
+        failure.committed = Committed::Unknown;
+    }
+    failure
 }
 
 impl Server {

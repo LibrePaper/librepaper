@@ -1,7 +1,9 @@
 //! Building responses: JSON and plain bodies, redirects, the headers every
 //! reply carries, and what the peer address is behind a proxy.
 
+use super::refusal::{self, FrameIds};
 use super::*;
+use librepaper_room::room::refusal::Refusal;
 
 pub fn slug_pattern(config: &Configuration) -> regex::Regex {
     regex::Regex::new(&config.slug_pattern).expect("the slug pattern is a valid expression")
@@ -579,54 +581,17 @@ pub(super) fn no_such_document() -> Reply {
 
 /* ------------------------------------------ refused room writes */
 
-/// The one place a refused room write becomes an HTTP answer.
-///
-/// Status, retry advice and the message a client reads all come from the
-/// [`WriteError`] variant, so rewording a refusal cannot move a route from
-/// 507 to 413 or make a permanent refusal look worth retrying. `what` names
-/// the operation for the log: the storage context a failure carries is
-/// written there and never sent to a client.
+/// A refused room write as an HTTP answer. The status, retry advice and the
+/// message a client reads all come from the [`Refusal`] the error converts
+/// to, so rewording a refusal cannot move a route from 507 to 413 or make a
+/// permanent refusal look worth retrying. `what` names the operation for the
+/// log: the storage context a failure carries is written there and never sent
+/// to a client.
 pub(super) fn refused(what: &str, error: &librepaper_room::room::WriteError) -> Reply {
-    refused_with(what, error, &[])
-}
-
-/// The same, keeping whatever correlation fields the route's clients read --
-/// a request id, a temporary id, the SHA a rendering was for. Those are the
-/// route's own wire contract; the error decides only status, message and
-/// retry.
-pub(super) fn refused_with(
-    what: &str,
-    error: &librepaper_room::room::WriteError,
-    fields: &[(&str, Value)],
-) -> Reply {
     if let Some(context) = error.log_context() {
         tracing::warn!("{what}: {context}");
     }
-    let mut payload = json!({"error": error.client_message()});
-    if error.is_temporary() {
-        payload["retryable"] = json!(true);
-    }
-    for (name, value) in fields {
-        payload[*name] = value.clone();
-    }
-    write_json(error.status(), &payload)
-}
-
-/// What a socket peer is sent for a refused write, with the correlation
-/// fields the room protocol promises. The same variant-driven mapping as the
-/// HTTP side, so a refusal reads the same whichever way a client asked.
-pub(super) fn socket_refusal(error: &librepaper_room::room::WriteError, request_id: &str) -> Value {
-    let mut payload = json!({
-        "type": "error",
-        "message": error.client_message(),
-        "request_id": request_id,
-        "version": 1,
-        "protocol": "librepaper.room.v3",
-    });
-    if error.is_temporary() {
-        payload["retryable"] = json!(true);
-    }
-    payload
+    refusal::http(&Refusal::from(error))
 }
 
 /// A refused semantic command, classified once (§7.1, §7.2).
@@ -656,11 +621,14 @@ pub(super) fn classify_command(
 /// log, exactly as it does for [`refused`].
 pub(super) fn command_refused(what: &str, error: librepaper_engine::log::CommandError) -> Reply {
     let (error, digest) = classify_command(error);
+    if let Some(context) = error.log_context() {
+        tracing::warn!("{what}: {context}");
+    }
     let fields: Vec<(&str, Value)> = digest
         .map(|digest| ("digest", json!(digest)))
         .into_iter()
         .collect();
-    refused_with(what, &error, &fields)
+    refusal::http_with(&Refusal::from(&error), &fields)
 }
 
 /// A refused command as the room protocol's own error frame, carrying the
@@ -672,28 +640,13 @@ pub(super) fn command_refusal_value(
     error: librepaper_engine::log::CommandError,
 ) -> Value {
     let (error, digest) = classify_command(error);
-    let mut payload = refusal_value(what, &error);
-    if let Some(digest) = digest {
-        payload["stale_source"] = json!(true);
-        payload["digest"] = json!(digest);
-    }
-    payload
-}
-
-/// A refused room read or write as an error frame: the message, the status
-/// and the retry advice the variant decides, and the context it carries
-/// written to the log rather than sent.
-pub(super) fn refusal_value(what: &str, error: &librepaper_room::room::WriteError) -> Value {
     if let Some(context) = error.log_context() {
         tracing::warn!("{what}: {context}");
     }
-    let mut payload = json!({
-        "type": "error",
-        "message": error.client_message(),
-        "status": error.status(),
-    });
-    if error.is_temporary() {
-        payload["retryable"] = json!(true);
+    let mut payload = refusal::socket(&Refusal::from(&error), FrameIds::default());
+    if let Some(digest) = digest {
+        payload["stale_source"] = json!(true);
+        payload["digest"] = json!(digest);
     }
     payload
 }
