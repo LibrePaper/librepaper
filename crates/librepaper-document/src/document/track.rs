@@ -27,6 +27,7 @@ use loro::{
 use crate::document::anchors::{bytes_of, record_map, str_of};
 use crate::document::projection::Projected;
 use crate::document::session::{apply_text_edits, Edit, CHANGES, FILES};
+use crate::document::text_index::{TextIndex, Utf16};
 
 /// Who is making an edit: the stable key and the name comments show.
 pub struct Author<'a> {
@@ -1059,19 +1060,6 @@ fn plain_num(v: &LoroValue) -> Option<f64> {
     }
 }
 
-/// The code point index of a UTF-16 offset in `s`. An offset inside a surrogate
-/// pair names the character after it.
-fn utf16_to_code_point(s: &str, units: usize) -> usize {
-    let mut seen = 0;
-    for (i, ch) in s.chars().enumerate() {
-        if seen >= units {
-            return i;
-        }
-        seen += ch.len_utf16();
-    }
-    s.chars().count()
-}
-
 /// The plain-value records of the earlier model that belong to `file_id`, by id.
 /// Their point offsets are converted from UTF-16 to code points.
 fn legacy_records(doc: &LoroDoc, file_id: &str) -> BTreeMap<String, LegacyRecord> {
@@ -1097,7 +1085,15 @@ fn legacy_records(doc: &LoroDoc, file_id: &str) -> BTreeMap<String, LegacyRecord
                 .filter_map(|p| match p {
                     LoroValue::Map(p) => {
                         let units = p.get("at").and_then(plain_num)?;
-                        let at = utf16_to_code_point(&deleted, units.max(0.0) as usize);
+                        // Stored offsets are read leniently: one inside a
+                        // surrogate pair names the character after it, and one
+                        // past the end names the end.
+                        let units = Utf16(units.max(0.0) as usize);
+                        let index = TextIndex::new(&deleted);
+                        let at = index.code_point_of(units).map_or_else(
+                            |_| deleted[..index.utf8_ceil(units).0].chars().count(),
+                            |point| point.0,
+                        );
                         Some((p.get("id").and_then(plain_str)?, at))
                     }
                     _ => None,

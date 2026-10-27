@@ -45,4 +45,5 @@ pub mod projection;
 pub mod render;
 pub mod retention;
 pub mod session;
+pub mod text_index;
 pub mod track;

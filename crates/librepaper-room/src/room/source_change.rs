@@ -25,6 +25,7 @@ use librepaper_base::paths::{self, Kind, Rules};
 use librepaper_base::text::LineEnding;
 use librepaper_document::document::anchors::{self, OperationFile};
 use librepaper_document::document::session;
+use librepaper_document::document::text_index::{TextIndex, Utf8};
 use librepaper_document::document::track;
 use librepaper_engine::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
 use librepaper_engine::storage::postgres::{LabelRecord, NewLabel, PostgresCatalog};
@@ -568,13 +569,6 @@ impl From<super::error::WriteError> for AgentError {
     }
 }
 
-/// Turns a byte offset in `text` into the UTF-16 offset the CRDT text API
-/// wants (every offset that crosses the document layer counts UTF-16 code
-/// units).
-fn byte_to_utf16(text: &str, byte: usize) -> usize {
-    str_indices::utf16::from_byte_idx(text, byte)
-}
-
 /// The head's files, as the validator needs them. Rebuilt on every
 /// evaluation -- including a retried one -- because the head it is built
 /// from is exactly what a retry's precondition has to agree with.
@@ -634,14 +628,27 @@ fn apply_patch_edits(
             .files
             .get(path)
             .ok_or_else(|| format!("file is absent: {path}"))?;
-        let edits: Vec<_> = patches
-            .into_iter()
-            .map(|patch| session::Edit {
-                at: byte_to_utf16(original.text, patch.start),
-                delete: byte_to_utf16(&original.text[patch.start..], patch.end - patch.start),
+        // A patch states bytes and the CRDT counts UTF-16 units. The offsets
+        // came from the caller, so one inside a character is refused.
+        let index = TextIndex::new(original.text);
+        let unit = |byte: usize| {
+            index
+                .utf16_of(Utf8(byte))
+                .map_err(|_| format!("patch offset {byte} is not on a character boundary in {path}"))
+        };
+        let mut edits = Vec::with_capacity(patches.len());
+        for patch in patches {
+            let at = unit(patch.start)?;
+            let end = unit(patch.end)?;
+            edits.push(session::Edit {
+                at: at.0,
+                delete: end
+                    .0
+                    .checked_sub(at.0)
+                    .ok_or_else(|| format!("patch range is inverted in {path}"))?,
                 insert: LineEnding::normalise(&patch.replacement).into_owned(),
-            })
-            .collect();
+            });
+        }
         files.push((
             path,
             OperationFile {

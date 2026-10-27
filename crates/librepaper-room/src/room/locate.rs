@@ -23,7 +23,7 @@
 //! first of them: that would make the comment silently about the wrong
 //! sentence, which is worse than asking for a longer selection.
 
-use super::text::slice16;
+use librepaper_document::document::text_index::{Span, TextIndex, Utf16};
 use librepaper_engine::storage::annotation::{AnchorSide, FileId, SourceTextTarget};
 
 /// Below this a phrase is too common to identify a place on its own:
@@ -491,7 +491,7 @@ fn place(
     at: usize,
     length: usize,
 ) -> SourceTextTarget {
-    let units: Vec<u16> = file.text.encode_utf16().collect();
+    let index = TextIndex::new(file.text);
     let mut start = flat.from[at] as usize;
     let mut end = flat.from[at + length] as usize;
 
@@ -510,7 +510,7 @@ fn place(
     if !html && at > 0 && flat.chars[at - 1] == ' ' {
         let run_start = flat.from[at - 1] as usize;
         let mut cut = start;
-        while cut > run_start && !is_space(unit_char(&units, cut - 1)) {
+        while cut > run_start && !is_space(unit_char(file.text, cut - 1)) {
             cut -= 1;
         }
         start = cut;
@@ -522,17 +522,17 @@ fn place(
     {
         let run_end = flat.from[at + length + 1] as usize;
         let mut cut = end;
-        while cut < run_end && !is_space(unit_char(&units, cut)) {
+        while cut < run_end && !is_space(unit_char(file.text, cut)) {
             cut += 1;
         }
         end = cut;
     }
     // Whatever is left is trimmed inward rather than dropped, so whitespace
     // that made it this far never ends up inside the quote.
-    while start < end && is_space(unit_char(&units, start)) {
+    while start < end && is_space(unit_char(file.text, start)) {
         start += 1;
     }
-    while end > start && is_space(unit_char(&units, end - 1)) {
+    while end > start && is_space(unit_char(file.text, end - 1)) {
         end -= 1;
     }
 
@@ -546,21 +546,29 @@ fn place(
         // the quotation.
         start_side: AnchorSide::Left,
         end_side: AnchorSide::Right,
-        exact: slice16(&units, start, end),
-        prefix: slice16(&units, start.saturating_sub(CONTEXT), start),
-        suffix: slice16(&units, end, (end + CONTEXT).min(units.len())),
+        exact: lossy(&index, start, end),
+        prefix: lossy(&index, start.saturating_sub(CONTEXT), start),
+        suffix: lossy(&index, end, (end + CONTEXT).min(index.len_utf16().0)),
     }
 }
 
-/// The character a UTF-16 offset lands on, for the boundary walks above. A
-/// lone surrogate is not whitespace and not a word character, so it simply
-/// stops the walk.
-fn unit_char(units: &[u16], at: usize) -> char {
-    units
-        .get(at)
-        .copied()
-        .and_then(|unit| char::from_u32(unit as u32))
-        .unwrap_or('\u{fffd}')
+/// The text of a UTF-16 range for the evidence that goes with a target. A
+/// bound inside a surrogate pair keeps the lone half as U+FFFD.
+fn lossy(index: &TextIndex<'_>, start: usize, end: usize) -> String {
+    index
+        .slice16_lossy(Span {
+            start: Utf16(start),
+            end: Utf16(end),
+        })
+        .into_owned()
+}
+
+/// The character a UTF-16 offset lands on, for the boundary walks above. An
+/// offset inside a surrogate pair lands on the whole character, which is not
+/// whitespace, so it stops the walk as a lone surrogate would.
+fn unit_char(text: &str, at: usize) -> char {
+    let from = TextIndex::new(text).utf8_floor(Utf16(at)).0;
+    text[from..].chars().next().unwrap_or('\u{fffd}')
 }
 
 #[cfg(test)]
@@ -588,9 +596,9 @@ mod tests {
         let text = "# Title\n\nThe interval covers the mean.\n";
         let found = locate(&one(text), &quote("covers the mean", "", "")).unwrap();
         assert_eq!(found.exact, "covers the mean");
-        let units: Vec<u16> = text.encode_utf16().collect();
+        let index = TextIndex::new(text);
         assert_eq!(
-            slice16(&units, found.start_utf16 as usize, found.end_utf16 as usize),
+            lossy(&index, found.start_utf16 as usize, found.end_utf16 as usize),
             "covers the mean"
         );
     }
@@ -621,8 +629,8 @@ mod tests {
             &quote("It is true.", "One\nIt is true.\nTwo\n", ""),
         )
         .unwrap();
-        let units: Vec<u16> = text.encode_utf16().collect();
-        let before = slice16(&units, 0, found.start_utf16 as usize);
+        let index = TextIndex::new(text);
+        let before = lossy(&index, 0, found.start_utf16 as usize);
         assert!(before.contains("## Two"), "picked the first occurrence");
     }
 
@@ -699,9 +707,9 @@ mod tests {
             found.exact
         );
         // Never a range that says one thing and covers another.
-        let units: Vec<u16> = text.encode_utf16().collect();
+        let index = TextIndex::new(text);
         assert_eq!(
-            slice16(&units, found.start_utf16 as usize, found.end_utf16 as usize),
+            lossy(&index, found.start_utf16 as usize, found.end_utf16 as usize),
             found.exact
         );
     }
@@ -776,9 +784,9 @@ mod tests {
             text,
         }];
         let found = locate(&files, &quote("a \u{2194} b", "", "")).unwrap();
-        let units: Vec<u16> = text.encode_utf16().collect();
+        let index = TextIndex::new(text);
         assert_eq!(
-            slice16(&units, found.start_utf16 as usize, found.end_utf16 as usize),
+            lossy(&index, found.start_utf16 as usize, found.end_utf16 as usize),
             "a &LeftRightArrow; b"
         );
         assert_eq!(found.exact, "a &LeftRightArrow; b");
@@ -788,9 +796,9 @@ mod tests {
     fn offsets_are_utf16_so_astral_characters_do_not_shift_a_range() {
         let text = "An emoji 😀 then the interval covers the mean.\n";
         let found = locate(&one(text), &quote("the interval covers", "", "")).unwrap();
-        let units: Vec<u16> = text.encode_utf16().collect();
+        let index = TextIndex::new(text);
         assert_eq!(
-            slice16(&units, found.start_utf16 as usize, found.end_utf16 as usize),
+            lossy(&index, found.start_utf16 as usize, found.end_utf16 as usize),
             "the interval covers"
         );
         assert_eq!(found.exact, "the interval covers");
