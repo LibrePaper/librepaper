@@ -55,6 +55,8 @@ The CLI walks the directory with gitignore semantics (the `ignore` crate: `.giti
 4. **Outside a repository** (a desktop folder), pull writes the newest version into the folder: files changed only on the web are written, files changed only here are kept, deleted-on-the-web files are moved to the trash. A file changed on both sides is not written; it is listed in the result, and a second call with `--mine` or `--theirs` per path settles it. A path the web holds that the folder also has but the walk leaves out (ignored, hidden, not UTF-8) is never written over or trashed; it is listed as skipped and `pulled` stays where it was. There is no three-way merge.
 5. `pulled` moves to the newest version, `files` to its hashes, `head` to the newest commit.
 
+Current head: after the named versions, pull also imports the current accepted project as a commit named "Current version" when its files differ from the last commit imported. Unnamed accepted edits are therefore imported too. A pull whose head identity is unchanged reads nothing else. `SPEC-git-sync.md` sections 4.1 to 4.5 define this. In a repository, `--branch` names the bound branch, and `--preview` lists first-link differences without writing anything.
+
 If no listed version has a sequence at or below `pulled`, history was trimmed. Pull then says so, takes the current head as a fresh base, and in a repository makes one commit for it.
 
 ### push
@@ -91,7 +93,7 @@ A public repository `LibrePaper/sync-action` with a composite action, pinned by 
 ```yaml
 on:
   push: { branches: [main] }
-  schedule: [{ cron: "*/15 * * * *" }]
+  schedule: [{ cron: "0 * * * *" }]  # hourly; SPEC-git-sync.md section 9
 concurrency: librepaper            # one run at a time per repository
 jobs:
   sync:
@@ -113,7 +115,7 @@ What the action does:
 
 - Fetches `refs/librepaper/*` from origin, so the state survives runners. When the state is missing, it seeds it on that run: a first pull, a push of the branch, then a push of the repository's files. It stops with an error when both sides hold different versions of a file.
 - On `push`: `librepaper push` with the pushed commit's subject and author. On `409 changed` it runs `librepaper pull --no-merge`, commits `librepaper/main`'s tree to a branch `librepaper/sync`, pushes it, opens or updates one pull request "LibrePaper changed files you also changed", and exits 1 so the run is visibly red. A person merges that PR in git; the next push event pushes the merged result.
-- On `schedule`: `librepaper pull`. A clean merge or fast-forward is pushed to `main`. A conflicting merge is aborted and handled as above. Nothing to pull exits 0 with no commit.
+- On `schedule`: `librepaper pull --branch BRANCH`. It stops with a "run librepaper push" error while a push is pending. A clean merge or fast-forward is pushed to `main`. A conflicting merge is aborted and handled as above. Nothing to pull exits 0 with no commit.
 - Always: `git push origin refs/librepaper/*`.
 
 The runner's own `GITHUB_TOKEN` pushes to the repository; the LibrePaper token reaches the project. The server sees an ordinary CLI client. Forgejo Actions and GitLab CI run the same two commands under their own YAML; that is documentation.
@@ -131,7 +133,7 @@ Every call into the sync crate passes the folder's recorded render outputs (the 
 
 Authentication: the sidecar holds a device token from the same device flow backups use (`tokens.json`). Kata vhqg's narrower credential applies here too when it lands.
 
-Page: a **Sync** section in the local project's side panel with Link or Publish, the linked project, "N changes here", "The web project changed", Pull, Push and Unlink. On a web project opened in the desktop app, **Work in a folder…** in the File menu asks for a folder, links it, pulls, and opens it as a local project.
+Page: a **Sync** section in the local project's side panel with Link or Publish, the linked project, "N changes here", "The web project changed", **Get changes from web**, **Send changes to web** and Unlink. The folder labels replace the earlier Pull and Push wording; the web-project Git panel uses **Get repository changes** and **Send project changes**, and native Git uses **Commit**, **Pull from remote** and **Push to remote** (`SPEC-git-sync.md` section 5). On a web project opened in the desktop app, **Work in a folder…** in the File menu asks for a folder, links it, pulls, and opens it as a local project.
 
 A folder that is also a git repository is Alice's case: the Sync section says so and points to the Git tab or the terminal; pull and push there are the git form. The Git tab itself (plain git on the folder, `SPEC-folder-git.md`) is a separate issue and not part of this set.
 

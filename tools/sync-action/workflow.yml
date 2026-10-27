@@ -1,11 +1,16 @@
 # Keeps this repository and a LibrePaper project in step.
 # Copy to .github/workflows/librepaper.yml and store the project token as the
 # repository secret LIBREPAPER_TOKEN.
+#
+# The hourly schedule picks up web edits made without a Git push. Every run
+# spends GitHub Actions minutes. Do not schedule runs more often than every
+# 15 minutes.
 on:
   push:
     branches: [main]
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "0 * * * *"
+  workflow_dispatch:
 concurrency: librepaper            # one run at a time per repository
 jobs:
   sync:
@@ -16,8 +21,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: main                # must match branch below
           fetch-depth: 0
       - uses: LibrePaper/sync-action@v1
         with:
           project: https://app.librepaper.org/docs/<slug>
           token: ${{ secrets.LIBREPAPER_TOKEN }}
+          branch: main
