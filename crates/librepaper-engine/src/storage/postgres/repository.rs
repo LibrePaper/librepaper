@@ -1067,7 +1067,7 @@ impl PostgresCatalog {
         .fetch_one(&mut *tx)
         .await?;
         if recent >= self.policy.asset_uploads_per_hour {
-            return Err(Error::Conflict("account upload rate exceeded".into()));
+            return Err(Error::RateLimited);
         }
         let id = new_id();
         sqlx::query("INSERT INTO upload_admissions(id,account_id,created_at) VALUES($1,$2,clock_timestamp())")
@@ -1233,12 +1233,10 @@ impl PostgresCatalog {
         .await?;
         let deployment_usage = _lock.saturating_add(log_usage);
         if owner_usage.saturating_add(incoming_bytes) > self.policy.owner_bytes {
-            return Err(Error::Conflict("account storage quota exceeded".into()));
+            return Err(Error::Quota(super::QuotaScope::Owner));
         }
         if deployment_usage.saturating_add(incoming_bytes) > self.policy.deployment_bytes {
-            return Err(Error::Conflict(
-                "deployment storage threshold exceeded".into(),
-            ));
+            return Err(Error::Quota(super::QuotaScope::Deployment));
         }
         let ids: Vec<Uuid> = new_inputs.iter().map(|_| new_id()).collect();
         let keys: Vec<String> = new_inputs

@@ -271,10 +271,10 @@ impl PostgresCatalog {
         );
         let granted = wanted.min(owner_room).min(deployment_room);
         if granted < minimum {
-            return Err(Error::Conflict(if owner_room < minimum {
-                "account storage quota exceeded".into()
+            return Err(Error::Quota(if owner_room < minimum {
+                super::QuotaScope::Owner
             } else {
-                "deployment storage threshold exceeded".into()
+                super::QuotaScope::Deployment
             }));
         }
         let total: i64 = if existing.is_some() {
@@ -854,7 +854,7 @@ mod tests {
         let refused = catalog
             .reserve_chat_bytes(document, key, CHAT_RESERVATION_CHUNK, 1)
             .await;
-        assert!(matches!(refused, Err(super::Error::Conflict(_))));
+        assert!(matches!(refused, Err(super::Error::Quota(_))));
         assert_eq!(reservation_bytes(&catalog, key).await, Some(100));
     }
 
@@ -900,7 +900,7 @@ mod tests {
         let refused = catalog
             .reserve_chat_bytes(document, key, CHAT_RESERVATION_CHUNK, 51)
             .await;
-        assert!(matches!(refused, Err(super::Error::Conflict(_))));
+        assert!(matches!(refused, Err(super::Error::Quota(_))));
         assert_eq!(reservation_bytes(&catalog, key).await, None);
     }
 

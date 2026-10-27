@@ -55,7 +55,8 @@ impl Server {
         };
         let upload_admission = match self.store.catalog.reserve_upload_admission(owner_id).await {
             Ok(id) => id,
-            Err(librepaper_engine::storage::postgres::Error::Conflict(_)) => {
+            Err(librepaper_engine::storage::postgres::Error::RateLimited)
+            | Err(librepaper_engine::storage::postgres::Error::Conflict(_)) => {
                 return write_json(
                     429,
                     &json!({"error": "too many uploads this hour; try later"}),

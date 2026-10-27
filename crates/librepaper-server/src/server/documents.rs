@@ -511,7 +511,8 @@ impl Server {
         };
         let upload_admission = match self.store.catalog.reserve_upload_admission(owner_id).await {
             Ok(id) => id,
-            Err(librepaper_engine::storage::postgres::Error::Conflict(_)) => {
+            Err(librepaper_engine::storage::postgres::Error::RateLimited)
+            | Err(librepaper_engine::storage::postgres::Error::Conflict(_)) => {
                 return write_json(
                     429,
                     &json!({"error": "too many uploads this hour; try later"}),
@@ -1591,7 +1592,8 @@ impl Server {
                 .await
             {
                 Ok(id) => Some(id),
-                Err(librepaper_engine::storage::postgres::Error::Conflict(_)) => {
+                Err(librepaper_engine::storage::postgres::Error::RateLimited)
+                | Err(librepaper_engine::storage::postgres::Error::Conflict(_)) => {
                     return write_json(
                         429,
                         &json!({"error": "too many uploads this hour; try later"}),
@@ -2180,6 +2182,7 @@ fn tag_failure(error: CatalogError) -> Reply {
     match error {
         CatalogError::Invalid(message) => write_json(400, &json!({"error": message})),
         CatalogError::Conflict(message) => write_json(409, &json!({"error": message})),
+        CatalogError::Duplicate(of) => write_json(409, &json!({"error": of.to_string()})),
         CatalogError::NotFound => write_json(404, &json!({"error": "not found"})),
         other => {
             tracing::warn!("could not save a tag: {other:?}");
