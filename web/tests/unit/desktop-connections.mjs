@@ -3,7 +3,7 @@
 // refusal arrives.
 import assert from "node:assert/strict";
 import * as client from "../../src/lib/desktop/client.js";
-import { connectionStatus, connectRepository, disconnectConnection, loginConnection, loginConnectionComplete, pullConnection, pushConnection, resolveConnection } from "../../src/lib/desktop/connections.js";
+import { connectionStatus, connectRepository, disconnectConnection, loginConnection, loginConnectionComplete, pullConnection, pushConnection, resolveConnection, retryConnection } from "../../src/lib/desktop/connections.js";
 
 globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
 client._testing.reset();
@@ -86,5 +86,15 @@ assert.deepEqual(last().body, { project, authorization_id: "auth-1" });
 // A code not yet approved is a 400 that the controller waits on.
 answer = () => response(400, { error: "sign in and approve the code, then retry" });
 await assert.rejects(loginConnectionComplete(project, "auth-1"), (error) => error.status === 400);
+
+
+// An interrupted send is settled by its own route, with the project alone.
+answer = () => response(409, { reason: "pending", error: "an earlier push was interrupted" });
+await assert.rejects(pullConnection(project), (error) => error.status === 409 && error.body.reason === "pending");
+answer = () => response(200, { status: connected, pushed: { files: 2 } });
+assert.deepEqual(await retryConnection(project), { status: connected, pushed: { files: 2 } });
+assert.equal(last().method, "POST");
+assert.ok(last().url.endsWith("librepaper/local/connections/retry"));
+assert.deepEqual(last().body, { project });
 
 console.log("desktop-connections: connection routes, bodies and refusals");

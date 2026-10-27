@@ -54,6 +54,32 @@
     return `${said[0].toUpperCase()}${said.slice(1)}.`;
   }
 
+  // What linking would meet, as sentences with the paths under each one. A
+  // group with no path is left out.
+  const previewLines = $derived.by(() => {
+    const found = view.preview;
+    if (!found) return [];
+    const are = (count) => `${plural(count, "file")} ${count === 1 ? "is" : "are"}`;
+    const they = (count) => (count === 1 ? "It" : "They");
+    const lines = [
+      { key: "project_only", paths: found.project_only, text: `${are(found.project_only.length)} only in the project. ${they(found.project_only.length)} will be added to this folder.` },
+      { key: "local_only", paths: found.local_only, text: `${are(found.local_only.length)} only in this folder. ${found.local_only.length === 1 ? "It stays here until you send it." : "They stay here until you send them."}` },
+      { key: "different", paths: found.different, text: `${are(found.different.length)} in both with different contents. ${status?.git ? "Git merges them." : "You choose which version to keep."}` },
+      { key: "equal", paths: found.equal, text: `${are(found.equal.length)} in both with the same contents.` },
+      { key: "blocked", paths: found.blocked.map(([path, why]) => `${path}: ${why}`), text: `${are(found.blocked.length)} not transferred.` },
+      { key: "excluded", paths: found.excluded, text: `${are(found.excluded.length)} left out by this folder's rules.` },
+    ];
+    return lines.filter((line) => line.paths.length);
+  });
+
+  // The branch of a repository. Sync uses one branch, confirmed once. The
+  // checkout may be on another branch or detached, which only the person
+  // fixes with git.
+  const git = $derived(Boolean(status?.git));
+  const asksBranch = $derived(git && !status?.branch && Boolean(status?.checked_out));
+  const detachedUnbound = $derived(git && !status?.branch && !status?.checked_out);
+  const wrongBranch = $derived(git && Boolean(status?.branch) && status.checked_out !== status.branch);
+
   async function submitPush(event) {
     event.preventDefault();
     await sync.push(message);
@@ -174,15 +200,40 @@
         {view.busy === "login" ? "Signing in…" : "Sign in"}
       </button>
     </div>
+  {:else if !status.linked && view.preview}
+    <p class="sync-lead">Linking compares this folder with the project, then takes the project in. Nothing has changed yet.</p>
+    <p class="sync-project"><Icon name="link" size={14} /><span title={view.preview.url}>{view.preview.url}</span></p>
+    {#if previewLines.length}
+      <ul class="sync-preview" aria-label="What linking would meet">
+        {#each previewLines as line (line.key)}
+          <li>
+            <details>
+              <summary>{line.text}</summary>
+              <ul class="sync-list">{#each line.paths as path (path)}<li>{path}</li>{/each}</ul>
+            </details>
+          </li>
+        {/each}
+      </ul>
+    {:else}
+      <p class="sync-line">Both the project and this folder are empty.</p>
+    {/if}
+    <div class="sync-row">
+      <button type="button" class="btn btn-sm lp-control-brand" disabled={busy} onclick={() => sync.confirmLink()}>
+        {view.busy === "link" ? "Linking…" : "Link"}
+      </button>
+      <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => sync.cancelPreview()}>Cancel</button>
+    </div>
   {:else if !status.linked}
     <p class="sync-lead">This folder is not linked to a project on the web.</p>
-    <form class="sync-block" onsubmit={(event) => { event.preventDefault(); void sync.link(url); }}>
+    <form class="sync-block" onsubmit={(event) => { event.preventDefault(); void sync.previewLink(url); }}>
       <label class="sync-field panel-meta">Link to a project
         <input class="input sync-input" type="url" bind:value={url} disabled={busy}
                placeholder={`${location.origin}/docs/your-project`} autocomplete="off" spellcheck="false" />
       </label>
       <div class="sync-row">
-        <button type="submit" class="btn btn-sm lp-control-tonal-brand" disabled={busy || !url.trim()}>Link</button>
+        <button type="submit" class="btn btn-sm lp-control-tonal-brand" disabled={busy || !url.trim()}>
+          {view.busy === "preview" ? "Comparing…" : "Preview link"}
+        </button>
       </div>
     </form>
     <form class="sync-block" onsubmit={(event) => { event.preventDefault(); void sync.publish(title); }}>
@@ -200,6 +251,29 @@
       <li><Icon name={unread ? "triangle-alert" : here ? "pencil" : "check"} size={14} /><span>{hereText}</span></li>
       <li><Icon name={unread ? "triangle-alert" : status.changes?.web ? "download" : "check"} size={14} /><span>{webText}</span></li>
     </ul>
+    {#if status.pending}
+      <div class="sync-box" role="alert">
+        <p>An earlier send to the web was interrupted before its outcome was known. Choose Send changes to web to finish it. Getting changes, linking and unlinking wait until then.</p>
+      </div>
+    {/if}
+    {#if asksBranch}
+      <div class="sync-box" role="alert">
+        <p>Choose the branch to sync. This folder is on branch {status.checked_out}, and sync will use it from now on.</p>
+        <div class="sync-row">
+          <button type="button" class="btn btn-sm lp-control-brand" disabled={busy} onclick={() => sync.confirmBranch(status.checked_out)}>Sync branch {status.checked_out}</button>
+        </div>
+      </div>
+    {:else if detachedUnbound}
+      <div class="sync-box" role="alert">
+        <p>HEAD is detached, so there is no branch to sync. Check out a branch with git first, such as git switch main.</p>
+      </div>
+    {:else if wrongBranch}
+      <div class="sync-box" role="alert">
+        <p>Sync uses branch {status.branch}, but this folder is {status.checked_out ? `on branch ${status.checked_out}` : "on a detached HEAD"}. Run git switch {status.branch} and try again. LibrePaper does not change branches.</p>
+      </div>
+    {:else if git && status.branch}
+      <p class="sync-line panel-meta sync-git">Syncing branch {status.branch}.</p>
+    {/if}
     {#if status.git}
       <p class="sync-line panel-meta sync-git">This folder is a git repository, so getting changes from web takes each web version in as a commit and git merges it.</p>
     {/if}
@@ -243,6 +317,8 @@
   .sync-facts li { display: flex; align-items: center; gap: calc(var(--spacing) * 2); }
   .sync-facts :global(svg) { flex: none; color: var(--color-text-muted); }
   .sync-git { margin: calc(var(--spacing) * 3) 0 0; }
+  .sync-preview { display: grid; grid-template-columns: minmax(0, 1fr); gap: calc(var(--spacing) * 1.5); margin: calc(var(--spacing) * 3) 0 0; padding: 0; list-style: none; }
+  .sync-preview summary { cursor: pointer; overflow-wrap: anywhere; }
   .sync-results { margin-top: calc(var(--spacing) * 4); }
   .sync-results:empty { display: none; }
   .sync-line { margin: 0 0 calc(var(--spacing) * 2); overflow-wrap: anywhere; }

@@ -666,6 +666,9 @@ async fn dispatch(
         ["connections", "push"] if *method == Method::POST => {
             connection::handle_push(inner, headers, origin, request).await
         }
+        ["connections", "retry"] if *method == Method::POST => {
+            connection::handle_retry(inner, headers, origin, request).await
+        }
         ["connections", "resolve"] if *method == Method::POST => {
             connection::handle_resolve(inner, headers, origin, request).await
         }
@@ -715,6 +718,9 @@ async fn dispatch(
         }
         ["projects", id, "sync", "link"] if *method == Method::POST => {
             sync::handle_link(inner, headers, origin, id, request).await
+        }
+        ["projects", id, "sync", "preview"] if *method == Method::POST => {
+            sync::handle_preview(inner, headers, origin, id, request).await
         }
         ["projects", id, "sync", "publish"] if *method == Method::POST => {
             sync::handle_publish(inner, headers, origin, id, request).await

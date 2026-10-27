@@ -128,7 +128,7 @@
 {/snippet}
 
 {#snippet connected()}
-  <p class="git-remote" title={status.url}>{status.url}, branch {status.branch}</p>
+  <p class="git-remote" title={status.url}>Repository {status.url}, branch {status.branch}</p>
   {#if !status.signed_in}
     {@render signIn()}
   {:else}
@@ -144,6 +144,17 @@
   {/if}
 
   {#if link.result}<p class="git-line" role="status">{link.result}</p>{/if}
+  {#if link.interrupted}
+    <div class="git-box" role="alert">
+      <p>{link.interrupted}</p>
+      <p>Getting and sending wait until it is settled.</p>
+      <div class="git-row">
+        <button type="button" class="btn btn-sm lp-control-brand" disabled={busy} onclick={() => connection.retryTransfer()}>
+          {link.busy === "retry" ? "Retrying…" : "Retry interrupted transfer"}
+        </button>
+      </div>
+    </div>
+  {/if}
   {#if link.refusal?.reason === "changed"}
     <div class="git-box" role="alert">
       <p>The project changed these files since the repository was last read:</p>
@@ -195,7 +206,7 @@
 
   {#if desktop && connection}
     <section class="git-block" aria-labelledby="git-web-connect">
-      <h3 id="git-web-connect" class="panel-section-title">{status?.connected ? "Connected repository" : "Connect a repository"}</h3>
+      <h3 id="git-web-connect" class="panel-section-title">{status?.connected ? "Repository on this computer" : "Connect a repository"}</h3>
       {#if !link.loaded}
         <p class="panel-muted" role="status">Loading…</p>
       {:else if status?.connected}
