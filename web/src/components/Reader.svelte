@@ -97,6 +97,7 @@
   import { anonymousIdentity, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import Avatar from "./Avatar.svelte";
   import { extractOutline } from "../lib/outline.js";
+  import { countWordsIn, documentWords, sectionWords } from "../lib/word-count.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
   import { rememberPreview, lastPreview, flushAll } from "../lib/reader/preview-cache.js";
   import { previewTarget, rendersAlone, openingFile, includersOf } from "../lib/opening.js";
@@ -119,6 +120,7 @@
   import CompactPanelMenu from "./layout/CompactPanelMenu.svelte";
   import Files from "./reader/Files.svelte";
   import Outline from "./reader/Outline.svelte";
+  import WordCount from "./reader/WordCount.svelte";
   import Agent from "./reader/Agent.svelte";
   import Collaboration from "./reader/Collaboration.svelte";
   import Changes from "./reader/Changes.svelte";
@@ -1568,6 +1570,9 @@
   // folder sync does and rewrites no file it did not change. A web project has
   // no folder and passes none.
   const renderEncode = LOCAL ? (/** @type {string} */ path, /** @type {string} */ text) => localProject.encode(path, text) : undefined;
+  // The digest the folder holds for a path, so a render in the folder is not
+  // sent a file the folder already has.
+  const renderOnDisk = LOCAL ? (/** @type {string} */ path) => localProject.onDisk(path) : undefined;
 
   // A local project's folder mirrors the project. Any change to the files
   // pokes the scheduler, which writes the folder once the person pauses. A
@@ -1580,15 +1585,20 @@
       // Files deleted on disk while they held unsaved edits are not sent, so
       // the folder does not bring them back before the person decides.
       const tree = localProject.withoutHeld(captured);
-      if (Object.keys(tree.digests || {}).length) {
-        const { held, missing } = await gatherFigures(tree.digests);
-        if (missing.length) throw new Error(`could not fetch ${missing.join(", ")}`);
-        tree.assets = held.assets;
-      }
+      // The figures are not gathered: the sync asks for the bytes of the few
+      // that must go to the folder.
+      const assets = {
+        size: (/** @type {string} */ sha) => localFigures.size(sha),
+        bytes: async (/** @type {Record<string, string>} */ digests) => {
+          const { held, missing } = await gatherFigures(digests);
+          if (missing.length) throw new Error(`could not fetch ${missing.join(", ")}`);
+          return held.assets;
+        },
+      };
       // The first save lists what this page took in, which may be less than
       // the folder holds. Saying so keeps the desktop app from trashing a file
       // this page never had.
-      const result = await localQuarto.syncFolder({ tree, bindingId: LOCAL_ID, encode: localProject.encode, opening });
+      const result = await localQuarto.syncFolder({ tree, bindingId: LOCAL_ID, encode: localProject.encode, opening, onDisk: localProject.onDisk, assets });
       if (result) localProject?.wrote(tree);
       for (const path of result?.kept_unreadable || []) {
         say(`${String(path).split("/").pop()} could not be read, so it was left in the folder.`, { kind: "note", id: `reader:folder-unreadable:${path}` });
@@ -1728,6 +1738,24 @@
   });
   const outlineHeadings = $derived.by(() => panel === "outline" && mayEdit
     ? extractOutline(outlineSource, outlineFormat) : []);
+  // Word counts for each heading in the Outline panel.
+  const outlineSections = $derived.by(() => panel === "outline" && mayEdit
+    ? sectionWords(outlineSource, outlineFormat, outlineHeadings) : []);
+  // The Word count dialog: the open file's document with its includes, and
+  // the selection in the open file. A preview lock does not change the count.
+  // Nothing is counted while the dialog is shut.
+  let wordCountOpen = $state(false);
+  const wordCount = $derived.by(() => {
+    void outlineRevision;
+    if (!wordCountOpen || !mayEdit || !toolbarPath) return null;
+    const texts = liveTreeNow().texts;
+    const root = previewTarget({ open: toolbarPath, locked: null, texts }).path || toolbarPath;
+    const range = editor?.selection?.();
+    return {
+      document: documentWords(root, texts),
+      selection: range && range.file === openFile ? countWordsIn(editor.text(), outlineFormat, range.from, range.to) : null,
+    };
+  });
   // Keep one render in flight and coalesce requests into the latest tree.
   // This bounds the worker queue while typing, and keeps each LaTeX PDF
   // tied to the snapshot digest of the tree that produced it.
@@ -2157,6 +2185,7 @@
     slug: SLUG,
     bindingId: RENDER_BINDING,
     encode: renderEncode,
+    onDisk: renderOnDisk,
     coordinator: renderCoordinator,
     status: renderStatus,
     framePreview: {
@@ -2610,7 +2639,7 @@
     [["undo", "Undo"], ["redo", "Redo"]],
     [["cut", "Cut"], ["copy", "Copy"], ["paste", "Paste"]],
     [["select-all", "Select All"]],
-    [["find", "Find…"], ["replace", "Replace…"]],
+    [["find", "Find…"], ["replace", "Replace…"], ["word-count", "Word count…"]],
     [["bold", "Bold"], ["italic", "Italic"]],
   ];
 
@@ -2625,6 +2654,7 @@
   const MENU_KEYS = $derived(menuKeys({ modalEditor: keys === "vim" || keys === "emacs", apple: APPLE }));
 
   function chooseEditCommand(command) {
+    if (command === "word-count") return openWordCount();
     showMobileView("source");
     const target = editor;
     // Restore source focus after the menu finishes closing.
@@ -2806,6 +2836,7 @@
         project: SLUG,
         bindingId: RENDER_BINDING,
         encode: renderEncode,
+        onDisk: renderOnDisk,
         preview,
         previewCurrent: Boolean(renderedIdentity) && renderedIdentity === await renderers.snapshotDigest(tree),
         render: renderers.render,
@@ -3944,6 +3975,7 @@
   // thing the menu already calls, so a command cannot drift from the menu item
   // that names it. Nothing new is implemented in this function.
   async function runCommand(id) {
+    if (id === "word-count") return openWordCount();
     if (EDIT_COMMANDS.includes(id)) return chooseEditCommand(id);
     if (id === "palette") { refreshEditAvailability(); commandPalette = true; return; }
     if (id === "shortcuts") return openSettings("editor");
@@ -3965,6 +3997,11 @@
   const EDIT_COMMANDS = ["undo", "redo", "cut", "copy", "paste", "select-all", "find", "replace", "bold", "italic"];
   const LAYOUT_COMMANDS = ["linked", "layout-source", "layout-document", "layout-split", "side-left", "side-right"];
   const TEXT_SIZE_COMMANDS = ["text-bigger", "text-smaller", "text-reset"];
+
+  // The count reads the source, so the dialog is offered only where the source is open.
+  function openWordCount() {
+    if (mayEdit && editing) wordCountOpen = true;
+  }
 
   // The palettes open over the editor. Each one inserts at the caret the
   // editor had when it opened, so there is nothing to open without a source.
@@ -4326,7 +4363,7 @@
   {/snippet}
 
   {#snippet outlinePanel()}
-    <Outline headings={outlineHeadings} activeFrom={outlineActiveFrom} onselect={openOutlineHeading} />
+    <Outline headings={outlineHeadings} counts={outlineSections} activeFrom={outlineActiveFrom} onselect={openOutlineHeading} />
   {/snippet}
 
   {#snippet agentPanel()}
@@ -4750,6 +4787,14 @@
   {#if mathOpen}
     <MathPalette bind:this={mathPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={closePalette} oncancel={(context) => editor?.releaseInsertContext?.(context)} />
   {/if}
+</Modal>
+
+<!-- Word counts for the open file, read on open and as the text changes. -->
+<Modal bind:open={wordCountOpen} title="Word count" onclose={returnToEditor}
+  confirm={{ label: "Close", cancel: false, onclick: () => (wordCountOpen = false) }}>
+  {#snippet children()}
+    <WordCount count={wordCount} />
+  {/snippet}
 </Modal>
 
 <!-- The preferences dialog is shared by the navbar menu and sidebar button. -->

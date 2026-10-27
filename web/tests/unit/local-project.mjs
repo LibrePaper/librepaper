@@ -79,9 +79,11 @@ function fakeFolder(initial) {
     files,
     skipped: [],
     treeReads: 0,
+    fetched: [],
     treeCursor: "t0",
     firstSince: undefined,
-    async projectTree() {
+    async projectTree(_id, extensions) {
+      folder.extensions = extensions;
       folder.treeReads += 1;
       return {
         cursor: folder.treeCursor,
@@ -90,6 +92,7 @@ function fakeFolder(initial) {
       };
     },
     async projectFile(_id, path) {
+      folder.fetched.push(path);
       if (!files.has(path)) throw Object.assign(new Error("gone"), { name: "Refused", status: 404 });
       return bytesOf(files.get(path));
     },
@@ -136,7 +139,8 @@ function numberedFolder(initial) {
   folder.sinces = [];
   folder.reads = [];
   folder.failures = new Map();
-  folder.projectTree = async function projectTree() {
+  folder.projectTree = async function projectTree(_id, extensions) {
+    folder.extensions = extensions;
     folder.treeReads += 1;
     return {
       cursor: events.length,
@@ -223,7 +227,7 @@ const textOf = (session, path) => session.textOf(session.idOf(path)).toString();
 // ---------------------------------------------------- the document from a tree
 
 {
-  const { session, loaded, project, figures } = await open({
+  const { session, loaded, project, figures, folder } = await open({
     "main.tex": MAIN,
     "chapters/one.tex": "One.\n",
     "refs.bib": "@book{a}\n",
@@ -242,8 +246,18 @@ const textOf = (session, path) => session.textOf(session.idOf(path)).toString();
   assert.equal(tree.texts["main.tex"], MAIN);
   assert.deepEqual(Object.keys(tree.digests), ["fig/a.png"]);
   assert.equal(tree.digests["fig/a.png"], digest(PNG));
+  assert.deepEqual([...new Set(folder.extensions)].sort(), [".bib", ".md", ".png", ".tex"], "the listing is asked for the rules' extensions");
+  assert.ok(!folder.fetched.includes("fig/a.png"), "opening does not read a figure");
+  assert.ok(folder.fetched.includes("main.tex"), "opening reads the texts");
+  assert.equal(figures.size(tree.digests["fig/a.png"]), PNG.length, "the size comes from the listing");
+  assert.equal(project.onDisk("fig/a.png"), digest(PNG));
+  assert.equal(project.onDisk("main.tex"), digest(MAIN));
+  assert.equal(project.onDisk("nothing.tex"), null);
   const held = await figures.gather("local-abc", tree.digests);
+  assert.deepEqual(folder.fetched.filter((path) => path === "fig/a.png"), ["fig/a.png"], "gather reads the figure");
   assert.deepEqual([...held.assets["fig/a.png"]], [...PNG], "the figure bytes are held for the render and the folder sync");
+  await figures.gather("local-abc", tree.digests);
+  assert.deepEqual(folder.fetched.filter((path) => path === "fig/a.png"), ["fig/a.png"], "and keeps it by digest");
   assert.match(held.urls["fig/a.png"], /^data:image\/png;base64,/);
   assert.deepEqual(held.missing, []);
   assert.deepEqual(project.send({ type: "anything" }), undefined, "there is no room to write to");
@@ -402,6 +416,52 @@ const textOf = (session, path) => session.textOf(session.idOf(path)).toString();
   assert.equal(session.tree().digests["fig.png"], digest(next));
   const held = await figures.gather("local-abc", session.tree().digests);
   assert.deepEqual([...held.assets["fig.png"]], [...next]);
+  project.close();
+}
+
+// A change that carries its digest and size does not read the figure: the
+// figure store reads it when its bytes are asked for.
+{
+  const { folder, session, figures, project } = await open({ "a.md": "a\n", "fig.png": PNG });
+  const next = new Uint8Array([9, 9, 9]);
+  folder.files.set("fig.png", next);
+  folder.report({ path: "fig.png", kind: "changed", sha256: digest(next), size: next.length });
+  await until(() => session.tree().digests["fig.png"] === digest(next));
+  assert.equal(session.tree().digests["fig.png"], digest(next));
+  assert.ok(!folder.fetched.includes("fig.png"), "the poller's change is not read");
+  assert.equal(project.onDisk("fig.png"), digest(next));
+  assert.equal(figures.size(digest(next)), next.length);
+  const held = await figures.gather("local-abc", session.tree().digests);
+  assert.deepEqual([...held.assets["fig.png"]], [...next]);
+  assert.deepEqual(folder.fetched, ["a.md", "fig.png"], "gather reads it once");
+  project.close();
+}
+
+// A figure whose bytes do not match the digest, or that cannot be read, is
+// reported missing and is not cached.
+{
+  const { folder, figures, session, project } = await open({ "a.md": "a\n", "fig.png": PNG });
+  const digests = { ...session.tree().digests };
+  folder.files.set("fig.png", new Uint8Array([7, 7]));
+  const stale = await figures.gather("local-abc", digests);
+  assert.deepEqual(stale.missing, ["fig.png"], "the file on disk is not the one the digest names");
+  assert.deepEqual(Object.keys(stale.assets), []);
+  folder.files.delete("fig.png");
+  const gone = await figures.gather("local-abc", digests);
+  assert.deepEqual(gone.missing, ["fig.png"]);
+  folder.files.set("fig.png", PNG);
+  assert.deepEqual((await figures.gather("local-abc", digests)).missing, [], "a later read that matches succeeds");
+  project.close();
+}
+
+// What the folder sync wrote is what the folder now holds.
+{
+  const { project, session } = await open({ "a.md": "a\n", "fig.png": PNG });
+  const sha = "b".repeat(64);
+  project.wrote({ texts: { "a.md": "a\n" }, digests: { "fig.png": sha } });
+  assert.equal(project.onDisk("fig.png"), sha);
+  assert.equal(project.onDisk("a.md"), null, "a text written by the sync has no digest recorded");
+  assert.ok(session);
   project.close();
 }
 

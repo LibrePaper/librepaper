@@ -4,7 +4,8 @@
 
 // Commands whose first braced argument names a key, file or package, not words.
 const NAME_ARGUMENT = new Set([
-  "label", "input", "include", "includeonly", "includegraphics", "usepackage",
+  "label", "input", "include", "includeonly", "subfile", "subfileinclude",
+  "includegraphics", "usepackage",
   "RequirePackage", "documentclass", "bibliography", "bibliographystyle",
   "addbibresource", "url", "href", "begin", "end", "newcommand",
   "renewcommand", "providecommand", "newenvironment", "renewenvironment",
@@ -52,6 +53,9 @@ const ENVIRONMENT_NAME = /[ \t]*(?:\n[ \t]*)?\{([^{}\n]*)\}/y;
 const BLANK = "[ \\t]*(?:\\n[ \\t]*)?";
 // The start of an \end tag, as a regular expression source.
 const END_TAG = "\\\\end";
+// An unbraced file name after \input, as in \input chapters/b.tex. It runs to
+// a blank, a comment, a command or a group, as TeX reads it.
+const FILE_NAME = /[^ \t\r\n\f\v%\\{}]+/y;
 
 // Escapes a string so that it matches itself inside a regular expression.
 function escapeRe(s) {
@@ -137,6 +141,16 @@ export function latexSkips(text) {
     return k;
   }
 
+  // Index just past an unbraced file name at `at`, after spaces and tabs. Without
+  // a name, the index is just past the blanks, which are not words either.
+  function fileName(at) {
+    let k = at;
+    while (text[k] === " " || text[k] === "\t") k++;
+    FILE_NAME.lastIndex = k;
+    const match = FILE_NAME.exec(text);
+    return match ? k + match[0].length : k;
+  }
+
   // Index just past the [...] groups that directly follow `at`. A "[" with no
   // closing "]" is prose and is left alone. With `spaced`, blanks may come
   // before each group, as in \cite [note] {key}.
@@ -204,11 +218,13 @@ export function latexSkips(text) {
   // Index just past a command with name-like arguments. Optional groups and the
   // first braced group are skipped, and a definition's body after them. Blanks
   // may separate the command from each argument. When no argument follows, the
-  // blanks are left in the prose.
+  // blanks are left in the prose. An unbraced \input name ends the command, so
+  // a bracket after the file name is prose.
   function argumentCommand(name, at) {
     let k = skipOptions(at, true);
     const brace = argumentStart(k);
     if (text[brace] === "{") k = skipGroup(brace);
+    else if (name === "input") return fileName(k);
     k = skipOptions(k, true);
     const body = argumentStart(k);
     if (DEFINITIONS.has(name) && text[body] === "{") k = skipGroup(body);

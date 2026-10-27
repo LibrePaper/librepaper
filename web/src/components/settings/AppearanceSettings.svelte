@@ -2,7 +2,7 @@
   // How the pages look for the person at this browser.
   import { onMount } from "svelte";
   import SettingRow from "./SettingRow.svelte";
-  import { choice, onChoice, setChoice, PALETTES, PALETTE_NAMES, palette, onPalette, setPalette } from "../../lib/theme.js";
+  import { choice, onChoice, setChoice, PALETTES, PALETTE_NAMES, palette, onPalette, setPalette, PAPERS, paper, onPaper, setPaper } from "../../lib/theme.js";
   import { FONTS, installed, MIN_SIZE, MAX_SIZE, font, setFont, onFont, size, setSize, onSize, lineHeight, setLineHeight, onLineHeight } from "../../lib/editor-type.js";
 
   // Follows the choice, which another tab of this browser may make too.
@@ -11,6 +11,9 @@
 
   let currentPalette = $state(palette());
   onMount(() => onPalette((now) => { currentPalette = now; }));
+
+  let currentPaper = $state(paper());
+  onMount(() => onPaper((now) => { currentPaper = now; }));
 
   // Follows the font, size and line height, which a pinch or another tab may change.
   let currentFont = $state(font());
@@ -37,6 +40,16 @@
           onchange={(event) => setPalette(event.currentTarget.value)}>
     {#each PALETTES as name (name)}
       <option value={name}>{PALETTE_NAMES[name]}</option>
+    {/each}
+  </select>
+</SettingRow>
+
+<SettingRow id="appearance-preview-paper" title="Preview paper"
+            description="Dark mode can show HTML previews on dark paper. Always light shows the page as readers of the exported HTML see it.">
+  <select class="select setting-select" aria-label="Preview paper" value={currentPaper}
+          onchange={(event) => setPaper(event.currentTarget.value)}>
+    {#each PAPERS as name (name)}
+      <option value={name}>{name === "theme" ? "Follow theme" : "Always light"}</option>
     {/each}
   </select>
 </SettingRow>

@@ -688,7 +688,8 @@ async fn dispatch(
             projects::handle_forget(inner, headers, origin, id).await
         }
         ["projects", id, "tree"] if *method == Method::GET => {
-            projects::handle_tree(inner, headers, origin, id).await
+            let extensions = query_value(request.uri(), "extensions");
+            projects::handle_tree(inner, headers, origin, id, extensions.as_deref()).await
         }
         ["projects", id, "files", name @ ..] if *method == Method::GET => {
             let encoded_name = name.join("/");
@@ -1912,31 +1913,30 @@ mod settings_tests {
         let origin = "https://paper.example";
         let folder = tempfile::tempdir().unwrap();
         let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
-        let headers = bearer(&inner);
+        // A description this long is past axum's default body limit, which
+        // only the router lifts, so it goes over the wire.
         let post = |count: usize| {
             let manifest: Vec<Value> = std::iter::once("main.typ".to_string())
-                .chain((1..count).map(|index| format!("f{index:04}.txt")))
+                .chain((1..count).map(|index| format!("f{index:05}.txt")))
                 .map(|path| json!({"path": path, "sha256": "a".repeat(64), "size": 1}))
                 .collect();
             let mut job = job_json(&binding.id, b"= Title");
             job["project"] = json!(binding.project);
             job["manifest"] = json!(manifest);
-            let request = job_request(job_body(&job, &[]));
-            jobs::handle_jobs_post(&inner, &headers, Some(origin), request)
+            let line = format!("POST {BASE_PATH}/jobs");
+            let body = multipart_bytes("job", &job, &[]);
+            let inner = inner.clone();
+            async move { over_the_wire(&inner, &line, body).await }
         };
         // Past the 2,000 files a job once carried. Nothing is uploaded, so the
         // request stops at the check for the bytes, after the count passed.
-        let response = post(projects::MAX_PROJECT_FILES).await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let error = body_json(response).await["error"].to_string();
-        assert!(error.contains("never uploaded"), "{error}");
+        let (status, answer) = post(projects::MAX_PROJECT_FILES).await;
+        assert_eq!(status, 400, "{answer}");
+        assert!(answer.contains("never uploaded"), "{answer}");
 
-        let response = post(projects::MAX_PROJECT_FILES + 1).await;
-        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        assert_eq!(
-            body_json(response).await["error"],
-            "too many manifest entries"
-        );
+        let (status, answer) = post(projects::MAX_PROJECT_FILES + 1).await;
+        assert_eq!(status, 413, "{answer}");
+        assert!(answer.contains("too many manifest entries"), "{answer}");
     }
 
     #[tokio::test]
