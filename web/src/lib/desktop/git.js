@@ -1,5 +1,5 @@
 // A folder project's git repository, through the `projects/<id>/git` routes of
-// the desktop app's local service (SPEC-git-panel.md). The desktop app runs
+// the desktop app's local service. The desktop app runs
 // the person's own git in the folder; this file only sends. A refusal is a
 // `Refused` error carrying `status` and the parsed `body`, which is where a
 // pull says which paths are dirty and a push says why it failed.

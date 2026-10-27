@@ -1,4 +1,4 @@
-// A folder on this computer, opened as a project (SPEC-local-folders.md).
+// A folder on this computer, opened as a project.
 //
 // The Loro document is an editing buffer built from the folder's files when
 // the project opens and thrown away when it closes. Nothing here has a socket:

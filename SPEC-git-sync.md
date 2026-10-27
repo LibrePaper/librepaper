@@ -2,7 +2,7 @@
 
 Status: proposed 2026-10-26
 
-This is a focused first-phase proposal. It replaces the earlier 683-line draft of this document. It supersedes only the named-version export, Git-panel wording, branch pinning, retry-state, and first-link preview portions of earlier Git specs where they conflict. `SPEC-sync.md` remains the design for the existing two-command folder sync. This document does not introduce a combined sync operation.
+The existing two-command folder transfer is implemented and documented in `docs/git.md`. This document specifies the proposed Git interface wording, current-head import, branch binding, retry state, and first-link preview changes. It does not introduce a combined sync operation.
 
 ## 1. Product principle
 
@@ -79,7 +79,7 @@ These are implementation facts, not proposed behavior.
 - The web-project Git panel has repository Pull/Push actions. In the desktop app it works with an app-managed checkout and offers native Git operations as well.
 - The local-folder side panel combines folder-to-web Pull/Push with native Git actions. Their direction changes with context, which makes a bare “Pull” or “Push” hard to interpret.
 - `web/src/lib/reader/web-connection.svelte.js` currently has History naming workarounds that make unnamed current-head changes visible to the Git transfer flow. Once core pull imports the current accepted head, remove those workarounds so transfer does not depend on automatic History naming.
-- `SPEC-sync.md` defines folder-to-web transfer as two actions. This proposal preserves that design and does not move its algorithm into the web-project Git panel.
+- Folder-to-web transfer remains two actions. This proposal preserves that design and does not move its algorithm into the web-project Git panel.
 
 ### 3.4 Action
 
@@ -158,7 +158,7 @@ The local-folder **Sync with LibrePaper** surface remains the home for linking a
 - **Get changes from web** imports the project into the folder.
 - **Send changes to web** publishes eligible folder changes to the project.
 
-Do not add a third bidirectional folder Sync action in this phase. This preserves `SPEC-sync.md` and keeps folder conflict decisions in the current flow.
+Do not add a third bidirectional folder Sync action in this phase. Preserve the existing two-command flow and its folder conflict choices.
 
 The **Git** panel is for a Git repository connection. The web-project panel uses:
 
@@ -351,7 +351,7 @@ Estimates below are planning ranges, not measurements. They include production a
 | C. Branch pinning | `crates/librepaper-sync/src/state.rs`, Git branch inspection, CLI option parsing in `crates/librepaper/src/cli/sync.rs`, desktop connection UI/bridge as needed, and crate/CLI tests. Add optional branch binding, validate mismatch/detached state, and refuse silent switching. | 150-350 LOC |
 | D. Pending push recovery | `crates/librepaper-sync/src/state.rs` and `push.rs`, CLI handling in `crates/librepaper/src/cli/sync.rs`, Action state handling, server-contract tests where needed. Save actor, request, captured commit, and exact success effects before POST; recover before new content inspection and finalize from saved effects. | 300-550 LOC |
 | E. First-link preview | CLI pull planner/output in `crates/librepaper/src/cli/sync.rs`; desktop bridge in `crates/librepaper-companion/src/local/service/{sync,connection}.rs` as needed; preview UI in reader Git components; CLI/desktop tests. Bypass state-saving `connect()` in preview and recheck on execution. | 250-500 LOC |
-| Cross-cutting Action and docs | `tools/sync-action/sync.sh`, Action metadata, `docs/git.md`, relevant clarifications in `SPEC-sync.md`, and focused workflow coverage. Keep event direction, state refs, and pending-push recovery instructions explicit. Change the documented default schedule to hourly and explain its cost. | 150-300 LOC |
+| Cross-cutting Action and docs | `tools/sync-action/sync.sh`, Action metadata, `docs/git.md`, and focused workflow coverage. Keep event direction, state refs, and pending-push recovery instructions explicit. Change the documented default schedule to hourly and explain its cost. | 150-300 LOC |
 
 Package D must use the actual existing StateStore serialization and source-change replay flow. If this requires a broader durable transaction or a new server receipt contract, stop that package and return for a scoped design update rather than quietly adding a coordinator. These packages share files, so parallel implementation needs explicit ownership or sequential integration. Revisit any estimate that grows materially before expanding the scope.
 
@@ -362,7 +362,7 @@ Package D must use the actual existing StateStore serialization and source-chang
 - CLI: `crates/librepaper/src/cli/sync.rs` command argument definitions, pull/push dispatch, and output rendering.
 - Desktop bridge: `crates/librepaper-companion/src/local/service/sync.rs` and `connection.rs`, only where branch/preview data must cross the bridge.
 - Web UI: `web/src/components/reader/Git.svelte`, Git child components/controllers, `Reader.svelte`, `web/src/lib/reader/web-connection.svelte.js`, and the separate local-folder Sync components. Keep responsibilities aligned with existing component boundaries.
-- Action and documentation: `tools/sync-action`, `docs/git.md`, and the relevant portions of `SPEC-sync.md`.
+- Action and documentation: `tools/sync-action` and `docs/git.md`.
 - The one server change is the `head` field on the history list response (section 4.5). Other History/source-change server changes should be unnecessary unless inspection proves the existing current projection or replay response lacks required data. Prefer the existing `/project?unsuggested=1`, operation key, and receipt behavior.
 
 ## 11. Acceptance matrix

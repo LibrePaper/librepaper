@@ -1,4 +1,4 @@
-// The Git panel of a web project (SPEC-git-panel.md): what the server knows
+// The Git panel of a web project: what the server knows
 // about pushes. A web project cannot run git, so this panel runs nothing. It
 // reads the history the way the History panel does and finds the newest
 // version a push made.
