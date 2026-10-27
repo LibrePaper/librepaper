@@ -139,7 +139,8 @@ mod tests {
         let mut found = Vec::new();
         for entry in ignore::WalkBuilder::new(dir)
             .standard_filters(false)
-            .build() {
+            .build()
+        {
             found.push(entry.unwrap().path().display().to_string());
         }
         found.sort();

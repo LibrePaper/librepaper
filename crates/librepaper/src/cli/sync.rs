@@ -5,8 +5,9 @@
 use super::*;
 
 use librepaper_sync::{
-    commit_summary, preview, publish, pull as pull_files, push as push_files, store_for, Client, Link,
-    MergeOutcome, Preview, PullOptions, PullOutcome, PushOptions, PushOutcome, State, StateStore,
+    commit_summary, preview, publish, pull as pull_files, push as push_files, store_for, Client,
+    Link, MergeOutcome, Preview, PullOptions, PullOutcome, PushOptions, PushOutcome, State,
+    StateStore,
 };
 
 /// The sign-in to use, when it is not the one `login` stored.

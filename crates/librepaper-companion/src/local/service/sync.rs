@@ -85,16 +85,17 @@ pub(super) fn failed(error: &Error) -> Failure {
         Error::DetachedHead
         | Error::BranchUnbound { .. }
         | Error::BranchMismatch { .. }
-        | Error::BranchRebind { .. } => (
-            409,
-            json!({"reason": "branch", "error": error.to_string()}),
-        ),
+        | Error::BranchRebind { .. } => {
+            (409, json!({"reason": "branch", "error": error.to_string()}))
+        }
         Error::PendingPush | Error::PendingActor => (
             409,
             json!({"reason": "pending", "error": error.to_string()}),
         ),
         Error::OtherProject { .. } => refuse(409, &error.to_string()),
-        Error::BranchNeedsRepository | Error::Link(_) | Error::Rules(_) | Error::Invalid(_) => refuse(400, &error.to_string()),
+        Error::BranchNeedsRepository | Error::Link(_) | Error::Rules(_) | Error::Invalid(_) => {
+            refuse(400, &error.to_string())
+        }
         Error::Network(_) | Error::Http { .. } | Error::Trimmed => refuse(502, &error.to_string()),
         Error::Io { .. } | Error::Git(_) | Error::State(_) => refuse(500, &error.to_string()),
     }
@@ -247,7 +248,10 @@ async fn folder_status(
     let (mut here, mut web, mut problem) = (0, false, None);
     if let (Some(state), true) = (&state, signed_in) {
         let client = Client::new(site.clone(), Credentials::token(&token));
-        let (rules, moved) = tokio::join!(client.rules(), web_changed(&client, state));
+        let (rules, moved) = tokio::join!(
+            client.rules(),
+            web_changed(&client, folder.store.as_ref(), state)
+        );
         let mut refused = false;
         match moved {
             Ok(moved) => web = moved,

@@ -38,7 +38,9 @@ pub enum Error {
     #[error("the interrupted push was sent under a different sign-in; sign in as the same account and run `librepaper push` again")]
     PendingActor,
     /// The directory is linked to another project than the one named.
-    #[error("this directory is linked to {linked}, not {named}; unlink it before using another project")]
+    #[error(
+        "this directory is linked to {linked}, not {named}; unlink it before using another project"
+    )]
     OtherProject { linked: String, named: String },
     /// The server answered with a failure status.
     #[error("{detail} ({status})")]

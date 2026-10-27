@@ -160,7 +160,10 @@ fn dependency(path: &str, hash: &str) -> Value {
 
 /// What the server said to a source change.
 enum Sent {
-    Accepted { sha: String, sequence: i64 },
+    Accepted {
+        sha: String,
+        sequence: i64,
+    },
     /// A definitive refusal: the change was not made.
     Refused(PushOutcome),
 }
@@ -244,6 +247,9 @@ async fn settle_pending(
             if pending.commit.is_some() {
                 state.head = pending.commit.clone();
             }
+            // The project's head moved with this push, so the next pull reads
+            // it once.
+            state.web_head = None;
             state.pending = None;
             store.save(state)?;
             Ok(PushOutcome::Pushed {
@@ -467,7 +473,7 @@ pub async fn publish(
         .labels(&slug, false, 1, None)
         .await
         .ok()
-        .and_then(|(newest, _)| newest.first().map(|label| label.sequence));
+        .and_then(|page| page.labels.first().map(|label| label.sequence));
     state.files = found.records();
     state.synced = state.files.keys().cloned().collect();
     state.head = git.as_ref().and_then(|git| git.rev("HEAD"));
@@ -489,13 +495,44 @@ pub fn changes_here(
     Ok(compare(dir, &state.files, &found).count())
 }
 
-/// Whether the project has a named version this directory has not taken in.
-pub async fn web_changed(client: &Client, state: &State) -> Result<bool, Error> {
-    let (newest, _) = client.labels(&state.link.slug, true, 1, None).await?;
-    Ok(newest.first().is_some_and(|label| match state.pulled {
+/// Whether the project has something this directory has not taken in: a named
+/// version past `pulled`, or accepted files that differ from the ones the
+/// state represents. The project's files are read only when its head identity
+/// differs from the recorded one. A read that finds nothing new records the
+/// identity in `store`, so the next check is cheap.
+pub async fn web_changed(
+    client: &Client,
+    store: &dyn StateStore,
+    state: &State,
+) -> Result<bool, Error> {
+    let page = client.labels(&state.link.slug, true, 1, None).await?;
+    let named = page.labels.first().is_some_and(|label| match state.pulled {
         Some(pulled) => label.sequence > pulled,
         None => true,
-    }))
+    });
+    if named {
+        return Ok(true);
+    }
+    if page.head.is_some() && page.head == state.web_head {
+        return Ok(false);
+    }
+    let rules = client.rules().await?;
+    let mut current = client.head(&state.link.slug).await?;
+    current.retain_synced(&rules);
+    // A fetch not yet merged is what the directory is about to agree with.
+    let recorded = match &state.fetched {
+        Some(fetched) => &fetched.files,
+        None => &state.files,
+    };
+    if current.files != *recorded {
+        return Ok(true);
+    }
+    if page.head.is_some() {
+        let mut seen = state.clone();
+        seen.web_head = page.head;
+        store.save(&seen)?;
+    }
+    Ok(false)
 }
 
 /// The latest commit of a repository, as a push's default message and author.
@@ -1069,7 +1106,9 @@ mod tests {
 
         let posted = server.posted();
         assert_eq!(posted.len(), 5);
-        assert!(posted[..4].iter().all(|body| body["operation"] == key.as_str()));
+        assert!(posted[..4]
+            .iter()
+            .all(|body| body["operation"] == key.as_str()));
         assert_eq!(posted[3], posted[0]);
         assert_eq!(posted[3]["change"]["create"].as_array().unwrap().len(), 1);
         assert_eq!(posted[3]["change"]["create"][0]["path"], "a.tex");
@@ -1132,7 +1171,10 @@ mod tests {
         assert_eq!(server.posted().len(), 1);
 
         let outcome = push(&client, dir.path(), &store, &options(None)).await;
-        assert!(matches!(outcome, Ok(PushOutcome::Pushed { .. })), "{outcome:?}");
+        assert!(
+            matches!(outcome, Ok(PushOutcome::Pushed { .. })),
+            "{outcome:?}"
+        );
         let posted = server.posted();
         assert_eq!(posted[0]["operation"], pending.request_key.as_str());
         assert_eq!(posted[1], posted[0]);
@@ -1193,5 +1235,141 @@ mod tests {
         .await;
         assert!(matches!(outcome, Err(Error::PendingPush)), "{outcome:?}");
         assert_eq!(store.load().unwrap(), Some(state));
+    }
+
+    mod web_changed_tests {
+        use super::*;
+        // ------------------------------------------------------- web_changed
+
+        use crate::fake::{self, Fake};
+        use crate::pull::{pull, PullOptions, PullOutcome};
+        use crate::state::FileStore;
+
+        fn records(entries: &[(&str, &str)]) -> BTreeMap<String, FileRecord> {
+            entries
+                .iter()
+                .map(|(path, text)| (path.to_string(), record(Kind::Text, text.as_bytes())))
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn an_unchanged_head_answers_without_reading_the_project() {
+            let home = tempfile::tempdir().unwrap();
+            let store = FileStore::for_dir(home.path(), home.path());
+            let fake = Fake::start().await;
+            fake.name(1, fake::files(&[("a.tex", "one\n")]));
+            fake.set_current(fake::files(&[("a.tex", "unnamed\n")]));
+            fake.set_head(Some("h1"));
+            let mut state = State::new(fake.link());
+            state.pulled = Some(1);
+            state.files = records(&[("a.tex", "one\n")]);
+            state.web_head = Some("h1".into());
+
+            assert!(!web_changed(&fake.client(), &store, &state).await.unwrap());
+            assert_eq!(fake.count("/project"), 0);
+        }
+
+        #[tokio::test]
+        async fn an_unnamed_accepted_edit_is_a_web_change() {
+            let home = tempfile::tempdir().unwrap();
+            let store = FileStore::for_dir(home.path(), home.path());
+            let fake = Fake::start().await;
+            fake.name(1, fake::files(&[("a.tex", "one\n")]));
+            fake.set_current(fake::files(&[("a.tex", "unnamed\n")]));
+            fake.set_head(Some("h2"));
+            let mut state = State::new(fake.link());
+            state.pulled = Some(1);
+            state.files = records(&[("a.tex", "one\n")]);
+            state.web_head = Some("h1".into());
+
+            assert!(web_changed(&fake.client(), &store, &state).await.unwrap());
+            assert_eq!(store.load().unwrap(), None, "nothing is recorded as seen");
+        }
+
+        #[tokio::test]
+        async fn a_moved_head_over_the_same_files_is_recorded_and_not_read_again() {
+            let home = tempfile::tempdir().unwrap();
+            let store = FileStore::for_dir(home.path(), home.path());
+            let fake = Fake::start().await;
+            fake.name(1, fake::files(&[("a.tex", "one\r\n")]));
+            fake.set_current(fake::files(&[("a.tex", "one\r\n")]));
+            fake.set_head(Some("h2"));
+            let mut state = State::new(fake.link());
+            state.pulled = Some(1);
+            state.files = records(&[("a.tex", "one\n")]);
+            state.web_head = None;
+            store.save(&state).unwrap();
+
+            assert!(!web_changed(&fake.client(), &store, &state).await.unwrap());
+            assert_eq!(fake.count("/project"), 1);
+            let state = store.load().unwrap().unwrap();
+            assert_eq!(state.web_head.as_deref(), Some("h2"));
+
+            assert!(!web_changed(&fake.client(), &store, &state).await.unwrap());
+            assert_eq!(fake.count("/project"), 1);
+        }
+
+        #[tokio::test]
+        async fn a_pending_fetch_is_what_the_current_files_are_compared_with() {
+            let home = tempfile::tempdir().unwrap();
+            let store = FileStore::for_dir(home.path(), home.path());
+            let fake = Fake::start().await;
+            fake.name(1, fake::files(&[("a.tex", "two\n")]));
+            fake.set_current(fake::files(&[("a.tex", "two\n")]));
+            fake.set_head(Some("h2"));
+            let mut state = State::new(fake.link());
+            state.pulled = Some(1);
+            state.files = records(&[("a.tex", "one\n")]);
+            state.fetched = Some(crate::state::Fetched {
+                commit: "c".into(),
+                files: records(&[("a.tex", "two\n")]),
+            });
+
+            assert!(!web_changed(&fake.client(), &store, &state).await.unwrap());
+        }
+
+        #[tokio::test]
+        async fn a_push_clears_the_head_and_the_pull_after_it_finds_nothing_to_write() {
+            let dir = tempfile::tempdir().unwrap();
+            let home = tempfile::tempdir().unwrap();
+            let store = FileStore::for_dir(home.path(), dir.path());
+            let fake = Fake::start().await;
+            let mut state = State::new(fake.link());
+            state.web_head = Some("h1".into());
+            store.save(&state).unwrap();
+            fake.set_head(Some("h1"));
+            write(dir.path(), "new.tex", b"mine\n");
+            fake.set_after_push(fake::files(&[("new.tex", "mine\n")]));
+
+            let options = PushOptions {
+                message: "Edits".into(),
+                author: None,
+                exclude: Vec::new(),
+                branch: None,
+            };
+            let outcome = push(&fake.client(), dir.path(), &store, &options)
+                .await
+                .unwrap();
+            assert!(matches!(outcome, PushOutcome::Pushed { .. }), "{outcome:?}");
+            assert_eq!(store.load().unwrap().unwrap().web_head, None);
+
+            let outcome = pull(&fake.client(), dir.path(), &store, &PullOptions::default())
+                .await
+                .unwrap();
+            match outcome {
+                PullOutcome::Folder {
+                    written,
+                    trashed,
+                    conflicts,
+                    ..
+                } => {
+                    assert!(written.is_empty() && trashed.is_empty() && conflicts.is_empty());
+                }
+                other => panic!("{other:?}"),
+            }
+            let state = store.load().unwrap().unwrap();
+            assert_eq!(state.web_head.as_deref(), Some("h1+"));
+            assert_eq!(fake.count("/project"), 1);
+        }
     }
 }

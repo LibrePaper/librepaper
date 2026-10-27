@@ -17,6 +17,8 @@ mod chain;
 mod client;
 mod diff;
 mod error;
+#[cfg(test)]
+mod fake;
 mod files;
 mod git;
 mod link;
