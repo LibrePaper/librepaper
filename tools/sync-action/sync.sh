@@ -4,10 +4,18 @@
 # GITHUB_TOKEN (for gh). The runner sets GITHUB_EVENT_NAME.
 set -euo pipefail
 
-: "${PROJECT:?PROJECT is required}"
-: "${LIBREPAPER_TOKEN:?the token is required}"
-: "${LIBREPAPER_VERSION:?the version is required}"
-: "${BRANCH:?the branch is required}"
+# A missing input fails with a message the operator can act on.
+require_input() {
+  local value=$1 message=$2
+  if [[ -z "$value" ]]; then
+    echo "::error::$message" >&2
+    exit 1
+  fi
+}
+require_input "${PROJECT:-}" "the project input is missing. Set it to the project page, https://<site>/docs/<slug>."
+require_input "${LIBREPAPER_TOKEN:-}" "the token input is missing. Store a project token with the Edit role as the repository secret LIBREPAPER_TOKEN."
+require_input "${LIBREPAPER_VERSION:-}" "the version input is missing. Set it to a librepaper release tag, such as v0.0.52."
+require_input "${BRANCH:-}" "the branch input is missing. Set it to the branch the workflow checks out."
 
 # Only these events run the sync. Checked first, so an unknown event never
 # seeds or publishes anything.
@@ -68,6 +76,15 @@ git fetch --quiet origin '+refs/librepaper/*:refs/librepaper/*' || {
 git config user.name "LibrePaper"
 git config user.email "noreply@librepaper.org"
 
+# Every transfer binds to $BRANCH. A checkout on another branch, or a detached
+# HEAD, would merge into or send from the wrong history, so stop before any
+# transfer. The workflow sets ref: $BRANCH on actions/checkout.
+current=$(git symbolic-ref --quiet --short HEAD || true)
+if [[ "$current" != "$BRANCH" ]]; then
+  echo "::error::the checkout is on ${current:-a detached HEAD}, not $BRANCH. Set ref: $BRANCH on actions/checkout and run the workflow again." >&2
+  exit 1
+fi
+
 # Run the CLI. Its output goes to the log and to $LOG for matching.
 run_cli() {
   librepaper "$@" 2>&1 | tee "$LOG"
@@ -113,7 +130,7 @@ if ! git rev-parse -q --verify refs/librepaper/state >/dev/null; then
   PUBLISH_STATE=0
   before=$(git rev-parse HEAD)
   status=0
-  run_cli pull "$PROJECT" || status=$?
+  run_cli pull "$PROJECT" --branch "$BRANCH" || status=$?
   if [[ $status -ne 0 ]]; then
     if [[ $status -eq 1 ]] && grep -qi "conflict" "$LOG"; then
       # Both sides hold a different version of a file, so a person merges once.
@@ -129,16 +146,18 @@ if ! git rev-parse -q --verify refs/librepaper/state >/dev/null; then
   # A pull that merges moves HEAD. The merge goes to the branch before the state does.
   if [[ "$(git rev-parse HEAD)" != "$before" ]]; then
     if ! git push origin HEAD:"$BRANCH"; then
-      echo "::error::could not push $BRANCH; the LibrePaper state was not published and the next run fetches again" >&2
+      echo "::error::repository: could not push $BRANCH. The web project was not changed by this run. The LibrePaper state was not published, and the next run fetches again." >&2
       exit 1
     fi
   fi
   # Sends the files the repository has and the project lacks.
   status=0
-  run_cli push "$PROJECT" || status=$?
+  run_cli push "$PROJECT" --branch "$BRANCH" || status=$?
   if [[ $status -ne 0 ]]; then
     if [[ $status -eq 1 ]] && grep -qi "pull first" "$LOG"; then
       echo "::error::the project changed a file that the repository also has, so the first push was refused. Merge the two versions once on a computer, then run the workflow again." >&2
+    else
+      echo "::error::project: the send to the web project failed, so the project does not have this repository's files yet. The LibrePaper state was not published, so the next run starts the first run again." >&2
     fi
     exit "$status"
   fi
@@ -150,14 +169,14 @@ status=0
 case "${GITHUB_EVENT_NAME:-}" in
 push)
   # The checked-out commit is the one pushed. Its subject and author name the version.
-  run_cli push "$PROJECT" --message "$(git log -1 --format=%s)" \
+  run_cli push "$PROJECT" --branch "$BRANCH" --message "$(git log -1 --format=%s)" \
     --author "$(git log -1 --format=%an)" || status=$?
   if [[ $status -eq 0 ]]; then
     exit 0
   fi
   # Refused: the web project changed files that this push also changed.
   if [[ $status -eq 1 ]] && grep -qi "pull first" "$LOG"; then
-    run_cli pull "$PROJECT" --no-merge
+    run_cli pull "$PROJECT" --branch "$BRANCH" --no-merge
     open_sync_pr
   fi
   exit "$status"
@@ -165,8 +184,14 @@ push)
 schedule | workflow_dispatch)
   # A pull that merges moves HEAD. A pull with nothing new leaves HEAD alone.
   before=$(git rev-parse HEAD)
-  run_cli pull "$PROJECT" || status=$?
+  run_cli pull "$PROJECT" --branch "$BRANCH" || status=$?
   if [[ $status -ne 0 ]]; then
+    # A push from an earlier run is still pending. The pull stops until it is
+    # sent, so a person re-runs the push or runs it in a clone.
+    if grep -qi "run librepaper push" "$LOG"; then
+      echo "::error::a send to the web project from an earlier run is still pending, so this pull stopped. Re-run the push workflow for this repository, or run librepaper push in a clone of it. The next scheduled run pulls once that send is done." >&2
+      exit "$status"
+    fi
     if [[ $status -eq 1 ]] && grep -qi "conflict" "$LOG"; then
       # Leave main as it was, then hand the conflicting files to a person.
       if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
@@ -179,7 +204,7 @@ schedule | workflow_dispatch)
   if [[ "$(git rev-parse HEAD)" != "$before" ]]; then
     if ! git push origin HEAD:"$BRANCH"; then
       PUBLISH_STATE=0
-      echo "::error::could not push $BRANCH; the LibrePaper state was not published and the next run fetches again" >&2
+      echo "::error::repository: could not push $BRANCH. This run only read the web project, so the web project was not changed. The LibrePaper state was not published, and the next run repeats the pull from the same point." >&2
       exit 1
     fi
   fi

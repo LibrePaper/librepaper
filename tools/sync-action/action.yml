@@ -14,7 +14,7 @@ inputs:
     required: false
     default: v0.0.52
   branch:
-    description: The branch to sync. The workflow must check it out.
+    description: The branch to sync. The workflow must check it out with actions/checkout ref set to this branch. The script stops when the checkout is on another branch or a detached HEAD.
     required: false
     default: main
 runs:

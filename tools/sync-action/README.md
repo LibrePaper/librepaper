@@ -4,10 +4,13 @@ A composite action that keeps a Git repository and a LibrePaper web project in s
 
 ## What it does
 
-- On a push to the branch, it sends the pushed commit to the project as one named version. The commit subject and author name the version.
-- On a schedule, or a manual run, it takes the web project's newer versions and merges them into the branch. It pushes the merge when there is one. If the branch moved during the run, the push fails, the state is not published, and the next run repeats the pull from the same point.
+- On a push to the branch, it sends the pushed commit to the project as one named version. The commit subject and author name the version. This is the repository-to-web direction.
+- On a schedule, or a manual run, it takes the web project's current version and merges it into the branch. It pushes the merge when there is one. This is the web-to-repository direction. If the branch moved during the run, the push fails, the state is not published, and the next run repeats the pull from the same point.
 - When a file changed on both sides, it does not guess. It opens a pull request from `librepaper/sync` and the run fails. A person merges the pull request in git.
+- When a send to the web project is pending from an earlier run, a scheduled or manual run stops with an error. Re-run the push workflow, or run `librepaper push` in a clone, to send it.
 - It keeps the sync state under `refs/librepaper/*` on origin, so the state survives between runners.
+
+Every event finishes its own transfer, or reports what is left. The Action's own pushes do not start another workflow run.
 
 ## Inputs
 
@@ -16,7 +19,7 @@ A composite action that keeps a Git repository and a LibrePaper web project in s
 | `project` | yes | | The project page, `https://<site>/docs/<slug>`. |
 | `token` | yes | | A project token with the Edit role. Store it as a secret. |
 | `version` | no | `v0.0.52` | The `librepaper` release tag to download. |
-| `branch` | no | `main` | The branch to sync. The workflow must check it out. |
+| `branch` | no | `main` | The branch to sync. The workflow checks it out with `ref` set to this branch. The script stops when the checkout is on another branch or a detached HEAD. |
 
 The default `version` follows the workspace version in `Cargo.toml`. Bump it in `action.yml` when a release ships `push` and `pull`.
 
@@ -38,14 +41,15 @@ If a file differs on both sides, the first run stops with an error. A person the
 
 ## Workflow
 
-Copy this into `.github/workflows/librepaper.yml`. Replace `<slug>` with the project's slug.
+Copy this into `.github/workflows/librepaper.yml`. Replace `<slug>` with the project's slug. Keep `ref` and `branch` equal.
 
 ```yaml
 on:
   push:
     branches: [main]
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "0 * * * *"          # hourly
+  workflow_dispatch:
 concurrency: librepaper
 jobs:
   sync:
@@ -56,12 +60,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
       - uses: LibrePaper/sync-action@v1
         with:
           project: https://app.librepaper.org/docs/<slug>
           token: ${{ secrets.LIBREPAPER_TOKEN }}
+          branch: main
 ```
+
+Each scheduled run spends GitHub Actions minutes, so hourly is the default. GitHub also delays frequent scheduled runs. A shorter interval costs more minutes, and it should not be shorter than 15 minutes.
 
 ## When a push is refused
 
@@ -70,6 +78,19 @@ jobs:
 - Merge the pull request in git, or merge `librepaper/sync` into the branch and resolve any conflicts. The next push sends the merged result to the web project.
 
 A scheduled run that hits a conflict aborts its merge and opens the same pull request.
+
+## When a send is pending
+
+A push can stop after it saves its request and before the web project confirms it. The next push run sends the pending request first. A scheduled or manual run does not, so it stops with this error:
+
+- Re-run the push workflow for the commit that failed. A re-run sends the pending request only while that commit is still the tip of the branch.
+- Or run `librepaper push` in a clone of the repository, with the same token and branch.
+
+The next push run recovers the request only when the run that stopped published its state. A run that stopped before it published the state, or a runner that disappeared before publishing, leaves nothing to recover.
+
+## Repository and web results
+
+Each run reports the two sides separately. A repository push that fails does not undo a web write that already succeeded. The Action never force-pushes the branch or bypasses branch protection. If a protected branch rejects the Action's push, the web side is reported as it is, and the next run repeats the transfer.
 
 ## Security
 
