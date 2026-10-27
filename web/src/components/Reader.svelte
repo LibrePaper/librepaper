@@ -120,6 +120,7 @@
   import CompactPanelMenu from "./layout/CompactPanelMenu.svelte";
   import Files from "./reader/Files.svelte";
   import Outline from "./reader/Outline.svelte";
+  import WordCount from "./reader/WordCount.svelte";
   import Agent from "./reader/Agent.svelte";
   import Collaboration from "./reader/Collaboration.svelte";
   import Changes from "./reader/Changes.svelte";
@@ -1729,19 +1730,21 @@
   });
   const outlineHeadings = $derived.by(() => panel === "outline" && mayEdit
     ? extractOutline(outlineSource, outlineFormat) : []);
-  // The words in the source selection, set by noteSourceSelection.
-  let sourceSelectionWords = $state(null);
-  // Word counts for the Outline panel: the open file's root with its includes,
-  // each section, and the source selection (kept by noteSourceSelection).
-  const outlineWords = $derived.by(() => {
+  // Word counts for each heading in the Outline panel.
+  const outlineSections = $derived.by(() => panel === "outline" && mayEdit
+    ? sectionWords(outlineSource, outlineFormat, outlineHeadings) : []);
+  // The Word count dialog: the open file's document with its includes, and
+  // the selection in the open file. Nothing is counted while the dialog is shut.
+  let wordCountOpen = $state(false);
+  const wordCount = $derived.by(() => {
     void outlineRevision;
-    if (panel !== "outline" || !mayEdit || !toolbarPath) return null;
+    if (!wordCountOpen || !mayEdit || !toolbarPath) return null;
     const texts = liveTreeNow().texts;
     const root = previewTarget({ open: toolbarPath, locked: lockedPath || null, texts }).path || toolbarPath;
+    const range = editor?.selection?.();
     return {
       document: documentWords(root, texts),
-      sections: sectionWords(outlineSource, outlineFormat, outlineHeadings),
-      selection: sourceSelectionWords,
+      selection: range && range.file === openFile ? countWordsIn(editor.text(), outlineFormat, range.from, range.to) : null,
     };
   });
   // Keep one render in flight and coalesce requests into the latest tree.
@@ -2299,9 +2302,6 @@
     const range = editor?.selection?.();
     sourceSelected = Boolean(range);
     sourcePassageNow = range ? sourcePassage(editor.text(), range.from, range.to, session?.paths?.get(range.file) || "") : null;
-    // Only the outline shows this, and only for a selection in the open file.
-    const inOpen = Boolean(range) && range.file === openFile && panel === "outline";
-    sourceSelectionWords = inOpen ? countWordsIn(editor.text(), outlineFormat, range.from, range.to) : null;
   }
   // Tasks on a passage take it from the source, where selecting is precise and
   // the text is what the server finds. The rendered selection serves only
@@ -2543,7 +2543,6 @@
     // Leaving the panel a comparison belongs to ends the comparison.
     if (comparison.kind && comparison.kind !== name) endComparison();
     panel = name;
-    if (name === "outline") noteSourceSelection();
     if (compact) mobileView = name ? "sidebar" : "document";
     if (name !== "history") return Promise.resolve();
     return loadHistory();
@@ -2630,7 +2629,7 @@
     [["undo", "Undo"], ["redo", "Redo"]],
     [["cut", "Cut"], ["copy", "Copy"], ["paste", "Paste"]],
     [["select-all", "Select All"]],
-    [["find", "Find…"], ["replace", "Replace…"]],
+    [["find", "Find…"], ["replace", "Replace…"], ["word-count", "Word count…"]],
     [["bold", "Bold"], ["italic", "Italic"]],
   ];
 
@@ -2645,6 +2644,7 @@
   const MENU_KEYS = $derived(menuKeys({ modalEditor: keys === "vim" || keys === "emacs", apple: APPLE }));
 
   function chooseEditCommand(command) {
+    if (command === "word-count") return openWordCount();
     showMobileView("source");
     const target = editor;
     // Restore source focus after the menu finishes closing.
@@ -3964,6 +3964,7 @@
   // thing the menu already calls, so a command cannot drift from the menu item
   // that names it. Nothing new is implemented in this function.
   async function runCommand(id) {
+    if (id === "word-count") return openWordCount();
     if (EDIT_COMMANDS.includes(id)) return chooseEditCommand(id);
     if (id === "palette") { refreshEditAvailability(); commandPalette = true; return; }
     if (id === "shortcuts") return openSettings("editor");
@@ -3985,6 +3986,11 @@
   const EDIT_COMMANDS = ["undo", "redo", "cut", "copy", "paste", "select-all", "find", "replace", "bold", "italic"];
   const LAYOUT_COMMANDS = ["linked", "layout-source", "layout-document", "layout-split", "side-left", "side-right"];
   const TEXT_SIZE_COMMANDS = ["text-bigger", "text-smaller", "text-reset"];
+
+  // The count reads the source, so the dialog is offered only where the source is open.
+  function openWordCount() {
+    if (mayEdit && editing) wordCountOpen = true;
+  }
 
   // The palettes open over the editor. Each one inserts at the caret the
   // editor had when it opened, so there is nothing to open without a source.
@@ -4346,7 +4352,7 @@
   {/snippet}
 
   {#snippet outlinePanel()}
-    <Outline headings={outlineHeadings} words={outlineWords} activeFrom={outlineActiveFrom} onselect={openOutlineHeading} />
+    <Outline headings={outlineHeadings} counts={outlineSections} activeFrom={outlineActiveFrom} onselect={openOutlineHeading} />
   {/snippet}
 
   {#snippet agentPanel()}
@@ -4770,6 +4776,14 @@
   {#if mathOpen}
     <MathPalette bind:this={mathPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={closePalette} oncancel={(context) => editor?.releaseInsertContext?.(context)} />
   {/if}
+</Modal>
+
+<!-- Word counts for the open file, read on open and as the text changes. -->
+<Modal bind:open={wordCountOpen} title="Word count" onclose={returnToEditor}
+  confirm={{ label: "Close", cancel: false, onclick: () => (wordCountOpen = false) }}>
+  {#snippet children()}
+    <WordCount count={wordCount} />
+  {/snippet}
 </Modal>
 
 <!-- The preferences dialog is shared by the navbar menu and sidebar button. -->

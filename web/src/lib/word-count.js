@@ -82,14 +82,17 @@ export function documentFiles(root, texts) {
 }
 
 /**
- * The words in a document: the root file and every file it includes.
+ * The words in a document: the root file and every file it includes. `files`
+ * has one entry per file, in the order documentFiles gives them.
  * @param {string} root
  * @param {{ [path: string]: string }} texts
- * @returns {{ words: number, files: string[] }}
+ * @returns {{ words: number, files: Array<{ path: string, words: number }> }}
  */
 export function documentWords(root, texts) {
-  const files = documentFiles(root, texts);
-  let words = 0;
-  for (const path of files) words += countWords(texts[path], formatOf(path) || "");
+  const files = documentFiles(root, texts).map((path) => ({
+    path,
+    words: countWords(texts[path], formatOf(path) || ""),
+  }));
+  const words = files.reduce((sum, file) => sum + file.words, 0);
   return { words, files };
 }

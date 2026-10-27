@@ -203,6 +203,7 @@ export const COMMANDS = [
   { id: "select-all", label: "Select All", category: "Editing", scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+A"], available: (c) => Boolean(c.edit?.["select-all"]) },
   { id: "find", label: "Find", category: "Editing", scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+F"], available: (c) => Boolean(c.edit?.find) },
   { id: "replace", label: "Replace", category: "Editing", scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+Alt+F"], available: (c) => Boolean(c.edit?.replace) },
+  { id: "word-count", label: "Word count", category: "Editing", scope: "workspace", menu: "edit", keys: [], available: editable },
   { id: "bold", label: "Bold", category: "Editing", scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+B"], available: (c) => Boolean(c.edit?.bold) },
   { id: "italic", label: "Italic", category: "Editing", scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+I"], available: (c) => Boolean(c.edit?.italic) },
 

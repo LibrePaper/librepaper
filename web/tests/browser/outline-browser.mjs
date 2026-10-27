@@ -287,16 +287,18 @@ try {
 
   await openFile("notes.md");
   await openOutline();
-  // The word count follows edits from both sides, two words a heading.
-  const words = () => tab.evaluate("Number(document.querySelector('.outline-words strong')?.textContent.replace(/\\D/g, '') || -1)");
-  const before = await words();
-  assert.ok(before > 0, "the outline shows the document's word count");
+  // Each heading's section count sits beside its title. A heading and its
+  // line are two words, so each new section counts two.
+  const countOf = (title) => tab.evaluate(`(() => {
+    const row = [...document.querySelectorAll('.outline .outline-heading')].find(node => node.querySelector('.outline-title')?.textContent.trim() === ${JSON.stringify(title)});
+    return row?.querySelector('.outline-count')?.textContent.trim() ?? "";
+  })()`);
   await tab.evaluate("window.roomControl.remoteAppend('notes.md', '# Remote heading')");
   await until("remote outline update", () => tab.evaluate("[...document.querySelectorAll('.outline .outline-heading')].some(node => node.textContent.includes('Remote heading'))"), 5000);
-  await until("remote word count update", async () => (await words()) === before + 2, 5000);
+  await until("remote section count", async () => (await countOf("Remote heading")) === "2", 5000);
   await tab.insert("\n\n# Local heading\n");
   await until("local outline update", () => tab.evaluate("[...document.querySelectorAll('.outline .outline-heading')].some(node => node.textContent.includes('Local heading'))"), 5000);
-  await until("local word count update", async () => (await words()) === before + 4, 5000);
+  await until("local section count", async () => Number(await countOf("Local heading")) > 0, 5000);
   assert.equal(await tab.evaluate("window.roomSent.some(message => message.type === 'doc-update')"), true, "local edits go out on the shared document");
   assert.match(await tab.evaluate("window.roomControl.snapshot('notes.md')"), /Local heading/);
   if (process.env.OUTLINE_SCREENSHOT) {

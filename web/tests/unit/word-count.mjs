@@ -74,10 +74,11 @@ import { includesOf } from "../../src/lib/opening.js";
   assert.deepEqual(documentFiles("thesis.tex", texts), ["thesis.tex", "chap.tex"]);
   assert.deepEqual(documentFiles("book.typ", texts), ["book.typ", "a.typ"]);
   assert.deepEqual(documentFiles("missing.tex", texts), []);
-  assert.deepEqual(documentWords("thesis.tex", texts), {
-    words: 4,
-    files: ["thesis.tex", "chap.tex"],
-  });
+  const thesis = documentWords("thesis.tex", texts);
+  assert.equal(thesis.words, 4);
+  assert.deepEqual(thesis.files.map((file) => file.path), ["thesis.tex", "chap.tex"]);
+  assert.equal(thesis.files[1].words, 2, "the chapter counts its own words");
+  assert.equal(thesis.words, thesis.files[0].words + thesis.files[1].words);
 }
 
 // A cycle does not loop: each file is visited once.
