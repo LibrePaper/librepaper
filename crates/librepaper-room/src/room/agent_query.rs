@@ -8,9 +8,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use librepaper_base::digest::Digest;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use sha2::{Digest, Sha256};
 
 /// The immutable source capture one query group reads, and the bounded
 /// comment windows prepared for whichever of its queries asked for one.
@@ -832,7 +832,7 @@ fn file_identity(snapshot: &QuerySnapshot, path: &str, source: &str) -> (String,
     let hash = entry
         .map(|entry| entry.digest.clone())
         .filter(|digest| !digest.is_empty())
-        .unwrap_or_else(|| digest(source.as_bytes()));
+        .unwrap_or_else(|| Digest::of(source.as_bytes()).to_hex());
     (id, hash)
 }
 
@@ -1631,12 +1631,6 @@ fn fingerprint(query: &Map<String, Value>) -> String {
     librepaper_base::canonical_json::sha256_hex(&Value::Object(copy))
 }
 
-fn digest(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hex::encode(hasher.finalize())
-}
-
 /// The envelope around a query group's results. `returned_bytes` and
 /// `returned_tokens` are not computed here: `mcp_read_existing` is the only
 /// place that stamps final sizes, once it has added the metadata it wraps
@@ -1707,7 +1701,7 @@ mod tests {
         Entry {
             kind: "text".into(),
             id: id.into(),
-            digest: digest(source.as_bytes()),
+            digest: Digest::of(source.as_bytes()).to_hex(),
             bytes: source.len() as u64,
         }
     }
@@ -1795,7 +1789,7 @@ mod tests {
         let text = by_path("main.md");
         assert_eq!(text["kind"], json!("text"));
         assert_eq!(text["file_id"], json!("file-1"));
-        assert_eq!(text["file_hash"], json!(digest(main.as_bytes())));
+        assert_eq!(text["file_hash"], json!(Digest::of(main.as_bytes()).to_hex()));
         assert_eq!(text["bytes"], json!(main.len()));
 
         let asset = by_path("figures/plot.png");

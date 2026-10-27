@@ -8,9 +8,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
+use librepaper_base::digest::Digest;
+
 use crate::chain::{Chain, Meta, MAIN_REF};
 use crate::client::{Client, Label, Snapshot};
-use crate::files::{inside, sha256_hex, FileRecord, Kind};
+use crate::files::{inside, FileRecord, Kind};
 use crate::git::Git;
 use crate::rules::Rules;
 use librepaper_base::text::LineEnding;
@@ -455,7 +457,7 @@ async fn asset_bytes(
             .values()
             .find(|file| file.kind == Kind::Asset && file.sha == record.sha)
             .and_then(|file| std::fs::read(&file.file).ok())
-            .filter(|data| sha256_hex(data) == record.sha);
+            .filter(|data| Digest::of(data).to_hex() == record.sha);
         let data = match held {
             Some(data) => data,
             None => client.asset(slug, &record.sha).await?,
@@ -1019,7 +1021,7 @@ mod tests {
         std::fs::write(root.join("latin.tex"), [b'c', b'a', b'f', 0xe9]).unwrap();
         std::fs::write(root.join("main.tex"), "same\n").unwrap();
 
-        let same = sha256_hex(b"same\n");
+        let same = Digest::of(b"same\n").to_hex();
         let web = files(&[
             ("build/out.tex", "1"),
             ("latin.tex", "1"),
@@ -1130,7 +1132,7 @@ mod tests {
         let root = dir.path();
         std::fs::write(root.join("main.tex"), "same\n").unwrap();
         std::fs::write(root.join("main.pdf"), "%PDF rendered").unwrap();
-        let same = sha256_hex(b"same\n");
+        let same = Digest::of(b"same\n").to_hex();
 
         // The web holds the render's files, though the folder has only the pdf.
         let recorded = files(&[("main.tex", same.as_str()), ("main.pdf", "1")]);
@@ -1219,8 +1221,8 @@ mod tests {
 
         // The web version holds the excluded path under a hash of its own.
         let listed = BTreeMap::from([
-            ("a.tex".to_string(), text(&sha256_hex(b"the web's\n"))),
-            ("main.tex".to_string(), text(&sha256_hex(b"main\n"))),
+            ("a.tex".to_string(), text(&Digest::of(b"the web's\n").to_hex())),
+            ("main.tex".to_string(), text(&Digest::of(b"main\n").to_hex())),
         ]);
         let mut snapshot = Snapshot {
             texts: BTreeMap::from([
@@ -1257,7 +1259,7 @@ mod tests {
             .unwrap();
         assert_eq!(shown, "mine");
         assert_eq!(held, listed);
-        assert_eq!(held["a.tex"].sha, sha256_hex(b"the web's\n"));
+        assert_eq!(held["a.tex"].sha, Digest::of(b"the web's\n").to_hex());
 
         // With the attribute gone the file is measured against the web's hash.
         // Git reads a missing working-tree .gitattributes from the index, so
@@ -1382,7 +1384,7 @@ mod tests {
                 .map(|(path, text)| {
                     let record = FileRecord {
                         kind: Kind::Text,
-                        sha: sha256_hex(text.as_bytes()),
+                        sha: Digest::of(text.as_bytes()).to_hex(),
                     };
                     (path.to_string(), record)
                 })

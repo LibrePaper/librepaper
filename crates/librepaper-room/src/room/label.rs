@@ -118,7 +118,7 @@ impl Command for TakeLabel {
     ) -> std::result::Result<Option<PreparedSource>, CommandError> {
         self.vector = head.vector.encode();
         self.frontier = head.frontier.encode();
-        self.digest = head.projection.projection.digest_bytes();
+        self.digest = *head.projection.projection.digest().as_bytes();
         Ok(None)
     }
 

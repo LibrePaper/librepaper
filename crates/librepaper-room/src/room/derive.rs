@@ -39,7 +39,7 @@ impl Room {
 }
 
 fn derive_into(doc: &LoroDoc, projected: &Projected, comments: &mut [Comment]) {
-    let tree_digest = projected.projection.digest();
+    let tree_digest = projected.projection.digest().to_hex();
     // The files that are text, by the id a comment's record names them with.
     let texts: HashSet<&str> = projected
         .projection

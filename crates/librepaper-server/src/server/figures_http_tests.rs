@@ -20,9 +20,10 @@ use super::http_test_support::{deployment as http_deployment, owner_bearer, Depl
 use super::Server;
 use crate::server::origins::Origins;
 use librepaper_base::auth::{sign_device, Identity, PROVIDER_GITHUB};
+use librepaper_base::digest::Digest;
 use librepaper_base::role::Role;
 use librepaper_engine::storage::postgres::{Authority, NewAccount, WriterLease};
-use librepaper_engine::storage::store::{digest_of_bytes, DocumentInput};
+use librepaper_engine::storage::store::DocumentInput;
 
 /// The app origin the requests name in their `host` header; the fixture's
 /// default origins would answer 421 to it.
@@ -222,7 +223,7 @@ async fn an_editor_reads_a_current_figure_without_a_decode() {
         return;
     };
     let slug = deployment.slug.clone();
-    let sha = digest_of_bytes(&figure(1));
+    let sha = Digest::of(&figure(1)).to_hex();
     let authorization = owner_authorization(&deployment);
     let served = serve(deployment).await;
     let room = served.server.documents.rooms.get(&slug).await.unwrap();
@@ -248,7 +249,7 @@ async fn an_editor_can_read_a_retained_figure() {
         return;
     };
     let slug = deployment.slug.clone();
-    let retained = digest_of_bytes(&figure(1));
+    let retained = Digest::of(&figure(1)).to_hex();
     put_directory(&deployment, &slug, vec![("figure-b.png".into(), figure(2))]).await;
     let authorization = owner_authorization(&deployment);
     let served = serve(deployment).await;
@@ -275,7 +276,7 @@ async fn a_reader_reads_a_current_figure_and_warms_the_document() {
         return;
     };
     let slug = deployment.slug.clone();
-    let sha = digest_of_bytes(&figure(1));
+    let sha = Digest::of(&figure(1)).to_hex();
     let document = document_id(&deployment, &slug).await;
     let authorization = reader_bearer(&deployment, document).await;
     let served = serve(deployment).await;
@@ -302,8 +303,8 @@ async fn a_reader_cannot_read_a_removed_figure_when_warm() {
         return;
     };
     let slug = deployment.slug.clone();
-    let removed = digest_of_bytes(&figure(1));
-    let current = digest_of_bytes(&figure(2));
+    let removed = Digest::of(&figure(1)).to_hex();
+    let current = Digest::of(&figure(2)).to_hex();
     put_directory(&deployment, &slug, vec![("figure-b.png".into(), figure(2))]).await;
     let document = document_id(&deployment, &slug).await;
     let authorization = reader_bearer(&deployment, document).await;
@@ -336,7 +337,7 @@ async fn a_reader_cannot_read_a_removed_figure_when_cold() {
         return;
     };
     let slug = deployment.slug.clone();
-    let removed = digest_of_bytes(&figure(1));
+    let removed = Digest::of(&figure(1)).to_hex();
     put_directory(&deployment, &slug, vec![("figure-b.png".into(), figure(2))]).await;
     let document = document_id(&deployment, &slug).await;
     let authorization = reader_bearer(&deployment, document).await;
@@ -365,7 +366,7 @@ async fn nobody_reads_another_documents_figure() {
     };
     let owned = deployment.slug.clone();
     let other = "figures-http-other";
-    let other_figure = digest_of_bytes(&figure(2));
+    let other_figure = Digest::of(&figure(2)).to_hex();
     put_directory(&deployment, other, vec![("figure-b.png".into(), figure(2))]).await;
     let authorization = owner_authorization(&deployment);
     let served = serve(deployment).await;

@@ -1544,7 +1544,7 @@ mod tests {
         assert!(tree.files[0]["mtime"].is_u64());
         assert_eq!(
             tree.listing["main.tex"].1,
-            librepaper_document::results::sha256(b"hello")
+            librepaper_base::digest::Digest::of(b"hello").to_hex()
         );
     }
 
@@ -1633,7 +1633,7 @@ mod tests {
         assert_eq!(changes[0].kind, "changed");
         assert_eq!(
             changes[0].sha256.as_deref(),
-            Some(librepaper_document::results::sha256(b"changed text").as_str())
+            Some(librepaper_base::digest::Digest::of(b"changed text").to_hex().as_str())
         );
         assert_eq!(changes[0].size, Some(12));
         assert!(scan.look(root.path(), &record).is_empty());
@@ -1655,7 +1655,7 @@ mod tests {
         let mut digests = BTreeMap::new();
         digests.insert(
             "main.tex".to_string(),
-            librepaper_document::results::sha256(b"written by the editor"),
+            librepaper_base::digest::Digest::of(b"written by the editor").to_hex(),
         );
         workspace::record_listed_digests(&record, root.path(), &digests).unwrap();
         for _ in 0..3 {
@@ -2242,7 +2242,7 @@ mod tests {
             binding_id: binding.id.clone(),
             manifest: vec![ManifestEntry {
                 path: entrypoint.into(),
-                sha256: librepaper_document::results::sha256(b"hello"),
+                sha256: librepaper_base::digest::Digest::of(b"hello").to_hex(),
                 size: 5,
             }],
             options: Default::default(),
@@ -2496,7 +2496,7 @@ mod tests {
     }
 
     fn digest(text: &str) -> String {
-        librepaper_document::results::sha256(text.as_bytes())
+        librepaper_base::digest::Digest::of(text.as_bytes()).to_hex()
     }
 
     /// A save of the page that lists only `main.tex`, with nothing to upload.

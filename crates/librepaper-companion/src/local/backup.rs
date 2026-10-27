@@ -85,9 +85,7 @@ pub(crate) async fn run_backup(
         return Err("backup requires an authenticated account".into());
     }
     let normalized_server = normalize_server(server)?;
-    let namespace_id = hex::encode(Sha256::digest(
-        format!("{}\0{}", normalized_server, account_id).as_bytes(),
-    ));
+    let namespace_id = librepaper_base::digest::Digest::of(format!("{}\0{}", normalized_server, account_id).as_bytes()).to_hex();
     let root = destination.join(MANAGED_DIR).join(namespace_id);
     create_managed_directories(destination)?;
     create_private_directory(&destination.join(MANAGED_DIR))?;
@@ -543,7 +541,7 @@ async fn fetch_snapshot(
     }
     let snapshot: Snapshot = serde_json::from_value(payload)
         .map_err(|error| format!("invalid project snapshot for {slug:?}: {error}"))?;
-    if snapshot.digest != snapshot.projection.digest() {
+    if snapshot.digest != snapshot.projection.digest().to_hex() {
         return Err(format!(
             "project {slug:?} snapshot digest does not match its identity"
         ));
@@ -579,7 +577,7 @@ async fn materialize_snapshot(
                 (text_bytes, false)
             }
             "asset" => match previous_files.get(path.to_str().unwrap_or_default()) {
-                Some(previous) if hex::encode(Sha256::digest(previous)) == entry.digest => {
+                Some(previous) if librepaper_base::digest::Digest::of(previous).to_hex() == entry.digest => {
                     (previous.clone(), true)
                 }
                 _ => (
@@ -598,7 +596,7 @@ async fn materialize_snapshot(
         if entry.kind == "text" && bytes.len() as u64 != entry.bytes {
             return Err(format!("file {} has the wrong size", path.display()));
         }
-        if !bytes_verified && hex::encode(Sha256::digest(&bytes)) != entry.digest {
+        if !bytes_verified && librepaper_base::digest::Digest::of(&bytes).to_hex() != entry.digest {
             return Err(format!(
                 "file {} failed digest verification",
                 path.display()
@@ -1103,7 +1101,7 @@ fn archive_name(title: &str, slug: &str) -> String {
 
 fn archive_slug_suffix(slug: &str) -> String {
     let safe_slug = safe_stem(slug);
-    let id = &hex::encode(Sha256::digest(slug.as_bytes()))[..12];
+    let id = &librepaper_base::digest::Digest::of(slug.as_bytes()).to_hex()[..12];
     format!("--{safe_slug}-{id}.zip")
 }
 
@@ -1227,7 +1225,7 @@ mod tests {
             let entry = librepaper_document::document::projection::Entry {
                 kind: "text".into(),
                 id: "text-id".into(),
-                digest: hex::encode(Sha256::digest(body.as_bytes())),
+                digest: librepaper_base::digest::Digest::of(body.as_bytes()).to_hex(),
                 bytes: body.len() as u64,
             };
             let mut projection = librepaper_document::document::projection::Projection::default();
@@ -1238,7 +1236,7 @@ mod tests {
                 librepaper_document::document::projection::Entry {
                     kind: "asset".into(),
                     id: String::new(),
-                    digest: hex::encode(Sha256::digest(asset_bytes)),
+                    digest: librepaper_base::digest::Digest::of(asset_bytes).to_hex(),
                     bytes: 0,
                 },
             );
@@ -1248,11 +1246,11 @@ mod tests {
                 librepaper_document::document::projection::Entry {
                     kind: "text".into(),
                     id: "note-id".into(),
-                    digest: hex::encode(Sha256::digest(dated_note.as_bytes())),
+                    digest: librepaper_base::digest::Digest::of(dated_note.as_bytes()).to_hex(),
                     bytes: dated_note.len() as u64,
                 },
             );
-            let digest = projection.digest();
+            let digest = projection.digest().to_hex();
             if !state.ignore_if_none_match.load(Ordering::SeqCst) {
                 if let Some(if_none_match) = headers.get("if-none-match") {
                     if if_none_match.as_bytes() == format!("\"{digest}\"").as_bytes() {
@@ -1273,7 +1271,7 @@ mod tests {
             } else {
                 b"\x00\x02\xff".as_slice()
             };
-            let digest_str = hex::encode(Sha256::digest(bytes));
+            let digest_str = librepaper_base::digest::Digest::of(bytes).to_hex();
             let entry = librepaper_document::document::projection::Entry {
                 kind: "asset".into(),
                 id: String::new(),
@@ -1282,7 +1280,7 @@ mod tests {
             };
             let mut projection = librepaper_document::document::projection::Projection::default();
             projection.files.insert("images/plot.bin".into(), entry);
-            let digest = projection.digest();
+            let digest = projection.digest().to_hex();
             if !state.ignore_if_none_match.load(Ordering::SeqCst) {
                 if let Some(if_none_match) = headers.get("if-none-match") {
                     if if_none_match.as_bytes() == format!("\"{digest}\"").as_bytes() {
@@ -1759,9 +1757,7 @@ mod tests {
         let output = tempfile::tempdir().unwrap();
         let server = "https://paper.example";
         let account = "account-one";
-        let namespace_id = hex::encode(Sha256::digest(
-            format!("{}\0{}", normalize_server(server).unwrap(), account).as_bytes(),
-        ));
+        let namespace_id = librepaper_base::digest::Digest::of(format!("{}\0{}", normalize_server(server).unwrap(), account).as_bytes()).to_hex();
         create_managed_directories(output.path()).unwrap();
         let managed = output.path().join(MANAGED_DIR);
         create_private_directory(&managed).unwrap();

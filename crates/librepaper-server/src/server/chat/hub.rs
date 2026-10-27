@@ -16,7 +16,7 @@ pub(super) fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
 }
 fn token_matches(stored: &str, token: &str) -> bool {
-    let hash = librepaper_engine::storage::store::digest_of(token);
+    let hash = librepaper_base::digest::Digest::of(token.as_bytes()).to_hex();
     !token.is_empty() && librepaper_base::util::constant_time_eq(stored.as_bytes(), hash.as_bytes())
 }
 
@@ -87,7 +87,7 @@ impl Hub {
             id.clone(),
             Channel {
                 slug: slug.into(),
-                token_hash: librepaper_engine::storage::store::digest_of(&token),
+                token_hash: librepaper_base::digest::Digest::of(token.as_bytes()).to_hex(),
                 touched_at: current,
                 browser: None,
                 agent: None,
@@ -569,7 +569,7 @@ impl Hub {
             .get_mut(id)
             .filter(|channel| channel.slug == slug && token_matches(&channel.token_hash, token))
             .ok_or((404, "channel not found"))?;
-        let digest = librepaper_engine::storage::store::digest_of(&frame.to_string());
+        let digest = librepaper_base::digest::Digest::of(frame.to_string().as_bytes()).to_hex();
         let key = format!("{role}:{event_id}");
         if let Some((_, previous)) = channel
             .requests

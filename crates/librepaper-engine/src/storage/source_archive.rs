@@ -6,9 +6,9 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Read};
 
+use librepaper_base::digest::Digest;
 use librepaper_base::paths::RelPath;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 pub const ARCHIVE_FORMAT_VERSION: u32 = 1;
 pub const DEFAULT_INLINE_FILE_BYTES: usize = 1024 * 1024;
@@ -152,7 +152,7 @@ pub fn encode(
                 logical_bytes = logical_bytes
                     .checked_add(bytes.len() as u64)
                     .ok_or_else(|| ArchiveError::Invalid("source byte count overflow".into()))?;
-                let digest = hex::encode(Sha256::digest(&bytes));
+                let digest = Digest::of(&bytes).to_hex();
                 manifest_files.push(ManifestFile::Inline {
                     path: path.clone(),
                     digest,
@@ -217,7 +217,7 @@ pub fn encode(
             limits.archive_bytes
         )));
     }
-    let digest = Sha256::digest(&bytes).into();
+    let digest = *Digest::of(&bytes).as_bytes();
     Ok(EncodedArchive {
         bytes,
         digest,
@@ -311,7 +311,7 @@ pub fn decode(bytes: &[u8], limits: ArchiveLimits) -> Result<SourceArchive, Arch
                 let body = inline.remove(&path).ok_or_else(|| {
                     ArchiveError::Invalid(format!("missing inline file {path:?}"))
                 })?;
-                if body.len() as u64 != bytes || hex::encode(Sha256::digest(&body)) != digest {
+                if body.len() as u64 != bytes || Digest::of(&body).to_hex() != digest {
                     return Err(ArchiveError::Invalid(format!(
                         "inline file {path:?} does not match its manifest"
                     )));
@@ -329,12 +329,10 @@ pub fn decode(bytes: &[u8], limits: ArchiveLimits) -> Result<SourceArchive, Arch
                 bytes,
                 media_type,
             } => {
-                let decoded = hex::decode(&digest).map_err(|_| {
+                let digest = *digest.parse::<Digest>().map_err(|_| {
                     ArchiveError::Invalid(format!("asset {path:?} has an invalid digest"))
-                })?;
-                let digest: [u8; 32] = decoded.try_into().map_err(|_| {
-                    ArchiveError::Invalid(format!("asset {path:?} has an invalid digest"))
-                })?;
+                })?
+                .as_bytes();
                 files.push(SourceFile::Asset {
                     path,
                     asset_id,

@@ -11,7 +11,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
-use crate::files::{inside, sha256_hex, FileRecord, Kind};
+use librepaper_base::digest::Digest;
+
+use crate::files::{inside, FileRecord, Kind};
 use crate::git::Git;
 use crate::rules::Rules;
 use librepaper_base::paths::{nfc, MAX_SEGMENTS};
@@ -210,7 +212,7 @@ pub(crate) fn scan(
                     };
                     Local {
                         kind,
-                        sha: sha256_hex(text.as_bytes()),
+                        sha: Digest::of(text.as_bytes()).to_hex(),
                         file,
                         text: Some(text),
                     }
@@ -222,7 +224,7 @@ pub(crate) fn scan(
             },
             Kind::Asset => Local {
                 kind,
-                sha: sha256_hex(&bytes),
+                sha: Digest::of(&bytes).to_hex(),
                 file,
                 text: None,
             },
@@ -348,7 +350,7 @@ mod tests {
         let scan = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
         assert_eq!(scan.files["crlf.tex"].sha, scan.files["lf.tex"].sha);
         assert_eq!(scan.files["crlf.tex"].text.as_deref(), Some("a\nb\n"));
-        assert_eq!(scan.files["lf.tex"].sha, sha256_hex(b"a\nb\n"));
+        assert_eq!(scan.files["lf.tex"].sha, Digest::of(b"a\nb\n").to_hex());
     }
 
     #[test]
@@ -443,7 +445,7 @@ mod tests {
         write(root, "main_files/libs/x.css", b"body {}\n");
         let record = |bytes: &[u8], kind| FileRecord {
             kind,
-            sha: sha256_hex(bytes),
+            sha: Digest::of(bytes).to_hex(),
         };
         let recorded = BTreeMap::from([
             ("main.tex".to_string(), record(b"main\n", Kind::Text)),
@@ -475,7 +477,7 @@ mod tests {
             "main.tex".to_string(),
             FileRecord {
                 kind: Kind::Text,
-                sha: sha256_hex(b"main\n"),
+                sha: Digest::of(b"main\n").to_hex(),
             },
         )]);
         let listed = scan(root, &Rules::default(), None, &[]).unwrap();
@@ -548,7 +550,7 @@ mod tests {
         let scan = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
         let record = |text: &str| FileRecord {
             kind: Kind::Text,
-            sha: sha256_hex(text.as_bytes()),
+            sha: Digest::of(text.as_bytes()).to_hex(),
         };
         let recorded = BTreeMap::from([
             ("same.tex".to_string(), record("same\n")),
@@ -577,7 +579,7 @@ mod tests {
 
         let record = |text: &str| FileRecord {
             kind: Kind::Text,
-            sha: sha256_hex(text.as_bytes()),
+            sha: Digest::of(text.as_bytes()).to_hex(),
         };
         let recorded = BTreeMap::from([
             ("main.tex".to_string(), record("main\n")),
@@ -611,7 +613,7 @@ mod tests {
         write(root, "locked/inner.tex", b"inner\n");
         let record = |text: &str| FileRecord {
             kind: Kind::Text,
-            sha: sha256_hex(text.as_bytes()),
+            sha: Digest::of(text.as_bytes()).to_hex(),
         };
         let recorded = BTreeMap::from([
             ("main.tex".to_string(), record("main\n")),
@@ -644,7 +646,7 @@ mod tests {
         std::fs::create_dir(root.join("kept")).unwrap();
         let record = |text: &str| FileRecord {
             kind: Kind::Text,
-            sha: sha256_hex(text.as_bytes()),
+            sha: Digest::of(text.as_bytes()).to_hex(),
         };
         let recorded = BTreeMap::from([
             ("main.tex".to_string(), record("main\n")),
@@ -671,7 +673,7 @@ mod tests {
 
         let record = |text: &str| FileRecord {
             kind: Kind::Text,
-            sha: sha256_hex(text.as_bytes()),
+            sha: Digest::of(text.as_bytes()).to_hex(),
         };
         let recorded = BTreeMap::from([
             ("main.tex".to_string(), record("main\n")),

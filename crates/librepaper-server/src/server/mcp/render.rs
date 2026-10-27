@@ -199,13 +199,14 @@ fn manifest(
         };
         let bytes = text.as_bytes();
         entry.insert("kind".into(), json!("text"));
-        entry.insert("sha".into(), json!(hex::encode(Sha256::digest(bytes))));
+        entry.insert("sha".into(), json!(librepaper_base::digest::Digest::of(bytes).to_hex()));
         entry.insert("size".into(), json!(bytes.len()));
     }
-    let dependency_hash = hex::encode(Sha256::digest(
-        serde_json::to_vec(&candidate.dependencies)
+    let dependency_hash = librepaper_base::digest::Digest::of(
+        &serde_json::to_vec(&candidate.dependencies)
             .map_err(|_| boxed_error(500, "candidate not found"))?,
-    ));
+    )
+    .to_hex();
     Ok(json!({
         "candidate_id": candidate_id,
         // "base_revision" and "revision" are the render-preview protocol's
@@ -269,7 +270,7 @@ impl Server {
             "type": "preview_request",
             // Stable across an MCP retry so a result arriving after the
             // bounded inline wait can be recovered from the channel journal.
-            "id": format!("render_{}", hex::encode(Sha256::digest(format!("{candidate_id}\0{tree_digest}").as_bytes()))),
+            "id": format!("render_{}", librepaper_base::digest::Digest::of(format!("{candidate_id}\0{tree_digest}").as_bytes()).to_hex()),
             "task_id": task_id,
             "base_revision": base_tree_digest,
             "revision": tree_digest,

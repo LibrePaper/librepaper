@@ -1193,7 +1193,7 @@ impl Server {
         // also covers the pending changes, so an accept or a reject reaches
         // a reader whose text did not move. The `source-changed` frame
         // names no identity the browser compares; it only says to refetch.
-        let identity = projected.projection.digest();
+        let identity = projected.projection.digest().to_hex();
         let etag = format!(
             "\"{}{}\"",
             reader_identity(&identity, &entry.title, &format, &changes),
@@ -1295,7 +1295,7 @@ impl Server {
         comment_state["next_cursor"] = json!(page
             .next
             .map(|at| librepaper_room::room::comments::encode_cursor(room.document_id, None, at)));
-        let tree_sha = projected.projection.digest();
+        let tree_sha = projected.projection.digest().to_hex();
         let files = projected.projection.files.clone();
         let snapshot = librepaper_document::document::projection::ProjectSnapshot {
             sha: tree_sha,
@@ -2234,7 +2234,7 @@ mod reader_changes_tests {
         assert_eq!(row.as_object().unwrap().len(), 11);
 
         let before = reader_identity(
-            &projected.projection.digest(),
+            &projected.projection.digest().to_hex(),
             "Paper",
             "markdown",
             &changes,
@@ -2242,7 +2242,7 @@ mod reader_changes_tests {
         assert_ne!(
             before,
             reader_identity(
-                &projected.projection.digest(),
+                &projected.projection.digest().to_hex(),
                 "Renamed",
                 "markdown",
                 &changes
@@ -2255,7 +2255,7 @@ mod reader_changes_tests {
         let changes = reader_changes(&doc, &projected);
         assert!(changes.is_empty());
         let after = reader_identity(
-            &projected.projection.digest(),
+            &projected.projection.digest().to_hex(),
             "Paper",
             "markdown",
             &changes,

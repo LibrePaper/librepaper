@@ -569,7 +569,7 @@ impl Server {
                             let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"chat messages must be between 1 and 4096 bytes","temp_id":incoming.temp_id()}).to_string())).await;
                             continue 'reader;
                         }
-                        let digest = librepaper_engine::storage::store::digest_of(text);
+                        let digest = librepaper_base::digest::Digest::of(text.as_bytes()).to_hex();
                         if let Some((_, previous)) = chat_requests.iter().find(|(id,_)| id == incoming.temp_id()) {
                             let reply = if previous == &digest {
                                 json!({"type":"chat-ack","temp_id":incoming.temp_id()})
@@ -704,7 +704,7 @@ impl Server {
                                     // itself (inline, or by reference above
                                     // the inline limit) and every row plus
                                     // the buffer follows as `doc-rows`.
-                                    let digest = format!("{:x}", Sha256::digest(&base));
+                                    let digest = librepaper_base::digest::Digest::of(&base).to_hex();
                                     let state = if base.len() > self.config.session.inline_state_max {
                                         let Some((reference, digest)) =
                                             self.state_reference(&room.slug, base).await
@@ -1093,7 +1093,7 @@ impl Server {
             .ok()?;
         let now = librepaper_base::util::now_unix();
         let id = random_token();
-        let digest = format!("{:x}", Sha256::digest(&update));
+        let digest = librepaper_base::digest::Digest::of(&update).to_hex();
         let mut transfers = self.state_transfers.lock().await;
         if !transfers.insert(
             id.clone(),

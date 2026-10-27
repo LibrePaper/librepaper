@@ -9,7 +9,6 @@ use std::collections::BTreeMap;
 
 use librepaper_base::paths::RelPath;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 /// The protocol versions this binary speaks. Version 2 carried typed
 /// builders and Quarto options and is no longer spoken.
@@ -179,7 +178,7 @@ impl OutputEntry {
     pub fn from_bytes(bytes: &[u8]) -> Self {
         OutputEntry {
             size: bytes.len() as u64,
-            sha256: hex::encode(Sha256::digest(bytes)),
+            sha256: librepaper_base::digest::Digest::of(bytes).to_hex(),
         }
     }
 }

@@ -1002,7 +1002,7 @@ async fn snapshot_exposes_the_shared_cli_project_snapshot_wire_fields() {
     assert!(payload.get("projection").is_none());
     let snapshot: librepaper_document::document::projection::ProjectSnapshot =
         serde_json::from_value(payload.clone()).unwrap();
-    assert_eq!(snapshot.sha, snapshot.tree.digest());
+    assert_eq!(snapshot.sha, snapshot.tree.digest().to_hex());
     assert_eq!(snapshot.texts["paper.md"], PAPER);
     assert_eq!(payload["files"], payload["tree"]["files"]);
     deployment.catalog.close().await;

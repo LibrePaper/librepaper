@@ -934,8 +934,8 @@ async fn a_durable_projection_is_stable_and_command_bundles_or_writes_nothing() 
         .expect("the room for the document just created");
 
     // -- (a) a reader projection is stable ---------------------------------
-    let first = room.projection().await.unwrap().projection.digest();
-    let second = room.projection().await.unwrap().projection.digest();
+    let first = room.projection().await.unwrap().projection.digest().to_hex();
+    let second = room.projection().await.unwrap().projection.digest().to_hex();
     assert_eq!(
         first, second,
         "unchanged durable state projects to the same digest"
@@ -1560,7 +1560,7 @@ async fn source_producing_evidence_matches_the_row_it_names() {
         &librepaper_document::document::paths::rules(&config),
     );
     assert_eq!(
-        after_projected.projection.digest(),
+        after_projected.projection.digest().to_hex(),
         evidence.after_digest.as_deref().unwrap(),
         "after_frontier really does lead to the state after_digest claims -- \
          reconstructed independently, not recomputed the way production did it"
@@ -1583,7 +1583,7 @@ async fn source_producing_evidence_matches_the_row_it_names() {
         &librepaper_document::document::paths::rules(&config),
     );
     assert_eq!(
-        before_projected.projection.digest(),
+        before_projected.projection.digest().to_hex(),
         evidence.before_digest,
         "before_frontier really does lead to the state before_digest claims"
     );

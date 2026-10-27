@@ -4,8 +4,8 @@
 //! `to_string` of a map depends on the order a client sent. Every digest of a
 //! JSON value goes through this module instead.
 
+use crate::digest::Digest;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 /// The RFC 8785 canonical encoding of `value`.
 pub fn canonical_bytes(value: &Value) -> Vec<u8> {
@@ -14,7 +14,7 @@ pub fn canonical_bytes(value: &Value) -> Vec<u8> {
 
 /// Lower-case hex SHA-256 of the canonical encoding of `value`.
 pub fn sha256_hex(value: &Value) -> String {
-    hex::encode(Sha256::digest(canonical_bytes(value)))
+    Digest::of(&canonical_bytes(value)).to_hex()
 }
 
 #[cfg(test)]

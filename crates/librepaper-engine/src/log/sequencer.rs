@@ -256,7 +256,7 @@ impl Head<'_> {
     }
 
     pub fn digest(&self) -> String {
-        self.projection.projection.digest()
+        self.projection.projection.digest().to_hex()
     }
 
     /// The path rules of this deployment.
@@ -323,7 +323,7 @@ impl Head<'_> {
             batch,
             end: header.partial_end_vv,
             after_frontier: draft.oplog_frontiers(),
-            after_digest: projected.projection.digest(),
+            after_digest: projected.projection.digest().to_hex(),
             after_projection: Arc::new(projected),
             client_seq,
             // Moved out of the local, not released at the end of `prepare`:
@@ -1181,7 +1181,7 @@ impl Sequencer {
             return Ingested::Refused("this server no longer holds this document; reconnect");
         }
 
-        let digest: [u8; 32] = Sha256::digest(&bytes).into();
+        let digest = *librepaper_base::digest::Digest::of(&bytes).as_bytes();
         let durable_key = durable_reservation_key(self.document_id, peer_key, client_seq, &digest);
         if let Some(previous) = inner
             .buffer
@@ -2725,7 +2725,7 @@ impl Sequencer {
                 &librepaper_document::document::paths::rules(&self.config),
             )
             .projection
-            .digest()
+            .digest().to_hex()
         });
         // Set unconditionally: keeping this on the success path alone meant a
         // cold document never engaged the one-per-second throttle, so every

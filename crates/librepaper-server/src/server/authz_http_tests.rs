@@ -116,7 +116,7 @@ async fn a_trashed_document_cannot_be_forked_or_read_for_assets() {
     let key = mint_editor_link(&deployment).await;
     let mut headers = owner_headers(&deployment);
     headers.insert("x-librepaper-key", HeaderValue::from_str(&key).unwrap());
-    let sha = librepaper_engine::storage::store::digest_of_bytes(&figure(1));
+    let sha = librepaper_base::digest::Digest::of(&figure(1)).to_hex();
     let context = context(&deployment);
 
     let live = deployment

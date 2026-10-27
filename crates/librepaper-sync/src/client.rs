@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use librepaper_base::digest::Digest;
 use librepaper_base::http::{detail_of, post_json_as, send, truncate, Credentials};
 use librepaper_base::text::LineEnding;
 use reqwest::Method;
@@ -10,7 +11,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use url::Url;
 
-use crate::files::{sha256_hex, FileRecord, Kind};
+use crate::files::{FileRecord, Kind};
 use crate::rules::Rules;
 use crate::Error;
 
@@ -87,7 +88,7 @@ impl Snapshot {
                         path.clone(),
                         FileRecord {
                             kind: Kind::Text,
-                            sha: sha256_hex(body.as_bytes()),
+                            sha: Digest::of(body.as_bytes()).to_hex(),
                         },
                     );
                     snapshot.texts.insert(path.clone(), body);
@@ -253,7 +254,7 @@ impl Client {
         if status != 200 {
             return Err(refusal(status, &decode(&raw)));
         }
-        if sha256_hex(&raw) != digest {
+        if Digest::of(&raw).to_hex() != digest {
             return Err(Error::Invalid(format!(
                 "the asset {digest} arrived damaged"
             )));
@@ -403,7 +404,7 @@ mod tests {
         let snapshot = Snapshot::parse(Some(&files), Some(&texts)).unwrap();
         assert_eq!(snapshot.files.len(), 2);
         assert_eq!(snapshot.texts["main.tex"], "one\ntwo\n");
-        assert_eq!(snapshot.files["main.tex"].sha, sha256_hex(b"one\ntwo\n"));
+        assert_eq!(snapshot.files["main.tex"].sha, Digest::of(b"one\ntwo\n").to_hex());
         assert_eq!(snapshot.files["fig/a.png"].sha, "a".repeat(64));
         assert_eq!(snapshot.files["fig/a.png"].kind, Kind::Asset);
     }

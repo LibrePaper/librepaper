@@ -1357,7 +1357,7 @@ impl Server {
         if let Some(value) = cookie(headers, &cookie_name(arrival.is_https(), VISITOR_COOKIE)) {
             let token = read_visitor(&self.key, &value);
             if !token.is_empty() {
-                return format!("visitor:{}", hex::encode(Sha256::digest(token.as_bytes())));
+                return format!("visitor:{}", librepaper_base::digest::Digest::of(token.as_bytes()).to_hex());
             }
         }
         String::new()

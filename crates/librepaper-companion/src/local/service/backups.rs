@@ -2021,7 +2021,7 @@ mod tests {
     ) -> Json<Value> {
         Json(json!({
             "schema": 1,
-            "project_digest": fixture.projection.digest(),
+            "project_digest": fixture.projection.digest().to_hex(),
             "slug": "scheduled-project",
             "title": "Scheduled Project",
             "format": "markdown",
@@ -2038,7 +2038,7 @@ mod tests {
             librepaper_document::document::projection::Entry {
                 kind: "text".into(),
                 id: "test-text".into(),
-                digest: hex::encode(sha2::Sha256::digest(text.as_bytes())),
+                digest: librepaper_base::digest::Digest::of(text.as_bytes()).to_hex(),
                 bytes: text.len() as u64,
             },
         );
@@ -2107,14 +2107,15 @@ mod tests {
         .await
         .expect("the scheduler completes the first backup");
 
-        let namespace = hex::encode(sha2::Sha256::digest(
+        let namespace = librepaper_base::digest::Digest::of(
             format!(
                 "{}\0{}",
                 crate::local::credentials::origin(&server),
                 account_id
             )
             .as_bytes(),
-        ));
+        )
+        .to_hex();
         let backup_dir = destination
             .path()
             .join("librepaper-backups")

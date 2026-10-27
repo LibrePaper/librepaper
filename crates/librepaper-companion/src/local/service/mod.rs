@@ -1540,7 +1540,7 @@ mod settings_tests {
             "entrypoint": "main.typ", "binding_id": binding_id,
             "manifest": [{
                 "path": "main.typ",
-                "sha256": hex::encode(Sha256::digest(source)),
+                "sha256": librepaper_base::digest::Digest::of(source).to_hex(),
                 "size": source.len(),
             }],
         })
@@ -1560,7 +1560,7 @@ mod settings_tests {
             .map(|(path, bytes)| {
                 json!({
                     "path": path,
-                    "sha256": hex::encode(Sha256::digest(bytes)),
+                    "sha256": librepaper_base::digest::Digest::of(bytes).to_hex(),
                     "size": bytes.len(),
                 })
             })

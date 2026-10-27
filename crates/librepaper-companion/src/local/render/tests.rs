@@ -36,7 +36,7 @@ fn fixture(format: &str, output: &str, entrypoint: &str) -> Fixture {
         binding_id: "hosted".into(),
         manifest: vec![ManifestEntry {
             path: entrypoint.into(),
-            sha256: librepaper_document::results::sha256(bytes),
+            sha256: librepaper_base::digest::Digest::of(bytes).to_hex(),
             size: bytes.len() as u64,
         }],
         options: Default::default(),
@@ -436,7 +436,7 @@ async fn render_with_the_default_command(
     let fixture = fixture(format, output, entrypoint);
     std::fs::write(fixture.staged.path().join(entrypoint), source).unwrap();
     let mut fixture = fixture;
-    fixture.request.manifest[0].sha256 = librepaper_document::results::sha256(source.as_bytes());
+    fixture.request.manifest[0].sha256 = librepaper_base::digest::Digest::of(source.as_bytes()).to_hex();
     fixture.request.manifest[0].size = source.len() as u64;
     run_fixture(&fixture, false).await
 }

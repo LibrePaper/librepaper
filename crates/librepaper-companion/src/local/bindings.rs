@@ -16,7 +16,6 @@ use std::path::{Path, PathBuf};
 
 use librepaper_base::paths::RelPath;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use librepaper_base::util::now_unix;
 
@@ -147,7 +146,7 @@ impl BindingStore {
         let name = if safe {
             id.to_string()
         } else {
-            hex::encode(Sha256::digest(id.as_bytes()))
+            librepaper_base::digest::Digest::of(id.as_bytes()).to_hex()
         };
         self.path
             .parent()
@@ -164,7 +163,7 @@ impl BindingStore {
         // One workspace per deployment and document: two deployments can
         // mint the same slug, and their trees must never share caches.
         let origin = super::store::normalize_origin(origin);
-        let deployment = hex::encode(&Sha256::digest(origin.as_bytes())[..8]);
+        let deployment = librepaper_base::digest::Digest::of(origin.as_bytes()).prefix(16);
         let root = base.join(deployment).join(project);
         std::fs::create_dir_all(&root).ok()?;
         let root = std::fs::canonicalize(&root).ok()?;

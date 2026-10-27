@@ -298,7 +298,7 @@ fn date(at: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::files::sha256_hex;
+    use librepaper_base::digest::Digest;
     use crate::git::testing::{commit_all, repository};
 
     fn version(
@@ -311,7 +311,7 @@ mod tests {
                 path.to_string(),
                 FileRecord {
                     kind: Kind::Text,
-                    sha: sha256_hex(text.as_bytes()),
+                    sha: Digest::of(text.as_bytes()).to_hex(),
                 },
             );
             texts.insert(path.to_string(), text.to_string());

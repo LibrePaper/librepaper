@@ -4,7 +4,6 @@
 //! time they return to a document, so a reader can tell one visitor from
 //! another across a thread without either of them having signed anything.
 
-use sha2::{Digest, Sha256};
 use std::sync::LazyLock;
 
 const ADJECTIVES_TXT: &str = include_str!("words/adjectives.txt");
@@ -33,7 +32,7 @@ static LIZARDS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
 /// bytes reduces word-list collisions. The display name is still only a cue;
 /// authorization always uses the full author key.
 pub fn pseudonym_for(author_key: &str, slug: &str) -> String {
-    let digest = Sha256::digest(format!("{author_key}\n{slug}").as_bytes());
+    let digest = *crate::digest::Digest::of(format!("{author_key}\n{slug}").as_bytes()).as_bytes();
     let adjective_index = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]);
     let lizard_index = u32::from_be_bytes([digest[4], digest[5], digest[6], digest[7]]);
     let adjective = ADJECTIVES[adjective_index as usize % ADJECTIVES.len()];

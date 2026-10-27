@@ -11,7 +11,6 @@
 use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
-use sha2::{Digest, Sha256};
 
 use super::*;
 use librepaper_engine::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
@@ -92,8 +91,8 @@ impl Room {
             return Err(WriteError::Invalid("that file is empty".into()));
         }
         librepaper_document::document::formats::check_asset(&body).map_err(WriteError::Invalid)?;
-        let sha = librepaper_engine::storage::store::digest_of_bytes(&body);
-        let digest: [u8; 32] = Sha256::digest(&body).into();
+        let sha = librepaper_base::digest::Digest::of(&body).to_hex();
+        let digest = *librepaper_base::digest::Digest::of(&body).as_bytes();
 
         let key = format!(
             "documents/{}/assets/{}",
@@ -110,7 +109,7 @@ impl Room {
                 .get(&key)
                 .await
                 .map_err(|e| WriteError::Storage(e.to_string()))?;
-            if stored.len() as i64 != size || Sha256::digest(&stored).as_slice() != digest {
+            if stored.len() as i64 != size || librepaper_base::digest::Digest::of(&stored).as_bytes().as_slice() != digest {
                 return Err(WriteError::Storage(
                     "asset failed immutable verification".into(),
                 ));

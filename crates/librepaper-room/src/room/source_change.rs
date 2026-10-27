@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 use loro::LoroDoc;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::agent::{AgentAuthority, OperationKey};
@@ -300,7 +299,7 @@ pub fn validate_source_change(
             };
             let moved = !dependency.file_id.is_empty() && dependency.file_id != file.file_id;
             let rewritten = !dependency.file_hash.is_empty()
-                && dependency.file_hash != librepaper_engine::storage::store::digest_of(file.text);
+                && dependency.file_hash != librepaper_base::digest::Digest::of(file.text.as_bytes()).to_hex();
             if moved
                 || rewritten
                 || !range_matches(
@@ -704,11 +703,6 @@ pub(crate) fn client_seq_of(id: Uuid) -> i64 {
     i64::from_be_bytes(half) & i64::MAX
 }
 
-pub(crate) fn parse_digest(hex_digest: &str) -> Option<[u8; 32]> {
-    let bytes = hex::decode(hex_digest).ok()?;
-    bytes.try_into().ok()
-}
-
 /// One source change, run as a semantic command (§7). `evaluate` rebuilds the
 /// tree from head and checks it against the change; `transact` records the
 /// idempotency row that makes a retry of the same request answer without
@@ -880,7 +874,12 @@ impl Command for SourceChangeCommand<'_> {
                             .after_frontier
                             .clone()
                             .unwrap_or_else(|| evidence.before_frontier.clone()),
-                        tree_digest: parse_digest(&after_digest),
+                        tree_digest: Some(
+                            *after_digest
+                                .parse::<librepaper_base::digest::Digest>()
+                                .map_err(|_| CommandError::Conflict("invalid tree digest".into()))?
+                                .as_bytes(),
+                        ),
                         label: self.change.message.clone(),
                         reason: self.origin.reason(),
                         request_id: Some(self.request_id),
@@ -1017,12 +1016,13 @@ impl Room {
         };
 
         let request_id = {
-            let digest = Sha256::digest(
+            let digest = librepaper_base::digest::Digest::of(
                 change
                     .operation
                     .scoped_request_id(&authority.operation_scope)
                     .as_bytes(),
             );
+            let digest = digest.as_bytes();
             let mut bytes = [0_u8; 16];
             bytes.copy_from_slice(&digest[..16]);
             Uuid::new_v8(bytes)
@@ -1393,8 +1393,8 @@ mod tests {
                 "paper.md".into()
             ]))
         );
-        let good = librepaper_engine::storage::store::digest_of("one two");
-        let also = librepaper_engine::storage::store::digest_of("red blue");
+        let good = librepaper_base::digest::Digest::of("one two".as_bytes()).to_hex();
+        let also = librepaper_base::digest::Digest::of("red blue".as_bytes()).to_hex();
         change.dependencies = vec![dependency("paper.md", &good), dependency("notes.md", &also)];
         assert_eq!(validate_for(&tree, &change, &sync(), 10), Ok(()));
     }

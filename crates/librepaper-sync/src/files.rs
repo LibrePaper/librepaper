@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use librepaper_base::paths::RelPath;
 pub use librepaper_base::paths::Kind;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::Error;
 
@@ -13,10 +12,6 @@ pub struct FileRecord {
     pub kind: Kind,
     /// SHA-256 hex of the LF text, or the asset digest.
     pub sha: String,
-}
-
-pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
 }
 
 /// Where `relative` is below `dir`, as `RelPath::under` decides.

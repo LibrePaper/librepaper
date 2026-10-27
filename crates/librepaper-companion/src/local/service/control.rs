@@ -9,7 +9,7 @@
 use super::*;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 
 const TOKEN_FILE: &str = "control-token.json";
 
@@ -72,7 +72,7 @@ impl ControlAuth {
             .map_err(|error| format!("could not save local control credential: {error}"))?;
         Ok(Self {
             instance: instance.to_string(),
-            token_hash: hex::encode(Sha256::digest(token.as_bytes())),
+            token_hash: librepaper_base::digest::Digest::of(token.as_bytes()).to_hex(),
             token,
             origin,
         })
@@ -101,7 +101,7 @@ impl ControlAuth {
         self.instance == instance
             && librepaper_base::util::constant_time_eq(
                 self.token_hash.as_bytes(),
-                hex::encode(Sha256::digest(token.as_bytes())).as_bytes(),
+                librepaper_base::digest::Digest::of(token.as_bytes()).to_hex().as_bytes(),
             )
     }
 }
