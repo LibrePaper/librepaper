@@ -257,7 +257,7 @@ impl Record {
             .map(|argument| expand_template(argument, input, stem))
             .collect::<Result<Vec<_>, _>>()?;
         let result = expand_template(&self.result, input, stem)?;
-        if !RelPath::is_valid(&result) {
+        if !RelPath::is_local(&result) {
             return Err(format!(
                 "the result path must be a safe relative path, not {result}"
             ));

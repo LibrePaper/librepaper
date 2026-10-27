@@ -764,7 +764,7 @@ pub(super) async fn handle_pull(
     if !mine
         .iter()
         .chain(&theirs)
-        .all(|path| RelPath::is_valid(path))
+        .all(|path| RelPath::is_local(path))
     {
         return write_json(400, &json!({"error": "unsafe file path"}));
     }

@@ -353,7 +353,7 @@ impl BindingStore {
         entrypoint: &str,
     ) -> Result<ProjectBinding, String> {
         let binding = self.resolve_scoped(id, origin, project)?;
-        if !RelPath::is_valid(entrypoint) {
+        if !RelPath::is_local(entrypoint) {
             return Err("entrypoint must be a safe project-relative path".into());
         }
         let binding = self.check_root(binding)?;

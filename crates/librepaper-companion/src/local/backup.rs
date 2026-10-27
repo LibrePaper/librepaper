@@ -1590,6 +1590,7 @@ mod tests {
         assert!(member_path("../escape.txt").is_err());
         assert!(member_path("/absolute.md").is_err());
         assert!(member_path("notes:2026.md").is_ok());
+        assert!(member_path("c:paper.tex").is_ok());
         assert!(member_path("C:\\escape.txt").is_err());
         assert!(member_path("dir\\escape.txt").is_err());
         task.abort();

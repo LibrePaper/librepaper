@@ -191,7 +191,7 @@ fuzz_target!(|input: Input| {
         job.output
     );
     assert!(
-        RelPath::is_valid(&job.entrypoint),
+        RelPath::is_local(&job.entrypoint),
         "a job was admitted with entrypoint {:?}",
         job.entrypoint
     );
@@ -210,7 +210,7 @@ fuzz_target!(|input: Input| {
 /// joined to. The string check knows about `/` and the filesystem knows about
 /// components; this is where the two have to agree.
 fn check_path(path: &str) {
-    if !RelPath::is_valid(path) {
+    if !RelPath::is_local(path) {
         return;
     }
     let root = Path::new("/srv/project");

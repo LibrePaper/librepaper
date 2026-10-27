@@ -152,7 +152,7 @@ impl JobRequest {
             return Err("unsupported protocol version".into());
         }
         crate::local::render::Key::parse_parts(&self.format, &self.output)?;
-        if !RelPath::is_valid(&self.entrypoint) {
+        if !RelPath::is_local(&self.entrypoint) {
             return Err("entrypoint must be a safe project-relative path".into());
         }
         if self.binding_id.is_empty() || self.binding_id.len() > 256 {
