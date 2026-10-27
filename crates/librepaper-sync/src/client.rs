@@ -4,12 +4,13 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use librepaper_base::digest::Digest;
-use librepaper_base::http::{detail_of, post_json_as, send, truncate, Credentials};
+use librepaper_base::http::{decode, detail_of, post_json_as, send, Credentials};
+use librepaper_base::site::SiteUrl;
 use librepaper_base::text::LineEnding;
 use librepaper_base::util::{token, Encoding};
 use reqwest::Method;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use url::Url;
 
 use crate::files::{FileRecord, Kind};
@@ -153,8 +154,8 @@ impl Client {
         &self.site
     }
 
-    fn base(&self) -> String {
-        self.site.origin().ascii_serialization()
+    fn base(&self) -> Result<SiteUrl, Error> {
+        SiteUrl::from_origin_of(&self.site).map_err(Error::Invalid)
     }
 
     async fn call(
@@ -173,7 +174,7 @@ impl Client {
         headers.extend_from_slice(extra);
         send(
             method,
-            &format!("{}{path}", self.base()),
+            &self.base()?.join(path),
             &headers,
             body,
             timeout,
@@ -197,10 +198,15 @@ impl Client {
     /// token is admitted only on its document's routes, so this call carries
     /// no credential.
     pub async fn rules(&self) -> Result<Rules, Error> {
+        let anonymous = Credentials::default().headers();
+        let headers: Vec<(&str, &str)> = anonymous
+            .iter()
+            .map(|(name, value)| (*name, value.as_str()))
+            .collect();
         let (status, raw) = send(
             Method::GET,
-            &format!("{}/api/config", self.base()),
-            &[("x-librepaper-client", "cli")],
+            &self.base()?.join("/api/config"),
+            &headers,
             None,
             QUICK,
         )
@@ -330,7 +336,7 @@ impl Client {
         slug: &str,
         body: &Value,
     ) -> Result<(u16, Value), Error> {
-        let target = format!("{}/api/documents/{slug}/source-change", self.base());
+        let target = self.base()?.join(&format!("/api/documents/{slug}/source-change"));
         let mut attempt = 0;
         loop {
             match post_json_as(&target, body, &self.credentials, BULK).await {
@@ -398,11 +404,6 @@ impl Client {
 
 fn retryable(reply: &Value) -> bool {
     reply.get("retryable").and_then(Value::as_bool) == Some(true)
-}
-
-fn decode(raw: &[u8]) -> Value {
-    serde_json::from_slice(raw)
-        .unwrap_or_else(|_| json!({"error": truncate(&String::from_utf8_lossy(raw), 300)}))
 }
 
 /// The error for a reply that was not a success.
