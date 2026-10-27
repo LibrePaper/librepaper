@@ -334,7 +334,7 @@ async fn pick_remote(
 /// render wrote. The walk leaves out hidden entries and the ignored names, so
 /// a change to `.gitignore` or to a build folder is not the editor's.
 fn held(path: &str, render_outputs: &BTreeSet<String>) -> bool {
-    RelPath::is_valid(path)
+    RelPath::is_local(path)
         && !path
             .split('/')
             .any(|part| projects::skip_reason(part).is_some())

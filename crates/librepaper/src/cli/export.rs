@@ -293,7 +293,7 @@ async fn unpack_archive(
 }
 
 fn output_path(path: &str) -> Result<PathBuf, String> {
-    RelPath::try_from(path)
+    RelPath::local(path)
         .map(|path| PathBuf::from(path.as_str()))
         .map_err(|refusal| refusal.to_string())
 }

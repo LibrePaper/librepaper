@@ -40,16 +40,31 @@ impl fmt::Display for PathRefusal {
 impl std::error::Error for PathRefusal {}
 
 /// Structure only: relative, `/`-separated, no empty, `.` or `..` segment, no
-/// `\`, no NUL or control characters, no leading `/`, and no Windows drive
-/// prefix (`C:`). Never trims and never normalises. It says nothing about what
-/// a project admits, so `asset:figures/plot.png` is one.
+/// `\`, no NUL or control characters, and no leading `/`. Never trims and
+/// never normalises. It says nothing about what a project admits, so
+/// `asset:figures/plot.png` is one, and a name that begins with a drive
+/// letter and a colon, such as `c:paper.tex`, is one too: archive and backup
+/// members never touch a host filesystem. `RelPath::local` adds the drive
+/// rule for a path named on a local disk.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RelPath(String);
 
 impl RelPath {
-    /// Whether `path` has the structure, for the callers that only branch.
-    pub fn is_valid(path: &str) -> bool {
-        RelPath::try_from(path).is_ok()
+    /// The structure, plus the one rule a path named on a local disk needs:
+    /// it cannot begin with a drive, since Windows would read it as a drive.
+    /// Used for paths written to or named on a real filesystem.
+    pub fn local(path: &str) -> Result<RelPath, PathRefusal> {
+        let relative = RelPath::try_from(path)?;
+        let bytes = path.as_bytes();
+        if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+            return Err(PathRefusal::new(path, "a path cannot begin with a drive"));
+        }
+        Ok(relative)
+    }
+
+    /// Whether `path` is local, for the callers that only branch.
+    pub fn is_local(path: &str) -> bool {
+        RelPath::local(path).is_ok()
     }
 
     pub fn as_str(&self) -> &str {
@@ -79,6 +94,7 @@ impl RelPath {
 impl TryFrom<&str> for RelPath {
     type Error = PathRefusal;
 
+    /// The structure only. `RelPath::local` adds the drive rule.
     fn try_from(path: &str) -> Result<RelPath, PathRefusal> {
         let refuse = |reason: &str| Err(PathRefusal::new(path, reason));
         if path.is_empty() {
@@ -92,10 +108,6 @@ impl TryFrom<&str> for RelPath {
         }
         if path.contains('\0') || path.chars().any(char::is_control) {
             return refuse("a path cannot carry control characters");
-        }
-        let bytes = path.as_bytes();
-        if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-            return refuse("a path cannot begin with a drive");
         }
         if path
             .split('/')
@@ -123,7 +135,7 @@ impl TryFrom<&str> for RepoPath {
     type Error = PathRefusal;
 
     fn try_from(path: &str) -> Result<RepoPath, PathRefusal> {
-        let path = RelPath::try_from(path)?;
+        let path = RelPath::local(path)?;
         if path
             .segments()
             .any(|part| part.eq_ignore_ascii_case(".git"))
@@ -350,7 +362,8 @@ mod tests {
         assert!(RelPath::try_from("asset:figures/plot.png").is_ok());
 
         // C:/x
-        assert!(RelPath::try_from("C:/x").is_err());
+        assert!(RelPath::try_from("C:/x").is_ok());
+        assert!(RelPath::local("C:/x").is_err());
         assert!(admit(&rules, "C:/x").is_err());
         assert!(RepoPath::try_from("C:/x").is_err());
 
@@ -379,14 +392,25 @@ mod tests {
             "a\u{0}b",
             "a//b",
             "x\n",
-            "C:/Windows/system32",
-            "c:x",
         ] {
             assert!(RelPath::try_from(bad).is_err(), "{bad:?} was allowed");
         }
         let path = RelPath::try_from("chapters/01.tex").unwrap();
         assert_eq!(path.as_str(), "chapters/01.tex");
         assert_eq!(path.segments().collect::<Vec<_>>(), ["chapters", "01.tex"]);
+    }
+
+    #[test]
+    fn a_drive_prefix_is_structure_for_archives_and_refused_on_disk() {
+        // Archive and backup members never touch a filesystem.
+        assert!(RelPath::try_from("c:paper.tex").is_ok());
+        // A path named on a local disk cannot begin with a drive.
+        assert!(RelPath::local("c:paper.tex").is_err());
+        assert!(RelPath::local("C:/Windows/system32").is_err());
+        assert!(RelPath::local("c:x").is_err());
+        assert!(!RelPath::is_local("c:paper.tex"));
+        assert!(RelPath::is_local("chapters/c:paper.tex"));
+        assert!(RepoPath::try_from("c:paper.tex").is_err());
     }
 
     #[test]
