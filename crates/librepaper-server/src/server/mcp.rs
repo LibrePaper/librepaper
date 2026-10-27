@@ -1,6 +1,7 @@
 //! MCP document tools. MCP owns transport; rooms own effects and durability.
 use super::*;
 use hmac::{Hmac, Mac};
+use librepaper_document::document::text_index::{TextIndex, Utf16};
 use librepaper_room::room::agent_query::{QueryBudget, QuerySnapshot};
 use serde::Serialize;
 
@@ -1032,10 +1033,14 @@ fn locate_comment_selection(
         .texts()
         .get(path)
         .ok_or_else(|| Failure::new("not_found", "comment source file is absent"))?;
-    let start = operations::byte_of_utf16(text, start as usize)
-        .ok_or_else(|| Failure::new("invalid_range", "comment range splits a Unicode character"))?;
-    let end = operations::byte_of_utf16(text, end as usize)
-        .ok_or_else(|| Failure::new("invalid_range", "comment range splits a Unicode character"))?;
+    let start = TextIndex::new(text)
+        .utf8_of(Utf16(start as usize))
+        .map(|byte| byte.0)
+        .map_err(|_| Failure::new("invalid_range", "comment range splits a Unicode character"))?;
+    let end = TextIndex::new(text)
+        .utf8_of(Utf16(end as usize))
+        .map(|byte| byte.0)
+        .map_err(|_| Failure::new("invalid_range", "comment range splits a Unicode character"))?;
     if start >= end {
         return Err(Failure::new("invalid_range", "comment passage is empty"));
     }
@@ -1071,10 +1076,14 @@ fn locate_selection(view: &View, selection: &Value) -> Result<(String, usize, us
         .iter()
         .find(|(_, file)| file.file_id == target.file_id.0)
         .ok_or_else(|| Failure::new("internal", "located file left the view"))?;
-    let start = operations::byte_of_utf16(file.text, target.start_utf16 as usize)
-        .ok_or_else(|| Failure::new("invalid_range", "selection splits a Unicode character"))?;
-    let end = operations::byte_of_utf16(file.text, target.end_utf16 as usize)
-        .ok_or_else(|| Failure::new("invalid_range", "selection splits a Unicode character"))?;
+    let start = TextIndex::new(file.text)
+        .utf8_of(Utf16(target.start_utf16 as usize))
+        .map(|byte| byte.0)
+        .map_err(|_| Failure::new("invalid_range", "selection splits a Unicode character"))?;
+    let end = TextIndex::new(file.text)
+        .utf8_of(Utf16(target.end_utf16 as usize))
+        .map(|byte| byte.0)
+        .map_err(|_| Failure::new("invalid_range", "selection splits a Unicode character"))?;
     Ok((path.clone(), start, end))
 }
 

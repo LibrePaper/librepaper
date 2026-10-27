@@ -48,6 +48,7 @@ use loro::{
 
 use crate::document::passage::{unique_occurrence, Occurrence};
 use crate::document::session::{Edit, CHANGES, FILES};
+use crate::document::text_index::{Span, TextIndex, Utf16};
 
 pub const ANCHORS: &str = "anchors";
 pub const ANCHORS_ORIGIN: &str = "anchors";
@@ -171,7 +172,7 @@ struct Entry {
 /// "aaa" is ambiguous.
 fn once(hay: &str, needle: &str, shift: isize) -> Option<(usize, isize)> {
     match unique_occurrence(hay, needle) {
-        Occurrence::One { start, .. } => Some((utf16_len(&hay[..start]), shift)),
+        Occurrence::One { start, .. } => Some((TextIndex::new(&hay[..start]).len_utf16().0, shift)),
         Occurrence::None | Occurrence::Many => None,
     }
 }
@@ -241,7 +242,7 @@ impl MoveMemory {
             else {
                 continue;
             };
-            if !free(at, at + utf16_len(text)) {
+            if !free(at, at + TextIndex::new(text).len_utf16().0) {
                 continue;
             }
             return Some((i, at, shift));
@@ -261,55 +262,6 @@ impl MoveMemory {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
-}
-
-/// The length of `s` in UTF-16 code units.
-fn utf16_len(s: &str) -> usize {
-    s.chars().map(char::len_utf16).sum()
-}
-
-/// The byte offset of the UTF-16 offset `units` in `s`. An offset inside a
-/// surrogate pair means the character after it.
-fn byte_at(s: &str, units: usize) -> usize {
-    let mut at = 0;
-    for (byte, ch) in s.char_indices() {
-        if at >= units {
-            return byte;
-        }
-        at += ch.len_utf16();
-    }
-    s.len()
-}
-
-/// The text between two UTF-16 offsets. Empty when `to` is not past `from`.
-fn slice16(s: &str, from: usize, to: usize) -> &str {
-    if to <= from {
-        return "";
-    }
-    &s[byte_at(s, from)..byte_at(s, to)]
-}
-
-/// The UTF-16 offset where the last character before `to` starts.
-fn last_char_start(s: &str, to: usize) -> usize {
-    let mut start = 0;
-    let mut at = 0;
-    for ch in s.chars() {
-        if at >= to {
-            break;
-        }
-        start = at;
-        at += ch.len_utf16();
-    }
-    start
-}
-
-/// The UTF-16 width of the character at `units`. One at the end of `s`, as in
-/// the JavaScript module.
-fn width_at(s: &str, units: usize) -> usize {
-    s[byte_at(s, units)..]
-        .chars()
-        .next()
-        .map_or(1, char::len_utf16)
 }
 
 /// Pure, operation-level planner. No Loro here.
@@ -389,8 +341,8 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
                     let Some(from) = (at + hit_at + h.offset).checked_add_signed(shift) else {
                         continue;
                     };
-                    let to = from + utf16_len(&h.text);
-                    if slice16(&work[wi].after, from, to) != h.text {
+                    let to = from + TextIndex::new(&h.text).len_utf16().0;
+                    if TextIndex::new(&work[wi].after).slice16_widened(Span { start: Utf16(from), end: Utf16(to) }) != h.text {
                         continue;
                     }
                     work[oi].anchors.remove(index);
@@ -414,7 +366,7 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
                 }
                 // A text whose pieces all failed stays remembered for a later insertion.
                 if applied {
-                    claimed.push((hit_at, hit_at + utf16_len(&hit_text)));
+                    claimed.push((hit_at, hit_at + TextIndex::new(&hit_text).len_utf16().0));
                     memory.drop(entry);
                 }
             }
@@ -434,8 +386,8 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
 /// be in the file at `from`, and the piece must sit at the edge of the anchor
 /// that it was cut from. Returns whether the anchor took the piece back.
 fn rejoin_piece(w: &mut Work, index: usize, side: Side, from: usize, text: &str) -> bool {
-    let to = from + utf16_len(text);
-    if slice16(&w.after, from, to) != text {
+    let to = from + TextIndex::new(text).len_utf16().0;
+    if TextIndex::new(&w.after).slice16_widened(Span { start: Utf16(from), end: Utf16(to) }) != text {
         return false;
     }
     let planned = &mut w.anchors[index];
@@ -502,11 +454,15 @@ fn plan_file(w: &mut Work, memory: &mut MoveMemory) {
     for (index, edit) in w.edits.iter().enumerate() {
         let ef = (edit.at as isize + adj) as usize;
         let et = ef + edit.delete;
-        let n = utf16_len(&edit.insert);
+        let n = TextIndex::new(&edit.insert).len_utf16().0;
         if ef == et && n == 0 {
             continue;
         }
-        let (b_ef, b_et) = (byte_at(&cur, ef), byte_at(&cur, et));
+        let cur_text = TextIndex::new(&cur);
+        let (b_ef, b_et) = (
+            cur_text.utf8_floor(Utf16(ef)).0,
+            cur_text.utf8_ceil(Utf16(et)).0,
+        );
         // Anchors this edit's deletion overlapped without covering them whole.
         let mut partial: HashSet<usize> = HashSet::new();
         if et > ef {
@@ -526,7 +482,7 @@ fn plan_file(w: &mut Work, memory: &mut MoveMemory) {
                     held.push(Held {
                         id: pa.anchor.id.clone(),
                         offset: from - ef,
-                        text: slice16(&cur, from, to).to_string(),
+                        text: TextIndex::new(&cur).slice16_widened(Span { start: Utf16(from), end: Utf16(to) }).to_string(),
                         side: None,
                     });
                     // The quote keys stay as they are. The length tells a later
@@ -549,14 +505,14 @@ fn plan_file(w: &mut Work, memory: &mut MoveMemory) {
                             held.push(Held {
                                 id: pa.anchor.id.clone(),
                                 offset: from - ef,
-                                text: slice16(&cur, from, et).to_string(),
+                                text: TextIndex::new(&cur).slice16_widened(Span { start: Utf16(from), end: Utf16(et) }).to_string(),
                                 side: Some(Side::Head),
                             });
                         } else if ef > from && et >= to {
                             held.push(Held {
                                 id: pa.anchor.id.clone(),
                                 offset: 0,
-                                text: slice16(&cur, ef, to).to_string(),
+                                text: TextIndex::new(&cur).slice16_widened(Span { start: Utf16(ef), end: Utf16(to) }).to_string(),
                                 side: Some(Side::Tail),
                             });
                         }
@@ -620,7 +576,7 @@ fn follow_edit(inserts: &mut Vec<(usize, String)>, ef: usize, et: usize, n: usiz
             *at = (*at as isize + n as isize - (et - ef) as isize) as usize;
             true
         } else {
-            ef >= *at + utf16_len(text.as_str())
+            ef >= *at + TextIndex::new(text.as_str()).len_utf16().0
         }
     });
 }
@@ -812,7 +768,10 @@ fn span_of(doc: &LoroDoc, live: &Live, place: &Place) -> Option<(usize, usize)> 
     let to = if e.stale {
         e.offset
     } else {
-        e.offset + width_at(&live.body, e.offset)
+        // One unit at the end of the text, as in the JavaScript module.
+        let from = TextIndex::new(&live.body).utf8_ceil(Utf16(e.offset)).0;
+        let width = live.body[from..].chars().next().map_or(1, char::len_utf16);
+        e.offset + width
     };
     Some((s.offset, to.max(s.offset)))
 }
@@ -971,7 +930,7 @@ impl<'a> Reader<'a> {
         let body = self
             .live(&anchor.file)
             .map_or("", |live| live.body.as_str());
-        if slice16(body, anchor.from, anchor.to) == anchor.exact {
+        if TextIndex::new(body).slice16_widened(Span { start: Utf16(anchor.from), end: Utf16(anchor.to) }) == anchor.exact {
             Status::Exact
         } else {
             Status::Modified
@@ -1049,7 +1008,7 @@ pub fn capture_cursors(
     let start = cursor_at(&live.text, from, CursorSide::Left)?;
     let end = cursor_at(
         &live.text,
-        last_char_start(&live.body, to),
+        TextIndex::new(&live.body).last_char_start(Utf16(to)).0,
         CursorSide::Right,
     )?;
     Some((start.encode(), end.encode()))
@@ -1156,7 +1115,7 @@ pub fn write_anchors(doc: &LoroDoc, planned: &[PlannedFile]) -> Vec<String> {
                     cursor_at(&live.text, a.from, CursorSide::Left),
                     cursor_at(
                         &live.text,
-                        last_char_start(&live.body, a.to),
+                        TextIndex::new(&live.body).last_char_start(Utf16(a.to)).0,
                         CursorSide::Right,
                     ),
                 ) else {
@@ -1277,7 +1236,7 @@ pub fn heal_stale(doc: &LoroDoc, file_id: &str) -> Vec<String> {
             cursor_at(&live.text, a.from, CursorSide::Left),
             cursor_at(
                 &live.text,
-                last_char_start(&live.body, a.to),
+                TextIndex::new(&live.body).last_char_start(Utf16(a.to)).0,
                 CursorSide::Right,
             ),
         ) else {
@@ -1456,7 +1415,7 @@ pub fn restore_by_fragments(doc: &LoroDoc, file_id: &str, restored: &[Restored])
             continue;
         };
         let from = r.at + offset;
-        let to = (from + length).min(r.at + utf16_len(&r.text));
+        let to = (from + length).min(r.at + TextIndex::new(&r.text).len_utf16().0);
         if to <= from {
             continue;
         }
@@ -1464,7 +1423,7 @@ pub fn restore_by_fragments(doc: &LoroDoc, file_id: &str, restored: &[Restored])
             cursor_at(&live.text, from, CursorSide::Left),
             cursor_at(
                 &live.text,
-                last_char_start(&live.body, to),
+                TextIndex::new(&live.body).last_char_start(Utf16(to)).0,
                 CursorSide::Right,
             ),
         ) else {
@@ -1853,7 +1812,7 @@ mod tests {
         let rejoined = &planned[0].anchors[0];
         assert_eq!(planned[0].after, "one two three");
         assert_eq!((rejoined.anchor.from, rejoined.anchor.to), (4, 7));
-        assert_eq!(slice16(&planned[0].after, 4, 7), "two");
+        assert_eq!(TextIndex::new(&planned[0].after).slice16_widened(Span { start: Utf16(4), end: Utf16(7) }), "two");
         assert!(!rejoined.anchor.detached);
         assert_eq!(rejoined.state, PlanState::Set);
         assert!(rejoined.touched);
@@ -1902,7 +1861,7 @@ mod tests {
         let repinned = &planned[0].anchors[0];
         assert!(!repinned.anchor.detached);
         assert_eq!((repinned.anchor.from, repinned.anchor.to), (11, 14));
-        assert_eq!(slice16(&planned[0].after, 11, 14), "two");
+        assert_eq!(TextIndex::new(&planned[0].after).slice16_widened(Span { start: Utf16(11), end: Utf16(14) }), "two");
         assert_eq!(repinned.state, PlanState::Set);
         assert!(repinned.touched);
         assert!(memory.is_empty());
@@ -1957,7 +1916,7 @@ mod tests {
         let rejoined = &planned[0].anchors[0];
         assert_eq!(planned[0].after, "one two three");
         assert_eq!((rejoined.anchor.from, rejoined.anchor.to), (4, 7));
-        assert_eq!(slice16(&planned[0].after, 4, 7), "two");
+        assert_eq!(TextIndex::new(&planned[0].after).slice16_widened(Span { start: Utf16(4), end: Utf16(7) }), "two");
         assert!(!rejoined.anchor.detached);
         assert!(rejoined.touched);
         assert!(memory.is_empty());
@@ -2082,7 +2041,7 @@ mod tests {
             .unwrap();
         assert!(!attached.anchor.detached);
         assert_eq!((attached.anchor.from, attached.anchor.to), (16, 19));
-        assert_eq!(slice16(&planned[0].after, 16, 19), "two");
+        assert_eq!(TextIndex::new(&planned[0].after).slice16_widened(Span { start: Utf16(16), end: Utf16(19) }), "two");
         let detached = planned[0]
             .anchors
             .iter()
@@ -2145,7 +2104,7 @@ mod tests {
         let rejoined = &third[0].anchors[0];
         assert_eq!(third[0].after, "twone two three");
         assert_eq!((rejoined.anchor.from, rejoined.anchor.to), (6, 9));
-        assert_eq!(slice16(&third[0].after, 6, 9), "two");
+        assert_eq!(TextIndex::new(&third[0].after).slice16_widened(Span { start: Utf16(6), end: Utf16(9) }), "two");
         assert!(memory.is_empty());
     }
 
@@ -2346,7 +2305,7 @@ mod tests {
         // Either place resolves to the passage that is left of "beta".
         let on_a = resolve_anchors(&a, &file);
         assert_eq!(body(&a, &file), "alpha et gamma");
-        assert_eq!(slice16(&body(&a, &file), on_a[0].from, on_a[0].to), "et");
+        assert_eq!(TextIndex::new(&body(&a, &file)).slice16_widened(Span { start: Utf16(on_a[0].from), end: Utf16(on_a[0].to) }), "et");
         assert_eq!(resolve_anchors(&b, &file), on_a);
     }
 
@@ -2523,7 +2482,7 @@ mod tests {
             id: fragment.clone(),
             edit: 0,
             start: 0,
-            end: utf16_len(CUT),
+            end: TextIndex::new(CUT).len_utf16().0,
         };
         record_operation(
             &doc,
@@ -2551,7 +2510,7 @@ mod tests {
         let restored = Restored {
             fragment: fragment.clone(),
             at,
-            text: slice16(&text_restored, at, at + utf16_len(CUT)).to_string(),
+            text: TextIndex::new(&text_restored).slice16_widened(Span { start: Utf16(at), end: Utf16(at + TextIndex::new(CUT).len_utf16().0) }).to_string(),
         };
         assert_eq!(restored.text, CUT);
         assert_eq!(
@@ -2581,7 +2540,7 @@ mod tests {
         let anchors = resolve_anchors(&doc, &file);
         assert_eq!(anchors.len(), 1);
         assert_eq!((anchors[0].from, anchors[0].to), (6, 11));
-        assert_eq!(slice16(&body(&doc, &file), 6, 11), "bXYZa");
+        assert_eq!(TextIndex::new(&body(&doc, &file)).slice16_widened(Span { start: Utf16(6), end: Utf16(11) }), "bXYZa");
         assert_eq!(status_of(&doc, &anchors[0]), Status::Modified);
     }
 
