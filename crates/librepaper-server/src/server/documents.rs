@@ -1211,19 +1211,18 @@ impl Server {
             privacy_headers(&mut response);
             return response;
         }
-        let mut response = write_json(
-            200,
-            &json!({
-                "schema": 1,
-                "project_digest": identity,
-                "slug": entry.slug,
-                "title": entry.title,
-                "format": format,
-                "tree": projected.projection,
-                "texts": projected.texts,
-                "changes": changes,
-            }),
-        );
+        let mut body = serde_json::to_value(librepaper_document::document::projection::HeadSnapshot {
+            project_digest: identity,
+            tree: projected.projection,
+            texts: projected.texts,
+        })
+        .expect("a snapshot serializes");
+        body["schema"] = json!(1);
+        body["slug"] = json!(entry.slug);
+        body["title"] = json!(entry.title);
+        body["format"] = json!(format);
+        body["changes"] = json!(changes);
+        let mut response = write_json(200, &body);
         set(&mut response, "etag", &etag);
         set(&mut response, "cache-control", "private, no-cache");
         privacy_headers(&mut response);

@@ -4,7 +4,11 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
+use librepaper_base::digest::Digest;
 use librepaper_base::http::Credentials;
+use librepaper_document::document::projection::{
+    Entry, HeadSnapshot, Projection, VersionSnapshot,
+};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -128,12 +132,23 @@ impl Fake {
     }
 }
 
-fn listing(files: &Files) -> Value {
-    let entries: serde_json::Map<String, Value> = files
-        .keys()
-        .map(|path| (path.clone(), json!({"kind": "text"})))
+fn tree(files: &Files) -> Projection {
+    let files = files
+        .iter()
+        .map(|(path, text)| {
+            let entry = Entry {
+                kind: "text".into(),
+                id: String::new(),
+                digest: Digest::of(text.as_bytes()).to_hex(),
+                bytes: text.len() as u64,
+            };
+            (path.clone(), entry)
+        })
         .collect();
-    Value::Object(entries)
+    Projection {
+        files,
+        diagnostics: Vec::new(),
+    }
 }
 
 fn query<'a>(target: &'a str, key: &str) -> Option<&'a str> {
@@ -199,13 +214,33 @@ fn reply(data: &mut Data, method: &str, target: &str, sent: &[u8]) -> Option<(u1
             .iter()
             .find(|(sequence, _)| format!("sha-{sequence}") == sha);
         return match found {
-            Some((_, files)) => Some((200, json!({"files": listing(files), "texts": files}))),
+            Some((_, files)) => {
+                let tree = tree(files);
+                let version = VersionSnapshot {
+                    sha: sha.to_string(),
+                    tree_sha: tree.digest().to_hex(),
+                    storage_id: String::new(),
+                    at: String::new(),
+                    by: String::new(),
+                    label: None,
+                    reason: String::new(),
+                    source_format: String::new(),
+                    files: tree.files,
+                    texts: files.clone(),
+                };
+                Some((200, serde_json::to_value(version).expect("serializes")))
+            }
             None => Some((404, json!({"error": "no such version"}))),
         };
     }
     if path.ends_with("/project") {
-        let body = json!({"tree": {"files": listing(&data.current)}, "texts": data.current});
-        return Some((200, body));
+        let tree = tree(&data.current);
+        let head = HeadSnapshot {
+            project_digest: tree.digest().to_hex(),
+            tree,
+            texts: data.current.clone(),
+        };
+        return Some((200, serde_json::to_value(head).expect("serializes")));
     }
     Some((404, json!({"error": "no such route"})))
 }

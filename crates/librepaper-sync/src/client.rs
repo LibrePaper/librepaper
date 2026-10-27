@@ -4,11 +4,11 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use librepaper_base::digest::Digest;
+use librepaper_document::document::projection::{Entry, HeadSnapshot, LabelRow, VersionSnapshot};
 use librepaper_base::http::{detail_of, post_json_as, send, truncate, Credentials};
 use librepaper_base::text::LineEnding;
 use librepaper_base::util::{token, Encoding};
 use reqwest::Method;
-use serde::Deserialize;
 use serde_json::{json, Value};
 use url::Url;
 
@@ -36,26 +36,11 @@ impl std::fmt::Debug for Client {
     }
 }
 
-/// One row of a project's version list.
-#[derive(Clone, Debug, Deserialize)]
-pub(crate) struct Label {
-    pub sha: String,
-    pub sequence: i64,
-    #[serde(default)]
-    pub at: String,
-    #[serde(default)]
-    pub by: String,
-    #[serde(default)]
-    pub label: Option<String>,
-}
-
-impl Label {
-    /// What a person called the version, or a stand-in when nobody did.
-    pub(crate) fn name(&self) -> String {
-        match self.label.as_deref().map(str::trim) {
-            Some(name) if !name.is_empty() => name.to_string(),
-            _ => format!("LibrePaper version {}", self.sequence),
-        }
+/// What a person called the version, or a stand-in when nobody did.
+pub(crate) fn version_name(row: &LabelRow) -> String {
+    match row.label.as_deref().map(str::trim) {
+        Some(name) if !name.is_empty() => name.to_string(),
+        _ => format!("LibrePaper version {}", row.sequence),
     }
 }
 
@@ -63,7 +48,7 @@ impl Label {
 #[derive(Debug)]
 pub(crate) struct LabelPage {
     /// Newest first.
-    pub labels: Vec<Label>,
+    pub labels: Vec<LabelRow>,
     /// Where the next page starts.
     pub next: Option<i64>,
     /// The identity of the project's accepted state when the page was read.
@@ -81,21 +66,17 @@ pub(crate) struct Snapshot {
 
 impl Snapshot {
     /// Reads a file listing and its texts as the server sends them.
-    fn parse(files: Option<&Value>, texts: Option<&Value>) -> Result<Snapshot, Error> {
-        let listing = files
-            .and_then(Value::as_object)
-            .ok_or_else(|| Error::Invalid("the server sent no list of files".into()))?;
-        let bodies = texts.and_then(Value::as_object);
+    fn from_wire(
+        listing: BTreeMap<String, Entry>,
+        bodies: BTreeMap<String, String>,
+    ) -> Result<Snapshot, Error> {
         let mut snapshot = Snapshot::default();
         for (path, entry) in listing {
-            match entry.get("kind").and_then(Value::as_str) {
-                Some("text") => {
-                    let body = bodies
-                        .and_then(|bodies| bodies.get(path))
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| {
-                            Error::Invalid(format!("the server sent no text for {path}"))
-                        })?;
+            match entry.kind.as_str() {
+                "text" => {
+                    let body = bodies.get(&path).ok_or_else(|| {
+                        Error::Invalid(format!("the server sent no text for {path}"))
+                    })?;
                     let body = LineEnding::normalise(body).into_owned();
                     snapshot.files.insert(
                         path.clone(),
@@ -104,21 +85,19 @@ impl Snapshot {
                             sha: Digest::of(body.as_bytes()).to_hex(),
                         },
                     );
-                    snapshot.texts.insert(path.clone(), body);
+                    snapshot.texts.insert(path, body);
                 }
-                Some("asset") => {
-                    let digest = entry
-                        .get("digest")
-                        .and_then(Value::as_str)
-                        .filter(|digest| digest.len() == 64)
-                        .ok_or_else(|| {
-                            Error::Invalid(format!("the server sent no digest for {path}"))
-                        })?;
+                "asset" => {
+                    if entry.digest.len() != 64 {
+                        return Err(Error::Invalid(format!(
+                            "the server sent no digest for {path}"
+                        )));
+                    }
                     snapshot.files.insert(
-                        path.clone(),
+                        path,
                         FileRecord {
                             kind: Kind::Asset,
-                            sha: digest.to_string(),
+                            sha: entry.digest,
                         },
                     );
                 }
@@ -233,7 +212,7 @@ impl Client {
             path.push_str(&format!("&after={after}"));
         }
         let value = self.get_json(&path).await?;
-        let labels: Vec<Label> = serde_json::from_value(
+        let labels: Vec<LabelRow> = serde_json::from_value(
             value.get("labels").cloned().unwrap_or(Value::Null),
         )
         .map_err(|error| Error::Invalid(format!("the version list is unreadable: {error}")))?;
@@ -256,7 +235,12 @@ impl Client {
         if status != 200 {
             return Err(refusal(status, &value));
         }
-        Snapshot::parse(value.get("files"), value.get("texts"))
+        let version: VersionSnapshot = serde_json::from_value(value)
+            .map_err(|error| Error::Invalid(format!("the version {sha} is unreadable: {error}")))?;
+        version
+            .verify()
+            .map_err(|error| Error::Invalid(format!("the version {sha} is damaged: {error}")))?;
+        Snapshot::from_wire(version.files, version.texts)
     }
 
     /// The files of the project as it stands.
@@ -267,10 +251,11 @@ impl Client {
         if status != 200 {
             return Err(refusal(status, &value));
         }
-        Snapshot::parse(
-            value.get("tree").and_then(|tree| tree.get("files")),
-            value.get("texts"),
-        )
+        let head: HeadSnapshot = serde_json::from_value(value)
+            .map_err(|error| Error::Invalid(format!("the project is unreadable: {error}")))?;
+        head.verify()
+            .map_err(|error| Error::Invalid(format!("the project is damaged: {error}")))?;
+        Snapshot::from_wire(head.tree.files, head.texts)
     }
 
     /// An asset's bytes, checked against its digest.
@@ -419,15 +404,31 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn entry(kind: &str, digest: &str) -> Entry {
+        Entry {
+            kind: kind.into(),
+            id: String::new(),
+            digest: digest.into(),
+            bytes: 0,
+        }
+    }
+
+    fn bodies(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(path, body)| (path.to_string(), body.to_string()))
+            .collect()
+    }
+
     #[test]
     fn a_version_listing_becomes_records_and_lf_texts() {
-        let files = json!({
-            "main.tex": {"kind": "text", "id": "x", "digest": "ignored", "bytes": 9},
-            "fig/a.png": {"kind": "asset", "digest": "a".repeat(64), "bytes": 0},
-            "odd": {"kind": "folder"},
-        });
-        let texts = json!({"main.tex": "one\r\ntwo\r\n"});
-        let snapshot = Snapshot::parse(Some(&files), Some(&texts)).unwrap();
+        let files = BTreeMap::from([
+            ("main.tex".to_string(), entry("text", "ignored")),
+            ("fig/a.png".to_string(), entry("asset", &"a".repeat(64))),
+            ("odd".to_string(), entry("folder", "")),
+        ]);
+        let snapshot =
+            Snapshot::from_wire(files, bodies(&[("main.tex", "one\r\ntwo\r\n")])).unwrap();
         assert_eq!(snapshot.files.len(), 2);
         assert_eq!(snapshot.texts["main.tex"], "one\ntwo\n");
         assert_eq!(
@@ -440,26 +441,24 @@ mod tests {
 
     #[test]
     fn a_text_without_a_body_is_an_error() {
-        let files = json!({"main.tex": {"kind": "text"}});
-        assert!(Snapshot::parse(Some(&files), Some(&json!({}))).is_err());
-        assert!(Snapshot::parse(None, None).is_err());
+        let files = BTreeMap::from([("main.tex".to_string(), entry("text", "x"))]);
+        assert!(Snapshot::from_wire(files, BTreeMap::new()).is_err());
     }
 
     #[test]
     fn paths_the_rules_refuse_are_dropped() {
-        let files = json!({
-            "main.tex": {"kind": "text"},
-            ".git/config.txt": {"kind": "text"},
-            "notes.docx": {"kind": "text"},
-            "C:/outside/paper.tex": {"kind": "text"},
-        });
-        let texts = json!({
-            "main.tex": "a\n",
-            ".git/config.txt": "b\n",
-            "notes.docx": "c\n",
-            "C:/outside/paper.tex": "d\n",
-        });
-        let mut snapshot = Snapshot::parse(Some(&files), Some(&texts)).unwrap();
+        let paths = ["main.tex", ".git/config.txt", "notes.docx", "C:/outside/paper.tex"];
+        let files = paths
+            .iter()
+            .map(|path| (path.to_string(), entry("text", "x")))
+            .collect();
+        let texts = bodies(&[
+            ("main.tex", "a\n"),
+            (".git/config.txt", "b\n"),
+            ("notes.docx", "c\n"),
+            ("C:/outside/paper.tex", "d\n"),
+        ]);
+        let mut snapshot = Snapshot::from_wire(files, texts).unwrap();
         snapshot.retain_synced(&Rules::default());
         assert_eq!(snapshot.files.keys().collect::<Vec<_>>(), ["main.tex"]);
         assert_eq!(snapshot.texts.len(), 1);
@@ -475,15 +474,19 @@ mod tests {
 
     #[test]
     fn an_unnamed_version_still_has_a_name() {
-        let label = |name: Option<&str>| Label {
+        let label = |name: Option<&str>| LabelRow {
             sha: "s".into(),
             sequence: 7,
             at: String::new(),
             by: String::new(),
             label: name.map(str::to_string),
+            reason: String::new(),
+            tree_sha: None,
+            frontier: String::new(),
+            archive_status: String::new(),
         };
-        assert_eq!(label(Some(" Draft 2 ")).name(), "Draft 2");
-        assert_eq!(label(None).name(), "LibrePaper version 7");
-        assert_eq!(label(Some("  ")).name(), "LibrePaper version 7");
+        assert_eq!(version_name(&label(Some(" Draft 2 "))), "Draft 2");
+        assert_eq!(version_name(&label(None)), "LibrePaper version 7");
+        assert_eq!(version_name(&label(Some("  "))), "LibrePaper version 7");
     }
 }

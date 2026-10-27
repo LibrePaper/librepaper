@@ -53,8 +53,9 @@ fn projection_wire(
     metadata: MomentMetadata<'_>,
     storage_id: &str,
     source_format: &str,
-    projected: &librepaper_document::document::projection::Projected,
+    projected: librepaper_document::document::projection::Projected,
 ) -> Value {
+    use librepaper_document::document::projection::VersionSnapshot;
     let MomentMetadata {
         sha,
         at,
@@ -62,30 +63,29 @@ fn projection_wire(
         label,
         reason,
     } = metadata;
-    let texts: HashMap<&str, &str> = projected
-        .projection
-        .files
-        .iter()
-        .filter(|(_, entry)| entry.kind == "text")
-        .filter_map(|(path, _)| {
-            projected
-                .texts
-                .get(path)
-                .map(|body| (path.as_str(), body.as_str()))
-        })
-        .collect();
-    json!({
-        "sha": sha,
-        "tree_sha": projected.projection.digest().to_hex(),
-        "storage_id": storage_id,
-        "at": at,
-        "by": by,
-        "label": label,
-        "reason": reason,
-        "source_format": source_format,
-        "files": projected.projection.files,
-        "texts": texts,
-    })
+    let librepaper_document::document::projection::Projected {
+        projection,
+        mut texts,
+    } = projected;
+    texts.retain(|path, _| {
+        projection
+            .files
+            .get(path)
+            .is_some_and(|entry| entry.kind == "text")
+    });
+    let snapshot = VersionSnapshot {
+        sha: sha.to_string(),
+        tree_sha: projection.digest().to_hex(),
+        storage_id: storage_id.to_string(),
+        at: at.to_string(),
+        by: by.to_string(),
+        label: label.map(str::to_string),
+        reason: reason.to_string(),
+        source_format: source_format.to_string(),
+        files: projection.files,
+        texts,
+    };
+    serde_json::to_value(snapshot).expect("a snapshot serializes")
 }
 
 /// The projection at a frontier, with each text's pending suggestions undone
@@ -432,16 +432,19 @@ impl librepaper_engine::log::Command for TrimRetained {
 
 /// A label row, on the wire.
 fn label_wire(row: &librepaper_engine::storage::postgres::LabelRecord) -> Value {
-    json!({
-        "sha": row.id,
-        "sequence": row.sequence,
-        "at": row.created_at.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),
-        "by": row.author_label,
-        "label": row.label,
-        "reason": row.reason,
-        "tree_sha": row.tree_digest.as_ref().map(hex::encode),
-        "frontier": librepaper_room::room::encode_update(&row.frontier),
-        "archive_status": if row.archive_key.is_some() {
+    let row = librepaper_document::document::projection::LabelRow {
+        sha: row.id.to_string(),
+        sequence: row.sequence,
+        at: row
+            .created_at
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default(),
+        by: row.author_label.clone(),
+        label: row.label.clone(),
+        reason: row.reason.clone(),
+        tree_sha: row.tree_digest.as_ref().map(hex::encode),
+        frontier: librepaper_room::room::encode_update(&row.frontier),
+        archive_status: if row.archive_key.is_some() {
             "ready"
         } else if row.archive_error.is_some() {
             "failed"
@@ -449,8 +452,10 @@ fn label_wire(row: &librepaper_engine::storage::postgres::LabelRecord) -> Value 
             "pending"
         } else {
             "none"
-        },
-    })
+        }
+        .to_string(),
+    };
+    serde_json::to_value(row).expect("a label row serializes")
 }
 
 impl Server {
@@ -629,7 +634,7 @@ impl Server {
                     },
                     &entry.storage_id,
                     &entry.source_format,
-                    &projected,
+                    projected,
                 ),
             );
             set(&mut response, "cache-control", "private, no-store");
@@ -713,7 +718,7 @@ impl Server {
                 },
                 &entry.storage_id,
                 &entry.source_format,
-                &projected,
+                projected,
             ),
         );
         set(&mut response, "cache-control", "private, no-store");
