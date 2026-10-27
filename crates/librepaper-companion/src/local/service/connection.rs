@@ -1316,7 +1316,11 @@ mod tests {
             let (status, body) = fixture
                 .send(Method::POST, path, Some(project.clone()))
                 .await;
-            assert_eq!((status, &body["reason"]), (409, &json!("pending")), "{path}: {body}");
+            assert_eq!(
+                (status, &body["reason"]),
+                (409, &json!("pending")),
+                "{path}: {body}"
+            );
         }
     }
 

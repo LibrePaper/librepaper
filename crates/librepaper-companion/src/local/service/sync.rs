@@ -31,7 +31,8 @@ use super::*;
 use librepaper_base::http::Credentials;
 use librepaper_sync::{
     changes_here, current_branch, preview, publish, pull, push, store_for, web_changed, Client,
-    Error, Link, MergeOutcome, PullOptions, PullOutcome, PushOptions, PushOutcome, State, StateStore, VersionCommit,
+    Error, Link, MergeOutcome, PullOptions, PullOutcome, PushOptions, PushOutcome, State,
+    StateStore, VersionCommit,
 };
 
 use crate::local::bindings::ProjectBinding;
@@ -2242,7 +2243,10 @@ mod tests {
             body["error"].as_str().unwrap().contains("git switch main"),
             "{body}"
         );
-        assert_eq!(git(fixture.root(), &["branch", "--show-current"]).unwrap(), "other");
+        assert_eq!(
+            git(fixture.root(), &["branch", "--show-current"]).unwrap(),
+            "other"
+        );
         let (_, body) = fixture.status().await;
         assert_eq!(body["branch"], "main", "{body}");
         assert_eq!(body["checked_out"], "other", "{body}");
@@ -2253,7 +2257,10 @@ mod tests {
         assert_eq!(body["checked_out"], Value::Null, "{body}");
         let (status, body) = fixture.pull(json!({})).await;
         assert_eq!((status, &body["reason"]), (409, &json!("branch")), "{body}");
-        assert!(body["error"].as_str().unwrap().contains("detached"), "{body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("detached"),
+            "{body}"
+        );
     }
 
     #[tokio::test]
@@ -2332,9 +2339,7 @@ mod tests {
         std::fs::write(fixture.root().join("both.tex"), "local version\n").unwrap();
 
         let url = json!({"url": format!("{site}/docs/abc123")});
-        let (status, body) = fixture
-            .route(Method::POST, "sync/preview", Some(url))
-            .await;
+        let (status, body) = fixture.route(Method::POST, "sync/preview", Some(url)).await;
         assert_eq!(status, 200, "{body}");
         assert_eq!(body["project_only"], json!(["web.tex"]), "{body}");
         assert_eq!(body["local_only"], json!(["local.tex"]), "{body}");
@@ -2356,9 +2361,7 @@ mod tests {
         let (site, _task) = project_site().await;
         let fixture = Fixture::new(&site).await;
         let url = json!({"url": format!("{site}/docs/abc123")});
-        let (status, _) = fixture
-            .route(Method::POST, "sync/preview", Some(url))
-            .await;
+        let (status, _) = fixture.route(Method::POST, "sync/preview", Some(url)).await;
         assert_eq!(status, 401);
 
         fixture.sign_in("lp_token");
