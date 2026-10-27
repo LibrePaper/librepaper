@@ -14,7 +14,7 @@ Writing, previews, collaboration and review work in any web browser. The desktop
 - Nothing runs unasked. Folders are granted one at a time through your system's own chooser. Running a document's code is off whenever a document opens, and you turn it on with the Run code switch.
 - On a shared project, editors can change the code that runs, so it is their code too.
 - The desktop app uses the tools installed on your computer, such as R, Python, Quarto and your coding agent.
-- **Settings, then Rendering** chooses, per format, whether a render runs in the browser or on this computer with your own latexmk, Typst or Quarto. Renders on this computer run in the folder and only while Run code is on.
+- **Settings, then Rendering** chooses, per format, whether a render runs in the browser or on this computer with your own latexmk, Typst or Quarto. Renders on this computer run only while Run code is on.
 
 The server you connect to decides what the desktop app runs. A document's code runs only when you turn on Run code, and the app still trusts its server. A compromised server could run code on your computer through the same tools. Connect the app only to a server you trust.
 
