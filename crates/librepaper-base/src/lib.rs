@@ -17,6 +17,7 @@ pub mod role;
 pub mod secret;
 pub mod shell;
 pub mod site;
+pub mod tasks;
 pub mod text;
 pub mod tls;
 pub mod util;

@@ -21,8 +21,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
+use librepaper_base::tasks::Shutdown;
 use tokio::process::Command;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 
 use crate::local::bindings::BindingStore;
 use crate::local::native::{self, RunOutcome};
@@ -106,7 +107,7 @@ pub async fn run(
     request: JobRequest,
     staged: PathBuf,
     bindings: &BindingStore,
-    mut cancel: watch::Receiver<bool>,
+    cancel: Shutdown,
     progress: mpsc::UnboundedSender<JobStatus>,
 ) -> JobOutcome {
     let key = match Key::parse_parts(&request.format, &request.output) {
@@ -186,7 +187,7 @@ pub async fn run(
     // a tick, so a result written at once could read as older than the start.
     // Only a failed command is held to it.
     let started = SystemTime::now() - Duration::from_secs(1);
-    let (outcome, output) = native::run_confined_logged(command, &mut cancel, deadline).await;
+    let (outcome, output) = native::run_confined_logged(command, &cancel, deadline).await;
 
     let mut status = JobStatus {
         stage: "finished".into(),

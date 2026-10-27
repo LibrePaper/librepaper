@@ -101,7 +101,6 @@ pub(super) async fn handle_jobs_post(
         return write_json(400, &json!({"error": error}));
     }
 
-    let (cancel_tx, cancel_rx) = watch::channel(false);
     let status = JobStatus {
         id: id.clone(),
         status: JobState::Queued,
@@ -145,8 +144,7 @@ pub(super) async fn handle_jobs_post(
             project,
             files: BTreeMap::new(),
             root,
-            cancel_tx,
-            cancel_rx,
+            cancel: Shutdown::new(),
             queued: true,
             superseded: false,
             finished_at: None,
@@ -327,7 +325,7 @@ pub(super) async fn handle_cancel(
     if entry.superseded {
         return write_json(409, &json!({"error": "superseded by a newer job"}));
     }
-    let _ = entry.cancel_tx.send(true);
+    entry.cancel.cancel();
     if entry.queued {
         // Never handed to the runner, so there is nothing for it to observe
         // cancelling: settle it here and drop it from the queue directly.
@@ -358,7 +356,7 @@ pub(super) async fn handle_job_delete(
     if !owned_by(entry, origin) {
         return write_json(404, &json!({"error": "not found"}));
     }
-    let _ = entry.cancel_tx.send(true);
+    entry.cancel.cancel();
     let root = entry.root.clone();
     jobs.remove(id);
     drop(jobs);

@@ -12,9 +12,10 @@
 //! enough to look up, insert or remove an entry, never while starting,
 //! stopping or polling the task itself.
 
-use super::lifecycle::{self, RunnerState, StatusHandle, StopSignal};
+use super::lifecycle::{self, RunnerState, StatusHandle};
 use super::runtime;
 use crate::automation::peer::{AutomationPeer, DocumentLink};
+use librepaper_base::tasks::Shutdown;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -30,7 +31,7 @@ enum Entry {
         config_hash: String,
         origin: Option<String>,
         status: StatusHandle,
-        stop: StopSignal,
+        stop: Shutdown,
         handle: tokio::task::JoinHandle<Result<(), String>>,
         /// Rotated by the browser while its session remains active.
         grant: Option<SharedAgentGrant>,
@@ -234,11 +235,11 @@ impl SessionRegistry {
         grant: Option<SharedAgentGrant>,
         body: F,
     ) where
-        F: FnOnce(StatusHandle, StopSignal) -> Fut,
+        F: FnOnce(StatusHandle, Shutdown) -> Fut,
         Fut: std::future::Future<Output = Result<(), String>> + Send + 'static,
     {
         let status = StatusHandle::new();
-        let stop = StopSignal::new();
+        let stop = Shutdown::new();
         let handle = tokio::spawn(body(status.clone(), stop.clone()));
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         // Dropping a JoinHandle detaches its task rather than ending it, so a
@@ -446,7 +447,7 @@ impl SessionRegistry {
         let Some(Entry::Running { stop, handle, .. }) = entry else {
             return Err(lifecycle::Error::NotRunning);
         };
-        stop.request();
+        stop.cancel();
         handle.abort();
         let _ = handle.await;
         let state_path = self
@@ -562,7 +563,7 @@ mod tests {
         });
         registry.spawn_running("two", "hash-2", None, None, |status, stop| async move {
             status.set(RunnerState::Ready, None, None);
-            while !stop.requested() {
+            while !stop.is_cancelled() {
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
             Ok(())

@@ -62,7 +62,10 @@ fn script(key: &str, body: &str, result: &str) {
 }
 
 async fn run_fixture(fixture: &Fixture, cancelled: bool) -> JobOutcome {
-    let (_cancel_tx, cancel) = watch::channel(cancelled);
+    let cancel = Shutdown::new();
+    if cancelled {
+        cancel.cancel();
+    }
     let (progress, _updates) = mpsc::unbounded_channel();
     run(
         fixture.request.clone(),
