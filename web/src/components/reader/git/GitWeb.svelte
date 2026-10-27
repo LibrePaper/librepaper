@@ -136,71 +136,73 @@
     <p class="git-lead" role="alert">The repository folder is gone.</p>
     {@render disconnectFoot()}
   {:else}
-  <p class="git-remote" title={local ? status.path : status.url}>Repository {local ? status.path : status.url}, branch {status.branch}</p>
-  {#if !status.signed_in}
-    {@render signIn()}
-  {:else}
-    <div class="git-row">
-      <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy || merging} onclick={() => connection.pull()}>
-        {link.busy === "pull" ? "Getting repository changes…" : "Get repository changes"}
-      </button>
-      <button type="button" class="btn btn-sm lp-control-brand" disabled={busy || merging} onclick={() => connection.push()}>
-        {link.busy === "push" ? "Sending project changes…" : "Send project changes"}
-      </button>
-    </div>
-    <p class="panel-meta git-note">Get repository changes imports the repository's commits into this project. Send project changes sends this project's changes to the repository branch above.</p>
-  {/if}
-
-  {#if link.result}<p class="git-line" role="status">{link.result}</p>{/if}
-  {#if link.interrupted}
-    <div class="git-box" role="alert">
-      <p>{link.interrupted}</p>
-      <p>Getting and sending wait until it is settled.</p>
+    <p class="git-remote" title={local ? status.path : status.url}>Repository {local ? status.path : status.url}, branch {status.branch}</p>
+    {#if !status.signed_in}
+      {@render signIn()}
+    {:else}
       <div class="git-row">
-        <button type="button" class="btn btn-sm lp-control-brand" disabled={busy} onclick={() => connection.retryTransfer()}>
-          {link.busy === "retry" ? "Retrying…" : "Retry interrupted transfer"}
+        <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy || merging} onclick={() => connection.pull()}>
+          {link.busy === "pull" ? "Getting repository changes…" : "Get repository changes"}
+        </button>
+        <button type="button" class="btn btn-sm lp-control-brand" disabled={busy || merging} onclick={() => connection.push()}>
+          {link.busy === "push" ? "Sending project changes…" : "Send project changes"}
         </button>
       </div>
-    </div>
-  {/if}
-  {#if link.refusal?.reason === "changed"}
-    <div class="git-box" role="alert">
-      <p>The project changed these files since the repository was last read:</p>
-      <ul class="git-list">{#each link.refusal.paths as path (path)}<li>{path}</li>{/each}</ul>
-      <p>Get repository changes again.</p>
-    </div>
-  {:else if link.refusal?.reason === "suggestion"}
-    <div class="git-box" role="alert">
-      <p>A pending suggestion in {link.refusal.path || "a file"} stops {ACTION[link.refusal.action]}. Accept or reject it, then try again.</p>
-    </div>
-  {/if}
+      <p class="panel-meta git-note">Get repository changes imports the repository's commits into this project. Send project changes sends this project's changes to the repository branch above.</p>
+    {/if}
 
-  {#if status.merging && !merging}
-    <p class="git-lead" role="status">The files are settled, but the merge could not be committed. Get repository changes or send project changes to try again.</p>
-  {:else if status.merging && local}
-    <div class="git-box">
-      <p>These files changed in both the project and the repository.</p>
-      <ul class="git-list" aria-label="Files that changed on both sides">{#each status.merging.conflicts as path (path)}<li>{path}</li>{/each}</ul>
-      <p>Resolve these files in your editor and commit the merge. Then choose Get repository changes or Send project changes again.</p>
-    </div>
-  {:else if status.merging}
-    <div class="git-box">
-      <p>These files changed in both the project and the repository. Choose which version to keep.</p>
-      <ul class="git-conflicts" aria-label="Files that changed on both sides">
-        {#each status.merging.conflicts as path (path)}
-          <li class="git-conflict">
-            <span class="git-path" title={path}>{path}</span>
-            <span class="git-choices">
-              <button type="button" class="git-action" disabled={busy} onclick={() => connection.resolve(path, "project")}>Keep project's</button>
-              <button type="button" class="git-action" disabled={busy} onclick={() => connection.resolve(path, "repository")}>Take repository's</button>
-            </span>
-          </li>
-        {/each}
-      </ul>
-    </div>
-  {/if}
+    {#if link.result}<p class="git-line" role="status">{link.result}</p>{/if}
+    {#if link.interrupted}
+      <div class="git-box" role="alert">
+        <p>{link.interrupted}</p>
+        <p>Getting and sending wait until it is settled.</p>
+        <div class="git-row">
+          <button type="button" class="btn btn-sm lp-control-brand" disabled={busy} onclick={() => connection.retryTransfer()}>
+            {link.busy === "retry" ? "Retrying…" : "Retry interrupted transfer"}
+          </button>
+        </div>
+      </div>
+    {/if}
+    {#if link.refusal?.reason === "changed"}
+      <div class="git-box" role="alert">
+        <p>The project changed these files since the repository was last read:</p>
+        <ul class="git-list">{#each link.refusal.paths as path (path)}<li>{path}</li>{/each}</ul>
+        <p>Get repository changes again.</p>
+      </div>
+    {:else if link.refusal?.reason === "suggestion"}
+      <div class="git-box" role="alert">
+        <p>A pending suggestion in {link.refusal.path || "a file"} stops {ACTION[link.refusal.action]}. Accept or reject it, then try again.</p>
+      </div>
+    {/if}
 
-  {@render disconnectFoot()}
+    {#if status.merging && !merging && local}
+      <p class="git-lead" role="status">A merge is waiting for its commit. Commit it in the repository, then choose Get repository changes or Send project changes again.</p>
+    {:else if status.merging && !merging}
+      <p class="git-lead" role="status">The files are settled, but the merge could not be committed. Get repository changes or send project changes to try again.</p>
+    {:else if status.merging && local}
+      <div class="git-box">
+        <p>These files changed in both the project and the repository.</p>
+        <ul class="git-list" aria-label="Files that changed on both sides">{#each status.merging.conflicts as path (path)}<li>{path}</li>{/each}</ul>
+        <p>Resolve these files in your editor and commit the merge. Then choose Get repository changes or Send project changes again.</p>
+      </div>
+    {:else if status.merging}
+      <div class="git-box">
+        <p>These files changed in both the project and the repository. Choose which version to keep.</p>
+        <ul class="git-conflicts" aria-label="Files that changed on both sides">
+          {#each status.merging.conflicts as path (path)}
+            <li class="git-conflict">
+              <span class="git-path" title={path}>{path}</span>
+              <span class="git-choices">
+                <button type="button" class="git-action" disabled={busy} onclick={() => connection.resolve(path, "project")}>Keep project's</button>
+                <button type="button" class="git-action" disabled={busy} onclick={() => connection.resolve(path, "repository")}>Take repository's</button>
+              </span>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+
+    {@render disconnectFoot()}
   {/if}
 {/snippet}
 

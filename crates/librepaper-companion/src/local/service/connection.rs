@@ -1767,7 +1767,9 @@ mod tests {
             };
         }
         if path.ends_with("/project") {
-            return found(json!({"tree": {"files": listing(&data.current)}, "texts": data.current}));
+            return found(
+                json!({"tree": {"files": listing(&data.current)}, "texts": data.current}),
+            );
         }
         (
             StatusCode::NOT_FOUND,
