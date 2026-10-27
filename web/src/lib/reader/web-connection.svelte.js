@@ -40,7 +40,7 @@ const paths = (/** @type {unknown} */ value) => (Array.isArray(value) ? value.ma
 
 /** @typedef {{ loaded: boolean, status: any, busy: "" | "connect" | "pull" | "push" | "retry" | "resolve" | "login" | "disconnect", result: string | null, refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string, action: "pull" | "push" } | null, problem: string, signInHelp: { remote: string, detail: string } | null, interrupted: string }} WebConnectionState */
 
-/** `flush` settles the editor's own edits on the server before a push captures
+/** `flush` settles the editor's own edits on the server before a transfer reads
  * the project. `signedIn` is asked each time Sign in is pressed: whether this
  * page has a session on the server, so the code can be approved here. `open`
  * shows a page in a new tab, and `origin` is the server the approval page is
@@ -154,9 +154,11 @@ export function createWebConnection({ api = routes, project, flush = async () =>
   };
 
   /// Imports the repository's changes into the project. Stops at a conflict,
-  /// which the merge section then settles one file at a time.
+  /// which the merge section then settles one file at a time. The merge reads
+  /// the project, so the editor's own edits are settled first.
   const pull = () => run("pull", async () => {
     set({ refusal: null, result: null, interrupted: "" });
+    await flush();
     let answer = /** @type {any} */ (null);
     try {
       answer = await api.pullConnection(project);
