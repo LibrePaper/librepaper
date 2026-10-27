@@ -283,7 +283,9 @@ pub async fn push(
     {
         return Err(Error::Merging);
     }
-    state.pin_branch(store.repository(), options.branch.as_deref())?;
+    if state.pin_branch(store.repository(), options.branch.as_deref())? {
+        store.save(&state)?;
+    }
     let mut settled = None;
     if let Some(pending) = state.pending.clone() {
         if pending.actor != client.actor() {
@@ -568,9 +570,11 @@ pub fn commit_summary(dir: &Path, state: &State) -> Option<CommitSummary> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fake::{self, accepted, Answer, Fake};
     use crate::git::testing::{commit_all, identify, repository};
     use crate::link::Link;
-    use crate::state::GitRefStore;
+    use crate::pull::{pull, PullOptions, PullOutcome};
+    use crate::state::{FileStore, GitRefStore};
 
     fn write(dir: &Path, path: &str, bytes: &[u8]) {
         let target = dir.join(path);
@@ -883,111 +887,6 @@ mod tests {
 
     // ----------------------------------------------------- branch and pending
 
-    use std::collections::VecDeque;
-    use std::sync::{Arc, Mutex};
-
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    /// What the fake deployment does with one source change.
-    enum Answer {
-        Reply(u16, Value),
-        /// Reads the request and closes the connection without answering.
-        Drop,
-    }
-
-    /// A deployment that answers `/api/config` and plays back scripted
-    /// answers to source changes, keeping every body it was sent.
-    struct Fake {
-        site: url::Url,
-        posted: Arc<Mutex<Vec<Value>>>,
-    }
-
-    impl Fake {
-        fn link(&self) -> Link {
-            Link::parse(&format!("{}docs/paper", self.site)).unwrap()
-        }
-
-        fn client(&self, token: &str) -> Client {
-            Client::new(
-                self.site.clone(),
-                librepaper_base::http::Credentials::token(token),
-            )
-        }
-
-        fn posted(&self) -> Vec<Value> {
-            self.posted.lock().unwrap().clone()
-        }
-    }
-
-    async fn fake(answers: Vec<Answer>) -> Fake {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let site = url::Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
-        let posted = Arc::new(Mutex::new(Vec::new()));
-        let script = Arc::new(Mutex::new(VecDeque::from(answers)));
-        let (log, queue) = (posted.clone(), script);
-        tokio::spawn(async move {
-            while let Ok((mut socket, _)) = listener.accept().await {
-                let (log, queue) = (log.clone(), queue.clone());
-                tokio::spawn(async move {
-                    let mut raw = Vec::new();
-                    let mut chunk = [0u8; 4096];
-                    let body_at = loop {
-                        let read = socket.read(&mut chunk).await.unwrap_or(0);
-                        if read == 0 {
-                            return;
-                        }
-                        raw.extend_from_slice(&chunk[..read]);
-                        if let Some(at) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
-                            break at + 4;
-                        }
-                    };
-                    let head = String::from_utf8_lossy(&raw[..body_at]).to_string();
-                    let length = head
-                        .lines()
-                        .find_map(|line| {
-                            line.to_ascii_lowercase()
-                                .strip_prefix("content-length:")
-                                .map(|value| value.trim().parse::<usize>().unwrap_or(0))
-                        })
-                        .unwrap_or(0);
-                    while raw.len() < body_at + length {
-                        let read = socket.read(&mut chunk).await.unwrap_or(0);
-                        if read == 0 {
-                            return;
-                        }
-                        raw.extend_from_slice(&chunk[..read]);
-                    }
-                    let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
-                    let (status, body) = if path.ends_with("/api/config") {
-                        (200, json!({}))
-                    } else if path.ends_with("/source-change") {
-                        let sent = serde_json::from_slice(&raw[body_at..]).unwrap();
-                        log.lock().unwrap().push(sent);
-                        let next = queue.lock().unwrap().pop_front();
-                        match next {
-                            Some(Answer::Reply(status, body)) => (status, body),
-                            Some(Answer::Drop) | None => return,
-                        }
-                    } else {
-                        (404, json!({}))
-                    };
-                    let text = body.to_string();
-                    let reply = format!(
-                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{text}",
-                        text.len()
-                    );
-                    let _ = socket.write_all(reply.as_bytes()).await;
-                    let _ = socket.shutdown().await;
-                });
-            }
-        });
-        Fake { site, posted }
-    }
-
-    fn accepted(sha: &str, sequence: i64) -> Answer {
-        Answer::Reply(200, json!({"label": {"sha": sha, "sequence": sequence}}))
-    }
-
     fn options(branch: Option<&str>) -> PushOptions {
         PushOptions {
             message: "Edits".into(),
@@ -1015,11 +914,12 @@ mod tests {
 
     #[tokio::test]
     async fn an_unbound_repository_needs_a_branch_and_the_push_binds_it() {
-        let server = fake(vec![accepted("l1", 1)]).await;
+        let server = Fake::start().await;
+        server.script(vec![accepted("l1", 1)]);
         let Some((dir, _git, store)) = on_main(server.link(), None) else {
             return;
         };
-        let client = server.client("lp_token");
+        let client = server.client();
         let refused = push(&client, dir.path(), &store, &options(None)).await;
         assert!(
             matches!(&refused, Err(Error::BranchUnbound { checked_out }) if checked_out == "main"),
@@ -1037,13 +937,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_push_with_nothing_to_send_still_keeps_the_branch_it_was_given() {
+        let server = Fake::start().await;
+        let Some((dir, _git, store)) = on_main(server.link(), None) else {
+            return;
+        };
+        let mut state = store.load().unwrap().unwrap();
+        state.files = BTreeMap::from([("a.tex".to_string(), record(Kind::Text, b"one\n"))]);
+        store.save(&state).unwrap();
+        let client = server.client();
+
+        let quiet = push(&client, dir.path(), &store, &options(Some("main"))).await;
+        assert!(matches!(quiet, Ok(PushOutcome::Nothing)), "{quiet:?}");
+        assert_eq!(
+            store.load().unwrap().unwrap().branch.as_deref(),
+            Some("main")
+        );
+
+        let again = push(&client, dir.path(), &store, &options(None)).await;
+        assert!(matches!(again, Ok(PushOutcome::Nothing)), "{again:?}");
+        assert!(server.posted().is_empty());
+    }
+
+    #[tokio::test]
     async fn a_detached_head_is_refused() {
-        let server = fake(Vec::new()).await;
+        let server = Fake::start().await;
         let Some((dir, git, store)) = on_main(server.link(), Some("main")) else {
             return;
         };
         git.run(&["checkout", "-q", "--detach"], None, &[]).unwrap();
-        let client = server.client("lp_token");
+        let client = server.client();
         let outcome = push(&client, dir.path(), &store, &options(None)).await;
         assert!(matches!(outcome, Err(Error::DetachedHead)), "{outcome:?}");
         assert!(server.posted().is_empty());
@@ -1051,13 +974,13 @@ mod tests {
 
     #[tokio::test]
     async fn another_branch_is_refused_and_named() {
-        let server = fake(Vec::new()).await;
+        let server = Fake::start().await;
         let Some((dir, git, store)) = on_main(server.link(), Some("main")) else {
             return;
         };
         git.run(&["checkout", "-q", "-b", "other"], None, &[])
             .unwrap();
-        let client = server.client("lp_token");
+        let client = server.client();
         let outcome = push(&client, dir.path(), &store, &options(None)).await;
         let Err(error) = outcome else {
             panic!("a push from the wrong branch went through");
@@ -1080,18 +1003,18 @@ mod tests {
 
     #[tokio::test]
     async fn a_lost_answer_is_settled_by_the_next_push_under_the_same_key() {
-        let server = fake(vec![
+        let server = Fake::start().await;
+        server.script(vec![
             Answer::Drop,
             Answer::Drop,
             Answer::Drop,
             accepted("l1", 1),
             accepted("l2", 2),
-        ])
-        .await;
+        ]);
         let Some((dir, _git, store)) = on_main(server.link(), Some("main")) else {
             return;
         };
-        let client = server.client("lp_token");
+        let client = server.client();
         let lost = push(&client, dir.path(), &store, &options(None)).await;
         assert!(matches!(lost, Err(Error::Network(_))), "{lost:?}");
         let key = store.load().unwrap().unwrap().pending.unwrap().request_key;
@@ -1125,15 +1048,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_refusal_clears_the_attempt_without_moving_the_baseline() {
-        let server = fake(vec![Answer::Reply(
+        let server = Fake::start().await;
+        server.script(vec![Answer::Reply(
             409,
             json!({"reason": "changed", "paths": ["a.tex"]}),
-        )])
-        .await;
+        )]);
         let Some((dir, _git, store)) = on_main(server.link(), Some("main")) else {
             return;
         };
-        let client = server.client("lp_token");
+        let client = server.client();
         let outcome = push(&client, dir.path(), &store, &options(None)).await;
         assert_eq!(
             outcome.unwrap(),
@@ -1148,15 +1071,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_attempt_keeps_its_key_and_only_the_same_sign_in_may_retry() {
-        let server = fake(vec![
+        let server = Fake::start().await;
+        server.script(vec![
             Answer::Reply(500, json!({"error": "boom"})),
             accepted("l1", 1),
-        ])
-        .await;
+        ]);
         let Some((dir, _git, store)) = on_main(server.link(), Some("main")) else {
             return;
         };
-        let client = server.client("lp_token");
+        let client = server.client();
         let failed = push(&client, dir.path(), &store, &options(None)).await;
         assert!(
             matches!(failed, Err(Error::Http { status: 500, .. })),
@@ -1165,7 +1088,7 @@ mod tests {
         let pending = store.load().unwrap().unwrap().pending.unwrap();
         assert!(!pending.actor.contains("lp_token"));
 
-        let other = server.client("lp_other");
+        let other = server.client_as("lp_other");
         let outcome = push(&other, dir.path(), &store, &options(None)).await;
         assert!(matches!(outcome, Err(Error::PendingActor)), "{outcome:?}");
         assert_eq!(server.posted().len(), 1);
@@ -1198,11 +1121,12 @@ mod tests {
 
     #[tokio::test]
     async fn nothing_is_sent_when_the_pending_record_cannot_be_saved() {
-        let server = fake(vec![accepted("l1", 1)]).await;
+        let server = Fake::start().await;
+        server.script(vec![accepted("l1", 1)]);
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "a.tex", b"one\n");
         let store = Unwritable(State::new(server.link()));
-        let client = server.client("lp_token");
+        let client = server.client();
         let outcome = push(&client, dir.path(), &store, &options(None)).await;
         assert!(matches!(outcome, Err(Error::State(_))), "{outcome:?}");
         assert!(server.posted().is_empty());
@@ -1236,140 +1160,132 @@ mod tests {
         assert!(matches!(outcome, Err(Error::PendingPush)), "{outcome:?}");
         assert_eq!(store.load().unwrap(), Some(state));
     }
+    // ------------------------------------------------------- web_changed
 
-    mod web_changed_tests {
-        use super::*;
-        // ------------------------------------------------------- web_changed
+    fn records(entries: &[(&str, &str)]) -> BTreeMap<String, FileRecord> {
+        entries
+            .iter()
+            .map(|(path, text)| (path.to_string(), record(Kind::Text, text.as_bytes())))
+            .collect()
+    }
 
-        use crate::fake::{self, Fake};
-        use crate::pull::{pull, PullOptions, PullOutcome};
-        use crate::state::FileStore;
+    #[tokio::test]
+    async fn an_unchanged_head_answers_without_reading_the_project() {
+        let home = tempfile::tempdir().unwrap();
+        let store = FileStore::for_dir(home.path(), home.path());
+        let fake = Fake::start().await;
+        fake.name(1, fake::files(&[("a.tex", "one\n")]));
+        fake.set_current(fake::files(&[("a.tex", "unnamed\n")]));
+        fake.set_head(Some("h1"));
+        let mut state = State::new(fake.link());
+        state.pulled = Some(1);
+        state.files = records(&[("a.tex", "one\n")]);
+        state.web_head = Some("h1".into());
 
-        fn records(entries: &[(&str, &str)]) -> BTreeMap<String, FileRecord> {
-            entries
-                .iter()
-                .map(|(path, text)| (path.to_string(), record(Kind::Text, text.as_bytes())))
-                .collect()
-        }
+        assert!(!web_changed(&fake.client(), &store, &state).await.unwrap());
+        assert_eq!(fake.count("/project"), 0);
+    }
 
-        #[tokio::test]
-        async fn an_unchanged_head_answers_without_reading_the_project() {
-            let home = tempfile::tempdir().unwrap();
-            let store = FileStore::for_dir(home.path(), home.path());
-            let fake = Fake::start().await;
-            fake.name(1, fake::files(&[("a.tex", "one\n")]));
-            fake.set_current(fake::files(&[("a.tex", "unnamed\n")]));
-            fake.set_head(Some("h1"));
-            let mut state = State::new(fake.link());
-            state.pulled = Some(1);
-            state.files = records(&[("a.tex", "one\n")]);
-            state.web_head = Some("h1".into());
+    #[tokio::test]
+    async fn an_unnamed_accepted_edit_is_a_web_change() {
+        let home = tempfile::tempdir().unwrap();
+        let store = FileStore::for_dir(home.path(), home.path());
+        let fake = Fake::start().await;
+        fake.name(1, fake::files(&[("a.tex", "one\n")]));
+        fake.set_current(fake::files(&[("a.tex", "unnamed\n")]));
+        fake.set_head(Some("h2"));
+        let mut state = State::new(fake.link());
+        state.pulled = Some(1);
+        state.files = records(&[("a.tex", "one\n")]);
+        state.web_head = Some("h1".into());
 
-            assert!(!web_changed(&fake.client(), &store, &state).await.unwrap());
-            assert_eq!(fake.count("/project"), 0);
-        }
+        assert!(web_changed(&fake.client(), &store, &state).await.unwrap());
+        assert_eq!(store.load().unwrap(), None, "nothing is recorded as seen");
+    }
 
-        #[tokio::test]
-        async fn an_unnamed_accepted_edit_is_a_web_change() {
-            let home = tempfile::tempdir().unwrap();
-            let store = FileStore::for_dir(home.path(), home.path());
-            let fake = Fake::start().await;
-            fake.name(1, fake::files(&[("a.tex", "one\n")]));
-            fake.set_current(fake::files(&[("a.tex", "unnamed\n")]));
-            fake.set_head(Some("h2"));
-            let mut state = State::new(fake.link());
-            state.pulled = Some(1);
-            state.files = records(&[("a.tex", "one\n")]);
-            state.web_head = Some("h1".into());
+    #[tokio::test]
+    async fn a_moved_head_over_the_same_files_is_recorded_and_not_read_again() {
+        let home = tempfile::tempdir().unwrap();
+        let store = FileStore::for_dir(home.path(), home.path());
+        let fake = Fake::start().await;
+        fake.name(1, fake::files(&[("a.tex", "one\r\n")]));
+        fake.set_current(fake::files(&[("a.tex", "one\r\n")]));
+        fake.set_head(Some("h2"));
+        let mut state = State::new(fake.link());
+        state.pulled = Some(1);
+        state.files = records(&[("a.tex", "one\n")]);
+        state.web_head = None;
+        store.save(&state).unwrap();
 
-            assert!(web_changed(&fake.client(), &store, &state).await.unwrap());
-            assert_eq!(store.load().unwrap(), None, "nothing is recorded as seen");
-        }
+        assert!(!web_changed(&fake.client(), &store, &state).await.unwrap());
+        assert_eq!(fake.count("/project"), 1);
+        let state = store.load().unwrap().unwrap();
+        assert_eq!(state.web_head.as_deref(), Some("h2"));
 
-        #[tokio::test]
-        async fn a_moved_head_over_the_same_files_is_recorded_and_not_read_again() {
-            let home = tempfile::tempdir().unwrap();
-            let store = FileStore::for_dir(home.path(), home.path());
-            let fake = Fake::start().await;
-            fake.name(1, fake::files(&[("a.tex", "one\r\n")]));
-            fake.set_current(fake::files(&[("a.tex", "one\r\n")]));
-            fake.set_head(Some("h2"));
-            let mut state = State::new(fake.link());
-            state.pulled = Some(1);
-            state.files = records(&[("a.tex", "one\n")]);
-            state.web_head = None;
-            store.save(&state).unwrap();
+        assert!(!web_changed(&fake.client(), &store, &state).await.unwrap());
+        assert_eq!(fake.count("/project"), 1);
+    }
 
-            assert!(!web_changed(&fake.client(), &store, &state).await.unwrap());
-            assert_eq!(fake.count("/project"), 1);
-            let state = store.load().unwrap().unwrap();
-            assert_eq!(state.web_head.as_deref(), Some("h2"));
+    #[tokio::test]
+    async fn a_pending_fetch_is_what_the_current_files_are_compared_with() {
+        let home = tempfile::tempdir().unwrap();
+        let store = FileStore::for_dir(home.path(), home.path());
+        let fake = Fake::start().await;
+        fake.name(1, fake::files(&[("a.tex", "two\n")]));
+        fake.set_current(fake::files(&[("a.tex", "two\n")]));
+        fake.set_head(Some("h2"));
+        let mut state = State::new(fake.link());
+        state.pulled = Some(1);
+        state.files = records(&[("a.tex", "one\n")]);
+        state.fetched = Some(crate::state::Fetched {
+            commit: "c".into(),
+            files: records(&[("a.tex", "two\n")]),
+        });
 
-            assert!(!web_changed(&fake.client(), &store, &state).await.unwrap());
-            assert_eq!(fake.count("/project"), 1);
-        }
+        assert!(!web_changed(&fake.client(), &store, &state).await.unwrap());
+    }
 
-        #[tokio::test]
-        async fn a_pending_fetch_is_what_the_current_files_are_compared_with() {
-            let home = tempfile::tempdir().unwrap();
-            let store = FileStore::for_dir(home.path(), home.path());
-            let fake = Fake::start().await;
-            fake.name(1, fake::files(&[("a.tex", "two\n")]));
-            fake.set_current(fake::files(&[("a.tex", "two\n")]));
-            fake.set_head(Some("h2"));
-            let mut state = State::new(fake.link());
-            state.pulled = Some(1);
-            state.files = records(&[("a.tex", "one\n")]);
-            state.fetched = Some(crate::state::Fetched {
-                commit: "c".into(),
-                files: records(&[("a.tex", "two\n")]),
-            });
+    #[tokio::test]
+    async fn a_push_clears_the_head_and_the_pull_after_it_finds_nothing_to_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let store = FileStore::for_dir(home.path(), dir.path());
+        let fake = Fake::start().await;
+        let mut state = State::new(fake.link());
+        state.web_head = Some("h1".into());
+        store.save(&state).unwrap();
+        fake.set_head(Some("h1"));
+        write(dir.path(), "new.tex", b"mine\n");
+        fake.set_after_push(fake::files(&[("new.tex", "mine\n")]));
 
-            assert!(!web_changed(&fake.client(), &store, &state).await.unwrap());
-        }
+        let options = PushOptions {
+            message: "Edits".into(),
+            author: None,
+            exclude: Vec::new(),
+            branch: None,
+        };
+        let outcome = push(&fake.client(), dir.path(), &store, &options)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, PushOutcome::Pushed { .. }), "{outcome:?}");
+        assert_eq!(store.load().unwrap().unwrap().web_head, None);
 
-        #[tokio::test]
-        async fn a_push_clears_the_head_and_the_pull_after_it_finds_nothing_to_write() {
-            let dir = tempfile::tempdir().unwrap();
-            let home = tempfile::tempdir().unwrap();
-            let store = FileStore::for_dir(home.path(), dir.path());
-            let fake = Fake::start().await;
-            let mut state = State::new(fake.link());
-            state.web_head = Some("h1".into());
-            store.save(&state).unwrap();
-            fake.set_head(Some("h1"));
-            write(dir.path(), "new.tex", b"mine\n");
-            fake.set_after_push(fake::files(&[("new.tex", "mine\n")]));
-
-            let options = PushOptions {
-                message: "Edits".into(),
-                author: None,
-                exclude: Vec::new(),
-                branch: None,
-            };
-            let outcome = push(&fake.client(), dir.path(), &store, &options)
-                .await
-                .unwrap();
-            assert!(matches!(outcome, PushOutcome::Pushed { .. }), "{outcome:?}");
-            assert_eq!(store.load().unwrap().unwrap().web_head, None);
-
-            let outcome = pull(&fake.client(), dir.path(), &store, &PullOptions::default())
-                .await
-                .unwrap();
-            match outcome {
-                PullOutcome::Folder {
-                    written,
-                    trashed,
-                    conflicts,
-                    ..
-                } => {
-                    assert!(written.is_empty() && trashed.is_empty() && conflicts.is_empty());
-                }
-                other => panic!("{other:?}"),
+        let outcome = pull(&fake.client(), dir.path(), &store, &PullOptions::default())
+            .await
+            .unwrap();
+        match outcome {
+            PullOutcome::Folder {
+                written,
+                trashed,
+                conflicts,
+                ..
+            } => {
+                assert!(written.is_empty() && trashed.is_empty() && conflicts.is_empty());
             }
-            let state = store.load().unwrap().unwrap();
-            assert_eq!(state.web_head.as_deref(), Some("h1+"));
-            assert_eq!(fake.count("/project"), 1);
+            other => panic!("{other:?}"),
         }
+        let state = store.load().unwrap().unwrap();
+        assert_eq!(state.web_head.as_deref(), Some("h1+"));
+        assert_eq!(fake.count("/project"), 1);
     }
 }
