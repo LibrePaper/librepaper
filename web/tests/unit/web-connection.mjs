@@ -30,13 +30,11 @@ function routes(answers) {
 
 const connected = { connected: true, signed_in: true, url: "https://github.com/you/paper.git", branch: "main", merging: null };
 const merging = { ...connected, merging: { side: "repository", conflicts: ["a.tex", "b.tex"] } };
-const named = [];
-const nameVersion = async (message) => { named.push(message); };
 
 // The first read fills the state, and says it has arrived.
 {
   const { api, calls } = routes({ connectionStatus: { connected: false, signed_in: true } });
-  const web = createWebConnection({ api, project, nameVersion });
+  const web = createWebConnection({ api, project });
   assert.equal(web.state.loaded, false);
   await web.refresh();
   assert.equal(web.state.loaded, true);
@@ -47,7 +45,7 @@ const nameVersion = async (message) => { named.push(message); };
 // Connecting clones the address and shows the connected status.
 {
   const { api, calls } = routes({ connectRepository: connected });
-  const web = createWebConnection({ api, project, nameVersion });
+  const web = createWebConnection({ api, project });
   await web.connect("  https://github.com/you/paper.git  ");
   assert.deepEqual(calls, [["connectRepository", project, "https://github.com/you/paper.git"]]);
   assert.deepEqual(web.state.status, connected);
@@ -57,7 +55,7 @@ const nameVersion = async (message) => { named.push(message); };
 // A connection that is refused says why, and nothing is left busy.
 {
   const { api } = routes({ connectRepository: refused(409, { reason: "linked" }, "this repository is linked to another LibrePaper project") });
-  const web = createWebConnection({ api, project, nameVersion });
+  const web = createWebConnection({ api, project });
   await web.connect("https://github.com/you/paper.git");
   assert.equal(web.state.problem, "this repository is linked to another LibrePaper project");
   assert.equal(web.state.busy, "");
@@ -66,18 +64,18 @@ const nameVersion = async (message) => { named.push(message); };
 // A pull that writes files says how many came in.
 {
   const { api } = routes({ pullConnection: { status: connected, pushed: { files: 3 } } });
-  const web = createWebConnection({ api, project, nameVersion });
+  const web = createWebConnection({ api, project });
   await web.pull();
-  assert.equal(web.state.result, "Pulled 3 files into the project.");
+  assert.equal(web.state.result, "Imported from repository branch main: 3 files into the project.");
   assert.equal(web.state.refusal, null);
 }
 
 // A pull with nothing new says so.
 {
   const { api } = routes({ pullConnection: { status: connected, pushed: { nothing: true } } });
-  const web = createWebConnection({ api, project, nameVersion });
+  const web = createWebConnection({ api, project });
   await web.pull();
-  assert.equal(web.state.result, "Nothing new in the repository.");
+  assert.equal(web.state.result, "Imported from repository branch main: nothing new.");
 }
 
 // A pull that stops on conflicts shows the merge, and resolving each file ends it.
@@ -87,7 +85,7 @@ const nameVersion = async (message) => { named.push(message); };
     resolveConnection: (_project, path) => (path === "a.tex" ? mergingAfterOne : { ...connected, merging: null }),
   });
   const mergingAfterOne = { ...connected, merging: { side: "repository", conflicts: ["b.tex"] } };
-  const web = createWebConnection({ api, project, nameVersion });
+  const web = createWebConnection({ api, project });
   await web.pull();
   assert.deepEqual(web.state.status.merging.conflicts, ["a.tex", "b.tex"]);
   assert.equal(web.state.result, null);
@@ -96,55 +94,39 @@ const nameVersion = async (message) => { named.push(message); };
   assert.equal(web.state.result, null, "the merge is not done while a file is left");
   await web.resolve("b.tex", "repository");
   assert.equal(web.state.status.merging, null);
-  assert.equal(web.state.result, "The merge is done. Pull or Push again.");
+  assert.equal(web.state.result, "The merge is done. Get repository changes or send project changes again.");
   assert.deepEqual(calls.slice(1), [["resolveConnection", project, "a.tex", "project"], ["resolveConnection", project, "b.tex", "repository"]]);
 }
 
-// A push names the version before it sends anything, and says what it pushed.
+// A push flushes the editor's own edits first, then sends, and says what it sent.
 {
   const order = [];
   const { api } = routes({ pushConnection: { status: connected, pushed: "pushed" } });
   const web = createWebConnection({
     api: { ...api, pushConnection: async (...args) => { order.push("push"); return api.pushConnection(...args); } },
     project,
-    nameVersion: async (message) => { order.push(`name ${message}`); },
+    flush: async () => { order.push("flush"); },
   });
-  await web.push("Edits from LibrePaper");
-  assert.deepEqual(order, ["name Edits from LibrePaper", "push"]);
-  assert.equal(web.state.result, "Pushed to main.");
+  await web.push();
+  assert.deepEqual(order, ["flush", "push"]);
+  assert.equal(web.state.result, "Sent to repository branch main.");
 }
 
 // A push that finds nothing new says so.
 {
   const { api } = routes({ pushConnection: { status: connected, pushed: "up-to-date" } });
-  const web = createWebConnection({ api, project, nameVersion });
-  await web.push("m");
-  assert.equal(web.state.result, "The repository was already up to date.");
+  const web = createWebConnection({ api, project });
+  await web.push();
+  assert.equal(web.state.result, "Nothing new to send to repository branch main.");
 }
 
-// A pull refused over unnamed edits names them and pulls once more, which brings the
-// conflict into the merge.
+// A pull refused over the project's changed files keeps the paths, asks for no second
+// pull, and says so.
 {
-  const names = [];
-  let pulls = 0;
-  const { api } = routes({
-    pullConnection: () => { pulls += 1; return pulls === 1 ? refused(409, { reason: "changed", paths: ["intro.tex"] }) : { stopped: "conflicts", status: merging }; },
-  });
-  const web = createWebConnection({ api, project, nameVersion: async (message) => { names.push(message); } });
-  await web.pull("Edits before the pull");
-  assert.deepEqual(names, ["Edits before the pull"]);
-  assert.equal(pulls, 2);
-  assert.deepEqual(web.state.status, merging);
-  assert.equal(web.state.refusal, null);
-}
-
-// A pull still refused after naming keeps the paths and says so.
-{
-  const names = [];
-  const { api } = routes({ pullConnection: refused(409, { reason: "changed", paths: ["intro.tex"] }) });
-  const web = createWebConnection({ api, project, nameVersion: async (message) => { names.push(message); } });
-  await web.pull("m");
-  assert.deepEqual(names, ["m"]);
+  const { api, calls } = routes({ pullConnection: refused(409, { reason: "changed", paths: ["intro.tex"] }) });
+  const web = createWebConnection({ api, project });
+  await web.pull();
+  assert.equal(calls.filter(([name]) => name === "pullConnection").length, 1);
   assert.deepEqual(web.state.refusal, { reason: "changed", paths: ["intro.tex"] });
   assert.equal(web.state.problem, "");
   assert.equal(web.state.busy, "");
@@ -153,17 +135,17 @@ const nameVersion = async (message) => { named.push(message); };
 // A suggestion stops whichever action asked, and says which.
 {
   const { api } = routes({ pushConnection: refused(409, { reason: "suggestion", path: "intro.tex" }) });
-  const web = createWebConnection({ api, project, nameVersion });
-  await web.push("m");
+  const web = createWebConnection({ api, project });
+  await web.push();
   assert.deepEqual(web.state.refusal, { reason: "suggestion", path: "intro.tex", action: "push" });
 }
 
 // A push that the repository moved ahead of says to pull first.
 {
   const { api } = routes({ pushConnection: refused(409, { reason: "behind" }) });
-  const web = createWebConnection({ api, project, nameVersion });
-  await web.push("m");
-  assert.match(web.state.problem, /Pull first/);
+  const web = createWebConnection({ api, project });
+  await web.push();
+  assert.match(web.state.problem, /Get repository changes first/);
 }
 
 // A git failure to sign in fills the sign-in help, and Try again repeats the pull.
@@ -177,21 +159,21 @@ const nameVersion = async (message) => { named.push(message); };
       return { status: connected, pushed: { files: 1 } };
     },
   });
-  const web = createWebConnection({ api, project, nameVersion });
+  const web = createWebConnection({ api, project });
   await web.refresh();
   await web.pull();
   assert.deepEqual(web.state.signInHelp, { remote: "https://github.com/you/paper.git", detail: "Authentication failed" });
   assert.equal(web.state.problem, "");
   await web.retry();
   assert.equal(web.state.signInHelp, null);
-  assert.equal(web.state.result, "Pulled 1 file into the project.");
+  assert.equal(web.state.result, "Imported from repository branch main: 1 file into the project.");
   web.dismiss();
 }
 
 // A 401 means the sign-in is gone, so the status says so.
 {
   const { api } = routes({ connectionStatus: connected, pullConnection: refused(401, { error: "sign in" }, "sign in") });
-  const web = createWebConnection({ api, project, nameVersion });
+  const web = createWebConnection({ api, project });
   await web.refresh();
   await web.pull();
   assert.equal(web.state.status.signed_in, false);
@@ -205,7 +187,7 @@ const nameVersion = async (message) => { named.push(message); };
     loginConnection: { authorization_id: "auth-1", user_code: "ABCD-EFGH" },
     loginConnectionComplete: { connected: false, signed_in: true },
   });
-  const web = createWebConnection({ api, project, nameVersion, signedIn: () => true, approve: async (code) => { approved.push(code); }, wait: noWait });
+  const web = createWebConnection({ api, project, signedIn: () => true, approve: async (code) => { approved.push(code); }, wait: noWait });
   await web.login();
   assert.deepEqual(approved, ["ABCD-EFGH"]);
   assert.deepEqual(calls, [["loginConnection", project], ["loginConnectionComplete", project, "auth-1"]]);
@@ -219,7 +201,7 @@ const nameVersion = async (message) => { named.push(message); };
     loginConnection: { authorization_id: "auth-1", user_code: "ABCD-EFGH" },
     loginConnectionComplete: () => { tries += 1; if (tries < 3) throw pending(); return { connected: false, signed_in: true }; },
   });
-  const web = createWebConnection({ api, project, nameVersion, approve: async () => {}, wait: noWait });
+  const web = createWebConnection({ api, project, approve: async () => {}, wait: noWait });
   await web.login();
   assert.equal(tries, 3);
   assert.equal(web.state.problem, "");
@@ -233,7 +215,7 @@ const nameVersion = async (message) => { named.push(message); };
     loginConnection: { authorization_id: "auth-1", user_code: "ABCD-EFGH" },
     loginConnectionComplete: () => { polls += 1; if (polls < 2) throw pending(); return { connected: false, signed_in: true }; },
   });
-  const web = createWebConnection({ api, project, nameVersion, signedIn: () => false, open: (url) => opened.push(url), origin: "https://app.example", wait: noWait });
+  const web = createWebConnection({ api, project, signedIn: () => false, open: (url) => opened.push(url), origin: "https://app.example", wait: noWait });
   await web.login();
   assert.deepEqual(opened, ["https://app.example/auth/device?code=ABCD-EFGH"]);
   assert.equal(polls, 2);
@@ -243,7 +225,7 @@ const nameVersion = async (message) => { named.push(message); };
 // Disconnecting forgets the copy and answers the status.
 {
   const { api, calls } = routes({ disconnectConnection: { connected: false, signed_in: true } });
-  const web = createWebConnection({ api, project, nameVersion });
+  const web = createWebConnection({ api, project });
   await web.disconnect();
   assert.deepEqual(calls, [["disconnectConnection", project]]);
   assert.deepEqual(web.state.status, { connected: false, signed_in: true });
@@ -258,7 +240,7 @@ const nameVersion = async (message) => { named.push(message); };
     connectionStatus: () => { reads += 1; return new Promise((resolve) => { land = () => resolve(connected); }); },
     disconnectConnection: { connected: false, signed_in: true },
   });
-  const web = createWebConnection({ api, project, nameVersion });
+  const web = createWebConnection({ api, project });
   const reading = web.refresh();
   await web.disconnect();
   land();
@@ -271,7 +253,7 @@ const nameVersion = async (message) => { named.push(message); };
 {
   let finish;
   const { api } = routes({ connectionStatus: () => new Promise((resolve) => { finish = resolve; }) });
-  const web = createWebConnection({ api, project, nameVersion });
+  const web = createWebConnection({ api, project });
   const reading = web.refresh();
   web.dispose();
   finish(connected);
