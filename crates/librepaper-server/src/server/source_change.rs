@@ -197,34 +197,17 @@ impl Server {
 /// The reply a refused change gets. A changed file names every path that
 /// moved, so the caller can pull once and plan again.
 fn change_refusal(error: AgentError) -> Reply {
-    match error {
-        AgentError::Changed(paths) => write_json(
-            409,
-            &json!({
-                "error": "files changed since the change was planned",
-                "reason": "changed",
-                "paths": paths,
-            }),
-        ),
-        AgentError::Suggestion { path, change } => write_json(
-            409,
-            &json!({
-                "error": "a pending suggestion is in the way",
-                "reason": "suggestion",
-                "path": path,
-                "change": change,
-            }),
-        ),
-        AgentError::Invalid(why) => write_json(400, &json!({"error": why})),
-        AgentError::Conflict(why) => write_json(409, &json!({"error": why, "reason": "conflict"})),
-        AgentError::Storage(why) => {
-            tracing::warn!("source change failed in storage: {why}");
-            write_json(
-                503,
-                &json!({"error": "could not apply the change", "retryable": true}),
-            )
-        }
+    if let AgentError::Storage(why) = &error {
+        tracing::warn!("source change failed in storage: {why}");
     }
+    let fields = match &error {
+        AgentError::Changed(paths) => vec![("paths", json!(paths))],
+        AgentError::Suggestion { path, change } => {
+            vec![("path", json!(path)), ("change", json!(change))]
+        }
+        _ => Vec::new(),
+    };
+    refusal::http_with(&Refusal::from(&error), &fields)
 }
 
 #[cfg(test)]

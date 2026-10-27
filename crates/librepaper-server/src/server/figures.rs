@@ -109,7 +109,7 @@ impl Server {
                     .catalog
                     .cancel_upload_admission(upload_admission)
                     .await;
-                return plain(error.status(), &error.client_message());
+                return refusal::http(&Refusal::from(&error));
             }
         };
         let Ok(mutation_actor) = who.authority(librepaper_base::role::Ceiling {
@@ -187,8 +187,8 @@ impl Server {
                 Ok(true) => {}
                 Ok(false) => return plain(404, "not found"),
                 Err(error) => {
-                    let refusal = librepaper_room::room::WriteError::from(error);
-                    return plain(refusal.status(), &refusal.client_message());
+                    let error = librepaper_room::room::WriteError::from(error);
+                    return refusal::http(&Refusal::from(&error));
                 }
             }
         }
