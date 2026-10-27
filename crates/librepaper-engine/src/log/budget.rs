@@ -14,10 +14,11 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use super::pool::{Pool, Wait};
+
 use futures_util::future::BoxFuture;
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
-use tokio::sync::Notify;
 
 pub use librepaper_base::config::budget::{estimate, BUILD_TRANSIENT_EXPANSION, DEFAULT_EXPANSION};
 
@@ -43,12 +44,10 @@ pub trait Evict: Send + Sync {
 
 /// The process-wide budget.
 pub struct Budget {
-    limit: u64,
-    used: AtomicU64,
-    expansion: u64,
-    /// Woken whenever a reservation is released, so a waiter retries at once
+    /// The bytes, and the waiters for them. A release wakes a waiter at once
     /// rather than on a timer.
-    released: Notify,
+    pool: Pool,
+    expansion: u64,
     /// The registry, weakly, so the budget it owns does not keep it alive.
     /// Set once, just after both exist.
     evictor: OnceLock<Weak<dyn Evict>>,
@@ -81,10 +80,8 @@ pub struct Budget {
 impl Budget {
     pub fn new(limit_bytes: u64, expansion: u64) -> Arc<Self> {
         Arc::new(Self {
-            limit: limit_bytes.max(1),
-            used: AtomicU64::new(0),
+            pool: Pool::new(limit_bytes.max(1)),
             expansion: expansion.max(1),
-            released: Notify::new(),
             evictor: OnceLock::new(),
             evicted: AtomicU64::new(0),
             refused: AtomicU64::new(0),
@@ -105,11 +102,11 @@ impl Budget {
     }
 
     pub fn limit(&self) -> u64 {
-        self.limit
+        self.pool.limit()
     }
 
     pub fn used(&self) -> u64 {
-        self.used.load(Ordering::Acquire)
+        self.pool.used()
     }
 
     pub fn evicted(&self) -> u64 {
@@ -155,7 +152,7 @@ impl Budget {
     /// demand: nothing here is sampled or aggregated on a timer.
     pub fn snapshot(&self) -> serde_json::Value {
         serde_json::json!({
-            "limit_bytes": self.limit,
+            "limit_bytes": self.limit(),
             "reserved_bytes": self.used(),
             "expansion": self.expansion,
             "evicted_caches": self.evicted(),
@@ -175,27 +172,10 @@ impl Budget {
     /// have its whole estimate must not start, because it cannot be stopped
     /// half way.
     pub fn try_reserve(self: &Arc<Self>, bytes: u64) -> Option<Reservation> {
-        let mut current = self.used.load(Ordering::Acquire);
-        loop {
-            let wanted = current.saturating_add(bytes);
-            if wanted > self.limit {
-                return None;
-            }
-            match self.used.compare_exchange_weak(
-                current,
-                wanted,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    return Some(Reservation {
-                        budget: self.clone(),
-                        bytes,
-                    })
-                }
-                Err(seen) => current = seen,
-            }
-        }
+        self.pool.try_take(bytes).then(|| Reservation {
+            budget: self.clone(),
+            bytes,
+        })
     }
 
     /// Takes `bytes` or refuses at once, for a caller that cannot await.
@@ -213,7 +193,7 @@ impl Budget {
         bytes: u64,
         patience: Duration,
     ) -> Result<Reservation, Busy> {
-        if bytes > self.limit {
+        if bytes > self.limit() {
             return Err(self.refuse());
         }
         let deadline = tokio::time::Instant::now() + patience;
@@ -226,19 +206,12 @@ impl Budget {
                 evictor.evict(bytes).await;
             }
         }
-        loop {
-            if let Some(reservation) = self.try_reserve(bytes) {
-                return Ok(reservation);
-            }
-            let waiting = self.released.notified();
-            // Re-check after arming the notification, so a release between
-            // the failed attempt above and the wait below is not missed.
-            if let Some(reservation) = self.try_reserve(bytes) {
-                return Ok(reservation);
-            }
-            if tokio::time::timeout_at(deadline, waiting).await.is_err() {
-                return Err(self.refuse());
-            }
+        match self.pool.take(bytes, Wait::Until(deadline)).await {
+            Ok(()) => Ok(Reservation {
+                budget: self.clone(),
+                bytes,
+            }),
+            Err(_) => Err(self.refuse()),
         }
     }
 }
@@ -274,8 +247,7 @@ impl Reservation {
 
 impl Drop for Reservation {
     fn drop(&mut self) {
-        self.budget.used.fetch_sub(self.bytes, Ordering::AcqRel);
-        self.budget.released.notify_waiters();
+        self.budget.pool.give_back(self.bytes);
     }
 }
 

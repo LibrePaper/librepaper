@@ -26,6 +26,7 @@ pub mod budget;
 pub mod frame;
 pub mod ledger;
 pub mod pending;
+pub mod pool;
 pub mod recorded;
 pub mod sequencer;
 #[cfg(test)]
