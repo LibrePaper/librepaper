@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use librepaper_base::digest::Digest;
+use librepaper_base::lines::lines;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -264,9 +265,9 @@ fn scan_headings(source: &str, item_limit: usize) -> (Vec<HeadingIndex>, bool) {
     }
     let mut headings = Vec::new();
     let mut fence: Option<&str> = None;
-    let mut byte = 0;
-    for (line_number, line_with_end) in source.split_inclusive('\n').enumerate() {
-        let line = line_with_end.strip_suffix('\n').unwrap_or(line_with_end);
+    for text_line in lines(source) {
+        let line = text_line.body;
+        let byte = text_line.start;
         let trimmed = line.trim_start_matches([' ', '\t']);
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             let marker = &trimmed[..3];
@@ -282,7 +283,7 @@ fn scan_headings(source: &str, item_limit: usize) -> (Vec<HeadingIndex>, bool) {
                 headings.push(HeadingIndex {
                     start: byte,
                     end: byte + line.len(),
-                    line: line_number + 1,
+                    line: text_line.number,
                     level,
                     title_start: byte + title_start,
                     title: title.to_string(),
@@ -292,7 +293,6 @@ fn scan_headings(source: &str, item_limit: usize) -> (Vec<HeadingIndex>, bool) {
                 }
             }
         }
-        byte += line_with_end.len();
     }
     (headings, false)
 }
@@ -754,16 +754,22 @@ fn line_number_range(
     }
     let mut start = None;
     let mut end = source.len();
-    let mut byte = 0;
-    for (current, line_with_end) in (1u64..).zip(source.split_inclusive('\n')) {
+    for text_line in lines(source) {
+        let current = text_line.number as u64;
         if current == line {
-            start = Some(byte);
+            start = Some(text_line.start);
         }
         if current == end_line {
-            end = byte + line_with_end.len();
+            // The range includes the line break that ends the line.
+            let rest = &source[text_line.end..];
+            let break_len = if rest.starts_with("\r\n") {
+                2
+            } else {
+                usize::from(rest.starts_with('\n'))
+            };
+            end = text_line.end + break_len;
             break;
         }
-        byte += line_with_end.len();
     }
     let Some(start) = start else {
         if line == 1 && source.is_empty() {
