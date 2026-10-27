@@ -8,6 +8,7 @@ pub mod canonical_json;
 pub mod config;
 pub mod digest;
 pub mod http;
+pub mod ids;
 pub mod paths;
 pub mod private_files;
 pub mod role;

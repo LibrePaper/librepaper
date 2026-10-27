@@ -13,16 +13,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use base64::Engine;
 use clap::Args;
 
 use crate::cli::Deployment;
+use librepaper_base::auth::AGENT_TOKEN_PREFIX;
+use librepaper_base::ids::AgentToken;
 use librepaper_companion::automation::peer::{AutomationPeer, DocumentLink};
 use librepaper_companion::local::connections::{AGENT_TOKEN_VARIABLE, GRANT_FILE_VARIABLE};
-
-/// The prefix every agent token starts with. A token that lacks it is refused
-/// before any request is sent.
-const AGENT_TOKEN_PREFIX: &str = "lpt_";
 
 /// Serve the document MCP tools over stdio.
 ///
@@ -100,35 +97,15 @@ pub(crate) async fn run_mcp(args: McpArgs) -> Result<(), String> {
     librepaper_companion::automation::mcp::stdio(&peer).await
 }
 
-/// Split an agent token, `lpt_<origin>.<slug>.<key>`, into the app origin and
-/// the project slug. The origin is base64url without padding and holds no dot,
-/// so the first dot ends it; the key is hex and holds no dot, so the last dot
-/// starts it. The slug between them may hold dots. The key is not returned.
+/// Split an agent token into the app origin and the project slug. The key is
+/// not returned.
 fn parse_agent_token(token: &str) -> Result<(String, String), String> {
-    let invalid = || {
+    let parsed = token.parse::<AgentToken>().map_err(|_| {
         format!(
             "{AGENT_TOKEN_VARIABLE} does not hold an agent token; agent tokens look like {AGENT_TOKEN_PREFIX}<server>.<project>.<key>, so create a new one in the project's Sharing panel"
         )
-    };
-    let rest = token.strip_prefix(AGENT_TOKEN_PREFIX).ok_or_else(invalid)?;
-    let (origin, rest) = rest.split_once('.').ok_or_else(invalid)?;
-    let (slug, key) = rest.rsplit_once('.').ok_or_else(invalid)?;
-    if origin.is_empty() || slug.is_empty() || key.is_empty() {
-        return Err(invalid());
-    }
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(origin)
-        .ok()
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .ok_or_else(invalid)?;
-    let url = url::Url::parse(&decoded).map_err(|_| invalid())?;
-    let is_origin = matches!(url.scheme(), "http" | "https")
-        && url.host_str().is_some()
-        && url.origin().ascii_serialization() == decoded;
-    if !is_origin {
-        return Err(invalid());
-    }
-    Ok((decoded, slug.to_string()))
+    })?;
+    Ok((parsed.origin, parsed.slug.to_string()))
 }
 
 /// Read the runner's scoped grant. The runner publishes the file by rename,
@@ -168,6 +145,7 @@ fn follow_grant(path: PathBuf, source: Arc<RwLock<String>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
 
     fn token(origin: &str, slug: &str, key: &str) -> String {
         let origin = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(origin);
@@ -180,14 +158,6 @@ mod tests {
             parse_agent_token(&token("http://localhost:8081", "paper", "abcd")).unwrap();
         assert_eq!(origin, "http://localhost:8081");
         assert_eq!(slug, "paper");
-    }
-
-    #[test]
-    fn a_slug_may_hold_a_dot() {
-        let (origin, slug) =
-            parse_agent_token(&token("https://app.example", "a.b", "abcd")).unwrap();
-        assert_eq!(origin, "https://app.example");
-        assert_eq!(slug, "a.b");
     }
 
     #[test]

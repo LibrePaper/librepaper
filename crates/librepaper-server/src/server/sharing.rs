@@ -141,22 +141,15 @@ pub(super) fn provider_of(id: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The digest a link key is known by. Empty in, empty out: no link at all is
-/// not the same question as a link that does not match.
-pub fn hash_link_key(key: &str) -> String {
-    let key = key.trim();
-    if key.is_empty() {
-        return String::new();
+/// The bearer string for an agent token on the deployment at `origin`.
+fn agent_token_text(origin: &str, slug: &str, key: &LinkKey) -> Result<String, String> {
+    let slug = slug.parse().map_err(|_| "not a project slug".to_string())?;
+    Ok(ids::AgentToken {
+        origin: origin.to_string(),
+        slug,
+        key: key.expose().to_string(),
     }
-    hex::encode(Sha256::digest(key.as_bytes()))
-}
-
-/// A new link key: 256 bits from the same source every other secret here comes
-/// from, well past the 128 the spec asks for. The document keeps its digest,
-/// which is what admits a caller, and a sealed copy of the key itself, which
-/// is what lets its owner be handed the URL again.
-pub fn mint_link_key() -> String {
-    hex::encode(librepaper_base::util::random_bytes(32))
+    .to_string())
 }
 
 /// The key that seals a link key, from the deployment's session key. A purpose
@@ -213,11 +206,11 @@ impl Server {
         slug: &str,
         caller: &Caller,
     ) -> Result<String, ModifyError> {
-        let key = mint_link_key();
+        let key = LinkKey::mint();
         let link = LinkGrant {
-            hash: hash_link_key(&key),
+            hash: key.digest().to_hex(),
             role: Role::Reader.as_str().to_string(),
-            sealed: seal_link_key(&self.key, &key),
+            sealed: seal_link_key(&self.key, key.expose()),
             since: librepaper_base::util::timestamp(),
             until: librepaper_base::util::format_unix(
                 librepaper_base::util::now_unix() + LINK_DEFAULT_SECONDS,
@@ -233,7 +226,7 @@ impl Server {
                 Ok(())
             })
             .await?;
-        Ok(format!("/docs/{slug}/{key}"))
+        Ok(format!("/docs/{slug}/{}", key.expose()))
     }
 
     /// Who a document is shared with, and -- for its owner -- the changes to
@@ -451,9 +444,9 @@ impl Server {
             return Err("a budget is a non-negative number of comments per hour".to_string());
         }
         let name = clean(&wanted.name, MAX_LINK_LABEL).trim().to_string();
-        let key = mint_link_key();
+        let key = LinkKey::mint();
         let mut grant = LinkGrant {
-            hash: hash_link_key(&key),
+            hash: key.digest().to_hex(),
             since: librepaper_base::util::timestamp(),
             label: name.clone(),
             budget: wanted.budget,
@@ -467,8 +460,8 @@ impl Server {
                     .map_err(|_| "a link is 'reader', 'commenter' or 'editor'")?;
                 grant.role = role.as_str().to_string();
                 grant.until = link_expiry(&wanted.until)?;
-                grant.sealed = seal_link_key(&self.key, &key);
-                json!({"id": grant.id(), "kind": "link", "url": format!("/docs/{slug}/{key}")})
+                grant.sealed = seal_link_key(&self.key, key.expose());
+                json!({"id": grant.id(), "kind": "link", "url": format!("/docs/{slug}/{}", key.expose())})
             }
             "token" => {
                 let role = wanted
@@ -482,7 +475,7 @@ impl Server {
                 grant.until = token_expiry(&wanted.until)?;
                 grant.kind = LinkKind::Agent;
                 grant.owner_generation = owner.id.session_generation.clone();
-                json!({"id": grant.id(), "kind": "token", "token": agent_token_string(origin, slug, &key)})
+                json!({"id": grant.id(), "kind": "token", "token": agent_token_text(origin, slug, &key)?})
             }
             _ => return Err("a share is a 'link' or a 'token'".to_string()),
         };
@@ -500,9 +493,9 @@ impl Server {
         wanted: &ReplaceRequest,
         owner: &Viewer,
     ) -> Result<(LinkGrant, Value), String> {
-        let key = mint_link_key();
+        let key = LinkKey::mint();
         let mut grant = existing.clone();
-        grant.hash = hash_link_key(&key);
+        grant.hash = key.digest().to_hex();
         grant.since = librepaper_base::util::timestamp();
         if let Some(until) = wanted
             .until
@@ -516,13 +509,13 @@ impl Server {
         }
         let shown = match existing.kind {
             LinkKind::Link => {
-                grant.sealed = seal_link_key(&self.key, &key);
-                json!({"id": grant.id(), "kind": "link", "url": format!("/docs/{slug}/{key}")})
+                grant.sealed = seal_link_key(&self.key, key.expose());
+                json!({"id": grant.id(), "kind": "link", "url": format!("/docs/{slug}/{}", key.expose())})
             }
             LinkKind::Agent => {
                 grant.sealed = Vec::new();
                 grant.owner_generation = owner.id.session_generation.clone();
-                json!({"id": grant.id(), "kind": "token", "token": agent_token_string(origin, slug, &key)})
+                json!({"id": grant.id(), "kind": "token", "token": agent_token_text(origin, slug, &key)?})
             }
         };
         Ok((grant, shown))
@@ -660,17 +653,17 @@ mod link_key_tests {
     #[test]
     fn a_sealed_key_comes_back_only_to_the_key_that_sealed_it() {
         let session = b"a deployment's session key".to_vec();
-        let key = mint_link_key();
-        let sealed = seal_link_key(&session, &key);
+        let key = LinkKey::mint();
+        let sealed = seal_link_key(&session, key.expose());
         assert_ne!(
             sealed,
-            key.as_bytes(),
+            key.expose().as_bytes(),
             "the key is not written down as it is"
         );
         assert!(!sealed
-            .windows(key.len())
-            .any(|window| window == key.as_bytes()));
-        assert_eq!(open_link_key(&session, &sealed), key);
+            .windows(key.expose().len())
+            .any(|window| window == key.expose().as_bytes()));
+        assert_eq!(open_link_key(&session, &sealed), key.expose());
         assert_eq!(
             open_link_key(b"another deployment", &sealed),
             "",
@@ -690,8 +683,11 @@ mod link_key_tests {
     #[test]
     fn sealing_the_same_key_twice_writes_down_two_different_things() {
         let session = b"a deployment's session key".to_vec();
-        let key = mint_link_key();
-        assert_ne!(seal_link_key(&session, &key), seal_link_key(&session, &key));
+        let key = LinkKey::mint();
+        assert_ne!(
+            seal_link_key(&session, key.expose()),
+            seal_link_key(&session, key.expose())
+        );
     }
 }
 

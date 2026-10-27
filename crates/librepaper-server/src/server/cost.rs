@@ -586,8 +586,10 @@ enum TokenRoute {
 /// The kind of route an `lpt_` token may be presented on for this request,
 /// with the slug the token names, or nothing for a route it may not use.
 fn agent_token_route(token: &str, path: &str, method: &Method) -> Option<TokenRoute> {
-    let (slug, _) = parse_agent_token(token)?;
-    let rest = path.strip_prefix("/api/documents/")?.strip_prefix(slug)?;
+    let parsed = token.parse::<librepaper_base::ids::AgentToken>().ok()?;
+    let rest = path
+        .strip_prefix("/api/documents/")?
+        .strip_prefix(parsed.slug.as_str())?;
     let one_segment = |name: &str| !name.is_empty() && !name.contains('/');
     match (method, rest) {
         (&Method::GET, "/tools") => Some(TokenRoute::Tools),
@@ -784,7 +786,7 @@ mod blob_response_tests {
 #[cfg(test)]
 mod agent_scope_tests {
     use super::{agent_document_slug, agent_token_route, TokenRoute};
-    use crate::server::agent_token_string;
+    use librepaper_base::ids::AgentToken;
     use axum::http::Method;
 
     #[test]
@@ -804,7 +806,12 @@ mod agent_scope_tests {
 
     #[test]
     fn a_token_reaches_its_tools_and_the_sync_routes_by_role() {
-        let token = agent_token_string("https://paper.example", "paper", "key");
+        let token = AgentToken {
+            origin: "https://paper.example".into(),
+            slug: "paper".parse().unwrap(),
+            key: "key".into(),
+        }
+        .to_string();
         let route = |method: Method, path: &str| agent_token_route(&token, path, &method);
         let tools = Some(TokenRoute::Tools);
         let sync = Some(TokenRoute::Sync);
@@ -837,7 +844,12 @@ mod agent_scope_tests {
 
     #[test]
     fn a_token_reaches_nothing_else_and_nothing_of_another_document() {
-        let token = agent_token_string("https://paper.example", "paper", "key");
+        let token = AgentToken {
+            origin: "https://paper.example".into(),
+            slug: "paper".parse().unwrap(),
+            key: "key".into(),
+        }
+        .to_string();
         let route = |method: Method, path: &str| agent_token_route(&token, path, &method);
         for (method, path) in [
             (Method::GET, "/api/documents/other/history"),

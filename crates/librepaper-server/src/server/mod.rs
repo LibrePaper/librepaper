@@ -15,7 +15,6 @@ use axum::extract::{DefaultBodyLimit, FromRequest, FromRequestParts, Multipart};
 use axum::http::{header, HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::Router;
-use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::Limited;
 use serde::Deserialize;
@@ -35,6 +34,7 @@ use librepaper_base::auth::{
     STATE_COOKIE, VISITOR_COOKIE,
 };
 use librepaper_base::config::Configuration;
+use librepaper_base::ids::{self, LinkKey};
 use librepaper_base::role::{Capabilities, Ceiling, Role};
 use librepaper_base::shell::{renderers, ShellFile};
 use librepaper_base::util::{clean, token, Encoding};
@@ -426,35 +426,9 @@ fn automation_role(
     }
 }
 
-/// The slug and key inside an `lpt_<origin>.<slug>.<key>` token, or nothing
-/// for a string that is not shaped like one. The origin is base64url without
-/// padding and must decode to an http or https origin. It is checked for
-/// shape and never trusted: only the slug and key authorize.
-pub(super) fn parse_agent_token(token: &str) -> Option<(&str, &str)> {
-    let rest = token.strip_prefix(AGENT_TOKEN_PREFIX)?;
-    let (origin, rest) = rest.split_once('.')?;
-    let (slug, key) = rest.rsplit_once('.')?;
-    if origin.is_empty() || slug.is_empty() || key.is_empty() {
-        return None;
-    }
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(origin)
-        .ok()?;
-    let decoded = std::str::from_utf8(&decoded).ok()?;
-    (decoded.starts_with("http://") || decoded.starts_with("https://")).then_some((slug, key))
-}
-
-/// The bearer string for an agent token: the app origin a page on this
-/// deployment sees, the document slug and the link key.
-pub(super) fn agent_token_string(origin: &str, slug: &str, key: &str) -> String {
-    let origin = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(origin);
-    format!("{AGENT_TOKEN_PREFIX}{origin}.{slug}.{key}")
-}
-
 /// An agent token's id: the first 16 hex characters of its key's digest.
-pub(super) fn agent_token_id(key: &str) -> String {
-    let hash = hash_link_key(key);
-    hash[..hash.len().min(16)].to_string()
+pub(super) fn agent_token_id(digest: &ids::LinkDigest) -> String {
+    digest.to_hex()[..16].to_string()
 }
 
 /// The `lpt_` bearer a request carries, if it carries one.
@@ -1254,18 +1228,18 @@ impl Server {
     /// alone, in `viewer_as`, and which routes accept it is decided at the
     /// admission boundary.
     async fn agent_token_identity(&self, token: &str) -> Result<Identity, AuthenticationFailure> {
-        let Some((slug, key)) = parse_agent_token(token) else {
+        let Ok(parsed) = token.parse::<ids::AgentToken>() else {
             return Err(AuthenticationFailure::Invalid);
         };
         let entry = self
             .store
-            .get_result(slug)
+            .get_result(parsed.slug.as_str())
             .await
             .map_err(|_| AuthenticationFailure::Unavailable)?
             .ok_or(AuthenticationFailure::Invalid)?;
         let now = librepaper_base::util::now_unix();
         let row = entry
-            .live_agent(&hash_link_key(key), now)
+            .live_agent(&parsed.digest().to_hex(), now)
             .ok_or(AuthenticationFailure::Invalid)?;
         let account = match account_row(&self.store.catalog, &entry.publisher_id).await {
             Ok(Some(account)) => account,
@@ -1291,12 +1265,12 @@ impl Server {
     /// row is read: the routes still hold the token to the deployment's
     /// switches, and an expired or revoked token has no row.
     async fn agent_token_edits(&self, token: &str) -> Result<bool, AuthenticationFailure> {
-        let Some((slug, key)) = parse_agent_token(token) else {
+        let Ok(parsed) = token.parse::<ids::AgentToken>() else {
             return Ok(false);
         };
         let Some(entry) = self
             .store
-            .get_result(slug)
+            .get_result(parsed.slug.as_str())
             .await
             .map_err(|_| AuthenticationFailure::Unavailable)?
         else {
@@ -1304,7 +1278,7 @@ impl Server {
         };
         let now = librepaper_base::util::now_unix();
         Ok(entry
-            .live_agent(&hash_link_key(key), now)
+            .live_agent(&parsed.digest().to_hex(), now)
             .is_some_and(|row| row.granted().at_least(Role::Editor)))
     }
 
@@ -1336,8 +1310,8 @@ impl Server {
         // A token's work is the token's, not the owner's whose account it
         // acts through.
         if let Some(token) = agent_token_bearer(headers) {
-            if let Some((_, key)) = parse_agent_token(&token) {
-                return format!("token:{}", agent_token_id(key));
+            if let Ok(parsed) = token.parse::<ids::AgentToken>() {
+                return format!("token:{}", agent_token_id(&parsed.digest()));
             }
         }
         // A link-only automation peer has no visitor cookie to key its
@@ -1445,7 +1419,9 @@ impl Server {
                     .unwrap_or_default();
             }
         }
-        hash_link_key(&key)
+        key.parse::<LinkKey>()
+            .map(|key| key.digest().to_hex())
+            .unwrap_or_default()
     }
 
     pub fn is_automation(headers: &HeaderMap) -> bool {
@@ -1577,9 +1553,11 @@ impl Server {
     /// failed authentication.
     fn token_viewer(&self, entry: &IndexEntry, id: Identity, token: &str) -> Viewer {
         let now = librepaper_base::util::now_unix();
-        let row = parse_agent_token(token)
-            .filter(|(slug, _)| *slug == entry.slug)
-            .and_then(|(_, key)| entry.live_agent(&hash_link_key(key), now))
+        let row = token
+            .parse::<ids::AgentToken>()
+            .ok()
+            .filter(|parsed| parsed.slug.as_str() == entry.slug)
+            .and_then(|parsed| entry.live_agent(&parsed.digest().to_hex(), now))
             .filter(|row| {
                 id.is_signed_in()
                     && entry.owned_by(&id.id)
@@ -2570,65 +2548,5 @@ mod automation_authority_tests {
             automation_role(&entry, "editor-hash", comment_only, now),
             Role::Commenter
         );
-    }
-}
-
-#[cfg(test)]
-mod agent_token_parse_tests {
-    use super::{agent_token_string, parse_agent_token};
-
-    const KEY: &str = "0123456789abcdef0123456789abcdef";
-
-    #[test]
-    fn a_minted_token_parses_back_to_its_slug_and_key() {
-        let token = agent_token_string("http://localhost:8081", "paper", KEY);
-        assert!(token.starts_with("lpt_"));
-        assert_eq!(parse_agent_token(&token), Some(("paper", KEY)));
-    }
-
-    #[test]
-    fn a_slug_may_contain_a_dot() {
-        let token = agent_token_string("https://paper.example", "a.b.c", KEY);
-        assert_eq!(parse_agent_token(&token), Some(("a.b.c", KEY)));
-    }
-
-    #[test]
-    fn missing_parts_are_refused() {
-        let origin = agent_token_string("https://paper.example", "x", "y");
-        let origin = origin
-            .strip_prefix("lpt_")
-            .and_then(|rest| rest.split_once('.'))
-            .map(|(origin, _)| origin.to_string())
-            .unwrap();
-        for token in [
-            "lpt_".to_string(),
-            format!("lpt_{origin}"),
-            format!("lpt_{origin}.{KEY}"),
-            format!("lpt_{origin}..{KEY}"),
-            format!("lpt_{origin}.paper."),
-            format!("lpt_.paper.{KEY}"),
-            format!("{origin}.paper.{KEY}"),
-        ] {
-            assert_eq!(parse_agent_token(&token), None, "{token}");
-        }
-    }
-
-    #[test]
-    fn a_bad_or_non_http_origin_is_refused() {
-        let ftp = agent_token_string("ftp://paper.example", "paper", KEY);
-        let bare = agent_token_string("paper.example", "paper", KEY);
-        for token in [
-            format!("lpt_!!!.paper.{KEY}"),
-            format!("lpt_a=.paper.{KEY}"),
-            ftp,
-            bare,
-        ] {
-            assert_eq!(parse_agent_token(&token), None, "{token}");
-        }
-    }
-
-    #[test]
-    fn the_old_two_part_format_is_refused() {
-        assert_eq!(parse_agent_token(&format!("lpt_paper.{KEY}")), None);
     }
 }

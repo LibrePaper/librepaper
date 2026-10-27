@@ -116,7 +116,7 @@ pub struct Guest {
 /// `label` is the owner's memo.
 /// `budget` is the number of comment actions this link may make in one clock
 /// hour; absent uses the deployment's ordinary numeric comment limit.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LinkGrant {
     pub hash: String,
     pub role: String,
@@ -142,6 +142,22 @@ pub struct LinkGrant {
     /// link.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub owner_generation: String,
+}
+
+impl std::fmt::Debug for LinkGrant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LinkGrant")
+            .field("hash", &self.hash)
+            .field("role", &self.role)
+            .field("sealed", &"[redacted]")
+            .field("label", &self.label)
+            .field("budget", &self.budget)
+            .field("since", &self.since)
+            .field("until", &self.until)
+            .field("kind", &self.kind)
+            .field("owner_generation", &self.owner_generation)
+            .finish()
+    }
 }
 
 /// What a share row admits.

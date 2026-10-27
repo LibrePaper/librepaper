@@ -11,10 +11,19 @@ use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
 use super::http_test_support::{deployment as http_deployment, owner_bearer, Deployment};
-use super::{agent_token_string, Server};
+use super::Server;
 use crate::server::origins::Origins;
 use librepaper_engine::storage::postgres::{PostgresCatalog, WriterLease};
 use librepaper_engine::storage::store::DocumentInput;
+
+fn agent_token_string(origin: &str, slug: &str, key: &str) -> String {
+    librepaper_base::ids::AgentToken {
+        origin: origin.into(),
+        slug: slug.parse().unwrap(),
+        key: key.into(),
+    }
+    .to_string()
+}
 
 const READER: &str = "https://paper.example";
 const DOCS: &str = "https://docs.paper.example";
@@ -409,7 +418,7 @@ async fn a_token_key_opens_no_browser_link() {
         .await
         .unwrap()
         .unwrap();
-    let hash = super::sharing::hash_link_key(key);
+    let hash = key.parse::<librepaper_base::ids::LinkKey>().unwrap().digest().to_hex();
     let now = librepaper_base::util::now_unix();
     assert!(entry.live_link(&hash, now).is_none());
     assert!(entry.link_role(&hash, now).is_none());
