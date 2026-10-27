@@ -154,9 +154,8 @@ impl ListingError {
 }
 
 async fn visible_documents(server: &str, token: &str) -> Result<Vec<Value>, ListingError> {
-    let mut target =
-        url::Url::parse(&format!("{server}/api/list"))
-            .map_err(|err| ListingError::without_status(err.to_string()))?;
+    let mut target = url::Url::parse(&format!("{server}/api/list"))
+        .map_err(|err| ListingError::without_status(err.to_string()))?;
     let mut documents = Vec::new();
     let mut seen_slugs = std::collections::HashSet::new();
     let mut cursors = std::collections::HashSet::new();

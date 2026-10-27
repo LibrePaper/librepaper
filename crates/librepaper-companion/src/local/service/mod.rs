@@ -1824,14 +1824,20 @@ mod conflict_reply_tests {
                 error: "on another branch".into(),
             }
             .reply(),
-            (409, json!({"reason": "branch", "error": "on another branch"})),
+            (
+                409,
+                json!({"reason": "branch", "error": "on another branch"})
+            ),
         );
         assert_eq!(
             ConflictReply::Pending {
                 error: "a push is pending".into(),
             }
             .reply(),
-            (409, json!({"reason": "pending", "error": "a push is pending"})),
+            (
+                409,
+                json!({"reason": "pending", "error": "a push is pending"})
+            ),
         );
     }
 }

@@ -524,9 +524,9 @@ fn pushed_refusal(outcome: &PushOutcome) -> Option<Failure> {
             }
             .reply(),
         ),
-        PushOutcome::Suggestion { path } => Some(
-            ConflictReply::Suggestion { path: path.clone() }.reply(),
-        ),
+        PushOutcome::Suggestion { path } => {
+            Some(ConflictReply::Suggestion { path: path.clone() }.reply())
+        }
         PushOutcome::Nothing | PushOutcome::Pushed { .. } => None,
     }
 }

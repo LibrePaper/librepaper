@@ -399,7 +399,9 @@ pub enum DuplicateOf {
 impl std::fmt::Display for DuplicateOf {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
-            Self::ProjectName => "A project with this name already exists. Choose a different name.",
+            Self::ProjectName => {
+                "A project with this name already exists. Choose a different name."
+            }
             Self::TagName => "A tag with that name already exists.",
         })
     }

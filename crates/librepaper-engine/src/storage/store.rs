@@ -21,8 +21,8 @@ use uuid::Uuid;
 use crate::log::{Command, CommandError, Evidence, Head, PreparedSource, Registry};
 use crate::storage::blob::BlobStore;
 use crate::storage::postgres::{
-    built_in_refusal, Authority, DuplicateOf, Error as CatalogError, QuotaScope, NewAsset, NewLabel,
-    PostgresCatalog as Catalog, TagRecord, FAVORITES_COLOUR, FAVORITES_NAME,
+    built_in_refusal, Authority, DuplicateOf, Error as CatalogError, NewAsset, NewLabel,
+    PostgresCatalog as Catalog, QuotaScope, TagRecord, FAVORITES_COLOUR, FAVORITES_NAME,
 };
 use librepaper_base::config::Configuration;
 use librepaper_base::paths::{admit, Kind};

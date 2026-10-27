@@ -190,7 +190,11 @@ async fn start_backup(options: &StorageOptions, dump: &Path) -> Result<StartedBa
     })
 }
 
-async fn create(options: StorageOptions, destination: &Path, id: String) -> Result<(), BackupError> {
+async fn create(
+    options: StorageOptions,
+    destination: &Path,
+    id: String,
+) -> Result<(), BackupError> {
     if destination.exists() {
         return Err(BackupError::Invalid(format!(
             "backup destination already exists: {}",
@@ -223,7 +227,9 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
         let length = blobs
             .get_to_writer(&reference.key, &mut sink)
             .await
-            .map_err(|e| BackupError::ObjectStore(format!("backup object {}: {e}", reference.key)))?;
+            .map_err(|e| {
+                BackupError::ObjectStore(format!("backup object {}: {e}", reference.key))
+            })?;
         let digest = sink.finish();
         if reference.bytes != 0 && reference.bytes != length as i64 {
             return Err(BackupError::Mismatch(format!(
@@ -312,8 +318,8 @@ async fn create_archive(
 ) -> Result<(), BackupError> {
     validate_archive_prefix(&prefix)?;
     let files = expand_includes(&includes)?;
-    let dump =
-        tempfile::NamedTempFile::new().map_err(|e| BackupError::Io(format!("could not create dump file: {e}")))?;
+    let dump = tempfile::NamedTempFile::new()
+        .map_err(|e| BackupError::Io(format!("could not create dump file: {e}")))?;
     let StartedBackup {
         started_at,
         migration_version,
@@ -329,10 +335,9 @@ async fn create_archive(
     // is read here to record its length and digest.
     for reference in &mut references {
         if reference.sha256.is_empty() || reference.bytes == 0 {
-            let bytes = blobs
-                .get(&reference.key)
-                .await
-                .map_err(|e| BackupError::ObjectStore(format!("backup object {}: {e}", reference.key)))?;
+            let bytes = blobs.get(&reference.key).await.map_err(|e| {
+                BackupError::ObjectStore(format!("backup object {}: {e}", reference.key))
+            })?;
             reference.bytes = bytes.len() as i64;
             reference.sha256 = librepaper_base::digest::Digest::of(&bytes).to_hex();
         }
@@ -345,7 +350,8 @@ async fn create_archive(
         &references,
         &missing,
     )?;
-    let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| BackupError::Manifest(e.to_string()))?;
+    let manifest_bytes =
+        serde_json::to_vec_pretty(&manifest).map_err(|e| BackupError::Manifest(e.to_string()))?;
     write_archive(
         out,
         &prefix,
@@ -390,7 +396,10 @@ async fn write_archive(
         manifest,
     )?;
     let dump_file = std::fs::File::open(dump).map_err(|e| BackupError::Io(e.to_string()))?;
-    let dump_length = dump_file.metadata().map_err(|e| BackupError::Io(e.to_string()))?.len();
+    let dump_length = dump_file
+        .metadata()
+        .map_err(|e| BackupError::Io(e.to_string()))?
+        .len();
     append_entry(
         &mut builder,
         format!("{prefix}/database.dump"),
@@ -399,10 +408,9 @@ async fn write_archive(
     )?;
     // One object is held in memory at a time.
     for reference in references {
-        let bytes = blobs
-            .get(&reference.key)
-            .await
-            .map_err(|e| BackupError::ObjectStore(format!("backup object {}: {e}", reference.key)))?;
+        let bytes = blobs.get(&reference.key).await.map_err(|e| {
+            BackupError::ObjectStore(format!("backup object {}: {e}", reference.key))
+        })?;
         if reference.bytes != bytes.len() as i64 {
             return Err(BackupError::Mismatch(format!(
                 "backup object length mismatch: {}",
@@ -423,19 +431,23 @@ async fn write_archive(
         )?;
     }
     if let Some(lock) = lock {
-        lock.release_backup()
-            .await
-            .map_err(BackupError::Storage)?;
+        lock.release_backup().await.map_err(BackupError::Storage)?;
     }
     for file in includes {
-        let name = file.strip_prefix("/")
+        let name = file
+            .strip_prefix("/")
             .map_err(|e| BackupError::Invalid(e.to_string()))?;
-        let input =
-            std::fs::File::open(file).map_err(|e| BackupError::Io(format!("include {}: {e}", file.display())))?;
-        let length = input.metadata().map_err(|e| BackupError::Io(e.to_string()))?.len();
+        let input = std::fs::File::open(file)
+            .map_err(|e| BackupError::Io(format!("include {}: {e}", file.display())))?;
+        let length = input
+            .metadata()
+            .map_err(|e| BackupError::Io(e.to_string()))?
+            .len();
         append_entry(&mut builder, name, length, input)?;
     }
-    let mut out = builder.into_inner().map_err(|e| BackupError::Io(e.to_string()))?;
+    let mut out = builder
+        .into_inner()
+        .map_err(|e| BackupError::Io(e.to_string()))?;
     std::io::Write::flush(&mut out).map_err(|e| BackupError::Io(e.to_string()))
 }
 
@@ -454,8 +466,12 @@ fn append_entry<W: std::io::Write>(
     header.set_uid(0);
     header.set_gid(0);
     header.set_mtime(0);
-    header.set_username("").map_err(|e| BackupError::Io(e.to_string()))?;
-    header.set_groupname("").map_err(|e| BackupError::Io(e.to_string()))?;
+    header
+        .set_username("")
+        .map_err(|e| BackupError::Io(e.to_string()))?;
+    header
+        .set_groupname("")
+        .map_err(|e| BackupError::Io(e.to_string()))?;
     builder
         .append_data(&mut header, path, data)
         .map_err(|e| BackupError::Io(e.to_string()))
@@ -582,9 +598,15 @@ pub async fn restore_cli(options: StorageOptions, backup: String, directory: Str
         librepaper_base::util::die(e)
     }
 }
-async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> Result<(), BackupError> {
-    let manifest_bytes = std::fs::read(backup.join("manifest.json")).map_err(|e| BackupError::Io(e.to_string()))?;
-    let manifest: Manifest = serde_json::from_slice(&manifest_bytes).map_err(|e| BackupError::Manifest(e.to_string()))?;
+async fn restore(
+    options: StorageOptions,
+    backup: &Path,
+    destination: &Path,
+) -> Result<(), BackupError> {
+    let manifest_bytes =
+        std::fs::read(backup.join("manifest.json")).map_err(|e| BackupError::Io(e.to_string()))?;
+    let manifest: Manifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|e| BackupError::Manifest(e.to_string()))?;
     if manifest.format != "librepaper-postgres-backup-v1" || !manifest.verified {
         return Err(BackupError::Invalid(
             "backup is not a verified supported recovery point".into(),
@@ -622,15 +644,17 @@ async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> 
         .map_err(BackupError::Storage)?;
     for reference in &manifest.references {
         let source = safe_target(&backup.join(&manifest.objects), &reference.key)?;
-        let mut input = std::fs::File::open(&source)
-            .map_err(|e| BackupError::Io(format!("missing backup object {}: {e}", reference.key)))?;
+        let mut input = std::fs::File::open(&source).map_err(|e| {
+            BackupError::Io(format!("missing backup object {}: {e}", reference.key))
+        })?;
         let target = safe_target(&destination.join("objects"), &reference.key)?;
         if let Some(parent) = target.parent() {
             super::create_private_dir(parent, "restored object directory")
                 .map_err(BackupError::Storage)?;
         }
         let mut sink = HashingFile::create(&target)?;
-        let length = std::io::copy(&mut input, &mut sink).map_err(|e| BackupError::Io(e.to_string()))?;
+        let length =
+            std::io::copy(&mut input, &mut sink).map_err(|e| BackupError::Io(e.to_string()))?;
         let digest = sink.finish();
         if reference.bytes != 0 && reference.bytes != length as i64 {
             return Err(BackupError::Mismatch(format!(
@@ -657,7 +681,9 @@ async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> 
         .await
         .map_err(|e| BackupError::Tool(format!("could not run pg_restore: {e}")))?;
     if !status.success() {
-        return Err(BackupError::Tool(format!("pg_restore exited with {status}")));
+        return Err(BackupError::Tool(format!(
+            "pg_restore exited with {status}"
+        )));
     }
     let restored: i64 = sqlx::query_scalar!(
         r#"SELECT COALESCE(max(version),0) AS "version!" FROM _sqlx_migrations WHERE success"#
@@ -682,7 +708,10 @@ async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> 
 /// libpq does not expand a connection URI supplied only through PGDATABASE.
 /// pg_restore additionally needs --dbname to restore instead of printing SQL.
 /// Keep the password in the child's environment, outside the process arguments.
-fn postgres_tool(program: &str, database_url: &str) -> Result<tokio::process::Command, BackupError> {
+fn postgres_tool(
+    program: &str,
+    database_url: &str,
+) -> Result<tokio::process::Command, BackupError> {
     postgres_tool_with_env(program, database_url, std::env::vars_os())
 }
 
@@ -770,7 +799,9 @@ fn create_private_file(path: &Path) -> Result<std::fs::File, BackupError> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options.open(path).map_err(|error| BackupError::Io(error.to_string()))
+    options
+        .open(path)
+        .map_err(|error| BackupError::Io(error.to_string()))
 }
 fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), BackupError> {
     use std::io::Write;
@@ -1085,7 +1116,10 @@ mod archive_tests {
         let fixture = fixture().await;
         let mut references = fixture.references.clone();
         references[1].sha256 = "0".repeat(64);
-        let error = archive(&fixture, &references).await.unwrap_err().to_string();
+        let error = archive(&fixture, &references)
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(error.contains(&references[1].key), "{error}");
     }
 
