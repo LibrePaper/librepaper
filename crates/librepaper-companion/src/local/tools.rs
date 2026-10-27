@@ -87,27 +87,31 @@ async fn version_output_with_path(
     command.arg("--version");
     // Discovery can run on every companion state poll. Keep console tools
     // invisible on Windows even though their output is captured below.
-    let captured = crate::local::native::run_captured(
+    let run = librepaper_base::process::supervise(
         command,
         None,
-        crate::local::native::Bounds {
-            timeout: probe.timeout,
-            stdout_bytes: MAX_PROBE_BYTES,
-            stderr_bytes: MAX_PROBE_BYTES,
-            reap_on_exit: true,
+        librepaper_base::process::Limits {
+            timeout: Some(probe.timeout),
+            cancel: None,
+            keep: librepaper_base::process::Keep::Head(MAX_PROBE_BYTES),
+            stderr_keep: None,
+            // A wrapper script can exit while a descendant holds its pipes.
+            kill_group: true,
         },
     )
-    .await
-    .ok()?;
+    .await;
+    let librepaper_base::process::Ending::Exited(code) = run.ending else {
+        return None;
+    };
     // A non-zero exit that still printed something is a tool that is there
     // and disagrees about `--version`, which is a version banner as far as
     // this is concerned.
-    if captured.code != 0 && captured.stdout.is_empty() && captured.stderr.is_empty() {
+    if code != 0 && run.stdout.is_empty() && run.stderr.is_empty() {
         return None;
     }
     Some((
-        String::from_utf8_lossy(&captured.stdout).into_owned(),
-        String::from_utf8_lossy(&captured.stderr).into_owned(),
+        String::from_utf8_lossy(&run.stdout).into_owned(),
+        String::from_utf8_lossy(&run.stderr).into_owned(),
     ))
 }
 
