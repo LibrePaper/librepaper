@@ -71,6 +71,9 @@ export const THEME = "librepaper-theme";
 // "gruvbox", "catppuccin" or "nord". Like the theme, a habit of the person
 // looking at the screen rather than of the document.
 export const PALETTE = "librepaper-palette";
+// Whether the HTML preview's paper follows the theme ("theme") or stays light
+// ("light"). Like the theme, a habit of the person looking at the screen.
+export const PREVIEW_PAPER = "librepaper-preview-paper";
 // The last `/api/config` answer, the deployment's limits and file rules. The
 // service worker does not keep API answers, so a folder project opened with no
 // connection to the server reads its rules from here. It describes the

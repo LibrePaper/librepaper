@@ -148,6 +148,24 @@ try {
   })()`);
   assert.ok(starts.length > 3, "the View menu has lines to compare");
   assert.equal(new Set(starts).size, 1, "every name starts at one place: " + JSON.stringify(starts));
+  await key("Escape", "Escape", 27);
+
+  // Edit > Word count opens a dialog that counts the source: "a line of
+  // source" is four words.
+  await press("edit");
+  const item = await b.evaluate(`(() => {
+    const trigger = document.querySelector("[data-menubar=edit]");
+    const panel = document.getElementById(trigger.getAttribute("aria-controls"));
+    const node = [...panel.querySelectorAll(".menuitem")].find(node => node.textContent.includes("Word count"));
+    const r = node?.getBoundingClientRect();
+    return r ? {x: r.left + r.width/2, y: r.top + r.height/2} : null;
+  })()`);
+  assert.ok(item, "the Edit menu offers Word count");
+  for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+    await b.command("Input.dispatchMouseEvent", { type, x: item.x, y: item.y, button: "left", clickCount: 1, buttons: type === "mousePressed" ? 1 : 0 });
+  }
+  await until("the word count dialog", () => b.evaluate(`document.querySelector(".word-total")?.textContent.trim() === "4 words"`), 5000);
+  assert.equal(await b.evaluate(`document.querySelector(".word-scope")?.textContent.trim()`), "in main.md");
 
   assert.deepEqual(await b.evaluate("window.testErrors"), []);
   console.log("menubar-browser: one bar, hover to switch, arrows across the row, shortcuts and a single name column passed");
