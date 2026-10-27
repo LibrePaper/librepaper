@@ -188,7 +188,7 @@ schedule | workflow_dispatch)
   if [[ $status -ne 0 ]]; then
     # A push from an earlier run is still pending. The pull stops until it is
     # sent, so a person re-runs the push or runs it in a clone.
-    if grep -qi "run librepaper push" "$LOG"; then
+    if grep -qi "interrupted before its outcome was known" "$LOG"; then
       echo "::error::a send to the web project from an earlier run is still pending, so this pull stopped. Re-run the push workflow for this repository, or run librepaper push in a clone of it. The next scheduled run pulls once that send is done." >&2
       exit "$status"
     fi
