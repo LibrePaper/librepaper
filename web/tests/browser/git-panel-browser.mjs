@@ -51,6 +51,13 @@ const connectionApi = {
     scene().connection = structuredClone(scene().afterConnect);
     return structuredClone(scene().connection);
   },
+  connectLocalRepository: async () => {
+    record("connectLocalRepository");
+    if (scene().localFails) throw refusal({ message: "Choose the top folder of a git repository.", status: 400, body: { reason: "not-repository" } });
+    if (scene().cancelLocal) return structuredClone(scene().connection);
+    scene().connection = structuredClone(scene().afterLocal);
+    return structuredClone(scene().connection);
+  },
   pullConnection: async () => { record("pullConnection"); return settle(scene().pullAnswer); },
   pushConnection: async () => { record("pushConnection"); return settle(scene().pushAnswer); },
   retryConnection: async () => { record("retryConnection"); return settle(scene().retryAnswer); },
@@ -195,6 +202,40 @@ window.gitPanelCheck = async () => {
   await press("Connect");
   check(alert() === "this repository is linked to another LibrePaper project" && button("Connect") && !button("Connecting…"), "a refused connect shows its message: " + alert());
   await widths("with a refusal shown");
+
+  // A local repository: the dialog is cancelled, then refused, then chosen.
+  const localStatus = { connected: true, local: true, signed_in: true, path: "/home/me/paper", branch: "main", merging: null };
+  await mountWeb({ connection: { connected: false, signed_in: true }, afterLocal: localStatus, cancelLocal: true }, { desktop: true });
+  await flush();
+  check(button("Use a local repository…") && text().includes("A git repository on this computer. LibrePaper works in it directly."), "the form offers a local repository: " + text());
+  await widths("with the local choice");
+  await press("Use a local repository…");
+  check(calls("connectLocalRepository").length === 1 && !alert() && headings() === "Repository|Connect a repository", "a cancelled dialog changes nothing: " + text());
+
+  await mountWeb({ connection: { connected: false, signed_in: true }, localFails: true }, { desktop: true });
+  await flush();
+  await press("Use a local repository…");
+  check(alert() === "Choose the top folder of a git repository." && button("Use a local repository…"), "a refused folder shows its message: " + alert());
+
+  await mountWeb({ connection: { connected: false, signed_in: true }, afterLocal: localStatus }, { desktop: true });
+  await flush();
+  await press("Use a local repository…");
+  check(headings() === "Repository|Repository on this computer" && text().includes("Repository /home/me/paper, branch main"), "a chosen folder is shown by its path: " + text());
+  check(button("Get repository changes") && button("Send project changes") && text().includes("Disconnecting forgets the link. The folder and the project stay as they are."), "with the same two buttons and a Disconnect note about the folder: " + text());
+  await widths("with a local repository");
+
+  // A folder that is gone offers Disconnect only.
+  await mountWeb({ connection: { connected: true, local: true, signed_in: true, path: "/home/me/paper", missing: true } }, { desktop: true });
+  await flush();
+  check(text().includes("The repository folder is gone.") && !button("Get repository changes") && !button("Send project changes") && button("Disconnect"), "a missing folder offers Disconnect only: " + text());
+  await widths("with a missing folder");
+
+  // A merge in a local repository is settled in the person's editor.
+  await mountWeb({ connection: { ...localStatus, merging: { side: "repository", conflicts: ["intro.tex", "chapters/outline.tex"] } } }, { desktop: true });
+  await flush();
+  check(text().includes("intro.tex") && text().includes("chapters/outline.tex") && text().includes("Resolve these files in your editor and commit the merge. Then choose Get repository changes or Send project changes again."), "a local merge lists the files and sends the person to their editor: " + text());
+  check(!button("Keep project's") && !button("Take repository's"), "and offers no Keep buttons");
+  await widths("with a local merge");
 
   // Connected and signed in: getting changes imports what came in, and sending changes sends the project's changes.
   await mountWeb({ connection: connectedStatus, afterConnect: connectedStatus, pullAnswer: { status: connectedStatus, pushed: { files: 2 } }, pushAnswer: { status: connectedStatus, pushed: "pushed" } }, { desktop: true });

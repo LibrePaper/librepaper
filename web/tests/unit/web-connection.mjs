@@ -17,7 +17,7 @@ const project = "https://app.example/docs/paper";
 function routes(answers) {
   const calls = [];
   const api = {};
-  for (const name of ["connectionStatus", "connectRepository", "pullConnection", "pushConnection", "resolveConnection", "retryConnection", "loginConnection", "loginConnectionComplete", "disconnectConnection"]) {
+  for (const name of ["connectionStatus", "connectRepository", "connectLocalRepository", "pullConnection", "pushConnection", "resolveConnection", "retryConnection", "loginConnection", "loginConnectionComplete", "disconnectConnection"]) {
     api[name] = async (...args) => {
       calls.push([name, ...args]);
       const answer = typeof answers[name] === "function" ? answers[name](...args) : answers[name];
@@ -59,6 +59,45 @@ const merging = { ...connected, merging: { side: "repository", conflicts: ["a.te
   await web.connect("https://github.com/you/paper.git");
   assert.equal(web.state.problem, "this repository is linked to another LibrePaper project");
   assert.equal(web.state.busy, "");
+}
+
+// Connecting a local repository asks for the folder dialog and shows the local status.
+{
+  const local = { connected: true, local: true, signed_in: true, path: "/home/me/paper", branch: "main", merging: null };
+  const { api, calls } = routes({ connectLocalRepository: local });
+  const web = createWebConnection({ api, project });
+  await web.connectLocal();
+  assert.deepEqual(calls, [["connectLocalRepository", project]]);
+  assert.deepEqual(web.state.status, local);
+  assert.equal(web.state.problem, "");
+  assert.equal(web.state.busy, "");
+}
+
+// A cancelled dialog leaves the panel as it was, with no error.
+{
+  const { api } = routes({ connectLocalRepository: { connected: false, signed_in: true } });
+  const web = createWebConnection({ api, project });
+  await web.connectLocal();
+  assert.deepEqual(web.state.status, { connected: false, signed_in: true });
+  assert.equal(web.state.problem, "");
+  assert.equal(web.state.busy, "");
+}
+
+// A folder that is not a repository is refused with the desktop app's message.
+{
+  const { api } = routes({ connectLocalRepository: refused(400, { reason: "not-repository", error: "Choose the top folder of a git repository." }) });
+  const web = createWebConnection({ api, project });
+  await web.connectLocal();
+  assert.equal(web.state.problem, "Choose the top folder of a git repository.");
+  assert.equal(web.state.busy, "");
+}
+
+// A local repository on another branch refuses a transfer with the desktop app's message.
+{
+  const { api } = routes({ pullConnection: refused(409, { reason: "branch", error: "The repository is on branch dev, not main." }) });
+  const web = createWebConnection({ api, project });
+  await web.pull();
+  assert.equal(web.state.problem, "The repository is on branch dev, not main.");
 }
 
 // A pull that writes files says how many came in.
@@ -118,6 +157,14 @@ const merging = { ...connected, merging: { side: "repository", conflicts: ["a.te
   const web = createWebConnection({ api, project });
   await web.push();
   assert.equal(web.state.result, "Nothing new to send to repository branch main.");
+}
+
+// A send in a local repository only takes the project in, and says so by what came in.
+for (const [pulled, line] of [[true, "Sent to repository branch main."], [false, "Nothing new to send to repository branch main."]]) {
+  const { api } = routes({ pushConnection: { status: connected, pulled } });
+  const web = createWebConnection({ api, project });
+  await web.push();
+  assert.equal(web.state.result, line);
 }
 
 // A pull refused over the project's changed files keeps the paths, asks for no second

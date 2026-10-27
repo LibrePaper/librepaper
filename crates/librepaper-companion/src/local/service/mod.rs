@@ -690,6 +690,9 @@ async fn dispatch(
         ["connections"] if *method == Method::POST => {
             connection::handle_connect(inner, headers, origin, request).await
         }
+        ["connections", "local"] if *method == Method::POST => {
+            connection::handle_connect_local(inner, headers, origin, request).await
+        }
         ["connections", "pull"] if *method == Method::POST => {
             connection::handle_pull(inner, headers, origin, request).await
         }

@@ -273,6 +273,7 @@ async fn run_push(args: PushArgs) -> Result<bool, String> {
         author,
         exclude: Vec::new(),
         branch: args.branch,
+        from_commit: None,
     };
     let outcome = push_files(&client, &workspace.dir, workspace.store.as_ref(), &options)
         .await

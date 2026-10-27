@@ -18,7 +18,8 @@ In the desktop app, the panel also connects the project to a git repository. The
 - **Get repository changes** imports the repository's changes into the project and its History.
 - **Send project changes** sends the project's files to the selected branch of the repository.
 - When a file changed in both the project and the repository, the panel lists it. Choose **Keep project's** or **Take repository's** for each file. Then choose **Get repository changes** or **Send project changes** again.
-- **Disconnect** forgets the copy on your computer. The repository and the project stay as they are.
+- **Use a local repository** picks a git repository on this computer. The buttons then work in that folder directly, with no remote. Only committed files are sent, and uncommitted changes to tracked files stop the transfer. Conflicts are left in the repository for your own tools.
+- **Disconnect** forgets the link. The copy on your computer, or the local folder, and the project stay as they are.
 
 The connection belongs to this computer. A coauthor on another computer connects on their own.
 
