@@ -299,7 +299,7 @@ pub fn validate_source_change(
             };
             let moved = !dependency.file_id.is_empty() && dependency.file_id != file.file_id;
             let rewritten = !dependency.file_hash.is_empty()
-                && dependency.file_hash != librepaper_engine::storage::store::digest_of(file.text);
+                && dependency.file_hash != librepaper_base::digest::Digest::of(file.text.as_bytes()).to_hex();
             if moved
                 || rewritten
                 || !range_matches(
@@ -1392,8 +1392,8 @@ mod tests {
                 "paper.md".into()
             ]))
         );
-        let good = librepaper_engine::storage::store::digest_of("one two");
-        let also = librepaper_engine::storage::store::digest_of("red blue");
+        let good = librepaper_base::digest::Digest::of("one two".as_bytes()).to_hex();
+        let also = librepaper_base::digest::Digest::of("red blue".as_bytes()).to_hex();
         change.dependencies = vec![dependency("paper.md", &good), dependency("notes.md", &also)];
         assert_eq!(validate_for(&tree, &change, &sync(), 10), Ok(()));
     }

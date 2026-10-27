@@ -571,7 +571,7 @@ impl Server {
                             let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"chat messages must be between 1 and 4096 bytes","temp_id":incoming.temp_id()}).to_string())).await;
                             continue 'reader;
                         }
-                        let digest = librepaper_engine::storage::store::digest_of(text);
+                        let digest = librepaper_base::digest::Digest::of(text.as_bytes()).to_hex();
                         if let Some((_, previous)) = chat_requests.iter().find(|(id,_)| id == incoming.temp_id()) {
                             let reply = if previous == &digest {
                                 json!({"type":"chat-ack","temp_id":incoming.temp_id()})

@@ -174,7 +174,7 @@ async fn deployment_mode_with_policy(
         automation: false,
     };
     let asset_bytes = png(64);
-    let asset_sha = librepaper_engine::storage::store::digest_of_bytes(&asset_bytes);
+    let asset_sha = librepaper_base::digest::Digest::of(&asset_bytes).to_hex();
     store
         .put_directory_as_actor(
             DocumentInput {

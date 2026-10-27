@@ -92,7 +92,7 @@ impl Room {
             return Err(WriteError::Invalid("that file is empty".into()));
         }
         librepaper_document::document::formats::check_asset(&body).map_err(WriteError::Invalid)?;
-        let sha = librepaper_engine::storage::store::digest_of_bytes(&body);
+        let sha = librepaper_base::digest::Digest::of(&body).to_hex();
         let digest: [u8; 32] = Sha256::digest(&body).into();
 
         let key = format!(

@@ -1,10 +1,9 @@
-//! Document metadata and the digest helper the server and engine share.
+//! Document metadata shared by the server and engine.
 //!
 //! `ExecutionEngine` and `DraftFormat` name how a stored `source_format` is
 //! executed and edited. They are the only vocabulary here.
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 /// Engines that may own an executable document.  Calepin and unknown values
 /// are intentionally absent: serde rejects them at the JSON boundary rather
@@ -84,10 +83,6 @@ impl DocumentMetadata {
             draft_format: DraftFormat::from_source_format(source_format),
         }
     }
-}
-
-pub fn sha256(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
 }
 
 /// Normalize legacy document metadata for API consumers that do not have a

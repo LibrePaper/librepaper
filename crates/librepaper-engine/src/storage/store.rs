@@ -1770,13 +1770,6 @@ pub fn slugify(value: &str, config: &Configuration) -> String {
     slug.trim_matches('-').to_string()
 }
 
-pub fn digest_of(text: &str) -> String {
-    digest_of_bytes(text.as_bytes())
-}
-pub fn digest_of_bytes(bytes: &[u8]) -> String {
-    librepaper_document::results::sha256(bytes)
-}
-
 fn parse_account_id(account_id: &str) -> Result<uuid::Uuid, CatalogError> {
     uuid::Uuid::parse_str(account_id).map_err(|_| CatalogError::Invalid("invalid account".into()))
 }

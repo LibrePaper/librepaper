@@ -12,6 +12,7 @@ use std::fs::File;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
+use librepaper_base::digest::Digest;
 use serde::{Deserialize, Serialize};
 
 use crate::local::protocol::{self, MAX_UPLOAD_BYTES};
@@ -242,7 +243,7 @@ fn read_verified_manifest(
             &format!("read {}", entry.path),
             limit,
         )?;
-        if bytes.len() as u64 != entry.size || sha256(&bytes) != entry.sha256 {
+        if bytes.len() as u64 != entry.size || Digest::of(&bytes).to_hex() != entry.sha256 {
             return Err(format!("manifest digest mismatch: {}", entry.path));
         }
         files.push((entry.path.clone(), bytes));
@@ -519,7 +520,7 @@ fn resolve_manifest(
         if std::fs::symlink_metadata(&uploaded).is_ok() {
             let bytes =
                 read_file_bounded_to(&uploaded, &format!("read {}", entry.path), MAX_UPLOAD_BYTES)?;
-            if bytes.len() as u64 != entry.size || sha256(&bytes) != entry.sha256 {
+            if bytes.len() as u64 != entry.size || Digest::of(&bytes).to_hex() != entry.sha256 {
                 return Err(format!("manifest digest mismatch: {}", entry.path).into());
             }
             resolved.push(Resolved {
@@ -606,7 +607,7 @@ pub(crate) fn cached_digest(
     }
     #[cfg(test)]
     DIGEST_READS.with(|reads| reads.set(reads.get() + 1));
-    let digest = sha256(&read(path)?);
+    let digest = Digest::of(&read(path)?).to_hex();
     // A file whose modification time cannot be read is never cached.
     if let Some(mtime_ns) = mtime_ns {
         let mut cache = DIGESTS
@@ -885,11 +886,11 @@ fn write_granted_files(root: &Path, files: &[Resolved], mirror: &mut Mirror) -> 
         if current.as_deref() == Some(bytes.as_slice()) {
             // Record a match too, so a folder that already held the editor's
             // copy does not read as edited outside LibrePaper on the next change.
-            mirror.written.insert(path.clone(), sha256(bytes));
+            mirror.written.insert(path.clone(), Digest::of(bytes).to_hex());
             continue;
         }
         if let Some(current) = current {
-            let current_digest = sha256(&current);
+            let current_digest = Digest::of(&current).to_hex();
             if mirror.written.get(path) != Some(&current_digest) {
                 invalidate_before_first_write(root, &mut mirror.invalidated)?;
                 let copy = keep_local_copy(root, path, &current)?;
@@ -902,7 +903,7 @@ fn write_granted_files(root: &Path, files: &[Resolved], mirror: &mut Mirror) -> 
         invalidate_before_first_write(root, &mut mirror.invalidated)?;
         write_hosted_new_input(&target, bytes)
             .map_err(|error| format!("write granted folder file {path}: {error}"))?;
-        mirror.written.insert(path.clone(), sha256(bytes));
+        mirror.written.insert(path.clone(), Digest::of(bytes).to_hex());
     }
     Ok(())
 }
@@ -1003,10 +1004,6 @@ impl Drop for Unreadable {
     }
 }
 
-fn sha256(bytes: &[u8]) -> String {
-    librepaper_document::results::sha256(bytes)
-}
-
 pub(crate) fn read_file_bounded_to(
     path: &Path,
     description: &str,
@@ -1050,14 +1047,14 @@ mod tests {
         std::fs::write(&path, b"one").expect("write");
         let before = digest_reads();
         let first = cached_digest(&path, read).expect("digest");
-        assert_eq!(first, (3, sha256(b"one")));
+        assert_eq!(first, (3, Digest::of(b"one").to_hex()));
         assert_eq!(digest_reads(), before + 1);
         // Same size and modification time: answered from the cache.
         assert_eq!(cached_digest(&path, read), Some(first));
         assert_eq!(digest_reads(), before + 1);
         // A new size is a new read, whatever the modification time says.
         std::fs::write(&path, b"three").expect("rewrite");
-        assert_eq!(cached_digest(&path, read), Some((5, sha256(b"three"))));
+        assert_eq!(cached_digest(&path, read), Some((5, Digest::of(b"three").to_hex())));
         assert_eq!(digest_reads(), before + 2);
     }
 
@@ -1130,7 +1127,7 @@ mod tests {
             std::fs::write(&target, bytes).expect("staged file");
             manifest.push(protocol::ManifestEntry {
                 path: (*path).into(),
-                sha256: sha256(bytes),
+                sha256: Digest::of(bytes).to_hex(),
                 size: bytes.len() as u64,
             });
         }
