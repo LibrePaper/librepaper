@@ -11,7 +11,9 @@
 use super::*;
 use librepaper_room::room;
 use librepaper_room::room::agent::OperationKey;
-use librepaper_room::room::comments::validate_existing_action;
+use librepaper_room::room::comments::{
+    validate_existing_action, CommentAction, Moderation, Moderator,
+};
 use librepaper_room::room::refusal::Kind;
 
 /// The id a newly created annotation gets.
@@ -200,8 +202,10 @@ impl Server {
                 existing.as_ref(),
                 supplied,
                 current_version.as_deref(),
-                &author,
-                editor,
+                &Moderator {
+                    key: &author,
+                    editor,
+                },
             )?;
         }
 
@@ -380,7 +384,11 @@ impl Server {
             "delete" => {
                 let existing = existing.expect("validated above");
                 let editor = who.at_least(Role::Editor);
-                if !room::deletable(&existing, &author, editor) {
+                let who = Moderator {
+                    key: &author,
+                    editor,
+                };
+                if !Moderation::may(CommentAction::Delete, &existing, &who) {
                     return Err(Failure::new(
                         "permission_changed",
                         "only the comment author or an editor may delete it",
@@ -458,8 +466,7 @@ mod tests {
                 Some(&comment),
                 &version,
                 Some(&version),
-                author,
-                editor,
+                &Moderator { key: author, editor },
             )
             .unwrap_or_else(|error| panic!("{action} was refused: {}", error.message));
         }
@@ -475,8 +482,10 @@ mod tests {
             Some(&comment),
             "an-older-version",
             Some(&version),
-            "author-a",
-            false,
+            &Moderator {
+                key: "author-a",
+                editor: false,
+            },
         )
         .expect_err("a version the caller did not read must not pass");
         assert_eq!(error.code, "conflict");
@@ -492,8 +501,10 @@ mod tests {
             Some(&comment),
             &version,
             Some(&version),
-            "author-b",
-            false,
+            &Moderator {
+                key: "author-b",
+                editor: false,
+            },
         )
         .expect_err("an unrelated commenter cannot delete");
         assert_eq!(error.code, "permission_changed");
@@ -501,7 +512,17 @@ mod tests {
 
     #[test]
     fn missing_comment_id_is_a_validation_error() {
-        let error = validate_existing_action("delete", "", None, "", None, "", false)
+        let error = validate_existing_action(
+            "delete",
+            "",
+            None,
+            "",
+            None,
+            &Moderator {
+                key: "",
+                editor: false,
+            },
+        )
             .expect_err("missing id must not panic");
         assert_eq!(error.code, "invalid_params");
     }
