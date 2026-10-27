@@ -920,6 +920,10 @@ async fn pull_from_repository(
     if merge_stopped(&web_pull(inner, &connection).await?)? {
         return stopped(inner, &connection).await;
     }
+    // The web pull spent a round trip on the network, and a file saved in the
+    // meantime would be read by the push. Looking again leaves the push only
+    // the moment between this check and its own read.
+    refuse_uncommitted(&connection, &repo).await?;
     let outcome = web_push(inner, &connection).await?;
     if let Some(refusal) = pushed_refusal(&outcome) {
         return Err(refusal);
