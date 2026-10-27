@@ -806,21 +806,21 @@ impl Server {
             let mut texts: std::collections::BTreeMap<String, String> =
                 std::collections::BTreeMap::new();
             for (path, bytes) in std::mem::take(&mut sent) {
-                let kind = match librepaper_document::document::paths::check(
+                let kind = match librepaper_base::paths::admit(
                     &librepaper_document::document::paths::rules(&self.config),
                     &path,
                 ) {
                     Ok(kind) => kind,
                     Err(why) => return Err(write_json(400, &json!({"error": why}))),
                 };
-                if !seen.insert(librepaper_document::document::paths::collision_key(&path)) {
+                if !seen.insert(librepaper_base::paths::collision_key(&path)) {
                     return Err(write_json(
                         400,
                         &json!({"error": format!("{path}: two files cannot share one name")}),
                     ));
                 }
-                let path = librepaper_document::document::paths::normalise(&path);
-                if kind == librepaper_document::document::paths::Kind::Text {
+                let path = librepaper_base::paths::normalise(&path);
+                if kind == librepaper_base::paths::Kind::Text {
                     let Ok(text) = std::str::from_utf8(&bytes) else {
                         return Err(write_json(
                             400,
@@ -992,11 +992,11 @@ impl Server {
     #[allow(clippy::result_large_err)] // as read_upload: the error is a response
     pub(super) fn preflight_directory(&self, parsed: &Upload) -> Result<(), Reply> {
         for (path, bytes) in &parsed.files {
-            match librepaper_document::document::paths::check(
+            match librepaper_base::paths::admit(
                 &librepaper_document::document::paths::rules(&self.config),
                 path,
             ) {
-                Ok(librepaper_document::document::paths::Kind::Text) => {
+                Ok(librepaper_base::paths::Kind::Text) => {
                     if std::str::from_utf8(bytes).is_err() {
                         return Err(write_json(
                             400,
@@ -1004,7 +1004,7 @@ impl Server {
                         ));
                     }
                 }
-                Ok(librepaper_document::document::paths::Kind::Asset) => {}
+                Ok(librepaper_base::paths::Kind::Asset) => {}
                 Err(why) => return Err(write_json(400, &json!({"error": why}))),
             }
         }

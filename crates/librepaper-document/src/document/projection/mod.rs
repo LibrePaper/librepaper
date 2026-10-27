@@ -19,11 +19,9 @@
 //! bounds that remain are on inputs -- update size, log quota, memory budget
 //! -- and live where those inputs arrive.
 
-pub mod paths;
-
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use self::paths::{Kind, Rules};
+use librepaper_base::paths::{self, Kind, Rules};
 use loro::{Container, LoroDoc, LoroValue, ValueOrContainer};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -296,7 +294,7 @@ pub fn project(doc: &LoroDoc, rules: &Rules) -> Projected {
 
     // 2. Validate paths.
     candidates.retain(
-        |candidate| match paths::check(rules, &candidate.requested) {
+        |candidate| match paths::admit(rules, &candidate.requested) {
             Ok(kind) => {
                 let wanted = if candidate.asset {
                     Kind::Asset
@@ -361,7 +359,7 @@ pub fn project(doc: &LoroDoc, rules: &Rules) -> Projected {
         let requested = paths::normalise(&candidates[index].requested);
         let mut chosen = None;
         for nth in 2..MOST {
-            let attempt = paths::suffixed(&requested, nth);
+            let attempt = crate::document::paths::suffixed(&requested, nth);
             if free(&taken, &attempt) {
                 chosen = Some(attempt);
                 break;

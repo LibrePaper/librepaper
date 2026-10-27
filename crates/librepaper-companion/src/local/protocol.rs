@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 
+use librepaper_base::paths::RelPath;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -152,7 +153,7 @@ impl JobRequest {
             return Err("unsupported protocol version".into());
         }
         crate::local::render::Key::parse_parts(&self.format, &self.output)?;
-        if !safe_relative_path(&self.entrypoint) {
+        if !RelPath::is_valid(&self.entrypoint) {
             return Err("entrypoint must be a safe project-relative path".into());
         }
         if self.binding_id.is_empty() || self.binding_id.len() > 256 {
@@ -226,8 +227,6 @@ pub struct JobOutcome {
     /// `artifact`, `synctex`, `log` as raw bytes.
     pub files: BTreeMap<String, Vec<u8>>,
 }
-
-pub use librepaper_document::document::paths::safe_relative_path;
 
 /* ------------------------------------------------- Connecting an agent */
 

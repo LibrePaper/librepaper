@@ -136,7 +136,7 @@ fn the_shared_corpus_projects_the_same_way_on_both_sides() {
         asset: &asset,
         derived: &derived,
         max_path: corpus["rules"]["max_path"].as_u64().unwrap_or(255) as usize,
-        max_segments: librepaper::projection::MAX_SEGMENTS,
+        max_segments: librepaper::paths::MAX_SEGMENTS,
     };
 
     let regenerate = std::env::var("LIBREPAPER_REGENERATE_FIXTURES").is_ok();

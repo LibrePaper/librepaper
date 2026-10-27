@@ -11,9 +11,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
-use crate::files::{inside, lf, sha256_hex, FileRecord, Kind};
+use crate::files::{inside, sha256_hex, FileRecord, Kind};
 use crate::git::Git;
-use crate::rules::{normalise, Rules, MAX_SEGMENTS};
+use crate::rules::Rules;
+use librepaper_base::paths::{nfc, MAX_SEGMENTS};
+use librepaper_base::text::LineEnding;
 use crate::Error;
 
 /// One synced file as it is on disk now.
@@ -135,7 +137,7 @@ pub(crate) fn scan(
     git: Option<&Git>,
     exclude: &[String],
 ) -> Result<Scan, Error> {
-    let exclude: Vec<String> = exclude.iter().map(|entry| normalise(entry)).collect();
+    let exclude: Vec<String> = exclude.iter().map(|entry| nfc(entry)).collect();
     let mut walk = ignore::WalkBuilder::new(dir);
     walk.standard_filters(true)
         .ignore(false)
@@ -166,17 +168,20 @@ pub(crate) fn scan(
             );
             continue;
         };
-        let path = normalise(&spelled);
+        let path = nfc(&spelled);
         if excluded(&path, &exclude) {
             continue;
         }
-        let Some(kind) = rules.kind_of(&path) else {
-            continue;
+        let kind = match rules.check(&path) {
+            Ok(kind) => kind,
+            Err(why) => {
+                // A file the project does not hold is left out without a word.
+                if rules.kind_of(&path).is_some() {
+                    tracing::warn!("sync: leaving out {why}");
+                }
+                continue;
+            }
         };
-        if let Some(why) = rules.refusal(&path) {
-            tracing::warn!("sync: leaving out {why}");
-            continue;
-        }
         found.push((path, spelled, entry.into_path(), kind));
     }
 
@@ -199,7 +204,7 @@ pub(crate) fn scan(
             Kind::Text => match String::from_utf8(bytes) {
                 Ok(text) => {
                     let text = if text.contains('\r') {
-                        lf(&text).into_owned()
+                        LineEnding::normalise(&text).into_owned()
                     } else {
                         text
                     };

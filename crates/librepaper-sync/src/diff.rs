@@ -180,9 +180,9 @@ mod tests {
 
     #[test]
     fn crlf_files_are_compared_after_they_are_made_lf() {
-        use crate::files::lf;
-        let before = lf("one\r\ntwo\r\nthree\r\n").into_owned();
-        let after = lf("one\r\nTWO\r\nthree\r\n").into_owned();
+        use librepaper_base::text::LineEnding;
+        let before = LineEnding::normalise("one\r\ntwo\r\nthree\r\n").into_owned();
+        let after = LineEnding::normalise("one\r\nTWO\r\nthree\r\n").into_owned();
         let found = check(&before, &after);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].exact, "two");
@@ -191,9 +191,9 @@ mod tests {
 
     #[test]
     fn a_line_ending_only_change_leaves_nothing_to_send() {
-        use crate::files::lf;
-        let unix = lf("one\ntwo\n").into_owned();
-        let windows = lf("one\r\ntwo\r\n").into_owned();
+        use librepaper_base::text::LineEnding;
+        let unix = LineEnding::normalise("one\ntwo\n").into_owned();
+        let windows = LineEnding::normalise("one\r\ntwo\r\n").into_owned();
         assert!(patches("a.tex", &unix, &windows).is_empty());
     }
 

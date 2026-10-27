@@ -260,7 +260,7 @@ impl Head<'_> {
     }
 
     /// The path rules of this deployment.
-    pub fn rules(&self) -> librepaper_document::document::projection::paths::Rules<'_> {
+    pub fn rules(&self) -> librepaper_base::paths::Rules<'_> {
         librepaper_document::document::paths::rules(self.rules_owner)
     }
 

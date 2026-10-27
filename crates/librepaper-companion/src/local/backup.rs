@@ -7,6 +7,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use librepaper_base::paths::RelPath;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -417,7 +418,7 @@ fn archive_holds_snapshot(root: &Path, filename: &str, slug: &str, snapshot: &Sn
         return false;
     }
     for (path, expected) in &snapshot.projection.files {
-        let relative = match safe_relative_path(path) {
+        let relative = match member_path(path) {
             Ok(path) => path,
             Err(_) => return false,
         };
@@ -566,7 +567,7 @@ async fn materialize_snapshot(
     let mut files = Vec::with_capacity(snapshot.projection.files.len());
     let mut total = 0usize;
     for (path, entry) in &snapshot.projection.files {
-        let path = safe_relative_path(path)?;
+        let path = member_path(path)?;
         let (bytes, bytes_verified) = match entry.kind.as_str() {
             "text" => {
                 let text_bytes = snapshot
@@ -869,7 +870,7 @@ fn read_previous_files(path: PathBuf) -> Result<BTreeMap<String, Vec<u8>>, Strin
             .by_index(index)
             .map_err(|error| format!("could not read previous backup entry: {error}"))?;
         let name = entry.name().to_string();
-        if safe_relative_path(&name).is_err() || entry.is_dir() {
+        if member_path(&name).is_err() || entry.is_dir() {
             continue;
         }
         if entry.size() > MAX_FILE_BYTES as u64 {
@@ -1087,22 +1088,12 @@ fn checked_child(root: &Path, filename: &str) -> Result<PathBuf, String> {
     Ok(root.join(filename))
 }
 
-fn safe_relative_path(path: &str) -> Result<PathBuf, String> {
-    if path.is_empty() || path.starts_with('/') || path.contains('\\') || path.contains('\0') {
-        return Err(format!("path {path:?} contains a dangerous component"));
-    }
-    if path
-        .split('/')
-        .any(|component| component.is_empty() || component == "." || component == "..")
-    {
-        return Err(format!("path {path:?} contains a dangerous component"));
-    }
-    if path.chars().any(char::is_control) {
-        return Err(format!("path {path:?} contains a control character"));
-    }
-    // ZIP member names are slash-separated labels, not host filesystem paths:
-    // names such as `notes:2026.md` are valid project files on every host.
-    Ok(PathBuf::from(path))
+// ZIP member names are slash-separated labels, not host filesystem paths:
+// names such as `notes:2026.md` are valid project files on every host.
+fn member_path(path: &str) -> Result<PathBuf, String> {
+    RelPath::try_from(path)
+        .map(|path| PathBuf::from(path.as_str()))
+        .map_err(|refusal| refusal.to_string())
 }
 
 fn archive_name(title: &str, slug: &str) -> String {
@@ -1593,11 +1584,11 @@ mod tests {
                 0o700
             );
         }
-        assert!(safe_relative_path("../escape.txt").is_err());
-        assert!(safe_relative_path("/absolute.md").is_err());
-        assert!(safe_relative_path("notes:2026.md").is_ok());
-        assert!(safe_relative_path("C:\\escape.txt").is_err());
-        assert!(safe_relative_path("dir\\escape.txt").is_err());
+        assert!(member_path("../escape.txt").is_err());
+        assert!(member_path("/absolute.md").is_err());
+        assert!(member_path("notes:2026.md").is_ok());
+        assert!(member_path("C:\\escape.txt").is_err());
+        assert!(member_path("dir\\escape.txt").is_err());
         task.abort();
     }
 

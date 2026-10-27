@@ -1,17 +1,12 @@
 //! What a path in a document's directory may be.
 //!
-//! The rules themselves live in the projection module, beside the projection
-//! that applies them: the projection is the
-//! one place a path is actually decided, and a rule the projection did not
-//! consult would be a rule nothing enforced. What is here is the binding to
-//! this deployment's configuration, and the placeholder name a route gives a
-//! file somebody uploaded without a usable one.
-
-pub use crate::document::projection::paths::{
-    check, collision_key, kind_of, normalise, suffixed, Kind, Rules, MAX_SEGMENTS,
-};
+//! The rules themselves live in `librepaper_base::paths`, where the sync
+//! client reaches them too. What is here is the binding to this deployment's
+//! configuration, the placeholder name a route gives a file somebody uploaded
+//! without a usable one, and the spelling of a name that is already taken.
 
 use librepaper_base::config::Configuration;
+use librepaper_base::paths::{Rules, MAX_SEGMENTS};
 
 /// The path rules this deployment's configuration binds. A free function
 /// rather than a method: `Configuration` lives in librepaper-base and the
@@ -47,45 +42,16 @@ pub fn placeholder(id: &str) -> String {
     }
 }
 
-/// Whether a project-relative path may be staged at all: relative, no `..`,
-/// no `.`, no backslash, no control characters, no empty component, and no
-/// leading slash. Shared by the service (upload) and the runner (outputs).
-pub fn safe_relative_path(path: &str) -> bool {
-    if path.is_empty() || path.starts_with('/') || path.contains('\\') || path.contains('\0') {
-        return false;
-    }
-    if path.len() >= 2 && path.as_bytes()[0].is_ascii_alphabetic() && path.as_bytes()[1] == b':' {
-        return false;
-    }
-    if path.chars().any(|c| c.is_control()) {
-        return false;
-    }
-    path.split('/')
-        .all(|part| !part.is_empty() && part != "." && part != "..")
-}
-
-#[cfg(test)]
-mod safe_relative_path_tests {
-    use super::*;
-
-    #[test]
-    fn a_relative_path_is_safe_and_an_escaping_one_is_not() {
-        assert!(safe_relative_path("main.tex"));
-        assert!(safe_relative_path("chapters/01.tex"));
-        assert!(safe_relative_path("asset:figures/plot.png"));
-        for bad in [
-            "",
-            "/etc/passwd",
-            "../x",
-            "a/../b",
-            "a/./b",
-            "a\\b",
-            "a\u{0}b",
-            "a//b",
-            "x\n",
-            "C:/Windows/system32",
-        ] {
-            assert!(!safe_relative_path(bad), "{bad:?} was allowed");
-        }
-    }
+/// The next spelling of a path that is already taken: `paper.tex` becomes
+/// `paper (2).tex`, then `paper (3).tex`. Before the extension rather than
+/// after it, because a name that stops being a `.tex` stops being a file the
+/// compiler will read.
+pub fn suffixed(path: &str, nth: usize) -> String {
+    let (stem, extension) = match path.rfind('.') {
+        // A leading dot is not an extension, and a dot in a directory name is
+        // not this file's.
+        Some(dot) if dot > 0 && !path[dot..].contains('/') => (&path[..dot], &path[dot..]),
+        _ => (path, ""),
+    };
+    format!("{stem} ({nth}){extension}")
 }

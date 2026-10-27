@@ -4,12 +4,13 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use librepaper_base::http::{detail_of, post_json_as, send, truncate, Credentials};
+use librepaper_base::text::LineEnding;
 use reqwest::Method;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use url::Url;
 
-use crate::files::{lf, sha256_hex, FileRecord, Kind};
+use crate::files::{sha256_hex, FileRecord, Kind};
 use crate::rules::Rules;
 use crate::Error;
 
@@ -81,7 +82,7 @@ impl Snapshot {
                         .ok_or_else(|| {
                             Error::Invalid(format!("the server sent no text for {path}"))
                         })?;
-                    let body = lf(body).into_owned();
+                    let body = LineEnding::normalise(body).into_owned();
                     snapshot.files.insert(
                         path.clone(),
                         FileRecord {

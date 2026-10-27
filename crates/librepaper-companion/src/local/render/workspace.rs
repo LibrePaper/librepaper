@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::local::protocol::{self, MAX_UPLOAD_BYTES};
+use librepaper_base::paths::RelPath;
 
 /// The record of which paths the last sync wrote into a hosted workspace, so
 /// a file the document no longer holds is removed rather than left to be
@@ -231,7 +232,7 @@ fn read_verified_manifest(
     let mut seen = BTreeSet::new();
     let mut files = Vec::with_capacity(manifest.len());
     for entry in manifest {
-        if !protocol::safe_relative_path(&entry.path) {
+        if !RelPath::is_valid(&entry.path) {
             return Err(format!("unsafe manifest path: {}", entry.path));
         }
         if !seen.insert(entry.path.as_str()) {
@@ -276,7 +277,7 @@ pub(crate) fn sync_hosted_workspace(
             .iter()
             .any(|entry| entry.path.as_str() == path.as_str())
     }) {
-        if protocol::safe_relative_path(stale) {
+        if RelPath::is_valid(stale) {
             changed |= std::fs::symlink_metadata(root.join(stale)).is_ok();
         }
     }
@@ -295,7 +296,7 @@ pub(crate) fn sync_hosted_workspace(
         written.push(path);
     }
     for stale in previous.files.iter().filter(|path| !written.contains(path)) {
-        if protocol::safe_relative_path(stale) {
+        if RelPath::is_valid(stale) {
             ensure_hosted_parent(root, stale)?;
             let _ = std::fs::remove_file(root.join(stale));
         }
@@ -509,7 +510,7 @@ fn resolve_manifest(
     let mut resolved = Vec::with_capacity(manifest.len());
     let mut missing = Vec::new();
     for entry in manifest {
-        if !protocol::safe_relative_path(&entry.path) {
+        if !RelPath::is_valid(&entry.path) {
             return Err(format!("unsafe manifest path: {}", entry.path).into());
         }
         if !seen.insert(entry.path.as_str()) {

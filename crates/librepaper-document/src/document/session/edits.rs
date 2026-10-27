@@ -5,8 +5,7 @@
 //! code units, matching JavaScript and the browser; that is enforced by the
 //! *_utf16 family of methods with no exceptions and no conversion.
 
-use std::borrow::Cow;
-
+use librepaper_base::text::LineEnding;
 use loro::{LoroDoc, LoroMap, LoroText};
 
 use super::shape::{mint_id, ASSETS, FILES, META, PATHS};
@@ -52,19 +51,6 @@ fn id_of_path(path_map: &LoroMap, path: &str) -> Option<String> {
         }
     }
     None
-}
-
-/// A file body never holds a carriage return. The browser editor counts a
-/// CRLF as one line break while a LoroText keeps both characters, and the
-/// editor copies its offsets straight into the text, so a body with CRLF
-/// shifts every edit made on it (gh#74). Every route that writes a whole
-/// body passes through here, and the room passes an agent's replacement
-/// through it as well.
-pub fn line_feeds(body: &str) -> Cow<'_, str> {
-    if !body.contains('\r') {
-        return Cow::Borrowed(body);
-    }
-    Cow::Owned(body.replace("\r\n", "\n").replace('\r', "\n"))
 }
 
 /// Replaces the text at `path` with `wanted`, creating the file when the
@@ -133,7 +119,7 @@ pub fn apply_edits_at(doc: &LoroDoc, path: &str, edits: &[Edit]) -> bool {
 /// id. What a publish of a directory and a restore both build the document
 /// with. The body is stored with LF line endings.
 pub fn put_text(doc: &LoroDoc, path: &str, body: &str) -> String {
-    let body = line_feeds(body);
+    let body = LineEnding::normalise(body);
     let (files, path_map, _, _) = maps(doc);
     let existing = id_of_path(&path_map, path);
     match existing {
@@ -159,7 +145,7 @@ pub fn put_text(doc: &LoroDoc, path: &str, body: &str) -> String {
 /// Creates a text under a caller-supplied stable id. Restore uses this only
 /// after proving that neither the id nor path exists in the live document.
 pub fn put_text_with_id(doc: &LoroDoc, id: &str, path: &str, body: &str) -> bool {
-    let body = line_feeds(body);
+    let body = LineEnding::normalise(body);
     let (files, path_map, _, _) = maps(doc);
     if text_at(&files, id).is_some() || id_of_path(&path_map, path).is_some() {
         return false;

@@ -5,7 +5,7 @@
 //! own machine, so two things are asserted about it, and they are the two
 //! things a page would try to break.
 //!
-//! **A safe path is a path that stays put.** `safe_relative_path` is a
+//! **A safe path is a path that stays put.** `RelPath` is a
 //! string check -- no leading slash, no `..`, no backslash, no empty
 //! component -- and what happens afterwards is a `Path::join` under a project
 //! root. Those are two different notions of a path, and the target holds them
@@ -29,7 +29,7 @@ use std::path::{Component, Path};
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use librepaper::protocol::{safe_relative_path, JobRequest};
+use librepaper::protocol::{JobRequest, RelPath};
 use serde_json::{json, Value};
 
 /// JSON the mutator can shape, so that `options` is a real tree rather than
@@ -191,7 +191,7 @@ fuzz_target!(|input: Input| {
         job.output
     );
     assert!(
-        safe_relative_path(&job.entrypoint),
+        RelPath::is_valid(&job.entrypoint),
         "a job was admitted with entrypoint {:?}",
         job.entrypoint
     );
@@ -210,7 +210,7 @@ fuzz_target!(|input: Input| {
 /// joined to. The string check knows about `/` and the filesystem knows about
 /// components; this is where the two have to agree.
 fn check_path(path: &str) {
-    if !safe_relative_path(path) {
+    if !RelPath::is_valid(path) {
         return;
     }
     let root = Path::new("/srv/project");

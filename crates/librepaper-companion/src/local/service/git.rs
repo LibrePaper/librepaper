@@ -20,6 +20,7 @@
 //! editor through the poll.
 
 use super::*;
+use librepaper_base::paths::{RelPath, RepoPath};
 
 use std::collections::BTreeSet;
 
@@ -333,7 +334,7 @@ async fn pick_remote(
 /// render wrote. The walk leaves out hidden entries and the ignored names, so
 /// a change to `.gitignore` or to a build folder is not the editor's.
 fn held(path: &str, render_outputs: &BTreeSet<String>) -> bool {
-    protocol::safe_relative_path(path)
+    RelPath::is_valid(path)
         && !path
             .split('/')
             .any(|part| projects::skip_reason(part).is_some())
@@ -561,7 +562,8 @@ fn text_of(bytes: Option<Vec<u8>>) -> Result<Option<String>, ()> {
 /// read there, and the working tree side is always `path`.
 async fn run_diff(root: &Path, path: &str, from: Option<&str>) -> Result<Value, Failure> {
     require_repository(root)?;
-    if !project_path(path) || from.is_some_and(|from| !project_path(from)) {
+    if RepoPath::try_from(path).is_err()
+        || from.is_some_and(|from| RepoPath::try_from(from).is_err()) {
         return Err(refuse(400, "unsafe file path"));
     }
     let spec = format!("HEAD:{}", from.unwrap_or(path));
@@ -618,15 +620,6 @@ struct CommitBody {
     paths: Option<Vec<String>>,
 }
 
-/// Whether `path` may be named to Git for a commit or a diff: a project path
-/// that is not inside Git's own directory.
-fn project_path(path: &str) -> bool {
-    protocol::safe_relative_path(path)
-        && !path
-            .split('/')
-            .any(|part| part.eq_ignore_ascii_case(".git"))
-}
-
 /// The paths as a NUL separated pathspec list that matches them literally,
 /// for `--pathspec-from-file`, which keeps a long list off the command line.
 fn pathspec_list(paths: &[String]) -> Vec<u8> {
@@ -657,7 +650,7 @@ async fn run_commit(
         return Err(refuse(400, "That commit message cannot be used."));
     }
     if let Some(paths) = paths {
-        if !paths.iter().all(|path| project_path(path)) {
+        if !paths.iter().all(|path| RepoPath::try_from(path.as_str()).is_ok()) {
             return Err(refuse(400, "unsafe file path"));
         }
         if paths.is_empty() {
@@ -2734,9 +2727,11 @@ mod tests {
     fn a_pathspec_list_matches_each_path_as_typed() {
         let list = pathspec_list(&["a [1].txt".to_string(), "*.tex".to_string()]);
         assert_eq!(list, b":(literal)a [1].txt\0:(literal)*.tex\0".to_vec());
-        assert!(project_path("dir/a.txt"));
-        assert!(!project_path(".git/config"));
-        assert!(!project_path("a/.GIT/x"));
-        assert!(!project_path("../x"));
+        assert!(RepoPath::try_from("dir/a.txt").is_ok());
+        assert!(RepoPath::try_from(".gitignore").is_ok());
+        assert!(RepoPath::try_from(".github/workflows/x.yml").is_ok());
+        assert!(RepoPath::try_from(".git/config").is_err());
+        assert!(RepoPath::try_from("a/.GIT/x").is_err());
+        assert!(RepoPath::try_from("../x").is_err());
     }
 }

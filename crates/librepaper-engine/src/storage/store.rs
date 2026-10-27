@@ -26,7 +26,7 @@ use crate::storage::postgres::{
 };
 use librepaper_base::config::Configuration;
 use librepaper_base::util::parse_timestamp;
-use librepaper_document::document::paths::{check, Kind};
+use librepaper_base::paths::{admit, Kind};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct IndexEntry {
@@ -1422,7 +1422,7 @@ impl Store {
         let mut texts = Vec::new();
         let mut asset_files = Vec::new();
         for (path, bytes) in files {
-            match check(&rules, &path) {
+            match admit(&rules, &path) {
                 Ok(Kind::Text) => texts.push((path, String::from_utf8_lossy(&bytes).into_owned())),
                 Ok(Kind::Asset) => {
                     if let Err(error) = librepaper_document::document::formats::check_asset(&bytes)

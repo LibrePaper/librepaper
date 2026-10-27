@@ -26,7 +26,6 @@ hex.workspace = true
 similar.workspace = true
 ignore.workspace = true
 # Paths are compared in the form the server stores them.
-unicode-normalization.workspace = true
 # The scratch index a version commit is built in.
 tempfile.workspace = true
 # A file the web deleted goes to the operating system trash.

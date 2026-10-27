@@ -11,6 +11,7 @@
 //! rest of the module uses, and nothing about the routing changed.
 
 use super::*;
+use librepaper_base::paths::RelPath;
 
 use crate::local::render::workspace::{self, MirrorError};
 
@@ -281,7 +282,7 @@ fn validate_manifest_shape(manifest: &[ManifestEntry], max_files: usize) -> Resu
     }
     if manifest
         .iter()
-        .any(|entry| !protocol::safe_relative_path(&entry.path))
+        .any(|entry| !RelPath::is_valid(&entry.path))
     {
         return Err(write_json(400, &json!({"error": "unsafe manifest path"})));
     }
@@ -305,7 +306,7 @@ fn validate_manifest(
 ) -> Result<(), Reply> {
     let mut expected: HashMap<&str, &ManifestEntry> = HashMap::new();
     for entry in manifest {
-        if !protocol::safe_relative_path(&entry.path) {
+        if !RelPath::is_valid(&entry.path) {
             return Err(write_json(
                 400,
                 &json!({"error": format!("unsafe path: {}", entry.path)}),

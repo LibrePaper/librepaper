@@ -5,8 +5,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Read};
-use std::path::{Component, Path};
 
+use librepaper_base::paths::RelPath;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -386,17 +386,7 @@ fn validate_format(format: &str) -> Result<(), ArchiveError> {
 }
 
 fn validate_path(path: &str) -> Result<(), ArchiveError> {
-    if path.is_empty() || path.len() > 4096 || path.contains('\\') || path.contains('\0') {
-        return Err(ArchiveError::Invalid(format!(
-            "invalid project path {path:?}"
-        )));
-    }
-    let parsed = Path::new(path);
-    if parsed.is_absolute()
-        || parsed
-            .components()
-            .any(|part| !matches!(part, Component::Normal(_)))
-    {
+    if path.len() > 4096 || RelPath::try_from(path).is_err() {
         return Err(ArchiveError::Invalid(format!(
             "invalid project path {path:?}"
         )));
