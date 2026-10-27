@@ -18,10 +18,7 @@
   // rail to put them in, so they are listed here; `activeTag` marks the one
   // showing, `ontag` takes a tag's id, and `ontagaction` takes "new" or
   // "manage" for the two things a tag list offers beneath it.
-  //
-  // Home is a plain link. A page that must do something before it leaves
-  // passes `onhome`, and Home is then an item that calls it.
-  let { tabs = [], panel = "", open = false, pressed = open, onselect, onsettings, onhome = undefined, menus = [], onmenu = undefined, me = {}, counts = {}, badges = {}, tags = [], activeTag = "", ontag = undefined, ontagaction = undefined } = $props();
+  let { tabs = [], panel = "", open = false, pressed = open, onselect, onsettings, menus = [], onmenu = undefined, me = {}, counts = {}, badges = {}, tags = [], activeTag = "", ontag = undefined, ontagaction = undefined } = $props();
   const marked = $derived(tabs.find((tab) => badges[tab.id]?.dot));
 
   // The menu is portalled so it cannot inherit a height; measure the room
@@ -90,7 +87,6 @@
       setTimeout(() => onmenu?.(id, trigger), 0);
     }
     else if (chosen.value === "signout") void signOut();
-    else if (chosen.value === "home") onhome?.();
   }}
   positioning={PANEL_POSITIONING}
 >
@@ -159,23 +155,15 @@
         <Icon name="settings" size="1rem" />
         <span class="menuitem-label">Settings</span>
       </Menu.Item>
-      {#if onhome}
-        <Menu.Item value="home" class="menuitem workspace-action" data-workspace-action="home">
-          <span class="menuitem-check" aria-hidden="true"></span>
-          <Icon name="home" size="1rem" />
-          <span class="menuitem-label">Home</span>
-        </Menu.Item>
-      {:else}
-        <Menu.Item value="home" class="menuitem workspace-action" data-workspace-action="home">
-          {#snippet element(attributes)}
-            <a {...retargetElementAttributes(attributes)} href="/" class="menuitem workspace-action" data-workspace-action="home">
-              <span class="menuitem-check" aria-hidden="true"></span>
-              <Icon name="home" size="1rem" />
-              <span class="menuitem-label">Home</span>
-            </a>
-          {/snippet}
-        </Menu.Item>
-      {/if}
+      <Menu.Item value="home" class="menuitem workspace-action" data-workspace-action="home">
+        {#snippet element(attributes)}
+          <a {...retargetElementAttributes(attributes)} href="/" class="menuitem workspace-action" data-workspace-action="home">
+            <span class="menuitem-check" aria-hidden="true"></span>
+            <Icon name="home" size="1rem" />
+            <span class="menuitem-label">Home</span>
+          </a>
+        {/snippet}
+      </Menu.Item>
       <Menu.Item value="docs" class="menuitem workspace-action" data-workspace-action="docs">
         {#snippet element(attributes)}
           <a {...retargetElementAttributes(attributes)} href={DOCUMENTATION_URL} target="_blank" rel="noreferrer" class="menuitem workspace-action" data-workspace-action="docs">
