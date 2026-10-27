@@ -97,6 +97,7 @@
   import { anonymousIdentity, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import Avatar from "./Avatar.svelte";
   import { extractOutline } from "../lib/outline.js";
+  import { countWordsIn, documentWords, sectionWords } from "../lib/word-count.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
   import { rememberPreview, lastPreview, flushAll } from "../lib/reader/preview-cache.js";
   import { previewTarget, rendersAlone, openingFile, includersOf } from "../lib/opening.js";
@@ -1728,6 +1729,19 @@
   });
   const outlineHeadings = $derived.by(() => panel === "outline" && mayEdit
     ? extractOutline(outlineSource, outlineFormat) : []);
+  // Word counts for the Outline panel: the open file's root with its includes,
+  // each section, and the source selection (kept by noteSourceSelection).
+  const outlineWords = $derived.by(() => {
+    void outlineRevision;
+    if (panel !== "outline" || !mayEdit || !toolbarPath) return null;
+    const texts = liveTreeNow().texts;
+    const root = previewTarget({ open: toolbarPath, locked: lockedPath || null, texts }).path || toolbarPath;
+    return {
+      document: documentWords(root, texts),
+      sections: sectionWords(outlineSource, outlineFormat, outlineHeadings),
+      selection: sourceSelectionWords,
+    };
+  });
   // Keep one render in flight and coalesce requests into the latest tree.
   // This bounds the worker queue while typing, and keeps each LaTeX PDF
   // tied to the snapshot digest of the tree that produced it.
@@ -2279,10 +2293,14 @@
   // those are the ways a selection moves.
   let sourceSelected = $state(false);
   let sourcePassageNow = $state(null);
+  let sourceSelectionWords = $state(null);
   function noteSourceSelection() {
     const range = editor?.selection?.();
     sourceSelected = Boolean(range);
     sourcePassageNow = range ? sourcePassage(editor.text(), range.from, range.to, session?.paths?.get(range.file) || "") : null;
+    // Only the outline shows this, and only for a selection in the open file.
+    const inOpen = Boolean(range) && range.file === openFile && panel === "outline";
+    sourceSelectionWords = inOpen ? countWordsIn(editor.text(), outlineFormat, range.from, range.to) : null;
   }
   // Tasks on a passage take it from the source, where selecting is precise and
   // the text is what the server finds. The rendered selection serves only
@@ -2524,6 +2542,7 @@
     // Leaving the panel a comparison belongs to ends the comparison.
     if (comparison.kind && comparison.kind !== name) endComparison();
     panel = name;
+    if (name === "outline") noteSourceSelection();
     if (compact) mobileView = name ? "sidebar" : "document";
     if (name !== "history") return Promise.resolve();
     return loadHistory();
@@ -4326,7 +4345,7 @@
   {/snippet}
 
   {#snippet outlinePanel()}
-    <Outline headings={outlineHeadings} activeFrom={outlineActiveFrom} onselect={openOutlineHeading} />
+    <Outline headings={outlineHeadings} words={outlineWords} activeFrom={outlineActiveFrom} onselect={openOutlineHeading} />
   {/snippet}
 
   {#snippet agentPanel()}
