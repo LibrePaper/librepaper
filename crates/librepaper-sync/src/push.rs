@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use librepaper_base::digest::Digest;
 use serde_json::{json, Value};
 
 use crate::client::{refusal, Client};
@@ -67,7 +66,7 @@ struct Plan<'a> {
     create: Vec<Value>,
     delete: Vec<Value>,
     put_binary: Vec<Value>,
-    uploads: Vec<(&'a str, &'a Local)>,
+    uploads: Vec<(String, &'a Local)>,
 }
 
 impl Plan<'_> {
@@ -117,7 +116,7 @@ fn plan_change<'a>(
                 "text": file.text.as_deref().unwrap_or_default(),
             })),
             Kind::Asset => {
-                plan.uploads.push((path.as_str(), file));
+                plan.uploads.push((path.clone(), file));
                 plan.put_binary
                     .push(json!({"path": path, "hash": file.sha, "expect": Value::Null}));
             }
@@ -141,7 +140,7 @@ fn plan_change<'a>(
                 plan.patches.extend(edits);
             }
             Kind::Asset => {
-                plan.uploads.push((path.as_str(), file));
+                plan.uploads.push((path.clone(), file));
                 plan.put_binary
                     .push(json!({"path": path, "hash": file.sha, "expect": before.sha}));
             }
@@ -317,9 +316,9 @@ pub async fn push(
                         .into(),
                 )
             })?;
-            let commit = git
-                .rev(commit)
-                .ok_or_else(|| Error::Invalid(format!("{commit} is not a commit in this repository")))?;
+            let commit = git.rev(commit).ok_or_else(|| {
+                Error::Invalid(format!("{commit} is not a commit in this repository"))
+            })?;
             scan_commit(git, &commit, &rules, &options.exclude)?
         }
         None => scan(dir, &rules, git.as_ref(), &options.exclude)?,
@@ -580,6 +579,7 @@ mod tests {
     use crate::link::Link;
     use crate::pull::{pull, PullOptions, PullOutcome};
     use crate::state::{FileStore, GitRefStore};
+    use librepaper_base::digest::Digest;
 
     fn write(dir: &Path, path: &str, bytes: &[u8]) {
         let target = dir.join(path);
@@ -1340,7 +1340,10 @@ mod tests {
 
         let sent = push(&server.client(), dir.path(), &store, &from_head()).await;
         assert!(matches!(sent, Ok(PushOutcome::Pushed { .. })), "{sent:?}");
-        assert_eq!(created(&server), [("a.tex".to_string(), "one\n".to_string())]);
+        assert_eq!(
+            created(&server),
+            [("a.tex".to_string(), "one\n".to_string())]
+        );
     }
 
     #[tokio::test]
@@ -1358,7 +1361,7 @@ mod tests {
             ("b.tex".to_string(), record(Kind::Text, b"two\n")),
         ]);
         store.save(&state).unwrap();
-        git.run(&["rm", "-q", "--cached", "b.tex"], None, &[]).unwrap();
+        std::fs::remove_file(dir.path().join("b.tex")).unwrap();
         commit_all(&git, "Drop b");
         // The copy stays in the folder, now untracked.
         write(dir.path(), "b.tex", b"two\n");

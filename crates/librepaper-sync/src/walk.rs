@@ -322,8 +322,7 @@ pub(crate) fn scan_commit(
             continue;
         };
         let mut fields = meta.split(' ');
-        let (Some(mode), Some(_), Some(oid)) = (fields.next(), fields.next(), fields.next())
-        else {
+        let (Some(mode), Some(_), Some(oid)) = (fields.next(), fields.next(), fields.next()) else {
             continue;
         };
         let Ok(spelled) = std::str::from_utf8(&entry[tab + 1..]) else {
