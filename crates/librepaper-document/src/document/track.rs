@@ -4232,6 +4232,21 @@ mod tests {
     }
 
     #[test]
+    fn unsuggested_range_touching_a_mark_counts_as_meeting_it() {
+        let (doc, id) = setup("hello world");
+        apply_tracked_edits(&doc, &id, &[edit(5, 0, " big")], &ME, None, 1).unwrap();
+        doc.commit();
+        let u = unsuggested(&doc, &id).unwrap();
+        let change = resolve_changes(&doc, &id)[0].id.clone();
+        // The mark sits at projected offset 5. A range ending at 5 and a
+        // range starting at 5 both touch it and are refused.
+        assert_eq!(u.to_stored(2, 5), Err(change.clone()));
+        assert_eq!(u.to_stored(5, 8), Err(change));
+        assert!(u.to_stored(2, 4).is_ok());
+        assert!(u.to_stored(6, 8).is_ok());
+    }
+
+    #[test]
     fn unsuggest_texts_swaps_a_text_and_leaves_the_tree_alone() {
         use crate::document::projection::{Entry, Projection};
         let (doc, id) = setup("hello world");
