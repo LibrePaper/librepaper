@@ -13,6 +13,7 @@ use uuid::Uuid;
 use super::source_change::{client_seq_of, label_for_request, AgentError, Patch, SourceChange};
 use librepaper_base::text::LineEnding;
 use librepaper_document::document::anchors::{self, FragmentRange, OperationFile};
+use librepaper_document::document::passage::{unique_occurrence, Occurrence};
 use librepaper_document::document::session;
 use librepaper_document::document::track;
 use librepaper_engine::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
@@ -546,28 +547,18 @@ impl AgentTrackedCommand {
 }
 
 /// The byte offset of the only occurrence of `needle` in `text`. Occurrences
-/// may overlap, so the search restarts one character after each match start.
+/// may overlap.
 fn locate_unique(text: &str, needle: &str) -> Result<usize, &'static str> {
     // An empty passage is the first text of an empty file; anywhere else it
     // matches at every position.
-    if needle.is_empty() {
-        return if text.is_empty() {
-            Ok(0)
-        } else {
-            Err("the passage is ambiguous; read the document again")
-        };
+    if needle.is_empty() && text.is_empty() {
+        return Ok(0);
     }
-    let mut found = None;
-    let mut from = 0;
-    while let Some(at) = text[from..].find(needle) {
-        let at = from + at;
-        if found.is_some() {
-            return Err("the passage is ambiguous; read the document again");
-        }
-        found = Some(at);
-        from = at + text[at..].chars().next().map_or(1, char::len_utf8);
+    match unique_occurrence(text, needle) {
+        Occurrence::One { start, .. } => Ok(start),
+        Occurrence::Many => Err("the passage is ambiguous; read the document again"),
+        Occurrence::None => Err("the passage changed; read the document again"),
     }
-    found.ok_or("the passage changed; read the document again")
 }
 
 impl Command for AgentTrackedCommand {

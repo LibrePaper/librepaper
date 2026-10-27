@@ -46,6 +46,7 @@ use loro::{
     Container, ContainerTrait, LoroDoc, LoroMap, LoroText, LoroValue, ValueOrContainer,
 };
 
+use crate::document::passage::{unique_occurrence, Occurrence};
 use crate::document::session::{Edit, CHANGES, FILES};
 
 pub const ANCHORS: &str = "anchors";
@@ -169,12 +170,10 @@ struct Entry {
 /// shift its pieces gain there. Overlapping occurrences count as two: "aa" in
 /// "aaa" is ambiguous.
 fn once(hay: &str, needle: &str, shift: isize) -> Option<(usize, isize)> {
-    let byte = hay.find(needle)?;
-    let next = byte + needle.chars().next().map_or(0, char::len_utf8);
-    if hay[next..].contains(needle) {
-        return None;
+    match unique_occurrence(hay, needle) {
+        Occurrence::One { start, .. } => Some((utf16_len(&hay[..start]), shift)),
+        Occurrence::None | Occurrence::Many => None,
     }
-    Some((utf16_len(&hay[..byte]), shift))
 }
 
 /// A linewise cut and paste in Vim mode moves the newline from one end of the
