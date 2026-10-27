@@ -237,8 +237,7 @@ fn walk_limited(
                 continue;
             };
             let kind = entry.file_type();
-            if kind.as_ref().is_ok_and(|kind| kind.is_file()) && !extension_matches(filter, &name)
-            {
+            if kind.as_ref().is_ok_and(|kind| kind.is_file()) && !extension_matches(filter, &name) {
                 continue;
             }
             let relative = if prefix.is_empty() {
@@ -533,7 +532,8 @@ impl Scan {
             if self.seen.get(path) != Some(stat) || self.settled.get(path) == Some(stat) {
                 continue;
             }
-            let Some((size, digest)) = workspace::cached_digest(&root.join(path), read_project_file)
+            let Some((size, digest)) =
+                workspace::cached_digest(&root.join(path), read_project_file)
             else {
                 // Still being written or just removed. The next look decides.
                 continue;
@@ -1431,7 +1431,13 @@ mod tests {
         for index in 0..10 {
             write(root.path(), &format!("other{index}.bin"), "");
         }
-        assert_eq!(walk_limited(root.path(), None, 13, 100).unwrap().files.len(), 13);
+        assert_eq!(
+            walk_limited(root.path(), None, 13, 100)
+                .unwrap()
+                .files
+                .len(),
+            13
+        );
         assert!(matches!(
             walk_limited(root.path(), None, 12, 100),
             Err(WalkError::TooMany)
@@ -1476,7 +1482,10 @@ mod tests {
         assert!(!wanted("tex"));
         assert!(!wanted("main."));
         assert!(extension_matches(None, "tex"));
-        assert_eq!(parse_extensions("tex, .MD,,pdf"), Some(names(&["tex", "md", "pdf"])));
+        assert_eq!(
+            parse_extensions("tex, .MD,,pdf"),
+            Some(names(&["tex", "md", "pdf"]))
+        );
         assert_eq!(parse_extensions(" , "), None);
     }
 
@@ -1913,8 +1922,14 @@ mod tests {
         assert!(inner.projects.get(&binding.id).is_some());
 
         // Another origin cannot read it.
-        let foreign =
-            handle_tree(&inner, &headers, Some("https://other.example"), &binding.id, None).await;
+        let foreign = handle_tree(
+            &inner,
+            &headers,
+            Some("https://other.example"),
+            &binding.id,
+            None,
+        )
+        .await;
         assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
         let file = handle_file(&inner, &headers, Some(origin), &binding.id, "main.tex").await;
         let bytes = axum::body::to_bytes(file.into_body(), 1 << 20)
@@ -2250,7 +2265,8 @@ mod tests {
         let binding = inner.bindings.open_project(ORIGIN, &root_path).unwrap();
         let headers = test_support::bearer(&inner);
 
-        let tree = body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id, None).await).await;
+        let tree =
+            body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id, None).await).await;
         let cursor = tree["cursor"].as_u64().unwrap();
 
         // The render: the expected outputs and files the run created, written
@@ -2290,7 +2306,8 @@ mod tests {
         assert_eq!(next["changes"], json!([]));
 
         // A folder opened after the render does not list its own outputs.
-        let tree = body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id, None).await).await;
+        let tree =
+            body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id, None).await).await;
         let listed: Vec<&Value> = tree["files"]
             .as_array()
             .unwrap()
@@ -2411,7 +2428,8 @@ mod tests {
         let inner = quick_inner(state.path()).await;
         let binding = inner.bindings.open_project(ORIGIN, &root_path).unwrap();
         let headers = test_support::bearer(&inner);
-        let tree = body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id, None).await).await;
+        let tree =
+            body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id, None).await).await;
         let cursor = tree["cursor"].as_u64().unwrap();
 
         let render = RenderWatch::begin(&inner, &render_request(&binding, "main.tex"))
@@ -2503,7 +2521,8 @@ mod tests {
         let headers = test_support::bearer(&inner);
 
         // The page opens the folder, imports both files, and saves them.
-        let tree = body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id, None).await).await;
+        let tree =
+            body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id, None).await).await;
         let cursor = tree["cursor"].as_u64().unwrap();
         let listed: Vec<&Value> = tree["files"]
             .as_array()
@@ -2578,7 +2597,8 @@ mod tests {
         .await;
         let binding = inner.bindings.open_project(ORIGIN, &root_path).unwrap();
         let headers = test_support::bearer(&inner);
-        let tree = body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id, None).await).await;
+        let tree =
+            body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id, None).await).await;
         let cursor = tree["cursor"].as_u64().unwrap();
         let record = inner.bindings.written_record(&binding.id);
         let saved = BTreeMap::from([
@@ -2620,7 +2640,8 @@ mod tests {
         let answer = body_of(reply).await;
         assert_eq!(answer["reset"], true);
         assert_eq!(answer["changes"], json!([]));
-        let tree = body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id, None).await).await;
+        let tree =
+            body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id, None).await).await;
         let listed: Vec<&Value> = tree["files"]
             .as_array()
             .unwrap()

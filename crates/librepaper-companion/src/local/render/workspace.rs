@@ -562,8 +562,9 @@ struct CachedDigest {
     digest: String,
 }
 
-static DIGESTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<PathBuf, CachedDigest>>> =
-    std::sync::LazyLock::new(Default::default);
+static DIGESTS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, CachedDigest>>,
+> = std::sync::LazyLock::new(Default::default);
 
 #[cfg(test)]
 thread_local! {
