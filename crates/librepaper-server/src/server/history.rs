@@ -76,7 +76,7 @@ fn projection_wire(
         .collect();
     json!({
         "sha": sha,
-        "tree_sha": projected.projection.digest(),
+        "tree_sha": projected.projection.digest().to_hex(),
         "storage_id": storage_id,
         "at": at,
         "by": by,

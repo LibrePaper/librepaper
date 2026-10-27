@@ -24,9 +24,9 @@ pub mod paths;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use self::paths::{Kind, Rules};
+use librepaper_base::digest::Digest;
 use loro::{Container, LoroDoc, LoroValue, ValueOrContainer};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 
 pub const ROOTS: [&str; 4] = [FILES, PATHS, ASSETS, META];
 
@@ -114,7 +114,9 @@ pub struct Entry {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub id: String,
     /// The digest of what is at this path: the SHA-256 of a text's UTF-8
-    /// bytes, or the asset's own digest as the document records it.
+    /// bytes, taken over the stored body as is (every write route stores LF,
+    /// see `session::line_feeds`, so this is the LF text), or the asset's own
+    /// digest as the document records it.
     pub digest: String,
     /// The UTF-8 length of a text. Zero for an asset, whose bytes are not
     /// here.
@@ -153,12 +155,8 @@ impl Projection {
     /// and every use this digest has, from a reader's etag to the
     /// stale-selection check on a rendered comment (§7.1), needs it to move
     /// exactly when the words do.
-    pub fn digest(&self) -> String {
-        hex::encode(self.digest_bytes())
-    }
-
-    pub fn digest_bytes(&self) -> [u8; 32] {
-        Sha256::digest(self.canonical_bytes()).into()
+    pub fn digest(&self) -> Digest {
+        Digest::of(&self.canonical_bytes())
     }
 
     /// The canonical form the digest is taken over: an empty entry line, then
@@ -257,7 +255,7 @@ pub fn project(doc: &LoroDoc, rules: &Rules) -> Projected {
             key: id.clone(),
             id,
             requested,
-            digest: hex::encode(Sha256::digest(body.as_bytes())),
+            digest: Digest::of(body.as_bytes()).to_hex(),
             bytes: body.len() as u64,
             text: Some(body),
         });

@@ -5,10 +5,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use librepaper_base::digest::Digest;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::files::{sha256_hex, FileRecord};
+use crate::files::FileRecord;
 use crate::git::Git;
 use crate::link::Link;
 use crate::Error;
@@ -184,7 +185,7 @@ impl FileStore {
     /// The store for `dir` under `<state_home>/librepaper/sync`.
     pub fn for_dir(state_home: &Path, dir: &Path) -> FileStore {
         let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-        let key = sha256_hex(canonical.to_string_lossy().as_bytes());
+        let key = Digest::of(canonical.to_string_lossy().as_bytes()).to_hex();
         FileStore {
             path: state_home
                 .join("librepaper")

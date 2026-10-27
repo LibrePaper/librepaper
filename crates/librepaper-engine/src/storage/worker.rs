@@ -973,7 +973,7 @@ impl Worker {
         let key = format!(
             "documents/{}/labels/{}.tar.zst",
             label.document_id,
-            projected.projection.digest()
+            projected.projection.digest().to_hex()
         );
         // Serialize adoption with the orphan sweep. The lock is session-owned
         // on a direct connection, so neither cancellation nor a small pool
@@ -993,7 +993,7 @@ impl Worker {
                 self.blobs.as_ref(),
                 label.document_id,
                 &key,
-                projected.projection.digest_bytes(),
+                *projected.projection.digest().as_bytes(),
                 encoded,
             )
             .await?

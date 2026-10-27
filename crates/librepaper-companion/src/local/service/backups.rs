@@ -2021,7 +2021,7 @@ mod tests {
     ) -> Json<Value> {
         Json(json!({
             "schema": 1,
-            "project_digest": fixture.projection.digest(),
+            "project_digest": fixture.projection.digest().to_hex(),
             "slug": "scheduled-project",
             "title": "Scheduled Project",
             "format": "markdown",

@@ -256,7 +256,7 @@ impl Head<'_> {
     }
 
     pub fn digest(&self) -> String {
-        self.projection.projection.digest()
+        self.projection.projection.digest().to_hex()
     }
 
     /// The path rules of this deployment.
@@ -323,7 +323,7 @@ impl Head<'_> {
             batch,
             end: header.partial_end_vv,
             after_frontier: draft.oplog_frontiers(),
-            after_digest: projected.projection.digest(),
+            after_digest: projected.projection.digest().to_hex(),
             after_projection: Arc::new(projected),
             client_seq,
             // Moved out of the local, not released at the end of `prepare`:
@@ -2725,7 +2725,7 @@ impl Sequencer {
                 &librepaper_document::document::paths::rules(&self.config),
             )
             .projection
-            .digest()
+            .digest().to_hex()
         });
         // Set unconditionally: keeping this on the success path alone meant a
         // cold document never engaged the one-per-second throttle, so every

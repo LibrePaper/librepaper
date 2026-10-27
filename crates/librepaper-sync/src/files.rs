@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::Error;
 
@@ -20,10 +19,6 @@ pub struct FileRecord {
     pub kind: Kind,
     /// SHA-256 hex of the LF text, or the asset digest.
     pub sha: String,
-}
-
-pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
 }
 
 /// The text with CRLF and lone CR turned into LF, which is how the CLI

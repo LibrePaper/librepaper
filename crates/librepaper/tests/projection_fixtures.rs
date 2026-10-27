@@ -120,7 +120,7 @@ fn expectation(projection: &Projection) -> Value {
     json!({
         "files": files,
         "diagnostics": diagnostics,
-        "digest": projection.digest(),
+        "digest": projection.digest().to_hex(),
     })
 }
 

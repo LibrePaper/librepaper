@@ -26,7 +26,7 @@ impl Room {
             })
         })?;
         Ok(crate::room::agent_query::QuerySnapshot {
-            tree_digest: projected.projection.digest(),
+            tree_digest: projected.projection.digest().to_hex(),
             projected,
             // A capture is of the source. Comments are read live, a page at
             // a time, by whichever query asks for them: see

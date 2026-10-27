@@ -47,7 +47,7 @@ async fn project_export_writes_verified_text_and_binary_files() {
         files,
         diagnostics: Vec::new(),
     };
-    let digest = projection.digest();
+    let digest = projection.digest().to_hex();
     let snapshot = json!({
         "version": 1,
         "protocol": "librepaper.snapshot.v1",

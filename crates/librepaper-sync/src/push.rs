@@ -3,11 +3,12 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use librepaper_base::digest::Digest;
 use serde_json::{json, Value};
 
 use crate::client::{refusal, Client};
 use crate::diff::{self, Patch};
-use crate::files::{sha256_hex, FileRecord, Kind};
+use crate::files::{FileRecord, Kind};
 use crate::git::Git;
 use crate::link::Link;
 use crate::pull::settle;
@@ -316,7 +317,7 @@ async fn upload(client: &Client, slug: &str, file: &Local) -> Result<(), Error> 
         return Ok(());
     }
     let bytes = std::fs::read(&file.file).map_err(|error| Error::io(&file.file, error))?;
-    if sha256_hex(&bytes) != file.sha {
+    if Digest::of(&bytes).to_hex() != file.sha {
         return Err(Error::Invalid(format!(
             "{} changed while it was being sent",
             file.file.display()
@@ -358,7 +359,7 @@ fn upload_list(found: &Scan, rules: &Rules) -> Result<Vec<(String, Vec<u8>)>, Er
             None => {
                 let bytes =
                     std::fs::read(&file.file).map_err(|error| Error::io(&file.file, error))?;
-                if sha256_hex(&bytes) != file.sha {
+                if Digest::of(&bytes).to_hex() != file.sha {
                     return Err(Error::Invalid(format!(
                         "{} changed while it was being sent",
                         file.file.display()
@@ -477,7 +478,7 @@ mod tests {
     fn record(kind: Kind, bytes: &[u8]) -> FileRecord {
         FileRecord {
             kind,
-            sha: sha256_hex(bytes),
+            sha: Digest::of(bytes).to_hex(),
         }
     }
 
@@ -517,8 +518,8 @@ mod tests {
         assert_eq!(plan.patches[0].start, 6);
         assert_eq!(plan.create, [json!({"path": "new.tex", "text": "fresh\n"})]);
 
-        let edited = sha256_hex(b"alpha\nbeta\ngamma\n");
-        let gone = sha256_hex(b"gone\n");
+        let edited = Digest::of(b"alpha\nbeta\ngamma\n").to_hex();
+        let gone = Digest::of(b"gone\n").to_hex();
         assert_eq!(
             plan.dependencies,
             [
@@ -529,15 +530,15 @@ mod tests {
         assert_eq!(
             plan.delete,
             [
-                json!({"path": "fig/gone.png", "expect": sha256_hex(b"old-figure")}),
+                json!({"path": "fig/gone.png", "expect": Digest::of(b"old-figure").to_hex()}),
                 json!({"path": "gone.tex", "expect": gone}),
             ]
         );
         assert_eq!(
             plan.put_binary,
             [
-                json!({"path": "fig/new.png", "hash": sha256_hex(b"new-figure"), "expect": null}),
-                json!({"path": "fig/changed.png", "hash": sha256_hex(b"after"), "expect": sha256_hex(b"before")}),
+                json!({"path": "fig/new.png", "hash": Digest::of(b"new-figure").to_hex(), "expect": null}),
+                json!({"path": "fig/changed.png", "hash": Digest::of(b"after").to_hex(), "expect": Digest::of(b"before").to_hex()}),
             ]
         );
         assert_eq!(plan.uploads.len(), 2);
@@ -606,7 +607,7 @@ mod tests {
         recorded.insert("gone.tex".to_string(), record(Kind::Text, b"gone\n"));
         let changes = compare(dir.path(), &recorded, &found);
         let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new());
-        let gone = sha256_hex(b"gone\n");
+        let gone = Digest::of(b"gone\n").to_hex();
         assert_eq!(plan.delete, [json!({"path": "gone.tex", "expect": gone})]);
         assert_eq!(plan.dependencies, [dependency("gone.tex", &gone)]);
     }
@@ -636,7 +637,7 @@ mod tests {
         assert!(plan.create.is_empty());
         assert_eq!(
             plan.put_binary,
-            [json!({"path": "fig/new.png", "hash": sha256_hex(b"new-figure"), "expect": null})]
+            [json!({"path": "fig/new.png", "hash": Digest::of(b"new-figure").to_hex(), "expect": null})]
         );
         assert_eq!(plan.uploads.len(), 1);
     }

@@ -542,7 +542,7 @@ async fn fetch_snapshot(
     }
     let snapshot: Snapshot = serde_json::from_value(payload)
         .map_err(|error| format!("invalid project snapshot for {slug:?}: {error}"))?;
-    if snapshot.digest != snapshot.projection.digest() {
+    if snapshot.digest != snapshot.projection.digest().to_hex() {
         return Err(format!(
             "project {slug:?} snapshot digest does not match its identity"
         ));
@@ -1261,7 +1261,7 @@ mod tests {
                     bytes: dated_note.len() as u64,
                 },
             );
-            let digest = projection.digest();
+            let digest = projection.digest().to_hex();
             if !state.ignore_if_none_match.load(Ordering::SeqCst) {
                 if let Some(if_none_match) = headers.get("if-none-match") {
                     if if_none_match.as_bytes() == format!("\"{digest}\"").as_bytes() {
@@ -1291,7 +1291,7 @@ mod tests {
             };
             let mut projection = librepaper_document::document::projection::Projection::default();
             projection.files.insert("images/plot.bin".into(), entry);
-            let digest = projection.digest();
+            let digest = projection.digest().to_hex();
             if !state.ignore_if_none_match.load(Ordering::SeqCst) {
                 if let Some(if_none_match) = headers.get("if-none-match") {
                     if if_none_match.as_bytes() == format!("\"{digest}\"").as_bytes() {
