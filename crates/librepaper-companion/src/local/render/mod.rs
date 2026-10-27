@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use librepaper_base::process::{supervise, Keep, Limits};
+use librepaper_base::process::{supervise, Ending, Keep, Limits};
 use librepaper_base::tasks::Shutdown;
 use tokio::process::Command;
 use tokio::sync::mpsc;

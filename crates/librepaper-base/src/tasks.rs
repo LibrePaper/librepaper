@@ -11,7 +11,7 @@ use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 
 /// A cancellation signal shared by clones. Once cancelled it stays cancelled.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Shutdown(CancellationToken);
 
 impl Shutdown {
