@@ -36,10 +36,43 @@ struct Manifest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     missing: Vec<String>,
 }
-fn now() -> Result<String, String> {
+/// Why a backup or restore stopped. The text is exactly what the command
+/// prints, so the variant only says which kind of failure it was.
+#[derive(Debug, thiserror::Error)]
+pub enum BackupError {
+    /// A local file, directory or archive could not be read or written.
+    #[error("{0}")]
+    Io(String),
+    /// The blob store refused or could not find an object.
+    #[error("{0}")]
+    ObjectStore(String),
+    /// PostgreSQL refused a statement or the connection failed.
+    #[error("{0}")]
+    Database(String),
+    /// `pg_dump` or `pg_restore` could not run or exited with a failure.
+    #[error("{0}")]
+    Tool(String),
+    /// The manifest could not be read or written.
+    #[error("{0}")]
+    Manifest(String),
+    /// The request or the stored data is not acceptable as given.
+    #[error("{0}")]
+    Invalid(String),
+    /// A length, digest or version did not match what was recorded.
+    #[error("{0}")]
+    Mismatch(String),
+    /// The clock could not be formatted.
+    #[error("{0}")]
+    Time(String),
+    /// The wider storage layer reported a failure as text.
+    #[error("{0}")]
+    Storage(String),
+}
+
+fn now() -> Result<String, BackupError> {
     time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|e| e.to_string())
+        .map_err(|e| BackupError::Time(e.to_string()))
 }
 
 pub async fn backup_cli(options: StorageOptions, directory: String, id: String) {
@@ -60,31 +93,33 @@ struct StartedBackup {
 
 /// The part both modes share. The caller copies the objects while the returned
 /// lock is held, then releases it with `release_backup()`.
-async fn start_backup(options: &StorageOptions, dump: &Path) -> Result<StartedBackup, String> {
+async fn start_backup(options: &StorageOptions, dump: &Path) -> Result<StartedBackup, BackupError> {
     let started_at = now()?;
     let catalog = PostgresCatalog::connect(PostgresOptions::new(&options.database_url))
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| BackupError::Database(e.to_string()))?;
     // This is session-scoped and acquired before the exported snapshot. Every
     // destructive blob path takes the matching shared lock, so object bytes
     // named by this snapshot remain available through the final copy.
-    let mut lifecycle_lock = super::maintenance::BlobLifecycleLock::backup(&catalog).await?;
+    let mut lifecycle_lock = super::maintenance::BlobLifecycleLock::backup(&catalog)
+        .await
+        .map_err(BackupError::Storage)?;
     // Transaction control cannot be prepared, so this one stays a runtime
     // statement: the checked macros would fail to PREPARE it.
     sqlx::query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         .execute(lifecycle_lock.connection_mut())
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| BackupError::Database(e.to_string()))?;
     let snapshot = sqlx::query_scalar!(r#"SELECT pg_export_snapshot() AS "snapshot!""#)
         .fetch_one(lifecycle_lock.connection_mut())
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| BackupError::Database(e.to_string()))?;
     let migration_version = sqlx::query_scalar!(
         r#"SELECT COALESCE(max(version),0) AS "version!" FROM _sqlx_migrations WHERE success"#
     )
     .fetch_one(lifecycle_lock.connection_mut())
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| BackupError::Database(e.to_string()))?;
     // §8.5: the backup set is PostgreSQL plus the blobs these tables name --
     // an asset, a current or retired document snapshot, or a retained
     // on-demand plain-source archive. Retired snapshots are in because the
@@ -110,7 +145,7 @@ async fn start_backup(options: &StorageOptions, dump: &Path) -> Result<StartedBa
     )
     .fetch_all(lifecycle_lock.connection_mut())
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| BackupError::Database(e.to_string()))?;
     let mut by_key: std::collections::BTreeMap<String, Reference> =
         std::collections::BTreeMap::new();
     for row in rows {
@@ -121,10 +156,10 @@ async fn start_backup(options: &StorageOptions, dump: &Path) -> Result<StartedBa
         };
         if let Some(existing) = by_key.get(&reference.key) {
             if existing.bytes != reference.bytes || existing.sha256 != reference.sha256 {
-                return Err(format!(
+                return Err(BackupError::Invalid(format!(
                     "database records conflicting metadata for object {}",
                     reference.key
-                ));
+                )));
             }
         } else {
             by_key.insert(reference.key.clone(), reference);
@@ -137,15 +172,15 @@ async fn start_backup(options: &StorageOptions, dump: &Path) -> Result<StartedBa
         .stdout(std::process::Stdio::null())
         .status()
         .await
-        .map_err(|e| format!("could not run pg_dump: {e}"))?;
+        .map_err(|e| BackupError::Tool(format!("could not run pg_dump: {e}")))?;
     if !status.success() {
-        return Err(format!("pg_dump exited with {status}"));
+        return Err(BackupError::Tool(format!("pg_dump exited with {status}")));
     }
     // As with BEGIN above, COMMIT cannot be prepared.
     sqlx::query("COMMIT")
         .execute(lifecycle_lock.connection_mut())
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| BackupError::Database(e.to_string()))?;
     Ok(StartedBackup {
         started_at,
         migration_version,
@@ -155,14 +190,14 @@ async fn start_backup(options: &StorageOptions, dump: &Path) -> Result<StartedBa
     })
 }
 
-async fn create(options: StorageOptions, destination: &Path, id: String) -> Result<(), String> {
+async fn create(options: StorageOptions, destination: &Path, id: String) -> Result<(), BackupError> {
     if destination.exists() {
-        return Err(format!(
+        return Err(BackupError::Invalid(format!(
             "backup destination already exists: {}",
             destination.display()
-        ));
+        )));
     }
-    super::create_private_dir(destination, "backup destination")?;
+    super::create_private_dir(destination, "backup destination").map_err(BackupError::Storage)?;
     let dump = destination.join("database.dump");
     write_private_file(&dump, &[])?;
     let StartedBackup {
@@ -172,26 +207,35 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
         catalog: _catalog,
         lifecycle_lock,
     } = start_backup(&options, &dump).await?;
-    let blobs = super::open_storage(options).await?;
+    let blobs = super::open_storage(options)
+        .await
+        .map_err(BackupError::Storage)?;
     let (references, missing) = drop_missing(blobs.as_ref(), references).await?;
     let object_root = destination.join("objects");
     let mut verified_references = Vec::with_capacity(references.len());
     for reference in references {
         let target = safe_target(&object_root, &reference.key)?;
         if let Some(parent) = target.parent() {
-            super::create_private_dir(parent, "backup object directory")?;
+            super::create_private_dir(parent, "backup object directory")
+                .map_err(BackupError::Storage)?;
         }
         let mut sink = HashingFile::create(&target)?;
         let length = blobs
             .get_to_writer(&reference.key, &mut sink)
             .await
-            .map_err(|e| format!("backup object {}: {e}", reference.key))?;
+            .map_err(|e| BackupError::ObjectStore(format!("backup object {}: {e}", reference.key)))?;
         let digest = sink.finish();
         if reference.bytes != 0 && reference.bytes != length as i64 {
-            return Err(format!("backup object length mismatch: {}", reference.key));
+            return Err(BackupError::Mismatch(format!(
+                "backup object length mismatch: {}",
+                reference.key
+            )));
         }
         if !reference.sha256.is_empty() && reference.sha256 != digest {
-            return Err(format!("backup object digest mismatch: {}", reference.key));
+            return Err(BackupError::Mismatch(format!(
+                "backup object digest mismatch: {}",
+                reference.key
+            )));
         }
         verified_references.push(Reference {
             key: reference.key,
@@ -199,7 +243,10 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
             sha256: digest,
         });
     }
-    lifecycle_lock.release_backup().await?;
+    lifecycle_lock
+        .release_backup()
+        .await
+        .map_err(BackupError::Storage)?;
     let manifest = build_manifest(
         id,
         started_at,
@@ -210,7 +257,7 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
     )?;
     write_private_file(
         &destination.join("manifest.json"),
-        &serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?,
+        &serde_json::to_vec_pretty(&manifest).map_err(|e| BackupError::Manifest(e.to_string()))?,
     )?;
     if missing.is_empty() {
         println!("created verified backup {}", destination.display());
@@ -230,7 +277,7 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
 async fn drop_missing(
     blobs: &dyn BlobStore,
     references: Vec<Reference>,
-) -> Result<(Vec<Reference>, Vec<String>), String> {
+) -> Result<(Vec<Reference>, Vec<String>), BackupError> {
     let mut present = Vec::with_capacity(references.len());
     let mut missing = Vec::new();
     for reference in references {
@@ -243,7 +290,12 @@ async fn drop_missing(
                 );
                 missing.push(reference.key);
             }
-            Err(e) => return Err(format!("backup object {}: {e}", reference.key)),
+            Err(e) => {
+                return Err(BackupError::ObjectStore(format!(
+                    "backup object {}: {e}",
+                    reference.key
+                )))
+            }
         }
     }
     Ok((present, missing))
@@ -257,11 +309,11 @@ async fn create_archive(
     prefix: String,
     includes: Vec<PathBuf>,
     out: impl std::io::Write,
-) -> Result<(), String> {
+) -> Result<(), BackupError> {
     validate_archive_prefix(&prefix)?;
     let files = expand_includes(&includes)?;
     let dump =
-        tempfile::NamedTempFile::new().map_err(|e| format!("could not create dump file: {e}"))?;
+        tempfile::NamedTempFile::new().map_err(|e| BackupError::Io(format!("could not create dump file: {e}")))?;
     let StartedBackup {
         started_at,
         migration_version,
@@ -269,7 +321,9 @@ async fn create_archive(
         catalog: _catalog,
         lifecycle_lock,
     } = start_backup(&options, dump.path()).await?;
-    let blobs = super::open_storage(options).await?;
+    let blobs = super::open_storage(options)
+        .await
+        .map_err(BackupError::Storage)?;
     let (mut references, missing) = drop_missing(blobs.as_ref(), references).await?;
     // The manifest is written first, so any object the database left unmeasured
     // is read here to record its length and digest.
@@ -278,7 +332,7 @@ async fn create_archive(
             let bytes = blobs
                 .get(&reference.key)
                 .await
-                .map_err(|e| format!("backup object {}: {e}", reference.key))?;
+                .map_err(|e| BackupError::ObjectStore(format!("backup object {}: {e}", reference.key)))?;
             reference.bytes = bytes.len() as i64;
             reference.sha256 = librepaper_base::digest::Digest::of(&bytes).to_hex();
         }
@@ -291,7 +345,7 @@ async fn create_archive(
         &references,
         &missing,
     )?;
-    let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| BackupError::Manifest(e.to_string()))?;
     write_archive(
         out,
         &prefix,
@@ -327,7 +381,7 @@ async fn write_archive(
     references: &[Reference],
     lock: Option<BlobLifecycleLock>,
     includes: &[PathBuf],
-) -> Result<(), String> {
+) -> Result<(), BackupError> {
     let mut builder = tar::Builder::new(out);
     append_entry(
         &mut builder,
@@ -335,8 +389,8 @@ async fn write_archive(
         manifest.len() as u64,
         manifest,
     )?;
-    let dump_file = std::fs::File::open(dump).map_err(|e| e.to_string())?;
-    let dump_length = dump_file.metadata().map_err(|e| e.to_string())?.len();
+    let dump_file = std::fs::File::open(dump).map_err(|e| BackupError::Io(e.to_string()))?;
+    let dump_length = dump_file.metadata().map_err(|e| BackupError::Io(e.to_string()))?.len();
     append_entry(
         &mut builder,
         format!("{prefix}/database.dump"),
@@ -348,12 +402,18 @@ async fn write_archive(
         let bytes = blobs
             .get(&reference.key)
             .await
-            .map_err(|e| format!("backup object {}: {e}", reference.key))?;
+            .map_err(|e| BackupError::ObjectStore(format!("backup object {}: {e}", reference.key)))?;
         if reference.bytes != bytes.len() as i64 {
-            return Err(format!("backup object length mismatch: {}", reference.key));
+            return Err(BackupError::Mismatch(format!(
+                "backup object length mismatch: {}",
+                reference.key
+            )));
         }
         if reference.sha256 != librepaper_base::digest::Digest::of(&bytes).to_hex() {
-            return Err(format!("backup object digest mismatch: {}", reference.key));
+            return Err(BackupError::Mismatch(format!(
+                "backup object digest mismatch: {}",
+                reference.key
+            )));
         }
         append_entry(
             &mut builder,
@@ -363,17 +423,20 @@ async fn write_archive(
         )?;
     }
     if let Some(lock) = lock {
-        lock.release_backup().await?;
+        lock.release_backup()
+            .await
+            .map_err(BackupError::Storage)?;
     }
     for file in includes {
-        let name = file.strip_prefix("/").map_err(|e| e.to_string())?;
+        let name = file.strip_prefix("/")
+            .map_err(|e| BackupError::Invalid(e.to_string()))?;
         let input =
-            std::fs::File::open(file).map_err(|e| format!("include {}: {e}", file.display()))?;
-        let length = input.metadata().map_err(|e| e.to_string())?.len();
+            std::fs::File::open(file).map_err(|e| BackupError::Io(format!("include {}: {e}", file.display())))?;
+        let length = input.metadata().map_err(|e| BackupError::Io(e.to_string()))?.len();
         append_entry(&mut builder, name, length, input)?;
     }
-    let mut out = builder.into_inner().map_err(|e| e.to_string())?;
-    std::io::Write::flush(&mut out).map_err(|e| e.to_string())
+    let mut out = builder.into_inner().map_err(|e| BackupError::Io(e.to_string()))?;
+    std::io::Write::flush(&mut out).map_err(|e| BackupError::Io(e.to_string()))
 }
 
 /// Every entry uses the same header so that unchanged content gives the same
@@ -383,7 +446,7 @@ fn append_entry<W: std::io::Write>(
     path: impl AsRef<Path>,
     size: u64,
     data: impl std::io::Read,
-) -> Result<(), String> {
+) -> Result<(), BackupError> {
     let mut header = tar::Header::new_gnu();
     header.set_entry_type(tar::EntryType::Regular);
     header.set_size(size);
@@ -391,44 +454,44 @@ fn append_entry<W: std::io::Write>(
     header.set_uid(0);
     header.set_gid(0);
     header.set_mtime(0);
-    header.set_username("").map_err(|e| e.to_string())?;
-    header.set_groupname("").map_err(|e| e.to_string())?;
+    header.set_username("").map_err(|e| BackupError::Io(e.to_string()))?;
+    header.set_groupname("").map_err(|e| BackupError::Io(e.to_string()))?;
     builder
         .append_data(&mut header, path, data)
-        .map_err(|e| e.to_string())
+        .map_err(|e| BackupError::Io(e.to_string()))
 }
 
-fn validate_archive_prefix(prefix: &str) -> Result<(), String> {
+fn validate_archive_prefix(prefix: &str) -> Result<(), BackupError> {
     let path = Path::new(prefix);
     if prefix.is_empty()
         || path.is_absolute()
         || path.components().any(|part| part == Component::ParentDir)
     {
-        return Err(format!(
+        return Err(BackupError::Invalid(format!(
             "archive prefix must be a non-empty relative path without '..': {prefix:?}"
-        ));
+        )));
     }
     Ok(())
 }
 
 /// Resolves each include to the regular files it names, in option order. A
 /// directory contributes its files in ascending path order.
-fn expand_includes(includes: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+fn expand_includes(includes: &[PathBuf]) -> Result<Vec<PathBuf>, BackupError> {
     let mut files = Vec::new();
     for include in includes {
         if !include.is_absolute() {
-            return Err(format!(
+            return Err(BackupError::Invalid(format!(
                 "include must be an absolute path: {}",
                 include.display()
-            ));
+            )));
         }
         let metadata = std::fs::symlink_metadata(include)
-            .map_err(|e| format!("include {}: {e}", include.display()))?;
+            .map_err(|e| BackupError::Io(format!("include {}: {e}", include.display())))?;
         if metadata.file_type().is_symlink() {
-            return Err(format!(
+            return Err(BackupError::Invalid(format!(
                 "include must not be a symlink: {}",
                 include.display()
-            ));
+            )));
         }
         if metadata.is_file() {
             files.push(include.clone());
@@ -438,37 +501,37 @@ fn expand_includes(includes: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
             found.sort();
             files.extend(found);
         } else {
-            return Err(format!(
+            return Err(BackupError::Invalid(format!(
                 "include is not a regular file or directory: {}",
                 include.display()
-            ));
+            )));
         }
     }
     Ok(files)
 }
 
-fn collect_files(directory: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
+fn collect_files(directory: &Path, found: &mut Vec<PathBuf>) -> Result<(), BackupError> {
     let entries = std::fs::read_dir(directory)
-        .map_err(|e| format!("include {}: {e}", directory.display()))?;
+        .map_err(|e| BackupError::Io(format!("include {}: {e}", directory.display())))?;
     for entry in entries {
-        let path = entry.map_err(|e| e.to_string())?.path();
+        let path = entry.map_err(|e| BackupError::Io(e.to_string()))?.path();
         let metadata = std::fs::symlink_metadata(&path)
-            .map_err(|e| format!("include {}: {e}", path.display()))?;
+            .map_err(|e| BackupError::Io(format!("include {}: {e}", path.display())))?;
         if metadata.file_type().is_symlink() {
-            return Err(format!(
+            return Err(BackupError::Invalid(format!(
                 "include must not contain a symlink: {}",
                 path.display()
-            ));
+            )));
         }
         if metadata.is_dir() {
             collect_files(&path, found)?;
         } else if metadata.is_file() {
             found.push(path);
         } else {
-            return Err(format!(
+            return Err(BackupError::Invalid(format!(
                 "include is not a regular file or directory: {}",
                 path.display()
-            ));
+            )));
         }
     }
     Ok(())
@@ -481,7 +544,7 @@ fn build_manifest(
     database_sha256: String,
     references: &[Reference],
     missing: &[String],
-) -> Result<Manifest, String> {
+) -> Result<Manifest, BackupError> {
     Ok(Manifest {
         format: "librepaper-postgres-backup-v1".into(),
         id: if id.is_empty() {
@@ -519,53 +582,67 @@ pub async fn restore_cli(options: StorageOptions, backup: String, directory: Str
         librepaper_base::util::die(e)
     }
 }
-async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> Result<(), String> {
-    let manifest_bytes = std::fs::read(backup.join("manifest.json")).map_err(|e| e.to_string())?;
-    let manifest: Manifest = serde_json::from_slice(&manifest_bytes).map_err(|e| e.to_string())?;
+async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> Result<(), BackupError> {
+    let manifest_bytes = std::fs::read(backup.join("manifest.json")).map_err(|e| BackupError::Io(e.to_string()))?;
+    let manifest: Manifest = serde_json::from_slice(&manifest_bytes).map_err(|e| BackupError::Manifest(e.to_string()))?;
     if manifest.format != "librepaper-postgres-backup-v1" || !manifest.verified {
-        return Err("backup is not a verified supported recovery point".into());
+        return Err(BackupError::Invalid(
+            "backup is not a verified supported recovery point".into(),
+        ));
     }
     let dump = backup.join(&manifest.database);
     if hash_file(&dump)? != manifest.database_sha256 {
-        return Err("database dump checksum mismatch".into());
+        return Err(BackupError::Mismatch(
+            "database dump checksum mismatch".into(),
+        ));
     }
     if destination.exists() {
-        return Err(format!(
+        return Err(BackupError::Invalid(format!(
             "restore destination already exists: {}",
             destination.display()
-        ));
+        )));
     }
     let database_url = options.database_url;
     let catalog = PostgresCatalog::connect(PostgresOptions::new(&database_url))
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| BackupError::Database(e.to_string()))?;
     let occupied = sqlx::query_scalar!(
         r#"SELECT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
              WHERE n.nspname='public' AND c.relkind='r') AS "exists!""#
     )
     .fetch_one(catalog.pool())
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| BackupError::Database(e.to_string()))?;
     if occupied {
-        return Err("restore requires an empty PostgreSQL database".into());
+        return Err(BackupError::Invalid(
+            "restore requires an empty PostgreSQL database".into(),
+        ));
     }
-    super::create_private_dir(&destination.join("objects"), "restored objects directory")?;
+    super::create_private_dir(&destination.join("objects"), "restored objects directory")
+        .map_err(BackupError::Storage)?;
     for reference in &manifest.references {
         let source = safe_target(&backup.join(&manifest.objects), &reference.key)?;
         let mut input = std::fs::File::open(&source)
-            .map_err(|e| format!("missing backup object {}: {e}", reference.key))?;
+            .map_err(|e| BackupError::Io(format!("missing backup object {}: {e}", reference.key)))?;
         let target = safe_target(&destination.join("objects"), &reference.key)?;
         if let Some(parent) = target.parent() {
-            super::create_private_dir(parent, "restored object directory")?;
+            super::create_private_dir(parent, "restored object directory")
+                .map_err(BackupError::Storage)?;
         }
         let mut sink = HashingFile::create(&target)?;
-        let length = std::io::copy(&mut input, &mut sink).map_err(|e| e.to_string())?;
+        let length = std::io::copy(&mut input, &mut sink).map_err(|e| BackupError::Io(e.to_string()))?;
         let digest = sink.finish();
         if reference.bytes != 0 && reference.bytes != length as i64 {
-            return Err(format!("backup object length mismatch: {}", reference.key));
+            return Err(BackupError::Mismatch(format!(
+                "backup object length mismatch: {}",
+                reference.key
+            )));
         }
         if !reference.sha256.is_empty() && reference.sha256 != digest {
-            return Err(format!("backup object digest mismatch: {}", reference.key));
+            return Err(BackupError::Mismatch(format!(
+                "backup object digest mismatch: {}",
+                reference.key
+            )));
         }
     }
     let status = postgres_tool("pg_restore", &database_url)?
@@ -578,18 +655,20 @@ async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> 
         .arg(dump)
         .status()
         .await
-        .map_err(|e| format!("could not run pg_restore: {e}"))?;
+        .map_err(|e| BackupError::Tool(format!("could not run pg_restore: {e}")))?;
     if !status.success() {
-        return Err(format!("pg_restore exited with {status}"));
+        return Err(BackupError::Tool(format!("pg_restore exited with {status}")));
     }
     let restored: i64 = sqlx::query_scalar!(
         r#"SELECT COALESCE(max(version),0) AS "version!" FROM _sqlx_migrations WHERE success"#
     )
     .fetch_one(catalog.pool())
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| BackupError::Database(e.to_string()))?;
     if restored != manifest.migration_version {
-        return Err("restored migration version does not match backup".into());
+        return Err(BackupError::Mismatch(
+            "restored migration version does not match backup".into(),
+        ));
     }
     for key in &manifest.missing {
         eprintln!(
@@ -603,7 +682,7 @@ async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> 
 /// libpq does not expand a connection URI supplied only through PGDATABASE.
 /// pg_restore additionally needs --dbname to restore instead of printing SQL.
 /// Keep the password in the child's environment, outside the process arguments.
-fn postgres_tool(program: &str, database_url: &str) -> Result<tokio::process::Command, String> {
+fn postgres_tool(program: &str, database_url: &str) -> Result<tokio::process::Command, BackupError> {
     postgres_tool_with_env(program, database_url, std::env::vars_os())
 }
 
@@ -611,10 +690,11 @@ fn postgres_tool_with_env(
     program: &str,
     database_url: &str,
     inherited_env: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
-) -> Result<tokio::process::Command, String> {
-    let mut url = url::Url::parse(database_url).map_err(|_| "invalid PostgreSQL URL")?;
+) -> Result<tokio::process::Command, BackupError> {
+    let mut url = url::Url::parse(database_url)
+        .map_err(|_| BackupError::Invalid("invalid PostgreSQL URL".into()))?;
     if !matches!(url.scheme(), "postgres" | "postgresql") {
-        return Err("expected a PostgreSQL URL".into());
+        return Err(BackupError::Invalid("expected a PostgreSQL URL".into()));
     }
     let mut password = url
         .password()
@@ -622,7 +702,7 @@ fn postgres_tool_with_env(
             percent_encoding::percent_decode_str(value)
                 .decode_utf8()
                 .map(|value| value.into_owned())
-                .map_err(|_| "PostgreSQL password is not UTF-8")
+                .map_err(|_| BackupError::Invalid("PostgreSQL password is not UTF-8".into()))
         })
         .transpose()?;
     for (key, value) in url.query_pairs() {
@@ -644,7 +724,7 @@ fn postgres_tool_with_env(
     url.set_query(query.as_deref().filter(|query| !query.is_empty()));
     if url.password().is_some() {
         url.set_password(None)
-            .map_err(|_| "invalid PostgreSQL URL authority")?;
+            .map_err(|_| BackupError::Invalid("invalid PostgreSQL URL authority".into()))?;
     }
     let mut command = tokio::process::Command::new(program);
     command.env_clear();
@@ -682,7 +762,7 @@ fn postgres_password_file() -> &'static str {
     "/dev/null"
 }
 
-fn create_private_file(path: &Path) -> Result<std::fs::File, String> {
+fn create_private_file(path: &Path) -> Result<std::fs::File, BackupError> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -690,13 +770,13 @@ fn create_private_file(path: &Path) -> Result<std::fs::File, String> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options.open(path).map_err(|error| error.to_string())
+    options.open(path).map_err(|error| BackupError::Io(error.to_string()))
 }
-fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), BackupError> {
     use std::io::Write;
     create_private_file(path)?
         .write_all(bytes)
-        .map_err(|error| error.to_string())
+        .map_err(|error| BackupError::Io(error.to_string()))
 }
 /// A private file that hashes everything written to it, so an object is
 /// copied and checksummed in one streaming pass.
@@ -705,7 +785,7 @@ struct HashingFile {
     hash: Sha256,
 }
 impl HashingFile {
-    fn create(path: &Path) -> Result<Self, String> {
+    fn create(path: &Path) -> Result<Self, BackupError> {
         Ok(Self {
             file: create_private_file(path)?,
             hash: Sha256::new(),
@@ -725,14 +805,14 @@ impl std::io::Write for HashingFile {
         self.file.flush()
     }
 }
-fn hash_file(path: &Path) -> Result<String, String> {
-    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+fn hash_file(path: &Path) -> Result<String, BackupError> {
+    let mut file = std::fs::File::open(path).map_err(|e| BackupError::Io(e.to_string()))?;
     let mut hash = Sha256::new();
-    std::io::copy(&mut file, &mut hash).map_err(|e| e.to_string())?;
+    std::io::copy(&mut file, &mut hash).map_err(|e| BackupError::Io(e.to_string()))?;
     Ok(hex::encode(hash.finalize()))
 }
-fn safe_target(root: &Path, key: &str) -> Result<PathBuf, String> {
-    super::blob::validate_object_key(key).map_err(|e| e.to_string())?;
+fn safe_target(root: &Path, key: &str) -> Result<PathBuf, BackupError> {
+    super::blob::validate_object_key(key).map_err(|e| BackupError::Invalid(e.to_string()))?;
     Ok(root.join(key))
 }
 
@@ -915,7 +995,10 @@ mod archive_tests {
         }
     }
 
-    async fn archive(fixture: &Fixture, references: &[Reference]) -> Result<Vec<u8>, String> {
+    async fn archive(
+        fixture: &Fixture,
+        references: &[Reference],
+    ) -> Result<Vec<u8>, super::BackupError> {
         let files = expand_includes(&fixture.includes)?;
         let mut out = Vec::new();
         write_archive(
@@ -1002,7 +1085,7 @@ mod archive_tests {
         let fixture = fixture().await;
         let mut references = fixture.references.clone();
         references[1].sha256 = "0".repeat(64);
-        let error = archive(&fixture, &references).await.unwrap_err();
+        let error = archive(&fixture, &references).await.unwrap_err().to_string();
         assert!(error.contains(&references[1].key), "{error}");
     }
 
