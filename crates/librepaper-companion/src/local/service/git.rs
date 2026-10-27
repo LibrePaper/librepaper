@@ -107,7 +107,7 @@ fn require_repository(root: &Path) -> Result<(), Failure> {
         Err(refuse_because(
             409,
             "no-repository",
-            "This folder is not a Git repository. Initialize it first.",
+            "The copy of the repository on this computer is missing. Disconnect, then connect again.",
         ))
     }
 }

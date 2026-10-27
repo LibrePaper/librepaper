@@ -22,7 +22,7 @@ const MAX_PENDING_LOGINS: usize = 32;
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_DEVICE_FIELD_BYTES: usize = 4096;
 
-const NOT_LINKED: &str = "link this folder to a web project first";
+const NOT_LINKED: &str = "connect the project to a repository first";
 
 /// A refusal: the status and the JSON body to answer with.
 pub(super) type Failure = (u16, Value);
@@ -238,7 +238,10 @@ pub(super) async fn finish_login(
         if login.origin != store::normalize_origin(origin.unwrap_or_default())
             || login.owner != owner
         {
-            return Err(refuse(400, "the sign-in does not belong to this connection"));
+            return Err(refuse(
+                400,
+                "the sign-in does not belong to this connection",
+            ));
         }
         (login.site.clone(), login.device_code.clone())
     };
@@ -300,7 +303,7 @@ mod tests {
             failed(&Error::NotLinked),
             (
                 409,
-                json!({"error": "link this folder to a web project first"})
+                json!({"error": "connect the project to a repository first"})
             )
         );
         assert_eq!(

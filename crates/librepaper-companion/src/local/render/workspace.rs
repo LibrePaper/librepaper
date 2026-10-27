@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{Read as _, Write as _};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 

@@ -77,7 +77,7 @@ fn on_menu(app: &AppHandle, id: &str) {
                 show(app, Target::NewWindow, url);
             }
         }
-        "tray-quit" => crate::quit::request(app),
+        "tray-quit" => app.exit(0),
         _ => {}
     }
 }
