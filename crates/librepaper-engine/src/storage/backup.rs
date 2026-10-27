@@ -846,7 +846,7 @@ mod connection_tests {
 #[cfg(test)]
 mod archive_tests {
     use super::{drop_missing, expand_includes, validate_archive_prefix, write_archive, Reference};
-    use sha2::{Digest, Sha256};
+    use crate::storage::blob::{BlobStore, FsStore};
     use std::io::Read;
     use std::path::PathBuf;
 
