@@ -308,6 +308,11 @@ async fn a_push_writes_a_named_label_with_the_author_and_the_account() {
     assert_eq!(first["reason"], "push");
     assert_eq!(first["by"], "Alice Example");
 
+    // Every page names the head, and it moves with each accepted edit.
+    let head = named["head"].as_str().expect("the list names its head");
+    assert_eq!(history(&d, &owner, "named=1").await["head"], head);
+    assert_eq!(history(&d, &owner, "").await["head"], head);
+
     // With no author the label names the caller.
     let body = create_body(&operation(), "second.md", sync_block("Add a second file"));
     let (status, value) = source_change(&d, &owner, &body).await;
@@ -322,6 +327,7 @@ async fn a_push_writes_a_named_label_with_the_author_and_the_account() {
     assert_eq!(row.label.as_deref(), Some("Add a second file"));
     assert_eq!(row.author_label, "owner");
     assert_eq!(row.author_account_id, Some(d.owner_id));
+    assert_ne!(history(&d, &owner, "").await["head"], head);
 }
 
 #[tokio::test]
