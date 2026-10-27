@@ -1,7 +1,7 @@
 <script>
   // The LibrePaper section of a folder project's Git panel: sign in, link the
-  // folder to a web project or publish it as one, then pull what changed on
-  // the web and push what changed here. The state and the actions belong to
+  // folder to a web project or publish it as one, then get the changes from the
+  // web and send the changes made here. The state and the actions belong to
   // the controller (lib/reader/local-sync.svelte.js); this draws them.
   import Icon from "../../Icon.svelte";
 
@@ -104,15 +104,15 @@
       </ul>
     {/if}
     {#if view.pushed}
-      <p class="sync-line">{view.pushed.nothing ? "Nothing to push." : `Pushed ${plural(view.pushed.files, "file")}.`}</p>
+      <p class="sync-line">{view.pushed.nothing ? "Nothing to send to web." : `Sent ${plural(view.pushed.files, "file")} to web.`}</p>
     {/if}
     {#if view.refusal?.reason === "changed"}
       <div class="sync-box" role="alert">
-        <p>The web project changed {view.refusal.paths.length === 1 ? "this file" : "these files"} since your last pull.</p>
+        <p>The web project changed {view.refusal.paths.length === 1 ? "this file" : "these files"} since your last get from web.</p>
         {#if view.refusal.paths.length}
           <ul class="sync-list">{#each view.refusal.paths as path (path)}<li>{path}</li>{/each}</ul>
         {/if}
-        <p>Pull first.</p>
+        <p>Get changes from web first.</p>
       </div>
     {:else if view.refusal?.reason === "suggestion"}
       <div class="sync-box" role="alert">
@@ -201,11 +201,11 @@
       <li><Icon name={unread ? "triangle-alert" : status.changes?.web ? "download" : "check"} size={14} /><span>{webText}</span></li>
     </ul>
     {#if status.git}
-      <p class="sync-line panel-meta sync-git">This folder is a git repository, so a pull takes each web version in as a commit and git merges it.</p>
+      <p class="sync-line panel-meta sync-git">This folder is a git repository, so getting changes from web takes each web version in as a commit and git merges it.</p>
     {/if}
     <div class="sync-row">
       <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => sync.pull()}>
-        {view.busy === "pull" ? "Pulling…" : "Pull"}
+        {view.busy === "pull" ? "Getting changes from web…" : "Get changes from web"}
       </button>
     </div>
     <form class="sync-block" onsubmit={submitPush}>
@@ -215,7 +215,7 @@
       </label>
       <div class="sync-row">
         <button type="submit" class="btn btn-sm lp-control-brand" disabled={busy}>
-          {view.busy === "push" ? "Pushing…" : "Push"}
+          {view.busy === "push" ? "Sending changes to web…" : "Send changes to web"}
         </button>
       </div>
     </form>
