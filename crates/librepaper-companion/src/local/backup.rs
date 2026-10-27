@@ -1131,16 +1131,10 @@ fn safe_stem(value: &str) -> String {
 }
 
 fn normalize_server(server: &str) -> Result<String, String> {
-    let mut url =
-        url::Url::parse(server).map_err(|error| format!("invalid backup server URL: {error}"))?;
-    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-        return Err("backup server must be an HTTP(S) origin".into());
-    }
-    url.set_query(None);
-    url.set_fragment(None);
-    let path = url.path().trim_end_matches('/').to_string();
-    url.set_path(&path);
-    Ok(url.as_str().trim_end_matches('/').to_string())
+    server
+        .parse::<librepaper_base::site::SiteUrl>()
+        .map(|site| site.to_string())
+        .map_err(|error| format!("invalid backup server URL: {error}"))
 }
 
 fn document_url(server: &str, slug: &str, suffix: &str) -> Result<url::Url, String> {
