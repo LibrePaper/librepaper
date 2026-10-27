@@ -131,6 +131,9 @@ impl From<CatalogError> for WriteError {
             CatalogError::NotFound => Self::NotFound,
             CatalogError::Invalid(why) => Self::Invalid(why),
             CatalogError::Conflict(why) => Self::Conflict(why),
+            refused @ (CatalogError::Quota(_)
+            | CatalogError::RateLimited
+            | CatalogError::Duplicate(_)) => Self::Conflict(refused.to_string()),
             CatalogError::Ownership(why) => Self::Storage(why),
             CatalogError::Database(err) => Self::Storage(err.to_string()),
         }

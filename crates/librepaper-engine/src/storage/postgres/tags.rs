@@ -91,7 +91,7 @@ pub fn validate_colour(colour: &str) -> Result<()> {
 fn duplicate_as_conflict(error: sqlx::Error) -> Error {
     match error {
         sqlx::Error::Database(ref database) if database.is_unique_violation() => {
-            Error::Conflict("A tag with that name already exists.".into())
+            Error::Duplicate(super::DuplicateOf::TagName)
         }
         other => Error::Database(other),
     }

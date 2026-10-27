@@ -407,7 +407,7 @@ impl PostgresCatalog {
         let owner_usage = super::repository::owner_usage_bytes(&mut **tx, owner_id).await?;
         let incoming = row.update_bytes.len().min(i64::MAX as usize) as i64;
         if owner_usage.saturating_add(incoming) > self.policy.owner_bytes {
-            return Err(Error::Conflict("account storage quota exceeded".into()));
+            return Err(Error::Quota(super::QuotaScope::Owner));
         }
         let deployment_usage: i64 = sqlx::query_scalar(
             "SELECT (SELECT bytes FROM storage_usage WHERE singleton) \
@@ -418,9 +418,7 @@ impl PostgresCatalog {
         .fetch_one(&mut **tx)
         .await?;
         if deployment_usage.saturating_add(incoming) > self.policy.deployment_bytes {
-            return Err(Error::Conflict(
-                "deployment storage threshold exceeded".into(),
-            ));
+            return Err(Error::Quota(super::QuotaScope::Deployment));
         }
         let sequence: i64 = sqlx::query_scalar(
             "UPDATE documents SET update_sequence=update_sequence+1,
@@ -514,7 +512,7 @@ impl PostgresCatalog {
         .fetch_one(&mut *tx)
         .await?;
         if owner_usage.saturating_add(bytes) > self.policy.owner_bytes {
-            return Err(Error::Conflict("account storage quota exceeded".into()));
+            return Err(Error::Quota(super::QuotaScope::Owner));
         }
         if retained
             .saturating_add(log_usage)
@@ -522,9 +520,7 @@ impl PostgresCatalog {
             .saturating_add(bytes)
             > self.policy.deployment_bytes
         {
-            return Err(Error::Conflict(
-                "deployment storage threshold exceeded".into(),
-            ));
+            return Err(Error::Quota(super::QuotaScope::Deployment));
         }
         sqlx::query(
             "INSERT INTO pending_log_reservations \
@@ -724,7 +720,7 @@ impl PostgresCatalog {
         let uncompacted_bytes = counters.try_get("uncompacted_update_bytes")?;
         let owner_usage = super::repository::owner_usage_bytes(&mut *tx, owner_id).await?;
         if owner_usage > self.policy.owner_bytes && owner_usage > owner_before {
-            return Err(Error::Conflict("account storage quota exceeded".into()));
+            return Err(Error::Quota(super::QuotaScope::Owner));
         }
         let deployment_usage: i64 = sqlx::query_scalar(
             "SELECT (SELECT bytes FROM storage_usage WHERE singleton) \
@@ -735,9 +731,7 @@ impl PostgresCatalog {
         .fetch_one(&mut *tx)
         .await?;
         if deployment_usage > self.policy.deployment_bytes && deployment_usage > deployment_before {
-            return Err(Error::Conflict(
-                "deployment storage threshold exceeded".into(),
-            ));
+            return Err(Error::Quota(super::QuotaScope::Deployment));
         }
         tx.commit().await?;
         Ok(Some(ActivatedLogBase {

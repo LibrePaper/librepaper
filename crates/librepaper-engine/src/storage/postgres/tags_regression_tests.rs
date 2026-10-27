@@ -100,7 +100,7 @@ async fn names_are_unique_per_account_ignoring_case_and_favorites_is_reserved() 
     catalog.create_tag(owner, "Draft", "gray").await.unwrap();
     let duplicate = catalog.create_tag(owner, "draft", "vermillion").await;
     assert!(
-        matches!(duplicate, Err(Error::Conflict(_))),
+        matches!(duplicate, Err(Error::Duplicate(_))),
         "a name the account already has is a conflict",
     );
     catalog.create_tag(other, "Draft", "gray").await.unwrap();

@@ -348,7 +348,11 @@ impl PostgresCatalog {
         };
         tx.commit().await?;
         if refused && changed {
-            return Err(Error::Conflict("storage quota exceeded".into()));
+            return Err(Error::Quota(if owner_usage >= self.policy.owner_bytes {
+                super::QuotaScope::Owner
+            } else {
+                super::QuotaScope::Deployment
+            }));
         }
         Ok(changed)
     }

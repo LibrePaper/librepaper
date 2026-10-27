@@ -21,7 +21,7 @@ use uuid::Uuid;
 use crate::log::{Command, CommandError, Evidence, Head, PreparedSource, Registry};
 use crate::storage::blob::BlobStore;
 use crate::storage::postgres::{
-    built_in_refusal, Authority, Error as CatalogError, NewAsset, NewLabel,
+    built_in_refusal, Authority, DuplicateOf, Error as CatalogError, QuotaScope, NewAsset, NewLabel,
     PostgresCatalog as Catalog, TagRecord, FAVORITES_COLOUR, FAVORITES_NAME,
 };
 use librepaper_base::config::Configuration;
@@ -459,25 +459,52 @@ impl TagView {
 
 fn source_put_error(error: CatalogError) -> PutError {
     match error {
-        CatalogError::Conflict(message) if message.contains("quota") => PutError::Quota {
+        CatalogError::Quota(QuotaScope::Owner) => PutError::Quota {
             status: 507,
             message: "your storage quota is used up; delete a document first",
+        },
+        CatalogError::Quota(QuotaScope::Deployment) => PutError::Quota {
+            status: 507,
+            message: "this server is out of storage; try again later",
         },
         CatalogError::NotFound => PutError::Authorization {
             status: 404,
             message: "not found",
         },
-        CatalogError::Conflict(message) => PutError::Authorization {
+        CatalogError::Duplicate(DuplicateOf::ProjectName) => PutError::Authorization {
             status: 409,
-            message: if message
-                == "A project with this name already exists. Choose a different name."
-            {
-                "A project with this name already exists. Choose a different name."
-            } else {
-                "the document changed; reload it before retrying"
-            },
+            message: "A project with this name already exists. Choose a different name.",
+        },
+        CatalogError::Conflict(_) => PutError::Authorization {
+            status: 409,
+            message: "the document changed; reload it before retrying",
         },
         other => PutError::Storage(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod put_error_tests {
+    use super::*;
+
+    #[test]
+    fn a_full_deployment_is_an_insufficient_storage_refusal() {
+        match source_put_error(CatalogError::Quota(QuotaScope::Deployment)) {
+            PutError::Quota { status, .. } => assert_eq!(status, 507),
+            other => panic!("expected a quota refusal, got {other:?}"),
+        }
+        match source_put_error(CatalogError::Quota(QuotaScope::Owner)) {
+            PutError::Quota { status, .. } => assert_eq!(status, 507),
+            other => panic!("expected a quota refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_moved_row_stays_a_reload_conflict() {
+        match source_put_error(CatalogError::Conflict("quota".into())) {
+            PutError::Authorization { status, .. } => assert_eq!(status, 409),
+            other => panic!("expected a conflict, got {other:?}"),
+        }
     }
 }
 

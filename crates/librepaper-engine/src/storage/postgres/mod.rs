@@ -357,12 +357,52 @@ pub enum Error {
     Database(#[from] sqlx::Error),
     #[error("{0}")]
     Invalid(String),
+    /// The row moved under the caller; reload and try again. The text is
+    /// human context and nothing may match on it.
     #[error("{0}")]
     Conflict(String),
+    #[error("{0}")]
+    Quota(QuotaScope),
+    #[error("account upload rate exceeded")]
+    RateLimited,
+    #[error("{0}")]
+    Duplicate(DuplicateOf),
     #[error("not found")]
     NotFound,
     #[error("{0}")]
     Ownership(String),
+}
+
+/// Which storage limit a write ran into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuotaScope {
+    Owner,
+    Deployment,
+}
+
+impl std::fmt::Display for QuotaScope {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Owner => "account storage quota exceeded",
+            Self::Deployment => "deployment storage threshold exceeded",
+        })
+    }
+}
+
+/// What a refused duplicate would have collided with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DuplicateOf {
+    ProjectName,
+    TagName,
+}
+
+impl std::fmt::Display for DuplicateOf {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::ProjectName => "A project with this name already exists. Choose a different name.",
+            Self::TagName => "A tag with that name already exists.",
+        })
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -1195,7 +1235,7 @@ mod tests {
             catalog
                 .complete_assets(vec![asset(1, 4), asset(2, 5)])
                 .await,
-            Err(Error::Conflict(message)) if message == "account storage quota exceeded"
+            Err(Error::Quota(QuotaScope::Owner))
         ));
         let stored: i64 =
             sqlx::query_scalar("SELECT count(*) FROM document_assets WHERE document_id=$1")
@@ -1224,7 +1264,7 @@ mod tests {
                     },
                 )
                 .await,
-            Err(Error::Conflict(message)) if message == "account storage quota exceeded"
+            Err(Error::Quota(QuotaScope::Owner))
         ));
         assert_eq!(catalog.log_sequence(first.id).await.unwrap(), 1);
         assert_eq!(catalog.usage_bytes(Some(owner.id)).await.unwrap(), 16);
@@ -1245,7 +1285,7 @@ mod tests {
                     },
                 )
                 .await,
-            Err(Error::Conflict(message)) if message == "account storage quota exceeded"
+            Err(Error::Quota(QuotaScope::Owner))
         ));
         assert!(catalog
             .discard_unwritten_document(refused_project.id, owner.id)
