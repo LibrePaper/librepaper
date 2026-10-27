@@ -39,6 +39,7 @@ pub mod anchors;
 pub mod formats;
 pub mod html;
 pub mod opening;
+pub mod overlap;
 pub mod paths;
 pub mod projection;
 

@@ -8,6 +8,8 @@
 use librepaper_base::text::LineEnding;
 use loro::{LoroDoc, LoroMap, LoroText};
 
+use crate::document::overlap::{check_overlaps, APPLY_SORTED};
+
 use super::shape::{mint_id, ASSETS, FILES, META, PATHS};
 
 /// A text edit: delete `delete` UTF-16 code units at position `at`,
@@ -80,13 +82,14 @@ pub fn replace_text(doc: &LoroDoc, wanted: &str, path: &str) {
 /// the text in a shape nothing asked for.
 pub(crate) fn apply_text_edits(text: &LoroText, edits: &[Edit]) -> bool {
     let len = text.len_utf16();
-    let mut end_of_previous = 0;
-    for edit in edits {
-        let end = edit.at.saturating_add(edit.delete);
-        if end > len || edit.at < end_of_previous {
-            return false;
-        }
-        end_of_previous = end;
+    let ranges: Vec<(usize, usize)> = edits
+        .iter()
+        .map(|edit| (edit.at, edit.at.saturating_add(edit.delete)))
+        .collect();
+    if ranges.iter().any(|&(_, end)| end > len)
+        || check_overlaps(&ranges, APPLY_SORTED).is_err()
+    {
+        return false;
     }
     for edit in edits.iter().rev() {
         if edit.delete > 0 {
