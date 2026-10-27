@@ -21,6 +21,7 @@
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+use librepaper_base::retry::RetryPolicy;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use tokio::sync::watch;
@@ -135,19 +136,21 @@ pub(crate) fn prepare(command: &mut Command) {
 /// closed the file, until that child execs; running it meanwhile fails with
 /// ETXTBSY.
 pub(crate) async fn spawn_unless_busy(command: &mut Command) -> std::io::Result<Child> {
-    let mut attempts = 0;
-    loop {
-        match command.spawn() {
-            Err(error)
-                if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 5 =>
-            {
-                attempts += 1;
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            result => return result,
-        }
-    }
+    BUSY_RETRY
+        .run(
+            || std::future::ready(command.spawn()),
+            |error| error.kind() == std::io::ErrorKind::ExecutableFileBusy,
+        )
+        .await
 }
+
+/// Five more tries, 20 ms apart, after the first: six in all.
+const BUSY_RETRY: RetryPolicy = RetryPolicy {
+    base: Duration::from_millis(20),
+    ceiling: Duration::from_millis(20),
+    max_attempts: Some(6),
+    jitter: false,
+};
 
 /// How long a captured command may run, and how much of each stream is kept.
 #[derive(Clone, Copy, Debug)]
@@ -361,6 +364,14 @@ fn truncate_tail(bytes: Vec<u8>, limit: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_busy_executable_is_retried_every_20ms_six_times_in_all() {
+        for failures in [1, 2, 5, 100] {
+            assert_eq!(BUSY_RETRY.delay(failures), Duration::from_millis(20));
+        }
+        assert_eq!(BUSY_RETRY.max_attempts, Some(6));
+    }
 
     #[tokio::test]
     async fn log_reader_drains_past_the_retention_limit() {

@@ -22,7 +22,7 @@ use std::time::Duration;
 use tokio::time::{advance, Instant};
 use uuid::Uuid;
 
-use super::schedule::{backoff, Deadlines, BACKOFF, BACKOFF_CEILING, DEADLINES};
+use super::schedule::{Deadlines, BACKOFF, BACKOFF_CEILING, DEADLINES, RETRY};
 use super::worker::Task;
 
 /// A task that keeps failing has to keep being retried, and has to stop
@@ -32,14 +32,14 @@ use super::worker::Task;
 /// other agent deletes as part of this cutover.
 #[test]
 fn the_backoff_doubles_and_then_stops_doubling() {
-    assert_eq!(backoff(1), BACKOFF);
-    assert_eq!(backoff(2), BACKOFF * 2);
-    assert_eq!(backoff(3), BACKOFF * 4);
-    assert_eq!(backoff(7), BACKOFF_CEILING);
-    assert_eq!(backoff(1_000), BACKOFF_CEILING);
+    assert_eq!(RETRY.delay(1), BACKOFF);
+    assert_eq!(RETRY.delay(2), BACKOFF * 2);
+    assert_eq!(RETRY.delay(3), BACKOFF * 4);
+    assert_eq!(RETRY.delay(7), BACKOFF_CEILING);
+    assert_eq!(RETRY.delay(1_000), BACKOFF_CEILING);
     // Failure counts start at one; a zero would be a caller's bug, and it
     // must not underflow into the ceiling.
-    assert_eq!(backoff(0), BACKOFF);
+    assert_eq!(RETRY.delay(0), BACKOFF);
 }
 
 /// The accumulated-timer bug this map exists to fix: two observations of
