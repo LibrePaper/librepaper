@@ -76,6 +76,16 @@ try {
   assert.equal(await page.evaluate('getComputedStyle(document.getElementById("plot")).backgroundColor'), "rgb(255, 255, 255)");
   console.log("preview-paper-browser: dark paper colours, scheme and data-theme, image stays white");
 
+  // Code coloured for white paper: blocks stay light, inline code takes the
+  // paper's ink on a faint chip.
+  await preview('<!doctype html><html><head><title>P</title><style>code{background:#f2f4f7;color:rgb(125, 18, 186)}pre{background:#f2f4f7}pre code{background:none}</style></head><body><p>Some <code id="inline">code</code>.</p><pre id="block"><code>block</code></pre></body></html>');
+  await until("code is in the preview", () => page.evaluate('document.getElementById("block") !== null'), 5000);
+  assert.equal(await page.evaluate('getComputedStyle(document.getElementById("inline")).color'), "rgb(228, 231, 229)");
+  assert.equal(await page.evaluate('getComputedStyle(document.getElementById("inline")).backgroundColor'), "rgba(255, 255, 255, 0.1)");
+  assert.equal(await page.evaluate('getComputedStyle(document.getElementById("block")).backgroundColor'), "rgb(242, 244, 247)");
+  assert.equal(await page.evaluate('getComputedStyle(document.getElementById("block")).color'), "rgb(26, 29, 33)");
+  console.log("preview-paper-browser: inline code takes the dark ink, code blocks stay light");
+
   // A new preview does not lose the paper.
   await preview("<!doctype html><html><head><title>P</title></head><body><p>Still on paper.</p></body></html>");
   await until("second preview published", () => page.evaluate('window.published.at(-1) === "Still on paper."'), 5000);
