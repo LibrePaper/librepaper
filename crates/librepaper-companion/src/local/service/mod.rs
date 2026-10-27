@@ -681,9 +681,6 @@ async fn dispatch(
         ["projects", "keep"] if *method == Method::POST => {
             sync::handle_keep(inner, headers, origin, request).await
         }
-        ["projects", "clone"] if *method == Method::POST => {
-            git::handle_clone(inner, headers, origin, request).await
-        }
         ["projects"] if *method == Method::GET => {
             projects::handle_list(inner, headers, origin).await
         }

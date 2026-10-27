@@ -1,7 +1,7 @@
 //! Checks on everything a page hands the Git routes before it reaches a Git
-//! command line: branch names, remote names and URLs, the name a clone gets,
-//! and the identity written into a repository. Also the redaction applied to
-//! Git's own output before it is returned.
+//! command line: branch names, remote names and URLs, and the identity
+//! written into a repository. Also the redaction applied to Git's own output
+//! before it is returned.
 
 /// Git's version from the `git version` banner, and whether it is new enough
 /// (2.38).
@@ -140,22 +140,6 @@ pub(crate) fn display_url(url: &str) -> String {
         format!("{user}@")
     };
     format!("{scheme}://{keep}{host}{tail}")
-}
-
-/// The folder name a clone of `url` gets: the last part of the address
-/// without a trailing `.git`. `None` when that is not a usable folder name.
-pub(crate) fn clone_name(url: &str) -> Option<String> {
-    let trimmed = url.trim().trim_end_matches('/');
-    let last = trimmed.rsplit(['/', ':']).next()?;
-    let name = last.strip_suffix(".git").unwrap_or(last);
-    let usable = !name.is_empty()
-        && name.len() <= 100
-        && !name.starts_with('-')
-        && !name.starts_with('.')
-        && name
-            .chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'));
-    usable.then(|| name.to_string())
 }
 
 /// Whether `text` can be a name or an email written into a repository's
@@ -307,23 +291,6 @@ mod tests {
             "git@github.com:o/r.git"
         );
         assert_eq!(display_url("/tmp/remote.git"), "/tmp/remote.git");
-    }
-
-    #[test]
-    fn a_clone_is_named_for_the_last_part_of_the_address() {
-        for (url, name) in [
-            ("https://github.com/o/paper.git", "paper"),
-            ("https://github.com/o/paper", "paper"),
-            ("https://github.com/o/paper.git/", "paper"),
-            ("git@github.com:o/my-paper.git", "my-paper"),
-            ("git@github.com:paper.git", "paper"),
-            ("ssh://git@host:22/o/p_1.git", "p_1"),
-        ] {
-            assert_eq!(clone_name(url).as_deref(), Some(name), "{url}");
-        }
-        for url in ["https://github.com/o/.git", "https://github.com/o/..", ""] {
-            assert_eq!(clone_name(url), None, "{url}");
-        }
     }
 
     #[test]

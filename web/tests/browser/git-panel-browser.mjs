@@ -481,7 +481,7 @@ window.gitPanelCheck = async () => {
 
   await mountFolder({ repo: noRepo(), afterInit: repoStatus({ changes: [], remotes: [], upstream: undefined }) });
   await flush();
-  check(text(repo()).includes("This folder is not a git repository.") && text(repo()).includes("Or clone a repository from the landing page."), "a folder without a repository offers one: " + text(repo()));
+  check(text(repo()).includes("This folder is not a git repository."), "a folder without a repository says so: " + text(repo()));
   check(!repo().querySelector("select"), "and no branch yet");
   await press("Initialize", repo());
   check(calls("gitInit").length === 1, "Initialize asks the desktop app");

@@ -196,7 +196,6 @@
         {view.busy === "init" ? "Initializing…" : "Initialize"}
       </button>
     </div>
-    <p class="panel-meta git-note">Or clone a repository from the landing page.</p>
   {:else}
     <div class="git-branch">
       <Icon name="git-branch" size={14} />

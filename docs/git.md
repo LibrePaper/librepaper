@@ -39,8 +39,6 @@ The panel has two sections.
 
 A pull that conflicts leaves git's conflict markers in the files. The panel lists the conflicted files. Resolve them in the editor, then Commit to finish the merge. Git 2.38 or later must be installed. Without it, the section says so.
 
-On the landing page, **Clone a repository…** beside **Open folder…** clones a Git URL into a subfolder of a folder you choose, and opens the clone as a folder project.
-
 ### Credentials
 
 Git signs in to the remote with your own credential helper or SSH key. LibrePaper holds no credential for GitHub or any other host. When a pull or a push fails on sign-in, the panel shows the steps for your host and your system, and Try again repeats the command.
