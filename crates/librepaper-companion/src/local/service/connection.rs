@@ -270,10 +270,7 @@ async fn stopped(inner: &Inner, connection: &Connection) -> Result<Value, Failur
 /// The refusal while a merge is open in the clone, with the status.
 async fn merging(inner: &Inner, connection: &Connection) -> Failure {
     match status_of(inner, connection).await {
-        Ok(mut body) => {
-            body["reason"] = json!("merging");
-            (409, body)
-        }
+        Ok(status) => ConflictReply::MergingWithStatus { status }.reply(),
         Err(failure) => failure,
     }
 }
@@ -482,14 +479,10 @@ fn merge_stopped(outcome: &PullOutcome) -> Result<bool, Failure> {
         PullOutcome::Repository {
             merge: MergeOutcome::DirtyTree(paths),
             ..
-        } => Err((
-            409,
-            json!({
-                "reason": "dirty",
-                "paths": paths,
-                "error": "Commit your changes to tracked files first.",
-            }),
-        )),
+        } => Err(ConflictReply::Dirty {
+            paths: paths.clone(),
+        }
+        .reply()),
         _ => Ok(false),
     }
 }
@@ -525,10 +518,15 @@ async fn web_push(inner: &Inner, connection: &Connection) -> Result<PushOutcome,
 /// The answer for a web push that did not send a version.
 fn pushed_refusal(outcome: &PushOutcome) -> Option<Failure> {
     match outcome {
-        PushOutcome::Refused { paths } => Some((409, json!({"reason": "changed", "paths": paths}))),
-        PushOutcome::Suggestion { path } => {
-            Some((409, json!({"reason": "suggestion", "path": path})))
-        }
+        PushOutcome::Refused { paths } => Some(
+            ConflictReply::Changed {
+                paths: paths.clone(),
+            }
+            .reply(),
+        ),
+        PushOutcome::Suggestion { path } => Some(
+            ConflictReply::Suggestion { path: path.clone() }.reply(),
+        ),
         PushOutcome::Nothing | PushOutcome::Pushed { .. } => None,
     }
 }

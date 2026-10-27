@@ -55,20 +55,21 @@ pub(super) fn failed(error: &Error) -> Failure {
     }
     match error {
         Error::NotLinked => refuse(409, NOT_LINKED),
-        Error::Merging => (
-            409,
-            json!({"reason": "merging", "error": error.to_string()}),
-        ),
+        Error::Merging => ConflictReply::Merging {
+            error: error.to_string(),
+        }
+        .reply(),
         Error::DetachedHead
         | Error::BranchUnbound { .. }
         | Error::BranchMismatch { .. }
-        | Error::BranchRebind { .. } => {
-            (409, json!({"reason": "branch", "error": error.to_string()}))
+        | Error::BranchRebind { .. } => ConflictReply::Branch {
+            error: error.to_string(),
         }
-        Error::PendingPush | Error::PendingActor => (
-            409,
-            json!({"reason": "pending", "error": error.to_string()}),
-        ),
+        .reply(),
+        Error::PendingPush | Error::PendingActor => ConflictReply::Pending {
+            error: error.to_string(),
+        }
+        .reply(),
         Error::OtherProject { .. } => refuse(409, &error.to_string()),
         Error::BranchNeedsRepository | Error::Link(_) | Error::Rules(_) | Error::Invalid(_) => {
             refuse(400, &error.to_string())

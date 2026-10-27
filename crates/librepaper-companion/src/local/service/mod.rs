@@ -64,6 +64,51 @@ mod sync;
 
 pub(super) type Reply = Response<Body>;
 
+/// The message a refused pull or merge gives when tracked files have changes.
+const DIRTY_MESSAGE: &str = "Commit your changes to tracked files first.";
+
+/// A 409 refusal whose JSON body names the reason. The reason strings and the
+/// fields each reason carries are spelled here and nowhere else.
+pub(crate) enum ConflictReply {
+    /// These files changed on the web since they were last pulled.
+    Changed { paths: Vec<String> },
+    /// A pending suggestion is in the way of this file.
+    Suggestion { path: String },
+    /// A merge is open in the clone. The body carries the words to show.
+    Merging { error: String },
+    /// A merge is open in the clone. The body is the connection status with
+    /// the reason added.
+    MergingWithStatus { status: Value },
+    /// Tracked files in the clone have changes the operation cannot keep.
+    Dirty { paths: Vec<String> },
+    /// The clone's branch cannot be used for this project as it stands.
+    Branch { error: String },
+    /// An earlier send to the project has not finished.
+    Pending { error: String },
+}
+
+impl ConflictReply {
+    /// The status and the JSON body this refusal answers with.
+    pub(crate) fn reply(&self) -> (u16, Value) {
+        let body = match self {
+            Self::Changed { paths } => json!({"reason": "changed", "paths": paths}),
+            Self::Suggestion { path } => json!({"reason": "suggestion", "path": path}),
+            Self::Merging { error } => json!({"reason": "merging", "error": error}),
+            Self::MergingWithStatus { status } => {
+                let mut body = status.clone();
+                body["reason"] = json!("merging");
+                body
+            }
+            Self::Dirty { paths } => {
+                json!({"reason": "dirty", "paths": paths, "error": DIRTY_MESSAGE})
+            }
+            Self::Branch { error } => json!({"reason": "branch", "error": error}),
+            Self::Pending { error } => json!({"reason": "pending", "error": error}),
+        };
+        (409, body)
+    }
+}
+
 /// At most this many jobs sit in the queue behind the one running. A fifth
 /// arrival while four already wait is refused outright rather than silently
 /// dropping the oldest -- dropping is reserved for a strictly newer
@@ -1682,6 +1727,111 @@ mod settings_tests {
                 crate::local::render::Key::parse("latex.pdf").unwrap()
             )
             .edited
+        );
+    }
+}
+
+#[cfg(test)]
+mod conflict_reply_tests {
+    use super::*;
+
+    #[test]
+    fn changed_lists_the_paths() {
+        assert_eq!(
+            ConflictReply::Changed {
+                paths: vec!["a.tex".into(), "b.md".into()],
+            }
+            .reply(),
+            (
+                409,
+                json!({"reason": "changed", "paths": ["a.tex", "b.md"]})
+            ),
+        );
+    }
+
+    #[test]
+    fn suggestion_names_the_path() {
+        assert_eq!(
+            ConflictReply::Suggestion {
+                path: "a.tex".into(),
+            }
+            .reply(),
+            (409, json!({"reason": "suggestion", "path": "a.tex"})),
+        );
+    }
+
+    #[test]
+    fn merging_carries_the_error() {
+        assert_eq!(
+            ConflictReply::Merging {
+                error: "Finish the merge.".into(),
+            }
+            .reply(),
+            (
+                409,
+                json!({"reason": "merging", "error": "Finish the merge."})
+            ),
+        );
+    }
+
+    #[test]
+    fn merging_with_status_keeps_the_status_and_adds_the_reason() {
+        let status = json!({
+            "connected": true,
+            "signed_in": true,
+            "url": "https://example.org",
+            "branch": "main",
+            "merging": {"side": "project", "conflicts": ["a.tex"]},
+        });
+        assert_eq!(
+            ConflictReply::MergingWithStatus { status }.reply(),
+            (
+                409,
+                json!({
+                    "connected": true,
+                    "signed_in": true,
+                    "url": "https://example.org",
+                    "branch": "main",
+                    "merging": {"side": "project", "conflicts": ["a.tex"]},
+                    "reason": "merging",
+                })
+            ),
+        );
+    }
+
+    #[test]
+    fn dirty_lists_the_paths_with_the_commit_message() {
+        assert_eq!(
+            ConflictReply::Dirty {
+                paths: vec!["a.tex".into()],
+            }
+            .reply(),
+            (
+                409,
+                json!({
+                    "reason": "dirty",
+                    "paths": ["a.tex"],
+                    "error": "Commit your changes to tracked files first.",
+                })
+            ),
+        );
+    }
+
+    #[test]
+    fn branch_and_pending_carry_the_error() {
+        assert_eq!(
+            ConflictReply::Branch {
+                error: "on another branch".into(),
+            }
+            .reply(),
+            (409, json!({"reason": "branch", "error": "on another branch"})),
+        );
+        assert_eq!(
+            ConflictReply::Pending {
+                error: "a push is pending".into(),
+            }
+            .reply(),
+            (409, json!({"reason": "pending", "error": "a push is pending"})),
         );
     }
 }
