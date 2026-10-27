@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 use librepaper_base::digest::Digest;
+use librepaper_base::util::{token, Encoding};
 
 use crate::chain::{Chain, Meta, MAIN_REF};
 use crate::client::{Client, Label, Snapshot};
@@ -762,7 +763,7 @@ fn write_file(dir: &Path, relative: &str, bytes: &[u8]) -> Result<(), Error> {
     std::fs::create_dir_all(parent).map_err(|error| Error::io(parent, error))?;
     let temporary = parent.join(format!(
         ".librepaper-{}.tmp",
-        librepaper_base::util::random_token()
+        token::<16>(Encoding::Hex)
     ));
     std::fs::write(&temporary, bytes).map_err(|error| Error::io(&temporary, error))?;
     if let Ok(meta) = std::fs::metadata(&target) {

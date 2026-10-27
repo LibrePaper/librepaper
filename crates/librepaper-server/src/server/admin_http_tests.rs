@@ -165,7 +165,7 @@ async fn fixture_full(
     server.app = if github_configured {
         librepaper_base::auth::GithubApp {
             client_id: "admin-test-client".into(),
-            client_secret: "admin-test-secret".into(),
+            client_secret: librepaper_base::secret::Secret::new("admin-test-secret".into()),
             token_url: format!("{github}/token"),
             user_url: format!("{github}/user"),
             ..Default::default()

@@ -13,11 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-
-use librepaper_base::util::random_bytes;
 
 /// What `librepaper local start` writes about itself, so a later command in a
 /// different process invocation -- `status`, `endpoint`, a second `start`
@@ -64,11 +60,6 @@ impl ServiceFile {
     pub fn remove(&self) {
         let _ = std::fs::remove_file(self.path());
     }
-}
-
-/// 32 random bytes, base64url without padding -- what a bearer token is.
-pub fn random_token() -> String {
-    URL_SAFE_NO_PAD.encode(random_bytes(32))
 }
 
 /// scheme + host + port, lowercase, with no path, query or trailing slash --

@@ -9,6 +9,7 @@
 use super::*;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use librepaper_base::util::{token, Encoding};
 use sha2::Sha256;
 
 const TOKEN_FILE: &str = "control-token.json";
@@ -54,7 +55,7 @@ impl ControlAuth {
         let token = old
             .as_ref()
             .map(|file| file.token.clone())
-            .unwrap_or_else(crate::local::store::random_token);
+            .unwrap_or_else(|| token::<32>(Encoding::Base64Url));
         let server = match (
             configured,
             old.as_ref().and_then(|file| file.server.as_deref()),

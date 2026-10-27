@@ -13,8 +13,9 @@ use moka::Expiry;
 use rand::Rng;
 use tokio::sync::Semaphore;
 
-use super::{normalized, now_unix, random_bytes, Identity, ProviderError};
+use super::{normalized, now_unix, Identity, ProviderError};
 use crate::digest::Digest;
+use crate::util::random;
 
 /// Keeps bearer tokens from costing a GitHub call per request. Positive
 /// answers are cached longer than negative ones, so a token that is revoked or
@@ -321,7 +322,7 @@ pub fn user_code() -> String {
 
 /// 128 random bits, which is what the terminal holds and never shows.
 pub fn device_code() -> String {
-    hex::encode(random_bytes(16))
+    hex::encode(random::<16>())
 }
 
 /// One terminal waiting to be signed in.

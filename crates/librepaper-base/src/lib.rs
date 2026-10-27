@@ -11,6 +11,7 @@ pub mod http;
 pub mod paths;
 pub mod private_files;
 pub mod role;
+pub mod secret;
 pub mod shell;
 pub mod text;
 pub mod tls;

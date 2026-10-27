@@ -1,17 +1,12 @@
 //! Ephemeral assistant channel state and bounded relay policy.
 
 use super::*;
+use librepaper_base::util::{token, Encoding};
 use librepaper_room::room::Outgoing;
-use rand::RngCore;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use tokio::sync::{oneshot, Mutex};
 
-fn random() -> String {
-    let mut bytes = [0; 32];
-    rand::rng().fill_bytes(&mut bytes);
-    hex::encode(bytes)
-}
 pub(super) fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
 }
@@ -81,8 +76,8 @@ impl Hub {
         {
             return Err((409, "live channel limit reached"));
         }
-        let id = random();
-        let token = random();
+        let id = token::<32>(Encoding::Hex);
+        let token = token::<32>(Encoding::Hex);
         channels.insert(
             id.clone(),
             Channel {
@@ -159,7 +154,9 @@ impl Hub {
         }
         *participant = Some(Peer { socket, tx });
         if role == "agent" {
-            channel.agent_epoch = Some(random());
+            channel.agent_epoch = Some(librepaper_base::util::token::<32>(
+                librepaper_base::util::Encoding::Hex,
+            ));
         }
         channel.touched_at = now();
         let mut ready = json!({"type":"ready","browser":channel.browser.is_some(),"agent":channel.agent.is_some()});

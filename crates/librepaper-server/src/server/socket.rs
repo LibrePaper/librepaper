@@ -1092,7 +1092,7 @@ impl Server {
             .await
             .ok()?;
         let now = librepaper_base::util::now_unix();
-        let id = random_token();
+        let id = token::<16>(Encoding::Hex);
         let digest = librepaper_base::digest::Digest::of(&update).to_hex();
         let mut transfers = self.state_transfers.lock().await;
         if !transfers.insert(

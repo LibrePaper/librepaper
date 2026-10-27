@@ -194,6 +194,7 @@ windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 tempfile = "3"
 # Moves a file the project no longer holds to the operating system trash.
 trash = "5"
+zeroize = "1"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 object_store = { version = "0.14", features = ["aws", "fs"] }
 # Native dialogs for the local service's approval and folder prompts, with no

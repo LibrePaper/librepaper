@@ -27,7 +27,7 @@ use crate::server::origins::{
 };
 use librepaper_base::auth::pseudonym::pseudonym_for;
 use librepaper_base::auth::{
-    cookie_name, device_deadline, normalized, now_unix, pkce_verifier, random_token,
+    cookie_name, device_deadline, normalized, now_unix, pkce_verifier,
     read_agent_grant, read_device, read_session, read_visitor, session_deadline, sign_device,
     sign_session, sign_visitor, DeviceOutcome, GithubApp, Identity, OidcProvider, PendingCodes,
     Policy, TokenCache, AGENT_GRANT_PREFIX, AGENT_TOKEN_PREFIX, DEVICE_POLL_INTERVAL,
@@ -37,7 +37,7 @@ use librepaper_base::auth::{
 use librepaper_base::config::Configuration;
 use librepaper_base::role::{Capabilities, Ceiling, Role};
 use librepaper_base::shell::{renderers, ShellFile};
-use librepaper_base::util::clean;
+use librepaper_base::util::{clean, token, Encoding};
 use librepaper_document::document::render::{title_from_html, title_from_markdown};
 use librepaper_engine::storage::store::{
     random_suffix, slugify, DocumentInput, IndexEntry, LinkGrant, LinkKind, ModifyError, PutError,

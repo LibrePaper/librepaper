@@ -5,6 +5,7 @@
 //! the native folder chooser; browser requests never supply a filesystem path.
 
 use super::*;
+use librepaper_base::util::{token, Encoding};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -549,7 +550,7 @@ impl BackupManager {
         })?;
         let origin = crate::local::credentials::origin(origin);
         let key = BackupConfig::key(&origin, account_id);
-        let authorization_id = librepaper_base::util::random_token();
+        let authorization_id = token::<16>(Encoding::Hex);
         {
             let mut pending = self.authorizations.lock().await;
             pending.retain(|_, value| value.expires > Instant::now());

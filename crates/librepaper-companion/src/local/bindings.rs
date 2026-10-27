@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use librepaper_base::paths::RelPath;
 use serde::{Deserialize, Serialize};
 
-use librepaper_base::util::now_unix;
+use librepaper_base::util::{now_unix, token, Encoding};
 
 // Binding updates are infrequent, and store instances for the same path can
 // be created by different service components. A process-wide lock makes each
@@ -31,7 +31,7 @@ fn transaction_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn opaque_id() -> String {
-    format!("q-{}", hex::encode(librepaper_base::util::random_bytes(16)))
+    format!("q-{}", token::<16>(Encoding::Hex))
 }
 
 /// A project slug fit to be a directory name under the hosted base: the

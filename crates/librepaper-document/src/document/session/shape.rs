@@ -33,6 +33,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use loro::{Container, LoroDoc, LoroMap, LoroValue, ValueOrContainer};
+use librepaper_base::util::{token, Encoding};
 
 // The document's four roots, from the crate that owns the schema. They were declared here as well, with the same
 // four strings, which is a schema defined in two places that nothing would
@@ -55,7 +56,7 @@ pub fn new_doc() -> LoroDoc {
 /// is written in and enough randomness that two browsers creating a file at
 /// the same instant do not collide.
 pub fn mint_id() -> String {
-    hex::encode(librepaper_base::util::random_bytes(6))
+    token::<6>(Encoding::Hex)
 }
 
 /// Raw text by path for fixtures. Production reads use stable file identities

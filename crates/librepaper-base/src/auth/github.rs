@@ -1,7 +1,6 @@
 //! GitHub: the OAuth app a browser signs in through, the token check a bearer
 //! goes through.
 
-use std::fmt;
 use std::time::Duration;
 
 use base64::Engine;
@@ -9,16 +8,17 @@ use serde::Deserialize;
 
 use crate::auth::{Identity, PROVIDER_HTTP_TIMEOUT};
 use crate::http::{provider_client, read_capped, USER_AGENT};
+use crate::secret::Secret;
 
 pub const GITHUB_AUTHORIZE: &str = "https://github.com/login/oauth/authorize";
 pub const GITHUB_TOKEN: &str = "https://github.com/login/oauth/access_token";
 pub const GITHUB_USER: &str = "https://api.github.com/user";
 pub const GITHUB_CHECK: &str = "https://api.github.com/applications/{id}/token";
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct GithubApp {
     pub client_id: String,
-    pub client_secret: String,
+    pub client_secret: Secret<String>,
     /// Where check-token is asked, `{id}` standing for the client id. A field
     /// rather than a constant for the same reason the other endpoints are:
     /// a test has no network and stands in for GitHub here.
@@ -30,24 +30,11 @@ pub struct GithubApp {
     pub user_url: String,
 }
 
-impl fmt::Debug for GithubApp {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("GithubApp")
-            .field("client_id", &self.client_id)
-            .field("client_secret", &"[REDACTED]")
-            .field("check_url", &self.check_url)
-            .field("token_url", &self.token_url)
-            .field("user_url", &self.user_url)
-            .finish()
-    }
-}
-
 impl Default for GithubApp {
     fn default() -> GithubApp {
         GithubApp {
             client_id: String::new(),
-            client_secret: String::new(),
+            client_secret: Secret::new(String::new()),
             check_url: GITHUB_CHECK.to_string(),
             token_url: GITHUB_TOKEN.to_string(),
             user_url: GITHUB_USER.to_string(),
@@ -110,7 +97,7 @@ impl GithubApp {
             .header("user-agent", USER_AGENT)
             .header("accept", "application/json")
             .json(&serde_json::json!({
-                "client_id": self.client_id, "client_secret": self.client_secret,
+                "client_id": self.client_id, "client_secret": self.client_secret.expose(),
                 "code": code, "redirect_uri": redirect, "code_verifier": verifier,
             }))
             .send()
@@ -138,7 +125,7 @@ impl GithubApp {
     /// and 404s for anything else, including a token that is simply invalid.
     pub async fn check_token(&self, token: &str) -> Result<Option<Identity>, ProviderError> {
         let _permit = crate::auth::try_provider_request().ok_or(ProviderError::Busy)?;
-        if self.client_id.is_empty() || self.client_secret.is_empty() {
+        if self.client_id.is_empty() || self.client_secret.expose().is_empty() {
             return Err(ProviderError::NotConfigured);
         }
         if token.trim().is_empty() {
@@ -149,7 +136,7 @@ impl GithubApp {
             user: GithubUser,
         }
         let basic = base64::engine::general_purpose::STANDARD
-            .encode(format!("{}:{}", self.client_id, self.client_secret));
+            .encode(format!("{}:{}", self.client_id, self.client_secret.expose()));
         let response = provider_client()
             .post(self.check_url.replace("{id}", &self.client_id))
             .timeout(PROVIDER_HTTP_TIMEOUT)
@@ -275,6 +262,7 @@ mod tests {
     use serde_json::json;
 
     use super::{GithubApp, ProviderError};
+    use crate::secret::Secret;
 
     async fn stand_in(status: StatusCode, body: serde_json::Value) -> String {
         let router = Router::new().route(
@@ -312,7 +300,7 @@ mod tests {
         let invalid = stand_in(StatusCode::NOT_FOUND, json!({})).await;
         let app = GithubApp {
             client_id: "client".into(),
-            client_secret: "secret".into(),
+            client_secret: Secret::new("secret".into()),
             check_url: format!("{invalid}/check"),
             ..GithubApp::default()
         };
@@ -333,12 +321,12 @@ mod tests {
     fn debug_redacts_github_secret() {
         let app = GithubApp {
             client_id: "public-client".into(),
-            client_secret: "do-not-print".into(),
+            client_secret: Secret::new("do-not-print".into()),
             ..GithubApp::default()
         };
         let debug = format!("{app:?}");
         assert!(debug.contains("public-client"));
         assert!(!debug.contains("do-not-print"));
-        assert!(debug.contains("REDACTED"));
+        assert!(debug.contains("[redacted]"));
     }
 }

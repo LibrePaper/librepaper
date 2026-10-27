@@ -20,7 +20,7 @@ const MAX_PROJECTS: usize = 20_000;
 const MAX_FILES_PER_PROJECT: usize = 20_000;
 const MAX_FILE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_PROJECT_BYTES: usize = 512 * 1024 * 1024;
-const MAX_RESPONSE_BYTES: usize = 160 * 1024 * 1024;
+const BACKUP_RESPONSE_MAX_BYTES: usize = 160 * 1024 * 1024;
 
 #[cfg(test)]
 struct BackupWriterPause {
@@ -457,7 +457,7 @@ async fn list_documents(
             .await
             .map_err(|error| format!("document listing failed: {error}"))?;
         let status = response.status();
-        let payload = response_json(response, MAX_RESPONSE_BYTES, "document listing").await?;
+        let payload = response_json(response, BACKUP_RESPONSE_MAX_BYTES, "document listing").await?;
         if status != reqwest::StatusCode::OK {
             return Err(format!(
                 "document listing failed ({}): {}",
@@ -531,7 +531,7 @@ async fn fetch_snapshot(
     if status == reqwest::StatusCode::NOT_MODIFIED {
         return Ok(Fetched::NotModified);
     }
-    let payload = response_json(response, MAX_RESPONSE_BYTES, "project snapshot").await?;
+    let payload = response_json(response, BACKUP_RESPONSE_MAX_BYTES, "project snapshot").await?;
     if status != reqwest::StatusCode::OK {
         return Err(format!(
             "could not capture project {slug:?} ({})",

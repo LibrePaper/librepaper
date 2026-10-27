@@ -13,7 +13,7 @@ use axum::http::{header, HeaderValue, Method, Request, StatusCode};
 use axum::response::Response;
 use base64::Engine;
 use librepaper_base::auth::{cookie_name, pkce_verifier, sign, verifies, Identity};
-use librepaper_base::util::random_token;
+use librepaper_base::util::{token, Encoding};
 use librepaper_engine::storage::postgres::{BlockOutcome, Error};
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
@@ -53,7 +53,7 @@ const STATE_SECONDS: i64 = 600;
 /// so a restart ends every admin session, and a copy of the server key alone
 /// cannot mint one that outlives the process.
 static ADMIN_EPOCH: std::sync::LazyLock<String> =
-    std::sync::LazyLock::new(librepaper_base::util::random_token);
+    std::sync::LazyLock::new(|| token::<16>(Encoding::Hex));
 /// Sign-outs per GitHub login, keyed in lowercase. The count is signed into
 /// every session, so a session minted before a sign-out no longer verifies.
 static SIGN_OUTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
@@ -174,7 +174,7 @@ fn decide(server: &Server, parts: &Parts) -> Decision {
             return Decision::Reply(text(StatusCode::UNAUTHORIZED, "sign in at /"));
         }
         let callback = format!("{admin}/auth/callback");
-        let state = random_token();
+        let state = token::<16>(Encoding::Hex);
         let verifier = pkce_verifier();
         let mut response = Response::new(Body::empty());
         *response.status_mut() = StatusCode::FOUND;

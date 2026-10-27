@@ -13,7 +13,7 @@ use librepaper_room::room::source_change::{
 };
 
 /// The longest a push message may be, in characters.
-const MAX_MESSAGE: usize = 200;
+const SOURCE_MESSAGE_MAX_CHARS: usize = 200;
 /// The longest an author name may be, in characters.
 const MAX_AUTHOR: usize = 100;
 
@@ -126,7 +126,7 @@ impl Server {
         if input.sync.provider != "cli" {
             return invalid("sync.provider must be cli");
         }
-        if !within(&input.sync.message, MAX_MESSAGE) {
+        if !within(&input.sync.message, SOURCE_MESSAGE_MAX_CHARS) {
             return invalid("sync.message must be 1 to 200 characters");
         }
         if input
