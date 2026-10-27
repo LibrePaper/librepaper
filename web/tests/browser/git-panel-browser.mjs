@@ -83,11 +83,12 @@ const syncApi = {
     scene().status = scene().afterLogin;
     return structuredClone(scene().status);
   },
+  syncPreview: async (id, url) => { record("syncPreview", url); return settle(scene().preview); },
   syncLink: async (id, url) => { record("syncLink", url); scene().status = scene().afterLink; },
   syncPublish: async (id, title) => { record("syncPublish", title); scene().status = scene().afterLink; },
   syncUnlink: async () => { record("syncUnlink"); scene().status = { signed_in: true, linked: false, git: Boolean(scene().status.git) }; },
   syncPull: async (id, choices) => { record("syncPull", choices); return settle(scene().pulls.shift()); },
-  syncPush: async (id, message) => { record("syncPush", message); return settle(scene().pushes.shift()); },
+  syncPush: async (id, message, branch) => { record("syncPush", message, branch); return settle(scene().pushes.shift()); },
 };
 
 const gitApi = {
@@ -133,6 +134,7 @@ const connectionApi = {
   },
   pullConnection: async () => { record("pullConnection"); return settle(scene().pullAnswer); },
   pushConnection: async () => { record("pushConnection"); return settle(scene().pushAnswer); },
+  retryConnection: async () => { record("retryConnection"); return settle(scene().retryAnswer); },
   resolveConnection: async (project, path, keep) => {
     record("resolveConnection", path, keep);
     const left = scene().connection.merging.conflicts.filter((entry) => entry !== path);
@@ -315,14 +317,25 @@ window.gitPanelCheck = async () => {
 
   /* ------------------------------------------------ signed in, not linked */
 
-  await mountFolder({ status: { signed_in: true, linked: false }, afterLink: linked() });
+  const empty = { written: [], trashed: [], kept: [], conflicts: [], trimmed: false };
+  const found = { project_only: ["web.tex"], local_only: ["mine.tex"], different: ["both.tex", "other.tex"], equal: [], blocked: [["big.bin", "it is too large"]], excluded: [] };
+  await mountFolder({ status: { signed_in: true, linked: false }, afterLink: linked(), preview: found, pulls: [empty] });
   await flush();
-  check(button("Link").disabled, "Link waits for an address");
+  check(button("Preview link").disabled, "Preview link waits for an address");
   check(field("Or publish").value === "thesis", "the title offered is the folder's name");
   check(!button("Publish").disabled, "so Publish is ready");
   await type(field("Link to a project"), "  https://app.example/docs/paper  ");
+  await press("Preview link");
+  check(calls("syncPreview")[0][1] === "https://app.example/docs/paper" && calls("syncLink").length === 0, "the preview sends the address and links nothing: " + JSON.stringify(window.scene.calls));
+  check(text().includes("1 file is only in the project. It will be added to this folder.") && text().includes("1 file is only in this folder. It stays here until you send it.") && text().includes("2 files are in both with different contents. You choose which version to keep.") && text().includes("1 file is not transferred."), "the preview says what it found in sentences: " + text());
+  check(text().includes("big.bin: it is too large") && text().includes("both.tex") && !text().includes("in both with the same contents"), "with the paths and the reason, and no empty group: " + text());
+  check(button("Link") && button("Cancel"), "and offers Link and Cancel");
+  await press("Cancel");
+  check(calls("syncLink").length === 0 && button("Preview link"), "Cancel links nothing and returns to the address: " + text());
+  await press("Preview link");
   await press("Link");
   check(calls("syncLink")[0][1].trim() === "https://app.example/docs/paper", "Link sends the address: " + JSON.stringify(calls("syncLink")));
+  check(calls("syncPull").length === 1, "and runs the first pull: " + JSON.stringify(window.scene.calls));
   check(text().includes("paper"), "and the linked project shows: " + text());
 
   await mountFolder({ status: { signed_in: true, linked: false }, afterLink: linked({ changes: { here: 0, web: false } }) });
@@ -341,6 +354,38 @@ window.gitPanelCheck = async () => {
   check(button("Get changes from web") && button("Send changes to web") && button("Unlink"), "Get changes from web, Send changes to web and Unlink are there");
   check(field("Message").value === today(), "the message starts as today's date: " + field("Message").value);
   check(!text().includes("This folder is a git repository"), "a plain folder does not talk about git here");
+
+  // A repository with no branch chosen asks for one, and the confirmation repeats the stopped pull with it.
+  const unboundWords = "this repository has no branch chosen for sync; it is on main";
+  await mountFolder({
+    status: linked({ git: true, branch: null, checked_out: "main", pending: false }),
+    pulls: [{ fail: { status: 409, body: { reason: "branch", error: unboundWords } } }, { repository: true, versions: [], merge: "already", trimmed: false }],
+  });
+  await flush();
+  check(text().includes("Choose the branch to sync. This folder is on branch main") && button("Sync branch main"), "an unbound repository proposes the checked out branch: " + text());
+  await press("Get changes from web");
+  check(!text().includes(unboundWords), "the stopped pull leaves no error line, the confirmation is the answer: " + text());
+  await press("Sync branch main");
+  check(JSON.stringify(calls("syncPull")[1][1]) === JSON.stringify({ branch: "main" }), "the confirmation repeats the pull with the branch: " + JSON.stringify(calls("syncPull")));
+
+  // Another checkout, or a detached HEAD, says which git command to run and never offers to switch.
+  await mountFolder({ status: linked({ git: true, branch: "main", checked_out: "other", pending: false }) });
+  await flush();
+  check(text().includes("Sync uses branch main, but this folder is on branch other. Run git switch main and try again.") && !button("Sync branch other"), "a mismatch names the git command: " + text());
+  await mountFolder({ status: linked({ git: true, branch: "main", checked_out: null, pending: false }) });
+  await flush();
+  check(text().includes("on a detached HEAD"), "a detached HEAD is said: " + text());
+  await mountFolder({ status: linked({ git: true, branch: "main", checked_out: "main", pending: false }) });
+  await flush();
+  check(text().includes("Syncing branch main.") && !button("Sync branch main"), "a bound repository on its branch states it and asks nothing: " + text());
+
+  // An interrupted send is shown, and the refusal of a pull says so.
+  const pendingWords = "an earlier push was interrupted before its outcome was known; run `librepaper push` to settle it first";
+  await mountFolder({ status: linked({ pending: true }), pulls: [{ fail: { status: 409, body: { reason: "pending", error: pendingWords } } }] });
+  await flush();
+  check(text().includes("An earlier send to the web was interrupted") && text().includes("Choose Send changes to web to finish it") && button("Send changes to web"), "a pending send points at Send changes to web: " + text());
+  await press("Get changes from web");
+  check(text().includes(pendingWords), "and a refused pull shows the message: " + text());
 
   await mountFolder({ status: linked({ changes: { here: 0, web: false } }) });
   await flush();
@@ -809,7 +854,7 @@ window.gitPanelCheck = async () => {
   await type(field("Repository address"), "   https://github.com/you/paper.git  ");
   await press("Connect");
   check(calls("connectRepository").length === 1 && calls("connectRepository")[0][1] === "https://github.com/you/paper.git", "the trimmed address is connected: " + JSON.stringify(calls("connectRepository")));
-  check(headings() === "Repository|Connected repository" && text().includes("https://github.com/you/paper.git, branch main"), "and the connected repository is shown: " + text());
+  check(headings() === "Repository|Repository on this computer" && text().includes("https://github.com/you/paper.git, branch main"), "and the connected repository is shown: " + text());
 
   // A connect the desktop app refuses says why, and the form stays.
   await mountWeb({ connection: { connected: false, signed_in: true }, connectFails: true }, { desktop: true });
@@ -822,12 +867,26 @@ window.gitPanelCheck = async () => {
   // Connected and signed in: getting changes imports what came in, and sending changes sends the project's changes.
   await mountWeb({ connection: connectedStatus, afterConnect: connectedStatus, pullAnswer: { status: connectedStatus, pushed: { files: 2 } }, pushAnswer: { status: connectedStatus, pushed: "pushed" } }, { desktop: true });
   await flush();
-  check(headings() === "Repository|Connected repository", "a connected project shows its repository: " + headings());
+  check(headings() === "Repository|Repository on this computer", "a connected project shows its repository: " + headings());
   check(text().includes("Get repository changes imports the repository's commits into this project. Send project changes sends this project's changes to the repository branch above."), "and says what the two actions do: " + text());
   await widths("with a connected repository");
 
   await press("Get repository changes");
   check(calls("pullConnection").length === 1 && text().includes("Imported from repository branch main: 2 files into the project."), "the pull says what came in: " + text());
+
+  // An interrupted send stops the transfer. The panel offers one retry that runs the send alone.
+  const interrupted = "an earlier push was interrupted before its outcome was known; run `librepaper push` to settle it first";
+  await mountWeb({
+    connection: connectedStatus, afterConnect: connectedStatus,
+    pullAnswer: { fail: { status: 409, body: { reason: "pending", error: interrupted } } },
+    retryAnswer: { status: connectedStatus, pushed: { files: 1 } },
+  }, { desktop: true });
+  await flush();
+  await press("Get repository changes");
+  check(text().includes(interrupted) && button("Retry interrupted transfer"), "an interrupted send offers a retry: " + text());
+  await press("Retry interrupted transfer");
+  check(calls("retryConnection").length === 1 && calls("pullConnection").length === 1, "the retry runs the send alone: " + JSON.stringify(window.scene.calls));
+  check(text().includes("The interrupted send finished: 1 file reached the project.") && !button("Retry interrupted transfer"), "and says it finished: " + text());
   await press("Send project changes");
   check(calls("flush").length === 1 && calls("pushConnection").length === 1 && text().includes("Sent to repository branch main."), "a push settles the editor first, then sends and says so: " + text());
 

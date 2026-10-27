@@ -17,7 +17,7 @@ const project = "https://app.example/docs/paper";
 function routes(answers) {
   const calls = [];
   const api = {};
-  for (const name of ["connectionStatus", "connectRepository", "pullConnection", "pushConnection", "resolveConnection", "loginConnection", "loginConnectionComplete", "disconnectConnection"]) {
+  for (const name of ["connectionStatus", "connectRepository", "pullConnection", "pushConnection", "resolveConnection", "retryConnection", "loginConnection", "loginConnectionComplete", "disconnectConnection"]) {
     api[name] = async (...args) => {
       calls.push([name, ...args]);
       const answer = typeof answers[name] === "function" ? answers[name](...args) : answers[name];
@@ -262,4 +262,59 @@ const merging = { ...connected, merging: { side: "repository", conflicts: ["a.te
   assert.equal(web.state.status, null);
 }
 
-console.log("web-connection: connect, pull, push, conflicts, refusals, sign-in and disconnect");
+// An interrupted send to the project stops a pull and a push. The panel keeps
+// the desktop app's words and offers one retry that runs the send alone, and
+// does not start the stopped transfer again.
+{
+  const words = "an earlier push was interrupted before its outcome was known; run `librepaper push` to settle it first";
+  const stopped = refused(409, { reason: "pending", error: words });
+  const scene = { pull: stopped, push: stopped };
+  const { api, calls } = routes({
+    pullConnection: () => scene.pull,
+    pushConnection: () => scene.push,
+    retryConnection: { status: connected, pushed: { files: 2 } },
+  });
+  const web = createWebConnection({ api, project });
+  await web.pull();
+  assert.equal(web.state.interrupted, words);
+  assert.equal(web.state.problem, "", "it is an answer for the panel, not a failure line");
+  assert.equal(web.state.result, null);
+
+  await web.push();
+  assert.equal(web.state.interrupted, words);
+
+  await web.retryTransfer();
+  assert.deepEqual(calls.filter((call) => call[0] === "retryConnection"), [["retryConnection", project]]);
+  assert.equal(calls.filter((call) => call[0] === "pullConnection").length, 1, "no pull runs before or after the retry");
+  assert.equal(calls.filter((call) => call[0] === "pushConnection").length, 1);
+  assert.equal(web.state.interrupted, "");
+  assert.match(web.state.result, /^The interrupted send finished: 2 files reached the project\. Get repository changes or send project changes again/);
+  assert.equal(web.state.busy, "");
+
+  // A transfer that goes through afterwards forgets the notice.
+  scene.pull = { status: connected, pushed: { nothing: true } };
+  await web.pull();
+  assert.equal(web.state.interrupted, "");
+}
+
+// A retry that cannot settle keeps the button and says why.
+{
+  const stopped = refused(409, { reason: "pending", error: "the interrupted push was sent under a different sign-in" });
+  const { api } = routes({
+    pullConnection: stopped,
+    retryConnection: refused(409, { reason: "pending", error: "the interrupted push was sent under a different sign-in" }),
+  });
+  const web = createWebConnection({ api, project });
+  await web.pull();
+  await web.retryTransfer();
+  assert.equal(web.state.interrupted !== "", true, "the interrupted notice stays");
+  assert.match(web.state.problem, /different sign-in/);
+
+  const nothing = routes({ pullConnection: stopped, retryConnection: { status: connected, pushed: { nothing: true } } });
+  const clean = createWebConnection({ api: nothing.api, project });
+  await clean.pull();
+  await clean.retryTransfer();
+  assert.match(clean.state.result, /nothing was left to send to the project/);
+}
+
+console.log("web-connection: connect, pull, push, conflicts, refusals, interrupted sends, sign-in and disconnect");
