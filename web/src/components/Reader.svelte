@@ -1729,6 +1729,8 @@
   });
   const outlineHeadings = $derived.by(() => panel === "outline" && mayEdit
     ? extractOutline(outlineSource, outlineFormat) : []);
+  // The words in the source selection, set by noteSourceSelection.
+  let sourceSelectionWords = $state(null);
   // Word counts for the Outline panel: the open file's root with its includes,
   // each section, and the source selection (kept by noteSourceSelection).
   const outlineWords = $derived.by(() => {
@@ -2293,7 +2295,6 @@
   // those are the ways a selection moves.
   let sourceSelected = $state(false);
   let sourcePassageNow = $state(null);
-  let sourceSelectionWords = $state(null);
   function noteSourceSelection() {
     const range = editor?.selection?.();
     sourceSelected = Boolean(range);
