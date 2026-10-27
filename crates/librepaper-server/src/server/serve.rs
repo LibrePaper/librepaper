@@ -15,8 +15,9 @@ use librepaper_base::auth::{
     SESSION_MAX_AGE,
 };
 use librepaper_base::config::Configuration;
+use librepaper_base::secret::Secret;
 use librepaper_base::shell::ShellFile;
-use librepaper_base::util::die;
+use librepaper_base::util::{die, token, Encoding};
 use librepaper_document::document::retention::{
     describe_seconds, parse_expire_from, parse_retention,
 };
@@ -36,7 +37,7 @@ pub struct ServeOptions {
     pub migrate: bool,
     /// GitHub OAuth app credentials resolved from the TOML configuration.
     pub github_client_id: Option<String>,
-    pub github_client_secret: Option<String>,
+    pub github_client_secret: Option<Secret<String>>,
     /// The OpenID Connect providers (Google, Entra and custom entries), in the
     /// order the sign-in page offers them, with their credentials resolved
     /// from the TOML configuration. GitHub is not among them.
@@ -271,7 +272,7 @@ async fn deployment_peer_key(
             }
         }
     }
-    let key = librepaper_base::util::random_token();
+    let key = token::<16>(Encoding::Hex);
     catalog
         .set_runtime_state(
             librepaper_engine::log::DEPLOYMENT_PEER_STATE,
@@ -322,7 +323,13 @@ pub fn validate_serve_options(options: &ServeOptions) -> Result<(), String> {
         .map_err(|error| format!("retention.erase_inactive_after: {error}"))?;
     configured_origins(options)?;
     let github_id = non_blank(options.github_client_id.as_deref()).is_some();
-    let github_secret = non_blank(options.github_client_secret.as_deref()).is_some();
+    let github_secret = non_blank(
+        options
+            .github_client_secret
+            .as_ref()
+            .map(|secret| secret.expose().as_str()),
+    )
+    .is_some();
     let github_configured = github_id && github_secret;
     validate_admin_github(
         options.admin_origin.as_deref(),
@@ -441,7 +448,9 @@ pub async fn serve(options: ServeOptions) {
 
     let app = GithubApp {
         client_id: options.github_client_id.unwrap_or_default(),
-        client_secret: options.github_client_secret.unwrap_or_default(),
+        client_secret: options
+            .github_client_secret
+            .unwrap_or_else(|| Secret::new(String::new())),
         ..GithubApp::default()
     };
     let publishers = options.publishers.clone();

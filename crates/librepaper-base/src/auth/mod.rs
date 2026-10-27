@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use tokio::sync::{Semaphore, SemaphorePermit};
 
-pub use crate::util::{now_unix, random_bytes, random_token};
+pub use crate::util::{now_unix, random_bytes};
 
 mod device;
 mod github;

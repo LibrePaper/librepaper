@@ -19,6 +19,7 @@ use crate::auth::{
     PROVIDER_HTTP_TIMEOUT, PROVIDER_ORCID,
 };
 use crate::http::{provider_client, read_capped, truncate, USER_AGENT};
+use crate::secret::Secret;
 
 pub const GOOGLE_ISSUER: &str = "https://accounts.google.com";
 
@@ -139,7 +140,7 @@ pub struct OidcProvider {
     pub preset: Preset,
     pub issuer: String,
     pub client_id: String,
-    pub client_secret: String,
+    pub client_secret: Secret<String>,
     pub scopes: String,
     /// A test seam. When set, discovery is skipped and these are used.
     pub endpoints: Option<Endpoints>,
@@ -158,7 +159,7 @@ impl fmt::Debug for OidcProvider {
             .field("preset", &self.preset)
             .field("issuer", &self.issuer)
             .field("client_id", &self.client_id)
-            .field("client_secret", &"[REDACTED]")
+            .field("client_secret", &self.client_secret)
             .field("scopes", &self.scopes)
             .field("endpoints", &self.endpoints)
             .field("discovered", &self.discovered.initialized())
@@ -221,7 +222,7 @@ impl OidcProvider {
             preset,
             issuer,
             client_id: client_id.to_string(),
-            client_secret: client_secret.to_string(),
+            client_secret: Secret::new(client_secret.to_string()),
             scopes: scopes.to_string(),
             endpoints: None,
             discovered: Arc::new(tokio::sync::OnceCell::new()),
@@ -421,13 +422,13 @@ impl OidcProvider {
             let credentials = format!(
                 "{}:{}",
                 form_encode(&self.client_id),
-                form_encode(&self.client_secret)
+                form_encode(self.client_secret.expose())
             );
             let encoded = base64::engine::general_purpose::STANDARD.encode(credentials);
             request = request.header("authorization", format!("Basic {encoded}"));
         } else {
             form.push(("client_id", self.client_id.as_str()));
-            form.push(("client_secret", self.client_secret.as_str()));
+            form.push(("client_secret", self.client_secret.expose().as_str()));
         }
         let response = request
             .form(&form)
@@ -1611,7 +1612,7 @@ mod tests {
         assert!(debug.contains("oidc-x"));
         assert!(debug.contains("https://sso.example.org"));
         assert!(!debug.contains("do-not-print"));
-        assert!(debug.contains("REDACTED"));
+        assert!(debug.contains("[redacted]"));
         let google = format!(
             "{:?}",
             OidcProvider::google("public-client", "do-not-print")

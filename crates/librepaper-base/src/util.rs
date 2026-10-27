@@ -65,9 +65,43 @@ pub fn random_bytes(n: usize) -> Vec<u8> {
     raw
 }
 
-/// Sixteen random bytes as lowercase hex.
-pub fn random_token() -> String {
-    hex::encode(random_bytes(16))
+/// `N` bytes from the operating system's random generator, with the length
+/// fixed in the type.
+pub fn random<const N: usize>() -> [u8; N] {
+    use rand::RngCore;
+    let mut raw = [0u8; N];
+    rand::rng().fill_bytes(&mut raw);
+    raw
+}
+
+/// How the bytes of a token are written as text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Encoding {
+    /// Lowercase hex, two characters per byte.
+    Hex,
+    /// URL-safe base64 without padding, which is what a bearer token is.
+    Base64Url,
+}
+
+/// `N` random bytes written as text in `encoding`.
+pub fn token<const N: usize>(encoding: Encoding) -> String {
+    use base64::Engine;
+    match encoding {
+        Encoding::Hex => hex::encode(random::<N>()),
+        Encoding::Base64Url => {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(random::<N>())
+        }
+    }
+}
+
+/// `n` kibibytes, in bytes.
+pub const fn kib(n: u64) -> u64 {
+    n * 1024
+}
+
+/// `n` mebibytes, in bytes.
+pub const fn mib(n: u64) -> u64 {
+    n * 1024 * 1024
 }
 
 /// Unix milliseconds for persisted deadlines and timestamps.
@@ -199,5 +233,37 @@ pub fn disk_space(path: &std::path::Path) -> std::io::Result<(u64, u64)> {
             std::io::ErrorKind::Unsupported,
             "no filesystem statistics on this platform",
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{kib, mib, token, Encoding};
+
+    #[test]
+    fn hex_tokens_have_two_characters_per_byte() {
+        let text = token::<16>(Encoding::Hex);
+        assert_eq!(text.len(), 32);
+        assert!(text.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn base64url_tokens_are_unpadded_and_url_safe() {
+        let text = token::<32>(Encoding::Base64Url);
+        assert_eq!(text.len(), 43);
+        assert!(text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'));
+    }
+
+    #[test]
+    fn tokens_differ_between_draws() {
+        assert_ne!(token::<16>(Encoding::Hex), token::<16>(Encoding::Hex));
+    }
+
+    #[test]
+    fn byte_sizes_are_binary() {
+        assert_eq!(kib(64), 64 * 1024);
+        assert_eq!(mib(160), 160 * 1024 * 1024);
     }
 }

@@ -6,6 +6,8 @@ use librepaper_base::{
         Policy, PROVIDER_ENTRA, PROVIDER_GITHUB, PROVIDER_GOOGLE, PROVIDER_ORCID, SESSION_MAX_AGE,
     },
     config::{Configuration, DEFAULT_LOG_QUOTA_BYTES, DEFAULT_PENDING_BYTES},
+    secret::Secret,
+    util::mib,
 };
 use librepaper_engine::storage::StorageOptions;
 use serde::{de::DeserializeOwned, Deserialize};
@@ -66,7 +68,7 @@ pub(crate) struct ResolvedConfig {
     pub(crate) migrate: bool,
     pub(crate) storage: StorageOptions,
     pub(crate) github_client_id: Option<String>,
-    pub(crate) github_client_secret: Option<String>,
+    pub(crate) github_client_secret: Option<Secret<String>>,
     pub(crate) oidc: Vec<OidcProvider>,
     pub(crate) session_lifetime: Option<std::time::Duration>,
     session_lifetime_text: Option<String>,
@@ -764,20 +766,21 @@ pub(crate) fn load_with_postgres_env(
     )?;
     let mut config = Configuration::default();
     let l = raw.limits;
-    let publisher_storage_mb =
+    let publisher_storage_mib =
         r.optional("limits.publisher_storage_mib", l.publisher_storage_mib)?;
-    let deployment_storage_mb =
+    let deployment_storage_mib =
         r.optional("limits.deployment_storage_mib", l.deployment_storage_mib)?;
-    let max_storage_mb = ((i64::MAX as u128).min(usize::MAX as u128) / 1_048_576) as usize;
+    let max_storage_mib =
+        ((i64::MAX as u128).min(usize::MAX as u128) / u128::from(mib(1))) as usize;
     for (key, value) in [
-        ("limits.publisher_storage_mib", publisher_storage_mb),
-        ("limits.deployment_storage_mib", deployment_storage_mb),
+        ("limits.publisher_storage_mib", publisher_storage_mib),
+        ("limits.deployment_storage_mib", deployment_storage_mib),
     ] {
-        if value.is_some_and(|mb| mb > max_storage_mb) {
+        if value.is_some_and(|count_mib| count_mib > max_storage_mib) {
             return Err(format!("{key} must fit in the storage byte limit"));
         }
     }
-    config.set_storage(publisher_storage_mb, deployment_storage_mb)?;
+    config.set_storage(publisher_storage_mib, deployment_storage_mib)?;
     let uploads_per_hour = r.optional(
         "limits.publisher_uploads_per_hour",
         l.publisher_uploads_per_hour,
@@ -804,7 +807,7 @@ pub(crate) fn load_with_postgres_env(
     let scratch = r.value(
         "limits.pending_scratch_mib",
         l.pending_scratch_mib,
-        config.pending_scratch_bytes.div_ceil(1024 * 1024),
+        config.pending_scratch_bytes.div_ceil(mib(1)),
     )?;
     config.set_pending(Some(pend), Some(scratch))?;
     config.set_memory_budget(Some(r.value(
@@ -881,7 +884,7 @@ pub(crate) fn load_with_postgres_env(
         migrate,
         storage,
         github_client_id,
-        github_client_secret,
+        github_client_secret: github_client_secret.map(Secret::new),
         oidc,
         session_lifetime,
         session_lifetime_text,
@@ -1701,7 +1704,7 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         "pending_scratch_mib",
         &c.config
             .pending_scratch_bytes
-            .div_ceil(1024 * 1024)
+            .div_ceil(mib(1))
             .to_string(),
     );
     value(
@@ -1998,7 +2001,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            load(&p).unwrap().github_client_secret.as_deref(),
+            load(&p)
+                .unwrap()
+                .github_client_secret
+                .as_ref()
+                .map(|secret| secret.expose().as_str()),
             Some("secret")
         );
     }
@@ -2194,17 +2201,17 @@ mod tests {
         let loaded = load(&p).unwrap();
         assert_eq!(loaded.address.port(), 8080);
         assert_eq!(loaded.storage.database_url, "postgresql:///librepaper");
-        let scratch_mb = Configuration::default()
+        let scratch_mib = Configuration::default()
             .pending_scratch_bytes
-            .div_ceil(1024 * 1024);
+            .div_ceil(mib(1));
         assert_eq!(
             loaded.config.pending_scratch_bytes,
-            scratch_mb * 1024 * 1024
+            mib(scratch_mib)
         );
         assert!(
             loaded.config.pending_scratch_bytes >= Configuration::default().pending_scratch_bytes
         );
-        assert!(show_resolved(&loaded).contains(&format!("pending_scratch_mib = {scratch_mb}")));
+        assert!(show_resolved(&loaded).contains(&format!("pending_scratch_mib = {scratch_mib}")));
     }
     #[test]
     fn resolves_explicit_env_and_array_refs() {
@@ -2307,7 +2314,7 @@ client_secret = { file = "missing-oauth-secret" }
         assert!(error.contains("missing-database-url"), "{error}");
     }
     #[test]
-    fn rejects_mb_values_that_overflow_storage_bytes() {
+    fn rejects_mib_values_that_overflow_storage_bytes() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.toml");
         std::fs::write(&p, "[limits]\ndeployment_storage_mib = 10000000000000").unwrap();
@@ -2324,18 +2331,18 @@ client_secret = { file = "missing-oauth-secret" }
     }
     #[test]
     fn explicit_scratch_is_preserved_when_log_quota_changes() {
-        let old_default_mb = Configuration::default()
+        let old_default_mib = Configuration::default()
             .pending_scratch_bytes
-            .div_ceil(1024 * 1024);
+            .div_ceil(mib(1));
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.toml");
-        let text=format!("[limits]\nlog_quota_mib = 28\npending_scratch_mib = {old_default_mb}\nmemory_budget_mib = 512");
+        let text=format!("[limits]\nlog_quota_mib = 28\npending_scratch_mib = {old_default_mib}\nmemory_budget_mib = 512");
         std::fs::write(&p, text).unwrap();
         let loaded = load(&p).unwrap();
-        assert_eq!(loaded.config.log_quota_bytes, 28 * 1024 * 1024);
+        assert_eq!(loaded.config.log_quota_bytes, mib(28) as usize);
         assert_eq!(
             loaded.config.pending_scratch_bytes,
-            old_default_mb * 1024 * 1024
+            mib(old_default_mib)
         );
     }
     #[test]

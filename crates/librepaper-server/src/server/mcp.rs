@@ -11,7 +11,7 @@ mod recovery_tests;
 mod render;
 mod schema;
 
-const MAX_MESSAGE: usize = 64 * 1024;
+const MCP_MESSAGE_MAX_BYTES: usize = 64 * 1024;
 const MAX_AGENT_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 /// How many comments or replies one `thread` query is handed. The same 24
 /// an agent query page has always been capped at, read from the catalogue
@@ -318,7 +318,7 @@ impl Server {
         }
         let mut headers = request.headers().clone();
         headers.insert(AUTOMATION_HEADER, HeaderValue::from_static("1"));
-        let raw = match to_bytes(request.into_body(), MAX_MESSAGE).await {
+        let raw = match to_bytes(request.into_body(), MCP_MESSAGE_MAX_BYTES).await {
             Ok(raw) => raw,
             Err(_) => return plain(413, "request exceeds 64 KiB"),
         };
@@ -914,7 +914,7 @@ impl Server {
         // second recheck here only re-served the same permissions computed
         // moments earlier from `who`.
         result["permissions"] = json!({"read":true,"suggest":who.at_least(Role::Editor),"comment":who.at_least(Role::Commenter),"apply":who.at_least(Role::Editor)});
-        result["limits"] = json!({"control_bytes":MAX_MESSAGE,"source_bytes":self.config.log_quota_bytes,"queries":8,"patches":100,"view_lifetime_seconds":3600,"concurrent_reads":8,"concurrent_effects":8,"concurrent_results":4});
+        result["limits"] = json!({"control_bytes":MCP_MESSAGE_MAX_BYTES,"source_bytes":self.config.log_quota_bytes,"queries":8,"patches":100,"view_lifetime_seconds":3600,"concurrent_reads":8,"concurrent_effects":8,"concurrent_results":4});
         // The only place a final size is computed: inserting
         // `returned_bytes`/`estimated_tokens` changes the serialized size,
         // so one pass sets a first estimate and a second captures the size

@@ -3,12 +3,13 @@
 
 use sha2::{Digest, Sha256};
 
-use super::{base64url, random_bytes};
+use super::base64url;
+use crate::util::{token, Encoding};
 
 /// A PKCE verifier: 32 random bytes, base64url, which is inside the 43-128
 /// characters the spec allows.
 pub fn pkce_verifier() -> String {
-    base64url(&random_bytes(32))
+    token::<32>(Encoding::Base64Url)
 }
 
 /// The S256 challenge for a verifier.

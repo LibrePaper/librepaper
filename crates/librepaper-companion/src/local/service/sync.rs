@@ -29,6 +29,7 @@
 use super::*;
 
 use librepaper_base::http::Credentials;
+use librepaper_base::util::{token, Encoding};
 use librepaper_sync::{
     changes_here, publish, pull, push, store_for, web_changed, Client, Error, Link, MergeOutcome,
     PullOptions, PullOutcome, PushOptions, PushOutcome, State, StateStore, VersionCommit,
@@ -424,7 +425,7 @@ pub(super) async fn begin_login(
             &format!("could not start the sign-in: the site answered HTTP {status}"),
         ));
     };
-    let authorization_id = librepaper_base::util::random_token();
+    let authorization_id = token::<16>(Encoding::Hex);
     {
         let mut pending = inner.sync_logins.live();
         pending.retain(|_, login| login.owner != owner);

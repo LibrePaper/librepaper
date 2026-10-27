@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use librepaper_base::http::{detail_of, post_json_as, send, truncate, Credentials};
+use librepaper_base::util::{token, Encoding};
 use reqwest::Method;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -322,7 +323,7 @@ impl Client {
         title: &str,
         files: &[(String, Vec<u8>)],
     ) -> Result<String, Error> {
-        let boundary = format!("librepaper-{}", librepaper_base::util::random_token());
+        let boundary = format!("librepaper-{}", token::<16>(Encoding::Hex));
         let mut body = Vec::new();
         body.extend_from_slice(
             format!(

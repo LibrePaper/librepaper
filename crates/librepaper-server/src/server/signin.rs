@@ -69,7 +69,7 @@ struct Begin {
 impl Begin {
     fn new() -> Begin {
         Begin {
-            state: random_token(),
+            state: token::<16>(Encoding::Hex),
             verifier: pkce_verifier(),
         }
     }
@@ -773,7 +773,7 @@ impl Server {
                 return;
             }
         }
-        let value = sign_visitor(&self.key, &random_token());
+        let value = sign_visitor(&self.key, &token::<16>(Encoding::Hex));
         add_cookie(
             response,
             &set_cookie(

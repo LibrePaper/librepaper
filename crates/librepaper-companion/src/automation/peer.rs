@@ -61,7 +61,7 @@ fn decoded_key(segment: &str) -> Option<String> {
 }
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+const PEER_RESPONSE_MAX_BYTES: usize = 64 * 1024;
 
 /// A parsed document link. `key` is intentionally private and never appears
 /// in Debug, JSON, or error text.
@@ -452,7 +452,7 @@ impl AutomationPeer {
         let status = response.status().as_u16();
         if response
             .content_length()
-            .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+            .is_some_and(|length| length > PEER_RESPONSE_MAX_BYTES as u64)
         {
             return Err("document response exceeds the 64 KiB control-message limit".into());
         }
@@ -463,7 +463,7 @@ impl AutomationPeer {
             .await
             .map_err(|err| format!("could not read document response: {err}"))?
         {
-            if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            if bytes.len().saturating_add(chunk.len()) > PEER_RESPONSE_MAX_BYTES {
                 return Err("document response exceeds the 64 KiB control-message limit".into());
             }
             bytes.extend_from_slice(&chunk);

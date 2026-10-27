@@ -8,6 +8,7 @@ pub mod canonical_json;
 pub mod config;
 pub mod http;
 pub mod private_files;
+pub mod secret;
 pub mod shell;
 pub mod tls;
 pub mod util;
