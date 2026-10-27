@@ -16,7 +16,6 @@ use super::*;
 
 use std::collections::BTreeSet;
 
-use sha2::{Digest, Sha256};
 
 use super::git::{
     conflicted_paths, declined, merge_in_progress, refuse_because, remote_failure, run, run_pull,
@@ -121,7 +120,7 @@ impl Connection {
 
 /// The first 32 hex characters of the SHA-256 of the project's address.
 fn connection_key(link: &Link) -> String {
-    hex::encode(Sha256::digest(project_url(link).as_bytes()))[..32].to_string()
+    librepaper_base::digest::Digest::of(project_url(link).as_bytes()).to_hex()[..32].to_string()
 }
 
 /// What `connection.json` holds: the project's address and the remote's.
@@ -939,7 +938,7 @@ mod tests {
         let fixture = Fixture::new().await;
         let connection = fixture.connection(PROJECT);
         let key =
-            hex::encode(Sha256::digest(b"https://paper.example/docs/abc123"))[..32].to_string();
+            librepaper_base::digest::Digest::of(b"https://paper.example/docs/abc123").to_hex()[..32].to_string();
         assert_eq!(connection.key, key);
         assert_eq!(connection.key.len(), 32);
         let folder = fixture.inner.state_home.join("connections").join(&key);

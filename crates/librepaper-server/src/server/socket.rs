@@ -706,7 +706,7 @@ impl Server {
                                     // itself (inline, or by reference above
                                     // the inline limit) and every row plus
                                     // the buffer follows as `doc-rows`.
-                                    let digest = format!("{:x}", Sha256::digest(&base));
+                                    let digest = librepaper_base::digest::Digest::of(&base).to_hex();
                                     let state = if base.len() > self.config.session.inline_state_max {
                                         let Some((reference, digest)) =
                                             self.state_reference(&room.slug, base).await
@@ -1095,7 +1095,7 @@ impl Server {
             .ok()?;
         let now = librepaper_base::util::now_unix();
         let id = random_token();
-        let digest = format!("{:x}", Sha256::digest(&update));
+        let digest = librepaper_base::digest::Digest::of(&update).to_hex();
         let mut transfers = self.state_transfers.lock().await;
         if !transfers.insert(
             id.clone(),

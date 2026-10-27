@@ -7,7 +7,6 @@
 use axum::body::{to_bytes, Body};
 use axum::http::{HeaderMap, Request};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
 use crate::server::http_test_support::{deployment as http_deployment, owner_bearer, Deployment};
 use crate::server::origins::Origins;
@@ -31,7 +30,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
 }
 
 fn sha(text: &str) -> String {
-    hex::encode(Sha256::digest(text.as_bytes()))
+    librepaper_base::digest::Digest::of(text.as_bytes()).to_hex()
 }
 
 fn request(method: &str, uri: &str, headers: &HeaderMap, body: Option<&Value>) -> Request<Body> {

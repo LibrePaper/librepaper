@@ -13,7 +13,6 @@
 //! The compressed base is bounded by the log quota. The expanded base is
 //! bounded by the memory reservation the reader holds for it.
 
-use sha2::{Digest, Sha256};
 use std::io::{Cursor, Read};
 use std::sync::Arc;
 use time::{Duration, OffsetDateTime};
@@ -58,7 +57,7 @@ impl CollaborationStorage {
         };
         let encoded = self.blobs.get(&base.snapshot_key).await?;
         if encoded.len() as i64 != base.snapshot_bytes
-            || Sha256::digest(&encoded).as_slice() != base.snapshot_digest
+            || librepaper_base::digest::Digest::of(&encoded).as_bytes().as_slice() != base.snapshot_digest
         {
             return Err(Error::Invalid(
                 "collaboration base failed integrity verification".into(),
@@ -94,7 +93,7 @@ impl CollaborationStorage {
                 "collaboration base exceeds the log quota".into(),
             ));
         }
-        let digest: [u8; 32] = Sha256::digest(&encoded).into();
+        let digest = *librepaper_base::digest::Digest::of(&encoded).as_bytes();
         let base_id = super::postgres::new_id();
         let key = format!("documents/{document_id}/collaboration/{base_id}.loro.zst");
         self.blobs

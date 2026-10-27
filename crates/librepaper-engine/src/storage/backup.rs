@@ -280,7 +280,7 @@ async fn create_archive(
                 .await
                 .map_err(|e| format!("backup object {}: {e}", reference.key))?;
             reference.bytes = bytes.len() as i64;
-            reference.sha256 = hex::encode(Sha256::digest(&bytes));
+            reference.sha256 = librepaper_base::digest::Digest::of(&bytes).to_hex();
         }
     }
     let manifest = build_manifest(
@@ -352,7 +352,7 @@ async fn write_archive(
         if reference.bytes != bytes.len() as i64 {
             return Err(format!("backup object length mismatch: {}", reference.key));
         }
-        if reference.sha256 != hex::encode(Sha256::digest(&bytes)) {
+        if reference.sha256 != librepaper_base::digest::Digest::of(&bytes).to_hex() {
             return Err(format!("backup object digest mismatch: {}", reference.key));
         }
         append_entry(
@@ -846,7 +846,6 @@ mod connection_tests {
 #[cfg(test)]
 mod archive_tests {
     use super::{drop_missing, expand_includes, validate_archive_prefix, write_archive, Reference};
-    use crate::storage::blob::{BlobStore, FsStore};
     use sha2::{Digest, Sha256};
     use std::io::Read;
     use std::path::PathBuf;
@@ -878,7 +877,7 @@ mod archive_tests {
         Reference {
             key: key.into(),
             bytes: body.len() as i64,
-            sha256: hex::encode(Sha256::digest(body)),
+            sha256: librepaper_base::digest::Digest::of(body).to_hex(),
         }
     }
 

@@ -153,7 +153,7 @@ impl Server {
             create: input.change.create,
             delete: input.change.delete,
             put_binary: input.change.put_binary,
-            request_digest: hex::encode(Sha256::digest(&body)),
+            request_digest: librepaper_base::digest::Digest::of(&body).to_hex(),
             message: Some(input.sync.message),
             author: input.sync.author,
         };

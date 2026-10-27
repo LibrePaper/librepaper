@@ -1181,7 +1181,7 @@ impl Sequencer {
             return Ingested::Refused("this server no longer holds this document; reconnect");
         }
 
-        let digest: [u8; 32] = Sha256::digest(&bytes).into();
+        let digest = *librepaper_base::digest::Digest::of(&bytes).as_bytes();
         let durable_key = durable_reservation_key(self.document_id, peer_key, client_seq, &digest);
         if let Some(previous) = inner
             .buffer

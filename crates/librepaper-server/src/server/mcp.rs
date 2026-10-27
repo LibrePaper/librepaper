@@ -169,10 +169,8 @@ fn verify(key: &[u8], context: &str, payload: &str, signature: &str) -> bool {
 fn agent_object_key(slug: &str, actor: &str, kind: &str, id: &str) -> String {
     format!(
         "temporary/agent/{}/{}",
-        hex::encode(Sha256::digest(
-            format!("{slug}\0{actor}\0{kind}").as_bytes()
-        )),
-        hex::encode(Sha256::digest(id.as_bytes()))
+        librepaper_base::digest::Digest::of(format!("{slug}\0{actor}\0{kind}").as_bytes()).to_hex(),
+        librepaper_base::digest::Digest::of(id.as_bytes()).to_hex()
     )
 }
 
@@ -190,10 +188,10 @@ fn require_live_identity(who: &Viewer) -> Result<(), Failure> {
 
 fn actor_scope(slug: &str, who: &Viewer, author: &str) -> String {
     // Bind cached views to authority as well as attribution. No raw key survives.
-    hex::encode(Sha256::digest(format!(
+    librepaper_base::digest::Digest::of(format!(
         "{slug}\0{author}\0{}\0{}\0{}\0{}\0{:?}",
         who.id.id, who.key, who.link, who.id.session_generation, who.role
-    )))
+    ).as_bytes()).to_hex()
 }
 
 impl Server {
@@ -907,9 +905,9 @@ impl Server {
         result["expires_at"] = json!(view.expires_at);
         result["schema_version"] = json!(2);
         result["authorization_epoch"] = json!(actor);
-        result["schema_digest"] = json!(hex::encode(Sha256::digest(include_bytes!(
+        result["schema_digest"] = json!(librepaper_base::digest::Digest::of(include_bytes!(
             "mcp/tools.json"
-        ))));
+        )).to_hex());
         // `mcp_recheck` rechecks access around every tool call already; a
         // second recheck here only re-served the same permissions computed
         // moments earlier from `who`.
@@ -1130,7 +1128,7 @@ mod selection_tests {
                 librepaper_document::document::projection::Entry {
                     kind: "text".into(),
                     id: "f1".into(),
-                    digest: hex::encode(<sha2::Sha256 as sha2::Digest>::digest(text.as_bytes())),
+                    digest: librepaper_base::digest::Digest::of(text.as_bytes()).to_hex(),
                     bytes: text.len() as u64,
                 },
             )]

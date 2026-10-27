@@ -74,7 +74,7 @@ async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes
         automation: false,
     };
     let bytes = png(64);
-    let digest = hex::encode(Sha256::digest(&bytes));
+    let digest = librepaper_base::digest::Digest::of(&bytes).to_hex();
 
     sqlx::query("UPDATE accounts SET session_generation=session_generation+1 WHERE id=$1")
         .bind(owner.id)

@@ -288,7 +288,7 @@ impl Server {
                     context: json!({
                         "candidate_id": args.get("candidate_id").cloned().unwrap_or_else(|| {
                             if tool == "document_propose" {
-                                json!(format!("candidate_{}", hex::encode(Sha256::digest(format!("{actor}\0{}\0{digest}", key.scoped_request_id(""))))))
+                                json!(format!("candidate_{}", librepaper_base::digest::Digest::of(format!("{actor}\0{}\0{digest}", key.scoped_request_id("")).as_bytes()).to_hex()))
                             } else { Value::Null }
                         }),
                         "action": args.get("action").cloned().unwrap_or(Value::Null),
@@ -869,7 +869,7 @@ impl Server {
             dependencies.push(source_change::Dependency {
                 path: path.to_string(),
                 file_id: tree.files[path].file_id.to_string(),
-                file_hash: hex::encode(Sha256::digest(view.snapshot.texts()[path].as_bytes())),
+                file_hash: librepaper_base::digest::Digest::of(view.snapshot.texts()[path].as_bytes()).to_hex(),
                 start,
                 end,
                 exact: view.snapshot.texts()[path][start..end].to_string(),
@@ -919,7 +919,7 @@ impl Server {
             dependencies.push(source_change::Dependency {
                 path: path.to_string(),
                 file_id: tree.files[path].file_id.to_string(),
-                file_hash: hex::encode(Sha256::digest(view.snapshot.texts()[path].as_bytes())),
+                file_hash: librepaper_base::digest::Digest::of(view.snapshot.texts()[path].as_bytes()).to_hex(),
                 start,
                 end,
                 exact: view.snapshot.texts()[path][start..end].to_string(),
@@ -962,7 +962,7 @@ impl Server {
                     "candidate text missing from projection",
                 ));
             };
-            entry.digest = hex::encode(Sha256::digest(text.as_bytes()));
+            entry.digest = librepaper_base::digest::Digest::of(text.as_bytes()).to_hex();
             entry.bytes = text.len() as u64;
         }
         let validation = args["validation"].as_str().unwrap_or("source");
@@ -1004,10 +1004,10 @@ impl Server {
         };
         let candidate_id = format!(
             "candidate_{}",
-            hex::encode(Sha256::digest(format!(
+            librepaper_base::digest::Digest::of(format!(
                 "{actor}\0{}\0{digest}",
                 key.scoped_request_id("")
-            )))
+            ).as_bytes()).to_hex()
         );
         self.mcp_store(
             slug,

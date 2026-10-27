@@ -10,7 +10,6 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::cli::{resolve_identifier, server_or_die};
 use librepaper_base::http::{detail_of, get_as, send, Credentials};
@@ -154,7 +153,7 @@ async fn fetch_live_project(
         if entry.kind == "text" && bytes.len() as u64 != entry.bytes {
             return Err(format!("file {} has the wrong size", relative.display()));
         }
-        if hex::encode(Sha256::digest(&bytes)) != entry.digest {
+        if librepaper_base::digest::Digest::of(&bytes).to_hex() != entry.digest {
             return Err(format!(
                 "file {} failed digest verification",
                 relative.display()
@@ -278,7 +277,7 @@ async fn unpack_archive(
             SourceFile::Asset { digest, .. } => {
                 let digest = hex::encode(digest);
                 let bytes = fetch_asset(server, slug, &digest, who).await?;
-                if hex::encode(Sha256::digest(&bytes)) != digest {
+                if librepaper_base::digest::Digest::of(&bytes).to_hex() != digest {
                     return Err(format!(
                         "asset {} failed digest verification",
                         relative.display()

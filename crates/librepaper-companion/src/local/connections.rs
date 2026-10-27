@@ -87,10 +87,7 @@ pub fn valid_name(name: &str) -> bool {
 /// the conversation, so the same runner rewrites the same record on every
 /// start instead of leaving old ones behind.
 pub fn runner_connection_name(document_url: &str, conversation: &str) -> String {
-    use sha2::Digest as _;
-    let digest = hex::encode(sha2::Sha256::digest(
-        format!("{document_url}\0{conversation}").as_bytes(),
-    ));
+    let digest = librepaper_base::digest::Digest::of(format!("{document_url}\0{conversation}").as_bytes()).to_hex();
     format!("runner-{}", &digest[..48])
 }
 

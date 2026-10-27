@@ -12,7 +12,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::blob::{BlobError, BlobStore};
@@ -60,7 +59,7 @@ impl SourceStorage {
     ) -> Result<(HashMap<([u8; 32], i64), AssetRecord>, Vec<NewAsset>), Error> {
         let mut unique = HashMap::new();
         for file in files {
-            let digest: [u8; 32] = Sha256::digest(&file.bytes).into();
+            let digest = *librepaper_base::digest::Digest::of(&file.bytes).as_bytes();
             unique
                 .entry((digest, file.bytes.len() as i64))
                 .or_insert(file);

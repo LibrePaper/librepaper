@@ -50,7 +50,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use loro::LoroDoc;
-use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -1235,12 +1234,12 @@ async fn put_or_adopt_archive(
             // Never overwrite an immutable object with a newer encoder's
             // bytes. The existing object itself supplies the recovery digest.
             let existing = blobs.get(key).await.map_err(|error| error.to_string())?;
-            let digest = Sha256::digest(&existing);
+            let digest = librepaper_base::digest::Digest::of(&existing);
             Ok(ArchiveObject {
                 document_id,
                 storage_key: key.to_string(),
                 tree_digest: Some(tree_digest.to_vec()),
-                content_digest: Some(digest.to_vec()),
+                content_digest: Some(digest.as_bytes().to_vec()),
                 byte_length: existing.len() as i64,
             })
         }
@@ -1347,7 +1346,7 @@ mod tests {
             .expect("seed the object left by the crashed worker");
         let new_bytes = b"bytes from a newer encoder".to_vec();
         let encoded = super::super::source_archive::EncodedArchive {
-            digest: Sha256::digest(&new_bytes).into(),
+            digest: *librepaper_base::digest::Digest::of(&new_bytes).as_bytes(),
             logical_bytes: new_bytes.len() as u64,
             bytes: new_bytes,
         };
@@ -1355,7 +1354,7 @@ mod tests {
         let adopted = put_or_adopt_archive(&blobs, Uuid::new_v4(), key, [7; 32], encoded)
             .await
             .expect("adopt existing immutable bytes");
-        let expected_digest = Sha256::digest(&old_bytes).to_vec();
+        let expected_digest = librepaper_base::digest::Digest::of(&old_bytes).as_bytes().to_vec();
 
         assert_eq!(adopted.byte_length, old_bytes.len() as i64);
         assert_eq!(

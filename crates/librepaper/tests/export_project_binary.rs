@@ -8,7 +8,6 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use librepaper::projection::{Entry, Projection};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use tokio::process::Command;
 
 const SLUG: &str = "paper-abcdefghij";
@@ -17,8 +16,8 @@ const SLUG: &str = "paper-abcdefghij";
 async fn project_export_writes_verified_text_and_binary_files() {
     let text = "# Captured paper\n";
     let asset = b"\0PNG captured bytes".to_vec();
-    let text_sha = hex::encode(Sha256::digest(text.as_bytes()));
-    let asset_sha = hex::encode(Sha256::digest(&asset));
+    let text_sha = librepaper_base::digest::Digest::of(text.as_bytes()).to_hex();
+    let asset_sha = librepaper_base::digest::Digest::of(&asset).to_hex();
 
     // Match the source-bearing fields emitted by GET /snapshot:
     // `sha` and `tree` are the projection digest and projection, with text
@@ -59,7 +58,7 @@ async fn project_export_writes_verified_text_and_binary_files() {
         "files": projection.files,
         "texts": {"paper.md": text},
         "source": text,
-        "source_sha": hex::encode(Sha256::digest(text.as_bytes())),
+        "source_sha": librepaper_base::digest::Digest::of(text.as_bytes()).to_hex(),
         "comments": [],
         "comment_state": {"complete": true, "next_cursor": null},
         "role": "owner",

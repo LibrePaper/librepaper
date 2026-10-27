@@ -21,7 +21,7 @@ use librepaper_room::room::comments::validate_existing_action;
 /// annotation rather than a second one, so the UUID is derived from a stable
 /// seed instead of generated fresh.
 pub(super) fn comment_uuid(request_id: &str) -> String {
-    let digest = Sha256::digest(request_id.as_bytes());
+    let digest = *librepaper_base::digest::Digest::of(request_id.as_bytes()).as_bytes();
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&digest[..16]);
     uuid::Builder::from_random_bytes(bytes)
