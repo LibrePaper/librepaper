@@ -982,7 +982,7 @@ impl Server {
             }
         }
         let base_tree_digest = view.snapshot.tree_digest.clone();
-        let tree_digest = candidate_projection.digest();
+        let tree_digest = candidate_projection.digest().to_hex();
         let candidate = Candidate {
             view_id: view_id.to_string(),
             base_tree_digest,

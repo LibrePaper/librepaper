@@ -10,7 +10,6 @@ use std::time::Duration;
 use librepaper_base::paths::RelPath;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use zip::write::SimpleFileOptions;
 
 const MANAGED_DIR: &str = "librepaper-backups";

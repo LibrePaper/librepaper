@@ -2708,6 +2708,7 @@ dependencies = [
  "time",
  "tokio",
  "tracing",
+ "unicode-normalization",
  "url",
  "uuid",
  "windows-sys 0.61.2",
@@ -2767,7 +2768,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
- "unicode-normalization",
 ]
 
 [[package]]
@@ -2896,7 +2896,6 @@ dependencies = [
  "tokio",
  "tracing",
  "trash",
- "unicode-normalization",
  "url",
 ]
 
