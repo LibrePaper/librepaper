@@ -77,7 +77,7 @@
     display: flex;
     flex-direction: column;
     gap: calc(var(--spacing) * .5);
-    padding: calc(var(--spacing) * 2) var(--spacing);
+    padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3);
     border-bottom: 1px solid var(--color-divider);
     font-size: var(--text-sm);
   }

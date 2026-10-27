@@ -274,9 +274,9 @@ try {
     await openOutline();
     await clickHeading(title);
     await clickHeading(child);
-    assert.equal(await tab.evaluate(`document.querySelector('.outline .outline-heading[aria-current="location"]')?.textContent.trim()`), child);
+    assert.equal(await tab.evaluate(`document.querySelector('.outline .outline-heading[aria-current="location"] .outline-title')?.textContent.trim()`), child);
     await clickHeading(next);
-    assert.equal(await tab.evaluate(`document.querySelector('.outline .outline-heading[aria-current="location"]')?.textContent.trim()`), next, "active heading follows the next top-level heading");
+    assert.equal(await tab.evaluate(`document.querySelector('.outline .outline-heading[aria-current="location"] .outline-title')?.textContent.trim()`), next, "active heading follows the next top-level heading");
     assert.equal(await tab.evaluate(`Boolean([...document.querySelectorAll('.outline .outline-heading[aria-current="location"]')].find(node => node.textContent.includes(${JSON.stringify(child)})))`), false, "a previous subsection is no longer active");
   }
 
@@ -287,10 +287,16 @@ try {
 
   await openFile("notes.md");
   await openOutline();
+  // The word count follows edits from both sides, two words a heading.
+  const words = () => tab.evaluate("Number(document.querySelector('.outline-words strong')?.textContent.replace(/\\D/g, '') || -1)");
+  const before = await words();
+  assert.ok(before > 0, "the outline shows the document's word count");
   await tab.evaluate("window.roomControl.remoteAppend('notes.md', '# Remote heading')");
   await until("remote outline update", () => tab.evaluate("[...document.querySelectorAll('.outline .outline-heading')].some(node => node.textContent.includes('Remote heading'))"), 5000);
+  await until("remote word count update", async () => (await words()) === before + 2, 5000);
   await tab.insert("\n\n# Local heading\n");
   await until("local outline update", () => tab.evaluate("[...document.querySelectorAll('.outline .outline-heading')].some(node => node.textContent.includes('Local heading'))"), 5000);
+  await until("local word count update", async () => (await words()) === before + 4, 5000);
   assert.equal(await tab.evaluate("window.roomSent.some(message => message.type === 'doc-update')"), true, "local edits go out on the shared document");
   assert.match(await tab.evaluate("window.roomControl.snapshot('notes.md')"), /Local heading/);
   if (process.env.OUTLINE_SCREENSHOT) {
