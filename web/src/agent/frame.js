@@ -55,24 +55,44 @@ import { watchPinch } from "../lib/pinch.js";
   // taken, and the title: nothing else in a head is this frame's to run.
   let installed = "";
   let installedNodes = [];
+  // The paper the preview is drawn on, set by the reader's theme message.
+  // Light until the reader says otherwise.
+  let paper = "light";
+  // Whether the frame set data-theme on the root itself. An attribute the
+  // document supplied is never changed.
+  let themeSetByFrame = false;
+  function applyPaper() {
+    const root = document.documentElement;
+    root.classList.toggle("librepaper-dark", paper === "dark");
+    if (themeSetByFrame) root.dataset.theme = paper;
+  }
+  function setPaper(next) {
+    if ((next !== "light" && next !== "dark") || next === paper) return;
+    paper = next;
+    applyPaper();
+    // The washes are mixed from the paper, so the marks are painted again.
+    if (lastRanges.length) highlight(lastRanges);
+  }
   // Live previews sit in a reading canvas owned by the shell. Keep this style
   // separate from the document's own stylesheet so published pages and
   // typst's generated rules remain untouched. adoptStyles keeps it appended
   // after the document styles and it only applies while previewing flow HTML.
   const previewCanvasStyle = `
-    /* The paper is light whatever the reader's own theme is, so its ink is
-       set here too: a dark reader would otherwise hand the body light text
-       on the white page. */
-    html.librepaper-preview.librepaper-flow { background: #fff; color: #000; }
+    /* The paper follows the reader's theme. The theme arrives by message and
+       is applied as the librepaper-dark class: WebKit answers a frame's
+       prefers-color-scheme from the system rather than from the page around
+       it, so these rules key on the class and never on the media query. Only
+       the root defaults change, and the flow body. A document that colours its
+       own body or text keeps its colours. Downloads and published HTML never
+       load these rules. */
+    /* The layout is the same on either paper. Only the colours differ. */
     html.librepaper-preview.librepaper-flow body {
-      color: #000;
       box-sizing: border-box;
       width: 100%;
       max-width: none;
       min-height: 100vh;
       margin: 0;
       padding: 32px 40px;
-      background: #fff;
     }
     html.librepaper-preview.librepaper-flow img {
       max-width: 100%;
@@ -83,22 +103,26 @@ import { watchPinch } from "../lib/pinch.js";
         padding: 24px 20px;
       }
     }
-    /* Every preview is light paper with dark ink at the root, whatever the
-       system or the reader is set to and whether or not the page is a styled
-       document of its own. The root only sets what is inherited, so a page
-       that colours its own body or text keeps its colours. Chrome and Firefox
-       answer a frame's prefers-color-scheme from the light page around it,
-       but WebKit follows the system, so LaTeXML's dark block is also met with
-       its own light rules restated for a dark system. */
-    html.librepaper-preview { color-scheme: light; background-color: #fff; color: #000; }
+    /* Light paper, the default. Its ink is set here too, so a dark reader does
+       not hand the body light text on the white page. */
+    html.librepaper-preview:not(.librepaper-dark) { color-scheme: light; background-color: #fff; color: #000; }
+    html.librepaper-preview:not(.librepaper-dark).librepaper-flow body { color: #000; background: #fff; }
+    /* On light paper under a dark system, WebKit still applies LaTeXML's dark
+       block, so these restate its colour variables for the light page. */
     @media (prefers-color-scheme: dark) {
-      html.librepaper-preview .ltx_foreignobject_content { color: inherit; }
-      html.librepaper-preview [style*="--ltx-fg-color:"] { color: var(--ltx-fg-color); }
-      html.librepaper-preview [style*="--ltx-bg-color:"] { background-color: var(--ltx-bg-color); }
-      html.librepaper-preview [style*="--ltx-border-color:"] { border-color: var(--ltx-border-color); }
-      html.librepaper-preview [style*="--ltx-fill-color:"] { fill: var(--ltx-fill-color); }
-      html.librepaper-preview [style*="--ltx-stroke-color:"] { stroke: var(--ltx-stroke-color); }
+      html.librepaper-preview:not(.librepaper-dark) .ltx_foreignobject_content { color: inherit; }
+      html.librepaper-preview:not(.librepaper-dark) [style*="--ltx-fg-color:"] { color: var(--ltx-fg-color); }
+      html.librepaper-preview:not(.librepaper-dark) [style*="--ltx-bg-color:"] { background-color: var(--ltx-bg-color); }
+      html.librepaper-preview:not(.librepaper-dark) [style*="--ltx-border-color:"] { border-color: var(--ltx-border-color); }
+      html.librepaper-preview:not(.librepaper-dark) [style*="--ltx-fill-color:"] { fill: var(--ltx-fill-color); }
+      html.librepaper-preview:not(.librepaper-dark) [style*="--ltx-stroke-color:"] { stroke: var(--ltx-stroke-color); }
     }
+    /* Dark paper. Flow images stay white, so a transparent plot drawn for white
+       paper remains readable, and Typst's paged SVG output is pages of paper. */
+    html.librepaper-preview.librepaper-dark { color-scheme: dark; background-color: #1c1f1e; color: #e4e7e5; }
+    html.librepaper-preview.librepaper-dark.librepaper-flow body { color: #e4e7e5; background: #1c1f1e; }
+    html.librepaper-preview.librepaper-dark.librepaper-flow img { background-color: #fff; }
+    html.librepaper-preview.librepaper-dark svg.typst-doc { background-color: #fff; }
   `;
   const previewStyle = document.createElement("style");
   previewStyle.dataset.librepaperPreview = "canvas";
@@ -127,6 +151,11 @@ import { watchPinch } from "../lib/pinch.js";
       box-decoration-break: clone;
       -webkit-box-decoration-break: clone;
     }
+    /* On dark paper the blue is lifted to a sky blue, which stands out on the
+       dark ground. */
+    html.librepaper-dark mark[data-librepaper][data-librepaper-selected] {
+      outline-color: #56b4e9;
+    }
   `;
   document.head.appendChild(markStyle);
 
@@ -141,10 +170,16 @@ import { watchPinch } from "../lib/pinch.js";
       }
     }
     document.documentElement.classList.add("librepaper-preview");
-    // Light paper for themes that follow the system too. Calepin's Pico, like
-    // many themes, turns its text light on a dark system unless the root
-    // names a theme, and the page would then be light text on white.
-    if (!document.documentElement.hasAttribute("data-theme")) document.documentElement.dataset.theme = "light";
+    // The document's own data-theme wins. Without one the frame names the theme
+    // after the paper: Calepin's Pico, like many themes, turns its text light on
+    // a dark system unless the root names a theme.
+    if (parsed.documentElement.hasAttribute("data-theme")) {
+      document.documentElement.setAttribute("data-theme", parsed.documentElement.getAttribute("data-theme"));
+      themeSetByFrame = false;
+    } else {
+      themeSetByFrame = true;
+    }
+    applyPaper();
     document.documentElement.classList.toggle("librepaper-flow", presentation !== "document" && !parsed.body.querySelector(":scope > svg.typst-doc"));
     const wanted = [...parsed.head.querySelectorAll("style, link[rel~='stylesheet' i]")];
     const markup = wanted.map((node) => node.outerHTML).join("");
@@ -177,10 +212,16 @@ import { watchPinch } from "../lib/pinch.js";
   /** @param {string} motivation @returns {[number, number, number]} */
   const tintOf = (motivation) => TINTS[motivation] || TINTS.commenting;
   // Each annotation stacked on the same words takes the wash a step deeper,
-  // stopping where dark text would start to struggle against it. The base
-  // hue is mixed toward white until it reaches that lightness.
+  // stopping where the ink would start to struggle against it. On light paper
+  // the base hue is mixed toward white until it reaches that lightness. On dark
+  // paper the hue itself is laid thinly over the ground and each stacked
+  // annotation thickens it, so light ink stays readable.
   /** @param {[number, number, number]} rgb @param {number} depth @param {number} [alpha] */
   const wash = (rgb, depth, alpha = 1) => {
+    if (paper === "dark") {
+      const thickness = alpha * (0.5 + (Math.min(depth, 5) - 1) * 0.1);
+      return `rgb(${rgb.join(" ")} / ${thickness.toFixed(3)})`;
+    }
     const target = Math.max(70, 90 - (Math.min(depth, 5) - 1) * 5) / 100;
     const lightness = (Math.max(...rgb) + Math.min(...rgb)) / 510;
     const mix = (target - lightness) / (1 - lightness);
@@ -512,6 +553,9 @@ import { watchPinch } from "../lib/pinch.js";
     // acknowledges its own load event so that readiness is never a one-shot
     // race.
     if (message.type === "reader-ready") publish(true);
+    // The reader's theme. `paper` is what the preview is drawn on, which can
+    // differ from the mode when the reader has set it separately.
+    if (message.type === "theme") setPaper(message.paper ?? message.mode);
     if (message.type === "highlight") highlight(message.ranges || []);
     // The editor's live preview. The document being previewed is not yet
     // published, so it arrives as HTML over this channel rather than as a
