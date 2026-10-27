@@ -398,12 +398,13 @@ async fn committed_tracked_changes_deletes_and_applies_survive_a_lost_mcp_respon
     )
     .await;
     let arrival = Origins::loopback_only().resolve("127.0.0.1:8080").unwrap();
-    let (_, batch_viewer) = deployment
+    let batch_viewer = deployment
         .server
-        .entry_viewer(&deployment.slug, &owner, &arrival, None)
+        .authorize_fresh::<access::rung::Read>(&owner, &arrival, &deployment.slug, None)
         .await
         .ok()
-        .unwrap();
+        .unwrap()
+        .viewer;
     let author = deployment
         .server
         .comment_author(&owner, &arrival, &batch_viewer.id);

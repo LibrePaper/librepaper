@@ -57,38 +57,6 @@ fn within(text: &str, max: usize) -> bool {
 }
 
 impl Server {
-    /// The document and its editor, or the reply that refuses.
-    #[allow(clippy::result_large_err)]
-    async fn change_editor(
-        &self,
-        slug: &str,
-        headers: &HeaderMap,
-        arrival: &Arrival,
-    ) -> Result<Viewer, Reply> {
-        if !self.valid_slug(slug) {
-            return Err(plain(400, "bad slug"));
-        }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return Err(no_such_document()),
-            Err(response) => return Err(response),
-        };
-        let who = self.viewer(&entry, headers, arrival, None).await;
-        if who.auth_failed {
-            return Err(authentication_expired());
-        }
-        if self.needs_sign_in(&entry, &who) {
-            return Err(sign_in_to_read());
-        }
-        if !self.may_read(&entry, &who) {
-            return Err(no_such_document());
-        }
-        if !who.at_least(Role::Editor) {
-            return Err(write_json(403, &json!({"error": "edit access required"})));
-        }
-        Ok(who)
-    }
-
     /// `POST /api/documents/{slug}/source-change`: one checked change to the
     /// project, applied whole or not at all.
     pub(super) async fn handle_source_change(
@@ -101,9 +69,18 @@ impl Server {
         if cross_site_refused(&headers, arrival) {
             return write_json(403, &json!({"error": "cross-site request refused"}));
         }
-        let first = match self.change_editor(slug, &headers, arrival).await {
-            Ok(found) => found,
-            Err(response) => return response,
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        let auth = match self
+            .authorize_fresh::<access::rung::Read>(&headers, arrival, slug, None)
+            .await
+        {
+            Ok(auth) => auth,
+            Err(refusal) => return access::deny(&refusal),
+        };
+        let Ok(auth) = auth.require::<access::rung::Edit>() else {
+            return write_json(403, &json!({"error": "edit access required"}));
         };
         // The deployment's log quota bounds a push's text, the same ceiling a
         // socket update has.
@@ -111,13 +88,9 @@ impl Server {
             Ok(body) => body,
             Err(_) => return write_json(413, &json!({"error": "the change is too large"})),
         };
-        // Access may have been withdrawn while the body was arriving.
-        let principal = first.principal_key();
-        let who = match self.change_editor(slug, &headers, arrival).await {
-            Ok(who) if who.principal_key() == principal => who,
-            Ok(_) => return no_such_document(),
-            Err(response) => return response,
-        };
+        // Access may have been withdrawn while the body was arriving, so the
+        // change is applied through `mutate` below.
+        let principal = auth.viewer.principal_key();
         let input: SourceChangeInput = match serde_json::from_slice(&body) {
             Ok(input) => input,
             Err(_) => return write_json(400, &json!({"error": "the change is malformed"})),
@@ -157,39 +130,51 @@ impl Server {
             message: Some(input.sync.message),
             author: input.sync.author,
         };
-        let ceiling = self.ceiling_for(&who.id);
-        let mut authority =
-            match who.agent_authority(ceiling, format!("sync:{}:{principal}", room.document_id)) {
-                Ok(authority) => authority,
-                Err(InvalidCredential) => {
-                    return change_refusal(AgentError::Conflict("document access changed".into()))
-                }
-            };
-        // A token has no key of its own, so a push with no author is the
-        // account's.
-        if authority.author_key.is_empty() {
-            authority.author_key = who.attribution().display().to_owned();
-        }
+        let principal = &principal;
+        let fence = &auth;
         let recheck = || async {
-            match self.change_editor(slug, &headers, arrival).await {
-                Ok(now) if now.principal_key() == principal => Ok(()),
+            match self.recheck(fence).await {
+                Ok((now, _)) if now.principal_key() == *principal => Ok(()),
                 _ => Err(AgentError::Conflict("document access changed".into())),
             }
         };
-        let applied = room
-            .apply_source_change(
-                change,
-                Origin::Sync {
-                    provider: "cli".into(),
-                },
-                authority,
-                None,
-                recheck,
-            )
+        let applied = self
+            .mutate(&auth, |who, _| {
+                async move {
+                    if who.principal_key() != *principal {
+                        return Err(AgentError::Conflict("document access changed".into()));
+                    }
+                    let ceiling = self.ceiling_for(&who.id);
+                    let mut authority = match who
+                        .agent_authority(ceiling, format!("sync:{}:{principal}", room.document_id))
+                    {
+                        Ok(authority) => authority,
+                        Err(InvalidCredential) => {
+                            return Err(AgentError::Conflict("document access changed".into()))
+                        }
+                    };
+                    // A token has no key of its own, so a push with no author is the
+                    // account's.
+                    if authority.author_key.is_empty() {
+                        authority.author_key = who.attribution().display().to_owned();
+                    }
+                    room.apply_source_change(
+                        change,
+                        Origin::Sync {
+                            provider: "cli".into(),
+                        },
+                        authority,
+                        None,
+                        recheck,
+                    )
+                    .await
+                }
+            })
             .await;
         match applied {
-            Ok(receipt) => write_json(200, &json!({"label": receipt.label, "receipt": receipt})),
-            Err(error) => change_refusal(error),
+            Ok(Ok(receipt)) => write_json(200, &json!({"label": receipt.label, "receipt": receipt})),
+            Ok(Err(error)) => change_refusal(error),
+            Err(refusal) => access::deny(&refusal),
         }
     }
 }

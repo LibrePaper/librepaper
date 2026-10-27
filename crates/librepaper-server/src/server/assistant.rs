@@ -56,19 +56,17 @@ impl Server {
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error":"bad slug"}));
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return write_json(404, &json!({"error":"not found"})),
-            Err(response) => return response,
-        };
         // Authenticate the browser normally, then report only the authority
         // an assistant would receive through the selected live link. Forcing
         // automation mode here would also require an agent bearer, which the
         // browser must not have before it starts the companion.
-        let who = self.viewer(&entry, headers, arrival, None).await;
-        if let Err(response) = self.check_readable(&entry, &who) {
-            return response;
-        }
+        let (entry, who) = match self
+            .authorize_fresh::<access::rung::Read>(headers, arrival, slug, None)
+            .await
+        {
+            Ok(auth) => (auth.entry, auth.viewer),
+            Err(refusal) => return access::deny(&refusal),
+        };
         let link_hash = self.link_hash(headers, None);
         let Some(role) = assistant_link_role(
             &entry,

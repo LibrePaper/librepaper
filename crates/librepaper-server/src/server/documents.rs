@@ -242,17 +242,15 @@ impl Server {
         let Ok(comment_id) = uuid::Uuid::parse_str(comment) else {
             return write_json(400, &json!({"error": "bad comment id"}));
         };
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return write_json(404, &json!({"error": "not found"})),
-            Err(response) => return response,
-        };
         let headers = request.headers().clone();
         let query = request.uri().query().map(str::to_string);
-        let who = self.viewer_as(&entry, context.identity(), &headers, arrival, None);
-        if let Err(response) = self.check_readable(&entry, &who) {
-            return response;
-        }
+        let who = match self
+            .authorize::<access::rung::Read>(context, &headers, slug, None)
+            .await
+        {
+            Ok(auth) => auth.viewer,
+            Err(refusal) => return access::deny(&refusal),
+        };
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
@@ -343,11 +341,11 @@ impl Server {
             50,
             100,
         ));
-        if let Err(response) = self
-            .entry_at_least_in(slug, context, &headers, None, Role::Commenter)
+        if let Err(refusal) = self
+            .authorize::<access::rung::Comment>(context, &headers, slug, None)
             .await
         {
-            return response;
+            return access::deny(&refusal);
         }
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
@@ -379,23 +377,21 @@ impl Server {
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error": "bad slug"}));
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return write_json(404, &json!({"error": "not found"})),
-            Err(response) => return response,
+        let headers = request.headers().clone();
+        let query = request.uri().query().map(str::to_string);
+        let auth = match self
+            .authorize::<access::rung::Read>(context, &headers, slug, None)
+            .await
+        {
+            Ok(auth) => auth,
+            Err(refusal) => return access::deny(&refusal),
         };
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
         };
-        let headers = request.headers().clone();
-        let query = request.uri().query().map(str::to_string);
-        let who = self.viewer_as(&entry, context.identity(), &headers, arrival, None);
-        if let Err(response) = self.check_readable(&entry, &who) {
-            return response;
-        }
-        let author = self.comment_author(&headers, arrival, &who.id);
-        let may_edit = who.at_least(Role::Editor);
+        let author = self.comment_author(&headers, arrival, &auth.viewer.id);
+        let may_edit = auth.viewer.at_least(Role::Editor);
 
         match *request.method() {
             Method::GET => {
@@ -412,51 +408,49 @@ impl Server {
                 let Ok(incoming) = serde_json::from_slice::<RoomMessage>(&body) else {
                     return write_json(400, &json!({"error": "bad request"}));
                 };
-                // Body reads are an await boundary. Resolve identity and
-                // document rights again afterwards so revocation
-                // cannot race a large request into a mutation.
-                let current_entry = match self.checked_entry(slug).await {
-                    Ok(Some(entry)) => entry,
-                    Ok(None) => return write_json(404, &json!({"error": "not found"})),
-                    Err(response) => return response,
-                };
-                let current_who = self.viewer(&current_entry, &headers, arrival, None).await;
-                if current_who.auth_failed {
-                    return write_json(
-                        401,
-                        &json!({"error": "authentication expired or was revoked"}),
-                    );
-                }
-                if self.needs_sign_in(&current_entry, &current_who) {
-                    return sign_in_to_read();
-                }
-                if !self.may_read(&current_entry, &current_who)
-                    || (who.at_least(Role::Commenter) && !current_who.at_least(Role::Commenter))
-                {
-                    return write_json(403, &json!({"error": "comment access changed"}));
-                }
                 // A read link can read the projection but never mutate its
                 // annotation channel. Refuse at the HTTP boundary so a role
                 // failure is not misreported as a room validation error
                 // after work has already begun.
-                if !current_who.at_least(Role::Commenter) {
+                let Ok(auth) = auth.require::<access::rung::Comment>() else {
                     return write_json(403, &json!({"error": "commenter access is required"}));
-                }
-                // Readers and commenters annotate the exact current projection
-                // which produced their rendered page.
-                if incoming.kind() == "comment"
-                    && !current_who.at_least(Role::Editor)
-                    && incoming.render_digest().is_empty()
-                {
-                    return write_json(
-                        409,
-                        &json!({"error": "current project identity is required; refresh before annotating"}),
-                    );
-                }
+                };
                 let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
-                let (result, ok) = self
-                    .apply_from(&room, incoming, &address, &current_who, &author)
+                // Body reads are an await boundary. `mutate` resolves identity
+                // and document rights again before the write, so revocation
+                // cannot race a large request into a mutation. Readers and
+                // commenters annotate the exact current projection which
+                // produced their rendered page.
+                let (room_ref, address_ref, author_ref) = (&room, &address, &author);
+                let written = self
+                    .mutate(&auth, |current_who, _| {
+                        async move {
+                            if access::needs_render_digest(&current_who, &incoming) {
+                                return None;
+                            }
+                            Some(
+                                self.apply_from(
+                                    room_ref,
+                                    incoming,
+                                    address_ref,
+                                    &current_who,
+                                    author_ref,
+                                )
+                                .await,
+                            )
+                        }
+                    })
                     .await;
+                let (result, ok) = match written {
+                    Ok(Some(done)) => done,
+                    Ok(None) => {
+                        return write_json(
+                            409,
+                            &json!({"error": "current project identity is required; refresh before annotating"}),
+                        )
+                    }
+                    Err(refusal) => return access::deny(&refusal),
+                };
                 if ok {
                     // One preparation for all three audiences: the two
                     // broadcasts and this caller's own view. Each used to
@@ -1022,18 +1016,17 @@ impl Server {
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
-        let (entry, who) = match self.entry_viewer_in(slug, context, headers, None).await {
-            Ok(result) => result,
-            Err(response) => return response,
-        };
         // The opaque reference identifies immutable bytes; it does not say
         // who is holding it. Who may read is asked again, from the request itself,
         // which is the same rule the socket answers `doc-open` under.
         // Full document state is a source synchronization transport. Readers
         // and commenters get the projection through `handle_project` instead
         // (§2.2): there is no separate rendered bundle any more.
-        if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
-            return plain(404, "not found");
+        if let Err(refusal) = self
+            .authorize::<access::rung::Edit>(context, headers, slug, None)
+            .await
+        {
+            return access::deny(&refusal);
         }
         let fields: HashMap<String, String> = query
             .map(|q| {
@@ -1087,22 +1080,16 @@ impl Server {
         context: &RequestContext,
         slug: &str,
     ) -> Reply {
-        let arrival = &context.arrival;
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error": "bad slug"}));
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return write_json(404, &json!({"error": "not found"})),
-            Err(response) => return response,
+        let entry = match self
+            .authorize::<access::rung::Edit>(context, headers, slug, None)
+            .await
+        {
+            Ok(auth) => auth.entry,
+            Err(refusal) => return access::deny(&refusal),
         };
-        let who = self.viewer_as(&entry, context.identity(), headers, arrival, None);
-        if self.needs_sign_in(&entry, &who) {
-            return sign_in_to_read();
-        }
-        if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
-            return write_json(404, &json!({"error": "not found"}));
-        }
         // Source is editable project material. Readers and commenters get
         // the same head through `handle_project`'s projection (§2.2); this
         // endpoint is for the editor's own working copy.
@@ -1144,18 +1131,13 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return write_json(404, &json!({"error": "not found"})),
-            Err(response) => return response,
+        let entry = match self
+            .authorize::<access::rung::Read>(context, headers, slug, None)
+            .await
+        {
+            Ok(auth) => auth.entry,
+            Err(refusal) => return access::deny(&refusal),
         };
-        let who = self.viewer_as(&entry, context.identity(), headers, arrival, None);
-        if self.needs_sign_in(&entry, &who) {
-            return sign_in_to_read();
-        }
-        if !self.may_read(&entry, &who) {
-            return write_json(404, &json!({"error": "not found"}));
-        }
         // `unsuggested=1` answers each text with its pending suggestions
         // undone, the text a sync change is checked against.
         let unsuggested = query.is_some_and(|q| {
@@ -1240,18 +1222,13 @@ impl Server {
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error": "bad slug"}));
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return write_json(404, &json!({"error": "not found"})),
-            Err(response) => return response,
+        let (entry, who) = match self
+            .authorize::<access::rung::Edit>(context, headers, slug, None)
+            .await
+        {
+            Ok(auth) => (auth.entry, auth.viewer),
+            Err(refusal) => return access::deny(&refusal),
         };
-        let who = self.viewer_as(&entry, context.identity(), headers, arrival, None);
-        if self.needs_sign_in(&entry, &who) {
-            return sign_in_to_read();
-        }
-        if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
-            return write_json(404, &json!({"error": "not found"}));
-        }
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
