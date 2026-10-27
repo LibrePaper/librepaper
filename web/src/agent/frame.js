@@ -123,6 +123,11 @@ import { watchPinch } from "../lib/pinch.js";
     html.librepaper-preview.librepaper-dark.librepaper-flow body { color: #e4e7e5; background: #1c1f1e; }
     html.librepaper-preview.librepaper-dark.librepaper-flow img { background-color: #fff; }
     html.librepaper-preview.librepaper-dark svg.typst-doc { background-color: #fff; }
+    /* Code is coloured by the document for white paper. Blocks stay light, like
+       images, so their syntax colours keep their contrast. Inline code takes
+       the paper's ink on a faint chip, whatever colours the document gave it. */
+    html.librepaper-preview.librepaper-dark.librepaper-flow :is(pre, div.sourceCode) { background-color: #f2f4f7; color: #1a1d21; }
+    html.librepaper-preview.librepaper-dark.librepaper-flow :not(pre) > code { background-color: rgb(255 255 255 / 0.1); color: inherit; }
   `;
   const previewStyle = document.createElement("style");
   previewStyle.dataset.librepaperPreview = "canvas";
