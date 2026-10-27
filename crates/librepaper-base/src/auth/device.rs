@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 use moka::future::Cache;
 use moka::Expiry;
 use rand::Rng;
-use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
 use super::{normalized, now_unix, random_bytes, Identity, ProviderError};
+use crate::digest::Digest;
 
 /// Keeps bearer tokens from costing a GitHub call per request. Positive
 /// answers are cached longer than negative ones, so a token that is revoked or
@@ -199,7 +199,7 @@ impl TokenCache {
             return Ok(Identity::anonymous());
         }
 
-        let key = hex::encode(Sha256::digest(token.as_bytes()));
+        let key = Digest::of(token.as_bytes()).to_hex();
         // Only the caller that runs this future is a leader; the cache hands
         // every other concurrent caller for the key the leader's answer, and
         // lets one of them take over if the leader is cancelled.
@@ -324,10 +324,6 @@ pub fn device_code() -> String {
     hex::encode(random_bytes(16))
 }
 
-pub(super) fn digest_of(value: &str) -> String {
-    hex::encode(Sha256::digest(value.as_bytes()))
-}
-
 /// One terminal waiting to be signed in.
 pub(super) struct Pending {
     pub(super) device_digest: String,
@@ -388,7 +384,7 @@ impl PendingCodes {
         }
 
         let now = Instant::now();
-        let source_key = digest_of(rate_key);
+        let source_key = Digest::of(rate_key.as_bytes()).to_hex();
         let mut source_limits = self.source_limits.lock().expect("source limiter poisoned");
         source_limits.retain(|_, window| now.duration_since(window.started) < DEVICE_SOURCE_WINDOW);
         let Some(window) = source_limits.get_mut(&source_key) else {
@@ -421,7 +417,7 @@ impl PendingCodes {
             entries.insert(
                 user.clone(),
                 Pending {
-                    device_digest: digest_of(&device),
+                    device_digest: Digest::of(device.as_bytes()).to_hex(),
                     created: now_unix(),
                     approved: None,
                 },
@@ -455,7 +451,7 @@ impl PendingCodes {
     pub fn claim(&self, device: &str) -> DeviceOutcome {
         let mut entries = self.entries.lock().expect("pending codes poisoned");
         self.sweep(&mut entries);
-        let digest = digest_of(device);
+        let digest = Digest::of(device.as_bytes()).to_hex();
         let Some(user) = entries
             .iter()
             .find(|(_, entry)| entry.device_digest == digest)
@@ -487,11 +483,12 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::{
-        digest_of, user_code, DeviceOutcome, PendingCodes, ProviderError, SourceWindow, TokenCache,
+        user_code, DeviceOutcome, PendingCodes, ProviderError, SourceWindow, TokenCache,
         DEVICE_SOURCE_KEYS_MAX, DEVICE_SOURCE_STARTS_MAX, TOKEN_CHECK_CONCURRENCY,
         TOKEN_IN_FLIGHT_CAP,
     };
     use crate::auth::Identity;
+    use crate::digest::Digest;
 
     #[test]
     fn source_admission_is_bounded_without_eviction() {
@@ -519,7 +516,7 @@ mod tests {
     fn full_source_limiter_refuses_unknown_keys_without_eviction() {
         let pending = PendingCodes::new();
         let now = Instant::now();
-        let trusted = digest_of("trusted-source");
+        let trusted = Digest::of(b"trusted-source").to_hex();
         let mut source_limits = pending
             .source_limits
             .lock()
