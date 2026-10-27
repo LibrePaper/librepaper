@@ -12,7 +12,7 @@ use crate::git::Git;
 use crate::link::Link;
 use crate::pull::settle;
 use crate::rules::Rules;
-use crate::state::{Pushed, State, StateStore};
+use crate::state::{PendingPush, Pushed, State, StateStore};
 use crate::walk::{compare, scan, Local, LocalChanges, Scan};
 use crate::Error;
 
@@ -32,6 +32,9 @@ pub struct PushOptions {
     /// directory that is not part of the project, such as a local render's
     /// output, goes here.
     pub exclude: Vec<String>,
+    /// In a repository, the branch to sync. An unbound repository needs it on
+    /// the first transfer; a bound one accepts only its own.
+    pub branch: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -155,7 +158,113 @@ fn dependency(path: &str, hash: &str) -> Value {
     json!({"path": path, "file_hash": hash, "start": 0, "end": 0, "exact": ""})
 }
 
-/// Sends the directory's changes to the project as one named version.
+/// What the server said to a source change.
+enum Sent {
+    Accepted {
+        sha: String,
+        sequence: i64,
+    },
+    /// A definitive refusal: the change was not made.
+    Refused(PushOutcome),
+}
+
+/// Posts a source change and reads the answer. An answer that is neither an
+/// acceptance nor a known refusal is an error, and settles nothing.
+async fn send(client: &Client, slug: &str, body: &Value) -> Result<Sent, Error> {
+    let (status, reply) = client.source_change(slug, body).await?;
+    match status {
+        200 => {}
+        409 => match reply.get("reason").and_then(Value::as_str) {
+            Some("changed") => {
+                let listed = reply.get("paths").or_else(|| reply.get("files"));
+                return Ok(Sent::Refused(PushOutcome::Refused {
+                    paths: strings(listed),
+                }));
+            }
+            Some("suggestion") => {
+                return Ok(Sent::Refused(PushOutcome::Suggestion {
+                    path: reply
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                }));
+            }
+            _ => return Err(refusal(status, &reply)),
+        },
+        _ => return Err(refusal(status, &reply)),
+    }
+    let label = reply.get("label");
+    let sha = label
+        .and_then(|label| label.get("sha"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::Invalid("the server did not name the version it recorded".into()))?
+        .to_string();
+    let sequence = label
+        .and_then(|label| label.get("sequence"))
+        .and_then(Value::as_i64)
+        .ok_or_else(|| {
+            Error::Invalid("the server did not number the version it recorded".into())
+        })?;
+    Ok(Sent::Accepted { sha, sequence })
+}
+
+/// Posts the request a pending push holds and settles the state by what the
+/// server said. Only the effects saved with the request are applied. A
+/// refusal clears the attempt and leaves the baseline where it was; an error
+/// keeps the attempt, key and effects, for the next push.
+async fn settle_pending(
+    client: &Client,
+    store: &dyn StateStore,
+    state: &mut State,
+    pending: &PendingPush,
+) -> Result<PushOutcome, Error> {
+    let slug = state.link.slug.clone();
+    match send(client, &slug, &pending.request).await? {
+        Sent::Refused(outcome) => {
+            state.pending = None;
+            store.save(state)?;
+            Ok(outcome)
+        }
+        Sent::Accepted { sha, sequence } => {
+            state.files.extend(pending.upsert_files.clone());
+            for path in &pending.deleted_paths {
+                state.files.remove(path);
+            }
+            state.synced.extend(
+                pending
+                    .upsert_files
+                    .keys()
+                    .chain(&pending.deleted_paths)
+                    .cloned(),
+            );
+            state.pushed.push(Pushed {
+                label: sha.clone(),
+                commit: pending.commit.clone(),
+            });
+            let excess = state.pushed.len().saturating_sub(MAX_PUSHED);
+            state.pushed.drain(..excess);
+            if pending.commit.is_some() {
+                state.head = pending.commit.clone();
+            }
+            // The project's head moved with this push, so the next pull reads
+            // it once.
+            state.web_head = None;
+            state.pending = None;
+            store.save(state)?;
+            Ok(PushOutcome::Pushed {
+                label_sha: sha,
+                sequence,
+                files: pending.upsert_files.len() + pending.deleted_paths.len(),
+            })
+        }
+    }
+}
+
+/// Sends the directory's changes to the project as one named version. A push
+/// that was posted and never settled is settled first, from the request and
+/// effects saved before it was posted; files changed since are new work for
+/// the same call.
 pub async fn push(
     client: &Client,
     dir: &Path,
@@ -174,6 +283,19 @@ pub async fn push(
     {
         return Err(Error::Merging);
     }
+    if state.pin_branch(store.repository(), options.branch.as_deref())? {
+        store.save(&state)?;
+    }
+    let mut settled = None;
+    if let Some(pending) = state.pending.clone() {
+        if pending.actor != client.actor() {
+            return Err(Error::PendingActor);
+        }
+        match settle_pending(client, store, &mut state, &pending).await? {
+            outcome @ PushOutcome::Pushed { .. } => settled = Some(outcome),
+            refused => return Ok(refused),
+        }
+    }
     let rules = client.rules().await?;
     if let Some(git) = &git {
         if settle(git, &mut state) {
@@ -183,7 +305,7 @@ pub async fn push(
     let found = scan(dir, &rules, git.as_ref(), &options.exclude)?;
     let changes = compare(dir, &state.files, &found);
     if changes.is_empty() {
-        return Ok(PushOutcome::Nothing);
+        return Ok(settled.unwrap_or(PushOutcome::Nothing));
     }
     if !changes.added.is_empty() && found.files.len() > rules.max_files {
         return Err(too_many(&rules, found.files.len()));
@@ -217,7 +339,7 @@ pub async fn push(
 
     let plan = plan_change(&state.files, &found, &changes, &bases);
     if plan.is_empty() {
-        return Ok(PushOutcome::Nothing);
+        return Ok(settled.unwrap_or(PushOutcome::Nothing));
     }
     for file in &plan.uploads {
         upload(client, &slug, file).await?;
@@ -231,83 +353,36 @@ pub async fn push(
     {
         sync["author"] = json!(author);
     }
-    let operation = librepaper_base::util::new_request_key();
-    let (status, reply) = client
-        .source_change(&slug, &plan.body(&operation, sync))
-        .await?;
-    match status {
-        200 => {}
-        409 => match reply.get("reason").and_then(Value::as_str) {
-            Some("changed") => {
-                let listed = reply.get("paths").or_else(|| reply.get("files"));
-                return Ok(PushOutcome::Refused {
-                    paths: strings(listed),
-                });
-            }
-            Some("suggestion") => {
-                return Ok(PushOutcome::Suggestion {
-                    path: reply
-                        .get("path")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                });
-            }
-            _ => return Err(refusal(status, &reply)),
-        },
-        _ => return Err(refusal(status, &reply)),
-    }
-
-    let label = reply.get("label");
-    let sha = label
-        .and_then(|label| label.get("sha"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::Invalid("the server did not name the version it recorded".into()))?
-        .to_string();
-    let sequence = label
-        .and_then(|label| label.get("sequence"))
-        .and_then(Value::as_i64)
-        .ok_or_else(|| {
-            Error::Invalid("the server did not number the version it recorded".into())
-        })?;
-
-    for path in changes.added.iter().chain(&changes.changed) {
-        let file = &found.files[path];
-        state.files.insert(
-            path.clone(),
-            FileRecord {
-                kind: file.kind,
-                sha: file.sha.clone(),
-            },
-        );
-    }
-    for path in &changes.deleted {
-        state.files.remove(path);
-    }
-    state.synced.extend(
-        changes
-            .added
-            .iter()
-            .chain(&changes.changed)
-            .chain(&changes.deleted)
-            .cloned(),
-    );
-    let commit = git.as_ref().and_then(|git| git.rev("HEAD"));
-    state.pushed.push(Pushed {
-        label: sha.clone(),
-        commit: commit.clone(),
-    });
-    let excess = state.pushed.len().saturating_sub(MAX_PUSHED);
-    state.pushed.drain(..excess);
-    if commit.is_some() {
-        state.head = commit;
-    }
+    let request_key = librepaper_base::util::new_request_key();
+    let request = plan.body(&request_key, sync);
+    let upsert_files = changes
+        .added
+        .iter()
+        .chain(&changes.changed)
+        .map(|path| {
+            let file = &found.files[path];
+            (
+                path.clone(),
+                FileRecord {
+                    kind: file.kind,
+                    sha: file.sha.clone(),
+                },
+            )
+        })
+        .collect();
+    let pending = PendingPush {
+        request_key,
+        actor: client.actor(),
+        request,
+        upsert_files,
+        deleted_paths: changes.deleted.clone(),
+        commit: git.as_ref().and_then(|git| git.rev("HEAD")),
+    };
+    // Saved before the post, so an answer that never arrives can be settled
+    // by the next push. When the save fails nothing has been sent.
+    state.pending = Some(pending.clone());
     store.save(&state)?;
-    Ok(PushOutcome::Pushed {
-        label_sha: sha,
-        sequence,
-        files: changes.count(),
-    })
+    settle_pending(client, store, &mut state, &pending).await
 }
 
 /// Sends an asset the project does not hold yet.
@@ -400,7 +475,7 @@ pub async fn publish(
         .labels(&slug, false, 1, None)
         .await
         .ok()
-        .and_then(|(newest, _)| newest.first().map(|label| label.sequence));
+        .and_then(|page| page.labels.first().map(|label| label.sequence));
     state.files = found.records();
     state.synced = state.files.keys().cloned().collect();
     state.head = git.as_ref().and_then(|git| git.rev("HEAD"));
@@ -422,13 +497,44 @@ pub fn changes_here(
     Ok(compare(dir, &state.files, &found).count())
 }
 
-/// Whether the project has a named version this directory has not taken in.
-pub async fn web_changed(client: &Client, state: &State) -> Result<bool, Error> {
-    let (newest, _) = client.labels(&state.link.slug, true, 1, None).await?;
-    Ok(newest.first().is_some_and(|label| match state.pulled {
+/// Whether the project has something this directory has not taken in: a named
+/// version past `pulled`, or accepted files that differ from the ones the
+/// state represents. The project's files are read only when its head identity
+/// differs from the recorded one. A read that finds nothing new records the
+/// identity in `store`, so the next check is cheap.
+pub async fn web_changed(
+    client: &Client,
+    store: &dyn StateStore,
+    state: &State,
+) -> Result<bool, Error> {
+    let page = client.labels(&state.link.slug, true, 1, None).await?;
+    let named = page.labels.first().is_some_and(|label| match state.pulled {
         Some(pulled) => label.sequence > pulled,
         None => true,
-    }))
+    });
+    if named {
+        return Ok(true);
+    }
+    if page.head.is_some() && page.head == state.web_head {
+        return Ok(false);
+    }
+    let rules = client.rules().await?;
+    let mut current = client.head(&state.link.slug).await?;
+    current.retain_synced(&rules);
+    // A fetch not yet merged is what the directory is about to agree with.
+    let recorded = match &state.fetched {
+        Some(fetched) => &fetched.files,
+        None => &state.files,
+    };
+    if current.files != *recorded {
+        return Ok(true);
+    }
+    if page.head.is_some() {
+        let mut seen = state.clone();
+        seen.web_head = page.head;
+        store.save(&seen)?;
+    }
+    Ok(false)
 }
 
 /// The latest commit of a repository, as a push's default message and author.
@@ -464,9 +570,11 @@ pub fn commit_summary(dir: &Path, state: &State) -> Option<CommitSummary> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fake::{self, accepted, Answer, Fake};
     use crate::git::testing::{commit_all, identify, repository};
     use crate::link::Link;
-    use crate::state::GitRefStore;
+    use crate::pull::{pull, PullOptions, PullOutcome};
+    use crate::state::{FileStore, GitRefStore};
 
     fn write(dir: &Path, path: &str, bytes: &[u8]) {
         let target = dir.join(path);
@@ -771,8 +879,413 @@ mod tests {
             message: "Edits".into(),
             author: None,
             exclude: Vec::new(),
+            branch: None,
         };
         let outcome = push(&client, dir.path(), &store, &options).await;
         assert!(matches!(outcome, Err(Error::Merging)), "{outcome:?}");
+    }
+
+    // ----------------------------------------------------- branch and pending
+
+    fn options(branch: Option<&str>) -> PushOptions {
+        PushOptions {
+            message: "Edits".into(),
+            author: None,
+            exclude: Vec::new(),
+            branch: branch.map(str::to_string),
+        }
+    }
+
+    /// A repository on `main` holding a.tex, with its state saved and bound to
+    /// `bound`.
+    fn on_main(link: Link, bound: Option<&str>) -> Option<(tempfile::TempDir, Git, GitRefStore)> {
+        let (dir, git) = repository()?;
+        identify(&git);
+        git.run(&["symbolic-ref", "HEAD", "refs/heads/main"], None, &[])
+            .unwrap();
+        write(dir.path(), "a.tex", b"one\n");
+        commit_all(&git, "First");
+        let store = GitRefStore::open(dir.path()).unwrap();
+        let mut state = State::new(link);
+        state.branch = bound.map(str::to_string);
+        store.save(&state).unwrap();
+        Some((dir, git, store))
+    }
+
+    #[tokio::test]
+    async fn an_unbound_repository_needs_a_branch_and_the_push_binds_it() {
+        let server = Fake::start().await;
+        server.script(vec![accepted("l1", 1)]);
+        let Some((dir, _git, store)) = on_main(server.link(), None) else {
+            return;
+        };
+        let client = server.client();
+        let refused = push(&client, dir.path(), &store, &options(None)).await;
+        assert!(
+            matches!(&refused, Err(Error::BranchUnbound { checked_out }) if checked_out == "main"),
+            "{refused:?}"
+        );
+        assert!(server.posted().is_empty());
+        assert_eq!(store.load().unwrap().unwrap().branch, None);
+
+        let sent = push(&client, dir.path(), &store, &options(Some("main"))).await;
+        assert!(matches!(sent, Ok(PushOutcome::Pushed { .. })), "{sent:?}");
+        assert_eq!(
+            store.load().unwrap().unwrap().branch.as_deref(),
+            Some("main")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_push_with_nothing_to_send_still_keeps_the_branch_it_was_given() {
+        let server = Fake::start().await;
+        let Some((dir, _git, store)) = on_main(server.link(), None) else {
+            return;
+        };
+        let mut state = store.load().unwrap().unwrap();
+        state.files = BTreeMap::from([("a.tex".to_string(), record(Kind::Text, b"one\n"))]);
+        store.save(&state).unwrap();
+        let client = server.client();
+
+        let quiet = push(&client, dir.path(), &store, &options(Some("main"))).await;
+        assert!(matches!(quiet, Ok(PushOutcome::Nothing)), "{quiet:?}");
+        assert_eq!(
+            store.load().unwrap().unwrap().branch.as_deref(),
+            Some("main")
+        );
+
+        let again = push(&client, dir.path(), &store, &options(None)).await;
+        assert!(matches!(again, Ok(PushOutcome::Nothing)), "{again:?}");
+        assert!(server.posted().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_detached_head_is_refused() {
+        let server = Fake::start().await;
+        let Some((dir, git, store)) = on_main(server.link(), Some("main")) else {
+            return;
+        };
+        git.run(&["checkout", "-q", "--detach"], None, &[]).unwrap();
+        let client = server.client();
+        let outcome = push(&client, dir.path(), &store, &options(None)).await;
+        assert!(matches!(outcome, Err(Error::DetachedHead)), "{outcome:?}");
+        assert!(server.posted().is_empty());
+    }
+
+    #[tokio::test]
+    async fn another_branch_is_refused_and_named() {
+        let server = Fake::start().await;
+        let Some((dir, git, store)) = on_main(server.link(), Some("main")) else {
+            return;
+        };
+        git.run(&["checkout", "-q", "-b", "other"], None, &[])
+            .unwrap();
+        let client = server.client();
+        let outcome = push(&client, dir.path(), &store, &options(None)).await;
+        let Err(error) = outcome else {
+            panic!("a push from the wrong branch went through");
+        };
+        assert!(
+            matches!(&error, Error::BranchMismatch { expected, checked_out }
+                if expected == "main" && checked_out == "other"),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("git switch main"), "{error}");
+
+        // Asking for the checked-out branch does not rebind a bound state.
+        let outcome = push(&client, dir.path(), &store, &options(Some("other"))).await;
+        assert!(
+            matches!(outcome, Err(Error::BranchRebind { .. })),
+            "{outcome:?}"
+        );
+        assert!(server.posted().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_lost_answer_is_settled_by_the_next_push_under_the_same_key() {
+        let server = Fake::start().await;
+        server.script(vec![
+            Answer::Drop,
+            Answer::Drop,
+            Answer::Drop,
+            accepted("l1", 1),
+            accepted("l2", 2),
+        ]);
+        let Some((dir, _git, store)) = on_main(server.link(), Some("main")) else {
+            return;
+        };
+        let client = server.client();
+        let lost = push(&client, dir.path(), &store, &options(None)).await;
+        assert!(matches!(lost, Err(Error::Network(_))), "{lost:?}");
+        let key = store.load().unwrap().unwrap().pending.unwrap().request_key;
+
+        // An edit made after the request was saved is not part of its replay.
+        write(dir.path(), "b.tex", b"two\n");
+        let outcome = push(&client, dir.path(), &store, &options(None)).await;
+        assert!(
+            matches!(&outcome, Ok(PushOutcome::Pushed { label_sha, .. }) if label_sha == "l2"),
+            "{outcome:?}"
+        );
+
+        let posted = server.posted();
+        assert_eq!(posted.len(), 5);
+        assert!(posted[..4]
+            .iter()
+            .all(|body| body["operation"] == key.as_str()));
+        assert_eq!(posted[3], posted[0]);
+        assert_eq!(posted[3]["change"]["create"].as_array().unwrap().len(), 1);
+        assert_eq!(posted[3]["change"]["create"][0]["path"], "a.tex");
+        assert_ne!(posted[4]["operation"], key.as_str());
+        assert_eq!(posted[4]["change"]["create"].as_array().unwrap().len(), 1);
+        assert_eq!(posted[4]["change"]["create"][0]["path"], "b.tex");
+
+        let state = store.load().unwrap().unwrap();
+        assert!(state.pending.is_none());
+        let labels: Vec<&str> = state.pushed.iter().map(|p| p.label.as_str()).collect();
+        assert_eq!(labels, ["l1", "l2"]);
+        assert!(state.files.contains_key("a.tex") && state.files.contains_key("b.tex"));
+    }
+
+    #[tokio::test]
+    async fn a_refusal_clears_the_attempt_without_moving_the_baseline() {
+        let server = Fake::start().await;
+        server.script(vec![Answer::Reply(
+            409,
+            json!({"reason": "changed", "paths": ["a.tex"]}),
+        )]);
+        let Some((dir, _git, store)) = on_main(server.link(), Some("main")) else {
+            return;
+        };
+        let client = server.client();
+        let outcome = push(&client, dir.path(), &store, &options(None)).await;
+        assert_eq!(
+            outcome.unwrap(),
+            PushOutcome::Refused {
+                paths: vec!["a.tex".into()]
+            }
+        );
+        let state = store.load().unwrap().unwrap();
+        assert!(state.pending.is_none());
+        assert!(state.files.is_empty() && state.pushed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_attempt_keeps_its_key_and_only_the_same_sign_in_may_retry() {
+        let server = Fake::start().await;
+        server.script(vec![
+            Answer::Reply(500, json!({"error": "boom"})),
+            accepted("l1", 1),
+        ]);
+        let Some((dir, _git, store)) = on_main(server.link(), Some("main")) else {
+            return;
+        };
+        let client = server.client();
+        let failed = push(&client, dir.path(), &store, &options(None)).await;
+        assert!(
+            matches!(failed, Err(Error::Http { status: 500, .. })),
+            "{failed:?}"
+        );
+        let pending = store.load().unwrap().unwrap().pending.unwrap();
+        assert!(!pending.actor.contains("lp_token"));
+
+        let other = server.client_as("lp_other");
+        let outcome = push(&other, dir.path(), &store, &options(None)).await;
+        assert!(matches!(outcome, Err(Error::PendingActor)), "{outcome:?}");
+        assert_eq!(server.posted().len(), 1);
+
+        let outcome = push(&client, dir.path(), &store, &options(None)).await;
+        assert!(
+            matches!(outcome, Ok(PushOutcome::Pushed { .. })),
+            "{outcome:?}"
+        );
+        let posted = server.posted();
+        assert_eq!(posted[0]["operation"], pending.request_key.as_str());
+        assert_eq!(posted[1], posted[0]);
+        assert!(store.load().unwrap().unwrap().pending.is_none());
+    }
+
+    /// A store that reads one state and cannot write.
+    struct Unwritable(State);
+
+    impl StateStore for Unwritable {
+        fn load(&self) -> Result<Option<State>, Error> {
+            Ok(Some(self.0.clone()))
+        }
+        fn save(&self, _: &State) -> Result<(), Error> {
+            Err(Error::State("the disk is full".into()))
+        }
+        fn clear(&self) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn nothing_is_sent_when_the_pending_record_cannot_be_saved() {
+        let server = Fake::start().await;
+        server.script(vec![accepted("l1", 1)]);
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.tex", b"one\n");
+        let store = Unwritable(State::new(server.link()));
+        let client = server.client();
+        let outcome = push(&client, dir.path(), &store, &options(None)).await;
+        assert!(matches!(outcome, Err(Error::State(_))), "{outcome:?}");
+        assert!(server.posted().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_pull_waits_for_the_pending_push() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::state::FileStore::for_dir(home.path(), dir.path());
+        let mut state = State::new(Link::parse("https://app.librepaper.org/docs/paper").unwrap());
+        state.pending = Some(PendingPush {
+            request_key: "v2.1.0".into(),
+            actor: "sha256:0".into(),
+            request: json!({}),
+            upsert_files: BTreeMap::new(),
+            deleted_paths: Vec::new(),
+            commit: None,
+        });
+        store.save(&state).unwrap();
+        // Nothing listens here, so a request would be a network error.
+        let site = url::Url::parse("http://127.0.0.1:9").unwrap();
+        let client = Client::new(site, librepaper_base::http::Credentials::token("lp_token"));
+        let outcome = crate::pull::pull(
+            &client,
+            dir.path(),
+            &store,
+            &crate::pull::PullOptions::default(),
+        )
+        .await;
+        assert!(matches!(outcome, Err(Error::PendingPush)), "{outcome:?}");
+        assert_eq!(store.load().unwrap(), Some(state));
+    }
+    // ------------------------------------------------------- web_changed
+
+    fn records(entries: &[(&str, &str)]) -> BTreeMap<String, FileRecord> {
+        entries
+            .iter()
+            .map(|(path, text)| (path.to_string(), record(Kind::Text, text.as_bytes())))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_head_answers_without_reading_the_project() {
+        let home = tempfile::tempdir().unwrap();
+        let store = FileStore::for_dir(home.path(), home.path());
+        let fake = Fake::start().await;
+        fake.name(1, fake::files(&[("a.tex", "one\n")]));
+        fake.set_current(fake::files(&[("a.tex", "unnamed\n")]));
+        fake.set_head(Some("h1"));
+        let mut state = State::new(fake.link());
+        state.pulled = Some(1);
+        state.files = records(&[("a.tex", "one\n")]);
+        state.web_head = Some("h1".into());
+
+        assert!(!web_changed(&fake.client(), &store, &state).await.unwrap());
+        assert_eq!(fake.count("/project"), 0);
+    }
+
+    #[tokio::test]
+    async fn an_unnamed_accepted_edit_is_a_web_change() {
+        let home = tempfile::tempdir().unwrap();
+        let store = FileStore::for_dir(home.path(), home.path());
+        let fake = Fake::start().await;
+        fake.name(1, fake::files(&[("a.tex", "one\n")]));
+        fake.set_current(fake::files(&[("a.tex", "unnamed\n")]));
+        fake.set_head(Some("h2"));
+        let mut state = State::new(fake.link());
+        state.pulled = Some(1);
+        state.files = records(&[("a.tex", "one\n")]);
+        state.web_head = Some("h1".into());
+
+        assert!(web_changed(&fake.client(), &store, &state).await.unwrap());
+        assert_eq!(store.load().unwrap(), None, "nothing is recorded as seen");
+    }
+
+    #[tokio::test]
+    async fn a_moved_head_over_the_same_files_is_recorded_and_not_read_again() {
+        let home = tempfile::tempdir().unwrap();
+        let store = FileStore::for_dir(home.path(), home.path());
+        let fake = Fake::start().await;
+        fake.name(1, fake::files(&[("a.tex", "one\r\n")]));
+        fake.set_current(fake::files(&[("a.tex", "one\r\n")]));
+        fake.set_head(Some("h2"));
+        let mut state = State::new(fake.link());
+        state.pulled = Some(1);
+        state.files = records(&[("a.tex", "one\n")]);
+        state.web_head = None;
+        store.save(&state).unwrap();
+
+        assert!(!web_changed(&fake.client(), &store, &state).await.unwrap());
+        assert_eq!(fake.count("/project"), 1);
+        let state = store.load().unwrap().unwrap();
+        assert_eq!(state.web_head.as_deref(), Some("h2"));
+
+        assert!(!web_changed(&fake.client(), &store, &state).await.unwrap());
+        assert_eq!(fake.count("/project"), 1);
+    }
+
+    #[tokio::test]
+    async fn a_pending_fetch_is_what_the_current_files_are_compared_with() {
+        let home = tempfile::tempdir().unwrap();
+        let store = FileStore::for_dir(home.path(), home.path());
+        let fake = Fake::start().await;
+        fake.name(1, fake::files(&[("a.tex", "two\n")]));
+        fake.set_current(fake::files(&[("a.tex", "two\n")]));
+        fake.set_head(Some("h2"));
+        let mut state = State::new(fake.link());
+        state.pulled = Some(1);
+        state.files = records(&[("a.tex", "one\n")]);
+        state.fetched = Some(crate::state::Fetched {
+            commit: "c".into(),
+            files: records(&[("a.tex", "two\n")]),
+        });
+
+        assert!(!web_changed(&fake.client(), &store, &state).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_push_clears_the_head_and_the_pull_after_it_finds_nothing_to_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let store = FileStore::for_dir(home.path(), dir.path());
+        let fake = Fake::start().await;
+        let mut state = State::new(fake.link());
+        state.web_head = Some("h1".into());
+        store.save(&state).unwrap();
+        fake.set_head(Some("h1"));
+        write(dir.path(), "new.tex", b"mine\n");
+        fake.set_after_push(fake::files(&[("new.tex", "mine\n")]));
+
+        let options = PushOptions {
+            message: "Edits".into(),
+            author: None,
+            exclude: Vec::new(),
+            branch: None,
+        };
+        let outcome = push(&fake.client(), dir.path(), &store, &options)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, PushOutcome::Pushed { .. }), "{outcome:?}");
+        assert_eq!(store.load().unwrap().unwrap().web_head, None);
+
+        let outcome = pull(&fake.client(), dir.path(), &store, &PullOptions::default())
+            .await
+            .unwrap();
+        match outcome {
+            PullOutcome::Folder {
+                written,
+                trashed,
+                conflicts,
+                ..
+            } => {
+                assert!(written.is_empty() && trashed.is_empty() && conflicts.is_empty());
+            }
+            other => panic!("{other:?}"),
+        }
+        let state = store.load().unwrap().unwrap();
+        assert_eq!(state.web_head.as_deref(), Some("h1+"));
+        assert_eq!(fake.count("/project"), 1);
     }
 }

@@ -53,6 +53,7 @@ const connectionApi = {
   },
   pullConnection: async () => { record("pullConnection"); return settle(scene().pullAnswer); },
   pushConnection: async () => { record("pushConnection"); return settle(scene().pushAnswer); },
+  retryConnection: async () => { record("retryConnection"); return settle(scene().retryAnswer); },
   resolveConnection: async (project, path, keep) => {
     record("resolveConnection", path, keep);
     const left = scene().connection.merging.conflicts.filter((entry) => entry !== path);
@@ -99,7 +100,7 @@ const mountWeb = async (next = {}, props = {}) => {
   window.scene = { ...defaults(), ...next };
   connection = createWebConnection({
     api: connectionApi, project: "https://app.example/docs/paper",
-    nameVersion: async (message) => { record("nameVersion", message); },
+    flush: async () => { record("flush"); },
     signedIn: async () => scene().session !== false,
     approve: async (code) => { record("approve", code); },
     open: (url) => { record("open", url); },
@@ -151,7 +152,7 @@ window.gitPanelCheck = async () => {
   await flush();
   check(panel().getAttribute("aria-label") === "Git", "the web panel is called Git too");
   check(headings() === "Repository", "one section in the browser: " + headings());
-  check(text().includes("Last pushed by Alice, 20 min ago: Reword the greeting"), "it names the last push: " + text());
+  check(text().includes("Last sent from a repository by Alice, 20 min ago: Reword the greeting"), "it names the last push: " + text());
   check(calls("history").length === 1 && calls("history")[0][1] === "paper", "from the history");
   check(text().includes("To push and pull with git, open this project in the LibrePaper desktop app.") && text().includes("keep a GitHub repository in sync with this project through a GitHub Action"), "the browser says where to connect: " + text());
   check(!panel().querySelector("pre") && !button("Connect"), "the browser shows no commands and no connect form");
@@ -164,10 +165,10 @@ window.gitPanelCheck = async () => {
   // No push yet, and a history that cannot be read.
   await mountWeb();
   await flush();
-  check(text().includes("No push yet."), "a project nobody pushed to says so: " + text());
+  check(text().includes("No changes sent from a repository yet."), "a project nobody pushed to says so: " + text());
   await mountWeb({ historyFails: true });
   await flush();
-  check(text().includes("The last push could not be read."), "a history that cannot be read is said: " + text());
+  check(text().includes("The last change sent from a repository could not be read."), "a history that cannot be read is said: " + text());
 
   // In the desktop app and not connected, the panel connects the project: the address is checked and trimmed.
   const connectedStatus = { connected: true, signed_in: true, url: "https://github.com/you/paper.git", branch: "main", merging: null };
@@ -185,7 +186,7 @@ window.gitPanelCheck = async () => {
   await type(field("Repository address"), "   https://github.com/you/paper.git  ");
   await press("Connect");
   check(calls("connectRepository").length === 1 && calls("connectRepository")[0][1] === "https://github.com/you/paper.git", "the trimmed address is connected: " + JSON.stringify(calls("connectRepository")));
-  check(headings() === "Repository|Connected repository" && text().includes("https://github.com/you/paper.git, branch main"), "and the connected repository is shown: " + text());
+  check(headings() === "Repository|Repository on this computer" && text().includes("https://github.com/you/paper.git, branch main"), "and the connected repository is shown: " + text());
 
   // A connect the desktop app refuses says why, and the form stays.
   await mountWeb({ connection: { connected: false, signed_in: true }, connectFails: true }, { desktop: true });
@@ -195,21 +196,32 @@ window.gitPanelCheck = async () => {
   check(alert() === "this repository is linked to another LibrePaper project" && button("Connect") && !button("Connecting…"), "a refused connect shows its message: " + alert());
   await widths("with a refusal shown");
 
-  // Connected and signed in: Pull writes what came in, and Push names the version before it sends it.
+  // Connected and signed in: getting changes imports what came in, and sending changes sends the project's changes.
   await mountWeb({ connection: connectedStatus, afterConnect: connectedStatus, pullAnswer: { status: connectedStatus, pushed: { files: 2 } }, pushAnswer: { status: connectedStatus, pushed: "pushed" } }, { desktop: true });
   await flush();
-  check(headings() === "Repository|Connected repository", "a connected project shows its repository: " + headings());
-  check(text().includes("Pull brings the repository's commits into this project. Push names this version and sends it to the repository."), "and says what Pull and Push do: " + text());
-  check(field("Version name")?.value === "Edits from LibrePaper", "the version name starts with its default");
+  check(headings() === "Repository|Repository on this computer", "a connected project shows its repository: " + headings());
+  check(text().includes("Get repository changes imports the repository's commits into this project. Send project changes sends this project's changes to the repository branch above."), "and says what the two actions do: " + text());
   await widths("with a connected repository");
 
-  await press("Pull");
-  check(calls("pullConnection").length === 1 && text().includes("Pulled 2 files into the project."), "Pull says what came in: " + text());
-  await type(field("Version name"), "Tighter abstract");
-  await press("Push");
-  check(calls("nameVersion").length === 1 && calls("nameVersion")[0][1] === "Tighter abstract", "the version is named first: " + JSON.stringify(calls("nameVersion")));
-  check(calls("pushConnection").length === 1 && text().includes("Pushed to main."), "then the push is sent and says so: " + text());
-  check(field("Version name").value === "Edits from LibrePaper", "the default name comes back after a push");
+  await press("Get repository changes");
+  check(calls("pullConnection").length === 1 && text().includes("Imported from repository branch main: 2 files into the project."), "the pull says what came in: " + text());
+
+  // An interrupted send stops the transfer. The panel offers one retry that runs the send alone.
+  const interrupted = "an earlier push was interrupted before its outcome was known; run \`librepaper push\` to settle it first";
+  await mountWeb({
+    connection: connectedStatus, afterConnect: connectedStatus,
+    pullAnswer: { fail: { status: 409, body: { reason: "pending", error: interrupted } } },
+    retryAnswer: { status: connectedStatus, pushed: { files: 1 } },
+    pushAnswer: { status: connectedStatus, pushed: "pushed" },
+  }, { desktop: true });
+  await flush();
+  await press("Get repository changes");
+  check(text().includes(interrupted) && button("Retry interrupted transfer"), "an interrupted send offers a retry: " + text());
+  await press("Retry interrupted transfer");
+  check(calls("retryConnection").length === 1 && calls("pullConnection").length === 1, "the retry runs the send alone: " + JSON.stringify(window.scene.calls));
+  check(text().includes("The interrupted send finished: 1 file reached the project.") && !button("Retry interrupted transfer"), "and says it finished: " + text());
+  await press("Send project changes");
+  check(calls("flush").length === 2 && calls("pushConnection").length === 1 && text().includes("Sent to repository branch main."), "each transfer settles the editor first; a push, then sends and says so: " + text());
 
   await press("Disconnect");
   check(calls("disconnectConnection").length === 1 && headings() === "Repository|Connect a repository", "Disconnect forgets the copy and shows the connect form: " + headings());
@@ -219,21 +231,21 @@ window.gitPanelCheck = async () => {
   await mountWeb({ connection: merging }, { desktop: true });
   await flush();
   check(text().includes("These files changed in both the project and the repository. Choose which version to keep."), "a merge says what to choose: " + text());
-  check(button("Pull")?.disabled && button("Push")?.disabled, "while merging, Pull and Push wait: " + text());
+  check(button("Get repository changes")?.disabled && button("Send project changes")?.disabled, "while merging, both transfers wait: " + text());
   await press("Keep project's");
   check(calls("resolveConnection").length === 1 && calls("resolveConnection")[0][1] === "intro.tex" && calls("resolveConnection")[0][2] === "project", "Keep project's keeps the project's file: " + JSON.stringify(calls("resolveConnection")));
   check(!text().includes("The merge is done."), "the merge is not done while a file is left");
   await press("Take repository's");
   check(calls("resolveConnection").length === 2 && calls("resolveConnection")[1][1] === "chapters/outline.tex" && calls("resolveConnection")[1][2] === "repository", "Take repository's takes the repository's file: " + JSON.stringify(calls("resolveConnection")));
-  check(text().includes("The merge is done. Pull or Push again."), "after the last file the merge is done: " + text());
+  check(text().includes("The merge is done. Get repository changes or send project changes again."), "after the last file the merge is done: " + text());
 
   // Not signed in: the panel asks for the sign-in, which approves the code here.
   await mountWeb({ connection: { connected: true, signed_in: false, url: "https://github.com/you/paper.git", branch: "main", merging: null } }, { desktop: true });
   await flush();
-  check(text().includes("Sign in so the desktop app can reach this project.") && !button("Pull"), "a project not signed in asks for the sign-in: " + text());
+  check(text().includes("Sign in so the desktop app can reach this project.") && !button("Get repository changes"), "a project not signed in asks for the sign-in: " + text());
   await press("Sign in");
   check(calls("loginConnection").length === 1 && calls("approve")[0][1] === "ABCD-EFGH", "Sign in gets a code and approves it here: " + JSON.stringify(window.scene.calls));
-  check(button("Pull") && !text().includes("Sign in so the desktop app can reach this project."), "and the repository is shown once signed in: " + text());
+  check(button("Get repository changes") && !text().includes("Sign in so the desktop app can reach this project."), "and the repository is shown once signed in: " + text());
 
   check(!/[\\u2013\\u2014]/.test(document.getElementById("panel").innerText), "no dashes in the panel text");
   return true;

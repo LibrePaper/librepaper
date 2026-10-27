@@ -3,8 +3,9 @@
   // nothing on the project itself. What the server knows (the last push) belongs
   // to the controller (lib/reader/web-git.svelte.js). In the desktop app the
   // panel also connects the project to a git repository: the desktop app keeps
-  // a clone on this computer, and Pull and Push move changes between the clone
-  // and the project. That state belongs to lib/reader/web-connection.svelte.js;
+  // a clone on this computer, and Get repository changes and Send project
+  // changes move changes between the clone and the project. That state belongs
+  // to lib/reader/web-connection.svelte.js;
   // this draws it. The GitHub Action that keeps a repository in step is
   // described in the docs.
   import { untrack } from "svelte";
@@ -23,23 +24,19 @@
   } = $props();
 
   const DOCS = "/docs/git.html";
-  // The name a push gives its version when the person does not name it.
-  const VERSION = "Edits from LibrePaper";
   const view = $derived(web.state);
   const link = $derived(connection?.state);
   const status = $derived(link?.status ?? null);
   const busy = $derived(Boolean(link?.busy));
-  // A merge blocks Pull and Push only while a file waits for a choice. One
+  // A merge blocks both transfers only while a file waits for a choice. One
   // whose files are settled but whose commit failed is retried by either.
   const merging = $derived(Boolean(status?.merging?.conflicts?.length));
+  // What a refused transfer is called in the panel's sentences.
+  const ACTION = { pull: "getting repository changes", push: "sending project changes" };
 
   // The address that is typed, and the problem with it.
   let address = $state("");
   let failure = $state("");
-  // What the person typed as the version name. Until they type, it shows its
-  // default, and a push that goes through puts the default back.
-  let typedVersion = $state(null);
-  const version = $derived(typedVersion ?? VERSION);
 
   $effect(() => {
     if (!open) return;
@@ -64,12 +61,13 @@
     return () => clearInterval(timer);
   });
 
+  // The project's last change from a repository, which the server records as a push.
   const pushText = $derived.by(() => {
-    if (!view.loaded) return "Checking for pushes…";
-    if (view.pushProblem) return "The last push could not be read.";
-    if (!view.push) return "No push yet.";
+    if (!view.loaded) return "Checking for changes sent from a repository…";
+    if (view.pushProblem) return "The last change sent from a repository could not be read.";
+    if (!view.push) return "No changes sent from a repository yet.";
     const who = view.push.by ? ` by ${view.push.by},` : "";
-    return `Last pushed${who} ${since(view.push.at)}${view.push.label ? `: ${view.push.label}` : ""}`;
+    return `Last sent from a repository${who} ${since(view.push.at)}${view.push.label ? `: ${view.push.label}` : ""}`;
   });
   const pushTitle = $derived(view.push?.at ? new Date(view.push.at).toLocaleString() : "");
 
@@ -80,13 +78,6 @@
     if (failure) return;
     await connection.connect(address);
     if (connection.state.status?.connected) address = "";
-  }
-
-  async function submitPush(event) {
-    event.preventDefault();
-    await connection.push(version.trim() || VERSION);
-    const after = connection.state;
-    if (!after.problem && !after.refusal && !after.signInHelp) typedVersion = null;
   }
 </script>
 
@@ -114,42 +105,47 @@
 {/snippet}
 
 {#snippet connected()}
-  <p class="git-remote" title={status.url}>{status.url}, branch {status.branch}</p>
+  <p class="git-remote" title={status.url}>Repository {status.url}, branch {status.branch}</p>
   {#if !status.signed_in}
     {@render signIn()}
   {:else}
-    <form class="git-form" onsubmit={submitPush}>
-      <label class="git-field panel-meta">Version name
-        <input class="input git-input" type="text" value={version} maxlength="200" disabled={busy}
-               oninput={(event) => (typedVersion = event.currentTarget.value)} />
-      </label>
-      <div class="git-row">
-        <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy || merging} onclick={() => connection.pull(version.trim() || VERSION)}>
-          {link.busy === "pull" ? "Pulling…" : "Pull"}
-        </button>
-        <button type="submit" class="btn btn-sm lp-control-brand" disabled={busy || merging}>
-          {link.busy === "push" ? "Pushing…" : "Push"}
-        </button>
-      </div>
-      <p class="panel-meta git-note">Pull brings the repository's commits into this project. Push names this version and sends it to the repository.</p>
-    </form>
+    <div class="git-row">
+      <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy || merging} onclick={() => connection.pull()}>
+        {link.busy === "pull" ? "Getting repository changes…" : "Get repository changes"}
+      </button>
+      <button type="button" class="btn btn-sm lp-control-brand" disabled={busy || merging} onclick={() => connection.push()}>
+        {link.busy === "push" ? "Sending project changes…" : "Send project changes"}
+      </button>
+    </div>
+    <p class="panel-meta git-note">Get repository changes imports the repository's commits into this project. Send project changes sends this project's changes to the repository branch above.</p>
   {/if}
 
   {#if link.result}<p class="git-line" role="status">{link.result}</p>{/if}
+  {#if link.interrupted}
+    <div class="git-box" role="alert">
+      <p>{link.interrupted}</p>
+      <p>Getting and sending wait until it is settled.</p>
+      <div class="git-row">
+        <button type="button" class="btn btn-sm lp-control-brand" disabled={busy} onclick={() => connection.retryTransfer()}>
+          {link.busy === "retry" ? "Retrying…" : "Retry interrupted transfer"}
+        </button>
+      </div>
+    </div>
+  {/if}
   {#if link.refusal?.reason === "changed"}
     <div class="git-box" role="alert">
-      <p>The project changed these files since the last pull:</p>
+      <p>The project changed these files since the repository was last read:</p>
       <ul class="git-list">{#each link.refusal.paths as path (path)}<li>{path}</li>{/each}</ul>
-      <p>Pull again.</p>
+      <p>Get repository changes again.</p>
     </div>
   {:else if link.refusal?.reason === "suggestion"}
     <div class="git-box" role="alert">
-      <p>A pending suggestion in {link.refusal.path || "a file"} stops the {link.refusal.action}. Accept or reject it, then {link.refusal.action} again.</p>
+      <p>A pending suggestion in {link.refusal.path || "a file"} stops {ACTION[link.refusal.action]}. Accept or reject it, then try again.</p>
     </div>
   {/if}
 
   {#if status.merging && !merging}
-    <p class="git-lead" role="status">The files are settled, but the merge could not be committed. Pull or Push to try again.</p>
+    <p class="git-lead" role="status">The files are settled, but the merge could not be committed. Get repository changes or send project changes to try again.</p>
   {:else if status.merging}
     <div class="git-box">
       <p>These files changed in both the project and the repository. Choose which version to keep.</p>
@@ -180,14 +176,14 @@
     <h3 id="git-web-repository" class="panel-section-title">Repository</h3>
     <p class="git-push" role="status" title={pushTitle}>{pushText}</p>
     {#if !desktop}
-      <p class="git-lead">To push and pull with git, open this project in the LibrePaper desktop app.</p>
+      <p class="git-lead">To send and get changes with git, open this project in the LibrePaper desktop app.</p>
       <p class="git-lead">You can also keep a GitHub repository in sync with this project through a <a href="{DOCS}#github-action" target="_blank" rel="noopener noreferrer">GitHub Action</a>, with no desktop app. <a href={DOCS} target="_blank" rel="noopener noreferrer">Read the Git docs</a> to set it up.</p>
     {/if}
   </section>
 
   {#if desktop && connection}
     <section class="git-block" aria-labelledby="git-web-connect">
-      <h3 id="git-web-connect" class="panel-section-title">{status?.connected ? "Connected repository" : "Connect a repository"}</h3>
+      <h3 id="git-web-connect" class="panel-section-title">{status?.connected ? "Repository on this computer" : "Connect a repository"}</h3>
       {#if !link.loaded}
         <p class="panel-muted" role="status">Loading…</p>
       {:else if status?.connected}

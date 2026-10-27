@@ -59,7 +59,20 @@ pub(super) fn failed(error: &Error) -> Failure {
             409,
             json!({"reason": "merging", "error": error.to_string()}),
         ),
-        Error::Link(_) | Error::Rules(_) | Error::Invalid(_) => refuse(400, &error.to_string()),
+        Error::DetachedHead
+        | Error::BranchUnbound { .. }
+        | Error::BranchMismatch { .. }
+        | Error::BranchRebind { .. } => {
+            (409, json!({"reason": "branch", "error": error.to_string()}))
+        }
+        Error::PendingPush | Error::PendingActor => (
+            409,
+            json!({"reason": "pending", "error": error.to_string()}),
+        ),
+        Error::OtherProject { .. } => refuse(409, &error.to_string()),
+        Error::BranchNeedsRepository | Error::Link(_) | Error::Rules(_) | Error::Invalid(_) => {
+            refuse(400, &error.to_string())
+        }
         Error::Network(_) | Error::Http { .. } | Error::Trimmed => refuse(502, &error.to_string()),
         Error::Io { .. } | Error::Git(_) | Error::State(_) => refuse(500, &error.to_string()),
     }

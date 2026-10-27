@@ -33,7 +33,9 @@ export async function connectRepository(project, url) {
   return response.json();
 }
 
-/** Takes in the repository's changes as named versions of the project.
+/** Takes in the repository's changes as named versions of the project. A
+ * 409 with `reason: "pending"` means an earlier send to the project was
+ * interrupted and `retryConnection` settles it first.
  * @param {string} project
  * @returns {Promise<{ status: object, pushed: { files: number } | { nothing: true } } | { stopped: "conflicts", status: object }>} */
 export async function pullConnection(project) {
@@ -46,6 +48,16 @@ export async function pullConnection(project) {
  * @returns {Promise<{ status: object, pushed: "pushed" | "up-to-date" } | { stopped: "conflicts", status: object }>} */
 export async function pushConnection(project) {
   const response = await send("POST", route("push"), { jsonBody: { project } });
+  return response.json();
+}
+
+/** Settles a send to the project that was interrupted, and sends what the
+ * copy changed since. It runs only that step: no pull comes first, because a
+ * pull is refused while the send is unsettled.
+ * @param {string} project
+ * @returns {Promise<{ status: object, pushed: { files: number } | { nothing: true } }>} */
+export async function retryConnection(project) {
+  const response = await send("POST", route("retry"), { jsonBody: { project } });
   return response.json();
 }
 

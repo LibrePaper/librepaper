@@ -457,6 +457,10 @@ impl Server {
     /// The document's manifest: every label, newest first, or only the named
     /// ones when `named=1` (or `named=true`) is in the query.
     ///
+    /// Every page carries `head`, a digest of the accepted state with buffered
+    /// updates included. Clients compare it by equality only, to skip reads
+    /// when nothing has changed (SPEC-git-sync.md §4.5).
+    ///
     /// Editor-only, as the manifest has always been: a label names a moment
     /// in the document's own past, which is information about the people
     /// writing it.
@@ -521,8 +525,11 @@ impl Server {
             .then(|| rows.last().map(|row| row.sequence))
             .flatten();
         let labels: Vec<_> = rows.iter().map(label_wire).collect();
+        let state = room.log().log_state().await;
+        let head = hex::encode(Sha256::digest(&state.head_vector));
         let mut body = json!({
             "slug": entry.slug,
+            "head": head,
             "labels": labels,
         });
         if let Some(next) = next_cursor {
