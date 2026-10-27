@@ -335,13 +335,22 @@ async fn status_of(inner: &Inner, connection: &Connection) -> Result<Value, Fail
     }))
 }
 
-/// A folder as the page shows it, without the extended-length prefix Windows
-/// puts on a canonical path.
+/// A folder as the page shows it.
 fn display_path(path: &Path) -> String {
+    plain_path(path).display().to_string()
+}
+
+/// `path` without the extended-length prefix Windows puts on a canonical path,
+/// `\\?\C:\...` or `\\?\UNC\server\...`. Git and the sync crate are handed
+/// the plain form, which they read as a repository.
+fn plain_path(path: &Path) -> PathBuf {
     let text = path.display().to_string();
-    match text.strip_prefix(r"\\?\") {
-        Some(plain) => plain.to_owned(),
-        None => text,
+    if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{share}"))
+    } else if let Some(plain) = text.strip_prefix(r"\\?\") {
+        PathBuf::from(plain)
+    } else {
+        path.to_path_buf()
     }
 }
 
@@ -606,7 +615,7 @@ async fn connect_local(
             "Choose the top folder of a git repository.",
         )
     };
-    let root = chosen.canonicalize().map_err(|_| not_repository())?;
+    let root = plain_path(&chosen.canonicalize().map_err(|_| not_repository())?);
     if !is_repository_top(&root).await? {
         return Err(not_repository());
     }
@@ -626,6 +635,11 @@ async fn connect_local(
     let branch = branch.text();
 
     let store = store_for(&root, &inner.state_home);
+    // The sync crate must see the repository too, or the transfers would sync
+    // a plain folder, with no git merge and no branch.
+    if store.repository().is_none() {
+        return Err(not_repository());
+    }
     let state = match store.load().map_err(|error| failed(&error))? {
         Some(state)
             if !(same_site(&state.link.site, &connection.link.site)
@@ -842,6 +856,9 @@ async fn untracked_paths(repo: &Path) -> Result<Vec<String>, Failure> {
     .await?;
     Ok(String::from_utf8_lossy(&output.stdout)
         .split('\0')
+        // A repository nested inside is reported as its folder, `nested/`, and
+        // an exclusion names a folder without the slash.
+        .map(|path| path.trim_end_matches('/'))
         .filter(|path| !path.is_empty())
         .map(str::to_owned)
         .collect())
@@ -2075,6 +2092,52 @@ mod tests {
         assert_eq!(body["pushed"], json!({"nothing": true}), "{body}");
         assert_eq!(site.posted(), posted);
         assert!(repo.join("notes.tex").exists());
+    }
+
+    #[tokio::test]
+    async fn an_untracked_repository_inside_a_local_repository_is_never_sent() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let repo = local_repository(fixture.scratch.path());
+        let site = Site::start(&[("main.tex", "hello\n")]).await;
+        let connection = fixture.connection_on(&site);
+        connect_local(&fixture.inner, &connection, &repo)
+            .await
+            .unwrap();
+        let origin = Some(site.url.as_str());
+        let project = site.project();
+        pull_from_repository(&fixture.inner, origin, &project)
+            .await
+            .unwrap();
+        let posted = site.posted();
+
+        let nested = repo.join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        plain_git(&nested, &["init", "-q"]);
+        std::fs::write(nested.join("inner.tex"), "not in the commits\n").unwrap();
+        let body = pull_from_repository(&fixture.inner, origin, &project)
+            .await
+            .unwrap();
+        assert_eq!(body["pushed"], json!({"nothing": true}), "{body}");
+        assert_eq!(site.posted(), posted);
+    }
+
+    #[test]
+    fn a_windows_canonical_path_loses_its_prefix() {
+        assert_eq!(
+            plain_path(Path::new(r"\\?\C:\Users\me\paper")),
+            PathBuf::from(r"C:\Users\me\paper")
+        );
+        assert_eq!(
+            plain_path(Path::new(r"\\?\UNC\server\share\paper")),
+            PathBuf::from(r"\\server\share\paper")
+        );
+        assert_eq!(
+            plain_path(Path::new("/home/me/paper")),
+            PathBuf::from("/home/me/paper")
+        );
     }
 
     #[tokio::test]
