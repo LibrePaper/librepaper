@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use librepaper_base::paths::RelPath;
+use librepaper_document::document::projection::HeadSnapshot as Snapshot;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use zip::write::SimpleFileOptions;
@@ -55,16 +56,6 @@ struct ProjectRecord {
     archive: String,
     #[serde(default)]
     sha: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct Snapshot {
-    #[serde(rename = "project_digest")]
-    digest: String,
-    #[serde(rename = "tree")]
-    projection: librepaper_document::document::projection::Projection,
-    #[serde(default)]
-    texts: BTreeMap<String, String>,
 }
 
 enum Fetched {
@@ -193,7 +184,7 @@ pub(crate) async fn run_backup(
             // A 200 with the recorded digest (a proxy that drops If-None-Match)
             // is unchanged too, if the archive still holds its entries.
             let kept = existing.as_ref().filter(|record| {
-                record.snapshot == snapshot.digest
+                record.snapshot == snapshot.project_digest
                     && record.title == title
                     && record.archive == archive_name(&title, slug)
             });
@@ -414,10 +405,10 @@ fn archive_holds_snapshot(root: &Path, filename: &str, slug: &str, snapshot: &Sn
         Ok(archive) => archive,
         Err(_) => return false,
     };
-    if archive.len() != snapshot.projection.files.len() {
+    if archive.len() != snapshot.tree.files.len() {
         return false;
     }
-    for (path, expected) in &snapshot.projection.files {
+    for (path, expected) in &snapshot.tree.files {
         let relative = match member_path(path) {
             Ok(path) => path,
             Err(_) => return false,
@@ -544,12 +535,10 @@ async fn fetch_snapshot(
     }
     let snapshot: Snapshot = serde_json::from_value(payload)
         .map_err(|error| format!("invalid project snapshot for {slug:?}: {error}"))?;
-    if snapshot.digest != snapshot.projection.digest().to_hex() {
-        return Err(format!(
-            "project {slug:?} snapshot digest does not match its identity"
-        ));
-    }
-    if snapshot.projection.files.len() > MAX_FILES_PER_PROJECT {
+    snapshot
+        .verify()
+        .map_err(|error| format!("project {slug:?} snapshot is damaged: {error}"))?;
+    if snapshot.tree.files.len() > MAX_FILES_PER_PROJECT {
         return Err(format!(
             "project {slug:?} exceeds {MAX_FILES_PER_PROJECT} files"
         ));
@@ -565,9 +554,9 @@ async fn materialize_snapshot(
     snapshot: Snapshot,
     previous_files: BTreeMap<String, Vec<u8>>,
 ) -> Result<MaterializedSnapshot, String> {
-    let mut files = Vec::with_capacity(snapshot.projection.files.len());
+    let mut files = Vec::with_capacity(snapshot.tree.files.len());
     let mut total = 0usize;
-    for (path, entry) in &snapshot.projection.files {
+    for (path, entry) in &snapshot.tree.files {
         let path = member_path(path)?;
         let (bytes, bytes_verified) = match entry.kind.as_str() {
             "text" => {
@@ -616,7 +605,7 @@ async fn materialize_snapshot(
         files.push((path.to_string_lossy().into_owned(), bytes));
     }
     Ok(MaterializedSnapshot {
-        snapshot: snapshot.digest,
+        snapshot: snapshot.project_digest,
         files,
     })
 }

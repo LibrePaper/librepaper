@@ -13,7 +13,8 @@ use librepaper_base::digest::Digest;
 use librepaper_base::util::{token, Encoding};
 
 use crate::chain::{Chain, Meta, MAIN_REF};
-use crate::client::{Client, Label, Snapshot};
+use crate::client::{version_name, Client, Snapshot};
+use librepaper_document::document::projection::LabelRow;
 use crate::files::{inside, FileRecord, Kind};
 use crate::git::Git;
 use crate::rules::Rules;
@@ -131,7 +132,7 @@ pub async fn pull(
 #[derive(Debug)]
 pub(crate) struct Discovery {
     /// Oldest first.
-    pub versions: Vec<Label>,
+    pub versions: Vec<LabelRow>,
     pub trimmed: bool,
     /// There is no named version to take, so the project as it stands is the
     /// base.
@@ -155,7 +156,7 @@ impl Discovery {
 
 /// The versions newer than `pulled` in a list that runs newest first, oldest
 /// first, and whether the list reached `pulled`.
-pub(crate) fn select(newest_first: &[Label], pulled: Option<i64>) -> (Vec<Label>, bool) {
+pub(crate) fn select(newest_first: &[LabelRow], pulled: Option<i64>) -> (Vec<LabelRow>, bool) {
     let mut take = Vec::new();
     let mut reached = false;
     for label in newest_first {
@@ -171,7 +172,7 @@ pub(crate) fn select(newest_first: &[Label], pulled: Option<i64>) -> (Vec<Label>
 
 /// Decides what to take. History is trimmed when something was pulled before
 /// and nothing at or below it is left to show for it.
-pub(crate) fn plan(mut take: Vec<Label>, pulled: Option<i64>, base_found: bool) -> Discovery {
+pub(crate) fn plan(mut take: Vec<LabelRow>, pulled: Option<i64>, base_found: bool) -> Discovery {
     let trimmed = pulled.is_some() && !base_found;
     if trimmed {
         // What came between is gone or cannot be told apart from what is not,
@@ -188,7 +189,7 @@ pub(crate) fn plan(mut take: Vec<Label>, pulled: Option<i64>, base_found: bool) 
 }
 
 async fn discover(client: &Client, slug: &str, pulled: Option<i64>) -> Result<Discovery, Error> {
-    let mut seen: Vec<Label> = Vec::new();
+    let mut seen: Vec<LabelRow> = Vec::new();
     let mut after: Option<i64> = None;
     // The first page is the one read before the project, so its identity is
     // the one an edit landing later cannot hide behind.
@@ -361,7 +362,7 @@ async fn fetch(
         snapshot.retain_synced(rules);
         leave_excluded_out(&mut snapshot, &local, git.dir(), &mut excluded);
         let assets = asset_bytes(client, &slug, &local, &snapshot, &chain).await?;
-        let name = label.name();
+        let name = version_name(label);
         let meta = Meta {
             by: &label.by,
             at: &label.at,
@@ -838,17 +839,21 @@ mod tests {
     use crate::git::testing::{commit_all, identify, repository};
     use crate::walk::compare;
 
-    fn label(sequence: i64) -> Label {
-        Label {
+    fn label(sequence: i64) -> LabelRow {
+        LabelRow {
             sha: format!("sha-{sequence}"),
             sequence,
             at: String::new(),
             by: "Bob".into(),
             label: Some(format!("Version {sequence}")),
+            reason: String::new(),
+            tree_sha: None,
+            frontier: String::new(),
+            archive_status: String::new(),
         }
     }
 
-    fn sequences(labels: &[Label]) -> Vec<i64> {
+    fn sequences(labels: &[LabelRow]) -> Vec<i64> {
         labels.iter().map(|label| label.sequence).collect()
     }
 
