@@ -1271,6 +1271,9 @@ mod tests {
                 "slug": null,
                 "pulled": null,
                 "changes": {"here": 0, "web": false},
+                "branch": null,
+                "checked_out": null,
+                "pending": false,
             })
         );
 
@@ -1428,7 +1431,16 @@ mod tests {
                                 "next_cursor": null,
                             })),
                         ),
-                        "/api/documents/abc123/history/v1" => (StatusCode::OK, Json(version)),
+                        "/api/documents/abc123/history/v1" => {
+                            (StatusCode::OK, Json(version))
+                        }
+                        "/api/documents/abc123/project" => (
+                            StatusCode::OK,
+                            Json(json!({
+                                "tree": {"files": version["files"]},
+                                "texts": version["texts"],
+                            })),
+                        ),
                         _ => (
                             StatusCode::NOT_FOUND,
                             Json(json!({"error": "no such file"})),
@@ -1478,7 +1490,7 @@ mod tests {
         fixture.link_to(&format!("{site}/docs/abc123"));
         fixture.based_on(&head);
 
-        let (status, body) = fixture.pull(json!({})).await;
+        let (status, body) = fixture.pull(json!({"branch": "main"})).await;
         assert_eq!(status, 200, "{body}");
         let root = fixture.root();
         let chain = git(root, &["rev-parse", "refs/librepaper/main"]).unwrap();
@@ -1530,7 +1542,7 @@ mod tests {
 
         // The repository and the project share no commit, so the first merge
         // joins them, and main.tex differs on both sides.
-        let (status, body) = fixture.pull(json!({})).await;
+        let (status, body) = fixture.pull(json!({"branch": "main"})).await;
         assert_eq!(status, 200, "{body}");
         assert_eq!(body["repository"], true);
         assert_eq!(body["merge"], json!({"conflicts": ["main.tex"]}));
@@ -1560,7 +1572,7 @@ mod tests {
         let root = fixture.root();
         std::fs::write(root.join("main.tex"), "main\nedited here\n").unwrap();
 
-        let (status, body) = fixture.pull(json!({})).await;
+        let (status, body) = fixture.pull(json!({"branch": "main"})).await;
         assert_eq!(status, 200, "{body}");
         assert_eq!(
             body,
@@ -2017,7 +2029,16 @@ mod tests {
                                 "next_cursor": null,
                             })),
                         ),
-                        "/api/documents/abc123/history/v1" => (StatusCode::OK, Json(version)),
+                        "/api/documents/abc123/history/v1" => {
+                            (StatusCode::OK, Json(version))
+                        }
+                        "/api/documents/abc123/project" => (
+                            StatusCode::OK,
+                            Json(json!({
+                                "tree": {"files": version["files"]},
+                                "texts": version["texts"],
+                            })),
+                        ),
                         _ => (
                             StatusCode::NOT_FOUND,
                             Json(json!({"error": "no such file"})),
