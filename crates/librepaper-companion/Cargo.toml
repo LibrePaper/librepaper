@@ -22,6 +22,7 @@ librepaper-base = { path = "../librepaper-base" }
 librepaper-document = { path = "../librepaper-document" }
 librepaper-sync = { path = "../librepaper-sync" }
 tokio.workspace = true
+tokio-util.workspace = true
 axum.workspace = true
 http-body-util.workspace = true
 futures-util.workspace = true

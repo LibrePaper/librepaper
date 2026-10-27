@@ -21,11 +21,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
+use librepaper_base::process::{supervise, Ending, Keep, Limits};
 use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
 use tokio::sync::{mpsc, watch};
 
 use crate::local::bindings::BindingStore;
-use crate::local::native::{self, RunOutcome};
+use crate::local::native;
 use crate::local::protocol::{
     self, Capabilities, JobOutcome, JobRequest, JobState, JobStatus, Provenance, RendererReport,
     Tool, MAX_RESULT_BYTES,
@@ -186,7 +188,38 @@ pub async fn run(
     // a tick, so a result written at once could read as older than the start.
     // Only a failed command is held to it.
     let started = SystemTime::now() - Duration::from_secs(1);
-    let (outcome, output) = native::run_confined_logged(command, &mut cancel, deadline).await;
+    let token = CancellationToken::new();
+    if *cancel.borrow() {
+        token.cancel();
+    }
+    // The job queue cancels through a watch channel. A closed channel is not a
+    // cancel.
+    let watcher = tokio::spawn({
+        let token = token.clone();
+        async move {
+            while cancel.changed().await.is_ok() {
+                if *cancel.borrow() {
+                    token.cancel();
+                    return;
+                }
+            }
+        }
+    });
+    let run = supervise(
+        command,
+        None,
+        Limits {
+            timeout: Some(deadline.saturating_duration_since(Instant::now())),
+            cancel: Some(token),
+            keep: Keep::Tail(protocol::MAX_LOG_BYTES),
+            stderr_keep: None,
+            kill_group: true,
+        },
+    )
+    .await;
+    watcher.abort();
+    let output = native::log_of(&run);
+    let outcome = run.ending;
 
     let mut status = JobStatus {
         stage: "finished".into(),
@@ -200,7 +233,7 @@ pub async fn run(
     match outcome {
         // A command that finds nothing to rebuild exits 0 without rewriting
         // its result, so after a success the file counts whatever its time.
-        RunOutcome::Exited(0) => match read_result(&root, &expanded.result, None) {
+        Ending::Exited(0) => match read_result(&root, &expanded.result, None) {
             Ok(Some(bytes)) if !bytes.is_empty() => {
                 attach_result(
                     &mut files,
@@ -231,7 +264,7 @@ pub async fn run(
                 status.error = Some(error);
             }
         },
-        RunOutcome::Exited(code) => {
+        Ending::Exited(code) => {
             status.exit = code;
             status.status = JobState::Failed;
             status.error = Some(format!("the command exited with status {code}"));
@@ -253,14 +286,14 @@ pub async fn run(
                 );
             }
         }
-        RunOutcome::Canceled => status.status = JobState::Canceled,
-        RunOutcome::TimedOut => {
+        Ending::Canceled => status.status = JobState::Canceled,
+        Ending::TimedOut => {
             status.status = JobState::Failed;
             status.error = Some("the render deadline was exceeded".into());
         }
-        RunOutcome::SpawnFailed(error) => {
+        Ending::SpawnFailed(error) => {
             status.status = JobState::Failed;
-            status.error = Some(error);
+            status.error = Some(error.to_string());
         }
     }
     files.insert("log".into(), output);

@@ -166,16 +166,11 @@ async fn start_backup(options: &StorageOptions, dump: &Path) -> Result<StartedBa
         }
     }
     let references = by_key.into_values().collect::<Vec<_>>();
-    let status = postgres_tool("pg_dump", &options.database_url)?
+    let mut command = postgres_tool("pg_dump", &options.database_url)?;
+    command
         .args(["--format=custom", "--snapshot", &snapshot, "--file"])
-        .arg(dump)
-        .stdout(std::process::Stdio::null())
-        .status()
-        .await
-        .map_err(|e| BackupError::Tool(format!("could not run pg_dump: {e}")))?;
-    if !status.success() {
-        return Err(BackupError::Tool(format!("pg_dump exited with {status}")));
-    }
+        .arg(dump);
+    run_postgres_tool("pg_dump", command).await?;
     // As with BEGIN above, COMMIT cannot be prepared.
     sqlx::query("COMMIT")
         .execute(lifecycle_lock.connection_mut())
@@ -669,22 +664,16 @@ async fn restore(
             )));
         }
     }
-    let status = postgres_tool("pg_restore", &database_url)?
+    let mut command = postgres_tool("pg_restore", &database_url)?;
+    command
         .args([
             "--no-owner",
             "--no-privileges",
             "--single-transaction",
             "--exit-on-error",
         ])
-        .arg(dump)
-        .status()
-        .await
-        .map_err(|e| BackupError::Tool(format!("could not run pg_restore: {e}")))?;
-    if !status.success() {
-        return Err(BackupError::Tool(format!(
-            "pg_restore exited with {status}"
-        )));
-    }
+        .arg(dump);
+    run_postgres_tool("pg_restore", command).await?;
     let restored: i64 = sqlx::query_scalar!(
         r#"SELECT COALESCE(max(version),0) AS "version!" FROM _sqlx_migrations WHERE success"#
     )
@@ -708,6 +697,40 @@ async fn restore(
 /// libpq does not expand a connection URI supplied only through PGDATABASE.
 /// pg_restore additionally needs --dbname to restore instead of printing SQL.
 /// Keep the password in the child's environment, outside the process arguments.
+/// Runs a prepared PostgreSQL tool to its exit, with no deadline: a dump or a
+/// restore takes as long as the database is large. Its diagnostics are kept
+/// and quoted in the error.
+async fn run_postgres_tool(
+    name: &str,
+    command: tokio::process::Command,
+) -> Result<(), BackupError> {
+    use librepaper_base::process::{supervise, Ending, Keep, Limits};
+    let run = supervise(
+        command,
+        None,
+        Limits {
+            timeout: None,
+            cancel: None,
+            keep: Keep::Head(64 * 1024),
+            stderr_keep: None,
+            kill_group: true,
+        },
+    )
+    .await;
+    match run.ending {
+        Ending::Exited(0) => Ok(()),
+        Ending::Exited(code) => Err(BackupError::Tool(format!(
+            "{name} exited with status {code}: {}",
+            String::from_utf8_lossy(&run.stderr).trim()
+        ))),
+        Ending::SpawnFailed(error) => Err(BackupError::Tool(format!(
+            "could not run {name}: {error}"
+        ))),
+        // Neither a deadline nor a token is set.
+        Ending::TimedOut | Ending::Canceled => Err(BackupError::Tool(format!("{name} was stopped"))),
+    }
+}
+
 fn postgres_tool(
     program: &str,
     database_url: &str,
