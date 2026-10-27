@@ -126,6 +126,14 @@ impl Client {
         Client { site, credentials }
     }
 
+    /// A fingerprint of the sign-in that is safe to store: it names the
+    /// credential without revealing it.
+    pub(crate) fn actor(&self) -> String {
+        let secret = format!("{}\n{}", self.credentials.token, self.credentials.key);
+        let digest = sha256_hex(secret.as_bytes());
+        format!("sha256:{digest}")
+    }
+
     pub(crate) fn site(&self) -> &Url {
         &self.site
     }

@@ -41,6 +41,10 @@ pub(crate) struct PullArgs {
     /// sides changed it
     #[arg(long, value_name = "PATH")]
     theirs: Vec<String>,
+    /// In a git repository, the branch to sync; needed the first time, then
+    /// it must match the checkout
+    #[arg(long, value_name = "BRANCH")]
+    branch: Option<String>,
     #[command(flatten)]
     sign: Sign,
 }
@@ -63,6 +67,10 @@ pub(crate) struct PushArgs {
     /// Publish the directory as a new project with this title
     #[arg(long, value_name = "TEXT")]
     title: Option<String>,
+    /// In a git repository, the branch to sync; needed the first time, then
+    /// it must match the checkout
+    #[arg(long, value_name = "BRANCH")]
+    branch: Option<String>,
     #[command(flatten)]
     deployment: Deployment,
 }
@@ -93,10 +101,11 @@ fn connect(
         (Some(state), Some(url)) => {
             let given = Link::parse(url).map_err(|error| error.to_string())?;
             if given != state.link {
-                return Err(format!(
-                    "this directory is linked to {}",
-                    state.link.project_url()
-                ));
+                return Err(librepaper_sync::Error::OtherProject {
+                    linked: state.link.project_url(),
+                    named: given.project_url(),
+                }
+                .to_string());
             }
             (given, state.clone())
         }
@@ -141,6 +150,7 @@ async fn run_pull(args: PullArgs) -> Result<bool, String> {
         mine: args.mine,
         theirs: args.theirs,
         exclude: Vec::new(),
+        branch: args.branch,
     };
     let outcome = pull_files(&client, &workspace.dir, workspace.store.as_ref(), &options)
         .await
@@ -201,6 +211,7 @@ async fn run_push(args: PushArgs) -> Result<bool, String> {
         message,
         author,
         exclude: Vec::new(),
+        branch: args.branch,
     };
     let outcome = push_files(&client, &workspace.dir, workspace.store.as_ref(), &options)
         .await

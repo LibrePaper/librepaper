@@ -32,8 +32,8 @@ use crate::local::git::{validate, Limit, Output};
 
 use librepaper_base::http::Credentials;
 use librepaper_sync::{
-    commit_summary, pull, push, store_for, web_changed, Client, Error, Link, MergeOutcome,
-    PullOptions, PullOutcome, PushOptions, PushOutcome, State,
+    commit_summary, current_branch, pull, push, store_for, web_changed, Client, Error, Link,
+    MergeOutcome, PullOptions, PullOutcome, PushOptions, PushOutcome, State,
 };
 
 /// The folder of every connection, under the state home.
@@ -454,16 +454,19 @@ async fn pull_remote(repo: &Path) -> Result<Value, Failure> {
 /// The project's named versions taken into the clone, merged into its branch.
 async fn web_pull(inner: &Inner, connection: &Connection) -> Result<PullOutcome, Failure> {
     let client = Arc::new(client_for(inner, &connection.link.site)?);
-    let options = PullOptions {
-        merge: true,
-        mine: Vec::new(),
-        theirs: Vec::new(),
-        exclude: Vec::new(),
-    };
     let (root, state_home) = (connection.repo(), inner.state_home.clone());
     let handle = tokio::runtime::Handle::current();
     let outcome = tokio::task::spawn_blocking(move || {
         let store = store_for(&root, &state_home);
+        // The clone is the app's own, so the branch it has is the branch it
+        // syncs.
+        let options = PullOptions {
+            merge: true,
+            mine: Vec::new(),
+            theirs: Vec::new(),
+            exclude: Vec::new(),
+            branch: Some(current_branch(&root)?),
+        };
         handle.block_on(pull(&client, &root, store.as_ref(), &options))
     })
     .await
@@ -513,6 +516,7 @@ async fn web_push(inner: &Inner, connection: &Connection) -> Result<PushOutcome,
             message,
             author,
             exclude: Vec::new(),
+            branch: Some(current_branch(&root)?),
         };
         handle.block_on(push(&client, &root, store.as_ref(), &options))
     })

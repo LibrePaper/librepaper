@@ -82,7 +82,19 @@ pub(super) fn failed(error: &Error) -> Failure {
             409,
             json!({"reason": "merging", "error": error.to_string()}),
         ),
-        Error::Link(_) | Error::Rules(_) | Error::Invalid(_) => refuse(400, &error.to_string()),
+        Error::DetachedHead
+        | Error::BranchUnbound { .. }
+        | Error::BranchMismatch { .. }
+        | Error::BranchRebind { .. } => (
+            409,
+            json!({"reason": "branch", "error": error.to_string()}),
+        ),
+        Error::PendingPush | Error::PendingActor => (
+            409,
+            json!({"reason": "pending", "error": error.to_string()}),
+        ),
+        Error::OtherProject { .. } => refuse(409, &error.to_string()),
+        Error::BranchNeedsRepository | Error::Link(_) | Error::Rules(_) | Error::Invalid(_) => refuse(400, &error.to_string()),
         Error::Network(_) | Error::Http { .. } | Error::Trimmed => refuse(502, &error.to_string()),
         Error::Io { .. } | Error::Git(_) | Error::State(_) => refuse(500, &error.to_string()),
     }
@@ -564,6 +576,7 @@ pub(super) async fn handle_link(
     };
     let linked = async {
         let link = parse_link(&body.url, origin)?;
+        refuse_pending(&folder)?;
         record_link(&folder, link)?;
         folder_status(inner, &folder, origin).await
     };
@@ -578,6 +591,15 @@ fn record_link(folder: &Folder, link: Link) -> Result<(), Failure> {
         .map_err(|error| failed(&error))
 }
 
+/// A web push waiting to be settled is the folder's only record of what it
+/// sent, so neither a new link nor an unlink may drop it.
+fn refuse_pending(folder: &Folder) -> Result<(), Failure> {
+    match folder.store.load().map_err(|error| failed(&error))? {
+        Some(state) => state.refuse_while_pending().map_err(|error| failed(&error)),
+        None => Ok(()),
+    }
+}
+
 pub(super) async fn handle_unlink(
     inner: &Arc<Inner>,
     headers: &HeaderMap,
@@ -589,6 +611,7 @@ pub(super) async fn handle_unlink(
         Err(response) => return response,
     };
     let unlinked = async {
+        refuse_pending(&folder)?;
         folder.store.clear().map_err(|error| failed(&error))?;
         folder_status(inner, &folder, origin).await
     };
@@ -707,6 +730,9 @@ async fn run_pull(
         mine,
         theirs,
         exclude: folder.render_outputs(inner),
+        // A bound repository must be on its branch. One that is not bound yet
+        // reports that, until a later wave asks the person which branch.
+        branch: None,
     };
     let (root, state_home) = (folder.binding.root.clone(), inner.state_home.clone());
     let handle = tokio::runtime::Handle::current();
@@ -822,6 +848,7 @@ async fn run_push(
         message: message.to_owned(),
         author: None,
         exclude: folder.render_outputs(inner),
+        branch: None,
     };
     let (root, state_home) = (folder.binding.root.clone(), inner.state_home.clone());
     let handle = tokio::runtime::Handle::current();

@@ -118,6 +118,54 @@ impl State {
         }
     }
 
+    /// Stops a caller that would move the baseline while a web push is
+    /// waiting to be settled.
+    pub fn refuse_while_pending(&self) -> Result<(), Error> {
+        match self.pending {
+            Some(_) => Err(Error::PendingPush),
+            None => Ok(()),
+        }
+    }
+
+    /// Checks the checkout against the branch this state syncs and the one the
+    /// caller asked for, and binds the branch when none is bound yet. The
+    /// binding is held in memory and saved with the next write. A plain folder
+    /// has no branch, and never switches one.
+    pub(crate) fn pin_branch(
+        &mut self,
+        repository: Option<&Path>,
+        requested: Option<&str>,
+    ) -> Result<(), Error> {
+        let Some(root) = repository else {
+            return match requested {
+                Some(_) => Err(Error::BranchNeedsRepository),
+                None => Ok(()),
+            };
+        };
+        let checked_out = Git::at(root).branch()?;
+        let bound = self.branch.clone();
+        match (bound.as_deref(), requested) {
+            (None, None) => Err(Error::BranchUnbound { checked_out }),
+            (None, Some(requested)) if requested != checked_out => Err(Error::BranchMismatch {
+                expected: requested.to_string(),
+                checked_out,
+            }),
+            (None, Some(requested)) => {
+                self.branch = Some(requested.to_string());
+                Ok(())
+            }
+            (Some(bound), Some(requested)) if bound != requested => Err(Error::BranchRebind {
+                bound: bound.to_string(),
+                requested: requested.to_string(),
+            }),
+            (Some(bound), _) if bound != checked_out => Err(Error::BranchMismatch {
+                expected: bound.to_string(),
+                checked_out,
+            }),
+            (Some(_), _) => Ok(()),
+        }
+    }
+
     pub fn to_json(&self) -> Result<Vec<u8>, Error> {
         let record = Record {
             site: self.link.origin(),
@@ -166,6 +214,12 @@ pub trait StateStore: Send + Sync {
     fn repository(&self) -> Option<&Path> {
         None
     }
+}
+
+/// The branch a repository's work tree is on, which may have no commit yet.
+/// Detached HEAD is an error.
+pub fn current_branch(dir: &Path) -> Result<String, Error> {
+    Git::at(dir).branch()
 }
 
 const STATE_REF: &str = "refs/librepaper/state";
@@ -409,5 +463,38 @@ mod tests {
             FileStore::for_dir(home.path(), dir.path()).load().unwrap(),
             None
         );
+    }
+
+    fn branch_state() -> State {
+        State::new(Link::parse("https://app.librepaper.org/docs/paper-abc").unwrap())
+    }
+
+    #[test]
+    fn an_unborn_named_branch_can_be_bound_and_a_plain_folder_has_none() {
+        let Some((dir, git)) = repository() else {
+            return;
+        };
+        git.run(&["symbolic-ref", "HEAD", "refs/heads/trunk"], None, &[])
+            .unwrap();
+        assert!(git.rev("HEAD").is_none(), "the branch has no commit yet");
+        let mut state = branch_state();
+        assert!(matches!(
+            state.pin_branch(Some(dir.path()), None),
+            Err(Error::BranchUnbound { .. })
+        ));
+        assert!(matches!(
+            state.pin_branch(Some(dir.path()), Some("main")),
+            Err(Error::BranchMismatch { .. })
+        ));
+        state.pin_branch(Some(dir.path()), Some("trunk")).unwrap();
+        assert_eq!(state.branch.as_deref(), Some("trunk"));
+        state.pin_branch(Some(dir.path()), None).unwrap();
+
+        let mut plain = branch_state();
+        plain.pin_branch(None, None).unwrap();
+        assert!(matches!(
+            plain.pin_branch(None, Some("main")),
+            Err(Error::BranchNeedsRepository)
+        ));
     }
 }
