@@ -188,19 +188,31 @@ async fn start_foreground(port: u16) {
     };
 
     let make_v4 = router.into_make_service_with_connect_info::<SocketAddr>();
-    let shutdown = async move {
-        let stop_poll = async {
-            let mut poll = tokio::time::interval(Duration::from_millis(250));
-            loop {
-                poll.tick().await;
-                if crate::local::lifecycle::stop_requested(&state_home) {
-                    break;
+    // The stop request is a file because `librepaper local stop` is another
+    // process. Reading it is the one place that file is polled; it cancels
+    // the token the rest of the service waits on.
+    let mut tasks = librepaper_base::tasks::Tasks::new();
+    let stopping = tasks.shutdown();
+    let requested = stopping.clone();
+    let watched_home = state_home.clone();
+    tasks.every(
+        "stop-request",
+        Duration::from_millis(250),
+        tokio::time::MissedTickBehavior::Delay,
+        move || {
+            let requested = requested.clone();
+            let home = watched_home.clone();
+            async move {
+                if crate::local::lifecycle::stop_requested(&home) {
+                    requested.cancel();
                 }
             }
-        };
+        },
+    );
+    let shutdown = async move {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {},
-            _ = stop_poll => {},
+            _ = stopping.cancelled() => {},
         }
     };
     if let Err(err) = axum::serve(listener, make_v4)
@@ -212,6 +224,12 @@ async fn start_foreground(port: u16) {
 
     if let Some(task) = v6_task {
         task.abort();
+    }
+    for name in tasks.stop(Duration::from_secs(5)).await {
+        tracing::warn!("background task {name} did not stop in time");
+    }
+    for name in service.stop(Duration::from_secs(5)).await {
+        tracing::warn!("background task {name} did not stop in time");
     }
     service_file.remove();
     println!("Local service stopped");

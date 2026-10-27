@@ -545,49 +545,56 @@ async fn handle_metrics(State(server): State<Arc<super::Server>>) -> Response<Bo
 
 /// Refresh aggregate gauges at a low fixed rate. The one-second timeout makes
 /// a stuck status query harmless to the user-facing request path.
-pub fn spawn_sampler(server: Arc<super::Server>) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(15));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        // The stored total the graphs draw. The storage ledger in the snapshot
-        // moves only when a log row is flushed or compacted, so it misses
-        // uploads, command rows, new documents and deletions until the next
-        // restart. The catalogue's total is exact. Asking for it only when the
-        // graphs are about to record keeps it to one query a minute, and a
-        // failed ask keeps the last figure.
-        let mut stored: Option<i64> = None;
-        loop {
-            interval.tick().await;
-            let snapshot =
-                tokio::time::timeout(SCRAPE_SAMPLE_TIMEOUT, server.metrics_snapshot()).await;
-            if let Ok(mut snapshot) = snapshot {
+pub fn spawn_sampler(tasks: &mut librepaper_base::tasks::Tasks, server: Arc<super::Server>) {
+    // The stored total the graphs draw. The storage ledger in the snapshot
+    // moves only when a log row is flushed or compacted, so it misses
+    // uploads, command rows, new documents and deletions until the next
+    // restart. The catalogue's total is exact. Asking for it only when the
+    // graphs are about to record keeps it to one query a minute, and a
+    // failed ask keeps the last figure.
+    let stored: Arc<std::sync::Mutex<Option<i64>>> = Arc::new(std::sync::Mutex::new(None));
+    tasks.every(
+        "metrics-sampler",
+        Duration::from_secs(15),
+        tokio::time::MissedTickBehavior::Delay,
+        move || {
+            let server = server.clone();
+            let stored = stored.clone();
+            async move {
+                let snapshot =
+                    tokio::time::timeout(SCRAPE_SAMPLE_TIMEOUT, server.metrics_snapshot()).await;
+                let Ok(mut snapshot) = snapshot else {
+                    server.metrics.note_snapshot_failure();
+                    return;
+                };
                 server.metrics.update_gauges(&snapshot, &server.config);
-                if let Some(graphs) = server.graphs.clone() {
-                    if stored.is_none() || graphs.due() {
-                        let asked = tokio::time::timeout(
-                            SCRAPE_SAMPLE_TIMEOUT,
-                            server.store.catalog.usage_bytes(None),
-                        )
-                        .await;
-                        if let Ok(Ok(bytes)) = asked {
-                            stored = Some(bytes);
-                        }
-                    }
-                    if let Some(bytes) = stored {
-                        snapshot["storage"] = serde_json::json!({ "retained_bytes": bytes });
-                    }
-                    let live = server.metrics.live.clone();
-                    let observed =
-                        tokio::task::spawn_blocking(move || graphs.observe(&snapshot, &live)).await;
-                    if let Err(error) = observed {
-                        tracing::warn!("operator graphs could not record a sample: {error}");
+                let Some(graphs) = server.graphs.clone() else {
+                    return;
+                };
+                let known = *stored.lock().unwrap_or_else(|e| e.into_inner());
+                if known.is_none() || graphs.due() {
+                    let asked = tokio::time::timeout(
+                        SCRAPE_SAMPLE_TIMEOUT,
+                        server.store.catalog.usage_bytes(None),
+                    )
+                    .await;
+                    if let Ok(Ok(bytes)) = asked {
+                        *stored.lock().unwrap_or_else(|e| e.into_inner()) = Some(bytes);
                     }
                 }
-            } else {
-                server.metrics.note_snapshot_failure();
+                let known = *stored.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(bytes) = known {
+                    snapshot["storage"] = serde_json::json!({ "retained_bytes": bytes });
+                }
+                let live = server.metrics.live.clone();
+                let observed =
+                    tokio::task::spawn_blocking(move || graphs.observe(&snapshot, &live)).await;
+                if let Err(error) = observed {
+                    tracing::warn!("operator graphs could not record a sample: {error}");
+                }
             }
-        }
-    });
+        },
+    );
 }
 
 /// Fixed allowlist from the aggregate cost snapshot. `field` may be a JSON

@@ -618,10 +618,11 @@ pub async fn serve(options: ServeOptions) {
     instance.latex = Some(latex);
     instance.site = site;
     let instance = Arc::new(instance);
+    let mut tasks = librepaper_base::tasks::Tasks::new();
     // The sampler feeds the metrics page and the graphs, so either one is
     // reason enough to run it. Only the listener needs `[metrics] address`.
     if metrics_listener.is_some() || instance.graphs.is_some() {
-        super::metrics::spawn_sampler(instance.clone());
+        super::metrics::spawn_sampler(&mut tasks, instance.clone());
     }
     if let Some(metrics_listener) = metrics_listener {
         if let Ok(address) = metrics_listener.local_addr() {
@@ -700,21 +701,31 @@ pub async fn serve(options: ServeOptions) {
         .await;
         let janitor = instance.clone();
         let from = expire_from.clone();
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(3600));
-            ticker.tick().await;
-            loop {
-                ticker.tick().await;
-                retention_pass(
-                    &janitor,
-                    librepaper_base::util::now_unix(),
-                    retention,
-                    &from,
-                    inactive_after,
-                )
-                .await;
-            }
-        });
+        // The pass above covers the first hour, so the first tick is skipped.
+        let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        tasks.every(
+            "retention-janitor",
+            std::time::Duration::from_secs(3600),
+            tokio::time::MissedTickBehavior::Burst,
+            move || {
+                let janitor = janitor.clone();
+                let from = from.clone();
+                let skip = first.swap(false, std::sync::atomic::Ordering::SeqCst);
+                async move {
+                    if skip {
+                        return;
+                    }
+                    retention_pass(
+                        &janitor,
+                        librepaper_base::util::now_unix(),
+                        retention,
+                        &from,
+                        inactive_after,
+                    )
+                    .await;
+                }
+            },
+        );
     }
 
     // The one periodic thing left (§8.6): flush what is due and retire idle
@@ -727,17 +738,20 @@ pub async fn serve(options: ServeOptions) {
     // once an hour with the orphan sweep for work written by another
     // process (§12).
     let sweeper = instance.clone();
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            ticker.tick().await;
-            sweeper.cost.housekeep();
-            if !sweeper.rooms.registry().all().await.is_empty() {
-                sweeper.rooms.housekeep().await;
+    tasks.every(
+        "room-sweeper",
+        std::time::Duration::from_secs(1),
+        tokio::time::MissedTickBehavior::Delay,
+        move || {
+            let sweeper = sweeper.clone();
+            async move {
+                sweeper.cost.housekeep();
+                if !sweeper.rooms.registry().all().await.is_empty() {
+                    sweeper.rooms.housekeep().await;
+                }
             }
-        }
-    });
+        },
+    );
 
     // A server on its way down writes what it holds. An acknowledged edit
     // survives a restart because it was written when it was acknowledged; this
@@ -770,6 +784,9 @@ pub async fn serve(options: ServeOptions) {
         }
     };
     drop(serving);
+    for name in tasks.stop(std::time::Duration::from_secs(5)).await {
+        tracing::warn!("background task {name} did not stop in time");
+    }
     drop(instance);
     closing_catalog.close().await;
     if let Err(err) = serve_result {

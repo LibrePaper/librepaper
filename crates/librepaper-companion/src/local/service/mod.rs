@@ -31,9 +31,10 @@ use axum::extract::{DefaultBodyLimit, FromRequest, Multipart, State};
 use axum::http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use axum::Router;
 use http_body_util::Limited;
+use librepaper_base::tasks::{Shutdown, Tasks};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::sync::{mpsc, watch, Mutex, Notify};
+use tokio::sync::{mpsc, Mutex, Notify};
 
 use crate::local::bindings::BindingStore;
 use crate::local::protocol::{
@@ -126,7 +127,7 @@ const FINISHED_TTL: Duration = Duration::from_secs(10 * 60);
 #[async_trait::async_trait]
 pub trait Runner: Send + Sync {
     /// Runs `request`, whose uploaded files are staged in `staged`. `cancel`
-    /// flips to `true` when `POST jobs/<id>/cancel`, a newer job for the same
+    /// is cancelled when `POST jobs/<id>/cancel`, a newer job for the same
     /// workspace, or a delete fires; `progress` carries interim `JobStatus`
     /// snapshots the service stores as they arrive so `GET jobs/<id>`
     /// reflects a running job, not just a finished one.
@@ -134,7 +135,7 @@ pub trait Runner: Send + Sync {
         &self,
         request: JobRequest,
         staged: PathBuf,
-        cancel: watch::Receiver<bool>,
+        cancel: Shutdown,
         progress: mpsc::UnboundedSender<JobStatus>,
     ) -> JobOutcome;
 
@@ -164,7 +165,7 @@ impl Runner for NativeRunner {
         &self,
         request: JobRequest,
         staged: PathBuf,
-        cancel: watch::Receiver<bool>,
+        cancel: Shutdown,
         progress: mpsc::UnboundedSender<JobStatus>,
     ) -> JobOutcome {
         crate::local::render::run(request, staged, &self.binding_store, cancel, progress).await
@@ -202,7 +203,7 @@ impl Runner for FakeRunner {
         &self,
         request: JobRequest,
         _staged: PathBuf,
-        mut cancel: watch::Receiver<bool>,
+        cancel: Shutdown,
         progress: mpsc::UnboundedSender<JobStatus>,
     ) -> JobOutcome {
         let delay = *self.delay.lock().expect("lock");
@@ -216,12 +217,7 @@ impl Runner for FakeRunner {
         drop(progress);
         tokio::select! {
             _ = tokio::time::sleep(delay) => {}
-            _ = async {
-                loop {
-                    if *cancel.borrow() { break; }
-                    if cancel.changed().await.is_err() { break; }
-                }
-            } => {
+            _ = cancel.cancelled() => {
                 return JobOutcome {
                     status: JobStatus {
                         status: JobState::Canceled,
@@ -282,8 +278,7 @@ struct JobEntry {
     files: BTreeMap<String, Vec<u8>>,
     /// `<jobs>/<id>`; the uploads are staged in its `project` directory.
     root: PathBuf,
-    cancel_tx: watch::Sender<bool>,
-    cancel_rx: watch::Receiver<bool>,
+    cancel: Shutdown,
     /// Still sitting in the queue, not yet handed to the runner.
     queued: bool,
     /// Dropped from the queue by a newer generation of the same
@@ -356,7 +351,7 @@ fn cancel_running_in_workspace(
             && entry.project == project
             && entry.request.binding_id == binding_id
         {
-            let _ = entry.cancel_tx.send(true);
+            entry.cancel.cancel();
         }
     }
 }
@@ -391,9 +386,9 @@ pub(super) struct Inner {
 
 /// The running local service: owns the job table and the background worker
 /// and reaper tasks. `router()` hands back the axum `Router` `cli.rs` serves.
-#[derive(Clone)]
 pub struct LocalService {
     inner: Arc<Inner>,
+    tasks: Tasks,
 }
 
 impl LocalService {
@@ -447,9 +442,22 @@ impl LocalService {
             connections: connection::Busy::default(),
         });
         tokio::spawn(run_worker(inner.clone()));
-        tokio::spawn(run_reaper(inner.clone()));
+        let mut tasks = Tasks::new();
+        let reaped = inner.clone();
+        tasks.every(
+            "job-reaper",
+            Duration::from_secs(30),
+            tokio::time::MissedTickBehavior::Burst,
+            move || reap_expired(reaped.clone()),
+        );
         backups::spawn_scheduler(inner.clone());
-        Ok(LocalService { inner })
+        Ok(LocalService { inner, tasks })
+    }
+
+    /// Stops the background loops and waits up to `grace` for them to exit.
+    /// Returns the names of those that did not.
+    pub async fn stop(self, grace: Duration) -> Vec<&'static str> {
+        self.tasks.stop(grace).await
     }
 
     pub fn router(&self) -> Router {
@@ -511,7 +519,7 @@ async fn run_worker(inner: Arc<Inner>) {
             Some((
                 entry.request.clone(),
                 entry.root.join("project"),
-                entry.cancel_rx.clone(),
+                entry.cancel.clone(),
             ))
         };
         let Some((request, staged, cancel_rx)) = started else {
@@ -553,21 +561,17 @@ async fn run_worker(inner: Arc<Inner>) {
     }
 }
 
-async fn run_reaper(inner: Arc<Inner>) {
-    let mut ticker = tokio::time::interval(Duration::from_secs(30));
-    loop {
-        ticker.tick().await;
-        let mut jobs = inner.jobs.lock().await;
-        let now = Instant::now();
-        let expired: Vec<String> = jobs
-            .iter()
-            .filter(|(_, entry)| expired_by(entry, now))
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in expired {
-            if let Some(entry) = jobs.remove(&id) {
-                let _ = std::fs::remove_dir_all(&entry.root);
-            }
+async fn reap_expired(inner: Arc<Inner>) {
+    let mut jobs = inner.jobs.lock().await;
+    let now = Instant::now();
+    let expired: Vec<String> = jobs
+        .iter()
+        .filter(|(_, entry)| expired_by(entry, now))
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in expired {
+        if let Some(entry) = jobs.remove(&id) {
+            let _ = std::fs::remove_dir_all(&entry.root);
         }
     }
 }
@@ -1512,6 +1516,7 @@ mod settings_tests {
         let address = listener.local_addr().unwrap();
         let router = LocalService {
             inner: inner.clone(),
+            tasks: Tasks::new(),
         }
         .router();
         let server = tokio::spawn(async move {
@@ -1850,7 +1855,6 @@ mod supersession_tests {
     use super::*;
 
     fn entry(origin: &str, project: &str, binding_id: &str, generation: u64) -> JobEntry {
-        let (cancel_tx, cancel_rx) = watch::channel(false);
         JobEntry {
             status: JobStatus {
                 id: "job".into(),
@@ -1876,8 +1880,7 @@ mod supersession_tests {
             project: project.into(),
             files: BTreeMap::new(),
             root: PathBuf::from("/nonexistent/librepaper-test-job"),
-            cancel_tx,
-            cancel_rx,
+            cancel: Shutdown::new(),
             queued: true,
             superseded: false,
             finished_at: None,
@@ -1959,7 +1962,7 @@ mod supersession_tests {
             ("queued", false),
             ("finished", false),
         ] {
-            assert_eq!(*jobs[id].cancel_rx.borrow(), canceled, "{id}");
+            assert_eq!(jobs[id].cancel.is_cancelled(), canceled, "{id}");
         }
     }
 }

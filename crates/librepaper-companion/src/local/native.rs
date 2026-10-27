@@ -22,9 +22,9 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use librepaper_base::retry::RetryPolicy;
+use librepaper_base::tasks::Shutdown;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
-use tokio::sync::watch;
 
 /// What running one subprocess produced.
 #[derive(Debug, PartialEq, Eq)]
@@ -38,10 +38,10 @@ pub(crate) enum RunOutcome {
 /// Stopping the read at the byte limit would deadlock a verbose compiler.
 pub(crate) async fn run_confined_logged(
     mut command: Command,
-    cancel: &mut watch::Receiver<bool>,
+    cancel: &Shutdown,
     deadline: Instant,
 ) -> (RunOutcome, Vec<u8>) {
-    if *cancel.borrow() {
+    if cancel.is_cancelled() {
         return (RunOutcome::Canceled, Vec::new());
     }
     if Instant::now() >= deadline {
@@ -61,7 +61,6 @@ pub(crate) async fn run_confined_logged(
     let sleep = tokio::time::sleep(remaining);
     tokio::pin!(sleep);
 
-    let mut cancellation_open = true;
     let outcome = loop {
         tokio::select! {
             status = child.wait() => {
@@ -75,16 +74,10 @@ pub(crate) async fn run_confined_logged(
                 let _ = child.wait().await;
                 break RunOutcome::TimedOut;
             }
-            changed = cancel.changed(), if cancellation_open => {
-                if changed.is_err() {
-                    cancellation_open = false;
-                    continue;
-                }
-                if *cancel.borrow() {
-                    kill_tree(pid);
-                    let _ = child.wait().await;
-                    break RunOutcome::Canceled;
-                }
+            _ = cancel.cancelled() => {
+                kill_tree(pid);
+                let _ = child.wait().await;
+                break RunOutcome::Canceled;
             }
         }
     };
@@ -394,22 +387,23 @@ mod tests {
 
     #[tokio::test]
     async fn canceled_and_expired_commands_do_not_spawn() {
-        let (_sender, mut cancel) = watch::channel(true);
+        let cancel = Shutdown::new();
+        cancel.cancel();
         let command = Command::new("nonexistent-librepaper-test-executable");
         assert!(matches!(
             run_confined_logged(
                 command,
-                &mut cancel,
+                &cancel,
                 Instant::now() + Duration::from_secs(5)
             )
             .await
             .0,
             RunOutcome::Canceled
         ));
-        let (_sender, mut cancel) = watch::channel(false);
+        let cancel = Shutdown::new();
         let command = Command::new("nonexistent-librepaper-test-executable");
         assert!(matches!(
-            run_confined_logged(command, &mut cancel, Instant::now())
+            run_confined_logged(command, &cancel, Instant::now())
                 .await
                 .0,
             RunOutcome::TimedOut
@@ -450,12 +444,12 @@ mod tests {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .process_group(0);
-        let (_sender, mut cancel) = watch::channel(false);
+        let cancel = Shutdown::new();
 
         let started = Instant::now();
         let (outcome, log) = tokio::time::timeout(
             Duration::from_secs(20),
-            run_confined_logged(command, &mut cancel, started + Duration::from_secs(45)),
+            run_confined_logged(command, &cancel, started + Duration::from_secs(45)),
         )
         .await
         .expect("the supervisor must not wait for the descendant");

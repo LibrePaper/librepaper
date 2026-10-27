@@ -285,7 +285,7 @@ async fn cancel_job(inner: &Inner, id: &str) -> Reply {
     if entry.superseded {
         return write_json(409, &json!({"error":"job was superseded"}));
     }
-    let _ = entry.cancel_tx.send(true);
+    entry.cancel.cancel();
     if entry.queued {
         entry.queued = false;
         entry.status.status = JobState::Canceled;
