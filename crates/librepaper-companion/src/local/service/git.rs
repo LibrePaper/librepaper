@@ -287,22 +287,15 @@ pub(super) async fn run_pull(root: &Path) -> Result<Value, Failure> {
     require_repository(root)?;
     let status = read_status(root).await?;
     if merge_in_progress(root).await? {
-        return Err(refuse_because(
-            409,
-            "merging",
-            "Finish the merge in progress first: resolve the conflicts, then commit.",
-        ));
+        return Err(ConflictReply::Merging {
+            error: "Finish the merge in progress first: resolve the conflicts, then commit."
+                .to_owned(),
+        }
+        .reply());
     }
     let dirty = dirty_paths(&status);
     if !dirty.is_empty() {
-        return Err((
-            409,
-            json!({
-                "reason": "dirty",
-                "paths": dirty,
-                "error": "Commit your changes to tracked files first.",
-            }),
-        ));
+        return Err(ConflictReply::Dirty { paths: dirty }.reply());
     }
     let named = match (&status.upstream, &status.branch) {
         (Some(_), _) => None,
