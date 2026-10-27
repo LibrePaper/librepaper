@@ -133,8 +133,7 @@ pub(super) struct Connection {
     pub(super) headers: HeaderMap,
     pub(super) arrival: Arrival,
     pub(super) query: Option<String>,
-    pub(super) may_edit: bool,
-    pub(super) can_comment: bool,
+    pub(super) role: Role,
     pub(super) chat: Option<String>,
     pub(super) link: String,
     pub(super) comment_budget: Option<i64>,
@@ -318,8 +317,7 @@ impl Server {
                 headers: headers.clone(),
                 arrival,
                 query,
-                may_edit,
-                can_comment: who.at_least(Role::Commenter),
+                role: who.rung(),
                 chat: None,
                 link: who.link.clone(),
                 comment_budget: who.comment_budget,
@@ -375,7 +373,7 @@ impl Server {
         let joined = if may_edit {
             Ok(())
         } else {
-            room.join(socket_id, false, &peer_key, tx.clone(), None)
+            room.join(socket_id, who.rung(), &peer_key, tx.clone(), None)
                 .await
                 .map(|_| ())
         };
@@ -683,7 +681,7 @@ impl Server {
                                 let vector =
                                     decode_update(incoming.vector()).filter(|raw| !raw.is_empty());
                                 let joined = match room
-                                    .join(socket_id, true, &peer_key, tx.clone(), vector.as_deref())
+                                    .join(socket_id, Role::Editor, &peer_key, tx.clone(), vector.as_deref())
                                     .await
                                 {
                                     Ok(joined) => joined,
@@ -1170,8 +1168,7 @@ impl Server {
                     .await;
                 !who.auth_failed
                     && self.may_read(entry, &who)
-                    && who.at_least(Role::Editor) == connection.may_edit
-                    && who.at_least(Role::Commenter) == connection.can_comment
+                    && who.rung() == connection.role
                     && who.link == connection.link
                     && who.comment_budget == connection.comment_budget
             }
@@ -1316,8 +1313,7 @@ impl Server {
                         .await;
                     !who.auth_failed
                         && self.may_read(entry, &who)
-                        && who.at_least(Role::Editor) == connection.may_edit
-                        && who.at_least(Role::Commenter) == connection.can_comment
+                        && who.rung() == connection.role
                         && who.link == connection.link
                         && who.comment_budget == connection.comment_budget
                 }

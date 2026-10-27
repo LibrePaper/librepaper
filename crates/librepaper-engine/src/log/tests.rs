@@ -38,7 +38,7 @@ use uuid::Uuid;
 
 use crate::log::budget::DEFAULT_EXPANSION;
 use crate::log::sequencer::{
-    ack_targets, max_update_bytes, FlushReason, Ingested, LogCatalog, Role, Sequencer,
+    ack_targets, max_update_bytes, FlushReason, Ingested, LogCatalog, SubscriberClass, Sequencer,
     SequencerError, FLUSH_MAX_AGE, FLUSH_QUIET, FLUSH_TRIGGER_BYTES,
 };
 use crate::log::{frame, Budget};
@@ -949,7 +949,7 @@ async fn a_refused_batch_is_never_acknowledged_and_its_peer_recovers_through_a_g
 
     let (tx, mut rx) = Sender::channel(4096, 1 << 20, None, None);
     sequencer
-        .join(1, Role::Editor, "account:writer", tx, None)
+        .join(1, SubscriberClass::Editor, "account:writer", tx, None)
         .await
         .expect("join succeeds");
 
@@ -1098,7 +1098,7 @@ async fn a_flush_whose_response_was_lost_acknowledges_only_the_row_it_proves_is_
 
     let (tx, mut rx) = Sender::channel(64, 1 << 20, None, None);
     sequencer
-        .join(1, Role::Editor, "account:writer", tx, None)
+        .join(1, SubscriberClass::Editor, "account:writer", tx, None)
         .await
         .expect("join succeeds");
 
@@ -1177,7 +1177,7 @@ async fn a_join_reports_head_and_durable_vectors_separately_while_a_flush_is_pen
     let sequencer = bare_sequencer(Arc::new(FakeCatalog::empty()));
     let (tx, _rx) = Sender::channel(64, 1 << 20, None, None);
     sequencer
-        .join(1, Role::Editor, "account:writer", tx, None)
+        .join(1, SubscriberClass::Editor, "account:writer", tx, None)
         .await
         .expect("join succeeds");
 
@@ -1189,7 +1189,7 @@ async fn a_join_reports_head_and_durable_vectors_separately_while_a_flush_is_pen
         Ingested::Accepted
     ));
     let joined = sequencer
-        .join(2, Role::Editor, "account:reconnected", subscriber(), None)
+        .join(2, SubscriberClass::Editor, "account:reconnected", subscriber(), None)
         .await
         .expect("reconnect join succeeds");
 
@@ -1209,15 +1209,15 @@ async fn a_successful_flush_notifies_every_editor_but_not_readers_of_the_committ
     let (peer_tx, mut peer_rx) = Sender::channel(64, 1 << 20, None, None);
     let (reader_tx, mut reader_rx) = Sender::channel(64, 1 << 20, None, None);
     sequencer
-        .join(1, Role::Editor, "account:writer", writer_tx, None)
+        .join(1, SubscriberClass::Editor, "account:writer", writer_tx, None)
         .await
         .expect("writer join succeeds");
     sequencer
-        .join(2, Role::Editor, "account:peer", peer_tx, None)
+        .join(2, SubscriberClass::Editor, "account:peer", peer_tx, None)
         .await
         .expect("peer join succeeds");
     sequencer
-        .join(3, Role::Reader, "account:reader", reader_tx, None)
+        .join(3, SubscriberClass::Reader, "account:reader", reader_tx, None)
         .await
         .expect("reader join succeeds");
     let mut outbox = Outbox::new();
@@ -1236,7 +1236,7 @@ async fn a_successful_flush_notifies_every_editor_but_not_readers_of_the_committ
     sequencer
         .join(
             4,
-            Role::Editor,
+            SubscriberClass::Editor,
             "account:reconnected-peer-key",
             reconnected_tx,
             None,
@@ -1308,7 +1308,7 @@ async fn a_failed_flush_does_not_advance_or_broadcast_durable_coverage() {
     let sequencer = bare_sequencer(catalog);
     let (tx, mut rx) = Sender::channel(64, 1 << 20, None, None);
     sequencer
-        .join(1, Role::Editor, "account:writer", tx, None)
+        .join(1, SubscriberClass::Editor, "account:writer", tx, None)
         .await
         .expect("join succeeds");
     let mut outbox = Outbox::new();
@@ -1328,7 +1328,7 @@ async fn a_failed_flush_does_not_advance_or_broadcast_durable_coverage() {
         "a failed write cannot claim a durable vector"
     );
     let joined = sequencer
-        .join(2, Role::Editor, "account:reconnected", subscriber(), None)
+        .join(2, SubscriberClass::Editor, "account:reconnected", subscriber(), None)
         .await
         .expect("join succeeds after the failed flush");
     assert_eq!(joined.durable_vector, VersionVector::default().encode());
@@ -1430,7 +1430,7 @@ async fn a_join_from_an_empty_vector_gets_the_base_and_every_row() {
     let fixture = join_fixture();
     let joined = fixture
         .sequencer
-        .join(1, Role::Editor, "account:reader", subscriber(), None)
+        .join(1, SubscriberClass::Editor, "account:reader", subscriber(), None)
         .await
         .expect("join succeeds");
     assert_eq!(joined.vector, fixture.v2.encode());
@@ -1454,7 +1454,7 @@ async fn a_join_covering_only_the_base_gets_every_row_as_doc_rows() {
         .sequencer
         .join(
             1,
-            Role::Editor,
+            SubscriberClass::Editor,
             "account:reader",
             subscriber(),
             Some(&client),
@@ -1478,7 +1478,7 @@ async fn a_join_missing_only_the_newest_row_gets_just_that_row() {
         .sequencer
         .join(
             1,
-            Role::Editor,
+            SubscriberClass::Editor,
             "account:reader",
             subscriber(),
             Some(&client),
@@ -1510,7 +1510,7 @@ async fn no_batch_is_lost_between_a_join_reply_and_the_first_relay_under_concurr
         tokio::spawn(async move {
             let (tx, rx) = Sender::channel(64, 1 << 20, None, None);
             let joined = sequencer
-                .join(1, Role::Editor, "account:reader", tx, None)
+                .join(1, SubscriberClass::Editor, "account:reader", tx, None)
                 .await
                 .expect("join succeeds");
             (joined, rx)
@@ -1668,7 +1668,7 @@ async fn a_base_activation_waits_for_a_join_that_is_already_reading_the_log() {
         let sequencer = sequencer.clone();
         tokio::spawn(async move {
             sequencer
-                .join(1, Role::Editor, "account:reader", subscriber(), None)
+                .join(1, SubscriberClass::Editor, "account:reader", subscriber(), None)
                 .await
         })
     };
@@ -1743,7 +1743,7 @@ async fn a_base_activated_with_nothing_serialising_it_answers_a_join_with_no_byt
         let sequencer = sequencer.clone();
         tokio::spawn(async move {
             sequencer
-                .join(1, Role::Editor, "account:reader", subscriber(), None)
+                .join(1, SubscriberClass::Editor, "account:reader", subscriber(), None)
                 .await
         })
     };
@@ -1787,7 +1787,7 @@ async fn a_fenced_flush_stops_ingest_and_closes_every_open_socket() {
 
     let (tx, mut rx) = Sender::channel(64, 1 << 20, None, None);
     sequencer
-        .join(1, Role::Editor, "account:writer", tx, None)
+        .join(1, SubscriberClass::Editor, "account:writer", tx, None)
         .await
         .expect("join succeeds");
 
@@ -1871,7 +1871,7 @@ async fn every_sequencer_read_refuses_after_compaction_fence() {
     ));
     assert!(matches!(
         sequencer
-            .join(999, Role::Editor, "fenced-reader", subscriber(), None)
+            .join(999, SubscriberClass::Editor, "fenced-reader", subscriber(), None)
             .await,
         Err(SequencerError::Fenced(_))
     ));
@@ -1982,7 +1982,7 @@ async fn a_subscriber_too_slow_for_relay_is_closed_rather_than_silently_detached
     // not fit either would prove nothing about what the code chose to send.
     let (tx, mut rx) = Sender::channel(64, 512, None, None);
     sequencer
-        .join(2, Role::Editor, "account:slow", tx, None)
+        .join(2, SubscriberClass::Editor, "account:slow", tx, None)
         .await
         .expect("join succeeds");
 
@@ -2027,7 +2027,7 @@ async fn a_subscriber_too_slow_even_for_the_close_frame_is_still_closed() {
 
     let (tx, mut rx) = Sender::channel(1, 4, None, None);
     sequencer
-        .join(2, Role::Editor, "account:slow", tx, None)
+        .join(2, SubscriberClass::Editor, "account:slow", tx, None)
         .await
         .expect("join succeeds");
 
@@ -2071,7 +2071,7 @@ async fn a_reader_on_a_cold_document_is_told_the_source_changed_without_a_digest
 
     let (tx, mut rx) = Sender::channel(64, 64 * 1024, None, None);
     sequencer
-        .join(2, Role::Reader, "account:reader", tx, None)
+        .join(2, SubscriberClass::Reader, "account:reader", tx, None)
         .await
         .expect("join succeeds");
 

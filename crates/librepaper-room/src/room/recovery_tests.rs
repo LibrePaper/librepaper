@@ -67,6 +67,7 @@ use futures_util::future::BoxFuture;
 
 use crate::room::{AddComment, Rooms};
 use librepaper_base::config::Configuration;
+use librepaper_base::role::Role;
 use librepaper_document::document::session;
 use librepaper_engine::log::*;
 use librepaper_engine::storage::blob::{BlobStore, FsStore};
@@ -552,7 +553,7 @@ async fn a_dependent_update_is_refused_alone_accepted_together_and_survives_comp
     let sequencer2 = deployment.sequencer(&registry2).await;
 
     let joined = sequencer2
-        .join(2, Role::Editor, "account:reader", subscriber(), None)
+        .join(2, SubscriberClass::Editor, "account:reader", subscriber(), None)
         .await
         .expect("join succeeds");
     let fresh = reconstruct(&joined.base, &joined.batches);
@@ -658,7 +659,7 @@ async fn offline_work_is_absent_from_a_join_reply_until_sent_and_durable_once_it
     // The editor reopens and joins. A join reply says only what the server
     // already has, which is nothing: the offline edit is not in it.
     let joined = sequencer2
-        .join(1, Role::Editor, "account:editor", subscriber(), None)
+        .join(1, SubscriberClass::Editor, "account:editor", subscriber(), None)
         .await
         .expect("join succeeds");
     assert!(
@@ -688,7 +689,7 @@ async fn offline_work_is_absent_from_a_join_reply_until_sent_and_durable_once_it
     let registry3 = deployment.registry();
     let sequencer3 = deployment.sequencer(&registry3).await;
     let fresh_join = sequencer3
-        .join(2, Role::Editor, "account:fresh", subscriber(), None)
+        .join(2, SubscriberClass::Editor, "account:fresh", subscriber(), None)
         .await
         .unwrap();
     let fresh = reconstruct(&fresh_join.base, &fresh_join.batches);
@@ -717,12 +718,12 @@ async fn a_tab_killed_mid_relay_reconciles_on_reopening_with_no_row_skipped() {
     let (_tab_a_tx, _tab_a_rx) = (subscriber(), ());
     let tab_a_sender = subscriber();
     sequencer
-        .join(1, Role::Editor, "account:tab-a", tab_a_sender, None)
+        .join(1, SubscriberClass::Editor, "account:tab-a", tab_a_sender, None)
         .await
         .unwrap();
     let tab_b_sender = subscriber();
     sequencer
-        .join(2, Role::Editor, "account:tab-b", tab_b_sender, None)
+        .join(2, SubscriberClass::Editor, "account:tab-b", tab_b_sender, None)
         .await
         .unwrap();
 
@@ -772,7 +773,7 @@ async fn a_tab_killed_mid_relay_reconciles_on_reopening_with_no_row_skipped() {
     let rejoin = sequencer
         .join(
             3,
-            Role::Editor,
+            SubscriberClass::Editor,
             "account:tab-b-reopened",
             subscriber(),
             None,
@@ -1285,7 +1286,7 @@ async fn opening_more_documents_than_the_budget_holds_evicts_a_subscribed_entry_
         sequencer
             .join(
                 index as u64,
-                Role::Editor,
+                SubscriberClass::Editor,
                 "account:editor",
                 subscriber(),
                 None,
@@ -1469,7 +1470,7 @@ async fn source_producing_evidence_matches_the_row_it_names() {
         .await
         .expect("the room for the document just created");
     let (editor_tx, mut editor_rx) = editor_subscription();
-    room.join(1, true, "semantic-editor", editor_tx, None)
+    room.join(1, Role::Editor, "semantic-editor", editor_tx, None)
         .await
         .expect("the semantic command subscriber joins");
     let config = Configuration::default();

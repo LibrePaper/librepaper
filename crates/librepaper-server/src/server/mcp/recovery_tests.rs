@@ -13,9 +13,10 @@ use uuid::Uuid;
 use crate::server::origins::Origins;
 use librepaper_base::auth::{sign_device, GithubApp, Identity, Policy, PROVIDER_GITHUB};
 use librepaper_base::config::Configuration;
+use librepaper_base::role::Role;
 use librepaper_engine::log::Registry;
 use librepaper_engine::storage::blob::FsStore;
-use librepaper_engine::storage::postgres::{AccessRole, Authority, NewAccount, PostgresCatalog};
+use librepaper_engine::storage::postgres::{Authority, NewAccount, PostgresCatalog};
 use librepaper_engine::storage::store::{DocumentInput, Store};
 use librepaper_room::room::Rooms;
 
@@ -116,7 +117,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
     let commenter_link = catalog
         .create_share_link(
             document_id,
-            AccessRole::Commenter,
+            Role::Commenter,
             hex::decode(crate::server::sharing::hash_link_key(&commenter_link_key))
                 .unwrap()
                 .try_into()
@@ -131,7 +132,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
     catalog
         .create_share_link(
             document_id,
-            AccessRole::Editor,
+            Role::Editor,
             hex::decode(crate::server::sharing::hash_link_key(&owner_link_key))
                 .unwrap()
                 .try_into()

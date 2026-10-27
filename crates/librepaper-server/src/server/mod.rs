@@ -35,12 +35,13 @@ use librepaper_base::auth::{
     STATE_COOKIE, VISITOR_COOKIE,
 };
 use librepaper_base::config::Configuration;
+use librepaper_base::role::{Capabilities, Ceiling, Role};
 use librepaper_base::shell::{renderers, ShellFile};
 use librepaper_base::util::clean;
 use librepaper_document::document::render::{title_from_html, title_from_markdown};
 use librepaper_engine::storage::store::{
-    random_suffix, slugify, Ceiling, DocumentInput, IndexEntry, LinkGrant, LinkKind, ModifyError,
-    PutError, Role, Store,
+    random_suffix, slugify, DocumentInput, IndexEntry, LinkGrant, LinkKind, ModifyError, PutError,
+    Store,
 };
 use librepaper_room::room::{
     decode_update, encode_update, Message as RoomMessage, Outgoing, Room, RoomCommand, Rooms,
@@ -202,12 +203,10 @@ fn grant_matches_scope(
     grant.slug == slug && (presented_link.is_empty() || presented_link == grant.link_hash)
 }
 
+/// The rung a grant's byte caps a caller at. A grant is verified to carry
+/// 1, 2 or 3 before it gets here, so an unknown byte reads as the lowest rung.
 fn grant_role_ceiling(role: u8) -> Role {
-    match role {
-        1 => Role::Reader,
-        2 => Role::Commenter,
-        _ => Role::Editor,
-    }
+    Role::try_from(role).unwrap_or(Role::Reader)
 }
 
 /// One way to sign in, as the sign-in page and `/api/me` describe it. The
@@ -403,7 +402,7 @@ fn resolved_role(
     entry: &IndexEntry,
     caller_id: &str,
     presented_link: &str,
-    ceiling: librepaper_engine::storage::store::Ceiling,
+    ceiling: librepaper_base::role::Ceiling,
     now: i64,
 ) -> Role {
     if automation {
@@ -418,23 +417,12 @@ fn resolved_role(
 fn automation_role(
     entry: &IndexEntry,
     presented_link: &str,
-    ceiling: librepaper_engine::storage::store::Ceiling,
+    ceiling: librepaper_base::role::Ceiling,
     now: i64,
 ) -> Role {
     match entry.link_role(presented_link, now) {
-        Some(granted) => clamp_to_ceiling(granted, ceiling),
+        Some(granted) => ceiling.clamp(granted),
         None => Role::Reader,
-    }
-}
-
-/// What a granted role comes to under the deployment's switches, for a caller
-/// that is bounded by a row alone: an editor row edits under the publish
-/// switch, comments under the comment switch and otherwise reads.
-fn clamp_to_ceiling(granted: Role, ceiling: librepaper_engine::storage::store::Ceiling) -> Role {
-    match granted {
-        Role::Editor if ceiling.edit => Role::Editor,
-        Role::Editor | Role::Commenter if ceiling.comment => Role::Commenter,
-        _ => Role::Reader,
     }
 }
 
@@ -562,6 +550,16 @@ impl Viewer {
         self.id.is_signed_in() && (!self.automation || self.bearer) && self.role.at_least(wanted)
     }
 
+    /// The role this viewer may act at, which is `role` only when `at_least`
+    /// would honour it. A caller it does not honour reads.
+    pub fn rung(&self) -> Role {
+        if self.at_least(Role::Reader) {
+            self.role
+        } else {
+            Role::Reader
+        }
+    }
+
     /// The account this request authenticated, if any.
     pub fn account_id(&self) -> Option<uuid::Uuid> {
         uuid::Uuid::parse_str(&self.id.id).ok()
@@ -593,7 +591,7 @@ impl Viewer {
     /// parse refuses, so a malformed value never widens into a visitor.
     pub fn authority(
         &self,
-        ceiling: librepaper_engine::storage::store::Ceiling,
+        ceiling: librepaper_base::role::Ceiling,
     ) -> Result<librepaper_engine::storage::postgres::Authority, InvalidCredential> {
         Ok(librepaper_engine::storage::postgres::Authority {
             principal_key: self.principal_key(),
@@ -608,7 +606,7 @@ impl Viewer {
     /// viewer's key, which names the author of the label the change writes.
     pub fn agent_authority(
         &self,
-        ceiling: librepaper_engine::storage::store::Ceiling,
+        ceiling: librepaper_base::role::Ceiling,
         operation_scope: String,
     ) -> Result<librepaper_room::room::agent::AgentAuthority, InvalidCredential> {
         Ok(librepaper_room::room::agent::AgentAuthority {
@@ -1601,7 +1599,7 @@ impl Server {
             };
         };
         let ceiling = self.ceiling_for(&id);
-        let role = clamp_to_ceiling(row.granted(), ceiling);
+        let role = ceiling.clamp(row.granted());
         Viewer {
             token: Some(AgentToken {
                 id: row.id().to_string(),

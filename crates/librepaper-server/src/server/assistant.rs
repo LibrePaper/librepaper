@@ -3,17 +3,16 @@
 use super::*;
 
 fn assistant_capabilities(role: Role) -> Value {
-    let can_comment = role.at_least(Role::Commenter);
-    let can_edit = role.at_least(Role::Editor);
+    let caps = Capabilities::from(role);
     json!({
-        "can_read": true,
-        "can_comment": can_comment,
-        "can_edit": can_edit,
-        "can_delete": can_comment,
-        "can_resolve": can_comment,
-        "can_label": can_edit,
-        "can_suggest": can_edit,
-        "can_reply": can_comment,
+        "can_read": caps.read,
+        "can_comment": caps.comment,
+        "can_edit": caps.edit,
+        "can_delete": caps.comment,
+        "can_resolve": caps.comment,
+        "can_label": caps.edit,
+        "can_suggest": caps.edit,
+        "can_reply": caps.comment,
     })
 }
 
@@ -25,7 +24,7 @@ fn assistant_capabilities(role: Role) -> Value {
 fn assistant_link_role(
     entry: &IndexEntry,
     who: &Viewer,
-    ceiling: librepaper_engine::storage::store::Ceiling,
+    ceiling: librepaper_base::role::Ceiling,
     link_hash: &str,
     now: i64,
 ) -> Option<Role> {
@@ -136,7 +135,7 @@ mod capability_tests {
             auth_failed: false,
             token: None,
         };
-        let ceiling = librepaper_engine::storage::store::Ceiling {
+        let ceiling = librepaper_base::role::Ceiling {
             comment: true,
             edit: true,
         };

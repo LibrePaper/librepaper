@@ -1,31 +1,15 @@
 use sqlx::{FromRow, Row};
+use librepaper_base::role::Role;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::{new_id, Error, PostgresCatalog, Result};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AccessRole {
-    Reader,
-    Commenter,
-    Editor,
-    Owner,
-}
-
-impl AccessRole {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Reader => "reader",
-            Self::Commenter => "commenter",
-            Self::Editor => "editor",
-            Self::Owner => "owner",
-        }
-    }
-    fn persisted(self) -> Result<&'static str> {
-        match self {
-            Self::Owner => Err(Error::Invalid("ownership is not a grant".into())),
-            other => Ok(other.as_str()),
-        }
+/// Ownership is never stored as a grant, so a write refuses that rung.
+fn persisted(role: Role) -> Result<&'static str> {
+    match role {
+        Role::Owner => Err(Error::Invalid("ownership is not a grant".into())),
+        other => Ok(other.as_str()),
     }
 }
 
@@ -237,9 +221,9 @@ impl PostgresCatalog {
         &self,
         document_id: Uuid,
         account_id: Uuid,
-        role: AccessRole,
+        role: Role,
     ) -> Result<GrantRecord> {
-        let role = role.persisted()?;
+        let role = persisted(role)?;
         let mut tx = self.begin_writer_transaction().await?;
         let target = sqlx::query_scalar!(
             "SELECT id FROM accounts WHERE id=$1 AND status='active' FOR SHARE",
@@ -270,7 +254,7 @@ impl PostgresCatalog {
         &self,
         document_id: Uuid,
         account_id: Uuid,
-        _role: AccessRole,
+        _role: Role,
         source_link_hash: [u8; 32],
     ) -> Result<()> {
         let mut tx = self.begin_writer_transaction().await?;
@@ -351,13 +335,13 @@ impl PostgresCatalog {
     pub async fn create_share_link(
         &self,
         document_id: Uuid,
-        role: AccessRole,
+        role: Role,
         token_hash: [u8; 32],
         label: String,
         expires_at: Option<OffsetDateTime>,
         comment_budget: Option<i64>,
     ) -> Result<ShareLinkRecord> {
-        let role = role.persisted()?;
+        let role = persisted(role)?;
         if label.len() > 80 {
             return Err(Error::Invalid("share link label is too long".into()));
         }
@@ -439,7 +423,7 @@ impl PostgresCatalog {
         account_id: Option<Uuid>,
         token_hash: Option<[u8; 32]>,
         now: OffsetDateTime,
-    ) -> Result<Option<AccessRole>> {
+    ) -> Result<Option<Role>> {
         let row = sqlx::query(
             r#"SELECT d.owner_id,
                 (SELECT CASE WHEN g.source_link_hash IS NULL THEN g.role ELSE gl.role END
@@ -466,26 +450,16 @@ impl PostgresCatalog {
         let grant_role: Option<String> = row.try_get("grant_role")?;
         let link_role: Option<String> = row.try_get("link_role")?;
         if account_id == Some(owner_id) {
-            return Ok(Some(AccessRole::Owner));
+            return Ok(Some(Role::Owner));
         }
         Ok(highest(grant_role.as_deref(), link_role.as_deref()))
     }
 }
 
-fn highest(left: Option<&str>, right: Option<&str>) -> Option<AccessRole> {
+fn highest(left: Option<&str>, right: Option<&str>) -> Option<Role> {
     [left, right]
         .into_iter()
         .flatten()
-        .filter_map(|role| match role {
-            "reader" => Some(AccessRole::Reader),
-            "commenter" => Some(AccessRole::Commenter),
-            "editor" => Some(AccessRole::Editor),
-            _ => None,
-        })
-        .max_by_key(|role| match role {
-            AccessRole::Reader => 1,
-            AccessRole::Commenter => 2,
-            AccessRole::Editor => 3,
-            AccessRole::Owner => 4,
-        })
+        .filter_map(|role| role.parse::<Role>().ok())
+        .max()
 }

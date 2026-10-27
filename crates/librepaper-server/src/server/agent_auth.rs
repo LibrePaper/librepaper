@@ -66,11 +66,7 @@ pub(super) async fn issue(
         server.ceiling_for(&identity),
         librepaper_base::util::now_unix(),
     );
-    let role = match delegated_role {
-        Role::Reader => 1,
-        Role::Commenter => 2,
-        Role::Editor | Role::Owner => 3,
-    };
+    let role = delegated_role.wire();
     let expires_at = librepaper_base::util::now_unix()
         + librepaper_base::auth::AGENT_GRANT_MAX_AGE.as_secs() as i64;
     let grant = librepaper_base::auth::AgentGrant {

@@ -72,7 +72,8 @@ pub fn valid_provider_id(id: &str) -> bool {
 
 /// A short-lived credential delegated by a signed-in browser to its local
 /// companion. It is useful only for one document and one already-presented
-/// share link. `role` is a ceiling: 1 = reader, 2 = commenter, 3 = editor.
+/// share link. `role` is a ceiling, in the bytes `Role::wire` writes: 1 = reader,
+/// 2 = commenter, 3 = editor.
 /// The document server must still resolve the live link and deployment policy
 /// on every request, and must treat this credential as automation even when
 /// the caller omits the automation header.
@@ -171,7 +172,7 @@ fn valid_agent_grant(grant: &AgentGrant, now: i64) -> bool {
         && !identity.session_generation.is_empty()
         && valid_provider_id(&identity.provider)
         && !identity.handle.is_empty()
-        && (1..=3).contains(&grant.role)
+        && crate::role::Role::try_from(grant.role).is_ok()
         && !grant.slug.is_empty()
         && grant.slug.len() <= 128
         && grant

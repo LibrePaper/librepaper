@@ -376,9 +376,10 @@ mod tests {
     use time::{Duration, OffsetDateTime};
 
     use super::*;
+    use librepaper_base::role::Role;
     use crate::log::sequencer::LogCatalog;
     use crate::log::{
-        Budget, Command, CommandError, Evidence, Head, PreparedSource, Role, Sequencer,
+        Budget, Command, CommandError, Evidence, Head, PreparedSource, SubscriberClass, Sequencer,
     };
     use crate::storage::annotation::{CommentTarget, OriginalAnchor, PresentationContext};
     use crate::storage::blob::{BlobStore, FsStore};
@@ -527,7 +528,7 @@ mod tests {
         let direct_link = catalog
             .create_share_link(
                 document.id,
-                access::AccessRole::Commenter,
+                Role::Commenter,
                 direct_link_hash,
                 "reviewer".into(),
                 None,
@@ -536,14 +537,14 @@ mod tests {
             .await
             .unwrap();
         catalog
-            .set_grant(document.id, named.id, access::AccessRole::Editor)
+            .set_grant(document.id, named.id, Role::Editor)
             .await
             .unwrap();
         catalog
             .pin_link_guest(
                 document.id,
                 named.id,
-                access::AccessRole::Commenter,
+                Role::Commenter,
                 direct_link_hash,
             )
             .await
@@ -566,7 +567,7 @@ mod tests {
                 .access_role(document.id, Some(named.id), None, OffsetDateTime::now_utc(),)
                 .await
                 .unwrap(),
-            Some(access::AccessRole::Editor),
+            Some(Role::Editor),
             "revoking the weaker link does not remove or downgrade the direct grant"
         );
 
@@ -578,7 +579,7 @@ mod tests {
         let source_link = catalog
             .create_share_link(
                 document.id,
-                access::AccessRole::Commenter,
+                Role::Commenter,
                 link_hash,
                 "reviewer".into(),
                 None,
@@ -587,7 +588,7 @@ mod tests {
             .await
             .unwrap();
         catalog
-            .pin_link_guest(document.id, named.id, access::AccessRole::Reader, link_hash)
+            .pin_link_guest(document.id, named.id, Role::Reader, link_hash)
             .await
             .unwrap();
         let sourced = catalog
@@ -642,7 +643,7 @@ mod tests {
                 .access_role(document.id, Some(named.id), None, now)
                 .await
                 .unwrap(),
-            Some(access::AccessRole::Reader),
+            Some(Role::Reader),
             "a pinned account tracks the current role of its source link"
         );
         catalog
@@ -660,7 +661,7 @@ mod tests {
         let expiring_link = catalog
             .create_share_link(
                 document.id,
-                access::AccessRole::Commenter,
+                Role::Commenter,
                 expiring_hash,
                 "temporary reviewer".into(),
                 None,
@@ -672,7 +673,7 @@ mod tests {
             .pin_link_guest(
                 document.id,
                 named.id,
-                access::AccessRole::Reader,
+                Role::Reader,
                 expiring_hash,
             )
             .await
@@ -711,7 +712,7 @@ mod tests {
         // as links. Edit permission implies comment permission, while a
         // comment-only ceiling lowers an editor grant to the commenter rung.
         catalog
-            .set_grant(document.id, named.id, access::AccessRole::Editor)
+            .set_grant(document.id, named.id, Role::Editor)
             .await
             .unwrap();
         let comment_only = make_actor(
@@ -775,7 +776,7 @@ mod tests {
         catalog
             .create_share_link(
                 document.id,
-                access::AccessRole::Commenter,
+                Role::Commenter,
                 owner_comment_hash,
                 "owner fallback".into(),
                 None,
@@ -813,7 +814,7 @@ mod tests {
         // Cached owner identity is attribution only in automation mode. The
         // same account gets no authority until an editor link is supplied.
         catalog
-            .set_grant(document.id, owner.id, access::AccessRole::Editor)
+            .set_grant(document.id, owner.id, Role::Editor)
             .await
             .unwrap();
         let automation = make_actor(
@@ -833,7 +834,7 @@ mod tests {
         catalog
             .create_share_link(
                 document.id,
-                access::AccessRole::Editor,
+                Role::Editor,
                 editor_hash,
                 "agent".into(),
                 None,
@@ -971,7 +972,7 @@ mod tests {
         let grantee = seed_account(&catalog, "erase-grantee").await;
         let document = seed_document(&catalog, owner.id, "erase-document").await;
         catalog
-            .set_grant(document.id, grantee.id, access::AccessRole::Editor)
+            .set_grant(document.id, grantee.id, Role::Editor)
             .await
             .unwrap();
         let actor = |account: &AccountRecord| Authority {
@@ -1327,7 +1328,7 @@ mod tests {
         let collaborator = seed_account(&catalog, "v3-collaborator").await;
         assert_eq!(
             catalog
-                .set_grant(first.id, collaborator.id, AccessRole::Editor)
+                .set_grant(first.id, collaborator.id, Role::Editor)
                 .await
                 .unwrap()
                 .role,
@@ -1343,7 +1344,7 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-            Some(AccessRole::Editor)
+            Some(Role::Editor)
         );
         assert!(catalog
             .remove_grant(first.id, collaborator.id)
@@ -1365,7 +1366,7 @@ mod tests {
         let link = catalog
             .create_share_link(
                 first.id,
-                AccessRole::Commenter,
+                Role::Commenter,
                 link_hash,
                 "review".into(),
                 None,
@@ -1379,10 +1380,10 @@ mod tests {
                 .access_role(first.id, None, Some(link_hash), OffsetDateTime::now_utc())
                 .await
                 .unwrap(),
-            Some(AccessRole::Commenter)
+            Some(Role::Commenter)
         );
         catalog
-            .pin_link_guest(first.id, collaborator.id, AccessRole::Commenter, link_hash)
+            .pin_link_guest(first.id, collaborator.id, Role::Commenter, link_hash)
             .await
             .unwrap();
         assert_eq!(
@@ -1395,7 +1396,7 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-            Some(AccessRole::Commenter)
+            Some(Role::Commenter)
         );
 
         // Reading a page of documents batches the three per-document lookups
@@ -1537,7 +1538,7 @@ mod tests {
                 .is_err());
         }
         catalog
-            .set_grant(first.id, collaborator.id, AccessRole::Commenter)
+            .set_grant(first.id, collaborator.id, Role::Commenter)
             .await
             .unwrap();
         let annotation_id = new_id();
@@ -3201,7 +3202,7 @@ mod tests {
         // after it, so the reply carries the base by reference and every row
         // behind it -- here, the single remaining row.
         let from_empty = sequencer
-            .join(1, Role::Editor, "peer-empty", sender.clone(), None)
+            .join(1, SubscriberClass::Editor, "peer-empty", sender.clone(), None)
             .await
             .unwrap();
         assert_eq!(from_empty.vector, v3.encode());
@@ -3217,7 +3218,7 @@ mod tests {
         let from_base = sequencer
             .join(
                 2,
-                Role::Editor,
+                SubscriberClass::Editor,
                 "peer-base",
                 sender.clone(),
                 Some(&base_vector),
@@ -3235,7 +3236,7 @@ mod tests {
         // and the reply carries neither a base nor rows.
         let head_vector = v3.encode();
         let from_head = sequencer
-            .join(3, Role::Editor, "peer-head", sender, Some(&head_vector))
+            .join(3, SubscriberClass::Editor, "peer-head", sender, Some(&head_vector))
             .await
             .unwrap();
         assert!(from_head.base.is_none());
@@ -3439,7 +3440,6 @@ mod tests {
     }
 }
 
-pub use access::AccessRole;
 pub use annotations::{
     original_anchor_from_record, presentation_from_record, AnnotationRecord, AnnotationState,
     NewAnnotation, NewReply, ReplyRecord, SizedReply,

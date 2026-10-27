@@ -25,6 +25,7 @@ use crate::storage::postgres::{
     PostgresCatalog as Catalog, TagRecord, FAVORITES_COLOUR, FAVORITES_NAME,
 };
 use librepaper_base::config::Configuration;
+use librepaper_base::role::{Ceiling, Role};
 use librepaper_base::util::parse_timestamp;
 use librepaper_document::document::paths::{check, Kind};
 
@@ -194,23 +195,8 @@ impl LinkGrant {
     }
 
     pub fn granted(&self) -> Role {
-        Role::parse(&self.role).unwrap_or(Role::Reader)
+        self.role.parse().unwrap_or(Role::Reader)
     }
-}
-
-/// The most a document may open each role to one caller, which is what the
-/// deployment's TOML settings say. the `publishers` and `commenters` lists under the
-/// `[auth.*]` tables are
-/// ceilings: a document may only ever be stricter than its server, so a grant
-/// recorded while a switch was wide stops answering when the switch narrows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Ceiling {
-    /// Whether this caller may comment here at all.
-    pub comment: bool,
-    /// Whether this caller may publish here, and so be named an editor. A
-    /// link names nobody, so it is asked with an empty handle, and publishing
-    /// always asks for a sign-in first, so a link never edits.
-    pub edit: bool,
 }
 
 impl IndexEntry {
@@ -248,11 +234,7 @@ impl IndexEntry {
         }
         let mut role = Role::Reader;
         if let Some(granted) = self.account_grants.get(caller_id).copied() {
-            if granted == Role::Editor && ceiling.edit {
-                role = role.max(Role::Editor);
-            } else if granted.at_least(Role::Commenter) && ceiling.comment {
-                role = role.max(Role::Commenter);
-            }
+            role = role.max(ceiling.clamp(granted));
         }
         // A link asks the deployment ceiling because it is a caller with no
         // name: an
@@ -261,11 +243,7 @@ impl IndexEntry {
         // reading is the rung everybody who reaches the document already
         // holds.
         if let Some(by_link) = self.link_role(link_hash, now) {
-            if by_link == Role::Editor && ceiling.edit {
-                role = role.max(Role::Editor);
-            } else if by_link.at_least(Role::Commenter) && ceiling.comment {
-                role = role.max(Role::Commenter);
-            }
+            role = role.max(ceiling.clamp(by_link));
         }
         // A read link is read-only: the switch is a ceiling on what a link may
         // carry, not a grant to whoever reaches the document.
@@ -375,49 +353,6 @@ impl IndexEntry {
         } else {
             &self.updated_at
         })
-    }
-}
-
-/// What a caller may do to a document, as a ladder: each role includes the
-/// ones beneath it. Reading has never had a switch, so `reader` is what
-/// everybody who can reach a document holds; `editor` sits between commenting
-/// and owning and is held today by the owner alone, until a document can name
-/// somebody.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Role {
-    Reader,
-    Commenter,
-    Editor,
-    Owner,
-}
-
-impl Role {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Role::Reader => "reader",
-            Role::Commenter => "commenter",
-            Role::Editor => "editor",
-            Role::Owner => "owner",
-        }
-    }
-
-    /// The role a grant or a link names, or None for a word that is not one a
-    /// document hands out. `reader` parses now too, because a link may carry
-    /// it -- on a `private` document that is the only thing a reader link is
-    /// for, since reading is otherwise what reaching the document already
-    /// gives. Nobody is granted `owner`, since the owner is one account.
-    pub fn parse(value: &str) -> Option<Role> {
-        match value {
-            "reader" => Some(Role::Reader),
-            "commenter" => Some(Role::Commenter),
-            "editor" => Some(Role::Editor),
-            _ => None,
-        }
-    }
-
-    /// Whether this role includes another: the ladder, asked as a question.
-    pub fn at_least(self, wanted: Role) -> bool {
-        self >= wanted
     }
 }
 
@@ -1510,12 +1445,9 @@ impl Store {
         let hash: [u8; 32] = raw
             .try_into()
             .map_err(|_| ModifyError::Refused("invalid link digest".into()))?;
-        let role = match role {
-            Role::Reader => crate::storage::postgres::AccessRole::Reader,
-            Role::Commenter => crate::storage::postgres::AccessRole::Commenter,
-            Role::Editor => crate::storage::postgres::AccessRole::Editor,
-            Role::Owner => return Err(ModifyError::Refused("invalid guest role".into())),
-        };
+        if role == Role::Owner {
+            return Err(ModifyError::Refused("invalid guest role".into()));
+        }
         catalog
             .pin_link_guest(document.id, account_id, role, hash)
             .await
@@ -1695,7 +1627,7 @@ async fn entries_from_documents(
             let mut account_grants = HashMap::new();
             for grant in grants_by_document.remove(&document.id).unwrap_or_default() {
                 let Some(hash) = grant.source_link_hash else {
-                    if let Some(role) = grant.role.as_deref().and_then(Role::parse) {
+                    if let Some(role) = grant.role.as_deref().and_then(|word| word.parse::<Role>().ok()) {
                         account_grants.insert(grant.account_id.to_string(), role);
                     }
                     continue;

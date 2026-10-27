@@ -7,7 +7,8 @@
 
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Request};
-use librepaper_engine::storage::postgres::{AccessRole, NewAccount};
+use librepaper_base::role::Role;
+use librepaper_engine::storage::postgres::NewAccount;
 use librepaper_engine::storage::store::DocumentInput;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -68,7 +69,7 @@ async fn mint_editor_link(deployment: &Deployment) -> String {
         .catalog
         .create_share_link(
             Uuid::parse_str(&entry.storage_id).unwrap(),
-            AccessRole::Editor,
+            Role::Editor,
             hex::decode(crate::server::sharing::hash_link_key(&key))
                 .unwrap()
                 .try_into()
@@ -249,7 +250,7 @@ async fn a_listing_cursor_cannot_probe_a_slug_the_caller_cannot_read() {
         .catalog
         .create_share_link(
             entry_id,
-            AccessRole::Reader,
+            Role::Reader,
             guest_hash,
             "authz reader".into(),
             None,
@@ -271,7 +272,7 @@ async fn a_listing_cursor_cannot_probe_a_slug_the_caller_cannot_read() {
         .unwrap();
     deployment
         .catalog
-        .pin_link_guest(entry_id, guest.id, AccessRole::Reader, guest_hash)
+        .pin_link_guest(entry_id, guest.id, Role::Reader, guest_hash)
         .await
         .unwrap();
     let pinned = store

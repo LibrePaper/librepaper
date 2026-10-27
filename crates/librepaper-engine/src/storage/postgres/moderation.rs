@@ -818,7 +818,7 @@ mod tests {
                 .access_role(document, Some(owner), None, time::OffsetDateTime::now_utc(),)
                 .await
                 .unwrap(),
-            Some(crate::storage::postgres::access::AccessRole::Owner)
+            Some(librepaper_base::role::Role::Owner)
         );
         let audits: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM moderation_audit WHERE target_id=$1 AND target_kind='project'",

@@ -20,7 +20,8 @@ use librepaper_document::document::{anchors, session};
 use librepaper_engine::log::Ingested;
 use librepaper_engine::storage::annotation::AnchorStatus;
 use librepaper_engine::storage::postgres::Authority;
-use librepaper_engine::storage::store::{DocumentInput, Role};
+use librepaper_base::role::Role;
+use librepaper_engine::storage::store::DocumentInput;
 use librepaper_room::room::{Message as RoomMessage, Room};
 
 use super::history_frontier_tests::viewer;

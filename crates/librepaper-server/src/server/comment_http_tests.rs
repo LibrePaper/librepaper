@@ -23,8 +23,9 @@ use librepaper_base::config::Configuration;
 use librepaper_engine::log::Registry;
 use librepaper_engine::storage::blob::FsStore;
 use librepaper_engine::storage::postgres::PostgresCatalog;
-use librepaper_engine::storage::postgres::{AccessRole, Authority, NewAccount};
-use librepaper_engine::storage::store::{DocumentInput, Role, Store};
+use librepaper_engine::storage::postgres::{Authority, NewAccount};
+use librepaper_base::role::Role;
+use librepaper_engine::storage::store::{DocumentInput, Store};
 use librepaper_room::room::{Message as RoomMessage, Rooms};
 
 use super::{Server, Viewer};
@@ -128,7 +129,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         .set_grant(
             uuid::Uuid::parse_str(&entry.storage_id).unwrap(),
             commenter.id,
-            AccessRole::Commenter,
+            Role::Commenter,
         )
         .await
         .unwrap();

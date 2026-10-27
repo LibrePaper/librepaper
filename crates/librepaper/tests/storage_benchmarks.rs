@@ -2260,7 +2260,7 @@ async fn capacity_editor(
     let pending: Pending = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let reader = acknowledgement_reader(rx, pending.clone());
     if let Err(error) = sequencer
-        .join(socket, librepaper::log::Role::Editor, &peer_key, tx, None)
+        .join(socket, librepaper::log::SubscriberClass::Editor, &peer_key, tx, None)
         .await
     {
         report.terminal = Some(format!("join failed: {error}"));

@@ -70,7 +70,7 @@ pub const COMPACTION_RECHECK_INTERVAL: Duration = Duration::from_secs(60);
 
 /// What a subscriber may do, which decides what it is sent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Role {
+pub enum SubscriberClass {
     /// Receives relayed batches. Blind review depends on nobody else doing.
     Editor,
     /// Receives `source-changed {digest}` and nothing of the CRDT (§2.1).
@@ -102,7 +102,7 @@ pub(super) fn historical_fork_at(doc: &LoroDoc, frontier: &Frontiers) -> loro::L
 
 struct Subscriber {
     tx: Sender,
-    role: Role,
+    role: SubscriberClass,
     /// Which peer's acknowledgements this socket is owed.
     peer_key: String,
 }
@@ -1678,7 +1678,7 @@ impl Sequencer {
     pub async fn join(
         &self,
         socket: u64,
-        role: Role,
+        role: SubscriberClass,
         peer_key: &str,
         tx: Sender,
         client_vector: Option<&[u8]>,
@@ -1820,14 +1820,14 @@ impl Sequencer {
             .await
             .subscribers
             .values()
-            .filter(|subscriber| subscriber.role == Role::Editor)
+            .filter(|subscriber| subscriber.role == SubscriberClass::Editor)
             .count()
     }
 
     /// Sends one frame to every subscriber of a role, except one.
     pub async fn broadcast(
         &self,
-        role: Option<Role>,
+        role: Option<SubscriberClass>,
         skip: Option<u64>,
         payload: &serde_json::Value,
     ) {
@@ -2734,7 +2734,7 @@ impl Sequencer {
         inner.source_changed_owed = false;
         let payload = json!({"type": "source-changed", "digest": digest}).to_string();
         fan_out(inner, false, |_, subscriber| {
-            (subscriber.role == Role::Reader).then(|| Outgoing::shared_text(payload.clone()))
+            (subscriber.role == SubscriberClass::Reader).then(|| Outgoing::shared_text(payload.clone()))
         });
     }
 }
@@ -2827,7 +2827,7 @@ fn relay(inner: &mut Inner, skip: Option<u64>, bytes: &[u8]) {
     })
     .to_string();
     fan_out(inner, false, |id, subscriber| {
-        (Some(id) != skip && subscriber.role == Role::Editor)
+        (Some(id) != skip && subscriber.role == SubscriberClass::Editor)
             .then(|| Outgoing::shared_text(payload.clone()))
     });
 }
@@ -2893,7 +2893,7 @@ fn notify_durable(inner: &mut Inner) {
     })
     .to_string();
     fan_out(inner, true, |_, subscriber| {
-        (subscriber.role == Role::Editor).then(|| Outgoing::shared_text(payload.clone()))
+        (subscriber.role == SubscriberClass::Editor).then(|| Outgoing::shared_text(payload.clone()))
     });
 }
 
