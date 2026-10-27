@@ -168,6 +168,19 @@ function words(text) {
   assert.deepEqual(words("\\emph {word}"), ["word"]);
 }
 {
+  // A subfile's name is skipped whole, as an include's is.
+  assert.deepEqual(words("\\subfile{chapters/b}"), []);
+}
+{
+  // An unbraced \input name is skipped, and the word after it stays prose.
+  assert.deepEqual(words("\\input chapters/b.tex more"), ["more"]);
+}
+{
+  // A braced \input name is still skipped, with or without blanks before it.
+  assert.deepEqual(words("\\input{a} after"), ["after"]);
+  assert.deepEqual(words("\\input {chapters/a} after"), ["after"]);
+}
+{
   // A citation at the very end of the text does not throw, with or without blanks after it.
   assert.deepEqual(words("\\cite"), []);
   assert.deepEqual(words("\\cite "), []);

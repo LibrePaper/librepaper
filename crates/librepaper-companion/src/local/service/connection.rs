@@ -30,8 +30,8 @@ use crate::local::git::{validate, Limit, Output};
 
 use librepaper_base::http::Credentials;
 use librepaper_sync::{
-    commit_summary, pull, push, store_for, web_changed, Client, Error, Link, MergeOutcome,
-    PullOptions, PullOutcome, PushOptions, PushOutcome, State,
+    commit_summary, current_branch, pull, push, store_for, web_changed, Client, Error, Link,
+    MergeOutcome, PullOptions, PullOutcome, PushOptions, PushOutcome, State,
 };
 
 /// The folder of every connection, under the state home.
@@ -209,7 +209,7 @@ async fn token_works(inner: &Inner, connection: &Connection, token: &str) -> boo
         return true;
     };
     let client = Client::new(connection.link.site.clone(), Credentials::token(token));
-    !matches!(web_changed(&client, &state).await, Err(error) if token_refused(&error))
+    !matches!(web_changed(&client, store.as_ref(), &state).await, Err(error) if token_refused(&error))
 }
 
 /// Whether a merge in the clone still needs the page. A merge whose files are
@@ -452,16 +452,19 @@ async fn pull_remote(repo: &Path) -> Result<Value, Failure> {
 /// The project's named versions taken into the clone, merged into its branch.
 async fn web_pull(inner: &Inner, connection: &Connection) -> Result<PullOutcome, Failure> {
     let client = Arc::new(client_for(inner, &connection.link.site)?);
-    let options = PullOptions {
-        merge: true,
-        mine: Vec::new(),
-        theirs: Vec::new(),
-        exclude: Vec::new(),
-    };
     let (root, state_home) = (connection.repo(), inner.state_home.clone());
     let handle = tokio::runtime::Handle::current();
     let outcome = tokio::task::spawn_blocking(move || {
         let store = store_for(&root, &state_home);
+        // The clone is the app's own, so the branch it has is the branch it
+        // syncs.
+        let options = PullOptions {
+            merge: true,
+            mine: Vec::new(),
+            theirs: Vec::new(),
+            exclude: Vec::new(),
+            branch: Some(current_branch(&root)?),
+        };
         handle.block_on(pull(&client, &root, store.as_ref(), &options))
     })
     .await
@@ -511,6 +514,7 @@ async fn web_push(inner: &Inner, connection: &Connection) -> Result<PushOutcome,
             message,
             author,
             exclude: Vec::new(),
+            branch: Some(current_branch(&root)?),
         };
         handle.block_on(push(&client, &root, store.as_ref(), &options))
     })
@@ -626,6 +630,48 @@ async fn push_to_repository(
         "status": status_of(inner, &connection).await?,
         "pushed": pushed["status"].clone(),
     }))
+}
+
+/// Settles a web push that was posted and never confirmed, and sends whatever
+/// the clone changed since. It runs only the project side of a transfer: a
+/// pull would be refused while the push is pending, so no pull or fetch comes
+/// first.
+pub(super) async fn handle_retry(
+    inner: &Arc<Inner>,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
+    let body = match read_json_body::<ProjectOnly>(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    answer(retry_interrupted(inner, origin, &body.project).await)
+}
+
+async fn retry_interrupted(
+    inner: &Inner,
+    origin: Option<&str>,
+    project: &str,
+) -> Result<Value, Failure> {
+    let connection = open_connection(inner, origin, project)?;
+    let _hold = inner.connections.claim(&connection.key)?;
+    let repo = require_connected(&connection)?;
+    if unfinished_merge(&repo).await? {
+        return Err(merging(inner, &connection).await);
+    }
+    let outcome = web_push(inner, &connection).await?;
+    if let Some(refusal) = pushed_refusal(&outcome) {
+        return Err(refusal);
+    }
+    let pushed = match outcome {
+        PushOutcome::Pushed { files, .. } => json!({"files": files}),
+        _ => json!({"nothing": true}),
+    };
+    Ok(json!({"status": status_of(inner, &connection).await?, "pushed": pushed}))
 }
 
 /* ----------------------------------------------------- resolve a merge */
@@ -1238,5 +1284,59 @@ mod tests {
         }
         let (status, _) = fixture.send(Method::POST, "connections/other", None).await;
         assert_eq!(status, 404);
+    }
+
+    #[tokio::test]
+    async fn a_pending_push_stops_both_transfers_with_the_reason_pending() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let bare = bare_remote(fixture.scratch.path());
+        let connection = fixture.connection(PROJECT);
+        run_connect(&fixture.inner, &connection, text(&bare))
+            .await
+            .unwrap();
+        credentials::store_token_at(&fixture.inner.state_home, PAGE, "lp_token").unwrap();
+        let store = store_for(&connection.repo(), &fixture.inner.state_home);
+        let mut state = store.load().unwrap().unwrap();
+        state.pending = Some(librepaper_sync::PendingPush {
+            request_key: "key".into(),
+            actor: "actor".into(),
+            request: json!({}),
+            upsert_files: Default::default(),
+            deleted_paths: Vec::new(),
+            commit: None,
+        });
+        store.save(&state).unwrap();
+
+        let project = json!({"project": PROJECT});
+        for path in ["connections/pull", "connections/push"] {
+            let (status, body) = fixture
+                .send(Method::POST, path, Some(project.clone()))
+                .await;
+            assert_eq!(
+                (status, &body["reason"]),
+                (409, &json!("pending")),
+                "{path}: {body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn retrying_needs_a_connection() {
+        let fixture = Fixture::new().await;
+        let (status, body) = fixture
+            .send(
+                Method::POST,
+                "connections/retry",
+                Some(json!({"project": PROJECT})),
+            )
+            .await;
+        assert_eq!(
+            (status, &body["reason"]),
+            (409, &json!("not-connected")),
+            "{body}"
+        );
     }
 }

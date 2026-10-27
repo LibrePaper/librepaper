@@ -32,8 +32,9 @@ use librepaper_base::paths::RelPath;
 use librepaper_base::http::Credentials;
 use librepaper_base::util::{token, Encoding};
 use librepaper_sync::{
-    changes_here, publish, pull, push, store_for, web_changed, Client, Error, Link, MergeOutcome,
-    PullOptions, PullOutcome, PushOptions, PushOutcome, State, StateStore, VersionCommit,
+    changes_here, current_branch, preview, publish, pull, push, store_for, web_changed, Client,
+    Error, Link, MergeOutcome, PullOptions, PullOutcome, PushOptions, PushOutcome, State,
+    StateStore, VersionCommit,
 };
 
 use crate::local::bindings::ProjectBinding;
@@ -84,7 +85,20 @@ pub(super) fn failed(error: &Error) -> Failure {
             409,
             json!({"reason": "merging", "error": error.to_string()}),
         ),
-        Error::Link(_) | Error::Rules(_) | Error::Invalid(_) => refuse(400, &error.to_string()),
+        Error::DetachedHead
+        | Error::BranchUnbound { .. }
+        | Error::BranchMismatch { .. }
+        | Error::BranchRebind { .. } => {
+            (409, json!({"reason": "branch", "error": error.to_string()}))
+        }
+        Error::PendingPush | Error::PendingActor => (
+            409,
+            json!({"reason": "pending", "error": error.to_string()}),
+        ),
+        Error::OtherProject { .. } => refuse(409, &error.to_string()),
+        Error::BranchNeedsRepository | Error::Link(_) | Error::Rules(_) | Error::Invalid(_) => {
+            refuse(400, &error.to_string())
+        }
         Error::Network(_) | Error::Http { .. } | Error::Trimmed => refuse(502, &error.to_string()),
         Error::Io { .. } | Error::Git(_) | Error::State(_) => refuse(500, &error.to_string()),
     }
@@ -237,7 +251,10 @@ async fn folder_status(
     let (mut here, mut web, mut problem) = (0, false, None);
     if let (Some(state), true) = (&state, signed_in) {
         let client = Client::new(site.clone(), Credentials::token(&token));
-        let (rules, moved) = tokio::join!(client.rules(), web_changed(&client, state));
+        let (rules, moved) = tokio::join!(
+            client.rules(),
+            web_changed(&client, folder.store.as_ref(), state)
+        );
         let mut refused = false;
         match moved {
             Ok(moved) => web = moved,
@@ -265,10 +282,21 @@ async fn folder_status(
             problem = Some("sign in".to_string());
         }
     }
+    let git = is_git_folder(&folder.binding.root);
+    // The branch sync is bound to, and the one the checkout is on now. A
+    // detached HEAD or a plain folder has no checked out branch.
+    let checked_out = if git {
+        current_branch(&folder.binding.root).ok()
+    } else {
+        None
+    };
     let mut body = json!({
         "signed_in": signed_in,
         "linked": state.is_some(),
-        "git": is_git_folder(&folder.binding.root),
+        "git": git,
+        "branch": state.as_ref().and_then(|state| state.branch.as_deref()),
+        "checked_out": checked_out,
+        "pending": state.as_ref().is_some_and(|state| state.pending.is_some()),
         "site": state.as_ref().map(|state| site_text(&state.link.site)),
         "slug": state.as_ref().map(|state| state.link.slug.as_str()),
         "pulled": state.as_ref().and_then(|state| state.pulled),
@@ -566,6 +594,7 @@ pub(super) async fn handle_link(
     };
     let linked = async {
         let link = parse_link(&body.url, origin)?;
+        refuse_pending(&folder)?;
         record_link(&folder, link)?;
         folder_status(inner, &folder, origin).await
     };
@@ -580,6 +609,48 @@ fn record_link(folder: &Folder, link: Link) -> Result<(), Failure> {
         .map_err(|error| failed(&error))
 }
 
+/// A web push waiting to be settled is the folder's only record of what it
+/// sent, so neither a new link nor an unlink may drop it.
+fn refuse_pending(folder: &Folder) -> Result<(), Failure> {
+    match folder.store.load().map_err(|error| failed(&error))? {
+        Some(state) => state.refuse_while_pending().map_err(|error| failed(&error)),
+        None => Ok(()),
+    }
+}
+
+/// What a first pull would meet in the folder, from the project as it stands
+/// now. Nothing is saved: the folder is not linked, bound or written to.
+pub(super) async fn handle_preview(
+    inner: &Arc<Inner>,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    id: &str,
+    request: Request<Body>,
+) -> Reply {
+    let folder = match open_folder(inner, headers, origin, id) {
+        Ok(folder) => folder,
+        Err(response) => return response,
+    };
+    let body = match read_json_body::<LinkBody>(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let previewed = async {
+        let link = parse_link(&body.url, origin)?;
+        let client = client_for(inner, &link.site)?;
+        let (root, exclude) = (folder.binding.root.clone(), folder.render_outputs(inner));
+        let handle = tokio::runtime::Handle::current();
+        let found = tokio::task::spawn_blocking(move || {
+            handle.block_on(preview(&client, &root, &link, &exclude))
+        })
+        .await
+        .map_err(|_| refuse(500, "the preview stopped"))?
+        .map_err(|error| failed(&error))?;
+        serde_json::to_value(found).map_err(|_| refuse(500, "the preview could not be written"))
+    };
+    answer(previewed.await)
+}
+
 pub(super) async fn handle_unlink(
     inner: &Arc<Inner>,
     headers: &HeaderMap,
@@ -591,6 +662,7 @@ pub(super) async fn handle_unlink(
         Err(response) => return response,
     };
     let unlinked = async {
+        refuse_pending(&folder)?;
         folder.store.clear().map_err(|error| failed(&error))?;
         folder_status(inner, &folder, origin).await
     };
@@ -663,6 +735,10 @@ struct PullBody {
     mine: Vec<String>,
     #[serde(default)]
     theirs: Vec<String>,
+    /// In a repository, the branch to sync. Needed once, to bind a repository
+    /// that has no branch yet.
+    #[serde(default)]
+    branch: Option<String>,
 }
 
 pub(super) async fn handle_pull(
@@ -680,7 +756,11 @@ pub(super) async fn handle_pull(
         Ok(body) => body,
         Err(response) => return response,
     };
-    let PullBody { mine, theirs } = body;
+    let PullBody {
+        mine,
+        theirs,
+        branch,
+    } = body;
     if !mine
         .iter()
         .chain(&theirs)
@@ -688,7 +768,7 @@ pub(super) async fn handle_pull(
     {
         return write_json(400, &json!({"error": "unsafe file path"}));
     }
-    answer(run_pull(inner, &folder, origin, mine, theirs).await)
+    answer(run_pull(inner, &folder, origin, mine, theirs, branch).await)
 }
 
 /// Takes the web project's newest version into the folder. A file changed on
@@ -701,6 +781,7 @@ async fn run_pull(
     origin: Option<&str>,
     mine: Vec<String>,
     theirs: Vec<String>,
+    branch: Option<String>,
 ) -> Result<Value, Failure> {
     let state = folder.linked(origin)?;
     let client = Arc::new(client_for(inner, &state.link.site)?);
@@ -709,6 +790,9 @@ async fn run_pull(
         mine,
         theirs,
         exclude: folder.render_outputs(inner),
+        // A bound repository must be on its branch. One that is not bound yet
+        // reports the checked out branch until the page confirms it.
+        branch,
     };
     let (root, state_home) = (folder.binding.root.clone(), inner.state_home.clone());
     let handle = tokio::runtime::Handle::current();
@@ -787,6 +871,8 @@ fn repository_reply(versions: &[VersionCommit], merge: &MergeOutcome, trimmed: b
 #[derive(serde::Deserialize)]
 struct PushBody {
     message: String,
+    #[serde(default)]
+    branch: Option<String>,
 }
 
 pub(super) async fn handle_push(
@@ -804,7 +890,7 @@ pub(super) async fn handle_push(
         Ok(body) => body,
         Err(response) => return response,
     };
-    answer(run_push(inner, &folder, origin, body.message.trim()).await)
+    answer(run_push(inner, &folder, origin, body.message.trim(), body.branch).await)
 }
 
 /// Sends what changed in the folder as one version. The page has saved its
@@ -814,6 +900,7 @@ async fn run_push(
     folder: &Folder,
     origin: Option<&str>,
     message: &str,
+    branch: Option<String>,
 ) -> Result<Value, Failure> {
     if message.is_empty() {
         return Err(refuse(400, "a push needs a message"));
@@ -824,6 +911,7 @@ async fn run_push(
         message: message.to_owned(),
         author: None,
         exclude: folder.render_outputs(inner),
+        branch,
     };
     let (root, state_home) = (folder.binding.root.clone(), inner.state_home.clone());
     let handle = tokio::runtime::Handle::current();
@@ -896,7 +984,7 @@ pub(super) async fn link_and_pull(
                 ));
             }
         }
-        run_pull(inner, &folder, origin, Vec::new(), Vec::new()).await
+        run_pull(inner, &folder, origin, Vec::new(), Vec::new(), None).await
     };
     match pulled.await {
         Ok(pulled) => {
@@ -1185,6 +1273,9 @@ mod tests {
                 "slug": null,
                 "pulled": null,
                 "changes": {"here": 0, "web": false},
+                "branch": null,
+                "checked_out": null,
+                "pending": false,
             })
         );
 
@@ -1343,6 +1434,13 @@ mod tests {
                             })),
                         ),
                         "/api/documents/abc123/history/v1" => (StatusCode::OK, Json(version)),
+                        "/api/documents/abc123/project" => (
+                            StatusCode::OK,
+                            Json(json!({
+                                "tree": {"files": version["files"]},
+                                "texts": version["texts"],
+                            })),
+                        ),
                         _ => (
                             StatusCode::NOT_FOUND,
                             Json(json!({"error": "no such file"})),
@@ -1392,7 +1490,7 @@ mod tests {
         fixture.link_to(&format!("{site}/docs/abc123"));
         fixture.based_on(&head);
 
-        let (status, body) = fixture.pull(json!({})).await;
+        let (status, body) = fixture.pull(json!({"branch": "main"})).await;
         assert_eq!(status, 200, "{body}");
         let root = fixture.root();
         let chain = git(root, &["rev-parse", "refs/librepaper/main"]).unwrap();
@@ -1444,7 +1542,7 @@ mod tests {
 
         // The repository and the project share no commit, so the first merge
         // joins them, and main.tex differs on both sides.
-        let (status, body) = fixture.pull(json!({})).await;
+        let (status, body) = fixture.pull(json!({"branch": "main"})).await;
         assert_eq!(status, 200, "{body}");
         assert_eq!(body["repository"], true);
         assert_eq!(body["merge"], json!({"conflicts": ["main.tex"]}));
@@ -1474,7 +1572,7 @@ mod tests {
         let root = fixture.root();
         std::fs::write(root.join("main.tex"), "main\nedited here\n").unwrap();
 
-        let (status, body) = fixture.pull(json!({})).await;
+        let (status, body) = fixture.pull(json!({"branch": "main"})).await;
         assert_eq!(status, 200, "{body}");
         assert_eq!(
             body,
@@ -1932,6 +2030,13 @@ mod tests {
                             })),
                         ),
                         "/api/documents/abc123/history/v1" => (StatusCode::OK, Json(version)),
+                        "/api/documents/abc123/project" => (
+                            StatusCode::OK,
+                            Json(json!({
+                                "tree": {"files": version["files"]},
+                                "texts": version["texts"],
+                            })),
+                        ),
                         _ => (
                             StatusCode::NOT_FOUND,
                             Json(json!({"error": "no such file"})),
@@ -2108,5 +2213,181 @@ mod tests {
         let (_, body) = fixture.status().await;
         assert_eq!(body["signed_in"], true);
         assert!(body["error"].as_str().unwrap().contains("(500)"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_plain_folder_reports_no_branch_and_nothing_pending() {
+        let fixture = Fixture::new(PAGE).await;
+        fixture.link_to("https://paper.example/docs/abc123");
+        let (_, body) = fixture.status().await;
+        assert_eq!(body["branch"], Value::Null, "{body}");
+        assert_eq!(body["checked_out"], Value::Null, "{body}");
+        assert_eq!(body["pending"], false, "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_repository_syncs_only_the_branch_the_page_confirmed() {
+        let (site, _task) = one_version_site("main\nedited on the web\n").await;
+        let fixture = Fixture::new(&site).await;
+        let Some(head) = init_repository(&fixture) else {
+            return;
+        };
+        fixture.sign_in("lp_token");
+        fixture.link_to(&format!("{site}/docs/abc123"));
+        fixture.based_on(&head);
+
+        // Unbound: the status proposes the checked out branch, and a pull
+        // without one is refused with the reason `branch`.
+        let (_, body) = fixture.status().await;
+        assert_eq!(body["branch"], Value::Null, "{body}");
+        assert_eq!(body["checked_out"], "main", "{body}");
+        let (status, body) = fixture.pull(json!({})).await;
+        assert_eq!((status, &body["reason"]), (409, &json!("branch")), "{body}");
+        assert!(body["error"].as_str().unwrap().contains("main"), "{body}");
+        let (status, body) = fixture.push(json!({"message": "Edits"})).await;
+        assert_eq!((status, &body["reason"]), (409, &json!("branch")), "{body}");
+
+        // Confirming the branch binds it and pulls.
+        let (status, body) = fixture.pull(json!({"branch": "main"})).await;
+        assert_eq!(status, 200, "{body}");
+        let (_, body) = fixture.status().await;
+        assert_eq!(body["branch"], "main", "{body}");
+        assert_eq!(body["checked_out"], "main", "{body}");
+
+        // Another checkout is refused with the git command, and not switched.
+        git(fixture.root(), &["switch", "-q", "-c", "other"]).unwrap();
+        let (status, body) = fixture.pull(json!({})).await;
+        assert_eq!((status, &body["reason"]), (409, &json!("branch")), "{body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("git switch main"),
+            "{body}"
+        );
+        assert_eq!(
+            git(fixture.root(), &["branch", "--show-current"]).unwrap(),
+            "other"
+        );
+        let (_, body) = fixture.status().await;
+        assert_eq!(body["branch"], "main", "{body}");
+        assert_eq!(body["checked_out"], "other", "{body}");
+
+        // A detached HEAD has no checked out branch.
+        git(fixture.root(), &["switch", "-q", "--detach"]).unwrap();
+        let (_, body) = fixture.status().await;
+        assert_eq!(body["checked_out"], Value::Null, "{body}");
+        let (status, body) = fixture.pull(json!({})).await;
+        assert_eq!((status, &body["reason"]), (409, &json!("branch")), "{body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("detached"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_plain_folder_refuses_a_branch() {
+        let (site, _task) = rules_site().await;
+        let fixture = Fixture::new(&site).await;
+        fixture.sign_in("lp_token");
+        fixture.link_to(&format!("{site}/docs/abc123"));
+        let (status, body) = fixture.pull(json!({"branch": "main"})).await;
+        assert_eq!(status, 400, "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_pending_push_blocks_pull_link_and_unlink_and_shows_in_the_status() {
+        let (site, _task) = rules_site().await;
+        let fixture = Fixture::new(&site).await;
+        fixture.sign_in("lp_token");
+        let url = format!("{site}/docs/abc123");
+        fixture.link_to(&url);
+        let folder = Folder::new(&fixture.inner, fixture.binding.clone());
+        let mut state = folder.store.load().unwrap().unwrap();
+        state.pending = Some(librepaper_sync::PendingPush {
+            request_key: "key".into(),
+            actor: "actor".into(),
+            request: json!({}),
+            upsert_files: Default::default(),
+            deleted_paths: Vec::new(),
+            commit: None,
+        });
+        folder.store.save(&state).unwrap();
+
+        let (_, body) = fixture.status().await;
+        assert_eq!(body["pending"], true, "{body}");
+        for answer in [
+            fixture.pull(json!({})).await,
+            fixture.link(&url).await,
+            fixture.unlink().await,
+        ] {
+            assert_eq!(
+                (answer.0, &answer.1["reason"]),
+                (409, &json!("pending")),
+                "{}",
+                answer.1
+            );
+            assert!(answer.1["error"].as_str().unwrap().contains("push"));
+        }
+        let (_, body) = fixture.status().await;
+        assert_eq!(body["linked"], true, "{body}");
+    }
+
+    /// A site that serves the rules and a project holding `web.tex`.
+    async fn project_site() -> (String, tokio::task::JoinHandle<()>) {
+        let app = axum::Router::new()
+            .route("/api/config", get(rules_reply))
+            .route(
+                "/api/documents/abc123/project",
+                get(|| async {
+                    Json(json!({
+                        "tree": {"files": {
+                            "web.tex": {"kind": "text"},
+                            "both.tex": {"kind": "text"},
+                        }},
+                        "texts": {"web.tex": "web\n", "both.tex": "web version\n"},
+                    }))
+                }),
+            );
+        serve(app).await
+    }
+
+    #[tokio::test]
+    async fn the_preview_sorts_the_paths_and_saves_nothing() {
+        let (site, _task) = project_site().await;
+        let fixture = Fixture::new(&site).await;
+        fixture.sign_in("lp_token");
+        std::fs::write(fixture.root().join("local.tex"), "local\n").unwrap();
+        std::fs::write(fixture.root().join("both.tex"), "local version\n").unwrap();
+
+        let url = json!({"url": format!("{site}/docs/abc123")});
+        let (status, body) = fixture.route(Method::POST, "sync/preview", Some(url)).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["project_only"], json!(["web.tex"]), "{body}");
+        assert_eq!(body["local_only"], json!(["local.tex"]), "{body}");
+        assert_eq!(body["different"], json!(["both.tex"]), "{body}");
+        assert_eq!(body["equal"], json!([]), "{body}");
+        assert_eq!(body["blocked"], json!([]), "{body}");
+        assert_eq!(body["excluded"], json!([]), "{body}");
+
+        // Nothing was linked, bound or written.
+        let (_, status) = fixture.status().await;
+        assert_eq!(status["linked"], false, "{status}");
+        assert!(!fixture.root().join("web.tex").exists());
+        let folder = Folder::new(&fixture.inner, fixture.binding.clone());
+        assert!(folder.store.load().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn the_preview_needs_a_sign_in_and_a_project_on_the_pages_site() {
+        let (site, _task) = project_site().await;
+        let fixture = Fixture::new(&site).await;
+        let url = json!({"url": format!("{site}/docs/abc123")});
+        let (status, _) = fixture.route(Method::POST, "sync/preview", Some(url)).await;
+        assert_eq!(status, 401);
+
+        fixture.sign_in("lp_token");
+        let other = json!({"url": "https://elsewhere.example/docs/abc123"});
+        let (status, body) = fixture
+            .route(Method::POST, "sync/preview", Some(other))
+            .await;
+        assert_eq!(status, 400, "{body}");
     }
 }

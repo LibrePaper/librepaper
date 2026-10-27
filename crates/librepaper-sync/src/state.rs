@@ -31,6 +31,28 @@ pub struct Fetched {
     pub files: BTreeMap<String, FileRecord>,
 }
 
+/// A web push saved before it is posted, so a retry after a lost answer sends
+/// the same request under the same key and applies the effects recorded here,
+/// never ones read again from a working tree that has moved on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingPush {
+    /// The operation key the request was first sent with.
+    pub request_key: String,
+    /// A nonsecret fingerprint of the principal that sent it.
+    pub actor: String,
+    /// The source-change request body, as posted.
+    pub request: serde_json::Value,
+    /// Paths and records `files` takes once the push is accepted.
+    #[serde(default)]
+    pub upsert_files: BTreeMap<String, FileRecord>,
+    /// Paths `files` drops once the push is accepted.
+    #[serde(default)]
+    pub deleted_paths: Vec<String>,
+    /// `HEAD` when the push was planned, in a repository.
+    #[serde(default)]
+    pub commit: Option<String>,
+}
+
 /// One record per working directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct State {
@@ -48,6 +70,13 @@ pub struct State {
     /// Every path this directory has ever synced, so one the web later drops
     /// is dropped from the chain's tree too.
     pub synced: BTreeSet<String>,
+    /// In a repository, the one branch this state syncs. `None` until a
+    /// transfer binds it explicitly.
+    pub branch: Option<String>,
+    /// The project's head identity when its files were last read or written.
+    pub web_head: Option<String>,
+    /// A web push posted and not yet known to have been settled.
+    pub pending: Option<PendingPush>,
 }
 
 /// The state file's shape: the link flattened beside the rest.
@@ -65,6 +94,12 @@ struct Record {
     fetched: Option<Fetched>,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     synced: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    web_head: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending: Option<PendingPush>,
 }
 
 impl State {
@@ -78,6 +113,58 @@ impl State {
             pushed: Vec::new(),
             fetched: None,
             synced: BTreeSet::new(),
+            branch: None,
+            web_head: None,
+            pending: None,
+        }
+    }
+
+    /// Stops a caller that would move the baseline while a web push is
+    /// waiting to be settled.
+    pub fn refuse_while_pending(&self) -> Result<(), Error> {
+        match self.pending {
+            Some(_) => Err(Error::PendingPush),
+            None => Ok(()),
+        }
+    }
+
+    /// Checks the checkout against the branch this state syncs and the one the
+    /// caller asked for, and binds the branch when none is bound yet. Returns
+    /// whether it bound one just now. The binding is held in memory, so the
+    /// caller saves the state when this is true. A plain folder has no branch,
+    /// and never switches one.
+    pub(crate) fn pin_branch(
+        &mut self,
+        repository: Option<&Path>,
+        requested: Option<&str>,
+    ) -> Result<bool, Error> {
+        let Some(root) = repository else {
+            return match requested {
+                Some(_) => Err(Error::BranchNeedsRepository),
+                None => Ok(false),
+            };
+        };
+        let checked_out = Git::at(root).branch()?;
+        let bound = self.branch.clone();
+        match (bound.as_deref(), requested) {
+            (None, None) => Err(Error::BranchUnbound { checked_out }),
+            (None, Some(requested)) if requested != checked_out => Err(Error::BranchMismatch {
+                expected: requested.to_string(),
+                checked_out,
+            }),
+            (None, Some(requested)) => {
+                self.branch = Some(requested.to_string());
+                Ok(true)
+            }
+            (Some(bound), Some(requested)) if bound != requested => Err(Error::BranchRebind {
+                bound: bound.to_string(),
+                requested: requested.to_string(),
+            }),
+            (Some(bound), _) if bound != checked_out => Err(Error::BranchMismatch {
+                expected: bound.to_string(),
+                checked_out,
+            }),
+            (Some(_), _) => Ok(false),
         }
     }
 
@@ -91,6 +178,9 @@ impl State {
             pushed: self.pushed.clone(),
             fetched: self.fetched.clone(),
             synced: self.synced.clone(),
+            branch: self.branch.clone(),
+            web_head: self.web_head.clone(),
+            pending: self.pending.clone(),
         };
         serde_json::to_vec_pretty(&record).map_err(|error| Error::State(error.to_string()))
     }
@@ -108,6 +198,9 @@ impl State {
             pushed: record.pushed,
             fetched: record.fetched,
             synced: record.synced,
+            branch: record.branch,
+            web_head: record.web_head,
+            pending: record.pending,
         })
     }
 }
@@ -123,6 +216,12 @@ pub trait StateStore: Send + Sync {
     fn repository(&self) -> Option<&Path> {
         None
     }
+}
+
+/// The branch a repository's work tree is on, which may have no commit yet.
+/// Detached HEAD is an error.
+pub fn current_branch(dir: &Path) -> Result<String, Error> {
+    Git::at(dir).branch()
 }
 
 const STATE_REF: &str = "refs/librepaper/state";
@@ -366,5 +465,38 @@ mod tests {
             FileStore::for_dir(home.path(), dir.path()).load().unwrap(),
             None
         );
+    }
+
+    fn branch_state() -> State {
+        State::new(Link::parse("https://app.librepaper.org/docs/paper-abc").unwrap())
+    }
+
+    #[test]
+    fn an_unborn_named_branch_can_be_bound_and_a_plain_folder_has_none() {
+        let Some((dir, git)) = repository() else {
+            return;
+        };
+        git.run(&["symbolic-ref", "HEAD", "refs/heads/trunk"], None, &[])
+            .unwrap();
+        assert!(git.rev("HEAD").is_none(), "the branch has no commit yet");
+        let mut state = branch_state();
+        assert!(matches!(
+            state.pin_branch(Some(dir.path()), None),
+            Err(Error::BranchUnbound { .. })
+        ));
+        assert!(matches!(
+            state.pin_branch(Some(dir.path()), Some("main")),
+            Err(Error::BranchMismatch { .. })
+        ));
+        assert!(state.pin_branch(Some(dir.path()), Some("trunk")).unwrap());
+        assert_eq!(state.branch.as_deref(), Some("trunk"));
+        assert!(!state.pin_branch(Some(dir.path()), None).unwrap());
+
+        let mut plain = branch_state();
+        assert!(!plain.pin_branch(None, None).unwrap());
+        assert!(matches!(
+            plain.pin_branch(None, Some("main")),
+            Err(Error::BranchNeedsRepository)
+        ));
     }
 }

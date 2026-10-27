@@ -64,12 +64,14 @@ function hasDocumentClass(body) {
 // kind, newlines included, may sit between the command and its name. Only
 // `\input` takes TeX's unbraced form, a run of characters up to whitespace,
 // `%`, `\`, `{` or `}`. A longer command such as `\includegraphics` is not
-// one of these.
+// one of these. The names come back in source order: each one is recorded
+// with the offset of its command, and the list is sorted by that offset.
 function latexNames(text) {
-  const names = [];
+  const found = [];
   for (const command of ["\\input", "\\include", "\\subfile"]) {
     let rest = text;
     for (let at = rest.indexOf(command); at >= 0; at = rest.indexOf(command)) {
+      const start = text.length - rest.length + at;
       rest = rest.slice(at + command.length);
       if (/^[A-Za-z]/.test(rest)) continue;
       const open = rest.replace(/^[ \t\r\n\f\v]+/, "");
@@ -77,31 +79,34 @@ function latexNames(text) {
         const close = open.indexOf("}");
         if (close < 0) continue;
         const name = open.slice(1, close).trim();
-        if (name) names.push(name);
+        if (name) found.push({ start, name });
       } else if (command === "\\input") {
         const bare = /^[^ \t\r\n\f\v%\\{}]+/.exec(open);
-        if (bare) names.push(bare[0]);
+        if (bare) found.push({ start, name: bare[0] });
       }
     }
   }
-  return names;
+  return found.sort((a, b) => a.start - b.start).map((entry) => entry.name);
 }
 
+// The names `#include` and `#import` point at, in source order. Like
+// latexNames, each name is sorted by the offset of its command.
 function typstNames(body) {
-  const names = [];
+  const found = [];
   for (const command of ["#include", "#import"]) {
     let rest = body;
     for (let at = rest.indexOf(command); at >= 0; at = rest.indexOf(command)) {
+      const start = body.length - rest.length + at;
       rest = rest.slice(at + command.length);
       const quoted = rest.replace(/^\s+/, "");
       if (!quoted.startsWith('"')) continue;
       const close = quoted.indexOf('"', 1);
       if (close < 0) continue;
       const name = quoted.slice(1, close);
-      if (name && !name.startsWith("@")) names.push(name);
+      if (name && !name.startsWith("@")) found.push({ start, name });
     }
   }
-  return names;
+  return found.sort((a, b) => a.start - b.start).map((entry) => entry.name);
 }
 
 function shortcodeNames(body) {
@@ -156,6 +161,20 @@ export function includersOf(texts) {
   }
   const out = new Map();
   for (const [target, from] of found) out.set(target, [...from].sort(compareUtf8));
+  return out;
+}
+
+/// The files `path` includes directly, in the order the source names them,
+/// each once. Only paths present in `texts` appear, and never `path` itself.
+export function includesOf(path, texts) {
+  const format = formatOf(path);
+  if (!format || !Object.hasOwn(texts, path)) return [];
+  const out = [];
+  for (const name of includedNames(format, texts[path])) {
+    const target = resolve(format, path, name, texts);
+    if (target === null || target === path || out.includes(target)) continue;
+    out.push(target);
+  }
   return out;
 }
 

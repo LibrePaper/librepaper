@@ -17,9 +17,12 @@ mod chain;
 mod client;
 mod diff;
 mod error;
+#[cfg(test)]
+mod fake;
 mod files;
 mod git;
 mod link;
+mod preview;
 mod pull;
 mod push;
 mod rules;
@@ -30,10 +33,14 @@ pub use client::Client;
 pub use error::Error;
 pub use files::{FileRecord, Kind};
 pub use link::Link;
+pub use preview::{preview, Preview};
 pub use pull::{pull, MergeOutcome, PullOptions, PullOutcome, VersionCommit};
 pub use push::{
     changes_here, commit_summary, publish, push, web_changed, CommitSummary, PushOptions,
     PushOutcome,
 };
 pub use rules::Rules;
-pub use state::{store_for, Fetched, FileStore, GitRefStore, Pushed, State, StateStore};
+pub use state::{
+    current_branch, store_for, Fetched, FileStore, GitRefStore, PendingPush, Pushed, State,
+    StateStore,
+};

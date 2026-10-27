@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import * as client from "../../src/lib/desktop/client.js";
 import { folderProjectHref, keepFolderProject } from "../../src/lib/desktop/projects.js";
-import { LOGIN_PENDING, syncLink, syncLogin, syncLoginComplete, syncPublish, syncPull, syncPush, syncStatus, syncUnlink } from "../../src/lib/desktop/sync.js";
+import { LOGIN_PENDING, syncLink, syncLogin, syncLoginComplete, syncPreview, syncPublish, syncPull, syncPush, syncStatus, syncUnlink } from "../../src/lib/desktop/sync.js";
 
 globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
 client._testing.reset();
@@ -49,6 +49,19 @@ assert.deepEqual(last().body, { authorization_id: "auth-1" });
 answer = () => response(400, { error: "sign in and approve the code, then retry" });
 await assert.rejects(syncLoginComplete("f1", "auth-1"), (error) => error.status === 400 && error.body.error === LOGIN_PENDING);
 
+// A repository reports the branch sync is bound to, the one checked out, and an interrupted send.
+answer = () => response(200, { ...status, git: true, branch: null, checked_out: "main", pending: false });
+const unbound = await syncStatus("f1");
+assert.deepEqual([unbound.branch, unbound.checked_out, unbound.pending], [null, "main", false]);
+
+// A preview sends the project page and answers the six lists, with a reason beside each blocked path.
+const previewed = { project_only: ["web.tex"], local_only: ["mine.tex"], different: ["both.tex"], equal: [], blocked: [["big.bin", "it is too large"]], excluded: [] };
+answer = () => response(200, previewed);
+assert.deepEqual(await syncPreview("f1", "https://app.example/docs/paper"), previewed);
+assert.equal(last().method, "POST");
+assert.ok(last().url.endsWith("projects/f1/sync/preview"));
+assert.deepEqual(last().body, { url: "https://app.example/docs/paper" });
+
 answer = () => response(204, null);
 await syncLink("f1", "https://app.example/docs/paper");
 assert.ok(last().url.endsWith("projects/f1/sync/link"));
@@ -72,6 +85,22 @@ await syncPull("f1", { mine: ["a.tex"] });
 assert.deepEqual(last().body, { mine: ["a.tex"] });
 await syncPull("f1", { theirs: ["a.tex"] });
 assert.deepEqual(last().body, { theirs: ["a.tex"] });
+
+// A pull and a push carry the confirmed branch only when there is one.
+answer = () => response(200, pulled);
+await syncPull("f1", { branch: "main" });
+assert.deepEqual(last().body, { branch: "main" });
+answer = () => response(200, { nothing: true });
+await syncPush("f1", "m", "main");
+assert.deepEqual(last().body, { message: "m", branch: "main" });
+await syncPush("f1", "m");
+assert.deepEqual(last().body, { message: "m" });
+
+// A refusal about the branch or an interrupted send carries its reason and the words on the error.
+answer = () => response(409, { reason: "branch", error: "run `git switch main` and try again" });
+await assert.rejects(syncPull("f1"), (error) => error.status === 409 && error.body.reason === "branch" && error.message.includes("git switch main"));
+answer = () => response(409, { reason: "pending", error: "an earlier push was interrupted" });
+await assert.rejects(syncUnlink("f1"), (error) => error.status === 409 && error.body.reason === "pending");
 
 // In a git repository the pull answers in its repository form, and the route hands it on whole.
 const repositoryPull = { repository: true, versions: [{ sha: "s1", label: "v1", by: "anne", commit: "c1" }], merge: { conflicts: ["a.tex"] }, trimmed: false };

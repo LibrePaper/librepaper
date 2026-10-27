@@ -24,8 +24,9 @@ const COMPLETE_DELAY_MS = 800;
 const APPROVAL_POLL_MS = 3000;
 const APPROVAL_ATTEMPTS = 200;
 
-const BEHIND = "The repository has changes that this project does not have. Pull first, then push again.";
-const MERGED = "The merge is done. Pull or Push again.";
+const BEHIND = "The repository has changes that this project does not have. Get repository changes first, then send project changes again.";
+const INTERRUPTED = "An earlier send to the project was interrupted before its outcome was known.";
+const MERGED = "The merge is done. Get repository changes or send project changes again.";
 
 const realWait = (/** @type {number} */ ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const realOpen = (/** @type {string} */ url) => { globalThis.open?.(url, "_blank", "noopener"); };
@@ -37,17 +38,17 @@ const isPending = (/** @type {any} */ error) => error?.status === 400 && error?.
 const plural = (/** @type {number} */ count, /** @type {string} */ noun) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 const paths = (/** @type {unknown} */ value) => (Array.isArray(value) ? value.map(String) : []);
 
-/** @typedef {{ loaded: boolean, status: any, busy: "" | "connect" | "pull" | "push" | "resolve" | "login" | "disconnect", result: string | null, refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string, action: "pull" | "push" } | null, problem: string, signInHelp: { remote: string, detail: string } | null }} WebConnectionState */
+/** @typedef {{ loaded: boolean, status: any, busy: "" | "connect" | "pull" | "push" | "retry" | "resolve" | "login" | "disconnect", result: string | null, refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string, action: "pull" | "push" } | null, problem: string, signInHelp: { remote: string, detail: string } | null, interrupted: string }} WebConnectionState */
 
-/** `nameVersion` names the version a push sends, so the repository receives
- * only named versions. `signedIn` is asked each time Sign in is pressed:
- * whether this page has a session on the server, so the code can be approved
- * here. `open` shows a page in a new tab, and `origin` is the server the
- * approval page is found under when the desktop app does not name it.
- * @param {{ api?: typeof routes, project: string, nameVersion: (message: string) => Promise<void>, signedIn?: () => boolean | Promise<boolean>, approve?: (userCode: string) => Promise<void>, open?: (url: string) => void, origin?: string, wait?: (ms: number) => Promise<void> }} options */
-export function createWebConnection({ api = routes, project, nameVersion, signedIn = () => true, approve = async () => {}, open = realOpen, origin = globalThis.location?.origin ?? "", wait = realWait }) {
+/** `flush` settles the editor's own edits on the server before a transfer reads
+ * the project. `signedIn` is asked each time Sign in is pressed: whether this
+ * page has a session on the server, so the code can be approved here. `open`
+ * shows a page in a new tab, and `origin` is the server the approval page is
+ * found under when the desktop app does not name it.
+ * @param {{ api?: typeof routes, project: string, flush?: () => Promise<void>, signedIn?: () => boolean | Promise<boolean>, approve?: (userCode: string) => Promise<void>, open?: (url: string) => void, origin?: string, wait?: (ms: number) => Promise<void> }} options */
+export function createWebConnection({ api = routes, project, flush = async () => {}, signedIn = () => true, approve = async () => {}, open = realOpen, origin = globalThis.location?.origin ?? "", wait = realWait }) {
   /** @type {WebConnectionState} */
-  let current = $state.raw({ loaded: false, status: null, busy: "", result: null, refusal: null, problem: "", signInHelp: null });
+  let current = $state.raw({ loaded: false, status: null, busy: "", result: null, refusal: null, problem: "", signInHelp: null, interrupted: "" });
   let generation = 0;
   let closed = false;
   // The address last typed into Connect, which names the remote until the
@@ -113,18 +114,35 @@ export function createWebConnection({ api = routes, project, nameVersion, signed
     return false;
   }
 
+  /// A pull or a push that an interrupted send to the project stops. The
+  /// project holds a request that was posted and not confirmed, and every
+  /// transfer is refused until it is settled, so the panel offers to retry just
+  /// that. Returns whether the error was this one.
+  function interruptedSend(/** @type {any} */ error) {
+    if (error?.status !== 409 || error.body?.reason !== "pending") return false;
+    set({ interrupted: String(error.body.error || error.message || INTERRUPTED) });
+    return true;
+  }
+
   /// The status an answer carries. Every route answers with it, but a status
   /// that is missing keeps the one the panel has.
   const statusOf = (/** @type {any} */ answer) => answer?.status ?? current.status;
 
-  const pulledLine = (/** @type {any} */ pushed) => {
-    const files = Number(pushed?.files) || 0;
-    return files ? `Pulled ${plural(files, "file")} into the project.` : "Nothing new in the repository.";
+  /// Names the repository branch an answer is about, when the status knows it.
+  const branchOf = (/** @type {any} */ answer) => {
+    const branch = statusOf(answer)?.branch;
+    return branch ? ` branch ${branch}` : "";
   };
 
-  const pushedLine = (/** @type {any} */ answer) => (answer.pushed === "pushed"
-    ? `Pushed to ${statusOf(answer)?.branch || "the repository"}.`
-    : "The repository was already up to date.");
+  const importedLine = (/** @type {any} */ answer) => {
+    const files = Number(answer.pushed?.files) || 0;
+    const from = `Imported from repository${branchOf(answer)}`;
+    return files ? `${from}: ${plural(files, "file")} into the project.` : `${from}: nothing new.`;
+  };
+
+  const sentLine = (/** @type {any} */ answer) => (answer.pushed === "pushed"
+    ? `Sent to repository${branchOf(answer)}.`
+    : `Nothing new to send to repository${branchOf(answer)}.`);
 
   /// Connects the project to a repository the desktop app clones.
   const connect = (/** @type {string} */ url) => {
@@ -135,52 +153,57 @@ export function createWebConnection({ api = routes, project, nameVersion, signed
     });
   };
 
-  /// Takes in the repository's changes. Stops at a conflict, which the merge
-  /// section then settles one file at a time.
-  //
-  // The repository only meets the project's named versions. When the project
-  // has unnamed edits to a file the repository also changed, the desktop app
-  // refuses with `changed`, and pulling again would fetch nothing new. So the
-  // edits are named as `message` and the pull runs once more, which brings
-  // them into the merge, where the conflict is settled file by file.
-  const pull = (/** @type {string} */ message) => run("pull", async () => {
-    set({ refusal: null, result: null });
+  /// Imports the repository's changes into the project. Stops at a conflict,
+  /// which the merge section then settles one file at a time. The merge reads
+  /// the project, so the editor's own edits are settled first.
+  const pull = () => run("pull", async () => {
+    set({ refusal: null, result: null, interrupted: "" });
+    await flush();
     let answer = /** @type {any} */ (null);
     try {
-      answer = await pullNaming(message);
+      answer = await api.pullConnection(project);
     } catch (error) {
-      if (refused(error, "pull")) return;
+      if (refused(error, "pull") || interruptedSend(error)) return;
       throw error;
     }
-    set({ status: statusOf(answer), result: answer.stopped ? null : pulledLine(answer.pushed) });
+    set({ status: statusOf(answer), result: answer.stopped ? null : importedLine(answer) });
   });
 
-  async function pullNaming(/** @type {string} */ message) {
-    try {
-      return await api.pullConnection(project);
-    } catch (error) {
-      if (error?.status !== 409 || error.body?.reason !== "changed") throw error;
-    }
-    await nameVersion(message);
-    return api.pullConnection(project);
-  }
-
-  /// Names the version, then sends the project's versions to the repository.
-  const push = (/** @type {string} */ message) => run("push", async () => {
-    set({ refusal: null, result: null });
-    await nameVersion(message);
+  /// Sends the project's changes to the repository. The editor's own edits are
+  /// settled first, so the project the server holds is the one sent.
+  const push = () => run("push", async () => {
+    set({ refusal: null, result: null, interrupted: "" });
+    await flush();
     let answer = /** @type {any} */ (null);
     try {
       answer = await api.pushConnection(project);
     } catch (error) {
-      if (refused(error, "push")) return;
+      if (refused(error, "push") || interruptedSend(error)) return;
       if (error?.body?.reason === "behind") {
         set({ problem: BEHIND });
         return;
       }
       throw error;
     }
-    set({ status: statusOf(answer), result: answer.stopped ? null : pushedLine(answer) });
+    set({ status: statusOf(answer), result: answer.stopped ? null : sentLine(answer) });
+  });
+
+  /// Settles the interrupted send to the project and nothing else. It does not
+  /// restart the pull or push that was stopped, because that one is refused
+  /// until this settles. The person starts it again afterwards, and the line
+  /// says so.
+  const retryTransfer = () => run("retry", async () => {
+    set({ refusal: null, result: null });
+    let answer = /** @type {any} */ (null);
+    try {
+      answer = await api.retryConnection(project);
+    } catch (error) {
+      if (refused(error, "push")) return;
+      throw error;
+    }
+    const files = Number(answer.pushed?.files) || 0;
+    const settled = files ? `The interrupted send finished: ${plural(files, "file")} reached the project.` : "The interrupted send finished: nothing was left to send to the project.";
+    set({ status: statusOf(answer), interrupted: "", result: `${settled} Get repository changes or send project changes again to continue.` });
   });
 
   /// Keeps one side of a file that changed on both sides during a merge. The
@@ -267,6 +290,7 @@ export function createWebConnection({ api = routes, project, nameVersion, signed
     connect,
     pull,
     push,
+    retryTransfer,
     resolve,
     login,
     disconnect,
