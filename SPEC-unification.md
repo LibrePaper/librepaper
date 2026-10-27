@@ -24,7 +24,7 @@ The first draft merged some things that only look alike: project admission with 
 
 ### In scope
 
-- Leaf types: `Digest`, `RelPath` with its three path policies, `LineEnding`, `Role`, `Token`, `Secret<T>`, `Bytes`. Most go in `librepaper-base`. `ProjectPath` goes in `librepaper-document`, which owns the admission rules.
+- Leaf types: `Digest`, `RelPath` with its three path policies, `LineEnding`, `Role`, `Token`, `Secret<T>`, `Bytes`. All go in `librepaper-base`, including the admission rules, because `librepaper-sync` depends only on base.
 - Typed errors and one refusal projection per transport.
 - A text offset model: unit newtypes, `Span<U>`, `TextIndex`, `SourceLines`.
 - An access guard for server handlers.
@@ -78,7 +78,7 @@ impl RelPath {
 }
 
 /// Policy 1, project admission: what a document may contain.
-/// Owned by `librepaper-document`, mirrored by web/src/lib/paths.js.
+/// Lives in `librepaper-base` (sync depends only on base), mirrored by web/src/lib/paths.js.
 pub struct ProjectPath(RelPath); // NFC-normalised
 impl ProjectPath {
     pub fn admit(rules: &Rules, raw: &str) -> Result<(ProjectPath, Kind), PathRefusal>;
@@ -91,10 +91,11 @@ pub struct RepoPath(RelPath);
 impl TryFrom<&str> for RepoPath { type Error = PathRefusal; }
 
 /// Policy 3, folder portability: whether a project path can be written to a
-/// local folder on every desktop OS. Refuses `:`, a segment that ends in a
-/// space or a dot, and reserved Windows names. A refusal reports the file and
-/// skips it; it never renames the file.
-pub fn portable(path: &ProjectPath) -> Result<(), PathRefusal>;
+/// local folder. Exactly the refusals sync adds today: a `:` anywhere, and a
+/// path that begins or ends with a space. Checked on the raw path, before
+/// admission trims. A refusal reports the file and skips it; it never renames
+/// the file.
+pub fn portable(raw: &str) -> Result<(), PathRefusal>;
 
 pub struct PathRefusal { pub path: String, pub reason: Cow<'static, str> }
 ```
