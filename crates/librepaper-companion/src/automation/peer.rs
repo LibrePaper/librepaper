@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-use librepaper_base::http::{detail_of, KEY_HEADER};
+use librepaper_base::http::{detail_of, Credentials};
 
 /// Extract a share key from either a literal key or a pasted document URL.
 /// A key in a `/docs/<slug>/<key>` path wins over the `#k=` fragment.
@@ -226,15 +226,8 @@ fn validate_file_path(path: &str) -> Result<(), String> {
 /// `chat_socket_request`, and the document tools endpoint -- so the set of
 /// headers a credential turns into is written once.
 fn auth_headers(token: &str, key: &str) -> Vec<(&'static str, String)> {
-    let mut headers = Vec::new();
-    if !token.is_empty() {
-        headers.push(("authorization", format!("Bearer {token}")));
-    }
-    if !key.is_empty() {
-        headers.push((KEY_HEADER, key.to_string()));
-    }
+    let mut headers = Credentials::new(token, key).headers();
     headers.push(("x-librepaper-automation", "1".to_string()));
-    headers.push(("x-librepaper-client", "1".to_string()));
     headers
 }
 

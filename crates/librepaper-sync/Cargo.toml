@@ -13,6 +13,7 @@ doctest = false
 
 [dependencies]
 librepaper-base = { path = "../librepaper-base" }
+librepaper-document = { path = "../librepaper-document" }
 thiserror.workspace = true
 tracing.workspace = true
 tokio.workspace = true

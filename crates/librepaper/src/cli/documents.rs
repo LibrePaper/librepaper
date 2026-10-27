@@ -1,6 +1,7 @@
 //! The commands that identify and open a document somebody already published.
 
 use super::*;
+use librepaper_base::pages::{walk, ListingCursor, Page, WalkError, LISTING_MAX_PAGES};
 
 pub async fn list_documents(server: Option<String>, token: Option<String>) {
     let server = server_or_die(server);
@@ -159,49 +160,49 @@ impl From<&str> for ListingError {
 }
 
 async fn visible_documents(server: &str, token: &str) -> Result<Vec<Value>, ListingError> {
-    let mut target =
-        url::Url::parse(&format!("{server}/api/list")).map_err(|err| err.to_string())?;
+    let base = url::Url::parse(&format!("{server}/api/list")).map_err(|err| err.to_string())?;
+    let pages = walk(
+        |cursor: Option<ListingCursor>| {
+            let mut target = base.clone();
+            async move {
+                if let Some(cursor) = &cursor {
+                    cursor.apply(&mut target);
+                }
+                let (status, payload) =
+                    post_json(target.as_str(), &json!({}), token, Duration::from_secs(60)).await?;
+                if status != 200 {
+                    return Err(ListingError {
+                        status: Some(status),
+                        message: format!("listing failed ({status}): {}", detail_of(&payload)),
+                    });
+                }
+                let items = payload
+                    .get("documents")
+                    .and_then(Value::as_array)
+                    .ok_or("invalid document listing: missing documents")?
+                    .clone();
+                let next = ListingCursor::from_payload(&payload)
+                    .map_err(|_| ListingError::from("invalid listing cursor"))?;
+                Ok(Page { items, next })
+            }
+        },
+        LISTING_MAX_PAGES,
+    )
+    .await
+    .map_err(|error| match error {
+        WalkError::Fetch(error) => error,
+        WalkError::Repeated => "server repeated a document listing cursor".into(),
+        WalkError::TooManyPages => {
+            format!("document listing exceeds {LISTING_MAX_PAGES} pages").into()
+        }
+    })?;
     let mut documents = Vec::new();
     let mut seen_slugs = std::collections::HashSet::new();
-    let mut cursors = std::collections::HashSet::new();
-    loop {
-        let (status, payload) =
-            post_json(target.as_str(), &json!({}), token, Duration::from_secs(60)).await?;
-        if status != 200 {
-            return Err(ListingError {
-                status: Some(status),
-                message: format!("listing failed ({status}): {}", detail_of(&payload)),
-            });
+    for document in pages {
+        let slug = text(&document, "slug");
+        if !slug.is_empty() && seen_slugs.insert(slug) {
+            documents.push(document);
         }
-        let page = payload
-            .get("documents")
-            .and_then(Value::as_array)
-            .ok_or("invalid document listing: missing documents")?;
-        for document in page {
-            let slug = text(document, "slug");
-            if !slug.is_empty() && seen_slugs.insert(slug) {
-                documents.push(document.clone());
-            }
-        }
-        let Some(cursor) = payload.get("next_cursor").filter(|v| !v.is_null()) else {
-            break;
-        };
-        let updated = cursor
-            .get("after_updated")
-            .and_then(Value::as_str)
-            .ok_or("invalid listing cursor")?;
-        let slug = cursor
-            .get("after_slug")
-            .and_then(Value::as_str)
-            .ok_or("invalid listing cursor")?;
-        if !cursors.insert((updated.to_string(), slug.to_string())) {
-            return Err("server repeated a document listing cursor".into());
-        }
-        target
-            .query_pairs_mut()
-            .clear()
-            .append_pair("after_updated", updated)
-            .append_pair("after_slug", slug);
     }
     Ok(documents)
 }

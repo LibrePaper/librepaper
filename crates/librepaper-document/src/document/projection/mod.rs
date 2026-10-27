@@ -145,6 +145,132 @@ pub struct ProjectSnapshot {
     pub texts: BTreeMap<String, String>,
 }
 
+/// A stated digest that is not the digest of the tree it came with.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Mismatch {
+    /// The digest the sender named.
+    pub stated: String,
+    /// The digest of the tree that arrived.
+    pub computed: String,
+}
+
+impl std::fmt::Display for Mismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the stated digest {} does not match the digest of the files, {}",
+            self.stated, self.computed
+        )
+    }
+}
+
+impl std::error::Error for Mismatch {}
+
+fn check_digest(stated: &str, files: &BTreeMap<String, Entry>) -> Result<(), Mismatch> {
+    let computed = Digest::of(&canonical_bytes_of(files)).to_hex();
+    if stated == computed {
+        Ok(())
+    } else {
+        Err(Mismatch {
+            stated: stated.to_string(),
+            computed,
+        })
+    }
+}
+
+impl ProjectSnapshot {
+    /// Checks that `sha` is the digest of `tree`.
+    pub fn verify(&self) -> Result<(), Mismatch> {
+        check_digest(&self.sha, &self.tree.files)
+    }
+}
+
+/// The answer of `GET /api/documents/{slug}/history/{sha}`: one moment of the
+/// document, its files and the text of each. The route sends nothing else.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VersionSnapshot {
+    pub sha: String,
+    /// The digest of `files`.
+    pub tree_sha: String,
+    #[serde(default)]
+    pub storage_id: String,
+    #[serde(default)]
+    pub at: String,
+    #[serde(default)]
+    pub by: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub source_format: String,
+    pub files: BTreeMap<String, Entry>,
+    /// The body of each text file.
+    #[serde(default)]
+    pub texts: BTreeMap<String, String>,
+}
+
+impl VersionSnapshot {
+    /// Checks that `tree_sha` is the digest of `files`.
+    pub fn verify(&self) -> Result<(), Mismatch> {
+        check_digest(&self.tree_sha, &self.files)
+    }
+}
+
+/// The part of `GET /api/documents/{slug}/project` that describes the files.
+/// The route adds the schema, slug, title, format and changes around it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HeadSnapshot {
+    /// The digest of `tree`.
+    pub project_digest: String,
+    pub tree: Projection,
+    #[serde(default)]
+    pub texts: BTreeMap<String, String>,
+}
+
+impl HeadSnapshot {
+    /// Checks that `project_digest` is the digest of `tree`.
+    pub fn verify(&self) -> Result<(), Mismatch> {
+        check_digest(&self.project_digest, &self.tree.files)
+    }
+}
+
+/// One row of `GET /api/documents/{slug}/history`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LabelRow {
+    pub sha: String,
+    pub sequence: i64,
+    #[serde(default)]
+    pub at: String,
+    #[serde(default)]
+    pub by: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub tree_sha: Option<String>,
+    #[serde(default)]
+    pub frontier: String,
+    #[serde(default)]
+    pub archive_status: String,
+}
+
+fn canonical_bytes_of(files: &BTreeMap<String, Entry>) -> Vec<u8> {
+    let mut out = String::with_capacity(64 + files.len() * 96);
+    out.push_str("librepaper.projection.v1\n");
+    out.push('\n');
+    for (path, entry) in files {
+        out.push_str(path);
+        out.push('\t');
+        out.push_str(&entry.kind);
+        out.push('\t');
+        out.push_str(&entry.digest);
+        out.push('\n');
+    }
+    out.into_bytes()
+}
+
 impl Projection {
     /// The name of this projection: the SHA-256 of what it says.
     ///
@@ -168,18 +294,7 @@ impl Projection {
     /// with a control character in it is refused in step 2, and a kind and a
     /// digest are drawn from fixed alphabets.
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut out = String::with_capacity(64 + self.files.len() * 96);
-        out.push_str("librepaper.projection.v1\n");
-        out.push('\n');
-        for (path, entry) in &self.files {
-            out.push_str(path);
-            out.push('\t');
-            out.push_str(&entry.kind);
-            out.push('\t');
-            out.push_str(&entry.digest);
-            out.push('\n');
-        }
-        out.into_bytes()
+        canonical_bytes_of(&self.files)
     }
 
     /// The text at a path, for a caller that projected with bodies.
@@ -641,5 +756,111 @@ mod tests {
         let moved = self::doc();
         put(&moved, "aaa", "a.md", "two");
         assert_ne!(first, project(&moved, &rules()).projection.digest());
+    }
+
+    fn fixture_projected() -> Projected {
+        let doc = self::doc();
+        put(&doc, "aaa", "a.md", "one");
+        project(&doc, &rules())
+    }
+
+    #[test]
+    fn a_version_snapshot_serializes_as_the_old_literal() {
+        let projected = fixture_projected();
+        let sha = projected.projection.digest().to_hex();
+        let snapshot = VersionSnapshot {
+            sha: "label-1".into(),
+            tree_sha: sha.clone(),
+            storage_id: "store".into(),
+            at: "2026-01-01T00:00:00Z".into(),
+            by: "Ann".into(),
+            label: None,
+            reason: "".into(),
+            source_format: "markdown".into(),
+            files: projected.projection.files.clone(),
+            texts: projected.texts.clone(),
+        };
+        let old = serde_json::json!({
+            "sha": "label-1",
+            "tree_sha": sha,
+            "storage_id": "store",
+            "at": "2026-01-01T00:00:00Z",
+            "by": "Ann",
+            "label": null,
+            "reason": "",
+            "source_format": "markdown",
+            "files": projected.projection.files,
+            "texts": projected.texts,
+        });
+        assert_eq!(serde_json::to_value(&snapshot).unwrap(), old);
+        let back: VersionSnapshot = serde_json::from_value(old).unwrap();
+        assert_eq!(back, snapshot);
+        back.verify().unwrap();
+        let mut damaged = back;
+        damaged.tree_sha = "0".repeat(64);
+        assert!(damaged.verify().is_err());
+    }
+
+    #[test]
+    fn a_head_snapshot_serializes_as_the_old_literal() {
+        let projected = fixture_projected();
+        let digest = projected.projection.digest().to_hex();
+        let snapshot = HeadSnapshot {
+            project_digest: digest.clone(),
+            tree: projected.projection.clone(),
+            texts: projected.texts.clone(),
+        };
+        let old = serde_json::json!({
+            "project_digest": digest,
+            "tree": projected.projection,
+            "texts": projected.texts,
+        });
+        assert_eq!(serde_json::to_value(&snapshot).unwrap(), old);
+        let back: HeadSnapshot = serde_json::from_value(old).unwrap();
+        assert_eq!(back, snapshot);
+        back.verify().unwrap();
+        let mut damaged = back;
+        damaged.project_digest = "0".repeat(64);
+        assert!(damaged.verify().is_err());
+    }
+
+    #[test]
+    fn a_label_row_serializes_as_the_old_literal() {
+        let row = LabelRow {
+            sha: "label-1".into(),
+            sequence: 4,
+            at: "2026-01-01T00:00:00Z".into(),
+            by: "Ann".into(),
+            label: Some("Draft".into()),
+            reason: "".into(),
+            tree_sha: None,
+            frontier: "AAEC".into(),
+            archive_status: "none".into(),
+        };
+        let old = serde_json::json!({
+            "sha": "label-1",
+            "sequence": 4,
+            "at": "2026-01-01T00:00:00Z",
+            "by": "Ann",
+            "label": "Draft",
+            "reason": "",
+            "tree_sha": null,
+            "frontier": "AAEC",
+            "archive_status": "none",
+        });
+        assert_eq!(serde_json::to_value(&row).unwrap(), old);
+    }
+
+    #[test]
+    fn a_project_snapshot_verifies_its_sha() {
+        let projected = fixture_projected();
+        let mut snapshot = ProjectSnapshot {
+            sha: projected.projection.digest().to_hex(),
+            tree: projected.projection,
+            texts: projected.texts,
+        };
+        snapshot.verify().unwrap();
+        snapshot.sha = "0".repeat(64);
+        assert!(snapshot.verify().is_err());
     }
 }

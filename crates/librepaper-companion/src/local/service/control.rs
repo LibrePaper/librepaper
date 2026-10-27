@@ -8,6 +8,7 @@
 
 use super::*;
 use hmac::{Hmac, Mac};
+use librepaper_base::site::SiteUrl;
 use librepaper_base::util::{token, Encoding};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -63,7 +64,7 @@ impl ControlAuth {
             (Some(server), _) | (None, Some(server)) => validate_server(server)?,
             (None, None) => validate_server("https://app.librepaper.org/")?,
         };
-        let origin = server.origin().ascii_serialization();
+        let origin = server.to_string();
         let file = TokenFile {
             instance: instance.to_string(),
             token: token.clone(),
@@ -109,22 +110,9 @@ impl ControlAuth {
     }
 }
 
-fn validate_server(raw: &str) -> Result<url::Url, String> {
-    let server =
-        url::Url::parse(raw).map_err(|error| format!("invalid LIBREPAPER_SERVER: {error}"))?;
-    let loopback_http = server.scheme() == "http" && crate::local::store::is_loopback(&server);
-    if !matches!(server.scheme(), "https" | "http")
-        || (!loopback_http && server.scheme() != "https")
-        || !server.username().is_empty()
-        || server.password().is_some()
-        || server.fragment().is_some()
-        || server.query().is_some()
-        || server.path() != "/"
-        || server.host_str().is_none()
-    {
-        return Err("LIBREPAPER_SERVER must be HTTPS without credentials or a fragment (HTTP is allowed for loopback development).".into());
-    }
-    Ok(server)
+fn validate_server(raw: &str) -> Result<SiteUrl, String> {
+    raw.parse::<SiteUrl>()
+        .map_err(|error| format!("invalid LIBREPAPER_SERVER: {error}"))
 }
 
 pub(crate) fn normalized_server(raw: &str) -> Result<String, String> {
@@ -143,6 +131,7 @@ pub(super) fn server_for_instance(state_home: &Path, instance: &str) -> Option<S
     read_private_file(&path)
         .filter(|file| file.instance == instance)
         .and_then(|file| file.server)
+        .and_then(|server| normalized_server(&server).ok())
 }
 
 fn read_private_file(path: &Path) -> Option<TokenFile> {
@@ -299,7 +288,7 @@ async fn cancel_job(inner: &Inner, id: &str) -> Reply {
     let _ = entry.cancel_tx.send(true);
     if entry.queued {
         entry.queued = false;
-        entry.status.status = "canceled".into();
+        entry.status.status = JobState::Canceled;
         entry.status.stage = "finished".into();
         entry.finished_at = Some(Instant::now());
         drop(jobs);

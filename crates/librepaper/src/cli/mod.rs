@@ -675,7 +675,10 @@ pub fn server_or_die(server: Option<String>) -> String {
     if server.trim().is_empty() {
         die("set --server or $LIBREPAPER_SERVER");
     }
-    server.trim_end_matches('/').to_string()
+    match server.parse::<librepaper_base::site::SiteUrl>() {
+        Ok(site) => site.to_string(),
+        Err(error) => die(format!("--server {server:?}: {error}")),
+    }
 }
 
 // The CLI signs in through the deployment, not through a provider: it asks the

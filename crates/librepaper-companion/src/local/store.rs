@@ -68,14 +68,7 @@ impl ServiceFile {
 /// rather than rejected, so a caller sees a miss, not a panic.
 pub fn normalize_origin(raw: &str) -> String {
     match url::Url::parse(raw.trim()) {
-        Ok(url) => {
-            let scheme = url.scheme().to_ascii_lowercase();
-            let host = url.host_str().unwrap_or("").to_ascii_lowercase();
-            match url.port() {
-                Some(port) => format!("{scheme}://{host}:{port}"),
-                None => format!("{scheme}://{host}"),
-            }
-        }
+        Ok(url) => librepaper_base::site::SiteUrl::origin_of(&url),
         Err(_) => raw.trim().to_ascii_lowercase(),
     }
 }
@@ -96,16 +89,6 @@ pub(crate) fn valid_origin(raw: &str) -> Option<String> {
         return None;
     }
     Some(normalize_origin(raw.trim()))
-}
-
-/// Whether `url` names this computer: `localhost` or a loopback address. Plain
-/// http is acceptable to a server or page only when this holds.
-pub(crate) fn is_loopback(url: &url::Url) -> bool {
-    url.host().is_some_and(|host| match host {
-        url::Host::Domain(domain) => domain == "localhost",
-        url::Host::Ipv4(address) => address.is_loopback(),
-        url::Host::Ipv6(address) => address.is_loopback(),
-    })
 }
 
 /// A project name: non-empty, bounded, and drawn from the characters a

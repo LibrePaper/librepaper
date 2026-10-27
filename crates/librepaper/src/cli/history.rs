@@ -14,6 +14,7 @@
 //! was made.
 
 use super::*;
+use librepaper_document::document::projection::LabelRow;
 
 /// One page of a document's labels, newest first, as the server returns
 /// them.
@@ -21,7 +22,7 @@ pub(super) async fn labels_for(
     server: &str,
     slug: &str,
     credentials: &Credentials,
-) -> Result<Vec<Value>, String> {
+) -> Result<Vec<LabelRow>, String> {
     let (status, payload) = get_as(
         &format!("{server}/api/documents/{slug}/history"),
         credentials,
@@ -34,18 +35,18 @@ pub(super) async fn labels_for(
             detail_of(&payload)
         ));
     }
-    payload
+    let labels = payload
         .get("labels")
-        .and_then(Value::as_array)
         .cloned()
-        .ok_or_else(|| "invalid history response: missing labels".into())
+        .ok_or_else(|| "invalid history response: missing labels".to_string())?;
+    serde_json::from_value(labels).map_err(|error| format!("invalid history response: {error}"))
 }
 
 /// Resolve a label identifier a person typed -- a prefix of its `sha`, or
 /// the exact name they gave it -- to that label's `sha` and the RFC 3339
 /// instant it was recorded at.
 pub(super) fn find_label(
-    labels: &[Value],
+    labels: &[LabelRow],
     slug: &str,
     requested: &str,
 ) -> Result<(String, String), String> {
@@ -55,12 +56,11 @@ pub(super) fn find_label(
     let matching: std::collections::HashSet<(String, String)> = labels
         .iter()
         .filter(|entry| {
-            let sha = text(entry, "sha");
-            let label = text(entry, "label");
-            (!sha.is_empty() && sha.starts_with(requested))
-                || (!label.is_empty() && label == requested)
+            let name = entry.label.as_deref().unwrap_or_default();
+            (!entry.sha.is_empty() && entry.sha.starts_with(requested))
+                || (!name.is_empty() && name == requested)
         })
-        .map(|entry| (text(entry, "sha"), text(entry, "at")))
+        .map(|entry| (entry.sha.clone(), entry.at.clone()))
         .collect();
     match matching.len() {
         0 => Err(format!("no label of {slug} matches {requested:?}")),
