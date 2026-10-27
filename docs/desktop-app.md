@@ -14,6 +14,7 @@ Writing, previews, collaboration and review work in any web browser. The desktop
 - Nothing runs unasked. Folders are granted one at a time through your system's own chooser. Running a document's code is off whenever a document opens, and you turn it on with the Run code switch.
 - On a shared project, editors can change the code that runs, so it is their code too.
 - The desktop app uses the tools installed on your computer, such as R, Python, Quarto and your coding agent.
+- **Settings, then Rendering** chooses, per format, whether a render runs in the browser or on this computer with your own latexmk, Typst or Quarto. Renders on this computer run only while Run code is on.
 
 The server you connect to decides what the desktop app runs. A document's code runs only when you turn on Run code, and the app still trusts its server. A compromised server could run code on your computer through the same tools. Connect the app only to a server you trust.
 
@@ -89,17 +90,6 @@ desktop/target/release/librepaper-desktop      # start the app
 LIBREPAPER_SERVER=https://paper.example.org/ desktop/target/release/librepaper-desktop
 ```
 
-## A project in a folder on your disk
-
-The desktop app can work on a folder instead of a web project.
-
-- **Open folder…** on the landing page opens any folder as a project. No sign-in, no server. Edits reach disk about a second after you stop typing, renames are real renames, deleted files go to the system trash, and a change another program makes shows up within a second. A file you have unsaved edits in asks whether to keep yours or load the disk copy.
-- **Clone a repository…** on the landing page, beside **Open folder…**, asks for a parent folder, clones a Git URL into a subfolder named after the repository, and opens the clone as a folder project.
-- **Work in a folder…** in a web project's File menu puts that project's files in an empty folder of your choice and opens that folder as the project. The folder stays linked to the web project.
-- **Settings, then Rendering** chooses, per format, whether a render runs in the browser or on this computer with your own latexmk, Typst or Quarto. Renders on this computer run in the folder and only while Run code is on.
-- **The Git panel** of a folder project links it to a web project, or publishes it as a new one, and moves changes with Pull and Push. The first time, it asks you to sign in to the server. A push is refused for a file that changed on the web since your last pull; a pull leaves a file that changed on both sides alone and lets you choose a copy. Files the folder excludes, such as a PDF a render wrote, are never synced. In a folder that is a git repository, the panel also commits, pulls, pushes, switches branches and sets the remote. Its Sync button does the commit, pull and push in one step.
-- A folder that is a git repository keeps both halves of the panel. Its LibrePaper Pull fetches the web project's versions as commits on `librepaper/main` and merges them, and its Push sends your commits, the way `librepaper pull` and `push` do in a repository; see [Git](git.html).
-
 ## How the desktop app works
 
 ### Nothing else to start
@@ -120,7 +110,6 @@ On macOS and with the Windows installer, the app checks for a new version when i
 - Closing the last window keeps the app running in the system tray (the menu bar on macOS).
 - The tray menu shows the window again, opens a new window or quits the app.
 - Quit in the tray (or the File menu) stops the local service.
-- Quit saves the project folder of every window first. If a folder cannot be saved, the app stays open and says so.
 - On Linux, the tray needs AppIndicator support (on GNOME, the AppIndicator extension). Without it, closing the last window quits the app.
 
 ### Help
