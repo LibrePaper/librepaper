@@ -2,10 +2,10 @@
 //! and the shell pages the reader's origin serves.
 
 use super::*;
-use librepaper_base::pages::ListingCursor;
 use axum::extract::{Extension, Path, State};
 use axum::middleware::Next;
 use axum::routing::{any, get, patch, post, put};
+use librepaper_base::pages::ListingCursor;
 
 /// Typed API routes. Routes migrate here without changing their domain
 /// handlers; the remaining fallback serves origin-specific pages and static

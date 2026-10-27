@@ -4,14 +4,13 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use librepaper_base::digest::Digest;
-use librepaper_base::http::{decode, detail_of, post_json_as, send, truncate, Credentials};
+use librepaper_base::http::{decode, detail_of, post_json_as, send, Credentials};
 use librepaper_base::site::SiteUrl;
 use librepaper_base::text::LineEnding;
 use librepaper_base::util::{token, Encoding};
 use librepaper_document::document::projection::{Entry, HeadSnapshot, LabelRow, VersionSnapshot};
 use reqwest::Method;
-use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use url::Url;
 
 use crate::files::{FileRecord, Kind};
@@ -152,15 +151,9 @@ impl Client {
             .map(|(name, value)| (*name, value.as_str()))
             .collect();
         headers.extend_from_slice(extra);
-        send(
-            method,
-            &self.base()?.join(path),
-            &headers,
-            body,
-            timeout,
-        )
-        .await
-        .map_err(Error::Network)
+        send(method, &self.base()?.join(path), &headers, body, timeout)
+            .await
+            .map_err(Error::Network)
     }
 
     /// A GET that must answer with JSON.
@@ -322,7 +315,9 @@ impl Client {
         slug: &str,
         body: &Value,
     ) -> Result<(u16, Value), Error> {
-        let target = self.base()?.join(&format!("/api/documents/{slug}/source-change"));
+        let target = self
+            .base()?
+            .join(&format!("/api/documents/{slug}/source-change"));
         let mut attempt = 0;
         loop {
             match post_json_as(&target, body, &self.credentials, BULK).await {
@@ -449,7 +444,12 @@ mod tests {
 
     #[test]
     fn paths_the_rules_refuse_are_dropped() {
-        let paths = ["main.tex", ".git/config.txt", "notes.docx", "C:/outside/paper.tex"];
+        let paths = [
+            "main.tex",
+            ".git/config.txt",
+            "notes.docx",
+            "C:/outside/paper.tex",
+        ];
         let files = paths
             .iter()
             .map(|path| (path.to_string(), entry("text", "x")))

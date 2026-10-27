@@ -58,7 +58,10 @@ mod tests {
         };
         let wire = json!({"after_updated": "2026-01-02T03:04:05Z", "after_id": "id-1"});
         assert_eq!(cursor.to_json(), wire);
-        assert_eq!(serde_json::from_value::<TemplatesCursor>(wire).unwrap(), cursor);
+        assert_eq!(
+            serde_json::from_value::<TemplatesCursor>(wire).unwrap(),
+            cursor
+        );
         let query = |name: &str| match name {
             "after_updated" => Some("2026-01-02T03:04:05Z".to_string()),
             "after_id" => Some("id-1".to_string()),

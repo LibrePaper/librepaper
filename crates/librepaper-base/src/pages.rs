@@ -71,10 +71,7 @@ pub enum WalkError<E> {
 
 /// Fetches pages from the first until one has no next cursor, and returns
 /// every item in order. The first fetch gets `None`.
-pub async fn walk<T, K, F, Fut, E>(
-    mut fetch: F,
-    max_pages: usize,
-) -> Result<Vec<T>, WalkError<E>>
+pub async fn walk<T, K, F, Fut, E>(mut fetch: F, max_pages: usize) -> Result<Vec<T>, WalkError<E>>
 where
     K: Eq + Hash + Clone,
     F: FnMut(Option<K>) -> Fut,
@@ -143,7 +140,9 @@ mod tests {
         );
     }
 
-    fn pages(next: &'static [Option<u32>]) -> impl FnMut(Option<u32>) -> std::future::Ready<Result<Page<u32, u32>, ()>> {
+    fn pages(
+        next: &'static [Option<u32>],
+    ) -> impl FnMut(Option<u32>) -> std::future::Ready<Result<Page<u32, u32>, ()>> {
         let mut index = 0;
         move |_| {
             let page = Page {

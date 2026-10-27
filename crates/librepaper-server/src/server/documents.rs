@@ -1211,12 +1211,13 @@ impl Server {
             privacy_headers(&mut response);
             return response;
         }
-        let mut body = serde_json::to_value(librepaper_document::document::projection::HeadSnapshot {
-            project_digest: identity,
-            tree: projected.projection,
-            texts: projected.texts,
-        })
-        .expect("a snapshot serializes");
+        let mut body =
+            serde_json::to_value(librepaper_document::document::projection::HeadSnapshot {
+                project_digest: identity,
+                tree: projected.projection,
+                texts: projected.texts,
+            })
+            .expect("a snapshot serializes");
         body["schema"] = json!(1);
         body["slug"] = json!(entry.slug);
         body["title"] = json!(entry.title);

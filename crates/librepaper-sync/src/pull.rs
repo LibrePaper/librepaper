@@ -14,7 +14,6 @@ use librepaper_base::util::{token, Encoding};
 
 use crate::chain::{Chain, Meta, MAIN_REF};
 use crate::client::{version_name, Client, Snapshot};
-use librepaper_document::document::projection::LabelRow;
 use crate::files::{inside, FileRecord, Kind};
 use crate::git::Git;
 use crate::rules::Rules;
@@ -22,6 +21,7 @@ use crate::state::{Fetched, State, StateStore};
 use crate::walk::{scan, Local, Scan};
 use crate::Error;
 use librepaper_base::text::LineEnding;
+use librepaper_document::document::projection::LabelRow;
 
 /// How to pull.
 #[derive(Clone, Debug)]

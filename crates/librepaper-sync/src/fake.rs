@@ -6,9 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use librepaper_base::digest::Digest;
 use librepaper_base::http::Credentials;
-use librepaper_document::document::projection::{
-    Entry, HeadSnapshot, Projection, VersionSnapshot,
-};
+use librepaper_document::document::projection::{Entry, HeadSnapshot, Projection, VersionSnapshot};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};

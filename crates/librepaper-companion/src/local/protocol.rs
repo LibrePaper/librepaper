@@ -409,7 +409,10 @@ mod tests {
             (JobState::Canceled, "canceled"),
         ];
         for (state, text) in cases {
-            assert_eq!(serde_json::to_value(state).unwrap(), serde_json::json!(text));
+            assert_eq!(
+                serde_json::to_value(state).unwrap(),
+                serde_json::json!(text)
+            );
         }
     }
 
@@ -422,7 +425,10 @@ mod tests {
             (PullOutcome::Conflicts, "conflicts"),
         ];
         for (outcome, text) in cases {
-            assert_eq!(serde_json::to_value(outcome).unwrap(), serde_json::json!(text));
+            assert_eq!(
+                serde_json::to_value(outcome).unwrap(),
+                serde_json::json!(text)
+            );
         }
     }
 }

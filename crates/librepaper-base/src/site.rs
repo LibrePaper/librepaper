@@ -108,7 +108,10 @@ mod tests {
         for (raw, expected) in [
             ("https://app.librepaper.org", "https://app.librepaper.org"),
             ("https://app.librepaper.org/", "https://app.librepaper.org"),
-            ("  HTTPS://LibrePaper.Example:5173/ ", "https://librepaper.example:5173"),
+            (
+                "  HTTPS://LibrePaper.Example:5173/ ",
+                "https://librepaper.example:5173",
+            ),
             ("https://x.example:443", "https://x.example"),
             ("http://localhost:3000/", "http://localhost:3000"),
             ("http://localhost:80", "http://localhost"),
@@ -143,8 +146,14 @@ mod tests {
         // What the companion's `normalize_origin` returned for these inputs
         // before `SiteUrl` replaced its hand-built form.
         for (raw, old) in [
-            ("HTTPS://LibrePaper.Example:5173/", "https://librepaper.example:5173"),
-            ("https://librepaper.example:5173", "https://librepaper.example:5173"),
+            (
+                "HTTPS://LibrePaper.Example:5173/",
+                "https://librepaper.example:5173",
+            ),
+            (
+                "https://librepaper.example:5173",
+                "https://librepaper.example:5173",
+            ),
             ("https://librepaper.example", "https://librepaper.example"),
             ("https://papers.example", "https://papers.example"),
             ("https://papers.example:443/", "https://papers.example"),

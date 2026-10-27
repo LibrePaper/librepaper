@@ -502,8 +502,11 @@ impl Server {
                 let after = values
                     .get("after")
                     .and_then(|value| value.parse::<i64>().ok());
-                let limit =
-                    i64::from(pages::clamp_limit(values.get("limit").map(String::as_str), 64, 200));
+                let limit = i64::from(pages::clamp_limit(
+                    values.get("limit").map(String::as_str),
+                    64,
+                    200,
+                ));
                 let named = matches!(values.get("named").map(String::as_str), Some("1" | "true"));
                 (after, limit, named)
             })

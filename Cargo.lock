@@ -2886,6 +2886,7 @@ dependencies = [
  "hex",
  "ignore",
  "librepaper-base",
+ "librepaper-document",
  "reqwest",
  "serde",
  "serde_json",
