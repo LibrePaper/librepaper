@@ -37,7 +37,7 @@ use tokio::sync::{mpsc, watch, Mutex, Notify};
 
 use crate::local::bindings::BindingStore;
 use crate::local::protocol::{
-    self, Capabilities, JobOutcome, JobRequest, JobStatus, ManifestEntry, BASE_PATH,
+    self, Capabilities, JobOutcome, JobRequest, JobStatus, ManifestEntry, BASE_PATH, MAX_FILES,
     MAX_JSON_BYTES, MAX_UPLOAD_BYTES, PROTOCOL_VERSIONS,
 };
 use crate::local::store;
@@ -60,7 +60,6 @@ pub(crate) fn normalized_server(raw: &str) -> Result<String, String> {
 mod connection;
 mod git;
 mod jobs;
-mod projects;
 mod sync;
 
 pub(super) type Reply = Response<Body>;
@@ -105,11 +104,11 @@ pub struct NativeRunner {
 }
 
 impl NativeRunner {
-    /// A runner that executes granted projects and, under `base`, the hosted
-    /// workspace every document has without a grant.
-    pub fn with_hosted_workspaces(state_home: &std::path::Path, base: PathBuf) -> Self {
+    /// A runner that executes every document in a hosted workspace under
+    /// `base`.
+    pub fn with_hosted_workspaces(base: PathBuf) -> Self {
         Self {
-            binding_store: BindingStore::new(state_home).with_hosted_workspaces(base),
+            binding_store: BindingStore::new(base),
         }
     }
 }
@@ -298,8 +297,7 @@ fn supersede_older_generations(
 
 /// Cancel the job running in the workspace a new job is about to use, so two
 /// commands never share a folder. A workspace is a site, a project and a
-/// binding: the hosted binding is one folder per project, and a granted
-/// binding names exactly one.
+/// binding: the hosted binding is one folder per project.
 fn cancel_running_in_workspace(
     jobs: &HashMap<String, JobEntry>,
     origin: &str,
@@ -338,12 +336,9 @@ pub(super) struct Inner {
     /// The one credential that opens this service, and the one origin whose
     /// pages may manage the machine. Created when the service is built.
     control: control::ControlAuth,
-    /// Serialises the steps that must not interleave with revoking a binding
-    /// or admitting a job: a workspace sync checks its binding.
+    /// Serialises admitting a job against the jobs already queued.
     admission: Mutex<()>,
-    /// The change pollers of the folder projects being edited.
-    projects: projects::Registry,
-    /// The sign-ins of folder projects waiting for their code to be approved.
+    /// The sign-ins of connections waiting for their code to be approved.
     sync_logins: sync::Logins,
     /// The connections with a git operation running.
     connections: connection::Busy,
@@ -385,7 +380,7 @@ impl LocalService {
         // than replaying it. See `SessionRegistry::recover_at_startup`.
         crate::assistant::registry::SessionRegistry::recover_at_startup(state_home);
         super::render::records::init(state_home);
-        let bindings = BindingStore::new(state_home).with_hosted_workspaces(base);
+        let bindings = BindingStore::new(base);
         let inner = Arc::new(Inner {
             state_home: state_home.to_path_buf(),
             folder_dialog: Mutex::new(()),
@@ -403,7 +398,6 @@ impl LocalService {
             ),
             control,
             admission: Mutex::new(()),
-            projects: projects::Registry::new(projects::Timing::default()),
             sync_logins: sync::Logins::new(),
             connections: connection::Busy::default(),
         });
@@ -494,16 +488,10 @@ async fn run_worker(inner: Arc<Inner>) {
             }
         });
 
-        // In a folder project the command writes into the project's own
-        // folder, and the poller must not report those files as the person's.
-        let render = projects::RenderWatch::begin(&inner, &request).await;
         let outcome = inner
             .runner
             .run(request, staged.clone(), cancel_rx, progress_tx)
             .await;
-        if let Some(render) = render {
-            render.finish(&inner).await;
-        }
         let _ = progress_task.await;
         // The uploads were written into the workspace; the staged copy has
         // done its work.
@@ -651,9 +639,6 @@ async fn dispatch(
         ["zotero", "items", key] if *method == Method::GET => {
             handle_zotero_item(inner, headers, origin, key).await
         }
-        ["projects", "open"] if *method == Method::POST => {
-            projects::handle_open(inner, headers, origin).await
-        }
         ["connections"] if *method == Method::GET => {
             connection::handle_status(inner, headers, origin, request).await
         }
@@ -680,99 +665,6 @@ async fn dispatch(
         }
         ["connections", "login", "complete"] if *method == Method::POST => {
             connection::handle_login_complete(inner, headers, origin, request).await
-        }
-        ["projects", "keep"] if *method == Method::POST => {
-            sync::handle_keep(inner, headers, origin, request).await
-        }
-        ["projects"] if *method == Method::GET => {
-            projects::handle_list(inner, headers, origin).await
-        }
-        ["projects", id] if *method == Method::DELETE => {
-            projects::handle_forget(inner, headers, origin, id).await
-        }
-        ["projects", id, "tree"] if *method == Method::GET => {
-            let extensions = query_value(request.uri(), "extensions");
-            projects::handle_tree(inner, headers, origin, id, extensions.as_deref()).await
-        }
-        ["projects", id, "files", name @ ..] if *method == Method::GET => {
-            let encoded_name = name.join("/");
-            let name = match percent_encoding::percent_decode_str(&encoded_name).decode_utf8() {
-                Ok(name) => name.into_owned(),
-                Err(_) => return plain(400, "invalid file name encoding"),
-            };
-            projects::handle_file(inner, headers, origin, id, &name).await
-        }
-        ["projects", id, "changes"] if *method == Method::GET => {
-            projects::handle_changes(inner, headers, origin, id, request).await
-        }
-        ["projects", id, "sync"] if *method == Method::GET => {
-            sync::handle_status(inner, headers, origin, id).await
-        }
-        ["projects", id, "sync", "login"] if *method == Method::POST => {
-            sync::handle_login(inner, headers, origin, id, request).await
-        }
-        ["projects", id, "sync", "login", "complete"] if *method == Method::POST => {
-            sync::handle_login_complete(inner, headers, origin, id, request).await
-        }
-        ["projects", id, "sync", "link"] if *method == Method::POST => {
-            sync::handle_link(inner, headers, origin, id, request).await
-        }
-        ["projects", id, "sync", "preview"] if *method == Method::POST => {
-            sync::handle_preview(inner, headers, origin, id, request).await
-        }
-        ["projects", id, "sync", "publish"] if *method == Method::POST => {
-            sync::handle_publish(inner, headers, origin, id, request).await
-        }
-        ["projects", id, "sync", "unlink"] if *method == Method::POST => {
-            sync::handle_unlink(inner, headers, origin, id).await
-        }
-        ["projects", id, "sync", "pull"] if *method == Method::POST => {
-            sync::handle_pull(inner, headers, origin, id, request).await
-        }
-        ["projects", id, "sync", "push"] if *method == Method::POST => {
-            sync::handle_push(inner, headers, origin, id, request).await
-        }
-        ["projects", id, "git"] if *method == Method::GET => {
-            git::handle_status(inner, headers, origin, id).await
-        }
-        ["projects", id, "git", "init"] if *method == Method::POST => {
-            git::handle_init(inner, headers, origin, id).await
-        }
-        ["projects", id, "git", "diff"] if *method == Method::GET => {
-            git::handle_diff(inner, headers, origin, id, request).await
-        }
-        ["projects", id, "git", "commit"] if *method == Method::POST => {
-            git::handle_commit(inner, headers, origin, id, request).await
-        }
-        ["projects", id, "git", "identity"] if *method == Method::POST => {
-            git::handle_identity(inner, headers, origin, id, request).await
-        }
-        ["projects", id, "git", "branches"] if *method == Method::GET => {
-            git::handle_branches(inner, headers, origin, id).await
-        }
-        ["projects", id, "git", "switch"] if *method == Method::POST => {
-            git::handle_switch(inner, headers, origin, id, request).await
-        }
-        ["projects", id, "git", "branch"] if *method == Method::POST => {
-            git::handle_branch(inner, headers, origin, id, request).await
-        }
-        ["projects", id, "git", "remote"] if *method == Method::POST => {
-            git::handle_remote(inner, headers, origin, id, request).await
-        }
-        ["projects", id, "git", "fetch"] if *method == Method::POST => {
-            git::handle_fetch(inner, headers, origin, id).await
-        }
-        ["projects", id, "git", "pull"] if *method == Method::POST => {
-            git::handle_pull(inner, headers, origin, id).await
-        }
-        ["projects", id, "git", "push"] if *method == Method::POST => {
-            git::handle_push(inner, headers, origin, id).await
-        }
-        ["projects", id, "git", "sync"] if *method == Method::POST => {
-            git::handle_sync(inner, headers, origin, id, request).await
-        }
-        ["folder"] if *method == Method::PUT => {
-            jobs::handle_folder_put(inner, headers, origin, request).await
         }
         ["jobs"] if *method == Method::POST => {
             jobs::handle_jobs_post(inner, headers, origin, request).await
@@ -1131,12 +1023,6 @@ pub(super) fn authenticate(
     check_credential(inner, headers)
 }
 
-/// The validated `?project=` query parameter, for the routes that carry no
-/// JSON body to name a project in.
-pub(super) fn project_query(uri: &axum::http::Uri) -> Option<String> {
-    query_value(uri, "project").and_then(|value| store::valid_project(&value))
-}
-
 /// The first query parameter called `name`, decoded.
 pub(super) fn query_value(uri: &axum::http::Uri, name: &str) -> Option<String> {
     let query = uri.query()?;
@@ -1268,7 +1154,7 @@ pub(super) mod test_support {
             control: control::ControlAuth::create(state_home, &instance).unwrap(),
             instance,
             port: PORT,
-            bindings: BindingStore::new(state_home),
+            bindings: BindingStore::new(cache_home.join("workspaces")),
             runner: Arc::new(FakeRunner::default()),
             jobs: Mutex::new(Default::default()),
             queue: Mutex::new(VecDeque::new()),
@@ -1278,7 +1164,6 @@ pub(super) mod test_support {
                 state_home.to_path_buf(),
             ),
             admission: Mutex::new(()),
-            projects: projects::Registry::new(projects::Timing::default()),
             sync_logins: sync::Logins::new(),
             connections: connection::Busy::default(),
         })
@@ -1556,400 +1441,11 @@ mod settings_tests {
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     }
 
-    /// The manifest of a `PUT folder` for `files`: path, digest and size each.
-    fn folder_manifest(files: &[(&str, &[u8])]) -> Vec<Value> {
-        files
-            .iter()
-            .map(|(path, bytes)| {
-                json!({
-                    "path": path,
-                    "sha256": librepaper_base::digest::Digest::of(bytes).to_hex(),
-                    "size": bytes.len(),
-                })
-            })
-            .collect()
-    }
-
-    /// A multipart `PUT folder` body: the manifest and a file part per upload.
-    fn folder_request(
-        project: &str,
-        binding: &str,
-        files: &[(&str, &[u8])],
-        uploads: &[&str],
-    ) -> Request<Body> {
-        folder_save(project, binding, files, uploads, false)
-    }
-
-    /// The same body for the first save after the page opened the folder.
-    fn folder_opening_request(
-        project: &str,
-        binding: &str,
-        files: &[(&str, &[u8])],
-        uploads: &[&str],
-    ) -> Request<Body> {
-        folder_save(project, binding, files, uploads, true)
-    }
-
-    fn folder_save(
-        project: &str,
-        binding: &str,
-        files: &[(&str, &[u8])],
-        uploads: &[&str],
-        opening: bool,
-    ) -> Request<Body> {
-        let upload: Vec<(&str, &[u8])> = files
-            .iter()
-            .filter(|(path, _)| uploads.contains(path))
-            .copied()
-            .collect();
-        let mut description = json!({ "manifest": folder_manifest(files) });
-        if opening {
-            description["opening"] = json!(true);
-        }
-        let body = multipart_bytes("manifest", &description, &upload);
-        Request::put(format!("/folder?project={project}&binding={binding}"))
-            .header("content-type", "multipart/form-data; boundary=control-test")
-            .body(Body::from(body))
-            .unwrap()
-    }
-
     #[tokio::test]
-    async fn the_folder_route_mirrors_a_granted_folder_and_asks_for_missing_bytes() {
-        let (inner, _state_home, _cache_home) = test_inner().await;
-        let origin = "https://paper.example";
-        let folder = tempfile::tempdir().unwrap();
-        std::fs::write(folder.path().join("main.typ"), b"= Title").unwrap();
-        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
-        let headers = bearer(&inner);
-
-        let both: [(&str, &[u8]); 2] = [("main.typ", b"= Title"), ("notes.typ", b"notes")];
-        let response = jobs::handle_folder_put(
-            &inner,
-            &headers,
-            Some(origin),
-            folder_request(
-                &binding.project,
-                &binding.id,
-                &both,
-                &["main.typ", "notes.typ"],
-            ),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(body_json(response).await["trashed"], json!([]));
-        assert_eq!(
-            std::fs::read(folder.path().join("notes.typ")).unwrap(),
-            b"notes"
-        );
-
-        // A new file with no bytes uploaded is asked for, and nothing changes.
-        let more: [(&str, &[u8]); 2] = [("main.typ", b"= Title"), ("fresh.typ", b"fresh")];
-        let response = jobs::handle_folder_put(
-            &inner,
-            &headers,
-            Some(origin),
-            folder_request(&binding.project, &binding.id, &more, &["main.typ"]),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        assert_eq!(body_json(response).await["missing"], json!(["fresh.typ"]));
-        assert!(folder.path().join("notes.typ").is_file());
-        assert!(!folder.path().join("fresh.typ").exists());
-
-        // Dropping a file written earlier trashes it.
-        let only: [(&str, &[u8]); 1] = [("main.typ", b"= Title")];
-        let response = jobs::handle_folder_put(
-            &inner,
-            &headers,
-            Some(origin),
-            folder_request(&binding.project, &binding.id, &only, &[]),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(body_json(response).await["trashed"], json!(["notes.typ"]));
-        assert!(!folder.path().join("notes.typ").exists());
-
-        // Another origin is refused, and so is an unknown binding.
-        let response = jobs::handle_folder_put(
-            &inner,
-            &headers,
-            Some("https://other.example"),
-            folder_request(&binding.project, &binding.id, &only, &[]),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        let response = jobs::handle_folder_put(
-            &inner,
-            &headers,
-            Some(origin),
-            folder_request("paper", "nope", &only, &[]),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn the_folder_route_names_a_dropped_file_it_could_not_read_and_keeps_it() {
-        let (inner, _state_home, _cache_home) = test_inner().await;
-        let origin = "https://paper.example";
-        let folder = tempfile::tempdir().unwrap();
-        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
-        let headers = bearer(&inner);
-        let both: [(&str, &[u8]); 2] = [("main.typ", b"= Title"), ("secret.typ", b"private")];
-        let response = jobs::handle_folder_put(
-            &inner,
-            &headers,
-            Some(origin),
-            folder_request(
-                &binding.project,
-                &binding.id,
-                &both,
-                &["main.typ", "secret.typ"],
-            ),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let secret = folder.path().join("secret.typ");
-        let Some(_locked) = crate::local::render::workspace::Unreadable::new(&secret) else {
-            return;
-        };
-
-        // The page could not read secret.typ, so its save omits it.
-        let only: [(&str, &[u8]); 1] = [("main.typ", b"= Title")];
-        let response = jobs::handle_folder_put(
-            &inner,
-            &headers,
-            Some(origin),
-            folder_request(&binding.project, &binding.id, &only, &[]),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let answer = body_json(response).await;
-        assert_eq!(answer["trashed"], json!([]));
-        assert_eq!(answer["kept_unreadable"], json!(["secret.typ"]));
-        assert!(folder.path().join("secret.typ").exists());
-    }
-
-    #[tokio::test]
-    async fn the_folder_route_releases_what_an_opening_save_omits_and_trashes_nothing() {
-        let (inner, _state_home, _cache_home) = test_inner().await;
-        let origin = "https://paper.example";
-        let folder = tempfile::tempdir().unwrap();
-        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
-        let headers = bearer(&inner);
-        let both: [(&str, &[u8]); 2] = [("main.typ", b"= Title"), ("data.typ", b"data")];
-        let response = jobs::handle_folder_put(
-            &inner,
-            &headers,
-            Some(origin),
-            folder_request(
-                &binding.project,
-                &binding.id,
-                &both,
-                &["main.typ", "data.typ"],
-            ),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(body_json(response).await["released"], json!([]));
-
-        // The page reopens the folder and could not take data.typ in, so the
-        // opening save omits it. The file stays and leaves the record.
-        let only: [(&str, &[u8]); 1] = [("main.typ", b"= Title")];
-        let response = jobs::handle_folder_put(
-            &inner,
-            &headers,
-            Some(origin),
-            folder_opening_request(&binding.project, &binding.id, &only, &[]),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let answer = body_json(response).await;
-        assert_eq!(answer["released"], json!(["data.typ"]));
-        assert_eq!(answer["trashed"], json!([]));
-        assert_eq!(answer["kept_unreadable"], json!([]));
-        assert_eq!(
-            std::fs::read(folder.path().join("data.typ")).unwrap(),
-            b"data"
-        );
-
-        // Later saves carry no flag. The released file is no longer recorded,
-        // so it stays, and a recorded file the save omits is trashed.
-        let with_notes: [(&str, &[u8]); 2] = [("main.typ", b"= Title"), ("notes.typ", b"notes")];
-        let response = jobs::handle_folder_put(
-            &inner,
-            &headers,
-            Some(origin),
-            folder_request(&binding.project, &binding.id, &with_notes, &["notes.typ"]),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(body_json(response).await["released"], json!([]));
-        let response = jobs::handle_folder_put(
-            &inner,
-            &headers,
-            Some(origin),
-            folder_request(&binding.project, &binding.id, &only, &[]),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let answer = body_json(response).await;
-        assert_eq!(answer["trashed"], json!(["notes.typ"]));
-        assert_eq!(answer["released"], json!([]));
-        assert!(folder.path().join("data.typ").is_file());
-        assert!(!folder.path().join("notes.typ").exists());
-    }
-
-    #[tokio::test]
-    async fn the_folder_route_refuses_a_binding_that_is_not_a_project_binding() {
-        let (inner, state_home, _cache_home) = test_inner().await;
-        let origin = "https://paper.example";
-        let folder = tempfile::tempdir().unwrap();
-        // A render binding left in the store by an older version.
-        let store = state_home
-            .path()
-            .join("librepaper/local/quarto-bindings.json");
-        std::fs::create_dir_all(store.parent().unwrap()).unwrap();
-        let render = json!({"bindings": [{
-            "id": "q-render", "origin": origin, "project": "paper",
-            "root": folder.path(), "entrypoint": "main.typ", "kind": "render",
-            "execution_granted": true
-        }]});
-        std::fs::write(&store, serde_json::to_vec(&render).unwrap()).unwrap();
-        let files: [(&str, &[u8]); 1] = [("main.typ", b"= Title")];
-        let response = jobs::handle_folder_put(
-            &inner,
-            &bearer(&inner),
-            Some(origin),
-            folder_request("paper", "q-render", &files, &["main.typ"]),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert!(!folder.path().join("main.typ").exists());
-    }
-
-    #[tokio::test]
-    async fn the_folder_route_refuses_the_hosted_binding() {
-        let (inner, _state_home, _cache_home) = test_inner().await;
-        let only: [(&str, &[u8]); 1] = [("main.typ", b"= Title")];
-        let response = jobs::handle_folder_put(
-            &inner,
-            &bearer(&inner),
-            Some("https://paper.example"),
-            folder_request("paper", "hosted", &only, &["main.typ"]),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn the_folder_route_takes_the_manifest_of_a_thousand_files() {
-        let (inner, _state_home, _cache_home) = test_inner().await;
-        let origin = "https://paper.example";
-        let folder = tempfile::tempdir().unwrap();
-        // The page read these files, so the folder holds them already and the
-        // save has no bytes to upload.
-        let names: Vec<String> = (0..1000)
-            .map(|index| format!("notes/{index:04}-{}.txt", "x".repeat(45)))
-            .collect();
-        assert!(names.iter().all(|name| name.len() == 60));
-        std::fs::create_dir_all(folder.path().join("notes")).unwrap();
-        for name in &names {
-            std::fs::write(folder.path().join(name), name.as_bytes()).unwrap();
-        }
-        let files: Vec<(&str, &[u8])> = names
-            .iter()
-            .map(|name| (name.as_str(), name.as_bytes()))
-            .collect();
-        // More than the fixed bound for JSON and well inside the folder allowance.
-        let manifest = json!({ "manifest": folder_manifest(&files) }).to_string();
-        assert!(manifest.len() > MAX_JSON_BYTES);
-        assert!(manifest.len() < projects::MAX_FOLDER_MANIFEST_BYTES);
-
-        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
-        let response = jobs::handle_folder_put(
-            &inner,
-            &bearer(&inner),
-            Some(origin),
-            folder_request(&binding.project, &binding.id, &files, &[]),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(body_json(response).await["trashed"], json!([]));
-        let kept = std::fs::read_dir(folder.path().join("notes"))
-            .unwrap()
-            .count();
-        assert_eq!(kept, 1000);
-    }
-
-    #[tokio::test]
-    async fn a_job_of_a_thousand_files_is_admitted() {
-        let (inner, _state_home, _cache_home) = test_inner().await;
-        let origin = "https://paper.example";
-        let folder = tempfile::tempdir().unwrap();
-        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
-        let mut names = vec!["main.typ".to_string()];
-        names.extend((1..1000).map(|index| format!("notes/{index:04}-{}.txt", "x".repeat(45))));
-        let files: Vec<(&str, &[u8])> = names
-            .iter()
-            .map(|name| (name.as_str(), name.as_bytes()))
-            .collect();
-        let mut job = job_json(&binding.id, b"= Title");
-        job["project"] = json!(binding.project);
-        job["manifest"] = json!(folder_manifest(&files));
-        // More than the fixed bound for JSON and well inside the allowance.
-        let description = job.to_string();
-        assert!(description.len() > MAX_JSON_BYTES);
-        assert!(description.len() < projects::MAX_FOLDER_MANIFEST_BYTES);
-
-        let response = jobs::handle_jobs_post(
-            &inner,
-            &bearer(&inner),
-            Some(origin),
-            job_request(job_body(&job, &files)),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
-    }
-
-    #[tokio::test]
-    async fn a_job_may_list_as_many_files_as_a_folder_project_and_no_more() {
-        let (inner, _state_home, _cache_home) = test_inner().await;
-        let origin = "https://paper.example";
-        let folder = tempfile::tempdir().unwrap();
-        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
-        // A description this long is past axum's default body limit, which
-        // only the router lifts, so it goes over the wire.
-        let post = |count: usize| {
-            let manifest: Vec<Value> = std::iter::once("main.typ".to_string())
-                .chain((1..count).map(|index| format!("f{index:05}.txt")))
-                .map(|path| json!({"path": path, "sha256": "a".repeat(64), "size": 1}))
-                .collect();
-            let mut job = job_json(&binding.id, b"= Title");
-            job["project"] = json!(binding.project);
-            job["manifest"] = json!(manifest);
-            let line = format!("POST {BASE_PATH}/jobs");
-            let body = multipart_bytes("job", &job, &[]);
-            let inner = inner.clone();
-            async move { over_the_wire(&inner, &line, body).await }
-        };
-        // Past the 2,000 files a job once carried. Nothing is uploaded, so the
-        // request stops at the check for the bytes, after the count passed.
-        let (status, answer) = post(projects::MAX_PROJECT_FILES).await;
-        assert_eq!(status, 400, "{answer}");
-        assert!(answer.contains("never uploaded"), "{answer}");
-
-        let (status, answer) = post(projects::MAX_PROJECT_FILES + 1).await;
-        assert_eq!(status, 413, "{answer}");
-        assert!(answer.contains("too many manifest entries"), "{answer}");
-    }
-
-    #[tokio::test]
-    async fn a_job_description_over_the_folder_allowance_is_refused_with_413() {
+    async fn a_job_description_over_the_json_bound_is_refused_with_413() {
         let (inner, _state_home, _cache_home) = test_inner().await;
         let mut job = job_json("hosted", b"= Title");
-        job["padding"] = json!("x".repeat(projects::MAX_FOLDER_MANIFEST_BYTES));
+        job["padding"] = json!("x".repeat(MAX_JSON_BYTES));
         let body = multipart_bytes("job", &job, &[("main.typ", b"= Title")]);
         let line = format!("POST {BASE_PATH}/jobs");
         let (status, answer) = over_the_wire(&inner, &line, body).await;
@@ -1996,54 +1492,6 @@ mod settings_tests {
     }
 
     #[tokio::test]
-    async fn a_folder_save_may_carry_more_than_two_mebibytes() {
-        let (inner, _state_home, _cache_home) = test_inner().await;
-        let folder = tempfile::tempdir().unwrap();
-        let binding = inner
-            .bindings
-            .open_project("https://paper.example", folder.path())
-            .unwrap();
-        let figure = vec![7u8; 3 << 20];
-        let files: [(&str, &[u8]); 1] = [("figure.bin", &figure)];
-        let body = multipart_bytes(
-            "manifest",
-            &json!({ "manifest": folder_manifest(&files) }),
-            &files,
-        );
-        let line = format!(
-            "PUT {BASE_PATH}/folder?project={}&binding={}",
-            binding.project, binding.id
-        );
-        let (status, answer) = over_the_wire(&inner, &line, body).await;
-        assert_eq!(status, 200, "{answer}");
-        let saved = std::fs::read(folder.path().join("figure.bin")).unwrap();
-        assert_eq!(saved.len(), 3 << 20);
-    }
-
-    #[tokio::test]
-    async fn a_manifest_over_the_folder_allowance_is_refused_with_413() {
-        let (inner, _state_home, _cache_home) = test_inner().await;
-        let folder = tempfile::tempdir().unwrap();
-        let binding = inner
-            .bindings
-            .open_project("https://paper.example", folder.path())
-            .unwrap();
-        let padding = "x".repeat(projects::MAX_FOLDER_MANIFEST_BYTES);
-        let body = multipart_bytes(
-            "manifest",
-            &json!({ "manifest": [], "padding": padding }),
-            &[],
-        );
-        let line = format!(
-            "PUT {BASE_PATH}/folder?project={}&binding={}",
-            binding.project, binding.id
-        );
-        let (status, answer) = over_the_wire(&inner, &line, body).await;
-        assert_eq!(status, 413, "{answer}");
-        assert!(answer.contains("the manifest is too large"), "{answer}");
-    }
-
-    #[tokio::test]
     async fn a_protocol_two_job_is_refused_with_a_request_to_update_the_page() {
         let (inner, _state_home, _cache_home) = test_inner().await;
         let mut job = job_json("hosted", b"= Title");
@@ -2083,13 +1531,9 @@ mod settings_tests {
     async fn an_admitted_job_runs_and_serves_its_artifact_log_and_status() {
         let (inner, _state_home, _cache_home) = test_inner().await;
         let origin = "https://paper.example";
-        let folder = tempfile::tempdir().unwrap();
-        std::fs::write(folder.path().join("main.typ"), b"= Title").unwrap();
-        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
         tokio::spawn(run_worker(inner.clone()));
 
-        let mut job = job_json(&binding.id, b"= Title");
-        job["project"] = json!(binding.project);
+        let job = job_json("hosted", b"= Title");
         let response = jobs::handle_jobs_post(
             &inner,
             &bearer(&inner),
@@ -2132,158 +1576,6 @@ mod settings_tests {
         // The staged uploads are gone once the pipeline has run.
         let staged = inner.jobs_root.join(&id).join("project");
         assert!(!staged.exists());
-    }
-
-    #[tokio::test]
-    async fn a_job_in_a_folder_project_records_its_result_files_for_the_poller() {
-        let (inner, _state_home, _cache_home) = test_inner().await;
-        let origin = "https://paper.example";
-        let folder = tempfile::tempdir().unwrap();
-        std::fs::write(folder.path().join("main.typ"), b"= Title").unwrap();
-        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
-        tokio::spawn(run_worker(inner.clone()));
-
-        let mut job = job_json(&binding.id, b"= Title");
-        job["project"] = json!(binding.project);
-        let response = jobs::handle_jobs_post(
-            &inner,
-            &bearer(&inner),
-            Some(origin),
-            job_request(job_body(&job, &[("main.typ", b"= Title")])),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
-        let id = body_json(response).await["id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let response =
-                    jobs::handle_job_status(&inner, &bearer(&inner), Some(origin), &id).await;
-                if body_json(response).await["status"] == "done" {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the job finishes");
-
-        let outputs = inner.projects.render_outputs(&binding.id);
-        assert!(outputs.contains("main.pdf"));
-        assert!(outputs.contains("main.synctex.gz"));
-        assert!(!outputs.contains("main.typ"));
-    }
-
-    #[tokio::test]
-    async fn a_cancelled_render_ends_the_running_state_of_its_project() {
-        let (mut inner, _state_home, _cache_home) = test_inner().await;
-        // A runner that takes a minute unless it is cancelled first.
-        Arc::get_mut(&mut inner).expect("not shared yet").runner = Arc::new(FakeRunner {
-            delay: std::sync::Mutex::new(Duration::from_secs(60)),
-            capabilities: Capabilities::default(),
-        });
-        let origin = "https://paper.example";
-        let folder = tempfile::tempdir().unwrap();
-        std::fs::write(folder.path().join("main.typ"), b"= Title").unwrap();
-        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
-        tokio::spawn(run_worker(inner.clone()));
-
-        let mut job = job_json(&binding.id, b"= Title");
-        job["project"] = json!(binding.project);
-        let response = jobs::handle_jobs_post(
-            &inner,
-            &bearer(&inner),
-            Some(origin),
-            job_request(job_body(&job, &[("main.typ", b"= Title")])),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
-        let id = body_json(response).await["id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while inner.projects.render_state(&binding.id).running.is_none() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the render starts");
-        let running = inner.projects.render_state(&binding.id).running;
-        assert_eq!(running.as_deref(), Some("main.pdf"));
-
-        let response = jobs::handle_cancel(&inner, &bearer(&inner), Some(origin), &id).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let response =
-                    jobs::handle_job_status(&inner, &bearer(&inner), Some(origin), &id).await;
-                if body_json(response).await["status"] == "canceled" {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the render is cancelled");
-
-        let after = inner.projects.render_state(&binding.id);
-        assert_eq!(after.running, None);
-        // What the command was expected to write stays recorded.
-        assert!(after.outputs.contains("main.pdf"));
-    }
-
-    #[tokio::test]
-    async fn a_job_for_an_entry_file_the_folder_has_not_saved_yet_is_admitted() {
-        let (inner, _state_home, _cache_home) = test_inner().await;
-        let origin = "https://paper.example";
-        let folder = tempfile::tempdir().unwrap();
-        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
-        let mut job = job_json(&binding.id, b"= Title");
-        job["project"] = json!(binding.project);
-        let response = jobs::handle_jobs_post(
-            &inner,
-            &bearer(&inner),
-            Some(origin),
-            job_request(job_body(&job, &[("main.typ", b"= Title")])),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
-        // Admission writes nothing into the folder; the render does.
-        assert!(!folder.path().join("main.typ").exists());
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_job_whose_entry_file_links_outside_the_folder_is_refused() {
-        let (inner, _state_home, _cache_home) = test_inner().await;
-        let origin = "https://paper.example";
-        let folder = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        std::fs::write(outside.path().join("secret.typ"), b"secret").unwrap();
-        std::os::unix::fs::symlink(
-            outside.path().join("secret.typ"),
-            folder.path().join("main.typ"),
-        )
-        .unwrap();
-        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
-        let mut job = job_json(&binding.id, b"= Title");
-        job["project"] = json!(binding.project);
-        let response = jobs::handle_jobs_post(
-            &inner,
-            &bearer(&inner),
-            Some(origin),
-            job_request(job_body(&job, &[("main.typ", b"= Title")])),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert_eq!(
-            std::fs::read(outside.path().join("secret.typ")).unwrap(),
-            b"secret"
-        );
     }
 
     #[tokio::test]

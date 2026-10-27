@@ -21,8 +21,6 @@
     desktop = false,
     // The desktop app's connection to a repository. An editor in the desktop app has one.
     connection = null,
-    // Keeps a folder on this computer. It throws with the message the panel shows.
-    onfolder,
   } = $props();
 
   const DOCS = "/docs/git.html";
@@ -36,12 +34,9 @@
   // What a refused transfer is called in the panel's sentences.
   const ACTION = { pull: "getting repository changes", push: "sending project changes" };
 
-  // The address that is typed, and the problem with it. A Use a folder action
-  // that is running holds its own button.
+  // The address that is typed, and the problem with it.
   let address = $state("");
   let failure = $state("");
-  let folderBusy = $state(false);
-  let folderFailure = $state("");
 
   $effect(() => {
     if (!open) return;
@@ -84,19 +79,6 @@
     await connection.connect(address);
     if (connection.state.status?.connected) address = "";
   }
-
-  async function chooseFolder() {
-    if (folderBusy || busy) return;
-    folderBusy = true;
-    folderFailure = "";
-    try {
-      await onfolder();
-    } catch (error) {
-      folderFailure = error?.message || "The desktop app could not keep a folder for this project.";
-    } finally {
-      folderBusy = false;
-    }
-  }
 </script>
 
 {#snippet signIn()}
@@ -120,11 +102,6 @@
       </button>
     </div>
   </form>
-  <div class="git-row">
-    <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy || folderBusy} onclick={chooseFolder}>Use a folder on this computer…</button>
-  </div>
-  <p class="panel-meta git-note">To edit in a clone you already have, or in a new empty folder.</p>
-  {#if folderFailure}<p class="lp-text-error git-error" role="alert">{folderFailure}</p>{/if}
 {/snippet}
 
 {#snippet connected()}

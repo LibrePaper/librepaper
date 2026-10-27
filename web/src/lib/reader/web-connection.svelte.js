@@ -6,13 +6,12 @@
 //
 // This module owns that state; the panel only reads it and calls the actions.
 //
-// Signing in is two calls to the desktop app with the page between them, as
-// for a folder project. When the page has a session on the server, `approve`
+// Signing in is two calls to the desktop app with the page between them. When the page has a session on the server, `approve`
 // approves the code there. Otherwise the page opens the server's approval page
 // in a new tab and asks the second call every few seconds until the code is
 // approved.
 import * as routes from "../desktop/connections.js";
-import { LOGIN_PENDING } from "../desktop/sync.js";
+import { LOGIN_PENDING } from "../desktop/connections.js";
 
 // How often the second call is repeated while the desktop app has not yet seen
 // the approval, and how long to wait between.

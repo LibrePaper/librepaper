@@ -4,7 +4,6 @@ mod download;
 #[cfg(target_os = "linux")]
 mod drop;
 mod notice;
-mod quit;
 mod scrub;
 mod servers;
 mod service;
@@ -120,7 +119,6 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(zoom::Zoom::load(app.handle()));
     app.manage(theme::Theme::load(app.handle()));
     app.manage(download::Downloads::default());
-    app.manage(quit::Quit::default());
     theme::watch_system(app.handle());
     #[cfg(target_os = "linux")]
     app.manage(drop::Dropped::default());
@@ -579,11 +577,10 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
         return responder.respond(with_origin(res, &origin));
     }
 
-    // The File menu's Quit in the page quits the whole app, after every
-    // window has saved its project folder. RunEvent::Exit stops the service.
+    // The File menu's Quit in the page quits the whole app. RunEvent::Exit stops the service.
     if request.method() == Method::POST && request.uri().path() == "/shell/quit" {
         let main = app.clone();
-        if let Err(err) = app.run_on_main_thread(move || quit::request(&main)) {
+        if let Err(err) = app.run_on_main_thread(move || main.exit(0)) {
             shell_log::write(&format!("could not quit: {err}"));
         }
         let res = Response::builder()
@@ -591,23 +588,6 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
             .body(Vec::new())
             .expect("an empty response is valid");
         return responder.respond(with_origin(res, &origin));
-    }
-
-    // A window's answer to the quit request: its project folder is saved (ok)
-    // or it could not be. The window is the one that sent it.
-    if request.method() == Method::POST && request.uri().path() == "/shell/quit-ready" {
-        let answer = serde_json::from_slice::<serde_json::Value>(request.body())
-            .ok()
-            .and_then(|body| Some((body["id"].as_u64()?, body["ok"].as_bool()?)));
-        let Some((id, ok)) = answer else {
-            let res = json_error(
-                StatusCode::BAD_REQUEST,
-                "The answer must name the request and say ok or not.",
-            );
-            return responder.respond(with_origin(res, &origin));
-        };
-        quit::answer(app, &label, id, ok);
-        return responder.respond(with_origin(no_content(), &origin));
     }
 
     // Linux only: a file the shell took from a drop. The request must name the

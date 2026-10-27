@@ -42,7 +42,6 @@
   import { localProjects } from "../lib/offline-projects.js";
   import { provide } from "../lib/support/providers.js";
   import * as localBridge from "../lib/desktop/client.js";
-  import { folderProjectHref, openFolderProject, folderProjects, forgetFolderProject } from "../lib/desktop/projects.js";
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
   import { readDefaultPreview } from "../lib/build-preferences.js";
   import { warmReader } from "../lib/warm-reader.js";
@@ -1128,31 +1127,6 @@
     return () => window.removeEventListener("popstate", reread);
   });
 
-  // Folder projects exist only in the desktop app, signed in or not.
-  const inDesktop = Boolean(localBridge.desktop());
-  let recentFolders = $state([]);
-
-  async function loadFolders() {
-    if (!inDesktop) return;
-    try { recentFolders = await folderProjects(); } catch { recentFolders = []; }
-  }
-
-  async function openFolder() {
-    try {
-      const project = await openFolderProject();
-      if (project) location.href = folderProjectHref(project.id);
-    } catch (error) { say(error?.message || "The desktop app could not open that folder."); }
-  }
-
-  async function forgetFolder(folder) {
-    try {
-      await forgetFolderProject(folder.id);
-      await loadFolders();
-    } catch (error) { say(error?.message || "The desktop app could not forget that folder."); }
-  }
-
-  $effect(() => { void loadFolders(); });
-
   $effect(() => provide("account", () => ({ id: me.id, signedIn: Boolean(me.provider) })));
 
   $effect(() => {
@@ -1205,29 +1179,6 @@
   </Menu.Item>
 {/snippet}
 
-{#snippet recentFoldersList()}
-  {#if inDesktop && recentFolders.length}
-    <section class="card p-4" aria-label="Recent folders">
-      <h2 class="h4">Recent folders</h2>
-      <ul class="folders">
-        {#each recentFolders as folder (folder.id)}
-          <li class="folder-row">
-            {#if folder.present}
-              <a class="folder-name" href={folderProjectHref(folder.id)}>{folder.name}</a>
-              <span class="folder-when" title={folder.opened_at}>{since(folder.opened_at)}</span>
-            {:else}
-              <span class="folder-name">{folder.name}</span>
-              <span class="folder-when">Folder not found</span>
-            {/if}
-            <button type="button" class="btn btn-sm lp-control-tonal-brand" aria-label="Forget {folder.name}"
-                    onclick={() => void forgetFolder(folder)}>Forget</button>
-          </li>
-        {/each}
-      </ul>
-    </section>
-  {/if}
-{/snippet}
-
 {#if me.name}
   <!-- The workspace half. The trail says where in the account this is, which
        is the same slot a project's title takes when one is open: going in
@@ -1253,9 +1204,6 @@
         <input class="input project-search" type="search" placeholder="Search projects"
                aria-label="Search projects by title or file" bind:value={search} />
         <button type="button" class="btn btn-sm nav-action lp-control-tonal-brand" onclick={() => openSettings()}>Settings</button>
-      {/if}
-      {#if inDesktop}
-        <button type="button" class="btn btn-sm nav-action lp-control-tonal-brand" onclick={() => void openFolder()}>Open folder…</button>
       {/if}
       {#if me.can_publish}
         <button type="button" class="btn btn-sm nav-new nav-action lp-control-tonal-brand" aria-label="New project" onclick={() => openNew()}>
@@ -1358,7 +1306,6 @@
         </div>
       {/if}
 
-      {#if place === "projects"}{@render recentFoldersList()}{/if}
 
       <!-- One toolbar or the other, never both. Selecting is a mode, and the
            dangerous verb in it is not something to leave sitting beside
@@ -1636,15 +1583,11 @@
        projects. -->
   <Nav {me}>
     {#snippet tools()}
-      {#if inDesktop}
-        <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void openFolder()}>Open folder…</button>
-      {/if}
       <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => openSettings()}>Settings</button>
     {/snippet}
   </Nav>
   <Page width="measure">
     <Stack gap={8}>
-      {@render recentFoldersList()}
       {#if reachedServer && me.providers && !me.providers.length}
         <aside class="card p-4">
           This server has no sign-in, so it has no projects to show. A project
@@ -1798,10 +1741,6 @@
   .place-heading { font-size: var(--text-2xl); font-weight: 600; margin: 0; }
   .place-line { display: flex; align-items: center; gap: calc(var(--spacing) * 2); }
 
-  .folders { list-style: none; padding: 0; margin: 0; }
-  .folder-row { display: flex; align-items: center; gap: calc(var(--spacing) * 3); padding-block: calc(var(--spacing) * 1); }
-  .folder-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .folder-when { color: var(--color-text-secondary); font-size: var(--text-sm); }
   .starters { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 2); }
   .new-page { height: calc(100dvh - var(--librepaper-bar)); max-width: none; margin: 0; padding: 0; overflow-y: auto; }
   .starters-say { color: var(--color-text-secondary); font-size: var(--text-sm); margin-right: calc(var(--spacing)); }

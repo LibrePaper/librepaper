@@ -75,13 +75,6 @@ try {
   assert.equal(await at(), "/desktop/?in", "a signed-in desktop user stays on the project browser");
   assert.equal(await tab.evaluate("Boolean(document.querySelector('.open-link'))"), false, "the project browser has no link field");
 
-  // Open folder sits on the landing page of the desktop app, and not in a browser.
-  const buttonLabels = () => tab.evaluate("[...document.querySelectorAll('button')].map((node) => node.textContent.trim())");
-  assert.ok((await buttonLabels()).includes("Open folder…"), "the desktop app offers Open folder: " + (await buttonLabels()));
-  await tab.navigate(`${origin}/?in`);
-  await until("project browser in a browser", () => tab.evaluate("Boolean(document.querySelector('.projects'))"));
-  assert.equal((await buttonLabels()).includes("Open folder…"), false, "a browser has no Open folder");
-
   // The desktop app opens a pasted link from its own server, keys and all, and
   // refuses one from anywhere else.
   const pasteLink = (value) => tab.evaluate(`(() => {

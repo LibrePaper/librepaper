@@ -1,6 +1,5 @@
 // The comparison the editor area shows in place of its source: a version of
-// the history, or a changed file of the Git panel. Choosing one starts it, and
-// the panel alone does not. Starting one keeps the editor area as it was, so
+// the history. Starting one keeps the editor area as it was, so
 // that ending it can put that back.
 //
 // The module owns which comparison is open and the view it saved. It does not
@@ -8,7 +7,7 @@
 // state when a comparison starts, and puts the saved view back itself when
 // one ends.
 
-/** @typedef {"" | "history" | "git"} ComparisonKind */
+/** @typedef {"" | "history"} ComparisonKind */
 
 /** @returns {{ readonly kind: ComparisonKind, begin: (kind: ComparisonKind, save: () => object) => void, end: () => object | null }} */
 export function createComparison() {

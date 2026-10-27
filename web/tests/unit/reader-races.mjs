@@ -184,7 +184,6 @@ const context = (values) => {
     Uint8Array,
     ArrayBuffer,
     readerDisposed: false,
-    LOCAL: false,
     // Recomputing the changes is part of what an edit does now; the blocks
     // that care override this to count the calls.
     refreshReview: () => {},
@@ -394,15 +393,13 @@ console.log("reader-races: all checks passed");
   const active = { files,
     directoryChanged: (events) => !Array.isArray(events) || events.some((event) => directory.has(event.target)) };
   let targets = 0;
-  let pokes = 0;
-  const ctx = context({ session: active, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: () => changes++, scheduleTargetUpdate: () => targets++, folderSync: { poke: () => pokes++ } });
+  const ctx = context({ session: active, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: () => changes++, scheduleTargetUpdate: () => targets++ });
   vm.runInContext(body("  function filesChanged(events, active = session)", "  function refreshPeers()"), ctx);
   ctx.events = [{ target: "cid:2@1:Text" }];
   vm.runInContext("filesChanged(events)", ctx);
   assert.equal(refreshes, 0, "an edit inside a file does not rebuild the directory");
   assert.equal(changes, 1, "but it does repaint the preview");
   assert.equal(targets, 1, "and it asks for the preview target to be worked out again");
-  assert.equal(pokes, 1, "and it tells the folder sync to catch up");
   ctx.events = [{ target: openText.id }];
   vm.runInContext("filesChanged(events)", ctx);
   assert.equal(changes, 2, "an edit to the open file is heard here too, since no watcher is bound to it");
@@ -906,9 +903,8 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   assert.equal(said.length, 3);
 }
 
-// A local project has no server copy. Its edits are in memory until the folder
-// is written, so closing the page while a write is pending is held, and the
-// write is started so one that can still finish does.
+// Closing the page is held only while work has reached neither the server nor
+// this browser.
 {
   const unloadBody = body("  function beforeUnload(event)", "  // The arrangement is changed");
   const closing = (ctx) => {
@@ -916,50 +912,11 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
     ctx.beforeUnload(event);
     return event.prevented;
   };
-  let flushes = 0;
-  const folderSync = { waiting: false, pending() { return this.waiting; }, async flush() { flushes += 1; return true; } };
-  const local = context({ LOCAL: true, atRisk: false, folderSync });
-  vm.runInContext(unloadBody, local);
-  assert.equal(closing(local), false, "a folder that holds everything lets the page go");
-  assert.equal(flushes, 0, "and has nothing to write");
-  folderSync.waiting = true;
-  assert.equal(closing(local), true, "a pending folder write keeps the page");
-  assert.equal(flushes, 1, "and the write is started");
-  // A web project has no folder sync, and unsaved server work still holds the page.
-  const web = context({ atRisk: false, folderSync: null });
+  const web = context({ atRisk: false });
   vm.runInContext(unloadBody, web);
   assert.equal(closing(web), false);
   web.atRisk = true;
   assert.equal(closing(web), true);
-  assert.equal(flushes, 1);
-}
-
-// The Reader's own moves to another page settle a local project's folder
-// first, and stay put, saying so, when it cannot be written.
-{
-  const said = [];
-  const location = { href: "/reader.html?local=f1" };
-  let saved = false;
-  let flushes = 0;
-  const folderSync = { async flush() { flushes += 1; return saved; } };
-  const ctx = context({ LOCAL: true, say: (text, options) => said.push({ text, ...options }), location, folderSync });
-  vm.runInContext(body("  async function leaveTo(href)", "  // The LibrePaper section of a local project's Git panel."), ctx);
-  await vm.runInContext('leaveTo("/")', ctx);
-  assert.equal(flushes, 1);
-  assert.equal(location.href, "/reader.html?local=f1", "a folder that could not be written keeps the person here");
-  assert.deepEqual(said, [{ text: "The folder could not be saved.", kind: "problem", id: "reader:folder-leave" }]);
-  saved = true;
-  await vm.runInContext('leaveTo("/")', ctx);
-  assert.equal(flushes, 2);
-  assert.equal(location.href, "/", "a folder that was written lets the person go");
-  assert.equal(said.length, 1);
-  // A web project has no folder to write.
-  const webLocation = { href: "/docs/paper" };
-  const web = context({ say: (text) => said.push({ text }), location: webLocation, folderSync: null });
-  vm.runInContext(body("  async function leaveTo(href)", "  // The LibrePaper section of a local project's Git panel."), web);
-  await vm.runInContext('leaveTo("/reader.html?local=f2")', web);
-  assert.equal(webLocation.href, "/reader.html?local=f2");
-  assert.equal(flushes, 2);
 }
 
 // Reconnect metadata is checked before the old session can send its CRDT.

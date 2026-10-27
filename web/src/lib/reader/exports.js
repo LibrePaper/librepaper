@@ -106,22 +106,15 @@ export function pandocMath(html) {
 ///   `{ kind: "html", html }` or null; reused when its kind is the one
 ///   wanted and `previewCurrent` says it is of the source on screen.
 /// - `project`: the document's slug, which a local build is scoped to.
-/// - `bindingId`: where a local build runs, which is where the preview runs:
-///   the hosted workspace for a web project, the folder for a folder project.
-/// - `encode`: the folder project's bytes for a text, passed on to a local
-///   build so it does not rewrite the files it did not change. None for a web
-///   project.
-/// - `onDisk`: the digest the folder holds for a path, so a local build is not
-///   sent a file the folder already has. None for a web project.
 /// - `render`: `renderers.render`. `run`: Pandoc.
 /// - `local`: whether the desktop app builds the file with the command for
 ///   its format, false for the browser route.
 ///
 /// Resolves `{ blob, name }`; rejects with an Error whose message is a plain
 /// sentence.
-export async function exportFile({ target, format, tree, title, slug, project = "", bindingId, preview, previewCurrent, render: renderIn, run, local = false, encode = undefined, onDisk = undefined }) {
+export async function exportFile({ target, format, tree, title, slug, project = "", preview, previewCurrent, render: renderIn, run, local = false }) {
   const reused = previewCurrent && preview?.kind === target ? preview : null;
-  const render = (source, name, options) => renderIn(source, name, { ...options, bindingId, ...(encode ? { encode } : {}), ...(onDisk ? { onDisk } : {}) });
+  const render = (source, name, options) => renderIn(source, name, options);
 
   // The desktop app builds the target itself, with no Pandoc step. The frame
   // is not reused: its page may predate Run code and lack the cells' results.

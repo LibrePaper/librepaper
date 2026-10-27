@@ -119,13 +119,8 @@ export async function desktopReport() {
 }
 
 // The binding of a web project: the desktop app renders it in a workspace of
-// its own, written from the files the browser sends with each job. A local
-// project uses its local id instead, and its folder is the workspace.
-export const HOSTED_BINDING = "hosted";
-
-function projectKey() {
-  return `${current.origin}|${current.project}`;
-}
+// its own, written from the files the browser sends with each job.
+const HOSTED_BINDING = "hosted";
 
 let current = { project: null, origin: "" };
 
@@ -329,7 +324,7 @@ function safeSize(value) {
 // Turn a shared tree's `texts`/`assets` maps into `[relativePath, bytes]`
 // pairs, validating and de-duplicating paths.
 /** @param {Pick<DesktopTree, "texts" | "assets">} tree @returns {Array<[string, Uint8Array]>} */
-function collectTreeFiles(tree, encode) {
+function collectTreeFiles(tree) {
   const files = [];
   const seen = new Set();
   const add = (path, bytes) => {
@@ -338,7 +333,7 @@ function collectTreeFiles(tree, encode) {
     seen.add(safe);
     files.push([safe, bytes]);
   };
-  for (const [path, text] of Object.entries(tree?.texts || {})) add(path, encode ? encode(path, text) : bytesOf(text));
+  for (const [path, text] of Object.entries(tree?.texts || {})) add(path, bytesOf(text));
   for (const [path, bytes] of Object.entries(tree?.assets || {})) add(path, bytesOf(bytes));
   return files;
 }
@@ -424,19 +419,11 @@ export const rendererKey = (format, output) => `${format}.${output}`;
 /** Render one document with the command the desktop app holds for its
  * format and output. The page sends a job and never a command. Resolves with
  * the result file, the SyncTeX file when the tool wrote one, and the log.
- * A folder project's render runs in its folder, so it sends each text as the
- * folder sync does, through `encode`, and a file the render did not change
- * keeps its bytes. A web project passes none and sends every text as LF.
- * A folder render also takes `onDisk`, which answers the digest the folder
- * holds for a path: a file with that digest is listed in the manifest and its
- * bytes stay out of the upload.
- * @param {{ job?: DesktopJob, tree: DesktopTree, format: string, output: string, entrypoint?: string, bindingId?: string, encode?: (path: string, text: string) => Uint8Array, onDisk?: (path: string) => string | null }} input
+ * @param {{ job?: DesktopJob, tree: DesktopTree, format: string, output: string, entrypoint?: string }} input
  * @param {BuildCallbacks} [callbacks] */
-export async function runRender({ job = {}, tree, format, output, entrypoint = "", bindingId: binding = "", encode, onDisk }, { signal, onProgress } = {}) {
-  const files = collectTreeFiles(tree, encode);
+export async function runRender({ job = {}, tree, format, output, entrypoint = "" }, { signal, onProgress } = {}) {
+  const files = collectTreeFiles(tree);
   const manifest = await manifestOf(files);
-  const folderRender = Boolean(binding) && binding !== HOSTED_BINDING && Boolean(onDisk);
-  const sent = folderRender ? files.filter(([path], at) => onDisk(path) !== manifest[at].sha256) : files;
   const request = {
     protocol: 3,
     project: current.project,
@@ -446,7 +433,7 @@ export async function runRender({ job = {}, tree, format, output, entrypoint = "
     format,
     output,
     entrypoint: relativePath(entrypoint || tree.main),
-    binding_id: binding || HOSTED_BINDING,
+    binding_id: HOSTED_BINDING,
     manifest,
     options: {
       deadline_seconds: Number.isFinite(job.deadlineSeconds) ? Math.max(1, Math.floor(job.deadlineSeconds)) : 300,
@@ -454,7 +441,7 @@ export async function runRender({ job = {}, tree, format, output, entrypoint = "
   };
   const scope = `local ${format}`;
   onProgress?.({ done: 0, total: 1, scope });
-  const finished = await submitAndAwait(formOf(request, sent), signal);
+  const finished = await submitAndAwait(formOf(request, files), signal);
   const { id, status } = finished;
   const artifact = await fetchVerifiedOutput(id, "artifact", status);
   const synctex = await fetchVerifiedOutput(id, "synctex", status);
@@ -469,106 +456,6 @@ export async function runRender({ job = {}, tree, format, output, entrypoint = "
     error: status.error,
     provenance: { backend: "local", format, output },
   };
-}
-
-// The digests the desktop app last acknowledged for one project folder. A new
-// binding, or any answer that is not a 200, starts the next call from nothing,
-// so the next upload sends every file again.
-let acknowledged = { key: "", digests: new Map() };
-
-/** Tells the client what the desktop app already holds for a folder, so the
- * next sync sends no bytes for files that still match. `entries` maps a path
- * to the sha256 of the bytes the folder holds.
- * @param {string} binding @param {Record<string, string>} entries */
-export function acknowledge(binding, entries) {
-  const key = `${projectKey()}|${binding}`;
-  if (acknowledged.key !== key) acknowledged = { key, digests: new Map() };
-  for (const [path, sha] of Object.entries(entries)) acknowledged.digests.set(path, sha);
-}
-
-/** Makes the next folder sync send these paths again, even though the desktop
- * app already holds bytes with their digest. A person who keeps their copy of
- * a file that changed on disk asks for exactly that.
- * @param {string[]} paths */
-export function forgetAcknowledged(paths) {
-  for (const path of paths) acknowledged.digests.delete(path);
-}
-
-function folderForm(manifest, files, opening) {
-  const form = new FormData();
-  form.append("manifest", new Blob([JSON.stringify(opening ? { manifest, opening: true } : { manifest })], { type: "application/json" }), "manifest.json");
-  for (const [path, bytes] of files) form.append("file", new Blob([toArrayBuffer(bytes)]), path);
-  return form;
-}
-
-/** Bring the granted project folder in step with the project. The manifest
- * lists every file, and the bytes go only for files that changed since the
- * desktop app last acknowledged them and that the folder does not already hold
- * (`onDisk` answers the digest it holds for a path). A text is hashed from the
- * bytes `encode` gives. A figure is listed by the digest in `tree.digests`, and
- * `assets` gives its size and, only when its bytes must go, the bytes.
- * `opening` marks the first save after the page opened the folder: its manifest
- * lists what the page took in, so the desktop app drops a recorded file it
- * omits from its record and trashes nothing. Resolves with the desktop app's
- * answer (`kept`, `trashed`, `renamed`, `kept_unreadable`, `released`), or the
- * answer as parsed.
- * @param {{ tree: Pick<DesktopTree, "texts" | "digests">, bindingId: string, encode?: (path: string, text: string) => Uint8Array, opening?: boolean, onDisk?: (path: string) => string | null, assets?: { size: (sha: string) => number | undefined, bytes: (digests: Record<string, string>) => Promise<Record<string, Uint8Array>> } }} input
- * @param {{ signal?: AbortSignal }} [options] */
-export async function syncFolder({ tree, bindingId: binding, encode, opening, onDisk = () => null, assets }, { signal } = {}) {
-  const id = String(binding || "");
-  if (!id || id === HOSTED_BINDING) throw new Error("only a local project has a folder");
-  const texts = collectTreeFiles({ texts: tree.texts }, encode);
-  const manifest = await manifestOf(texts);
-  /** Bytes already in hand, by path. @type {Map<string, Uint8Array>} */
-  const held = new Map(texts);
-  /** Figures whose size is not known, which are read to measure them. @type {Record<string, string>} */
-  const unsized = {};
-  /** Figure digests by path. @type {Record<string, string>} */
-  const figures = {};
-  for (const [name, sha] of Object.entries(tree.digests || {})) {
-    const path = relativePath(name);
-    if (held.has(path) || path in figures) throw new Error(`duplicate project path: ${path}`);
-    figures[path] = sha;
-    const size = assets.size(sha);
-    if (size === undefined) unsized[path] = sha;
-    else manifest.push({ path, sha256: sha, size });
-  }
-  if (Object.keys(unsized).length) {
-    for (const [path, bytes] of Object.entries(await assets.bytes(unsized))) {
-      held.set(path, bytes);
-      manifest.push({ path, sha256: figures[path], size: bytes.byteLength });
-    }
-  }
-  const key = `${projectKey()}|${id}`;
-  if (acknowledged.key !== key) acknowledged = { key, digests: new Map() };
-  const known = acknowledged.digests;
-  const path = `folder?project=${encodeURIComponent(current.project || "")}&binding=${encodeURIComponent(id)}`;
-  const changed = new Set(manifest
-    .filter((entry) => known.get(entry.path) !== entry.sha256 && onDisk(entry.path) !== entry.sha256)
-    .map((entry) => entry.path));
-  const upload = async (paths) => {
-    /** @type {Record<string, string>} */
-    const wanted = {};
-    for (const name of paths) if (!held.has(name) && name in figures) wanted[name] = figures[name];
-    if (Object.keys(wanted).length) for (const [name, bytes] of Object.entries(await assets.bytes(wanted))) held.set(name, bytes);
-    const files = [...paths].filter((name) => held.has(name)).map((name) => /** @type {[string, Uint8Array]} */ ([name, held.get(name)]));
-    return send("PUT", path, { formBody: folderForm(manifest, files, opening), signal });
-  };
-  let response;
-  try {
-    try {
-      response = await upload(changed);
-    } catch (error) {
-      if (error?.name !== "Refused" || error?.status !== 409) throw error;
-      const missing = Array.isArray(error.body?.missing) ? error.body.missing : [];
-      response = await upload(new Set([...changed, ...missing]));
-    }
-  } catch (error) {
-    acknowledged = { key: "", digests: new Map() };
-    throw error;
-  }
-  acknowledged = { key, digests: new Map(manifest.map((entry) => [entry.path, entry.sha256])) };
-  return response.json();
 }
 
 /** Change the command that renders one output. The desktop app shows the

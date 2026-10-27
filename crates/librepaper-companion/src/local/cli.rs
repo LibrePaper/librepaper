@@ -150,17 +150,13 @@ async fn start_foreground(port: u16) {
 
     // Every document renders in a workspace of its own under the cache,
     // written from the files the browser sends with each job: nothing has
-    // to be bound by hand. A project folder chosen in the browser's local
-    // app settings still wins for a project that keeps data the document
-    // does not share.
+    // to be bound by hand.
     let workspaces = cache_home()
         .join("librepaper")
         .join("local")
         .join("workspaces");
-    let runner: Arc<dyn Runner> = Arc::new(NativeRunner::with_hosted_workspaces(
-        &state_home,
-        workspaces.clone(),
-    ));
+    let runner: Arc<dyn Runner> =
+        Arc::new(NativeRunner::with_hosted_workspaces(workspaces.clone()));
     // The credential is written to a private file before the first request
     // is served, so `endpoint` can read it as soon as `health` answers.
     let service = LocalService::with_hosted_workspaces(

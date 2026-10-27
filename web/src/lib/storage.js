@@ -75,7 +75,7 @@ export const PALETTE = "librepaper-palette";
 // ("light"). Like the theme, a habit of the person looking at the screen.
 export const PREVIEW_PAPER = "librepaper-preview-paper";
 // The last `/api/config` answer, the deployment's limits and file rules. The
-// service worker does not keep API answers, so a folder project opened with no
+// service worker does not keep API answers, so a project opened with no
 // connection to the server reads its rules from here. It describes the
 // deployment and nothing about the person, so signing out leaves it.
 export const CONFIG = "librepaper-config";

@@ -3,18 +3,16 @@
 //!
 //! The desktop app clones the repository into the state home, under
 //! `connections/<key>/repo`, and keeps the link and the hashes of what was
-//! last pulled or pushed in the clone's own refs, as a git folder does. The
+//! last pulled or pushed in the clone's own refs. The
 //! person never sees the clone. Pull and push move the project's named versions
 //! and the repository's commits through it, with the person's own Git
 //! credentials, and a merge that stops with conflicts is resolved here one file
 //! at a time.
 //!
-//! Only one git operation runs per connection at a time. The work is the same
-//! as the git routes' and the sync crate's, called from `git.rs` and `sync.rs`.
+//! Only one git operation runs per connection at a time. The work is the
+//! sync crate's and the Git runner's, called through `git.rs` and `sync.rs`.
 
 use super::*;
-
-use std::collections::BTreeSet;
 
 use super::git::{
     conflicted_paths, declined, merge_in_progress, refuse_because, remote_failure, run, run_pull,
@@ -119,7 +117,7 @@ impl Connection {
 
 /// The first 32 hex characters of the SHA-256 of the project's address.
 fn connection_key(link: &Link) -> String {
-    librepaper_base::digest::Digest::of(project_url(link).as_bytes()).to_hex()[..32].to_string()
+    librepaper_base::digest::Digest::of(project_url(link).as_bytes()).prefix(32)
 }
 
 /// What `connection.json` holds: the project's address and the remote's.
@@ -194,9 +192,9 @@ async fn merge_side(repo: &Path) -> Result<&'static str, Failure> {
 }
 
 /// Whether the token this computer holds for the project's site still works.
-/// A connected project asks the site, as a folder project's status does, so a
-/// revoked or expired token reads as signed out. Any other failure to reach
-/// the site leaves the answer to the pull or push that meets it.
+/// A connected project asks the site, so a revoked or expired token reads as
+/// signed out. Any other failure to reach the site leaves the answer to the
+/// pull or push that meets it.
 async fn token_works(inner: &Inner, connection: &Connection, token: &str) -> bool {
     if token.is_empty() {
         return false;
@@ -446,7 +444,7 @@ async fn pull_remote(repo: &Path) -> Result<Value, Failure> {
     if !upstream.success() {
         return Ok(json!({"status": "up-to-date", "conflicts": []}));
     }
-    run_pull(repo, &BTreeSet::new()).await
+    run_pull(repo).await
 }
 
 /// The project's named versions taken into the clone, merged into its branch.
@@ -982,9 +980,8 @@ mod tests {
     async fn a_connection_lives_in_a_folder_named_by_its_project_address() {
         let fixture = Fixture::new().await;
         let connection = fixture.connection(PROJECT);
-        let key = librepaper_base::digest::Digest::of(b"https://paper.example/docs/abc123")
-            .to_hex()[..32]
-            .to_string();
+        let key =
+            librepaper_base::digest::Digest::of(b"https://paper.example/docs/abc123").prefix(32);
         assert_eq!(connection.key, key);
         assert_eq!(connection.key.len(), 32);
         let folder = fixture.inner.state_home.join("connections").join(&key);

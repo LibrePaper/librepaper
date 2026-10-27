@@ -34,7 +34,7 @@ const { createComparison } = await loadRunes(new URL("../../src/lib/reader/compa
   // become since.
   const comparison = createComparison();
   let openFile = "main.typ";
-  comparison.begin("git", () => ({ openFile }));
+  comparison.begin("history", () => ({ openFile }));
   openFile = "chapter.typ";
   assert.equal(comparison.end().openFile, "main.typ");
 }

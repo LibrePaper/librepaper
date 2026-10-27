@@ -6,6 +6,10 @@
 // failure says what git reported.
 import { send } from "./client.js";
 
+/// What the desktop app answers to `login/complete` while the code it handed
+/// out has not been approved yet. Any other 400 means the sign-in expired.
+export const LOGIN_PENDING = "sign in and approve the code, then retry";
+
 const route = (step = "") => `connections${step ? `/${step}` : ""}`;
 
 // A project is named by its page address, `https://<site>/docs/<slug>`, in the

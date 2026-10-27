@@ -82,9 +82,8 @@ export const config = () => get("/api/config").then((answer) => {
 });
 
 /// The same limits when the server cannot be reached: the answer kept from the
-/// last visit, with `remembered` set so the page can say so. A folder project
-/// opens from the desktop app and needs only these rules, so it still opens
-/// offline. With nothing kept, the original failure is thrown.
+/// last visit, with `remembered` set so the page can say so. A project opened
+/// offline needs only these rules. With nothing kept, the original failure is thrown.
 export async function configOrRemembered() {
   try {
     return { config: await config(), remembered: false };

@@ -10,25 +10,21 @@
 // disagreed with this one would silently show an empty panel.
 //
 // `when` is asked about the reader, not about the document: `mayEdit` is the
-// role the document answers with, `editing` whether the source pane is open,
-// and `local` whether the project is a folder on this computer, which has no
-// server behind it to collaborate, ask an agent, keep history or share through.
+// role the document answers with, and `editing` whether the source pane is
+// open.
 export const TABS = [
   { id: "files", says: "Files", icon: "folder", when: (who) => who.mayEdit },
   { id: "outline", says: "Outline", icon: "list", when: (who) => who.mayEdit },
-  { id: "collaboration", says: "Collaboration", icon: "comment", when: (who) => !who.local },
+  { id: "collaboration", says: "Collaboration", icon: "comment" },
   { id: "changes", says: "Changes", icon: "pencil" },
-  { id: "agent", says: "Agent", icon: "bot", when: (who) => !who.local },
+  { id: "agent", says: "Agent", icon: "bot" },
   // History is readable by link-holders too: reviewers need the “since”
   // view even when they cannot edit or restore the live source.
-  { id: "history", says: "History", icon: "history", when: (who) => !who.local },
-  // Every project that can be edited has a Git panel, and it says what git
-  // means for that project. A web project cannot run git: its panel sets up
-  // the GitHub Action that does. A folder on this computer can, so there it
-  // runs git on the folder and holds the link to the project's web twin. A
-  // folder is only meaningful in the desktop app.
-  { id: "git", says: "Git", icon: "git-branch", when: (who) => who.mayEdit && (who.local ? who.desktop : true) },
-  { id: "share", says: "Share", icon: "users", when: (who) => !who.local && (who.canSeeSharing || who.canPublish) },
+  { id: "history", says: "History", icon: "history" },
+  // Every project that can be edited has a Git panel. A web project cannot
+  // run git: its panel sets up the GitHub Action that does.
+  { id: "git", says: "Git", icon: "git-branch", when: (who) => who.mayEdit },
+  { id: "share", says: "Share", icon: "users", when: (who) => who.canSeeSharing || who.canPublish },
   // Last, because it comes and goes with the source pane: at the end of the
   // rail its arrival moves nothing else.
   { id: "diagnostics", says: "Diagnostics", icon: "triangle-alert", when: (who) => who.editing },
