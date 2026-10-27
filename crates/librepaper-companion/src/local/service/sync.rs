@@ -1431,9 +1431,7 @@ mod tests {
                                 "next_cursor": null,
                             })),
                         ),
-                        "/api/documents/abc123/history/v1" => {
-                            (StatusCode::OK, Json(version))
-                        }
+                        "/api/documents/abc123/history/v1" => (StatusCode::OK, Json(version)),
                         "/api/documents/abc123/project" => (
                             StatusCode::OK,
                             Json(json!({
@@ -2029,9 +2027,7 @@ mod tests {
                                 "next_cursor": null,
                             })),
                         ),
-                        "/api/documents/abc123/history/v1" => {
-                            (StatusCode::OK, Json(version))
-                        }
+                        "/api/documents/abc123/history/v1" => (StatusCode::OK, Json(version)),
                         "/api/documents/abc123/project" => (
                             StatusCode::OK,
                             Json(json!({
