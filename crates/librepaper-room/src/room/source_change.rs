@@ -505,7 +505,8 @@ fn validate_path(path: &str) -> Result<(), AgentError> {
 fn reject_overlaps(ranges: &mut [(&str, usize, usize)]) -> Result<(), AgentError> {
     ranges.sort_by(|left, right| left.0.cmp(right.0));
     for group in ranges.chunk_by(|left, right| left.0 == right.0) {
-        let spans: Vec<(usize, usize)> = group.iter().map(|&(_, start, end)| (start, end)).collect();
+        let spans: Vec<(usize, usize)> =
+            group.iter().map(|&(_, start, end)| (start, end)).collect();
         if check_overlaps(&spans, AGENT_PATCH).is_err() {
             return Err(AgentError::Conflict("patch ranges overlap".into()));
         }
@@ -619,9 +620,9 @@ fn apply_patch_edits(
         // came from the caller, so one inside a character is refused.
         let index = TextIndex::new(original.text);
         let unit = |byte: usize| {
-            index
-                .utf16_of(Utf8(byte))
-                .map_err(|_| format!("patch offset {byte} is not on a character boundary in {path}"))
+            index.utf16_of(Utf8(byte)).map_err(|_| {
+                format!("patch offset {byte} is not on a character boundary in {path}")
+            })
         };
         let mut edits = Vec::with_capacity(patches.len());
         for patch in patches {

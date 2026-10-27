@@ -260,9 +260,11 @@ fn fragment_ranges(
 fn gaps_of(before: &str, edits: &[session::Edit]) -> Vec<usize> {
     let starts: Vec<isize> = edits
         .iter()
-        .map(|edit| before[..TextIndex::new(before).utf8_ceil(Utf16(edit.at)).0]
+        .map(|edit| {
+            before[..TextIndex::new(before).utf8_ceil(Utf16(edit.at)).0]
                 .chars()
-                .count() as isize)
+                .count() as isize
+        })
         .collect();
     let nets: Vec<isize> = edits
         .iter()

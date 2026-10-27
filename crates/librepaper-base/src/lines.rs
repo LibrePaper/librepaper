@@ -54,8 +54,20 @@ mod tests {
     #[test]
     fn matches_str_lines() {
         for text in [
-            "", "\n", "\n\n", "a", "a\n", "a\nb", "a\nb\n", "a\r\nb\r\n", "a\r\n\r\nb", "\r\n",
-            "a\rb", "a\r", "a\r\r\nb", "\u{e9}\n\u{1F600}x\r\n",
+            "",
+            "\n",
+            "\n\n",
+            "a",
+            "a\n",
+            "a\nb",
+            "a\nb\n",
+            "a\r\nb\r\n",
+            "a\r\n\r\nb",
+            "\r\n",
+            "a\rb",
+            "a\r",
+            "a\r\r\nb",
+            "\u{e9}\n\u{1F600}x\r\n",
         ] {
             assert_eq!(bodies(text), text.lines().collect::<Vec<_>>(), "{text:?}");
         }

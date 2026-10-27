@@ -86,9 +86,7 @@ pub(crate) fn apply_text_edits(text: &LoroText, edits: &[Edit]) -> bool {
         .iter()
         .map(|edit| (edit.at, edit.at.saturating_add(edit.delete)))
         .collect();
-    if ranges.iter().any(|&(_, end)| end > len)
-        || check_overlaps(&ranges, APPLY_SORTED).is_err()
-    {
+    if ranges.iter().any(|&(_, end)| end > len) || check_overlaps(&ranges, APPLY_SORTED).is_err() {
         return false;
     }
     for edit in edits.iter().rev() {
