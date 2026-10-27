@@ -82,6 +82,7 @@ mod metrics;
 #[cfg(test)]
 mod moderation_http_tests;
 mod onboarding;
+mod pages;
 #[cfg(test)]
 mod onboarding_tests;
 pub mod origins;

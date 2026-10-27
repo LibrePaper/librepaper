@@ -7,6 +7,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use librepaper_base::pages::{walk, ListingCursor, Page, WalkError, LISTING_MAX_PAGES};
 use librepaper_base::paths::RelPath;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -446,70 +447,69 @@ async fn list_documents(
     server: &str,
     token: &str,
 ) -> Result<Vec<Value>, String> {
-    let mut target = url::Url::parse(&format!("{server}/api/backup/projects"))
+    let base = url::Url::parse(&format!("{server}/api/backup/projects"))
         .map_err(|error| format!("invalid backup server URL: {error}"))?;
+    let pages = walk(
+        |cursor: Option<ListingCursor>| {
+            let mut target = base.clone();
+            async move {
+                if let Some(cursor) = &cursor {
+                    cursor.apply(&mut target);
+                }
+                let response = client
+                    .get(target)
+                    .bearer_auth(token)
+                    .timeout(Duration::from_secs(60))
+                    .send()
+                    .await
+                    .map_err(|error| format!("document listing failed: {error}"))?;
+                let status = response.status();
+                let payload =
+                    response_json(response, BACKUP_RESPONSE_MAX_BYTES, "document listing").await?;
+                if status != reqwest::StatusCode::OK {
+                    return Err(format!(
+                        "document listing failed ({}): {}",
+                        status.as_u16(),
+                        detail(&payload)
+                    ));
+                }
+                let items = payload
+                    .get("documents")
+                    .and_then(Value::as_array)
+                    .ok_or("invalid document listing: missing documents")?
+                    .clone();
+                let next = ListingCursor::from_payload(&payload)
+                    .map_err(|_| "invalid document listing cursor".to_string())?;
+                Ok(Page { items, next })
+            }
+        },
+        LISTING_MAX_PAGES,
+    )
+    .await
+    .map_err(|error| match error {
+        WalkError::Fetch(error) => error,
+        WalkError::Repeated => "server repeated a document listing cursor".to_string(),
+        WalkError::TooManyPages => format!("document listing exceeds {MAX_PROJECTS} projects"),
+    })?;
     let mut documents = Vec::new();
     let mut seen_slugs = HashSet::new();
-    let mut seen_cursors = HashSet::new();
-    loop {
-        let response = client
-            .get(target.clone())
-            .bearer_auth(token)
-            .timeout(Duration::from_secs(60))
-            .send()
-            .await
-            .map_err(|error| format!("document listing failed: {error}"))?;
-        let status = response.status();
-        let payload =
-            response_json(response, BACKUP_RESPONSE_MAX_BYTES, "document listing").await?;
-        if status != reqwest::StatusCode::OK {
-            return Err(format!(
-                "document listing failed ({}): {}",
-                status.as_u16(),
-                detail(&payload)
-            ));
-        }
-        let page = payload
-            .get("documents")
-            .and_then(Value::as_array)
-            .ok_or("invalid document listing: missing documents")?;
-        for document in page {
-            let slug = document
-                .get("slug")
-                .and_then(Value::as_str)
-                .ok_or("invalid document listing: document has no slug")?;
-            if slug.is_empty() {
-                return Err("invalid document listing: document has an empty slug".into());
-            }
-            if slug.len() > 1024 {
-                return Err("invalid document listing: document slug is too long".into());
-            }
-            if seen_slugs.insert(slug.to_string()) {
-                documents.push(document.clone());
-                if documents.len() > MAX_PROJECTS {
-                    return Err(format!("document listing exceeds {MAX_PROJECTS} projects"));
-                }
-            }
-        }
-        let Some(cursor) = payload.get("next_cursor").filter(|value| !value.is_null()) else {
-            break;
-        };
-        let after_updated = cursor
-            .get("after_updated")
+    for document in pages {
+        let slug = document
+            .get("slug")
             .and_then(Value::as_str)
-            .ok_or("invalid document listing cursor")?;
-        let after_slug = cursor
-            .get("after_slug")
-            .and_then(Value::as_str)
-            .ok_or("invalid document listing cursor")?;
-        if !seen_cursors.insert((after_updated.to_string(), after_slug.to_string())) {
-            return Err("server repeated a document listing cursor".into());
+            .ok_or("invalid document listing: document has no slug")?;
+        if slug.is_empty() {
+            return Err("invalid document listing: document has an empty slug".into());
         }
-        target
-            .query_pairs_mut()
-            .clear()
-            .append_pair("after_updated", after_updated)
-            .append_pair("after_slug", after_slug);
+        if slug.len() > 1024 {
+            return Err("invalid document listing: document slug is too long".into());
+        }
+        if seen_slugs.insert(slug.to_string()) {
+            if documents.len() >= MAX_PROJECTS {
+                return Err(format!("document listing exceeds {MAX_PROJECTS} projects"));
+            }
+            documents.push(document.clone());
+        }
     }
     Ok(documents)
 }

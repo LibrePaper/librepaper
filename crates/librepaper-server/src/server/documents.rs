@@ -339,11 +339,11 @@ impl Server {
             },
             None => None,
         };
-        let limit = values
-            .get("limit")
-            .and_then(|raw| raw.parse::<i64>().ok())
-            .unwrap_or(50)
-            .clamp(1, 100);
+        let limit = i64::from(pages::clamp_limit(
+            values.get("limit").map(String::as_str),
+            50,
+            100,
+        ));
         if let Err(response) = self
             .entry_at_least_in(slug, context, &headers, None, Role::Commenter)
             .await
@@ -1795,15 +1795,11 @@ impl Server {
                     .collect()
             })
             .unwrap_or_default();
-        let limit = values
-            .get("limit")
-            .and_then(|value| value.parse::<u32>().ok())
-            .unwrap_or(200)
-            .clamp(1, 200);
-        let cursor = values
-            .get("after_updated")
-            .zip(values.get("after_id"))
-            .map(|(updated, id)| (updated.as_str(), id.as_str()));
+        let limit = pages::clamp_limit(values.get("limit").map(String::as_str), 200, 200);
+        let cursor = pages::TemplatesCursor::from_query(|name| values.get(name).cloned());
+        let cursor = cursor
+            .as_ref()
+            .map(|cursor| (cursor.after_updated.as_str(), cursor.after_id.as_str()));
         match self.store.templates_page(&who.id, cursor, limit).await {
             Ok((entries, next)) => {
                 let templates: Vec<Value> = entries
@@ -1812,8 +1808,11 @@ impl Server {
                     .collect();
                 let mut body = json!({"templates": templates});
                 if let Some((after_updated, after_id)) = next {
-                    body["next_cursor"] =
-                        json!({"after_updated": after_updated, "after_id": after_id});
+                    body["next_cursor"] = pages::TemplatesCursor {
+                        after_updated,
+                        after_id,
+                    }
+                    .to_json();
                 }
                 write_json(200, &body)
             }
