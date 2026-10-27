@@ -466,7 +466,10 @@ mod tests {
                 Some(&comment),
                 &version,
                 Some(&version),
-                &Moderator { key: author, editor },
+                &Moderator {
+                    key: author,
+                    editor,
+                },
             )
             .unwrap_or_else(|error| panic!("{action} was refused: {}", error.message));
         }
@@ -523,7 +526,7 @@ mod tests {
                 editor: false,
             },
         )
-            .expect_err("missing id must not panic");
+        .expect_err("missing id must not panic");
         assert_eq!(error.code, "invalid_params");
     }
     /// The catalog stores a comment only if its id parses as a UUID, and the

@@ -843,51 +843,52 @@ impl Server {
         let written = self
             .mutate(&auth, |who, _| {
                 async move {
-                let Ok(authority) = who.authority(self.ceiling_for(&who.id)) else {
-                    return write_json(403, &json!({"error": "access changed"}));
-                };
-                if current {
-                    // `Room::take_label` rather than a second label command of this
-                    // module's own: that one had no §7.2 replay lookup, so a retry
-                    // of the same request wrote a second row naming the same state.
-                    // Name the row in that same command: a replay must not rename it
-                    // back over a later explicit rename by another editor.
-                    match room
-                        .take_label(
-                            "label",
-                            (!label.is_empty()).then(|| label.clone()),
-                            who.attribution(),
-                            &authority,
-                            request_id,
-                        )
-                        .await
-                    {
-                        Ok(row) => write_json(
-                            200,
-                            &json!({"sha": row.id, "label": row.label.unwrap_or_default()}),
-                        ),
-                        Err(error) => refused("label a version", &error),
-                    }
-                } else {
-                    let label_id = uuid::Uuid::parse_str(sha).expect("checked by is_label_id");
-                    let named = if label.is_empty() {
-                        None
-                    } else {
-                        Some(label.as_str())
+                    let Ok(authority) = who.authority(self.ceiling_for(&who.id)) else {
+                        return write_json(403, &json!({"error": "access changed"}));
                     };
-                    match self
-                        .store
-                        .catalog
-                        .rename_label(room.document_id, label_id, named)
-                        .await
-                    {
-                        Ok(true) => write_json(200, &json!({"sha": label_id, "label": label})),
-                        Ok(false) => plain(404, "not found"),
-                        Err(error) => {
-                            write_json(503, &json!({"error": error.to_string(), "retryable": true}))
+                    if current {
+                        // `Room::take_label` rather than a second label command of this
+                        // module's own: that one had no §7.2 replay lookup, so a retry
+                        // of the same request wrote a second row naming the same state.
+                        // Name the row in that same command: a replay must not rename it
+                        // back over a later explicit rename by another editor.
+                        match room
+                            .take_label(
+                                "label",
+                                (!label.is_empty()).then(|| label.clone()),
+                                who.attribution(),
+                                &authority,
+                                request_id,
+                            )
+                            .await
+                        {
+                            Ok(row) => write_json(
+                                200,
+                                &json!({"sha": row.id, "label": row.label.unwrap_or_default()}),
+                            ),
+                            Err(error) => refused("label a version", &error),
+                        }
+                    } else {
+                        let label_id = uuid::Uuid::parse_str(sha).expect("checked by is_label_id");
+                        let named = if label.is_empty() {
+                            None
+                        } else {
+                            Some(label.as_str())
+                        };
+                        match self
+                            .store
+                            .catalog
+                            .rename_label(room.document_id, label_id, named)
+                            .await
+                        {
+                            Ok(true) => write_json(200, &json!({"sha": label_id, "label": label})),
+                            Ok(false) => plain(404, "not found"),
+                            Err(error) => write_json(
+                                503,
+                                &json!({"error": error.to_string(), "retryable": true}),
+                            ),
                         }
                     }
-                }
                 }
             })
             .await;
@@ -982,30 +983,26 @@ impl Server {
         // rights changed while the request body was being read, so the caller
         // is decided again, and the restore is written as the fresh viewer.
         let restored = self
-            .mutate(&auth, |current_who, _| {
-                async move {
-                    let Ok(authority) =
-                        current_who.authority(self.ceiling_for(&current_who.id))
-                    else {
-                        return Err(write_json(403, &json!({"error": "access changed"})));
-                    };
-                    let author_account_id = uuid::Uuid::parse_str(&current_who.id.id).ok();
-                    let mut command = Restore {
-                        request_id: uuid::Uuid::new_v4(),
-                        document_id: room.document_id,
-                        label_id,
-                        catalog: self.store.catalog.clone(),
-                        expected_frontier,
-                        texts,
-                        assets,
-                        author_account_id,
-                        author_label: current_who.attribution().display().to_string(),
-                        replaced_vector: Vec::new(),
-                    };
-                    match room.command(&authority, &mut command).await {
-                        Ok(_) => Ok(()),
-                        Err(error) => Err(command_reply("restore a version", error)),
-                    }
+            .mutate(&auth, |current_who, _| async move {
+                let Ok(authority) = current_who.authority(self.ceiling_for(&current_who.id)) else {
+                    return Err(write_json(403, &json!({"error": "access changed"})));
+                };
+                let author_account_id = uuid::Uuid::parse_str(&current_who.id.id).ok();
+                let mut command = Restore {
+                    request_id: uuid::Uuid::new_v4(),
+                    document_id: room.document_id,
+                    label_id,
+                    catalog: self.store.catalog.clone(),
+                    expected_frontier,
+                    texts,
+                    assets,
+                    author_account_id,
+                    author_label: current_who.attribution().display().to_string(),
+                    replaced_vector: Vec::new(),
+                };
+                match room.command(&authority, &mut command).await {
+                    Ok(_) => Ok(()),
+                    Err(error) => Err(command_reply("restore a version", error)),
                 }
             })
             .await;

@@ -184,11 +184,17 @@ fn not_found() -> Refusal {
 }
 
 fn authentication_expired() -> Refusal {
-    Refusal::not_written(Kind::Unauthenticated, "authentication expired or was revoked")
+    Refusal::not_written(
+        Kind::Unauthenticated,
+        "authentication expired or was revoked",
+    )
 }
 
 fn sign_in_to_read() -> Refusal {
-    Refusal::not_written(Kind::Unauthenticated, "sign in to read this shared document")
+    Refusal::not_written(
+        Kind::Unauthenticated,
+        "sign in to read this shared document",
+    )
 }
 
 impl Server {
@@ -202,8 +208,15 @@ impl Server {
         slug: &str,
         query: Option<&str>,
     ) -> Result<Authorized<R>, Refusal> {
-        self.admit(Some(context.identity()), headers, &context.arrival, slug, query, false)
-            .await
+        self.admit(
+            Some(context.identity()),
+            headers,
+            &context.arrival,
+            slug,
+            query,
+            false,
+        )
+        .await
     }
 
     /// The same for a handler with no request context, which resolves the
@@ -226,8 +239,15 @@ impl Server {
         headers: &HeaderMap,
         slug: &str,
     ) -> Result<Authorized<R>, Refusal> {
-        self.admit(Some(context.identity()), headers, &context.arrival, slug, None, true)
-            .await
+        self.admit(
+            Some(context.identity()),
+            headers,
+            &context.arrival,
+            slug,
+            None,
+            true,
+        )
+        .await
     }
 
     /// Reruns the full decision, then runs `write` with the fresh viewer and
@@ -256,7 +276,12 @@ impl Server {
         let caller = &auth.caller;
         let entry = self.entry_of(&auth.slug).await?;
         let viewer = self
-            .viewer(&entry, &caller.headers, &caller.arrival, caller.query.as_deref())
+            .viewer(
+                &entry,
+                &caller.headers,
+                &caller.arrival,
+                caller.query.as_deref(),
+            )
             .await;
         self.gate(&entry, &viewer, R::ROLE, R::lost)?;
         if let Some(expected) = &caller.actor {

@@ -299,121 +299,138 @@ impl Server {
         let shared = self
             .mutate(&auth, |current_who, current_entry| {
                 async move {
-                // Everything a bad request can get wrong is answered here, with the
-                // reason, before the write. A new key is minted before the write too,
-                // because the write is what commits it; whether it does anything for
-                // anybody is `role_of`'s business from here on.
-                let mut created: Option<Value> = None;
-                let mut add: Option<LinkGrant> = None;
-                let mut swap: Option<(String, LinkGrant)> = None;
-                let mut change: Option<(String, UpdateRequest)> = None;
-                let mut remove: Option<String> = None;
-                if let Some(wanted) = &asked.create {
-                    match self.plan_create(slug, &arrival.reader_origin(), wanted, &current_who) {
-                        Ok((grant, shown)) => {
-                            created = Some(shown);
-                            add = Some(grant);
-                        }
-                        Err(message) => return write_json(400, &json!({"error": message})),
-                    }
-                }
-                if let Some(wanted) = asked.update {
-                    let Some(existing) = current_entry.link_by_id(&wanted.id) else {
-                        return write_json(404, &json!({"error": "nothing is shared under that id"}));
-                    };
-                    if let Err(message) = check_update(existing.kind, &wanted) {
-                        return write_json(400, &json!({"error": message}));
-                    }
-                    change = Some((wanted.id.clone(), wanted));
-                }
-                if let Some(wanted) = &asked.replace {
-                    let Some(existing) = current_entry.link_by_id(&wanted.id) else {
-                        return write_json(404, &json!({"error": "nothing is shared under that id"}));
-                    };
-                    match self.plan_replace(
-                        slug,
-                        &arrival.reader_origin(),
-                        existing,
-                        wanted,
-                        &current_who,
-                    ) {
-                        Ok((grant, shown)) => {
-                            created = Some(shown);
-                            swap = Some((wanted.id.clone(), grant));
-                        }
-                        Err(message) => return write_json(400, &json!({"error": message})),
-                    }
-                }
-                if let Some(wanted) = &asked.revoke {
-                    if current_entry.link_by_id(&wanted.id).is_none() {
-                        return write_json(404, &json!({"error": "nothing is shared under that id"}));
-                    }
-                    remove = Some(wanted.id.clone());
-                }
-
-                let now = librepaper_base::util::now_unix();
-                let Ok(mutation_actor) = current_who.authority(librepaper_base::role::Ceiling {
-                    comment: self.commenters.allows(&current_who.id),
-                    edit: self.publishers.allows(&current_who.id),
-                }) else {
-                    return write_json(401, &json!({"error": "invalid account"}));
-                };
-                let updated = self
-                    .store
-                    .modify_as_owner(slug, &mutation_actor, |entry| {
-                        if let Some(link) = &add {
-                            entry.add_link(link.clone());
-                        }
-                        if let Some((id, link)) = &swap {
-                            if !entry.replace_link(id, link.clone()) {
-                                return Err("nothing is shared under that id".to_string());
+                    // Everything a bad request can get wrong is answered here, with the
+                    // reason, before the write. A new key is minted before the write too,
+                    // because the write is what commits it; whether it does anything for
+                    // anybody is `role_of`'s business from here on.
+                    let mut created: Option<Value> = None;
+                    let mut add: Option<LinkGrant> = None;
+                    let mut swap: Option<(String, LinkGrant)> = None;
+                    let mut change: Option<(String, UpdateRequest)> = None;
+                    let mut remove: Option<String> = None;
+                    if let Some(wanted) = &asked.create {
+                        match self.plan_create(slug, &arrival.reader_origin(), wanted, &current_who)
+                        {
+                            Ok((grant, shown)) => {
+                                created = Some(shown);
+                                add = Some(grant);
                             }
-                            // The old key names nothing any more, so a guest recorded
-                            // against it is not a guest of this document's link either.
-                            entry.prune_guests(now);
+                            Err(message) => return write_json(400, &json!({"error": message})),
                         }
-                        if let Some((id, wanted)) = &change {
-                            let Some(existing) = entry.link_by_id(id) else {
-                                return Err("nothing is shared under that id".to_string());
-                            };
-                            let mut link = existing.clone();
-                            apply_update(&mut link, wanted)?;
-                            entry.replace_link(id, link);
-                        }
-                        if let Some(id) = &remove {
-                            if !entry.drop_link(id) {
-                                return Err("nothing is shared under that id".to_string());
-                            }
-                            entry.prune_guests(now);
-                        }
-                        Ok(())
-                    })
-                    .await;
-                let entry = match updated {
-                    Ok(entry) => entry,
-                    Err(ModifyError::NotFound) => return write_json(404, &json!({"error": "not found"})),
-                    Err(ModifyError::Refused(message)) => {
-                        let status = if message == "ownership changed" {
-                            409
-                        } else {
-                            400
+                    }
+                    if let Some(wanted) = asked.update {
+                        let Some(existing) = current_entry.link_by_id(&wanted.id) else {
+                            return write_json(
+                                404,
+                                &json!({"error": "nothing is shared under that id"}),
+                            );
                         };
-                        return write_json(status, &json!({"error": message}));
+                        if let Err(message) = check_update(existing.kind, &wanted) {
+                            return write_json(400, &json!({"error": message}));
+                        }
+                        change = Some((wanted.id.clone(), wanted));
                     }
-                    Err(ModifyError::Storage(err)) => {
-                        tracing::warn!("could not record the sharing of {slug}: {err}");
-                        return write_json(500, &json!({"error": "could not record the change"}));
+                    if let Some(wanted) = &asked.replace {
+                        let Some(existing) = current_entry.link_by_id(&wanted.id) else {
+                            return write_json(
+                                404,
+                                &json!({"error": "nothing is shared under that id"}),
+                            );
+                        };
+                        match self.plan_replace(
+                            slug,
+                            &arrival.reader_origin(),
+                            existing,
+                            wanted,
+                            &current_who,
+                        ) {
+                            Ok((grant, shown)) => {
+                                created = Some(shown);
+                                swap = Some((wanted.id.clone(), grant));
+                            }
+                            Err(message) => return write_json(400, &json!({"error": message})),
+                        }
                     }
-                };
-                // Replacements and revocations both land here: whatever just changed,
-                // any socket already open on this document may no longer be entitled
-                // to what it is holding.
-                self.reauthorize(slug).await;
-                let mut shown = self.sharing_json(&entry);
-                if let Some(created) = created {
-                    shown["created"] = created;
-                }
-                write_json(200, &shown)
+                    if let Some(wanted) = &asked.revoke {
+                        if current_entry.link_by_id(&wanted.id).is_none() {
+                            return write_json(
+                                404,
+                                &json!({"error": "nothing is shared under that id"}),
+                            );
+                        }
+                        remove = Some(wanted.id.clone());
+                    }
+
+                    let now = librepaper_base::util::now_unix();
+                    let Ok(mutation_actor) =
+                        current_who.authority(librepaper_base::role::Ceiling {
+                            comment: self.commenters.allows(&current_who.id),
+                            edit: self.publishers.allows(&current_who.id),
+                        })
+                    else {
+                        return write_json(401, &json!({"error": "invalid account"}));
+                    };
+                    let updated = self
+                        .store
+                        .modify_as_owner(slug, &mutation_actor, |entry| {
+                            if let Some(link) = &add {
+                                entry.add_link(link.clone());
+                            }
+                            if let Some((id, link)) = &swap {
+                                if !entry.replace_link(id, link.clone()) {
+                                    return Err("nothing is shared under that id".to_string());
+                                }
+                                // The old key names nothing any more, so a guest recorded
+                                // against it is not a guest of this document's link either.
+                                entry.prune_guests(now);
+                            }
+                            if let Some((id, wanted)) = &change {
+                                let Some(existing) = entry.link_by_id(id) else {
+                                    return Err("nothing is shared under that id".to_string());
+                                };
+                                let mut link = existing.clone();
+                                apply_update(&mut link, wanted)?;
+                                entry.replace_link(id, link);
+                            }
+                            if let Some(id) = &remove {
+                                if !entry.drop_link(id) {
+                                    return Err("nothing is shared under that id".to_string());
+                                }
+                                entry.prune_guests(now);
+                            }
+                            Ok(())
+                        })
+                        .await;
+                    let entry = match updated {
+                        Ok(entry) => entry,
+                        Err(ModifyError::NotFound) => {
+                            return write_json(404, &json!({"error": "not found"}))
+                        }
+                        Err(ModifyError::Refused(message)) => {
+                            let status = if message == "ownership changed" {
+                                409
+                            } else {
+                                400
+                            };
+                            return write_json(status, &json!({"error": message}));
+                        }
+                        Err(ModifyError::Storage(err)) => {
+                            tracing::warn!("could not record the sharing of {slug}: {err}");
+                            return write_json(
+                                500,
+                                &json!({"error": "could not record the change"}),
+                            );
+                        }
+                    };
+                    // Replacements and revocations both land here: whatever just changed,
+                    // any socket already open on this document may no longer be entitled
+                    // to what it is holding.
+                    self.reauthorize(slug).await;
+                    let mut shown = self.sharing_json(&entry);
+                    if let Some(created) = created {
+                        shown["created"] = created;
+                    }
+                    write_json(200, &shown)
                 }
             })
             .await;

@@ -172,7 +172,9 @@ impl Server {
             })
             .await;
         match applied {
-            Ok(Ok(receipt)) => write_json(200, &json!({"label": receipt.label, "receipt": receipt})),
+            Ok(Ok(receipt)) => {
+                write_json(200, &json!({"label": receipt.label, "receipt": receipt}))
+            }
             Ok(Err(error)) => change_refusal(error),
             Err(refusal) => access::deny(&refusal),
         }

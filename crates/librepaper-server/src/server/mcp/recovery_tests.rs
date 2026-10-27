@@ -400,7 +400,12 @@ async fn committed_tracked_changes_deletes_and_applies_survive_a_lost_mcp_respon
     let arrival = Origins::loopback_only().resolve("127.0.0.1:8080").unwrap();
     let batch_viewer = deployment
         .server
-        .authorize_fresh::<access::rung::Read>(&owner, &arrival, &deployment.slug, None)
+        .authorize_fresh::<crate::server::access::rung::Read>(
+            &owner,
+            &arrival,
+            &deployment.slug,
+            None,
+        )
         .await
         .ok()
         .unwrap()

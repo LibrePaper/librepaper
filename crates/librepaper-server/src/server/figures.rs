@@ -96,19 +96,17 @@ impl Server {
         // The body was an await boundary, so the caller is decided again and
         // the figure is stored as the fresh viewer.
         let stored = self
-            .mutate(&auth, |who, _| {
-                async move {
-                    let Ok(mutation_actor) = who.authority(librepaper_base::role::Ceiling {
-                        comment: self.commenters.allows(&who.id),
-                        edit: self.publishers.allows(&who.id),
-                    }) else {
-                        return None;
-                    };
-                    Some(
-                        room.put_asset_authorized(body.to_vec(), &mutation_actor)
-                            .await,
-                    )
-                }
+            .mutate(&auth, |who, _| async move {
+                let Ok(mutation_actor) = who.authority(librepaper_base::role::Ceiling {
+                    comment: self.commenters.allows(&who.id),
+                    edit: self.publishers.allows(&who.id),
+                }) else {
+                    return None;
+                };
+                Some(
+                    room.put_asset_authorized(body.to_vec(), &mutation_actor)
+                        .await,
+                )
             })
             .await;
         let stored = match stored {

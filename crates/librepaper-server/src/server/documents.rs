@@ -423,22 +423,20 @@ impl Server {
                 // produced their rendered page.
                 let (room_ref, address_ref, author_ref) = (&room, &address, &author);
                 let written = self
-                    .mutate(&auth, |current_who, _| {
-                        async move {
-                            if access::needs_render_digest(&current_who, &incoming) {
-                                return None;
-                            }
-                            Some(
-                                self.apply_from(
-                                    room_ref,
-                                    incoming,
-                                    address_ref,
-                                    &current_who,
-                                    author_ref,
-                                )
-                                .await,
-                            )
+                    .mutate(&auth, |current_who, _| async move {
+                        if access::needs_render_digest(&current_who, &incoming) {
+                            return None;
                         }
+                        Some(
+                            self.apply_from(
+                                room_ref,
+                                incoming,
+                                address_ref,
+                                &current_who,
+                                author_ref,
+                            )
+                            .await,
+                        )
                     })
                     .await;
                 let (result, ok) = match written {

@@ -360,7 +360,6 @@ impl Server {
         actor: &str,
         who: &Viewer,
         headers: &HeaderMap,
-        arrival: &Arrival,
         candidate_id: &str,
         candidate: &Candidate,
         task_id: &str,

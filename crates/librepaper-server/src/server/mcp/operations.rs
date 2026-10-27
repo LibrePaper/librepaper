@@ -459,7 +459,9 @@ impl Server {
         parent_request_id: &str,
     ) -> Result<Value, Failure> {
         if name == "document_result" {
-            return self.mcp_result(auth, slug, actor, headers, arrival, args).await;
+            return self
+                .mcp_result(auth, slug, actor, headers, arrival, args)
+                .await;
         }
         let key: OperationKey = serde_json::from_value(args["operation"].clone())
             .map_err(|e| Failure::new("invalid_params", e.to_string()))?;
@@ -630,7 +632,7 @@ impl Server {
                     request_digest: digest,
                     ..Default::default()
                 };
-                self.mcp_commit_change(auth, slug, actor, &current, headers, arrival, name, request)
+                self.mcp_commit_change(auth, slug, actor, &current, name, request)
                     .await
             }
             "document_files" => {
@@ -676,7 +678,7 @@ impl Server {
                     request_digest: digest,
                     ..Default::default()
                 };
-                self.mcp_commit_change(auth, slug, actor, &current, headers, arrival, name, request)
+                self.mcp_commit_change(auth, slug, actor, &current, name, request)
                     .await
             }
             "document_comment" => {
@@ -708,8 +710,6 @@ impl Server {
         slug: &str,
         actor: &str,
         current: &Viewer,
-        headers: &HeaderMap,
-        arrival: &Arrival,
         name: &str,
         request: SourceChange,
     ) -> Result<Value, Failure> {
@@ -1053,7 +1053,7 @@ impl Server {
         let render = if candidate.validation == "compile" {
             Some(match self.load_render_receipt(slug,actor,who,candidate_id).await {
                 Ok(receipt)=>receipt,
-                Err(error) if error.code=="view_expired"=>self.mcp_render(auth,slug,actor,who,headers,arrival,candidate_id,candidate,&key.id).await.map_err(|error|error.with_data(json!({"candidate_id":candidate_id,"operation":key,"retry_tool":"document_result","retry_arguments":{"kind":"render","id":candidate_id}})))?,
+                Err(error) if error.code=="view_expired"=>self.mcp_render(auth,slug,actor,who,headers,candidate_id,candidate,&key.id).await.map_err(|error|error.with_data(json!({"candidate_id":candidate_id,"operation":key,"retry_tool":"document_result","retry_arguments":{"kind":"render","id":candidate_id}})))?,
                 Err(error)=>return Err(error),
             })
         } else {
