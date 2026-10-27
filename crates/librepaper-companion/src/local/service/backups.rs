@@ -102,18 +102,6 @@ enum BackupError {
     Other(String),
 }
 
-impl From<String> for BackupError {
-    fn from(message: String) -> Self {
-        Self::Other(message)
-    }
-}
-
-impl From<&str> for BackupError {
-    fn from(message: &str) -> Self {
-        Self::Other(message.to_owned())
-    }
-}
-
 impl BackupError {
     fn kind(&self) -> BackupErrorKind {
         match self {
@@ -812,7 +800,9 @@ impl BackupManager {
         frequency_minutes: u64,
     ) -> Result<(), BackupError> {
         if !valid_frequency(frequency_minutes) {
-            return Err("frequency_minutes must be one of 1, 5, 15, 30, or 60".into());
+            return Err(BackupError::Other(
+                "frequency_minutes must be one of 1, 5, 15, 30, or 60".into(),
+            ));
         }
         let key = BackupConfig::key(origin, account_id);
         let state = self.state.lock().await;
@@ -822,7 +812,9 @@ impl BackupManager {
                 .get(&key)
                 .is_some_and(|config| config.destination.is_dir())
         {
-            return Err("Choose a backup destination before enabling backups.".into());
+            return Err(BackupError::Other(
+                "Choose a backup destination before enabling backups.".into(),
+            ));
         }
         // Never hold the status/config lock over a network request. Apart
         // from keeping GETs responsive, re-check the destination below in
@@ -834,10 +826,10 @@ impl BackupManager {
                 let mut state = self.state.lock().await;
                 if state.configs.get(&key).map_or(0, |config| config.revision) != expected_revision
                 {
-                    return Err(
+                    return Err(BackupError::Other(
                         "backup settings changed during account verification; retry the request"
                             .into(),
-                    );
+                    ));
                 }
                 let config = state
                     .configs
@@ -866,9 +858,9 @@ impl BackupManager {
         }
         let mut state = self.state.lock().await;
         if state.configs.get(&key).map_or(0, |config| config.revision) != expected_revision {
-            return Err(
+            return Err(BackupError::Other(
                 "backup settings changed during account verification; retry the request".into(),
-            );
+            ));
         }
         if enabled
             && !state
@@ -876,7 +868,9 @@ impl BackupManager {
                 .get(&key)
                 .is_some_and(|config| config.destination.is_dir())
         {
-            return Err("Choose a backup destination before enabling backups.".into());
+            return Err(BackupError::Other(
+                "Choose a backup destination before enabling backups.".into(),
+            ));
         }
         let previous = state.configs.get(&key).cloned();
         let config = state
@@ -902,7 +896,7 @@ impl BackupManager {
         }
         if let Err(error) = self.persist(&state).await {
             restore_after_persist_failure(&mut state, &key, previous, origin, account_id, &error);
-            return Err(error.into());
+            return Err(BackupError::Other(error));
         }
         self.changed.notify_one();
         Ok(())
@@ -1293,7 +1287,7 @@ async fn run_backup(
         &config.destination,
     )
     .await
-    .map_err(BackupError::from)
+    .map_err(BackupError::Other)
 }
 
 pub(super) fn spawn_scheduler(inner: Arc<Inner>) {
