@@ -235,7 +235,7 @@ async fn folder_status(
     let (mut here, mut web, mut problem) = (0, false, None);
     if let (Some(state), true) = (&state, signed_in) {
         let client = Client::new(site.clone(), Credentials::token(&token));
-        let (rules, moved) = tokio::join!(client.rules(), web_changed(&client, state));
+        let (rules, moved) = tokio::join!(client.rules(), web_changed(&client, folder.store.as_ref(), state));
         let mut refused = false;
         match moved {
             Ok(moved) => web = moved,

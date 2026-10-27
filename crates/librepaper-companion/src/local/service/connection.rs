@@ -211,7 +211,7 @@ async fn token_works(inner: &Inner, connection: &Connection, token: &str) -> boo
         return true;
     };
     let client = Client::new(connection.link.site.clone(), Credentials::token(token));
-    !matches!(web_changed(&client, &state).await, Err(error) if token_refused(&error))
+    !matches!(web_changed(&client, store.as_ref(), &state).await, Err(error) if token_refused(&error))
 }
 
 /// Whether a merge in the clone still needs the page. A merge whose files are

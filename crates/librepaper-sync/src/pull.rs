@@ -1,9 +1,10 @@
-//! `pull`: take the web project's named versions into a directory.
+//! `pull`: take the web project's named versions, and then the project as it
+//! stands, into a directory.
 //!
 //! In a git repository the versions become commits on `refs/librepaper/main`
 //! and git merges them; the working tree is written by git alone. In a plain
-//! folder the newest version is written into the folder, with a file changed
-//! on both sides left for the person to settle.
+//! folder the project as it stands is written into the folder, with a file
+//! changed on both sides left for the person to settle.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -123,6 +124,21 @@ pub(crate) struct Discovery {
     /// There is no named version to take, so the project as it stands is the
     /// base.
     pub from_head: bool,
+    /// The project's head identity as the first history page gave it, when
+    /// the server gave one.
+    pub head: Option<String>,
+}
+
+impl Discovery {
+    /// Whether the pull has nothing to take: no unseen named version, a base
+    /// to compare with, and a head identity the state already recorded
+    /// reading the project at.
+    fn is_quiet(&self, state: &State) -> bool {
+        self.versions.is_empty()
+            && !self.from_head
+            && self.head.is_some()
+            && self.head == state.web_head
+    }
 }
 
 /// The versions newer than `pulled` in a list that runs newest first, oldest
@@ -155,18 +171,28 @@ pub(crate) fn plan(mut take: Vec<Label>, pulled: Option<i64>, base_found: bool) 
         versions: take,
         trimmed,
         from_head,
+        head: None,
     }
 }
 
 async fn discover(client: &Client, slug: &str, pulled: Option<i64>) -> Result<Discovery, Error> {
     let mut seen: Vec<Label> = Vec::new();
     let mut after: Option<i64> = None;
+    // The first page is the one read before the project, so its identity is
+    // the one an edit landing later cannot hide behind.
+    let mut head: Option<String> = None;
     loop {
-        let (page, next) = client.labels(slug, true, 200, after).await?;
-        let reached =
-            pulled.is_some_and(|pulled| page.iter().any(|label| label.sequence <= pulled));
-        seen.extend(page);
-        match next {
+        let page = client.labels(slug, true, 200, after).await?;
+        if after.is_none() {
+            head = page.head;
+        }
+        let reached = pulled.is_some_and(|pulled| {
+            page.labels
+                .iter()
+                .any(|label| label.sequence <= pulled)
+        });
+        seen.extend(page.labels);
+        match page.next {
             Some(cursor) if !reached => {
                 if Some(cursor) == after {
                     return Err(Error::Invalid(
@@ -183,11 +209,13 @@ async fn discover(client: &Client, slug: &str, pulled: Option<i64>) -> Result<Di
         if let Some(pulled) = pulled {
             // The version taken last may be one nobody named, which the named
             // list does not show.
-            let (older, _) = client.labels(slug, false, 1, Some(pulled + 1)).await?;
-            base_found = !older.is_empty();
+            let older = client.labels(slug, false, 1, Some(pulled + 1)).await?;
+            base_found = !older.labels.is_empty();
         }
     }
-    Ok(plan(take, pulled, base_found))
+    let mut found = plan(take, pulled, base_found);
+    found.head = head;
+    Ok(found)
 }
 
 // ---------------------------------------------------------------- repository
@@ -204,7 +232,7 @@ async fn pull_repository(
     let settled = settle(&git, &mut state);
     let slug = state.link.slug.clone();
     let found = discover(client, &slug, state.pulled).await?;
-    let nothing_new = found.versions.is_empty() && !found.from_head;
+    let nothing_new = found.is_quiet(&state);
     let pending = state.fetched.is_some();
     // A trim is said even when the project holds what the chain already has,
     // so the person knows the versions between are gone.
@@ -245,10 +273,9 @@ async fn pull_repository(
     if !nothing_new {
         versions = fetch(client, &git, &mut state, &found, rules, &options.exclude).await?;
         if versions.is_empty() && state.fetched.is_none() {
-            // The project as it stands is what the branch already has.
-            if settled {
-                store.save(&state)?;
-            }
+            // The project as it stands is what the branch already has. The
+            // head it was read at is recorded, so the next pull can skip it.
+            store.save(&state)?;
             return Ok(unchanged(found.trimmed));
         }
     }
@@ -316,47 +343,14 @@ async fn fetch(
 
     let mut commits = Vec::new();
     let mut taken: Vec<String> = Vec::new();
-    // The newest version's files as the web holds them, the paths left out of
-    // the commit included, so lifting an exclusion later reads as a change
-    // against the web's file and not as a new one.
-    let mut newest: Option<(Option<i64>, BTreeMap<String, FileRecord>)> = None;
+    // The current snapshot has no sequence, so only named versions move it.
+    let mut pulled = state.pulled;
 
-    if found.from_head {
-        let mut snapshot = client.head(&slug).await?;
-        snapshot.retain_synced(rules);
-        let held = leave_excluded_out(&mut snapshot, &local, git.dir(), &mut excluded);
-        let assets = asset_bytes(client, &slug, &local, &snapshot, &chain).await?;
-        let meta = Meta {
-            by: "LibrePaper",
-            at: "",
-            message: "Current version",
-            version: None,
-            skip_if_unchanged: true,
-        };
-        let commit = chain.commit(
-            &snapshot.files,
-            &snapshot.texts,
-            &assets,
-            &meta,
-            None,
-            &excluded,
-        )?;
-        if Some(commit.as_str()) != before.as_deref() {
-            commits.push(VersionCommit {
-                sha: String::new(),
-                label: meta.message.to_string(),
-                by: meta.by.to_string(),
-                commit,
-            });
-        }
-        state.synced.extend(snapshot.files.keys().cloned());
-        newest = Some((None, held));
-    }
     for label in &found.versions {
         let mut snapshot = client.version(&slug, &label.sha).await?;
         // A path the rules refuse never enters the chain, whatever the web holds.
         snapshot.retain_synced(rules);
-        let held = leave_excluded_out(&mut snapshot, &local, git.dir(), &mut excluded);
+        leave_excluded_out(&mut snapshot, &local, git.dir(), &mut excluded);
         let assets = asset_bytes(client, &slug, &local, &snapshot, &chain).await?;
         let name = label.name();
         let meta = Meta {
@@ -387,7 +381,50 @@ async fn fetch(
         });
         taken.push(label.sha.clone());
         state.synced.extend(snapshot.files.keys().cloned());
-        newest = Some((Some(label.sequence), held));
+        pulled = Some(label.sequence);
+    }
+
+    // The project as it stands comes after the named versions, so an edit
+    // nobody named still lands, and lands last. The history page was read
+    // first, so its identity cannot be newer than what is read here.
+    let mut snapshot = client.head(&slug).await?;
+    snapshot.retain_synced(rules);
+    // The files of the project as the web holds them, the paths left out of
+    // the commit included, so lifting an exclusion later reads as a change
+    // against the web's file and not as a new one.
+    let held = leave_excluded_out(&mut snapshot, &local, git.dir(), &mut excluded);
+    let assets = asset_bytes(client, &slug, &local, &snapshot, &chain).await?;
+    let meta = Meta {
+        by: "LibrePaper",
+        at: "",
+        message: "Current version",
+        version: None,
+        skip_if_unchanged: true,
+    };
+    let prior = chain.tip().map(str::to_string);
+    let commit = chain.commit(
+        &snapshot.files,
+        &snapshot.texts,
+        &assets,
+        &meta,
+        None,
+        &excluded,
+    )?;
+    if Some(&commit) != prior.as_ref() {
+        commits.push(VersionCommit {
+            sha: String::new(),
+            label: meta.message.to_string(),
+            by: meta.by.to_string(),
+            commit,
+        });
+    }
+    state.synced.extend(snapshot.files.keys().cloned());
+    if found.from_head {
+        // With no named version to stand on, the snapshot is the base.
+        pulled = None;
+    }
+    if found.head.is_some() {
+        state.web_head = found.head.clone();
     }
 
     let Some(tip) = chain.tip().map(str::to_string) else {
@@ -397,10 +434,8 @@ async fn fetch(
         return Ok(commits);
     }
     git.run(&["update-ref", MAIN_REF, tip.as_str()], None, &[])?;
-    if let Some((pulled, files)) = newest {
-        state.pulled = pulled;
-        state.fetched = Some(Fetched { commit: tip, files });
-    }
+    state.pulled = pulled;
+    state.fetched = Some(Fetched { commit: tip, files: held });
     state.pushed.retain(|pushed| !taken.contains(&pushed.label));
     Ok(commits)
 }
@@ -628,15 +663,17 @@ async fn pull_folder(
 ) -> Result<PullOutcome, Error> {
     let slug = state.link.slug.clone();
     let found = discover(client, &slug, state.pulled).await?;
-    if found.versions.is_empty() && !found.from_head {
+    if found.is_quiet(&state) {
         return Ok(PullOutcome::UpToDate);
     }
-    let (mut web, sequence) = match found.versions.last() {
-        Some(label) => (
-            client.version(&slug, &label.sha).await?,
-            Some(label.sequence),
-        ),
-        None => (client.head(&slug).await?, None),
+    // The project as it stands is newer than every named version, so it is
+    // what the folder takes. The history page was read first, so its identity
+    // cannot be newer than this read.
+    let mut web = client.head(&slug).await?;
+    let sequence = match found.versions.last() {
+        Some(label) => Some(label.sequence),
+        None if found.from_head => None,
+        None => state.pulled,
     };
     // The rules apply to what comes in as to what goes out: a path they refuse
     // is dropped here, so it is never written.
@@ -684,6 +721,9 @@ async fn pull_folder(
     // can settle it.
     if plan.conflicts.is_empty() {
         state.pulled = sequence;
+        if found.head.is_some() {
+            state.web_head = found.head.clone();
+        }
     }
     store.save(&state)?;
     Ok(PullOutcome::Folder {
@@ -1454,5 +1494,253 @@ mod tests {
             MergeOutcome::Conflicts(vec!["a.tex".into()])
         );
         assert!(git.succeeds(&["rev-parse", "-q", "--verify", "MERGE_HEAD"]));
+    }
+
+    // ------------------------------------------------ current version import
+
+    use crate::fake::{self, Fake};
+    use crate::state::{FileStore, GitRefStore};
+
+    fn fetch_only() -> PullOptions {
+        PullOptions {
+            merge: false,
+            ..PullOptions::default()
+        }
+    }
+
+    /// A linked repository and the server it is linked to.
+    async fn linked() -> Option<(Fake, tempfile::TempDir, Git, GitRefStore)> {
+        let (dir, git) = repository()?;
+        let fake = Fake::start().await;
+        let store = GitRefStore::open(git.dir()).unwrap();
+        store.save(&State::new(fake.link())).unwrap();
+        Some((fake, dir, git, store))
+    }
+
+    fn chain_length(git: &Git) -> usize {
+        git.line(&["rev-list", "--count", MAIN_REF])
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
+    fn chain_subjects(git: &Git) -> Vec<String> {
+        git.line(&["log", "--format=%s", "--reverse", MAIN_REF])
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn versions_of(outcome: PullOutcome) -> Vec<String> {
+        match outcome {
+            PullOutcome::Repository { versions, .. } => {
+                versions.into_iter().map(|version| version.label).collect()
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_named_version_the_project_still_holds_adds_no_snapshot() {
+        let Some((fake, _dir, git, store)) = linked().await else {
+            return;
+        };
+        let same = fake::files(&[("a.tex", "one\n")]);
+        fake.name(1, same.clone());
+        fake.set_current(same);
+        fake.set_head(Some("h1"));
+
+        let outcome = pull(&fake.client(), git.dir(), &store, &fetch_only())
+            .await
+            .unwrap();
+        assert_eq!(versions_of(outcome), ["Version 1"]);
+        assert_eq!(chain_length(&git), 1);
+        let state = store.load().unwrap().unwrap();
+        assert_eq!(state.pulled, Some(1));
+        assert_eq!(state.web_head.as_deref(), Some("h1"));
+    }
+
+    #[tokio::test]
+    async fn named_versions_come_first_and_an_unnamed_edit_after_them() {
+        let Some((fake, _dir, git, store)) = linked().await else {
+            return;
+        };
+        fake.name(1, fake::files(&[("a.tex", "one\n")]));
+        fake.name(2, fake::files(&[("a.tex", "two\n")]));
+        fake.set_current(fake::files(&[("a.tex", "three\n")]));
+        fake.set_head(Some("h1"));
+
+        let outcome = pull(&fake.client(), git.dir(), &store, &fetch_only())
+            .await
+            .unwrap();
+        assert_eq!(
+            versions_of(outcome),
+            ["Version 1", "Version 2", "Current version"]
+        );
+        assert_eq!(
+            chain_subjects(&git),
+            ["Version 1", "Version 2", "Current version"]
+        );
+        assert_eq!(git.line(&["show", format!("{MAIN_REF}:a.tex").as_str()]).unwrap(), "three");
+        let state = store.load().unwrap().unwrap();
+        assert_eq!(state.pulled, Some(2), "the snapshot has no sequence");
+        assert_eq!(state.fetched.unwrap().files["a.tex"].sha, sha256_hex(b"three\n"));
+    }
+
+    #[tokio::test]
+    async fn an_unnamed_edit_alone_is_one_snapshot() {
+        let Some((fake, _dir, git, store)) = linked().await else {
+            return;
+        };
+        let first = fake::files(&[("a.tex", "one\n")]);
+        fake.name(1, first.clone());
+        fake.set_current(first);
+        fake.set_head(Some("h1"));
+        pull(&fake.client(), git.dir(), &store, &fetch_only())
+            .await
+            .unwrap();
+
+        fake.set_current(fake::files(&[("a.tex", "edited\n")]));
+        fake.set_head(Some("h2"));
+        let outcome = pull(&fake.client(), git.dir(), &store, &fetch_only())
+            .await
+            .unwrap();
+        assert_eq!(versions_of(outcome), ["Current version"]);
+        assert_eq!(chain_subjects(&git), ["Version 1", "Current version"]);
+        let state = store.load().unwrap().unwrap();
+        assert_eq!(state.pulled, Some(1));
+        assert_eq!(state.web_head.as_deref(), Some("h2"));
+    }
+
+    #[tokio::test]
+    async fn pulling_again_adds_nothing_even_for_a_crlf_project() {
+        let Some((fake, _dir, git, store)) = linked().await else {
+            return;
+        };
+        let crlf = fake::files(&[("a.tex", "one\r\ntwo\r\n")]);
+        fake.name(1, crlf.clone());
+        fake.set_current(crlf);
+        // An older server sends no head, so every pull reads the project.
+        fake.set_head(None);
+        pull(&fake.client(), git.dir(), &store, &fetch_only())
+            .await
+            .unwrap();
+        let outcome = pull(&fake.client(), git.dir(), &store, &fetch_only())
+            .await
+            .unwrap();
+        // The first fetch is still unmerged, so the outcome is a fetch that
+        // took nothing new.
+        assert!(versions_of(outcome).is_empty());
+        assert_eq!(chain_length(&git), 1);
+        assert_eq!(fake.count("/project"), 2, "no head means a read each time");
+        assert_eq!(store.load().unwrap().unwrap().web_head, None);
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_head_reads_no_project() {
+        let Some((fake, _dir, git, store)) = linked().await else {
+            return;
+        };
+        let same = fake::files(&[("a.tex", "one\n")]);
+        fake.name(1, same.clone());
+        fake.set_current(same);
+        fake.set_head(Some("h1"));
+        pull(&fake.client(), git.dir(), &store, &fetch_only())
+            .await
+            .unwrap();
+        assert_eq!(fake.count("/project"), 1);
+
+        let outcome = pull(&fake.client(), git.dir(), &store, &fetch_only())
+            .await
+            .unwrap();
+        assert_eq!(outcome, PullOutcome::UpToDate);
+        assert_eq!(fake.count("/project"), 1);
+        assert_eq!(chain_length(&git), 1);
+    }
+
+    #[tokio::test]
+    async fn a_moved_head_with_the_same_files_reads_once_and_adds_nothing() {
+        let Some((fake, _dir, git, store)) = linked().await else {
+            return;
+        };
+        let same = fake::files(&[("a.tex", "one\n")]);
+        fake.name(1, same.clone());
+        fake.set_current(same);
+        fake.set_head(Some("h1"));
+        pull(&fake.client(), git.dir(), &store, &fetch_only())
+            .await
+            .unwrap();
+
+        fake.set_head(Some("h2"));
+        let outcome = pull(&fake.client(), git.dir(), &store, &fetch_only())
+            .await
+            .unwrap();
+        assert!(versions_of(outcome).is_empty());
+        assert_eq!(fake.count("/project"), 2);
+        assert_eq!(chain_length(&git), 1);
+        assert_eq!(
+            store.load().unwrap().unwrap().web_head.as_deref(),
+            Some("h2")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_folder_takes_the_current_project_after_the_named_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let store = FileStore::for_dir(home.path(), dir.path());
+        let fake = Fake::start().await;
+        store.save(&State::new(fake.link())).unwrap();
+        fake.name(1, fake::files(&[("a.tex", "one\n")]));
+        fake.set_current(fake::files(&[("a.tex", "unnamed\n")]));
+        fake.set_head(Some("h1"));
+
+        let outcome = pull(&fake.client(), dir.path(), &store, &PullOptions::default())
+            .await
+            .unwrap();
+        match outcome {
+            PullOutcome::Folder { written, .. } => assert_eq!(written, ["a.tex"]),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.tex")).unwrap(),
+            "unnamed\n"
+        );
+        let state = store.load().unwrap().unwrap();
+        assert_eq!(state.pulled, Some(1));
+        assert_eq!(state.web_head.as_deref(), Some("h1"));
+
+        let again = pull(&fake.client(), dir.path(), &store, &PullOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(again, PullOutcome::UpToDate);
+        assert_eq!(fake.count("/project"), 1);
+    }
+
+    #[tokio::test]
+    async fn a_folder_conflict_is_met_again_because_its_head_is_not_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let store = FileStore::for_dir(home.path(), dir.path());
+        let fake = Fake::start().await;
+        let mut state = State::new(fake.link());
+        state.files = BTreeMap::from([("a.tex".to_string(), text(&sha256_hex(b"base\n")))]);
+        store.save(&state).unwrap();
+        std::fs::write(dir.path().join("a.tex"), "mine\n").unwrap();
+        fake.name(1, fake::files(&[("a.tex", "web\n")]));
+        fake.set_current(fake::files(&[("a.tex", "web\n")]));
+        fake.set_head(Some("h1"));
+
+        for _ in 0..2 {
+            let outcome = pull(&fake.client(), dir.path(), &store, &PullOptions::default())
+                .await
+                .unwrap();
+            match outcome {
+                PullOutcome::Folder { conflicts, .. } => assert_eq!(conflicts, ["a.tex"]),
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(store.load().unwrap().unwrap().web_head, None);
     }
 }
