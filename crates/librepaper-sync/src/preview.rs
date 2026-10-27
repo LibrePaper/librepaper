@@ -106,7 +106,7 @@ fn unreadable(dir: &Path, path: &str, kind: Kind) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::files::{sha256_hex, FileRecord};
+    use crate::files::FileRecord;
 
     fn write(dir: &Path, path: &str, bytes: &[u8]) {
         let target = dir.join(path);
@@ -119,7 +119,7 @@ mod tests {
             path.into(),
             FileRecord {
                 kind: Kind::Text,
-                sha: sha256_hex(body.as_bytes()),
+                sha: librepaper_base::digest::Digest::of(body.as_bytes()).to_hex(),
             },
         );
         web.texts.insert(path.into(), body.into());

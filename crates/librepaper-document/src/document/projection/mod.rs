@@ -113,7 +113,7 @@ pub struct Entry {
     pub id: String,
     /// The digest of what is at this path: the SHA-256 of a text's UTF-8
     /// bytes, taken over the stored body as is (every write route stores LF,
-    /// see `session::line_feeds`, so this is the LF text), or the asset's own
+    /// see `LineEnding::normalise`, so this is the LF text), or the asset's own
     /// digest as the document records it.
     pub digest: String,
     /// The UTF-8 length of a text. Zero for an asset, whose bytes are not

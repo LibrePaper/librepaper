@@ -1608,7 +1608,7 @@ mod tests {
         assert_eq!(state.pulled, Some(2), "the snapshot has no sequence");
         assert_eq!(
             state.fetched.unwrap().files["a.tex"].sha,
-            sha256_hex(b"three\n")
+            librepaper_base::digest::Digest::of(b"three\n").to_hex()
         );
     }
 
@@ -1784,7 +1784,10 @@ mod tests {
         let store = FileStore::for_dir(home.path(), dir.path());
         let fake = Fake::start().await;
         let mut state = State::new(fake.link());
-        state.files = BTreeMap::from([("a.tex".to_string(), text(&sha256_hex(b"base\n")))]);
+        state.files = BTreeMap::from([(
+            "a.tex".to_string(),
+            text(&librepaper_base::digest::Digest::of(b"base\n").to_hex()),
+        )]);
         store.save(&state).unwrap();
         std::fs::write(dir.path().join("a.tex"), "mine\n").unwrap();
         fake.name(1, fake::files(&[("a.tex", "web\n")]));
