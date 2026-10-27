@@ -21,6 +21,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use self::refusal::FrameIds;
 use crate::server::origins::{
     cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,
 };
@@ -43,7 +44,6 @@ use librepaper_engine::storage::store::{
     random_suffix, slugify, DocumentInput, IndexEntry, LinkGrant, LinkKind, ModifyError, PutError,
     Store,
 };
-use self::refusal::FrameIds;
 use librepaper_room::room::refusal::Kind as RefusalKind;
 use librepaper_room::room::{
     decode_update, encode_update, Message as RoomMessage, Outgoing, Refusal, Room, RoomCommand,

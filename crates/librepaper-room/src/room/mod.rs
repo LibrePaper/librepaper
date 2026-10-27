@@ -75,11 +75,11 @@ pub use annotation::OriginalAnchor;
 pub use command::Command as RoomCommand;
 pub use comments::*;
 pub use error::WriteError;
-pub use refusal::Refusal;
 pub use label::Attribution;
 pub use librepaper_base::util::{decode_update, encode_update};
 pub use message::Message;
 pub use outgoing::{Outgoing, Sender};
+pub use refusal::Refusal;
 
 /// One connected socket, as the room needs to know it.
 ///

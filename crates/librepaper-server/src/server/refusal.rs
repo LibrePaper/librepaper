@@ -229,7 +229,10 @@ mod tests {
             })
         );
         let frame = socket(
-            &Refusal::not_written(Kind::RateLimited, "too many chat messages; try again shortly"),
+            &Refusal::not_written(
+                Kind::RateLimited,
+                "too many chat messages; try again shortly",
+            ),
             FrameIds::new("t1", ""),
         );
         assert_eq!(frame["status"], json!(429));
@@ -272,13 +275,31 @@ mod tests {
         let cases = [
             (Refusal::from(WriteError::NotFound), "not_found"),
             (Refusal::from(WriteError::Conflict("x".into())), "conflict"),
-            (Refusal::from(WriteError::Invalid("x".into())), "invalid_params"),
+            (
+                Refusal::from(WriteError::Invalid("x".into())),
+                "invalid_params",
+            ),
             (Refusal::from(WriteError::Busy), "unavailable"),
-            (Refusal::from(WriteError::Storage("x".into())), "outcome_unknown"),
-            (Refusal::not_written(Kind::Forbidden, "x"), "permission_changed"),
-            (Refusal::not_written(Kind::Quota(QuotaScope::Deployment), "x"), "budget_exceeded"),
-            (Refusal::not_written(Kind::RateLimited, "x"), "budget_exceeded"),
-            (Refusal::new(Kind::Internal, Committed::Unknown, "x"), "internal"),
+            (
+                Refusal::from(WriteError::Storage("x".into())),
+                "outcome_unknown",
+            ),
+            (
+                Refusal::not_written(Kind::Forbidden, "x"),
+                "permission_changed",
+            ),
+            (
+                Refusal::not_written(Kind::Quota(QuotaScope::Deployment), "x"),
+                "budget_exceeded",
+            ),
+            (
+                Refusal::not_written(Kind::RateLimited, "x"),
+                "budget_exceeded",
+            ),
+            (
+                Refusal::new(Kind::Internal, Committed::Unknown, "x"),
+                "internal",
+            ),
         ];
         for (refusal, code) in cases {
             let failure = mcp(&refusal);

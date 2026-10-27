@@ -19,8 +19,8 @@ use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 
 use super::{unix_seconds, Bucket, SeriesData, HISTORY_RETENTION};
-use crate::server::signin::{clear_cookie, cookie, set_cookie};
 use crate::server::refusal;
+use crate::server::signin::{clear_cookie, cookie, set_cookie};
 use crate::server::{set, write_json, Server};
 use librepaper_room::room::refusal::{Kind, Refusal};
 

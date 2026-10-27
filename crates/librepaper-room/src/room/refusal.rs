@@ -126,9 +126,7 @@ impl Refusal {
     pub fn from_catalog(error: CatalogError, not_found: &str, internal: &str) -> Self {
         match error {
             CatalogError::Invalid(why) => Self::not_written(Kind::Invalid, why),
-            CatalogError::Conflict(why) => {
-                Self::not_written(Kind::Conflict(Reason::Conflict), why)
-            }
+            CatalogError::Conflict(why) => Self::not_written(Kind::Conflict(Reason::Conflict), why),
             CatalogError::Duplicate(of) => {
                 Self::not_written(Kind::Conflict(Reason::Conflict), of.to_string())
             }
@@ -155,9 +153,7 @@ impl From<&WriteError> for Refusal {
         let message = error.client_message();
         match error {
             WriteError::NotFound => Self::not_written(Kind::NotFound, message),
-            WriteError::Conflict(_) => {
-                Self::not_written(Kind::Conflict(Reason::Conflict), message)
-            }
+            WriteError::Conflict(_) => Self::not_written(Kind::Conflict(Reason::Conflict), message),
             WriteError::Invalid(_) => Self::not_written(Kind::Invalid, message),
             // Refused before anything was applied.
             WriteError::Unreadable(_) | WriteError::Busy => {
@@ -227,7 +223,12 @@ mod tests {
             (Kind::Conflict(Reason::Suggestion), 409, false, "suggestion"),
             (Kind::Invalid, 400, false, "invalid_request"),
             (Kind::Quota(QuotaScope::Owner), 507, false, "storage_budget"),
-            (Kind::Quota(QuotaScope::Deployment), 507, false, "storage_budget"),
+            (
+                Kind::Quota(QuotaScope::Deployment),
+                507,
+                false,
+                "storage_budget",
+            ),
             (Kind::RateLimited, 429, true, "request_budget"),
             (Kind::Unavailable, 503, true, "service_unavailable"),
             (Kind::Internal, 500, true, "service_unavailable"),
@@ -248,8 +249,18 @@ mod tests {
             (WriteError::Invalid("x".into()), 400, false, Committed::No),
             (WriteError::Unreadable("x".into()), 503, true, Committed::No),
             (WriteError::Busy, 503, true, Committed::No),
-            (WriteError::Fenced("x".into()), 503, true, Committed::Unknown),
-            (WriteError::Storage("x".into()), 503, true, Committed::Unknown),
+            (
+                WriteError::Fenced("x".into()),
+                503,
+                true,
+                Committed::Unknown,
+            ),
+            (
+                WriteError::Storage("x".into()),
+                503,
+                true,
+                Committed::Unknown,
+            ),
         ];
         for (error, status, retryable, committed) in cases {
             let refusal = Refusal::from(&error);
@@ -264,7 +275,10 @@ mod tests {
     fn an_agent_error_keeps_its_http_wording() {
         let changed = Refusal::from(AgentError::Changed(vec!["a".into()]));
         assert_eq!(changed.reason(), "changed");
-        assert_eq!(changed.message, "files changed since the change was planned");
+        assert_eq!(
+            changed.message,
+            "files changed since the change was planned"
+        );
         let storage = Refusal::from(AgentError::Storage("db.internal".into()));
         assert_eq!(storage.status(), 503);
         assert_eq!(storage.committed, Committed::Unknown);
