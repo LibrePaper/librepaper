@@ -34,6 +34,9 @@ pub struct PullOptions {
     /// directory with `/` between the parts. A version's file at such a path
     /// is never written, trashed or put in a commit.
     pub exclude: Vec<String>,
+    /// In a repository, the branch to sync. An unbound repository needs it on
+    /// the first transfer; a bound one accepts only its own.
+    pub branch: Option<String>,
 }
 
 impl Default for PullOptions {
@@ -43,6 +46,7 @@ impl Default for PullOptions {
             mine: Vec::new(),
             theirs: Vec::new(),
             exclude: Vec::new(),
+            branch: None,
         }
     }
 }
@@ -104,7 +108,9 @@ pub async fn pull(
     store: &dyn StateStore,
     options: &PullOptions,
 ) -> Result<PullOutcome, Error> {
-    let state = store.load()?.ok_or(Error::NotLinked)?;
+    let mut state = store.load()?.ok_or(Error::NotLinked)?;
+    state.refuse_while_pending()?;
+    state.pin_branch(store.repository(), options.branch.as_deref())?;
     let rules = client.rules().await?;
     match store.repository() {
         Some(root) => pull_repository(client, root, store, options, state, &rules).await,

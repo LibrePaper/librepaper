@@ -122,6 +122,18 @@ impl Git {
             .unwrap_or(false)
     }
 
+    /// The branch HEAD names, which may have no commit yet. Detached HEAD is
+    /// an error, since it is not a branch.
+    pub(crate) fn branch(&self) -> Result<String, Error> {
+        let output = self.output(&["symbolic-ref", "--quiet", "--short", "HEAD"], None, &[])?;
+        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if output.status.success() && !name.is_empty() {
+            Ok(name)
+        } else {
+            Err(Error::DetachedHead)
+        }
+    }
+
     /// The commit a name resolves to, or `None` when there is no such commit.
     pub(crate) fn rev(&self, name: &str) -> Option<String> {
         let spec = format!("{name}^{{commit}}");
