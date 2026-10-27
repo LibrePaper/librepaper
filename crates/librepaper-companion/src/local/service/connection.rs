@@ -1,13 +1,20 @@
-//! Connections: a web project joined to a remote Git repository, with no
-//! folder the person chose.
+//! Connections: a web project joined to a Git repository. A connection is
+//! either remote or local.
 //!
-//! The desktop app clones the repository into the state home, under
-//! `connections/<key>/repo`, and keeps the link and the hashes of what was
-//! last pulled or pushed in the clone's own refs. The
-//! person never sees the clone. Pull and push move the project's named versions
-//! and the repository's commits through it, with the person's own Git
-//! credentials, and a merge that stops with conflicts is resolved here one file
-//! at a time.
+//! A remote connection has no folder the person chose. The desktop app clones
+//! the repository into the state home, under `connections/<key>/repo`, and
+//! keeps the link and the hashes of what was last pulled or pushed in the
+//! clone's own refs. The person never sees the clone. Pull and push move the
+//! project's named versions and the repository's commits through it, with the
+//! person's own Git credentials, and a merge that stops with conflicts is
+//! resolved here one file at a time.
+//!
+//! A local connection works directly in a repository the person chose with the
+//! native folder dialog. There is no clone and no remote step: pull and push
+//! only move the project's versions into and out of the checked-out branch, and
+//! a merge that stops is left in the repository for the person's own tools. The
+//! connection's folder holds only its record. It never deletes or changes
+//! anything in the repository beyond the sync state in its refs.
 //!
 //! Only one git operation runs per connection at a time. The work is the
 //! sync crate's and the Git runner's, called through `git.rs` and `sync.rs`.
@@ -87,7 +94,9 @@ impl Drop for Hold<'_> {
     }
 }
 
-/// The connection to one project: its key, its link and its folder.
+/// The connection to one project: its key, its link and its folder. The folder
+/// is the app's own, under the state home. A local connection's repository is
+/// elsewhere, named only by the record.
 struct Connection {
     key: String,
     link: Link,
@@ -101,12 +110,36 @@ impl Connection {
         Connection { key, link, dir }
     }
 
+    /// The repository a local connection works in, from the record. A remote
+    /// connection, or none, has no such root.
+    fn local_root(&self) -> Option<PathBuf> {
+        read_record(&self.dir).ok()?.root
+    }
+
+    /// The repository the connection works in: the person's own for a local
+    /// connection, the app's clone for a remote one.
     fn repo(&self) -> PathBuf {
-        self.dir.join(REPOSITORY)
+        self.local_root()
+            .unwrap_or_else(|| self.dir.join(REPOSITORY))
     }
 
     fn connected(&self) -> bool {
-        self.repo().exists()
+        self.local_root().is_some() || self.dir.join(REPOSITORY).exists()
+    }
+
+    /// Removes what the connection itself owns under the state home. A local
+    /// connection owns only its record, so the repository and its refs are
+    /// never reached from here.
+    fn forget(&self) -> std::io::Result<()> {
+        let ignore_missing = |result: std::io::Result<()>| match result {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        };
+        if self.local_root().is_some() {
+            ignore_missing(std::fs::remove_file(self.dir.join(RECORD)))?;
+            return ignore_missing(std::fs::remove_dir(&self.dir));
+        }
+        ignore_missing(std::fs::remove_dir_all(&self.dir))
     }
 
     /// The owner a sign-in for this connection is recorded under.
@@ -120,11 +153,15 @@ fn connection_key(link: &Link) -> String {
     librepaper_base::digest::Digest::of(project_url(link).as_bytes()).prefix(32)
 }
 
-/// What `connection.json` holds: the project's address and the remote's.
+/// What `connection.json` holds: the project's address, and either the
+/// remote's or, for a local connection, the root of the chosen repository.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Record {
     project: String,
-    url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    root: Option<PathBuf>,
 }
 
 fn read_record(dir: &Path) -> Result<Record, Failure> {
@@ -144,16 +181,49 @@ fn open_connection(
     Ok(Connection::open(inner, parse_link(project, origin)?))
 }
 
-/// The clone of a connected project, or the refusal that it is not connected.
-fn require_connected(connection: &Connection) -> Result<PathBuf, Failure> {
-    if connection.connected() {
-        Ok(connection.repo())
-    } else {
-        Err(refuse_because(
+/// The repository of a connected project, or the refusal that it is not
+/// connected. A local connection whose folder is gone is refused as `missing`.
+async fn require_connected(connection: &Connection) -> Result<PathBuf, Failure> {
+    if !connection.connected() {
+        return Err(refuse_because(
             409,
             "not-connected",
             "this project is not connected to a repository",
-        ))
+        ));
+    }
+    let repo = connection.repo();
+    if connection.local_root().is_some() && !is_repository_top(&repo).await? {
+        return Err(refuse_because(
+            409,
+            "missing",
+            "The repository folder is gone. Disconnect, then connect again.",
+        ));
+    }
+    Ok(repo)
+}
+
+/// Whether `root` is the top folder of a Git working tree. A bare repository,
+/// a subfolder of a working tree and a folder that is gone are not.
+async fn is_repository_top(root: &Path) -> Result<bool, Failure> {
+    if !root.is_dir() {
+        return Ok(false);
+    }
+    let top = run(root, Limit::Local, &["rev-parse", "--show-toplevel"]).await?;
+    if !top.success() {
+        return Ok(false);
+    }
+    let (root, top) = (root.canonicalize(), Path::new(&top.text()).canonicalize());
+    Ok(matches!((root, top), (Ok(root), Ok(top)) if root == top))
+}
+
+/// Whether a merge in the repository still needs the person. A remote
+/// connection's merge may be committed again here. A local one is always the
+/// person's, so it is never committed for them.
+async fn open_merge(connection: &Connection, repo: &Path) -> Result<bool, Failure> {
+    if connection.local_root().is_some() {
+        merge_in_progress(repo).await
+    } else {
+        unfinished_merge(repo).await
     }
 }
 
@@ -234,8 +304,51 @@ async fn status_of(inner: &Inner, connection: &Connection) -> Result<Value, Fail
     }
     let repo = connection.repo();
     let record = read_record(&connection.dir)?;
+    if let Some(root) = &record.root {
+        let path = display_path(root);
+        if !is_repository_top(root).await? {
+            return Ok(json!({
+                "connected": true,
+                "local": true,
+                "path": path,
+                "signed_in": signed_in,
+                "missing": true,
+            }));
+        }
+        let (branch, merging) = branch_and_merge(&repo).await?;
+        return Ok(json!({
+            "connected": true,
+            "local": true,
+            "path": path,
+            "signed_in": signed_in,
+            "branch": branch,
+            "merging": merging,
+        }));
+    }
+    let (branch, merging) = branch_and_merge(&repo).await?;
+    Ok(json!({
+        "connected": true,
+        "signed_in": signed_in,
+        "url": validate::display_url(record.url.as_deref().unwrap_or_default()),
+        "branch": branch,
+        "merging": merging,
+    }))
+}
+
+/// A folder as the page shows it, without the extended-length prefix Windows
+/// puts on a canonical path.
+fn display_path(path: &Path) -> String {
+    let text = path.display().to_string();
+    match text.strip_prefix(r"\\?\") {
+        Some(plain) => plain.to_owned(),
+        None => text,
+    }
+}
+
+/// The checked-out branch, or null when detached, and the merge in progress.
+async fn branch_and_merge(repo: &Path) -> Result<(Value, Value), Failure> {
     let branch = run(
-        &repo,
+        repo,
         Limit::Local,
         &["symbolic-ref", "--short", "-q", "HEAD"],
     )
@@ -245,21 +358,15 @@ async fn status_of(inner: &Inner, connection: &Connection) -> Result<Value, Fail
     } else {
         Value::Null
     };
-    let merging = if merge_in_progress(&repo).await? {
+    let merging = if merge_in_progress(repo).await? {
         json!({
-            "side": merge_side(&repo).await?,
-            "conflicts": conflicted_paths(&repo).await?,
+            "side": merge_side(repo).await?,
+            "conflicts": conflicted_paths(repo).await?,
         })
     } else {
         Value::Null
     };
-    Ok(json!({
-        "connected": true,
-        "signed_in": signed_in,
-        "url": validate::display_url(&record.url),
-        "branch": branch,
-        "merging": merging,
-    }))
+    Ok((branch, merging))
 }
 
 /// The answer when a merge stops with conflicts for the page to resolve.
@@ -415,13 +522,155 @@ async fn clone_for(inner: &Inner, connection: &Connection, url: &str) -> Result<
 
     let record = Record {
         project: project_url(&connection.link),
-        url: url.to_owned(),
+        url: Some(url.to_owned()),
+        root: None,
     };
     let bytes =
         serde_json::to_vec_pretty(&record).map_err(|error| refuse(500, &error.to_string()))?;
     std::fs::write(connection.dir.join(RECORD), bytes).map_err(unwritable)?;
     std::fs::rename(&partial, connection.repo()).map_err(unwritable)?;
     Ok(())
+}
+
+/// What the folder chooser says on a local connection.
+const LOCAL_TITLE: &str = "Choose the git repository for this project";
+
+/// Asks for a repository on this computer, then connects the project to it. A
+/// cancelled chooser changes nothing and answers the status.
+pub(super) async fn handle_connect_local(
+    inner: &Arc<Inner>,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
+    let body = match read_json_body::<ProjectOnly>(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    answer(choose_and_connect(inner, origin, &body.project).await)
+}
+
+async fn choose_and_connect(
+    inner: &Inner,
+    origin: Option<&str>,
+    project: &str,
+) -> Result<Value, Failure> {
+    let connection = open_connection(inner, origin, project)?;
+    // Refused before the chooser opens, and again once the folder is chosen.
+    refuse_if_connected(&connection)?;
+    let Ok(_dialog) = inner.folder_dialog.try_lock() else {
+        return Err((
+            409,
+            json!({"error": "A folder chooser is already open on this computer."}),
+        ));
+    };
+    let chosen = match crate::local::folder::choose_directory_with_title(LOCAL_TITLE).await {
+        Ok(chosen) => chosen,
+        Err(why) if why == crate::local::folder::CANCELLED => {
+            return status_of(inner, &connection).await;
+        }
+        Err(why) => return Err(refuse(400, &why)),
+    };
+    connect_local(inner, &connection, &chosen).await
+}
+
+fn refuse_if_connected(connection: &Connection) -> Result<(), Failure> {
+    if connection.connected() {
+        return Err(refuse_because(
+            409,
+            "connected",
+            "this project is already connected to a repository",
+        ));
+    }
+    Ok(())
+}
+
+/// Connects the project to the repository at `chosen`, which must be the top
+/// folder of a working tree on a branch. The repository keeps the state it has
+/// when it is linked to this project, and gets a new one otherwise. Nothing
+/// else in it is touched, and no identity is configured.
+async fn connect_local(
+    inner: &Inner,
+    connection: &Connection,
+    chosen: &Path,
+) -> Result<Value, Failure> {
+    let _hold = inner.connections.claim(&connection.key)?;
+    refuse_if_connected(connection)?;
+    let not_repository = || {
+        refuse_because(
+            400,
+            "not-repository",
+            "Choose the top folder of a git repository.",
+        )
+    };
+    let root = chosen.canonicalize().map_err(|_| not_repository())?;
+    if !is_repository_top(&root).await? {
+        return Err(not_repository());
+    }
+    let branch = run(
+        &root,
+        Limit::Local,
+        &["symbolic-ref", "--short", "-q", "HEAD"],
+    )
+    .await?;
+    if !branch.success() {
+        return Err(refuse_because(
+            409,
+            "detached",
+            "Check out a branch in this repository first.",
+        ));
+    }
+    let branch = branch.text();
+
+    let store = store_for(&root, &inner.state_home);
+    let state = match store.load().map_err(|error| failed(&error))? {
+        Some(state)
+            if !(same_site(&state.link.site, &connection.link.site)
+                && state.link.slug == connection.link.slug) =>
+        {
+            return Err(refuse_because(
+                409,
+                "linked",
+                "this repository is linked to another LibrePaper project",
+            ));
+        }
+        // A state that binds a branch is kept, even if it is not the checked
+        // out one: the transfers refuse until the person checks it out.
+        Some(state) if state.branch.is_some() => None,
+        Some(mut state) => {
+            state.branch = Some(branch);
+            Some(state)
+        }
+        None => {
+            let mut state = State::new(connection.link.clone());
+            state.branch = Some(branch);
+            Some(state)
+        }
+    };
+    if let Some(state) = state {
+        store.save(&state).map_err(|error| failed(&error))?;
+    }
+
+    let record = Record {
+        project: project_url(&connection.link),
+        url: None,
+        root: Some(root),
+    };
+    let bytes =
+        serde_json::to_vec_pretty(&record).map_err(|error| refuse(500, &error.to_string()))?;
+    let written = std::fs::create_dir_all(&connection.dir)
+        .and_then(|()| std::fs::write(connection.dir.join(RECORD), bytes));
+    if let Err(error) = written {
+        let _ = std::fs::remove_dir_all(&connection.dir);
+        return Err(refuse(
+            500,
+            &format!("could not make the connection: {error}"),
+        ));
+    }
+    status_of(inner, connection).await
 }
 
 /* ----------------------------------------------------- pull and push */
@@ -447,21 +696,33 @@ async fn pull_remote(repo: &Path) -> Result<Value, Failure> {
     run_pull(repo).await
 }
 
+/// The branch to hand the sync crate. The app's own clone syncs whatever it
+/// has checked out. A repository of the person's own syncs the branch bound to
+/// it, so `None` makes the crate refuse a different checkout.
+fn sync_branch(root: &Path, local: bool) -> Result<Option<String>, Error> {
+    if local {
+        Ok(None)
+    } else {
+        current_branch(root).map(Some)
+    }
+}
+
 /// The project's named versions taken into the clone, merged into its branch.
 async fn web_pull(inner: &Inner, connection: &Connection) -> Result<PullOutcome, Failure> {
     let client = Arc::new(client_for(inner, &connection.link.site)?);
     let (root, state_home) = (connection.repo(), inner.state_home.clone());
     let handle = tokio::runtime::Handle::current();
+    // The app's own clone syncs the branch it has. A repository of the
+    // person's own syncs the branch bound to it, and refuses another.
+    let local = connection.local_root().is_some();
     let outcome = tokio::task::spawn_blocking(move || {
         let store = store_for(&root, &state_home);
-        // The clone is the app's own, so the branch it has is the branch it
-        // syncs.
         let options = PullOptions {
             merge: true,
             mine: Vec::new(),
             theirs: Vec::new(),
             exclude: Vec::new(),
-            branch: Some(current_branch(&root)?),
+            branch: sync_branch(&root, local)?,
         };
         handle.block_on(pull(&client, &root, store.as_ref(), &options))
     })
@@ -501,6 +762,7 @@ async fn web_push(inner: &Inner, connection: &Connection) -> Result<PushOutcome,
     let client = Arc::new(client_for(inner, &connection.link.site)?);
     let (root, state_home) = (connection.repo(), inner.state_home.clone());
     let handle = tokio::runtime::Handle::current();
+    let local = connection.local_root().is_some();
     let outcome = tokio::task::spawn_blocking(move || -> Result<PushOutcome, Error> {
         let store = store_for(&root, &state_home);
         let state = store.load()?.ok_or(Error::NotLinked)?;
@@ -512,7 +774,7 @@ async fn web_push(inner: &Inner, connection: &Connection) -> Result<PushOutcome,
             message,
             author,
             exclude: Vec::new(),
-            branch: Some(current_branch(&root)?),
+            branch: sync_branch(&root, local)?,
         };
         handle.block_on(push(&client, &root, store.as_ref(), &options))
     })
@@ -564,13 +826,15 @@ async fn pull_from_repository(
 ) -> Result<Value, Failure> {
     let connection = open_connection(inner, origin, project)?;
     let _hold = inner.connections.claim(&connection.key)?;
-    let repo = require_connected(&connection)?;
-    if unfinished_merge(&repo).await? {
+    let repo = require_connected(&connection).await?;
+    if open_merge(&connection, &repo).await? {
         return Err(merging(inner, &connection).await);
     }
-    let fetched = pull_remote(&repo).await?;
-    if fetched["status"] == "conflicts" {
-        return stopped(inner, &connection).await;
+    if connection.local_root().is_none() {
+        let fetched = pull_remote(&repo).await?;
+        if fetched["status"] == "conflicts" {
+            return stopped(inner, &connection).await;
+        }
     }
     if merge_stopped(&web_pull(inner, &connection).await?)? {
         return stopped(inner, &connection).await;
@@ -612,12 +876,18 @@ async fn push_to_repository(
 ) -> Result<Value, Failure> {
     let connection = open_connection(inner, origin, project)?;
     let _hold = inner.connections.claim(&connection.key)?;
-    let repo = require_connected(&connection)?;
-    if unfinished_merge(&repo).await? {
+    let repo = require_connected(&connection).await?;
+    if open_merge(&connection, &repo).await? {
         return Err(merging(inner, &connection).await);
     }
     if merge_stopped(&web_pull(inner, &connection).await?)? {
         return stopped(inner, &connection).await;
+    }
+    if connection.local_root().is_some() {
+        return Ok(json!({
+            "status": status_of(inner, &connection).await?,
+            "pulled": true,
+        }));
     }
     let fetched = pull_remote(&repo).await?;
     if fetched["status"] == "conflicts" {
@@ -657,8 +927,8 @@ async fn retry_interrupted(
 ) -> Result<Value, Failure> {
     let connection = open_connection(inner, origin, project)?;
     let _hold = inner.connections.claim(&connection.key)?;
-    let repo = require_connected(&connection)?;
-    if unfinished_merge(&repo).await? {
+    let repo = require_connected(&connection).await?;
+    if open_merge(&connection, &repo).await? {
         return Err(merging(inner, &connection).await);
     }
     let outcome = web_push(inner, &connection).await?;
@@ -706,7 +976,14 @@ async fn resolve(
 ) -> Result<Value, Failure> {
     let connection = open_connection(inner, origin, &body.project)?;
     let _hold = inner.connections.claim(&connection.key)?;
-    let repo = require_connected(&connection)?;
+    let repo = require_connected(&connection).await?;
+    if connection.local_root().is_some() {
+        return Err(refuse_because(
+            409,
+            "local",
+            "Resolve the conflicts in your editor, then commit the merge.",
+        ));
+    }
     if !merge_in_progress(&repo).await? {
         return Err(refuse_because(
             409,
@@ -751,7 +1028,8 @@ async fn resolve(
 
 /* ------------------------------------------------------------ disconnect */
 
-/// Removes the connection's folder, and with it the clone and its state.
+/// Removes the connection's folder, and with it the clone and its state. A
+/// local connection's repository is not in that folder and is left as it is.
 pub(super) async fn handle_disconnect(
     inner: &Arc<Inner>,
     headers: &HeaderMap,
@@ -771,15 +1049,11 @@ pub(super) async fn handle_disconnect(
 async fn disconnect(inner: &Inner, origin: Option<&str>, project: &str) -> Result<Value, Failure> {
     let connection = open_connection(inner, origin, project)?;
     let _hold = inner.connections.claim(&connection.key)?;
-    match std::fs::remove_dir_all(&connection.dir) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(refuse(
-                500,
-                &format!("could not remove the connection: {error}"),
-            ))
-        }
+    if let Err(error) = connection.forget() {
+        return Err(refuse(
+            500,
+            &format!("could not remove the connection: {error}"),
+        ));
     }
     status_of(inner, &connection).await
 }
@@ -1016,7 +1290,7 @@ mod tests {
         let record: Record =
             serde_json::from_slice(&std::fs::read(connection.dir.join(RECORD)).unwrap()).unwrap();
         assert_eq!(record.project, PROJECT);
-        assert_eq!(record.url, text(&bare));
+        assert_eq!(record.url.as_deref(), Some(text(&bare)));
 
         let store = store_for(&connection.repo(), &fixture.inner.state_home);
         assert_eq!(store.load().unwrap().unwrap().link.slug, "abc123");
@@ -1040,7 +1314,8 @@ mod tests {
         // A token in an address is never shown back to the page.
         let record = Record {
             project: PROJECT.to_owned(),
-            url: "https://ghp_secret@github.com/o/r.git".to_owned(),
+            url: Some("https://ghp_secret@github.com/o/r.git".to_owned()),
+            root: None,
         };
         std::fs::write(
             connection.dir.join(RECORD),
@@ -1273,6 +1548,7 @@ mod tests {
 
         for path in [
             "connections",
+            "connections/local",
             "connections/login",
             "connections/login/complete",
         ] {
@@ -1335,5 +1611,546 @@ mod tests {
             (409, &json!("not-connected")),
             "{body}"
         );
+    }
+
+    /* ------------------------------------------------- local connections */
+
+    /// A repository of the person's own on `main`, with one commit and an
+    /// identity, as a merge made in it needs.
+    fn local_repository(scratch: &Path) -> PathBuf {
+        let repo = scratch.join("mine");
+        plain_git(scratch, &["init", "-b", "main", "mine"]);
+        plain_git(&repo, &["config", "user.name", "Me"]);
+        plain_git(&repo, &["config", "user.email", "me@example.org"]);
+        std::fs::write(repo.join("main.tex"), "hello\n").unwrap();
+        plain_git(&repo, &["add", "-A"]);
+        plain_git(&repo, &["commit", "-m", "First"]);
+        repo.canonicalize().unwrap()
+    }
+
+    /// Everything in a repository a connection must leave alone: its files,
+    /// HEAD, config and refs. The refs under `refs/librepaper/` are left out
+    /// unless `with_state` is true.
+    fn snapshot(repo: &Path, with_state: bool) -> String {
+        let mut names: Vec<String> = std::fs::read_dir(repo)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name != ".git")
+            .collect();
+        names.sort();
+        let mut out = String::new();
+        for name in names {
+            let bytes = std::fs::read(repo.join(&name)).unwrap();
+            out.push_str(&format!("{name}={bytes:?}\n"));
+        }
+        out.push_str(&std::fs::read_to_string(repo.join(".git/HEAD")).unwrap());
+        out.push_str(&std::fs::read_to_string(repo.join(".git/config")).unwrap());
+        for line in plain_git(repo, &["for-each-ref"]).lines() {
+            if with_state || !line.contains("refs/librepaper/") {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        out
+    }
+
+    type Tree = std::collections::BTreeMap<String, String>;
+
+    #[derive(Default)]
+    struct SiteData {
+        versions: Vec<(i64, Tree)>,
+        current: Tree,
+        posted: usize,
+    }
+
+    /// A project server that holds one named version and answers the reads
+    /// and the source change that pull and push make.
+    struct Site {
+        url: String,
+        data: Arc<std::sync::Mutex<SiteData>>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Site {
+        async fn start(files: &[(&str, &str)]) -> Site {
+            let tree: Tree = files
+                .iter()
+                .map(|(path, text)| (path.to_string(), text.to_string()))
+                .collect();
+            let data = Arc::new(std::sync::Mutex::new(SiteData {
+                versions: vec![(1, tree.clone())],
+                current: tree,
+                posted: 0,
+            }));
+            let app = axum::Router::new()
+                .fallback(site_reply)
+                .with_state(data.clone());
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let task = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            Site { url, data, task }
+        }
+
+        fn project(&self) -> String {
+            format!("{}/docs/paper", self.url)
+        }
+
+        fn posted(&self) -> usize {
+            self.data.lock().unwrap().posted
+        }
+    }
+
+    impl Drop for Site {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    async fn site_reply(
+        axum::extract::State(data): axum::extract::State<Arc<std::sync::Mutex<SiteData>>>,
+        method: Method,
+        uri: axum::http::Uri,
+        _body: axum::body::Bytes,
+    ) -> (StatusCode, axum::Json<Value>) {
+        let mut data = data.lock().unwrap();
+        let path = uri.path().to_owned();
+        let listing = |tree: &Tree| {
+            Value::Object(
+                tree.keys()
+                    .map(|path| (path.clone(), json!({"kind": "text"})))
+                    .collect(),
+            )
+        };
+        let found = |body: Value| (StatusCode::OK, axum::Json(body));
+        if method == Method::POST && path.ends_with("/source-change") {
+            data.posted += 1;
+            return found(json!({"label": {"sha": "sha-2", "sequence": 2}}));
+        }
+        if path == "/api/config" {
+            return found(json!({}));
+        }
+        if path.ends_with("/history") {
+            let after = uri
+                .query()
+                .unwrap_or("")
+                .split('&')
+                .find_map(|pair| pair.strip_prefix("after=")?.parse::<i64>().ok());
+            let labels: Vec<Value> = data
+                .versions
+                .iter()
+                .rev()
+                .filter(|(sequence, _)| after.is_none_or(|after| *sequence < after))
+                .map(|(sequence, _)| {
+                    json!({
+                        "sha": format!("sha-{sequence}"),
+                        "sequence": sequence,
+                        "by": "Bob",
+                        "label": format!("Version {sequence}"),
+                    })
+                })
+                .collect();
+            return found(json!({"labels": labels, "next_cursor": null, "head": "h1"}));
+        }
+        if let Some((_, sha)) = path.split_once("/history/") {
+            let version = data
+                .versions
+                .iter()
+                .find(|(sequence, _)| format!("sha-{sequence}") == sha);
+            return match version {
+                Some((_, files)) => found(json!({"files": listing(files), "texts": files})),
+                None => (
+                    StatusCode::NOT_FOUND,
+                    axum::Json(json!({"error": "no such version"})),
+                ),
+            };
+        }
+        if path.ends_with("/project") {
+            return found(json!({"tree": {"files": listing(&data.current)}, "texts": data.current}));
+        }
+        (
+            StatusCode::NOT_FOUND,
+            axum::Json(json!({"error": "no such route"})),
+        )
+    }
+
+    impl Fixture {
+        /// The connection to the project on `site`, signed in to it.
+        fn connection_on(&self, site: &Site) -> Connection {
+            let link = parse_link(&site.project(), Some(&site.url)).unwrap();
+            credentials::store_token_at(&self.inner.state_home, &site.url, "lp_token").unwrap();
+            Connection::open(&self.inner, link)
+        }
+    }
+
+    #[tokio::test]
+    async fn connecting_a_local_repository_records_it_and_changes_nothing_else() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let repo = local_repository(fixture.scratch.path());
+        let connection = fixture.connection(PROJECT);
+        let before = snapshot(&repo, false);
+
+        let status = connect_local(&fixture.inner, &connection, &repo)
+            .await
+            .unwrap();
+        assert_eq!(status["connected"], json!(true), "{status}");
+        assert_eq!(status["local"], json!(true), "{status}");
+        assert_eq!(status["path"], json!(display_path(&repo)), "{status}");
+        assert_eq!(status["branch"], json!("main"), "{status}");
+        assert_eq!(status["merging"], Value::Null, "{status}");
+        assert!(status.get("url").is_none(), "{status}");
+        assert_eq!(connection.repo(), repo);
+        assert!(connection.connected());
+        assert!(!connection.dir.join(REPOSITORY).exists());
+
+        let record: Record =
+            serde_json::from_slice(&std::fs::read(connection.dir.join(RECORD)).unwrap()).unwrap();
+        assert_eq!(record.project, PROJECT);
+        assert_eq!(record.url, None);
+        assert_eq!(record.root.as_deref(), Some(repo.as_path()));
+
+        let state = store_for(&repo, &fixture.inner.state_home)
+            .load()
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.link.slug, "abc123");
+        assert_eq!(state.branch.as_deref(), Some("main"));
+        assert_eq!(snapshot(&repo, false), before);
+
+        let (status, body) = connect_local(&fixture.inner, &connection, &repo)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (status, &body["reason"]),
+            (409, &json!("connected")),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_local_repository_that_cannot_be_used_is_refused() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let scratch = fixture.scratch.path();
+        let repo = local_repository(scratch);
+        let connection = fixture.connection(PROJECT);
+        let refused = |why: &'static str, status: u16| {
+            move |(code, body): Failure| {
+                assert_eq!((code, &body["reason"]), (status, &json!(why)), "{body}");
+            }
+        };
+
+        let plain = scratch.join("plain");
+        std::fs::create_dir(&plain).unwrap();
+        let failure = connect_local(&fixture.inner, &connection, &plain)
+            .await
+            .unwrap_err();
+        refused("not-repository", 400)(failure);
+
+        let sub = repo.join("figures");
+        std::fs::create_dir(&sub).unwrap();
+        let failure = connect_local(&fixture.inner, &connection, &sub)
+            .await
+            .unwrap_err();
+        refused("not-repository", 400)(failure);
+
+        plain_git(scratch, &["init", "--bare", "-b", "main", "bare.git"]);
+        let failure = connect_local(&fixture.inner, &connection, &scratch.join("bare.git"))
+            .await
+            .unwrap_err();
+        refused("not-repository", 400)(failure);
+
+        let failure = connect_local(&fixture.inner, &connection, &scratch.join("nowhere"))
+            .await
+            .unwrap_err();
+        refused("not-repository", 400)(failure);
+
+        let other = Link::parse("https://paper.example/docs/other").unwrap();
+        store_for(&repo, &fixture.inner.state_home)
+            .save(&State::new(other))
+            .unwrap();
+        let failure = connect_local(&fixture.inner, &connection, &repo)
+            .await
+            .unwrap_err();
+        refused("linked", 409)(failure);
+        assert!(!connection.connected());
+        assert!(!connection.dir.exists());
+
+        std::fs::create_dir(scratch.join("second")).unwrap();
+        let detached = local_repository(&scratch.join("second"));
+        plain_git(&detached, &["checkout", "--detach"]);
+        let failure = connect_local(&fixture.inner, &connection, &detached)
+            .await
+            .unwrap_err();
+        refused("detached", 409)(failure);
+        assert!(!connection.connected());
+    }
+
+    #[tokio::test]
+    async fn getting_changes_into_a_local_repository_merges_the_project_without_a_remote() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let repo = local_repository(fixture.scratch.path());
+        let site = Site::start(&[("main.tex", "hello\n"), ("extra.tex", "more\n")]).await;
+        let connection = fixture.connection_on(&site);
+        connect_local(&fixture.inner, &connection, &repo)
+            .await
+            .unwrap();
+
+        let body = pull_from_repository(&fixture.inner, Some(&site.url), &site.project())
+            .await
+            .unwrap();
+        assert_eq!(body["status"]["merging"], Value::Null, "{body}");
+        assert_eq!(body["status"]["local"], json!(true), "{body}");
+        assert_eq!(
+            std::fs::read_to_string(repo.join("extra.tex")).unwrap(),
+            "more\n"
+        );
+        assert!(plain_git(&repo, &["remote"]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn sending_from_a_local_repository_only_takes_the_project_in() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let repo = local_repository(fixture.scratch.path());
+        let site = Site::start(&[("main.tex", "hello\n"), ("extra.tex", "more\n")]).await;
+        let connection = fixture.connection_on(&site);
+        connect_local(&fixture.inner, &connection, &repo)
+            .await
+            .unwrap();
+
+        let body = push_to_repository(&fixture.inner, Some(&site.url), &site.project())
+            .await
+            .unwrap();
+        assert_eq!(body["pulled"], json!(true), "{body}");
+        assert_eq!(body["status"]["merging"], Value::Null, "{body}");
+        assert!(repo.join("extra.tex").exists());
+        assert_eq!(site.posted(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_conflict_stays_in_the_local_repository_and_is_never_committed_for_the_person() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let repo = local_repository(fixture.scratch.path());
+        std::fs::write(repo.join("main.tex"), "mine\n").unwrap();
+        plain_git(&repo, &["commit", "-am", "Mine"]);
+        let site = Site::start(&[("main.tex", "theirs\n")]).await;
+        let connection = fixture.connection_on(&site);
+        connect_local(&fixture.inner, &connection, &repo)
+            .await
+            .unwrap();
+
+        let body = pull_from_repository(&fixture.inner, Some(&site.url), &site.project())
+            .await
+            .unwrap();
+        assert_eq!(body["stopped"], json!("conflicts"), "{body}");
+        assert_eq!(
+            body["status"]["merging"]["conflicts"],
+            json!(["main.tex"]),
+            "{body}"
+        );
+        assert!(repo.join(".git/MERGE_HEAD").exists());
+
+        // Even with every file settled, the merge is the person's to commit.
+        plain_git(&repo, &["checkout", "--theirs", "--", "main.tex"]);
+        plain_git(&repo, &["add", "main.tex"]);
+        let project = site.project();
+        let origin = Some(site.url.as_str());
+        for failure in [
+            pull_from_repository(&fixture.inner, origin, &project)
+                .await
+                .unwrap_err(),
+            push_to_repository(&fixture.inner, origin, &project)
+                .await
+                .unwrap_err(),
+            retry_interrupted(&fixture.inner, origin, &project)
+                .await
+                .unwrap_err(),
+        ] {
+            assert_eq!(
+                (failure.0, &failure.1["reason"]),
+                (409, &json!("merging")),
+                "{}",
+                failure.1
+            );
+        }
+        assert!(repo.join(".git/MERGE_HEAD").exists());
+    }
+
+    #[tokio::test]
+    async fn a_dirty_local_repository_is_refused_before_the_merge() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let repo = local_repository(fixture.scratch.path());
+        let site = Site::start(&[("main.tex", "hello\n"), ("extra.tex", "more\n")]).await;
+        let connection = fixture.connection_on(&site);
+        connect_local(&fixture.inner, &connection, &repo)
+            .await
+            .unwrap();
+        std::fs::write(repo.join("main.tex"), "edited\n").unwrap();
+
+        let origin = Some(site.url.as_str());
+        let project = site.project();
+        for failure in [
+            pull_from_repository(&fixture.inner, origin, &project)
+                .await
+                .unwrap_err(),
+            push_to_repository(&fixture.inner, origin, &project)
+                .await
+                .unwrap_err(),
+        ] {
+            assert_eq!(
+                (failure.0, &failure.1["reason"]),
+                (409, &json!("dirty")),
+                "{}",
+                failure.1
+            );
+        }
+        assert!(!repo.join("extra.tex").exists());
+    }
+
+    #[tokio::test]
+    async fn a_local_repository_on_another_branch_is_refused() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let repo = local_repository(fixture.scratch.path());
+        let site = Site::start(&[("main.tex", "hello\n"), ("extra.tex", "more\n")]).await;
+        let connection = fixture.connection_on(&site);
+        connect_local(&fixture.inner, &connection, &repo)
+            .await
+            .unwrap();
+        plain_git(&repo, &["checkout", "-b", "other"]);
+
+        let origin = Some(site.url.as_str());
+        let project = site.project();
+        for failure in [
+            pull_from_repository(&fixture.inner, origin, &project)
+                .await
+                .unwrap_err(),
+            push_to_repository(&fixture.inner, origin, &project)
+                .await
+                .unwrap_err(),
+            retry_interrupted(&fixture.inner, origin, &project)
+                .await
+                .unwrap_err(),
+        ] {
+            assert_eq!(
+                (failure.0, &failure.1["reason"]),
+                (409, &json!("branch")),
+                "{}",
+                failure.1
+            );
+        }
+        assert!(!repo.join("extra.tex").exists());
+    }
+
+    #[tokio::test]
+    async fn resolving_is_refused_for_a_local_connection() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let repo = local_repository(fixture.scratch.path());
+        let connection = fixture.connection(PROJECT);
+        connect_local(&fixture.inner, &connection, &repo)
+            .await
+            .unwrap();
+
+        let body = ResolveBody {
+            project: PROJECT.to_string(),
+            path: "main.tex".to_string(),
+            keep: "project".to_string(),
+        };
+        let (status, failure) = resolve(&fixture.inner, Some(PAGE), &body)
+            .await
+            .unwrap_err();
+        assert_eq!((status, &failure["reason"]), (409, &json!("local")));
+    }
+
+    #[tokio::test]
+    async fn disconnecting_a_local_connection_leaves_the_repository_as_it_was() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let repo = local_repository(fixture.scratch.path());
+        let connection = fixture.connection(PROJECT);
+        connect_local(&fixture.inner, &connection, &repo)
+            .await
+            .unwrap();
+        let before = snapshot(&repo, true);
+        assert!(before.contains("refs/librepaper/"), "{before}");
+
+        let status = disconnect(&fixture.inner, Some(PAGE), PROJECT)
+            .await
+            .unwrap();
+        assert_eq!(status["connected"], json!(false), "{status}");
+        assert!(!connection.connected());
+        assert!(!connection.dir.exists());
+        assert_eq!(snapshot(&repo, true), before);
+        assert!(repo.join("main.tex").exists());
+    }
+
+    #[tokio::test]
+    async fn a_local_repository_that_is_gone_reads_missing() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let repo = local_repository(fixture.scratch.path());
+        let site = Site::start(&[("main.tex", "hello\n")]).await;
+        let connection = fixture.connection_on(&site);
+        connect_local(&fixture.inner, &connection, &repo)
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(&repo).unwrap();
+
+        let status = status_of(&fixture.inner, &connection).await.unwrap();
+        assert_eq!(status["connected"], json!(true), "{status}");
+        assert_eq!(status["local"], json!(true), "{status}");
+        assert_eq!(status["missing"], json!(true), "{status}");
+        assert_eq!(status["path"], json!(display_path(&repo)), "{status}");
+
+        let origin = Some(site.url.as_str());
+        let project = site.project();
+        for failure in [
+            pull_from_repository(&fixture.inner, origin, &project)
+                .await
+                .unwrap_err(),
+            push_to_repository(&fixture.inner, origin, &project)
+                .await
+                .unwrap_err(),
+            retry_interrupted(&fixture.inner, origin, &project)
+                .await
+                .unwrap_err(),
+        ] {
+            assert_eq!(
+                (failure.0, &failure.1["reason"]),
+                (409, &json!("missing")),
+                "{}",
+                failure.1
+            );
+        }
+
+        let status = disconnect(&fixture.inner, origin, &project).await.unwrap();
+        assert_eq!(status["connected"], json!(false), "{status}");
     }
 }
