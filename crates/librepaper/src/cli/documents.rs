@@ -143,30 +143,28 @@ impl std::fmt::Display for ListingError {
     }
 }
 
-impl From<String> for ListingError {
-    fn from(message: String) -> Self {
+impl ListingError {
+    /// A failure with no HTTP status: transport, URL or response shape.
+    fn without_status(message: impl Into<String>) -> Self {
         Self {
             status: None,
-            message,
+            message: message.into(),
         }
-    }
-}
-
-impl From<&str> for ListingError {
-    fn from(message: &str) -> Self {
-        message.to_string().into()
     }
 }
 
 async fn visible_documents(server: &str, token: &str) -> Result<Vec<Value>, ListingError> {
     let mut target =
-        url::Url::parse(&format!("{server}/api/list")).map_err(|err| err.to_string())?;
+        url::Url::parse(&format!("{server}/api/list"))
+            .map_err(|err| ListingError::without_status(err.to_string()))?;
     let mut documents = Vec::new();
     let mut seen_slugs = std::collections::HashSet::new();
     let mut cursors = std::collections::HashSet::new();
     loop {
         let (status, payload) =
-            post_json(target.as_str(), &json!({}), token, Duration::from_secs(60)).await?;
+            post_json(target.as_str(), &json!({}), token, Duration::from_secs(60))
+                .await
+                .map_err(ListingError::without_status)?;
         if status != 200 {
             return Err(ListingError {
                 status: Some(status),
@@ -176,7 +174,9 @@ async fn visible_documents(server: &str, token: &str) -> Result<Vec<Value>, List
         let page = payload
             .get("documents")
             .and_then(Value::as_array)
-            .ok_or("invalid document listing: missing documents")?;
+            .ok_or_else(|| {
+                ListingError::without_status("invalid document listing: missing documents")
+            })?;
         for document in page {
             let slug = text(document, "slug");
             if !slug.is_empty() && seen_slugs.insert(slug) {
@@ -189,13 +189,15 @@ async fn visible_documents(server: &str, token: &str) -> Result<Vec<Value>, List
         let updated = cursor
             .get("after_updated")
             .and_then(Value::as_str)
-            .ok_or("invalid listing cursor")?;
+            .ok_or_else(|| ListingError::without_status("invalid listing cursor"))?;
         let slug = cursor
             .get("after_slug")
             .and_then(Value::as_str)
-            .ok_or("invalid listing cursor")?;
+            .ok_or_else(|| ListingError::without_status("invalid listing cursor"))?;
         if !cursors.insert((updated.to_string(), slug.to_string())) {
-            return Err("server repeated a document listing cursor".into());
+            return Err(ListingError::without_status(
+                "server repeated a document listing cursor",
+            ));
         }
         target
             .query_pairs_mut()

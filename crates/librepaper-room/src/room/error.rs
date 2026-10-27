@@ -116,15 +116,6 @@ impl std::fmt::Display for WriteError {
 
 impl std::error::Error for WriteError {}
 
-/// The room's own storage paths still report failures as strings. Those are
-/// storage context by construction: every refusal that a caller has to tell
-/// apart is built as a variant at the point that decides it.
-impl From<String> for WriteError {
-    fn from(context: String) -> Self {
-        Self::Storage(context)
-    }
-}
-
 impl From<CatalogError> for WriteError {
     fn from(error: CatalogError) -> Self {
         match error {
