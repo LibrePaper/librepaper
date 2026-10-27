@@ -1,5 +1,5 @@
 // The Git panel's connection of a web project to a git repository, in the
-// desktop app (SPEC-git-panel.md). The desktop app keeps a clone of the
+// desktop app. The desktop app keeps a clone of the
 // repository on this computer, and pull and push move changes between that
 // clone and the project. This module decides nothing about files: it asks the
 // desktop app, and says what the answer means.

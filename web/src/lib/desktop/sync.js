@@ -1,5 +1,5 @@
 // A folder project's meeting with its web project, through the `projects/<id>/sync`
-// routes of the desktop app's local service (SPEC-sync.md). The desktop app
+// routes of the desktop app's local service. The desktop app
 // holds the sign-in and runs the two commands, pull and push; this file only
 // sends. A refusal is a `Refused` error carrying `status` and the parsed
 // `body`, which is where a push says which paths changed.

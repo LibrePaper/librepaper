@@ -1,5 +1,5 @@
-// The repository section of the Git panel for a folder project
-// (SPEC-git-panel.md): where the folder's git repository stands, and what the
+// The repository section of the Git panel for a folder project:
+// where the folder's git repository stands, and what the
 // last action did.
 //
 // This module owns that state; the panel only reads it and calls the actions.

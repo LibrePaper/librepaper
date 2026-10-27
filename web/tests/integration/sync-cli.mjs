@@ -1,4 +1,4 @@
-// `librepaper push` and `librepaper pull` (SPEC-sync.md), end to end: the real
+// `librepaper push` and `librepaper pull`, end to end: the real
 // binary, run in real working directories, against a real `librepaper admin
 // serve` on a throwaway PostgreSQL database. Edits on the web are made through
 // the room's socket the way a browser makes them. Every outcome is read back

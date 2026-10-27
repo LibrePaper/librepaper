@@ -1,6 +1,6 @@
 // Reading a folder project through the desktop app: its tree, one file, the
 // outside changes, and its name. The routes are the `projects/<id>` ones of
-// the desktop app's local service (SPEC-local-folders.md).
+// the desktop app's local service.
 import { send } from "./client.js";
 
 const segment = (value) => encodeURIComponent(String(value));

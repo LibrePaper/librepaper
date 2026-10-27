@@ -1,4 +1,4 @@
-// The LibrePaper section of the Git panel for a folder project (SPEC-sync.md):
+// The LibrePaper section of the Git panel for a folder project:
 // where the folder stands with its web project, and what the last Pull or Push
 // did.
 //
