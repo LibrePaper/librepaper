@@ -6,11 +6,15 @@ import { send } from "./client.js";
 const segment = (value) => encodeURIComponent(String(value));
 const filePath = (path) => String(path).split("/").map(segment).join("/");
 
-/** The project's files and what was left out of the listing.
- * @param {string} id
+/** The project's files and what was left out of the listing. `extensions` are
+ * the file extensions the project's rules name; the desktop app leaves every
+ * other file out of the listing.
+ * @param {string} id @param {string[]} [extensions]
  * @returns {Promise<{ cursor: string | number, files: Array<{ path: string, size: number, sha256: string, mtime: number }>, skipped: Array<{ path: string, reason: string }> }>} */
-export async function projectTree(id) {
-  const response = await send("GET", `projects/${segment(id)}/tree`);
+export async function projectTree(id, extensions = []) {
+  const wanted = [...new Set(extensions.map((one) => String(one).replace(/^\./, "").toLowerCase()).filter(Boolean))];
+  const query = wanted.length ? `?extensions=${wanted.map(segment).join(",")}` : "";
+  const response = await send("GET", `projects/${segment(id)}/tree${query}`);
   return response.json();
 }
 

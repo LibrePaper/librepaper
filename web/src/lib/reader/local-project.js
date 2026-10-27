@@ -18,7 +18,7 @@
 // - The editor holds unsaved edits to that file: `onConflict` is told, and the
 //   person chooses `keepMine` or `loadDisk`.
 // - Files that were added join the project, files that were removed leave it,
-//   and an asset is replaced by its new bytes.
+//   and an asset is replaced by its new digest.
 //
 // The cursor moves past a batch of changes only when the whole batch was
 // applied. A file that cannot be read now keeps the cursor where it was, so
@@ -41,7 +41,8 @@ import * as folderRead from "../desktop/folder-read.js";
 /// prefix is the directory's, which the editor's undo manager leaves alone:
 /// undoing a reload would write the old text back over the file.
 const DISK_ORIGIN = "directory:disk";
-// Files read at once while the project opens.
+// Files read at once while the project opens, and figures fetched at once when
+// a caller asks for their bytes.
 const READ_BATCH = 8;
 // How long the change loop waits after a failed request before asking again.
 const RETRY_MS = 3000;
@@ -115,17 +116,69 @@ function realWait(ms, signal) {
 /// The figures of a local project. The bytes are held here, under their
 /// digest, in place of the server's asset store: `upload` and `gather` have the
 /// shape of the Reader's `uploadAsset` and `figures.gather`.
+///
+/// A figure that is in the folder is not read when the project opens. The
+/// local project attaches a source, and `gather` reads the file by its path
+/// the first time its bytes are asked for, keeping it only if its digest is the
+/// one expected.
 export function createFigureStore() {
   /** @type {Map<string, Uint8Array>} */
   const bytes = new Map();
+  /** @type {Map<string, number>} */
+  const sizes = new Map();
   /** @type {Map<string, string>} */
   const urls = new Map();
+  /** @type {((path: string) => Promise<Uint8Array>) | null} */
+  let source = null;
 
   /** @param {Uint8Array} data */
   async function put(data) {
     const sha = await sha256Hex(data);
     bytes.set(sha, data);
+    sizes.set(sha, data.byteLength);
     return sha;
+  }
+
+  /// Where to read a figure the store does not hold, by its path.
+  /** @param {((path: string) => Promise<Uint8Array>) | null} read */
+  function attach(read) {
+    source = read;
+  }
+
+  /// Records the size of a figure that has not been read.
+  /** @param {string} sha @param {number | undefined} size */
+  function note(sha, size) {
+    if (Number.isSafeInteger(size)) sizes.set(sha, /** @type {number} */ (size));
+  }
+
+  /// The size of a figure, or undefined when it is neither held nor noted.
+  /** @param {string} sha */
+  function size(sha) {
+    return bytes.get(sha)?.byteLength ?? sizes.get(sha);
+  }
+
+  /// Reads the figures of `digests` that are not held, a few at a time. One
+  /// that cannot be read, or whose bytes do not hash to the digest, stays out.
+  /** @param {Record<string, string>} digests */
+  async function fetchMissing(digests) {
+    const read = source;
+    if (!read) return;
+    /** @type {Map<string, string>} */
+    const wanted = new Map();
+    for (const [path, sha] of Object.entries(digests)) if (!bytes.has(sha) && !wanted.has(sha)) wanted.set(sha, path);
+    const entries = [...wanted];
+    for (let at = 0; at < entries.length; at += READ_BATCH) {
+      await Promise.all(entries.slice(at, at + READ_BATCH).map(async ([sha, path]) => {
+        try {
+          const data = await read(path);
+          if (await sha256Hex(data) !== sha) return;
+          bytes.set(sha, data);
+          sizes.set(sha, data.byteLength);
+        } catch {
+          // The path is reported as missing.
+        }
+      }));
+    }
   }
 
   /** @param {string} _slug @param {File} file */
@@ -141,6 +194,7 @@ export function createFigureStore() {
     const where = {};
     /** @type {string[]} */
     const missing = [];
+    await fetchMissing(digests || {});
     for (const [path, sha] of Object.entries(digests || {})) {
       const body = bytes.get(sha);
       if (!body) {
@@ -165,9 +219,11 @@ export function createFigureStore() {
     for (const url of urls.values()) if (url.startsWith("blob:")) URL.revokeObjectURL(url);
     urls.clear();
     bytes.clear();
+    sizes.clear();
+    source = null;
   }
 
-  return { put, upload, gather, release };
+  return { put, upload, gather, attach, note, size, release };
 }
 
 /** @param {{
@@ -203,6 +259,10 @@ export function createLocalProject({
   wait = realWait,
 }) {
   const slug = localSlug(id);
+  // The extensions the rules name, which is all of the folder the desktop app
+  // needs to list.
+  const extensions = [...(rules.text_extensions || []), ...(rules.asset_extensions || [])];
+  figures.attach((path) => folder.projectFile(id, path));
   const abort = new AbortController();
   let closed = false;
   let session = null;
@@ -252,7 +312,8 @@ export function createLocalProject({
     return kept;
   }
 
-  /// Reads each file of a listing, a few at a time.
+  /// Reads each text file of a listing, a few at a time. Figures are not read:
+  /// the figure store reads one when its bytes are first asked for.
   async function readAll(files) {
     const read = [];
     for (let at = 0; at < files.length; at += READ_BATCH) {
@@ -262,38 +323,56 @@ export function createLocalProject({
     return read;
   }
 
-  /// A file's bytes as the project holds them: a text with LF endings, or an
-  /// asset's digest. Null for a text that is not UTF-8.
-  /** @param {{ file: { path: string, kind: "text" | "asset", sha256?: string | null }, bytes: Uint8Array }} read
-   * @returns {Promise<Item | null>} */
-  async function interpret({ file, bytes }) {
-    if (file.kind === "text") {
-      const text = decodeText(bytes);
-      if (text === null) return null;
-      const ending = endingOf(bytes);
-      // Bytes that the style cannot rebuild (a byte order mark, mixed endings)
-      // are kept, so a file that is not edited is written back as it was.
-      const exact = styled(text, ending);
-      const same = exact.length === bytes.length && exact.every((byte, at) => byte === bytes[at]);
-      return { path: file.path, kind: "text", text, sha: file.sha256 ?? null, ending, raw: same ? undefined : bytes };
+  /// A text file's bytes as the project holds them, with LF endings. Null for
+  /// a text that is not UTF-8.
+  /** @param {{ file: { path: string, sha256?: string | null }, bytes: Uint8Array }} read
+   * @returns {TextItem | null} */
+  function interpret({ file, bytes }) {
+    const text = decodeText(bytes);
+    if (text === null) return null;
+    const ending = endingOf(bytes);
+    // Bytes that the style cannot rebuild (a byte order mark, mixed endings)
+    // are kept, so a file that is not edited is written back as it was.
+    const exact = styled(text, ending);
+    const same = exact.length === bytes.length && exact.every((byte, at) => byte === bytes[at]);
+    return { path: file.path, kind: "text", text, sha: file.sha256 ?? null, ending, raw: same ? undefined : bytes };
+  }
+
+  /// A figure the listing or a change names, by the digest the desktop app
+  /// gave. Its bytes stay in the folder. Without a digest the file is read.
+  /** @param {{ path: string, sha256?: string | null, size?: number }} file
+   * @returns {Promise<AssetItem>} */
+  async function assetItem(file) {
+    if (file.sha256) {
+      figures.note(file.sha256, file.size);
+      return { path: file.path, kind: "asset", sha: file.sha256 };
     }
-    return { path: file.path, kind: "asset", sha: await figures.put(bytes) };
+    return { path: file.path, kind: "asset", sha: await figures.put(await folder.projectFile(id, file.path)) };
+  }
+
+  /// The items of a listing's files: texts are read, figures are not.
+  /** @param {Array<{ path: string, kind: "text" | "asset", sha256?: string | null, size?: number }>} files
+   * @returns {Promise<Item[]>} */
+  async function itemsOf(files) {
+    /** @type {Item[]} */
+    const items = [];
+    for (const one of await readAll(files.filter((file) => file.kind === "text"))) {
+      const item = interpret(one);
+      if (item) items.push(item);
+    }
+    for (const file of files) if (file.kind === "asset") items.push(await assetItem(file));
+    return items;
   }
 
   /// Opens the folder: reads the tree and every file the rules name. Resolves
   /// with the folder's name and the format of the file the project opens on.
   async function load() {
     const [tree, name] = await Promise.all([
-      folder.projectTree(id),
+      folder.projectTree(id, extensions),
       folder.projectName(id).catch(() => ""),
     ]);
     cursor = tree.cursor;
-    const read = await readAll([...managed(tree.files).values()]);
-    initial = [];
-    for (const one of read) {
-      const item = await interpret(one);
-      if (item) initial.push(item);
-    }
+    initial = await itemsOf([...managed(tree.files).values()]);
     seeded = Object.fromEntries(initial.filter((item) => item.sha).map((item) => [item.path, item.sha]));
     const texts = Object.fromEntries(initial.filter((item) => item.kind === "text").map((item) => [item.path, item.text]));
     return { name: name || "Local project", sourceFormat: formatOf(openingFile(texts)) };
@@ -382,6 +461,13 @@ export function createLocalProject({
     disk.set(path, { kind: "asset", sha });
   }
 
+  /// The digest the folder last held for a path as far as this module knows,
+  /// or null when it is not known.
+  /** @param {string} path @returns {string | null} */
+  function onDisk(path) {
+    return disk.get(path)?.sha ?? null;
+  }
+
   /** @param {Item} item */
   function ingest(item) {
     if (item.kind === "text") ingestText(item);
@@ -449,6 +535,13 @@ export function createLocalProject({
       gone(change.path);
       return;
     }
+    // A figure with a digest is not read: the figure store reads it when its
+    // bytes are asked for.
+    if (checked.kind === "asset" && change.sha256) {
+      const item = await assetItem({ path: change.path, sha256: change.sha256, size: change.size });
+      if (!closed) ingest(item);
+      return;
+    }
     let bytes;
     try {
       bytes = await folder.projectFile(id, change.path);
@@ -457,7 +550,10 @@ export function createLocalProject({
       throw new ReadFailure(change.path, error);
     }
     if (closed) return;
-    const item = await interpret({ file: { path: change.path, kind: /** @type {"text" | "asset"} */ (checked.kind), sha256: change.sha256 ?? null }, bytes });
+    /** @type {Item | null} */
+    const item = checked.kind === "asset"
+      ? { path: change.path, kind: "asset", sha: await figures.put(bytes) }
+      : interpret({ file: { path: change.path, sha256: change.sha256 ?? null }, bytes });
     if (item && !closed) ingest(item);
   }
 
@@ -468,7 +564,7 @@ export function createLocalProject({
   /// repeats this: a file dropped here is no longer known, and the rest is
   /// compared by digest, so doing it twice changes nothing.
   async function reread() {
-    const tree = await folder.projectTree(id);
+    const tree = await folder.projectTree(id, extensions);
     if (closed) return;
     const listed = managed(tree.files);
     // A file under an entry the desktop could not read is not gone, only
@@ -480,10 +576,9 @@ export function createLocalProject({
       const known = disk.get(file.path);
       return !known || known.sha === null || known.sha !== file.sha256;
     });
-    for (const one of await readAll(changed)) {
+    for (const item of await itemsOf(changed)) {
       if (closed) return;
-      const item = await interpret(one);
-      if (item && !closed) ingest(item);
+      ingest(item);
     }
     if (closed) return;
     cursor = tree.cursor;
@@ -642,6 +737,7 @@ export function createLocalProject({
     close,
     wrote,
     withoutHeld,
+    onDisk,
     encode,
     seed,
     // There is no room to write to.
