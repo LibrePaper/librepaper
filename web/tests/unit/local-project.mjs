@@ -246,7 +246,7 @@ const textOf = (session, path) => session.textOf(session.idOf(path)).toString();
   assert.equal(tree.texts["main.tex"], MAIN);
   assert.deepEqual(Object.keys(tree.digests), ["fig/a.png"]);
   assert.equal(tree.digests["fig/a.png"], digest(PNG));
-  assert.deepEqual([...new Set(folder.extensions)].sort(), ["bib", "md", "png", "tex"], "the listing is asked for the rules' extensions, without dots");
+  assert.deepEqual([...new Set(folder.extensions)].sort(), [".bib", ".md", ".png", ".tex"], "the listing is asked for the rules' extensions");
   assert.ok(!folder.fetched.includes("fig/a.png"), "opening does not read a figure");
   assert.ok(folder.fetched.includes("main.tex"), "opening reads the texts");
   assert.equal(figures.size(tree.digests["fig/a.png"]), PNG.length, "the size comes from the listing");
