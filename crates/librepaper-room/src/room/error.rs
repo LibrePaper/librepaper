@@ -66,19 +66,6 @@ impl WriteError {
         }
     }
 
-    /// The HTTP status this refusal is answered with. The one table every
-    /// route reads, so a status is a property of the variant and not of
-    /// whichever handler happened to receive it.
-    pub fn status(&self) -> u16 {
-        match self {
-            Self::NotFound => 404,
-            Self::Unreadable(_) | Self::Fenced(_) | Self::Busy => 503,
-            Self::Conflict(_) => 409,
-            Self::Invalid(_) => 400,
-            Self::Storage(_) => 503,
-        }
-    }
-
     /// What a client is told. Never the storage context: an object key or a
     /// bucket error is for the log.
     pub fn client_message(&self) -> String {

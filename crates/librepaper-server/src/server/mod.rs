@@ -43,9 +43,11 @@ use librepaper_engine::storage::store::{
     random_suffix, slugify, DocumentInput, IndexEntry, LinkGrant, LinkKind, ModifyError, PutError,
     Store,
 };
+use self::refusal::FrameIds;
+use librepaper_room::room::refusal::Kind as RefusalKind;
 use librepaper_room::room::{
-    decode_update, encode_update, Message as RoomMessage, Outgoing, Room, RoomCommand, Rooms,
-    Sender,
+    decode_update, encode_update, Message as RoomMessage, Outgoing, Refusal, Room, RoomCommand,
+    Rooms, Sender,
 };
 
 #[cfg(test)]
@@ -86,6 +88,7 @@ mod onboarding;
 mod onboarding_tests;
 pub mod origins;
 mod quota;
+mod refusal;
 mod reply;
 #[cfg(test)]
 mod restore_http_tests;
@@ -1832,10 +1835,13 @@ impl Server {
             } else {
                 "Read-only access. Ask the owner for a Comment or Edit link.".to_string()
             };
+            let kind = if id.is_signed_in() || self.commenters.public {
+                RefusalKind::Forbidden
+            } else {
+                RefusalKind::Unauthenticated
+            };
             return (
-                json!({"type": "error", "message": reason, "temp_id": incoming.temp_id(),
-                    "request_id": request_id, "version": 1,
-                    "protocol": "librepaper.room.v1"}),
+                comment_frame(&Refusal::not_written(kind, reason), FrameIds::of(&incoming)),
                 false,
             );
         }
@@ -1861,9 +1867,12 @@ impl Server {
         let ceiling = self.ceiling_for(&who.id);
         let Ok(authority) = who.authority(ceiling) else {
             return (
-                json!({"type": "error", "message": "access changed", "temp_id": command.temp_id(),
-                    "request_id": request_id, "version": 1,
-                    "protocol": "librepaper.room.v1"}),
+                comment_frame(
+                    &Refusal::not_written(RefusalKind::Forbidden, "access changed"),
+                    FrameIds::default()
+                        .temp(command.temp_id())
+                        .request(&request_id),
+                ),
                 false,
             );
         };
@@ -1885,9 +1894,10 @@ impl Server {
         // comment that already committed writes nothing, so it spends
         // nothing and is answered even when the budget is gone.
         let refusal = |message: &str| {
-            json!({"type": "error", "message": message, "status": 429,
-                "temp_id": temp_id, "request_id": request_id,
-                "version": 1, "protocol": "librepaper.room.v1"})
+            comment_frame(
+                &Refusal::not_written(RefusalKind::RateLimited, message),
+                FrameIds::default().temp(&temp_id).request(&request_id),
+            )
         };
         let (charge, refused) = match self.spend_comment(who) {
             Ok(charge) => (charge, None),
@@ -1927,7 +1937,7 @@ impl Server {
                     .or_insert(json!(comment_id_field));
             }
             fields.insert("version".into(), json!(1));
-            fields.insert("protocol".into(), json!("librepaper.room.v1"));
+            fields.insert("protocol".into(), json!(COMMENT_PROTOCOL));
         }
         (result, ok)
     }
@@ -1993,7 +2003,12 @@ impl Server {
                     color.as_deref(),
                     expected_render_digest,
                 )
-                .map_err(|error| json!({"type": "error", "message": error}))?;
+                .map_err(|error| {
+                    comment_frame(
+                        &Refusal::not_written(RefusalKind::Invalid, error),
+                        FrameIds::default(),
+                    )
+                })?;
                 if let Some(refusal) = refusal {
                     let recorded = room
                         .recorded_result(&mut new_comment)
@@ -2028,7 +2043,12 @@ impl Server {
                     &body,
                     author,
                 )
-                .map_err(|error| json!({"type": "error", "message": error}))?;
+                .map_err(|error| {
+                    comment_frame(
+                        &Refusal::not_written(RefusalKind::Invalid, error),
+                        FrameIds::default(),
+                    )
+                })?;
                 let outcome = room
                     .command(authority, &mut add_reply)
                     .await
@@ -2078,7 +2098,12 @@ impl Server {
                     &body,
                     author,
                 )
-                .map_err(|error| json!({"type": "error", "message": error}))?;
+                .map_err(|error| {
+                    comment_frame(
+                        &Refusal::not_written(RefusalKind::Invalid, error),
+                        FrameIds::default(),
+                    )
+                })?;
                 let outcome = room
                     .command(authority, &mut edit)
                     .await
@@ -2210,6 +2235,17 @@ mod comment_lookup_tests {
             "conflict",
         );
     }
+}
+
+/// The protocol string comment frames carry. It is the comment channel's own
+/// and is not the room socket's.
+const COMMENT_PROTOCOL: &str = "librepaper.room.v1";
+
+/// An error frame on the comment channel.
+fn comment_frame(refusal: &Refusal, ids: FrameIds) -> Value {
+    let mut frame = refusal::socket(refusal, ids);
+    frame["protocol"] = json!(COMMENT_PROTOCOL);
+    frame
 }
 
 /// The same mapping as [`command_reply`], for a caller that answers over the

@@ -2,6 +2,7 @@
 use super::*;
 use hmac::{Hmac, Mac};
 use librepaper_room::room::agent_query::{QueryBudget, QuerySnapshot};
+use librepaper_room::room::refusal::{Committed, Refusal};
 use serde::Serialize;
 
 pub(crate) mod comments;
@@ -96,19 +97,52 @@ pub(crate) struct Failure {
     pub(crate) code: &'static str,
     pub(crate) message: String,
     data: Value,
+    /// Whether the refused work may have been written. A failure that is not
+    /// `No` is recorded as an unknown outcome, never as a definite refusal.
+    pub(crate) committed: Committed,
+}
+
+/// The codes MCP itself raises for work it refused before anything was
+/// written. Every other code, including the ones raised for a storage
+/// failure, leaves the commit state unknown.
+fn refused_before_writing(code: &str) -> bool {
+    matches!(
+        code,
+        "invalid_params"
+            | "invalid_range"
+            | "not_found"
+            | "conflict"
+            | "permission_changed"
+            | "budget_exceeded"
+    )
 }
 
 impl Failure {
     fn new(code: &'static str, message: impl Into<String>) -> Self {
+        let committed = if refused_before_writing(code) {
+            Committed::No
+        } else {
+            Committed::Unknown
+        };
         Self {
             code,
             message: message.into(),
             data: Value::Null,
+            committed,
         }
     }
     fn with_data(mut self, data: Value) -> Self {
         self.data = data;
         self
+    }
+    /// The failure a refusal is on this transport.
+    pub(crate) fn of_refusal(refusal: &Refusal) -> Self {
+        Self {
+            code: crate::server::refusal::mcp_code(refusal),
+            message: refusal.message.clone(),
+            data: Value::Null,
+            committed: refusal.committed,
+        }
     }
 }
 

@@ -14,13 +14,15 @@ use axum::response::Response;
 use base64::Engine;
 use librepaper_base::auth::{cookie_name, pkce_verifier, sign, verifies, Identity};
 use librepaper_base::util::{token, Encoding};
-use librepaper_engine::storage::postgres::{BlockOutcome, Error};
+use librepaper_engine::storage::postgres::BlockOutcome;
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 
 use super::{unix_seconds, Bucket, SeriesData, HISTORY_RETENTION};
 use crate::server::signin::{clear_cookie, cookie, set_cookie};
-use crate::server::{set, Server};
+use crate::server::refusal;
+use crate::server::{set, write_json, Server};
+use librepaper_room::room::refusal::{Kind, Refusal};
 
 /// How many admin sign-in callbacks may be exchanging codes at once. The
 /// console has its own cap, so it can never take all of the app's sign-in
@@ -752,15 +754,14 @@ struct ModerationRequest {
 async fn moderate(server: &Server, actor: &str, body: Body) -> Response<Body> {
     let bytes = match axum::body::to_bytes(body, MODERATION_BODY_LIMIT).await {
         Ok(bytes) => bytes,
-        Err(_) => return json_status(StatusCode::PAYLOAD_TOO_LARGE, "the request is too large"),
+        Err(_) => {
+            return write_json(413, &json!({"error": "the request is too large"}));
+        }
     };
     let request: ModerationRequest = match serde_json::from_slice(&bytes) {
         Ok(request) => request,
         Err(_) => {
-            return json_status(
-                StatusCode::BAD_REQUEST,
-                "the request is not a moderation request",
-            )
+            return invalid("the request is not a moderation request");
         }
     };
     let catalog = &server.store.catalog;
@@ -781,7 +782,7 @@ async fn moderate(server: &Server, actor: &str, body: Body) -> Response<Body> {
                 .unban_handle(id, actor, &request.reason)
                 .await
                 .map(|label| ("unbanned", label)),
-            Err(_) => return json_status(StatusCode::BAD_REQUEST, "unban needs a ban ID"),
+            Err(_) => return invalid("unban needs a ban ID"),
         },
         "hide" => catalog
             .moderate_project(&request.target, true, actor, &request.reason)
@@ -791,30 +792,24 @@ async fn moderate(server: &Server, actor: &str, body: Body) -> Response<Body> {
             .moderate_project(&request.target, false, actor, &request.reason)
             .await
             .map(|_| ("unhidden", request.target.trim().to_string())),
-        _ => return json_status(StatusCode::BAD_REQUEST, "unknown action"),
+        _ => return invalid("unknown action"),
     };
     match result {
         Ok((outcome, label)) => {
             tracing::info!(actor, action = %request.action, label = %label, "moderation");
             json_reply(&json!({"outcome": outcome, "label": label}))
         }
-        Err(Error::Invalid(message)) => json_status(StatusCode::BAD_REQUEST, &message),
-        Err(Error::NotFound) => json_status(StatusCode::NOT_FOUND, "nothing has that name"),
-        Err(Error::Conflict(message)) => json_status(StatusCode::CONFLICT, &message),
-        Err(error) => {
-            tracing::warn!("moderation failed: {error}");
-            json_status(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "the change could not be saved",
-            )
-        }
+        Err(error) => refusal::catalog(
+            error,
+            "moderation failed",
+            "nothing has that name",
+            "the change could not be saved",
+        ),
     }
 }
 
-fn json_status(status: StatusCode, message: &str) -> Response<Body> {
-    let mut response = json_reply(&json!({"error": message}));
-    *response.status_mut() = status;
-    response
+fn invalid(message: &str) -> Response<Body> {
+    refusal::http(&Refusal::not_written(Kind::Invalid, message))
 }
 
 fn json_reply(value: &Value) -> Response<Body> {

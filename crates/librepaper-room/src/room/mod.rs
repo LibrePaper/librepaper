@@ -67,6 +67,7 @@ mod message;
 pub(crate) use librepaper_engine::storage::outgoing;
 #[cfg(test)]
 mod recovery_tests;
+pub mod refusal;
 pub mod source_change;
 pub(crate) mod text;
 
@@ -74,6 +75,7 @@ pub use annotation::OriginalAnchor;
 pub use command::Command as RoomCommand;
 pub use comments::*;
 pub use error::WriteError;
+pub use refusal::Refusal;
 pub use label::Attribution;
 pub use librepaper_base::util::{decode_update, encode_update};
 pub use message::Message;

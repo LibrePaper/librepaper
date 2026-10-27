@@ -2,7 +2,6 @@
 //! state and snapshot, its comments over HTTP, and deleting it.
 
 use super::*;
-use librepaper_engine::storage::postgres::Error as CatalogError;
 
 pub(super) struct Upload {
     pub(super) title: String,
@@ -471,7 +470,7 @@ impl Server {
                 // `command_refusal_value`. Only the shapes that carry no
                 // typed error -- a malformed message, an unknown comment id
                 // -- still fall back to 400. The allowed set is what
-                // `WriteError::status` can produce plus the statuses this
+                // `Refusal::status` can produce plus the statuses this
                 // route decides for itself; anything else would mean a
                 // status arrived from somewhere it should not have.
                 let status = result
@@ -1945,7 +1944,12 @@ impl Server {
         };
         match self.store.list_tags(&account).await {
             Ok(tags) => write_json(200, &json!({"tags": tags})),
-            Err(error) => tag_failure(error),
+            Err(error) => refusal::catalog(
+                error,
+                "could not save a tag",
+                "not found",
+                "could not save that",
+            ),
         }
     }
 
@@ -1976,7 +1980,12 @@ impl Server {
             .unwrap_or_default();
         match self.store.create_tag(&account, name, colour).await {
             Ok(tag) => write_json(201, &json!({"tag": tag})),
-            Err(error) => tag_failure(error),
+            Err(error) => refusal::catalog(
+                error,
+                "could not save a tag",
+                "not found",
+                "could not save that",
+            ),
         }
     }
 
@@ -2007,7 +2016,12 @@ impl Server {
             .map(|colour| colour.as_str().unwrap_or_default());
         match self.store.update_tag(&account, tag, name, colour).await {
             Ok(tag) => write_json(200, &json!({"tag": tag})),
-            Err(error) => tag_failure(error),
+            Err(error) => refusal::catalog(
+                error,
+                "could not save a tag",
+                "not found",
+                "could not save that",
+            ),
         }
     }
 
@@ -2028,7 +2042,12 @@ impl Server {
                 *response.status_mut() = StatusCode::NO_CONTENT;
                 response
             }
-            Err(error) => tag_failure(error),
+            Err(error) => refusal::catalog(
+                error,
+                "could not save a tag",
+                "not found",
+                "could not save that",
+            ),
         }
     }
 
@@ -2174,20 +2193,6 @@ impl Server {
             return Err(write_json(401, &json!({"error": "sign in first"})));
         }
         Ok(who.id.id.clone())
-    }
-}
-
-/// The reply for a tag the catalogue refused or could not write.
-fn tag_failure(error: CatalogError) -> Reply {
-    match error {
-        CatalogError::Invalid(message) => write_json(400, &json!({"error": message})),
-        CatalogError::Conflict(message) => write_json(409, &json!({"error": message})),
-        CatalogError::Duplicate(of) => write_json(409, &json!({"error": of.to_string()})),
-        CatalogError::NotFound => write_json(404, &json!({"error": "not found"})),
-        other => {
-            tracing::warn!("could not save a tag: {other:?}");
-            write_json(500, &json!({"error": "could not save that"}))
-        }
     }
 }
 
