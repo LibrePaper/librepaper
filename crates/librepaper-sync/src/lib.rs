@@ -20,6 +20,7 @@ mod error;
 mod files;
 mod git;
 mod link;
+mod preview;
 mod pull;
 mod push;
 mod rules;
@@ -30,6 +31,7 @@ pub use client::Client;
 pub use error::Error;
 pub use files::{FileRecord, Kind};
 pub use link::Link;
+pub use preview::{preview, Preview};
 pub use pull::{pull, MergeOutcome, PullOptions, PullOutcome, VersionCommit};
 pub use push::{
     changes_here, commit_summary, publish, push, web_changed, CommitSummary, PushOptions,

@@ -5,8 +5,8 @@
 use super::*;
 
 use librepaper_sync::{
-    commit_summary, publish, pull as pull_files, push as push_files, store_for, Client, Link,
-    MergeOutcome, PullOptions, PullOutcome, PushOptions, PushOutcome, State, StateStore,
+    commit_summary, preview, publish, pull as pull_files, push as push_files, store_for, Client, Link,
+    MergeOutcome, Preview, PullOptions, PullOutcome, PushOptions, PushOutcome, State, StateStore,
 };
 
 /// The sign-in to use, when it is not the one `login` stored.
@@ -41,6 +41,10 @@ pub(crate) struct PullArgs {
     /// sides changed it
     #[arg(long, value_name = "PATH")]
     theirs: Vec<String>,
+    /// Show how the project and this folder differ, without linking or
+    /// writing anything; only for a folder that is not linked yet
+    #[arg(long, conflicts_with_all = ["no_merge", "mine", "theirs"])]
+    preview: bool,
     #[command(flatten)]
     sign: Sign,
 }
@@ -135,6 +139,9 @@ pub(crate) async fn pull(args: PullArgs) {
 
 async fn run_pull(args: PullArgs) -> Result<bool, String> {
     let workspace = open(&args.dir)?;
+    if args.preview {
+        return run_preview(&workspace, args.url.as_deref(), args.sign.token.as_deref()).await;
+    }
     let (client, _) = connect(&workspace, args.url.as_deref(), args.sign.token.as_deref())?;
     let options = PullOptions {
         merge: !args.no_merge,
@@ -146,6 +153,59 @@ async fn run_pull(args: PullArgs) -> Result<bool, String> {
         .await
         .map_err(|error| error.to_string())?;
     Ok(show_pull(&outcome))
+}
+
+/// The first-link preview. It does not go through `connect`, which records
+/// the link, so nothing is saved.
+async fn run_preview(
+    workspace: &Workspace,
+    url: Option<&str>,
+    token: Option<&str>,
+) -> Result<bool, String> {
+    if let Some(state) = &workspace.state {
+        return Err(format!(
+            "this directory is already linked to {}; a preview is only for the first link",
+            state.link.project_url()
+        ));
+    }
+    let url = url.ok_or(
+        "give the project page to preview, such as https://app.librepaper.org/docs/<slug>",
+    )?;
+    let link = Link::parse(url).map_err(|error| error.to_string())?;
+    let token = require_token_for(&link.origin(), token);
+    let client = Client::new(link.site.clone(), Credentials::token(&token));
+    let found = preview(&client, &workspace.dir, &link, &[])
+        .await
+        .map_err(|error| error.to_string())?;
+    show_preview(&found);
+    Ok(true)
+}
+
+/// Prints a preview. Nothing was written, and the heading says so.
+fn show_preview(found: &Preview) {
+    println!(
+        "Preview only; nothing was linked or written. The project has {} only, this folder has {} only, {} differ and {} are equal.",
+        plural(found.project_only.len(), "file"),
+        plural(found.local_only.len(), "file"),
+        plural(found.different.len(), "file"),
+        plural(found.equal.len(), "file"),
+    );
+    println!(
+        "{} blocked and {} kept out by this folder's rules.",
+        plural(found.blocked.len(), "file"),
+        plural(found.excluded.len(), "file"),
+    );
+    list("Only in the project:", &found.project_only);
+    list("Only in this folder:", &found.local_only);
+    list("Different in both:", &found.different);
+    list("Equal in both:", &found.equal);
+    if !found.blocked.is_empty() {
+        println!("Cannot be taken:");
+        for (path, why) in &found.blocked {
+            println!("  {path}: {why}");
+        }
+    }
+    list("Kept out of the sync:", &found.excluded);
 }
 
 pub(crate) async fn push(args: PushArgs) {
