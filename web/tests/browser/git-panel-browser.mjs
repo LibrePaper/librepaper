@@ -380,7 +380,7 @@ window.gitPanelCheck = async () => {
   check(text().includes("Syncing branch main.") && !button("Sync branch main"), "a bound repository on its branch states it and asks nothing: " + text());
 
   // An interrupted send is shown, and the refusal of a pull says so.
-  const pendingWords = "an earlier push was interrupted before its outcome was known; run `librepaper push` to settle it first";
+  const pendingWords = "an earlier push was interrupted before its outcome was known; run \`librepaper push\` to settle it first";
   await mountFolder({ status: linked({ pending: true }), pulls: [{ fail: { status: 409, body: { reason: "pending", error: pendingWords } } }] });
   await flush();
   check(text().includes("An earlier send to the web was interrupted") && text().includes("Choose Send changes to web to finish it") && button("Send changes to web"), "a pending send points at Send changes to web: " + text());
@@ -875,7 +875,7 @@ window.gitPanelCheck = async () => {
   check(calls("pullConnection").length === 1 && text().includes("Imported from repository branch main: 2 files into the project."), "the pull says what came in: " + text());
 
   // An interrupted send stops the transfer. The panel offers one retry that runs the send alone.
-  const interrupted = "an earlier push was interrupted before its outcome was known; run `librepaper push` to settle it first";
+  const interrupted = "an earlier push was interrupted before its outcome was known; run \`librepaper push\` to settle it first";
   await mountWeb({
     connection: connectedStatus, afterConnect: connectedStatus,
     pullAnswer: { fail: { status: 409, body: { reason: "pending", error: interrupted } } },
