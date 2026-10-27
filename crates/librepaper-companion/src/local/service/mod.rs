@@ -691,7 +691,8 @@ async fn dispatch(
             projects::handle_forget(inner, headers, origin, id).await
         }
         ["projects", id, "tree"] if *method == Method::GET => {
-            projects::handle_tree(inner, headers, origin, id).await
+            let extensions = query_value(request.uri(), "extensions");
+            projects::handle_tree(inner, headers, origin, id, extensions.as_deref()).await
         }
         ["projects", id, "files", name @ ..] if *method == Method::GET => {
             let encoded_name = name.join("/");

@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{Read as _, Write as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -549,11 +549,81 @@ fn resolve_manifest(
 /// The digest of a regular file within the upload bound, or `None` for
 /// anything else, including a symlink.
 fn disk_digest(path: &Path) -> Option<String> {
+    cached_digest(path, read_hosted_input).map(|(_, digest)| digest)
+}
+
+/// Most digests the cache holds. When it is full it is emptied, since the next
+/// folder read refills it with the files that are still there.
+const MAX_CACHED_DIGESTS: usize = 200_000;
+
+struct CachedDigest {
+    size: u64,
+    mtime_ns: u128,
+    digest: String,
+}
+
+static DIGESTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<PathBuf, CachedDigest>>> =
+    std::sync::LazyLock::new(Default::default);
+
+#[cfg(test)]
+thread_local! {
+    /// How many times `cached_digest` read a file on this thread.
+    static DIGEST_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The size and SHA-256 of a regular file within the upload bound, or `None`
+/// for anything else, including a symlink. Every call stats the file with
+/// `symlink_metadata`, which is never cached. The file is read with `read` and
+/// hashed only when its size and modification time differ from the ones the
+/// cache holds for `path`, so a folder of unchanged files costs one stat each.
+/// A rewrite that keeps both the size and the modification time is not seen,
+/// which is the same assumption the change poller makes.
+pub(crate) fn cached_digest(
+    path: &Path,
+    read: impl FnOnce(&Path) -> Option<Vec<u8>>,
+) -> Option<(u64, String)> {
     let metadata = std::fs::symlink_metadata(path).ok()?;
     if !metadata.is_file() || metadata.len() > MAX_UPLOAD_BYTES as u64 {
         return None;
     }
-    read_hosted_input(path).map(|bytes| sha256(&bytes))
+    let size = metadata.len();
+    let mtime_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|elapsed| elapsed.as_nanos());
+    if let Some(mtime_ns) = mtime_ns {
+        let cache = DIGESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let hit = cache
+            .get(path)
+            .filter(|hit| hit.size == size && hit.mtime_ns == mtime_ns);
+        if let Some(hit) = hit {
+            return Some((size, hit.digest.clone()));
+        }
+    }
+    #[cfg(test)]
+    DIGEST_READS.with(|reads| reads.set(reads.get() + 1));
+    let digest = sha256(&read(path)?);
+    // A file whose modification time cannot be read is never cached.
+    if let Some(mtime_ns) = mtime_ns {
+        let mut cache = DIGESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cache.len() >= MAX_CACHED_DIGESTS {
+            cache.clear();
+        }
+        cache.insert(
+            path.to_path_buf(),
+            CachedDigest {
+                size,
+                mtime_ns,
+                digest: digest.clone(),
+            },
+        );
+    }
+    Some((size, digest))
 }
 
 fn exists_on_disk(path: &Path) -> bool {
@@ -966,6 +1036,39 @@ pub(crate) fn read_file_bounded_to(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    fn digest_reads() -> usize {
+        DIGEST_READS.with(std::cell::Cell::get)
+    }
+
+    #[test]
+    fn the_digest_cache_rereads_only_a_file_whose_stat_changed() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("a.txt");
+        let read = |path: &Path| std::fs::read(path).ok();
+        std::fs::write(&path, b"one").expect("write");
+        let before = digest_reads();
+        let first = cached_digest(&path, read).expect("digest");
+        assert_eq!(first, (3, sha256(b"one")));
+        assert_eq!(digest_reads(), before + 1);
+        // Same size and modification time: answered from the cache.
+        assert_eq!(cached_digest(&path, read), Some(first));
+        assert_eq!(digest_reads(), before + 1);
+        // A new size is a new read, whatever the modification time says.
+        std::fs::write(&path, b"three").expect("rewrite");
+        assert_eq!(cached_digest(&path, read), Some((5, sha256(b"three"))));
+        assert_eq!(digest_reads(), before + 2);
+    }
+
+    #[test]
+    fn the_digest_cache_answers_nothing_for_a_missing_file() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("gone.txt");
+        std::fs::write(&path, b"x").expect("write");
+        assert!(cached_digest(&path, |path| std::fs::read(path).ok()).is_some());
+        std::fs::remove_file(&path).expect("remove");
+        assert!(cached_digest(&path, |path| std::fs::read(path).ok()).is_none());
+    }
 
     #[test]
     fn a_bounded_read_honours_a_limit_below_the_upload_ceiling() {

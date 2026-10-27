@@ -34,8 +34,10 @@ A folder project is a binding with `kind: "project"`, `project: "local-<id>"`, n
 
 ### Reading
 
-`GET projects/<id>/tree` answers `{ files: [{ path, size, sha256, mtime }], skipped: [{ path, reason }] }`.
-- It walks the root, skipping `.git`, any hidden file or folder, `node_modules`, `renv`, `__pycache__`, `.quarto`, `_freeze`, symlinks, and files over the upload size bound. At most 5000 files; past that it answers 413.
+`GET projects/<id>/tree` answers `{ files: [{ path, size, sha256, mtime }], skipped: [{ path, reason }] }`. It takes an optional `extensions` query value, a comma-separated list of lowercase extensions without dots, such as `tex,typ,md,bib,png,pdf`.
+- With `extensions`, a file whose extension (case-insensitive, the part after the last `.` of its name) is not listed is never read or hashed, is not in `files` or `skipped`, and does not count toward the file cap. A name without an extension never matches. The poller remembers the same list and ignores unmatched files too. Without it every file is listed. A newer page may talk to an older app and the other way round, so the value is optional.
+- File digests are cached by path while the file's size and modification time are unchanged, so opening a folder again, saving it and rendering it read only the files that changed. A rewrite that keeps both size and modification time is not seen, the same assumption the poller makes.
+- It walks the root, skipping `.git`, any hidden file or folder, `node_modules`, `renv`, `__pycache__`, `.quarto`, `_freeze`, symlinks, and files over the upload size bound. At most 50000 matched files, and the walk stops after 1000000 directory entries; past either it answers 413 with "the folder holds more than 50000 project files; open the folder that holds your project".
 - It records nothing. A file becomes managed, so that a deletion in the editor trashes it and a rename moves it, only once the page has sent it in a save; the page's first save on open sends no bytes and does exactly that.
 - A file a local render wrote into the folder (see Outside changes) is left out of `files` and named in `skipped` with the reason "render output".
 - A directory or file that cannot be read is named in `skipped` with the reason "unreadable".
@@ -45,7 +47,7 @@ A folder project is a binding with `kind: "project"`, `project: "local-<id>"`, n
 
 `PUT folder` (the `rj7r` mirror) works for project bindings unchanged: edits, renames, deletions to the trash, the `.local` copy when a file changed on disk since LibrePaper last wrote it.
 
-The manifest names every file, so it may list up to 5000 files. Its JSON part is bounded at 512 bytes per allowed file, which is 2.4 MiB, instead of the 64 KiB that bounds other JSON bodies. A bigger manifest answers 413. The description of a render job carries the same manifest, so it has the same bound and the same limit of 5000 files.
+The manifest names every file, so it may list up to 50000 files. Its JSON part is bounded at 512 bytes per allowed file, which is 24.4 MiB, instead of the 64 KiB that bounds other JSON bodies. A bigger manifest answers 413. The description of a render job carries the same manifest, so it has the same bound and the same limit of 50000 files.
 
 The page's first save after it opens the folder carries `"opening": true` beside `manifest` in the manifest part. Its manifest lists what the page took in, which can be less than the folder holds: a text that stopped being UTF-8 or a file over the size bound is not in the project. A recorded path it omits then says the page never had the file, not that the person deleted it, so the opening save trashes and renames nothing. A recorded path the manifest omits leaves the record, the file stays in the folder, and the reply lists the path under `released`. The page repeats the flag until a save succeeds.
 
@@ -110,5 +112,5 @@ In the desktop app only, signed in or not:
 ## Done
 
 - `make test` green, the browser suite green.
-- Unit tests for: the standalone session, the tree-to-document build, the outside-change rules (clean replace, unsaved conflict, added, removed), the sidecar tree skip rules and 5000 cap, echo suppression, the long poll, `kind: "project"` entrypoint freedom, `projects/open` reuse of an existing root.
+- Unit tests for: the standalone session, the tree-to-document build, the outside-change rules (clean replace, unsaved conflict, added, removed), the sidecar tree skip rules and 50000 cap, echo suppression, the long poll, `kind: "project"` entrypoint freedom, `projects/open` reuse of an existing root.
 - A Node integration test against the real binary: open a project binding, read the tree, write through `PUT folder`, change a file on disk and see it in `changes`.
