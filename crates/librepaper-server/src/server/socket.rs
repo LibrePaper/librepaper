@@ -5,7 +5,8 @@ use super::*;
 use librepaper_engine::log::sequencer::Ingested;
 use librepaper_engine::storage::outgoing::OutgoingSink;
 use librepaper_engine::storage::postgres::ChatRecord;
-use librepaper_room::room::Room;
+use librepaper_room::room::refusal::{Kind, Reason};
+use librepaper_room::room::{Room, WriteError};
 
 /// How many messages a hello carries; older ones are paged in over HTTP.
 const CHAT_HELLO_LIMIT: i64 = 50;
@@ -17,7 +18,18 @@ const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// The only protocol this binary speaks. There is no v1 fallback (§6.1): a
 /// client that cannot present this string in `doc-open` is closed with
 /// `upgrade_required` before it can send an update.
-const PROTOCOL: &str = "librepaper.room.v3";
+pub(super) const PROTOCOL: &str = "librepaper.room.v3";
+
+/// An error frame for a refusal of `incoming` that wrote nothing, carrying
+/// the ids the client clears its pending state by.
+fn refused_frame(kind: Kind, message: &str, incoming: &RoomMessage) -> String {
+    refusal::socket(&Refusal::not_written(kind, message), FrameIds::of(incoming)).to_string()
+}
+
+/// An error frame for a refused room write.
+fn write_error_frame(error: &WriteError, incoming: &RoomMessage) -> String {
+    refusal::socket(&Refusal::from(error), FrameIds::of(incoming)).to_string()
+}
 
 /// How many consecutive `Retryable`/`Refused` answers an editor's ingest may
 /// collect before the socket is closed. A single refusal is an ordinary
@@ -231,7 +243,7 @@ impl Server {
         // against the one memory budget of §9.2, not here.
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
-            Err(error) => return plain(error.status(), &error.client_message()),
+            Err(error) => return refusal::http(&Refusal::from(&error)),
         };
         let server = self.clone();
         let arrival = arrival.clone();
@@ -408,13 +420,9 @@ impl Server {
                     }));
                     json!({"type": "hello", "comments": comments, "state": state})
                 }
-                Err(error) => {
-                    json!({"type": "error", "message": error.to_string(), "retryable": error.is_temporary()})
-                }
+                Err(error) => refusal::socket(&Refusal::from(&error), FrameIds::default()),
             },
-            Err(error) => {
-                json!({"type": "error", "message": error.to_string(), "retryable": error.is_temporary()})
-            }
+            Err(error) => refusal::socket(&Refusal::from(&error), FrameIds::default()),
         };
         let sent = if joined.is_err() {
             Err(())
@@ -540,33 +548,33 @@ impl Server {
                         // The role can change while this socket stays open, so it
                         // is read again now rather than at connect.
                         if !self.is_current_owner(&room.slug, socket_id).await {
-                            let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"only the owner can clear chat"}).to_string())).await;
+                            let _ = send_outgoing(&tx, Outgoing::Text(refused_frame(Kind::Forbidden, "only the owner can clear chat", &incoming))).await;
                             continue 'reader;
                         }
-                        let refusal = json!({"type":"error","message":"only the owner can clear chat"}).to_string();
+                        let not_owner = refused_frame(Kind::Forbidden, "only the owner can clear chat", &incoming);
                         let Some(owner_id) = who.account_id() else {
-                            let _ = send_outgoing(&tx, Outgoing::Text(refusal)).await;
+                            let _ = send_outgoing(&tx, Outgoing::Text(not_owner)).await;
                             continue 'reader;
                         };
                         match room.clear_chat(owner_id).await {
                             Ok(Some(_)) => {}
                             Ok(None) => {
-                                let _ = send_outgoing(&tx, Outgoing::Text(refusal)).await;
+                                let _ = send_outgoing(&tx, Outgoing::Text(not_owner)).await;
                             }
                             Err(error) => {
-                                let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":error.to_string()}).to_string())).await;
+                                let _ = send_outgoing(&tx, Outgoing::Text(write_error_frame(&error, &incoming))).await;
                             }
                         }
                         continue 'reader;
                     }
                     if incoming.kind() == "chat" {
                         if !who.at_least(Role::Commenter) {
-                            let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"comment access is required to chat","temp_id":incoming.temp_id()}).to_string())).await;
+                            let _ = send_outgoing(&tx, Outgoing::Text(refused_frame(Kind::Forbidden, "comment access is required to chat", &incoming))).await;
                             continue 'reader;
                         }
                         let text = incoming.body().trim();
                         if text.is_empty() || text.len() > 4096 || incoming.temp_id().is_empty() || incoming.temp_id().len() > 128 {
-                            let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"chat messages must be between 1 and 4096 bytes","temp_id":incoming.temp_id()}).to_string())).await;
+                            let _ = send_outgoing(&tx, Outgoing::Text(refused_frame(Kind::Invalid, "chat messages must be between 1 and 4096 bytes", &incoming))).await;
                             continue 'reader;
                         }
                         let digest = librepaper_base::digest::Digest::of(text.as_bytes()).to_hex();
@@ -574,13 +582,19 @@ impl Server {
                             let reply = if previous == &digest {
                                 json!({"type":"chat-ack","temp_id":incoming.temp_id()})
                             } else {
-                                json!({"type":"error","message":"message id already used for different content","temp_id":incoming.temp_id()})
+                                refusal::socket(
+                                    &Refusal::not_written(
+                                        Kind::Conflict(Reason::Conflict),
+                                        "message id already used for different content",
+                                    ),
+                                    FrameIds::of(&incoming),
+                                )
                             };
                             let _ = send_outgoing(&tx, Outgoing::Text(reply.to_string())).await;
                             continue 'reader;
                         }
                         if !room.chat_allowed(socket_id).await {
-                            let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"too many chat messages; try again shortly","temp_id":incoming.temp_id()}).to_string())).await;
+                            let _ = send_outgoing(&tx, Outgoing::Text(refused_frame(Kind::RateLimited, "too many chat messages; try again shortly", &incoming))).await;
                             continue 'reader;
                         }
                         let creator = if who.id.is_signed_in() {
@@ -598,7 +612,7 @@ impl Server {
                             created_at: librepaper_engine::storage::postgres::chat_now(),
                         };
                         if let Err(reason) = room.enqueue_chat(record, socket_id, incoming.temp_id()).await {
-                            let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":reason,"temp_id":incoming.temp_id()}).to_string())).await;
+                            let _ = send_outgoing(&tx, Outgoing::Text(refused_frame(Kind::Unavailable, reason, &incoming))).await;
                             continue 'reader;
                         }
                         chat_requests.push_back((incoming.temp_id().to_owned(),digest));
@@ -612,16 +626,11 @@ impl Server {
                     ) {
                         if !may_edit {
                             let _ = tx
-                                .send(Outgoing::Text(
-                                    json!({
-                                        "type": "error",
-                                        "message": "editing is not permitted",
-                                        "request_id": incoming.request_id(),
-                                        "version": 1,
-                                        "protocol": PROTOCOL,
-                                    })
-                                    .to_string(),
-                                ))
+                                .send(Outgoing::Text(refused_frame(
+                                    Kind::Forbidden,
+                                    "editing is not permitted",
+                                    &incoming,
+                                )))
                                 .await;
                             continue 'reader;
                         }
@@ -657,14 +666,11 @@ impl Server {
                             // is closed before it can send an update (§6.1).
                             "doc-open" => {
                                 if !may_edit {
-                                    let _ = send_outgoing(&tx, Outgoing::Text(
-                                        json!({
-                                            "type": "error",
-                                            "message": "source synchronization is restricted to editors",
-                                            "request_id": incoming.request_id(),
-                                            "protocol": PROTOCOL,
-                                        }).to_string(),
-                                    )).await;
+                                    let _ = send_outgoing(&tx, Outgoing::Text(refused_frame(
+                                        Kind::Forbidden,
+                                        "source synchronization is restricted to editors",
+                                        &incoming,
+                                    ))).await;
                                     continue 'reader;
                                 }
                                 if incoming.protocol() != PROTOCOL {
@@ -785,15 +791,11 @@ impl Server {
                             }
                             "doc-update" => {
                                 if !may_edit {
-                                    let _ = send_outgoing(&tx, Outgoing::Text(
-                                            json!({
-                                                "type": "error",
-                                                "message": "editing is not permitted",
-                                                "request_id": incoming.request_id(),
-                                                "protocol": PROTOCOL,
-                                            })
-                                            .to_string(),
-                                        )).await;
+                                    let _ = send_outgoing(&tx, Outgoing::Text(refused_frame(
+                                        Kind::Forbidden,
+                                        "editing is not permitted",
+                                        &incoming,
+                                    ))).await;
                                     continue 'reader;
                                 }
                                 // §6.1: the protocol handshake is required
@@ -884,13 +886,14 @@ impl Server {
                                         if !retry.pressure {
                                             refusals += 1;
                                         }
-                                        let _ = send_outgoing(&tx, Outgoing::Text(json!({
-                                            "type": "error", "message": retry.why,
-                                            "reason": retry.reason, "retryable": true,
-                                            "vector": encode_update(&retry.vector),
-                                            "request_id": incoming.request_id(), "seq": incoming.seq(),
-                                            "protocol": PROTOCOL,
-                                        }).to_string())).await;
+                                        let mut frame = refusal::socket(
+                                            &Refusal::not_written(Kind::Unavailable, retry.why),
+                                            FrameIds::of(&incoming),
+                                        );
+                                        frame["reason"] = json!(retry.reason);
+                                        frame["vector"] = json!(encode_update(&retry.vector));
+                                        frame["seq"] = json!(incoming.seq());
+                                        let _ = send_outgoing(&tx, Outgoing::Text(frame.to_string())).await;
                                         if refusals >= MAX_CONSECUTIVE_REFUSALS {
                                             let _ = send_outgoing(&tx, Outgoing::Close(
                                                 "too many refused updates; reconnect and reconcile".into(),
@@ -900,12 +903,13 @@ impl Server {
                                     }
                                     Ingested::Refused(why) => {
                                         refusals += 1;
-                                        let _ = send_outgoing(&tx, Outgoing::Text(json!({
-                                            "type": "error", "message": why,
-                                            "reason": "refused", "retryable": false,
-                                            "request_id": incoming.request_id(), "seq": incoming.seq(),
-                                            "protocol": PROTOCOL,
-                                        }).to_string())).await;
+                                        let mut frame = refusal::socket(
+                                            &Refusal::not_written(Kind::Invalid, why),
+                                            FrameIds::of(&incoming),
+                                        );
+                                        frame["reason"] = json!("refused");
+                                        frame["seq"] = json!(incoming.seq());
+                                        let _ = send_outgoing(&tx, Outgoing::Text(frame.to_string())).await;
                                         if refusals >= MAX_CONSECUTIVE_REFUSALS {
                                             let _ = send_outgoing(&tx, Outgoing::Close(
                                                 "too many refused updates; reconnect and reconcile".into(),
@@ -920,14 +924,9 @@ impl Server {
                             // became, so peers can report the accepted revision.
                             "doc-label" => {
                                 if !may_edit {
-                                    let payload = json!({
-                                        "type": "error",
-                                        "message": "editing is not permitted",
-                                        "request_id": incoming.request_id(),
-                                        "version": 1,
-                                        "protocol": PROTOCOL,
-                                    });
-                                    if send_outgoing(&tx, Outgoing::Text(payload.to_string())).await.is_err() {
+                                    let payload =
+                                        refused_frame(Kind::Forbidden, "editing is not permitted", &incoming);
+                                    if send_outgoing(&tx, Outgoing::Text(payload)).await.is_err() {
                                         break 'reader;
                                     }
                                     continue 'reader;
@@ -951,14 +950,9 @@ impl Server {
                                     .and_then(|page| page.into_iter().next())
                                     .and_then(|label| label.tree_digest);
                                 let Ok(authority) = who.authority(self.ceiling_for(&who.id)) else {
-                                    let payload = json!({
-                                        "type": "error",
-                                        "message": "editing is not permitted",
-                                        "request_id": incoming.request_id(),
-                                        "version": 1,
-                                        "protocol": PROTOCOL,
-                                    });
-                                    if send_outgoing(&tx, Outgoing::Text(payload.to_string())).await.is_err() {
+                                    let payload =
+                                        refused_frame(Kind::Forbidden, "editing is not permitted", &incoming);
+                                    if send_outgoing(&tx, Outgoing::Text(payload)).await.is_err() {
                                         break 'reader;
                                     }
                                     continue 'reader;
@@ -997,7 +991,7 @@ impl Server {
                                                 room.slug
                                             );
                                         }
-                                        socket_refusal(&error, incoming.request_id())
+                                        refusal::socket(&Refusal::from(&error), FrameIds::of(&incoming))
                                     }
                                 };
                                 if send_outgoing(&tx, Outgoing::Text(payload.to_string())).await.is_err() {
@@ -1013,7 +1007,11 @@ impl Server {
                     // exact current projection that produced their page.
                     if incoming.kind() == "comment" && !may_edit && incoming.render_digest().is_empty() {
                         let _ = send_outgoing(&tx, Outgoing::Text(
-                            json!({"type":"error","message":"current project identity is required; refresh before annotating","temp_id":incoming.temp_id(),"request_id":incoming.request_id()}).to_string(),
+                            refused_frame(
+                                Kind::Conflict(Reason::Conflict),
+                                "current project identity is required; refresh before annotating",
+                                &incoming,
+                            ),
                         )).await;
                         continue 'reader;
                     }
