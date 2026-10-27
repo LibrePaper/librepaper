@@ -1,7 +1,8 @@
 <script>
   // The Repository section of a folder project's Git panel: the folder's own
   // git repository. Initialize it, see the branch and the remote, list the
-  // changes, commit them, pull, push, or do all three with Sync. The state and
+  // changes, commit them, pull from and push to the remote, or do all three with
+  // Sync with remote. The state and
   // the actions belong to the controller (lib/reader/local-git.svelte.js); this
   // draws them. It is the person's repository: their identity, credential
   // helpers and hooks apply, and nothing is written but what git writes.
@@ -80,8 +81,8 @@
   const canCommit = $derived(!busy && message.trim() !== "" && (merging || included.length > 0));
 
   const upstreamText = $derived.by(() => {
-    if (!remote) return "No remote yet. Set one to pull and push.";
-    if (!status?.upstream) return "No upstream branch yet. The first push sets it.";
+    if (!remote) return "No remote yet. Set one to pull from and push to it.";
+    if (!status?.upstream) return "No upstream branch yet. The first push to remote sets it.";
     const ahead = Number(status.ahead);
     const behind = Number(status.behind);
     if (!Number.isFinite(ahead) || !Number.isFinite(behind)) return `Follows ${status.upstream}.`;
@@ -157,13 +158,13 @@
     {/if}
     {#if view.refusal?.reason === "dirty"}
       <div class="git-box" role="alert">
-        <p>These files have changes that are not committed{view.refusal.paths.length ? "" : ", so the pull did not start"}. Commit them, then pull again.</p>
+        <p>These files have changes that are not committed{view.refusal.paths.length ? "" : ", so the pull did not start"}. Commit them, then pull from remote again.</p>
         {#if view.refusal.paths.length}
           <ul class="git-list">{#each view.refusal.paths as path (path)}<li>{path}</li>{/each}</ul>
         {/if}
       </div>
     {:else if view.refusal?.reason === "behind"}
-      <div class="git-box" role="alert"><p>The remote has commits you do not have. Pull first.</p></div>
+      <div class="git-box" role="alert"><p>The remote has commits you do not have. Pull from remote first.</p></div>
     {:else if view.refusal?.reason === "network"}
       <div class="git-box" role="alert">
         <p>Git could not reach the remote. Check the connection and the address, then try again.</p>
@@ -280,7 +281,7 @@
         </label>
         <div class="git-row">
           <button type="submit" class="btn btn-sm lp-control-brand" disabled={busy || !identityName.trim() || !identityEmail.trim()}>
-            {view.identity.then === "sync" ? "Save and sync" : "Save and commit"}
+            {view.identity.then === "sync" ? "Save and sync with remote" : "Save and commit"}
           </button>
           <button type="button" class="git-action" disabled={busy} onclick={() => git.cancelIdentity()}>Cancel</button>
         </div>
@@ -301,21 +302,21 @@
 
     <div class="git-row git-remote-actions">
       <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy || !remote} onclick={() => git.pull()}>
-        {view.busy === "pull" ? "Pulling…" : "Pull"}
+        {view.busy === "pull" ? "Pulling from remote…" : "Pull from remote"}
       </button>
       <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy || !remote} onclick={() => git.push()}>
-        {view.busy === "push" ? "Pushing…" : "Push"}
+        {view.busy === "push" ? "Pushing to remote…" : "Push to remote"}
       </button>
       <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy || !remote} onclick={() => git.fetch()}>
-        {view.busy === "fetch" ? "Fetching…" : "Fetch"}
+        {view.busy === "fetch" ? "Fetching from remote…" : "Fetch from remote"}
       </button>
     </div>
     <div class="git-row">
       <button type="button" class="btn btn-sm lp-control-brand" disabled={busy || !remote}
               onclick={() => git.sync(typedMessage ?? "")}>
-        {view.busy === "sync" ? "Syncing…" : "Sync"}
+        {view.busy === "sync" ? "Syncing with remote…" : "Sync with remote"}
       </button>
-      <span class="panel-meta git-sync-note">Commits, pulls and pushes.</span>
+      <span class="panel-meta git-sync-note">Commit, then pull from remote, then push to remote.</span>
     </div>
     {@render results()}
     {#if view.auth}

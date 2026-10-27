@@ -16,7 +16,7 @@ const noWait = async () => {};
 function routes(answers) {
   const calls = [];
   const api = {};
-  for (const name of ["syncStatus", "syncLogin", "syncLoginComplete", "syncLink", "syncPublish", "syncUnlink", "syncPull", "syncPush"]) {
+  for (const name of ["syncStatus", "syncLogin", "syncLoginComplete", "syncLink", "syncPreview", "syncPublish", "syncUnlink", "syncPull", "syncPush"]) {
     api[name] = async (...args) => {
       calls.push([name, ...args]);
       const answer = typeof answers[name] === "function" ? answers[name](...args) : answers[name];
@@ -319,26 +319,136 @@ const today = () => new Date(2026, 9, 25, 12);
   assert.equal(attempts, 0);
 }
 
-// Link and publish send what was typed, trimmed, and read the state again.
+// Link previews first, then links and pulls on confirmation. Publish sends the
+// title, trimmed, and reads the state again.
 {
   const scene = { status: { signed_in: true, linked: false } };
+  const order = [];
   const { api, calls } = routes({
     syncStatus: () => scene.status,
-    syncLink: () => { scene.status = linked; },
+    syncPreview: () => {
+      order.push("preview");
+      return { project_only: ["web.tex"], local_only: ["mine.tex"], different: ["both.tex"], equal: [], blocked: [["big.bin", "it is too large"]], excluded: [".DS_Store"] };
+    },
+    syncLink: () => { order.push("link"); scene.status = linked; },
+    syncPull: () => { order.push("pull"); return { written: ["web.tex"], trashed: [], conflicts: ["both.tex"] }; },
     syncPublish: () => { scene.status = linked; },
     syncUnlink: () => { scene.status = { signed_in: true, linked: false }; },
   });
-  const sync = createLocalSync({ id: "f1", api });
+  const sync = createLocalSync({ id: "f1", api, flush: async () => { order.push("flush"); return true; } });
   await sync.refresh();
-  await sync.link("  https://app.example/docs/paper  ");
-  assert.deepEqual(calls.at(-2), ["syncLink", "f1", "https://app.example/docs/paper"]);
+  await sync.previewLink("  https://app.example/docs/paper  ");
+  assert.deepEqual(order, ["flush", "preview"], "the folder is saved, then compared; nothing is linked");
+  assert.deepEqual(calls.find((call) => call[0] === "syncPreview"), ["syncPreview", "f1", "https://app.example/docs/paper"]);
+  assert.deepEqual(sync.state.preview, {
+    url: "https://app.example/docs/paper",
+    project_only: ["web.tex"],
+    local_only: ["mine.tex"],
+    different: ["both.tex"],
+    equal: [],
+    blocked: [["big.bin", "it is too large"]],
+    excluded: [".DS_Store"],
+  });
+  assert.equal(calls.some((call) => call[0] === "syncLink"), false);
+  assert.equal(sync.state.status.linked, false);
+
+  sync.cancelPreview();
+  assert.equal(sync.state.preview, null, "Cancel drops the preview");
+  assert.equal(calls.some((call) => call[0] === "syncLink"), false);
+
+  await sync.previewLink("https://app.example/docs/paper");
+  await sync.confirmLink();
+  assert.deepEqual(order.slice(-3), ["link", "flush", "pull"], "Link links the previewed address, then pulls");
+  assert.deepEqual(calls.find((call) => call[0] === "syncLink"), ["syncLink", "f1", "https://app.example/docs/paper"]);
+  assert.equal(sync.state.preview, null);
   assert.equal(sync.state.status.linked, true);
+  assert.deepEqual(sync.state.conflicts, ["both.tex"], "a conflict in the first pull reaches the ordinary choice");
+
   await sync.unlink();
   assert.equal(calls.at(-2)[0], "syncUnlink");
   assert.equal(sync.state.status.linked, false);
   await sync.publish(" My paper ");
   assert.deepEqual(calls.at(-2), ["syncPublish", "f1", "My paper"]);
   assert.equal(sync.state.status.linked, true);
+}
+
+// A preview that fails shows the desktop app's words and links nothing.
+{
+  const { api, calls } = routes({ syncStatus: { signed_in: true, linked: false }, syncPreview: refused(400, { error: "that project is on another site" }) });
+  const sync = createLocalSync({ id: "f1", api });
+  await sync.previewLink("https://elsewhere.example/docs/paper");
+  assert.equal(sync.state.preview, null);
+  assert.match(sync.state.error, /another site/);
+  await sync.confirmLink();
+  assert.equal(calls.some((call) => call[0] === "syncLink"), false, "there is nothing to confirm");
+}
+
+// A repository with no branch chosen is asked for it. The refusal is not an
+// error line, the confirmation repeats the stopped action with the branch, and
+// a mismatch or a detached HEAD shows the desktop app's words and never asks.
+{
+  const scene = { status: { ...linked, git: true, branch: null, checked_out: "main", pending: false } };
+  const unbound = refused(409, { reason: "branch", error: "this repository has no branch chosen for sync" });
+  const { api, calls } = routes({
+    syncStatus: () => scene.status,
+    syncPull: (id, choices) => {
+      if (!choices.branch) return unbound;
+      scene.status = { ...scene.status, branch: choices.branch };
+      return { repository: true, versions: [], merge: "already", trimmed: false };
+    },
+    syncPush: (id, message, branch) => {
+      if (!branch) return unbound;
+      scene.status = { ...scene.status, branch };
+      return { nothing: true };
+    },
+  });
+  const sync = createLocalSync({ id: "f1", api, now: today });
+  await sync.refresh();
+  await sync.pull();
+  assert.equal(sync.state.error, "", "the confirmation says it, not an error line");
+  assert.equal(sync.state.status.checked_out, "main", "the status was read again");
+  await sync.confirmBranch("main");
+  assert.deepEqual(calls.filter((call) => call[0] === "syncPull").at(-1), ["syncPull", "f1", { branch: "main" }]);
+  assert.equal(sync.state.status.branch, "main");
+  assert.equal(sync.state.pull.merge, "already");
+
+  scene.status = { ...scene.status, branch: null };
+  await sync.push("Edits");
+  await sync.confirmBranch("main");
+  assert.deepEqual(calls.filter((call) => call[0] === "syncPush").at(-1), ["syncPush", "f1", "Edits", "main"], "a stopped push is repeated as a push");
+  assert.deepEqual(sync.state.pushed, { nothing: true });
+
+  const mismatch = "this checkout is on `other` but sync uses `main`; run `git switch main` and try again";
+  scene.status = { ...scene.status, branch: "main", checked_out: "other" };
+  calls.length = 0;
+  const wrong = routes({
+    syncStatus: () => scene.status,
+    syncPull: refused(409, { reason: "branch", error: mismatch }),
+  });
+  const bound = createLocalSync({ id: "f1", api: wrong.api });
+  await bound.pull();
+  assert.equal(bound.state.error, mismatch);
+
+  scene.status = { ...scene.status, checked_out: null };
+  await bound.pull();
+  assert.equal(bound.state.error, mismatch, "a detached HEAD has no branch to offer");
+}
+
+// A pull or link refused for an interrupted send says so, and the status shows it.
+{
+  const message = "an earlier push was interrupted before its outcome was known; run `librepaper push` to settle it first";
+  const { api } = routes({
+    syncStatus: { ...linked, git: false, pending: true },
+    syncPull: refused(409, { reason: "pending", error: message }),
+    syncUnlink: refused(409, { reason: "pending", error: message }),
+  });
+  const sync = createLocalSync({ id: "f1", api });
+  await sync.refresh();
+  assert.equal(sync.state.status.pending, true);
+  await sync.pull();
+  assert.equal(sync.state.error, message);
+  await sync.unlink();
+  assert.equal(sync.state.error, message);
 }
 
 // Pull saves the folder first, shows the counts, and keeps the conflicts for an answer.
@@ -525,4 +635,4 @@ const today = () => new Date(2026, 9, 25, 12);
   assert.equal(sync.state.loaded, false);
 }
 
-console.log("local-sync: status, sign-in by approving here or in another tab, link, pull with conflicts, push with refusals, sign-in loss");
+console.log("local-sync: status, sign-in by approving here or in another tab, link preview, branch confirmation, pending push, pull with conflicts, push with refusals, sign-in loss");

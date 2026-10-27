@@ -83,11 +83,12 @@ const syncApi = {
     scene().status = scene().afterLogin;
     return structuredClone(scene().status);
   },
+  syncPreview: async (id, url) => { record("syncPreview", url); return settle(scene().preview); },
   syncLink: async (id, url) => { record("syncLink", url); scene().status = scene().afterLink; },
   syncPublish: async (id, title) => { record("syncPublish", title); scene().status = scene().afterLink; },
   syncUnlink: async () => { record("syncUnlink"); scene().status = { signed_in: true, linked: false, git: Boolean(scene().status.git) }; },
   syncPull: async (id, choices) => { record("syncPull", choices); return settle(scene().pulls.shift()); },
-  syncPush: async (id, message) => { record("syncPush", message); return settle(scene().pushes.shift()); },
+  syncPush: async (id, message, branch) => { record("syncPush", message, branch); return settle(scene().pushes.shift()); },
 };
 
 const gitApi = {
@@ -133,6 +134,7 @@ const connectionApi = {
   },
   pullConnection: async () => { record("pullConnection"); return settle(scene().pullAnswer); },
   pushConnection: async () => { record("pushConnection"); return settle(scene().pushAnswer); },
+  retryConnection: async () => { record("retryConnection"); return settle(scene().retryAnswer); },
   resolveConnection: async (project, path, keep) => {
     record("resolveConnection", path, keep);
     const left = scene().connection.merging.conflicts.filter((entry) => entry !== path);
@@ -200,7 +202,7 @@ const mountWeb = async (next = {}, props = {}) => {
   window.scene = { ...defaults(), ...next };
   connection = createWebConnection({
     api: connectionApi, project: "https://app.example/docs/paper",
-    nameVersion: async (message) => { record("nameVersion", message); },
+    flush: async () => { record("flush"); },
     signedIn: async () => scene().session !== false,
     approve: async (code) => { record("approve", code); },
     open: (url) => { record("open", url); },
@@ -258,7 +260,7 @@ window.gitPanelCheck = async () => {
   await flush();
   check(panel().getAttribute("aria-label") === "Git", "the panel is called Git");
   check(text().includes("Sign in to keep this folder"), "a signed-out folder asks for a sign-in: " + text());
-  check(!button("Pull") && !button("Link"), "and offers nothing else");
+  check(!button("Get changes from web") && !button("Link"), "and offers nothing else");
   await press("Sign in");
   check(calls("syncLogin").length === 1 && calls("approve")[0][1] === "ABCD-EFGH", "Sign in gets a code and approves it here: " + JSON.stringify(window.scene.calls));
   check(calls("syncLoginComplete")[0][1] === "auth-1", "and finishes with the authorization");
@@ -315,14 +317,27 @@ window.gitPanelCheck = async () => {
 
   /* ------------------------------------------------ signed in, not linked */
 
-  await mountFolder({ status: { signed_in: true, linked: false }, afterLink: linked() });
+  const empty = { written: [], trashed: [], kept: [], conflicts: [], trimmed: false };
+  const found = { project_only: ["web.tex"], local_only: ["mine.tex"], different: ["both.tex", "other.tex"], equal: [], blocked: [["big.bin", "it is too large"]], excluded: [] };
+  await mountFolder({ status: { signed_in: true, linked: false }, afterLink: linked(), preview: found, pulls: [empty] });
   await flush();
-  check(button("Link").disabled, "Link waits for an address");
+  check(button("Preview link").disabled, "Preview link waits for an address");
   check(field("Or publish").value === "thesis", "the title offered is the folder's name");
   check(!button("Publish").disabled, "so Publish is ready");
   await type(field("Link to a project"), "  https://app.example/docs/paper  ");
+  await press("Preview link");
+  check(calls("syncPreview")[0][1] === "https://app.example/docs/paper" && calls("syncLink").length === 0, "the preview sends the address and links nothing: " + JSON.stringify(window.scene.calls));
+  check(text().includes("1 file is only in the project. It will be added to this folder.") && text().includes("1 file is only in this folder. It stays here until you send it.") && text().includes("2 files are in both with different contents. You choose which version to keep.") && text().includes("1 file is not transferred."), "the preview says what it found in sentences: " + text());
+  // The path lists sit in closed groups, which innerText leaves out.
+  const listed = base().querySelector(".sync-preview")?.textContent ?? "";
+  check(listed.includes("big.bin: it is too large") && listed.includes("both.tex") && !text().includes("in both with the same contents"), "with the paths and the reason, and no empty group: " + listed);
+  check(button("Link") && button("Cancel"), "and offers Link and Cancel");
+  await press("Cancel");
+  check(calls("syncLink").length === 0 && button("Preview link"), "Cancel links nothing and returns to the address: " + text());
+  await press("Preview link");
   await press("Link");
   check(calls("syncLink")[0][1].trim() === "https://app.example/docs/paper", "Link sends the address: " + JSON.stringify(calls("syncLink")));
+  check(calls("syncPull").length === 1, "and runs the first pull: " + JSON.stringify(window.scene.calls));
   check(text().includes("paper"), "and the linked project shows: " + text());
 
   await mountFolder({ status: { signed_in: true, linked: false }, afterLink: linked({ changes: { here: 0, web: false } }) });
@@ -338,9 +353,41 @@ window.gitPanelCheck = async () => {
   const link = lp().querySelector(".sync-project a");
   check(link && link.getAttribute("href") === "https://app.example/docs/paper" && link.textContent.trim() === "paper", "the project is a link to its page: " + (link && link.getAttribute("href")));
   check(text().includes("2 changes here") && text().includes("The web project changed"), "the state is said in two lines: " + text());
-  check(button("Pull") && button("Push") && button("Unlink"), "Pull, Push and Unlink are there");
+  check(button("Get changes from web") && button("Send changes to web") && button("Unlink"), "Get changes from web, Send changes to web and Unlink are there");
   check(field("Message").value === today(), "the message starts as today's date: " + field("Message").value);
   check(!text().includes("This folder is a git repository"), "a plain folder does not talk about git here");
+
+  // A repository with no branch chosen asks for one, and the confirmation repeats the stopped pull with it.
+  const unboundWords = "this repository has no branch chosen for sync; it is on main";
+  await mountFolder({
+    status: linked({ git: true, branch: null, checked_out: "main", pending: false }),
+    pulls: [{ fail: { status: 409, body: { reason: "branch", error: unboundWords } } }, { repository: true, versions: [], merge: "already", trimmed: false }],
+  });
+  await flush();
+  check(text().includes("Choose the branch to sync. This folder is on branch main") && button("Sync branch main"), "an unbound repository proposes the checked out branch: " + text());
+  await press("Get changes from web");
+  check(!text().includes(unboundWords), "the stopped pull leaves no error line, the confirmation is the answer: " + text());
+  await press("Sync branch main");
+  check(JSON.stringify(calls("syncPull")[1][1]) === JSON.stringify({ branch: "main" }), "the confirmation repeats the pull with the branch: " + JSON.stringify(calls("syncPull")));
+
+  // Another checkout, or a detached HEAD, says which git command to run and never offers to switch.
+  await mountFolder({ status: linked({ git: true, branch: "main", checked_out: "other", pending: false }) });
+  await flush();
+  check(text().includes("Sync uses branch main, but this folder is on branch other. Run git switch main and try again.") && !button("Sync branch other"), "a mismatch names the git command: " + text());
+  await mountFolder({ status: linked({ git: true, branch: "main", checked_out: null, pending: false }) });
+  await flush();
+  check(text().includes("on a detached HEAD"), "a detached HEAD is said: " + text());
+  await mountFolder({ status: linked({ git: true, branch: "main", checked_out: "main", pending: false }) });
+  await flush();
+  check(text().includes("Syncing branch main.") && !button("Sync branch main"), "a bound repository on its branch states it and asks nothing: " + text());
+
+  // An interrupted send is shown, and the refusal of a pull says so.
+  const pendingWords = "an earlier push was interrupted before its outcome was known; run \`librepaper push\` to settle it first";
+  await mountFolder({ status: linked({ pending: true }), pulls: [{ fail: { status: 409, body: { reason: "pending", error: pendingWords } } }] });
+  await flush();
+  check(text().includes("An earlier send to the web was interrupted") && text().includes("Choose Send changes to web to finish it") && button("Send changes to web"), "a pending send points at Send changes to web: " + text());
+  await press("Get changes from web");
+  check(text().includes(pendingWords), "and a refused pull shows the message: " + text());
 
   await mountFolder({ status: linked({ changes: { here: 0, web: false } }) });
   await flush();
@@ -368,25 +415,25 @@ window.gitPanelCheck = async () => {
     pushes: [{ label: { sha: "abc", sequence: 5 }, files: 2 }],
   });
   await flush();
-  check(text().includes("This folder is a git repository, so a pull takes each web version in as a commit"), "a git folder says how a pull works: " + text());
-  check(button("Pull") && button("Push") && button("Unlink") && field("Message") && lp().querySelector(".sync-project"), "and keeps Pull, Push, Unlink and the project");
+  check(text().includes("This folder is a git repository, so getting changes from web takes each web version in as a commit"), "a git folder says how a pull works: " + text());
+  check(button("Get changes from web") && button("Send changes to web") && button("Unlink") && field("Message") && lp().querySelector(".sync-project"), "and keeps both actions, Unlink and the project");
   check(!text().includes("Sync it with git in a terminal"), "the notice that hid them is gone");
-  await press("Pull");
+  await press("Get changes from web");
   check(text().includes("3 versions fetched as commits.") && text().includes("Fast-forwarded."), "a pull says the versions and the merge: " + text());
-  await press("Pull");
+  await press("Get changes from web");
   check(text().includes("No new versions on the web.") && text().includes("Already merged."), "a pull with nothing new says so: " + text());
-  await press("Pull");
+  await press("Get changes from web");
   check(text().includes("1 version fetched as commits.") && text().includes("Merged.") && text().includes("was trimmed"), "a merge, and a trimmed history: " + text());
-  await press("Pull");
+  await press("Get changes from web");
   check(text().includes("Not merged."), "a skipped merge says so: " + text());
-  await press("Pull");
+  await press("Get changes from web");
   check(text().includes("Merge conflicts in intro.tex, chapters/refs.bib. Resolve them in the editor, then Commit in the Repository section."), "conflicts name the files and where to go: " + text());
   check(!button("Keep mine") && !button("Take theirs"), "there is no side to take in a repository");
-  await press("Pull");
+  await press("Get changes from web");
   check(text().includes("Commit your changes first: intro.tex"), "uncommitted files stop the merge and are named: " + text());
   check(!text().includes("Merge conflicts"), "the earlier result is gone");
-  await press("Push");
-  check(text().includes("Pushed 2 files."), "a push works as before: " + text());
+  await press("Send changes to web");
+  check(text().includes("Sent 2 files to web."), "a push works as before: " + text());
 
   /* ----------------------------------------------------------------- pull */
 
@@ -399,7 +446,7 @@ window.gitPanelCheck = async () => {
     ],
   });
   await flush();
-  await press("Pull");
+  await press("Get changes from web");
   check(window.scene.saves === 1, "the folder is saved before the pull");
   check(text().includes("Wrote 2 files and moved 1 file to the trash."), "the pull says what it did: " + text());
   check(text().includes("2 files changed here and on the web"), "and what needs an answer: " + text());
@@ -415,15 +462,15 @@ window.gitPanelCheck = async () => {
 
   await mountFolder({ status: linked({ changes: { here: 0, web: false } }), pulls: [{ written: [], trashed: [], kept: [], conflicts: [] }] });
   await flush();
-  await press("Pull");
+  await press("Get changes from web");
   check(text().includes("Nothing new on the web."), "a pull with nothing says so: " + text());
   await mountFolder({ status: linked(), pulls: [{ written: ["a.tex"], trashed: [], conflicts: [], trimmed: true }] });
   await flush();
-  await press("Pull");
+  await press("Get changes from web");
   check(text().includes("was trimmed"), "a trimmed history is said: " + text());
   await mountFolder({ status: linked(), pulls: [{ fail: { status: 401, body: { error: "sign in" }, message: "sign in" } }] });
   await flush();
-  await press("Pull");
+  await press("Get changes from web");
   check(text().includes("Sign in to the web project to continue.") && button("Sign in"), "a lost sign-in goes back to the Sign in button: " + text());
 
   /* ----------------------------------------------------------------- push */
@@ -439,24 +486,24 @@ window.gitPanelCheck = async () => {
   });
   await flush();
   await type(field("Message"), "Fix the abstract");
-  await press("Push");
+  await press("Send changes to web");
   check(window.scene.saves === 1, "the folder is saved before the push");
   check(calls("syncPush")[0][1] === "Fix the abstract", "Push sends the message");
-  check(text().includes("Pushed 2 files."), "and says what went: " + text());
+  check(text().includes("Sent 2 files to web."), "and says what went: " + text());
   check(field("Message").value === today(), "the message goes back to the date for the next push: " + field("Message").value);
-  await press("Push");
+  await press("Send changes to web");
   check(calls("syncPush")[1][1] === today(), "an unnamed push is named by the date");
-  check(text().includes("changed these files since your last pull") && text().includes("fig/a.png") && text().includes("Pull first."), "a push over changed files lists them and says to pull first: " + text());
-  check(!text().includes("Pushed 2 files."), "the earlier result is gone");
-  await press("Push");
+  check(text().includes("changed these files since your last get from web") && text().includes("fig/a.png") && text().includes("Get changes from web first."), "a push over changed files lists them and says to pull first: " + text());
+  check(!text().includes("Sent 2 files to web."), "the earlier result is gone");
+  await press("Send changes to web");
   check(text().includes("pending suggestion in intro.tex") && text().includes("on the web"), "a suggestion is named and left to the web: " + text());
-  check(!text().includes("Pull first."), "the earlier refusal is gone");
-  await press("Push");
-  check(text().includes("Nothing to push."), "an empty push says so: " + text());
+  check(!text().includes("Get changes from web first."), "the earlier refusal is gone");
+  await press("Send changes to web");
+  check(text().includes("Nothing to send to web."), "an empty push says so: " + text());
 
   await mountFolder({ status: linked(), saved: false });
   await flush();
-  await press("Push");
+  await press("Send changes to web");
   check(calls("syncPush").length === 0 && text().includes("could not be saved"), "a folder that cannot be saved stops the push: " + text());
 
   /* --------------------------------------------------------------- unlink */
@@ -501,20 +548,20 @@ window.gitPanelCheck = async () => {
   check(squash(changeRows()[1]).includes("outline.tex") && squash(changeRows()[1]).includes("chapters") && squash(changeRows()[1]).includes("A"), "an added one A, with its folder: " + squash(changeRows()[1]));
   check(changeRows().every((row) => row.querySelector("input[type=checkbox]")?.checked && button("Diff", row)), "each is included and has a Diff button");
   check(button("Commit", repo()).disabled, "Commit waits for a message");
-  check(button("Pull", repo()) && button("Push", repo()) && button("Fetch", repo()) && button("Sync", repo()), "Pull, Push, Fetch and Sync are there");
-  check(!button("Pull", repo()).disabled, "and ready");
-  check(text(repo()).includes("Commits, pulls and pushes."), "Sync says what it does");
+  check(button("Pull from remote", repo()) && button("Push to remote", repo()) && button("Fetch from remote", repo()) && button("Sync with remote", repo()), "Pull from remote, Push to remote, Fetch from remote and Sync with remote are there");
+  check(!button("Pull from remote", repo()).disabled, "and ready");
+  check(text(repo()).includes("Commit, then pull from remote, then push to remote."), "Sync says what it does");
 
   await mountFolder({ repo: repoStatus({ ahead: 2, behind: 1 }) });
   await flush();
   check(text(repo()).includes("2 ahead, 1 behind origin/main."), "ahead and behind are counted: " + text(repo()));
   await mountFolder({ repo: repoStatus({ upstream: undefined, ahead: undefined, behind: undefined }) });
   await flush();
-  check(text(repo()).includes("No upstream branch yet. The first push sets it."), "a branch with no upstream says the first push sets it: " + text(repo()));
+  check(text(repo()).includes("No upstream branch yet. The first push to remote sets it."), "a branch with no upstream says the first push sets it: " + text(repo()));
   await mountFolder({ repo: repoStatus({ remotes: [], upstream: undefined }) });
   await flush();
-  check(text(repo()).includes("No remote yet. Set one to pull and push.") && text(repo()).includes("No remote"), "no remote is said: " + text(repo()));
-  check(button("Pull", repo()).disabled && button("Push", repo()).disabled && button("Sync", repo()).disabled && !button("Set remote", repo()).disabled, "and there is nothing to pull from or push to");
+  check(text(repo()).includes("No remote yet. Set one to pull from and push to it.") && text(repo()).includes("No remote"), "no remote is said: " + text(repo()));
+  check(button("Pull from remote", repo()).disabled && button("Push to remote", repo()).disabled && button("Sync with remote", repo()).disabled && !button("Set remote", repo()).disabled, "and there is nothing to pull from or push to");
   check(changeRows().length === 2, "the changes are still listed");
 
   /* ------------------------------------------------------------------ commit */
@@ -622,7 +669,7 @@ window.gitPanelCheck = async () => {
 
   await mountFolder({ repo: repoStatus(), fetched: { ahead: 2, behind: 1 } });
   await flush();
-  await press("Fetch", repo());
+  await press("Fetch from remote", repo());
   check(text(repo()).includes("Fetched. 2 ahead, 1 behind."), "a fetch says how far the branch is: " + text(repo()));
 
   /* -------------------------------------------------------------------- pull */
@@ -636,14 +683,14 @@ window.gitPanelCheck = async () => {
     ],
   });
   await flush();
-  await press("Pull", repo());
+  await press("Pull from remote", repo());
   check(window.scene.saves === 1 && text(repo()).includes("Pulled and merged."), "a pull saves the folder, then says how it went: " + text(repo()));
-  await press("Pull", repo());
+  await press("Pull from remote", repo());
   check(text(repo()).includes("2 files in conflict. Resolve them in the editor, then Commit."), "a conflict says to resolve it in the editor: " + text(repo()));
   check([...repo().querySelectorAll(".git-list li")].map((node) => node.textContent).join("|") === "intro.tex|chapters/refs.bib", "and lists the files");
   check(!text(repo()).includes("Pulled and merged."), "the earlier result is gone");
-  await press("Pull", repo());
-  check(text(repo()).includes("not committed") && text(repo()).includes("notes.tex") && text(repo()).includes("Commit them, then pull again."), "uncommitted files are listed and stop the pull: " + text(repo()));
+  await press("Pull from remote", repo());
+  check(text(repo()).includes("not committed") && text(repo()).includes("notes.tex") && text(repo()).includes("Commit them, then pull from remote again."), "uncommitted files are listed and stop the pull: " + text(repo()));
 
   // A merge in progress: Commit finishes it, every file goes in, and the message is git's.
   await mountFolder({ repo: repoStatus({ merging: true, changes: [{ path: "intro.tex", kind: "conflicted" }, { path: "refs.bib", kind: "modified" }] }) });
@@ -667,14 +714,14 @@ window.gitPanelCheck = async () => {
     ],
   });
   await flush();
-  await press("Push", repo());
+  await press("Push to remote", repo());
   check(window.scene.saves === 0, "a push does not wait for the folder");
   check(text(repo()).includes("Pushed."), "a push says so: " + text(repo()));
-  await press("Push", repo());
-  check(text(repo()).includes("The remote has commits you do not have. Pull first.") && !text(repo()).includes("Pushed."), "a remote that moved says to pull first: " + text(repo()));
-  await press("Push", repo());
+  await press("Push to remote", repo());
+  check(text(repo()).includes("The remote has commits you do not have. Pull from remote first.") && !text(repo()).includes("Pushed."), "a remote that moved says to pull first: " + text(repo()));
+  await press("Push to remote", repo());
   check(text(repo()).includes("Git could not reach the remote") && text(repo()).includes("Could not resolve host: github.com"), "a lost connection is said with git's words: " + text(repo()));
-  await press("Push", repo());
+  await press("Push to remote", repo());
   check(text(repo()).includes("Git could not sign in to github.com."), "a failed sign-in shows the sign-in help: " + text(repo()));
   check(text(repo()).includes("Install the GitHub CLI.") && text(repo()).includes("gh auth login") && text(repo()).includes("gh auth setup-git"), "with the steps for github.com: " + text(repo()));
   check(repo().querySelector('button[aria-label="Copy gh auth login"]'), "each command can be copied");
@@ -691,7 +738,7 @@ window.gitPanelCheck = async () => {
     gitPushes: [{ fail: { status: 409, body: { reason: "auth", detail: "Permission denied (publickey)." } } }],
   });
   await flush();
-  await press("Push", repo());
+  await press("Push to remote", repo());
   check(text(repo()).includes("Git could not sign in to gitlab.com over SSH.") && text(repo()).includes("ssh -T git@gitlab.com"), "an SSH remote gets the SSH steps: " + text(repo()));
   await press("Dismiss", repo());
   check(!text(repo()).includes("Git could not sign in"), "Dismiss puts the help away");
@@ -706,12 +753,12 @@ window.gitPanelCheck = async () => {
     ],
   });
   await flush();
-  await press("Sync", repo());
+  await press("Sync with remote", repo());
   check(calls("gitSync").length === 1 && calls("gitSync")[0][1] === "Edits from LibrePaper", "Sync commits with its own message: " + JSON.stringify(calls("gitSync")));
   check(window.scene.saves === 1, "after saving the folder");
   check(text(repo()).includes("Committed 1a2b3c4.") && text(repo()).includes("Pulled and merged.") && text(repo()).includes("Pushed."), "every step is shown: " + text(repo()));
-  await press("Sync", repo());
-  check(text(repo()).includes("Nothing to commit.") && text(repo()).includes("Stopped at push") && text(repo()).includes("Pull first."), "a Sync stops at the step that failed and says which: " + text(repo()));
+  await press("Sync with remote", repo());
+  check(text(repo()).includes("Nothing to commit.") && text(repo()).includes("Stopped at push") && text(repo()).includes("Pull from remote first."), "a Sync stops at the step that failed and says which: " + text(repo()));
   check(!text(repo()).includes("Pulled and merged."), "the earlier steps are gone");
 
   /* -------------------------------------------------------------------- diff */
@@ -744,10 +791,10 @@ window.gitPanelCheck = async () => {
     gitPushes: [{ fail: { status: 409, body: { reason: "auth", detail: "fatal: Authentication failed for https://example-forge.example/organisation/a-very-long-repository-name-that-keeps-going.git" } } }],
   });
   await flush();
-  await press("Pull", lp());
-  await press("Push", lp());
-  await press("Pull", repo());
-  await press("Push", repo());
+  await press("Get changes from web", lp());
+  await press("Send changes to web", lp());
+  await press("Pull from remote", repo());
+  await press("Push to remote", repo());
   await widths("in a folder project");
   await press("Set remote", repo());
   await widths("with the remote form open");
@@ -770,9 +817,9 @@ window.gitPanelCheck = async () => {
   await flush();
   check(panel().getAttribute("aria-label") === "Git", "the web panel is called Git too");
   check(headings() === "Repository", "one section in the browser: " + headings());
-  check(text().includes("Last pushed by Alice, 20 min ago: Reword the greeting"), "it names the last push: " + text());
+  check(text().includes("Last sent from a repository by Alice, 20 min ago: Reword the greeting"), "it names the last push: " + text());
   check(calls("history").length === 1 && calls("history")[0][1] === "paper", "from the history");
-  check(text().includes("To push and pull with git, open this project in the LibrePaper desktop app.") && text().includes("keep a GitHub repository in sync with this project through a GitHub Action"), "the browser says where to connect: " + text());
+  check(text().includes("To send and get changes with git, open this project in the LibrePaper desktop app.") && text().includes("keep a GitHub repository in sync with this project through a GitHub Action"), "the browser says where to connect: " + text());
   check(!panel().querySelector("pre") && !button("Connect") && !button("Use a folder on this computer…"), "the browser shows no commands and no connect form");
   const docs = [...panel().querySelectorAll("a")].find((node) => node.getAttribute("href") === "/docs/git.html");
   check(docs && docs.textContent.trim() === "Read the Git docs" && docs.target === "_blank" && docs.rel.includes("noopener"), "the docs are one link away");
@@ -783,10 +830,10 @@ window.gitPanelCheck = async () => {
   // No push yet, and a history that cannot be read.
   await mountWeb();
   await flush();
-  check(text().includes("No push yet."), "a project nobody pushed to says so: " + text());
+  check(text().includes("No changes sent from a repository yet."), "a project nobody pushed to says so: " + text());
   await mountWeb({ historyFails: true });
   await flush();
-  check(text().includes("The last push could not be read."), "a history that cannot be read is said: " + text());
+  check(text().includes("The last change sent from a repository could not be read."), "a history that cannot be read is said: " + text());
 
   // In the desktop app and not connected, the panel connects the project: the address is checked and trimmed, and a folder can be kept instead.
   const connectedStatus = { connected: true, signed_in: true, url: "https://github.com/you/paper.git", branch: "main", merging: null };
@@ -809,7 +856,7 @@ window.gitPanelCheck = async () => {
   await type(field("Repository address"), "   https://github.com/you/paper.git  ");
   await press("Connect");
   check(calls("connectRepository").length === 1 && calls("connectRepository")[0][1] === "https://github.com/you/paper.git", "the trimmed address is connected: " + JSON.stringify(calls("connectRepository")));
-  check(headings() === "Repository|Connected repository" && text().includes("https://github.com/you/paper.git, branch main"), "and the connected repository is shown: " + text());
+  check(headings() === "Repository|Repository on this computer" && text().includes("https://github.com/you/paper.git, branch main"), "and the connected repository is shown: " + text());
 
   // A connect the desktop app refuses says why, and the form stays.
   await mountWeb({ connection: { connected: false, signed_in: true }, connectFails: true }, { desktop: true });
@@ -819,21 +866,32 @@ window.gitPanelCheck = async () => {
   check(alert() === "this repository is linked to another LibrePaper project" && button("Connect") && !button("Connecting…"), "a refused connect shows its message: " + alert());
   await widths("with a refusal shown");
 
-  // Connected and signed in: Pull writes what came in, and Push names the version before it sends it.
+  // Connected and signed in: getting changes imports what came in, and sending changes sends the project's changes.
   await mountWeb({ connection: connectedStatus, afterConnect: connectedStatus, pullAnswer: { status: connectedStatus, pushed: { files: 2 } }, pushAnswer: { status: connectedStatus, pushed: "pushed" } }, { desktop: true });
   await flush();
-  check(headings() === "Repository|Connected repository", "a connected project shows its repository: " + headings());
-  check(text().includes("Pull brings the repository's commits into this project. Push names this version and sends it to the repository."), "and says what Pull and Push do: " + text());
-  check(field("Version name")?.value === "Edits from LibrePaper", "the version name starts with its default");
+  check(headings() === "Repository|Repository on this computer", "a connected project shows its repository: " + headings());
+  check(text().includes("Get repository changes imports the repository's commits into this project. Send project changes sends this project's changes to the repository branch above."), "and says what the two actions do: " + text());
   await widths("with a connected repository");
 
-  await press("Pull");
-  check(calls("pullConnection").length === 1 && text().includes("Pulled 2 files into the project."), "Pull says what came in: " + text());
-  await type(field("Version name"), "Tighter abstract");
-  await press("Push");
-  check(calls("nameVersion").length === 1 && calls("nameVersion")[0][1] === "Tighter abstract", "the version is named first: " + JSON.stringify(calls("nameVersion")));
-  check(calls("pushConnection").length === 1 && text().includes("Pushed to main."), "then the push is sent and says so: " + text());
-  check(field("Version name").value === "Edits from LibrePaper", "the default name comes back after a push");
+  await press("Get repository changes");
+  check(calls("pullConnection").length === 1 && text().includes("Imported from repository branch main: 2 files into the project."), "the pull says what came in: " + text());
+
+  // An interrupted send stops the transfer. The panel offers one retry that runs the send alone.
+  const interrupted = "an earlier push was interrupted before its outcome was known; run \`librepaper push\` to settle it first";
+  await mountWeb({
+    connection: connectedStatus, afterConnect: connectedStatus,
+    pullAnswer: { fail: { status: 409, body: { reason: "pending", error: interrupted } } },
+    retryAnswer: { status: connectedStatus, pushed: { files: 1 } },
+    pushAnswer: { status: connectedStatus, pushed: "pushed" },
+  }, { desktop: true });
+  await flush();
+  await press("Get repository changes");
+  check(text().includes(interrupted) && button("Retry interrupted transfer"), "an interrupted send offers a retry: " + text());
+  await press("Retry interrupted transfer");
+  check(calls("retryConnection").length === 1 && calls("pullConnection").length === 1, "the retry runs the send alone: " + JSON.stringify(window.scene.calls));
+  check(text().includes("The interrupted send finished: 1 file reached the project.") && !button("Retry interrupted transfer"), "and says it finished: " + text());
+  await press("Send project changes");
+  check(calls("flush").length === 2 && calls("pushConnection").length === 1 && text().includes("Sent to repository branch main."), "each transfer settles the editor first; a push, then sends and says so: " + text());
 
   await press("Disconnect");
   check(calls("disconnectConnection").length === 1 && headings() === "Repository|Connect a repository", "Disconnect forgets the copy and shows the connect form: " + headings());
@@ -843,21 +901,21 @@ window.gitPanelCheck = async () => {
   await mountWeb({ connection: merging }, { desktop: true });
   await flush();
   check(text().includes("These files changed in both the project and the repository. Choose which version to keep."), "a merge says what to choose: " + text());
-  check(button("Pull")?.disabled && button("Push")?.disabled, "while merging, Pull and Push wait: " + text());
+  check(button("Get repository changes")?.disabled && button("Send project changes")?.disabled, "while merging, both transfers wait: " + text());
   await press("Keep project's");
   check(calls("resolveConnection").length === 1 && calls("resolveConnection")[0][1] === "intro.tex" && calls("resolveConnection")[0][2] === "project", "Keep project's keeps the project's file: " + JSON.stringify(calls("resolveConnection")));
   check(!text().includes("The merge is done."), "the merge is not done while a file is left");
   await press("Take repository's");
   check(calls("resolveConnection").length === 2 && calls("resolveConnection")[1][1] === "chapters/outline.tex" && calls("resolveConnection")[1][2] === "repository", "Take repository's takes the repository's file: " + JSON.stringify(calls("resolveConnection")));
-  check(text().includes("The merge is done. Pull or Push again."), "after the last file the merge is done: " + text());
+  check(text().includes("The merge is done. Get repository changes or send project changes again."), "after the last file the merge is done: " + text());
 
   // Not signed in: the panel asks for the sign-in, which approves the code here.
   await mountWeb({ connection: { connected: true, signed_in: false, url: "https://github.com/you/paper.git", branch: "main", merging: null } }, { desktop: true });
   await flush();
-  check(text().includes("Sign in so the desktop app can reach this project.") && !button("Pull"), "a project not signed in asks for the sign-in: " + text());
+  check(text().includes("Sign in so the desktop app can reach this project.") && !button("Get repository changes"), "a project not signed in asks for the sign-in: " + text());
   await press("Sign in");
   check(calls("loginConnection").length === 1 && calls("approve")[0][1] === "ABCD-EFGH", "Sign in gets a code and approves it here: " + JSON.stringify(window.scene.calls));
-  check(button("Pull") && !text().includes("Sign in so the desktop app can reach this project."), "and the repository is shown once signed in: " + text());
+  check(button("Get repository changes") && !text().includes("Sign in so the desktop app can reach this project."), "and the repository is shown once signed in: " + text());
 
   check(!/[\\u2013\\u2014]/.test(document.getElementById("panel").innerText), "no dashes in the panel text");
   return true;

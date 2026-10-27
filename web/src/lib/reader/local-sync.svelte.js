@@ -46,7 +46,14 @@ const isPending = (/** @type {any} */ error) => error?.status === 400 && error?.
  * stopped it.
  * @typedef {{ repository?: false, written: number, trashed: number, skipped: string[], trimmed: boolean } | { repository: true, versions: number, merge: "fast-forward" | "merged" | "already" | "skipped" | "conflicts" | "dirty", paths: string[], trimmed: boolean }} PullResult */
 
-/** @typedef {{ loaded: boolean, status: any, busy: string, error: string, waiting: { userCode: string, url: string } | null, pull: PullResult | null, conflicts: string[], refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string } | null, pushed: { nothing: true } | { files: number } | null }} SyncState */
+/** What linking would meet, from the desktop app's preview: the paths only in
+ * the project, only in the folder, in both with different contents, in both
+ * with equal contents, the ones that cannot be transferred with the reason
+ * for each, and the ones this folder's rules leave out. `url` is the project
+ * address that was previewed, which Link then links.
+ * @typedef {{ url: string, project_only: string[], local_only: string[], different: string[], equal: string[], blocked: [string, string][], excluded: string[] }} LinkPreview */
+
+/** @typedef {{ loaded: boolean, status: any, busy: string, error: string, waiting: { userCode: string, url: string } | null, pull: PullResult | null, conflicts: string[], refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string } | null, pushed: { nothing: true } | { files: number } | null, preview: LinkPreview | null }} SyncState */
 
 /** `signedIn` is asked each time Sign in is pressed: whether this page has a
  * session on the server, so the code can be approved here. `open` shows a page
@@ -55,7 +62,7 @@ const isPending = (/** @type {any} */ error) => error?.status === 400 && error?.
  * @param {{ id: string, approve: (userCode: string) => Promise<void>, signedIn?: () => boolean | Promise<boolean>, open?: (url: string) => void, origin?: string, api?: typeof routes, flush?: () => Promise<boolean>, now?: () => Date, wait?: (ms: number) => Promise<void> }} options */
 export function createLocalSync({ id, approve, signedIn = () => true, open = realOpen, origin = globalThis.location?.origin ?? "", api = routes, flush = async () => true, now = () => new Date(), wait = realWait }) {
   /** @type {SyncState} */
-  let current = $state.raw({ loaded: false, status: null, busy: "", error: "", waiting: null, pull: null, conflicts: [], refusal: null, pushed: null });
+  let current = $state.raw({ loaded: false, status: null, busy: "", error: "", waiting: null, pull: null, conflicts: [], refusal: null, pushed: null, preview: null });
   let generation = 0;
   let closed = false;
   // The sign-in that is waiting for an approval in another tab, if any.
@@ -110,7 +117,27 @@ export function createLocalSync({ id, approve, signedIn = () => true, open = rea
     return false;
   }
 
-  const forgetResults = () => ({ pull: null, conflicts: [], refusal: null, pushed: null });
+  const forgetResults = () => ({ pull: null, conflicts: [], refusal: null, pushed: null, preview: null });
+
+  // The last pull or push that was asked for, so confirming the branch of a
+  // repository repeats it with the branch.
+  /** @type {{ kind: "pull", choices: { mine?: string[], theirs?: string[] } } | { kind: "push", message: string } | null} */
+  let last = null;
+
+  /// A pull or push that the branch or an interrupted send stops. The desktop
+  /// app's words name the git command to run, so they are shown as they are.
+  /// A repository with no branch chosen yet is answered by the confirmation
+  /// instead, which names the branch it is on. Answers whether it was one of
+  /// those.
+  async function stopped(/** @type {any} */ error) {
+    const reason = error?.body?.reason;
+    if (error?.status !== 409 || (reason !== "branch" && reason !== "pending")) return false;
+    await refresh();
+    const status = current.status;
+    const asking = reason === "branch" && status?.git && !status.branch && status.checked_out;
+    set({ error: asking ? "" : String(error.body.error || error.message) });
+    return true;
+  }
 
   /// Asks the desktop app to finish the sign-in. It refuses while the
   /// approval has not reached it yet, so that refusal is tried again a few
@@ -189,10 +216,39 @@ export function createLocalSync({ id, approve, signedIn = () => true, open = rea
     approval.wake();
   };
 
-  const link = (/** @type {string} */ url) => run("link", async () => {
-    await api.syncLink(id, url.trim());
+  /// Shows what linking would meet in the folder, from the project as it
+  /// stands. Nothing is linked, bound or written until Link is confirmed. The
+  /// folder is settled first, so the preview reads what the editor holds.
+  const previewLink = (/** @type {string} */ url) => run("preview", async () => {
+    if (!(await saved())) return;
+    const address = url.trim();
+    const found = await api.syncPreview(id, address);
+    const paths = (/** @type {unknown} */ value) => (Array.isArray(value) ? value.map(String) : []);
+    set({
+      preview: {
+        url: address,
+        project_only: paths(found?.project_only),
+        local_only: paths(found?.local_only),
+        different: paths(found?.different),
+        equal: paths(found?.equal),
+        blocked: Array.isArray(found?.blocked) ? found.blocked.map((/** @type {any} */ pair) => /** @type {[string, string]} */ ([String(pair?.[0]), String(pair?.[1])])) : [],
+        excluded: paths(found?.excluded),
+      },
+    });
+  });
+
+  const cancelPreview = () => set({ preview: null });
+
+  /// Links the folder to the previewed project, then takes the project in as
+  /// the first pull. A file that differs on both sides is settled by the
+  /// ordinary conflict choice, and a repository asks for its branch.
+  const confirmLink = () => run("link", async () => {
+    const shown = current.preview;
+    if (!shown) return;
+    await api.syncLink(id, shown.url);
     set(forgetResults());
     await refresh();
+    await pullWork({});
   });
 
   /// Makes a web project from the folder, so the folder is settled first and
@@ -228,11 +284,21 @@ export function createLocalSync({ id, approve, signedIn = () => true, open = rea
   /// Takes in the web project's changes. `choices` settles files that changed
   /// on both sides, and its counts are added to the pull they belong to. In a
   /// git repository there is nothing to settle one file at a time: the
-  /// versions become commits and git merges them.
-  const pull = (/** @type {{ mine?: string[], theirs?: string[] }} */ choices = {}) => run("pull", async () => {
+  /// versions become commits and git merges them. `branch` in `choices`
+  /// confirms the branch of a repository that has none chosen.
+  async function pullWork(/** @type {{ mine?: string[], theirs?: string[], branch?: string }} */ choices) {
     if (!(await saved())) return;
+    const settled = { ...choices };
+    delete settled.branch;
+    last = { kind: "pull", choices: settled };
     const settling = Boolean(choices.mine?.length || choices.theirs?.length);
-    const result = await api.syncPull(id, choices);
+    let result;
+    try {
+      result = await api.syncPull(id, choices);
+    } catch (error) {
+      if (await stopped(error)) return;
+      throw error;
+    }
     if (result.repository === true) {
       set({ pull: repositoryPull(result), conflicts: [], refusal: null, pushed: null });
       await refresh();
@@ -253,22 +319,28 @@ export function createLocalSync({ id, approve, signedIn = () => true, open = rea
       pushed: null,
     });
     await refresh();
-  });
+  }
+
+  const pull = (/** @type {{ mine?: string[], theirs?: string[] }} */ choices = {}) => run("pull", () => pullWork(choices));
 
   const keepMine = (/** @type {string} */ path) => pull({ mine: [path] });
   const takeTheirs = (/** @type {string} */ path) => pull({ theirs: [path] });
 
   /// Sends the folder's changes with a short message. A refusal is not a
   /// failure: it says which files changed on the web, or which suggestion is
-  /// waiting, and the person settles that and tries again.
-  const push = (/** @type {string} */ message) => run("push", async () => {
+  /// waiting, and the person settles that and tries again. `branch` confirms
+  /// the branch of a repository that has none chosen.
+  async function pushWork(/** @type {string} */ message, /** @type {string} */ branch = "") {
     set({ refusal: null, pushed: null });
     if (!(await saved())) return;
+    const named = message.trim() || defaultMessage();
+    last = { kind: "push", message: named };
     let result;
     try {
-      result = await api.syncPush(id, message.trim() || defaultMessage());
+      result = branch ? await api.syncPush(id, named, branch) : await api.syncPush(id, named);
     } catch (error) {
       const body = error?.body;
+      if (await stopped(error)) return;
       if (error?.status === 409 && body?.reason === "changed") {
         set({ ...forgetResults(), refusal: { reason: "changed", paths: Array.isArray(body.paths) ? body.paths.map(String) : [] } });
         return;
@@ -281,7 +353,20 @@ export function createLocalSync({ id, approve, signedIn = () => true, open = rea
     }
     set({ ...forgetResults(), pushed: result?.nothing ? { nothing: true } : { files: count(result?.files) } });
     await refresh();
-  });
+  }
+
+  const push = (/** @type {string} */ message) => run("push", () => pushWork(message));
+
+  /// Chooses `branch` for sync in a repository and repeats the pull or push
+  /// that was stopped for want of one. With none asked for yet, it pulls.
+  const confirmBranch = (/** @type {string} */ branch) => {
+    if (last?.kind === "push") {
+      const { message } = last;
+      return run("push", () => pushWork(message, branch));
+    }
+    const choices = last?.kind === "pull" ? last.choices : {};
+    return run("pull", () => pullWork({ ...choices, branch }));
+  };
 
   function dispose() {
     closed = true;
@@ -294,7 +379,10 @@ export function createLocalSync({ id, approve, signedIn = () => true, open = rea
     refresh,
     login,
     cancelLogin,
-    link,
+    previewLink,
+    cancelPreview,
+    confirmLink,
+    confirmBranch,
     publish,
     unlink,
     pull,

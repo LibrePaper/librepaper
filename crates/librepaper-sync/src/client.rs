@@ -56,6 +56,18 @@ impl Label {
     }
 }
 
+/// One page of a project's version list.
+#[derive(Debug)]
+pub(crate) struct LabelPage {
+    /// Newest first.
+    pub labels: Vec<Label>,
+    /// Where the next page starts.
+    pub next: Option<i64>,
+    /// The identity of the project's accepted state when the page was read.
+    /// Older servers send none.
+    pub head: Option<String>,
+}
+
 /// The files of a project at one moment, with pending suggestions undone.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Snapshot {
@@ -126,6 +138,14 @@ impl Client {
         Client { site, credentials }
     }
 
+    /// A fingerprint of the sign-in that is safe to store: it names the
+    /// credential without revealing it.
+    pub(crate) fn actor(&self) -> String {
+        let secret = format!("{}\n{}", self.credentials.token, self.credentials.key);
+        let digest = sha256_hex(secret.as_bytes());
+        format!("sha256:{digest}")
+    }
+
     pub(crate) fn site(&self) -> &Url {
         &self.site
     }
@@ -192,15 +212,16 @@ impl Client {
         })
     }
 
-    /// One page of a project's versions, newest first, and where the next page
-    /// starts. `named` leaves out the labels nobody named.
+    /// One page of a project's versions, newest first, where the next page
+    /// starts, and the project's head identity. `named` leaves out the labels
+    /// nobody named.
     pub(crate) async fn labels(
         &self,
         slug: &str,
         named: bool,
         limit: u32,
         after: Option<i64>,
-    ) -> Result<(Vec<Label>, Option<i64>), Error> {
+    ) -> Result<LabelPage, Error> {
         let mut path = format!("/api/documents/{slug}/history?limit={limit}");
         if named {
             path.push_str("&named=1");
@@ -214,7 +235,11 @@ impl Client {
         )
         .map_err(|error| Error::Invalid(format!("the version list is unreadable: {error}")))?;
         let next = value.get("next_cursor").and_then(Value::as_i64);
-        Ok((labels, next))
+        let head = value
+            .get("head")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        Ok(LabelPage { labels, next, head })
     }
 
     /// The files of one version.
