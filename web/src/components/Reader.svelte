@@ -1570,6 +1570,9 @@
   // folder sync does and rewrites no file it did not change. A web project has
   // no folder and passes none.
   const renderEncode = LOCAL ? (/** @type {string} */ path, /** @type {string} */ text) => localProject.encode(path, text) : undefined;
+  // The digest the folder holds for a path, so a render in the folder is not
+  // sent a file the folder already has.
+  const renderOnDisk = LOCAL ? (/** @type {string} */ path) => localProject.onDisk(path) : undefined;
 
   // A local project's folder mirrors the project. Any change to the files
   // pokes the scheduler, which writes the folder once the person pauses. A
@@ -1582,15 +1585,20 @@
       // Files deleted on disk while they held unsaved edits are not sent, so
       // the folder does not bring them back before the person decides.
       const tree = localProject.withoutHeld(captured);
-      if (Object.keys(tree.digests || {}).length) {
-        const { held, missing } = await gatherFigures(tree.digests);
-        if (missing.length) throw new Error(`could not fetch ${missing.join(", ")}`);
-        tree.assets = held.assets;
-      }
+      // The figures are not gathered: the sync asks for the bytes of the few
+      // that must go to the folder.
+      const assets = {
+        size: (/** @type {string} */ sha) => localFigures.size(sha),
+        bytes: async (/** @type {Record<string, string>} */ digests) => {
+          const { held, missing } = await gatherFigures(digests);
+          if (missing.length) throw new Error(`could not fetch ${missing.join(", ")}`);
+          return held.assets;
+        },
+      };
       // The first save lists what this page took in, which may be less than
       // the folder holds. Saying so keeps the desktop app from trashing a file
       // this page never had.
-      const result = await localQuarto.syncFolder({ tree, bindingId: LOCAL_ID, encode: localProject.encode, opening });
+      const result = await localQuarto.syncFolder({ tree, bindingId: LOCAL_ID, encode: localProject.encode, opening, onDisk: localProject.onDisk, assets });
       if (result) localProject?.wrote(tree);
       for (const path of result?.kept_unreadable || []) {
         say(`${String(path).split("/").pop()} could not be read, so it was left in the folder.`, { kind: "note", id: `reader:folder-unreadable:${path}` });
@@ -2176,6 +2184,7 @@
     slug: SLUG,
     bindingId: RENDER_BINDING,
     encode: renderEncode,
+    onDisk: renderOnDisk,
     coordinator: renderCoordinator,
     status: renderStatus,
     framePreview: {
@@ -2826,6 +2835,7 @@
         project: SLUG,
         bindingId: RENDER_BINDING,
         encode: renderEncode,
+        onDisk: renderOnDisk,
         preview,
         previewCurrent: Boolean(renderedIdentity) && renderedIdentity === await renderers.snapshotDigest(tree),
         render: renderers.render,

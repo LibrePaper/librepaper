@@ -6,11 +6,18 @@ import { send } from "./client.js";
 const segment = (value) => encodeURIComponent(String(value));
 const filePath = (path) => String(path).split("/").map(segment).join("/");
 
-/** The project's files and what was left out of the listing.
- * @param {string} id
+/** The project's files and what was left out of the listing. `extensions` are
+ * the file extensions the project's rules name; the desktop app leaves every
+ * other file out of the listing. The desktop app matches the part of a name
+ * after its last dot, so a rule that is not a plain `.ext`, such as `.tar.gz`
+ * or a whole name, sends no filter at all and every file is listed.
+ * @param {string} id @param {string[]} [extensions]
  * @returns {Promise<{ cursor: string | number, files: Array<{ path: string, size: number, sha256: string, mtime: number }>, skipped: Array<{ path: string, reason: string }> }>} */
-export async function projectTree(id) {
-  const response = await send("GET", `projects/${segment(id)}/tree`);
+export async function projectTree(id, extensions = []) {
+  const plain = extensions.every((one) => /^\.[A-Za-z0-9_+-]+$/.test(String(one)));
+  const wanted = plain ? [...new Set(extensions.map((one) => String(one).slice(1).toLowerCase()))] : [];
+  const query = wanted.length ? `?extensions=${wanted.map(segment).join(",")}` : "";
+  const response = await send("GET", `projects/${segment(id)}/tree${query}`);
   return response.json();
 }
 
