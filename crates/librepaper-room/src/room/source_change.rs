@@ -24,6 +24,7 @@ use crate::room::Room;
 use librepaper_base::paths::{self, Kind, Rules};
 use librepaper_base::text::LineEnding;
 use librepaper_document::document::anchors::{self, OperationFile};
+use librepaper_document::document::overlap::{check_overlaps, AGENT_PATCH};
 use librepaper_document::document::session;
 use librepaper_document::document::track;
 use librepaper_engine::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
@@ -501,24 +502,10 @@ fn validate_path(path: &str) -> Result<(), AgentError> {
 }
 
 fn reject_overlaps(ranges: &mut [(&str, usize, usize)]) -> Result<(), AgentError> {
-    ranges
-        .sort_unstable_by(|left, right| (left.0, left.1, left.2).cmp(&(right.0, right.1, right.2)));
-    for pair in ranges.windows(2) {
-        let (path_a, start_a, end_a) = pair[0];
-        let (path_b, start_b, end_b) = pair[1];
-        if path_a != path_b {
-            continue;
-        }
-        let overlap = if start_a == end_a && start_b == end_b {
-            start_a == start_b
-        } else if start_a == end_a {
-            start_a > start_b && start_a < end_b
-        } else if start_b == end_b {
-            start_b > start_a && start_b < end_a
-        } else {
-            start_a < end_b && start_b < end_a
-        };
-        if overlap {
+    ranges.sort_by(|left, right| left.0.cmp(right.0));
+    for group in ranges.chunk_by(|left, right| left.0 == right.0) {
+        let spans: Vec<(usize, usize)> = group.iter().map(|&(_, start, end)| (start, end)).collect();
+        if check_overlaps(&spans, AGENT_PATCH).is_err() {
             return Err(AgentError::Conflict("patch ranges overlap".into()));
         }
     }
@@ -1063,6 +1050,53 @@ impl Room {
 
 #[cfg(test)]
 mod tests {
+    fn overlaps(mut ranges: Vec<(&str, usize, usize)>) -> bool {
+        reject_overlaps(&mut ranges).is_err()
+    }
+
+    #[test]
+    fn overlap_touching_ranges_are_allowed() {
+        assert!(!overlaps(vec![("a", 0, 2), ("a", 2, 4)]));
+    }
+
+    #[test]
+    fn overlap_insert_before_a_range_that_starts_there_is_allowed() {
+        assert!(!overlaps(vec![("a", 2, 2), ("a", 2, 4)]));
+    }
+
+    #[test]
+    fn overlap_insert_at_the_end_of_a_range_is_allowed() {
+        assert!(!overlaps(vec![("a", 0, 2), ("a", 2, 2)]));
+    }
+
+    #[test]
+    fn overlap_coincident_inserts_are_refused() {
+        assert!(overlaps(vec![("a", 2, 2), ("a", 2, 2)]));
+    }
+
+    #[test]
+    fn overlap_intersecting_ranges_are_refused() {
+        assert!(overlaps(vec![("a", 0, 3), ("a", 2, 4)]));
+    }
+
+    #[test]
+    fn overlap_insert_strictly_inside_a_range_is_refused() {
+        assert!(overlaps(vec![("a", 0, 4), ("a", 2, 2)]));
+        assert!(overlaps(vec![("a", 2, 2), ("a", 0, 4)]));
+    }
+
+    #[test]
+    fn overlap_unsorted_input_is_sorted_first() {
+        assert!(!overlaps(vec![("a", 2, 4), ("a", 0, 2)]));
+        assert!(overlaps(vec![("a", 2, 4), ("a", 0, 3)]));
+    }
+
+    #[test]
+    fn overlap_is_checked_per_path() {
+        assert!(!overlaps(vec![("a", 0, 3), ("b", 2, 4)]));
+        assert!(!overlaps(vec![("a", 2, 2), ("b", 2, 2)]));
+    }
+
     use super::*;
     fn tree(text: &str) -> SourceTree<'_> {
         let files = [(

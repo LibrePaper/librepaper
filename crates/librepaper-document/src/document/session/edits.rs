@@ -8,6 +8,8 @@
 use librepaper_base::text::LineEnding;
 use loro::{LoroDoc, LoroMap, LoroText};
 
+use crate::document::overlap::{check_overlaps, APPLY_SORTED};
+
 use super::shape::{mint_id, ASSETS, FILES, META, PATHS};
 
 /// A text edit: delete `delete` UTF-16 code units at position `at`,
@@ -80,13 +82,14 @@ pub fn replace_text(doc: &LoroDoc, wanted: &str, path: &str) {
 /// the text in a shape nothing asked for.
 pub(crate) fn apply_text_edits(text: &LoroText, edits: &[Edit]) -> bool {
     let len = text.len_utf16();
-    let mut end_of_previous = 0;
-    for edit in edits {
-        let end = edit.at.saturating_add(edit.delete);
-        if end > len || edit.at < end_of_previous {
-            return false;
-        }
-        end_of_previous = end;
+    let ranges: Vec<(usize, usize)> = edits
+        .iter()
+        .map(|edit| (edit.at, edit.at.saturating_add(edit.delete)))
+        .collect();
+    if ranges.iter().any(|&(_, end)| end > len)
+        || check_overlaps(&ranges, APPLY_SORTED).is_err()
+    {
+        return false;
     }
     for edit in edits.iter().rev() {
         if edit.delete > 0 {
@@ -205,4 +208,67 @@ pub fn remove_asset(doc: &LoroDoc, path: &str) -> bool {
 pub fn put_asset(doc: &LoroDoc, path: &str, sha: &str) {
     let (_, _, assets, _) = maps(doc);
     assets.insert(path, sha).ok();
+}
+
+#[cfg(test)]
+mod overlap_tests {
+    use super::*;
+
+    fn edit(at: usize, delete: usize, insert: &str) -> Edit {
+        Edit {
+            at,
+            delete,
+            insert: insert.into(),
+        }
+    }
+
+    /// Applies `edits` to "abcdef" and returns the result, or None when refused.
+    fn run(edits: &[Edit]) -> Option<String> {
+        let doc = LoroDoc::new();
+        let text = doc.get_text("t");
+        text.insert_utf16(0, "abcdef").unwrap();
+        apply_text_edits(&text, edits).then(|| text.to_string())
+    }
+
+    #[test]
+    fn touching_ranges_are_allowed() {
+        assert_eq!(
+            run(&[edit(0, 2, "X"), edit(2, 2, "Y")]),
+            Some("XYef".into())
+        );
+    }
+
+    #[test]
+    fn an_insert_before_a_range_that_starts_there_is_allowed() {
+        assert_eq!(
+            run(&[edit(2, 0, "X"), edit(2, 2, "Y")]),
+            Some("abXYef".into())
+        );
+    }
+
+    #[test]
+    fn an_insert_at_the_end_of_a_range_is_allowed() {
+        assert_eq!(
+            run(&[edit(0, 2, "X"), edit(2, 0, "Y")]),
+            Some("XYcdef".into())
+        );
+    }
+
+    #[test]
+    fn two_inserts_at_one_position_apply_in_order() {
+        assert_eq!(
+            run(&[edit(2, 0, "X"), edit(2, 0, "Y")]),
+            Some("abXYcdef".into())
+        );
+    }
+
+    #[test]
+    fn intersecting_ranges_are_refused() {
+        assert_eq!(run(&[edit(0, 3, "X"), edit(2, 2, "Y")]), None);
+    }
+
+    #[test]
+    fn unsorted_input_is_refused() {
+        assert_eq!(run(&[edit(2, 2, "Y"), edit(0, 2, "X")]), None);
+    }
 }
