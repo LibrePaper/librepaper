@@ -1100,7 +1100,10 @@ fn legacy_records(doc: &LoroDoc, file_id: &str) -> BTreeMap<String, LegacyRecord
             LegacyRecord {
                 end: m.get("end").and_then(plain_bytes),
                 who: m.get("who").and_then(Roots::string_of).unwrap_or_default(),
-                author: m.get("author").and_then(Roots::string_of).unwrap_or_default(),
+                author: m
+                    .get("author")
+                    .and_then(Roots::string_of)
+                    .unwrap_or_default(),
                 run: m.get("run").and_then(Roots::string_of),
                 at: m.get("at").and_then(plain_num).map_or(0, |v| v as i64),
                 deleted,
@@ -1325,7 +1328,6 @@ fn materialize(doc: &LoroDoc, file_id: &str, id: &str) {
 
 /// Converts the legacy record `id`, when it is one, before a decision reads it.
 fn convert_plain(doc: &LoroDoc, id: &str) {
-    let root = Roots::new(doc).changes();
     if let Some(m) = Roots::new(doc).plain_record(id) {
         if let Some(file) = m.get("file").and_then(Roots::string_of) {
             convert_legacy(doc, &file, id);
@@ -1752,7 +1754,9 @@ fn apply_planned(
     now_ms: i64,
     untracked: bool,
 ) -> Result<Option<Plan>, String> {
-    let text = Roots::new(doc).text_by_id(file_id).ok_or_else(|| "the file does not exist".to_string())?;
+    let text = Roots::new(doc)
+        .text_by_id(file_id)
+        .ok_or_else(|| "the file does not exist".to_string())?;
     let before = text.to_string();
     // Resolved before the text moves: the cursors are read where they stand.
     let state = resolve_file(doc, file_id).state;
@@ -3825,7 +3829,10 @@ mod tests {
         assert_eq!(prune(&doc), 0);
         doc.commit();
         let root = doc.get_map(CHANGES);
-        assert!(Roots::record_in(&root, "frag").unwrap().get("emptied").is_none());
+        assert!(Roots::record_in(&root, "frag")
+            .unwrap()
+            .get("emptied")
+            .is_none());
         assert!(reject(&doc, "frag"));
         doc.commit();
         assert_eq!(body(&doc, &id), "aXbc");
@@ -4035,7 +4042,8 @@ mod tests {
         // same character of "ae".
         let build = || {
             let (doc, id) = setup("ae");
-            let anchor = Roots::new(&doc).text_by_id(&id)
+            let anchor = Roots::new(&doc)
+                .text_by_id(&id)
                 .unwrap()
                 .get_cursor(1, Side::Left)
                 .unwrap()
@@ -4124,7 +4132,11 @@ mod tests {
         let (doc, id) = setup("abcdef");
         apply_tracked_edits(&doc, &id, &[edit(2, 1, "")], &who_of("p"), None, 1).unwrap();
         doc.commit();
-        Roots::new(&doc).text_by_id(&id).unwrap().delete(2, 1).unwrap();
+        Roots::new(&doc)
+            .text_by_id(&id)
+            .unwrap()
+            .delete(2, 1)
+            .unwrap();
         doc.commit();
         let before = resolve_file(&doc, &id).state.gaps;
         assert!(before[0].stale);
@@ -4140,7 +4152,10 @@ mod tests {
         let after = resolve_file(&doc, &id).state.gaps;
         assert!(!after[0].stale);
         assert_eq!(after[0].at, 2);
-        assert!(Roots::record_in(&root, &fid).unwrap().get("stale").is_none());
+        assert!(Roots::record_in(&root, &fid)
+            .unwrap()
+            .get("stale")
+            .is_none());
     }
 
     #[derive(Deserialize)]

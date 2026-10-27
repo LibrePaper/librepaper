@@ -140,7 +140,10 @@ mod tests {
     fn doc_with(files: &[(&str, &str, &str)]) -> LoroDoc {
         let doc = LoroDoc::new();
         for (id, path, body) in files {
-            let text = doc.get_map(FILES).insert_container(id, LoroText::new()).unwrap();
+            let text = doc
+                .get_map(FILES)
+                .insert_container(id, LoroText::new())
+                .unwrap();
             text.insert(0, body).unwrap();
             doc.get_map(PATHS).insert(id, *path).unwrap();
         }
@@ -228,7 +231,10 @@ mod tests {
         assert_eq!(Roots::string_at(&map, "missing"), None);
         map.delete("s").unwrap();
         assert_eq!(Roots::string_at(&map, "s"), None);
-        assert_eq!(Roots::string_of(&LoroValue::from("v")).as_deref(), Some("v"));
+        assert_eq!(
+            Roots::string_of(&LoroValue::from("v")).as_deref(),
+            Some("v")
+        );
         assert_eq!(Roots::string_of(&LoroValue::from(1)), None);
     }
 
