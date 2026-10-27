@@ -398,7 +398,7 @@ const textOf = (session, path) => session.textOf(session.idOf(path)).toString();
   const next = new Uint8Array([9, 9, 9]);
   folder.files.set("fig.png", next);
   folder.report({ path: "fig.png", kind: "changed" });
-  await tick();
+  await until(() => session.tree().digests["fig.png"] === digest(next));
   assert.equal(session.tree().digests["fig.png"], digest(next));
   const held = await figures.gather("local-abc", session.tree().digests);
   assert.deepEqual([...held.assets["fig.png"]], [...next]);

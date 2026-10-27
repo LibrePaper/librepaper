@@ -786,7 +786,7 @@ fn move_to_trash(path: &Path) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::testing::{commit_all, repository};
+    use crate::git::testing::{commit_all, identify, repository};
     use crate::walk::compare;
 
     fn label(sequence: i64) -> Label {
@@ -1358,16 +1358,6 @@ mod tests {
             0,
             "nothing was made outside the folder"
         );
-    }
-
-    /// Gives the test repository the identity a merge commit needs.
-    fn identify(git: &Git) {
-        git.run(&["config", "user.name", "Test"], None, &[])
-            .unwrap();
-        git.run(&["config", "user.email", "test@example.org"], None, &[])
-            .unwrap();
-        git.run(&["config", "commit.gpgsign", "false"], None, &[])
-            .unwrap();
     }
 
     fn write(git: &Git, path: &str, text: &str) {

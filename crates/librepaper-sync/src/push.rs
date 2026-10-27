@@ -464,7 +464,7 @@ pub fn commit_summary(dir: &Path, state: &State) -> Option<CommitSummary> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::testing::{commit_all, repository};
+    use crate::git::testing::{commit_all, identify, repository};
     use crate::link::Link;
     use crate::state::GitRefStore;
 
@@ -742,6 +742,7 @@ mod tests {
         let Some((dir, git)) = repository() else {
             return;
         };
+        identify(&git);
         write(dir.path(), "a.tex", b"base\n");
         commit_all(&git, "Base");
         git.run(&["branch", "theirs"], None, &[]).unwrap();

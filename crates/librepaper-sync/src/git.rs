@@ -263,6 +263,16 @@ pub(crate) mod testing {
         .unwrap();
         git.rev("HEAD").unwrap()
     }
+
+    /// Gives the test repository the identity a merge commit needs.
+    pub(crate) fn identify(git: &Git) {
+        git.run(&["config", "user.name", "Test"], None, &[])
+            .unwrap();
+        git.run(&["config", "user.email", "test@example.org"], None, &[])
+            .unwrap();
+        git.run(&["config", "commit.gpgsign", "false"], None, &[])
+            .unwrap();
+    }
 }
 
 #[cfg(test)]

@@ -1301,20 +1301,12 @@ mod tests {
     fn init_repository(fixture: &Fixture) -> Option<String> {
         let root = fixture.root();
         git(root, &["init", "-q", "-b", "main"])?;
+        // The pull's merge commits too, and a CI runner has no global identity.
+        git(root, &["config", "user.name", "Test"])?;
+        git(root, &["config", "user.email", "test@example.org"])?;
         std::fs::write(root.join("main.tex"), "main\n").unwrap();
         git(root, &["add", "-A"])?;
-        let committed = [
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.org",
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "-q",
-            "-m",
-            "First",
-        ];
+        let committed = ["-c", "commit.gpgsign=false", "commit", "-q", "-m", "First"];
         git(root, &committed)?;
         git(root, &["rev-parse", "HEAD"])
     }
