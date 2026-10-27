@@ -2,7 +2,7 @@
 //! Unix only, because the scripts are shell.
 
 use super::*;
-use crate::local::protocol::ManifestEntry;
+use crate::local::protocol::{JobState, ManifestEntry};
 
 const ORIGIN: &str = "https://paper.example";
 
@@ -86,7 +86,7 @@ async fn a_run_writes_the_files_runs_the_command_and_returns_the_result() {
         "{stem}.pdf",
     );
     let outcome = run_fixture(&fixture, false).await;
-    assert_eq!(outcome.status.status, "done", "{:?}", outcome.status.error);
+    assert_eq!(outcome.status.status, JobState::Done, "{:?}", outcome.status.error);
     assert_eq!(outcome.status.exit, 0);
     assert_eq!(
         outcome.files["artifact"],
@@ -131,7 +131,7 @@ async fn only_a_pdf_run_reads_synctex() {
         "{stem}.html",
     );
     let outcome = run_fixture(&fixture, false).await;
-    assert_eq!(outcome.status.status, "done", "{:?}", outcome.status.error);
+    assert_eq!(outcome.status.status, JobState::Done, "{:?}", outcome.status.error);
     assert!(!outcome.files.contains_key("synctex"));
 }
 
@@ -142,7 +142,7 @@ async fn exit_zero_with_no_result_file_fails_and_names_the_expected_path() {
     let fixture = fixture("typst", "pdf", "docs/paper.typ");
     script("typst.pdf", "true", "{stem}.pdf");
     let outcome = run_fixture(&fixture, false).await;
-    assert_eq!(outcome.status.status, "failed");
+    assert_eq!(outcome.status.status, JobState::Failed);
     let error = outcome.status.error.unwrap();
     assert!(error.contains("docs/paper.pdf"), "{error}");
     assert!(!outcome.files.contains_key("artifact"));
@@ -159,7 +159,7 @@ async fn a_failing_run_still_returns_the_result_it_wrote() {
         "{stem}.pdf",
     );
     let outcome = run_fixture(&fixture, false).await;
-    assert_eq!(outcome.status.status, "failed");
+    assert_eq!(outcome.status.status, JobState::Failed);
     assert_eq!(outcome.status.exit, 1);
     assert!(outcome.status.log_tail.contains("error: broken"));
     assert_eq!(
@@ -197,13 +197,13 @@ async fn a_successful_run_that_rewrites_nothing_still_returns_the_result() {
         "{stem}.pdf",
     );
     let first = run_fixture(&fixture, false).await;
-    assert_eq!(first.status.status, "done", "{:?}", first.status.error);
+    assert_eq!(first.status.status, JobState::Done, "{:?}", first.status.error);
     age(&fixture, &["main.pdf", "main.synctex.gz"]);
 
     // latexmk on unchanged inputs: exit 0, nothing written.
     script("latex.pdf", "true", "{stem}.pdf");
     let outcome = run_fixture(&fixture, false).await;
-    assert_eq!(outcome.status.status, "done", "{:?}", outcome.status.error);
+    assert_eq!(outcome.status.status, JobState::Done, "{:?}", outcome.status.error);
     assert_eq!(
         outcome.files["artifact"],
         b"\\documentclass{article}".to_vec()
@@ -218,7 +218,7 @@ async fn a_failing_run_does_not_return_a_result_an_earlier_run_left() {
     let fixture = fixture("typst", "pdf", "paper.typ");
     script("typst.pdf", "cat paper.typ > paper.pdf", "{stem}.pdf");
     let first = run_fixture(&fixture, false).await;
-    assert_eq!(first.status.status, "done", "{:?}", first.status.error);
+    assert_eq!(first.status.status, JobState::Done, "{:?}", first.status.error);
     age(&fixture, &["paper.pdf"]);
 
     script(
@@ -227,7 +227,7 @@ async fn a_failing_run_does_not_return_a_result_an_earlier_run_left() {
         "{stem}.pdf",
     );
     let outcome = run_fixture(&fixture, false).await;
-    assert_eq!(outcome.status.status, "failed");
+    assert_eq!(outcome.status.status, JobState::Failed);
     assert_eq!(outcome.status.exit, 1);
     assert!(!outcome.files.contains_key("artifact"));
     assert!(!outcome.files.contains_key("synctex"));
@@ -244,7 +244,7 @@ async fn a_failing_command_reports_its_status_and_its_log() {
         "{stem}.pdf",
     );
     let outcome = run_fixture(&fixture, false).await;
-    assert_eq!(outcome.status.status, "failed");
+    assert_eq!(outcome.status.status, JobState::Failed);
     assert_eq!(outcome.status.exit, 3);
     assert!(outcome.status.log_tail.contains("error: broken"));
     assert!(outcome.files.contains_key("log"));
@@ -264,7 +264,7 @@ async fn a_missing_program_fails_before_anything_is_written() {
     )
     .unwrap();
     let outcome = run_fixture(&fixture, false).await;
-    assert_eq!(outcome.status.status, "failed");
+    assert_eq!(outcome.status.status, JobState::Failed);
     assert!(outcome
         .status
         .error
@@ -285,7 +285,7 @@ async fn a_canceled_job_ends_canceled() {
     let fixture = fixture("typst", "pdf", "paper.typ");
     script("typst.pdf", "sleep 30", "{stem}.pdf");
     let outcome = run_fixture(&fixture, true).await;
-    assert_eq!(outcome.status.status, "canceled");
+    assert_eq!(outcome.status.status, JobState::Canceled);
 }
 
 #[test]
@@ -327,7 +327,7 @@ async fn real_quarto_renders_html_with_its_default_command() {
     let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let outcome =
         render_with_the_default_command("quarto", "html", "paper.qmd", "# Title\n\nBody.\n").await;
-    assert_eq!(outcome.status.status, "done", "{}", outcome.status.log_tail);
+    assert_eq!(outcome.status.status, JobState::Done, "{}", outcome.status.log_tail);
     assert!(String::from_utf8_lossy(&outcome.files["artifact"]).contains("Body."));
 }
 
@@ -338,7 +338,7 @@ async fn real_typst_renders_a_pdf_with_its_default_command() {
     let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let outcome =
         render_with_the_default_command("typst", "pdf", "docs/paper.typ", "= Title\n").await;
-    assert_eq!(outcome.status.status, "done", "{}", outcome.status.log_tail);
+    assert_eq!(outcome.status.status, JobState::Done, "{}", outcome.status.log_tail);
     assert!(outcome.files["artifact"].starts_with(b"%PDF-"));
 }
 
@@ -354,7 +354,7 @@ async fn real_latexmk_renders_a_pdf_and_synctex_with_its_default_command() {
         "\\documentclass{article}\\begin{document}Hello\\end{document}\n",
     )
     .await;
-    assert_eq!(outcome.status.status, "done", "{}", outcome.status.log_tail);
+    assert_eq!(outcome.status.status, JobState::Done, "{}", outcome.status.log_tail);
     assert!(outcome.files["artifact"].starts_with(b"%PDF-"));
     assert!(outcome.files.contains_key("synctex"));
 }

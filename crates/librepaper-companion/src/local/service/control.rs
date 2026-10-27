@@ -299,7 +299,7 @@ async fn cancel_job(inner: &Inner, id: &str) -> Reply {
     let _ = entry.cancel_tx.send(true);
     if entry.queued {
         entry.queued = false;
-        entry.status.status = "canceled".into();
+        entry.status.status = JobState::Canceled;
         entry.status.stage = "finished".into();
         entry.finished_at = Some(Instant::now());
         drop(jobs);

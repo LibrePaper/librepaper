@@ -321,20 +321,20 @@ pub(super) async fn run_pull(root: &Path) -> Result<Value, Failure> {
     if output.success() {
         let after = head_id(root).await?;
         let state = if after == before {
-            "up-to-date"
+            protocol::PullOutcome::UpToDate
         } else if before.is_none() || output.said().contains("Fast-forward") {
-            "fast-forward"
+            protocol::PullOutcome::FastForward
         } else {
-            "merged"
+            protocol::PullOutcome::Merged
         };
         return Ok(json!({"status": state, "conflicts": []}));
     }
     let conflicts = conflicted_paths(root).await?;
     if !conflicts.is_empty() {
-        return Ok(json!({"status": "conflicts", "conflicts": conflicts}));
+        return Ok(json!({"status": protocol::PullOutcome::Conflicts, "conflicts": conflicts}));
     }
     if named.is_some() && output.said().contains("couldn't find remote ref") {
-        return Ok(json!({"status": "up-to-date", "conflicts": []}));
+        return Ok(json!({"status": protocol::PullOutcome::UpToDate, "conflicts": []}));
     }
     Err(remote_failure(&output))
 }

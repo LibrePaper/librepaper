@@ -27,8 +27,8 @@ use tokio::sync::{mpsc, watch};
 use crate::local::bindings::BindingStore;
 use crate::local::native::{self, RunOutcome};
 use crate::local::protocol::{
-    self, Capabilities, JobOutcome, JobRequest, JobStatus, Provenance, RendererReport, Tool,
-    MAX_RESULT_BYTES,
+    self, Capabilities, JobOutcome, JobRequest, JobState, JobStatus, Provenance, RendererReport,
+    Tool, MAX_RESULT_BYTES,
 };
 
 pub mod discovery;
@@ -165,7 +165,7 @@ pub async fn run(
     }
 
     let _ = progress.send(JobStatus {
-        status: "running".into(),
+        status: JobState::Running,
         stage: "build".into(),
         snapshot: request.snapshot.clone(),
         generation: request.generation,
@@ -210,30 +210,30 @@ pub async fn run(
                     None,
                     bytes,
                 );
-                status.status = "done".into();
+                status.status = JobState::Done;
             }
             Ok(Some(_)) => {
-                status.status = "failed".into();
+                status.status = JobState::Failed;
                 status.error = Some(format!(
                     "the command exited with status 0 but {} is empty",
                     expanded.result
                 ));
             }
             Ok(None) => {
-                status.status = "failed".into();
+                status.status = JobState::Failed;
                 status.error = Some(format!(
                     "the command exited with status 0 but wrote no {}",
                     expanded.result
                 ));
             }
             Err(error) => {
-                status.status = "failed".into();
+                status.status = JobState::Failed;
                 status.error = Some(error);
             }
         },
         RunOutcome::Exited(code) => {
             status.exit = code;
-            status.status = "failed".into();
+            status.status = JobState::Failed;
             status.error = Some(format!("the command exited with status {code}"));
             // LaTeX in nonstop mode can exit nonzero and still write a usable
             // PDF, so a fresh result is shown beside the error. One left by an
@@ -253,13 +253,13 @@ pub async fn run(
                 );
             }
         }
-        RunOutcome::Canceled => status.status = "canceled".into(),
+        RunOutcome::Canceled => status.status = JobState::Canceled,
         RunOutcome::TimedOut => {
-            status.status = "failed".into();
+            status.status = JobState::Failed;
             status.error = Some("the render deadline was exceeded".into());
         }
         RunOutcome::SpawnFailed(error) => {
-            status.status = "failed".into();
+            status.status = JobState::Failed;
             status.error = Some(error);
         }
     }
@@ -283,7 +283,7 @@ fn provenance(request: &JobRequest) -> Provenance {
 fn failed(request: &JobRequest, error: &str) -> JobOutcome {
     JobOutcome {
         status: JobStatus {
-            status: "failed".into(),
+            status: JobState::Failed,
             stage: "finished".into(),
             error: Some(error.into()),
             snapshot: request.snapshot.clone(),
