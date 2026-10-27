@@ -145,9 +145,16 @@ impl PendingBudget {
         }
     }
 
-    /// Mandatory drains wait without holding a document lock. Register the
-    /// waiter before checking capacity to avoid missing a concurrent release.
+    /// Mandatory drains wait without holding a document lock. The first miss
+    /// counts as a refusal, so an operator sees that a drain had to wait; the
+    /// retries while it waits do not.
     pub async fn reserve_scratch(self: &Arc<Self>, bytes: u64) -> Result<Reservation, Pressure> {
+        if bytes > self.scratch_limit() {
+            return Err(Pressure);
+        }
+        if let Ok(reservation) = self.try_scratch(bytes) {
+            return Ok(reservation);
+        }
         match self.scratch.take(bytes, Wait::Forever).await {
             Ok(()) => Ok(Reservation {
                 budget: self.clone(),
