@@ -1716,6 +1716,11 @@ mod tests {
         out
     }
 
+    use librepaper_base::digest::Digest;
+    use librepaper_document::document::projection::{
+        Entry, HeadSnapshot, Projection, VersionSnapshot,
+    };
+
     type Tree = std::collections::BTreeMap<String, String>;
 
     #[derive(Default)]
@@ -1778,12 +1783,20 @@ mod tests {
     ) -> (StatusCode, axum::Json<Value>) {
         let mut data = data.lock().unwrap();
         let path = uri.path().to_owned();
-        let listing = |tree: &Tree| {
-            Value::Object(
-                tree.keys()
-                    .map(|path| (path.clone(), json!({"kind": "text"})))
-                    .collect(),
-            )
+        let projection = |tree: &Tree| Projection {
+            files: tree
+                .iter()
+                .map(|(path, text)| {
+                    let entry = Entry {
+                        kind: "text".into(),
+                        id: String::new(),
+                        digest: Digest::of(text.as_bytes()).to_hex(),
+                        bytes: text.len() as u64,
+                    };
+                    (path.clone(), entry)
+                })
+                .collect(),
+            diagnostics: Vec::new(),
         };
         let found = |body: Value| (StatusCode::OK, axum::Json(body));
         if method == Method::POST && path.ends_with("/source-change") {
@@ -1821,7 +1834,22 @@ mod tests {
                 .iter()
                 .find(|(sequence, _)| format!("sha-{sequence}") == sha);
             return match version {
-                Some((_, files)) => found(json!({"files": listing(files), "texts": files})),
+                Some((_, files)) => {
+                    let tree = projection(files);
+                    let version = VersionSnapshot {
+                        sha: sha.to_string(),
+                        tree_sha: tree.digest().to_hex(),
+                        storage_id: String::new(),
+                        at: String::new(),
+                        by: String::new(),
+                        label: None,
+                        reason: String::new(),
+                        source_format: String::new(),
+                        files: tree.files,
+                        texts: files.clone(),
+                    };
+                    found(serde_json::to_value(version).unwrap())
+                }
                 None => (
                     StatusCode::NOT_FOUND,
                     axum::Json(json!({"error": "no such version"})),
@@ -1829,9 +1857,13 @@ mod tests {
             };
         }
         if path.ends_with("/project") {
-            return found(
-                json!({"tree": {"files": listing(&data.current)}, "texts": data.current}),
-            );
+            let tree = projection(&data.current);
+            let head = HeadSnapshot {
+                project_digest: tree.digest().to_hex(),
+                tree,
+                texts: data.current.clone(),
+            };
+            return found(serde_json::to_value(head).unwrap());
         }
         (
             StatusCode::NOT_FOUND,
