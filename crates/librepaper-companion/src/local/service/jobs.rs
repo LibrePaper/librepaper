@@ -12,8 +12,6 @@
 
 use super::*;
 
-use crate::local::render::workspace::{self, MirrorError};
-
 pub(super) async fn handle_jobs_post(
     inner: &Arc<Inner>,
     headers: &HeaderMap,
@@ -25,17 +23,14 @@ pub(super) async fn handle_jobs_post(
     }
     let origin = origin.unwrap_or_default().to_string();
 
-    // The description carries the manifest of the whole project, and a folder
-    // project may list as many files as its save does, so it takes the bound
-    // of a folder save's manifest and not the fixed one for other JSON.
     let upload = match read_multipart_upload(
         request,
         "job",
         "bad job part",
         "job description is too large",
         "missing the job part",
-        projects::MAX_PROJECT_FILES,
-        projects::MAX_FOLDER_MANIFEST_BYTES,
+        MAX_FILES,
+        MAX_JSON_BYTES,
     )
     .await
     {
@@ -63,13 +58,13 @@ pub(super) async fn handle_jobs_post(
             &json!({"error": "job scope does not match the request origin"}),
         );
     }
-    if let Err(response) = validate_manifest_shape(&job.manifest, projects::MAX_PROJECT_FILES) {
+    if let Err(response) = validate_manifest_shape(&job.manifest, MAX_FILES) {
         return response;
     }
-    // Whether *this* caller holds the binding the job names. The workspace
-    // it points at is written to before the command runs. The entry file may
-    // be one the folder save has not written yet, so only its path is checked
-    // here; the render checks the file itself once the uploads are mirrored.
+    // Whether the job names the hosted binding. The workspace it points at is
+    // written to before the command runs. Only the entry file's path is
+    // checked here; the render checks the file itself once the uploads are
+    // written.
     if inner
         .bindings
         .validate_scoped_entrypoint(&job.binding_id, &origin, &project, &job.entrypoint)
@@ -80,7 +75,7 @@ pub(super) async fn handle_jobs_post(
             &json!({"error": "workspace binding is not granted for this origin and project"}),
         );
     }
-    if let Err(response) = validate_manifest(&job.manifest, &uploads, true) {
+    if let Err(response) = validate_manifest(&job.manifest, &uploads) {
         return response;
     }
     if !job
@@ -164,112 +159,6 @@ pub(super) async fn handle_jobs_post(
     write_json(202, &json!({"id": id, "status": "queued"}))
 }
 
-/// `PUT folder`: mirror the whole project into the project folder the binding
-/// names. The manifest lists every file; the uploads carry the bytes of some.
-pub(super) async fn handle_folder_put(
-    inner: &Arc<Inner>,
-    headers: &HeaderMap,
-    origin: Option<&str>,
-    request: Request<Body>,
-) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-    let origin = origin.unwrap_or_default().to_string();
-    let Some(project) = project_query(request.uri()) else {
-        return write_json(400, &json!({"error": "folder needs a valid project"}));
-    };
-    let Some(binding_id) = query_value(request.uri(), "binding") else {
-        return write_json(400, &json!({"error": "folder needs a binding"}));
-    };
-    if binding_id == crate::local::bindings::HOSTED_BINDING {
-        return write_json(400, &json!({"error": "only a project folder is mirrored"}));
-    }
-    // Only a project binding is stored, so any other id does not resolve.
-    let granted = inner
-        .bindings
-        .validate_scoped_root(&binding_id, &origin, &project);
-    let Ok(binding) = granted else {
-        return write_json(
-            403,
-            &json!({"error": "workspace binding is not granted for this origin and project"}),
-        );
-    };
-
-    // A folder project may hold more files than a render job carries, and the
-    // manifest of a save names every one of them.
-    let max_files = projects::MAX_PROJECT_FILES;
-    let upload = match read_multipart_upload(
-        request,
-        "manifest",
-        "bad manifest part",
-        "the manifest is too large",
-        "missing the manifest part",
-        max_files,
-        projects::MAX_FOLDER_MANIFEST_BYTES,
-    )
-    .await
-    {
-        Ok(upload) => upload,
-        Err(response) => return response,
-    };
-    #[derive(serde::Deserialize)]
-    struct FolderManifest {
-        manifest: Vec<ManifestEntry>,
-        /// Set on the first save after the page opened the folder, which
-        /// lists what the page took in and so cannot tell a file it never
-        /// held from one the person deleted.
-        #[serde(default)]
-        opening: bool,
-    }
-    let Ok(FolderManifest { manifest, opening }) = serde_json::from_str(&upload.metadata) else {
-        return write_json(400, &json!({"error": "bad manifest"}));
-    };
-    if let Err(response) = validate_manifest_shape(&manifest, max_files) {
-        return response;
-    }
-    if let Err(response) = validate_manifest(&manifest, &upload.files, false) {
-        return response;
-    }
-
-    let staging = match std::fs::create_dir_all(&inner.jobs_root)
-        .and_then(|()| tempfile::tempdir_in(&inner.jobs_root))
-    {
-        Ok(staging) => staging,
-        Err(_) => return write_json(500, &json!({"error": "could not create a workspace"})),
-    };
-    if let Err(error) = stage_uploads(staging.path(), &upload.files) {
-        return write_json(400, &json!({"error": error}));
-    }
-    let record = inner.bindings.written_record(&binding.id);
-    let root = binding.root.clone();
-    let staged = staging.path().to_path_buf();
-    let outcome = tokio::task::spawn_blocking(move || {
-        workspace::mirror_granted_folder(&staged, &root, &manifest, &record, opening)
-    })
-    .await;
-    drop(staging);
-    match outcome {
-        Ok(Ok(report)) => write_json(
-            200,
-            &json!({
-                "kept": report.kept.iter()
-                    .map(|kept| json!({"path": kept.path, "copy": kept.copy}))
-                    .collect::<Vec<_>>(),
-                "trashed": report.trashed,
-                "renamed": report.renamed.iter()
-                    .map(|renamed| json!({"from": renamed.from, "to": renamed.to}))
-                    .collect::<Vec<_>>(),
-                "kept_unreadable": report.kept_unreadable,
-                "released": report.released,
-            }),
-        ),
-        Ok(Err(MirrorError::Missing(missing))) => write_json(409, &json!({"missing": missing})),
-        Ok(Err(MirrorError::Failed(error))) => write_json(500, &json!({"error": error})),
-        Err(_) => write_json(500, &json!({"error": "the folder mirror stopped"})),
-    }
-}
-
 /// Every manifest entry has a bounded count, safe path, and total size.
 #[allow(clippy::result_large_err)]
 fn validate_manifest_shape(manifest: &[ManifestEntry], max_files: usize) -> Result<(), Reply> {
@@ -301,7 +190,6 @@ fn validate_manifest_shape(manifest: &[ManifestEntry], max_files: usize) -> Resu
 fn validate_manifest(
     manifest: &[ManifestEntry],
     uploads: &[(String, Vec<u8>)],
-    require_all: bool,
 ) -> Result<(), Reply> {
     let mut expected: HashMap<&str, &ManifestEntry> = HashMap::new();
     for entry in manifest {
@@ -347,7 +235,7 @@ fn validate_manifest(
             ));
         }
     }
-    if require_all && provided.len() != expected.len() {
+    if provided.len() != expected.len() {
         return Err(write_json(
             400,
             &json!({"error": "the manifest lists a file that was never uploaded"}),

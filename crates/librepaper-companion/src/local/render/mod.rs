@@ -98,29 +98,6 @@ pub async fn reports(refresh: bool) -> BTreeMap<String, RendererReport> {
 /// tried: compressed when the engine wrote it so, else plain.
 const SYNCTEX_EXTENSIONS: [&str; 2] = ["synctex.gz", "synctex"];
 
-/// The files a run of `request` is expected to leave in the workspace: the
-/// result path, which comes first, and, for a PDF, the SyncTeX files beside
-/// it. Empty when the job names no tool record. A folder project's change
-/// poller is told about these before the command starts, so it never reports
-/// them as outside changes.
-pub fn expected_outputs(request: &JobRequest) -> Vec<String> {
-    let Ok(key) = Key::parse_parts(&request.format, &request.output) else {
-        return Vec::new();
-    };
-    let Ok(expanded) = records::get(key).record.expand(&request.entrypoint) else {
-        return Vec::new();
-    };
-    let mut paths = vec![expanded.result];
-    if key.output == Output::Pdf {
-        paths.extend(
-            SYNCTEX_EXTENSIONS
-                .iter()
-                .map(|extension| format!("{}.{extension}", expanded.stem)),
-        );
-    }
-    paths
-}
-
 /// Runs one admitted job. `staged` holds the uploaded files, which are
 /// written into the workspace the binding names before the command starts.
 /// A job already running in that workspace has been canceled by admission,
@@ -150,8 +127,8 @@ pub async fn run(
         );
     };
     // The binding is checked again here rather than only at admission: the
-    // queue delay between the two is long enough for the folder to be moved,
-    // replaced or revoked, and what runs is what is on disk now. The entry
+    // queue delay between the two is long enough for the workspace to be
+    // moved or replaced, and what runs is what is on disk now. The entry
     // file itself need not be on disk yet; the uploads below put it there.
     let binding = match bindings.validate_scoped_entrypoint(
         &request.binding_id,
@@ -178,30 +155,11 @@ pub async fn run(
             )
         }
     };
-    // The editor is the source of truth for the files the manifest names. In
-    // a granted folder a file the project dropped is trashed and a renamed one
-    // is moved, but only files LibrePaper wrote; every other file is left
-    // alone, and a file changed outside LibrePaper since the last write is
-    // kept as `<name>.local`. The notes say what changed, and lead the log.
-    let mut notes: Vec<String> = Vec::new();
-    if BindingStore::is_hosted(&binding) {
-        if let Err(error) = workspace::sync_hosted_workspace(&staged, &root, &request.manifest) {
-            return failed(&request, &error);
-        }
-    } else {
-        match workspace::mirror_granted_folder(
-            &staged,
-            &root,
-            &request.manifest,
-            &bindings.written_record(&binding.id),
-            false,
-        ) {
-            Ok(report) => notes = report.notes(),
-            Err(error) => return failed(&request, &String::from(error)),
-        }
+    // The editor is the source of truth for the files the manifest names.
+    if let Err(error) = workspace::sync_hosted_workspace(&staged, &root, &request.manifest) {
+        return failed(&request, &error);
     }
-    // Admission let through an entry file the folder save may not have written
-    // yet, so the check that it exists comes after the uploads are in place.
+    // The check that the entry file exists comes after the uploads are in place.
     if let Err(error) = BindingStore::require_entrypoint_file(&root, &request.entrypoint) {
         return failed(&request, &error);
     }
@@ -230,16 +188,11 @@ pub async fn run(
     let started = SystemTime::now() - Duration::from_secs(1);
     let (outcome, output) = native::run_confined_logged(command, &mut cancel, deadline).await;
 
-    let mut log: Vec<u8> = notes
-        .iter()
-        .flat_map(|note| format!("{note}\n").into_bytes())
-        .collect();
-    log.extend_from_slice(&output);
     let mut status = JobStatus {
         stage: "finished".into(),
         snapshot: request.snapshot.clone(),
         generation: request.generation,
-        log_tail: String::from_utf8_lossy(&log).into_owned(),
+        log_tail: String::from_utf8_lossy(&output).into_owned(),
         provenance: provenance(&request),
         ..Default::default()
     };
@@ -310,7 +263,7 @@ pub async fn run(
             status.error = Some(error);
         }
     }
-    files.insert("log".into(), log);
+    files.insert("log".into(), output);
     status.outputs = files
         .iter()
         .map(|(name, bytes)| (name.clone(), protocol::OutputEntry::from_bytes(bytes)))

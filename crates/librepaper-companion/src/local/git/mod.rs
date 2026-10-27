@@ -1,6 +1,6 @@
-//! The person's own Git, run in the root of a folder project.
+//! The person's own Git, run in the root of a repository.
 //!
-//! The Git routes of the local service (`service/git.rs`) hand this module an
+//! The Git helpers of the local service (`service/git.rs`) hand this module an
 //! argument list and a directory. It finds Git, requires 2.38 or newer, makes
 //! the command non-interactive, bounds its time and its output, and kills the
 //! whole process tree when the time runs out. Everything else is the

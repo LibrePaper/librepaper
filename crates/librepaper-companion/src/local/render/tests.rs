@@ -23,7 +23,7 @@ fn fixture(format: &str, output: &str, entrypoint: &str) -> Fixture {
     std::fs::create_dir_all(staged_entry.parent().unwrap()).unwrap();
     std::fs::write(staged_entry, bytes).unwrap();
     records::init(state.path());
-    let bindings = BindingStore::new(state.path()).with_hosted_workspaces(hosted.path().into());
+    let bindings = BindingStore::new(hosted.path().into());
     let request = JobRequest {
         protocol: 3,
         project: "paper".into(),
@@ -133,25 +133,6 @@ async fn only_a_pdf_run_reads_synctex() {
     let outcome = run_fixture(&fixture, false).await;
     assert_eq!(outcome.status.status, "done", "{:?}", outcome.status.error);
     assert!(!outcome.files.contains_key("synctex"));
-}
-
-#[test]
-fn the_expected_outputs_are_the_result_and_for_a_pdf_its_synctex_files() {
-    let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let latex = fixture("latex", "pdf", "chapters/main.tex");
-    assert_eq!(
-        expected_outputs(&latex.request),
-        [
-            "chapters/main.pdf",
-            "chapters/main.synctex.gz",
-            "chapters/main.synctex",
-        ]
-    );
-    let quarto = fixture("quarto", "html", "paper.qmd");
-    assert_eq!(expected_outputs(&quarto.request), ["paper.html"]);
-    let mut unknown = fixture("typst", "pdf", "main.typ").request;
-    unknown.output = "docx".into();
-    assert!(expected_outputs(&unknown).is_empty());
 }
 
 #[tokio::test]
@@ -305,109 +286,6 @@ async fn a_canceled_job_ends_canceled() {
     script("typst.pdf", "sleep 30", "{stem}.pdf");
     let outcome = run_fixture(&fixture, true).await;
     assert_eq!(outcome.status.status, "canceled");
-}
-
-/// A fixture bound to a folder project instead of the hosted workspace. The
-/// folder starts empty, as a project does before the editor's first save.
-fn project_fixture(
-    format: &str,
-    output: &str,
-    entrypoint: &str,
-) -> (Fixture, tempfile::TempDir, PathBuf) {
-    let mut fixture = fixture(format, output, entrypoint);
-    let folder = tempfile::tempdir().unwrap();
-    let binding = fixture
-        .bindings
-        .open_project(ORIGIN, folder.path())
-        .unwrap();
-    fixture.request.binding_id = binding.id;
-    fixture.request.project = binding.project;
-    (fixture, folder, binding.root)
-}
-
-#[tokio::test]
-#[allow(clippy::await_holding_lock)]
-async fn a_project_render_writes_an_entry_file_the_folder_does_not_hold_yet() {
-    let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let (fixture, _folder, root) = project_fixture("typst", "pdf", "chapters/new.typ");
-    script(
-        "typst.pdf",
-        "cat chapters/new.typ > chapters/new.pdf",
-        "{stem}.pdf",
-    );
-    assert!(!root.join("chapters/new.typ").exists());
-    // Admission lets the path through before anything is written.
-    let request = &fixture.request;
-    let admitted = fixture.bindings.validate_scoped_entrypoint(
-        &request.binding_id,
-        ORIGIN,
-        &request.project,
-        &request.entrypoint,
-    );
-    assert!(admitted.is_ok());
-    let outcome = run_fixture(&fixture, false).await;
-    assert_eq!(outcome.status.status, "done", "{:?}", outcome.status.error);
-    assert_eq!(
-        outcome.files["artifact"],
-        b"\\documentclass{article}".to_vec()
-    );
-    assert!(root.join("chapters/new.typ").is_file());
-}
-
-#[tokio::test]
-#[allow(clippy::await_holding_lock)]
-async fn a_project_render_whose_entry_file_links_outside_the_folder_is_refused() {
-    let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let (fixture, _folder, root) = project_fixture("typst", "pdf", "paper.typ");
-    script("typst.pdf", "cat paper.typ > paper.pdf", "{stem}.pdf");
-    let outside = tempfile::tempdir().unwrap();
-    std::fs::write(outside.path().join("secret.typ"), b"secret").unwrap();
-    std::os::unix::fs::symlink(outside.path().join("secret.typ"), root.join("paper.typ")).unwrap();
-    let outcome = run_fixture(&fixture, false).await;
-    assert_eq!(outcome.status.status, "failed");
-    let error = outcome.status.error.unwrap();
-    assert!(error.contains("outside the project folder"), "{error}");
-    assert_eq!(
-        std::fs::read(outside.path().join("secret.typ")).unwrap(),
-        b"secret"
-    );
-    assert!(!root.join("paper.pdf").exists());
-}
-
-#[tokio::test]
-#[allow(clippy::await_holding_lock)]
-async fn a_project_render_whose_entry_file_sits_under_a_linked_folder_is_refused() {
-    let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let (fixture, _folder, root) = project_fixture("typst", "pdf", "data/paper.typ");
-    script(
-        "typst.pdf",
-        "cat data/paper.typ > data/paper.pdf",
-        "{stem}.pdf",
-    );
-    let outside = tempfile::tempdir().unwrap();
-    std::os::unix::fs::symlink(outside.path(), root.join("data")).unwrap();
-    let outcome = run_fixture(&fixture, false).await;
-    assert_eq!(outcome.status.status, "failed");
-    let error = outcome.status.error.unwrap();
-    assert!(error.contains("outside the project folder"), "{error}");
-    assert!(!outside.path().join("paper.typ").exists());
-    assert!(!outside.path().join("paper.pdf").exists());
-}
-
-#[tokio::test]
-#[allow(clippy::await_holding_lock)]
-async fn a_project_render_with_an_entry_file_neither_uploaded_nor_on_disk_fails() {
-    let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let (fixture, _folder, root) = project_fixture("typst", "pdf", "paper.typ");
-    script("typst.pdf", "cat paper.typ > paper.pdf", "{stem}.pdf");
-    // The manifest lists the entry file, but its bytes never arrived.
-    std::fs::remove_file(fixture.staged.path().join("paper.typ")).unwrap();
-    let outcome = run_fixture(&fixture, false).await;
-    assert_eq!(outcome.status.status, "failed");
-    let error = outcome.status.error.unwrap();
-    assert!(error.contains("paper.typ"), "{error}");
-    assert!(!root.join("paper.typ").exists());
-    assert!(!root.join("paper.pdf").exists());
 }
 
 #[test]

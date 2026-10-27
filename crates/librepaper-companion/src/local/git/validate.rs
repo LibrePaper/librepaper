@@ -1,7 +1,6 @@
-//! Checks on everything a page hands the Git routes before it reaches a Git
-//! command line: branch names, remote names and URLs, the name a clone gets,
-//! and the identity written into a repository. Also the redaction applied to
-//! Git's own output before it is returned.
+//! Checks on everything a page hands the Git helpers before it reaches a Git
+//! command line: remote names and URLs. Also the redaction applied to Git's
+//! own output before it is returned.
 
 /// Git's version from the `git version` banner, and whether it is new enough
 /// (2.38).
@@ -25,29 +24,6 @@ pub(crate) fn parse_version(banner: &str) -> Option<(String, bool)> {
         .collect::<Vec<_>>()
         .join(".");
     Some((text, (numbers[0], numbers[1]) >= (2, 38)))
-}
-
-/// Whether `name` is a branch name Git would accept under `refs/heads/`,
-/// and one that cannot be read as an option.
-pub(crate) fn valid_branch(name: &str) -> bool {
-    if name.is_empty() || name.len() > 255 || name == "@" {
-        return false;
-    }
-    if name.starts_with('-') || name.starts_with('/') || name.ends_with('/') || name.ends_with('.')
-    {
-        return false;
-    }
-    if name.contains("..") || name.contains("@{") || name.contains("//") {
-        return false;
-    }
-    if name
-        .chars()
-        .any(|c| c.is_control() || c.is_whitespace() || "~^:?*[\\".contains(c))
-    {
-        return false;
-    }
-    name.split('/')
-        .all(|part| !part.starts_with('.') && !part.ends_with(".lock"))
 }
 
 /// Whether `name` can name a remote: plain letters, digits, dots, dashes and
@@ -142,32 +118,6 @@ pub(crate) fn display_url(url: &str) -> String {
     format!("{scheme}://{keep}{host}{tail}")
 }
 
-/// The folder name a clone of `url` gets: the last part of the address
-/// without a trailing `.git`. `None` when that is not a usable folder name.
-pub(crate) fn clone_name(url: &str) -> Option<String> {
-    let trimmed = url.trim().trim_end_matches('/');
-    let last = trimmed.rsplit(['/', ':']).next()?;
-    let name = last.strip_suffix(".git").unwrap_or(last);
-    let usable = !name.is_empty()
-        && name.len() <= 100
-        && !name.starts_with('-')
-        && !name.starts_with('.')
-        && name
-            .chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'));
-    usable.then(|| name.to_string())
-}
-
-/// Whether `text` can be a name or an email written into a repository's
-/// configuration: not empty, short, one line, no angle brackets (Git strips
-/// them from an identity) and not readable as an option.
-pub(crate) fn valid_identity_field(text: &str) -> bool {
-    !text.is_empty()
-        && text.len() <= 200
-        && !text.starts_with('-')
-        && !text.chars().any(|c| c.is_control() || c == '<' || c == '>')
-}
-
 /// `text` with the user info of any URL removed and cut to a size fit for an
 /// error message.
 pub(crate) fn redact(text: &str) -> String {
@@ -227,19 +177,6 @@ mod tests {
             Some(("1.9".into(), false))
         );
         assert_eq!(parse_version("nonsense"), None);
-    }
-
-    #[test]
-    fn branch_names_follow_git_rules() {
-        for good in ["main", "feature/x-1", "v1.2"] {
-            assert!(valid_branch(good), "{good}");
-        }
-        for bad in [
-            "", "-x", "a b", "a..b", "a:b", "a~1", "a^", "a?", "a*", "a[", "a\\b", "x.lock",
-            "a/.b", "/a", "a/", "a.", "@", "a@{b", "a//b",
-        ] {
-            assert!(!valid_branch(bad), "{bad}");
-        }
     }
 
     #[test]
@@ -307,33 +244,6 @@ mod tests {
             "git@github.com:o/r.git"
         );
         assert_eq!(display_url("/tmp/remote.git"), "/tmp/remote.git");
-    }
-
-    #[test]
-    fn a_clone_is_named_for_the_last_part_of_the_address() {
-        for (url, name) in [
-            ("https://github.com/o/paper.git", "paper"),
-            ("https://github.com/o/paper", "paper"),
-            ("https://github.com/o/paper.git/", "paper"),
-            ("git@github.com:o/my-paper.git", "my-paper"),
-            ("git@github.com:paper.git", "paper"),
-            ("ssh://git@host:22/o/p_1.git", "p_1"),
-        ] {
-            assert_eq!(clone_name(url).as_deref(), Some(name), "{url}");
-        }
-        for url in ["https://github.com/o/.git", "https://github.com/o/..", ""] {
-            assert_eq!(clone_name(url), None, "{url}");
-        }
-    }
-
-    #[test]
-    fn an_identity_is_one_plain_line() {
-        assert!(valid_identity_field("Ada Lovelace"));
-        assert!(valid_identity_field("ada@example.org"));
-        for bad in ["", "-x", "a\nb", "Ada <ada@example.org>"] {
-            assert!(!valid_identity_field(bad), "{bad:?}");
-        }
-        assert!(!valid_identity_field(&"a".repeat(201)));
     }
 
     #[test]

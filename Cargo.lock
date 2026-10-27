@@ -2747,7 +2747,6 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
- "trash",
  "unicode-normalization",
  "url",
  "uuid",

@@ -3,18 +3,16 @@
 //!
 //! The desktop app clones the repository into the state home, under
 //! `connections/<key>/repo`, and keeps the link and the hashes of what was
-//! last pulled or pushed in the clone's own refs, as a git folder does. The
+//! last pulled or pushed in the clone's own refs. The
 //! person never sees the clone. Pull and push move the project's named versions
 //! and the repository's commits through it, with the person's own Git
 //! credentials, and a merge that stops with conflicts is resolved here one file
 //! at a time.
 //!
-//! Only one git operation runs per connection at a time. The work is the same
-//! as the git routes' and the sync crate's, called from `git.rs` and `sync.rs`.
+//! Only one git operation runs per connection at a time. The work is the
+//! sync crate's and the Git runner's, called through `git.rs` and `sync.rs`.
 
 use super::*;
-
-use std::collections::BTreeSet;
 
 use sha2::{Digest, Sha256};
 
@@ -196,9 +194,9 @@ async fn merge_side(repo: &Path) -> Result<&'static str, Failure> {
 }
 
 /// Whether the token this computer holds for the project's site still works.
-/// A connected project asks the site, as a folder project's status does, so a
-/// revoked or expired token reads as signed out. Any other failure to reach
-/// the site leaves the answer to the pull or push that meets it.
+/// A connected project asks the site, so a revoked or expired token reads as
+/// signed out. Any other failure to reach the site leaves the answer to the
+/// pull or push that meets it.
 async fn token_works(inner: &Inner, connection: &Connection, token: &str) -> bool {
     if token.is_empty() {
         return false;
@@ -448,7 +446,7 @@ async fn pull_remote(repo: &Path) -> Result<Value, Failure> {
     if !upstream.success() {
         return Ok(json!({"status": "up-to-date", "conflicts": []}));
     }
-    run_pull(repo, &BTreeSet::new()).await
+    run_pull(repo).await
 }
 
 /// The project's named versions taken into the clone, merged into its branch.
