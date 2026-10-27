@@ -6,9 +6,19 @@
 //! other way through `PUT folder`, which already mirrors a project into a
 //! granted folder.
 //!
+//! The tree route takes an optional `extensions` query value, a comma-separated
+//! list such as `tex,typ,md`. A file whose extension is not in it is never
+//! read, listed or named in `skipped`, and does not count toward
+//! `MAX_PROJECT_FILES`, so a Downloads folder opens without hashing its videos.
+//! Without the value every file is listed. Digests come from a cache keyed by
+//! path and valid while the file's size and modification time hold, which the
+//! folder save and the render share, so only a changed file is read again. The
+//! walk also stops after `MAX_WALK_ENTRIES` directory entries.
+//!
 //! Outside changes are found by polling. One background task per polled
 //! project stats the tree every second, so the same code runs on every
-//! platform and on network drives. A file is reported once its size and
+//! platform and on network drives. The poller looks only at the extensions the
+//! tree was read with. A file is reported once its size and
 //! modification time held still across one poll, and a change whose digest
 //! matches the written record is LibrePaper's own write and is not reported.
 //!
@@ -66,8 +76,14 @@ use std::time::UNIX_EPOCH;
 use crate::local::bindings::ProjectBinding;
 use crate::local::render::workspace;
 
-/// Most files a folder project may list. A bigger folder answers 413.
-pub(super) const MAX_PROJECT_FILES: usize = 5000;
+/// Most files a folder project may list. Only files that match the request's
+/// extensions count. A bigger folder answers 413.
+pub(super) const MAX_PROJECT_FILES: usize = 50_000;
+
+/// Most directory entries a walk visits, matched or not, so that opening a
+/// home directory stops instead of walking it for as long as it takes. Past
+/// it the walk fails like a folder with too many files.
+const MAX_WALK_ENTRIES: usize = 1_000_000;
 
 /// Most bytes one entry of a folder save's manifest may take as JSON. An entry
 /// is `{"path":"...","sha256":"...","size":N},`, which is about 110 bytes of
@@ -76,7 +92,7 @@ pub(super) const MAX_PROJECT_FILES: usize = 5000;
 const MANIFEST_ENTRY_BYTES: usize = 512;
 
 /// Most bytes the manifest of a folder save may take: every file a folder
-/// project may list, at `MANIFEST_ENTRY_BYTES` each, which is 2.4 MiB. The
+/// project may list, at `MANIFEST_ENTRY_BYTES` each, which is 24.4 MiB. The
 /// fixed bound for other JSON, 64 KiB, holds a few hundred files, and a save
 /// above that answered 413 even with no bytes to upload. The description of a
 /// render job carries the same manifest, so it takes the same bound.
@@ -154,11 +170,54 @@ pub(super) fn skip_reason(name: &str) -> Option<&'static str> {
     }
 }
 
+/// The extensions a request asks for: lowercase, without dots.
+pub(super) type Extensions = BTreeSet<String>;
+
+/// Parse the comma-separated `extensions` query value. Blank entries and
+/// leading dots are dropped. A value with no extension in it is no filter.
+fn parse_extensions(value: &str) -> Option<Extensions> {
+    let set: Extensions = value
+        .split(',')
+        .map(|part| part.trim().trim_start_matches('.').to_ascii_lowercase())
+        .filter(|part| !part.is_empty())
+        .collect();
+    (!set.is_empty()).then_some(set)
+}
+
+/// Whether a file called `name` is wanted. Without a filter every file is. With
+/// one, the part after the last `.` must be in it, ignoring case, and a name
+/// without a `.` never matches.
+fn extension_matches(filter: Option<&Extensions>, name: &str) -> bool {
+    let Some(filter) = filter else {
+        return true;
+    };
+    name.rsplit_once('.')
+        .is_some_and(|(_, extension)| filter.contains(&extension.to_ascii_lowercase()))
+}
+
 /// Walk `root` and list its regular files. Hidden entries, the ignored
 /// names, symlinks, files over the upload bound and anything that is not a
-/// regular file are skipped. More than `MAX_PROJECT_FILES` files is an error.
+/// regular file are skipped. More than `MAX_PROJECT_FILES` files, or more than
+/// `MAX_WALK_ENTRIES` directory entries, is an error.
 pub(super) fn walk(root: &Path) -> Result<Walk, WalkError> {
+    walk_matching(root, None)
+}
+
+/// Like `walk`, but with a filter a regular file whose extension is not in it
+/// is left out silently: it is not listed, not skipped and not counted toward
+/// the file cap. Directories and everything else are handled as `walk` does.
+fn walk_matching(root: &Path, filter: Option<&Extensions>) -> Result<Walk, WalkError> {
+    walk_limited(root, filter, MAX_PROJECT_FILES, MAX_WALK_ENTRIES)
+}
+
+fn walk_limited(
+    root: &Path,
+    filter: Option<&Extensions>,
+    max_files: usize,
+    max_entries: usize,
+) -> Result<Walk, WalkError> {
     let mut result = Walk::default();
+    let mut visited = 0usize;
     let mut pending = vec![(root.to_path_buf(), String::new())];
     while let Some((directory, prefix)) = pending.pop() {
         let entries = match std::fs::read_dir(&directory) {
@@ -170,9 +229,17 @@ pub(super) fn walk(root: &Path) -> Result<Walk, WalkError> {
             }
         };
         for entry in entries.flatten() {
+            visited += 1;
+            if visited > max_entries {
+                return Err(WalkError::TooMany);
+            }
             let Some(name) = entry.file_name().to_str().map(str::to_string) else {
                 continue;
             };
+            let kind = entry.file_type();
+            if kind.as_ref().is_ok_and(|kind| kind.is_file()) && !extension_matches(filter, &name) {
+                continue;
+            }
             let relative = if prefix.is_empty() {
                 name.clone()
             } else {
@@ -182,7 +249,7 @@ pub(super) fn walk(root: &Path) -> Result<Walk, WalkError> {
                 result.skipped.push((relative, reason));
                 continue;
             }
-            let Ok(kind) = entry.file_type() else {
+            let Ok(kind) = kind else {
                 result.skipped.push((relative, "unreadable"));
                 continue;
             };
@@ -212,7 +279,7 @@ pub(super) fn walk(root: &Path) -> Result<Walk, WalkError> {
                             mtime_ns,
                         },
                     );
-                    if result.files.len() > MAX_PROJECT_FILES {
+                    if result.files.len() > max_files {
                         return Err(WalkError::TooMany);
                     }
                 }
@@ -260,8 +327,20 @@ struct Tree {
 /// a directory that cannot be read is listed as itself, and a file that cannot
 /// be read is listed under its own path. Only a file that is confirmed gone is
 /// left out without a word.
+#[cfg(test)]
 fn read_tree(root: &Path, render_outputs: &BTreeSet<String>) -> Result<Tree, WalkError> {
-    let walked = walk(root)?;
+    read_tree_matching(root, render_outputs, None)
+}
+
+/// Like `read_tree`, but a file whose extension is not in `filter` is never
+/// read, listed or named in `skipped`. Digests come from the digest cache, so
+/// a file whose size and modification time are unchanged is not read again.
+fn read_tree_matching(
+    root: &Path,
+    render_outputs: &BTreeSet<String>,
+    filter: Option<&Extensions>,
+) -> Result<Tree, WalkError> {
+    let walked = walk_matching(root, filter)?;
     let mut tree = Tree {
         files: Vec::new(),
         skipped: walked
@@ -277,12 +356,11 @@ fn read_tree(root: &Path, render_outputs: &BTreeSet<String>) -> Result<Tree, Wal
                 .push(json!({"path": path, "reason": "render output"}));
             continue;
         }
-        match workspace::read_file_bounded_to(&root.join(&path), "project file", MAX_UPLOAD_BYTES) {
-            Ok(bytes) => {
-                let digest = librepaper_document::results::sha256(&bytes);
+        match workspace::cached_digest(&root.join(&path), read_project_file) {
+            Some((size, digest)) => {
                 tree.files.push(json!({
                     "path": path,
-                    "size": bytes.len(),
+                    "size": size,
                     "sha256": digest,
                     "mtime": stat.mtime_secs(),
                 }));
@@ -291,13 +369,18 @@ fn read_tree(root: &Path, render_outputs: &BTreeSet<String>) -> Result<Tree, Wal
             // A file that vanished since the walk is left out, as if the walk
             // had never seen it. One that grew past the bound or cannot be
             // opened is still there, so it is named.
-            Err(_) if confirmed_gone(root, &path, &walked.skipped) => {}
-            Err(_) => tree
+            None if confirmed_gone(root, &path, &walked.skipped) => {}
+            None => tree
                 .skipped
                 .push(json!({"path": path, "reason": "unreadable"})),
         }
     }
     Ok(tree)
+}
+
+/// Read a project file whole, within the upload bound.
+fn read_project_file(path: &Path) -> Option<Vec<u8>> {
+    workspace::read_file_bounded_to(path, "project file", MAX_UPLOAD_BYTES).ok()
 }
 
 /// Resolve `relative` to a regular file inside `root`. The path must be safe,
@@ -358,6 +441,10 @@ struct Scan {
     /// held back until the run ends and records it. The poller refreshes this
     /// before every look, together with `render_outputs`.
     running: Option<String>,
+    /// The extensions the page asked the tree for. A file outside them is not
+    /// walked into the scan, so it is never read and never reported. `None`
+    /// means every file.
+    extensions: Option<Extensions>,
 }
 
 impl Scan {
@@ -378,7 +465,14 @@ impl Scan {
                 .collect(),
             render_outputs: BTreeSet::new(),
             running: None,
+            extensions: None,
         }
+    }
+
+    /// Look only at files with these extensions, as the tree read did.
+    fn with_extensions(mut self, extensions: Option<Extensions>) -> Scan {
+        self.extensions = extensions;
+        self
     }
 
     /// Whether `path` is a new file named for the result of the render running
@@ -403,7 +497,7 @@ impl Scan {
     /// neither does a part of it that cannot be read: its files stay as the
     /// page holds them.
     fn look(&mut self, root: &Path, record: &Path) -> Vec<Change> {
-        let Ok(walked) = walk(root) else {
+        let Ok(walked) = walk_matching(root, self.extensions.as_ref()) else {
             return Vec::new();
         };
         let (now, skipped) = (walked.files, walked.skipped);
@@ -438,13 +532,12 @@ impl Scan {
             if self.seen.get(path) != Some(stat) || self.settled.get(path) == Some(stat) {
                 continue;
             }
-            let Ok(bytes) =
-                workspace::read_file_bounded_to(&root.join(path), "project file", MAX_UPLOAD_BYTES)
+            let Some((size, digest)) =
+                workspace::cached_digest(&root.join(path), read_project_file)
             else {
                 // Still being written or just removed. The next look decides.
                 continue;
             };
-            let digest = librepaper_document::results::sha256(&bytes);
             let recorded = recorded
                 .get_or_insert_with(|| workspace::recorded_digests(record).unwrap_or_default());
             // Either LibrePaper's own write, or content the page already holds.
@@ -459,7 +552,7 @@ impl Scan {
                         "added"
                     },
                     sha256: Some(digest.clone()),
-                    size: Some(bytes.len() as u64),
+                    size: Some(size),
                 });
             }
             self.settled.insert(path.clone(), *stat);
@@ -1153,6 +1246,7 @@ pub(super) async fn handle_tree(
     headers: &HeaderMap,
     origin: Option<&str>,
     id: &str,
+    extensions: Option<&str>,
 ) -> Reply {
     if let Err(response) = authenticate(inner, headers, origin) {
         return response;
@@ -1161,15 +1255,19 @@ pub(super) async fn handle_tree(
         Ok(binding) => binding,
         Err(response) => return response,
     };
+    let extensions = extensions.and_then(parse_extensions);
     let _ = inner.bindings.touch_project(id, origin.unwrap_or_default());
     let record_path = inner.bindings.written_record(&binding.id);
     let root = binding.root.clone();
     let render_outputs = inner.projects.render_outputs(&binding.id);
+    let walked_extensions = extensions.clone();
     let read = tokio::task::spawn_blocking(move || {
-        let tree = read_tree(&root, &render_outputs).map_err(|error| match error {
+        let tree = read_tree_matching(&root, &render_outputs, walked_extensions.as_ref()).map_err(|error| match error {
             WalkError::TooMany => (
                 413,
-                format!("the folder holds more than {MAX_PROJECT_FILES} files"),
+                format!(
+                    "the folder holds more than {MAX_PROJECT_FILES} project files; open the folder that holds your project"
+                ),
             ),
             WalkError::Io(error) => (500, format!("read the folder: {error}")),
         })?;
@@ -1184,7 +1282,7 @@ pub(super) async fn handle_tree(
             let cursor = inner.projects.set_baseline(
                 &binding,
                 record_path,
-                Scan::from_listing(&tree.listing),
+                Scan::from_listing(&tree.listing).with_extensions(extensions),
             );
             write_json(
                 200,
@@ -1325,14 +1423,113 @@ mod tests {
     }
 
     #[test]
-    fn the_walk_refuses_more_than_five_thousand_files() {
+    fn the_walk_refuses_more_files_than_the_cap_and_counts_only_matches() {
         let root = tempfile::tempdir().unwrap();
-        for index in 0..MAX_PROJECT_FILES {
-            write(root.path(), &format!("d{}/f{index}.txt", index % 10), "");
+        for index in 0..3 {
+            write(root.path(), &format!("d{}/f{index}.txt", index % 2), "");
         }
-        assert_eq!(walk(root.path()).unwrap().files.len(), MAX_PROJECT_FILES);
-        write(root.path(), "one-more.txt", "");
-        assert!(matches!(walk(root.path()), Err(WalkError::TooMany)));
+        for index in 0..10 {
+            write(root.path(), &format!("other{index}.bin"), "");
+        }
+        assert_eq!(
+            walk_limited(root.path(), None, 13, 100)
+                .unwrap()
+                .files
+                .len(),
+            13
+        );
+        assert!(matches!(
+            walk_limited(root.path(), None, 12, 100),
+            Err(WalkError::TooMany)
+        ));
+        // Unmatched files do not count toward the cap.
+        let filter = names(&["txt"]);
+        assert_eq!(
+            walk_limited(root.path(), Some(&filter), 3, 100)
+                .unwrap()
+                .files
+                .len(),
+            3
+        );
+        assert!(matches!(
+            walk_limited(root.path(), Some(&filter), 2, 100),
+            Err(WalkError::TooMany)
+        ));
+    }
+
+    #[test]
+    fn the_walk_stops_after_too_many_directory_entries() {
+        let root = tempfile::tempdir().unwrap();
+        for index in 0..6 {
+            write(root.path(), &format!("f{index}.bin"), "");
+        }
+        assert!(walk_limited(root.path(), None, 100, 6).is_ok());
+        let filter = names(&["tex"]);
+        assert!(matches!(
+            walk_limited(root.path(), Some(&filter), 100, 5),
+            Err(WalkError::TooMany)
+        ));
+    }
+
+    #[test]
+    fn the_extension_filter_matches_the_last_extension_ignoring_case() {
+        let filter = names(&["tex", "md"]);
+        let wanted = |name: &str| extension_matches(Some(&filter), name);
+        assert!(wanted("main.tex"));
+        assert!(wanted("MAIN.TeX"));
+        assert!(wanted("notes.final.md"));
+        assert!(!wanted("main.tex.bak"));
+        assert!(!wanted("tex"));
+        assert!(!wanted("main."));
+        assert!(extension_matches(None, "tex"));
+        assert_eq!(
+            parse_extensions("tex, .MD,,pdf"),
+            Some(names(&["tex", "md", "pdf"]))
+        );
+        assert_eq!(parse_extensions(" , "), None);
+    }
+
+    #[test]
+    fn the_extension_filter_leaves_out_an_unmatched_file_without_reading_it() {
+        let root = tempfile::tempdir().unwrap();
+        write(root.path(), "main.tex", "hello");
+        write(root.path(), "clip.mp4", "video");
+        write(root.path(), "README", "no extension");
+        let filter = names(&["tex"]);
+        let locked = Unreadable::new(&root.path().join("clip.mp4"));
+        let tree = read_tree_matching(root.path(), &BTreeSet::new(), Some(&filter)).unwrap();
+        drop(locked);
+        let listed: Vec<&Value> = tree.files.iter().map(|file| &file["path"]).collect();
+        assert_eq!(listed, ["main.tex"]);
+        assert!(tree.skipped.is_empty());
+        assert!(!tree.listing.contains_key("clip.mp4"));
+        // Without a filter every file is read.
+        let everything = read_tree(root.path(), &BTreeSet::new()).unwrap();
+        assert_eq!(everything.files.len(), 3);
+    }
+
+    #[test]
+    fn the_poller_does_not_report_an_unmatched_file() {
+        let (root, _state, record) = setup();
+        write(root.path(), "main.tex", "one");
+        write(root.path(), "clip.mp4", "video");
+        let filter = names(&["tex"]);
+        let tree = read_tree_matching(root.path(), &BTreeSet::new(), Some(&filter)).unwrap();
+        let mut scan = Scan::from_listing(&tree.listing).with_extensions(Some(filter));
+        write(root.path(), "clip.mp4", "a longer video");
+        write(root.path(), "new.mp4", "another");
+        std::fs::remove_file(root.path().join("clip.mp4")).unwrap();
+        for _ in 0..3 {
+            assert!(scan.look(root.path(), &record).is_empty());
+        }
+        // A matched file is still reported.
+        write(root.path(), "late.tex", "new");
+        let mut reported = Vec::new();
+        for _ in 0..3 {
+            reported.extend(scan.look(root.path(), &record));
+        }
+        assert_eq!(reported.len(), 1);
+        assert_eq!(reported[0].path, "late.tex");
     }
 
     #[test]
@@ -1712,7 +1909,7 @@ mod tests {
         let binding = inner.bindings.open_project(origin, root.path()).unwrap();
         let headers = test_support::bearer(&inner);
 
-        let reply = handle_tree(&inner, &headers, Some(origin), &binding.id).await;
+        let reply = handle_tree(&inner, &headers, Some(origin), &binding.id, None).await;
         assert_eq!(reply.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(reply.into_body(), 1 << 20)
             .await
@@ -1725,8 +1922,14 @@ mod tests {
         assert!(inner.projects.get(&binding.id).is_some());
 
         // Another origin cannot read it.
-        let foreign =
-            handle_tree(&inner, &headers, Some("https://other.example"), &binding.id).await;
+        let foreign = handle_tree(
+            &inner,
+            &headers,
+            Some("https://other.example"),
+            &binding.id,
+            None,
+        )
+        .await;
         assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
         let file = handle_file(&inner, &headers, Some(origin), &binding.id, "main.tex").await;
         let bytes = axum::body::to_bytes(file.into_body(), 1 << 20)
@@ -1769,7 +1972,7 @@ mod tests {
         let binding = inner.bindings.open_project(origin, &root_path).unwrap();
         let headers = test_support::bearer(&inner);
 
-        let reply = handle_tree(&inner, &headers, Some(origin), &binding.id).await;
+        let reply = handle_tree(&inner, &headers, Some(origin), &binding.id, None).await;
         let bytes = axum::body::to_bytes(reply.into_body(), 1 << 20)
             .await
             .unwrap();
@@ -2062,7 +2265,8 @@ mod tests {
         let binding = inner.bindings.open_project(ORIGIN, &root_path).unwrap();
         let headers = test_support::bearer(&inner);
 
-        let tree = body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id).await).await;
+        let tree =
+            body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id, None).await).await;
         let cursor = tree["cursor"].as_u64().unwrap();
 
         // The render: the expected outputs and files the run created, written
@@ -2102,7 +2306,8 @@ mod tests {
         assert_eq!(next["changes"], json!([]));
 
         // A folder opened after the render does not list its own outputs.
-        let tree = body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id).await).await;
+        let tree =
+            body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id, None).await).await;
         let listed: Vec<&Value> = tree["files"]
             .as_array()
             .unwrap()
@@ -2223,7 +2428,8 @@ mod tests {
         let inner = quick_inner(state.path()).await;
         let binding = inner.bindings.open_project(ORIGIN, &root_path).unwrap();
         let headers = test_support::bearer(&inner);
-        let tree = body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id).await).await;
+        let tree =
+            body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id, None).await).await;
         let cursor = tree["cursor"].as_u64().unwrap();
 
         let render = RenderWatch::begin(&inner, &render_request(&binding, "main.tex"))
@@ -2315,7 +2521,8 @@ mod tests {
         let headers = test_support::bearer(&inner);
 
         // The page opens the folder, imports both files, and saves them.
-        let tree = body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id).await).await;
+        let tree =
+            body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id, None).await).await;
         let cursor = tree["cursor"].as_u64().unwrap();
         let listed: Vec<&Value> = tree["files"]
             .as_array()
@@ -2390,7 +2597,8 @@ mod tests {
         .await;
         let binding = inner.bindings.open_project(ORIGIN, &root_path).unwrap();
         let headers = test_support::bearer(&inner);
-        let tree = body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id).await).await;
+        let tree =
+            body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id, None).await).await;
         let cursor = tree["cursor"].as_u64().unwrap();
         let record = inner.bindings.written_record(&binding.id);
         let saved = BTreeMap::from([
@@ -2432,7 +2640,8 @@ mod tests {
         let answer = body_of(reply).await;
         assert_eq!(answer["reset"], true);
         assert_eq!(answer["changes"], json!([]));
-        let tree = body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id).await).await;
+        let tree =
+            body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id, None).await).await;
         let listed: Vec<&Value> = tree["files"]
             .as_array()
             .unwrap()

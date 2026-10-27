@@ -58,6 +58,19 @@ const sent = form.getAll("file");
 assert.deepEqual(sent.map((file) => file.name).sort(), ["chapters/paper.tex", "figures/dot.png"]);
 assert.deepEqual([...new Uint8Array(await sent.find((file) => file.name === "figures/dot.png").arrayBuffer())], [0xff, 0x00, 0x80]);
 
+// A folder render lists a file the folder already holds without its bytes.
+{
+  const onDisk = new Map(submitted.manifest.map((file) => [file.path, file.sha256]));
+  onDisk.delete("chapters/paper.tex");
+  await client.runRender({ job: { snapshot: "s", generation: 1 }, tree, format: "latex", output: "pdf", bindingId: "folder-1", onDisk: (path) => onDisk.get(path) ?? null });
+  assert.deepEqual(submitted.manifest.map((file) => file.path).sort(), ["chapters/paper.tex", "figures/dot.png"], "the manifest still lists both");
+  assert.deepEqual(form.getAll("file").map((file) => file.name), ["chapters/paper.tex"], "only the file the folder does not hold is sent");
+
+  // The hosted workspace has no folder, so it sends everything whatever `onDisk` says.
+  await client.runRender({ job: { snapshot: "s", generation: 1 }, tree, format: "latex", output: "pdf", onDisk: (path) => onDisk.get(path) ?? null });
+  assert.deepEqual(form.getAll("file").map((file) => file.name).sort(), ["chapters/paper.tex", "figures/dot.png"]);
+}
+
 // With no folder granted the render goes to the hosted workspace, and the
 // deadline defaults.
 await client.runRender({ job: { snapshot: "s", generation: 1 }, tree, format: "latex", output: "pdf" });

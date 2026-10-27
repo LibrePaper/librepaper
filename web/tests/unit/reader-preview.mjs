@@ -115,7 +115,7 @@ assert.match(previewSource, /framePreview\.clear\?\.\(\);[\s\S]*?onEmpty\(\);/);
 assert.doesNotMatch(readerSource, /project-folder|ProjectFolderSetting/);
 assert.match(readerSource, /const folderSync = LOCAL \? createFolderSync\(/);
 // The folder sync's first save says it is the opening one, so the desktop app trashes nothing the page never held.
-assert.match(readerSource, /createFolderSync\(\{[\s\S]*?run: async \(\{ opening \}\) => \{[\s\S]*?localQuarto\.syncFolder\(\{[^}]*\bopening \}\)/);
+assert.match(readerSource, /createFolderSync\(\{[\s\S]*?run: async \(\{ opening \}\) => \{[\s\S]*?localQuarto\.syncFolder\(\{[^}]*\bopening\b[^}]*\}\)/);
 // A web project renders in the hosted workspace and a local project in its own folder, and an
 // export of either runs where its preview does.
 assert.match(readerSource, /const RENDER_BINDING = LOCAL \? LOCAL_ID : localQuarto\.HOSTED_BINDING;/);
@@ -125,6 +125,8 @@ assert.match(readerSource, /exportFile\(\{[\s\S]*?bindingId: RENDER_BINDING,/);
 // A folder project's render sends each text as the folder sync does, and a web project sends none.
 assert.match(readerSource, /const renderEncode = LOCAL \? \(.*?\) => localProject\.encode\(path, text\) : undefined;/);
 assert.equal(readerSource.match(/encode: renderEncode,/g)?.length, 2, "the preview and the export take the same encoder");
+assert.equal(readerSource.match(/onDisk: renderOnDisk,/g)?.length, 2, "and the same folder digests");
+assert.doesNotMatch(readerSource.slice(readerSource.indexOf("const folderSync = LOCAL"), readerSource.indexOf("$effect(() => () => folderSync?.dispose())")), /tree\.assets = /, "the folder sync does not gather every figure");
 // A folder project opens offline: its rules come from the last visit when the server cannot be reached, and it says so.
 assert.match(readerSource, /async function bootLocal\(\) \{[\s\S]*?configOrRemembered\(\)[\s\S]*?if \(remembered\) say\(/);
 // HTML/PDF output format choice for markdown and quarto in View menu.
