@@ -500,7 +500,8 @@ async fn asset_bytes(
             .files
             .values()
             .find(|file| file.kind == Kind::Asset && file.sha == record.sha)
-            .and_then(|file| std::fs::read(&file.file).ok())
+            .and_then(|file| file.disk())
+            .and_then(|file| std::fs::read(file).ok())
             .filter(|data| Digest::of(data).to_hex() == record.sha);
         let data = match held {
             Some(data) => data,
@@ -716,10 +717,10 @@ async fn pull_folder(
                 written.push(path.clone());
             }
             None => {
-                // `file.file` came from the walk of `dir`, which follows no
+                // The file came from the walk of `dir`, which follows no
                 // link, so it is inside the folder.
-                if let Some(file) = here.files.get(path) {
-                    move_to_trash(&file.file)?;
+                if let Some(file) = here.files.get(path).and_then(|file| file.disk()) {
+                    move_to_trash(file)?;
                     trashed.push(path.clone());
                 }
             }
@@ -773,7 +774,8 @@ async fn write_remote(
                 .get(path)
                 .ok_or_else(|| Error::Invalid(format!("the version has no text for {path}")))?;
             let ending = existing
-                .and_then(|file| std::fs::read(&file.file).ok())
+                .and_then(|file| file.disk())
+                .and_then(|file| std::fs::read(file).ok())
                 .map_or(LineEnding::Lf, |current| LineEnding::detect(&current));
             ending.apply(text).into_bytes()
         }

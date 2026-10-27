@@ -14,7 +14,7 @@ use crate::link::Link;
 use crate::pull::settle;
 use crate::rules::Rules;
 use crate::state::{PendingPush, Pushed, State, StateStore};
-use crate::walk::{compare, scan, Local, LocalChanges, Scan};
+use crate::walk::{compare, scan, scan_commit, Local, LocalChanges, Scan};
 use crate::Error;
 
 /// How many pushed versions a state remembers until a pull meets them.
@@ -36,6 +36,12 @@ pub struct PushOptions {
     /// In a repository, the branch to sync. An unbound repository needs it on
     /// the first transfer; a bound one accepts only its own.
     pub branch: Option<String>,
+    /// A commit of the repository to send instead of the working tree, such as
+    /// `HEAD`. The files are read from that commit, so an edit saved since or
+    /// a file git does not track is never sent, and a file the commit no
+    /// longer holds is deleted on the web whatever the disk has. A directory
+    /// that is not a repository refuses it.
+    pub from_commit: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,7 +67,7 @@ struct Plan<'a> {
     create: Vec<Value>,
     delete: Vec<Value>,
     put_binary: Vec<Value>,
-    uploads: Vec<&'a Local>,
+    uploads: Vec<(&'a str, &'a Local)>,
 }
 
 impl Plan<'_> {
@@ -111,7 +117,7 @@ fn plan_change<'a>(
                 "text": file.text.as_deref().unwrap_or_default(),
             })),
             Kind::Asset => {
-                plan.uploads.push(file);
+                plan.uploads.push((path.as_str(), file));
                 plan.put_binary
                     .push(json!({"path": path, "hash": file.sha, "expect": Value::Null}));
             }
@@ -135,7 +141,7 @@ fn plan_change<'a>(
                 plan.patches.extend(edits);
             }
             Kind::Asset => {
-                plan.uploads.push(file);
+                plan.uploads.push((path.as_str(), file));
                 plan.put_binary
                     .push(json!({"path": path, "hash": file.sha, "expect": before.sha}));
             }
@@ -303,7 +309,21 @@ pub async fn push(
             store.save(&state)?;
         }
     }
-    let found = scan(dir, &rules, git.as_ref(), &options.exclude)?;
+    let found = match &options.from_commit {
+        Some(commit) => {
+            let git = git.as_ref().ok_or_else(|| {
+                Error::Invalid(
+                    "a push from a commit needs a git repository, and this directory is a plain folder"
+                        .into(),
+                )
+            })?;
+            let commit = git
+                .rev(commit)
+                .ok_or_else(|| Error::Invalid(format!("{commit} is not a commit in this repository")))?;
+            scan_commit(git, &commit, &rules, &options.exclude)?
+        }
+        None => scan(dir, &rules, git.as_ref(), &options.exclude)?,
+    };
     let changes = compare(dir, &state.files, &found);
     if changes.is_empty() {
         return Ok(settled.unwrap_or(PushOutcome::Nothing));
@@ -342,8 +362,8 @@ pub async fn push(
     if plan.is_empty() {
         return Ok(settled.unwrap_or(PushOutcome::Nothing));
     }
-    for file in &plan.uploads {
-        upload(client, &slug, file).await?;
+    for (path, file) in &plan.uploads {
+        upload(client, &slug, path, file).await?;
     }
     let mut sync = json!({"provider": "cli", "message": options.message});
     if let Some(author) = options
@@ -387,17 +407,11 @@ pub async fn push(
 }
 
 /// Sends an asset the project does not hold yet.
-async fn upload(client: &Client, slug: &str, file: &Local) -> Result<(), Error> {
+async fn upload(client: &Client, slug: &str, path: &str, file: &Local) -> Result<(), Error> {
     if client.has_asset(slug, &file.sha).await? {
         return Ok(());
     }
-    let bytes = std::fs::read(&file.file).map_err(|error| Error::io(&file.file, error))?;
-    if Digest::of(&bytes).to_hex() != file.sha {
-        return Err(Error::Invalid(format!(
-            "{} changed while it was being sent",
-            file.file.display()
-        )));
-    }
+    let bytes = file.asset_bytes(path)?;
     client.upload_asset(slug, bytes, &file.sha).await
 }
 
@@ -431,17 +445,7 @@ fn upload_list(found: &Scan, rules: &Rules) -> Result<Vec<(String, Vec<u8>)>, Er
     for (path, file) in &found.files {
         let bytes = match &file.text {
             Some(text) => text.clone().into_bytes(),
-            None => {
-                let bytes =
-                    std::fs::read(&file.file).map_err(|error| Error::io(&file.file, error))?;
-                if Digest::of(&bytes).to_hex() != file.sha {
-                    return Err(Error::Invalid(format!(
-                        "{} changed while it was being sent",
-                        file.file.display()
-                    )));
-                }
-                bytes
-            }
+            None => file.asset_bytes(path)?,
         };
         sent.push((path.clone(), bytes));
     }
@@ -883,6 +887,7 @@ mod tests {
             author: None,
             exclude: Vec::new(),
             branch: None,
+            from_commit: None,
         };
         let outcome = push(&client, dir.path(), &store, &options).await;
         assert!(matches!(outcome, Err(Error::Merging)), "{outcome:?}");
@@ -896,6 +901,7 @@ mod tests {
             author: None,
             exclude: Vec::new(),
             branch: branch.map(str::to_string),
+            from_commit: None,
         }
     }
 
@@ -1266,6 +1272,7 @@ mod tests {
             author: None,
             exclude: Vec::new(),
             branch: None,
+            from_commit: None,
         };
         let outcome = push(&fake.client(), dir.path(), &store, &options)
             .await
@@ -1290,5 +1297,110 @@ mod tests {
         let state = store.load().unwrap().unwrap();
         assert_eq!(state.web_head.as_deref(), Some("h1+"));
         assert_eq!(fake.count("/project"), 1);
+    }
+
+    // ------------------------------------------------------- push from a commit
+
+    fn from_head() -> PushOptions {
+        PushOptions {
+            from_commit: Some("HEAD".into()),
+            ..options(Some("main"))
+        }
+    }
+
+    fn created(server: &Fake) -> Vec<(String, String)> {
+        let posted = server.posted();
+        let create = posted[0]["change"]["create"].as_array().unwrap();
+        create
+            .iter()
+            .map(|item| {
+                (
+                    item["path"].as_str().unwrap().to_string(),
+                    item["text"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_push_from_a_commit_sends_what_was_committed() {
+        let server = Fake::start().await;
+        server.script(vec![accepted("l1", 1)]);
+        let Some((dir, git, store)) = on_main(server.link(), Some("main")) else {
+            return;
+        };
+        write(dir.path(), ".gitattributes", b"secret.tex -librepaper\n");
+        write(dir.path(), "secret.tex", b"private\n");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("a.tex", dir.path().join("link.tex")).unwrap();
+        commit_all(&git, "More");
+        // Saved after the commit: an edit and a file git does not track.
+        write(dir.path(), "a.tex", b"edited since\n");
+        write(dir.path(), "untracked.tex", b"never committed\n");
+
+        let sent = push(&server.client(), dir.path(), &store, &from_head()).await;
+        assert!(matches!(sent, Ok(PushOutcome::Pushed { .. })), "{sent:?}");
+        assert_eq!(created(&server), [("a.tex".to_string(), "one\n".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn a_push_from_a_commit_deletes_a_file_whose_deletion_was_committed() {
+        let server = Fake::start().await;
+        server.script(vec![accepted("l1", 1)]);
+        let Some((dir, git, store)) = on_main(server.link(), Some("main")) else {
+            return;
+        };
+        write(dir.path(), "b.tex", b"two\n");
+        commit_all(&git, "Add b");
+        let mut state = store.load().unwrap().unwrap();
+        state.files = BTreeMap::from([
+            ("a.tex".to_string(), record(Kind::Text, b"one\n")),
+            ("b.tex".to_string(), record(Kind::Text, b"two\n")),
+        ]);
+        store.save(&state).unwrap();
+        git.run(&["rm", "-q", "--cached", "b.tex"], None, &[]).unwrap();
+        commit_all(&git, "Drop b");
+        // The copy stays in the folder, now untracked.
+        write(dir.path(), "b.tex", b"two\n");
+        assert!(dir.path().join("b.tex").exists());
+
+        let sent = push(&server.client(), dir.path(), &store, &from_head()).await;
+        assert!(matches!(sent, Ok(PushOutcome::Pushed { .. })), "{sent:?}");
+        let posted = server.posted();
+        let delete = posted[0]["change"]["delete"].as_array().unwrap();
+        assert_eq!(delete.len(), 1, "{posted:?}");
+        assert_eq!(delete[0]["path"], "b.tex");
+    }
+
+    #[tokio::test]
+    async fn a_push_without_a_commit_still_sends_the_working_tree() {
+        let server = Fake::start().await;
+        server.script(vec![accepted("l1", 1)]);
+        let Some((dir, _git, store)) = on_main(server.link(), Some("main")) else {
+            return;
+        };
+        write(dir.path(), "untracked.tex", b"never committed\n");
+        let sent = push(&server.client(), dir.path(), &store, &options(None)).await;
+        assert!(matches!(sent, Ok(PushOutcome::Pushed { .. })), "{sent:?}");
+        let mut paths: Vec<String> = created(&server).into_iter().map(|item| item.0).collect();
+        paths.sort();
+        assert_eq!(paths, ["a.tex", "untracked.tex"]);
+    }
+
+    #[tokio::test]
+    async fn a_push_from_a_commit_needs_a_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let store = FileStore::for_dir(home.path(), dir.path());
+        let fake = Fake::start().await;
+        store.save(&State::new(fake.link())).unwrap();
+        write(dir.path(), "new.tex", b"mine\n");
+        let options = PushOptions {
+            from_commit: Some("HEAD".into()),
+            ..options(None)
+        };
+        let outcome = push(&fake.client(), dir.path(), &store, &options).await;
+        assert!(matches!(outcome, Err(Error::Invalid(_))), "{outcome:?}");
+        assert!(fake.posted().is_empty());
     }
 }

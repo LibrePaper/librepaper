@@ -759,10 +759,10 @@ fn dirty_refusal(paths: &[String]) -> Failure {
 }
 
 /// Refuses a local connection whose tracked files hold uncommitted changes.
-/// The web pull answers up to date before it looks at the tree, and a push
-/// uploads the working tree, so both would send edits the person has not
-/// committed. A remote connection works in the app's own clone and is not
-/// checked.
+/// The web pull answers up to date before it looks at the tree, and the push
+/// sends only what is committed, so an edit would be skipped without a word.
+/// The person is told to commit it instead. A remote connection works in the
+/// app's own clone and is not checked.
 async fn refuse_uncommitted(connection: &Connection, repo: &Path) -> Result<(), Failure> {
     if connection.local_root().is_none() {
         return Ok(());
@@ -817,13 +817,9 @@ async fn web_push(inner: &Inner, connection: &Connection) -> Result<PushOutcome,
     let (root, state_home) = (connection.repo(), inner.state_home.clone());
     let handle = tokio::runtime::Handle::current();
     let local = connection.local_root().is_some();
-    // A person's own repository sends what it committed: a file git does not
-    // track yet stays out, as if it were not there.
-    let exclude = if local {
-        untracked_paths(&root).await?
-    } else {
-        Vec::new()
-    };
+    // A person's own repository sends the files of its HEAD commit, so a file
+    // git does not track, or an edit saved since the commit, is never read.
+    let from_commit = local.then(|| "HEAD".to_owned());
     let outcome = tokio::task::spawn_blocking(move || -> Result<PushOutcome, Error> {
         let store = store_for(&root, &state_home);
         let state = store.load()?.ok_or(Error::NotLinked)?;
@@ -834,8 +830,9 @@ async fn web_push(inner: &Inner, connection: &Connection) -> Result<PushOutcome,
         let options = PushOptions {
             message,
             author,
-            exclude,
+            exclude: Vec::new(),
             branch: sync_branch(&root, local)?,
+            from_commit,
         };
         handle.block_on(push(&client, &root, store.as_ref(), &options))
     })
@@ -843,25 +840,6 @@ async fn web_push(inner: &Inner, connection: &Connection) -> Result<PushOutcome,
     .map_err(|_| refuse(500, "the push stopped"))?
     .map_err(|error| failed(&error))?;
     Ok(outcome)
-}
-
-/// The files git does not track in `repo` and does not ignore, relative to its
-/// top folder.
-async fn untracked_paths(repo: &Path) -> Result<Vec<String>, Failure> {
-    let output = must(
-        repo,
-        Limit::Local,
-        &["ls-files", "--others", "--exclude-standard", "-z"],
-    )
-    .await?;
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .split('\0')
-        // A repository nested inside is reported as its folder, `nested/`, and
-        // an exclusion names a folder without the slash.
-        .map(|path| path.trim_end_matches('/'))
-        .filter(|path| !path.is_empty())
-        .map(str::to_owned)
-        .collect())
 }
 
 /// The answer for a web push that did not send a version.
@@ -920,10 +898,6 @@ async fn pull_from_repository(
     if merge_stopped(&web_pull(inner, &connection).await?)? {
         return stopped(inner, &connection).await;
     }
-    // The web pull spent a round trip on the network, and a file saved in the
-    // meantime would be read by the push. Looking again leaves the push only
-    // the moment between this check and its own read.
-    refuse_uncommitted(&connection, &repo).await?;
     let outcome = web_push(inner, &connection).await?;
     if let Some(refusal) = pushed_refusal(&outcome) {
         return Err(refusal);
