@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { mode, onMode } from "../lib/theme.js";
+  import { mode, onMode, paperMode, onPaper } from "../lib/theme.js";
   import { createFrameMessageReceiver } from "../lib/frame-messages.js";
   // The document, on its own origin, in a frame.
   //
@@ -51,7 +51,8 @@
       heldHeight = viewport.clientHeight;
     });
     observer.observe(viewport);
-    const stopMode = onMode((next) => tell({ type: "theme", mode: next }));
+    const stopMode = onMode(() => sendTheme());
+    const stopPaper = onPaper(() => sendTheme());
     const standard = () => document.fullscreenElement === frame;
     const current = () => standard() || /** @type {any} */ (document).webkitFullscreenElement === frame;
     let presenting = false;
@@ -67,6 +68,7 @@
       document.removeEventListener("fullscreenchange", changed);
       document.removeEventListener("webkitfullscreenchange", changed);
       stopMode();
+      stopPaper();
       window.removeEventListener("message", receiver.receive);
       receiver.dispose();
       observer.disconnect();
@@ -90,6 +92,12 @@
     if (!trusted || target.origin !== trusted) return false;
     frame.contentWindow.postMessage({ librepaper: true, ...message }, trusted, transfer);
     return true;
+  }
+
+  /// The theme as the frame should show it: the mode, and the paper the
+  /// preview is drawn on. Sent when either changes and once the frame loads.
+  function sendTheme() {
+    return tell({ type: "theme", mode: mode(), paper: paperMode() });
   }
 
   /// Presentation mode. A message carries no user activation, so the frame
@@ -137,7 +145,7 @@
         receiver?.frameLoaded();
         onload?.();
         tell({ type: "reader-ready" });
-        tell({ type: "theme", mode: mode() });
+        sendTheme();
       }}
       style:pointer-events={grabbing ? "none" : null}
       allow="fullscreen"
