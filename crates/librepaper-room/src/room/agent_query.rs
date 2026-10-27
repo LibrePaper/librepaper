@@ -8,9 +8,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use librepaper_base::digest::Digest;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use librepaper_base::digest::Digest;
 
 /// The immutable source capture one query group reads, and the bounded
 /// comment windows prepared for whichever of its queries asked for one.

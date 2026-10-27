@@ -14,8 +14,8 @@
 use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
+use librepaper_base::digest::Digest;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::log::{Command, CommandError, Evidence, Head, PreparedSource, Registry};
@@ -645,9 +645,12 @@ impl Command for ReplaceProject {
                 .after_digest
                 .as_deref()
                 .unwrap_or(&evidence.before_digest);
-            let tree_digest = hex::decode(digest_hex)
-                .ok()
-                .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok());
+            let tree_digest = Some(
+                *digest_hex
+                    .parse::<Digest>()
+                    .map_err(|_| CommandError::Conflict("invalid tree digest".into()))?
+                    .as_bytes(),
+            );
             if !self.staged_assets.is_empty() {
                 self.catalog
                     .complete_assets_in_transaction(tx, &self.staged_assets)
@@ -655,11 +658,16 @@ impl Command for ReplaceProject {
             }
             // Rows reused at staging may have been deleted by a trim since.
             // A retry stages those bytes again because their rows are gone.
-            let digests: Vec<Vec<u8>> = self
+            let digests = self
                 .assets
                 .iter()
-                .filter_map(|(_, digest_hex)| hex::decode(digest_hex).ok())
-                .collect();
+                .map(|(_, digest_hex)| {
+                    digest_hex
+                        .parse::<Digest>()
+                        .map(|digest| digest.as_bytes().to_vec())
+                        .map_err(|_| CommandError::Conflict("invalid asset digest".into()))
+                })
+                .collect::<std::result::Result<Vec<Vec<u8>>, CommandError>>()?;
             if !digests.is_empty()
                 && self
                     .catalog
@@ -1451,8 +1459,7 @@ impl Store {
             let assets = asset_files
                 .iter()
                 .map(|file| {
-                    let digest: [u8; 32] = Sha256::digest(&file.bytes).into();
-                    (file.path.clone(), hex::encode(digest))
+                    (file.path.clone(), Digest::of(&file.bytes).to_hex())
                 })
                 .collect();
             (assets, staged_assets)
@@ -1505,11 +1512,10 @@ impl Store {
             .ok_or(ModifyError::NotFound)?;
         let account_id = uuid::Uuid::parse_str(account_id)
             .map_err(|_| ModifyError::Refused("invalid guest account".into()))?;
-        let raw = hex::decode(link_hash)
-            .map_err(|_| ModifyError::Refused("invalid link digest".into()))?;
-        let hash: [u8; 32] = raw
-            .try_into()
-            .map_err(|_| ModifyError::Refused("invalid link digest".into()))?;
+        let hash = *link_hash
+            .parse::<Digest>()
+            .map_err(|_| ModifyError::Refused("invalid link digest".into()))?
+            .as_bytes();
         let role = match role {
             Role::Reader => crate::storage::postgres::AccessRole::Reader,
             Role::Commenter => crate::storage::postgres::AccessRole::Commenter,
@@ -1548,11 +1554,11 @@ impl Store {
             .links
             .iter()
             .map(|link| {
-                let raw = hex::decode(&link.hash)
-                    .map_err(|_| ModifyError::Refused("invalid link digest".into()))?;
-                let hash: [u8; 32] = raw
-                    .try_into()
-                    .map_err(|_| ModifyError::Refused("invalid link digest".into()))?;
+                let hash = *link
+                    .hash
+                    .parse::<Digest>()
+                    .map_err(|_| ModifyError::Refused("invalid link digest".into()))?
+                    .as_bytes();
                 let expiry = if link.until.is_empty() {
                     None
                 } else {
@@ -1575,8 +1581,13 @@ impl Store {
             .links
             .iter()
             .filter(|link| link.live_at(librepaper_base::util::now_unix()))
-            .filter_map(|link| hex::decode(&link.hash).ok())
-            .collect::<Vec<_>>();
+            .map(|link| {
+                link.hash
+                    .parse::<Digest>()
+                    .map(|digest| digest.as_bytes().to_vec())
+                    .map_err(|_| ModifyError::Refused("invalid link digest".into()))
+            })
+            .collect::<Result<Vec<_>, ModifyError>>()?;
         catalog
             .save_document_sharing(document.id, actor, &links, &live_hashes)
             .await
