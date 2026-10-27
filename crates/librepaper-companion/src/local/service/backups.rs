@@ -560,11 +560,7 @@ impl BackupManager {
             );
         }
         let attempt = async {
-            let client = reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(5))
-                .timeout(Duration::from_secs(10))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
+            let client = short_client()
                 .map_err(|error| format!("could not start account authorization: {error}"))?;
             let response = client
                 .post(format!("{origin}/api/auth/device"))
@@ -639,11 +635,7 @@ impl BackupManager {
             device_code
         };
         let result = async {
-            let response = reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(5))
-                .timeout(Duration::from_secs(10))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
+            let response = short_client()
                 .map_err(|error| format!("could not complete account authorization: {error}"))?
                 .post(format!("{origin}/api/auth/device/token"))
                 .json(&json!({"device_code": device_code}))
@@ -1236,12 +1228,7 @@ async fn verify_account_with_token(
     account_id: &str,
     token: &str,
 ) -> Result<(), BackupError> {
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|error| BackupError::Unverified(error.to_string()))?;
+    let client = short_client().map_err(|error| BackupError::Unverified(error.to_string()))?;
     let response = client
         .get(format!("{}/api/me", origin.trim_end_matches('/')))
         .bearer_auth(token)
@@ -1354,6 +1341,16 @@ fn unix_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or_default()
+}
+
+/// The client for the short calls that sign in or check a token: a few
+/// seconds to connect, ten to answer, and no redirects.
+fn short_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
 }
 
 #[cfg(test)]

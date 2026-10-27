@@ -135,9 +135,9 @@ async fn fetch_live_project(
     let snapshot: librepaper_document::document::projection::ProjectSnapshot =
         serde_json::from_value(raw)
             .map_err(|error| format!("invalid project snapshot: {error}"))?;
-    if snapshot.sha != snapshot.tree.digest().to_hex() {
-        return Err("project snapshot digest does not match its identity".into());
-    }
+    snapshot
+        .verify()
+        .map_err(|error| format!("project snapshot is damaged: {error}"))?;
     let mut files = Vec::with_capacity(snapshot.tree.files.len());
     for (path, entry) in &snapshot.tree.files {
         let relative = output_path(path)?;

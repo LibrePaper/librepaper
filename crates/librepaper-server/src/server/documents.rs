@@ -338,11 +338,11 @@ impl Server {
             },
             None => None,
         };
-        let limit = values
-            .get("limit")
-            .and_then(|raw| raw.parse::<i64>().ok())
-            .unwrap_or(50)
-            .clamp(1, 100);
+        let limit = i64::from(pages::clamp_limit(
+            values.get("limit").map(String::as_str),
+            50,
+            100,
+        ));
         if let Err(response) = self
             .entry_at_least_in(slug, context, &headers, None, Role::Commenter)
             .await
@@ -1211,19 +1211,19 @@ impl Server {
             privacy_headers(&mut response);
             return response;
         }
-        let mut response = write_json(
-            200,
-            &json!({
-                "schema": 1,
-                "project_digest": identity,
-                "slug": entry.slug,
-                "title": entry.title,
-                "format": format,
-                "tree": projected.projection,
-                "texts": projected.texts,
-                "changes": changes,
-            }),
-        );
+        let mut body =
+            serde_json::to_value(librepaper_document::document::projection::HeadSnapshot {
+                project_digest: identity,
+                tree: projected.projection,
+                texts: projected.texts,
+            })
+            .expect("a snapshot serializes");
+        body["schema"] = json!(1);
+        body["slug"] = json!(entry.slug);
+        body["title"] = json!(entry.title);
+        body["format"] = json!(format);
+        body["changes"] = json!(changes);
+        let mut response = write_json(200, &body);
         set(&mut response, "etag", &etag);
         set(&mut response, "cache-control", "private, no-cache");
         privacy_headers(&mut response);
@@ -1796,15 +1796,11 @@ impl Server {
                     .collect()
             })
             .unwrap_or_default();
-        let limit = values
-            .get("limit")
-            .and_then(|value| value.parse::<u32>().ok())
-            .unwrap_or(200)
-            .clamp(1, 200);
-        let cursor = values
-            .get("after_updated")
-            .zip(values.get("after_id"))
-            .map(|(updated, id)| (updated.as_str(), id.as_str()));
+        let limit = pages::clamp_limit(values.get("limit").map(String::as_str), 200, 200);
+        let cursor = pages::TemplatesCursor::from_query(|name| values.get(name).cloned());
+        let cursor = cursor
+            .as_ref()
+            .map(|cursor| (cursor.after_updated.as_str(), cursor.after_id.as_str()));
         match self.store.templates_page(&who.id, cursor, limit).await {
             Ok((entries, next)) => {
                 let templates: Vec<Value> = entries
@@ -1813,8 +1809,11 @@ impl Server {
                     .collect();
                 let mut body = json!({"templates": templates});
                 if let Some((after_updated, after_id)) = next {
-                    body["next_cursor"] =
-                        json!({"after_updated": after_updated, "after_id": after_id});
+                    body["next_cursor"] = pages::TemplatesCursor {
+                        after_updated,
+                        after_id,
+                    }
+                    .to_json();
                 }
                 write_json(200, &body)
             }

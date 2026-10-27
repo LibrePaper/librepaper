@@ -13,7 +13,9 @@ use uuid::Uuid;
 use super::source_change::{client_seq_of, label_for_request, AgentError, Patch, SourceChange};
 use librepaper_base::text::LineEnding;
 use librepaper_document::document::anchors::{self, FragmentRange, OperationFile};
+use librepaper_document::document::passage::{unique_occurrence, Occurrence};
 use librepaper_document::document::session;
+use librepaper_document::document::text_index::{Span, TextIndex, Utf16};
 use librepaper_document::document::track;
 use librepaper_engine::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
 use librepaper_engine::storage::postgres::{NewLabel, PostgresCatalog};
@@ -207,7 +209,10 @@ fn fragment_ranges(
         .filter(|(_, edit)| edit.delete > 0)
         .map(|(index, edit)| Deletion {
             index,
-            deleted: utf16_slice(before, edit.at, edit.at + edit.delete),
+            deleted: TextIndex::new(before).slice16_widened(Span {
+                start: Utf16(edit.at),
+                end: Utf16(edit.at + edit.delete),
+            }),
             gap: gaps[index],
             run: None,
         })
@@ -255,12 +260,19 @@ fn fragment_ranges(
 fn gaps_of(before: &str, edits: &[session::Edit]) -> Vec<usize> {
     let starts: Vec<isize> = edits
         .iter()
-        .map(|edit| before[..utf16_byte(before, edit.at)].chars().count() as isize)
+        .map(|edit| {
+            before[..TextIndex::new(before).utf8_ceil(Utf16(edit.at)).0]
+                .chars()
+                .count() as isize
+        })
         .collect();
     let nets: Vec<isize> = edits
         .iter()
         .map(|edit| {
-            let deleted = utf16_slice(before, edit.at, edit.at + edit.delete);
+            let deleted = TextIndex::new(before).slice16_widened(Span {
+                start: Utf16(edit.at),
+                end: Utf16(edit.at + edit.delete),
+            });
             edit.insert.chars().count() as isize - deleted.chars().count() as isize
         })
         .collect();
@@ -308,24 +320,6 @@ fn first_run(
         }
     }
     None
-}
-
-/// The text between two UTF-16 offsets. `to` is never taken before `from`.
-fn utf16_slice(s: &str, from: usize, to: usize) -> &str {
-    &s[utf16_byte(s, from)..utf16_byte(s, to.max(from))]
-}
-
-/// The byte offset of the UTF-16 offset `units` in `s`. An offset inside a
-/// surrogate pair means the character after it.
-fn utf16_byte(s: &str, units: usize) -> usize {
-    let mut seen = 0;
-    for (byte, ch) in s.char_indices() {
-        if seen >= units {
-            return byte;
-        }
-        seen += ch.len_utf16();
-    }
-    s.len()
 }
 
 /// One edit of a tracked pass. It names its place by the words around it
@@ -546,28 +540,18 @@ impl AgentTrackedCommand {
 }
 
 /// The byte offset of the only occurrence of `needle` in `text`. Occurrences
-/// may overlap, so the search restarts one character after each match start.
+/// may overlap.
 fn locate_unique(text: &str, needle: &str) -> Result<usize, &'static str> {
     // An empty passage is the first text of an empty file; anywhere else it
     // matches at every position.
-    if needle.is_empty() {
-        return if text.is_empty() {
-            Ok(0)
-        } else {
-            Err("the passage is ambiguous; read the document again")
-        };
+    if needle.is_empty() && text.is_empty() {
+        return Ok(0);
     }
-    let mut found = None;
-    let mut from = 0;
-    while let Some(at) = text[from..].find(needle) {
-        let at = from + at;
-        if found.is_some() {
-            return Err("the passage is ambiguous; read the document again");
-        }
-        found = Some(at);
-        from = at + text[at..].chars().next().map_or(1, char::len_utf8);
+    match unique_occurrence(text, needle) {
+        Occurrence::One { start, .. } => Ok(start),
+        Occurrence::Many => Err("the passage is ambiguous; read the document again"),
+        Occurrence::None => Err("the passage changed; read the document again"),
     }
-    found.ok_or("the passage changed; read the document again")
 }
 
 impl Command for AgentTrackedCommand {

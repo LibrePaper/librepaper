@@ -4,13 +4,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub(crate) fn origin(server: &str) -> String {
-    match url::Url::parse(server) {
-        Ok(url) if url.host_str().is_some() => format!(
-            "{}://{}:{}",
-            url.scheme(),
-            url.host_str().unwrap_or_default(),
-            url.port_or_known_default().unwrap_or(0)
-        ),
+    match url::Url::parse(server.trim()) {
+        Ok(url) if url.host_str().is_some() => librepaper_base::site::SiteUrl::origin_of(&url),
         _ => server.trim().trim_end_matches('/').to_lowercase(),
     }
 }

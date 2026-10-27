@@ -43,10 +43,13 @@ use std::collections::{HashMap, HashSet};
 
 use loro::{
     cursor::{Cursor, PosType, Side as CursorSide},
-    Container, ContainerTrait, LoroDoc, LoroMap, LoroText, LoroValue, ValueOrContainer,
+    ContainerTrait, LoroDoc, LoroMap, LoroText, LoroValue, ValueOrContainer,
 };
 
-use crate::document::session::{Edit, CHANGES, FILES};
+use crate::document::passage::{unique_occurrence, Occurrence};
+use crate::document::roots::Roots;
+use crate::document::session::Edit;
+use crate::document::text_index::{Span, TextIndex, Utf16};
 
 pub const ANCHORS: &str = "anchors";
 pub const ANCHORS_ORIGIN: &str = "anchors";
@@ -169,12 +172,10 @@ struct Entry {
 /// shift its pieces gain there. Overlapping occurrences count as two: "aa" in
 /// "aaa" is ambiguous.
 fn once(hay: &str, needle: &str, shift: isize) -> Option<(usize, isize)> {
-    let byte = hay.find(needle)?;
-    let next = byte + needle.chars().next().map_or(0, char::len_utf8);
-    if hay[next..].contains(needle) {
-        return None;
+    match unique_occurrence(hay, needle) {
+        Occurrence::One { start, .. } => Some((TextIndex::new(&hay[..start]).len_utf16().0, shift)),
+        Occurrence::None | Occurrence::Many => None,
     }
-    Some((utf16_len(&hay[..byte]), shift))
 }
 
 /// A linewise cut and paste in Vim mode moves the newline from one end of the
@@ -242,7 +243,7 @@ impl MoveMemory {
             else {
                 continue;
             };
-            if !free(at, at + utf16_len(text)) {
+            if !free(at, at + TextIndex::new(text).len_utf16().0) {
                 continue;
             }
             return Some((i, at, shift));
@@ -262,55 +263,6 @@ impl MoveMemory {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
-}
-
-/// The length of `s` in UTF-16 code units.
-fn utf16_len(s: &str) -> usize {
-    s.chars().map(char::len_utf16).sum()
-}
-
-/// The byte offset of the UTF-16 offset `units` in `s`. An offset inside a
-/// surrogate pair means the character after it.
-fn byte_at(s: &str, units: usize) -> usize {
-    let mut at = 0;
-    for (byte, ch) in s.char_indices() {
-        if at >= units {
-            return byte;
-        }
-        at += ch.len_utf16();
-    }
-    s.len()
-}
-
-/// The text between two UTF-16 offsets. Empty when `to` is not past `from`.
-fn slice16(s: &str, from: usize, to: usize) -> &str {
-    if to <= from {
-        return "";
-    }
-    &s[byte_at(s, from)..byte_at(s, to)]
-}
-
-/// The UTF-16 offset where the last character before `to` starts.
-fn last_char_start(s: &str, to: usize) -> usize {
-    let mut start = 0;
-    let mut at = 0;
-    for ch in s.chars() {
-        if at >= to {
-            break;
-        }
-        start = at;
-        at += ch.len_utf16();
-    }
-    start
-}
-
-/// The UTF-16 width of the character at `units`. One at the end of `s`, as in
-/// the JavaScript module.
-fn width_at(s: &str, units: usize) -> usize {
-    s[byte_at(s, units)..]
-        .chars()
-        .next()
-        .map_or(1, char::len_utf16)
 }
 
 /// Pure, operation-level planner. No Loro here.
@@ -390,8 +342,12 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
                     let Some(from) = (at + hit_at + h.offset).checked_add_signed(shift) else {
                         continue;
                     };
-                    let to = from + utf16_len(&h.text);
-                    if slice16(&work[wi].after, from, to) != h.text {
+                    let to = from + TextIndex::new(&h.text).len_utf16().0;
+                    if TextIndex::new(&work[wi].after).slice16_widened(Span {
+                        start: Utf16(from),
+                        end: Utf16(to),
+                    }) != h.text
+                    {
                         continue;
                     }
                     work[oi].anchors.remove(index);
@@ -415,7 +371,7 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
                 }
                 // A text whose pieces all failed stays remembered for a later insertion.
                 if applied {
-                    claimed.push((hit_at, hit_at + utf16_len(&hit_text)));
+                    claimed.push((hit_at, hit_at + TextIndex::new(&hit_text).len_utf16().0));
                     memory.drop(entry);
                 }
             }
@@ -435,8 +391,12 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
 /// be in the file at `from`, and the piece must sit at the edge of the anchor
 /// that it was cut from. Returns whether the anchor took the piece back.
 fn rejoin_piece(w: &mut Work, index: usize, side: Side, from: usize, text: &str) -> bool {
-    let to = from + utf16_len(text);
-    if slice16(&w.after, from, to) != text {
+    let to = from + TextIndex::new(text).len_utf16().0;
+    if TextIndex::new(&w.after).slice16_widened(Span {
+        start: Utf16(from),
+        end: Utf16(to),
+    }) != text
+    {
         return false;
     }
     let planned = &mut w.anchors[index];
@@ -503,11 +463,15 @@ fn plan_file(w: &mut Work, memory: &mut MoveMemory) {
     for (index, edit) in w.edits.iter().enumerate() {
         let ef = (edit.at as isize + adj) as usize;
         let et = ef + edit.delete;
-        let n = utf16_len(&edit.insert);
+        let n = TextIndex::new(&edit.insert).len_utf16().0;
         if ef == et && n == 0 {
             continue;
         }
-        let (b_ef, b_et) = (byte_at(&cur, ef), byte_at(&cur, et));
+        let cur_text = TextIndex::new(&cur);
+        let (b_ef, b_et) = (
+            cur_text.utf8_floor(Utf16(ef)).0,
+            cur_text.utf8_ceil(Utf16(et)).0,
+        );
         // Anchors this edit's deletion overlapped without covering them whole.
         let mut partial: HashSet<usize> = HashSet::new();
         if et > ef {
@@ -527,7 +491,12 @@ fn plan_file(w: &mut Work, memory: &mut MoveMemory) {
                     held.push(Held {
                         id: pa.anchor.id.clone(),
                         offset: from - ef,
-                        text: slice16(&cur, from, to).to_string(),
+                        text: TextIndex::new(&cur)
+                            .slice16_widened(Span {
+                                start: Utf16(from),
+                                end: Utf16(to),
+                            })
+                            .to_string(),
                         side: None,
                     });
                     // The quote keys stay as they are. The length tells a later
@@ -550,14 +519,24 @@ fn plan_file(w: &mut Work, memory: &mut MoveMemory) {
                             held.push(Held {
                                 id: pa.anchor.id.clone(),
                                 offset: from - ef,
-                                text: slice16(&cur, from, et).to_string(),
+                                text: TextIndex::new(&cur)
+                                    .slice16_widened(Span {
+                                        start: Utf16(from),
+                                        end: Utf16(et),
+                                    })
+                                    .to_string(),
                                 side: Some(Side::Head),
                             });
                         } else if ef > from && et >= to {
                             held.push(Held {
                                 id: pa.anchor.id.clone(),
                                 offset: 0,
-                                text: slice16(&cur, ef, to).to_string(),
+                                text: TextIndex::new(&cur)
+                                    .slice16_widened(Span {
+                                        start: Utf16(ef),
+                                        end: Utf16(to),
+                                    })
+                                    .to_string(),
                                 side: Some(Side::Tail),
                             });
                         }
@@ -621,7 +600,7 @@ fn follow_edit(inserts: &mut Vec<(usize, String)>, ef: usize, et: usize, n: usiz
             *at = (*at as isize + n as isize - (et - ef) as isize) as usize;
             true
         } else {
-            ef >= *at + utf16_len(text.as_str())
+            ef >= *at + TextIndex::new(text.as_str()).len_utf16().0
         }
     });
 }
@@ -639,15 +618,6 @@ fn after_delete(p: usize, ef: usize, et: usize) -> usize {
 
 // ---------------------------------------------------------------------------
 // Loro layer
-
-/// The text at `file_id`, when the file is a text.
-fn text_of(doc: &LoroDoc, file_id: &str) -> Option<LoroText> {
-    match doc.get_map(FILES).get(file_id)? {
-        ValueOrContainer::Container(Container::Text(t)) => Some(t),
-        _ => None,
-    }
-}
-
 /// A file's text and its body, read once for a pass over its records.
 struct Live {
     text: LoroText,
@@ -655,7 +625,7 @@ struct Live {
 }
 
 fn live_of(doc: &LoroDoc, file_id: &str) -> Option<Live> {
-    let text = text_of(doc, file_id)?;
+    let text = Roots::new(doc).text_by_id(file_id)?;
     let body = text.to_string();
     Some(Live { text, body })
 }
@@ -813,26 +783,15 @@ fn span_of(doc: &LoroDoc, live: &Live, place: &Place) -> Option<(usize, usize)> 
     let to = if e.stale {
         e.offset
     } else {
-        e.offset + width_at(&live.body, e.offset)
+        // One unit at the end of the text, as in the JavaScript module.
+        let from = TextIndex::new(&live.body).utf8_ceil(Utf16(e.offset)).0;
+        let width = live.body[from..].chars().next().map_or(1, char::len_utf16);
+        e.offset + width
     };
     Some((s.offset, to.max(s.offset)))
 }
 
 /// The record `id` of a records root, when it is a map container.
-pub(super) fn record_map(root: &LoroMap, id: &str) -> Option<LoroMap> {
-    match root.get(id)? {
-        ValueOrContainer::Container(Container::Map(m)) => Some(m),
-        _ => None,
-    }
-}
-
-pub(super) fn str_of(m: &LoroMap, key: &str) -> Option<String> {
-    match m.get(key)? {
-        ValueOrContainer::Value(LoroValue::String(s)) => Some(s.to_string()),
-        _ => None,
-    }
-}
-
 pub(super) fn bytes_of(m: &LoroMap, key: &str) -> Option<Vec<u8>> {
     match m.get(key)? {
         ValueOrContainer::Value(LoroValue::Binary(b)) => Some(b.to_vec()),
@@ -876,9 +835,9 @@ fn record_fields(record: &LoroMap, id: &str, place: &Place) -> Anchor {
         fragment: place.fragment.clone(),
         offset: place.offset,
         length: place.length,
-        exact: str_of(record, "exact").unwrap_or_default(),
-        prefix: str_of(record, "prefix").unwrap_or_default(),
-        suffix: str_of(record, "suffix").unwrap_or_default(),
+        exact: Roots::string_at(record, "exact").unwrap_or_default(),
+        prefix: Roots::string_at(record, "prefix").unwrap_or_default(),
+        suffix: Roots::string_at(record, "suffix").unwrap_or_default(),
         collapsed: false,
         unresolved: false,
     }
@@ -941,7 +900,7 @@ impl<'a> Reader<'a> {
     pub fn resolve(&mut self, id: &str) -> Option<Anchor> {
         let doc = self.doc;
         let map = doc.get_map(ANCHORS);
-        let record = record_map(&map, id)?;
+        let record = Roots::record_in(&map, id)?;
         let place = Place::read(&record)?;
         let live = self.live(&place.file);
         Some(record_anchor(doc, id, &record, &place, live))
@@ -955,10 +914,7 @@ impl<'a> Reader<'a> {
         }
         if anchor.detached {
             let pending = anchor.fragment.as_deref().is_some_and(|fragment| {
-                matches!(
-                    doc.get_map(CHANGES).get(fragment),
-                    Some(ValueOrContainer::Container(Container::Map(_)))
-                )
+                Roots::record_in(&Roots::new(doc).changes(), fragment).is_some()
             });
             return if pending {
                 Status::PendingDeletion
@@ -972,7 +928,11 @@ impl<'a> Reader<'a> {
         let body = self
             .live(&anchor.file)
             .map_or("", |live| live.body.as_str());
-        if slice16(body, anchor.from, anchor.to) == anchor.exact {
+        if TextIndex::new(body).slice16_widened(Span {
+            start: Utf16(anchor.from),
+            end: Utf16(anchor.to),
+        }) == anchor.exact
+        {
             Status::Exact
         } else {
             Status::Modified
@@ -997,7 +957,7 @@ pub fn resolve_anchors(doc: &LoroDoc, file_id: &str) -> Vec<Anchor> {
     let mut out = Vec::new();
     for key in map.keys() {
         let id = key.to_string();
-        let Some(record) = record_map(&map, &id) else {
+        let Some(record) = Roots::record_in(&map, &id) else {
             continue;
         };
         let Some(place) = Place::read(&record).filter(|p| p.file == file_id) else {
@@ -1050,7 +1010,7 @@ pub fn capture_cursors(
     let start = cursor_at(&live.text, from, CursorSide::Left)?;
     let end = cursor_at(
         &live.text,
-        last_char_start(&live.body, to),
+        TextIndex::new(&live.body).last_char_start(Utf16(to)).0,
         CursorSide::Right,
     )?;
     Some((start.encode(), end.encode()))
@@ -1132,7 +1092,7 @@ pub fn write_anchors(doc: &LoroDoc, planned: &[PlannedFile]) -> Vec<String> {
             if pa.state != PlanState::Set || (!a.detached && !pa.touched) {
                 continue;
             }
-            let Some(record) = record_map(&map, &a.id) else {
+            let Some(record) = Roots::record_in(&map, &a.id) else {
                 continue;
             };
             let place = if a.detached {
@@ -1157,7 +1117,7 @@ pub fn write_anchors(doc: &LoroDoc, planned: &[PlannedFile]) -> Vec<String> {
                     cursor_at(&live.text, a.from, CursorSide::Left),
                     cursor_at(
                         &live.text,
-                        last_char_start(&live.body, a.to),
+                        TextIndex::new(&live.body).last_char_start(Utf16(a.to)).0,
                         CursorSide::Right,
                     ),
                 ) else {
@@ -1197,7 +1157,7 @@ pub fn mark_collapsed(doc: &LoroDoc, file_id: &str) -> Vec<String> {
         if !a.collapsed {
             continue;
         }
-        let Some(record) = record_map(&map, &a.id) else {
+        let Some(record) = Roots::record_in(&map, &a.id) else {
             continue;
         };
         let Some(mut place) = Place::read(&record) else {
@@ -1219,16 +1179,12 @@ pub fn mark_collapsed(doc: &LoroDoc, file_id: &str) -> Vec<String> {
 /// The id of every text in the files map. A text is listed whether or not a
 /// path still names it, since a record can point at a text no path names.
 pub fn text_file_ids(doc: &LoroDoc) -> Vec<String> {
-    let files = doc.get_map(FILES);
-    files
+    let roots = Roots::new(doc);
+    roots
+        .files()
         .keys()
         .map(|key| key.to_string())
-        .filter(|id| {
-            matches!(
-                files.get(id.as_str()),
-                Some(ValueOrContainer::Container(Container::Text(_)))
-            )
-        })
+        .filter(|id| roots.text_by_id(id).is_some())
         .collect()
 }
 
@@ -1259,7 +1215,7 @@ pub fn heal_stale(doc: &LoroDoc, file_id: &str) -> Vec<String> {
         if a.detached || a.unresolved {
             continue;
         }
-        let Some(record) = record_map(&map, &a.id) else {
+        let Some(record) = Roots::record_in(&map, &a.id) else {
             continue;
         };
         let Some(mut place) = Place::read(&record) else {
@@ -1278,7 +1234,7 @@ pub fn heal_stale(doc: &LoroDoc, file_id: &str) -> Vec<String> {
             cursor_at(&live.text, a.from, CursorSide::Left),
             cursor_at(
                 &live.text,
-                last_char_start(&live.body, a.to),
+                TextIndex::new(&live.body).last_char_start(Utf16(a.to)).0,
                 CursorSide::Right,
             ),
         ) else {
@@ -1308,7 +1264,7 @@ fn detached_elsewhere(doc: &LoroDoc, named: &[OperationFile]) -> Vec<OperationFi
     let mut groups: Vec<(String, Vec<Anchor>)> = Vec::new();
     for key in map.keys() {
         let id = key.to_string();
-        let Some(record) = record_map(&map, &id) else {
+        let Some(record) = Roots::record_in(&map, &id) else {
             continue;
         };
         let Some(place) = Place::read(&record) else {
@@ -1437,7 +1393,7 @@ pub fn restore_by_fragments(doc: &LoroDoc, file_id: &str, restored: &[Restored])
     let mut repins: Vec<(String, LoroMap, Place)> = Vec::new();
     for key in map.keys() {
         let id = key.to_string();
-        let Some(record) = record_map(&map, &id) else {
+        let Some(record) = Roots::record_in(&map, &id) else {
             continue;
         };
         let Some(place) = Place::read(&record) else {
@@ -1457,7 +1413,7 @@ pub fn restore_by_fragments(doc: &LoroDoc, file_id: &str, restored: &[Restored])
             continue;
         };
         let from = r.at + offset;
-        let to = (from + length).min(r.at + utf16_len(&r.text));
+        let to = (from + length).min(r.at + TextIndex::new(&r.text).len_utf16().0);
         if to <= from {
             continue;
         }
@@ -1465,7 +1421,7 @@ pub fn restore_by_fragments(doc: &LoroDoc, file_id: &str, restored: &[Restored])
             cursor_at(&live.text, from, CursorSide::Left),
             cursor_at(
                 &live.text,
-                last_char_start(&live.body, to),
+                TextIndex::new(&live.body).last_char_start(Utf16(to)).0,
                 CursorSide::Right,
             ),
         ) else {
@@ -1492,7 +1448,7 @@ pub fn restore_by_fragments(doc: &LoroDoc, file_id: &str, restored: &[Restored])
 pub fn has_legacy_records(doc: &LoroDoc) -> bool {
     let map = doc.get_map(ANCHORS);
     let legacy = map.keys().any(|key| {
-        record_map(&map, key.as_ref()).is_some_and(|record| record.get("file").is_some())
+        Roots::record_in(&map, key.as_ref()).is_some_and(|record| record.get("file").is_some())
     });
     legacy
 }
@@ -1513,19 +1469,19 @@ pub fn upgrade_records(doc: &LoroDoc) -> Vec<String> {
     let mut legacy: Vec<(String, LoroMap, Option<Place>)> = Vec::new();
     for key in map.keys() {
         let id = key.to_string();
-        let Some(record) = record_map(&map, &id) else {
+        let Some(record) = Roots::record_in(&map, &id) else {
             continue;
         };
         if record.get("file").is_none() {
             continue;
         }
-        let place = str_of(&record, "file").map(|file| Place {
+        let place = Roots::string_at(&record, "file").map(|file| Place {
             file,
             start: bytes_of(&record, "start"),
             end: bytes_of(&record, "end"),
             detached: is_true(&record, "detached"),
             length: count_of(&record, "length"),
-            fragment: str_of(&record, "fragment"),
+            fragment: Roots::string_at(&record, "fragment"),
             offset: count_of(&record, "offset"),
         });
         legacy.push((id, record, place));
@@ -1553,6 +1509,7 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::*;
+    use crate::document::session::CHANGES;
     use crate::document::session::{apply_text_edits, new_doc, put_text};
     use crate::document::track::{self, Author};
 
@@ -1854,7 +1811,13 @@ mod tests {
         let rejoined = &planned[0].anchors[0];
         assert_eq!(planned[0].after, "one two three");
         assert_eq!((rejoined.anchor.from, rejoined.anchor.to), (4, 7));
-        assert_eq!(slice16(&planned[0].after, 4, 7), "two");
+        assert_eq!(
+            TextIndex::new(&planned[0].after).slice16_widened(Span {
+                start: Utf16(4),
+                end: Utf16(7)
+            }),
+            "two"
+        );
         assert!(!rejoined.anchor.detached);
         assert_eq!(rejoined.state, PlanState::Set);
         assert!(rejoined.touched);
@@ -1903,7 +1866,13 @@ mod tests {
         let repinned = &planned[0].anchors[0];
         assert!(!repinned.anchor.detached);
         assert_eq!((repinned.anchor.from, repinned.anchor.to), (11, 14));
-        assert_eq!(slice16(&planned[0].after, 11, 14), "two");
+        assert_eq!(
+            TextIndex::new(&planned[0].after).slice16_widened(Span {
+                start: Utf16(11),
+                end: Utf16(14)
+            }),
+            "two"
+        );
         assert_eq!(repinned.state, PlanState::Set);
         assert!(repinned.touched);
         assert!(memory.is_empty());
@@ -1958,7 +1927,13 @@ mod tests {
         let rejoined = &planned[0].anchors[0];
         assert_eq!(planned[0].after, "one two three");
         assert_eq!((rejoined.anchor.from, rejoined.anchor.to), (4, 7));
-        assert_eq!(slice16(&planned[0].after, 4, 7), "two");
+        assert_eq!(
+            TextIndex::new(&planned[0].after).slice16_widened(Span {
+                start: Utf16(4),
+                end: Utf16(7)
+            }),
+            "two"
+        );
         assert!(!rejoined.anchor.detached);
         assert!(rejoined.touched);
         assert!(memory.is_empty());
@@ -2083,7 +2058,13 @@ mod tests {
             .unwrap();
         assert!(!attached.anchor.detached);
         assert_eq!((attached.anchor.from, attached.anchor.to), (16, 19));
-        assert_eq!(slice16(&planned[0].after, 16, 19), "two");
+        assert_eq!(
+            TextIndex::new(&planned[0].after).slice16_widened(Span {
+                start: Utf16(16),
+                end: Utf16(19)
+            }),
+            "two"
+        );
         let detached = planned[0]
             .anchors
             .iter()
@@ -2146,7 +2127,13 @@ mod tests {
         let rejoined = &third[0].anchors[0];
         assert_eq!(third[0].after, "twone two three");
         assert_eq!((rejoined.anchor.from, rejoined.anchor.to), (6, 9));
-        assert_eq!(slice16(&third[0].after, 6, 9), "two");
+        assert_eq!(
+            TextIndex::new(&third[0].after).slice16_widened(Span {
+                start: Utf16(6),
+                end: Utf16(9)
+            }),
+            "two"
+        );
         assert!(memory.is_empty());
     }
 
@@ -2158,12 +2145,12 @@ mod tests {
     }
 
     fn body(doc: &LoroDoc, file: &str) -> String {
-        text_of(doc, file).unwrap().to_string()
+        Roots::new(doc).text_by_id(file).unwrap().to_string()
     }
 
     fn record_file(doc: &LoroDoc, id: &str) -> Option<String> {
         let root = doc.get_map(ANCHORS);
-        Some(Place::read(&record_map(&root, id)?)?.file)
+        Some(Place::read(&Roots::record_in(&root, id)?)?.file)
     }
 
     fn sync(a: &LoroDoc, b: &LoroDoc) {
@@ -2180,9 +2167,9 @@ mod tests {
             .keys()
             .map(|k| k.to_string())
             .find(|k| {
-                record_map(&root, k).is_some_and(|m| {
-                    str_of(&m, "kind").as_deref() == Some("fragment")
-                        && str_of(&m, "change").as_deref() == Some(change)
+                Roots::record_in(&root, k).is_some_and(|m| {
+                    Roots::string_at(&m, "kind").as_deref() == Some("fragment")
+                        && Roots::string_at(&m, "change").as_deref() == Some(change)
                 })
             })
             .unwrap();
@@ -2218,7 +2205,7 @@ mod tests {
             delete,
             insert: insert.to_string(),
         };
-        let text = text_of(doc, file).unwrap();
+        let text = Roots::new(doc).text_by_id(file).unwrap();
         assert!(apply_text_edits(&text, std::slice::from_ref(&edit)));
         let plan = record_operation(
             doc,
@@ -2309,7 +2296,7 @@ mod tests {
         assert_eq!(after[0].length, Some(4));
         assert_eq!(after[0].fragment.as_deref(), Some("frag1"));
         assert_eq!(after[0].offset, Some(1));
-        let record = record_map(&doc.get_map(ANCHORS), "c1").unwrap();
+        let record = Roots::record_in(&doc.get_map(ANCHORS), "c1").unwrap();
         assert!(record.get("file").is_none());
         assert!(record.get("detached").is_none());
         assert!(record.get("length").is_none());
@@ -2334,20 +2321,26 @@ mod tests {
         let mut memory_b = MoveMemory::new(32);
         edit_and_record(&a, &file, &mut memory_a, 6, 1, "");
         edit_and_record(&b, &file, &mut memory_b, 9, 1, "");
-        let place_a = Place::read(&record_map(&a.get_map(ANCHORS), "c1").unwrap()).unwrap();
-        let place_b = Place::read(&record_map(&b.get_map(ANCHORS), "c1").unwrap()).unwrap();
+        let place_a = Place::read(&Roots::record_in(&a.get_map(ANCHORS), "c1").unwrap()).unwrap();
+        let place_b = Place::read(&Roots::record_in(&b.get_map(ANCHORS), "c1").unwrap()).unwrap();
         assert_ne!(place_a, place_b);
         sync(&a, &b);
 
-        let merged_a = Place::read(&record_map(&a.get_map(ANCHORS), "c1").unwrap()).unwrap();
-        let merged_b = Place::read(&record_map(&b.get_map(ANCHORS), "c1").unwrap()).unwrap();
+        let merged_a = Place::read(&Roots::record_in(&a.get_map(ANCHORS), "c1").unwrap()).unwrap();
+        let merged_b = Place::read(&Roots::record_in(&b.get_map(ANCHORS), "c1").unwrap()).unwrap();
         assert_eq!(merged_a, merged_b);
         assert!(merged_a == place_a || merged_a == place_b);
 
         // Either place resolves to the passage that is left of "beta".
         let on_a = resolve_anchors(&a, &file);
         assert_eq!(body(&a, &file), "alpha et gamma");
-        assert_eq!(slice16(&body(&a, &file), on_a[0].from, on_a[0].to), "et");
+        assert_eq!(
+            TextIndex::new(&body(&a, &file)).slice16_widened(Span {
+                start: Utf16(on_a[0].from),
+                end: Utf16(on_a[0].to)
+            }),
+            "et"
+        );
         assert_eq!(resolve_anchors(&b, &file), on_a);
     }
 
@@ -2457,7 +2450,7 @@ mod tests {
             .unwrap();
 
         // Each peer deletes one half of the passage: "be" on one, "ta" on the other.
-        let text_a = text_of(&a, &file).unwrap();
+        let text_a = Roots::new(&a).text_by_id(&file).unwrap();
         assert!(apply_text_edits(
             &text_a,
             &[Edit {
@@ -2467,7 +2460,7 @@ mod tests {
             }]
         ));
         a.commit();
-        let text_b = text_of(&b, &file).unwrap();
+        let text_b = Roots::new(&b).text_by_id(&file).unwrap();
         assert!(apply_text_edits(
             &text_b,
             &[Edit {
@@ -2489,7 +2482,7 @@ mod tests {
         assert!(marked[0].detached);
         assert_eq!(status_of(&a, &marked[0]), Status::Deleted);
         let root = a.get_map(ANCHORS);
-        let record = record_map(&root, "c1").unwrap();
+        let record = Roots::record_in(&root, "c1").unwrap();
         assert!(Place::read(&record).unwrap().detached);
     }
 
@@ -2524,7 +2517,7 @@ mod tests {
             id: fragment.clone(),
             edit: 0,
             start: 0,
-            end: utf16_len(CUT),
+            end: TextIndex::new(CUT).len_utf16().0,
         };
         record_operation(
             &doc,
@@ -2552,7 +2545,12 @@ mod tests {
         let restored = Restored {
             fragment: fragment.clone(),
             at,
-            text: slice16(&text_restored, at, at + utf16_len(CUT)).to_string(),
+            text: TextIndex::new(&text_restored)
+                .slice16_widened(Span {
+                    start: Utf16(at),
+                    end: Utf16(at + TextIndex::new(CUT).len_utf16().0),
+                })
+                .to_string(),
         };
         assert_eq!(restored.text, CUT);
         assert_eq!(
@@ -2582,7 +2580,13 @@ mod tests {
         let anchors = resolve_anchors(&doc, &file);
         assert_eq!(anchors.len(), 1);
         assert_eq!((anchors[0].from, anchors[0].to), (6, 11));
-        assert_eq!(slice16(&body(&doc, &file), 6, 11), "bXYZa");
+        assert_eq!(
+            TextIndex::new(&body(&doc, &file)).slice16_widened(Span {
+                start: Utf16(6),
+                end: Utf16(11)
+            }),
+            "bXYZa"
+        );
         assert_eq!(status_of(&doc, &anchors[0]), Status::Modified);
     }
 
@@ -2594,7 +2598,7 @@ mod tests {
         ));
         doc.commit();
         // "ta" goes, and the end cursor's character with it.
-        let text = text_of(&doc, &file).unwrap();
+        let text = Roots::new(&doc).text_by_id(&file).unwrap();
         assert!(apply_text_edits(
             &text,
             &[Edit {

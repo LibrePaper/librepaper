@@ -87,6 +87,7 @@ mod onboarding;
 #[cfg(test)]
 mod onboarding_tests;
 pub mod origins;
+mod pages;
 mod quota;
 mod refusal;
 mod reply;

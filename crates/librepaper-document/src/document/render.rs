@@ -2,6 +2,8 @@
 //! reads titles for publish and seed. The browser renders through pinned
 //! renderer libraries.
 
+use librepaper_base::lines::lines;
+
 use super::html;
 
 pub fn is_markdown(name: &str) -> bool {
@@ -16,7 +18,7 @@ pub fn is_quarto(name: &str) -> bool {
 /// Read metadata without rewriting the editable source. Incomplete front matter
 /// is an ordinary editing state and falls back to a heading.
 pub fn title_from_quarto(source: &str) -> String {
-    let mut lines = source.lines();
+    let mut lines = lines(source).map(|line| line.body);
     if lines
         .next()
         .map(|line| line.trim_start_matches('\u{feff}').trim())
@@ -74,7 +76,7 @@ pub fn title_from_typst(source: &str) -> String {
 
 /// The first level-one heading, the obvious title when none was given.
 fn first_heading(source: &str, marker: char) -> String {
-    for line in source.lines() {
+    for line in lines(source).map(|line| line.body) {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix(marker) {
             if rest.starts_with([' ', '\t']) {

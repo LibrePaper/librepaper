@@ -7,6 +7,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use librepaper_base::lines::lines;
+
 use super::render::document_format;
 
 /// The files that include each file, sorted. Only paths present in `texts`
@@ -157,7 +159,7 @@ fn included_names(format: &str, body: &str) -> Vec<String> {
 /// an even number of backslashes precedes.
 fn strip_latex_comments(body: &str) -> String {
     let mut out = String::with_capacity(body.len());
-    for line in body.split('\n') {
+    for line in lines(body).map(|line| line.body) {
         let mut slashes = 0;
         let mut end = line.len();
         for (at, ch) in line.char_indices() {

@@ -85,7 +85,7 @@ pub fn latex_release() -> &'static str {
 /// once, each with a lowercase SHA-256. Keyed by file name.
 fn parse_lock(source: &str) -> Result<HashMap<String, String>, String> {
     let mut pins = HashMap::new();
-    for line in source.lines() {
+    for line in librepaper_base::lines::lines(source).map(|line| line.body) {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;

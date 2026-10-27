@@ -7,7 +7,9 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use librepaper_base::pages::{walk, ListingCursor, Page, WalkError, LISTING_MAX_PAGES};
 use librepaper_base::paths::RelPath;
+use librepaper_document::document::projection::HeadSnapshot as Snapshot;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use zip::write::SimpleFileOptions;
@@ -55,16 +57,6 @@ struct ProjectRecord {
     archive: String,
     #[serde(default)]
     sha: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct Snapshot {
-    #[serde(rename = "project_digest")]
-    digest: String,
-    #[serde(rename = "tree")]
-    projection: librepaper_document::document::projection::Projection,
-    #[serde(default)]
-    texts: BTreeMap<String, String>,
 }
 
 enum Fetched {
@@ -193,7 +185,7 @@ pub(crate) async fn run_backup(
             // A 200 with the recorded digest (a proxy that drops If-None-Match)
             // is unchanged too, if the archive still holds its entries.
             let kept = existing.as_ref().filter(|record| {
-                record.snapshot == snapshot.digest
+                record.snapshot == snapshot.project_digest
                     && record.title == title
                     && record.archive == archive_name(&title, slug)
             });
@@ -414,10 +406,10 @@ fn archive_holds_snapshot(root: &Path, filename: &str, slug: &str, snapshot: &Sn
         Ok(archive) => archive,
         Err(_) => return false,
     };
-    if archive.len() != snapshot.projection.files.len() {
+    if archive.len() != snapshot.tree.files.len() {
         return false;
     }
-    for (path, expected) in &snapshot.projection.files {
+    for (path, expected) in &snapshot.tree.files {
         let relative = match member_path(path) {
             Ok(path) => path,
             Err(_) => return false,
@@ -446,70 +438,69 @@ async fn list_documents(
     server: &str,
     token: &str,
 ) -> Result<Vec<Value>, String> {
-    let mut target = url::Url::parse(&format!("{server}/api/backup/projects"))
+    let base = url::Url::parse(&format!("{server}/api/backup/projects"))
         .map_err(|error| format!("invalid backup server URL: {error}"))?;
+    let pages = walk(
+        |cursor: Option<ListingCursor>| {
+            let mut target = base.clone();
+            async move {
+                if let Some(cursor) = &cursor {
+                    cursor.apply(&mut target);
+                }
+                let response = client
+                    .get(target)
+                    .bearer_auth(token)
+                    .timeout(Duration::from_secs(60))
+                    .send()
+                    .await
+                    .map_err(|error| format!("document listing failed: {error}"))?;
+                let status = response.status();
+                let payload =
+                    response_json(response, BACKUP_RESPONSE_MAX_BYTES, "document listing").await?;
+                if status != reqwest::StatusCode::OK {
+                    return Err(format!(
+                        "document listing failed ({}): {}",
+                        status.as_u16(),
+                        detail(&payload)
+                    ));
+                }
+                let items = payload
+                    .get("documents")
+                    .and_then(Value::as_array)
+                    .ok_or("invalid document listing: missing documents")?
+                    .clone();
+                let next = ListingCursor::from_payload(&payload)
+                    .map_err(|_| "invalid document listing cursor".to_string())?;
+                Ok(Page { items, next })
+            }
+        },
+        LISTING_MAX_PAGES,
+    )
+    .await
+    .map_err(|error| match error {
+        WalkError::Fetch(error) => error,
+        WalkError::Repeated => "server repeated a document listing cursor".to_string(),
+        WalkError::TooManyPages => format!("document listing exceeds {MAX_PROJECTS} projects"),
+    })?;
     let mut documents = Vec::new();
     let mut seen_slugs = HashSet::new();
-    let mut seen_cursors = HashSet::new();
-    loop {
-        let response = client
-            .get(target.clone())
-            .bearer_auth(token)
-            .timeout(Duration::from_secs(60))
-            .send()
-            .await
-            .map_err(|error| format!("document listing failed: {error}"))?;
-        let status = response.status();
-        let payload =
-            response_json(response, BACKUP_RESPONSE_MAX_BYTES, "document listing").await?;
-        if status != reqwest::StatusCode::OK {
-            return Err(format!(
-                "document listing failed ({}): {}",
-                status.as_u16(),
-                detail(&payload)
-            ));
-        }
-        let page = payload
-            .get("documents")
-            .and_then(Value::as_array)
-            .ok_or("invalid document listing: missing documents")?;
-        for document in page {
-            let slug = document
-                .get("slug")
-                .and_then(Value::as_str)
-                .ok_or("invalid document listing: document has no slug")?;
-            if slug.is_empty() {
-                return Err("invalid document listing: document has an empty slug".into());
-            }
-            if slug.len() > 1024 {
-                return Err("invalid document listing: document slug is too long".into());
-            }
-            if seen_slugs.insert(slug.to_string()) {
-                documents.push(document.clone());
-                if documents.len() > MAX_PROJECTS {
-                    return Err(format!("document listing exceeds {MAX_PROJECTS} projects"));
-                }
-            }
-        }
-        let Some(cursor) = payload.get("next_cursor").filter(|value| !value.is_null()) else {
-            break;
-        };
-        let after_updated = cursor
-            .get("after_updated")
+    for document in pages {
+        let slug = document
+            .get("slug")
             .and_then(Value::as_str)
-            .ok_or("invalid document listing cursor")?;
-        let after_slug = cursor
-            .get("after_slug")
-            .and_then(Value::as_str)
-            .ok_or("invalid document listing cursor")?;
-        if !seen_cursors.insert((after_updated.to_string(), after_slug.to_string())) {
-            return Err("server repeated a document listing cursor".into());
+            .ok_or("invalid document listing: document has no slug")?;
+        if slug.is_empty() {
+            return Err("invalid document listing: document has an empty slug".into());
         }
-        target
-            .query_pairs_mut()
-            .clear()
-            .append_pair("after_updated", after_updated)
-            .append_pair("after_slug", after_slug);
+        if slug.len() > 1024 {
+            return Err("invalid document listing: document slug is too long".into());
+        }
+        if seen_slugs.insert(slug.to_string()) {
+            if documents.len() >= MAX_PROJECTS {
+                return Err(format!("document listing exceeds {MAX_PROJECTS} projects"));
+            }
+            documents.push(document.clone());
+        }
     }
     Ok(documents)
 }
@@ -544,12 +535,10 @@ async fn fetch_snapshot(
     }
     let snapshot: Snapshot = serde_json::from_value(payload)
         .map_err(|error| format!("invalid project snapshot for {slug:?}: {error}"))?;
-    if snapshot.digest != snapshot.projection.digest().to_hex() {
-        return Err(format!(
-            "project {slug:?} snapshot digest does not match its identity"
-        ));
-    }
-    if snapshot.projection.files.len() > MAX_FILES_PER_PROJECT {
+    snapshot
+        .verify()
+        .map_err(|error| format!("project {slug:?} snapshot is damaged: {error}"))?;
+    if snapshot.tree.files.len() > MAX_FILES_PER_PROJECT {
         return Err(format!(
             "project {slug:?} exceeds {MAX_FILES_PER_PROJECT} files"
         ));
@@ -565,9 +554,9 @@ async fn materialize_snapshot(
     snapshot: Snapshot,
     previous_files: BTreeMap<String, Vec<u8>>,
 ) -> Result<MaterializedSnapshot, String> {
-    let mut files = Vec::with_capacity(snapshot.projection.files.len());
+    let mut files = Vec::with_capacity(snapshot.tree.files.len());
     let mut total = 0usize;
-    for (path, entry) in &snapshot.projection.files {
+    for (path, entry) in &snapshot.tree.files {
         let path = member_path(path)?;
         let (bytes, bytes_verified) = match entry.kind.as_str() {
             "text" => {
@@ -616,7 +605,7 @@ async fn materialize_snapshot(
         files.push((path.to_string_lossy().into_owned(), bytes));
     }
     Ok(MaterializedSnapshot {
-        snapshot: snapshot.digest,
+        snapshot: snapshot.project_digest,
         files,
     })
 }
@@ -1131,16 +1120,10 @@ fn safe_stem(value: &str) -> String {
 }
 
 fn normalize_server(server: &str) -> Result<String, String> {
-    let mut url =
-        url::Url::parse(server).map_err(|error| format!("invalid backup server URL: {error}"))?;
-    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-        return Err("backup server must be an HTTP(S) origin".into());
-    }
-    url.set_query(None);
-    url.set_fragment(None);
-    let path = url.path().trim_end_matches('/').to_string();
-    url.set_path(&path);
-    Ok(url.as_str().trim_end_matches('/').to_string())
+    server
+        .parse::<librepaper_base::site::SiteUrl>()
+        .map(|site| site.to_string())
+        .map_err(|error| format!("invalid backup server URL: {error}"))
 }
 
 fn document_url(server: &str, slug: &str, suffix: &str) -> Result<url::Url, String> {

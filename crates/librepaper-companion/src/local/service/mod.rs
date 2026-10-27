@@ -37,8 +37,8 @@ use tokio::sync::{mpsc, watch, Mutex, Notify};
 
 use crate::local::bindings::BindingStore;
 use crate::local::protocol::{
-    self, Capabilities, JobOutcome, JobRequest, JobStatus, ManifestEntry, BASE_PATH, MAX_FILES,
-    MAX_JSON_BYTES, MAX_UPLOAD_BYTES, PROTOCOL_VERSIONS,
+    self, Capabilities, JobOutcome, JobRequest, JobState, JobStatus, ManifestEntry, BASE_PATH,
+    MAX_FILES, MAX_JSON_BYTES, MAX_UPLOAD_BYTES, PROTOCOL_VERSIONS,
 };
 use crate::local::store;
 
@@ -207,7 +207,7 @@ impl Runner for FakeRunner {
     ) -> JobOutcome {
         let delay = *self.delay.lock().expect("lock");
         let _ = progress.send(JobStatus {
-            status: "running".to_string(),
+            status: JobState::Running,
             stage: "build".to_string(),
             snapshot: request.snapshot.clone(),
             generation: request.generation,
@@ -224,7 +224,7 @@ impl Runner for FakeRunner {
             } => {
                 return JobOutcome {
                     status: JobStatus {
-                        status: "canceled".to_string(),
+                        status: JobState::Canceled,
                         stage: "finished".to_string(),
                         snapshot: request.snapshot,
                         generation: request.generation,
@@ -249,7 +249,7 @@ impl Runner for FakeRunner {
         files.insert("log".to_string(), log);
         JobOutcome {
             status: JobStatus {
-                status: "done".to_string(),
+                status: JobState::Done,
                 stage: "finished".to_string(),
                 exit: 0,
                 snapshot: request.snapshot,
@@ -333,7 +333,7 @@ fn supersede_older_generations(
         {
             entry.superseded = true;
             entry.queued = false;
-            entry.status.status = "canceled".to_string();
+            entry.status.status = JobState::Canceled;
             entry.status.stage = "finished".to_string();
             entry.finished_at = Some(Instant::now());
         }
@@ -507,7 +507,7 @@ async fn run_worker(inner: Arc<Inner>) {
                 continue;
             }
             entry.queued = false;
-            entry.status.status = "running".to_string();
+            entry.status.status = JobState::Running;
             Some((
                 entry.request.clone(),
                 entry.root.join("project"),
@@ -1854,7 +1854,7 @@ mod supersession_tests {
         JobEntry {
             status: JobStatus {
                 id: "job".into(),
-                status: "queued".into(),
+                status: JobState::Queued,
                 stage: "staging".into(),
                 generation,
                 ..Default::default()
@@ -1895,7 +1895,7 @@ mod supersession_tests {
         let superseded = &jobs["older"];
         assert!(superseded.superseded);
         assert!(!superseded.queued);
-        assert_eq!(superseded.status.status, "canceled");
+        assert_eq!(superseded.status.status, JobState::Canceled);
         assert_eq!(superseded.status.stage, "finished");
         assert!(!superseded.is_pending());
 

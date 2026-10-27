@@ -39,10 +39,14 @@ pub mod anchors;
 pub mod formats;
 pub mod html;
 pub mod opening;
+pub mod overlap;
+pub mod passage;
 pub mod paths;
 pub mod projection;
 
 pub mod render;
 pub mod retention;
+pub mod roots;
 pub mod session;
+pub mod text_index;
 pub mod track;

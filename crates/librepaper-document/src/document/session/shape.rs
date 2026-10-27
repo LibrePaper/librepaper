@@ -33,7 +33,9 @@
 use std::collections::{BTreeMap, HashMap};
 
 use librepaper_base::util::{token, Encoding};
-use loro::{Container, LoroDoc, LoroMap, LoroValue, ValueOrContainer};
+use loro::LoroDoc;
+
+use crate::document::roots::Roots;
 
 // The document's four roots, from the crate that owns the schema. They were declared here as well, with the same
 // four strings, which is a schema defined in two places that nothing would
@@ -64,16 +66,16 @@ pub fn mint_id() -> String {
 // Test support for every crate that drives a session, so it is not gated on
 // this crate's own `cfg(test)`.
 pub fn texts_of(doc: &LoroDoc) -> BTreeMap<String, String> {
-    let files = doc.get_map(FILES);
-    let path_map = doc.get_map(PATHS);
+    let roots = Roots::new(doc);
+    let files = roots.files();
     let mut out = BTreeMap::new();
 
     for key in files.keys() {
         let id = key.to_string();
-        let Some(ValueOrContainer::Container(Container::Text(text))) = files.get(&id) else {
+        let Some(text) = roots.text_by_id(&id) else {
             continue;
         };
-        let Some(path) = string_at(&path_map, &id) else {
+        let Some(path) = roots.path_of(&id) else {
             continue;
         };
         out.insert(path, text.to_string());
@@ -88,16 +90,15 @@ pub fn texts_of(doc: &LoroDoc) -> BTreeMap<String, String> {
 /// reading a past state on a comment's behalf has to be able to answer which
 /// path held which id at the time.
 pub fn text_ids_of(doc: &LoroDoc) -> BTreeMap<String, String> {
-    let files = doc.get_map(FILES);
-    let path_map = doc.get_map(PATHS);
+    let roots = Roots::new(doc);
     let mut out = BTreeMap::new();
 
-    for key in files.keys() {
+    for key in roots.files().keys() {
         let id = key.to_string();
-        let Some(ValueOrContainer::Container(Container::Text(_))) = files.get(&id) else {
+        if roots.text_by_id(&id).is_none() {
             continue;
-        };
-        let Some(path) = string_at(&path_map, &id) else {
+        }
+        let Some(path) = roots.path_of(&id) else {
             continue;
         };
         out.insert(path, id);
@@ -107,17 +108,13 @@ pub fn text_ids_of(doc: &LoroDoc) -> BTreeMap<String, String> {
 
 /// Every asset in the document, path to digest.
 pub fn assets_of(doc: &LoroDoc) -> BTreeMap<String, String> {
-    let assets = doc.get_map(ASSETS);
+    let assets = Roots::new(doc).assets();
     let mut out = BTreeMap::new();
 
     for key in assets.keys() {
         let path = key.to_string();
-        let Some(ValueOrContainer::Value(value)) = assets.get(&path) else {
+        let Some(string_value) = Roots::string_at(&assets, &path) else {
             continue;
-        };
-        let string_value = match value {
-            LoroValue::String(s) => s.to_string(),
-            _ => continue,
         };
         out.insert(path, string_value);
     }
@@ -127,17 +124,13 @@ pub fn assets_of(doc: &LoroDoc) -> BTreeMap<String, String> {
 /// The paths of every text, by id, which is what the file list is drawn from
 /// and what the repair works over.
 pub fn paths_of(doc: &LoroDoc) -> HashMap<String, String> {
-    let path_map = doc.get_map(PATHS);
+    let path_map = Roots::new(doc).paths();
     let mut out = HashMap::new();
 
     for key in path_map.keys() {
         let id = key.to_string();
-        let Some(ValueOrContainer::Value(value)) = path_map.get(&id) else {
+        let Some(string_value) = Roots::string_at(&path_map, &id) else {
             continue;
-        };
-        let string_value = match value {
-            LoroValue::String(s) => s.to_string(),
-            _ => continue,
         };
         out.insert(id, string_value);
     }
@@ -147,19 +140,14 @@ pub fn paths_of(doc: &LoroDoc) -> HashMap<String, String> {
 /// The text at `path` as it stands, or `None` when the document has no text
 /// there. This is what the command line reads.
 pub fn text_of(doc: &LoroDoc, path: &str) -> Option<String> {
-    texts_of(doc).remove(path)
+    // Of two files claiming one path, the one with the larger id is read.
+    let roots = Roots::new(doc);
+    let id = roots.text_id_by_path_last(path)?;
+    Some(roots.text_by_id(&id)?.to_string())
 }
 
 /// The path the project opens on, by the opening rule over its text files, or
 /// `None` for a project with no text.
 pub fn opening_path(doc: &LoroDoc) -> Option<String> {
     crate::document::opening::opening_file(&texts_of(doc))
-}
-
-/// Helper: extract a string value from a map by key.
-fn string_at(map: &LoroMap, key: &str) -> Option<String> {
-    match map.get(key) {
-        Some(ValueOrContainer::Value(LoroValue::String(s))) => Some(s.to_string()),
-        _ => None,
-    }
 }

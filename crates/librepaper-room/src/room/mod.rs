@@ -69,7 +69,6 @@ pub(crate) use librepaper_engine::storage::outgoing;
 mod recovery_tests;
 pub mod refusal;
 pub mod source_change;
-pub(crate) mod text;
 
 pub use annotation::OriginalAnchor;
 pub use command::Command as RoomCommand;
