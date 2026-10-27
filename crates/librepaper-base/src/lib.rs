@@ -13,6 +13,7 @@ pub mod lines;
 pub mod pages;
 pub mod paths;
 pub mod private_files;
+pub mod retry;
 pub mod role;
 pub mod secret;
 pub mod shell;

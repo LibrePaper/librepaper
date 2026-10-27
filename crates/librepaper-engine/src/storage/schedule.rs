@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use librepaper_base::retry::RetryPolicy;
 use tokio::time::Instant;
 
 use super::worker::Task;
@@ -38,15 +39,14 @@ pub const BACKOFF: Duration = Duration::from_secs(60);
 /// without an operator noticing.
 pub const BACKOFF_CEILING: Duration = Duration::from_secs(60 * 60);
 
-/// The wait after `failures` consecutive failures of one task.
-pub fn backoff(failures: u32) -> Duration {
-    BACKOFF
-        .saturating_mul(
-            1u32.checked_shl(failures.saturating_sub(1))
-                .unwrap_or(u32::MAX),
-        )
-        .min(BACKOFF_CEILING)
-}
+/// The wait after `failures` consecutive failures of one task: `BACKOFF`
+/// doubling up to `BACKOFF_CEILING`, with no jitter and no attempt limit.
+pub const RETRY: RetryPolicy = RetryPolicy {
+    base: BACKOFF,
+    ceiling: BACKOFF_CEILING,
+    max_attempts: None,
+    jitter: false,
+};
 
 /// One task's place in the map: when it is next due, how many times in a
 /// row it has failed, and whether that deadline has fired yet.
@@ -130,7 +130,7 @@ impl Deadlines {
     /// [`clear`]: Deadlines::clear
     pub fn failed(&mut self, task: Task, now: Instant) -> Duration {
         let failures = self.entries.get(&task).map_or(0, |entry| entry.failures) + 1;
-        let wait = backoff(failures);
+        let wait = RETRY.delay(failures);
         let due = now + wait;
         if let Some(entry) = self.entries.get_mut(&task) {
             entry.due = due;
