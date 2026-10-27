@@ -8,11 +8,10 @@ use std::sync::Arc;
 
 use loro::LoroDoc;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::source_change::{
-    client_seq_of, label_for_request, parse_digest, AgentError, Patch, SourceChange,
+    client_seq_of, label_for_request, AgentError, Patch, SourceChange,
 };
 use librepaper_document::document::anchors::{self, FragmentRange, OperationFile};
 use librepaper_document::document::session;
@@ -70,7 +69,7 @@ impl OperationKey {
             epoch: self.epoch.clone(),
             id: format!(
                 "v2.{issued}.{}",
-                &hex::encode(Sha256::digest(binding))[..32]
+                librepaper_base::digest::Digest::of(&binding).prefix(32)
             ),
         }
     }
@@ -89,7 +88,7 @@ impl OperationKey {
         let issued = librepaper_base::util::request_key_timestamp(&self.id).unwrap_or(0);
         format!(
             "v2.{issued}.{}",
-            &hex::encode(Sha256::digest(binding))[..32]
+            librepaper_base::digest::Digest::of(&binding).prefix(32)
         )
     }
 }
@@ -644,7 +643,12 @@ impl Command for AgentTrackedCommand {
                             .after_frontier
                             .clone()
                             .unwrap_or_else(|| evidence.before_frontier.clone()),
-                        tree_digest: parse_digest(&after_digest),
+                        tree_digest: Some(
+                            *after_digest
+                                .parse::<librepaper_base::digest::Digest>()
+                                .map_err(|_| CommandError::Conflict("invalid tree digest".into()))?
+                                .as_bytes(),
+                        ),
                         label: None,
                         reason: self.name().to_string(),
                         request_id: Some(self.request_id),

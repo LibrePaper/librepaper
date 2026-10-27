@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 use loro::LoroDoc;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::agent::{AgentAuthority, OperationKey};
@@ -703,11 +702,6 @@ pub(crate) fn client_seq_of(id: Uuid) -> i64 {
     i64::from_be_bytes(half) & i64::MAX
 }
 
-pub(crate) fn parse_digest(hex_digest: &str) -> Option<[u8; 32]> {
-    let bytes = hex::decode(hex_digest).ok()?;
-    bytes.try_into().ok()
-}
-
 /// One source change, run as a semantic command (§7). `evaluate` rebuilds the
 /// tree from head and checks it against the change; `transact` records the
 /// idempotency row that makes a retry of the same request answer without
@@ -879,7 +873,12 @@ impl Command for SourceChangeCommand<'_> {
                             .after_frontier
                             .clone()
                             .unwrap_or_else(|| evidence.before_frontier.clone()),
-                        tree_digest: parse_digest(&after_digest),
+                        tree_digest: Some(
+                            *after_digest
+                                .parse::<librepaper_base::digest::Digest>()
+                                .map_err(|_| CommandError::Conflict("invalid tree digest".into()))?
+                                .as_bytes(),
+                        ),
                         label: self.change.message.clone(),
                         reason: self.origin.reason(),
                         request_id: Some(self.request_id),
@@ -1016,12 +1015,13 @@ impl Room {
         };
 
         let request_id = {
-            let digest = Sha256::digest(
+            let digest = librepaper_base::digest::Digest::of(
                 change
                     .operation
                     .scoped_request_id(&authority.operation_scope)
                     .as_bytes(),
             );
+            let digest = digest.as_bytes();
             let mut bytes = [0_u8; 16];
             bytes.copy_from_slice(&digest[..16]);
             Uuid::new_v8(bytes)
