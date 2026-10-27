@@ -20,18 +20,63 @@ use crate::Error;
 use librepaper_base::paths::{nfc, MAX_SEGMENTS};
 use librepaper_base::text::LineEnding;
 
-/// One synced file as it is on disk now.
+/// Where the bytes of a synced file are read from.
+pub(crate) enum Source {
+    /// A file in the directory.
+    Disk(PathBuf),
+    /// A blob in the repository, which does not change under the push.
+    Blob { git: Git, oid: String },
+}
+
+/// One synced file as the scan saw it.
 pub(crate) struct Local {
     pub kind: Kind,
     /// SHA-256 hex of the LF text, or of the asset's bytes.
     pub sha: String,
-    pub file: PathBuf,
+    pub source: Source,
     /// The LF text of a text file.
     pub text: Option<String>,
 }
 
+impl Local {
+    /// The file in the directory, or `None` for a blob.
+    pub(crate) fn disk(&self) -> Option<&Path> {
+        match &self.source {
+            Source::Disk(file) => Some(file),
+            Source::Blob { .. } => None,
+        }
+    }
+
+    /// The raw bytes of `path`, read again from where the scan found them.
+    pub(crate) fn bytes(&self, path: &str) -> Result<Vec<u8>, Error> {
+        match &self.source {
+            Source::Disk(file) => std::fs::read(file).map_err(|error| Error::io(file, error)),
+            Source::Blob { git, oid } => blob(git, path, oid),
+        }
+    }
+
+    /// The bytes of an asset, checked against the hash the scan took.
+    pub(crate) fn asset_bytes(&self, path: &str) -> Result<Vec<u8>, Error> {
+        let bytes = self.bytes(path)?;
+        if Digest::of(&bytes).to_hex() != self.sha {
+            return Err(Error::Invalid(format!(
+                "{path} changed while it was being sent"
+            )));
+        }
+        Ok(bytes)
+    }
+}
+
+/// The bytes of a blob, named by the path it has in the commit.
+fn blob(git: &Git, path: &str, oid: &str) -> Result<Vec<u8>, Error> {
+    git.read(&["cat-file", "blob", oid])
+        .map_err(|error| Error::Invalid(format!("could not read {path} from the commit: {error}")))
+}
+
 pub(crate) struct Scan {
     pub files: BTreeMap<String, Local>,
+    /// For a scan of a commit, every path the commit holds, whatever it is.
+    committed: Option<BTreeSet<String>>,
     /// The paths the scan was asked to leave out, in the server's spelling.
     exclude: Vec<String>,
 }
@@ -64,7 +109,9 @@ impl Scan {
     /// does not list them: ignored by git, hidden, not UTF-8, not readable,
     /// named in `exclude`, or below a directory that cannot be read. The walk
     /// never yields what is ignored or hidden, so these are found by asking
-    /// for each path itself. A path is absent only when the disk says it is
+    /// for each path itself. For a scan of a commit the commit answers: a path
+    /// it holds but the scan leaves out has left the sync, and a path it does
+    /// not hold is gone, whatever the disk has. A path is absent only when the disk says it is
     /// not found; any other answer leaves it counted, so a failure to look is
     /// never taken for a deletion.
     pub(crate) fn left_out<'a>(
@@ -75,7 +122,10 @@ impl Scan {
         paths
             .into_iter()
             .filter(|path| !self.files.contains_key(path.as_str()))
-            .filter(|path| inside(dir, path).is_ok_and(|target| may_exist(&target)))
+            .filter(|path| match &self.committed {
+                Some(held) => held.contains(path.as_str()),
+                None => inside(dir, path).is_ok_and(|target| may_exist(&target)),
+            })
             .cloned()
             .collect()
     }
@@ -202,36 +252,133 @@ pub(crate) fn scan(
                 continue;
             }
         };
-        let local = match kind {
-            Kind::Text => match String::from_utf8(bytes) {
-                Ok(text) => {
-                    let text = if text.contains('\r') {
-                        LineEnding::normalise(&text).into_owned()
-                    } else {
-                        text
-                    };
-                    Local {
-                        kind,
-                        sha: Digest::of(text.as_bytes()).to_hex(),
-                        file,
-                        text: Some(text),
-                    }
-                }
-                Err(_) => {
-                    tracing::warn!("sync: leaving out {path}: it is not valid UTF-8");
-                    continue;
-                }
-            },
-            Kind::Asset => Local {
-                kind,
-                sha: Digest::of(&bytes).to_hex(),
-                file,
-                text: None,
-            },
-        };
-        files.insert(path, local);
+        if let Some(local) = local_of(&path, kind, bytes, Source::Disk(file)) {
+            files.insert(path, local);
+        }
     }
-    Ok(Scan { files, exclude })
+    Ok(Scan {
+        files,
+        exclude,
+        committed: None,
+    })
+}
+
+/// The file the bytes make, or `None` (with a warning) when a text file is not
+/// UTF-8. Line endings are normalised to LF before the hash is taken.
+fn local_of(path: &str, kind: Kind, bytes: Vec<u8>, source: Source) -> Option<Local> {
+    match kind {
+        Kind::Text => match String::from_utf8(bytes) {
+            Ok(text) => {
+                let text = if text.contains('\r') {
+                    LineEnding::normalise(&text).into_owned()
+                } else {
+                    text
+                };
+                Some(Local {
+                    kind,
+                    sha: Digest::of(text.as_bytes()).to_hex(),
+                    source,
+                    text: Some(text),
+                })
+            }
+            Err(_) => {
+                tracing::warn!("sync: leaving out {path}: it is not valid UTF-8");
+                None
+            }
+        },
+        Kind::Asset => Some(Local {
+            kind,
+            sha: Digest::of(&bytes).to_hex(),
+            source,
+            text: None,
+        }),
+    }
+}
+
+/// Reads the files a commit holds, with the same filters as `scan`. Only
+/// regular files count: a symbolic link or a submodule is left out. The disk is
+/// not looked at, so what is untracked or edited since the commit is not here.
+/// Each blob is read with its own `git cat-file blob`, so no more than one
+/// file is in memory at a time. Attributes are those git reports for the paths
+/// in the work tree.
+pub(crate) fn scan_commit(
+    git: &Git,
+    commit: &str,
+    rules: &Rules,
+    exclude: &[String],
+) -> Result<Scan, Error> {
+    let exclude: Vec<String> = exclude.iter().map(|entry| nfc(entry)).collect();
+    let listing = git.read(&["ls-tree", "-r", "-z", "--full-tree", commit])?;
+
+    let mut committed = BTreeSet::new();
+    // The project path, the path as the tree spells it, the blob and the kind.
+    let mut found: Vec<(String, String, String, Kind)> = Vec::new();
+    for entry in listing.split(|byte| *byte == 0).filter(|e| !e.is_empty()) {
+        // <mode> SP <type> SP <object> TAB <path>
+        let Some(tab) = entry.iter().position(|byte| *byte == b'\t') else {
+            continue;
+        };
+        let Ok(meta) = std::str::from_utf8(&entry[..tab]) else {
+            continue;
+        };
+        let mut fields = meta.split(' ');
+        let (Some(mode), Some(_), Some(oid)) = (fields.next(), fields.next(), fields.next()) else {
+            continue;
+        };
+        let Ok(spelled) = std::str::from_utf8(&entry[tab + 1..]) else {
+            tracing::warn!(
+                "sync: leaving out {}: the name is not valid UTF-8",
+                String::from_utf8_lossy(&entry[tab + 1..])
+            );
+            continue;
+        };
+        let path = nfc(spelled);
+        committed.insert(path.clone());
+        if !matches!(mode, "100644" | "100755") {
+            continue;
+        }
+        if path.split('/').count() > MAX_SEGMENTS {
+            continue;
+        }
+        if excluded(&path, &exclude) {
+            continue;
+        }
+        let kind = match rules.check(&path) {
+            Ok(kind) => kind,
+            Err(why) => {
+                // A file the project does not hold is left out without a word.
+                if rules.kind_of(&path).is_some() {
+                    tracing::warn!("sync: leaving out {why}");
+                }
+                continue;
+            }
+        };
+        found.push((path, spelled.to_string(), oid.to_string(), kind));
+    }
+
+    // The walk of a working tree skips what git ignores, a tracked file
+    // included, and so does a commit.
+    let spelled: Vec<String> = found.iter().map(|item| item.1.clone()).collect();
+    let ignored = git.ignored(&spelled)?;
+    let unset = git.unset_librepaper(&spelled)?;
+    found.retain(|item| !ignored.contains(&item.1) && !unset.contains(&item.1));
+
+    let mut files = BTreeMap::new();
+    for (path, _, oid, kind) in found {
+        let bytes = blob(git, &path, &oid)?;
+        let source = Source::Blob {
+            git: git.clone(),
+            oid,
+        };
+        if let Some(local) = local_of(&path, kind, bytes, source) {
+            files.insert(path, local);
+        }
+    }
+    Ok(Scan {
+        files,
+        exclude,
+        committed: Some(committed),
+    })
 }
 
 /// The path below the directory with `/` between its parts, or `None` when a

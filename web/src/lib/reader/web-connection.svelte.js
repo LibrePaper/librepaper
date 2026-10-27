@@ -1,7 +1,8 @@
 // The Git panel's connection of a web project to a git repository, in the
 // desktop app. The desktop app keeps a clone of the
-// repository on this computer, and pull and push move changes between that
-// clone and the project. This module decides nothing about files: it asks the
+// repository on this computer, or works in a repository folder the person
+// chose, and pull and push move changes between that repository and the
+// project. This module decides nothing about files: it asks the
 // desktop app, and says what the answer means.
 //
 // This module owns that state; the panel only reads it and calls the actions.
@@ -37,7 +38,7 @@ const isPending = (/** @type {any} */ error) => error?.status === 400 && error?.
 const plural = (/** @type {number} */ count, /** @type {string} */ noun) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 const paths = (/** @type {unknown} */ value) => (Array.isArray(value) ? value.map(String) : []);
 
-/** @typedef {{ loaded: boolean, status: any, busy: "" | "connect" | "pull" | "push" | "retry" | "resolve" | "login" | "disconnect", result: string | null, refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string, action: "pull" | "push" } | null, problem: string, signInHelp: { remote: string, detail: string } | null, interrupted: string }} WebConnectionState */
+/** @typedef {{ loaded: boolean, status: any, busy: "" | "connect" | "connect-local" | "pull" | "push" | "retry" | "resolve" | "login" | "disconnect", result: string | null, refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string, action: "pull" | "push" } | null, problem: string, signInHelp: { remote: string, detail: string } | null, interrupted: string }} WebConnectionState */
 
 /** `flush` settles the editor's own edits on the server before a transfer reads
  * the project. `signedIn` is asked each time Sign in is pressed: whether this
@@ -139,7 +140,7 @@ export function createWebConnection({ api = routes, project, flush = async () =>
     return files ? `${from}: ${plural(files, "file")} into the project.` : `${from}: nothing new.`;
   };
 
-  const sentLine = (/** @type {any} */ answer) => (answer.pushed === "pushed"
+  const sentLine = (/** @type {any} */ answer) => ((typeof answer.pulled === "boolean" ? answer.pulled : answer.pushed === "pushed")
     ? `Sent to repository${branchOf(answer)}.`
     : `Nothing new to send to repository${branchOf(answer)}.`);
 
@@ -151,6 +152,14 @@ export function createWebConnection({ api = routes, project, flush = async () =>
       set({ status, result: null, refusal: null });
     });
   };
+
+  /// Connects the project to a git repository on this computer, which the
+  /// person chooses in the desktop app's folder dialog. A cancelled dialog
+  /// answers the status as it was, so the panel stays as it was.
+  const connectLocal = () => run("connect-local", async () => {
+    const status = await api.connectLocalRepository(project);
+    set({ status, result: null, refusal: null });
+  });
 
   /// Imports the repository's changes into the project. Stops at a conflict,
   /// which the merge section then settles one file at a time. The merge reads
@@ -266,8 +275,8 @@ export function createWebConnection({ api = routes, project, flush = async () =>
   /// did not say.
   const verificationUrl = (/** @type {string} */ userCode) => `${origin.replace(/\/+$/, "")}/auth/device?code=${encodeURIComponent(userCode)}`;
 
-  /// Forgets the copy on this computer. The repository and the project stay as
-  /// they are.
+  /// Forgets the link. The copy on this computer, a local folder included, and
+  /// the project stay as they are.
   const disconnect = () => run("disconnect", async () => {
     const status = await api.disconnectConnection(project);
     set({ status, result: null, refusal: null });
@@ -287,6 +296,7 @@ export function createWebConnection({ api = routes, project, flush = async () =>
     get state() { return current; },
     refresh,
     connect,
+    connectLocal,
     pull,
     push,
     retryTransfer,
