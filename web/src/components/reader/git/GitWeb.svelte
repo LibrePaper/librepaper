@@ -3,8 +3,9 @@
   // nothing on the project itself. What the server knows (the last push) belongs
   // to the controller (lib/reader/web-git.svelte.js). In the desktop app the
   // panel also connects the project to a git repository: the desktop app keeps
-  // a clone on this computer, and Get repository changes and Send project
-  // changes move changes between the clone and the project. That state belongs
+  // a clone on this computer, or works in a repository folder the person
+  // chose, and Get repository changes and Send project changes move changes
+  // between that repository and the project. That state belongs
   // to lib/reader/web-connection.svelte.js;
   // this draws it. The GitHub Action that keeps a repository in step is
   // described in the docs.
@@ -33,6 +34,10 @@
   const merging = $derived(Boolean(status?.merging?.conflicts?.length));
   // What a refused transfer is called in the panel's sentences.
   const ACTION = { pull: "getting repository changes", push: "sending project changes" };
+
+  // A local repository is a folder on this computer; the status names its path.
+  const local = $derived(Boolean(status?.local));
+  const missing = $derived(Boolean(status?.missing));
 
   // The address that is typed, and the problem with it.
   let address = $state("");
@@ -79,6 +84,12 @@
     await connection.connect(address);
     if (connection.state.status?.connected) address = "";
   }
+
+  async function connectLocal() {
+    if (busy) return;
+    failure = "";
+    await connection.connectLocal();
+  }
 </script>
 
 {#snippet signIn()}
@@ -102,10 +113,30 @@
       </button>
     </div>
   </form>
+  <div class="git-row">
+    <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={connectLocal}>
+      {link.busy === "connect-local" ? "Choosing…" : "Use a local repository…"}
+    </button>
+  </div>
+  <p class="panel-meta git-note">A git repository on this computer. LibrePaper works in it directly.</p>
+{/snippet}
+
+{#snippet disconnectFoot()}
+  <div class="git-foot">
+    <button type="button" class="git-action" disabled={busy} onclick={() => connection.disconnect()}>
+      {link.busy === "disconnect" ? "Disconnecting…" : "Disconnect"}
+    </button>
+    <p class="panel-meta">{local ? "Disconnecting forgets the link. The folder and the project stay as they are." : "Disconnecting forgets the copy on this computer. The repository and the project stay as they are."}</p>
+  </div>
 {/snippet}
 
 {#snippet connected()}
-  <p class="git-remote" title={status.url}>Repository {status.url}, branch {status.branch}</p>
+  {#if missing}
+    <p class="git-remote" title={status.path}>Repository {status.path}</p>
+    <p class="git-lead" role="alert">The repository folder is gone.</p>
+    {@render disconnectFoot()}
+  {:else}
+  <p class="git-remote" title={local ? status.path : status.url}>Repository {local ? status.path : status.url}, branch {status.branch}</p>
   {#if !status.signed_in}
     {@render signIn()}
   {:else}
@@ -146,6 +177,12 @@
 
   {#if status.merging && !merging}
     <p class="git-lead" role="status">The files are settled, but the merge could not be committed. Get repository changes or send project changes to try again.</p>
+  {:else if status.merging && local}
+    <div class="git-box">
+      <p>These files changed in both the project and the repository.</p>
+      <ul class="git-list" aria-label="Files that changed on both sides">{#each status.merging.conflicts as path (path)}<li>{path}</li>{/each}</ul>
+      <p>Resolve these files in your editor and commit the merge. Then choose Get repository changes or Send project changes again.</p>
+    </div>
   {:else if status.merging}
     <div class="git-box">
       <p>These files changed in both the project and the repository. Choose which version to keep.</p>
@@ -163,12 +200,8 @@
     </div>
   {/if}
 
-  <div class="git-foot">
-    <button type="button" class="git-action" disabled={busy} onclick={() => connection.disconnect()}>
-      {link.busy === "disconnect" ? "Disconnecting…" : "Disconnect"}
-    </button>
-    <p class="panel-meta">Disconnecting forgets the copy on this computer. The repository and the project stay as they are.</p>
-  </div>
+  {@render disconnectFoot()}
+  {/if}
 {/snippet}
 
 <div class="git-web">

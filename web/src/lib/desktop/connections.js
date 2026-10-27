@@ -19,7 +19,9 @@ const forProject = (project) => `${route()}?project=${encodeURIComponent(project
 /** Where the project stands with its repository. Until it is connected the
  * answer has no repository in it.
  * @param {string} project
- * @returns {Promise<{ connected: false, signed_in: boolean } | { connected: true, signed_in: boolean, url: string, branch: string, merging: null | { side: "project" | "repository", conflicts: string[] } }>} */
+ * A local repository has `local: true` and the folder's `path` in place of the
+ * `url`; a folder that is gone has `missing: true` and no branch.
+ * @returns {Promise<{ connected: false, signed_in: boolean } | { connected: true, signed_in: boolean, url: string, branch: string, merging: null | { side: "project" | "repository", conflicts: string[] } } | { connected: true, local: true, signed_in: boolean, path: string, branch: string, merging: null | { side: "project" | "repository", conflicts: string[] } } | { connected: true, local: true, signed_in: boolean, path: string, missing: true }>} */
 export async function connectionStatus(project) {
   const response = await send("GET", forProject(project));
   return response.json();
@@ -30,6 +32,15 @@ export async function connectionStatus(project) {
  * @param {string} project @param {string} url */
 export async function connectRepository(project, url) {
   const response = await send("POST", route(), { jsonBody: { project, url } });
+  return response.json();
+}
+
+/** Connects the project to a git repository already on this computer: the
+ * desktop app shows the folder dialog and works in the chosen folder. A
+ * cancelled dialog answers the status as it was.
+ * @param {string} project */
+export async function connectLocalRepository(project) {
+  const response = await send("POST", route("local"), { jsonBody: { project } });
   return response.json();
 }
 
@@ -68,8 +79,8 @@ export async function resolveConnection(project, path, keep) {
   return response.json();
 }
 
-/** Forgets the copy on this computer. The repository and the project stay as
- * they are.
+/** Forgets the link. The repository, a local folder included, and the project
+ * stay as they are.
  * @param {string} project */
 export async function disconnectConnection(project) {
   const response = await send("POST", route("disconnect"), { jsonBody: { project } });
