@@ -803,6 +803,13 @@ async fn web_push(inner: &Inner, connection: &Connection) -> Result<PushOutcome,
     let (root, state_home) = (connection.repo(), inner.state_home.clone());
     let handle = tokio::runtime::Handle::current();
     let local = connection.local_root().is_some();
+    // A person's own repository sends what it committed: a file git does not
+    // track yet stays out, as if it were not there.
+    let exclude = if local {
+        untracked_paths(&root).await?
+    } else {
+        Vec::new()
+    };
     let outcome = tokio::task::spawn_blocking(move || -> Result<PushOutcome, Error> {
         let store = store_for(&root, &state_home);
         let state = store.load()?.ok_or(Error::NotLinked)?;
@@ -813,7 +820,7 @@ async fn web_push(inner: &Inner, connection: &Connection) -> Result<PushOutcome,
         let options = PushOptions {
             message,
             author,
-            exclude: Vec::new(),
+            exclude,
             branch: sync_branch(&root, local)?,
         };
         handle.block_on(push(&client, &root, store.as_ref(), &options))
@@ -822,6 +829,22 @@ async fn web_push(inner: &Inner, connection: &Connection) -> Result<PushOutcome,
     .map_err(|_| refuse(500, "the push stopped"))?
     .map_err(|error| failed(&error))?;
     Ok(outcome)
+}
+
+/// The files git does not track in `repo` and does not ignore, relative to its
+/// top folder.
+async fn untracked_paths(repo: &Path) -> Result<Vec<String>, Failure> {
+    let output = must(
+        repo,
+        Limit::Local,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+    )
+    .await?;
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect())
 }
 
 /// The answer for a web push that did not send a version.
@@ -2024,6 +2047,34 @@ mod tests {
             );
         }
         assert_eq!(site.posted(), posted);
+    }
+
+    #[tokio::test]
+    async fn an_untracked_file_in_a_local_repository_is_never_sent() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let repo = local_repository(fixture.scratch.path());
+        let site = Site::start(&[("main.tex", "hello\n")]).await;
+        let connection = fixture.connection_on(&site);
+        connect_local(&fixture.inner, &connection, &repo)
+            .await
+            .unwrap();
+        let origin = Some(site.url.as_str());
+        let project = site.project();
+        pull_from_repository(&fixture.inner, origin, &project)
+            .await
+            .unwrap();
+        let posted = site.posted();
+
+        std::fs::write(repo.join("notes.tex"), "not committed\n").unwrap();
+        let body = pull_from_repository(&fixture.inner, origin, &project)
+            .await
+            .unwrap();
+        assert_eq!(body["pushed"], json!({"nothing": true}), "{body}");
+        assert_eq!(site.posted(), posted);
+        assert!(repo.join("notes.tex").exists());
     }
 
     #[tokio::test]
