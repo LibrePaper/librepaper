@@ -2,8 +2,7 @@
 // app, which checks it again before it reaches a command line. The forms are
 // https://host/path, ssh://user@host/path and scp-like user@host:path. An
 // address that carries a password is refused here, so a secret typed into a
-// field is never sent anywhere. A folder on this computer is not an address:
-// it is chosen with the folder button.
+// field is never sent anywhere.
 
 /// The reason `raw` cannot be used, or an empty string when it can.
 /** @param {string} raw @returns {string} */

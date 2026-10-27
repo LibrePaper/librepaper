@@ -104,7 +104,7 @@ const makeRender = (result) => {
   render.calls = calls;
   return render;
 };
-const base = { title: "Paper", slug: "paper", bindingId: "hosted", preview: null, previewCurrent: false };
+const base = { title: "Paper", slug: "paper", preview: null, previewCurrent: false };
 const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "doc/f.png": Uint8Array.of(1) } };
 
 // A current preview of the right kind is reused without rendering.
@@ -128,9 +128,9 @@ const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "
 {
   const render = makeRender({ pdf: pdfBytes, diagnostics: [] });
   await exportFile({ ...base, target: "pdf", format: "latex", tree: mdTree, render, run: makeRun() });
-  assert.deepEqual(render.calls[0].options, { format: "pdf", project: "", bindingId: "hosted" });
+  assert.deepEqual(render.calls[0].options, { format: "pdf", project: "" });
   await exportFile({ ...base, target: "pdf", format: "quarto", tree: mdTree, render, run: makeRun() });
-  assert.deepEqual(render.calls[1].options, { format: "pdf", project: "", bindingId: "hosted", buildPreferences: { backend: "browser", output: "pdf" } });
+  assert.deepEqual(render.calls[1].options, { format: "pdf", project: "", buildPreferences: { backend: "browser", output: "pdf" } });
   // Authored HTML goes through Pandoc to Typst, and the Typst tree is rendered.
   const run = makeRun();
   const htmlTree = { main: "site/index.html", texts: { "site/index.html": "<p>x</p>" }, assets: {} };
@@ -144,7 +144,7 @@ const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "
 {
   const render = makeRender({ html: "<p>made</p>", diagnostics: [] });
   const typst = await exportFile({ ...base, target: "html", format: "typst", tree: mdTree, render, run: makeRun() });
-  assert.deepEqual(render.calls[0].options, { format: "html", project: "", bindingId: "hosted" });
+  assert.deepEqual(render.calls[0].options, { format: "html", project: "" });
   assert.equal(await typst.blob.text(), "<p>made</p>");
   await exportFile({ ...base, target: "html", format: "markdown", tree: mdTree, render, run: makeRun() });
   assert.equal(render.calls[1].options.buildPreferences.output, "html");
@@ -211,7 +211,7 @@ const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "
     assert.deepEqual(render.calls[0].options, {
       format: target,
       project: "slug-x",
-      bindingId: "hosted",
+     
       buildPreferences: { backend: "local", output: target },
     });
     return file;
@@ -235,22 +235,9 @@ const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "
   assert.deepEqual(render.calls[0].options, {
     format: "pdf",
     project: "",
-    bindingId: "hosted",
+   
     buildPreferences: { backend: "browser", output: "pdf" },
   });
-}
-
-// A folder project's encoder reaches every render the export makes, and a web project passes none.
-{
-  const qmdTree = { main: "a.qmd", texts: { "a.qmd": "# t" }, assets: {} };
-  const encode = (_path, text) => new TextEncoder().encode(text);
-  const render = makeRender({ ok: true, pdf: pdfBytes });
-  await exportFile({ ...base, bindingId: "local-1", slug: "t", target: "pdf", format: "quarto", tree: qmdTree, project: "slug-x", render, run: makeRun(), local: true, encode });
-  assert.equal(render.calls[0].options.encode, encode, "the local build takes the folder's bytes");
-  assert.equal(render.calls[0].options.bindingId, "local-1");
-  const web = makeRender({ ok: true, pdf: pdfBytes });
-  await exportFile({ ...base, slug: "t", target: "pdf", format: "quarto", tree: qmdTree, project: "slug-x", render: web, run: makeRun(), local: true });
-  assert.equal("encode" in web.calls[0].options, false, "a web project passes no encoder");
 }
 
 // A format with a command only for some outputs takes the browser route for the rest.
@@ -260,37 +247,10 @@ const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "
   const run = makeRun();
   const pdf = await exportFile({ ...base, slug: "t", target: "pdf", format: "latex", tree: texTree, project: "slug-x", render, run, local: true });
   assert.equal(pdf.name, "t.pdf");
-  assert.deepEqual(render.calls[0].options, { format: "pdf", project: "slug-x", bindingId: "hosted", buildPreferences: { backend: "local", output: "pdf" } });
+  assert.deepEqual(render.calls[0].options, { format: "pdf", project: "slug-x", buildPreferences: { backend: "local", output: "pdf" } });
   await exportFile({ ...base, slug: "t", target: "html", format: "latex", tree: texTree, project: "slug-x", render, run, local: true });
-  assert.deepEqual(render.calls[1].options, { format: "html", project: "slug-x", bindingId: "hosted" });
+  assert.deepEqual(render.calls[1].options, { format: "html", project: "slug-x" });
   assert.equal(run.calls.length, 0);
-}
-
-// An export builds where the preview does. A folder project's binding reaches every render, so
-// its export runs in the folder and not in the hosted workspace.
-{
-  const bindingId = "folder-1";
-  const bound = { ...base, bindingId, project: "local-folder-1" };
-  const rendered = (render) => render.calls.map((call) => call.options.bindingId);
-  const render = makeRender({ ok: true, pdf: pdfBytes, html: "<p>made</p>", artifact: docxBytes, artifactKind: "docx", diagnostics: [] });
-  const qmdTree = { main: "a.qmd", texts: { "a.qmd": "# t" }, assets: {} };
-  const texTree = { main: "a.tex", texts: { "a.tex": "x" }, assets: {} };
-  const htmlTree = { main: "site/index.html", texts: { "site/index.html": "<p>x</p>" }, assets: {} };
-  // The desktop build.
-  for (const target of EXPORT_TARGETS) await exportFile({ ...bound, target, format: "quarto", tree: qmdTree, render, run: makeRun(), local: true });
-  assert.deepEqual(rendered(render), [bindingId, bindingId, bindingId], "the local build");
-  // The browser route, for each way it renders.
-  render.calls.length = 0;
-  await exportFile({ ...bound, target: "pdf", format: "latex", tree: texTree, render, run: makeRun() });
-  await exportFile({ ...bound, target: "html", format: "latex", tree: texTree, render, run: makeRun() });
-  await exportFile({ ...bound, target: "pdf", format: "quarto", tree: qmdTree, render, run: makeRun() });
-  await exportFile({ ...bound, target: "html", format: "quarto", tree: qmdTree, render, run: makeRun() });
-  await exportFile({ ...bound, target: "pdf", format: "html", tree: htmlTree, render, run: makeRun() });
-  await exportFile({ ...bound, target: "docx", format: "quarto", tree: qmdTree, render, run: makeRun() });
-  assert.deepEqual(rendered(render), Array(6).fill(bindingId), "the browser route");
-  // The caller's own options are kept beside it.
-  assert.equal(render.calls[0].options.project, "local-folder-1");
-  assert.equal(render.calls[0].options.format, "pdf");
 }
 
 // Cells that a browser export leaves unrun.

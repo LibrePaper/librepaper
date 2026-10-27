@@ -30,7 +30,7 @@ client._testing.inject({ fetch: async (url, init = {}) => {
 const progress = [];
 const sourceTreeDigest = "a".repeat(64);
 const result = await client.runRender(
-  { job: { snapshot: sourceTreeDigest, generation: 4.9, deadlineSeconds: 60 }, tree, format: "latex", output: "pdf", bindingId: "folder-1" },
+  { job: { snapshot: sourceTreeDigest, generation: 4.9, deadlineSeconds: 60 }, tree, format: "latex", output: "pdf" },
   { onProgress: (entry) => progress.push(entry) },
 );
 assert.equal(result.ok, true);
@@ -50,7 +50,7 @@ assert.equal(submitted.generation, 4);
 assert.equal(submitted.format, "latex");
 assert.equal(submitted.output, "pdf");
 assert.equal(submitted.entrypoint, "chapters/paper.tex");
-assert.equal(submitted.binding_id, "folder-1");
+assert.equal(submitted.binding_id, "hosted");
 assert.deepEqual(submitted.options, { deadline_seconds: 60 });
 assert.deepEqual(submitted.manifest.map((file) => file.path).sort(), ["chapters/paper.tex", "figures/dot.png"]);
 assert.ok(submitted.manifest.every((file) => /^[0-9a-f]{64}$/.test(file.sha256) && file.size > 0));
@@ -58,21 +58,7 @@ const sent = form.getAll("file");
 assert.deepEqual(sent.map((file) => file.name).sort(), ["chapters/paper.tex", "figures/dot.png"]);
 assert.deepEqual([...new Uint8Array(await sent.find((file) => file.name === "figures/dot.png").arrayBuffer())], [0xff, 0x00, 0x80]);
 
-// A folder render lists a file the folder already holds without its bytes.
-{
-  const onDisk = new Map(submitted.manifest.map((file) => [file.path, file.sha256]));
-  onDisk.delete("chapters/paper.tex");
-  await client.runRender({ job: { snapshot: "s", generation: 1 }, tree, format: "latex", output: "pdf", bindingId: "folder-1", onDisk: (path) => onDisk.get(path) ?? null });
-  assert.deepEqual(submitted.manifest.map((file) => file.path).sort(), ["chapters/paper.tex", "figures/dot.png"], "the manifest still lists both");
-  assert.deepEqual(form.getAll("file").map((file) => file.name), ["chapters/paper.tex"], "only the file the folder does not hold is sent");
-
-  // The hosted workspace has no folder, so it sends everything whatever `onDisk` says.
-  await client.runRender({ job: { snapshot: "s", generation: 1 }, tree, format: "latex", output: "pdf", onDisk: (path) => onDisk.get(path) ?? null });
-  assert.deepEqual(form.getAll("file").map((file) => file.name).sort(), ["chapters/paper.tex", "figures/dot.png"]);
-}
-
-// With no folder granted the render goes to the hosted workspace, and the
-// deadline defaults.
+// The render goes to the hosted workspace, and the deadline defaults.
 await client.runRender({ job: { snapshot: "s", generation: 1 }, tree, format: "latex", output: "pdf" });
 assert.equal(submitted.binding_id, "hosted");
 assert.deepEqual(submitted.options, { deadline_seconds: 300 });
@@ -149,22 +135,6 @@ client._testing.inject({ fetch: async (url, init = {}) => {
 } });
 await assert.rejects(client.runRender({ job: {}, tree, format: "latex", output: "pdf" }), /could not reach its local service/);
 assert.equal(submissions, 1);
-
-// The binding id comes from the caller. A call that names none renders in the
-// hosted workspace, and a call that names a local project sends its id.
-const bindings = [];
-client._testing.inject({ fetch: async (url, init = {}) => {
-  if (url.endsWith("/jobs") && init.method === "POST") {
-    bindings.push(JSON.parse(await (await formOf(init)).get("job").text()).binding_id);
-    return response(202, { id: "job-4" });
-  }
-  if (url.endsWith("/jobs/job-4")) return response(200, { id: "job-4", status: "done", exit: 0, outputs: { artifact: await descriptor(artifact) } });
-  if (url.endsWith("/jobs/job-4/files/artifact")) return response(200, {}, artifact);
-  throw new Error(`unexpected binding request ${url}`);
-} });
-await client.runRender({ job: {}, tree, format: "latex", output: "pdf" });
-await client.runRender({ job: {}, tree, format: "latex", output: "pdf", bindingId: "local-1" });
-assert.deepEqual(bindings, ["hosted", "local-1"]);
 
 // A command is saved or reset by key, and a reset carries no command.
 const sentRecords = [];

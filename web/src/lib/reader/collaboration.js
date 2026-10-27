@@ -220,7 +220,7 @@ export function createReaderCollaboration({
 
   function connect() {
     if (disposed || room) return session;
-    if (!document_) throw new Error("open the local project before connecting");
+    if (!document_) throw new Error("open the document before connecting");
     room = openRoom(slug, {
       onMessage: (event) => { if (!disposed) onMessage(event); },
       onConnected: reconnect,

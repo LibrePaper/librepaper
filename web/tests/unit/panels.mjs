@@ -39,7 +39,7 @@ for (const role of ["reader", "commenter"]) {
 
 // Every project that can be edited has a Git panel. A web project's is the
 // GitHub Action's setup, so a browser is offered it with or without the
-// desktop app; a folder's runs git on the folder, so it needs the desktop app.
+// desktop app.
 assert.ok(
   offered({ role: "editor", mayEdit: true, editing: true, canSeeSharing: false, canPublish: true }).includes("git"),
   "a web project's editor is offered the Git panel in a browser",
@@ -47,10 +47,6 @@ assert.ok(
 assert.ok(
   offered({ role: "editor", mayEdit: true, editing: true, canSeeSharing: false, canPublish: true, desktop: true }).includes("git"),
   "and in the desktop app",
-);
-assert.ok(
-  !offered({ role: "owner", mayEdit: true, editing: true, canSeeSharing: true, canPublish: true, local: true }).includes("git"),
-  "a folder with no desktop app has no Git panel",
 );
 assert.ok(
   !offered({ role: "editor", mayEdit: false, editing: false, canSeeSharing: false, canPublish: false }).includes("git"),
@@ -78,17 +74,6 @@ assert.ok(
     .includes("diagnostics"),
   "diagnostics waits on the source pane, whatever the role",
 );
-
-// A folder on this computer has no server behind it: collaboration, the agent,
-// history and sharing are not offered, whatever else the reader may do. It is
-// offered Git, which is how it meets a web project and runs git on its folder.
-{
-  const list = offered({ role: "owner", mayEdit: true, editing: true, canSeeSharing: true, canPublish: true, desktop: true, local: true });
-  for (const hidden of ["collaboration", "agent", "history", "share"]) {
-    assert.ok(!list.includes(hidden), `a local project is not offered ${hidden}`);
-  }
-  assert.deepEqual(list, ["files", "outline", "changes", "git", "diagnostics"], "a local project keeps the files, outline, changes, git and diagnostics");
-}
 
 // Before the document has answered there is no role, and the rail stays empty
 // rather than putting up one audience's furniture and taking it down again

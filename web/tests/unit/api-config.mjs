@@ -1,6 +1,6 @@
-// The deployment's file rules are kept in this browser, so a folder project
-// can open again with no connection to the server: the service worker does not
-// keep API answers, and the folder itself is local.
+// The deployment's file rules are kept in this browser, so a project can
+// open again with no connection to the server: the service worker does not
+// keep API answers.
 import assert from "node:assert/strict";
 import { config, configOrRemembered } from "../../src/lib/api.js";
 import { CONFIG } from "../../src/lib/storage.js";
