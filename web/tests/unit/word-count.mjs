@@ -16,6 +16,10 @@ import { includesOf } from "../../src/lib/opening.js";
   const body = "Before text.\n\\begin{equation}\nx = y foo\n\\end{equation}\nAfter.";
   assert.equal(countWords(body, "latex"), 3);
   assert.equal(countWords("\\caption{Two words}", "latex"), 2);
+  // Include names are markup in both braced and unbraced forms.
+  assert.equal(countWords("\\input{b} x", "latex"), 1);
+  assert.equal(countWords("\\input b.tex x", "latex"), 1);
+  assert.equal(countWords("\\subfile{b} x", "latex"), 1);
 }
 
 // Typst: headings count, math is skipped.
