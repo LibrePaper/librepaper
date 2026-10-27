@@ -330,7 +330,7 @@ export function createLocalSync({ id, approve, signedIn = () => true, open = rea
   /// failure: it says which files changed on the web, or which suggestion is
   /// waiting, and the person settles that and tries again. `branch` confirms
   /// the branch of a repository that has none chosen.
-  async function pushWork(/** @type {string} */ message, /** @type {string | undefined} */ branch) {
+  async function pushWork(/** @type {string} */ message, /** @type {string} */ branch = "") {
     set({ refusal: null, pushed: null });
     if (!(await saved())) return;
     const named = message.trim() || defaultMessage();
