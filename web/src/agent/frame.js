@@ -106,7 +106,6 @@ import { watchPinch } from "../lib/pinch.js";
     /* Light paper, the default. Its ink is set here too, so a dark reader does
        not hand the body light text on the white page. */
     html.librepaper-preview:not(.librepaper-dark) { color-scheme: light; background-color: #fff; color: #000; }
-    html.librepaper-preview:not(.librepaper-dark).librepaper-flow { background: #fff; color: #000; }
     html.librepaper-preview:not(.librepaper-dark).librepaper-flow body { color: #000; background: #fff; }
     /* On light paper under a dark system, WebKit still applies LaTeXML's dark
        block, so these restate its colour variables for the light page. */
@@ -215,18 +214,16 @@ import { watchPinch } from "../lib/pinch.js";
   // Each annotation stacked on the same words takes the wash a step deeper,
   // stopping where the ink would start to struggle against it. On light paper
   // the base hue is mixed toward white until it reaches that lightness. On dark
-  // paper the mirror image holds: the target becomes 1 - target and the hue is
-  // mixed toward black, so light ink stays readable.
+  // paper the hue itself is laid thinly over the ground and each stacked
+  // annotation thickens it, so light ink stays readable.
   /** @param {[number, number, number]} rgb @param {number} depth @param {number} [alpha] */
   const wash = (rgb, depth, alpha = 1) => {
+    if (paper === "dark") {
+      const thickness = alpha * (0.5 + (Math.min(depth, 5) - 1) * 0.1);
+      return `rgb(${rgb.join(" ")} / ${thickness.toFixed(3)})`;
+    }
     const target = Math.max(70, 90 - (Math.min(depth, 5) - 1) * 5) / 100;
     const lightness = (Math.max(...rgb) + Math.min(...rgb)) / 510;
-    if (paper === "dark") {
-      // Scaling each channel toward 0 scales the lightness by the same factor.
-      const dim = (1 - target) / lightness;
-      const [r, g, b] = rgb.map((channel) => Math.round(channel * dim));
-      return `rgb(${r} ${g} ${b} / ${alpha})`;
-    }
     const mix = (target - lightness) / (1 - lightness);
     const [r, g, b] = rgb.map((channel) => Math.round(channel + (255 - channel) * mix));
     return `rgb(${r} ${g} ${b} / ${alpha})`;
