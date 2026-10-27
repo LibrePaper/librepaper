@@ -3,7 +3,7 @@
 // refusal arrives.
 import assert from "node:assert/strict";
 import * as client from "../../src/lib/desktop/client.js";
-import { connectionStatus, connectRepository, disconnectConnection, loginConnection, loginConnectionComplete, pullConnection, pushConnection, resolveConnection, retryConnection } from "../../src/lib/desktop/connections.js";
+import { connectionStatus, connectLocalRepository, connectRepository, disconnectConnection, loginConnection, loginConnectionComplete, pullConnection, pushConnection, resolveConnection, retryConnection } from "../../src/lib/desktop/connections.js";
 
 globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
 client._testing.reset();
@@ -40,6 +40,22 @@ assert.deepEqual(last().body, { project, url: "https://github.com/you/paper.git"
 // A repository already connected elsewhere is refused with its reason.
 answer = () => response(409, { reason: "linked", error: "this repository is linked to another LibrePaper project" });
 await assert.rejects(connectRepository(project, "https://github.com/you/paper.git"), (error) => error.status === 409 && error.body.reason === "linked");
+
+// A local repository is chosen in the desktop app's dialog: only the project is sent.
+const local = { connected: true, local: true, signed_in: true, path: "/home/me/paper", branch: "main", merging: null };
+answer = () => response(200, local);
+assert.deepEqual(await connectLocalRepository(project), local);
+assert.equal(last().method, "POST");
+assert.ok(last().url.endsWith("librepaper/local/connections/local"));
+assert.deepEqual(last().body, { project });
+
+// A cancelled dialog answers the status as it was.
+answer = () => response(200, { connected: false, signed_in: true });
+assert.deepEqual(await connectLocalRepository(project), { connected: false, signed_in: true });
+
+// A folder that is not a repository is refused with its reason.
+answer = () => response(400, { reason: "not-repository", error: "Choose the top folder of a git repository." });
+await assert.rejects(connectLocalRepository(project), (error) => error.status === 400 && error.body.reason === "not-repository");
 
 // Pull sends the project alone and answers what it wrote, or the conflicts it stopped at.
 answer = () => response(200, { status: connected, pushed: { files: 3 } });
