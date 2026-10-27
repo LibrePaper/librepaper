@@ -11,8 +11,9 @@ pub const USER_AGENT: &str = "librepaper/1.0";
 
 /// The shared client. Connection pooling is why it is one rather than one per
 /// call; the timeout is per request, set where the request is made. It follows
-/// redirects, so it must not be used for calls to a sign-in provider; those
-/// go through `provider_client`.
+/// redirects, so it must not be used for calls to a sign-in provider (those
+/// go through `provider_client`) or for any request that carries a token, a
+/// cookie or a link key (those go through `credentialed_client`).
 pub fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
@@ -20,6 +21,22 @@ pub fn client() -> &'static reqwest::Client {
             .user_agent(USER_AGENT)
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(300))
+            .build()
+            .expect("a client with no special needs builds")
+    })
+}
+
+/// The client for requests that carry a bearer token, a cookie or a link key.
+/// It never follows a redirect, so a credential goes only to the address the
+/// caller named. A redirect comes back to the caller as a reply.
+pub fn credentialed_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent(USER_AGENT)
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(300))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("a client with no special needs builds")
     })
@@ -73,7 +90,9 @@ pub async fn read_capped(mut response: reqwest::Response) -> Result<(u16, Vec<u8
 }
 
 /// One round trip, returning (status, body) rather than an error on a 4xx:
-/// both APIs this talks to put their error detail in the response body.
+/// the deployment puts its error detail in the response body. It goes through
+/// `credentialed_client`, so a redirect is not followed; it is reported as an
+/// error that names the status and where the server pointed.
 pub async fn send(
     method: reqwest::Method,
     target: &str,
@@ -81,7 +100,9 @@ pub async fn send(
     body: Option<Vec<u8>>,
     timeout: Duration,
 ) -> Result<(u16, Vec<u8>), String> {
-    let mut request = client().request(method.clone(), target).timeout(timeout);
+    let mut request = credentialed_client()
+        .request(method.clone(), target)
+        .timeout(timeout);
     for (name, value) in headers {
         request = request.header(*name, *value);
     }
@@ -93,6 +114,17 @@ pub async fn send(
         .await
         .map_err(|err| format!("{method} {target}: {err}"))?;
     let status = response.status().as_u16();
+    if response.status().is_redirection() {
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("somewhere else");
+        return Err(format!(
+            "{method} {target}: the server answered {status} and redirected to {location}; \
+             use that address as the server instead"
+        ));
+    }
     let raw = response
         .bytes()
         .await
@@ -137,7 +169,7 @@ impl Credentials {
     /// a request as cookie-authenticated and applies the cross-site checks in
     /// rule A, so the CLI carries the same marker header the browser shell
     /// does; a bearer-carrying call skips those checks regardless.
-    pub fn headers(&self) -> Vec<(&str, String)> {
+    pub fn headers(&self) -> Vec<(&'static str, String)> {
         let mut headers = vec![("x-librepaper-client", "cli".to_string())];
         if !self.token.is_empty() {
             headers.push(("authorization", format!("Bearer {}", self.token)));
@@ -200,7 +232,8 @@ pub async fn get_as(
     Ok((status, decode(&raw)))
 }
 
-fn decode(raw: &[u8]) -> Value {
+/// A reply body as JSON, or `{"error": <the text>}` when it is not JSON.
+pub fn decode(raw: &[u8]) -> Value {
     serde_json::from_slice(raw).unwrap_or_else(
         |_| serde_json::json!({"error": truncate(&String::from_utf8_lossy(raw), 300)}),
     )
