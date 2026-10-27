@@ -154,7 +154,7 @@ window.gitPanelCheck = async () => {
   check(headings() === "Repository", "one section in the browser: " + headings());
   check(text().includes("Last sent from a repository by Alice, 20 min ago: Reword the greeting"), "it names the last push: " + text());
   check(calls("history").length === 1 && calls("history")[0][1] === "paper", "from the history");
-  check(text().includes("To push and pull with git, open this project in the LibrePaper desktop app.") && text().includes("keep a GitHub repository in sync with this project through a GitHub Action"), "the browser says where to connect: " + text());
+  check(text().includes("To send and get changes with git, open this project in the LibrePaper desktop app.") && text().includes("keep a GitHub repository in sync with this project through a GitHub Action"), "the browser says where to connect: " + text());
   check(!panel().querySelector("pre") && !button("Connect"), "the browser shows no commands and no connect form");
   const docs = [...panel().querySelectorAll("a")].find((node) => node.getAttribute("href") === "/docs/git.html");
   check(docs && docs.textContent.trim() === "Read the Git docs" && docs.target === "_blank" && docs.rel.includes("noopener"), "the docs are one link away");
