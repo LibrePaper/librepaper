@@ -234,26 +234,22 @@ try {
   assert.deepEqual(await page.evaluate('window.sockets[0].sent[0]'),{type:"join",token:"secret-token",role:"user"});
 
   // Activity comes from task events, independently of connection presence.
-  // The status is the last line of the transcript, never beside the composer's
-  // buttons, so they do not move as it changes; there is no more "Working"/"Disconnected"/"Waiting"/"Interrupted"
-  // line, and no working-dots animation to count.
+  // The status is one line above the composer, outside the composer's form,
+  // so the composer's buttons stay where they are as it changes.
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'activity',status:'working'})");
-  await until("working indicator", () => page.evaluate('document.querySelector(".agent-progress")?.textContent.includes("Working")'), 1000);
+  await until("working indicator", () => page.evaluate('document.querySelector(".agent-progress")?.textContent.includes("is working")'), 1000);
   assert.equal(await page.evaluate('Boolean(document.querySelector(".chat-form [role=status]"))'), false, "no status sits among the composer's buttons");
-  // Working tasks are not listed anywhere. Queued tasks render as .queued-request
-  // rows. Stopping is the composer's job, not the activity disclosure's.
-  assert.equal(await page.evaluate('!document.querySelector(".queued-request[data-task-id=\\"activity\\"]")'),
-    true, "a working task has no queued-request row");
+  assert.equal(await page.evaluate('!document.querySelector(".queued-note[data-task-id=\\"activity\\"]")'),
+    true, "a working task has no queued note");
+  // A queued task with no user message in the transcript has no queued note.
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'queued-task',status:'queued'})");
-  await until("queued task row", () => page.evaluate('document.querySelector(".queued-request[data-task-id=\\"queued-task\\"]")'), 1000);
+  await until("queued task counted", () => page.evaluate('document.querySelector(".agent-progress")?.textContent.includes("1 queued")'), 1000);
+  assert.equal(await page.evaluate('Boolean(document.querySelector(".queued-request"))'), false, "no queued request rows remain");
   assert.ok(
-    await page.evaluate('document.querySelector(".queued-request[data-task-id=\\"queued-task\\"] .queued-label")?.textContent.includes("Queued")'),
-    "a queued task row shows Queued label");
-  assert.ok(
-    await page.evaluate('Array.from(document.querySelectorAll(".queued-request[data-task-id=\\"queued-task\\"] button")).some(b=>b.textContent.trim()==="Cancel")'),
-    "a queued task offers Cancel button");
+    await page.evaluate('Array.from(document.querySelectorAll(".agent-status button")).some(b=>b.textContent.trim()==="Cancel")'),
+    "exactly one queued task offers Cancel in the status row");
   await page.evaluate("window.sockets[0].emit({type:'presence',browser:true,agent:true})");
-  assert.match(await page.evaluate('document.querySelector(".agent-progress")?.textContent'), /Working/);
+  assert.match(await page.evaluate('document.querySelector(".agent-progress")?.textContent'), /is working/);
   // With the runner away the composer still sends: sending is what starts
   // the chosen agent.
   await page.evaluate("window.sockets[0].emit({type:'presence',browser:true,agent:false})");
@@ -261,9 +257,10 @@ try {
   assert.ok(await page.evaluate('document.querySelector("[role=log]")?.textContent.includes("Send a message to start the agent.")'),
     "the empty transcript names the missing runner, not the old badge text");
   await page.evaluate("window.sockets[0].emit({type:'presence',browser:true,agent:true}); window.sockets[0].emit({type:'task',task_id:'activity',status:'needs_input'})");
-  await until("waiting for input", () => page.evaluate('document.querySelector(".agent-progress")?.textContent === "Waiting for permission"'), 1000);
-  await page.evaluate("window.sockets[0].emit({type:'task',task_id:'activity',status:'working'}); window.sockets[0].emit({type:'task',task_id:'activity',status:'completed'})");
-  await until("no status once idle", () => page.evaluate('!document.querySelector(".agent-progress")'), 1000);
+  await until("waiting for input", () => page.evaluate('document.querySelector(".agent-progress")?.textContent.startsWith("Waiting for permission")'), 1000);
+  // The queued task is cancelled here too, so the row goes idle with the activity.
+  await page.evaluate("window.sockets[0].emit({type:'task',task_id:'activity',status:'working'}); window.sockets[0].emit({type:'task',task_id:'activity',status:'completed'}); window.sockets[0].emit({type:'task',task_id:'queued-task',status:'cancelled'})");
+  await until("no status once idle", () => page.evaluate('!document.querySelector(".agent-status")'), 1000);
   await page.evaluate("window.setProps({diagnostics:[{severity:'warning',file:'librepaper.tex',line:12,message:'Reference undefined',revision:'render-sha',source:'source line'}]})");
   await page.evaluate(`(()=>{const input=document.querySelector('textarea[placeholder]');input.value='Explain this';input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));})()`);
   await until("agent reply",()=>page.evaluate('document.querySelector("[role=log]")?.textContent.includes("<img")'),10000);
@@ -465,7 +462,7 @@ try {
   // A new request binds its source anchor and opens the Tasks pane; Remove
   // must not immediately reattach the passage from props.
   await page.evaluate("window.setProps({selection:{exact:'same',source:{path:'a.md',exact:'same',prefix:'before ',suffix:' after',position:20},revision:'captured-a'},request:{id:'new-selection',selection:{exact:'same',source:{path:'a.md',exact:'same',prefix:'before ',suffix:' after',position:20}},revision:'captured-a'}})");
-  await until("selection request applied", () => page.evaluate('document.querySelector("#agent-pane-tasks").hidden===false && document.querySelector(".context-summary").textContent.includes("a.md")'), 1000);
+  await until("selection request applied", () => page.evaluate('document.querySelector("#agent-pane-tasks").hidden===false && document.querySelector(".context-trigger").textContent.includes("a.md")'), 1000);
   // The browser lists the catalog, search narrows it, a row opens an inline
   // preparation view, and only sending it writes anything.
   await page.evaluate(`(()=>{const search=document.querySelector('.task-search');search.value='tight';search.dispatchEvent(new Event('input',{bubbles:true}));})()`);
@@ -497,8 +494,13 @@ try {
   assert.equal(anchored.context.file, "a.md");
   assert.equal(anchored.context.revision, "captured-a");
   assert.equal(anchored.context.selection.position, 20);
-  await page.evaluate('Array.from(document.querySelectorAll(".context-summary button")).find(b=>b.textContent==="Remove passage").click()');
-  await until("removed attachment", () => page.evaluate('!document.body.innerText.includes("Selected passage")'), 1000);
+  // Choosing "Current file" in the context menu detaches the passage.
+  // Zag parks an unplaced menu off screen, so wait until it is on screen.
+  const menuItem = `Array.from(document.querySelectorAll('[role="menuitem"]')).find(i=>i.textContent.includes("Current file"))`;
+  await page.evaluate(`(()=>{const trigger=document.querySelector(".context-trigger");trigger.dispatchEvent(new PointerEvent("pointerdown",{pointerType:"mouse",button:0,bubbles:true}));trigger.click();})()`);
+  await until("context menu placed", () => page.evaluate(`(()=>{const item=${menuItem};if(!item)return false;const r=item.getBoundingClientRect();return r.left>=0&&r.top>=0;})()`), 2000);
+  await page.evaluate(`(()=>{const item=${menuItem};item.dispatchEvent(new PointerEvent("pointermove",{pointerType:"mouse",bubbles:true}));item.click();})()`);
+  await until("removed attachment", () => page.evaluate('!document.querySelector(".context-trigger").textContent.includes("Selection")'), 1000);
   await page.evaluate("window.setProps({diagnostics:[{file:'error.typ',line:4,message:'Old error',source:'old source',revision:'old-revision'}],request:{id:'diagnostic',diagnostic:{file:'error.typ',line:4,message:'Old error',source:'old source',revision:'old-revision'},revision:'old-revision'}})");
   await until("diagnostic request", () => page.evaluate('document.querySelector(".task-prepare .task-title")?.textContent==="Fix diagnostic"'), 1000);
   await page.evaluate('Array.from(document.querySelectorAll(".task-prepare button")).find(b=>b.textContent==="Send to agent").click()');
@@ -512,7 +514,7 @@ try {
   // A drag reports its selection as it grows. The first word attaches, and
   // the longer range that overlaps it replaces the attachment.
   await page.evaluate("window.setProps({selection:{exact:'One',source:{path:'a.md',exact:'One',prefix:'',suffix:' two three',position:0}}})");
-  await until("first drag word attached", () => page.evaluate('document.querySelector(".context-summary")?.textContent.includes("Remove passage")'), 1000);
+  await until("first drag word attached", () => page.evaluate('document.querySelector(".context-trigger")?.textContent.includes("Selection")'), 1000);
   await page.evaluate("window.setProps({selection:{exact:'One two three',source:{path:'a.md',exact:'One two three',prefix:'',suffix:'',position:0}}})");
   await page.evaluate("window.setProps({request:{id:'grown-selection',task:{kind:'tighten',scope:'selection'}}})");
   await until("grown selection prepared", () => page.evaluate('document.querySelector(".task-prepare .attachment blockquote")?.textContent==="One two three"'), 1000);
