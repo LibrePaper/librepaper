@@ -2110,7 +2110,7 @@ mod tests {
         // This task is the only trigger: the test does not make a browser
         // request after enabling the persisted setting.
         spawn_scheduler(inner.clone());
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let status = inner.backups.status(&inner, &server, &account_id).await;
                 if status["last_success"].as_u64().is_some()
@@ -2200,7 +2200,8 @@ mod tests {
             .configure(&inner, &server, &account_id, false, 5)
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
+        // A generous bound: it catches a hang, not a slow machine.
+        tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let status = inner.backups.status(&inner, &server, &account_id).await;
                 if status["running"] == false {

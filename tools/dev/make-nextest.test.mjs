@@ -36,7 +36,7 @@ function runTarget(directory, log, values = {}) {
     "SHELL=/bin/sh",
     "WEB=",
     "SOURCES=",
-    "test-rust",
+    "test-nextest",
   ], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -52,7 +52,7 @@ function runTarget(directory, log, values = {}) {
   });
 }
 
-test("test-rust falls back only when cargo-nextest is unavailable", async () => {
+test("test-nextest falls back only when cargo-nextest is unavailable", async () => {
   const { directory, log } = await runnerFixture();
   try {
     const output = runTarget(directory, log);
@@ -63,7 +63,7 @@ test("test-rust falls back only when cargo-nextest is unavailable", async () => 
   }
 });
 
-test("test-rust preserves an installed cargo-nextest failure", async () => {
+test("test-nextest preserves an installed cargo-nextest failure", async () => {
   const { directory, log } = await runnerFixture(true);
   try {
     assert.throws(() => runTarget(directory, log, { MOCK_NEXTEST_EXIT: "19" }));
