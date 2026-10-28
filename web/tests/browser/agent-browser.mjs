@@ -243,10 +243,10 @@ try {
     true, "a working task has no queued note");
   // A queued task with no user message in the transcript has no queued note.
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'queued-task',status:'queued'})");
-  await until("queued task counted", () => page.evaluate('document.querySelector(".agent-progress")?.textContent.includes("1 queued")'), 1000);
+  await until("queued task counted", () => page.evaluate('document.querySelector(".agent-queue-text")?.textContent.includes("Request queued")'), 1000);
   assert.equal(await page.evaluate('Boolean(document.querySelector(".queued-request"))'), false, "no queued request rows remain");
   assert.ok(
-    await page.evaluate('Array.from(document.querySelectorAll(".agent-status button")).some(b=>b.textContent.trim()==="Cancel")'),
+    await page.evaluate('Array.from(document.querySelectorAll(".agent-queue button")).some(b=>b.textContent.trim()==="Cancel")'),
     "exactly one queued task offers Cancel in the status row");
   await page.evaluate("window.sockets[0].emit({type:'presence',browser:true,agent:true})");
   assert.match(await page.evaluate('document.querySelector(".agent-progress")?.textContent'), /is working/);
