@@ -953,37 +953,38 @@ impl Server {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
         };
-        let label = match self.store.catalog.label(room.document_id, label_id).await {
-            Ok(Some(label)) => label,
-            Ok(None) => return plain(404, "not found"),
-            Err(error) => return refused("read the catalogue", &error.into()),
-        };
-        let Ok(frontier) = loro::Frontiers::decode(&label.frontier) else {
-            return write_json(
-                500,
-                &json!({"error": "that label's frontier is unreadable"}),
-            );
-        };
-        let target = match room.log().projection_at(&frontier).await {
-            Ok(target) => target,
-            Err(error) => return sequencer_reply(&error),
-        };
-        let mut texts = Vec::new();
-        let mut assets = Vec::new();
-        for (path, file) in &target.projection.files {
-            if file.kind == "text" {
-                if let Some(body) = target.texts.get(path) {
-                    texts.push((path.clone(), body.clone(), file.id.clone()));
-                }
-            } else {
-                assets.push((path.clone(), file.digest.clone()));
-            }
-        }
         // A link may have been revoked, the session ended, or the account's
         // rights changed while the request body was being read, so the caller
-        // is decided again, and the restore is written as the fresh viewer.
+        // is decided again before anything is looked up, and the restore is
+        // written as the fresh viewer.
         let restored = self
             .mutate(&auth, |current_who, _| async move {
+                let label = match self.store.catalog.label(room.document_id, label_id).await {
+                    Ok(Some(label)) => label,
+                    Ok(None) => return Err(plain(404, "not found")),
+                    Err(error) => return Err(refused("read the catalogue", &error.into())),
+                };
+                let Ok(frontier) = loro::Frontiers::decode(&label.frontier) else {
+                    return Err(write_json(
+                        500,
+                        &json!({"error": "that label's frontier is unreadable"}),
+                    ));
+                };
+                let target = match room.log().projection_at(&frontier).await {
+                    Ok(target) => target,
+                    Err(error) => return Err(sequencer_reply(&error)),
+                };
+                let mut texts = Vec::new();
+                let mut assets = Vec::new();
+                for (path, file) in &target.projection.files {
+                    if file.kind == "text" {
+                        if let Some(body) = target.texts.get(path) {
+                            texts.push((path.clone(), body.clone(), file.id.clone()));
+                        }
+                    } else {
+                        assets.push((path.clone(), file.digest.clone()));
+                    }
+                }
                 let Ok(authority) = current_who.authority(self.ceiling_for(&current_who.id)) else {
                     return Err(write_json(403, &json!({"error": "access changed"})));
                 };
@@ -1001,16 +1002,16 @@ impl Server {
                     replaced_vector: Vec::new(),
                 };
                 match room.command(&authority, &mut command).await {
-                    Ok(_) => Ok(()),
+                    Ok(_) => Ok(label),
                     Err(error) => Err(command_reply("restore a version", error)),
                 }
             })
             .await;
-        match restored {
-            Ok(Ok(())) => {}
+        let label = match restored {
+            Ok(Ok(label)) => label,
             Ok(Err(reply)) => return reply,
             Err(refusal) => return access::deny(&refusal),
-        }
+        };
         // The command wrote its own label for the moment the restore
         // produced; what a caller wants back here is what it asked to
         // restore, which is still `label` as read above.
