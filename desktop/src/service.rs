@@ -51,6 +51,8 @@ impl Service {
             // The service is on loopback, so a system proxy must not see it.
             http: reqwest::Client::builder()
                 .no_proxy()
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(300))
                 .build()
                 .expect("the HTTP client builds"),
         }
@@ -255,6 +257,7 @@ static REFRESHED: AtomicBool = AtomicBool::new(false);
 async fn endpoint(server: &str) -> Result<Endpoint, String> {
     let mut command = tokio::process::Command::new(binary());
     command.args(["local", "endpoint"]).stdin(Stdio::null());
+    command.kill_on_drop(true);
     // The service accepts management requests for this one site only.
     command.env("LIBREPAPER_SERVER", server);
     // Read by librepaper-companion `local::environment` (REFRESH_ENV).
@@ -264,9 +267,9 @@ async fn endpoint(server: &str) -> Result<Endpoint, String> {
     // CREATE_NO_WINDOW: a GUI app spawning a console program would flash a console window.
     #[cfg(windows)]
     command.creation_flags(0x0800_0000);
-    let output = command
-        .output()
+    let output = tokio::time::timeout(Duration::from_secs(30), command.output())
         .await
+        .map_err(|_| "librepaper local endpoint did not answer within 30 seconds".to_string())?
         .map_err(|err| format!("cannot run librepaper: {err}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -305,12 +308,13 @@ pub async fn diagnostics(args: &[&str]) -> Result<String, String> {
         .args(["local", "diagnostics"])
         .args(args)
         .stdin(Stdio::null());
+    command.kill_on_drop(true);
     // CREATE_NO_WINDOW: a GUI app spawning a console program would flash a console window.
     #[cfg(windows)]
     command.creation_flags(0x0800_0000);
-    let output = command
-        .output()
+    let output = tokio::time::timeout(Duration::from_secs(30), command.output())
         .await
+        .map_err(|_| "librepaper local diagnostics did not answer within 30 seconds".to_string())?
         .map_err(|err| format!("cannot run librepaper: {err}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
