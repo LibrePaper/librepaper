@@ -20,6 +20,10 @@ APP="$ROOT/desktop/target/${CARGO_PROFILE:-release}/librepaper-desktop"
 if [ -e /etc/NIXOS ]; then
   gtk=$(nix-build '<nixpkgs>' -A gtk3 --no-out-link)
   export XDG_DATA_DIRS="$(echo "$gtk"/share/gsettings-schemas/*)${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+  # The tray icon needs AppIndicator, which the app loads by name at run time
+  # and NixOS keeps off the library path.
+  indicator=$(nix-build '<nixpkgs>' -A libayatana-appindicator --no-out-link)
+  export LD_LIBRARY_PATH="$indicator/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 answers() { curl -fsS -o /dev/null "$URL" 2>/dev/null; }
 revision=$(git -C "$ROOT" rev-parse HEAD)
