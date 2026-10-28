@@ -9,7 +9,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use librepaper_base::digest::Digest;
-use librepaper_base::lines::lines;
+use librepaper_document::document::source_lines::{Cursor, SourceLines};
+use librepaper_document::document::text_index::Utf8;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -157,6 +158,7 @@ struct SearchIndex {
     start: usize,
     end: usize,
     line: usize,
+    /// 1-based, in UTF-16 code units, as the editor counts.
     column: usize,
 }
 
@@ -165,13 +167,9 @@ struct TextOffsets {
     checkpoints: Vec<OffsetCheckpoint>,
 }
 
-#[derive(Clone)]
-struct OffsetCheckpoint {
-    byte: usize,
-    chars: usize,
-    line: usize,
-    line_start_chars: usize,
-}
+/// A scan state saved every 256 UTF-16 units, so a position does not rescan
+/// a long file from its start.
+type OffsetCheckpoint = Cursor;
 
 struct SnapshotIndexes {
     headings: BTreeMap<String, Vec<HeadingIndex>>,
@@ -265,9 +263,9 @@ fn scan_headings(source: &str, item_limit: usize) -> (Vec<HeadingIndex>, bool) {
     }
     let mut headings = Vec::new();
     let mut fence: Option<&str> = None;
-    for text_line in lines(source) {
+    for text_line in SourceLines::new(source).iter() {
         let line = text_line.body;
-        let byte = text_line.start;
+        let byte = text_line.span.start.0;
         let trimmed = line.trim_start_matches([' ', '\t']);
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             let marker = &trimmed[..3];
@@ -298,28 +296,14 @@ fn scan_headings(source: &str, item_limit: usize) -> (Vec<HeadingIndex>, bool) {
 }
 
 fn scan_offsets(source: &str) -> TextOffsets {
-    let mut checkpoints = vec![OffsetCheckpoint {
-        byte: 0,
-        chars: 0,
-        line: 1,
-        line_start_chars: 0,
-    }];
-    let mut chars = 0;
-    let mut line = 1;
-    let mut line_start_chars = 0;
-    for (byte, character) in source.char_indices() {
-        chars += 1;
-        if character == '\n' {
-            line += 1;
-            line_start_chars = chars;
-        }
-        if chars % 256 == 0 && checkpoints.len() < MAX_OFFSET_ITEMS {
-            checkpoints.push(OffsetCheckpoint {
-                byte: byte + character.len_utf8(),
-                chars,
-                line,
-                line_start_chars,
-            });
+    let mut checkpoints = vec![Cursor::START];
+    let mut cursor = Cursor::START;
+    let mut next = 256;
+    for character in source.chars() {
+        cursor.step(character);
+        if cursor.units().0 >= next && checkpoints.len() < MAX_OFFSET_ITEMS {
+            checkpoints.push(cursor);
+            next = cursor.units().0 - cursor.units().0 % 256 + 256;
         }
     }
     TextOffsets { checkpoints }
@@ -331,29 +315,21 @@ fn indexed_position(source: &str, offsets: Option<&TextOffsets>, at: usize) -> (
     };
     let checkpoint = offsets
         .checkpoints
-        .partition_point(|checkpoint| checkpoint.byte <= at)
+        .partition_point(|checkpoint| checkpoint.byte.0 <= at)
         .saturating_sub(1);
-    let checkpoint = &offsets.checkpoints[checkpoint];
-    if checkpoint.byte < at
+    let mut cursor = offsets.checkpoints[checkpoint];
+    if cursor.byte.0 < at
         && offsets
             .checkpoints
             .last()
-            .is_some_and(|last| last.byte < at)
+            .is_some_and(|last| last.byte.0 < at)
         && offsets.checkpoints.len() >= MAX_OFFSET_ITEMS
     {
         return source_position(source, at);
     }
-    let mut line = checkpoint.line;
-    let mut line_start_chars = checkpoint.line_start_chars;
-    let mut chars = checkpoint.chars;
-    for character in source[checkpoint.byte..at].chars() {
-        chars += 1;
-        if character == '\n' {
-            line += 1;
-            line_start_chars = chars;
-        }
-    }
-    (line, chars.saturating_sub(line_start_chars) + 1)
+    cursor.advance_to(source, Utf8(at));
+    let position = cursor.position();
+    (position.line, position.column.0)
 }
 
 fn scan_bibliography(source: &str, item_limit: usize) -> (Vec<BibliographyIndex>, bool) {
@@ -754,20 +730,20 @@ fn line_number_range(
     }
     let mut start = None;
     let mut end = source.len();
-    for text_line in lines(source) {
+    for text_line in SourceLines::new(source).iter() {
         let current = text_line.number as u64;
         if current == line {
-            start = Some(text_line.start);
+            start = Some(text_line.span.start.0);
         }
         if current == end_line {
             // The range includes the line break that ends the line.
-            let rest = &source[text_line.end..];
+            let rest = &source[text_line.span.end.0..];
             let break_len = if rest.starts_with("\r\n") {
                 2
             } else {
                 usize::from(rest.starts_with('\n'))
             };
-            end = text_line.end + break_len;
+            end = text_line.span.end.0 + break_len;
             break;
         }
     }
@@ -1017,13 +993,8 @@ fn selected_paths(
 }
 
 fn source_position(source: &str, offset: usize) -> (usize, usize) {
-    let line = source[..offset]
-        .bytes()
-        .filter(|byte| *byte == b'\n')
-        .count()
-        + 1;
-    let line_start = source[..offset].rfind('\n').map_or(0, |i| i + 1);
-    (line, source[line_start..offset].chars().count() + 1)
+    let position = SourceLines::new(source).position(Utf8(offset));
+    (position.line, position.column.0)
 }
 
 fn outline_query(
@@ -1905,6 +1876,48 @@ mod tests {
         let matches = result["results"][0]["matches"].as_array().expect("matches");
         assert_eq!(matches.len(), 2);
         assert_ne!(matches[0]["range"]["start"], matches[1]["range"]["start"]);
+    }
+
+    fn search_hit(source: &str, query: &str) -> (u64, u64) {
+        let mut snap = snapshot();
+        let mut texts = snap.projected.texts.clone();
+        texts.insert("main.md".into(), source.into());
+        snap.projected = snapshot_of(snap.projected.projection.clone(), texts);
+        let result = read(
+            &snap,
+            &[json!({"kind":"search","path":"main.md","query":query,"limit":1})],
+            QueryBudget::default(),
+        )
+        .expect("search query");
+        let hit = &result["results"][0]["matches"][0];
+        (hit["line"].as_u64().unwrap(), hit["column"].as_u64().unwrap())
+    }
+
+    #[test]
+    fn search_column_counts_utf16_units() {
+        assert_eq!(search_hit("\u{1F600}abc", "a"), (1, 3));
+    }
+
+    #[test]
+    fn search_line_and_column_after_crlf() {
+        assert_eq!(search_hit("one\r\n\u{1F600}two\r\nx", "two"), (2, 3));
+    }
+
+    #[test]
+    fn checkpointed_position_matches_the_scan() {
+        let mut source = String::new();
+        for i in 0..400 {
+            source.push_str(&format!("line {i} \u{1F600} caf\u{e9}\r\n"));
+        }
+        let offsets = scan_offsets(&source);
+        assert!(offsets.checkpoints.len() > 10);
+        for (at, _) in source.char_indices().step_by(7) {
+            assert_eq!(
+                indexed_position(&source, Some(&offsets), at),
+                source_position(&source, at),
+                "{at}"
+            );
+        }
     }
 
     #[test]
