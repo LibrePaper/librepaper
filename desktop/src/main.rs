@@ -136,7 +136,7 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 
     open_window(app.handle(), first)?;
 
-    if cfg!(any(target_os = "linux", windows)) {
+    if cfg!(any(target_os = "linux", windows)) && !built_in_place() {
         if let Err(err) = app.deep_link().register_all() {
             shell_log::write(&format!(
                 "could not register the librepaper:// scheme: {err}"
@@ -400,6 +400,15 @@ fn has_action(args: &[String]) -> bool {
         matches!(arg.as_str(), "--open" | "--settings" | "--server")
             || arg.starts_with("librepaper://")
     })
+}
+
+// A build run from a Cargo target directory is a dev or demo build. It leaves
+// the librepaper:// handler to the installed app.
+fn built_in_place() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent()?.parent().map(|dir| dir.ends_with("target")))
+        .unwrap_or(false)
 }
 
 fn handle_args(app: &AppHandle, target: Target, args: &[String]) {
