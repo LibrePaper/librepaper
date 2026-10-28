@@ -97,6 +97,37 @@ writeFileSync(entry, [
       value.leave();
     }
   };`,
+  `window.zoteroFrontmatterCheck = async () => {
+    const value = joinSession({ send: () => {}, mayEdit: true });
+    const paper = value.addText("paper.md", "");
+    const fetchBefore = globalThis.fetch;
+    const host = document.createElement("section");
+    document.body.append(host);
+    const editor = createClassComponent({ component: Editor, target: host, props: {
+      session: value, format: "markdown", file: paper, entry: "paper.md", analyze: async () => ({ entries: [], diagnostics: [] }),
+    } });
+    try {
+      globalThis.fetch = async (input, init) => {
+        if (String(input).includes("/zotero/items/ITEM123")) return new Response(JSON.stringify({
+          citation_key: "Riv2024", zotero_item: "ITEM123", bibtex: "@article{Riv2024,\\n  title={Rivers}\\n}\\n",
+        }), { status: 200, headers: { "content-type": "application/json" } });
+        return fetchBefore(input, init);
+      };
+      configureDesktop({ project: "paper", origin: location.origin });
+      window.__LIBREPAPER_DESKTOP__ = { base: "http://lp-local.localhost/", version: "test" };
+      await tick();
+      const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+      view.dispatch({ selection: { anchor: 0 } });
+      await editor.importZoteroItems([{ zotero_item: "ITEM123", key: "Riv2024" }]);
+      return { text: view.state.doc.toString(), head: view.state.selection.main.head };
+    } finally {
+      globalThis.fetch = fetchBefore;
+      delete window.__LIBREPAPER_DESKTOP__;
+      editor.$destroy();
+      host.remove();
+      value.leave();
+    }
+  };`,
 ].join("\n"));
 let server, browser, socket;
 try {
@@ -165,4 +196,8 @@ try {
   assert.ok(zotero.changeCount > 0, "the tracked import recorded no change");
   assert.deepEqual(zotero.changeFiles, [zotero.paperId], "the tracked import recorded a change in another file");
   console.log("citations-browser: tracked Zotero imports are recorded as changes");
+  const front = await evaluate("zoteroFrontmatterCheck()");
+  assert.match(front.text, /^---\nbibliography: references\.bib\n---\n/);
+  assert.equal(front.head, front.text.length, "the caret moved past the frontmatter the import added");
+  console.log("citations-browser: an import into an empty file leaves the caret below its new frontmatter");
 } finally { socket?.close(); await stopBrowserProcess(browser); server?.close(); removeTemporary(temporary); }

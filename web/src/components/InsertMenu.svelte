@@ -196,6 +196,7 @@
   async function submitZotero() {
     const generation = dialogGeneration;
     busy = true;
+    error = "";
     try {
       const keys = await onzoteroimport?.(zoteroSelected);
       if (generation !== dialogGeneration) return;
@@ -358,7 +359,8 @@
   confirm={{
     form: "insert-dialog",
     label: "Insert",
-    disabled: busy || Boolean(error) || !insertReady,
+    // A failed Zotero import is retried with Insert, so its error does not disable it.
+    disabled: busy || (Boolean(error) && !zoteroMode) || !insertReady,
     oncancel: closeDialog,
   }}>
   <!-- A form, so Enter in any of these fields inserts, the way Enter in the

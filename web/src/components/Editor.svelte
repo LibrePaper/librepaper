@@ -628,7 +628,12 @@
       const { plan, regId } = writeZoteroImport(doc, activeFile, activePath, fetchedItems[index], items[index].zotero_item);
       keys.push(plan.key);
       // The file on screen goes through the view, because writeText would bypass the editor for it.
-      if (plan.registration && regId === activeFile) view.dispatch({ changes: plan.registration });
+      // A caret where frontmatter is inserted at the top moves past it, so the citation lands in the body.
+      // A caret where a bibliography is inserted lower down stays before it.
+      if (plan.registration && regId === activeFile) {
+        const changes = view.state.changes(plan.registration);
+        view.dispatch({ changes, selection: view.state.selection.map(changes, plan.registration.from === 0 ? 1 : -1) });
+      }
     }
     if (tracked) prune(doc);
     doc.commit();
