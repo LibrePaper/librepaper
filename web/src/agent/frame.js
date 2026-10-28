@@ -107,16 +107,6 @@ import { watchPinch } from "../lib/pinch.js";
        not hand the body light text on the white page. */
     html.librepaper-preview:not(.librepaper-dark) { color-scheme: light; background-color: #fff; color: #000; }
     html.librepaper-preview:not(.librepaper-dark).librepaper-flow body { color: #000; background: #fff; }
-    /* On light paper under a dark system, WebKit still applies LaTeXML's dark
-       block, so these restate its colour variables for the light page. */
-    @media (prefers-color-scheme: dark) {
-      html.librepaper-preview:not(.librepaper-dark) .ltx_foreignobject_content { color: inherit; }
-      html.librepaper-preview:not(.librepaper-dark) [style*="--ltx-fg-color:"] { color: var(--ltx-fg-color); }
-      html.librepaper-preview:not(.librepaper-dark) [style*="--ltx-bg-color:"] { background-color: var(--ltx-bg-color); }
-      html.librepaper-preview:not(.librepaper-dark) [style*="--ltx-border-color:"] { border-color: var(--ltx-border-color); }
-      html.librepaper-preview:not(.librepaper-dark) [style*="--ltx-fill-color:"] { fill: var(--ltx-fill-color); }
-      html.librepaper-preview:not(.librepaper-dark) [style*="--ltx-stroke-color:"] { stroke: var(--ltx-stroke-color); }
-    }
     /* Dark paper. Flow images stay white, so a transparent plot drawn for white
        paper remains readable, and Typst's paged SVG output is pages of paper. */
     html.librepaper-preview.librepaper-dark { color-scheme: dark; background-color: #1c1f1e; color: #e4e7e5; }
@@ -164,6 +154,17 @@ import { watchPinch } from "../lib/pinch.js";
   `;
   document.head.appendChild(markStyle);
 
+  // LaTeXML picks its colours by prefers-color-scheme, which WebKit answers
+  // from the system rather than from the reader. In the preview, its two
+  // blocks become nested rules keyed on the paper class instead, so they
+  // follow the paper. If upstream changes the wording of these conditions,
+  // the rewrite stops matching and LaTeXML falls back to the system setting.
+  function followPaper(css) {
+    return css
+      .replace(/@media\s*\(\s*prefers-color-scheme\s*:\s*dark\s*\)\s*\{/g, "html.librepaper-dark {")
+      .replace(/@media\s*\(\s*prefers-color-scheme\s*:\s*light\s*\)\s*\{/g, "html:not(.librepaper-dark) {");
+  }
+
   function adoptStyles(parsed, presentation) {
     // Quarto's layout selectors depend on attributes of both root elements.
     // Keep the body itself (and its observer), copying only presentation
@@ -191,7 +192,11 @@ import { watchPinch } from "../lib/pinch.js";
     if (markup !== installed) {
       installed = markup;
       for (const node of installedNodes) node.remove();
-      installedNodes = wanted.map((node) => document.head.appendChild(node.cloneNode(true)));
+      installedNodes = wanted.map((node) => {
+        const clone = node.cloneNode(true);
+        if (clone.localName === "style" && clone.hasAttribute("data-latexml-css")) clone.textContent = followPaper(clone.textContent);
+        return document.head.appendChild(clone);
+      });
     }
     const title = parsed.head.querySelector("title");
     if (title) document.title = title.textContent || "";
