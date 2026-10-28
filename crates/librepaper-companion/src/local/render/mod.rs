@@ -51,7 +51,7 @@ pub async fn capabilities(refresh: bool) -> Capabilities {
             Ok(()) => Tool {
                 available: true,
                 version: Some("api-v3".into()),
-                note: "Zotero desktop local API is available".into(),
+                note: String::new(),
             },
             Err(error) => Tool {
                 available: false,
