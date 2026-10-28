@@ -683,7 +683,12 @@ impl Server {
         // was created with.
         if mine && !parsed.title.is_empty() && parsed.title != entry.title {
             if let Err(error) = self.store.rename(&key, &parsed.title, &actor).await {
-                return write_json(409, &json!({"error": error}));
+                let message = match error {
+                    ModifyError::OwnershipChanged => "ownership changed".to_string(),
+                    ModifyError::NotFound => "document not found".to_string(),
+                    ModifyError::Refused(message) | ModifyError::Storage(message) => message,
+                };
+                return write_json(409, &json!({"error": message}));
             }
         }
         let entry = if mine {
@@ -1388,9 +1393,11 @@ impl Server {
         };
         match self.store.rename(slug, &title, &actor).await {
             Ok(()) => write_json(200, &json!({"slug": slug, "title": title})),
-            Err(error) if error == "ownership changed" => write_json(409, &json!({"error": error})),
+            Err(ModifyError::OwnershipChanged) => {
+                write_json(409, &json!({"error": "ownership changed"}))
+            }
             Err(error) => {
-                tracing::warn!("could not rename {slug}: {error}");
+                tracing::warn!("could not rename {slug}: {error:?}");
                 write_json(500, &json!({"error": "could not rename the project"}))
             }
         }
@@ -2044,6 +2051,9 @@ impl Server {
             Ok(()) => write_json(200, &json!({"slug": slug, "tag": tag, "on": on})),
             Err(ModifyError::NotFound) => write_json(404, &json!({"error": "not found"})),
             Err(ModifyError::Refused(message)) => write_json(400, &json!({"error": message})),
+            Err(ModifyError::OwnershipChanged) => {
+                write_json(409, &json!({"error": "ownership changed"}))
+            }
             Err(ModifyError::Storage(error)) => {
                 tracing::warn!("could not tag {slug}: {error}");
                 write_json(500, &json!({"error": "could not save that"}))

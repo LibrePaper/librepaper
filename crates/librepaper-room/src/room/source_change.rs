@@ -29,7 +29,9 @@ use librepaper_document::document::session;
 use librepaper_document::document::text_index::{TextIndex, Utf8};
 use librepaper_document::document::track;
 use librepaper_engine::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
-use librepaper_engine::storage::postgres::{LabelRecord, NewLabel, PostgresCatalog};
+use librepaper_engine::storage::postgres::{
+    DuplicateOf, Error as CatalogError, LabelRecord, NewLabel, PostgresCatalog, QuotaScope,
+};
 
 const MAX_PATCHES: usize = 100;
 const MAX_PATCH_BYTES: usize = 256 * 1024;
@@ -530,6 +532,12 @@ pub enum AgentError {
     Invalid(String),
     #[error("agent operation conflict: {0}")]
     Conflict(String),
+    #[error("{0}")]
+    Quota(QuotaScope),
+    #[error("account upload rate exceeded")]
+    RateLimited,
+    #[error("{0}")]
+    Duplicate(DuplicateOf),
     #[error("agent operation storage failure: {0}")]
     Storage(String),
     #[error("files changed: {0:?}")]
@@ -545,15 +553,34 @@ impl From<CommandError> for AgentError {
             CommandError::StaleSelection { digest } => {
                 Self::Conflict(format!("source changed: {digest}"))
             }
-            CommandError::Storage(error) => Self::Storage(error.to_string()),
+            CommandError::Storage(error) => Self::from_catalog(error),
             CommandError::Sequencer(error) => Self::Storage(error.to_string()),
+        }
+    }
+}
+
+impl AgentError {
+    /// A catalogue failure. The refusals that carry their own status keep it;
+    /// anything else is a storage failure.
+    fn from_catalog(error: CatalogError) -> Self {
+        match error {
+            CatalogError::Quota(scope) => Self::Quota(scope),
+            CatalogError::RateLimited => Self::RateLimited,
+            CatalogError::Duplicate(of) => Self::Duplicate(of),
+            other => Self::Storage(other.to_string()),
         }
     }
 }
 
 impl From<super::error::WriteError> for AgentError {
     fn from(error: super::error::WriteError) -> Self {
-        Self::Storage(error.to_string())
+        use super::error::WriteError;
+        match error {
+            WriteError::Quota(scope) => Self::Quota(scope),
+            WriteError::RateLimited => Self::RateLimited,
+            WriteError::Duplicate(of) => Self::Duplicate(of),
+            other => Self::Storage(other.to_string()),
+        }
     }
 }
 
