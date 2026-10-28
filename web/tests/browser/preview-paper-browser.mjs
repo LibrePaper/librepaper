@@ -110,6 +110,22 @@ try {
   assert.equal(await page.evaluate('getComputedStyle(document.body).color'), "rgb(4, 5, 6)");
   console.log("preview-paper-browser: author body styles are kept over the paper");
 
+  // LaTeXML's colours follow the paper, not the system: its prefers-color-scheme
+  // blocks are rewritten to key on the paper class, so the dark block applies
+  // on dark paper and the light block on light paper, whatever the system says.
+  await theme("dark", "dark");
+  await until("dark class on for LaTeXML", () => page.evaluate('document.documentElement.classList.contains("librepaper-dark")'), 5000);
+  await preview('<!doctype html><html><head><title>P</title><style data-latexml-css="latexml.css">@media (prefers-color-scheme: light) { [style*="--ltx-fg-color:"] { color: var(--ltx-fg-color); } } @media (prefers-color-scheme: dark) { [style*="--ltx-fg-color:"] { color: rgb(1, 2, 3); } }</style></head><body><span id="ltx" style="--ltx-fg-color: rgb(200, 0, 0)">red</span></body></html>');
+  await until("LaTeXML span is in the preview", () => page.evaluate('document.getElementById("ltx") !== null'), 5000);
+  assert.equal(await page.evaluate('getComputedStyle(document.getElementById("ltx")).color'), "rgb(1, 2, 3)");
+  await theme("light", "light");
+  await until("dark class off for LaTeXML", () => page.evaluate('!document.documentElement.classList.contains("librepaper-dark")'), 5000);
+  assert.equal(await page.evaluate('getComputedStyle(document.getElementById("ltx")).color'), "rgb(200, 0, 0)");
+  await theme("dark", "dark");
+  await until("dark class back on after LaTeXML", () => page.evaluate('document.documentElement.classList.contains("librepaper-dark")'), 5000);
+  assert.equal(await page.evaluate('document.querySelector(\'style[data-latexml-css]\').textContent.includes("prefers-color-scheme")'), false);
+  console.log("preview-paper-browser: LaTeXML colours follow the paper, not the system");
+
   // Always light: the dark class goes, and the flow preview is white again.
   await theme("dark", "light");
   await until("dark class off", () => page.evaluate('!document.documentElement.classList.contains("librepaper-dark")'), 5000);
