@@ -76,7 +76,7 @@ cmd_smoke() {
   local mirror_checked=0
   if [ "${1:-}" = --prechecked ]; then mirror_checked=1; fi
   make --no-print-directory dist/librepaper
-  node --test tools/assets/mirror.test.mjs
+  node --test 'tools/assets/mirror-*.test.mjs'
   if [ "$mirror_checked" = 0 ]; then
     node tools/assets/mirror.mjs check "$MIRROR"
   fi
