@@ -84,7 +84,7 @@ pub struct ModerationOverview {
     pub recent: Vec<AuditEntry>,
 }
 
-/// Per-owner bytes: the same five sources `owner_usage_bytes` charges each owner.
+/// Per-owner bytes: the same five sources `usage_bytes` charges each owner.
 const OWNER_USAGE: &str = "SELECT owner_id, COALESCE(sum(bytes),0)::bigint AS bytes FROM (
                  SELECT d.owner_id, x.byte_length AS bytes FROM document_archives x
                    JOIN documents d ON d.id=x.document_id
@@ -457,7 +457,7 @@ impl PostgresCatalog {
     }
 
     /// Every account but the system ones, largest stored bytes first. Each byte
-    /// count is what `owner_usage_bytes` charges that owner. An account with no
+    /// count is what `usage_bytes` charges that owner. An account with no
     /// documents shows 0.
     pub async fn all_accounts(&self) -> Result<Vec<AccountUsage>> {
         let sql = format!(
@@ -598,6 +598,7 @@ pub(super) async fn insert_audit(
 mod tests {
     use super::*;
     use crate::storage::postgres::{NewAccount, PostgresCatalog, PostgresOptions};
+    use crate::storage::postgres::usage::{usage_bytes, Sources, UsageScope};
 
     async fn test_catalog() -> PostgresCatalog {
         let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
@@ -1050,10 +1051,10 @@ mod tests {
         let totals: Vec<(i64, i64)> = all.iter().map(|row| (row.documents, row.bytes)).collect();
         assert_eq!(totals, vec![(3, 1500), (1, 400), (2, 100), (0, 0)]);
         for row in &all {
-            let charged =
-                crate::storage::postgres::repository::owner_usage_bytes(catalog.pool(), row.id)
-                    .await
-                    .unwrap();
+            let mut conn = catalog.pool().acquire().await.unwrap();
+            let charged = usage_bytes(&mut conn, UsageScope::Owner(row.id), Sources::ALL)
+                .await
+                .unwrap();
             assert_eq!(row.bytes, charged);
         }
         catalog.close().await;

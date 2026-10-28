@@ -13,6 +13,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::chat::ChatCleared;
+use super::usage::{lock_storage_usage, usage_bytes, Sources, UsageScope};
 use super::{Error, PostgresCatalog, Result};
 
 /// A row to write. `sequence` is assigned here, under the document lock, so
@@ -307,22 +308,14 @@ impl PostgresCatalog {
         };
         // Admission is deliberately only an early check: the final archive
         // size is unknown until encoding and is checked again at attachment.
-        let usage_lock: i64 =
-            sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
-                .fetch_one(&mut *tx)
-                .await?;
-        let owner_usage = super::repository::owner_usage_bytes(&mut *tx, owner).await?;
-        let log_usage: i64 = sqlx::query_scalar(
-            "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
-             + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0) \
-             + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
+        lock_storage_usage(&mut *tx).await?;
+        let owner_usage = usage_bytes(&mut *tx, UsageScope::Owner(owner), Sources::ALL).await?;
+        let deployment_usage =
+            usage_bytes(&mut *tx, UsageScope::Deployment, Sources::ALL).await?;
         let refused = identity_known
             && !has_existing_object
             && (owner_usage >= self.policy.owner_bytes
-                || usage_lock.saturating_add(log_usage) >= self.policy.deployment_bytes);
+                || deployment_usage >= self.policy.deployment_bytes);
         let changed = if refused {
             sqlx::query(
                 "UPDATE document_labels SET archive_requested_at=NULL,archive_error='storage quota exceeded' \
@@ -416,10 +409,7 @@ impl PostgresCatalog {
         }
         // Keep the global accounting mutex after the document lock, matching
         // asset completion's lock order across documents.
-        let deployment_usage: i64 =
-            sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
-                .fetch_one(&mut *tx)
-                .await?;
+        lock_storage_usage(&mut *tx).await?;
         let already_catalogued: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM document_archives WHERE storage_key=$1)",
         )
@@ -437,20 +427,13 @@ impl PostgresCatalog {
                 "new archives require SHA-256 digests".into(),
             ));
         }
-        let owner_usage = super::repository::owner_usage_bytes(&mut *tx, owner_id).await?;
-        let log_usage: i64 = sqlx::query_scalar(
-            "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
-             + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0) \
-             + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
+        let owner_usage =
+            usage_bytes(&mut *tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
+        let deployment_usage =
+            usage_bytes(&mut *tx, UsageScope::Deployment, Sources::ALL).await?;
         let refused = delta > 0
             && (owner_usage.saturating_add(delta) > self.policy.owner_bytes
-                || deployment_usage
-                    .saturating_add(log_usage)
-                    .saturating_add(delta)
-                    > self.policy.deployment_bytes);
+                || deployment_usage.saturating_add(delta) > self.policy.deployment_bytes);
         if refused {
             sqlx::query(
                 "UPDATE document_labels SET archive_requested_at=NULL,archive_error='storage quota exceeded' \

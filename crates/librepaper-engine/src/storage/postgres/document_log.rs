@@ -20,6 +20,7 @@ mod pending_log_reservation_tests;
 #[path = "snapshot_regression_tests.rs"]
 mod snapshot_regression_tests;
 
+use super::usage::{lock_storage_usage, usage_bytes, Sources, UsageScope};
 use super::{Error, PostgresCatalog, Result};
 
 /// One row of the log.
@@ -383,10 +384,7 @@ impl PostgresCatalog {
             .bind(document_id)
             .fetch_one(&mut **tx)
             .await?;
-        let _retained: i64 =
-            sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
-                .fetch_one(&mut **tx)
-                .await?;
+        lock_storage_usage(&mut **tx).await?;
         if reserved_bytes > 0 {
             let epoch = self.writer_epoch()?;
             let removed: Vec<i64> = sqlx::query_scalar(
@@ -404,19 +402,12 @@ impl PostgresCatalog {
                 return Err(Error::Conflict("pending log reservation was lost".into()));
             }
         }
-        let owner_usage = super::repository::owner_usage_bytes(&mut **tx, owner_id).await?;
+        let owner_usage = usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
         let incoming = row.update_bytes.len().min(i64::MAX as usize) as i64;
         if owner_usage.saturating_add(incoming) > self.policy.owner_bytes {
             return Err(Error::Quota(super::QuotaScope::Owner));
         }
-        let deployment_usage: i64 = sqlx::query_scalar(
-            "SELECT (SELECT bytes FROM storage_usage WHERE singleton) \
-             + COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
-             + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0) \
-             + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)",
-        )
-        .fetch_one(&mut **tx)
-        .await?;
+        let deployment_usage = usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
         if deployment_usage.saturating_add(incoming) > self.policy.deployment_bytes {
             return Err(Error::Quota(super::QuotaScope::Deployment));
         }
@@ -472,11 +463,9 @@ impl PostgresCatalog {
         .fetch_optional(&mut *tx)
         .await?;
         let owner_id = owner_id.ok_or(Error::NotFound)?;
-        let retained: i64 =
-            sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
-                .fetch_one(&mut *tx)
-                .await?;
-        let owner_usage = super::repository::owner_usage_bytes(&mut *tx, owner_id).await?;
+        lock_storage_usage(&mut *tx).await?;
+        let owner_usage =
+            usage_bytes(&mut *tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
         let epoch = self.writer_epoch()?;
         if let Some((existing_document, existing_epoch, existing_bytes, existing_digest)) =
             sqlx::query_as::<_, (Uuid, i64, i64, Vec<u8>)>(
@@ -500,25 +489,11 @@ impl PostgresCatalog {
                 ))
             };
         }
-        let log_usage: i64 = sqlx::query_scalar(
-            "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
-             + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0)",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        let reservations: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(sum(bytes),0)::bigint FROM pending_log_reservations",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
+        let deployment_usage = usage_bytes(&mut *tx, UsageScope::Deployment, Sources::ALL).await?;
         if owner_usage.saturating_add(bytes) > self.policy.owner_bytes {
             return Err(Error::Quota(super::QuotaScope::Owner));
         }
-        if retained
-            .saturating_add(log_usage)
-            .saturating_add(reservations)
-            .saturating_add(bytes)
-            > self.policy.deployment_bytes
+        if deployment_usage.saturating_add(bytes) > self.policy.deployment_bytes
         {
             return Err(Error::Quota(super::QuotaScope::Deployment));
         }
@@ -656,19 +631,11 @@ impl PostgresCatalog {
             tx.commit().await?;
             return Ok(None);
         }
-        let _usage_lock: i64 =
-            sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
-                .fetch_one(&mut *tx)
-                .await?;
-        let owner_before = super::repository::owner_usage_bytes(&mut *tx, owner_id).await?;
-        let deployment_before: i64 = sqlx::query_scalar(
-            "SELECT (SELECT bytes FROM storage_usage WHERE singleton) \
-             + COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
-             + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0) \
-             + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
+        lock_storage_usage(&mut *tx).await?;
+        let owner_before =
+            usage_bytes(&mut *tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
+        let deployment_before =
+            usage_bytes(&mut *tx, UsageScope::Deployment, Sources::ALL).await?;
         sqlx::query!(
             "UPDATE document_snapshots SET delete_after=$2
              WHERE document_id=$1 AND delete_after IS NULL",
@@ -718,18 +685,12 @@ impl PostgresCatalog {
         .await?;
         let uncompacted_count = counters.try_get("uncompacted_update_count")?;
         let uncompacted_bytes = counters.try_get("uncompacted_update_bytes")?;
-        let owner_usage = super::repository::owner_usage_bytes(&mut *tx, owner_id).await?;
+        let owner_usage =
+            usage_bytes(&mut *tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
         if owner_usage > self.policy.owner_bytes && owner_usage > owner_before {
             return Err(Error::Quota(super::QuotaScope::Owner));
         }
-        let deployment_usage: i64 = sqlx::query_scalar(
-            "SELECT (SELECT bytes FROM storage_usage WHERE singleton) \
-             + COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
-             + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0) \
-             + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
+        let deployment_usage = usage_bytes(&mut *tx, UsageScope::Deployment, Sources::ALL).await?;
         if deployment_usage > self.policy.deployment_bytes && deployment_usage > deployment_before {
             return Err(Error::Quota(super::QuotaScope::Deployment));
         }

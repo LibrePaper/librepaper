@@ -13,6 +13,7 @@
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use super::usage::{lock_storage_usage, usage_bytes, Sources, UsageScope};
 use super::{Error, PostgresCatalog, Result};
 
 /// The fixed per-row charge added to a message's body bytes.
@@ -127,11 +128,7 @@ impl PostgresCatalog {
                 .bind(document_id)
                 .fetch_optional(&mut *tx)
                 .await?;
-            sqlx::query_scalar::<_, i64>(
-                "SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",
-            )
-            .fetch_one(&mut *tx)
-            .await?;
+            lock_storage_usage(&mut *tx).await?;
         }
         let inserted: Vec<i64> = sqlx::query_scalar(
             "INSERT INTO chat_messages (id,document_id,author_account_id,author_label,body,created_at) \
@@ -220,10 +217,7 @@ impl PostgresCatalog {
         .fetch_optional(&mut *tx)
         .await?;
         let owner_id = owner_id.ok_or(Error::NotFound)?;
-        let retained: i64 =
-            sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
-                .fetch_one(&mut *tx)
-                .await?;
+        lock_storage_usage(&mut *tx).await?;
         let epoch = self.writer_epoch()?;
         let existing = sqlx::query_as::<_, (Uuid, i64)>(
             "SELECT document_id,writer_epoch FROM pending_log_reservations \
@@ -251,24 +245,11 @@ impl PostgresCatalog {
         };
         // Measured after a stale row is gone, so it does not count against
         // the row that replaces it.
-        let owner_usage = super::repository::owner_usage_bytes(&mut *tx, owner_id).await?;
-        let log_usage: i64 = sqlx::query_scalar(
-            "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
-             + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0)",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        let reservations: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(sum(bytes),0)::bigint FROM pending_log_reservations",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
+        let owner_usage = usage_bytes(&mut *tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
+        let deployment_usage =
+            usage_bytes(&mut *tx, UsageScope::Deployment, Sources::ALL).await?;
         let owner_room = self.policy.owner_bytes.saturating_sub(owner_usage);
-        let deployment_room = self.policy.deployment_bytes.saturating_sub(
-            retained
-                .saturating_add(log_usage)
-                .saturating_add(reservations),
-        );
+        let deployment_room = self.policy.deployment_bytes.saturating_sub(deployment_usage);
         let granted = wanted.min(owner_room).min(deployment_room);
         if granted < minimum {
             return Err(Error::Quota(if owner_room < minimum {

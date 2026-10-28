@@ -27,6 +27,7 @@ mod persistence;
 pub use persistence::PersistenceConnection;
 mod repository;
 mod tags;
+mod usage;
 
 #[cfg(test)]
 #[path = "schema_regression_tests.rs"]

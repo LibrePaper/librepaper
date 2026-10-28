@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::super::{NewAccount, NewDocument, PostgresCatalog, PostgresOptions};
+use super::usage::{usage_bytes, Sources, UsageScope};
 use super::FlushRow;
 
 async fn catalog() -> PostgresCatalog {
@@ -293,4 +294,173 @@ async fn durable_ledger_usage_replaces_pending_reservation_on_flush() {
         owner_after
     );
     assert_eq!(catalog.usage_bytes(None).await.unwrap(), deployment_after);
+}
+
+/// The sums the hand-written code computed before `usage_bytes` replaced them.
+const OLD_OWNER_SUM: &str = r#"SELECT COALESCE(sum(bytes),0)::bigint FROM (
+     SELECT a.byte_length AS bytes FROM document_archives a
+       JOIN documents d ON d.id=a.document_id WHERE d.owner_id=$1
+     UNION ALL SELECT a.byte_length FROM document_assets a
+       JOIN documents d ON d.id=a.document_id WHERE d.owner_id=$1
+     UNION ALL SELECT s.snapshot_bytes FROM document_snapshots s
+       JOIN documents d ON d.id=s.document_id
+       WHERE d.owner_id=$1 AND s.delete_after IS NULL
+     UNION ALL SELECT d.uncompacted_update_bytes + d.chat_bytes FROM documents d
+       WHERE d.owner_id=$1
+     UNION ALL SELECT r.bytes FROM pending_log_reservations r
+       JOIN documents d ON d.id=r.document_id WHERE d.owner_id=$1
+   ) usage"#;
+
+const OLD_DEPLOYMENT_SUM: &str = "SELECT (SELECT bytes FROM storage_usage WHERE singleton) \
+     + COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
+     + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0) \
+     + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)";
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn usage_bytes_matches_the_sums_it_replaced() {
+    let catalog = catalog().await;
+    crate::testing::reset(&catalog).await;
+    let pool = catalog.pool();
+    let tag = Uuid::now_v7();
+    let mut documents = Vec::new();
+    let mut owners = Vec::new();
+    for _ in 0..2 {
+        let owner = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO accounts(id,kind,handle,display_name,status)
+             VALUES($1,'anonymous',$2,'Usage test','active')",
+        )
+        .bind(owner)
+        .bind(format!("usage-{owner}"))
+        .execute(pool)
+        .await
+        .unwrap();
+        let document = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,status,source_format)
+             VALUES($1,$2,$3,'owned','Usage test','active','markdown')",
+        )
+        .bind(document)
+        .bind(format!("usage-{tag}-{document}"))
+        .bind(owner)
+        .execute(pool)
+        .await
+        .unwrap();
+        owners.push(owner);
+        documents.push(document);
+    }
+    // Owner 0 holds 10 archive, 20 asset, 30 current base, 40 uncompacted,
+    // 5 chat and 7 reserved bytes, plus a superseded base that is not charged.
+    // Owner 1 holds 100, 200, 300, 400, 0 and 70.
+    let rows = [
+        (documents[0], 10_i64, 20_i64, 30_i64, 40_i64, 5_i64, 7_i64),
+        (documents[1], 100, 200, 300, 400, 0, 70),
+    ];
+    for (document, archive, asset, base, uncompacted, chat, reserved) in rows {
+        sqlx::query(
+            "INSERT INTO document_archives(storage_key,document_id,byte_length) VALUES($1,$2,$3)",
+        )
+        .bind(format!("archive-{document}"))
+        .bind(document)
+        .bind(archive)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO document_assets(id,document_id,storage_key,digest,byte_length,media_type)
+             VALUES($1,$2,$3,$4,$5,'image/png')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(document)
+        .bind(format!("asset-{document}"))
+        .bind(vec![1_u8; 32])
+        .bind(asset)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO document_snapshots
+             (snapshot_key,document_id,through_update_sequence,vector,snapshot_digest,snapshot_bytes)
+             VALUES($1,$2,0,'\\x00',$3,$4)",
+        )
+        .bind(format!("base-{document}"))
+        .bind(document)
+        .bind(vec![2_u8; 32])
+        .bind(base)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE documents SET uncompacted_update_bytes=$2, chat_bytes=$3 WHERE id=$1")
+            .bind(document)
+            .bind(uncompacted)
+            .bind(chat)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO pending_log_reservations(reservation_id,document_id,writer_epoch,bytes,batch_digest)
+             VALUES($1,$2,0,$3,$4)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(document)
+        .bind(reserved)
+        .bind(vec![3_u8; 32])
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO document_snapshots
+         (snapshot_key,document_id,delete_after,snapshot_bytes)
+         VALUES($1,$2,now() + interval '1 day',1000)",
+    )
+    .bind(format!("superseded-{tag}"))
+    .bind(documents[0])
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let mut conn = pool.acquire().await.unwrap();
+    let old_owner: i64 = sqlx::query_scalar(OLD_OWNER_SUM)
+        .bind(owners[0])
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+    let old_deployment: i64 = sqlx::query_scalar(OLD_DEPLOYMENT_SUM)
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+
+    let owner = UsageScope::Owner(owners[0]);
+    assert_eq!(usage_bytes(&mut conn, owner, Sources::ALL).await.unwrap(), 112);
+    assert_eq!(usage_bytes(&mut conn, owner, Sources::ALL).await.unwrap(), old_owner);
+    assert_eq!(usage_bytes(&mut conn, owner, Sources::DURABLE).await.unwrap(), 105);
+    assert_eq!(
+        usage_bytes(&mut conn, owner, Sources::ARCHIVES | Sources::RESERVATIONS)
+            .await
+            .unwrap(),
+        17
+    );
+    assert_eq!(
+        usage_bytes(&mut conn, UsageScope::Owner(owners[1]), Sources::ALL)
+            .await
+            .unwrap(),
+        1070
+    );
+
+    let deployment = UsageScope::Deployment;
+    assert_eq!(usage_bytes(&mut conn, deployment, Sources::ALL).await.unwrap(), 1182);
+    assert_eq!(
+        usage_bytes(&mut conn, deployment, Sources::ALL).await.unwrap(),
+        old_deployment
+    );
+    assert_eq!(
+        usage_bytes(&mut conn, deployment, Sources::DURABLE).await.unwrap(),
+        1105
+    );
+    assert_eq!(
+        usage_bytes(&mut conn, deployment, Sources::RESERVATIONS).await.unwrap(),
+        77
+    );
 }

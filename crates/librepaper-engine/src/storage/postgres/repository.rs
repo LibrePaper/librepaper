@@ -2,6 +2,7 @@ use sqlx::Row;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use super::usage::{lock_storage_usage, usage_bytes, Sources, UsageScope};
 use super::{new_id, Error, PostgresCatalog, Result};
 
 #[derive(Clone, Debug)]
@@ -1214,24 +1215,15 @@ impl PostgresCatalog {
         // the same account. The document row lock above handles duplicate
         // completion races for this document; this deployment mutex also
         // protects the per-owner count and byte total across documents.
-        let _lock =
-            sqlx::query_scalar!("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",)
-                .fetch_one(&mut **tx)
-                .await?;
+        lock_storage_usage(&mut **tx).await?;
         let incoming_bytes = new_inputs.iter().fold(0_i64, |total, input| {
             total.saturating_add(input.byte_length)
         });
-        let owner_usage = owner_usage_bytes(&mut **tx, owner_id).await?;
+        let owner_usage = usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
         // The deployment total is blob bytes plus every current base plus
-        // every document's uncompacted rows.
-        let log_usage: i64 = sqlx::query_scalar(
-            "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
-             + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0) \
-             + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)",
-        )
-        .fetch_one(&mut **tx)
-        .await?;
-        let deployment_usage = _lock.saturating_add(log_usage);
+        // every document's uncompacted rows plus pending reservations.
+        let deployment_usage =
+            usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
         if owner_usage.saturating_add(incoming_bytes) > self.policy.owner_bytes {
             return Err(Error::Quota(super::QuotaScope::Owner));
         }
@@ -1544,52 +1536,15 @@ impl PostgresCatalog {
     /// reservations are replaced by durable row charges on flush; including
     /// them here would let that ledger count the same work twice.
     pub async fn durable_usage_bytes(&self, account_id: Option<Uuid>) -> Result<i64> {
-        let Some(account_id) = account_id else {
-            return sqlx::query_scalar::<_, i64>(
-                r#"SELECT (
-                     (SELECT bytes FROM storage_usage WHERE singleton) +
-                     COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL), 0) +
-                     COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents), 0)
-                   )::bigint"#,
-            )
-            .fetch_one(&self.pool)
-            .await
-            .map_err(Error::from);
-        };
-        sqlx::query_scalar::<_, i64>(
-            r#"SELECT COALESCE(sum(bytes),0)::bigint FROM (
-                 SELECT a.byte_length AS bytes FROM document_archives a
-                   JOIN documents d ON d.id=a.document_id WHERE d.owner_id=$1
-                 UNION ALL SELECT a.byte_length FROM document_assets a
-                   JOIN documents d ON d.id=a.document_id WHERE d.owner_id=$1
-                 UNION ALL SELECT s.snapshot_bytes FROM document_snapshots s
-                   JOIN documents d ON d.id=s.document_id
-                   WHERE d.owner_id=$1 AND s.delete_after IS NULL
-                 UNION ALL SELECT d.uncompacted_update_bytes + d.chat_bytes FROM documents d
-                   WHERE d.owner_id=$1
-               ) usage"#,
-        )
-        .bind(account_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(Error::from)
+        let scope = account_id.map_or(UsageScope::Deployment, UsageScope::Owner);
+        let mut conn = self.pool.acquire().await?;
+        usage_bytes(&mut conn, scope, Sources::DURABLE).await
     }
 
     pub async fn usage_bytes(&self, account_id: Option<Uuid>) -> Result<i64> {
-        let Some(account_id) = account_id else {
-            return sqlx::query_scalar::<_, i64>(
-                r#"SELECT (
-                     (SELECT bytes FROM storage_usage WHERE singleton) +
-                     COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL), 0) +
-                     COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents), 0) +
-                     COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations), 0)
-                   )::bigint"#
-            )
-            .fetch_one(&self.pool)
-            .await
-            .map_err(Error::from);
-        };
-        owner_usage_bytes(&self.pool, account_id).await
+        let scope = account_id.map_or(UsageScope::Deployment, UsageScope::Owner);
+        let mut conn = self.pool.acquire().await?;
+        usage_bytes(&mut conn, scope, Sources::ALL).await
     }
 }
 
@@ -1619,42 +1574,6 @@ fn validate_document(input: &NewDocument) -> Result<()> {
         return Err(Error::Invalid("invalid document kind".into()));
     }
     Ok(())
-}
-
-/// Every byte an account is charged for: retained archive objects, assets,
-/// and each document's editing log (base snapshot plus uncompacted rows).
-/// This is the single definition of what counts toward the owner quota -- it
-/// was copied into three call sites before, keyed two different ways, so a
-/// new kind of billable byte had to be remembered in three places to be
-/// counted in any of them.
-///
-/// Callers holding a document row pass its `owner_id` from whatever lock they
-/// already took, so the sum is measured against the owner the document has
-/// under that lock. `OWNER_USAGE` in moderation.rs sums the same five
-/// sources per owner for the operator's lists, and a test holds the two together.
-pub(super) async fn owner_usage_bytes<'e, E>(executor: E, account_id: Uuid) -> Result<i64>
-where
-    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
-{
-    sqlx::query_scalar(
-        r#"SELECT COALESCE(sum(bytes),0)::bigint FROM (
-             SELECT a.byte_length AS bytes FROM document_archives a
-               JOIN documents d ON d.id=a.document_id WHERE d.owner_id=$1
-             UNION ALL SELECT a.byte_length FROM document_assets a
-               JOIN documents d ON d.id=a.document_id WHERE d.owner_id=$1
-             UNION ALL SELECT s.snapshot_bytes FROM document_snapshots s
-               JOIN documents d ON d.id=s.document_id
-               WHERE d.owner_id=$1 AND s.delete_after IS NULL
-             UNION ALL SELECT d.uncompacted_update_bytes + d.chat_bytes FROM documents d
-               WHERE d.owner_id=$1
-             UNION ALL SELECT r.bytes FROM pending_log_reservations r
-               JOIN documents d ON d.id=r.document_id WHERE d.owner_id=$1
-           ) usage"#,
-    )
-    .bind(account_id)
-    .fetch_one(executor)
-    .await
-    .map_err(Error::from)
 }
 
 impl PostgresCatalog {
@@ -1694,6 +1613,8 @@ pub struct DocumentStorage {
 }
 
 impl PostgresCatalog {
+    // Reservations are left out and only active documents are listed. This is
+    // preserved as found.
     pub async fn document_storage_by_owner(&self, owner_id: Uuid) -> Result<Vec<DocumentStorage>> {
         sqlx::query_as!(
             DocumentStorage,
