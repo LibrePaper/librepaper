@@ -135,8 +135,7 @@ try {
   await until("picker after cancel", () => evaluate(`document.querySelectorAll("button[data-template]").length > 0`), 5000);
 
   // The embedded symbol search, its results, and a typed query.
-  const search = 'details.math-symbols input[type="search"]';
-  const openSymbols = () => evaluate(`document.querySelector("details.math-symbols").open = true`);
+  const search = 'section.math-symbols input[type="search"]';
   const typeQuery = (query) => evaluate(`(() => {
     const input = document.querySelector(${JSON.stringify(search)});
     input.value = ${JSON.stringify(query)};
@@ -146,7 +145,7 @@ try {
   const field = (index) => `document.querySelectorAll("[data-math-field]")[${index}]`;
   const pickSymbol = async (query, id) => {
     await typeQuery(query);
-    const tile = `details.math-symbols .symbol-tile[data-symbol="${id}"]`;
+    const tile = `section.math-symbols .symbol-tile[data-symbol="${id}"]`;
     await until(`${id} tile`, () => evaluate(`document.querySelectorAll(${JSON.stringify(tile)}).length > 0`), 5000);
     await click(tile);
   };
@@ -154,7 +153,6 @@ try {
     await until("picker for fraction", () => evaluate(`document.querySelectorAll("button[data-template]").length > 0`), 5000);
     await click('button[data-template="fraction"]');
     await until("fraction form", () => evaluate(`document.querySelectorAll("[data-math-field]").length === 2`), 5000);
-    await openSymbols();
   };
 
   // Escape in a populated search clears it and keeps the form; a second one leaves.

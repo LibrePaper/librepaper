@@ -15,6 +15,7 @@
   /** @typedef {import("../lib/insert.js").InsertionResult} InsertionResult */
   /** @typedef {import("../lib/insert.js").FinalInsertion} FinalInsertion */
   /** @typedef {{key?: string; [field: string]: unknown}} InsertBibliographyEntry */
+  /** @typedef {InsertBibliographyEntry & {zotero_item: string}} ZoteroEntry */
   /** @typedef {InsertContext & {bibliography?: InsertBibliographyEntry[] | {entries: InsertBibliographyEntry[]}; targetId?: string}} InsertMenuContext */
   /** @typedef {{
    * getContext?: () => InsertMenuContext | null;
@@ -24,11 +25,13 @@
    * onpalette?: (id: "symbols" | "math") => void;
    * onfocus?: () => void;
    * oncancel?: (context: InsertMenuContext | null) => void;
+   * onzoterosearch?: ((query: string) => Promise<ZoteroEntry[]>) | null;
+   * onzoteroimport?: (items: ZoteroEntry[]) => Promise<string[]>;
    * keys?: Record<string, string>;
    * disabled?: boolean;
    * }} InsertMenuProps */
   /** @type {InsertMenuProps} */
-  let { getContext, oninsert, onupload, onpreview, onpalette, onfocus, oncancel, keys = {}, disabled = false } = $props();
+  let { getContext, oninsert, onupload, onpreview, onpalette, onfocus, oncancel, onzoterosearch = null, onzoteroimport, keys = {}, disabled = false } = $props();
 
   /** @type {string | null} */
   let dialog = $state(null);
@@ -39,6 +42,7 @@
   let menuContext = $state(null);
 
   onDestroy(() => {
+    clearTimeout(zoteroTimer);
     if (menuContext) oncancel?.(menuContext);
     if (dialogOpen && captured && captured !== menuContext) oncancel?.(captured);
   });
@@ -49,6 +53,15 @@
   let error = $state("");
   let preview = $state(null);
   let dialogGeneration = 0;
+  let source = $state(/** @type {"bibtex" | "zotero"} */ ("bibtex"));
+  /** @type {ZoteroEntry[]} */
+  let zoteroEntries = $state([]);
+  /** @type {ZoteroEntry[]} */
+  let zoteroSelected = $state([]);
+  let zoteroReady = $state(false);
+  let zoteroError = $state("");
+  let zoteroSearchCount = 0;
+  let zoteroTimer = 0;
 
   /** @typedef {string | {label: string; ids: string[]}} InsertMenuEntry */
   // The common actions stay at the top. Everything else sits in a sub-menu
@@ -85,6 +98,7 @@
   function actionLabel(id) { return actionById(id)?.label || id; }
   function closeDialog() {
     const target = captured;
+    clearTimeout(zoteroTimer);
     dialogGeneration += 1;
     busy = false;
     dialogOpen = false;
@@ -111,6 +125,12 @@
     draft = { ...(defaults[id] || {}) };
     query = "";
     error = "";
+    source = "bibtex";
+    zoteroEntries = [];
+    zoteroSelected = [];
+    zoteroReady = false;
+    zoteroError = "";
+    clearTimeout(zoteroTimer);
     // Skeleton closes the menu after dispatching onSelect. Opening the modal
     // on the next task avoids that close event immediately dismissing it.
     setTimeout(() => {
@@ -118,6 +138,7 @@
       dialog = id;
       dialogOpen = true;
       preview = safeBuild(id, insertionOptions(), context);
+      if (id === "citation" && onzoterosearch) void openZotero(generation);
     }, 0);
   }
   /** @param {string} id */
@@ -164,9 +185,32 @@
   }
   async function submit() {
     if (!dialog || !captured || busy) return;
+    if (dialog === "citation" && source === "zotero") return submitZotero();
     busy = true;
     try { await insert(dialog, insertionOptions(), captured); }
     catch (cause) { error = errorMessage(cause, "Could not generate this insertion."); }
+    finally { busy = false; }
+  }
+  // Importing writes the items into the project bibliography, so the context
+  // captured when the dialog opened is stale afterwards. A fresh one is taken.
+  async function submitZotero() {
+    const generation = dialogGeneration;
+    busy = true;
+    error = "";
+    try {
+      const keys = await onzoteroimport?.(zoteroSelected);
+      if (generation !== dialogGeneration) return;
+      const stale = captured;
+      oncancel?.(stale);
+      if (menuContext === stale) menuContext = null;
+      captured = getContext?.() ?? null;
+      if (!captured) {
+        error = "The document changed. Close this dialog and choose the insertion point again.";
+        return;
+      }
+      insert("citation", { ...insertionOptions(), keys }, captured);
+    }
+    catch (cause) { error = errorMessage(cause, "Could not import the Zotero items."); }
     finally { busy = false; }
   }
   /** @param {Event & {currentTarget: HTMLInputElement}} event */
@@ -193,8 +237,69 @@
   const environments = $derived(gatherInsertEnvironments(captured || {}));
   /** @param {string | null} id */
   const needsText = (id) => ["heading", "link"].includes(id || "");
+  const zoteroMode = $derived(dialog === "citation" && source === "zotero");
+  // Zotero mode needs a selection. The preview may be empty until the import.
+  const insertReady = $derived(zoteroMode ? zoteroSelected.length > 0 : Boolean(preview?.text || preview?.additionalEdits?.length));
+  /** @returns {InsertionResult | null} */
+  function zoteroPreview() {
+    if (!zoteroSelected.length || !captured) return null;
+    try { return buildInsertion("citation", { ...insertionOptions(), keys: zoteroSelected.map((item) => item.key) }, captured); }
+    catch { return null; }
+  }
+  /** @returns {string} */
+  function zoteroReason() {
+    if (!onzoterosearch) return "desktop app only";
+    if (zoteroReady) return "";
+    return zoteroError ? "not running" : "checking";
+  }
+  /** @param {string} text */
+  async function searchZotero(text) {
+    const generation = dialogGeneration;
+    const search = ++zoteroSearchCount;
+    let found;
+    try { found = await onzoterosearch?.(text); }
+    catch (cause) {
+      if (generation === dialogGeneration && search === zoteroSearchCount) {
+        zoteroReady = false;
+        zoteroError = errorMessage(cause, "Zotero is not running.");
+        zoteroEntries = [];
+      }
+      return;
+    }
+    if (generation !== dialogGeneration || search !== zoteroSearchCount) return;
+    zoteroReady = true;
+    zoteroError = "";
+    zoteroEntries = found || [];
+  }
+  /** @param {number} generation */
+  async function openZotero(generation) {
+    await searchZotero("");
+    if (generation !== dialogGeneration || entries().length || !zoteroReady) return;
+    source = "zotero";
+    error = "";
+  }
+  // Typing in Zotero mode searches after a pause, so each keystroke does not
+  // ask Zotero a question.
+  function scheduleZotero() {
+    if (source !== "zotero") return;
+    clearTimeout(zoteroTimer);
+    const generation = dialogGeneration;
+    const text = query;
+    zoteroTimer = setTimeout(() => { if (generation === dialogGeneration) void searchZotero(text); }, 200);
+  }
+  /** @param {string} value */
+  function chooseSource(value) {
+    source = value === "zotero" ? "zotero" : "bibtex";
+    error = "";
+    if (source === "zotero") scheduleZotero();
+  }
+  /** @param {ZoteroEntry} entry @param {boolean} selected */
+  function toggleZotero(entry, selected) {
+    const others = zoteroSelected.filter((item) => item.zotero_item !== entry.zotero_item);
+    zoteroSelected = selected ? [...others, entry] : others;
+  }
   $effect(() => {
-    if (dialog && captured && dialogOpen) preview = safeBuild(dialog, insertionOptions(), captured);
+    if (dialog && captured && dialogOpen) preview = zoteroMode ? zoteroPreview() : safeBuild(dialog, insertionOptions(), captured);
   });
   // Zag closes a sub-menu only through its own trigger, so a sub-menu left
   // open when the bar moves on would stay on screen. Clearing the open group
@@ -254,18 +359,32 @@
   confirm={{
     form: "insert-dialog",
     label: "Insert",
-    disabled: busy || Boolean(error) || !(preview?.text || preview?.additionalEdits?.length),
+    // A failed Zotero import is retried with Insert, so its error does not disable it.
+    disabled: busy || (Boolean(error) && !zoteroMode) || !insertReady,
     oncancel: closeDialog,
   }}>
   <!-- A form, so Enter in any of these fields inserts, the way Enter in the
        name field of the rename dialog renames. -->
   <form id="insert-dialog" class="flex min-h-0 flex-col gap-3" onsubmit={(event) => { event.preventDefault(); void submit(); }}>
   {#if dialog === "citation"}
-    <input class="input" type="search" placeholder="Search author, title, year, or key" aria-label="Search bibliography" bind:value={query} />
-    <div class="insert-results" role="group" aria-label="Bibliography entries">
-      {#each filteredEntries as entry}
-        <label class="insert-result"><input type="checkbox" value={entry.key} bind:group={draft.keys} /><span><strong>{entry.key}</strong> {entryLabel(entry)}</span></label>
-      {:else}<p class="panel-muted">No matching bibliography entries.</p>{/each}
+    <label class="label">Source
+      <select class="select" value={source} onchange={(event) => chooseSource(event.currentTarget.value)}>
+        <option value="bibtex" disabled={!entries().length}>{entries().length ? "BibTeX" : "BibTeX (no bibliography)"}</option>
+        <option value="zotero" disabled={!zoteroReady}>{zoteroReason() ? `Zotero (${zoteroReason()})` : "Zotero"}</option>
+      </select>
+    </label>
+    <input class="input" type="search" placeholder="Search author, title, year, or key" aria-label="Search bibliography" value={query}
+           oninput={(event) => { query = event.currentTarget.value; scheduleZotero(); }} />
+    <div class="insert-results" role="group" aria-label={source === "zotero" ? "Zotero items" : "Bibliography entries"}>
+      {#if source === "zotero"}
+        {#each zoteroEntries as entry}
+          <label class="insert-result"><input type="checkbox" value={entry.zotero_item} checked={zoteroSelected.some((item) => item.zotero_item === entry.zotero_item)} onchange={(event) => toggleZotero(entry, event.currentTarget.checked)} /><span><strong>{entry.key}</strong> {entryLabel(entry)}</span></label>
+        {:else}<p class="panel-muted">No matching Zotero items.</p>{/each}
+      {:else}
+        {#each filteredEntries as entry}
+          <label class="insert-result"><input type="checkbox" value={entry.key} bind:group={draft.keys} /><span><strong>{entry.key}</strong> {entryLabel(entry)}</span></label>
+        {:else}<p class="panel-muted">No matching bibliography entries.</p>{/each}
+      {/if}
     </div>
     <label class="label">Citation style <select class="select" bind:value={draft.style}><option value="default">Default</option><option value="narrative">Narrative / textual</option><option value="parenthetical">Parenthetical</option></select></label>
     <label class="label">Page or locator (optional) <input class="input" bind:value={draft.locator} /></label>
@@ -307,7 +426,7 @@
     {#if dialog === "label"}<label class="label">Label <input class="input" bind:value={draft.label} /></label>{/if}
   {/if}
   {#if preview}
-    <details class="insert-preview" open><summary>Source preview</summary>{#if preview.text}<pre>{preview.text}</pre>{:else}<p class="panel-muted">No source will be inserted.</p>{/if}{#if preview.notes?.length}<ul>{#each preview.notes as note}<li>{note}</li>{/each}</ul>{/if}{#if preview.additionalEdits?.length}<p class="panel-muted">Additional source edits:</p>{#each preview.additionalEdits as edit}<pre>{edit.path ? `${edit.path}: ` : ""}{edit.insert || "(delete)"}</pre>{/each}{/if}</details>
+    <section class="insert-preview" aria-labelledby="insert-preview-heading"><h3 class="insert-preview-heading" id="insert-preview-heading">Source preview</h3>{#if preview.text}<pre>{preview.text}</pre>{:else}<p class="panel-muted">No source will be inserted.</p>{/if}{#if preview.notes?.length}<ul>{#each preview.notes as note}<li>{note}</li>{/each}</ul>{/if}{#if preview.additionalEdits?.length}<p class="panel-muted">Additional source edits:</p>{#each preview.additionalEdits as edit}<pre>{edit.path ? `${edit.path}: ` : ""}{edit.insert || "(delete)"}</pre>{/each}{/if}</section>
   {/if}
   {#if error}<p class="insert-error" role="alert">{error}</p>{/if}
   </form>
@@ -322,6 +441,7 @@
   .insert-result:hover { background: var(--color-subtle); }
   .insert-error { padding: .7rem 1rem; color: var(--color-error-text); background: var(--color-raised); border: 1px solid var(--color-error-solid); border-radius: var(--radius-base); box-shadow: var(--shadow-xl); }
   .insert-preview { margin-top: .4rem; border-top: 1px solid var(--color-divider); padding-top: .6rem; }
+  .insert-preview-heading { font-size: .8rem; font-weight: 600; color: var(--color-text-secondary); }
   .insert-preview pre { max-height: 11rem; overflow: auto; margin-top: .5rem; padding: .7rem; background: var(--color-subtle); border-radius: var(--radius-base); font-size: .75rem; white-space: pre-wrap; }
   .insert-preview ul { margin: .5rem 0 0 1rem; color: var(--color-warning-text); font-size: .8rem; }
   .insert-image-preview { max-height: 10rem; max-width: 100%; object-fit: contain; border: 1px solid var(--color-divider); border-radius: var(--radius-base); }

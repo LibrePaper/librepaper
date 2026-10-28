@@ -4044,7 +4044,7 @@
           {/each}
         {/each}
       </MenubarMenu>
-      <InsertMenu getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpalette={(id) => void openPalette(id)} keys={{ symbols: MENU_KEYS.symbols, math: MENU_KEYS.math }} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} disabled={!mayEdit || !editor} />
+      <InsertMenu getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpalette={(id) => void openPalette(id)} keys={{ symbols: MENU_KEYS.symbols, math: MENU_KEYS.math }} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} onzoterosearch={localQuarto.desktop() ? (query) => editor?.zoteroSearch?.(query) : null} onzoteroimport={(items) => editor?.importZoteroItems?.(items)} disabled={!mayEdit || !editor} />
     {/if}
     {#if editing}
       <MenubarMenu id="view" label="View" onselect={chooseViewCommand}>
@@ -4376,10 +4376,10 @@
           This browser cannot render this {sourceFormat === "typst" ? "Typst" : "paged"} document from source.
         </p>
         {#if session && previewPath}
-          <details open>
-            <summary>View source · {previewPath}</summary>
+          <section aria-label="Source of {previewPath}">
+            <h3 class="h6">Source · {previewPath}</h3>
             <pre>{String(session.textOf(session.idOf(previewPath))?.toString?.() ?? "")}</pre>
-          </details>
+          </section>
         {/if}
       </div>
     </section>

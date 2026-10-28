@@ -225,7 +225,7 @@
   import { typstLabels } from "../lib/citation-keys.js";
   import { citationKeysExtension, citationsChanged } from "../lib/citation-keys-extension.js";
   import { completionExtension, formatOfPath } from "../lib/completion/index.js";
-  import { desktop, searchZotero, zoteroItem } from "../lib/desktop/client.js";
+  import { searchZotero, zoteroItem } from "../lib/desktop/client.js";
   import { changeMarks, setChangeMarks } from "../lib/change-marks.js";
   import { CHANGES, planEdits, writePlanned, resolveFile, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
@@ -505,9 +505,6 @@
   let bibliographyGeneration = 0;
   let bibliographyTimer = null;
   let lastBibliographyKey = "";
-  let zoteroSearchGeneration = 0;
-  let lastZoteroError = "";
-  const ZOTERO_NEEDS_DESKTOP = "Zotero needs the LibrePaper desktop app.";
   function formatOf(path) {
     const lower = String(path || "").toLowerCase();
     if (lower.endsWith(".typ")) return "typst";
@@ -578,96 +575,70 @@
     labels: () => (formatOf(pathOfDoc(session?.doc, showing)) === "typst" ? typstLabels(treeForDoc(session.doc).texts) : new Set()),
   });
 
-  function reportZotero(message) {
-    if (message === lastZoteroError) return;
-    lastZoteroError = message;
-    onbibliography?.({ entries: bibliographyEntries(), diagnostics: [{ severity: "warning", message, file: pathOfDoc(session.doc, showing), line: 0 }] }, bibliographyRequest());
-  }
-
-  async function remoteBibliography(query) {
-    if (!formatOf(pathOfDoc(session.doc, showing))) return [];
-    // Zotero lives on this computer, so a browser says where it can be used.
-    if (!desktop()) {
-      reportZotero(ZOTERO_NEEDS_DESKTOP);
-      return [];
-    }
-    const generation = ++zoteroSearchGeneration;
-    await new Promise((resolve) => setTimeout(resolve, 180));
-    if (generation !== zoteroSearchGeneration) return [];
-    let response;
-    try {
-      response = await searchZotero(query);
-      lastZoteroError = "";
-    } catch (error) {
-      reportZotero(`Zotero unavailable: ${error?.message || String(error)}`);
-      return [];
-    }
-    if (generation !== zoteroSearchGeneration) return [];
-    return (response?.entries || []).map((entry) => ({
-      ...entry, key: entry.citation_key, year: entry.year || "", type: entry.item_type,
+  // Maps a Zotero search response into the entries the completion list reads.
+  function zoteroEntries(response) {
+    return (response?.entries || []).map((found) => ({
+      ...found, key: found.citation_key, year: found.year || "", type: found.item_type,
     }));
   }
 
-  async function importZotero(entry, target) {
-    if (!editable || !session || target.view !== view || !showing) return false;
-    const doc = session.doc;
-    const active = getTextFromDoc(showing);
-    if (!active) return false;
-    const fromUnicode = active.convertPos(target.from, "utf16", "unicode") ?? target.from;
-    const toUnicode = active.convertPos(target.to, "utf16", "unicode") ?? target.to;
-    // Reassigned below when the document moved while the item was fetched.
-    let fromCursor = active.getCursor(fromUnicode, 0);
-    let toCursor = active.getCursor(toUnicode, 0);
-    const activeSession = session, activeFile = showing, activePath = pathOfDoc(doc, showing);
-    try {
-      const fetched = await zoteroItem(entry.zotero_item);
-      if (session !== activeSession || session.doc !== doc || showing !== activeFile || pathOfDoc(doc, activeFile) !== activePath || view !== target.view || !editable) return false;
+  /// Searches Zotero for the Insert > Citation dialog. It throws when Zotero cannot answer.
+  export async function zoteroSearch(query) {
+    return zoteroEntries(await searchZotero(query));
+  }
 
-      const fromResult = doc.getCursorPos(fromCursor);
-      if (!fromResult) return false;
-      if (fromResult.update) fromCursor = fromResult.update;
-      const toResult = doc.getCursorPos(toCursor);
-      if (!toResult) return false;
-      if (toResult.update) toCursor = toResult.update;
-
-      const start_utf16 = active.convertPos(fromResult.offset, "unicode", "utf16") ?? 0;
-      const end_utf16 = active.convertPos(toResult.offset, "unicode", "utf16") ?? 0;
-
-      const tree = treeForDoc(doc);
-      // The bibliography is registered in the preview's file when it shares the citing file's format family, else in the citing file.
-      const sameFamily = Boolean(entry) && formatOf(entry) === formatOf(activePath);
-      const regPath = sameFamily ? entry : activePath;
-      const regId = sameFamily ? textIdForPath(doc, entry) : activeFile;
-      const reg = getTextFromDoc(regId);
-      const plan = planZoteroImport({
-        source: reg?.toString() || "", targetPath: regPath, texts: tree.texts,
-        item: { ...fetched, zotero_item: entry.zotero_item }, format: formatOf(regPath),
-      });
-      const bibId = textIdForPath(doc, plan.path);
-      const bib = bibId ? getTextFromDoc(bibId) : null;
-      const changes = [{ from: Math.min(start_utf16, end_utf16), to: Math.max(start_utf16, end_utf16), insert: plan.key }];
-      if (plan.registration && regId === activeFile) changes.push(plan.registration);
-      changes.sort((a, b) => a.from - b.from || a.to - b.to);
-      const setupShift = plan.registration && regId === activeFile && plan.registration.from <= Math.min(start_utf16, end_utf16)
-        ? plan.registration.insert.length - (plan.registration.to - plan.registration.from) : 0;
-      if (bib) {
-        if (plan.addition) {
-          const end = bib.toString().length;
-          writeText(bibId, bib, end, end, plan.addition);
-        }
-      } else addTextToDoc(doc, plan.path, plan.bibtex);
-      if (plan.registration && reg && regId !== activeFile) {
-        writeText(regId, reg, plan.registration.from, plan.registration.to, plan.registration.insert);
+  // Writes an imported item's BibTeX and its bibliography registration. The
+  // registration is written here only when it belongs to another file.
+  // importZoteroItems dispatches it through the view when it belongs to the file on screen.
+  function writeZoteroImport(doc, activeFile, activePath, fetched, zoteroItemKey) {
+    const tree = treeForDoc(doc);
+    // The bibliography is registered in the preview's file when it shares the citing file's format family, else in the citing file.
+    const sameFamily = Boolean(entry) && formatOf(entry) === formatOf(activePath) && Boolean(textIdForPath(doc, entry));
+    const regPath = sameFamily ? entry : activePath;
+    const regId = sameFamily ? textIdForPath(doc, entry) : activeFile;
+    const reg = getTextFromDoc(regId);
+    const plan = planZoteroImport({
+      source: reg?.toString() || "", targetPath: regPath, texts: tree.texts,
+      item: { ...fetched, zotero_item: zoteroItemKey }, format: formatOf(regPath),
+    });
+    const bibId = textIdForPath(doc, plan.path);
+    const bib = bibId ? getTextFromDoc(bibId) : null;
+    if (bib) {
+      if (plan.addition) {
+        const end = bib.toString().length;
+        writeText(bibId, bib, end, end, plan.addition);
       }
-      target.view.dispatch({ changes, selection: { anchor: Math.min(start_utf16, end_utf16) + setupShift + plan.key.length }, annotations: Transaction.userEvent.of("input.complete") });
-      if (tracked) prune(doc);
-      doc.commit();
-      scheduleBibliography();
-      return true;
-    } catch (error) {
-      onbibliography?.({ entries: bibliographyEntries(), diagnostics: [{ severity: "warning", message: `Zotero import failed: ${error?.message || error}`, file: pathOfDoc(session.doc, showing), line: 0 }] }, bibliographyRequest());
-      return false;
+    } else addTextToDoc(doc, plan.path, plan.bibtex);
+    if (plan.registration && reg && regId !== activeFile) {
+      writeText(regId, reg, plan.registration.from, plan.registration.to, plan.registration.insert);
     }
+    return { plan, regId };
+  }
+
+  /// Imports several Zotero items for the Insert > Citation dialog. Errors throw to the caller. It returns the citation key of each item, in order.
+  export async function importZoteroItems(items) {
+    if (!editable || !session || !showing || !view) throw new Error("Open a file that can be edited before importing from Zotero.");
+    const activeSession = session, doc = session.doc, activeFile = showing, activePath = pathOfDoc(doc, showing);
+    const fetchedItems = await Promise.all(items.map((item) => zoteroItem(item.zotero_item)));
+    if (session !== activeSession || session.doc !== doc || showing !== activeFile || pathOfDoc(doc, activeFile) !== activePath || !editable) {
+      throw new Error("The document changed while Zotero answered. Try again.");
+    }
+    const keys = [];
+    for (let index = 0; index < items.length; index++) {
+      const { plan, regId } = writeZoteroImport(doc, activeFile, activePath, fetchedItems[index], items[index].zotero_item);
+      keys.push(plan.key);
+      // The file on screen goes through the view, because writeText would bypass the editor for it.
+      // A caret where frontmatter is inserted at the top moves past it, so the citation lands in the body.
+      // A caret where a bibliography is inserted lower down stays before it.
+      if (plan.registration && regId === activeFile) {
+        const changes = view.state.changes(plan.registration);
+        view.dispatch({ changes, selection: view.state.selection.map(changes, plan.registration.from === 0 ? 1 : -1) });
+      }
+    }
+    if (tracked) prune(doc);
+    doc.commit();
+    scheduleBibliography();
+    return keys;
   }
 
   let host = $state(null);
@@ -1143,7 +1114,7 @@
         completionCompartment.of(completionOn(untrack(() => completion))),
         completionExtension({
           project: completionProject,
-          sources: [bibliographyCompletion({ entries: bibliographyEntries, format: () => formatOf(pathOfDoc(session.doc, showing)), remote: remoteBibliography, onRemote: importZotero })],
+          sources: [bibliographyCompletion({ entries: bibliographyEntries, format: () => formatOf(pathOfDoc(session.doc, showing)) })],
         }),
         // Where a compile's errors are shown: the gutter mark, and with it the
         // underline and the hover the lint extension draws. Drawn only while

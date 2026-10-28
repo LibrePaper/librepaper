@@ -557,16 +557,16 @@
 
 {#snippet treeNode(node)}
   {#if node.children}
-    <details open>
-      <summary>
+    <div class="upload-folder">
+      <div class="upload-folder-name">
         {node.name} <span class="np-muted">({node.count} {node.count === 1 ? "file" : "files"})</span>
         <IconButton icon="x" label="Remove the folder {node.path}" tone="plain" size="btn-icon-sm"
-                    onclick={(event) => { event.preventDefault(); staged = unstage(staged, stagedFolder(node.path)); }} />
-      </summary>
+                    onclick={() => { staged = unstage(staged, stagedFolder(node.path)); }} />
+      </div>
       <ul>
         {#each node.children as child (child.path)}<li>{@render treeNode(child)}</li>{/each}
       </ul>
-    </details>
+    </div>
   {:else}
     <div class="upload-file">
       <span class="upload-file-name">{node.name}</span>
@@ -727,7 +727,7 @@
 
   .upload-tree, .upload-tree ul { list-style: none; margin: 0; padding: 0; }
   .upload-tree ul { padding-left: calc(var(--spacing) * 4); }
-  .upload-tree summary { padding-block: calc(var(--spacing)); cursor: pointer; font-weight: 500; }
+  .upload-tree .upload-folder-name { display: flex; align-items: center; gap: var(--spacing); padding-block: calc(var(--spacing)); font-weight: 500; }
   .upload-file { display: flex; align-items: center; gap: calc(var(--spacing) * 3); min-height: 2rem; border-top: 1px solid var(--color-pane-edge); }
   .upload-file-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
   .upload-progress { width: 100%; accent-color: var(--color-focus); }

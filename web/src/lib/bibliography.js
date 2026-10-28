@@ -70,7 +70,7 @@ function markupContext(text, position, format) {
   if (format === "markdown" || format === "quarto") { if (markdownCode(text, position)) return null; }
   else if (format !== "typst") return null;
   let from = position;
-  while (from > 0 && (WORD.test(text[from - 1]) || /[ \t]/.test(text[from - 1]))) from--;
+  while (from > 0 && WORD.test(text[from - 1])) from--;
   if (!from || text[from - 1] !== "@") return null;
   const previous = text[from - 2] || "";
   if (previous && ((WORD.test(previous) && previous !== "-") || previous === "@" || previous === "/")) return null;
@@ -108,24 +108,15 @@ export function entryLabel(entry) {
   return [author, value.year, value.title, value.container].filter(Boolean).join(" — ");
 }
 export function entryDetail(entry) { const value = normalized(entry); return value.container || value.type || ""; }
-export function bibliographyCompletion({ entries, format, remote, onRemote }) {
+export function bibliographyCompletion({ entries, format }) {
   return (context) => {
     const found = citationContext(context.state.doc.toString(), context.pos, typeof format === "function" ? format() : format);
     if (!found) return null;
     const available = typeof entries === "function" ? entries() : entries;
-    const exact = string(found.query).trim().toLocaleLowerCase();
-    if (/[ \t]+$/.test(found.query) && (available || []).some((entry) => string(entry?.key).toLocaleLowerCase() === exact)) return null;
-    const local = rankEntries(available, found.query);
-    const options = (remoteEntries = []) => {
-      const localKeys = new Set(local.map((entry) => entry.key.toLocaleLowerCase()));
-      const ranked = [...local, ...rankEntries(remoteEntries, found.query).filter((entry) => !localKeys.has(entry.key.toLocaleLowerCase())).map((entry) => ({ ...entry, zotero: true }))];
-      if (!ranked.length) return null;
-      return { from: found.from, to: found.to, filter: false,
-      options: ranked.map((entry) => ({ label: entry.key, displayLabel: entryLabel(entry), detail: entry.zotero ? "Zotero — import" : entryDetail(entry), info: entryLabel(entry), type: "reference",
-        ...(entry.zotero && typeof onRemote === "function" ? { apply: (view, _completion, from, to) => onRemote(entry, { view, from, to }) } : {}) })) };
-    };
-    if (typeof remote !== "function") return options();
-    return Promise.resolve(remote(found.query)).then(options, () => options());
+    const ranked = rankEntries(available, found.query);
+    if (!ranked.length) return null;
+    return { from: found.from, to: found.to, filter: false,
+      options: ranked.map((entry) => ({ label: entry.key, displayLabel: entryLabel(entry), detail: entryDetail(entry), info: entryLabel(entry), type: "reference" })) };
   };
 }
 export function selectedBibliographyFiles(source, format) {
