@@ -9,7 +9,8 @@ use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::Sha256;
 use tauri::http::{header, HeaderValue, Method, Response, StatusCode};
-use tokio::sync::Mutex;
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::sync::{mpsc, Mutex};
 
 // Set when the app starts to quit or to install an update, so the watcher stops.
 pub static QUITTING: AtomicBool = AtomicBool::new(false);
@@ -51,6 +52,8 @@ impl Service {
             // The service is on loopback, so a system proxy must not see it.
             http: reqwest::Client::builder()
                 .no_proxy()
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(300))
                 .build()
                 .expect("the HTTP client builds"),
         }
@@ -264,27 +267,92 @@ async fn endpoint(server: &str) -> Result<Endpoint, String> {
     // CREATE_NO_WINDOW: a GUI app spawning a console program would flash a console window.
     #[cfg(windows)]
     command.creation_flags(0x0800_0000);
-    let output = command
-        .output()
+    let line = tokio::time::timeout(Duration::from_secs(30), first_line(command, "endpoint"))
         .await
-        .map_err(|err| format!("cannot run librepaper: {err}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            "librepaper local endpoint failed".to_string()
-        } else {
-            stderr
-        });
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let line = stdout
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .ok_or("librepaper local endpoint printed nothing")?;
+        .map_err(|_| "librepaper local endpoint did not answer within 30 seconds".to_string())??;
     let endpoint: Endpoint =
-        serde_json::from_str(line).map_err(|err| format!("unreadable endpoint: {err}"))?;
+        serde_json::from_str(&line).map_err(|err| format!("unreadable endpoint: {err}"))?;
     compatible(&endpoint)?;
     Ok(endpoint)
+}
+
+// Runs a command that prints one line and exits, and returns that line. The
+// command's exit is what is waited for, never the end of its pipes: on
+// Windows the service that `local endpoint` starts inherits both pipes and
+// keeps them open for its own lifetime (rust-lang/rust#54760), so waiting for
+// EOF would wait for the service to stop. Each pipe is read on a task of its
+// own, which is dropped once the command has exited and its output is in hand.
+async fn first_line(mut command: tokio::process::Command, name: &str) -> Result<String, String> {
+    command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("cannot run librepaper: {err}"))?;
+    let mut stdout = lines_of(child.stdout.take().expect("stdout is piped"));
+    let mut stderr = lines_of(child.stderr.take().expect("stderr is piped"));
+    let status = child
+        .wait()
+        .await
+        .map_err(|err| format!("cannot run librepaper: {err}"))?;
+    // Everything the command printed is in the pipes by now; the readers only
+    // need a moment to pass it on.
+    let line = next_line(&mut stdout).await;
+    if !status.success() {
+        let mut message = String::new();
+        while let Some(line) = next_line(&mut stderr).await {
+            if !message.is_empty() {
+                message.push('\n');
+            }
+            message.push_str(&line);
+        }
+        return Err(if message.is_empty() {
+            format!("librepaper local {name} failed")
+        } else {
+            message
+        });
+    }
+    line.ok_or_else(|| format!("librepaper local {name} printed nothing"))
+}
+
+// A pipe read line by line on its own task. Dropping it stops the task, which
+// may otherwise sit on a pipe another process still holds open.
+struct Lines {
+    lines: mpsc::UnboundedReceiver<String>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for Lines {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn lines_of<R: AsyncRead + Unpin + Send + 'static>(reader: R) -> Lines {
+    let (tx, lines) = mpsc::unbounded_channel();
+    let task = tokio::spawn(async move {
+        let mut reader = BufReader::new(reader).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    Lines { lines, task }
+}
+
+// The next non-empty line, or None once the pipe has closed or has stayed
+// quiet for a second. After the command's exit a longer wait would be on
+// another process's copy of the pipe.
+async fn next_line(lines: &mut Lines) -> Option<String> {
+    loop {
+        match tokio::time::timeout(Duration::from_secs(1), lines.lines.recv()).await {
+            Ok(Some(line)) if line.trim().is_empty() => continue,
+            Ok(line) => return line,
+            Err(_) => return None,
+        }
+    }
 }
 
 // Refuses a service that speaks another protocol than this shell does.
@@ -305,12 +373,13 @@ pub async fn diagnostics(args: &[&str]) -> Result<String, String> {
         .args(["local", "diagnostics"])
         .args(args)
         .stdin(Stdio::null());
+    command.kill_on_drop(true);
     // CREATE_NO_WINDOW: a GUI app spawning a console program would flash a console window.
     #[cfg(windows)]
     command.creation_flags(0x0800_0000);
-    let output = command
-        .output()
+    let output = tokio::time::timeout(Duration::from_secs(30), command.output())
         .await
+        .map_err(|_| "librepaper local diagnostics did not answer within 30 seconds".to_string())?
         .map_err(|err| format!("cannot run librepaper: {err}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -398,9 +467,10 @@ async fn relay(res: reqwest::Response) -> Result<Response<Vec<u8>>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{compatible, health_matches, Endpoint, RELAYED};
+    use super::{compatible, first_line, health_matches, Endpoint, RELAYED};
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
+    use std::time::{Duration, Instant};
     use tauri::http::HeaderName;
 
     #[test]
@@ -512,5 +582,40 @@ mod tests {
             );
             assert_eq!(name, name.to_ascii_lowercase());
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_whose_child_keeps_the_pipes_open_is_done_when_it_exits() {
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", "echo; echo first; sleep 30 & exit 0"]);
+        let started = Instant::now();
+        let line = first_line(command, "test").await.expect("the line is read");
+        assert_eq!(line, "first");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_command_reports_its_stderr_without_waiting_for_the_pipes() {
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", "echo oops >&2; sleep 30 & exit 1"]);
+        let started = Instant::now();
+        let err = first_line(command, "test")
+            .await
+            .expect_err("the command fails");
+        assert_eq!(err, "oops");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_command_that_printed_nothing_is_named() {
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", "exit 2"]);
+        let err = first_line(command, "test")
+            .await
+            .expect_err("the command fails");
+        assert_eq!(err, "librepaper local test failed");
     }
 }
