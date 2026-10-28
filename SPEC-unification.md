@@ -405,7 +405,7 @@ The post-await rechecks become `mutate` calls:
 - the six `mcp_recheck` sites in `mcp/operations.rs`
 - `chat/mod.rs:284-306`
 
-`recheck_chat_caller` checks no rung. Confirm what chat delete should require before porting it.
+Chat delete requires the read rung plus the chat's own token (decision 7).
 
 Comment moderation gets one `Moderation::may(action, &Comment, &Caller)`. Today the command path (`room/comments.rs:1558`) compares `author_key`. The MCP and validation paths (`comments.rs:332` `deletable`, `:361-386`) compare `author`. They also disagree on whether an author may resolve. `author` is a server-derived stable key (**confirmed**: `server/mod.rs:1337` `comment_author`), so this is not exploitable. It is two identities for one person, and the rules should be one. The anonymous `render_digest` gate in `documents.rs:447` and `socket.rs:1016` moves into `Caller`.
 
@@ -428,11 +428,11 @@ One SQL builder replaces the roughly 12 hand-written sums: `postgres/document_lo
 
 ```rust
 pub enum Fence { Required, Exempt(&'static str) }   // the reason is mandatory
-pub enum Lock { StorageUsage, Account(Uuid), Document(Uuid) } // acquired in this order
+pub enum Lock { Account(Uuid), Document(Uuid), StorageUsage } // acquired in this order
 async fn begin_write(&self, fence: Fence, locks: &[Lock]) -> Result<WriteTx<'_>>;
 ```
 
-This replaces `begin_writer_transaction`, the bare `begin_metered` calls, the raw `pool().begin()` at `operation_outcomes.rs:84`, and about 14 hand-written `documents ... FOR UPDATE` preambles, some with `status='active'` and some without. Lock order is written once in code, instead of in comments (`chat.rs:120`).
+This replaces `begin_writer_transaction`, the bare `begin_metered` calls, the raw `pool().begin()` at `operation_outcomes.rs:84`, and about 14 hand-written `documents ... FOR UPDATE` preambles, some with `status='active'` and some without. Lock order is written once in code, instead of in comments (`chat.rs:120`). The order is account, then document, then storage usage, because every existing transaction already takes them that way and a different order would deadlock against the paths that still lock mid-transaction.
 
 The fence rule is decided. The epoch fence exists so that a process that lost the writer lease cannot commit something that depends on the writer's in-memory state: the sequencer, budgets and reservations. So:
 
@@ -485,6 +485,8 @@ pub struct Lease<V> { .. } // explicit hold; idle means zero leases
 This replaces idleness by reference count: `room/mod.rs:560,567` (`strong_count == 2` and `> 1`, **confirmed**) and `engine/log/mod.rs:243,357` (`== 2` and `== 1`, **confirmed**). It also replaces the hand-rolled single flight (`engine/log/mod.rs` `admitting`, `companion/assistant/registry.rs` `start_gate`). Other candidates are `projects.rs:667` `pollers`, `backups.rs:406` and `chat/hub.rs:25`.
 
 The sequencer and room registries carry the fencing and writer-lease logic, and `close()` can deadlock on the writer lease. Port them last, with the gated Postgres suite (`tools/dev/db test`) as the check.
+
+This section was split out of phase 6 into Kata issue xnz9. No target ports without a design for where leases are taken: `start_gate` is a mutex over start, stop and renewal rather than a keyed init, and the engine and room registries hand `Arc<Sequencer>` and `Arc<Room>` across crates and judge idleness by subscribers and reservations as well as reference counts.
 
 ### 8.3 Retry
 
@@ -587,9 +589,8 @@ Decided 2026-10-27.
 4. **Offsets that split a character.** Refuse offsets that callers send, in their boundary's own unit (UTF-16 for the editor, bytes for MCP and patches). Widen offsets the program works out itself. See sections 5.1 and 5.3.
 5. **Comment resolve.** An author may delete or resolve their own comment, and an editor may do either to any comment. See section 6.
 6. **Id newtypes.** Deferred until after phase 7. See section 3.6.
+7. **Chat delete.** The read rung plus the chat's own token, which proves the caller started that chat.
+8. **Owner storage listing.** `document_storage_by_owner` keeps leaving out reservations and listing only active documents, as found.
+9. **`PullOutcome` spelling.** The browser-visible strings stayed as they were; only the Rust type changed.
 
-Still open:
-
-- Chat delete has no rung check in `recheck_chat_caller` (section 6). Decide the rung when porting it.
-- `document_storage_by_owner` leaves out reservations and filters `status='active'` (section 7.1). Confirm that this is intended when porting it.
-- Which `PullOutcome` spelling the browser reads (section 9.2). Settle it by grepping `web/src`.
+Nothing is still open. Keyed registries (section 8.2) are deferred to Kata issue xnz9.
