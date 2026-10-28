@@ -24,6 +24,7 @@
     loadingOlder = false,
     loadError = "",
     onloadolder = undefined,
+    messageEnd = undefined,
   } = $props();
   let transcript = $state();
   let following = true;
@@ -118,6 +119,7 @@
           {#if message.context?.results?.changes?.length}
             <button class="btn btn-sm lp-control-tonal-brand" onclick={() => onresult?.(message.context.results)}>Review changes</button>
           {/if}
+          {@render messageEnd?.(message)}
         </div>
       </article>
     {/each}
