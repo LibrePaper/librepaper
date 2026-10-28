@@ -76,12 +76,6 @@ impl PostgresCatalog {
         Ok(())
     }
 
-    pub async fn begin_writer_transaction(&self) -> Result<sqlx::Transaction<'_, Postgres>> {
-        let mut tx = self.begin_metered().await?;
-        self.check_writer_epoch(&mut tx).await?;
-        Ok(tx)
-    }
-
     /// Try to become the deployment writer. This never waits behind another
     /// process: only the holder may become ready and accept live commands.
     pub async fn claim_writer(&self) -> Result<WriterLease> {

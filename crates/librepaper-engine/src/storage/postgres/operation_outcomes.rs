@@ -3,6 +3,7 @@
 use serde_json::Value;
 use uuid::Uuid;
 
+use super::write_tx::{Fence, Lock};
 use super::{Error, PostgresCatalog, Result};
 
 #[derive(Clone, Debug)]
@@ -83,14 +84,12 @@ impl PostgresCatalog {
         }
         let message = message.chars().take(1000).collect::<String>();
         let outcome = serde_json::json!({"tool":receipt.tool,"status":"refused","error":{"code":code,"message":message}});
-        let mut tx = self.pool().begin().await?;
-        sqlx::query("SELECT id FROM documents WHERE id=$1 FOR UPDATE")
-            .bind(receipt.document_id)
-            .execute(&mut *tx)
+        let mut tx = self
+            .begin_write(Fence::Required, &[Lock::Document(receipt.document_id)])
             .await?;
         let existing: Option<StoredOperationOutcome> = sqlx::query_as("SELECT digest,tool,outcome FROM operation_outcomes WHERE document_id=$1 AND actor=$2 AND request_id=$3")
             .bind(receipt.document_id).bind(&receipt.actor).bind(&receipt.request_id)
-            .fetch_optional(&mut *tx).await?;
+            .fetch_optional(&mut **tx).await?;
         if let Some(existing) = existing {
             if existing.digest != receipt.digest || existing.tool != receipt.tool {
                 return Err(Error::Conflict(

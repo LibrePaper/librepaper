@@ -4,6 +4,7 @@ use sqlx::Row;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use super::write_tx::Fence;
 use super::{new_id, Error, PostgresCatalog, Result};
 use crate::storage::split_page;
 
@@ -195,7 +196,9 @@ impl PostgresCatalog {
         reason: &str,
     ) -> Result<(Uuid, String)> {
         validate_operator_fields(actor, reason)?;
-        let mut tx = self.begin_metered().await?;
+        let mut tx = self
+            .begin_write(Fence::Exempt("operator action, row-locked"), &[])
+            .await?;
         let account = lock_account(&mut tx, selector).await?;
         let next = if blocked { "blocked" } else { "active" };
         let expected = if blocked { "active" } else { "blocked" };
@@ -213,7 +216,7 @@ impl PostgresCatalog {
             };
             sqlx::query(query)
                 .bind(account.id)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?;
         }
         let label = account.label();
@@ -247,7 +250,9 @@ impl PostgresCatalog {
         reason: &str,
     ) -> Result<(Uuid, String)> {
         validate_operator_fields(actor, reason)?;
-        let mut tx = self.begin_metered().await?;
+        let mut tx = self
+            .begin_write(Fence::Exempt("operator action, row-locked"), &[])
+            .await?;
         let account = lock_account(&mut tx, selector).await?;
         if account.kind != "registered" {
             return Err(Error::Conflict(
@@ -262,14 +267,14 @@ impl PostgresCatalog {
         // themselves, but the operator may.
         sqlx::query("UPDATE accounts SET status='erasing',session_generation=session_generation+1 WHERE id=$1")
             .bind(account.id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         sqlx::query(
             "UPDATE documents SET status='deleting',deleted_at=COALESCE(deleted_at,now()),updated_at=now()
              WHERE owner_id=$1 AND status='active'",
         )
         .bind(account.id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         let label = account.label();
         insert_audit(
@@ -301,11 +306,13 @@ impl PostgresCatalog {
         if slug.is_empty() {
             return Err(Error::Invalid("project slug must not be empty".into()));
         }
-        let mut tx = self.begin_metered().await?;
+        let mut tx = self
+            .begin_write(Fence::Exempt("operator action, row-locked"), &[])
+            .await?;
         let row =
             sqlx::query("SELECT id FROM documents WHERE slug=$1 AND status='active' FOR UPDATE")
                 .bind(slug)
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut **tx)
                 .await?
                 .ok_or(Error::NotFound)?;
         let id: Uuid = row.try_get("id")?;
@@ -315,13 +322,13 @@ impl PostgresCatalog {
                  ON CONFLICT(document_id) DO NOTHING",
             )
             .bind(id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?
             .rows_affected()
         } else {
             sqlx::query("DELETE FROM moderated_projects WHERE document_id=$1")
                 .bind(id)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?
                 .rows_affected()
         };
@@ -390,7 +397,9 @@ impl PostgresCatalog {
                 Ok(BlockOutcome::Blocked { id, label })
             }
             [] => {
-                let mut tx = self.begin_metered().await?;
+                let mut tx = self
+                    .begin_write(Fence::Exempt("operator action, row-locked"), &[])
+                    .await?;
                 let id = new_id();
                 let inserted = sqlx::query_scalar::<_, Uuid>(
                     "INSERT INTO banned_handles(id,provider,handle,actor,reason)
@@ -401,7 +410,7 @@ impl PostgresCatalog {
                 .bind(handle)
                 .bind(actor.trim())
                 .bind(reason.trim())
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut **tx)
                 .await?;
                 let id = match inserted {
                     Some(id) => id,
@@ -432,10 +441,12 @@ impl PostgresCatalog {
     /// Removes a name ban and returns its `provider:handle` label.
     pub async fn unban_handle(&self, id: Uuid, actor: &str, reason: &str) -> Result<String> {
         validate_operator_fields(actor, reason)?;
-        let mut tx = self.begin_metered().await?;
+        let mut tx = self
+            .begin_write(Fence::Exempt("operator action, row-locked"), &[])
+            .await?;
         let row = sqlx::query("DELETE FROM banned_handles WHERE id=$1 RETURNING provider, handle")
             .bind(id)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await?
             .ok_or(Error::NotFound)?;
         let provider: String = row.try_get("provider")?;

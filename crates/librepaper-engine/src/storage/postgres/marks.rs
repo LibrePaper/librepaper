@@ -11,6 +11,7 @@
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use super::write_tx::Fence;
 use super::{Error, PostgresCatalog, Result};
 
 #[cfg(test)]
@@ -55,14 +56,16 @@ impl PostgresCatalog {
             return Ok(true);
         }
 
-        let mut tx = self.begin_metered().await?;
+        let mut tx = self
+            .begin_write(Fence::Exempt("per-account preference rows"), &[])
+            .await?;
         let _ = sqlx::query!(
             "SELECT account_id FROM document_marks
              WHERE account_id=$1 AND document_id=$2 FOR UPDATE",
             account_id,
             document_id,
         )
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
         sqlx::query!(
             "DELETE FROM document_marks
@@ -71,7 +74,7 @@ impl PostgresCatalog {
             account_id,
             document_id,
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         sqlx::query!(
             "UPDATE document_marks SET shared_hidden=false
@@ -80,7 +83,7 @@ impl PostgresCatalog {
             account_id,
             document_id,
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         tx.commit().await?;
         Ok(false)

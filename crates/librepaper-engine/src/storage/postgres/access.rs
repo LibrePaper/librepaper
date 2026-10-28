@@ -3,6 +3,7 @@ use sqlx::{FromRow, Row};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use super::write_tx::{Fence, Lock, WriteTx};
 use super::{new_id, Error, PostgresCatalog, Result};
 
 /// Ownership is never stored as a grant, so a write refuses that rung.
@@ -47,18 +48,22 @@ impl PostgresCatalog {
     async fn begin_document_admin(
         &self,
         document_id: Uuid,
-    ) -> Result<sqlx::Transaction<'_, sqlx::Postgres>> {
-        let mut tx = self.begin_writer_transaction().await?;
-        Self::lock_active_document(&mut tx, document_id).await?;
+    ) -> Result<WriteTx<'_>> {
+        let mut tx = self
+            .begin_write(Fence::Required, &[Lock::Document(document_id)])
+            .await?;
+        Self::require_active_document(&mut tx, document_id).await?;
         Ok(tx)
     }
 
-    async fn lock_active_document(
+    /// Refuses a document that is not active or is hidden by moderation. The
+    /// caller already holds the document row lock.
+    async fn require_active_document(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
     ) -> Result<()> {
         let found = sqlx::query_scalar!(
-            "SELECT id FROM documents WHERE id=$1 AND status='active' FOR UPDATE",
+            "SELECT id FROM documents WHERE id=$1 AND status='active'",
             document_id,
         )
         .fetch_optional(&mut **tx)
@@ -224,17 +229,22 @@ impl PostgresCatalog {
         role: Role,
     ) -> Result<GrantRecord> {
         let role = persisted(role)?;
-        let mut tx = self.begin_writer_transaction().await?;
+        let mut tx = self
+            .begin_write(
+                Fence::Required,
+                &[Lock::Account(account_id), Lock::Document(document_id)],
+            )
+            .await?;
         let target = sqlx::query_scalar!(
-            "SELECT id FROM accounts WHERE id=$1 AND status='active' FOR SHARE",
+            "SELECT id FROM accounts WHERE id=$1 AND status='active'",
             account_id,
         )
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
         if target.is_none() {
             return Err(Error::NotFound);
         }
-        Self::lock_active_document(&mut tx, document_id).await?;
+        Self::require_active_document(&mut tx, document_id).await?;
         let row = sqlx::query_as!(
             GrantRecord,
             "INSERT INTO grants(document_id,account_id,role,source_link_hash) VALUES($1,$2,$3,NULL)
@@ -244,7 +254,7 @@ impl PostgresCatalog {
             account_id,
             role,
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
         tx.commit().await?;
         Ok(row)
@@ -257,17 +267,22 @@ impl PostgresCatalog {
         _role: Role,
         source_link_hash: [u8; 32],
     ) -> Result<()> {
-        let mut tx = self.begin_writer_transaction().await?;
+        let mut tx = self
+            .begin_write(
+                Fence::Required,
+                &[Lock::Account(account_id), Lock::Document(document_id)],
+            )
+            .await?;
         let target = sqlx::query_scalar!(
-            "SELECT id FROM accounts WHERE id=$1 AND status='active' FOR SHARE",
+            "SELECT id FROM accounts WHERE id=$1 AND status='active'",
             account_id,
         )
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
         if target.is_none() {
             return Err(Error::NotFound);
         }
-        Self::lock_active_document(&mut tx, document_id).await?;
+        Self::require_active_document(&mut tx, document_id).await?;
         sqlx::query!(
             "INSERT INTO grants(document_id,account_id,role,source_link_hash)
              SELECT $1,$2,NULL,$3 FROM share_links l
@@ -280,7 +295,7 @@ impl PostgresCatalog {
             account_id,
             source_link_hash.as_slice(),
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         tx.commit().await?;
         Ok(())

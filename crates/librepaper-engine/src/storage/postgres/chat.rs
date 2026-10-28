@@ -14,6 +14,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::usage::{lock_storage_usage, usage_bytes, Sources, UsageScope};
+use super::write_tx::{Fence, Lock};
 use super::{Error, PostgresCatalog, Result};
 
 /// The fixed per-row charge added to a message's body bytes.
@@ -112,23 +113,24 @@ impl PostgresCatalog {
         let mut wanted: Vec<Uuid> = authors.iter().flatten().copied().collect();
         wanted.sort();
         wanted.dedup();
-        let mut tx = self.begin_writer_transaction().await?;
+        let mut tx = self.begin_write(Fence::Required, &[]).await?;
         let active: Vec<Uuid> = sqlx::query_scalar(
             "SELECT id FROM accounts WHERE id = ANY($1) AND status='active' ORDER BY id FOR SHARE",
         )
         .bind(wanted)
-        .fetch_all(&mut *tx)
+        .fetch_all(&mut **tx)
         .await?;
         if reservation.is_some() {
             // Moving bytes from the reservation to chat_bytes keeps the
             // deployment sum steady only if no reservation or other chat
-            // write reads the sums in between. This takes the locks the
-            // reservation path takes, in its order, after the account locks.
+            // write reads the sums in between. These two locks stay here
+            // rather than in `begin_write`, because the author accounts above
+            // are locked FOR SHARE first. They follow the order of `Lock`.
             sqlx::query("SELECT id FROM documents WHERE id=$1 FOR UPDATE")
                 .bind(document_id)
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut **tx)
                 .await?;
-            lock_storage_usage(&mut *tx).await?;
+            lock_storage_usage(&mut **tx).await?;
         }
         let inserted: Vec<i64> = sqlx::query_scalar(
             "INSERT INTO chat_messages (id,document_id,author_account_id,author_label,body,created_at) \
@@ -146,7 +148,7 @@ impl PostgresCatalog {
         .bind(bodies)
         .bind(created)
         .bind(active)
-        .fetch_all(&mut *tx)
+        .fetch_all(&mut **tx)
         .await?;
         let charge: i64 = inserted
             .iter()
@@ -155,7 +157,7 @@ impl PostgresCatalog {
         let updated = sqlx::query("UPDATE documents SET chat_bytes=chat_bytes+$2 WHERE id=$1")
             .bind(document_id)
             .bind(charge)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?
             .rows_affected();
         if updated != 1 {
@@ -170,7 +172,7 @@ impl PostgresCatalog {
             .bind(key)
             .bind(document_id)
             .bind(charge)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?
             .rows_affected();
             if deleted == 0 {
@@ -181,7 +183,7 @@ impl PostgresCatalog {
                 .bind(key)
                 .bind(document_id)
                 .bind(charge)
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut **tx)
                 .await?
                 .unwrap_or(0);
             }
@@ -208,23 +210,27 @@ impl PostgresCatalog {
         if wanted <= 0 || minimum <= 0 || minimum > wanted {
             return Err(Error::Invalid("invalid chat reservation".into()));
         }
-        let mut tx = self.begin_writer_transaction().await?;
+        let mut tx = self
+            .begin_write(
+                Fence::Required,
+                &[Lock::Document(document_id), Lock::StorageUsage],
+            )
+            .await?;
         let owner_id: Option<Uuid> = sqlx::query_scalar(
             "SELECT owner_id FROM documents WHERE id=$1 AND status='active' \
-             AND NOT EXISTS(SELECT 1 FROM moderated_projects WHERE document_id=$1) FOR UPDATE",
+             AND NOT EXISTS(SELECT 1 FROM moderated_projects WHERE document_id=$1)",
         )
         .bind(document_id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
         let owner_id = owner_id.ok_or(Error::NotFound)?;
-        lock_storage_usage(&mut *tx).await?;
         let epoch = self.writer_epoch()?;
         let existing = sqlx::query_as::<_, (Uuid, i64)>(
             "SELECT document_id,writer_epoch FROM pending_log_reservations \
              WHERE reservation_id=$1 FOR UPDATE",
         )
         .bind(key)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
         let existing = match existing {
             Some((existing_document, _)) if existing_document != document_id => {
@@ -237,7 +243,7 @@ impl PostgresCatalog {
             Some((_, existing_epoch)) if existing_epoch != epoch => {
                 sqlx::query("DELETE FROM pending_log_reservations WHERE reservation_id=$1")
                     .bind(key)
-                    .execute(&mut *tx)
+                    .execute(&mut **tx)
                     .await?;
                 None
             }
@@ -245,9 +251,9 @@ impl PostgresCatalog {
         };
         // Measured after a stale row is gone, so it does not count against
         // the row that replaces it.
-        let owner_usage = usage_bytes(&mut *tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
+        let owner_usage = usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
         let deployment_usage =
-            usage_bytes(&mut *tx, UsageScope::Deployment, Sources::ALL).await?;
+            usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
         let owner_room = self.policy.owner_bytes.saturating_sub(owner_usage);
         let deployment_room = self.policy.deployment_bytes.saturating_sub(deployment_usage);
         let granted = wanted.min(owner_room).min(deployment_room);
@@ -265,7 +271,7 @@ impl PostgresCatalog {
             )
             .bind(key)
             .bind(granted)
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut **tx)
             .await?
         } else {
             sqlx::query(
@@ -278,7 +284,7 @@ impl PostgresCatalog {
             .bind(epoch)
             .bind(granted)
             .bind([0u8; 32].as_slice())
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
             granted
         };
@@ -288,14 +294,15 @@ impl PostgresCatalog {
 
     /// Deletes the chat reservation row `key`. A missing row is not an error.
     pub async fn release_chat_reservation(&self, document_id: Uuid, key: Uuid) -> Result<()> {
-        let mut tx = self.begin_writer_transaction().await?;
-        lock_chat_reservations(&mut tx, document_id).await?;
+        let mut tx = self
+            .begin_write(Fence::Required, &[Lock::Document(document_id)])
+            .await?;
         sqlx::query(
             "DELETE FROM pending_log_reservations WHERE reservation_id=$1 AND document_id=$2",
         )
         .bind(key)
         .bind(document_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         tx.commit().await?;
         Ok(())
@@ -305,14 +312,15 @@ impl PostgresCatalog {
     /// It reads under the document row lock that every change to the row
     /// takes, so a change whose reply was lost has finished before the read.
     pub async fn chat_reservation_bytes(&self, document_id: Uuid, key: Uuid) -> Result<i64> {
-        let mut tx = self.begin_writer_transaction().await?;
-        lock_chat_reservations(&mut tx, document_id).await?;
+        let mut tx = self
+            .begin_write(Fence::Required, &[Lock::Document(document_id)])
+            .await?;
         let bytes: Option<i64> = sqlx::query_scalar(
             "SELECT bytes FROM pending_log_reservations WHERE reservation_id=$1 AND document_id=$2",
         )
         .bind(key)
         .bind(document_id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
         tx.commit().await?;
         Ok(bytes.unwrap_or(0))
@@ -353,11 +361,13 @@ impl PostgresCatalog {
         buffered: &[Uuid],
         owner: Uuid,
     ) -> Result<Option<ChatCleared>> {
-        let mut tx = self.begin_writer_transaction().await?;
+        let mut tx = self
+            .begin_write(Fence::Required, &[Lock::Document(document_id)])
+            .await?;
         let current: Option<Uuid> =
-            sqlx::query_scalar("SELECT owner_id FROM documents WHERE id=$1 FOR UPDATE")
+            sqlx::query_scalar("SELECT owner_id FROM documents WHERE id=$1")
                 .bind(document_id)
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut **tx)
                 .await?;
         if current != Some(owner) {
             tx.rollback().await?;
@@ -418,24 +428,12 @@ pub struct ChatCleared {
     pub stored_buffered: Vec<Uuid>,
 }
 
-/// Locks the document row. Reserving, consuming, releasing and reading a chat
-/// reservation all take this lock first, so they run one at a time.
-async fn lock_chat_reservations(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    document_id: Uuid,
-) -> Result<()> {
-    sqlx::query("SELECT id FROM documents WHERE id=$1 FOR UPDATE")
-        .bind(document_id)
-        .execute(&mut **tx)
-        .await?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use uuid::Uuid;
 
     use super::super::{NewAccount, NewDocument, PostgresCatalog, PostgresOptions};
+    use super::super::write_tx::Fence;
     use super::{ChatRecord, CHAT_RESERVATION_CHUNK, CHAT_ROW_OVERHEAD_BYTES};
 
     async fn catalog() -> PostgresCatalog {
@@ -596,7 +594,10 @@ mod tests {
             .await
             .unwrap()
             .charged;
-        let mut tx = catalog.begin_writer_transaction().await.unwrap();
+        let mut tx = catalog
+            .begin_write(Fence::Required, &[])
+            .await
+            .unwrap();
         let outcome = catalog
             .trim_retained_in_transaction(&mut tx, document, &[], &[], Some(owner.id))
             .await
@@ -625,7 +626,10 @@ mod tests {
             .unwrap()
             .charged;
         for trimmer in [None, Some(editor.id)] {
-            let mut tx = catalog.begin_writer_transaction().await.unwrap();
+            let mut tx = catalog
+            .begin_write(Fence::Required, &[])
+            .await
+            .unwrap();
             let outcome = catalog
                 .trim_retained_in_transaction(&mut tx, document, &[], &[], trimmer)
                 .await

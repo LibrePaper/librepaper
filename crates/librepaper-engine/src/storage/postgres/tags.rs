@@ -12,6 +12,7 @@
 
 use uuid::Uuid;
 
+use super::write_tx::{Fence, Lock};
 use super::{Error, PostgresCatalog, Result};
 
 /// The colours a tag may take. Clients draw them by key, so a new colour is a
@@ -176,9 +177,14 @@ impl PostgresCatalog {
         let name = validate_name(name)?;
         validate_colour(colour)?;
         let id = Uuid::now_v7();
-        let mut tx = self.begin_metered().await?;
-        sqlx::query_scalar!("SELECT id FROM accounts WHERE id=$1 FOR UPDATE", account_id,)
-            .fetch_optional(&mut *tx)
+        let mut tx = self
+            .begin_write(
+                Fence::Exempt("per-account preference rows"),
+                &[Lock::Account(account_id)],
+            )
+            .await?;
+        sqlx::query_scalar!("SELECT id FROM accounts WHERE id=$1", account_id,)
+            .fetch_optional(&mut **tx)
             .await?
             .ok_or(Error::NotFound)?;
         let inserted = sqlx::query_scalar!(
@@ -193,7 +199,7 @@ impl PostgresCatalog {
             colour,
             MAX_TAGS,
         )
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await
         .map_err(duplicate_as_conflict)?;
         if inserted.is_none() {

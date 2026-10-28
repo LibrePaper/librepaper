@@ -28,6 +28,7 @@ pub use persistence::PersistenceConnection;
 mod repository;
 mod tags;
 mod usage;
+mod write_tx;
 
 #[cfg(test)]
 #[path = "schema_regression_tests.rs"]
@@ -497,7 +498,9 @@ mod tests {
         annotation_path: bool,
     ) -> Result<()> {
         if annotation_path {
-            let mut tx = catalog.begin_metered().await?;
+            let mut tx = catalog
+                .begin_write(super::write_tx::Fence::Required, &[])
+                .await?;
             PostgresCatalog::authorize_mutation(&mut tx, document_id, actor, require_editor)
                 .await?;
             tx.rollback().await.map_err(Error::from)

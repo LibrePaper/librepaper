@@ -21,6 +21,7 @@ mod pending_log_reservation_tests;
 mod snapshot_regression_tests;
 
 use super::usage::{lock_storage_usage, usage_bytes, Sources, UsageScope};
+use super::write_tx::{Fence, Lock};
 use super::{Error, PostgresCatalog, Result};
 
 /// One row of the log.
@@ -249,10 +250,11 @@ impl PostgresCatalog {
         document_id: Uuid,
         expected_update_sequence: i64,
     ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>> {
-        let mut tx = self.begin_metered().await?;
-        self.check_fenced_flush(&mut tx, document_id, expected_update_sequence)
+        let mut tx = self
+            .begin_write(Fence::Required, &[Lock::Document(document_id)])
             .await?;
-        Ok(tx)
+        Self::check_flush_sequence(&mut tx, document_id, expected_update_sequence).await?;
+        Ok(tx.into_inner())
     }
 
     pub async fn check_fenced_flush(
@@ -261,14 +263,27 @@ impl PostgresCatalog {
         document_id: Uuid,
         expected_update_sequence: i64,
     ) -> Result<()> {
-        use sqlx::Row as _;
         self.check_writer_epoch(tx).await?;
-        let row =
-            sqlx::query("SELECT status,update_sequence FROM documents WHERE id=$1 FOR UPDATE")
-                .bind(document_id)
-                .fetch_optional(&mut **tx)
-                .await?
-                .ok_or(Error::NotFound)?;
+        sqlx::query("SELECT id FROM documents WHERE id=$1 FOR UPDATE")
+            .bind(document_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+        Self::check_flush_sequence(tx, document_id, expected_update_sequence).await
+    }
+
+    /// Refuses a flush whose document is gone or inactive, or whose update
+    /// sequence has moved. The caller already holds the document row lock.
+    async fn check_flush_sequence(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        expected_update_sequence: i64,
+    ) -> Result<()> {
+        use sqlx::Row as _;
+        let row = sqlx::query("SELECT status,update_sequence FROM documents WHERE id=$1")
+            .bind(document_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or(Error::NotFound)?;
         let status: String = row.get(0);
         let sequence: i64 = row.get(1);
         if status != "active" {
@@ -293,10 +308,11 @@ impl PostgresCatalog {
         authority: &super::Authority,
         rung: crate::log::sequencer::Rung,
     ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>> {
-        let mut tx = self.begin_metered().await?;
-        self.check_document_command(&mut tx, document_id, authority, rung)
+        let mut tx = self.begin_write(Fence::Required, &[]).await?;
+        let require_editor = matches!(rung, crate::log::sequencer::Rung::Editor);
+        PostgresCatalog::authorize_mutation(&mut tx, document_id, authority, require_editor)
             .await?;
-        Ok(tx)
+        Ok(tx.into_inner())
     }
 
     pub async fn check_document_command(
@@ -454,18 +470,22 @@ impl PostgresCatalog {
         if bytes <= 0 {
             return Err(Error::Invalid("invalid pending log reservation".into()));
         }
-        let mut tx = self.begin_writer_transaction().await?;
+        let mut tx = self
+            .begin_write(
+                Fence::Required,
+                &[Lock::Document(document_id), Lock::StorageUsage],
+            )
+            .await?;
         let owner_id: Option<Uuid> = sqlx::query_scalar(
             "SELECT owner_id FROM documents WHERE id=$1 AND status='active' \
-             AND NOT EXISTS(SELECT 1 FROM moderated_projects WHERE document_id=$1) FOR UPDATE",
+             AND NOT EXISTS(SELECT 1 FROM moderated_projects WHERE document_id=$1)",
         )
         .bind(document_id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
         let owner_id = owner_id.ok_or(Error::NotFound)?;
-        lock_storage_usage(&mut *tx).await?;
         let owner_usage =
-            usage_bytes(&mut *tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
+            usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
         let epoch = self.writer_epoch()?;
         if let Some((existing_document, existing_epoch, existing_bytes, existing_digest)) =
             sqlx::query_as::<_, (Uuid, i64, i64, Vec<u8>)>(
@@ -473,7 +493,7 @@ impl PostgresCatalog {
                  FROM pending_log_reservations WHERE reservation_id=$1",
             )
             .bind(reservation_key)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await?
         {
             tx.commit().await?;
@@ -489,7 +509,7 @@ impl PostgresCatalog {
                 ))
             };
         }
-        let deployment_usage = usage_bytes(&mut *tx, UsageScope::Deployment, Sources::ALL).await?;
+        let deployment_usage = usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
         if owner_usage.saturating_add(bytes) > self.policy.owner_bytes {
             return Err(Error::Quota(super::QuotaScope::Owner));
         }
@@ -507,7 +527,7 @@ impl PostgresCatalog {
         .bind(epoch)
         .bind(bytes)
         .bind(digest.as_slice())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         match tx.commit().await {
             Ok(()) => Ok(()),
@@ -549,10 +569,10 @@ impl PostgresCatalog {
 
     pub async fn clear_stale_pending_log_reservations(&self) -> Result<()> {
         let epoch = self.writer_epoch()?;
-        let mut tx = self.begin_writer_transaction().await?;
+        let mut tx = self.begin_write(Fence::Required, &[]).await?;
         sqlx::query("DELETE FROM pending_log_reservations WHERE writer_epoch <> $1")
             .bind(epoch)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         tx.commit().await?;
         Ok(())
@@ -595,13 +615,14 @@ impl PostgresCatalog {
         if through_update_sequence < 0 || snapshot_bytes < 0 || snapshot_key.is_empty() {
             return Err(Error::Invalid("invalid collaboration base".into()));
         }
-        let mut tx = self.begin_metered().await?;
-        self.check_writer_epoch(&mut tx).await?;
+        let mut tx = self
+            .begin_write(Fence::Required, &[Lock::Document(document_id)])
+            .await?;
         let (head, owner_id) = sqlx::query_as::<_, (i64, Uuid)>(
-            "SELECT update_sequence,owner_id FROM documents WHERE id=$1 FOR UPDATE",
+            "SELECT update_sequence,owner_id FROM documents WHERE id=$1",
         )
         .bind(document_id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?
         .ok_or(Error::NotFound)?;
         if through_update_sequence > head {
@@ -619,7 +640,7 @@ impl PostgresCatalog {
                FROM document_snapshots WHERE document_id=$1 AND delete_after IS NULL"#,
             document_id,
         )
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
         if current_through.is_some_and(|through| {
             if replace_equal {
@@ -631,18 +652,18 @@ impl PostgresCatalog {
             tx.commit().await?;
             return Ok(None);
         }
-        lock_storage_usage(&mut *tx).await?;
+        lock_storage_usage(&mut **tx).await?;
         let owner_before =
-            usage_bytes(&mut *tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
+            usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
         let deployment_before =
-            usage_bytes(&mut *tx, UsageScope::Deployment, Sources::ALL).await?;
+            usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
         sqlx::query!(
             "UPDATE document_snapshots SET delete_after=$2
              WHERE document_id=$1 AND delete_after IS NULL",
             document_id,
             predecessor_delete_after,
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         let base = sqlx::query_as!(
             LogBase,
@@ -661,14 +682,14 @@ impl PostgresCatalog {
             snapshot_digest.as_slice(),
             snapshot_bytes,
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
         sqlx::query!(
             "DELETE FROM document_updates WHERE document_id=$1 AND update_sequence <= $2",
             document_id,
             through_update_sequence,
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         let counters = sqlx::query(
             "UPDATE documents d SET
@@ -681,16 +702,16 @@ impl PostgresCatalog {
              RETURNING d.uncompacted_update_count,d.uncompacted_update_bytes",
         )
         .bind(document_id)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
         let uncompacted_count = counters.try_get("uncompacted_update_count")?;
         let uncompacted_bytes = counters.try_get("uncompacted_update_bytes")?;
         let owner_usage =
-            usage_bytes(&mut *tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
+            usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
         if owner_usage > self.policy.owner_bytes && owner_usage > owner_before {
             return Err(Error::Quota(super::QuotaScope::Owner));
         }
-        let deployment_usage = usage_bytes(&mut *tx, UsageScope::Deployment, Sources::ALL).await?;
+        let deployment_usage = usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
         if deployment_usage > self.policy.deployment_bytes && deployment_usage > deployment_before {
             return Err(Error::Quota(super::QuotaScope::Deployment));
         }
