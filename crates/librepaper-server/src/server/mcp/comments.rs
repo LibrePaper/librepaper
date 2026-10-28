@@ -14,7 +14,6 @@ use librepaper_room::room::agent::OperationKey;
 use librepaper_room::room::comments::{
     validate_existing_action, CommentAction, Moderation, Moderator,
 };
-use librepaper_room::room::refusal::Kind;
 
 /// The id a newly created annotation gets.
 ///
@@ -71,13 +70,11 @@ pub(crate) fn command_failure(error: librepaper_engine::log::sequencer::CommandE
     let mut failure = crate::server::refusal::mcp(&refusal);
     // The comment tools have always spelled any refusal about this moment
     // "unavailable", whether or not the write may have landed. The commit
-    // state stays as the refusal has it, so a recorded operation never
-    // treats one of these as a definite refusal.
+    // state stays as the shared projection produced it, so a recorded
+    // operation stores a definite refusal as one and an uncertain failure as
+    // unknown.
     if failure.code == "outcome_unknown" {
         failure.code = "unavailable";
-    }
-    if refusal.kind == Kind::Unavailable {
-        failure.committed = Committed::Unknown;
     }
     failure
 }
@@ -440,6 +437,19 @@ impl Server {
 mod tests {
     use super::*;
     use librepaper_room::room::Comment;
+
+    #[test]
+    fn a_busy_comment_refusal_is_definitely_not_committed() {
+        use librepaper_engine::log::{CommandError, SequencerError};
+        let busy = command_failure(CommandError::Sequencer(SequencerError::Busy));
+        assert_eq!(busy.code, "unavailable");
+        assert_eq!(busy.committed, Committed::No);
+        let uncertain = command_failure(CommandError::Sequencer(SequencerError::Fenced(
+            "lost".into(),
+        )));
+        assert_eq!(uncertain.code, "unavailable");
+        assert_eq!(uncertain.committed, Committed::Unknown);
+    }
 
     fn served(author: &str) -> Comment {
         Comment {

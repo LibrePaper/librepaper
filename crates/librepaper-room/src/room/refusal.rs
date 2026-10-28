@@ -155,6 +155,11 @@ impl From<&WriteError> for Refusal {
             WriteError::NotFound => Self::not_written(Kind::NotFound, message),
             WriteError::Conflict(_) => Self::not_written(Kind::Conflict(Reason::Conflict), message),
             WriteError::Invalid(_) => Self::not_written(Kind::Invalid, message),
+            WriteError::Quota(scope) => Self::not_written(Kind::Quota(*scope), message),
+            WriteError::RateLimited => Self::not_written(Kind::RateLimited, message),
+            WriteError::Duplicate(_) => {
+                Self::not_written(Kind::Conflict(Reason::Conflict), message)
+            }
             // Refused before anything was applied.
             WriteError::Unreadable(_) | WriteError::Busy => {
                 Self::not_written(Kind::Unavailable, message)
@@ -189,6 +194,13 @@ impl From<&AgentError> for Refusal {
                 Kind::Conflict(Reason::Suggestion),
                 "a pending suggestion is in the way",
             ),
+            AgentError::Quota(scope) => Self::not_written(Kind::Quota(*scope), scope.to_string()),
+            AgentError::RateLimited => {
+                Self::not_written(Kind::RateLimited, AgentError::RateLimited.to_string())
+            }
+            AgentError::Duplicate(of) => {
+                Self::not_written(Kind::Conflict(Reason::Conflict), of.to_string())
+            }
             AgentError::Storage(_) => Self::new(
                 Kind::Unavailable,
                 Committed::Unknown,
@@ -269,6 +281,36 @@ mod tests {
             assert_eq!(refusal.committed, committed, "{error:?}");
             assert_eq!(refusal.message, error.client_message(), "{error:?}");
         }
+    }
+
+    #[test]
+    fn a_catalog_refusal_keeps_its_own_status_through_a_write_error() {
+        use librepaper_engine::storage::postgres::DuplicateOf;
+        let make = |index: usize| match index {
+            0 => CatalogError::Quota(QuotaScope::Deployment),
+            1 => CatalogError::Quota(QuotaScope::Owner),
+            2 => CatalogError::RateLimited,
+            _ => CatalogError::Duplicate(DuplicateOf::ProjectName),
+        };
+        let expected = [
+            (507, QuotaScope::Deployment.to_string()),
+            (507, QuotaScope::Owner.to_string()),
+            (429, CatalogError::RateLimited.to_string()),
+            (409, DuplicateOf::ProjectName.to_string()),
+        ];
+        for (index, (status, message)) in expected.into_iter().enumerate() {
+            let direct = Refusal::from_catalog(make(index), "nf", "internal");
+            let through = Refusal::from(WriteError::from(make(index)));
+            assert_eq!(through.status(), status, "{index}");
+            assert_eq!(through, direct, "{index}");
+            assert_eq!(through.message, message, "{index}");
+        }
+        let owner = Refusal::from(WriteError::Quota(QuotaScope::Owner));
+        assert_eq!(owner.kind, Kind::Quota(QuotaScope::Owner));
+        let deployment = Refusal::from(WriteError::Quota(QuotaScope::Deployment));
+        assert_eq!(deployment.kind, Kind::Quota(QuotaScope::Deployment));
+        let through_agent = Refusal::from(AgentError::from(WriteError::RateLimited));
+        assert_eq!(through_agent.status(), 429);
     }
 
     #[test]

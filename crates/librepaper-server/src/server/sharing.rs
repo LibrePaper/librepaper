@@ -406,13 +406,11 @@ impl Server {
                         Err(ModifyError::NotFound) => {
                             return write_json(404, &json!({"error": "not found"}))
                         }
+                        Err(ModifyError::OwnershipChanged) => {
+                            return write_json(409, &json!({"error": "ownership changed"}))
+                        }
                         Err(ModifyError::Refused(message)) => {
-                            let status = if message == "ownership changed" {
-                                409
-                            } else {
-                                400
-                            };
-                            return write_json(status, &json!({"error": message}));
+                            return write_json(400, &json!({"error": message}));
                         }
                         Err(ModifyError::Storage(err)) => {
                             tracing::warn!("could not record the sharing of {slug}: {err}");

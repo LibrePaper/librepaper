@@ -127,6 +127,36 @@ impl BackupError {
     }
 }
 
+/// Why finishing an account authorization did not finish it. A pending
+/// approval keeps the authorization so the user can retry; every other
+/// failure ends it.
+enum CompleteError {
+    /// The user has not approved the code yet.
+    Pending,
+    Failed(String),
+}
+
+impl CompleteError {
+    fn into_message(self) -> String {
+        match self {
+            Self::Pending => "sign in and approve the code, then retry".to_string(),
+            Self::Failed(message) => message,
+        }
+    }
+}
+
+impl From<String> for CompleteError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
+}
+
+impl From<&str> for CompleteError {
+    fn from(message: &str) -> Self {
+        Self::Failed(message.to_string())
+    }
+}
+
 fn identity_error(identity: &Value, account_id: &str) -> Option<BackupError> {
     match identity
         .get("id")
@@ -634,7 +664,7 @@ impl BackupManager {
             entry.completing = true;
             device_code
         };
-        let result = async {
+        let result: Result<(), CompleteError> = async {
             let response = short_client()
                 .map_err(|error| format!("could not complete account authorization: {error}"))?
                 .post(format!("{origin}/api/auth/device/token"))
@@ -646,16 +676,15 @@ impl BackupManager {
             let payload = bounded_auth_json(response).await?;
             if !status.is_success() {
                 return match payload.get("error").and_then(Value::as_str) {
-                    Some("authorization_pending") => {
-                        Err("sign in and approve the code, then retry".into())
-                    }
+                    Some("authorization_pending") => Err(CompleteError::Pending),
                     Some("expired_token") => {
                         Err("account authorization expired; start again".into())
                     }
                     _ => Err(format!(
                         "could not complete account authorization: server returned HTTP {}",
                         status.as_u16()
-                    )),
+                    )
+                    .into()),
                 };
             }
             let token = payload
@@ -701,21 +730,18 @@ impl BackupManager {
             }
             self.persist(&state).await?;
             self.changed.notify_one();
-            Ok(())
+            Ok::<(), CompleteError>(())
         }
         .await;
         let mut pending = self.authorizations.lock().await;
-        if result.is_ok()
-            || result
-                .as_ref()
-                .err()
-                .is_some_and(|error| !error.contains("sign in and approve the code"))
-        {
+        if matches!(result, Err(CompleteError::Pending)) {
+            if let Some(entry) = pending.get_mut(authorization_id) {
+                entry.completing = false;
+            }
+        } else {
             pending.remove(authorization_id);
-        } else if let Some(entry) = pending.get_mut(authorization_id) {
-            entry.completing = false;
         }
-        result
+        result.map_err(CompleteError::into_message)
     }
 
     #[allow(clippy::result_large_err)] // The error is an HTTP response, as in the other service handlers.

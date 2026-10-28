@@ -414,10 +414,13 @@ pub enum PutError {
 }
 
 /// Why `modify` did not: the document is not there, the change refused itself
-/// with a message meant for the caller, or storage would not take it.
+/// with a message meant for the caller, the actor no longer owns the document,
+/// or storage would not take it.
 #[derive(Debug)]
 pub enum ModifyError {
     NotFound,
+    /// The actor owned the document when it was loaded and does not now.
+    OwnershipChanged,
     Refused(String),
     Storage(String),
 }
@@ -1459,7 +1462,12 @@ impl Store {
         Ok(usize::from(self.begin_delete(slug).await?.is_some()))
     }
 
-    pub async fn rename(&self, slug: &str, title: &str, actor: &Authority) -> Result<(), String> {
+    pub async fn rename(
+        &self,
+        slug: &str,
+        title: &str,
+        actor: &Authority,
+    ) -> Result<(), ModifyError> {
         if title.is_empty() {
             return Ok(());
         }
@@ -1467,20 +1475,20 @@ impl Store {
         let Some(document) = catalog
             .document_by_slug(slug)
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| ModifyError::Storage(e.to_string()))?
         else {
-            return Err("document not found".into());
+            return Err(ModifyError::NotFound);
         };
         let changed = catalog
             .update_document_title(document.id, actor, title)
             .await
             .map_err(|error| match error {
-                CatalogError::Conflict(_) => "ownership changed".to_string(),
-                CatalogError::NotFound => "document not found".to_string(),
-                other => other.to_string(),
+                CatalogError::Conflict(_) => ModifyError::OwnershipChanged,
+                CatalogError::NotFound => ModifyError::NotFound,
+                other => ModifyError::Storage(other.to_string()),
             })?;
         if !changed {
-            return Err("ownership changed".into());
+            return Err(ModifyError::OwnershipChanged);
         }
         Ok(())
     }
@@ -1529,7 +1537,7 @@ impl Store {
             .map_err(|e| ModifyError::Storage(e.to_string()))?
             .ok_or(ModifyError::NotFound)?;
         if actor.account_id != Some(document.owner_id) {
-            return Err(ModifyError::Refused("ownership changed".into()));
+            return Err(ModifyError::OwnershipChanged);
         }
         let mut entry = entry_from_document(catalog, &document)
             .await
@@ -1577,7 +1585,7 @@ impl Store {
             .save_document_sharing(document.id, actor, &links, &live_hashes)
             .await
             .map_err(|error| match error {
-                CatalogError::Conflict(_) => ModifyError::Refused("ownership changed".into()),
+                CatalogError::Conflict(_) => ModifyError::OwnershipChanged,
                 CatalogError::NotFound => ModifyError::NotFound,
                 other => ModifyError::Storage(other.to_string()),
             })?;

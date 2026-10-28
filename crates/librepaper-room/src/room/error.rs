@@ -7,7 +7,7 @@
 //! refusal is for the person reading it, so rewording one must not silently
 //! move a route from 507 to 413 or turn a permanent refusal into a retry.
 
-use librepaper_engine::storage::postgres::Error as CatalogError;
+use librepaper_engine::storage::postgres::{DuplicateOf, Error as CatalogError, QuotaScope};
 
 /// Whether the same write is worth sending again.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,6 +39,13 @@ pub enum WriteError {
     Conflict(String),
     /// The input is not something this document could ever take.
     Invalid(String),
+    /// A storage limit was reached. The scope says whose, so the answer is
+    /// the same 507 the catalogue gives.
+    Quota(QuotaScope),
+    /// The account is writing faster than it is allowed to.
+    RateLimited,
+    /// The write would collide with something that already has that name.
+    Duplicate(DuplicateOf),
     /// Storage failed. The string is context for the log; clients are told
     /// only that storage is unavailable.
     Storage(String),
@@ -58,7 +65,9 @@ impl WriteError {
             // after an editor trims the document (§9.3). So it is worth
             // trying again, unlike a refusal about the work itself.
             Self::Unreadable(_) | Self::Fenced(_) | Self::Busy => Retry::Later,
-            Self::NotFound | Self::Invalid(_) => Retry::No,
+            Self::NotFound | Self::Invalid(_) | Self::Quota(_) | Self::Duplicate(_) => Retry::No,
+            // The account's budget refills with time.
+            Self::RateLimited => Retry::Later,
             // A stale input has to be rebuilt against the current document
             // before it can be sent again, so the same bytes never help.
             Self::Conflict(_) => Retry::No,
@@ -78,6 +87,9 @@ impl WriteError {
             Self::Busy => "this deployment is busy; try again in a moment".into(),
             Self::NotFound => "not found".into(),
             Self::Conflict(why) | Self::Invalid(why) => why.clone(),
+            Self::Quota(scope) => scope.to_string(),
+            Self::RateLimited => CatalogError::RateLimited.to_string(),
+            Self::Duplicate(of) => of.to_string(),
             Self::Storage(_) => "storage temporarily unavailable".into(),
         }
     }
@@ -109,9 +121,9 @@ impl From<CatalogError> for WriteError {
             CatalogError::NotFound => Self::NotFound,
             CatalogError::Invalid(why) => Self::Invalid(why),
             CatalogError::Conflict(why) => Self::Conflict(why),
-            refused @ (CatalogError::Quota(_)
-            | CatalogError::RateLimited
-            | CatalogError::Duplicate(_)) => Self::Conflict(refused.to_string()),
+            CatalogError::Quota(scope) => Self::Quota(scope),
+            CatalogError::RateLimited => Self::RateLimited,
+            CatalogError::Duplicate(of) => Self::Duplicate(of),
             CatalogError::Ownership(why) => Self::Storage(why),
             CatalogError::Database(err) => Self::Storage(err.to_string()),
         }
