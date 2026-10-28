@@ -579,6 +579,17 @@ Phases 3, 4 and 5 depend only on phase 1 and can run side by side. Storage is la
 
 Each piece's brief names the files to change, the helpers to delete and the call sites to port. It also restates that the worker must not run tests, builds or linters. Every piece ends with a grep showing that the old helper names are gone.
 
+## 10a. Not built
+
+Four parts of this spec were dropped on 2026-10-28, after the Roborev pass over the merged phases (job 1100) found them missing. The operator chose to record them here rather than build them. Reviews should not raise them as omissions.
+
+- **`ProjectPath`** (section 3.2). Admission still returns a `Kind` and leaves the normalised path to the caller. `RelPath`, `RepoPath` and `portable` were built.
+- **`Bytes` and the limits table** (section 3.5). Byte caps stay as named constants in their own crates. The colliding names listed in 3.5 were renamed.
+- **`Edit<U>` and `Span<U>` for edits, patches and overlap checks** (section 5.4). Session edits, source patches and the overlap checker keep `usize` offsets. The unit newtypes, `TextIndex` and the two named overlap policies were built, and each boundary converts through `TextIndex`.
+- **`ApiClient` and `Profile`** (section 9.4). Callers keep their own request code. `SiteUrl`, the redirect-free `credentialed_client` and `short_client` were built.
+
+The reason is cost against value. Each item is a wide mechanical port with no known bug behind it, and the unification already added more code than it removed.
+
 ## 11. Decisions
 
 Decided 2026-10-27.
