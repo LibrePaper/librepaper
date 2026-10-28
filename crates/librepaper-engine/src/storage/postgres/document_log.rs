@@ -651,10 +651,8 @@ impl PostgresCatalog {
             return Ok(None);
         }
         lock_storage_usage(&mut tx).await?;
-        let owner_before =
-            usage_bytes(&mut tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
-        let deployment_before =
-            usage_bytes(&mut tx, UsageScope::Deployment, Sources::ALL).await?;
+        let owner_before = usage_bytes(&mut tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
+        let deployment_before = usage_bytes(&mut tx, UsageScope::Deployment, Sources::ALL).await?;
         sqlx::query!(
             "UPDATE document_snapshots SET delete_after=$2
              WHERE document_id=$1 AND delete_after IS NULL",
