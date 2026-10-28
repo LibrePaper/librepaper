@@ -116,7 +116,10 @@ mod tests {
             .delay(failures);
             for _ in 0..200 {
                 let wait = policy.delay(failures);
-                assert!(wait >= full / 2 && wait <= full, "{wait:?} outside {full:?}");
+                assert!(
+                    wait >= full / 2 && wait <= full,
+                    "{wait:?} outside {full:?}"
+                );
             }
         }
     }
@@ -164,7 +167,11 @@ mod tests {
             .run(
                 || {
                     runs.set(runs.get() + 1);
-                    std::future::ready(if runs.get() < 4 { Err(()) } else { Ok(runs.get()) })
+                    std::future::ready(if runs.get() < 4 {
+                        Err(())
+                    } else {
+                        Ok(runs.get())
+                    })
                 },
                 |_| true,
             )

@@ -723,11 +723,13 @@ async fn run_postgres_tool(
             "{name} exited with status {code}: {}",
             String::from_utf8_lossy(&run.stderr).trim()
         ))),
-        Ending::SpawnFailed(error) => Err(BackupError::Tool(format!(
-            "could not run {name}: {error}"
-        ))),
+        Ending::SpawnFailed(error) => {
+            Err(BackupError::Tool(format!("could not run {name}: {error}")))
+        }
         // Neither a deadline nor a token is set.
-        Ending::TimedOut | Ending::Canceled => Err(BackupError::Tool(format!("{name} was stopped"))),
+        Ending::TimedOut | Ending::Canceled => {
+            Err(BackupError::Tool(format!("{name} was stopped")))
+        }
     }
 }
 

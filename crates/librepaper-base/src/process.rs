@@ -16,10 +16,10 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, Command};
 use crate::retry::RetryPolicy;
 use crate::tasks::Shutdown;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::process::{Child, Command};
 
 /// How long the readers get to reach end-of-file once the child has ended. A
 /// descendant outside the process group can keep a pipe open past that.
@@ -101,7 +101,8 @@ impl Collected {
                 if chunk.len() > room {
                     self.truncated = true;
                 }
-                self.bytes.extend_from_slice(&chunk[..chunk.len().min(room)]);
+                self.bytes
+                    .extend_from_slice(&chunk[..chunk.len().min(room)]);
             }
             Keep::Tail(cap) => {
                 self.bytes.extend_from_slice(chunk);
@@ -132,7 +133,9 @@ impl Collected {
 type Shared = Arc<Mutex<Collected>>;
 
 fn lock(shared: &Shared) -> std::sync::MutexGuard<'_, Collected> {
-    shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Reads `reader` to end-of-file into `shared`, whatever the cap, so the child

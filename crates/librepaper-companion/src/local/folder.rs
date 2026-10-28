@@ -157,9 +157,7 @@ async fn run_picker_process(
         Ending::Exited(code) => decode_picker_process(code == 0, &run.stdout),
         Ending::TimedOut => Err("The folder chooser timed out.".into()),
         Ending::Canceled => Err(CANCELLED.into()),
-        Ending::SpawnFailed(error) => {
-            Err(format!("Could not start the folder chooser: {error}"))
-        }
+        Ending::SpawnFailed(error) => Err(format!("Could not start the folder chooser: {error}")),
     }
 }
 
