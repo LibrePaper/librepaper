@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Page not found · LibrePaper</title>
+    <meta name="robots" content="noindex" />
+    <link rel="icon" type="image/svg+xml" href="/assets/librepaper-icon.svg" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #fbfaf7;
+        color: #1f2a2e;
+        font-family:
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          Roboto,
+          "Helvetica Neue",
+          Arial,
+          sans-serif;
+      }
+
+      body {
+        min-height: 100vh;
+        min-height: 100dvh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 16px;
+        box-sizing: border-box;
+      }
+
+      main {
+        text-align: center;
+      }
+
+      .logo {
+        display: inline-block;
+      }
+
+      .logo img {
+        display: block;
+        width: min(260px, 70vw);
+        height: auto;
+        margin: 0 auto;
+      }
+
+      h1 {
+        font-size: 1.5rem;
+        color: #2b5748;
+        margin: 2rem 0 0.5rem;
+      }
+
+      p {
+        margin: 0.5rem 0;
+      }
+
+      a {
+        color: #2b5748;
+        text-decoration: underline;
+      }
+
+      a:hover {
+        color: #1d3d32;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      web/tools/build-site.mjs copies this file unchanged into docs/.build beside index.html.
+      Caddy serves it for any missing path on librepaper.org (see handle_errors in tools/deploy/production).
+      It uses absolute paths and no script because it is served at arbitrary URLs.
+    -->
+    <main>
+      <a class="logo" href="https://librepaper.org/"><img src="/assets/librepaper-logo.svg" alt="LibrePaper" width="260" height="38" /></a>
+      <h1>Page not found</h1>
+      <p>There is nothing at this address. It may have moved, or the link may be wrong.</p>
+      <p><a href="https://librepaper.org/">Go to librepaper.org</a></p>
+    </main>
+  </body>
+</html>

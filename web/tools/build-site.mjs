@@ -251,8 +251,9 @@ async function main() {
   // `pages`; but vite.site.config.js's root is this same directory, and an
   // html entry outside a Rollup build's root cannot be given a stable output
   // path. Copying it in, unchanged, is cheaper than teaching that config
-  // about a second root.
+  // about a second root. The 404 page is copied in the same way, for the same reason.
   await copyFile(resolve(here, "../src/site/index.html"), resolve(outDir, "index.html"));
+  await copyFile(resolve(here, "../src/site/404.html"), resolve(outDir, "404.html"));
   console.log(
     `build-site: wrote ${built} page(s) to ${relative(process.cwd(), outDir)}${skipped ? ` (${skipped} page(s) in nav.js have no markdown yet)` : ""}`,
   );

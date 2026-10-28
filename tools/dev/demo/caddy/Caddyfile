@@ -9,4 +9,8 @@
 :8081 {
 	root * /srv/site
 	file_server
+	handle_errors 404 {
+		rewrite * /404.html
+		file_server
+	}
 }
