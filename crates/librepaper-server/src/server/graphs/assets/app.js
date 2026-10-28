@@ -485,13 +485,15 @@
     }
   }
 
-  async function loadModeration() {
-    const note = document.getElementById("moderation-status");
-    try {
-      const response = await request("/moderation", { cache: "no-store" });
-      if (!response.ok) throw new Error("HTTP " + response.status);
-      const data = await response.json();
-      fill(document.getElementById("blocked-rows"), data.blocked_accounts, 5, (account) => {
+  // The four moderation tables. `param` is the query field that carries the
+  // cursor of the next page, and `next` is the same list's key in the reply.
+  const MODERATION_LISTS = [
+    {
+      body: "blocked-rows",
+      field: "blocked_accounts",
+      param: "blocked_after",
+      columns: 5,
+      build: (account) => {
         const row = document.createElement("tr");
         row.append(
           labelled(account.handle, account.provider),
@@ -501,8 +503,14 @@
           undoCell("Unblock", "unblock", account.id)
         );
         return row;
-      });
-      fill(document.getElementById("banned-rows"), data.banned_handles, 5, (entry) => {
+      },
+    },
+    {
+      body: "banned-rows",
+      field: "banned_handles",
+      param: "banned_after",
+      columns: 5,
+      build: (entry) => {
         const row = document.createElement("tr");
         row.append(
           labelled(entry.handle, entry.provider),
@@ -512,8 +520,14 @@
           undoCell("Remove", "unban", entry.id)
         );
         return row;
-      });
-      fill(document.getElementById("hidden-rows"), data.hidden_projects, 6, (project) => {
+      },
+    },
+    {
+      body: "hidden-rows",
+      field: "hidden_projects",
+      param: "hidden_after",
+      columns: 6,
+      build: (project) => {
         const row = document.createElement("tr");
         row.append(
           labelled(project.slug, project.title),
@@ -524,8 +538,14 @@
           undoCell("Unhide", "unhide", project.slug)
         );
         return row;
-      });
-      fill(document.getElementById("recent-rows"), data.recent, 5, (entry) => {
+      },
+    },
+    {
+      body: "recent-rows",
+      field: "recent",
+      param: "recent_after",
+      columns: 5,
+      build: (entry) => {
         const row = document.createElement("tr");
         row.append(
           cell(new Date(entry.at * 1000).toISOString().slice(0, 16).replace("T", " ")),
@@ -535,7 +555,55 @@
           cell(entry.reason || "", "reason")
         );
         return row;
-      });
+      },
+    },
+  ];
+
+  // Ends a table with a "More" row when the server returned a cursor for it.
+  function moreRow(list, cursor) {
+    const td = document.createElement("td");
+    td.colSpan = list.columns;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "More";
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      const note = document.getElementById("moderation-status");
+      try {
+        const response = await request("/moderation?" + list.param + "=" + encodeURIComponent(cursor), {
+          cache: "no-store",
+        });
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        const data = await response.json();
+        const body = document.getElementById(list.body);
+        body.lastElementChild.remove();
+        body.append(...data[list.field].map(list.build));
+        const next = data.next[list.field];
+        if (next) body.append(moreRow(list, next));
+      } catch (error) {
+        button.disabled = false;
+        note.classList.add("failed");
+        note.textContent = LOAD_FAILED;
+      }
+    });
+    td.append(button);
+    const row = document.createElement("tr");
+    row.append(td);
+    return row;
+  }
+
+  async function loadModeration() {
+    const note = document.getElementById("moderation-status");
+    try {
+      const response = await request("/moderation", { cache: "no-store" });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const data = await response.json();
+      for (const list of MODERATION_LISTS) {
+        const body = document.getElementById(list.body);
+        fill(body, data[list.field], list.columns, list.build);
+        const next = data.next[list.field];
+        if (next) body.append(moreRow(list, next));
+      }
       if (note.textContent === LOAD_FAILED) {
         note.classList.remove("failed");
         note.textContent = "";

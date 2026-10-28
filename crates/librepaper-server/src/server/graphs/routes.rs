@@ -14,7 +14,9 @@ use axum::response::Response;
 use base64::Engine;
 use librepaper_base::auth::{cookie_name, pkce_verifier, sign, verifies, Identity};
 use librepaper_base::util::{token, Encoding};
-use librepaper_engine::storage::postgres::BlockOutcome;
+use librepaper_engine::storage::postgres::{
+    BlockOutcome, ModerationAfter, ModerationCursor, MODERATION_LIST_PAGE, MODERATION_RECENT_PAGE,
+};
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 
@@ -74,7 +76,7 @@ enum Decision {
     Callback(String, String),
     Data(Option<String>),
     Accounts,
-    Moderation,
+    Moderation(Option<String>),
     /// A moderation change, with the operator's login for the audit trail.
     Moderate(String),
 }
@@ -106,7 +108,7 @@ pub fn admin<'a>(
             Decision::Callback(code, verifier) => callback(server, &code, &verifier).await,
             Decision::Data(query) => data(server, query.as_deref()).await,
             Decision::Accounts => accounts(server).await,
-            Decision::Moderation => moderation(server).await,
+            Decision::Moderation(query) => moderation(server, query.as_deref()).await,
             Decision::Moderate(actor) => moderate(server, &actor, body).await,
         };
         for (name, value) in [
@@ -201,7 +203,7 @@ fn decide(server: &Server, parts: &Parts) -> Decision {
     };
     if parts.uri.path() == "/moderation" {
         if matches!(parts.method, Method::GET | Method::HEAD) {
-            return Decision::Moderation;
+            return Decision::Moderation(parts.uri.query().map(str::to_owned));
         }
         if parts.method != Method::POST {
             let mut response = text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
@@ -659,10 +661,37 @@ fn body(window: &Window, series: &[SeriesData]) -> Value {
     })
 }
 
+/// Where each moderation list starts, from `blocked_after`, `banned_after`,
+/// `hidden_after` and `recent_after`. A cursor that does not parse is an error.
+fn moderation_after(query: Option<&str>) -> Result<ModerationAfter, &'static str> {
+    let mut after = ModerationAfter::default();
+    for (key, value) in url::form_urlencoded::parse(query.unwrap_or("").as_bytes()) {
+        let slot = match key.as_ref() {
+            "blocked_after" => &mut after.blocked,
+            "banned_after" => &mut after.banned,
+            "hidden_after" => &mut after.hidden,
+            "recent_after" => &mut after.recent,
+            _ => continue,
+        };
+        *slot = Some(ModerationCursor::decode(&value).ok_or("a moderation cursor is not valid")?);
+    }
+    Ok(after)
+}
+
 /// The moderation lists: blocked accounts, banned handles, hidden projects and
-/// the recent audit trail.
-async fn moderation(server: &Server) -> Response<Body> {
-    let overview = match server.store.catalog.moderation_overview().await {
+/// the recent audit trail. Each list carries a `next` cursor when a row
+/// follows its page, and the client sends it back to read the next page.
+async fn moderation(server: &Server, query: Option<&str>) -> Response<Body> {
+    let after = match moderation_after(query) {
+        Ok(after) => after,
+        Err(message) => return invalid(message),
+    };
+    let overview = match server
+        .store
+        .catalog
+        .moderation_page(&after, MODERATION_LIST_PAGE, MODERATION_RECENT_PAGE)
+        .await
+    {
         Ok(overview) => overview,
         Err(error) => {
             tracing::warn!("moderation read failed: {error}");
@@ -730,11 +759,42 @@ async fn moderation(server: &Server) -> Response<Body> {
             })
         })
         .collect();
+    let next = |more: bool, key: Option<time::OffsetDateTime>, id: Option<uuid::Uuid>| {
+        id.filter(|_| more)
+            .map(|id| ModerationCursor { key, id }.encode())
+    };
+    let more = overview.more;
+    let last_blocked = overview.blocked_accounts.last();
+    let last_banned = overview.banned_handles.last();
+    let last_hidden = overview.hidden_projects.last();
+    let last_recent = overview.recent.last();
     json_reply(&json!({
         "blocked_accounts": blocked_accounts,
         "banned_handles": banned_handles,
         "hidden_projects": hidden_projects,
         "recent": recent,
+        "next": {
+            "blocked_accounts": next(
+                more.blocked,
+                last_blocked.and_then(|row| row.blocked_at),
+                last_blocked.map(|row| row.id),
+            ),
+            "banned_handles": next(
+                more.banned,
+                last_banned.map(|row| row.created_at),
+                last_banned.map(|row| row.id),
+            ),
+            "hidden_projects": next(
+                more.hidden,
+                last_hidden.map(|row| row.hidden_at),
+                last_hidden.map(|row| row.id),
+            ),
+            "recent": next(
+                more.recent,
+                last_recent.map(|row| row.occurred_at),
+                last_recent.map(|row| row.id),
+            ),
+        },
     }))
 }
 

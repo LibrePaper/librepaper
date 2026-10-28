@@ -706,11 +706,10 @@ async fn work_created_behind_an_advanced_cursor_is_found_by_a_fresh_pass() {
         .catalog
         .pending_background_work(
             PendingWorkCursor {
-                deleting: anchor,
-                compaction_done: true,
-                archives_done: true,
-                erasing_done: true,
-                ..Default::default()
+                compaction: None,
+                deleting: Some(anchor),
+                archives: None,
+                erasing: None
             },
             64,
         )
@@ -742,6 +741,40 @@ async fn work_created_behind_an_advanced_cursor_is_found_by_a_fresh_pass() {
         purged_within(&deployment.catalog, hidden, Duration::from_secs(30)).await,
         "the worker never purged a document reachable only through its scan"
     );
+
+    deployment.close().await;
+}
+
+/// A page that is exactly full with nothing after it leaves no cursor, and a
+/// page with one more row behind it does.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_scan_continues_exactly_when_one_more_row_follows() {
+    let Some(deployment) = deployment("worker-exact-page").await else {
+        return;
+    };
+    for name in ["worker-exact-page-a", "worker-exact-page-b"] {
+        deployment
+            .document_deleted(name, DELETION_GRACE + Duration::from_secs(60))
+            .await;
+    }
+    let full = deployment
+        .catalog
+        .pending_background_work(PendingWorkCursor::default(), 2)
+        .await
+        .expect("scan");
+    assert_eq!(full.deleting.len(), 2);
+    assert_eq!(full.next.deleting, None);
+    assert!(!full.next.continues());
+
+    let short = deployment
+        .catalog
+        .pending_background_work(PendingWorkCursor::default(), 1)
+        .await
+        .expect("scan");
+    assert_eq!(short.deleting.len(), 1);
+    assert_eq!(short.next.deleting, short.deleting.last().copied());
+    assert!(short.next.continues());
 
     deployment.close().await;
 }

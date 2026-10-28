@@ -772,47 +772,55 @@ impl PostgresCatalog {
         after: PendingWorkCursor,
         limit: i64,
     ) -> Result<PendingWork> {
-        let compaction = if after.compaction_done {
-            Vec::new()
-        } else {
-            // Keep these literals aligned with COMPACTION_* in postgres/mod.rs;
-            // the counters themselves were introduced by migration 0001_catalog.sql.
-            sqlx::query_scalar::<_, Uuid>(
-                "SELECT id FROM documents WHERE status='active'
+        // Each kind asks for one row past the page. That row alone says the
+        // kind goes on, so a page that is exactly full and last finishes it.
+        let (compaction, compaction_next) = match after.compaction {
+            None => (Vec::new(), None),
+            Some(from) => {
+                // Keep these literals aligned with COMPACTION_* in postgres/mod.rs;
+                // the counters themselves were introduced by migration 0001_catalog.sql.
+                let rows = sqlx::query_scalar::<_, Uuid>(
+                    "SELECT id FROM documents WHERE status='active'
                AND (uncompacted_update_count >= 100 OR uncompacted_update_bytes >= 16777216)
                AND id > $1
              ORDER BY id LIMIT $2",
-            )
-            .bind(after.compaction)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await?
+                )
+                .bind(from)
+                .bind(limit + 1)
+                .fetch_all(&self.pool)
+                .await?;
+                split_ids(rows, limit)
+            }
         };
-        let deleting = if after.deleting_done {
-            Vec::new()
-        } else {
-            sqlx::query_scalar::<_, Uuid>(
-                "SELECT id FROM documents WHERE status IN ('deleting','purging') AND id > $1
+        let (deleting, deleting_next) = match after.deleting {
+            None => (Vec::new(), None),
+            Some(from) => {
+                let rows = sqlx::query_scalar::<_, Uuid>(
+                    "SELECT id FROM documents WHERE status IN ('deleting','purging') AND id > $1
              ORDER BY id LIMIT $2",
-            )
-            .bind(after.deleting)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await?
+                )
+                .bind(from)
+                .bind(limit + 1)
+                .fetch_all(&self.pool)
+                .await?;
+                split_ids(rows, limit)
+            }
         };
-        let archives = if after.archives_done {
-            Vec::new()
-        } else {
-            sqlx::query_scalar::<_, Uuid>(
-                "SELECT id FROM document_labels
+        let (archives, archives_next) = match after.archives {
+            None => (Vec::new(), None),
+            Some(from) => {
+                let rows = sqlx::query_scalar::<_, Uuid>(
+                    "SELECT id FROM document_labels
              WHERE archive_requested_at IS NOT NULL AND archive_key IS NULL
                AND id > $1
              ORDER BY id LIMIT $2",
-            )
-            .bind(after.archives)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await?
+                )
+                .bind(from)
+                .bind(limit + 1)
+                .fetch_all(&self.pool)
+                .await?;
+                split_ids(rows, limit)
+            }
         };
         // An account whose owner asked for it to be erased. The account row
         // saying `erasing` is the whole of the durable state that remembers
@@ -820,17 +828,19 @@ impl PostgresCatalog {
         // and an account with no documents at all has nothing else that
         // could ever remind anyone: without this page the request marked the
         // row and no production caller ever came back to finish it.
-        let erasing = if after.erasing_done {
-            Vec::new()
-        } else {
-            sqlx::query_scalar::<_, Uuid>(
-                "SELECT id FROM accounts WHERE status='erasing' AND id > $1
+        let (erasing, erasing_next) = match after.erasing {
+            None => (Vec::new(), None),
+            Some(from) => {
+                let rows = sqlx::query_scalar::<_, Uuid>(
+                    "SELECT id FROM accounts WHERE status='erasing' AND id > $1
              ORDER BY id LIMIT $2",
-            )
-            .bind(after.erasing)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await?
+                )
+                .bind(from)
+                .bind(limit + 1)
+                .fetch_all(&self.pool)
+                .await?;
+                split_ids(rows, limit)
+            }
         };
         let superseded_base_due = self.superseded_base_due().await?;
         Ok(PendingWork {
@@ -838,6 +848,12 @@ impl PostgresCatalog {
             deleting,
             archives,
             erasing,
+            next: PendingWorkCursor {
+                compaction: compaction_next,
+                deleting: deleting_next,
+                archives: archives_next,
+                erasing: erasing_next,
+            },
             superseded_base_due,
         })
     }
@@ -851,33 +867,47 @@ pub struct PendingWork {
     pub archives: Vec<Uuid>,
     /// Accounts marked `erasing` whose erasure has not been completed.
     pub erasing: Vec<Uuid>,
+    /// Where each kind resumes, or `None` for a kind with nothing further.
+    pub next: PendingWorkCursor,
     /// The next superseded compaction base deadline, if one exists.
     pub superseded_base_due: Option<OffsetDateTime>,
 }
 
+/// Where each kind of pending work resumes: after this id, or `None` once the
+/// kind has no row past its last page.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct PendingWorkCursor {
-    pub compaction: Uuid,
-    pub deleting: Uuid,
-    pub archives: Uuid,
-    pub erasing: Uuid,
-    pub compaction_done: bool,
-    pub deleting_done: bool,
-    pub archives_done: bool,
-    pub erasing_done: bool,
+    pub compaction: Option<Uuid>,
+    pub deleting: Option<Uuid>,
+    pub archives: Option<Uuid>,
+    pub erasing: Option<Uuid>,
+}
+
+impl PendingWorkCursor {
+    /// Whether any kind has a page left to read.
+    pub fn continues(&self) -> bool {
+        self.compaction.is_some()
+            || self.deleting.is_some()
+            || self.archives.is_some()
+            || self.erasing.is_some()
+    }
 }
 
 impl Default for PendingWorkCursor {
     fn default() -> Self {
         Self {
-            compaction: Uuid::nil(),
-            deleting: Uuid::nil(),
-            archives: Uuid::nil(),
-            erasing: Uuid::nil(),
-            compaction_done: false,
-            deleting_done: false,
-            archives_done: false,
-            erasing_done: false,
+            compaction: Some(Uuid::nil()),
+            deleting: Some(Uuid::nil()),
+            archives: Some(Uuid::nil()),
+            erasing: Some(Uuid::nil()),
         }
     }
+}
+
+/// The page of ids and the cursor after it, which exists only when the extra
+/// row of a `LIMIT limit + 1` query came back.
+fn split_ids(rows: Vec<Uuid>, limit: i64) -> (Vec<Uuid>, Option<Uuid>) {
+    let (page, has_more) = crate::storage::split_page(rows, limit as u32);
+    let next = page.last().copied().filter(|_| has_more);
+    (page, next)
 }

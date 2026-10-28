@@ -836,13 +836,15 @@ impl PostgresCatalog {
         .map_err(Error::from)
     }
 
+    /// A page limit of 201 is the 200 a page holds plus the one extra row a
+    /// caller asks for to learn whether another page exists.
     pub async fn list_documents(
         &self,
         before: Option<(OffsetDateTime, Uuid)>,
         limit: i64,
     ) -> Result<Vec<DocumentRecord>> {
-        if !(1..=200).contains(&limit) {
-            return Err(Error::Invalid("document page limit must be 1..=200".into()));
+        if !(1..=201).contains(&limit) {
+            return Err(Error::Invalid("document page limit must be 1..=201".into()));
         }
         sqlx::query_as::<_, DocumentRecord>(
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
@@ -870,8 +872,8 @@ impl PostgresCatalog {
         before: Option<(OffsetDateTime, Uuid)>,
         limit: i64,
     ) -> Result<Vec<DocumentRecord>> {
-        if !(1..=200).contains(&limit) {
-            return Err(Error::Invalid("document page limit must be 1..=200".into()));
+        if !(1..=201).contains(&limit) {
+            return Err(Error::Invalid("document page limit must be 1..=201".into()));
         }
         sqlx::query_as::<_, DocumentRecord>(
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
@@ -897,8 +899,8 @@ impl PostgresCatalog {
         limit: i64,
         include_templates: bool,
     ) -> Result<Vec<DocumentRecord>> {
-        if !(1..=200).contains(&limit) {
-            return Err(Error::Invalid("document page limit must be 1..=200".into()));
+        if !(1..=201).contains(&limit) {
+            return Err(Error::Invalid("document page limit must be 1..=201".into()));
         }
         // Build a bounded candidate set from each access path before joining
         // back to documents. The old OR predicate encouraged PostgreSQL to
@@ -977,8 +979,8 @@ impl PostgresCatalog {
         before: Option<(OffsetDateTime, Uuid)>,
         limit: i64,
     ) -> Result<Vec<DocumentRecord>> {
-        if !(1..=200).contains(&limit) {
-            return Err(Error::Invalid("document page limit must be 1..=200".into()));
+        if !(1..=201).contains(&limit) {
+            return Err(Error::Invalid("document page limit must be 1..=201".into()));
         }
         sqlx::query_as!(
             DocumentRecord,

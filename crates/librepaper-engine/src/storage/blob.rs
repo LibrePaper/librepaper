@@ -96,21 +96,14 @@ pub trait BlobStore: Send + Sync {
     async fn put_new(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()>;
     async fn delete(&self, keys: &[String]) -> BlobResult<()>;
     async fn list(&self, prefix: &str) -> BlobResult<Vec<BlobInfo>>;
+    /// The next `limit` objects under `prefix` whose key sorts after `after`,
+    /// listed from the backend's own offset rather than filtered here.
     async fn list_page(
         &self,
         prefix: &str,
         after: Option<&str>,
         limit: usize,
-    ) -> BlobResult<Vec<BlobInfo>> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-        let mut rows = self.list(prefix).await?;
-        rows.retain(|row| after.is_none_or(|cursor| row.key.as_str() > cursor));
-        rows.sort_by(|a, b| a.key.cmp(&b.key));
-        rows.truncate(limit);
-        Ok(rows)
-    }
+    ) -> BlobResult<Vec<BlobInfo>>;
     fn describe(&self) -> String;
     fn is_local(&self) -> bool {
         false
@@ -399,6 +392,26 @@ mod tests {
             assert!(validate_object_key(key).is_err());
         }
     }
+    #[tokio::test]
+    async fn list_page_resumes_after_the_cursor() {
+        let root = tempfile::tempdir().expect("temporary object directory");
+        let store = FsStore::new(root.path(), false);
+        for name in ["a", "b", "c"] {
+            store
+                .put_new(&format!("documents/{name}"), b"x".to_vec(), "text/plain")
+                .await
+                .expect("put");
+        }
+        let keys = |rows: Vec<BlobInfo>| rows.into_iter().map(|row| row.key).collect::<Vec<_>>();
+        let first = store.list_page("documents/", None, 2).await.expect("page");
+        assert_eq!(keys(first), ["documents/a", "documents/b"]);
+        let rest = store
+            .list_page("documents/", Some("documents/b"), 2)
+            .await
+            .expect("page");
+        assert_eq!(keys(rest), ["documents/c"]);
+    }
+
     #[tokio::test]
     async fn filesystem_contract() {
         let root = tempfile::tempdir().expect("temporary object directory");
