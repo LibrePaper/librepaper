@@ -227,14 +227,12 @@
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   }
 
-  const statusText = $derived.by(() => {
-    let text = "";
-    if (activeTask?.status === "working") text = `${humanizeTool(activeTask.message) || `${runningLabel} is working`}… · ${formatElapsed(elapsedTime)}`;
-    else if (activeTask?.status === "needs_input") text = "Waiting for permission";
-    else if (queueCount) text = queueCount === 1 ? "Request queued" : `${queueCount} requests queued`;
-    if (activeTask && queueCount) text += ` · ${queueCount} queued`;
-    return text;
+  const activityText = $derived.by(() => {
+    if (activeTask?.status === "working") return `${humanizeTool(activeTask.message) || `${runningLabel} is working`}… · ${formatElapsed(elapsedTime)}`;
+    if (activeTask?.status === "needs_input") return "Waiting for permission";
+    return "";
   });
+  const queueText = $derived(queueCount === 1 ? "Request queued" : queueCount ? `${queueCount} requests queued` : "");
 
   function viewQueued() {
     const id = viewableQueued?.id;
@@ -885,30 +883,41 @@
   {#if assistant.agent !== chosenAgent && chosenInstalled?.assistant_fetches}
     <p class="panel-meta" data-adapter-fetch>Starting it downloads its adapter.{#if chosenInstalled.assistant_install}{" "}To install it for good, run <code>{chosenInstalled.assistant_install}</code>.{/if}</p>
   {/if}
-  <!-- One line says what the agent is doing or what waits, and appears only then.
-       Stop interrupts the running task and Cancel drops a queued one. -->
-  {#if statusText}
-    <div class="agent-status">
-      <p class="agent-progress" role="status">{statusText}</p>
-      <span class="agent-status-actions">
-        {#if viewableQueued}
-          <button type="button" class="agent-text-action" onclick={viewQueued}>View</button>
-        {/if}
-        {#if queueCount === 1}
-          {#if queuedTasks[0].cancelRequested}
-            <span class="agent-status-note">Cancelling…</span>
-          {:else}
-            <button type="button" class="agent-text-action" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(queuedTasks[0].id))}>Cancel</button>
-          {/if}
-        {/if}
-        {#if assistant.running && activeTask}
-          {#if activeTask.cancelRequested}
-            <span class="agent-status-note">Stopping…</span>
-          {:else}
-            <button type="button" class="agent-text-action" disabled={busy} onclick={() => void act(() => client.cancel(activeTask.id))}>Stop</button>
-          {/if}
-        {/if}
-      </span>
+  <!-- The first row says what the running task is doing, with Stop.
+       The second appears only while requests wait, with View and Cancel. -->
+  {#if activeTask || queueCount > 0}
+    <div class="agent-status-rows">
+      {#if activeTask}
+        <div class="agent-status">
+          <p class="agent-progress" role="status">{activityText}</p>
+          <span class="agent-status-actions">
+            {#if assistant.running}
+              {#if activeTask.cancelRequested}
+                <span class="agent-status-note">Stopping…</span>
+              {:else}
+                <button type="button" class="agent-text-action" disabled={busy} onclick={() => void act(() => client.cancel(activeTask.id))}>Stop</button>
+              {/if}
+            {/if}
+          </span>
+        </div>
+      {/if}
+      {#if queueCount > 0}
+        <div class="agent-status agent-queue">
+          <p class="agent-progress agent-queue-text" role={activeTask ? undefined : "status"}>{queueText}</p>
+          <span class="agent-status-actions">
+            {#if viewableQueued}
+              <button type="button" class="agent-text-action" onclick={viewQueued}>View</button>
+            {/if}
+            {#if queueCount === 1}
+              {#if queuedTasks[0].cancelRequested}
+                <span class="agent-status-note">Cancelling…</span>
+              {:else}
+                <button type="button" class="agent-text-action" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(queuedTasks[0].id))}>Cancel</button>
+              {/if}
+            {/if}
+          </span>
+        </div>
+      {/if}
     </div>
   {/if}
   <ChatComposer placeholder={`Ask ${chosenInstalled?.label || "your agent"}…`} canSend={!busy && (sendable || startable)} draft={draft} ondraft={(value) => draft = value} onsend={send}
@@ -1059,8 +1068,9 @@
      is a select. A row of buttons had to signal the chosen one and the signal
      was easy to miss; a select shows its value as its content. */
   .setup-actions, .attachment-actions { display:flex; align-items:center; flex-wrap:wrap; gap:var(--spacing); }
-  /* The status row: one line of what the agent is doing, with its text actions
-     at the right. It never wraps, so the composer does not move as it changes. */
+  /* Each status row is one line with its text actions at the right: the running
+     task, then the queue. A row never wraps, so the composer does not move as it changes. */
+  .agent-status-rows { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5); flex-shrink:0; }
   .agent-status { display:flex; align-items:center; gap:var(--spacing); min-width:0; flex-shrink:0; }
   .agent-progress { flex:1 1 auto; min-width:0; margin:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:var(--panel-muted); font-size:var(--panel-meta-size); line-height:var(--panel-line-height); }
   .agent-status-actions { display:flex; flex:none; align-items:center; gap:calc(var(--spacing) * .5); }
