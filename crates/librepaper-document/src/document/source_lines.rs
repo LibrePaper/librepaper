@@ -90,10 +90,19 @@ impl Cursor {
         }
     }
 
-    /// Passes the characters from the cursor to `to`. Panics if either is not
-    /// a character boundary of `text`.
+    /// Passes the characters from the cursor to `to`. An offset inside a
+    /// character, or past the end, stops at the character boundary before
+    /// it: these offsets come from the program, so they are widened rather
+    /// than refused (decision 4).
     pub fn advance_to(&mut self, text: &str, to: Utf8) {
-        for character in text[self.byte.0..to.0].chars() {
+        let mut end = to.0.min(text.len());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end <= self.byte.0 {
+            return;
+        }
+        for character in text[self.byte.0..end].chars() {
             self.step(character);
         }
     }
@@ -141,11 +150,24 @@ mod tests {
     fn crlf_lines_restart_the_column() {
         let lines = SourceLines::new("a\r\nb\r\n\u{1F600}x");
         assert_eq!(
-            lines.position(Utf8(9)),
+            lines.position(Utf8(10)),
             Position {
                 line: 3,
                 column: Utf16(3)
             }
         );
+    }
+
+    #[test]
+    fn an_offset_inside_a_character_stops_before_it() {
+        let lines = SourceLines::new("a\r\nb\r\n\u{1F600}x");
+        assert_eq!(
+            lines.position(Utf8(9)),
+            Position {
+                line: 3,
+                column: Utf16(1)
+            }
+        );
+        assert_eq!(lines.position(Utf8(99)), lines.position(Utf8(11)));
     }
 }
