@@ -141,7 +141,7 @@ async fn shared_visibility_is_a_private_persistent_mark_and_preserves_other_mark
     // removes the underlying grant nor another account's marks.
     assert_eq!(
         catalog
-            .access_role(paper, Some(viewer), None, time::OffsetDateTime::now_utc())
+            .access_role(paper, Some(viewer), None)
             .await
             .unwrap(),
         Some(Role::Reader)

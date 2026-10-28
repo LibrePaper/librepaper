@@ -579,9 +579,7 @@ async fn shared_visibility_routes_enforce_account_and_access_boundaries() {
             .access_role(
                 deployment.document_id,
                 Some(viewer.id),
-                None,
-                time::OffsetDateTime::now_utc(),
-            )
+                None)
             .await
             .unwrap(),
         Some(Role::Reader),

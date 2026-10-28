@@ -601,7 +601,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             catalog
-                .access_role(document.id, Some(named.id), None, OffsetDateTime::now_utc(),)
+                .access_role(document.id, Some(named.id), None)
                 .await
                 .unwrap(),
             Some(Role::Editor),
@@ -677,7 +677,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             catalog
-                .access_role(document.id, Some(named.id), None, now)
+                .access_role(document.id, Some(named.id), None)
                 .await
                 .unwrap(),
             Some(Role::Reader),
@@ -1068,7 +1068,7 @@ mod tests {
             request_id: "request-one".into(),
             digest: "a".repeat(64),
             tool: "document_comment".into(),
-            expires_at: OffsetDateTime::now_utc().unix_timestamp() + 3600,
+            retain_secs: 3600,
         };
         let outcome = json!({"status":"committed","action":"delete","comment_id":"removed"});
         let mut tx = catalog.pool().begin().await.unwrap();
@@ -1140,6 +1140,20 @@ mod tests {
                 .outcome,
             outcome
         );
+        // The stored expiry is the database clock plus the retention, so a
+        // fresh outcome is unexpired by that same clock.
+        let stored: i64 = sqlx::query_scalar(
+            "SELECT expires_at - extract(epoch FROM now())::bigint FROM operation_outcomes WHERE document_id=$1",
+        )
+        .bind(document.id)
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+        assert!(
+            (3590..=3600).contains(&stored),
+            "expiry is the database now plus the retention, got {stored}"
+        );
+        // Zero is epoch 1970, always in the past under the database clock.
         sqlx::query("UPDATE operation_outcomes SET expires_at=0 WHERE document_id=$1")
             .bind(document.id)
             .execute(catalog.pool())
@@ -1371,9 +1385,7 @@ mod tests {
                 .access_role(
                     first.id,
                     Some(collaborator.id),
-                    None,
-                    OffsetDateTime::now_utc()
-                )
+                    None)
                 .await
                 .unwrap(),
             Some(Role::Editor)
@@ -1387,9 +1399,7 @@ mod tests {
                 .access_role(
                     first.id,
                     Some(collaborator.id),
-                    None,
-                    OffsetDateTime::now_utc()
-                )
+                    None)
                 .await
                 .unwrap(),
             None
@@ -1409,7 +1419,7 @@ mod tests {
         assert_eq!(link.comment_budget, Some(5));
         assert_eq!(
             catalog
-                .access_role(first.id, None, Some(link_hash), OffsetDateTime::now_utc())
+                .access_role(first.id, None, Some(link_hash))
                 .await
                 .unwrap(),
             Some(Role::Commenter)
@@ -1423,9 +1433,7 @@ mod tests {
                 .access_role(
                     first.id,
                     Some(collaborator.id),
-                    None,
-                    OffsetDateTime::now_utc()
-                )
+                    None)
                 .await
                 .unwrap(),
             Some(Role::Commenter)
@@ -1511,7 +1519,7 @@ mod tests {
         assert!(catalog.revoke_share_link(first.id, link.id).await.unwrap());
         assert_eq!(
             catalog
-                .access_role(first.id, None, Some(link_hash), OffsetDateTime::now_utc())
+                .access_role(first.id, None, Some(link_hash))
                 .await
                 .unwrap(),
             None
@@ -2520,7 +2528,7 @@ mod tests {
         assert_eq!(rows[0].kind, "agent");
         assert_eq!(rows[0].owner_generation, "3");
         let role = catalog
-            .access_role(document.id, None, Some(token), OffsetDateTime::now_utc())
+            .access_role(document.id, None, Some(token))
             .await
             .unwrap();
         assert!(role.is_none(), "a token key is not a browser link");
