@@ -226,7 +226,7 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # number overrides the three weeks. It applies to the examples an account is
 # given at first sign-in, so changing it means `demo-wipe` and signing in again.
 #
-# The demo builds main in a worktree under the git directory (.git/librepaper-demo),
+# The demo builds dev in a worktree under the git directory (.git/librepaper-demo),
 # not in the current checkout, so unfinished work cannot leak into it. DEMO_REF=
 # picks another branch or commit. The demo uses the deployment services with an
 # image built from that worktree.
@@ -235,7 +235,7 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # it starts without sign-in. CONFIG= may select an explicitly container-ready
 # TOML file.
 DEMO_KEYS ?= tools/dev/keys.yaml
-DEMO_REF ?= main
+DEMO_REF ?= dev
 # The demo checks the LaTeX release on the public asset mirror, which is the
 # one it serves; MIRROR= checks a local mirror or another URL instead (see
 # tools/dev/demo/mirror-check). Paths given here are relative to this checkout,
@@ -244,7 +244,7 @@ DEMO_REF ?= main
 # unsupplied CONFIG is dropped from the environment, where `export` put its default.
 DEMO_MIRROR := $(if $(filter http://% https://%,$(MIRROR)),$(MIRROR),$(abspath $(MIRROR)))
 DEMO_ARGS   := $(if $(MIRROR),MIRROR="$(DEMO_MIRROR)") CARGO_PROFILE=demo $(if $(CONFIG_WAS_SUPPLIED),CONFIG="$(abspath $(CONFIG))")
-demo:  ## Run a local Docker deployment of main (DEMO_REF= picks another commit)
+demo:  ## Run a local Docker deployment of dev (DEMO_REF= picks another commit)
 	@tree=$$(tools/dev/demo/worktree "$(DEMO_REF)") && echo "demo: $(DEMO_REF) at $$(git -C "$$tree" rev-parse --short HEAD) in $$tree" && \
 		env -u CONFIG $(MAKE) -C "$$tree" --no-print-directory web $(DEMO_ARGS) && \
 		exec env -u CONFIG $(MAKE) -C "$$tree" --no-print-directory demo-checkout $(DEMO_ARGS)
@@ -279,11 +279,11 @@ demo-stop:  ## Stop the demo containers and retain their named volumes
 demo-wipe:  ## Stop the demo and explicitly delete its named volumes
 	@tools/dev/demo/compose wipe
 
-# The desktop app normally opens app.librepaper.org. The demo builds main in the
+# The desktop app normally opens app.librepaper.org. The demo builds dev in the
 # worktree under the git directory (see demo), so the app is built there too and
 # opens against the demo. DEMO_REF= picks another commit. When nothing answers on
 # PORT, tools/dev/demo/desktop starts the demo and stops it when the app closes.
-demo-desktop:  ## Open the desktop app against the demo of main, starting the demo when none is running
+demo-desktop:  ## Open the desktop app against the demo of dev, starting the demo when none is running
 	@tree=$$(tools/dev/demo/worktree "$(DEMO_REF)") && \
 		exec env -u CONFIG $(MAKE) -C "$$tree" --no-print-directory demo-desktop-checkout $(DEMO_ARGS)
 

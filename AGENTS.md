@@ -2,6 +2,10 @@
 
 These rules apply to every coding agent working in this repository, Claude and Codex alike.
 
+## Merge to dev, not main
+
+Never merge to `main` until a new release is minted. Work happens in branches. When a line of work is complete, merge its branch into `dev`. `make demo` and `make demo-desktop` build `dev`.
+
 ## Work in a git worktree
 
 Never edit code in the main checkout. Every code change happens in a git worktree on its own branch, created with `git worktree add` (or the agent's built-in worktree isolation). This includes subagents: each one gets its own worktree so parallel work never collides. Never use `git stash` to move work around; use a worktree or `git diff`.
