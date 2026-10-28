@@ -42,7 +42,8 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::Notify;
+
+use super::pool::{Pool, Wait};
 
 /// What a deployment-wide pending refusal is. Always retryable: the bytes
 /// standing in the way are somebody else's unsaved work, and it leaves as it
@@ -54,7 +55,7 @@ pub struct Pressure;
 /// Which pool a reservation came from. Only used to keep the two `Drop`
 /// implementations from being written twice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Pool {
+enum Kind {
     Retained,
     Scratch,
 }
@@ -62,11 +63,8 @@ enum Pool {
 /// The one accounting authority, built by [`super::Registry`] and handed to
 /// every sequencer it admits.
 pub struct PendingBudget {
-    retained_limit: u64,
-    retained_used: AtomicU64,
-    scratch_limit: u64,
-    scratch_used: AtomicU64,
-    released: Notify,
+    retained: Pool,
+    scratch: Pool,
     /// Updates refused for want of retained capacity, cumulative. The number
     /// an operator reads to tell a deployment that is merely busy from one
     /// that is turning typing away.
@@ -80,30 +78,27 @@ pub struct PendingBudget {
 impl PendingBudget {
     pub fn new(retained_limit_bytes: u64, scratch_limit_bytes: u64) -> Arc<Self> {
         Arc::new(Self {
-            retained_limit: retained_limit_bytes.max(1),
-            retained_used: AtomicU64::new(0),
-            scratch_limit: scratch_limit_bytes.max(1),
-            scratch_used: AtomicU64::new(0),
-            released: Notify::new(),
+            retained: Pool::new(retained_limit_bytes.max(1)),
+            scratch: Pool::new(scratch_limit_bytes.max(1)),
             refused_retained: AtomicU64::new(0),
             refused_scratch: AtomicU64::new(0),
         })
     }
 
     pub fn retained_limit(&self) -> u64 {
-        self.retained_limit
+        self.retained.limit()
     }
 
     pub fn scratch_limit(&self) -> u64 {
-        self.scratch_limit
+        self.scratch.limit()
     }
 
     pub fn retained_used(&self) -> u64 {
-        self.retained_used.load(Ordering::Acquire)
+        self.retained.used()
     }
 
     pub fn scratch_used(&self) -> u64 {
-        self.scratch_used.load(Ordering::Acquire)
+        self.scratch.used()
     }
 
     pub fn refused_retained(&self) -> u64 {
@@ -118,13 +113,13 @@ impl PendingBudget {
     /// buffer. Non-blocking by design: this runs on the typing path, and a
     /// keystroke must not queue behind a database recovery.
     pub fn try_retain(self: &Arc<Self>, bytes: u64) -> Result<Reservation, Pressure> {
-        match take(&self.retained_used, self.retained_limit, bytes) {
-            Some(()) => Ok(Reservation {
+        match self.retained.try_take(bytes) {
+            true => Ok(Reservation {
                 budget: self.clone(),
-                pool: Pool::Retained,
+                kind: Kind::Retained,
                 bytes,
             }),
-            None => {
+            false => {
                 self.refused_retained.fetch_add(1, Ordering::Relaxed);
                 Err(Pressure)
             }
@@ -137,33 +132,36 @@ impl PendingBudget {
     /// deferral rather than a loss -- the buffer and its retained charge are
     /// untouched.
     pub fn try_scratch(self: &Arc<Self>, bytes: u64) -> Result<Reservation, Pressure> {
-        match take(&self.scratch_used, self.scratch_limit, bytes) {
-            Some(()) => Ok(Reservation {
+        match self.scratch.try_take(bytes) {
+            true => Ok(Reservation {
                 budget: self.clone(),
-                pool: Pool::Scratch,
+                kind: Kind::Scratch,
                 bytes,
             }),
-            None => {
+            false => {
                 self.refused_scratch.fetch_add(1, Ordering::Relaxed);
                 Err(Pressure)
             }
         }
     }
 
-    /// Mandatory drains wait without holding a document lock. Register the
-    /// waiter before checking capacity to avoid missing a concurrent release.
+    /// Mandatory drains wait without holding a document lock. The first miss
+    /// counts as a refusal, so an operator sees that a drain had to wait; the
+    /// retries while it waits do not.
     pub async fn reserve_scratch(self: &Arc<Self>, bytes: u64) -> Result<Reservation, Pressure> {
-        if bytes > self.scratch_limit {
+        if bytes > self.scratch_limit() {
             return Err(Pressure);
         }
-        loop {
-            let released = self.released.notified();
-            tokio::pin!(released);
-            released.as_mut().enable();
-            if let Ok(reservation) = self.try_scratch(bytes) {
-                return Ok(reservation);
-            }
-            released.await;
+        if let Ok(reservation) = self.try_scratch(bytes) {
+            return Ok(reservation);
+        }
+        match self.scratch.take(bytes, Wait::Forever).await {
+            Ok(()) => Ok(Reservation {
+                budget: self.clone(),
+                kind: Kind::Scratch,
+                bytes,
+            }),
+            Err(_) => Err(Pressure),
         }
     }
 
@@ -176,30 +174,13 @@ impl PendingBudget {
     /// to read it as one.
     pub fn snapshot(&self) -> serde_json::Value {
         serde_json::json!({
-            "retained_limit_bytes": self.retained_limit,
+            "retained_limit_bytes": self.retained_limit(),
             "retained_reserved_bytes": self.retained_used(),
-            "scratch_limit_bytes": self.scratch_limit,
+            "scratch_limit_bytes": self.scratch_limit(),
             "scratch_reserved_bytes": self.scratch_used(),
             "refused_retained": self.refused_retained(),
             "refused_scratch": self.refused_scratch(),
         })
-    }
-}
-
-/// One compare-and-swap loop, shared by both pools. Checked arithmetic
-/// throughout: a size that overflows is refused rather than wrapped into a
-/// small number that would be admitted.
-fn take(used: &AtomicU64, limit: u64, bytes: u64) -> Option<()> {
-    let mut current = used.load(Ordering::Acquire);
-    loop {
-        let wanted = current.checked_add(bytes)?;
-        if wanted > limit {
-            return None;
-        }
-        match used.compare_exchange_weak(current, wanted, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => return Some(()),
-            Err(seen) => current = seen,
-        }
     }
 }
 
@@ -211,7 +192,7 @@ fn take(used: &AtomicU64, limit: u64, bytes: u64) -> Option<()> {
 /// is how an accepted payload's charge travels from `ingest` into the buffer.
 pub struct Reservation {
     budget: Arc<PendingBudget>,
-    pool: Pool,
+    kind: Kind,
     bytes: u64,
 }
 
@@ -222,7 +203,7 @@ impl Reservation {
         self.bytes -= bytes;
         Self {
             budget: self.budget.clone(),
-            pool: self.pool,
+            kind: self.kind,
             bytes,
         }
     }
@@ -234,13 +215,9 @@ impl Reservation {
 
 impl Drop for Reservation {
     fn drop(&mut self) {
-        let counter = match self.pool {
-            Pool::Retained => &self.budget.retained_used,
-            Pool::Scratch => &self.budget.scratch_used,
-        };
-        counter.fetch_sub(self.bytes, Ordering::AcqRel);
-        if self.pool == Pool::Scratch {
-            self.budget.released.notify_waiters();
+        match self.kind {
+            Kind::Retained => self.budget.retained.give_back(self.bytes),
+            Kind::Scratch => self.budget.scratch.give_back(self.bytes),
         }
     }
 }
@@ -252,7 +229,7 @@ impl std::fmt::Debug for Reservation {
         write!(
             formatter,
             "Reservation({:?}, {} bytes)",
-            self.pool, self.bytes
+            self.kind, self.bytes
         )
     }
 }

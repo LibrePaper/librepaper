@@ -134,45 +134,31 @@ async fn choose_directory_rfd(title: &str) -> Result<PathBuf, String> {
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
 async fn run_picker_process(
-    mut command: tokio::process::Command,
+    command: tokio::process::Command,
     timeout: Duration,
 ) -> Result<PathBuf, String> {
-    use std::process::Stdio;
-    use tokio::io::AsyncReadExt;
+    use librepaper_base::process::{supervise, Ending, Keep, Limits};
 
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("Could not start the folder chooser: {error}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "The folder chooser returned no response.".to_string())?;
-
-    let result = tokio::time::timeout(timeout, async {
-        let mut output = Vec::new();
-        stdout
-            .take((PICKER_OUTPUT_LIMIT + 1) as u64)
-            .read_to_end(&mut output)
-            .await
-            .map_err(|error| format!("Could not read the folder chooser response: {error}"))?;
-        if output.len() > PICKER_OUTPUT_LIMIT {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            return Err("The folder chooser returned an oversized response.".into());
-        }
-        let status = child
-            .wait()
-            .await
-            .map_err(|error| format!("Could not finish the folder chooser: {error}"))?;
-        decode_picker_process(status.success(), &output)
-    })
+    // One byte past the limit, so a response over it is told from one at it.
+    let run = supervise(
+        command,
+        None,
+        Limits {
+            timeout: Some(timeout),
+            cancel: None,
+            keep: Keep::Head(PICKER_OUTPUT_LIMIT + 1),
+            stderr_keep: None,
+            // The chooser may start helpers that hold its pipes.
+            kill_group: true,
+        },
+    )
     .await;
-    result.unwrap_or_else(|_| Err("The folder chooser timed out.".into()))
+    match run.ending {
+        Ending::Exited(code) => decode_picker_process(code == 0, &run.stdout),
+        Ending::TimedOut => Err("The folder chooser timed out.".into()),
+        Ending::Canceled => Err(CANCELLED.into()),
+        Ending::SpawnFailed(error) => Err(format!("Could not start the folder chooser: {error}")),
+    }
 }
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
