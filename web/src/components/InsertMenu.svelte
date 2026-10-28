@@ -53,8 +53,7 @@
   let error = $state("");
   let preview = $state(null);
   let dialogGeneration = 0;
-  /** @type {"bibtex" | "zotero"} */
-  let source = $state("bibtex");
+  let source = $state(/** @type {"bibtex" | "zotero"} */ ("bibtex"));
   /** @type {ZoteroEntry[]} */
   let zoteroEntries = $state([]);
   /** @type {ZoteroEntry[]} */

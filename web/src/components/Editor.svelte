@@ -624,7 +624,7 @@
   function writeZoteroImport(doc, activeFile, activePath, fetched, zoteroItemKey) {
     const tree = treeForDoc(doc);
     // The bibliography is registered in the preview's file when it shares the citing file's format family, else in the citing file.
-    const sameFamily = Boolean(entry) && formatOf(entry) === formatOf(activePath);
+    const sameFamily = Boolean(entry) && formatOf(entry) === formatOf(activePath) && Boolean(textIdForPath(doc, entry));
     const regPath = sameFamily ? entry : activePath;
     const regId = sameFamily ? textIdForPath(doc, entry) : activeFile;
     const reg = getTextFromDoc(regId);
