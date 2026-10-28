@@ -49,3 +49,5 @@ document.commit();
 assert.equal(sourceChanges, 1, "asset structure changes repaint once");
 
 console.log("reader source event: Loro text, mixed, and structural changes repaint once");
+// Stops the session's presence store cleanup timer so the file exits.
+session.leave();

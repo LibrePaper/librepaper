@@ -59,6 +59,7 @@ try {
   latest.apply(decode(cursorFrame));
   const allStates = latest.getAllStates();
   assert.equal(allStates.cursor?.head, 99, "the frame carries the latest cursor");
+  latest.destroy();
 
   const peer = new EphemeralStore(30000);
   peer.set("cursor", { head: 99 });
@@ -68,6 +69,7 @@ try {
   const remote = encode(peer.encode("cursor"));
   session.applyPresence(remote);
   assert.equal(sent.length, beforeRemote, "remote presence is not echoed");
+  peer.destroy();
 
   // A reconnect gets the current state again because the room only relays
   // presence while a socket is alive. A pending update is retained after
