@@ -125,7 +125,7 @@
     return body.token;
   }
   let access = $state(roles.some((entry) => entry.id === lastUsed(LAST_ACCESS)) ? lastUsed(LAST_ACCESS) : "commenter");
-  const runningLabel = $derived(installed.find((entry) => entry.id === assistant.agent)?.label || "assistant");
+  const runningLabel = $derived(installed.find((entry) => entry.id === assistant.agent)?.label || chosenInstalled?.label || "The agent");
   let tab = $state("chat");
   const TABS = [
     { id: "chat", label: "Chat" },
@@ -818,7 +818,7 @@
   {#snippet queuedNote(message)}
     {#if message.role === "user" && connection.tasks?.[message.id]?.status === "queued"}
       {@const item = connection.tasks[message.id]}
-      <p class="queued-note" data-task-id={message.id}>Queued{#if item.cancelRequested} · Cancelling…{:else} <button type="button" class="agent-text-action" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(message.id))}>Cancel</button>{/if}</p>
+      <p class="queued-note" data-task-id={message.id}>Queued{#if item.cancelRequested} · Cancelling…{:else} · <button type="button" class="agent-text-action" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(message.id))}>Cancel</button>{/if}</p>
     {/if}
   {/snippet}
 
@@ -870,8 +870,6 @@
                   onresult={chooseResult} after={transcriptEnd} messageEnd={queuedNote}
                   roleLabel={(message) => message.role === "user" ? userName : (message.creator || message.role)} />
 
-  <!-- The draft carries its own context, so the chat pane states it in one
-       line and sends the user back to the task view to change it. -->
   <!-- Missing access or context is worth explaining; a runner that simply
        is not there yet starts when the message is sent, so that case gets no
        line here. -->
