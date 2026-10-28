@@ -246,9 +246,7 @@ impl PostgresCatalog {
         id: Uuid,
         label: Option<&str>,
     ) -> Result<bool> {
-        let mut tx = self
-            .begin_write(Fence::Required, &[])
-            .await?;
+        let mut tx = self.begin_write(Fence::Required, &[]).await?;
         let changed =
             sqlx::query("UPDATE document_labels SET label=$3 WHERE document_id=$1 AND id=$2")
                 .bind(document_id)
@@ -269,12 +267,11 @@ impl PostgresCatalog {
         let mut tx = self
             .begin_write(Fence::Required, &[Lock::Document(document_id)])
             .await?;
-        let owner: Option<Uuid> = sqlx::query_scalar(
-            "SELECT owner_id FROM documents WHERE id=$1 AND status='active'",
-        )
-        .bind(document_id)
-        .fetch_optional(&mut **tx)
-        .await?;
+        let owner: Option<Uuid> =
+            sqlx::query_scalar("SELECT owner_id FROM documents WHERE id=$1 AND status='active'")
+                .bind(document_id)
+                .fetch_optional(&mut **tx)
+                .await?;
         let Some(owner) = owner else {
             tx.commit().await?;
             return Ok(false);
@@ -315,8 +312,7 @@ impl PostgresCatalog {
         // size is unknown until encoding and is checked again at attachment.
         lock_storage_usage(&mut **tx).await?;
         let owner_usage = usage_bytes(&mut **tx, UsageScope::Owner(owner), Sources::ALL).await?;
-        let deployment_usage =
-            usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
+        let deployment_usage = usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
         let refused = identity_known
             && !has_existing_object
             && (owner_usage >= self.policy.owner_bytes
@@ -375,9 +371,7 @@ impl PostgresCatalog {
         {
             return Err(Error::Invalid("invalid label archive".into()));
         }
-        let mut tx = self
-            .begin_write(Fence::Required, &[])
-            .await?;
+        let mut tx = self.begin_write(Fence::Required, &[]).await?;
         let document_id: Option<Uuid> = sqlx::query_scalar(
             "SELECT document_id FROM document_labels WHERE id=$1 AND archive_key IS NULL",
         )
@@ -434,10 +428,8 @@ impl PostgresCatalog {
                 "new archives require SHA-256 digests".into(),
             ));
         }
-        let owner_usage =
-            usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
-        let deployment_usage =
-            usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
+        let owner_usage = usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
+        let deployment_usage = usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
         let refused = delta > 0
             && (owner_usage.saturating_add(delta) > self.policy.owner_bytes
                 || deployment_usage.saturating_add(delta) > self.policy.deployment_bytes);
@@ -514,9 +506,7 @@ impl PostgresCatalog {
     /// It did not. `archive_requested_at` is left in place, so the startup
     /// scan tries again (§8.5).
     pub async fn note_label_archive_error(&self, id: Uuid, message: &str) -> Result<()> {
-        let mut tx = self
-            .begin_write(Fence::Required, &[])
-            .await?;
+        let mut tx = self.begin_write(Fence::Required, &[]).await?;
         sqlx::query(
             "UPDATE document_labels SET archive_error=$2 WHERE id=$1 AND archive_key IS NULL",
         )

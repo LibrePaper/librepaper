@@ -148,12 +148,9 @@ impl PostgresCatalog {
         let mut tx = self
             .begin_write(Fence::Required, &[Lock::Account(account_id)])
             .await?;
-        let status = sqlx::query_scalar!(
-            "SELECT status FROM accounts WHERE id=$1",
-            account_id,
-        )
-        .fetch_optional(&mut **tx)
-        .await?;
+        let status = sqlx::query_scalar!("SELECT status FROM accounts WHERE id=$1", account_id,)
+            .fetch_optional(&mut **tx)
+            .await?;
         match status.as_deref() {
             None => return Err(Error::NotFound),
             Some("active") => {}
@@ -250,9 +247,7 @@ impl PostgresCatalog {
     }
 
     pub async fn finish_account_erasure(&self, account_id: Uuid) -> Result<bool> {
-        let mut tx = self
-            .begin_write(Fence::Required, &[])
-            .await?;
+        let mut tx = self.begin_write(Fence::Required, &[]).await?;
         let remaining = sqlx::query_scalar!(
             r#"SELECT count(*) AS "count!" FROM documents WHERE owner_id=$1"#,
             account_id,
@@ -316,9 +311,7 @@ impl PostgresCatalog {
         if title.is_empty() {
             return Err(Error::Invalid("invalid document metadata".into()));
         }
-        let mut tx = self
-            .begin_write(Fence::Required, &[])
-            .await?;
+        let mut tx = self.begin_write(Fence::Required, &[]).await?;
         PostgresCatalog::authorize_mutation(&mut tx, id, actor, true).await?;
         let expected_owner_id = Self::require_document_owner(&mut tx, id, actor).await?;
         let changed = sqlx::query(
@@ -356,9 +349,7 @@ impl PostgresCatalog {
         )],
         live_hashes: &[Vec<u8>],
     ) -> Result<()> {
-        let mut tx = self
-            .begin_write(Fence::Required, &[])
-            .await?;
+        let mut tx = self.begin_write(Fence::Required, &[]).await?;
         PostgresCatalog::authorize_mutation(&mut tx, document_id, actor, true).await?;
         Self::require_document_owner(&mut tx, document_id, actor).await?;
         Self::replace_share_links_tx(&mut tx, document_id, links).await?;
@@ -603,9 +594,7 @@ impl PostgresCatalog {
         session_generation: i64,
         request_id: Uuid,
     ) -> Result<Option<TemplateOperation>> {
-        let mut tx = self
-            .begin_write(Fence::Required, &[])
-            .await?;
+        let mut tx = self.begin_write(Fence::Required, &[]).await?;
         let account = sqlx::query_as::<_, (String, i64)>(
             "SELECT status,session_generation FROM accounts WHERE id=$1 FOR SHARE",
         )
@@ -1065,12 +1054,11 @@ impl PostgresCatalog {
         let mut tx = self
             .begin_write(Fence::Required, &[Lock::Account(account_id)])
             .await?;
-        let status =
-            sqlx::query_scalar::<_, String>("SELECT status FROM accounts WHERE id=$1")
-                .bind(account_id)
-                .fetch_optional(&mut **tx)
-                .await?
-                .ok_or(Error::NotFound)?;
+        let status = sqlx::query_scalar::<_, String>("SELECT status FROM accounts WHERE id=$1")
+            .bind(account_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or(Error::NotFound)?;
         if status != "active" {
             return Err(Error::Conflict("account is not active".into()));
         }
@@ -1138,9 +1126,7 @@ impl PostgresCatalog {
         actor: Option<&super::Authority>,
     ) -> Result<Vec<(AssetRecord, bool)>> {
         let document_id = inputs.first().map(|input| input.document_id);
-        let mut tx = self
-            .begin_write(Fence::Required, &[])
-            .await?;
+        let mut tx = self.begin_write(Fence::Required, &[]).await?;
         if let (Some(document_id), Some(actor)) = (document_id, actor) {
             PostgresCatalog::authorize_mutation(&mut tx, document_id, actor, true).await?;
         }
@@ -1243,8 +1229,7 @@ impl PostgresCatalog {
         let owner_usage = usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
         // The deployment total is blob bytes plus every current base plus
         // every document's uncompacted rows plus pending reservations.
-        let deployment_usage =
-            usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
+        let deployment_usage = usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
         if owner_usage.saturating_add(incoming_bytes) > self.policy.owner_bytes {
             return Err(Error::Quota(super::QuotaScope::Owner));
         }
@@ -1396,9 +1381,7 @@ impl PostgresCatalog {
     }
 
     pub async fn mark_document_deleting(&self, document_id: Uuid) -> Result<bool> {
-        let mut tx = self
-            .begin_write(Fence::Required, &[])
-            .await?;
+        let mut tx = self.begin_write(Fence::Required, &[]).await?;
         let changed = sqlx::query!(
             "UPDATE documents SET status='deleting',deleted_at=COALESCE(deleted_at,now()),
              updated_at=now() WHERE id=$1 AND status='active'",
@@ -1472,9 +1455,7 @@ impl PostgresCatalog {
     /// a document restored while a purge is in flight is left alone rather
     /// than half deleted.
     pub async fn restore_document(&self, document_id: Uuid) -> Result<bool> {
-        let mut tx = self
-            .begin_write(Fence::Required, &[])
-            .await?;
+        let mut tx = self.begin_write(Fence::Required, &[]).await?;
         let restored = sqlx::query!(
             "UPDATE documents SET status='active',deleted_at=NULL,updated_at=now()
              WHERE id=$1 AND status='deleting'",
@@ -1495,9 +1476,7 @@ impl PostgresCatalog {
     /// blob. Once this succeeds, restoration refuses the document even if
     /// blob deletion or a process restart delays completion of the purge.
     pub async fn claim_document_purge(&self, document_id: Uuid) -> Result<bool> {
-        let mut tx = self
-            .begin_write(Fence::Required, &[])
-            .await?;
+        let mut tx = self.begin_write(Fence::Required, &[]).await?;
         let claimed = sqlx::query(
             "UPDATE documents SET status='purging',updated_at=now()
              WHERE id=$1 AND status='deleting'
@@ -1522,9 +1501,7 @@ impl PostgresCatalog {
     /// "Delete forever" in the trash: backdating `deleted_at` past the grace
     /// period is what makes the next sweep pick it up.
     pub async fn hasten_deletion(&self, document_id: Uuid) -> Result<bool> {
-        let mut tx = self
-            .begin_write(Fence::Required, &[])
-            .await?;
+        let mut tx = self.begin_write(Fence::Required, &[]).await?;
         let changed = sqlx::query!(
             "UPDATE documents SET deleted_at=now() - $2::interval,updated_at=now()
              WHERE id=$1 AND status='deleting'",
@@ -1550,9 +1527,7 @@ impl PostgresCatalog {
     }
 
     pub async fn finish_document_deletion(&self, document_id: Uuid) -> Result<bool> {
-        let mut tx = self
-            .begin_write(Fence::Required, &[])
-            .await?;
+        let mut tx = self.begin_write(Fence::Required, &[]).await?;
         let changed = sqlx::query("DELETE FROM documents WHERE id=$1 AND status='purging'")
             .bind(document_id)
             .execute(&mut **tx)

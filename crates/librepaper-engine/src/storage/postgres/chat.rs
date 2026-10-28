@@ -252,10 +252,12 @@ impl PostgresCatalog {
         // Measured after a stale row is gone, so it does not count against
         // the row that replaces it.
         let owner_usage = usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
-        let deployment_usage =
-            usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
+        let deployment_usage = usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
         let owner_room = self.policy.owner_bytes.saturating_sub(owner_usage);
-        let deployment_room = self.policy.deployment_bytes.saturating_sub(deployment_usage);
+        let deployment_room = self
+            .policy
+            .deployment_bytes
+            .saturating_sub(deployment_usage);
         let granted = wanted.min(owner_room).min(deployment_room);
         if granted < minimum {
             return Err(Error::Quota(if owner_room < minimum {
@@ -432,8 +434,8 @@ pub struct ChatCleared {
 mod tests {
     use uuid::Uuid;
 
-    use super::super::{NewAccount, NewDocument, PostgresCatalog, PostgresOptions};
     use super::super::write_tx::Fence;
+    use super::super::{NewAccount, NewDocument, PostgresCatalog, PostgresOptions};
     use super::{ChatRecord, CHAT_RESERVATION_CHUNK, CHAT_ROW_OVERHEAD_BYTES};
 
     async fn catalog() -> PostgresCatalog {
@@ -594,10 +596,7 @@ mod tests {
             .await
             .unwrap()
             .charged;
-        let mut tx = catalog
-            .begin_write(Fence::Required, &[])
-            .await
-            .unwrap();
+        let mut tx = catalog.begin_write(Fence::Required, &[]).await.unwrap();
         let outcome = catalog
             .trim_retained_in_transaction(&mut tx, document, &[], &[], Some(owner.id))
             .await
@@ -626,10 +625,7 @@ mod tests {
             .unwrap()
             .charged;
         for trimmer in [None, Some(editor.id)] {
-            let mut tx = catalog
-            .begin_write(Fence::Required, &[])
-            .await
-            .unwrap();
+            let mut tx = catalog.begin_write(Fence::Required, &[]).await.unwrap();
             let outcome = catalog
                 .trim_retained_in_transaction(&mut tx, document, &[], &[], trimmer)
                 .await

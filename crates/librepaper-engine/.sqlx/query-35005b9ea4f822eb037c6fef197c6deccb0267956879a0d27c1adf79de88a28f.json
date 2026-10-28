@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id FROM accounts WHERE id=$1 AND status='active' FOR SHARE",
+  "query": "SELECT id FROM accounts WHERE id=$1",
   "describe": {
     "columns": [
       {
@@ -18,5 +18,5 @@
       false
     ]
   },
-  "hash": "3e2327c0d0a2037698c70eb132d5c561f8bd2e0992ffef7c262449860148078f"
+  "hash": "35005b9ea4f822eb037c6fef197c6deccb0267956879a0d27c1adf79de88a28f"
 }

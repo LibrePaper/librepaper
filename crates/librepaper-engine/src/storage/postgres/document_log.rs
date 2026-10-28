@@ -484,8 +484,7 @@ impl PostgresCatalog {
         .fetch_optional(&mut **tx)
         .await?;
         let owner_id = owner_id.ok_or(Error::NotFound)?;
-        let owner_usage =
-            usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
+        let owner_usage = usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
         let epoch = self.writer_epoch()?;
         if let Some((existing_document, existing_epoch, existing_bytes, existing_digest)) =
             sqlx::query_as::<_, (Uuid, i64, i64, Vec<u8>)>(
@@ -513,8 +512,7 @@ impl PostgresCatalog {
         if owner_usage.saturating_add(bytes) > self.policy.owner_bytes {
             return Err(Error::Quota(super::QuotaScope::Owner));
         }
-        if deployment_usage.saturating_add(bytes) > self.policy.deployment_bytes
-        {
+        if deployment_usage.saturating_add(bytes) > self.policy.deployment_bytes {
             return Err(Error::Quota(super::QuotaScope::Deployment));
         }
         sqlx::query(
@@ -706,8 +704,7 @@ impl PostgresCatalog {
         .await?;
         let uncompacted_count = counters.try_get("uncompacted_update_count")?;
         let uncompacted_bytes = counters.try_get("uncompacted_update_bytes")?;
-        let owner_usage =
-            usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
+        let owner_usage = usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
         if owner_usage > self.policy.owner_bytes && owner_usage > owner_before {
             return Err(Error::Quota(super::QuotaScope::Owner));
         }

@@ -717,8 +717,8 @@ pub(super) async fn insert_audit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::postgres::{NewAccount, PostgresCatalog, PostgresOptions};
     use crate::storage::postgres::usage::{usage_bytes, Sources, UsageScope};
+    use crate::storage::postgres::{NewAccount, PostgresCatalog, PostgresOptions};
 
     async fn test_catalog() -> PostgresCatalog {
         let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
@@ -1272,7 +1272,9 @@ mod tests {
     fn a_moderation_cursor_round_trips_and_refuses_junk() {
         let id = Uuid::now_v7();
         let keyed = ModerationCursor {
-            key: Some(OffsetDateTime::from_unix_timestamp_nanos(1_700_000_000_123_456_000).unwrap()),
+            key: Some(
+                OffsetDateTime::from_unix_timestamp_nanos(1_700_000_000_123_456_000).unwrap(),
+            ),
             id,
         };
         assert_eq!(ModerationCursor::decode(&keyed.encode()), Some(keyed));
@@ -1290,7 +1292,12 @@ mod tests {
         let suffix = Uuid::now_v7().simple().to_string();
         for index in 0..3 {
             catalog
-                .block_or_ban("github", &format!("@page-{index}-{suffix}"), "operator", "spam")
+                .block_or_ban(
+                    "github",
+                    &format!("@page-{index}-{suffix}"),
+                    "operator",
+                    "spam",
+                )
                 .await
                 .unwrap();
         }

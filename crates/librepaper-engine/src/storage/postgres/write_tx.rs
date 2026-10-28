@@ -47,11 +47,11 @@ pub(super) enum Lock {
 }
 
 /// An open write transaction. Dropping it without `commit` rolls back.
-pub(super) struct WriteTx<'c> {
-    tx: Transaction<'c, Postgres>,
+pub(super) struct WriteTx {
+    tx: Transaction<'static, Postgres>,
 }
 
-impl<'c> WriteTx<'c> {
+impl WriteTx {
     pub(super) async fn commit(self) -> sqlx::Result<()> {
         self.tx.commit().await
     }
@@ -61,20 +61,20 @@ impl<'c> WriteTx<'c> {
     }
 
     /// The bare transaction, for a caller that hands it across a trait seam.
-    pub(super) fn into_inner(self) -> Transaction<'c, Postgres> {
+    pub(super) fn into_inner(self) -> Transaction<'static, Postgres> {
         self.tx
     }
 }
 
-impl<'c> Deref for WriteTx<'c> {
-    type Target = Transaction<'c, Postgres>;
+impl Deref for WriteTx {
+    type Target = Transaction<'static, Postgres>;
 
     fn deref(&self) -> &Self::Target {
         &self.tx
     }
 }
 
-impl<'c> DerefMut for WriteTx<'c> {
+impl DerefMut for WriteTx {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.tx
     }
@@ -83,7 +83,7 @@ impl<'c> DerefMut for WriteTx<'c> {
 impl PostgresCatalog {
     /// Begins a metered write transaction, checks the fence, then takes
     /// `locks` in the fixed order of `Lock`.
-    pub(super) async fn begin_write(&self, fence: Fence, locks: &[Lock]) -> Result<WriteTx<'_>> {
+    pub(super) async fn begin_write(&self, fence: Fence, locks: &[Lock]) -> Result<WriteTx> {
         let mut tx = self.begin_metered().await?;
         match fence {
             Fence::Required => self.check_writer_epoch(&mut tx).await?,

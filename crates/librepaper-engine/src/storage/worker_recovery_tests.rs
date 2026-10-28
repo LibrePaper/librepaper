@@ -709,7 +709,7 @@ async fn work_created_behind_an_advanced_cursor_is_found_by_a_fresh_pass() {
                 compaction: None,
                 deleting: Some(anchor),
                 archives: None,
-                erasing: None
+                erasing: None,
             },
             64,
         )

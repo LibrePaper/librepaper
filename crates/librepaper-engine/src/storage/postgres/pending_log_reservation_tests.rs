@@ -3,8 +3,8 @@
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::super::{NewAccount, NewDocument, PostgresCatalog, PostgresOptions};
 use super::super::usage::{usage_bytes, Sources, UsageScope};
+use super::super::{NewAccount, NewDocument, PostgresCatalog, PostgresOptions};
 use super::FlushRow;
 
 async fn catalog() -> PostgresCatalog {
@@ -433,9 +433,20 @@ async fn usage_bytes_matches_the_sums_it_replaced() {
         .unwrap();
 
     let owner = UsageScope::Owner(owners[0]);
-    assert_eq!(usage_bytes(&mut conn, owner, Sources::ALL).await.unwrap(), 112);
-    assert_eq!(usage_bytes(&mut conn, owner, Sources::ALL).await.unwrap(), old_owner);
-    assert_eq!(usage_bytes(&mut conn, owner, Sources::DURABLE).await.unwrap(), 105);
+    assert_eq!(
+        usage_bytes(&mut conn, owner, Sources::ALL).await.unwrap(),
+        112
+    );
+    assert_eq!(
+        usage_bytes(&mut conn, owner, Sources::ALL).await.unwrap(),
+        old_owner
+    );
+    assert_eq!(
+        usage_bytes(&mut conn, owner, Sources::DURABLE)
+            .await
+            .unwrap(),
+        105
+    );
     assert_eq!(
         usage_bytes(&mut conn, owner, Sources::ARCHIVES | Sources::RESERVATIONS)
             .await
@@ -450,17 +461,28 @@ async fn usage_bytes_matches_the_sums_it_replaced() {
     );
 
     let deployment = UsageScope::Deployment;
-    assert_eq!(usage_bytes(&mut conn, deployment, Sources::ALL).await.unwrap(), 1182);
     assert_eq!(
-        usage_bytes(&mut conn, deployment, Sources::ALL).await.unwrap(),
+        usage_bytes(&mut conn, deployment, Sources::ALL)
+            .await
+            .unwrap(),
+        1182
+    );
+    assert_eq!(
+        usage_bytes(&mut conn, deployment, Sources::ALL)
+            .await
+            .unwrap(),
         old_deployment
     );
     assert_eq!(
-        usage_bytes(&mut conn, deployment, Sources::DURABLE).await.unwrap(),
+        usage_bytes(&mut conn, deployment, Sources::DURABLE)
+            .await
+            .unwrap(),
         1105
     );
     assert_eq!(
-        usage_bytes(&mut conn, deployment, Sources::RESERVATIONS).await.unwrap(),
+        usage_bytes(&mut conn, deployment, Sources::RESERVATIONS)
+            .await
+            .unwrap(),
         77
     );
 }

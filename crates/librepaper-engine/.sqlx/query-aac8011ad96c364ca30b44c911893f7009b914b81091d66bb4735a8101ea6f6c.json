@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
+  "query": "SELECT id FROM documents WHERE id=$1 AND status='active'",
   "describe": {
     "columns": [
       {
@@ -18,5 +18,5 @@
       false
     ]
   },
-  "hash": "12ae99fc87c316df0f0e0cf5dc7d54286948140160cffe6d52ff34ccb18ecb78"
+  "hash": "aac8011ad96c364ca30b44c911893f7009b914b81091d66bb4735a8101ea6f6c"
 }

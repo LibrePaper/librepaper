@@ -20,11 +20,11 @@ use uuid::Uuid;
 
 use crate::log::{Command, CommandError, Evidence, Head, PreparedSource, Registry};
 use crate::storage::blob::BlobStore;
-use crate::storage::split_page;
 use crate::storage::postgres::{
     built_in_refusal, Authority, DuplicateOf, Error as CatalogError, NewAsset, NewLabel,
     PostgresCatalog as Catalog, QuotaScope, TagRecord, FAVORITES_COLOUR, FAVORITES_NAME,
 };
+use crate::storage::split_page;
 use librepaper_base::config::Configuration;
 use librepaper_base::paths::{admit, Kind};
 use librepaper_base::role::{Ceiling, Role};

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT status FROM accounts WHERE id=$1 FOR UPDATE",
+  "query": "SELECT status FROM accounts WHERE id=$1",
   "describe": {
     "columns": [
       {
@@ -18,5 +18,5 @@
       false
     ]
   },
-  "hash": "341e11188c8e3df906234c09531a55360a7b1f3167355fd970d5106c228f7913"
+  "hash": "e59e3e0a4dc72a11e48bdc709d2e54c0bfd2a5757a6afc9ab3330d6f30d638f8"
 }

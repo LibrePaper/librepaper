@@ -1387,10 +1387,7 @@ mod tests {
         );
         assert_eq!(
             catalog
-                .access_role(
-                    first.id,
-                    Some(collaborator.id),
-                    None)
+                .access_role(first.id, Some(collaborator.id), None)
                 .await
                 .unwrap(),
             Some(Role::Editor)
@@ -1401,10 +1398,7 @@ mod tests {
             .unwrap());
         assert_eq!(
             catalog
-                .access_role(
-                    first.id,
-                    Some(collaborator.id),
-                    None)
+                .access_role(first.id, Some(collaborator.id), None)
                 .await
                 .unwrap(),
             None
@@ -1435,10 +1429,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             catalog
-                .access_role(
-                    first.id,
-                    Some(collaborator.id),
-                    None)
+                .access_role(first.id, Some(collaborator.id), None)
                 .await
                 .unwrap(),
             Some(Role::Commenter)

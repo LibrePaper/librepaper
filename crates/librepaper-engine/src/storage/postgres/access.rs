@@ -45,10 +45,7 @@ pub struct ShareLinkRecord {
 }
 
 impl PostgresCatalog {
-    async fn begin_document_admin(
-        &self,
-        document_id: Uuid,
-    ) -> Result<WriteTx<'_>> {
+    async fn begin_document_admin(&self, document_id: Uuid) -> Result<WriteTx> {
         let mut tx = self
             .begin_write(Fence::Required, &[Lock::Document(document_id)])
             .await?;
@@ -308,7 +305,7 @@ impl PostgresCatalog {
             document_id,
             account_id,
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?
         .rows_affected()
             == 1;
@@ -375,7 +372,7 @@ impl PostgresCatalog {
             expires_at,
             comment_budget,
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
         tx.commit().await?;
         Ok(row)
@@ -424,7 +421,7 @@ impl PostgresCatalog {
             document_id,
             id,
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?
         .rows_affected()
             == 1;

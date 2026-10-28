@@ -576,10 +576,7 @@ async fn shared_visibility_routes_enforce_account_and_access_boundaries() {
     assert_eq!(
         deployment
             .catalog
-            .access_role(
-                deployment.document_id,
-                Some(viewer.id),
-                None)
+            .access_role(deployment.document_id, Some(viewer.id), None)
             .await
             .unwrap(),
         Some(Role::Reader),
