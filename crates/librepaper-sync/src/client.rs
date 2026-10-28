@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use librepaper_base::digest::Digest;
 use librepaper_base::http::{decode, detail_of, post_json_as, send, Credentials};
+use librepaper_base::retry::RetryPolicy;
 use librepaper_base::site::SiteUrl;
 use librepaper_base::text::LineEnding;
 use librepaper_base::util::{token, Encoding};
@@ -21,8 +22,14 @@ use crate::Error;
 const QUICK: Duration = Duration::from_secs(60);
 /// A request that carries or returns file contents.
 const BULK: Duration = Duration::from_secs(300);
-/// How many times a request that got no answer is sent again, unchanged.
-const RETRIES: u32 = 2;
+/// A request that got no answer is sent again, unchanged, after 2 s and then
+/// 4 s: three tries in all.
+const RETRY: RetryPolicy = RetryPolicy {
+    base: Duration::from_secs(2),
+    ceiling: Duration::MAX,
+    max_attempts: Some(3),
+    jitter: false,
+};
 
 /// One deployment, and who is asking.
 pub struct Client {
@@ -318,16 +325,22 @@ impl Client {
         let target = self
             .base()?
             .join(&format!("/api/documents/{slug}/source-change"));
-        let mut attempt = 0;
-        loop {
-            match post_json_as(&target, body, &self.credentials, BULK).await {
-                Ok((503, reply)) if retryable(&reply) && attempt < RETRIES => {}
-                Ok(reply) => return Ok(reply),
-                Err(_) if attempt < RETRIES => {}
-                Err(error) => return Err(Error::Network(error)),
-            }
-            attempt += 1;
-            tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
+        let sent = RETRY
+            .run(
+                || async {
+                    match post_json_as(&target, body, &self.credentials, BULK).await {
+                        Ok((503, reply)) if retryable(&reply) => Err(Unanswered::Busy(reply)),
+                        Ok(reply) => Ok(reply),
+                        Err(error) => Err(Unanswered::Network(error)),
+                    }
+                },
+                |_| true,
+            )
+            .await;
+        match sent {
+            Ok(reply) => Ok(reply),
+            Err(Unanswered::Busy(reply)) => Ok((503, reply)),
+            Err(Unanswered::Network(error)) => Err(Error::Network(error)),
         }
     }
 
@@ -396,10 +409,24 @@ pub(crate) fn refusal(status: u16, reply: &Value) -> Error {
     Error::Http { status, detail }
 }
 
+/// Why a source change did not get a final answer.
+enum Unanswered {
+    /// The deployment answered 503 and said the request may be sent again.
+    Busy(Value),
+    Network(String),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_source_change_waits_two_then_four_seconds_and_tries_three_times() {
+        assert_eq!(RETRY.delay(1), Duration::from_secs(2));
+        assert_eq!(RETRY.delay(2), Duration::from_secs(4));
+        assert_eq!(RETRY.max_attempts, Some(3));
+    }
 
     fn entry(kind: &str, digest: &str) -> Entry {
         Entry {

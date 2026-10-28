@@ -3,11 +3,12 @@ use super::acp;
 use super::commands::{split_commands, Segment};
 use super::context;
 use super::journal::{self as runner_journal, Journal};
-use super::lifecycle::{Lease, RunnerState, StatusHandle, StopSignal};
+use super::lifecycle::{Lease, RunnerState, StatusHandle};
 use super::protocol::{push_bounded_utf8, truncate_utf8, TaskStatus};
 use super::task::{AdmissionResult, State, Task};
 use super::transport::{Event, Transport};
 use crate::automation::peer::{chat_token, validate_conversation, AutomationPeer};
+use librepaper_base::tasks::Shutdown;
 use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -704,7 +705,7 @@ pub async fn run(
     peer: &AutomationPeer,
     config: Config,
     status: StatusHandle,
-    stop: StopSignal,
+    stop: Shutdown,
 ) -> Result<(), String> {
     validate_conversation(&config.conversation, &config.token)?;
     let lease = Lease::acquire(

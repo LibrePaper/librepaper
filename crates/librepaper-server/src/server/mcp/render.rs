@@ -355,16 +355,18 @@ impl Server {
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn mcp_render(
         &self,
+        auth: &access::Authorized<access::rung::Read>,
         slug: &str,
         actor: &str,
         who: &Viewer,
         headers: &HeaderMap,
-        arrival: &Arrival,
         candidate_id: &str,
         candidate: &Candidate,
         task_id: &str,
     ) -> Result<RenderReceipt, Failure> {
-        self.mcp_recheck(slug, headers, arrival, actor).await?;
+        self.recheck(auth)
+            .await
+            .map_err(|refusal| access_failure(&refusal))?;
         let conversation = headers
             .get("x-librepaper-conversation")
             .and_then(|value| value.to_str().ok())
@@ -400,7 +402,7 @@ impl Server {
             .await
             .map_err(|(_, message)| Failure::new("renderer_unavailable", message))?;
         let receipt = Self::render_receipt(candidate_id, &candidate.tree_digest, &result)?;
-        // Access was checked before dispatch above; `mcp_recheck` rechecks
+        // Access was checked before dispatch above; the final recheck runs
         // once more before this receipt reaches the caller.
         self.store_render_receipt(slug, actor, who, candidate, receipt.clone())
             .await?;

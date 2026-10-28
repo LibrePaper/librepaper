@@ -81,6 +81,7 @@ pub(crate) async fn run_mcp(args: McpArgs) -> Result<(), String> {
         std::env::set_var("LIBREPAPER_CHAT_TOKEN", chat_token);
     }
     let link = DocumentLink::parse(&resolved.link, server.as_deref().unwrap_or(""))?;
+    let mut tasks = librepaper_base::tasks::Tasks::new();
     let peer = match std::env::var_os(GRANT_FILE_VARIABLE) {
         // Started by a sidebar runner: its scoped grant is the only
         // credential this bridge may use. Falling back to this computer's
@@ -89,12 +90,14 @@ pub(crate) async fn run_mcp(args: McpArgs) -> Result<(), String> {
         Some(path) => {
             let path = PathBuf::from(path);
             let peer = AutomationPeer::open_scoped(link, read_grant(&path)?).await?;
-            follow_grant(path, peer.token_source());
+            follow_grant(&mut tasks, path, peer.token_source());
             peer
         }
         None => AutomationPeer::open(link, server.as_deref(), token.as_deref()).await?,
     };
-    librepaper_companion::automation::mcp::stdio(&peer).await
+    let served = librepaper_companion::automation::mcp::stdio(&peer).await;
+    tasks.stop(Duration::ZERO).await;
+    served
 }
 
 /// Split an agent token into the app origin and the project slug. The key is
@@ -126,20 +129,29 @@ fn read_grant(path: &Path) -> Result<String, String> {
 /// second. A file that is briefly missing or invalid keeps the last good
 /// grant: the runner removes it only when it stops, and its agent, and so
 /// this process, go with it.
-fn follow_grant(path: PathBuf, source: Arc<RwLock<String>>) {
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(1));
-        loop {
-            tick.tick().await;
-            let Ok(token) = read_grant(&path) else {
-                continue;
-            };
-            let mut current = source.write().unwrap_or_else(|error| error.into_inner());
-            if *current != token {
-                *current = token;
+fn follow_grant(
+    tasks: &mut librepaper_base::tasks::Tasks,
+    path: PathBuf,
+    source: Arc<RwLock<String>>,
+) {
+    tasks.every(
+        "follow-grant",
+        Duration::from_secs(1),
+        tokio::time::MissedTickBehavior::Burst,
+        move || {
+            let path = path.clone();
+            let source = source.clone();
+            async move {
+                let Ok(token) = read_grant(&path) else {
+                    return;
+                };
+                let mut current = source.write().unwrap_or_else(|error| error.into_inner());
+                if *current != token {
+                    *current = token;
+                }
             }
-        }
-    });
+        },
+    );
 }
 
 #[cfg(test)]

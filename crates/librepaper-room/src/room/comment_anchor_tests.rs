@@ -602,7 +602,7 @@ fn received(
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn mcp_validates_a_comment_as_it_is_actually_served() {
-    use crate::room::comments::validate_existing_action;
+    use crate::room::comments::{validate_existing_action, Moderator};
 
     let Some(deployment) = deployment("anchor-mcp-gate").await else {
         return;
@@ -635,8 +635,10 @@ async fn mcp_validates_a_comment_as_it_is_actually_served() {
             Some(&served),
             &version,
             Some(&version),
-            caller,
-            editor,
+            &Moderator {
+                key: caller,
+                editor,
+            },
         )
     };
 
@@ -657,8 +659,10 @@ async fn mcp_validates_a_comment_as_it_is_actually_served() {
             Some(&served),
             "a-version-read-two-edits-ago",
             Some(&version),
-            &author,
-            false,
+            &Moderator {
+                key: &author,
+                editor: false,
+            },
         )
         .expect_err("a stale expected_version is refused")
         .code,

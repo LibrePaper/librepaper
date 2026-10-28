@@ -170,35 +170,20 @@ impl Server {
         // A room belongs to a document. Without this, any invented slug would
         // conjure one, and since the rate limiter counts per room, a new slug
         // per comment would also mean no rate limit at all.
-        let entry = {
-            match self.store.get_result(slug).await {
-                Ok(Some(entry)) => entry,
-                Ok(None) => return plain(404, "not found"),
-                Err(error) => {
-                    tracing::warn!("could not authorize socket for {slug}: {error}");
-                    return plain(503, "catalogue temporarily unavailable");
-                }
-            }
-        };
         let headers = request.headers().clone();
         // A browser cannot set a header on a socket handshake, so the link key
         // rides in the query string. Over TLS that is seen by this server and
-        // by nobody else, and what is logged anywhere is the digest.
+        // by nobody else, and what is logged anywhere is the digest. A private
+        // document answers a stranger exactly as a missing one does, here as
+        // everywhere else.
         let query = request.uri().query().map(str::to_string);
-        let who = self
-            .viewer(&entry, &headers, arrival, query.as_deref())
-            .await;
-        if who.auth_failed {
-            return plain(401, "authentication expired or was revoked");
-        }
-        if self.needs_sign_in(&entry, &who) {
-            return plain(401, "sign in to read this shared document");
-        }
-        // A private document answers a stranger exactly as a missing one does,
-        // here as everywhere else.
-        if !self.may_read(&entry, &who) {
-            return plain(404, "not found");
-        }
+        let (entry, who) = match self
+            .authorize_fresh::<access::rung::Read>(&headers, arrival, slug, query.as_deref())
+            .await
+        {
+            Ok(auth) => (auth.entry, auth.viewer),
+            Err(refusal) => return access::deny(&refusal),
+        };
         let id = who.id.clone();
         let author = if Self::is_automation(&headers) && !id.is_signed_in() && !who.link.is_empty()
         {
@@ -1005,7 +990,7 @@ impl Server {
 
                     // A commenter can only create annotations against the
                     // exact current projection that produced their page.
-                    if incoming.kind() == "comment" && !may_edit && incoming.render_digest().is_empty() {
+                    if access::needs_render_digest(&who, &incoming) {
                         let _ = send_outgoing(&tx, Outgoing::Text(
                             refused_frame(
                                 Kind::Conflict(Reason::Conflict),

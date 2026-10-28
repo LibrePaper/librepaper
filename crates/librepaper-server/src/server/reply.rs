@@ -552,18 +552,6 @@ pub(super) fn privacy_headers(response: &mut Reply) {
 
 /* ------------------------------------------ refused requests */
 
-/// A caller who presented a credential that did not resolve.
-///
-/// Never an anonymous identity: somebody who sent a session or a bearer and
-/// was quietly downgraded would be shown a public view of their own private
-/// document and be told nothing about why.
-pub(super) fn authentication_expired() -> Reply {
-    write_json(
-        401,
-        &json!({"error": "authentication expired or was revoked"}),
-    )
-}
-
 /// A live document link still requires a signed-in account to use.
 pub(super) fn sign_in_to_read() -> Reply {
     write_json(

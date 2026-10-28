@@ -3,17 +3,17 @@
 //! A session is identified by a private, per conversation directory, derived
 //! the same way it always was. What changed is who observes liveness: there
 //! is no longer a second process to flock, so [`StatusHandle`] and
-//! [`StopSignal`] are the in-process replacements for `runner.status.json`
+//! [`Shutdown`] are the in-process replacements for `runner.status.json`
 //! and the control file. The session registry (`assistant::registry`) is the
 //! only thing that creates and holds these; a [`Lease`] just carries them
 //! down into the run loop.
 
 use crate::automation::peer::DocumentLink;
+use librepaper_base::tasks::Shutdown;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 const DIRECTORY: &str = "assistant";
@@ -89,33 +89,10 @@ impl StatusHandle {
     }
 }
 
-/// The in-process replacement for the old cross-process control file. Setting
-/// this asks a session's own tick loop to wind down cooperatively, the same
-/// way `lease.stop_requested()` always worked; it is not the hard kill. A
-/// session wedged deep in an await that never reaches its tick loop is
-/// stopped by the registry aborting its tokio task outright, which is the
-/// hard kill (see `assistant::registry::SessionRegistry::stop`).
-#[derive(Clone, Default)]
-pub(crate) struct StopSignal(Arc<AtomicBool>);
-
-impl StopSignal {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn request(&self) {
-        self.0.store(true, Ordering::SeqCst);
-    }
-
-    pub(crate) fn requested(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
-    }
-}
-
 pub(crate) struct Lease {
     pub location: Location,
     status: StatusHandle,
-    stop: StopSignal,
+    stop: Shutdown,
 }
 
 fn location_at(base: PathBuf, link: &DocumentLink, conversation: &str) -> Result<Location, String> {
@@ -201,7 +178,7 @@ impl Lease {
         link: &DocumentLink,
         conversation: &str,
         status: StatusHandle,
-        stop: StopSignal,
+        stop: Shutdown,
     ) -> Result<Self, String> {
         let location = location(state_home, link, conversation)?;
         private_directory(&location.directory)?;
@@ -245,7 +222,7 @@ impl Lease {
     }
 
     pub(crate) fn stop_requested(&self) -> bool {
-        self.stop.requested()
+        self.stop.is_cancelled()
     }
 }
 
@@ -297,9 +274,9 @@ mod tests {
 
     #[test]
     fn stop_signal_is_observed_after_request() {
-        let signal = StopSignal::new();
-        assert!(!signal.requested());
-        signal.request();
-        assert!(signal.requested());
+        let signal = Shutdown::new();
+        assert!(!signal.is_cancelled());
+        signal.cancel();
+        assert!(signal.is_cancelled());
     }
 }

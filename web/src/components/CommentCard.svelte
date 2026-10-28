@@ -375,6 +375,8 @@
   <!-- One row of verbs for the whole thread, and it stays put: a verb you
        cannot see is a verb you do not know you have, so reply, resolve and
        delete are painted on every card rather than only the hovered one.
+       Resolve follows the delete rule: an author on their own comment, or
+       an editor on any, so the server's `deletable` flag decides both.
 
        Delete was behind a "•••" menu whose only item was Delete -- a menu
        is for choosing, and there was nothing to choose. It is its own button
@@ -392,7 +394,7 @@
         }}
       />
     {/if}
-    {#if canComment}
+    {#if canComment && (Boolean(comment.deletable) || canModerate)}
       <IconButton
         icon="check"
         label={comment.resolved ? "Reopen" : "Resolve"}

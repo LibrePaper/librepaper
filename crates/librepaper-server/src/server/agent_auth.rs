@@ -37,13 +37,13 @@ pub(super) async fn issue(
         );
     }
 
-    let (entry, viewer) = match server.entry_viewer_in(&slug, &context, headers, None).await {
-        Ok(value) => value,
-        Err(response) => return response,
+    let entry = match server
+        .authorize::<access::rung::Read>(&context, headers, &slug, None)
+        .await
+    {
+        Ok(auth) => auth.entry,
+        Err(refusal) => return access::deny(&refusal),
     };
-    if let Err(response) = server.check_readable(&entry, &viewer) {
-        return response;
-    }
 
     // A grant must name one live link capability. A bare owner page may read
     // the document, but cannot delegate that wider account authority to an

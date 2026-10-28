@@ -483,12 +483,12 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let (entry, _who) = match self
-            .entry_at_least_in(slug, context, headers, None, Role::Editor)
+        let entry = match self
+            .authorize::<access::rung::Edit>(context, headers, slug, None)
             .await
         {
-            Ok(result) => result,
-            Err(response) => return response,
+            Ok(auth) => auth.entry,
+            Err(refusal) => return access::deny(&refusal),
         };
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
@@ -576,12 +576,12 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let (entry, _who) = match self
-            .entry_at_least_in(slug, context, headers, None, Role::Editor)
+        let entry = match self
+            .authorize::<access::rung::Edit>(context, headers, slug, None)
             .await
         {
-            Ok(result) => result,
-            Err(response) => return response,
+            Ok(auth) => auth.entry,
+            Err(refusal) => return access::deny(&refusal),
         };
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
@@ -751,13 +751,12 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let (_entry, _who) = match self
-            .entry_at_least_in(slug, context, headers, None, Role::Editor)
+        if let Err(refusal) = self
+            .authorize::<access::rung::Edit>(context, headers, slug, None)
             .await
         {
-            Ok(result) => result,
-            Err(response) => return response,
-        };
+            return access::deny(&refusal);
+        }
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
@@ -806,19 +805,13 @@ impl Server {
         if cross_site_refused(request.headers(), arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let (entry, who) = match self
-            .entry_viewer_in(slug, context, request.headers(), None)
+        let auth = match self
+            .authorize::<access::rung::Edit>(context, request.headers(), slug, None)
             .await
         {
-            Ok(result) => result,
-            Err(response) => return response,
+            Ok(auth) => auth,
+            Err(refusal) => return access::deny(&refusal),
         };
-        if self.needs_sign_in(&entry, &who) {
-            return sign_in_to_read();
-        }
-        if !who.at_least(Role::Editor) {
-            return plain(404, "not found");
-        }
         let Ok(body) = to_bytes(request.into_body(), 8 * 1024).await else {
             return write_json(413, &json!({"error": "that label is too long"}));
         };
@@ -844,50 +837,64 @@ impl Server {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
         };
-        let Ok(authority) = who.authority(self.ceiling_for(&who.id)) else {
-            return write_json(403, &json!({"error": "access changed"}));
-        };
-        if current {
-            // `Room::take_label` rather than a second label command of this
-            // module's own: that one had no §7.2 replay lookup, so a retry
-            // of the same request wrote a second row naming the same state.
-            // Name the row in that same command: a replay must not rename it
-            // back over a later explicit rename by another editor.
-            match room
-                .take_label(
-                    "label",
-                    (!label.is_empty()).then(|| label.clone()),
-                    who.attribution(),
-                    &authority,
-                    request_id,
-                )
-                .await
-            {
-                Ok(row) => write_json(
-                    200,
-                    &json!({"sha": row.id, "label": row.label.unwrap_or_default()}),
-                ),
-                Err(error) => refused("label a version", &error),
-            }
-        } else {
-            let label_id = uuid::Uuid::parse_str(sha).expect("checked by is_label_id");
-            let named = if label.is_empty() {
-                None
-            } else {
-                Some(label.as_str())
-            };
-            match self
-                .store
-                .catalog
-                .rename_label(room.document_id, label_id, named)
-                .await
-            {
-                Ok(true) => write_json(200, &json!({"sha": label_id, "label": label})),
-                Ok(false) => plain(404, "not found"),
-                Err(error) => {
-                    write_json(503, &json!({"error": error.to_string(), "retryable": true}))
+        // The body was an await boundary, so the label is written against a
+        // fresh decision and the viewer it produced.
+        let label = &label;
+        let written = self
+            .mutate(&auth, |who, _| {
+                async move {
+                    let Ok(authority) = who.authority(self.ceiling_for(&who.id)) else {
+                        return write_json(403, &json!({"error": "access changed"}));
+                    };
+                    if current {
+                        // `Room::take_label` rather than a second label command of this
+                        // module's own: that one had no §7.2 replay lookup, so a retry
+                        // of the same request wrote a second row naming the same state.
+                        // Name the row in that same command: a replay must not rename it
+                        // back over a later explicit rename by another editor.
+                        match room
+                            .take_label(
+                                "label",
+                                (!label.is_empty()).then(|| label.clone()),
+                                who.attribution(),
+                                &authority,
+                                request_id,
+                            )
+                            .await
+                        {
+                            Ok(row) => write_json(
+                                200,
+                                &json!({"sha": row.id, "label": row.label.unwrap_or_default()}),
+                            ),
+                            Err(error) => refused("label a version", &error),
+                        }
+                    } else {
+                        let label_id = uuid::Uuid::parse_str(sha).expect("checked by is_label_id");
+                        let named = if label.is_empty() {
+                            None
+                        } else {
+                            Some(label.as_str())
+                        };
+                        match self
+                            .store
+                            .catalog
+                            .rename_label(room.document_id, label_id, named)
+                            .await
+                        {
+                            Ok(true) => write_json(200, &json!({"sha": label_id, "label": label})),
+                            Ok(false) => plain(404, "not found"),
+                            Err(error) => write_json(
+                                503,
+                                &json!({"error": error.to_string(), "retryable": true}),
+                            ),
+                        }
+                    }
                 }
-            }
+            })
+            .await;
+        match written {
+            Ok(reply) => reply,
+            Err(refusal) => access::deny(&refusal),
         }
     }
 
@@ -907,12 +914,13 @@ impl Server {
         if cross_site_refused(&headers, &context.arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        if let Err(response) = self
-            .entry_at_least_in(slug, context, request.headers(), None, Role::Editor)
+        let auth = match self
+            .authorize::<access::rung::Edit>(context, request.headers(), slug, None)
             .await
         {
-            return response;
-        }
+            Ok(auth) => auth,
+            Err(refusal) => return access::deny(&refusal),
+        };
         let body = match to_bytes(request.into_body(), 16 * 1024).await {
             Ok(body) => body,
             Err(_) => return write_json(413, &json!({"error": "restore request too large"})),
@@ -947,59 +955,63 @@ impl Server {
         };
         // A link may have been revoked, the session ended, or the account's
         // rights changed while the request body was being read, so the caller
-        // is authenticated again rather than taken from the request context.
-        let (_current_entry, current_who) = match self
-            .entry_at_least(slug, &headers, &context.arrival, None, Role::Editor)
-            .await
-        {
-            Ok(result) => result,
-            Err(response) => return response,
-        };
-        let label = match self.store.catalog.label(room.document_id, label_id).await {
-            Ok(Some(label)) => label,
-            Ok(None) => return plain(404, "not found"),
-            Err(error) => return refused("read the catalogue", &error.into()),
-        };
-        let Ok(frontier) = loro::Frontiers::decode(&label.frontier) else {
-            return write_json(
-                500,
-                &json!({"error": "that label's frontier is unreadable"}),
-            );
-        };
-        let target = match room.log().projection_at(&frontier).await {
-            Ok(target) => target,
-            Err(error) => return sequencer_reply(&error),
-        };
-        let mut texts = Vec::new();
-        let mut assets = Vec::new();
-        for (path, file) in &target.projection.files {
-            if file.kind == "text" {
-                if let Some(body) = target.texts.get(path) {
-                    texts.push((path.clone(), body.clone(), file.id.clone()));
+        // is decided again before anything is looked up, and the restore is
+        // written as the fresh viewer.
+        let restored = self
+            .mutate(&auth, |current_who, _| async move {
+                let label = match self.store.catalog.label(room.document_id, label_id).await {
+                    Ok(Some(label)) => label,
+                    Ok(None) => return Err(plain(404, "not found")),
+                    Err(error) => return Err(refused("read the catalogue", &error.into())),
+                };
+                let Ok(frontier) = loro::Frontiers::decode(&label.frontier) else {
+                    return Err(write_json(
+                        500,
+                        &json!({"error": "that label's frontier is unreadable"}),
+                    ));
+                };
+                let target = match room.log().projection_at(&frontier).await {
+                    Ok(target) => target,
+                    Err(error) => return Err(sequencer_reply(&error)),
+                };
+                let mut texts = Vec::new();
+                let mut assets = Vec::new();
+                for (path, file) in &target.projection.files {
+                    if file.kind == "text" {
+                        if let Some(body) = target.texts.get(path) {
+                            texts.push((path.clone(), body.clone(), file.id.clone()));
+                        }
+                    } else {
+                        assets.push((path.clone(), file.digest.clone()));
+                    }
                 }
-            } else {
-                assets.push((path.clone(), file.digest.clone()));
-            }
-        }
-        let Ok(authority) = current_who.authority(self.ceiling_for(&current_who.id)) else {
-            return write_json(403, &json!({"error": "access changed"}));
+                let Ok(authority) = current_who.authority(self.ceiling_for(&current_who.id)) else {
+                    return Err(write_json(403, &json!({"error": "access changed"})));
+                };
+                let author_account_id = uuid::Uuid::parse_str(&current_who.id.id).ok();
+                let mut command = Restore {
+                    request_id: uuid::Uuid::new_v4(),
+                    document_id: room.document_id,
+                    label_id,
+                    catalog: self.store.catalog.clone(),
+                    expected_frontier,
+                    texts,
+                    assets,
+                    author_account_id,
+                    author_label: current_who.attribution().display().to_string(),
+                    replaced_vector: Vec::new(),
+                };
+                match room.command(&authority, &mut command).await {
+                    Ok(_) => Ok(label),
+                    Err(error) => Err(command_reply("restore a version", error)),
+                }
+            })
+            .await;
+        let label = match restored {
+            Ok(Ok(label)) => label,
+            Ok(Err(reply)) => return reply,
+            Err(refusal) => return access::deny(&refusal),
         };
-        let author_account_id = uuid::Uuid::parse_str(&current_who.id.id).ok();
-        let mut command = Restore {
-            request_id: uuid::Uuid::new_v4(),
-            document_id: room.document_id,
-            label_id,
-            catalog: self.store.catalog.clone(),
-            expected_frontier,
-            texts,
-            assets,
-            author_account_id,
-            author_label: current_who.attribution().display().to_string(),
-            replaced_vector: Vec::new(),
-        };
-        if let Err(error) = room.command(&authority, &mut command).await {
-            return command_reply("restore a version", error);
-        }
         // The command wrote its own label for the moment the restore
         // produced; what a caller wants back here is what it asked to
         // restore, which is still `label` as read above.
@@ -1030,12 +1042,13 @@ impl Server {
         if cross_site_refused(&headers, &context.arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        if let Err(response) = self
-            .entry_at_least_in(slug, context, request.headers(), None, Role::Editor)
+        let auth = match self
+            .authorize::<access::rung::Edit>(context, request.headers(), slug, None)
             .await
         {
-            return response;
-        }
+            Ok(auth) => auth,
+            Err(refusal) => return access::deny(&refusal),
+        };
         let _body = match to_bytes(request.into_body(), 16 * 1024).await {
             Ok(body) => body,
             Err(_) => return write_json(413, &json!({"error": "trim request too large"})),
@@ -1046,116 +1059,119 @@ impl Server {
         };
         // A link may have been revoked, the session ended, or the account's
         // rights changed while the request body was being read, so the caller
-        // is authenticated again rather than taken from the request context.
-        let (_, current_who) = match self
-            .entry_at_least(slug, &headers, &context.arrival, None, Role::Editor)
-            .await
-        {
-            Ok(result) => result,
-            Err(response) => return response,
-        };
-        // Check if another editor has the document open. The caller's own tab
-        // may hold one editor socket, which is why the bound is 1, not 0.
-        if room.editors().await > 1 {
-            return write_json(
-                409,
-                &json!({"error": "another editor has this document open; ask them to close it first"}),
-            );
-        }
-        let Ok(authority) = current_who.authority(self.ceiling_for(&current_who.id)) else {
-            return write_json(403, &json!({"error": "access changed"}));
-        };
-        // A shallow snapshot keeps no history before the trim point, so a comment
-        // on a passage deleted there could not be resolved again. Each attempt
-        // heals the comment anchors to the text as it stands, and the healing
-        // answers with the frontier it left, read under the sequencer's lock.
-        // The snapshot is taken only against that frontier, so an edit that
-        // lands in between makes the attempt start over with a fresh healing.
-        // Ok(None) means the document moved, not that compaction succeeded.
-        let mut after = None;
-        for attempt in 0..3 {
-            let frontier = match room.heal_comment_anchors(&authority).await {
-                Ok((_, frontier)) => frontier,
-                Err(error) => return command_reply("heal comment anchors", error),
-            };
-            let result = librepaper_engine::storage::worker::compact_document(
-                &self.store.catalog,
-                &self.store.blobs,
-                self.rooms.registry(),
-                &self.background,
-                &self.config,
-                room.document_id,
-                librepaper_engine::log::sequencer::SnapshotMode::Shallow,
-                Some(frontier.as_slice()),
-            )
-            .await;
-            match result {
-                Ok(Some(bytes)) => {
-                    after = Some(bytes);
-                    break;
+        // is decided again, and the trim runs as the fresh viewer.
+        let trimmed = self
+            .mutate(&auth, |current_who, _| {
+                async move {
+                // Check if another editor has the document open. The caller's own tab
+                // may hold one editor socket, which is why the bound is 1, not 0.
+                if room.editors().await > 1 {
+                    return write_json(
+                        409,
+                        &json!({"error": "another editor has this document open; ask them to close it first"}),
+                    );
                 }
-                Ok(None) => {
-                    if attempt < 2 {
-                        tokio::task::yield_now().await;
+                let Ok(authority) = current_who.authority(self.ceiling_for(&current_who.id)) else {
+                    return write_json(403, &json!({"error": "access changed"}));
+                };
+                // A shallow snapshot keeps no history before the trim point, so a comment
+                // on a passage deleted there could not be resolved again. Each attempt
+                // heals the comment anchors to the text as it stands, and the healing
+                // answers with the frontier it left, read under the sequencer's lock.
+                // The snapshot is taken only against that frontier, so an edit that
+                // lands in between makes the attempt start over with a fresh healing.
+                // Ok(None) means the document moved, not that compaction succeeded.
+                let mut after = None;
+                for attempt in 0..3 {
+                    let frontier = match room.heal_comment_anchors(&authority).await {
+                        Ok((_, frontier)) => frontier,
+                        Err(error) => return command_reply("heal comment anchors", error),
+                    };
+                    let result = librepaper_engine::storage::worker::compact_document(
+                        &self.store.catalog,
+                        &self.store.blobs,
+                        self.rooms.registry(),
+                        &self.background,
+                        &self.config,
+                        room.document_id,
+                        librepaper_engine::log::sequencer::SnapshotMode::Shallow,
+                        Some(frontier.as_slice()),
+                    )
+                    .await;
+                    match result {
+                        Ok(Some(bytes)) => {
+                            after = Some(bytes);
+                            break;
+                        }
+                        Ok(None) => {
+                            if attempt < 2 {
+                                tokio::task::yield_now().await;
+                            }
+                        }
+                        Err(message) => return write_json(503, &json!({"error": message})),
                     }
                 }
-                Err(message) => return write_json(503, &json!({"error": message})),
-            }
-        }
-        let after = match after {
-            Some(bytes) => bytes,
-            None => {
-                return write_json(
-                    503,
-                    &json!({"error": "the document changed while it was being trimmed; try again"}),
+                let after = match after {
+                    Some(bytes) => bytes,
+                    None => {
+                        return write_json(
+                            503,
+                            &json!({"error": "the document changed while it was being trimmed; try again"}),
+                        )
+                    }
+                };
+                // The chat lock is held across the trim so a flush cannot write a
+                // message between the delete and the buffer being dropped. The trim
+                // never calls into the chat path.
+                let mut chat = room.chat_lock().await;
+                let mut command = TrimRetained {
+                    document_id: room.document_id,
+                    catalog: self.store.catalog.clone(),
+                    referenced: Vec::new(),
+                    buffered_chat: chat.ids(),
+                    chat_owner: current_who.account_id(),
+                };
+                let outcome = match room.command(&authority, &mut command).await {
+                    Ok(outcome) => outcome,
+                    Err(error) => return command_reply("trim history", error),
+                };
+                // Only the owner's trim deletes chat. An editor's trim leaves it alone.
+                if outcome.chat_cleared {
+                    let waiting = chat.discard_unstored(&outcome.chat_stored_buffered);
+                    room.chat_discarded();
+                    room.log().charge_storage(-outcome.chat_bytes);
+                    room.log().charge_storage(-waiting);
+                    room.broadcast_chat(None, &json!({"type": "chat-cleared"}))
+                        .await;
+                }
+                drop(chat);
+                // The ledger is a coarse running total, so move it by what was freed.
+                // A failed lookup leaves it alone: admission reloads the owner's total from the catalogue.
+                if let Ok(Some(document)) = self.store.catalog.document(room.document_id).await {
+                    self.rooms.registry().ledger().charge(
+                        document.owner_id,
+                        -(outcome.version_bytes + outcome.figure_bytes),
+                    );
+                }
+                write_json(
+                    200,
+                    &json!({
+                        "historyBytes": after,
+                        "versions": outcome.versions,
+                        "versionBytes": outcome.version_bytes,
+                        "figures": outcome.figures,
+                        "figureBytes": outcome.figure_bytes,
+                        "chatMessages": outcome.chat_messages,
+                        "chatBytes": outcome.chat_bytes
+                    }),
                 )
-            }
-        };
-        // The chat lock is held across the trim so a flush cannot write a
-        // message between the delete and the buffer being dropped. The trim
-        // never calls into the chat path.
-        let mut chat = room.chat_lock().await;
-        let mut command = TrimRetained {
-            document_id: room.document_id,
-            catalog: self.store.catalog.clone(),
-            referenced: Vec::new(),
-            buffered_chat: chat.ids(),
-            chat_owner: current_who.account_id(),
-        };
-        let outcome = match room.command(&authority, &mut command).await {
-            Ok(outcome) => outcome,
-            Err(error) => return command_reply("trim history", error),
-        };
-        // Only the owner's trim deletes chat. An editor's trim leaves it alone.
-        if outcome.chat_cleared {
-            let waiting = chat.discard_unstored(&outcome.chat_stored_buffered);
-            room.chat_discarded();
-            room.log().charge_storage(-outcome.chat_bytes);
-            room.log().charge_storage(-waiting);
-            room.broadcast_chat(None, &json!({"type": "chat-cleared"}))
-                .await;
+                }
+            })
+            .await;
+        match trimmed {
+            Ok(reply) => reply,
+            Err(refusal) => access::deny(&refusal),
         }
-        drop(chat);
-        // The ledger is a coarse running total, so move it by what was freed.
-        // A failed lookup leaves it alone: admission reloads the owner's total from the catalogue.
-        if let Ok(Some(document)) = self.store.catalog.document(room.document_id).await {
-            self.rooms.registry().ledger().charge(
-                document.owner_id,
-                -(outcome.version_bytes + outcome.figure_bytes),
-            );
-        }
-        write_json(
-            200,
-            &json!({
-                "historyBytes": after,
-                "versions": outcome.versions,
-                "versionBytes": outcome.version_bytes,
-                "figures": outcome.figures,
-                "figureBytes": outcome.figure_bytes,
-                "chatMessages": outcome.chat_messages,
-                "chatBytes": outcome.chat_bytes
-            }),
-        )
     }
 
     /* -------------------------------------------------------------- assets */

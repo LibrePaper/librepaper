@@ -367,6 +367,7 @@ impl Server {
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn mcp_operation(
         &self,
+        auth: &access::Authorized<access::rung::Read>,
         slug: &str,
         actor: &str,
         who: &Viewer,
@@ -376,7 +377,7 @@ impl Server {
         args: &Value,
     ) -> Result<Value, Failure> {
         let result = self
-            .mcp_operation_inner(slug, actor, who, headers, arrival, name, args, "")
+            .mcp_operation_inner(auth, slug, actor, who, headers, arrival, name, args, "")
             .await;
         if let Err(error) = &result {
             if name != "document_result" && error.committed == Committed::No {
@@ -447,6 +448,7 @@ impl Server {
     #[allow(clippy::too_many_arguments)]
     async fn mcp_operation_inner(
         &self,
+        auth: &access::Authorized<access::rung::Read>,
         slug: &str,
         actor: &str,
         who: &Viewer,
@@ -457,13 +459,18 @@ impl Server {
         parent_request_id: &str,
     ) -> Result<Value, Failure> {
         if name == "document_result" {
-            return self.mcp_result(slug, actor, headers, arrival, args).await;
+            return self
+                .mcp_result(auth, slug, actor, headers, arrival, args)
+                .await;
         }
         let key: OperationKey = serde_json::from_value(args["operation"].clone())
             .map_err(|e| Failure::new("invalid_params", e.to_string()))?;
         key.validate().map_err(failure)?;
         let digest = operation_digest(name, args);
-        let current = self.mcp_recheck(slug, headers, arrival, actor).await?;
+        let (current, _) = self
+            .recheck(auth)
+            .await
+            .map_err(|refusal| access_failure(&refusal))?;
         if !current.at_least(Role::Commenter) {
             return Err(Failure::new(
                 "permission_changed",
@@ -487,6 +494,7 @@ impl Server {
                         child["patches"] = json!([patch]);
                         child["operation"] = json!(child_operation);
                         let outcome = Box::pin(self.mcp_operation_inner(
+                            auth,
                             slug,
                             actor,
                             &current,
@@ -550,11 +558,12 @@ impl Server {
                     // there is no batch-level key here.
                     let result = json!({"operation":key,"status":"committed","batch":"independent","items":items});
                     // Access was rechecked before each child effect above;
-                    // `mcp_recheck` rechecks once more before the batch result
+                    // the final recheck runs once more before the batch result
                     // is handed back.
                     return Ok(result);
                 }
                 self.mcp_propose(
+                    auth,
                     slug,
                     actor,
                     &current,
@@ -623,7 +632,7 @@ impl Server {
                     request_digest: digest,
                     ..Default::default()
                 };
-                self.mcp_commit_change(slug, actor, &current, headers, arrival, name, request)
+                self.mcp_commit_change(auth, slug, actor, &current, name, request)
                     .await
             }
             "document_files" => {
@@ -669,7 +678,7 @@ impl Server {
                     request_digest: digest,
                     ..Default::default()
                 };
-                self.mcp_commit_change(slug, actor, &current, headers, arrival, name, request)
+                self.mcp_commit_change(auth, slug, actor, &current, name, request)
                     .await
             }
             "document_comment" => {
@@ -697,11 +706,10 @@ impl Server {
     #[allow(clippy::too_many_arguments)]
     async fn mcp_commit_change(
         &self,
+        auth: &access::Authorized<access::rung::Read>,
         slug: &str,
         actor: &str,
         current: &Viewer,
-        headers: &HeaderMap,
-        arrival: &Arrival,
         name: &str,
         request: SourceChange,
     ) -> Result<Value, Failure> {
@@ -731,10 +739,10 @@ impl Server {
                 authority,
                 Some(operation_receipt),
                 || async {
-                    self.mcp_recheck(slug, headers, arrival, actor)
+                    self.recheck(auth)
                         .await
                         .map(|_| ())
-                        .map_err(|error| source_change::AgentError::Conflict(error.message))
+                        .map_err(|refusal| source_change::AgentError::Conflict(refusal.message))
                 },
             )
             .await
@@ -821,6 +829,7 @@ impl Server {
     #[allow(clippy::too_many_arguments)]
     async fn mcp_propose(
         &self,
+        auth: &access::Authorized<access::rung::Read>,
         slug: &str,
         actor: &str,
         who: &Viewer,
@@ -1014,6 +1023,7 @@ impl Server {
         )
         .await?;
         self.mcp_finish_proposal(
+            auth,
             slug,
             actor,
             who,
@@ -1029,6 +1039,7 @@ impl Server {
     #[allow(clippy::too_many_arguments)]
     async fn mcp_finish_proposal(
         &self,
+        auth: &access::Authorized<access::rung::Read>,
         slug: &str,
         actor: &str,
         who: &Viewer,
@@ -1042,7 +1053,7 @@ impl Server {
         let render = if candidate.validation == "compile" {
             Some(match self.load_render_receipt(slug,actor,who,candidate_id).await {
                 Ok(receipt)=>receipt,
-                Err(error) if error.code=="view_expired"=>self.mcp_render(slug,actor,who,headers,arrival,candidate_id,candidate,&key.id).await.map_err(|error|error.with_data(json!({"candidate_id":candidate_id,"operation":key,"retry_tool":"document_result","retry_arguments":{"kind":"render","id":candidate_id}})))?,
+                Err(error) if error.code=="view_expired"=>self.mcp_render(auth,slug,actor,who,headers,candidate_id,candidate,&key.id).await.map_err(|error|error.with_data(json!({"candidate_id":candidate_id,"operation":key,"retry_tool":"document_result","retry_arguments":{"kind":"render","id":candidate_id}})))?,
                 Err(error)=>return Err(error),
             })
         } else {
@@ -1191,19 +1202,23 @@ impl Server {
         }
         // No receipt is retained for private staging; the candidate was
         // already stored under the recheck at the top of `mcp_operation_inner`,
-        // and `mcp_recheck` rechecks once more before the result is returned.
+        // and the final recheck runs once more before the result is returned.
         Ok(result)
     }
 
     async fn mcp_result(
         &self,
+        auth: &access::Authorized<access::rung::Read>,
         slug: &str,
         actor: &str,
         headers: &HeaderMap,
         arrival: &Arrival,
         args: &Value,
     ) -> Result<Value, Failure> {
-        let who = self.mcp_recheck(slug, headers, arrival, actor).await?;
+        let (who, _) = self
+            .recheck(auth)
+            .await
+            .map_err(|refusal| access_failure(&refusal))?;
         match args["kind"].as_str().unwrap_or("operation") {
             "operation" => {
                 let key: OperationKey = serde_json::from_value(
@@ -1282,6 +1297,7 @@ impl Server {
                         .await?;
                     return self
                         .mcp_finish_proposal(
+                            auth,
                             slug,
                             actor,
                             &who,

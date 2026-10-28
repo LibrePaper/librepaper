@@ -279,7 +279,7 @@ fn login_shell_path(shell: &Path, timeout: std::time::Duration) -> Option<OsStri
     if old_flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, old_flags | libc::O_NONBLOCK) } < 0
     {
         let pid = child.id();
-        crate::local::native::kill_tree(Some(pid));
+        librepaper_base::process::kill_tree(Some(pid));
         let _ = child.wait();
         return None;
     }
@@ -294,7 +294,7 @@ fn login_shell_path(shell: &Path, timeout: std::time::Duration) -> Option<OsStri
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => 0,
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => {
-                crate::local::native::kill_tree(Some(pid));
+                librepaper_base::process::kill_tree(Some(pid));
                 let _ = child.wait();
                 return None;
             }
@@ -302,7 +302,7 @@ fn login_shell_path(shell: &Path, timeout: std::time::Duration) -> Option<OsStri
         if count > 0 {
             let remaining = MAX_SHELL_OUTPUT.saturating_sub(output.len());
             if count > remaining {
-                crate::local::native::kill_tree(Some(pid));
+                librepaper_base::process::kill_tree(Some(pid));
                 let _ = child.wait();
                 return None;
             }
@@ -334,13 +334,13 @@ fn login_shell_path(shell: &Path, timeout: std::time::Duration) -> Option<OsStri
             }
             Ok(None) => {}
             Err(_) => {
-                crate::local::native::kill_tree(Some(pid));
+                librepaper_base::process::kill_tree(Some(pid));
                 let _ = child.wait();
                 return None;
             }
         }
         if Instant::now() >= deadline {
-            crate::local::native::kill_tree(Some(pid));
+            librepaper_base::process::kill_tree(Some(pid));
             let _ = child.wait();
             return None;
         }

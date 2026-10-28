@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use tokio::process::Command;
 
-use crate::local::native::{self, Bounds, CaptureError};
+use librepaper_base::process::{supervise, Ending, Keep, Limits};
 
 pub(crate) mod remote;
 pub(crate) mod status;
@@ -285,30 +285,36 @@ async fn run_to_output(
     stdin: Option<Vec<u8>>,
     limit: Duration,
 ) -> Result<Output, RunError> {
-    let bounds = Bounds {
-        timeout: limit,
-        stdout_bytes: MAX_STDOUT_BYTES,
-        stderr_bytes: MAX_STDERR_BYTES,
-        reap_on_exit: false,
+    // One byte past the bound, so output over it is told from output at it.
+    let run = supervise(
+        command,
+        stdin,
+        Limits {
+            timeout: Some(limit),
+            cancel: None,
+            keep: Keep::Head(MAX_STDOUT_BYTES + 1),
+            stderr_keep: Some(Keep::Head(MAX_STDERR_BYTES)),
+            // Git's background maintenance is a helper it starts on purpose,
+            // and that helper must survive the command.
+            kill_group: false,
+        },
+    )
+    .await;
+    let code = match run.ending {
+        Ending::Exited(code) => code,
+        Ending::TimedOut => return Err(RunError::Timeout),
+        Ending::SpawnFailed(error) => {
+            return Err(RunError::Spawn(format!("could not start git: {error}")))
+        }
+        // No token is passed, so this cannot happen.
+        Ending::Canceled => return Err(RunError::Timeout),
     };
-    let captured = native::run_captured(command, stdin, bounds)
-        .await
-        .map_err(runner_error)?;
-    if captured.stdout_truncated {
+    if run.stdout.len() > MAX_STDOUT_BYTES {
         return Err(RunError::TooLarge);
     }
     Ok(Output {
-        code: captured.code,
-        stdout: captured.stdout,
-        stderr: String::from_utf8_lossy(&captured.stderr).into_owned(),
+        code,
+        stdout: run.stdout,
+        stderr: String::from_utf8_lossy(&run.stderr).into_owned(),
     })
-}
-
-/// Git's words for a command that could not run to an exit status.
-fn runner_error(error: CaptureError) -> RunError {
-    match error {
-        CaptureError::Spawn(error) => RunError::Spawn(format!("could not start git: {error}")),
-        CaptureError::Wait(error) => RunError::Spawn(format!("could not wait for git: {error}")),
-        CaptureError::TimedOut => RunError::Timeout,
-    }
 }

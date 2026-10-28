@@ -50,11 +50,11 @@ impl Server {
         let headers = request.headers().clone();
         let query = request.uri().query().map(str::to_string);
         let (entry, who) = match self
-            .readable_entry(slug, &headers, arrival, query.as_deref())
+            .authorize_fresh::<access::rung::Read>(&headers, arrival, slug, query.as_deref())
             .await
         {
-            Ok(result) => result,
-            Err(response) => return response,
+            Ok(auth) => (auth.entry, auth.viewer),
+            Err(refusal) => return access::deny(&refusal),
         };
         let link_expires = entry
             .live_link(&who.link, librepaper_base::util::now_unix())
@@ -246,12 +246,12 @@ impl Server {
         }
         let headers = request.headers().clone();
         let query = request.uri().query().map(str::to_string);
-        let (_entry, _who) = match self
-            .readable_entry_in(slug, context, &headers, query.as_deref())
+        let auth = match self
+            .authorize::<access::rung::Read>(context, &headers, slug, query.as_deref())
             .await
         {
-            Ok(result) => result,
-            Err(response) => return response,
+            Ok(auth) => auth,
+            Err(refusal) => return access::deny(&refusal),
         };
         let token = request
             .headers()
@@ -262,13 +262,16 @@ impl Server {
         let result = match (request.method().as_str(), tail) {
             ("POST", []) => self.chat.create(slug).await,
             ("DELETE", [id]) => {
-                if let Err(response) = self
-                    .recheck_chat_caller(slug, &headers, arrival, query.as_deref())
+                // Deleting needs the read rung and the chat token. The caller is
+                // decided again at the delete, since the token check is the only
+                // other gate and it knows nothing of a revoked link.
+                match self
+                    .mutate(&auth, |_, _| self.chat.delete(slug, id, &token))
                     .await
                 {
-                    return *response;
+                    Ok(result) => result,
+                    Err(refusal) => return access::deny(&refusal),
                 }
-                self.chat.delete(slug, id, &token).await
             }
             _ => return write_json(405, &json!({"error":"unsupported chat operation"})),
         };
@@ -278,34 +281,6 @@ impl Server {
         };
         set(&mut response, "cache-control", "no-store");
         response
-    }
-
-    async fn recheck_chat_caller(
-        &self,
-        slug: &str,
-        headers: &HeaderMap,
-        arrival: &Arrival,
-        query: Option<&str>,
-    ) -> Result<(), Box<Reply>> {
-        let entry = self
-            .checked_entry(slug)
-            .await
-            .map_err(Box::new)?
-            .ok_or_else(|| Box::new(write_json(404, &json!({"error":"not found"}))))?;
-        let who = self.viewer(&entry, headers, arrival, query).await;
-        if who.auth_failed {
-            return Err(Box::new(write_json(
-                401,
-                &json!({"error":"authentication expired or was revoked"}),
-            )));
-        }
-        if self.needs_sign_in(&entry, &who) {
-            return Err(Box::new(sign_in_to_read()));
-        }
-        if !self.may_read(&entry, &who) {
-            return Err(Box::new(write_json(404, &json!({"error":"not found"}))));
-        }
-        Ok(())
     }
 }
 

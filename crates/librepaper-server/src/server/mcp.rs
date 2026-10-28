@@ -103,6 +103,18 @@ pub(crate) struct Failure {
     pub(crate) committed: Committed,
 }
 
+/// The failure an access refusal is over MCP. A caller who lost access, or
+/// whose document is gone, is told its permission changed; a lookup that
+/// failed is retryable.
+pub(super) fn access_failure(refusal: &Refusal) -> Failure {
+    match refusal.kind {
+        librepaper_room::room::refusal::Kind::Unavailable => {
+            Failure::new("unavailable", refusal.message.clone())
+        }
+        _ => Failure::new("permission_changed", refusal.message.clone()),
+    }
+}
+
 /// The codes MCP itself raises for work it refused before anything was
 /// written. Every other code, including the ones raised for a storage
 /// failure, leaves the commit state unknown.
@@ -221,7 +233,7 @@ fn require_live_identity(who: &Viewer) -> Result<(), Failure> {
     Ok(())
 }
 
-fn actor_scope(slug: &str, who: &Viewer, author: &str) -> String {
+pub(super) fn actor_scope(slug: &str, who: &Viewer, author: &str) -> String {
     // Bind cached views to authority as well as attribution. No raw key survives.
     librepaper_base::digest::Digest::of(
         format!(
@@ -297,28 +309,22 @@ impl Server {
         }
         let mut headers = request.headers().clone();
         headers.insert(AUTOMATION_HEADER, HeaderValue::from_static("1"));
-        let (entry, who) = match self.entry_viewer_in(slug, context, &headers, None).await {
-            Ok(result) => result,
-            Err(reply) => return reply,
-        };
-        if who.auth_failed {
-            return plain(401, "authentication expired or revoked");
-        }
-        if self.needs_sign_in(&entry, &who) {
-            return sign_in_to_read();
-        }
         // MCP exposes source views, ranges, candidate trees, and source
         // mutations. A reader is admitted to read; every other tool is gated
         // per tool below, so a reader reaches the source and nothing that
         // writes. A caller is offered only the tools its role can call.
-        if !who.at_least(Role::Reader) || !self.may_read(&entry, &who) {
-            return plain(404, "not found");
-        }
+        let auth = match self
+            .authorize::<access::rung::Read>(context, &headers, slug, None)
+            .await
+        {
+            Ok(auth) => auth,
+            Err(refusal) => return access::deny(&refusal),
+        };
         let mut reply = write_json(
             200,
             &json!({
                 "instructions": INSTRUCTIONS,
-                "tools": schema::served_tools(who.role),
+                "tools": schema::served_tools(auth.viewer.role),
             }),
         );
         set(&mut reply, "cache-control", "no-store");
@@ -370,19 +376,14 @@ impl Server {
         if !args.is_object() {
             return plain(400, "expected a JSON object body");
         }
-        let (entry, who) = match self.entry_viewer_in(slug, context, &headers, None).await {
-            Ok(result) => result,
-            Err(reply) => return reply,
+        let auth = match self
+            .authorize_mcp::<access::rung::Read>(context, &headers, slug)
+            .await
+        {
+            Ok(auth) => auth,
+            Err(refusal) => return access::deny(&refusal),
         };
-        if who.auth_failed {
-            return plain(401, "authentication expired or revoked");
-        }
-        if self.needs_sign_in(&entry, &who) {
-            return sign_in_to_read();
-        }
-        if !who.at_least(Role::Reader) || !self.may_read(&entry, &who) {
-            return plain(404, "not found");
-        }
+        let who = &auth.viewer;
         if !schema::tools().iter().any(|tool| tool["name"] == name) {
             return tool_result(Err(Failure::new("invalid_params", "unknown document tool")));
         }
@@ -390,7 +391,7 @@ impl Server {
             return tool_result(Err(Failure::new("invalid_params", error)));
         }
         schema::normalize_integers(&mut args);
-        let _permit = match self.mcp_capacity.acquire(&who) {
+        let _permit = match self.mcp_capacity.acquire(who) {
             Ok(permit) => permit,
             Err(error) => return tool_result(Err(error)),
         };
@@ -407,23 +408,23 @@ impl Server {
                 ),
             )));
         }
-        let actor = actor_scope(slug, &who, &self.comment_author(&headers, arrival, &who.id));
+        let actor = auth.caller.actor().unwrap_or_default().to_owned();
         let result = match name {
             "document_read" => {
-                self.mcp_read(slug, &actor, &who, &headers, arrival, &args)
+                self.mcp_read(slug, &actor, who, &headers, arrival, &args)
                     .await
             }
             _ => {
-                self.mcp_operation(slug, &actor, &who, &headers, arrival, name, &args)
+                self.mcp_operation(&auth, slug, &actor, who, &headers, arrival, name, &args)
                     .await
             }
         };
         // Access may have changed while loading a cached receipt or
         // executing a read. Never deliver retained private data on
         // the strength of the admission check alone.
-        let result = match self.mcp_recheck(slug, &headers, arrival, &actor).await {
+        let result = match self.recheck(&auth).await {
             Ok(_) => result,
-            Err(error) => Err(error),
+            Err(refusal) => Err(access_failure(&refusal)),
         };
         tool_result(result)
     }
@@ -534,72 +535,6 @@ impl Server {
         }
         serde_json::from_value(value["payload"].clone())
             .map_err(|e| Failure::new("internal", e.to_string()))
-    }
-
-    // Keep the wire identity, authority, and expiry explicit at this storage boundary.
-    #[allow(clippy::too_many_arguments)]
-    async fn mcp_recheck(
-        &self,
-        slug: &str,
-        headers: &HeaderMap,
-        arrival: &Arrival,
-        expected_actor: &str,
-    ) -> Result<Viewer, Failure> {
-        let entry = self
-            .checked_entry(slug)
-            .await
-            .map_err(|_| Failure::new("unavailable", "document lookup failed"))?
-            .ok_or_else(|| Failure::new("permission_changed", "document unavailable"))?;
-        let who = self.viewer(&entry, headers, arrival, None).await;
-        if who.auth_failed
-            || !self.may_read(&entry, &who)
-            || actor_scope(slug, &who, &self.comment_author(headers, arrival, &who.id))
-                != expected_actor
-        {
-            return Err(Failure::new(
-                "permission_changed",
-                "document access changed",
-            ));
-        }
-        if headers.contains_key("x-librepaper-execution-epoch")
-            && (runner_execution_epoch(headers).is_empty()
-                || !headers.contains_key("x-librepaper-runner-conversation"))
-        {
-            return Err(Failure::new(
-                "permission_changed",
-                "runner epoch requires valid runner provenance",
-            ));
-        }
-        let Some(runner_conversation) = headers.get("x-librepaper-runner-conversation") else {
-            return Ok(who);
-        };
-        let conversation = runner_conversation
-            .to_str()
-            .map_err(|_| Failure::new("permission_changed", "runner conversation is invalid"))?;
-        if conversation.is_empty() {
-            return Err(Failure::new(
-                "permission_changed",
-                "runner conversation is missing",
-            ));
-        }
-        let epoch = runner_execution_epoch(headers);
-        if epoch.is_empty() {
-            return Err(Failure::new(
-                "permission_changed",
-                "runner execution lease is missing",
-            ));
-        }
-        if !self
-            .chat
-            .valid_agent_lease(slug, conversation, &epoch)
-            .await
-        {
-            return Err(Failure::new(
-                "permission_changed",
-                "runner execution lease has expired",
-            ));
-        }
-        Ok(who)
     }
 
     async fn mcp_read(
@@ -946,7 +881,7 @@ impl Server {
         result["authorization_epoch"] = json!(actor);
         result["schema_digest"] =
             json!(librepaper_base::digest::Digest::of(include_bytes!("mcp/tools.json")).to_hex());
-        // `mcp_recheck` rechecks access around every tool call already; a
+        // the access recheck runs around every tool call already; a
         // second recheck here only re-served the same permissions computed
         // moments earlier from `who`.
         let caps = Capabilities::from(who.rung());

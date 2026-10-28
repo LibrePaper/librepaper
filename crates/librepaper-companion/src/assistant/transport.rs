@@ -1,5 +1,6 @@
 //! Persistent relay delivery, independent of model turns.
 use futures_util::{SinkExt, StreamExt};
+use librepaper_base::retry::RetryPolicy;
 use serde_json::{json, Value};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -9,6 +10,13 @@ use tokio_tungstenite::tungstenite::{http::Request, Message};
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 const RETRY: Duration = Duration::from_secs(2);
+/// The wait before reconnecting: 0.5 s, doubling to 8 s.
+const RECONNECT: RetryPolicy = RetryPolicy {
+    base: Duration::from_millis(500),
+    ceiling: Duration::from_secs(8),
+    max_attempts: None,
+    jitter: false,
+};
 
 fn retain_execution_epoch(current: &mut Option<String>, frame: &Value) {
     if let Some(epoch) = frame["execution_epoch"].as_str() {
@@ -81,8 +89,8 @@ impl Transport {
                         if input.send(Event::Offline).await.is_err() {
                             return;
                         }
-                        attempt = (attempt + 1).min(5);
-                        tokio::time::sleep(Duration::from_millis(250 * (1 << attempt))).await;
+                        attempt = attempt.saturating_add(1);
+                        tokio::time::sleep(RECONNECT.delay(attempt)).await;
                         continue;
                     }
                 };
@@ -188,6 +196,14 @@ mod tests {
     use std::time::Duration;
     use tokio::io::AsyncReadExt;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    #[test]
+    fn reconnects_wait_half_a_second_doubling_to_eight() {
+        let waits: Vec<u64> = (1..=7)
+            .map(|n| RECONNECT.delay(n).as_millis() as u64)
+            .collect();
+        assert_eq!(waits, [500, 1000, 2000, 4000, 8000, 8000, 8000]);
+    }
 
     const TRANSPORT_CHILD: &str = "LIBREPAPER_TEST_TLS_TRANSPORT_CHILD";
     const PRESERVE_CHILD: &str = "LIBREPAPER_TEST_TLS_PRESERVE_CHILD";

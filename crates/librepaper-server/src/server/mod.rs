@@ -50,6 +50,7 @@ use librepaper_room::room::{
     Rooms, Sender,
 };
 
+mod access;
 #[cfg(test)]
 mod admin_http_tests;
 mod agent_auth;
@@ -93,6 +94,8 @@ mod refusal;
 mod reply;
 #[cfg(test)]
 mod restore_http_tests;
+#[cfg(test)]
+mod revoke_tests;
 mod routes;
 pub mod serve;
 mod sharing;
@@ -790,162 +793,6 @@ fn authentication_failure_of(
 }
 
 impl Server {
-    #[allow(clippy::result_large_err)]
-    pub(super) async fn entry_viewer(
-        &self,
-        slug: &str,
-        headers: &HeaderMap,
-        arrival: &Arrival,
-        query: Option<&str>,
-    ) -> Result<(IndexEntry, Viewer), Reply> {
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return Err(no_such_document()),
-            Err(response) => return Err(response),
-        };
-        let who = self.viewer(&entry, headers, arrival, query).await;
-        Ok((entry, who))
-    }
-
-    /// The same, resolving the caller from the request context the
-    /// middleware already filled in rather than authenticating again.
-    ///
-    /// Safe because a request whose credential did not validate is refused
-    /// before the handler runs: `api_guard` refuses it for the routes of
-    /// `api_router`, and the fallback dispatch refuses it for the `/api/` and
-    /// `/ws/` paths it serves. By this point the context's identity is the
-    /// answer a fresh lookup would give, and the 401/503 that a failure
-    /// would have produced has already been sent.
-    // The error is a whole response, for the same reason `entry_viewer`'s is.
-    #[allow(clippy::result_large_err)]
-    pub(super) async fn entry_viewer_in(
-        &self,
-        slug: &str,
-        context: &RequestContext,
-        headers: &HeaderMap,
-        query: Option<&str>,
-    ) -> Result<(IndexEntry, Viewer), Reply> {
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return Err(no_such_document()),
-            Err(response) => return Err(response),
-        };
-        let who = self.viewer_as(&entry, context.identity(), headers, &context.arrival, query);
-        Ok((entry, who))
-    }
-
-    /// [`Self::entry_at_least`], from the request context.
-    #[allow(clippy::result_large_err)]
-    pub(super) async fn entry_at_least_in(
-        &self,
-        slug: &str,
-        context: &RequestContext,
-        headers: &HeaderMap,
-        query: Option<&str>,
-        rung: Role,
-    ) -> Result<(IndexEntry, Viewer), Reply> {
-        let (entry, who) = self.entry_viewer_in(slug, context, headers, query).await?;
-        self.check_readable_at(&entry, &who, rung)?;
-        Ok((entry, who))
-    }
-
-    /// [`Self::readable_entry`], from the request context.
-    #[allow(clippy::result_large_err)]
-    pub(super) async fn readable_entry_in(
-        &self,
-        slug: &str,
-        context: &RequestContext,
-        headers: &HeaderMap,
-        query: Option<&str>,
-    ) -> Result<(IndexEntry, Viewer), Reply> {
-        self.entry_at_least_in(slug, context, headers, query, Role::Reader)
-            .await
-    }
-
-    /// [`Self::entry_viewer`], with a credential that did not resolve
-    /// refused rather than treated as anonymous.
-    ///
-    /// Every route that does anything with a caller's identity needs this,
-    /// and every route had its own copy of it. The copies agreed, which is
-    /// the only reason nothing had gone wrong: the one that did not would
-    /// have shown a signed-in reader with a stale session the public view of
-    /// their own document.
-    #[allow(clippy::result_large_err)]
-    pub(super) async fn authenticated_entry(
-        &self,
-        slug: &str,
-        headers: &HeaderMap,
-        arrival: &Arrival,
-        query: Option<&str>,
-    ) -> Result<(IndexEntry, Viewer), Reply> {
-        let (entry, who) = self.entry_viewer(slug, headers, arrival, query).await?;
-        if who.auth_failed {
-            return Err(authentication_expired());
-        }
-        Ok((entry, who))
-    }
-
-    /// The gate a document *read* passes: the entry exists, the credential
-    /// resolved, and this document is this caller's to see.
-    ///
-    /// Route-specific rung requirements stay with their routes: this is the
-    /// floor, not the whole of any route's authorization.
-    #[allow(clippy::result_large_err)]
-    pub(super) async fn readable_entry(
-        &self,
-        slug: &str,
-        headers: &HeaderMap,
-        arrival: &Arrival,
-        query: Option<&str>,
-    ) -> Result<(IndexEntry, Viewer), Reply> {
-        self.entry_at_least(slug, headers, arrival, query, Role::Reader)
-            .await
-    }
-
-    /// The same, for a route that takes more than reading.
-    ///
-    /// The rung failure answers "not found" rather than "forbidden", on the
-    /// reasoning the delete route already followed: a document somebody may
-    /// not change is not a document they need to learn the shape of.
-    #[allow(clippy::result_large_err)]
-    pub(super) async fn entry_at_least(
-        &self,
-        slug: &str,
-        headers: &HeaderMap,
-        arrival: &Arrival,
-        query: Option<&str>,
-        rung: Role,
-    ) -> Result<(IndexEntry, Viewer), Reply> {
-        let (entry, who) = self
-            .authenticated_entry(slug, headers, arrival, query)
-            .await?;
-        self.check_readable_at(&entry, &who, rung)?;
-        Ok((entry, who))
-    }
-
-    /// The same two checks, for a caller that already holds the entry and
-    /// the viewer -- because it read the entry first and then resolved the
-    /// viewer against headers of its own making, as the assistant routes do
-    /// to keep an owner session from widening a link.
-    #[allow(clippy::result_large_err)]
-    pub(super) fn check_readable(&self, entry: &IndexEntry, who: &Viewer) -> Result<(), Reply> {
-        self.check_readable_at(entry, who, Role::Reader)
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn check_readable_at(&self, entry: &IndexEntry, who: &Viewer, rung: Role) -> Result<(), Reply> {
-        if who.auth_failed {
-            return Err(authentication_expired());
-        }
-        if self.needs_sign_in(entry, who) {
-            return Err(sign_in_to_read());
-        }
-        if !who.at_least(rung) || !self.may_read(entry, who) {
-            return Err(no_such_document());
-        }
-        Ok(())
-    }
-
     #[allow(clippy::too_many_arguments)] // a server is made of exactly these
     pub fn new(
         store: Store,

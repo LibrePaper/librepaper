@@ -307,7 +307,14 @@ pub struct CommentView {
 impl CommentView {
     pub fn for_viewer(comment: &Comment, author: &str, is_owner: bool) -> CommentView {
         let mine = !author.is_empty() && comment.author == author;
-        let deletable = deletable(comment, author, is_owner);
+        let deletable = Moderation::may(
+            CommentAction::Delete,
+            comment,
+            &Moderator {
+                key: author,
+                editor: is_owner,
+            },
+        );
         let mut comment = comment.clone();
         for reply in &mut comment.replies {
             reply.mine = !author.is_empty() && reply.author == author;
@@ -327,10 +334,50 @@ impl CommentView {
     }
 }
 
-/// Rule H's authorization test: the document's owner may delete anything on
-/// it, and everyone else only their own.
-pub fn deletable(item: &Comment, author: &str, is_owner: bool) -> bool {
-    is_owner || (!author.is_empty() && item.author == author)
+/// A moderation action on an existing comment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommentAction {
+    Delete,
+    Resolve,
+}
+
+/// Who is asking to moderate: their attribution key (empty when they have
+/// none) and whether they hold the editor rung on the document.
+#[derive(Clone, Copy, Debug)]
+pub struct Moderator<'a> {
+    pub key: &'a str,
+    pub editor: bool,
+}
+
+impl<'a> From<&'a CommentAuthor> for Moderator<'a> {
+    fn from(author: &'a CommentAuthor) -> Self {
+        Self {
+            key: &author.key,
+            editor: author.is_owner,
+        }
+    }
+}
+
+/// The one moderation rule: an editor may delete or resolve any comment, and
+/// an author may delete or resolve their own. Every path that decides this
+/// asks here, and the identity compared is the attribution key.
+pub struct Moderation;
+
+impl Moderation {
+    pub fn may(action: CommentAction, comment: &Comment, who: &Moderator<'_>) -> bool {
+        Self::may_by(action, &comment.author, who)
+    }
+
+    /// The same test against a stored row's author key, for a command that
+    /// holds the row and not a built `Comment`. `Comment::author` is copied
+    /// from that column and nowhere else, so the two never differ.
+    pub fn may_by(action: CommentAction, author: &str, who: &Moderator<'_>) -> bool {
+        match action {
+            CommentAction::Delete | CommentAction::Resolve => {
+                who.editor || (!who.key.is_empty() && author == who.key)
+            }
+        }
+    }
 }
 
 /// Why an action on an existing comment was refused: a stable
@@ -357,8 +404,7 @@ pub fn validate_existing_action(
     comment: Option<&Comment>,
     supplied_version: &str,
     current_version: Option<&str>,
-    author: &str,
-    editor: bool,
+    who: &Moderator<'_>,
 ) -> Result<(), ActionRefusal> {
     if comment_id.is_empty() {
         return Err(ActionRefusal::new(
@@ -377,9 +423,13 @@ pub fn validate_existing_action(
     if current_version != Some(supplied_version) {
         return Err(ActionRefusal::new("conflict", "comment version changed"));
     }
-    let own = !author.is_empty() && comment.author == author;
+    let action = match action {
+        "delete" => Some(CommentAction::Delete),
+        "resolve" => Some(CommentAction::Resolve),
+        _ => None,
+    };
     match action {
-        "delete" | "resolve" if !(editor || own) => Err(ActionRefusal::new(
+        Some(action) if !Moderation::may(action, comment, who) => Err(ActionRefusal::new(
             "permission_changed",
             "only the comment author or an editor may change this comment",
         )),
@@ -1406,6 +1456,8 @@ pub struct ResolveComment {
     document_id: Uuid,
     comment_id: Uuid,
     resolved: bool,
+    author_key: String,
+    is_owner: bool,
     actor: Authority,
 }
 
@@ -1422,6 +1474,8 @@ impl ResolveComment {
             document_id,
             comment_id,
             resolved,
+            author_key: author.key.clone(),
+            is_owner: author.is_owner,
             actor: author.authorization.clone(),
         }
     }
@@ -1454,6 +1508,20 @@ impl SequencerCommand for ResolveComment {
         _evidence: &'a Evidence,
     ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
         Box::pin(async move {
+            let existing =
+                find_annotation(&self.catalog, tx, self.document_id, self.comment_id).await?;
+            if !Moderation::may_by(
+                CommentAction::Resolve,
+                &existing.author_key,
+                &Moderator {
+                    key: &self.author_key,
+                    editor: self.is_owner,
+                },
+            ) {
+                return Err(CommandError::Conflict(
+                    "you may only resolve your own comments".into(),
+                ));
+            }
             // One column, changed by one authorized update that answers with
             // what it wrote. Nothing else about the annotation is touched,
             // so nothing else about it can be lost on the way round.
@@ -1485,7 +1553,7 @@ impl SequencerCommand for ResolveComment {
 }
 
 /// Deletes a comment. `is_owner` and `author_key` decide whether the caller
-/// may, exactly as [`deletable`] would; the check is made against the row's
+/// may, by [`Moderation`]; the check is made against the row's
 /// own author read here rather than a copy read earlier, because that is the
 /// only copy nothing can have raced. It is narrower than what
 /// `delete_annotation_authorized` itself checks (rung and session only, not
@@ -1555,9 +1623,14 @@ impl SequencerCommand for DeleteComment {
         Box::pin(async move {
             let existing =
                 find_annotation(&self.catalog, tx, self.document_id, self.comment_id).await?;
-            if !(self.is_owner
-                || (!self.author_key.is_empty() && existing.author_key == self.author_key))
-            {
+            if !Moderation::may_by(
+                CommentAction::Delete,
+                &existing.author_key,
+                &Moderator {
+                    key: &self.author_key,
+                    editor: self.is_owner,
+                },
+            ) {
                 return Err(CommandError::Conflict(
                     "you may only delete your own comments".into(),
                 ));
@@ -1842,4 +1915,51 @@ pub fn comment_revision(state: &AnnotationState) -> String {
         hash.update(value.to_le_bytes());
     }
     hex::encode(&hash.finalize()[..8])
+}
+
+#[cfg(test)]
+mod moderation_tests {
+    use super::*;
+
+    fn comment_by(author: &str) -> Comment {
+        Comment {
+            author: author.into(),
+            ..Comment::default()
+        }
+    }
+
+    fn may(action: CommentAction, author: &str, key: &str, editor: bool) -> bool {
+        Moderation::may(action, &comment_by(author), &Moderator { key, editor })
+    }
+
+    const BOTH: [CommentAction; 2] = [CommentAction::Delete, CommentAction::Resolve];
+
+    #[test]
+    fn an_editor_deletes_and_resolves_anyone_elses_comment() {
+        for action in BOTH {
+            assert!(may(action, "account:a", "account:editor", true));
+        }
+    }
+
+    #[test]
+    fn an_author_deletes_and_resolves_their_own_comment() {
+        for action in BOTH {
+            assert!(may(action, "account:a", "account:a", false));
+        }
+    }
+
+    #[test]
+    fn a_commenter_cannot_touch_someone_elses_comment() {
+        for action in BOTH {
+            assert!(!may(action, "account:a", "account:b", false));
+        }
+    }
+
+    #[test]
+    fn a_reader_with_no_key_can_do_neither() {
+        for action in BOTH {
+            assert!(!may(action, "account:a", "", false));
+            assert!(!may(action, "", "", false));
+        }
+    }
 }

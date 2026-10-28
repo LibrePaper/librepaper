@@ -26,12 +26,12 @@ impl Server {
         // The rung failure is "not found" on the same reasoning the delete
         // route follows: a document somebody may not change is not a
         // document they need to learn the shape of.
-        let (_entry, who) = match self
-            .entry_at_least_in(slug, context, request.headers(), None, Role::Editor)
+        let auth = match self
+            .authorize::<access::rung::Edit>(context, request.headers(), slug, None)
             .await
         {
-            Ok(result) => result,
-            Err(response) => return response,
+            Ok(auth) => auth,
+            Err(refusal) => return access::deny(&refusal),
         };
         let Some(length) =
             header_of(&headers, "content-length").and_then(|v| v.parse::<usize>().ok())
@@ -49,7 +49,7 @@ impl Server {
         // A figure request and a whole-project publish each consume one
         // durable owner upload event. The database serializes concurrent
         // admissions across server processes.
-        let owner_id = match uuid::Uuid::parse_str(&who.id.id) {
+        let owner_id = match uuid::Uuid::parse_str(&auth.viewer.id.id) {
             Ok(id) => id,
             Err(_) => return write_json(401, &json!({"error": "invalid account"})),
         };
@@ -80,25 +80,6 @@ impl Server {
                 .await;
             return write_json(400, &json!({"error": "a figure upload may not be empty"}));
         }
-        let (_entry, who) = match self.entry_viewer_in(slug, context, &headers, None).await {
-            Ok(result) => result,
-            Err(response) => {
-                let _ = self
-                    .store
-                    .catalog
-                    .cancel_upload_admission(upload_admission)
-                    .await;
-                return response;
-            }
-        };
-        if !who.at_least(Role::Editor) {
-            let _ = self
-                .store
-                .catalog
-                .cancel_upload_admission(upload_admission)
-                .await;
-            return write_json(403, &json!({"error": "edit access changed"}));
-        }
         // Atomic object admission accounts for physical bytes and recognizes
         // deduplicated uploads even when the owner's quota is full.
         let room = match self.rooms.get(slug).await {
@@ -112,20 +93,41 @@ impl Server {
                 return refusal::http(&Refusal::from(&error));
             }
         };
-        let Ok(mutation_actor) = who.authority(librepaper_base::role::Ceiling {
-            comment: self.commenters.allows(&who.id),
-            edit: self.publishers.allows(&who.id),
-        }) else {
-            let _ = self
-                .store
-                .catalog
-                .cancel_upload_admission(upload_admission)
-                .await;
-            return write_json(401, &json!({"error": "invalid account"}));
-        };
-        let stored = room
-            .put_asset_authorized(body.to_vec(), &mutation_actor)
+        // The body was an await boundary, so the caller is decided again and
+        // the figure is stored as the fresh viewer.
+        let stored = self
+            .mutate(&auth, |who, _| async move {
+                let Ok(mutation_actor) = who.authority(librepaper_base::role::Ceiling {
+                    comment: self.commenters.allows(&who.id),
+                    edit: self.publishers.allows(&who.id),
+                }) else {
+                    return None;
+                };
+                Some(
+                    room.put_asset_authorized(body.to_vec(), &mutation_actor)
+                        .await,
+                )
+            })
             .await;
+        let stored = match stored {
+            Ok(Some(stored)) => stored,
+            Ok(None) => {
+                let _ = self
+                    .store
+                    .catalog
+                    .cancel_upload_admission(upload_admission)
+                    .await;
+                return write_json(401, &json!({"error": "invalid account"}));
+            }
+            Err(refusal) => {
+                let _ = self
+                    .store
+                    .catalog
+                    .cancel_upload_admission(upload_admission)
+                    .await;
+                return access::deny(&refusal);
+            }
+        };
         match stored {
             Ok((sha, size)) => write_json(200, &json!({"sha": sha, "size": size})),
             // Every error from this point can follow a fresh object write: the
@@ -161,9 +163,12 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let (entry, who) = match self.readable_entry_in(slug, context, headers, None).await {
-            Ok(result) => result,
-            Err(response) => return response,
+        let (entry, who) = match self
+            .authorize::<access::rung::Read>(context, headers, slug, None)
+            .await
+        {
+            Ok(auth) => (auth.entry, auth.viewer),
+            Err(refusal) => return access::deny(&refusal),
         };
         // Assets retained for history are not part of the reader contract, so
         // a reader needs the digest to be in the current tree. An editor
