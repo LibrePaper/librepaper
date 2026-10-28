@@ -424,7 +424,7 @@
     {#if dialog === "label"}<label class="label">Label <input class="input" bind:value={draft.label} /></label>{/if}
   {/if}
   {#if preview}
-    <details class="insert-preview" open><summary>Source preview</summary>{#if preview.text}<pre>{preview.text}</pre>{:else}<p class="panel-muted">No source will be inserted.</p>{/if}{#if preview.notes?.length}<ul>{#each preview.notes as note}<li>{note}</li>{/each}</ul>{/if}{#if preview.additionalEdits?.length}<p class="panel-muted">Additional source edits:</p>{#each preview.additionalEdits as edit}<pre>{edit.path ? `${edit.path}: ` : ""}{edit.insert || "(delete)"}</pre>{/each}{/if}</details>
+    <section class="insert-preview" aria-labelledby="insert-preview-heading"><h3 class="insert-preview-heading" id="insert-preview-heading">Source preview</h3>{#if preview.text}<pre>{preview.text}</pre>{:else}<p class="panel-muted">No source will be inserted.</p>{/if}{#if preview.notes?.length}<ul>{#each preview.notes as note}<li>{note}</li>{/each}</ul>{/if}{#if preview.additionalEdits?.length}<p class="panel-muted">Additional source edits:</p>{#each preview.additionalEdits as edit}<pre>{edit.path ? `${edit.path}: ` : ""}{edit.insert || "(delete)"}</pre>{/each}{/if}</section>
   {/if}
   {#if error}<p class="insert-error" role="alert">{error}</p>{/if}
   </form>
@@ -439,6 +439,7 @@
   .insert-result:hover { background: var(--color-subtle); }
   .insert-error { padding: .7rem 1rem; color: var(--color-error-text); background: var(--color-raised); border: 1px solid var(--color-error-solid); border-radius: var(--radius-base); box-shadow: var(--shadow-xl); }
   .insert-preview { margin-top: .4rem; border-top: 1px solid var(--color-divider); padding-top: .6rem; }
+  .insert-preview-heading { font-size: .8rem; font-weight: 600; color: var(--color-text-secondary); }
   .insert-preview pre { max-height: 11rem; overflow: auto; margin-top: .5rem; padding: .7rem; background: var(--color-subtle); border-radius: var(--radius-base); font-size: .75rem; white-space: pre-wrap; }
   .insert-preview ul { margin: .5rem 0 0 1rem; color: var(--color-warning-text); font-size: .8rem; }
   .insert-image-preview { max-height: 10rem; max-width: 100%; object-fit: contain; border: 1px solid var(--color-divider); border-radius: var(--radius-base); }
