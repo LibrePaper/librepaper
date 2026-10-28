@@ -244,7 +244,7 @@ impl Server {
             request_id: key.scoped_request_id(actor),
             digest: digest.to_owned(),
             tool: tool.to_owned(),
-            expires_at,
+            retain_secs: (expires_at - now_unix()).max(0),
         })
     }
 

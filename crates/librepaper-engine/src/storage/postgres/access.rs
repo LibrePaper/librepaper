@@ -422,25 +422,23 @@ impl PostgresCatalog {
         document_id: Uuid,
         account_id: Option<Uuid>,
         token_hash: Option<[u8; 32]>,
-        now: OffsetDateTime,
     ) -> Result<Option<Role>> {
         let row = sqlx::query(
             r#"SELECT d.owner_id,
                 (SELECT CASE WHEN g.source_link_hash IS NULL THEN g.role ELSE gl.role END
                    FROM grants g LEFT JOIN share_links gl
                      ON gl.document_id=g.document_id AND gl.token_hash=g.source_link_hash
-                    AND gl.revoked_at IS NULL AND gl.kind='link' AND (gl.expires_at IS NULL OR gl.expires_at>$4)
+                    AND gl.revoked_at IS NULL AND gl.kind='link' AND (gl.expires_at IS NULL OR gl.expires_at>now())
                    WHERE g.document_id=d.id AND g.account_id=$2
                      AND (g.source_link_hash IS NULL OR gl.token_hash IS NOT NULL)) AS grant_role,
                 (SELECT role FROM share_links l WHERE l.document_id=d.id AND l.token_hash=$3
-                    AND l.revoked_at IS NULL AND l.kind='link' AND (l.expires_at IS NULL OR l.expires_at>$4)) AS link_role
+                    AND l.revoked_at IS NULL AND l.kind='link' AND (l.expires_at IS NULL OR l.expires_at>now())) AS link_role
              FROM documents d WHERE d.id=$1 AND d.status='active'
                AND NOT EXISTS (SELECT 1 FROM moderated_projects m WHERE m.document_id=d.id)"#,
         )
         .bind(document_id)
         .bind(account_id)
         .bind(token_hash.map(|v| v.to_vec()))
-        .bind(now)
         .fetch_optional(&self.pool)
         .await?;
         let Some(row) = row else {

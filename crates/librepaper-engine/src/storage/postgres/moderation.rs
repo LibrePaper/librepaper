@@ -788,7 +788,7 @@ mod tests {
         assert_eq!(lifecycle, "active");
         assert_eq!(
             catalog
-                .access_role(document, Some(owner), None, time::OffsetDateTime::now_utc(),)
+                .access_role(document, Some(owner), None)
                 .await
                 .unwrap(),
             None
@@ -816,7 +816,7 @@ mod tests {
         assert!(!catalog.project_is_hidden(document).await.unwrap());
         assert_eq!(
             catalog
-                .access_role(document, Some(owner), None, time::OffsetDateTime::now_utc(),)
+                .access_role(document, Some(owner), None)
                 .await
                 .unwrap(),
             Some(librepaper_base::role::Role::Owner)

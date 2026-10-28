@@ -12,7 +12,9 @@ pub struct OperationReceipt {
     pub request_id: String,
     pub digest: String,
     pub tool: String,
-    pub expires_at: i64,
+    /// Seconds to keep the outcome. The expiry is stored as the database
+    /// clock plus this, so storing and comparing use one clock.
+    pub retain_secs: i64,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -53,9 +55,9 @@ impl PostgresCatalog {
         if count >= 4096 {
             return Err(Error::Invalid("operation recovery capacity reached".into()));
         }
-        sqlx::query("INSERT INTO operation_outcomes (document_id,actor,request_id,digest,tool,outcome,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7)")
+        sqlx::query("INSERT INTO operation_outcomes (document_id,actor,request_id,digest,tool,outcome,expires_at) VALUES ($1,$2,$3,$4,$5,$6,extract(epoch FROM now())::bigint + $7)")
             .bind(receipt.document_id).bind(&receipt.actor).bind(&receipt.request_id)
-            .bind(&receipt.digest).bind(&receipt.tool).bind(outcome).bind(receipt.expires_at)
+            .bind(&receipt.digest).bind(&receipt.tool).bind(outcome).bind(receipt.retain_secs)
             .execute(&mut **tx).await?;
         Ok(())
     }
