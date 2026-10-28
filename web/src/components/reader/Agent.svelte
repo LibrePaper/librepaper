@@ -940,7 +940,7 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="agent-context task-prepare" onkeydown={prepareKeydown}>
       <div class="task-head">
-        <button class="task-back" aria-label="Back to tasks" bind:this={backEl} onclick={() => leavePrepare()}>←</button>
+        <button class="task-back" aria-label="Back to tasks" bind:this={backEl} onclick={() => leavePrepare()}><Icon name="arrow-left" size={18} /></button>
         <h3 class="task-title">{chosen.label}</h3>
       </div>
       <p class="panel-muted task-description">{chosen.description}</p>
@@ -1124,8 +1124,8 @@
   .task-row:focus-visible .task-summary-focus { display:-webkit-box; }
   .visually-hidden { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
   .task-head { display:flex; align-items:center; gap:var(--spacing); }
-  .task-back { border:0; background:transparent; padding:0; cursor:pointer; color:var(--color-text-secondary); }
-  .task-back:hover { color:inherit; }
+  .task-back { display:inline-flex; align-items:center; justify-content:center; padding:calc(var(--spacing) * 1.5); margin-left:calc(var(--spacing) * -1.5); border:0; border-radius:var(--radius-base); background:none; color:inherit; cursor:pointer; }
+  .task-back:hover { background-color:var(--color-row-hover); }
   .task-title { margin:0; font-weight:600; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
   .task-description { margin:0; font-size:.85em; }
   .task-target { margin:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
