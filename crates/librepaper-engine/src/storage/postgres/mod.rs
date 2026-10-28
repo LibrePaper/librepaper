@@ -1065,6 +1065,8 @@ mod tests {
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
     async fn operation_outcomes_commit_atomically_and_remain_actor_scoped() {
         let catalog = crate::testing::catalog().await.expect("test database");
+        // Storing a refusal is fenced like every other outcome write.
+        let _writer = catalog.claim_writer().await.unwrap();
         let account = seed_account(&catalog, "outcome").await;
         let document = seed_document(&catalog, account.id, "outcome").await;
         let receipt = OperationReceipt {

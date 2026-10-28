@@ -130,7 +130,7 @@ impl PostgresCatalog {
                 .bind(document_id)
                 .fetch_optional(&mut **tx)
                 .await?;
-            lock_storage_usage(&mut **tx).await?;
+            lock_storage_usage(&mut tx).await?;
         }
         let inserted: Vec<i64> = sqlx::query_scalar(
             "INSERT INTO chat_messages (id,document_id,author_account_id,author_label,body,created_at) \
@@ -251,8 +251,8 @@ impl PostgresCatalog {
         };
         // Measured after a stale row is gone, so it does not count against
         // the row that replaces it.
-        let owner_usage = usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
-        let deployment_usage = usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
+        let owner_usage = usage_bytes(&mut tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
+        let deployment_usage = usage_bytes(&mut tx, UsageScope::Deployment, Sources::ALL).await?;
         let owner_room = self.policy.owner_bytes.saturating_sub(owner_usage);
         let deployment_room = self
             .policy

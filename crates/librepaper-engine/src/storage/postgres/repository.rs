@@ -1222,14 +1222,14 @@ impl PostgresCatalog {
         // the same account. The document row lock above handles duplicate
         // completion races for this document; this deployment mutex also
         // protects the per-owner count and byte total across documents.
-        lock_storage_usage(&mut **tx).await?;
+        lock_storage_usage(tx).await?;
         let incoming_bytes = new_inputs.iter().fold(0_i64, |total, input| {
             total.saturating_add(input.byte_length)
         });
-        let owner_usage = usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
+        let owner_usage = usage_bytes(tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
         // The deployment total is blob bytes plus every current base plus
         // every document's uncompacted rows plus pending reservations.
-        let deployment_usage = usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
+        let deployment_usage = usage_bytes(tx, UsageScope::Deployment, Sources::ALL).await?;
         if owner_usage.saturating_add(incoming_bytes) > self.policy.owner_bytes {
             return Err(Error::Quota(super::QuotaScope::Owner));
         }

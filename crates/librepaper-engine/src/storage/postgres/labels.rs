@@ -310,9 +310,9 @@ impl PostgresCatalog {
         };
         // Admission is deliberately only an early check: the final archive
         // size is unknown until encoding and is checked again at attachment.
-        lock_storage_usage(&mut **tx).await?;
-        let owner_usage = usage_bytes(&mut **tx, UsageScope::Owner(owner), Sources::ALL).await?;
-        let deployment_usage = usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
+        lock_storage_usage(&mut tx).await?;
+        let owner_usage = usage_bytes(&mut tx, UsageScope::Owner(owner), Sources::ALL).await?;
+        let deployment_usage = usage_bytes(&mut tx, UsageScope::Deployment, Sources::ALL).await?;
         let refused = identity_known
             && !has_existing_object
             && (owner_usage >= self.policy.owner_bytes
@@ -410,7 +410,7 @@ impl PostgresCatalog {
         }
         // Keep the global accounting mutex after the document lock, matching
         // asset completion's lock order across documents.
-        lock_storage_usage(&mut **tx).await?;
+        lock_storage_usage(&mut tx).await?;
         let already_catalogued: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM document_archives WHERE storage_key=$1)",
         )
@@ -428,8 +428,8 @@ impl PostgresCatalog {
                 "new archives require SHA-256 digests".into(),
             ));
         }
-        let owner_usage = usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
-        let deployment_usage = usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
+        let owner_usage = usage_bytes(&mut tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
+        let deployment_usage = usage_bytes(&mut tx, UsageScope::Deployment, Sources::ALL).await?;
         let refused = delta > 0
             && (owner_usage.saturating_add(delta) > self.policy.owner_bytes
                 || deployment_usage.saturating_add(delta) > self.policy.deployment_bytes);

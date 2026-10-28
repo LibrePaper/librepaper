@@ -400,7 +400,7 @@ impl PostgresCatalog {
             .bind(document_id)
             .fetch_one(&mut **tx)
             .await?;
-        lock_storage_usage(&mut **tx).await?;
+        lock_storage_usage(tx).await?;
         if reserved_bytes > 0 {
             let epoch = self.writer_epoch()?;
             let removed: Vec<i64> = sqlx::query_scalar(
@@ -418,12 +418,12 @@ impl PostgresCatalog {
                 return Err(Error::Conflict("pending log reservation was lost".into()));
             }
         }
-        let owner_usage = usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
+        let owner_usage = usage_bytes(tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
         let incoming = row.update_bytes.len().min(i64::MAX as usize) as i64;
         if owner_usage.saturating_add(incoming) > self.policy.owner_bytes {
             return Err(Error::Quota(super::QuotaScope::Owner));
         }
-        let deployment_usage = usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
+        let deployment_usage = usage_bytes(tx, UsageScope::Deployment, Sources::ALL).await?;
         if deployment_usage.saturating_add(incoming) > self.policy.deployment_bytes {
             return Err(Error::Quota(super::QuotaScope::Deployment));
         }
@@ -484,7 +484,7 @@ impl PostgresCatalog {
         .fetch_optional(&mut **tx)
         .await?;
         let owner_id = owner_id.ok_or(Error::NotFound)?;
-        let owner_usage = usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
+        let owner_usage = usage_bytes(&mut tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
         let epoch = self.writer_epoch()?;
         if let Some((existing_document, existing_epoch, existing_bytes, existing_digest)) =
             sqlx::query_as::<_, (Uuid, i64, i64, Vec<u8>)>(
@@ -508,7 +508,7 @@ impl PostgresCatalog {
                 ))
             };
         }
-        let deployment_usage = usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
+        let deployment_usage = usage_bytes(&mut tx, UsageScope::Deployment, Sources::ALL).await?;
         if owner_usage.saturating_add(bytes) > self.policy.owner_bytes {
             return Err(Error::Quota(super::QuotaScope::Owner));
         }
@@ -650,11 +650,11 @@ impl PostgresCatalog {
             tx.commit().await?;
             return Ok(None);
         }
-        lock_storage_usage(&mut **tx).await?;
+        lock_storage_usage(&mut tx).await?;
         let owner_before =
-            usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
+            usage_bytes(&mut tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
         let deployment_before =
-            usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
+            usage_bytes(&mut tx, UsageScope::Deployment, Sources::ALL).await?;
         sqlx::query!(
             "UPDATE document_snapshots SET delete_after=$2
              WHERE document_id=$1 AND delete_after IS NULL",
@@ -704,11 +704,11 @@ impl PostgresCatalog {
         .await?;
         let uncompacted_count = counters.try_get("uncompacted_update_count")?;
         let uncompacted_bytes = counters.try_get("uncompacted_update_bytes")?;
-        let owner_usage = usage_bytes(&mut **tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
+        let owner_usage = usage_bytes(&mut tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
         if owner_usage > self.policy.owner_bytes && owner_usage > owner_before {
             return Err(Error::Quota(super::QuotaScope::Owner));
         }
-        let deployment_usage = usage_bytes(&mut **tx, UsageScope::Deployment, Sources::ALL).await?;
+        let deployment_usage = usage_bytes(&mut tx, UsageScope::Deployment, Sources::ALL).await?;
         if deployment_usage > self.policy.deployment_bytes && deployment_usage > deployment_before {
             return Err(Error::Quota(super::QuotaScope::Deployment));
         }
