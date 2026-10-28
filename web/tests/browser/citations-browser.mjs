@@ -23,7 +23,6 @@ writeFileSync(entry, [
   "import { tick } from " + imports("web/node_modules/svelte/src/index-client.js") + ";",
   "import { EditorView } from " + imports("web/node_modules/@codemirror/view/dist/index.js") + ";",
   "import { Transaction } from " + imports("web/node_modules/@codemirror/state/dist/index.js") + ";",
-  "import { acceptCompletion } from " + imports("web/node_modules/@codemirror/autocomplete/dist/index.js") + ";",
   "import { createClassComponent } from " + imports("web/node_modules/svelte/src/legacy/legacy-client.js") + ";",
   "import { join as joinSession } from " + imports("web/src/lib/collab.js") + ";",
   "import { projectDirectory } from " + imports("web/src/lib/projection.js") + ";",
@@ -74,23 +73,15 @@ writeFileSync(entry, [
       const at = view.state.doc.length;
       view.dispatch({ changes: { from: at, insert: "@Riv" }, selection: { anchor: at + 4 }, annotations: Transaction.userEvent.of("input.type") });
       view.focus();
-      let popup = "";
-      for (let attempt = 0; attempt < 100; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        popup = host.querySelector(".cm-tooltip-autocomplete")?.textContent || "";
-        if (popup.includes("Rivers")) break;
-      }
-      if (!popup.includes("Rivers")) throw new Error("Zotero fixture did not appear in the citation picker: " + JSON.stringify({ popup, calls: zoteroCalls, text: view.state.doc.toString() }));
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      if (!acceptCompletion(view)) throw new Error("the Zotero picker could not accept its selected entry");
-      for (let attempt = 0; attempt < 100; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        if (value.textOf(paper).toString().includes("@Riv2024") && value.doc.getMap("changes").size > 0) break;
-      }
-      if (!value.textOf(paper).toString().includes("@Riv2024")) throw new Error("tracked Zotero import did not reach the document: " + JSON.stringify({ text: value.textOf(paper).toString(), calls: zoteroCalls, reports: bibliographyReports }));
+      // Completion offers the project's keys only, so typing a citation never asks Zotero.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const searchedWhileTyping = zoteroCalls.some((call) => call.url.includes("/zotero/search?"));
+      const keys = await editor.importZoteroItems([{ zotero_item: "ITEM123", key: "Riv2024" }]);
       const projection = projectDirectory(value.doc, null);
       const entries = [...value.doc.getMap("changes").values()];
       return {
+        keys,
+        searchedWhileTyping,
         text: value.textOf(paper).toString(),
         paperId: paper,
         bib: [...projection.files].find(([path]) => path === "references.bib")?.[1].id || "",
@@ -167,7 +158,8 @@ try {
   console.log("citations-browser: an unknown key is underlined and a known key shows its entry on hover");
   const zotero = await evaluate("zoteroImportCheck()");
   assert.match(zotero.text, /bibliography: references\.bib/);
-  assert.match(zotero.text, /@Riv2024/);
+  assert.deepEqual(zotero.keys, ["Riv2024"], "the import returns the key it wrote");
+  assert.equal(zotero.searchedWhileTyping, false, "typing a citation searched Zotero");
   assert.notEqual(zotero.bib, "", "the Zotero import did not create references.bib");
   assert.match(zotero.bibliography, /x-librepaper-zotero-item=\{ITEM123\}/);
   assert.ok(zotero.changeCount > 0, "the tracked import recorded no change");
