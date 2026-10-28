@@ -2828,9 +2828,6 @@
   // on a reconnect keeps its file ids, and a place whose file is gone is skipped.
   const jumps = createJumps();
   const fileExists = (id) => Boolean(session?.paths?.get(id));
-  const backLabel = $derived(jumps.last
-    ? `Back to ${session?.paths?.get(jumps.last.file) ?? "the previous place"}`
-    : "Back to the previous place");
   // Whether there is a text to edit yet. The directory arrives after the
   // session joins, and the editor has nothing to bind to before then.
   const sourceBound = $derived(Boolean(session && persistence.joined && files.some((file) => file.kind === "text")));
@@ -4208,9 +4205,6 @@
         <IconButton icon={ARRANGEMENTS[layout].icon}
           label={`Layout: ${ARRANGEMENTS[layout].says}. Switch to ${ARRANGEMENTS[ARRANGEMENTS[layout].next].says}`}
           onclick={cycleLayout} />
-      {/if}
-      {#if editing && shown.source}
-        <IconButton icon="arrow-left" label={backLabel} disabled={!jumps.canGoBack} onclick={goBack} />
       {/if}
       <IconButton icon="settings" label="Settings" tone="plain"
                   onclick={() => openSettings()} />
