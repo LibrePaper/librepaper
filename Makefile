@@ -49,7 +49,7 @@ WEB_BUILD := web/bun.lock web/tools/vendor-katex.mjs web/tools/compress-shell.mj
 WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js) $(WEB_BUILD)
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find docs/examples -type f) Cargo.toml Cargo.lock .cargo/config.toml assets.lock
 
-.PHONY: help build install desktop test test-rust sync-test check fmt serve demo demo-run demo-checkout demo-stop demo-wipe demo-desktop demo-desktop-checkout wipe kill clean snapshot web pins site site-serve
+.PHONY: help build install desktop test test-web test-web-unit test-web-types test-tools test-rust sync-test check fmt serve demo demo-run demo-checkout demo-stop demo-wipe demo-desktop demo-desktop-checkout wipe kill clean snapshot web pins site site-serve
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
@@ -89,18 +89,8 @@ $(BIN): $(SOURCES) $(SHELL_OUT)
 
 # The suite reads the built shell -- a test that asserts a page names its own
 # bundle needs that bundle to exist -- so the pages are built first.
-test: pins $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
-	@cd web && bun run check
-	@cd web && bun run check:types
-	@cargo fmt --check
-	@node --test 'web/tools/*.test.mjs' 'tools/**/*.test.mjs'
-	@cargo clippy --workspace --all-targets -- -D warnings
-# nextest runs each case in its own process, so one crate's failure does not
-# abandon the crates after it and a hung case is named rather than waited on.
-# It is not required: `cargo test` still runs everything, just more slowly and
-# only up to the first crate that fails.
-#
-	@$(MAKE) --no-print-directory test-rust
+test: pins $(SHELL_OUT)  ## Run every check, the web and Rust halves in parallel
+	@$(MAKE) --no-print-directory -j4 --output-sync=target test-web test-rust
 # Said out loud because a silent green `test` reads as "everything passes", and
 # it is not: the browser components and the Postgres-gated cases are both out
 # of this target on purpose, and both have hidden real faults while every
@@ -111,9 +101,36 @@ test: pins $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 	@echo "  tools/dev/db test                         the PostgreSQL-gated cases, in a throwaway container"
 	@echo "  make check                                test + browser + reader smoke in one go"
 
+# The web and Rust halves do not depend on each other, so `test` runs them side
+# by side. Each half can also be run alone.
+test-web: pins $(SHELL_OUT) test-web-unit test-web-types test-tools  ## Web checks only: unit and integration tests, svelte-check, tool tests
+	@:
+
+# Two web integration tests spawn target/debug/librepaper, so the binary is built
+# first. Cargo's lock keeps this from racing the Rust half, and the build is a
+# no-op once nextest has built it.
+test-web-unit: pins $(SHELL_OUT)
+	@cargo build -p librepaper --quiet
+	@cd web && bun run check
+
+test-web-types: pins $(SHELL_OUT)
+	@cd web && bun run check:types
+
+test-tools: pins $(SHELL_OUT)
+	@node --test 'web/tools/*.test.mjs' 'tools/**/*.test.mjs'
+
 # Keep runner discovery separate from runner execution: a failing nextest run
 # is a test failure, not a reason to retry with a runner that can hide it.
-test-rust:
+# nextest runs each case in its own process, so one crate's failure does not
+# abandon the crates after it and a hung case is named rather than waited on.
+# It is not required: `cargo test` still runs everything, just more slowly and
+# only up to the first crate that fails.
+#
+# The crate embeds web/dist, which is why this waits for the pages. Clippy runs
+# before the tests so a lint error fails fast.
+test-rust: pins $(SHELL_OUT)  ## Rust checks only: rustfmt, clippy, nextest
+	@cargo fmt --check
+	@cargo clippy --workspace --all-targets -- -D warnings
 	@if command -v cargo-nextest >/dev/null; then \
 		cargo nextest run --workspace; \
 	else \
