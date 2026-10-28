@@ -87,23 +87,31 @@ test('publisher validates prefixes and selects explicit browser metadata', () =>
 
 test('dry run lists large files without staging or compression', async () => {
   const root = await mkdtemp(join(tmpdir(), 'publish-mirror-dry-run-'));
+  const scratch = await mkdtemp(join(tmpdir(), 'publish-mirror-dry-run-tmp-'));
   const large = join(root, 'large.wasm');
   const handle = await open(large, 'w');
   await handle.truncate(11 * 1024 * 1024 * 1024);
   await handle.close();
   try {
-    const before = new Set((await readdir(tmpdir())).filter((name) => name.startsWith('librepaper-mirror-')));
     const lines = [];
-    const result = await publish({ dir: root, prefix: 'wasm', dryRun: true, env: {}, output: (line) => lines.push(line) });
-    const after = new Set((await readdir(tmpdir())).filter((name) => name.startsWith('librepaper-mirror-')));
+    let result;
+    const previous = process.env.TMPDIR;
+    try {
+      process.env.TMPDIR = scratch;
+      result = await publish({ dir: root, prefix: 'wasm', dryRun: true, env: {}, output: (line) => lines.push(line) });
+    } finally {
+      if (previous === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previous;
+    }
     assert.equal(result.count, 1);
     assert.equal(result.uploaded, 0);
     assert.equal(result.dryRun, true);
-    assert.deepEqual(after, before);
+    assert.deepEqual(await readdir(scratch), [], 'a dry run stages nothing');
     assert.ok(lines.some((line) => /application\/wasm\tbr\tpublic, max-age=3600/.test(line)));
     assert.equal((await stat(large)).size, 11 * 1024 * 1024 * 1024);
   } finally {
     await rm(root, { recursive: true, force: true });
+    await rm(scratch, { recursive: true, force: true });
   }
 });
 

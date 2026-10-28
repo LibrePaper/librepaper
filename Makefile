@@ -49,7 +49,7 @@ WEB_BUILD := web/bun.lock web/tools/vendor-katex.mjs web/tools/compress-shell.mj
 WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js) $(WEB_BUILD)
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find docs/examples -type f) Cargo.toml Cargo.lock .cargo/config.toml assets.lock
 
-.PHONY: help build install desktop test test-web test-web-unit test-web-types test-tools test-rust sync-test check fmt serve demo demo-run demo-checkout demo-stop demo-wipe demo-desktop demo-desktop-checkout wipe kill clean snapshot web pins site site-serve
+.PHONY: help build install desktop test test-web test-web-unit test-web-types test-tools test-rust test-nextest sync-test check fmt serve demo demo-run demo-checkout demo-stop demo-wipe demo-desktop demo-desktop-checkout wipe kill clean snapshot web pins site site-serve
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
@@ -119,18 +119,20 @@ test-web-types: pins $(SHELL_OUT)
 test-tools: pins $(SHELL_OUT)
 	@node --test 'web/tools/*.test.mjs' 'tools/**/*.test.mjs'
 
+# The crate embeds web/dist, which is why this waits for the pages. Clippy runs
+# before the tests so a lint error fails fast.
+test-rust: pins $(SHELL_OUT)  ## Rust checks only: rustfmt, clippy, nextest
+	@cargo fmt --check
+	@cargo clippy --workspace --all-targets -- -D warnings
+	@$(MAKE) --no-print-directory test-nextest
+
 # Keep runner discovery separate from runner execution: a failing nextest run
 # is a test failure, not a reason to retry with a runner that can hide it.
 # nextest runs each case in its own process, so one crate's failure does not
 # abandon the crates after it and a hung case is named rather than waited on.
 # It is not required: `cargo test` still runs everything, just more slowly and
 # only up to the first crate that fails.
-#
-# The crate embeds web/dist, which is why this waits for the pages. Clippy runs
-# before the tests so a lint error fails fast.
-test-rust: pins $(SHELL_OUT)  ## Rust checks only: rustfmt, clippy, nextest
-	@cargo fmt --check
-	@cargo clippy --workspace --all-targets -- -D warnings
+test-nextest:
 	@if command -v cargo-nextest >/dev/null; then \
 		cargo nextest run --workspace; \
 	else \
