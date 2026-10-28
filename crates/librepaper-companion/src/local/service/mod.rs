@@ -781,7 +781,7 @@ async fn handle_zotero_search(
         return plain(400, "Zotero search query is too long");
     }
     match crate::local::zotero::Client::local()
-        .search(&query, 50)
+        .search(&query, 100)
         .await
     {
         Ok(results) => write_json(200, &json!({ "entries": results })),

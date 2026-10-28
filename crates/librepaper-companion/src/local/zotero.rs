@@ -149,17 +149,14 @@ impl Client {
 
     pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, Error> {
         let limit = limit.clamp(1, PAGE_SIZE).to_string();
-        let response = self
-            .get(
-                "users/0/items",
-                &[
-                    ("itemType", "-attachment"),
-                    ("q", query),
-                    ("qmode", "everything"),
-                    ("limit", &limit),
-                ],
-            )
-            .await?;
+        let query = query.trim();
+        let mut params = vec![("itemType", "-attachment"), ("limit", limit.as_str())];
+        if query.is_empty() {
+            params.extend([("sort", "dateAdded"), ("direction", "desc")]);
+        } else {
+            params.extend([("q", query), ("qmode", "titleCreatorYear")]);
+        }
+        let response = self.get("users/0/items/top", &params).await?;
         if !response.status().is_success() {
             return Err(classify(response.status()));
         }
@@ -168,6 +165,8 @@ impl Client {
         })?;
         Ok(items
             .into_iter()
+            // The API allows only one negated itemType, so notes and annotations are dropped here.
+            .filter(|item| !matches!(item.data.item_type.as_str(), "note" | "annotation"))
             .map(|item| SearchResult {
                 zotero_item: item.key,
                 citation_key: preferred_key(&item.data),
