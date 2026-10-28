@@ -22,16 +22,16 @@
   let checked = $state(new Set());
   let deciding = $state(new Set());
   let expandedText = $state(new Set());
-  let authorFilter = $state("");
-  let fileFilter = $state("");
-  let runFilter = $state("");
-  let idsFilter = $state([]);
-  $effect(() => { idsFilter = ids; });
-  const idSet = $derived(new Set(idsFilter));
+  // The one filter the queue shows: "all", "task", or "author:", "file:" or
+  // "run:" followed by the value it picks.
+  let scope = $state("all");
+  $effect(() => { scope = ids.length ? "task" : "all"; });
+  const idSet = $derived(new Set(ids));
   let feedback = $state("");
   // Ticking changes is a mode you enter, not the state the queue sits in. A
   // review is one change at a time; answering several at once is the rarer
-  // thing, so it waits behind a menu item and takes the row of verbs with it.
+  // thing, so it waits behind the Select button and the bar of verbs takes the
+  // place of the header's toolbar while it lasts.
   let selecting = $state(false);
   // A bulk verb held for one confirmation: the action, the rows it answers for,
   // and whether those are every pending change or only the ticked ones.
@@ -50,6 +50,8 @@
   // A change this long shows its first six lines until the reviewer asks for
   // the rest, so one large paste cannot push the queue out of view.
   const isLong = (item) => [item.before, item.after].some((text) => (text || "").length > 280 || (text || "").split("\n").length > 6);
+  // A scope string split into its kind and the value after the first colon.
+  const scopeOf = (value) => { const [key, ...rest] = String(value).split(":"); return { key, answer: rest.join(":") }; };
 
   // session.list() is the stable file order. File identity wins over path so
   // renames do not reshuffle an existing review queue.
@@ -62,8 +64,16 @@
   });
   const orderOf = (item) => fileOrder.get(String(item.file_id || pathOf(item))) ?? Number.MAX_SAFE_INTEGER;
   const orderedRows = $derived([...changes].sort((a, b) => orderOf(a) - orderOf(b) || pathOf(a).localeCompare(pathOf(b)) || positionOf(a) - positionOf(b) || (a.at || 0) - (b.at || 0) || a.id.localeCompare(b.id)));
-  const filteredRows = $derived(orderedRows.filter((item) =>
-    (!authorFilter || authorOf(item) === authorFilter) && (!fileFilter || pathOf(item) === fileFilter) && (!runFilter || item.run === runFilter) && (!idsFilter.length || idSet.has(item.id))));
+  // Whether a row falls inside the scope the reviewer chose.
+  function inScope(item) {
+    if (scope === "all") return true;
+    if (scope === "task") return idSet.has(item.id);
+    const { key, answer } = scopeOf(scope);
+    if (key === "author") return authorOf(item) === answer;
+    if (key === "file") return pathOf(item) === answer;
+    return key === "run" && item.run === answer;
+  }
+  const filteredRows = $derived(orderedRows.filter(inScope));
   const selectedRows = $derived(filteredRows.filter((item) => checked.has(item.id)));
   const active = $derived(filteredRows.some((item) => item.id === expanded) ? expanded : filteredRows.some((item) => item.id === selected) ? selected : filteredRows[0]?.id || "");
   const derivedAuthors = $derived([...new Set(changes.map(authorOf))]);
@@ -73,17 +83,36 @@
   /// Whether a decision is in flight; the bulk verbs are disabled while one
   /// is, so a second click cannot answer for rows already being answered for.
   const busy = $derived(deciding.size > 0);
-  const showExtraFilters = $derived(derivedAuthors.length > 1 || derivedFiles.length > 1 || derivedRuns.length > 0);
-  // The filter names that are in force, in the order the label gives them.
-  const filterNames = $derived([
-    authorFilter ? authorLabel({ author: authorFilter }) : "",
-    fileFilter,
-    runFilter ? runLabel(runFilter) : "",
-    idsFilter.length ? "From this task" : "",
-  ].filter(Boolean));
-  const countLabel = $derived(filterNames.length
-    ? `${filteredRows.length} of ${changes.length} pending · ${filterNames.join(" · ")}`
-    : `${changes.length} pending`);
+  // Every pending change ticked in the all scope: the verbs then read "Accept
+  // all" and "Reject all", and answering them asks first.
+  const allChosen = $derived(scope === "all" && changes.length > 0 && selectedRows.length === changes.length);
+  // The scopes the menu offers: all changes, this task when there are ids,
+  // then one entry per author, file and run, each under its group's heading.
+  const scopes = $derived.by(() => {
+    const list = [{ value: "all", label: "All changes", group: "" }];
+    if (ids.length) list.push({ value: "task", label: "This task", group: "" });
+    if (derivedAuthors.length > 1) for (const author of derivedAuthors) list.push({ value: `author:${author}`, label: authorLabel({ author }), group: "Author" });
+    if (derivedFiles.length > 1) for (const file of derivedFiles) list.push({ value: `file:${file}`, label: file, group: "File" });
+    for (const id of derivedRuns) list.push({ value: `run:${id}`, label: runLabel(id), group: "Run" });
+    return list;
+  });
+  // The name of a scope whose option is gone, because its last change was
+  // answered, is rebuilt from the scope string itself.
+  const labelOf = (value) => {
+    const { key, answer } = scopeOf(value);
+    if (key === "author") return authorLabel({ author: answer });
+    if (key === "file") return answer;
+    if (key === "run") return runLabel(answer);
+    return value === "task" ? "This task" : "All changes";
+  };
+  const scopeName = $derived(scopes.find((option) => option.value === scope)?.label ?? labelOf(scope));
+  // How an empty queue names the scope it is empty for.
+  const scopePhrase = $derived({
+    task: "in this task",
+    author: `from ${scopeName}`,
+    file: `in ${scopeName}`,
+    run: "in this run",
+  }[scopeOf(scope).key] ?? "");
   /// The place a change sits, when the reviewer cannot tell it from the diff:
   /// the filename once several files are under review, and the line once the
   /// change has one.
@@ -142,8 +171,8 @@
     finally { removeBusy(item.id); }
   }
 
-  /// Answering several changes at once: the ticked ones, or every pending
-  /// change when the verb came from the Bulk actions menu.
+  /// Answering several changes at once: the rows it is handed, which are the
+  /// ticked ones or the whole queue when every change is ticked.
   async function bulk(action, rows = selectedRows) {
     if (!canReview) return;
     // Take the rows before sending anything: the ticks are cleared and the
@@ -183,28 +212,14 @@
       : `${verbOf(action)} ${rows.length} selected ${noun}?`;
   };
   const confirmLabel = ({ action, rows }) => `${verbOf(action)} ${rows.length}`;
-  // Several ticked rows are a decision worth a second look; one row is not.
+  // Every ticked change in the all scope is the whole project and asks first,
+  // as does any other set of several; one ticked row answers directly.
   function answerSelected(action) {
-    if (selectedRows.length > 1) askBulk(action, selectedRows, "selected");
+    if (allChosen) askBulk(action, selectedRows, "all");
+    else if (selectedRows.length > 1) askBulk(action, selectedRows, "selected");
     else bulk(action, selectedRows);
   }
-  function clearFilters() { authorFilter = ""; fileFilter = ""; runFilter = ""; idsFilter = []; }
-  // Bulk actions holds what acts on many changes at once: the mode that lets a
-  // reviewer choose a set, and the two verbs that answer for every pending
-  // change whatever the filter shows.
-  function chooseMenuItem(value) {
-    if (value === "select") startSelecting();
-    else if (value === "accept-all") askBulk("accept", orderedRows, "all");
-    else if (value === "reject-all") askBulk("reject", orderedRows, "all");
-  }
-  function chooseFilter(value) {
-    const [key, ...rest] = String(value).split(":");
-    const answer = rest.join(":");
-    idsFilter = [];
-    if (key === "author") authorFilter = answer;
-    else if (key === "file") fileFilter = answer;
-    else if (key === "run") runFilter = answer;
-  }
+  function chooseScope(value) { scope = value; }
   function move(offset) { const index = filteredRows.findIndex((item) => item.id === active); const item = filteredRows[index + offset] || filteredRows[index]; if (item) activate(item, { focus: true }); }
   function keydown(event) {
     if (event.defaultPrevented || event.isComposing || event.target.closest("input,select,textarea,[contenteditable=true],details,[data-scope='menu']")) return;
@@ -231,10 +246,9 @@
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div class="panel changes-panel" role="application" tabindex="0" onkeydown={keydown} aria-label="Changes review" aria-keyshortcuts="ArrowDown ArrowUp J K A R">
-  <!-- Two rows and nothing else above the queue: whether subsequent edits are
-       tracked, the count of what is pending, and the filter and bulk menus
-       beside it, so the first reviewable change sits close to the top of the
-       panel. -->
+  <!-- The header is the title row, then one bar: the scope menu with the count,
+       or the selection or confirmation bar while either is open. Nothing else
+       sits above the queue, so the first reviewable change is near the top. -->
   <header class="changes-header">
     <div class="changes-title-row">
       <h2 class="panel-section-title">Changes</h2>
@@ -251,77 +265,60 @@
       </Switch>
       {/if}
     </div>
-    <div class="changes-toolbar">
-      {#if showExtraFilters}<Menu onSelect={(chosen) => chooseFilter(chosen.value)}>
+    {#if confirming}<div class="confirm-bar" role="alertdialog" aria-labelledby="changes-confirm-text">
+      <p class="confirm-text" id="changes-confirm-text">{confirmText(confirming)}</p>
+      <div class="bar-buttons">
+        <button type="button" class="bar-action cancel" onclick={() => confirming = null}>Cancel</button>
+        <button type="button" class="bar-action confirm {confirming.action}" disabled={busy} onclick={() => bulk(confirming.action, confirming.rows)}>{confirmLabel(confirming)}</button>
+      </div>
+    </div>
+    {:else if selecting}<div class="select-bar" role="toolbar" aria-label="Selected changes">
+      <div class="bar-row">
+        <span class="select-count" aria-live="polite">{checked.size} selected</span>
+        <div class="bar-end">
+          <button type="button" class="text-action select-all" disabled={filteredRows.every((item) => checked.has(item.id))} onclick={() => checked = new Set(filteredRows.map((item) => item.id))}>Select all</button>
+          <button type="button" class="text-action cancel" onclick={stopSelecting}>Cancel</button>
+        </div>
+      </div>
+      <div class="bar-buttons">
+        <button type="button" class="bar-action reject" disabled={!selectedRows.length || busy} onclick={() => answerSelected("reject")}>{allChosen ? "Reject all" : "Reject"}</button>
+        <button type="button" class="bar-action accept" disabled={!selectedRows.length || busy} onclick={() => answerSelected("accept")}>{allChosen ? "Accept all" : "Accept"}</button>
+      </div>
+    </div>
+    {:else if changes.length}<div class="changes-toolbar">
+      {#if scopes.length > 1}<Menu onSelect={(chosen) => chooseScope(chosen.value)}>
         <Menu.Trigger>
           {#snippet element(attributes)}
-            <button {...attributes} type="button" class="filter-trigger" aria-label="Which changes to show"><span class="filter-label">{countLabel}</span><Icon name="chevron-down" size="12px" /></button>
+            <button {...attributes} type="button" class="scope-trigger" aria-label={`Which changes to show: ${scopeName}`}><span class="scope-label">{scopeName}</span><Icon name="chevron-down" size="12px" /></button>
           {/snippet}
         </Menu.Trigger>
         <ExplorerMenu>
-          {#if derivedAuthors.length > 1}
-            <div class="changes-menu-label">Author</div>
-            <Menu.Item value="author:" class="menuitem"><span class="menuitem-check">{authorFilter ? "" : "✓"}</span>Anyone</Menu.Item>
-            {#each derivedAuthors as author}
-              <Menu.Item value={`author:${author}`} class="menuitem"><span class="menuitem-check">{authorFilter === author ? "✓" : ""}</span>{authorLabel({ author })}</Menu.Item>
-            {/each}
-          {/if}
-          {#if derivedFiles.length > 1}
-            {#if derivedAuthors.length > 1}<hr class="hr my-1" />{/if}
-            <div class="changes-menu-label">File</div>
-            <Menu.Item value="file:" class="menuitem"><span class="menuitem-check">{fileFilter ? "" : "✓"}</span>Every file</Menu.Item>
-            {#each derivedFiles as file}
-              <Menu.Item value={`file:${file}`} class="menuitem"><span class="menuitem-check">{fileFilter === file ? "✓" : ""}</span>{file}</Menu.Item>
-            {/each}
-          {/if}
-          {#if derivedRuns.length}
-            {#if derivedAuthors.length > 1 || derivedFiles.length > 1}<hr class="hr my-1" />{/if}
-            <div class="changes-menu-label">Run</div>
-            <Menu.Item value="run:" class="menuitem"><span class="menuitem-check">{runFilter ? "" : "✓"}</span>Every run</Menu.Item>
-            {#each derivedRuns as id}
-              <Menu.Item value={`run:${id}`} class="menuitem"><span class="menuitem-check">{runFilter === id ? "✓" : ""}</span>{runLabel(id)}</Menu.Item>
-            {/each}
-          {/if}
+          {#each scopes.filter((option) => !option.group) as option (option.value)}
+            <Menu.Item value={option.value} class="menuitem"><span class="menuitem-check">{scope === option.value ? "✓" : ""}</span>{option.label}</Menu.Item>
+          {/each}
+          {#each ["Author", "File", "Run"] as group}
+            {#if scopes.some((option) => option.group === group)}
+              <hr class="hr my-1" />
+              <div class="changes-menu-label">{group}</div>
+              {#each scopes.filter((option) => option.group === group) as option (option.value)}
+                <Menu.Item value={option.value} class="menuitem"><span class="menuitem-check">{scope === option.value ? "✓" : ""}</span>{option.label}</Menu.Item>
+              {/each}
+            {/if}
+          {/each}
         </ExplorerMenu>
-      </Menu>{:else}<span class="changes-count">{countLabel}</span>{/if}
-      <span class="changes-live sr-only" aria-live="polite">{changes.length} pending</span>
-      {#if canReview && !selecting}<Menu onSelect={(chosen) => chooseMenuItem(chosen.value)} positioning={{ placement: "bottom-end" }}>
-        <Menu.Trigger>
-          {#snippet element(attributes)}
-            <button {...attributes} type="button" class="bulk-trigger">Bulk actions<Icon name="chevron-down" size="12px" /></button>
-          {/snippet}
-        </Menu.Trigger>
-        <ExplorerMenu positioning={{ placement: "bottom-end" }}>
-          <Menu.Item value="select" class="menuitem" disabled={!filteredRows.length}><Icon name="list-checks" size="14px" />Select multiple</Menu.Item>
-          <hr class="hr my-1" />
-          <Menu.Item value="accept-all" class="menuitem" disabled={!changes.length}><Icon name="check-check" size="14px" />Accept all</Menu.Item>
-          <Menu.Item value="reject-all" class="menuitem" disabled={!changes.length}><Icon name="x" size="14px" />Reject all</Menu.Item>
-        </ExplorerMenu>
-      </Menu>{/if}
-    </div>
+      </Menu>{:else}<span class="scope-label scope-static">All changes</span>{/if}
+      <div class="toolbar-end">
+        <span class="changes-count">{filteredRows.length} pending</span>
+        {#if canReview && filteredRows.length}<button type="button" class="text-action select-start" onclick={startSelecting}>Select</button>{/if}
+      </div>
+    </div>{/if}
+    <span class="changes-live sr-only" aria-live="polite">{filteredRows.length} pending</span>
   </header>
-  {#if idsFilter.length}<div class="ids-bar">
-    <span class="filter-label">From this task</span>
-    <button type="button" class="bar-action show-all" onclick={() => idsFilter = []}>Show all</button>
-  </div>{/if}
-  <!-- Ticking rows, and the verbs that go with it, for as long as the mode lasts. -->
-  {#if selecting}<div class="select-bar" role="toolbar" aria-label="Selected changes">
-    <span class="select-count" aria-live="polite">{checked.size} selected</span>
-    <button type="button" class="bar-action select-all" disabled={filteredRows.every((item) => checked.has(item.id))} onclick={() => checked = new Set(filteredRows.map((item) => item.id))}>Select all</button>
-    {#if canReview}<button type="button" class="bar-action reject" disabled={!selectedRows.length || busy} onclick={() => answerSelected("reject")}>Reject</button>
-    <button type="button" class="bar-action accept" disabled={!selectedRows.length || busy} onclick={() => answerSelected("accept")}>Accept</button>{/if}
-    <button type="button" class="bar-action cancel" onclick={stopSelecting}>Cancel</button>
-  </div>{/if}
-  {#if confirming}<div class="confirm-bar" role="alertdialog" aria-labelledby="changes-confirm-text">
-    <span class="confirm-text" id="changes-confirm-text">{confirmText(confirming)}</span>
-    <button type="button" class="bar-action confirm {confirming.action}" disabled={busy} onclick={() => bulk(confirming.action, confirming.rows)}>{confirmLabel(confirming)}</button>
-    <button type="button" class="bar-action cancel" onclick={() => confirming = null}>Cancel</button>
-  </div>{/if}
   {#if feedback}<p class="panel-status" role="status" aria-live="polite">{feedback}</p>{/if}
   {#if !filteredRows.length}<div class="changes-empty" role="status">
     {#if changes.length}
-      <p class="changes-empty-title">No changes match this filter</p>
-      <p class="changes-empty-note"><button type="button" class="clear-filters" onclick={clearFilters}>Show all changes</button></p>
+      <p class="changes-empty-title">No pending changes {scopePhrase}</p>
+      <p class="changes-empty-note">{changes.length} pending in all changes.</p>
     {:else}
       <p class="changes-empty-title">No pending changes</p>
       <p class="changes-empty-note">Changes to review will appear here.</p>
@@ -348,46 +345,51 @@
 </div>
 
 <style>
-  .changes-panel { display: flex; flex-direction: column; min-height: 0; outline: none; height: 100%; }
-  /* Two rows of header, the count and the menus under the title, so the first
-     change sits near the top. Both stay put while the queue scrolls beneath. */
-  .changes-header { position: sticky; top: 0; z-index: 2; flex: 0 0 auto; padding: .5rem var(--spacing); background: var(--color-sidebar); }
-  .changes-title-row { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .5rem; }
-  h2 { margin: 0; flex: 1 1 auto; min-width: 0; }
+  .changes-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 0; outline: none; container-type: inline-size; }
+  /* The header holds the title and the tracking switch, then one bar. It stays
+     put while the queue scrolls beneath, and its side padding is the panel's
+     gutter, so the title, the bars and the rows share one left edge. */
+  .changes-header { position: sticky; top: 0; z-index: 2; flex: 0 0 auto; display: flex; flex-direction: column; gap: .25rem; padding: 0 var(--panel-padding) .75rem; border-bottom: 1px solid var(--color-divider); background: var(--color-sidebar); }
+  .changes-title-row { display: flex; align-items: center; justify-content: space-between; gap: .5rem; min-height: 2.5rem; }
+  h2 { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* The track and thumb are `.switch` in librepaper.css, worn here and in the
      settings dialog alike; this is only where the word sits beside them. */
-  .changes-panel :global(.tracking-toggle) { display: flex; align-items: center; gap: .35rem; flex: 0 0 auto; margin-left: auto; font-size: var(--panel-meta-size); white-space: nowrap; }
-  .changes-toolbar { margin-top: .35rem; display: flex; flex-wrap: wrap; gap: .35rem .5rem; align-items: center; justify-content: space-between; }
-  .changes-count { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--panel-muted); font-size: var(--panel-meta-size); }
-  /* The filter and bulk triggers are the same kind of control: a small outlined
-     button that takes the same hover as a row. */
-  .filter-trigger, .bulk-trigger { display: inline-flex; align-items: center; gap: .3rem; min-height: 1.75rem; padding: .15rem .45rem; border: 1px solid var(--color-divider); border-radius: .25rem; background: none; color: inherit; font-size: var(--panel-font-size); font-weight: 500; cursor: pointer; }
-  .filter-trigger:hover, .filter-trigger[data-state="open"], .bulk-trigger:hover, .bulk-trigger[data-state="open"] { background: var(--color-row-hover); }
-  .filter-trigger { flex: 0 1 auto; min-width: 0; max-width: 100%; }
-  .filter-trigger :global(svg), .bulk-trigger :global(svg) { color: var(--panel-muted); flex: 0 0 auto; }
-  .filter-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .bulk-trigger { flex: 0 0 auto; margin-left: auto; white-space: nowrap; }
-  .changes-menu-label { padding: .35rem .65rem .2rem; color: var(--panel-muted); font-size: var(--panel-meta-size); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
-  .ids-bar { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .5rem; padding: .3rem var(--spacing); background: var(--color-sidebar); border-bottom: 1px solid var(--color-divider); font-size: var(--panel-meta-size); }
-  .ids-bar .filter-label { flex: 1 1 auto; color: var(--panel-muted); }
-  /* The contextual bars: only while a selection or a confirmation is open, and
-     gone the moment it is answered or dismissed. */
-  .select-bar, .confirm-bar { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .4rem; padding: .4rem var(--spacing); border-bottom: 1px solid var(--color-divider); background: color-mix(in srgb, var(--color-brand) 6%, var(--color-sidebar)); }
-  .select-count, .confirm-text { flex: 1 1 8rem; min-width: 0; color: var(--panel-muted); font-size: var(--panel-meta-size); }
-  .row-action, .bar-action { display: inline-flex; align-items: center; gap: .25rem; min-height: 1.75rem; padding: .2rem .5rem; border: 1px solid transparent; border-radius: .25rem; background: none; color: inherit; font-size: var(--panel-meta-size); font-weight: 500; cursor: pointer; }
-  .row-action:hover:not(:disabled), .bar-action:hover:not(:disabled) { background: var(--color-row-hover); }
-  .row-action:disabled, .bar-action:disabled { opacity: .45; cursor: default; }
-  .row-action.accept, .bar-action.accept { border-color: var(--color-divider); color: var(--color-success-text); }
-  .bar-action.confirm { border-color: var(--color-divider); }
-  .row-action:focus-visible, .bar-action:focus-visible, .bulk-trigger:focus-visible, .filter-trigger:focus-visible, .row-more:focus-visible, .clear-filters:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+  .changes-panel :global(.tracking-toggle) { display: inline-flex; align-items: center; gap: .5rem; flex: none; min-height: 2rem; color: var(--panel-muted); font-size: var(--panel-font-size); white-space: nowrap; cursor: pointer; }
+  .changes-toolbar, .bar-row { display: flex; align-items: center; justify-content: space-between; gap: .5rem; min-width: 0; min-height: 2rem; }
+  /* The scope menu's trigger is an outlined control that takes the same hover
+     as a row. */
+  .scope-trigger { display: inline-flex; align-items: center; gap: .25rem; flex: 0 1 auto; min-width: 0; min-height: 2rem; padding: 0 .5rem; border: 1px solid var(--color-divider); border-radius: var(--radius-base); background: none; color: inherit; font-size: var(--panel-font-size); font-weight: 400; cursor: pointer; }
+  .scope-trigger:hover, .scope-trigger[data-state="open"] { background: var(--color-row-hover); }
+  .scope-trigger :global(svg) { flex: none; color: var(--panel-muted); }
+  .scope-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .scope-static { font-size: var(--panel-font-size); }
+  .toolbar-end, .bar-end { display: inline-flex; align-items: center; gap: .75rem; flex: none; white-space: nowrap; }
+  .changes-count { color: var(--panel-muted); font-size: var(--panel-meta-size); }
+  /* In a column this narrow the scope name and Select keep the room and the
+     count gives it up; the live region still reads it out. */
+  @container (max-width: 16.5rem) { .changes-count { display: none; } }
+  .select-count { font-size: var(--panel-font-size); font-weight: 500; }
+  /* Text actions read as links; the bars' own buttons are the bordered ones. */
+  .text-action { display: inline-flex; align-items: center; min-height: 2rem; padding: 0; border: 0; background: none; color: var(--color-link, var(--color-brand)); font-size: var(--panel-meta-size); font-weight: 500; cursor: pointer; }
+  .text-action:hover:not(:disabled) { text-decoration: underline; }
+  .text-action:disabled { color: var(--panel-muted); cursor: default; }
+  .select-bar, .confirm-bar { display: flex; flex-direction: column; gap: .5rem; }
+  .confirm-text { margin: 0; min-height: 2rem; display: flex; align-items: center; font-size: var(--panel-font-size); line-height: var(--panel-line-height); }
+  .bar-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+  .bar-action, .row-action { display: inline-flex; align-items: center; justify-content: center; gap: .25rem; min-height: 2rem; padding: 0 .75rem; border: 1px solid var(--color-divider); border-radius: var(--radius-base); background: none; color: inherit; font-size: var(--panel-meta-size); font-weight: 500; cursor: pointer; white-space: nowrap; }
+  .row-action { min-height: 1.75rem; padding: 0 .5rem; }
+  .bar-action:hover:not(:disabled), .row-action:hover:not(:disabled) { background: var(--color-row-hover); }
+  .bar-action:disabled, .row-action:disabled { opacity: .45; cursor: default; }
+  .bar-action.accept, .row-action.accept { color: var(--color-success-text); }
+  :is(.scope-trigger, .text-action, .bar-action, .row-action, .row-more):focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
   /* Touch needs room for a thumb; a mouse does not. */
-  @media (pointer: coarse) {
-    .row-action, .bar-action, .bulk-trigger, .filter-trigger { min-height: 2.25rem; }
-  }
+  @media (pointer: coarse) { .scope-trigger, .text-action, .bar-action, .row-action { min-height: 2.25rem; } }
+  .changes-menu-label { padding: .35rem .65rem .2rem; color: var(--panel-muted); font-size: var(--panel-meta-size); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+  .panel-status { margin: 0; padding: .5rem var(--panel-padding) 0; color: var(--panel-muted); font-size: var(--panel-meta-size); }
   .changes-list { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
   /* A row is the change and a line saying whose it is. No card, no border but
      the hairline between one change and the next. */
-  .change-row { position: relative; content-visibility: auto; contain-intrinsic-size: 0 3.4rem; padding: .6rem var(--spacing); border-bottom: 1px solid var(--color-divider); }
+  .change-row { position: relative; content-visibility: auto; contain-intrinsic-size: 0 3.4rem; padding: .75rem var(--panel-padding); border-bottom: 1px solid var(--color-divider); }
   .change-row:hover { background: var(--color-row-hover); }
   /* The row under review is tinted and marked with a thin bar on its left edge. */
   .change-row.active { background: color-mix(in srgb, var(--color-brand) 7%, transparent); box-shadow: inset 2px 0 0 var(--color-brand); }
@@ -412,10 +414,10 @@
   ins.change-text { text-decoration: none; }
   .sign { margin-right: .35rem; font-weight: 600; user-select: none; }
   .row-diff.clamped .insertion, .row-diff.clamped .deletion { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; line-clamp: 6; overflow: hidden; }
-  .row-more, .clear-filters { margin-top: .2rem; padding: .1rem 0; border: 0; background: none; color: var(--color-link, var(--color-brand)); font-size: var(--panel-meta-size); cursor: pointer; }
-  .row-actions { display: flex; justify-content: flex-end; gap: .35rem; margin-top: .4rem; }
-  .changes-empty { padding: 1rem var(--spacing); }
+  .row-more { margin-top: .2rem; padding: .1rem 0; border: 0; background: none; color: var(--color-link, var(--color-brand)); font-size: var(--panel-meta-size); cursor: pointer; }
+  .row-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .5rem; }
+  .changes-empty { padding: 2rem var(--panel-padding); text-align: center; text-wrap: balance; }
   .changes-empty-title { margin: 0; font-weight: 500; font-size: var(--panel-font-size); }
   .changes-empty-note { margin: .2rem 0 0; color: var(--panel-muted); font-size: var(--panel-meta-size); }
-  .changes-hint { flex: 0 0 auto; padding: .35rem var(--spacing); border-top: 1px solid var(--color-divider); color: var(--panel-muted); font-size: var(--panel-meta-size); text-align: center; }
+  .changes-hint { flex: 0 0 auto; padding: .5rem var(--panel-padding); border-top: 1px solid var(--color-divider); color: var(--panel-muted); font-size: var(--panel-meta-size); text-align: center; }
 </style>
