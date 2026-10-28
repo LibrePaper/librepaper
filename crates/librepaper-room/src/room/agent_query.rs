@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use librepaper_base::digest::Digest;
-use librepaper_document::document::source_lines::{Cursor, SourceLines};
+use librepaper_document::document::source_lines::{Cursor as LineCursor, SourceLines};
 use librepaper_document::document::text_index::Utf8;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -169,7 +169,7 @@ struct TextOffsets {
 
 /// A scan state saved every 256 UTF-16 units, so a position does not rescan
 /// a long file from its start.
-type OffsetCheckpoint = Cursor;
+type OffsetCheckpoint = LineCursor;
 
 struct SnapshotIndexes {
     headings: BTreeMap<String, Vec<HeadingIndex>>,
@@ -296,8 +296,8 @@ fn scan_headings(source: &str, item_limit: usize) -> (Vec<HeadingIndex>, bool) {
 }
 
 fn scan_offsets(source: &str) -> TextOffsets {
-    let mut checkpoints = vec![Cursor::START];
-    let mut cursor = Cursor::START;
+    let mut checkpoints = vec![LineCursor::START];
+    let mut cursor = LineCursor::START;
     let mut next = 256;
     for character in source.chars() {
         cursor.step(character);
@@ -1890,7 +1890,10 @@ mod tests {
         )
         .expect("search query");
         let hit = &result["results"][0]["matches"][0];
-        (hit["line"].as_u64().unwrap(), hit["column"].as_u64().unwrap())
+        (
+            hit["line"].as_u64().unwrap(),
+            hit["column"].as_u64().unwrap(),
+        )
     }
 
     #[test]

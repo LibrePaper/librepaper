@@ -307,12 +307,13 @@ async fn sharing_rechecks_owner_access_after_the_body_is_read() {
         .to_string()
         .into_bytes();
 
+    let here = arrival();
     let reply = withdrawn_while_the_body_arrives(
         body,
         |body| {
             deployment
                 .server
-                .handle_share(post(&headers, body), &arrival(), &deployment.slug)
+                .handle_share(post(&headers, body), &here, &deployment.slug)
         },
         sign_out(&deployment, deployment.owner_id),
     )
@@ -339,12 +340,13 @@ async fn source_change_rechecks_editor_access_after_the_body_is_read() {
     .to_string()
     .into_bytes();
 
+    let here = arrival();
     let reply = withdrawn_while_the_body_arrives(
         body,
         |body| {
             deployment
                 .server
-                .handle_source_change(post(&headers, body), &arrival(), &deployment.slug)
+                .handle_source_change(post(&headers, body), &here, &deployment.slug)
         },
         sign_out(&deployment, deployment.owner_id),
     )
