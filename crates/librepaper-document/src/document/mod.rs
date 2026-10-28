@@ -48,5 +48,6 @@ pub mod render;
 pub mod retention;
 pub mod roots;
 pub mod session;
+pub mod source_lines;
 pub mod text_index;
 pub mod track;
