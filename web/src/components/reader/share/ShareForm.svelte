@@ -40,13 +40,10 @@
     </select>
   </label>
   {#if spends}
-    <details class="share-advanced">
-      <summary class="panel-meta">Advanced</summary>
-      <label class="share-field panel-meta">Comments/hour
-        <input class="input share-input" type="number" min="0" step="1" bind:value={draft.budget} disabled={busy} />
-        <span>Leave empty for the deployment default.</span>
-      </label>
-    </details>
+    <label class="share-field panel-meta">Comments/hour
+      <input class="input share-input" type="number" min="0" step="1" bind:value={draft.budget} disabled={busy} />
+      <span>Leave empty for the deployment default.</span>
+    </label>
   {/if}
   <div class="share-form-actions">
     <button type="button" class="share-action" disabled={busy} onclick={oncancel}>Cancel</button>
@@ -61,8 +58,6 @@
   .share-note { margin: 0; }
   .share-input, .share-select { width: 100%; min-width: 0; max-width: 100%; }
   .share-select { border: 0; background-color: var(--color-row-hover); font: inherit; border-radius: var(--radius-base); }
-  .share-advanced summary { cursor: pointer; padding-block: var(--spacing); }
-  .share-advanced .share-field { margin-top: var(--spacing); }
   .share-form-actions { display: flex; align-items: center; justify-content: flex-end; gap: calc(var(--spacing) * 2); }
   .share-action { padding: .15rem .35rem; border: 0; border-radius: .25rem; background: none; color: var(--color-link); font: inherit; cursor: pointer; }
   .share-action:hover:not(:disabled) { background: var(--color-row-hover); }

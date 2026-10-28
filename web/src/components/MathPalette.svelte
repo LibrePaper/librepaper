@@ -392,10 +392,10 @@
       {/if}
 
       <!-- Outside the form: Enter in the search field must not submit it. -->
-      <details class="math-symbols">
-        <summary>Symbols</summary>
+      <section class="math-symbols" aria-labelledby="math-symbols-heading">
+        <h3 class="math-symbols-heading" id="math-symbols-heading">Symbols</h3>
         <SymbolSearch symbols={SYMBOLS} format={capturedFormat} onpick={pickSymbol} placeholder="Search symbols" autofocus={false} />
-      </details>
+      </section>
 
       <form class="math-fields" bind:this={formEl} onsubmit={(event) => { event.preventDefault(); insert(); }}>
         {#if active.id === "brackets"}
@@ -488,7 +488,7 @@
   .math-cells { display: grid; gap: .35rem; }
   .math-style { display: flex; flex-wrap: wrap; gap: 1rem; margin: 0; padding: 0; border: 0; }
   .math-symbols { border-top: 1px solid var(--color-divider); padding-top: .5rem; }
-  .math-symbols summary { cursor: pointer; color: var(--panel-muted); }
+  .math-symbols-heading { font-size: .8rem; font-weight: 600; color: var(--panel-muted); margin-bottom: .35rem; }
   .math-error { padding: .6rem .8rem; color: var(--color-error-text); background: var(--color-raised); border: 1px solid var(--color-error-solid); border-radius: var(--radius-base); }
   .math-actions { display: flex; justify-content: flex-end; gap: .5rem; }
 </style>

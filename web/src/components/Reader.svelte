@@ -4376,10 +4376,10 @@
           This browser cannot render this {sourceFormat === "typst" ? "Typst" : "paged"} document from source.
         </p>
         {#if session && previewPath}
-          <details open>
-            <summary>View source · {previewPath}</summary>
+          <section aria-label="Source of {previewPath}">
+            <h3 class="h6">Source · {previewPath}</h3>
             <pre>{String(session.textOf(session.idOf(previewPath))?.toString?.() ?? "")}</pre>
-          </details>
+          </section>
         {/if}
       </div>
     </section>
