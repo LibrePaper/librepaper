@@ -56,13 +56,14 @@ try {
     ["Resolve", "Delete comment", "Reply"]);
   assert.equal(await page.evaluate('document.body.innerHTML.includes("\u2022\u2022\u2022")'), false,
     "no card keeps an overflow menu");
-  // A comment this caller may not delete offers no trash at all.
-  assert.deepEqual(await page.evaluate('window.verbs("theirs")'), ["Resolve", "Reply"]);
+  // A comment this caller may not delete offers neither trash nor Resolve,
+  // since Resolve follows the same rule as delete.
+  assert.deepEqual(await page.evaluate('window.verbs("theirs")'), ["Reply"]);
 
   // A commenter: no "Delete all", since they cannot delete what is not theirs.
   assert.deepEqual(await page.evaluate("window.labels()"), ["Resolve all", "Clear resolved"]);
   assert.ok(await page.evaluate('window.click("Resolve all")'));
-  assert.deepEqual(await page.evaluate("window.resolved"), ["open", "theirs"]);
+  assert.deepEqual(await page.evaluate("window.resolved"), ["open"]);
   assert.ok(await page.evaluate('window.click("Clear resolved")'));
   assert.deepEqual(await page.evaluate("window.deleted"), [["done"]]);
 

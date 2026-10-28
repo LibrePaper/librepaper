@@ -104,7 +104,7 @@
   // The bulk verbs act only on what the cards would let this caller do one at
   // a time: delete is real only for a comment the server said so about, or an
   // owner.
-  const resolvable = $derived(filtered.filter((comment) => !comment.resolved));
+  const resolvable = $derived(filtered.filter((comment) => !comment.resolved && (canModerate || comment.deletable)));
   const deletable = $derived(filtered.filter((comment) => canModerate || comment.deletable));
   const clearable = $derived(deletable.filter((comment) => comment.resolved));
 

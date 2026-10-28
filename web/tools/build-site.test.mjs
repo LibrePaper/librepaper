@@ -34,6 +34,7 @@ test("a second docs build removes pages absent from the current nav and sources"
     await writeFile(join(root, "docs/kept.md"), "# Kept page\n");
     await writeFile(join(root, "docs/removed.md"), "# Removed page\n");
     await writeFile(join(root, "web/src/site/index.html"), "<!doctype html><title>Home</title>\n");
+    await writeFile(join(root, "web/src/site/404.html"), "<!doctype html><title>Not found</title>\n");
 
     // `make test` runs `pins` first, so use the same verified renderer artifact
     // while keeping every generated page inside this temporary project.
