@@ -159,6 +159,8 @@ import { watchPinch } from "../lib/pinch.js";
   // blocks become nested rules keyed on the paper class instead, so they
   // follow the paper. If upstream changes the wording of these conditions,
   // the rewrite stops matching and LaTeXML falls back to the system setting.
+  // Nesting turns the dark block's :root rule into a descendant selector that
+  // matches nothing, which is intended: the paper rules above colour the page.
   function followPaper(css) {
     return css
       .replace(/@media\s*\(\s*prefers-color-scheme\s*:\s*dark\s*\)\s*\{/g, "html.librepaper-dark {")
