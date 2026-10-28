@@ -891,7 +891,7 @@
         <div class="agent-status">
           <p class="agent-progress" role="status">{activityText}</p>
           <span class="agent-status-actions">
-            {#if assistant.running && activeTask}
+            {#if assistant.running}
               {#if activeTask.cancelRequested}
                 <span class="agent-status-note">Stopping…</span>
               {:else}
@@ -1068,8 +1068,8 @@
      is a select. A row of buttons had to signal the chosen one and the signal
      was easy to miss; a select shows its value as its content. */
   .setup-actions, .attachment-actions { display:flex; align-items:center; flex-wrap:wrap; gap:var(--spacing); }
-  /* The status row: one line of what the agent is doing, with its text actions
-     at the right. It never wraps, so the composer does not move as it changes. */
+  /* Each status row is one line with its text actions at the right: the running
+     task, then the queue. A row never wraps, so the composer does not move as it changes. */
   .agent-status-rows { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5); flex-shrink:0; }
   .agent-status { display:flex; align-items:center; gap:var(--spacing); min-width:0; flex-shrink:0; }
   .agent-progress { flex:1 1 auto; min-width:0; margin:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:var(--panel-muted); font-size:var(--panel-meta-size); line-height:var(--panel-line-height); }
