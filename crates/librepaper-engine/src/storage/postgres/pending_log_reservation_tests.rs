@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::super::{NewAccount, NewDocument, PostgresCatalog, PostgresOptions};
-use super::usage::{usage_bytes, Sources, UsageScope};
+use super::super::usage::{usage_bytes, Sources, UsageScope};
 use super::FlushRow;
 
 async fn catalog() -> PostgresCatalog {
