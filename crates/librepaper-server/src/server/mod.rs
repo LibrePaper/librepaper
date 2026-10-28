@@ -94,6 +94,8 @@ mod refusal;
 mod reply;
 #[cfg(test)]
 mod restore_http_tests;
+#[cfg(test)]
+mod revoke_tests;
 mod routes;
 pub mod serve;
 mod sharing;
