@@ -1,10 +1,12 @@
 <script>
   import { onMount, tick } from "svelte";
-  import { Tabs } from "@skeletonlabs/skeleton-svelte";
+  import { Menu, Tabs } from "@skeletonlabs/skeleton-svelte";
   import { getPrivate, post, SHELL_HEADERS, keyHeaders, withoutKey } from "../../lib/api.js";
   import PanelHeader from "../PanelHeader.svelte";
   import PanelTabs from "../PanelTabs.svelte";
   import IconButton from "../IconButton.svelte";
+  import Icon from "../Icon.svelte";
+  import ExplorerMenu from "../ExplorerMenu.svelte";
   import ChatTranscript from "../ChatTranscript.svelte";
   import ChatComposer from "../ChatComposer.svelte";
   import DesktopOnly from "../DesktopOnly.svelte";
@@ -137,9 +139,16 @@
   let capabilityGeneration = 0;
   let verifiedCapabilities = $state(null);
   let elapsedTime = $state(0);
+  let panelEl = $state(null);
   const selectedText = $derived(attachment?.selection?.exact || "");
   const caps = $derived(normalizeCapabilities(verifiedCapabilities));
   const contextPath = $derived(diagnostic?.file || diagnostic?.path || path);
+  // What the composer's context selector shows. A passage wins over the file,
+  // and the file wins over the whole document.
+  const chatScope = $derived(attachment ? "selection" : scope === "document" || !contextPath ? "document" : "file");
+  const contextLabel = $derived(chatScope === "selection"
+    ? (attachment?.path ? `Selection · ${attachment.path}` : "Selection")
+    : chatScope === "file" ? contextPath : "Whole document");
   const runnerReady = $derived(connection.connected && connection.runnerConnected);
   // No agent attached yet, but sending can start the chosen one first.
   const canStart = $derived(!runnerReady && !assistant.running && Boolean(connection.id) && Boolean(chosenInstalled?.assistant));
@@ -190,13 +199,16 @@
   const selectedWords = $derived(selectedText.trim().split(/\s+/).filter(Boolean).length);
   function clip(text, max) { return text.length > max ? `${text.slice(0, max)}...` : text; }
   const inputTask = $derived(Object.values(connection.tasks || {}).find((item) => item?.status === "needs_input" && item.input) || null);
-  // Everything that is currently in flight: what the queued list and status
-  // line show, and the composer's Stop button acts on. "Active" (as opposed to
-  // queued) is what a Stop button can actually interrupt.
+  // Everything that is currently in flight. "Active" (as opposed to queued) is
+  // what Stop can actually interrupt.
   const activeTasks = $derived(Object.values(connection.tasks || {}).filter((item) =>
     ["queued", "working", "needs_input"].includes(item.status)));
   const activeTask = $derived(activeTasks.find((item) => ["working", "needs_input"].includes(item.status)) || null);
   const queuedTasks = $derived(Object.values(connection.tasks || {}).filter((item) => item?.status === "queued"));
+  // The first queued request the conversation shows, so View has a message to scroll to.
+  const viewableQueued = $derived(queuedTasks.find((item) =>
+    connection.messages.some((message) => message.role === "user" && message.id === item.id)) || null);
+  const queueCount = $derived(queuedTasks.length);
 
   // The task carries no start time, so the clock starts when this client
   // first sees it working, and restarts for each new working task.
@@ -215,10 +227,36 @@
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   }
 
-  const progress = $derived(
-    activeTask?.status === "working"
-      ? `${runningLabel} ·${humanizeTool(activeTask.message) || 'Working'}… · ${formatElapsed(elapsedTime)}`
-      : activeTask?.status === "needs_input" ? "Waiting for permission" : "");
+  const statusText = $derived.by(() => {
+    let text = "";
+    if (activeTask?.status === "working") text = `${humanizeTool(activeTask.message) || `${runningLabel} is working`}… · ${formatElapsed(elapsedTime)}`;
+    else if (activeTask?.status === "needs_input") text = "Waiting for permission";
+    else if (queueCount) text = queueCount === 1 ? "Request queued" : `${queueCount} requests queued`;
+    if (activeTask && queueCount) text += ` · ${queueCount} queued`;
+    return text;
+  });
+
+  function viewQueued() {
+    const id = viewableQueued?.id;
+    if (!id) return;
+    const message = panelEl?.querySelector(`.chat-message[data-id="${CSS.escape(id)}"]`);
+    message?.scrollIntoView({ block: "nearest" });
+    message?.querySelector(".queued-note button")?.focus({ preventScroll: true });
+  }
+
+  /// The composer's context choice. Picking a passage attaches the current
+  /// selection when none is attached; picking a file or the whole document
+  /// drops the passage.
+  function chooseContext(value) {
+    if (value === "selection") {
+      if (!attachment) replaceSelection();
+      scope = "selection";
+    } else {
+      if (attachment) removeSelection();
+      scope = value;
+    }
+    if (task) task = { ...task, scope };
+  }
 
   function validDocumentLink() {
     try {
@@ -606,7 +644,7 @@
       await client.send(text, {
         task: task || undefined, attachment,
         thread: task?.kind === "respond" ? commentContext : null,
-        path: task?.scope === "file" || !task ? contextPath : "",
+        path: (task ? task.scope === "file" : chatScope !== "document") ? contextPath : "",
         revision: diagnosticRevision || attachment?.revision || (task?.scope === "selection" ? revision : ""),
         diagnostic, diagnostics,
       });
@@ -693,7 +731,7 @@
 
 </script>
 
-<section class="panel panel-tabbed agent-panel" aria-label="Agent chat">
+<section class="panel panel-tabbed agent-panel" aria-label="Agent chat" bind:this={panelEl}>
   <PanelHeader title="Agent" />
   <!-- This stays in the local template scope instead of becoming an unknown
        snippet prop on PanelTabs. -->
@@ -771,12 +809,40 @@
     {/if}
   {/snippet}
 
-  <!-- What the agent is doing, as the last line of the conversation rather than
-       beside the buttons: it changes length as the work goes on, and the
-       composer must not move when it does. -->
+  <!-- The permission card is the last thing in the conversation. -->
   {#snippet transcriptEnd()}
     {@render permissionCard()}
-    {#if progress}<p class="agent-progress panel-meta" role="status">{progress}</p>{/if}
+  {/snippet}
+
+  <!-- A queued request says so under its own message, with Cancel while it waits. -->
+  {#snippet queuedNote(message)}
+    {#if message.role === "user" && connection.tasks?.[message.id]?.status === "queued"}
+      {@const item = connection.tasks[message.id]}
+      <p class="queued-note" data-task-id={message.id}>Queued{#if item.cancelRequested} · Cancelling…{:else} <button type="button" class="agent-text-action" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(message.id))}>Cancel</button>{/if}</p>
+    {/if}
+  {/snippet}
+
+  <!-- The context choice sits inside the composer, as a quiet trigger. -->
+  {#snippet chatContext()}
+    <Menu onSelect={({ value }) => chooseContext(value)}>
+      <Menu.Trigger class="context-trigger" aria-label={`Context: ${contextLabel}`} title={contextLabel}>
+        <span class="context-label">{contextLabel}</span><Icon name="chevron-down" size="0.875rem" />
+      </Menu.Trigger>
+      <ExplorerMenu>
+        <Menu.Item value="selection" class="menuitem" disabled={!attachment && !selection?.exact}>
+          <span class="menuitem-check" aria-hidden="true">{chatScope === "selection" ? "✓" : ""}</span>
+          <span class="menuitem-label">Selected passage</span>
+        </Menu.Item>
+        <Menu.Item value="file" class="menuitem" disabled={!contextPath}>
+          <span class="menuitem-check" aria-hidden="true">{chatScope === "file" ? "✓" : ""}</span>
+          <span class="menuitem-label">{contextPath ? `Current file · ${contextPath}` : "Current file"}</span>
+        </Menu.Item>
+        <Menu.Item value="document" class="menuitem">
+          <span class="menuitem-check" aria-hidden="true">{chatScope === "document" ? "✓" : ""}</span>
+          <span class="menuitem-label">Whole document</span>
+        </Menu.Item>
+      </ExplorerMenu>
+    </Menu>
   {/snippet}
 
   <!-- The strip, its ids and the layout of a pane are PanelTabs', shared with
@@ -801,12 +867,11 @@
   <ChatTranscript messages={connection.messages}
                   emptyTitle="No messages yet"
                   emptyText={connection.runnerConnected ? "Messages go to the agent on this computer." : "Send a message to start the agent."}
-                  onresult={chooseResult} after={transcriptEnd}
+                  onresult={chooseResult} after={transcriptEnd} messageEnd={queuedNote}
                   roleLabel={(message) => message.role === "user" ? userName : (message.creator || message.role)} />
 
   <!-- The draft carries its own context, so the chat pane states it in one
        line and sends the user back to the task view to change it. -->
-  {#if task || attachment}<p class="panel-meta context-summary">{scopeLabel(scope, { path: contextPath, attached: attachment })} <button class="btn btn-sm" onclick={() => { tab = "tasks"; if (chosen) enterPrepare(); else taskView = "launcher"; }}>Change context</button>{#if attachment}<button class="btn btn-sm" onclick={removeSelection}>Remove passage</button>{/if}</p>{/if}
   <!-- Missing access or context is worth explaining; a runner that simply
        is not there yet starts when the message is sent, so that case gets no
        line here. -->
@@ -814,20 +879,6 @@
     <p class="panel-meta">{uncertainDelivery ? "This request was not confirmed. Retry delivery above before sending it again." : "This task needs the appropriate access and context. Choose another task or attach a passage."}</p>
   {/if}
     </div>
-  {#if queuedTasks.length}
-  <div class="queued-requests">
-  {#each queuedTasks as item (item.id)}
-    <div class="queued-request" data-task-id={item.id}>
-      <span class="queued-label">Queued: {item.request || "Request"}</span>
-      {#if item.cancelRequested}
-        <span class="queued-status">Cancellation requested</span>
-      {:else}
-        <button class="btn btn-sm" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(item.id))}>Cancel</button>
-      {/if}
-    </div>
-  {/each}
-  </div>
-  {/if}
   <!-- Why sending cannot start this agent, or what its route cannot do. -->
   {#if chosenInstalled?.assistant_blocked || chosenInstalled?.assistant_note}
     <!-- An older desktop app sends no assistant_docs, so the link falls back to the agents page. -->
@@ -836,9 +887,34 @@
   {#if assistant.agent !== chosenAgent && chosenInstalled?.assistant_fetches}
     <p class="panel-meta" data-adapter-fetch>Starting it downloads its adapter.{#if chosenInstalled.assistant_install}{" "}To install it for good, run <code>{chosenInstalled.assistant_install}</code>.{/if}</p>
   {/if}
-  <ChatComposer placeholder="Ask your agent…" canSend={!busy && (sendable || startable)} draft={draft} ondraft={(value) => draft = value} onsend={send}
-                onstop={assistant.running && activeTask ? () => void act(() => client.cancel(activeTask.id)) : null}
-                stopLabel="Stop" />
+  <!-- One line says what the agent is doing or what waits, and appears only then.
+       Stop interrupts the running task and Cancel drops a queued one. -->
+  {#if statusText}
+    <div class="agent-status">
+      <p class="agent-progress" role="status">{statusText}</p>
+      <span class="agent-status-actions">
+        {#if viewableQueued}
+          <button type="button" class="agent-text-action" onclick={viewQueued}>View</button>
+        {/if}
+        {#if queueCount === 1}
+          {#if queuedTasks[0].cancelRequested}
+            <span class="agent-status-note">Cancelling…</span>
+          {:else}
+            <button type="button" class="agent-text-action" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(queuedTasks[0].id))}>Cancel</button>
+          {/if}
+        {/if}
+        {#if assistant.running && activeTask}
+          {#if activeTask.cancelRequested}
+            <span class="agent-status-note">Stopping…</span>
+          {:else}
+            <button type="button" class="agent-text-action" disabled={busy} onclick={() => void act(() => client.cancel(activeTask.id))}>Stop</button>
+          {/if}
+        {/if}
+      </span>
+    </div>
+  {/if}
+  <ChatComposer placeholder={`Ask ${chosenInstalled?.label || "your agent"}…`} canSend={!busy && (sendable || startable)} draft={draft} ondraft={(value) => draft = value} onsend={send}
+                context={chatContext} />
   {/if}
   </Tabs.Content>
   <Tabs.Content value="tasks" class="agent-tab-content">
@@ -985,16 +1061,22 @@
      is a select. A row of buttons had to signal the chosen one and the signal
      was easy to miss; a select shows its value as its content. */
   .setup-actions, .attachment-actions { display:flex; align-items:center; flex-wrap:wrap; gap:var(--spacing); }
-  /* Queued requests: a compact list above the composer showing what is queued,
-     with a cancel button for each. Secondary text colour keeps it quiet. */
-  .queued-request { display:flex; align-items:center; justify-content:space-between; gap:var(--spacing);
-                    padding:calc(var(--spacing) * .75) calc(var(--spacing) * 1.5); font-size:.85em; }
-  /* One line each and a bounded list, so a backlog never pushes the composer
-     out of a short pane. */
-  .agent-progress { margin:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-  .queued-requests { flex:none; max-height:2.25rem; overflow-y:auto; }
-  .queued-label { color:var(--color-text-secondary); min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-  .queued-status { color:var(--color-text-secondary); font-size:.8em; }
+  /* The status row: one line of what the agent is doing, with its text actions
+     at the right. It never wraps, so the composer does not move as it changes. */
+  .agent-status { display:flex; align-items:center; gap:var(--spacing); min-width:0; flex-shrink:0; }
+  .agent-progress { flex:1 1 auto; min-width:0; margin:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:var(--panel-muted); font-size:var(--panel-meta-size); line-height:var(--panel-line-height); }
+  .agent-status-actions { display:flex; flex:none; align-items:center; gap:calc(var(--spacing) * .5); }
+  .agent-status-note { color:var(--panel-muted); font-size:var(--panel-meta-size); white-space:nowrap; }
+  .agent-panel :global(.agent-text-action) { border:0; background:transparent; padding:0 var(--spacing); border-radius:var(--radius-base); font:inherit; font-size:var(--panel-meta-size); line-height:var(--panel-line-height); color:var(--color-text-secondary); cursor:pointer; white-space:nowrap; }
+  .agent-panel :global(.agent-text-action:hover:not(:disabled)) { color:var(--color-text); text-decoration:underline; }
+  .agent-panel :global(.agent-text-action:focus-visible) { outline:2px solid var(--color-focus); outline-offset:1px; }
+  .agent-panel :global(.agent-text-action:disabled) { opacity:.5; cursor:default; }
+  .agent-panel :global(.queued-note) { margin:0; color:var(--panel-muted); font-size:var(--panel-meta-size); line-height:var(--panel-line-height); }
+  .agent-panel :global(.context-trigger) { display:inline-flex; align-items:center; gap:calc(var(--spacing) * .5); min-width:0; max-width:100%; padding:0; border:0; background:transparent; border-radius:var(--radius-base); font:inherit; font-size:var(--panel-meta-size); line-height:var(--panel-line-height); color:var(--panel-muted); cursor:pointer; }
+  .agent-panel :global(.context-trigger:hover) { color:var(--color-text); }
+  .agent-panel :global(.context-trigger:focus-visible) { outline:2px solid var(--color-focus); outline-offset:1px; }
+  .agent-panel :global(.context-label) { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  @media (pointer: coarse) { .agent-panel :global(.agent-text-action), .agent-panel :global(.context-trigger) { min-height:2.75rem; } }
   /* The task browser is typography, spacing and a hover background, not a
      stack of controls. The head stays put while the pane scrolls under it. */
   .task-launcher, .task-prepare { gap:var(--spacing); }
@@ -1042,7 +1124,6 @@
   .task-scope .select, .task-prepare .input { width:100%; min-width:0; }
   .task-extra { field-sizing:content; min-height:2rem; max-height:8rem; overflow:auto; resize:none; }
   .prepare-actions { display:flex; justify-content:flex-end; }
-  .context-summary { display:flex; align-items:center; flex-wrap:wrap; gap:var(--spacing); }
   .attachment { display:flex; flex-direction:column; gap:var(--spacing); padding:calc(var(--spacing) * 1.5); border-left:3px solid var(--color-brand); background:var(--color-subtle); }
   .attachment blockquote { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; line-clamp:3; overflow:hidden; margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
   .request-warning { display:flex; flex-direction:column; gap:var(--spacing); padding:calc(var(--spacing) * 2); background:var(--color-warning-bg); overflow-wrap:anywhere; }
