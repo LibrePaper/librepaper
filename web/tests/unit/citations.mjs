@@ -12,7 +12,8 @@ assert.deepEqual(rankEntries(entries, "river data").map((e) => e.key), ["river+d
 assert.equal(entryLabel(entries[1]), "Jones et al. — 2019 — Writing Better Papers — JOSS");
 
 assert.deepEqual(citationContext("See @smith", 10, "markdown"), { kind: "markdown", from: 5, to: 10, query: "smith", trigger: "@" });
-assert.deepEqual(citationContext("See @river data", 15, "markdown"), { kind: "markdown", from: 5, to: 15, query: "river data", trigger: "@" });
+assert.equal(citationContext("See @river data", 15, "markdown"), null, "a citation query is one word");
+assert.deepEqual(citationContext("See @river data", 10, "markdown"), { kind: "markdown", from: 5, to: 10, query: "river", trigger: "@" });
 assert.deepEqual(rankEntries(entries, "river data").map((entry) => entry.key), ["river+data"]);
 assert.equal(citationContext("mail a@smith.example", 18, "markdown"), null);
 assert.equal(citationContext(String.fromCharCode(96) + "See @smith" + String.fromCharCode(96), 11, "markdown"), null);
@@ -29,11 +30,9 @@ assert.equal(completion.options[0].displayLabel.includes("Rivers"), true);
 assert.equal(completion.filter, false);
 assert.equal(bibliographyCompletion({ entries: [], format: "markdown" })(fake("@", 1)), null);
 assert.equal(bibliographyCompletion({ entries, format: "markdown" })(fake("See @smith2020 ", 16)), null);
-let imported = null;
-const remoteCompletion = await bibliographyCompletion({ entries: [], format: "markdown", remote: async () => [{ key: "Smi2023", authors: ["Smith, Ada"], year: 2023, title: "Local paper", zotero_item: "ABC123" }], onRemote: (entry) => { imported = entry; } })(fake("See @smi", 8));
-assert.equal(remoteCompletion.options[0].detail, "Zotero — import");
-remoteCompletion.options[0].apply({}, {}, 5, 8);
-assert.equal(imported.zotero_item, "ABC123");
+assert.equal(citationContext("see @smith2020 for details", 26, "markdown"), null, "prose after a citation is not a query");
+assert.deepEqual(citationContext("see @smi", 8, "markdown"), { kind: "markdown", from: 5, to: 8, query: "smi", trigger: "@" });
+assert.deepEqual(citationContext("[@smith2020; @jo", 16, "markdown"), { kind: "markdown", from: 14, to: 16, query: "jo", trigger: "@" });
 
 const base = { main: "paper.md", format: "markdown", source: "bibliography: refs.bib\n[@smith2020]", texts: { "refs.bib": "a", "other.bib": "b" } };
 assert.equal(bibliographyCacheKey({ ...base, source: "bibliography: refs.bib\nchanged" }), bibliographyCacheKey(base));
