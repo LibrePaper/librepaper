@@ -9,8 +9,7 @@
     draft: controlledDraft = undefined,
     initialDraft = "",
     ondraft = undefined,
-    onstop = null,
-    stopLabel = "Stop",
+    context = undefined,
   } = $props();
   let draft = $state("");
   let initialized = false;
@@ -94,14 +93,16 @@
 
 <form class="chat-form" onsubmit={submit} data-cansend={canSend && !disabled && !sending}>
   <div class="composer-box">
-    <textarea bind:this={input} rows="1" value={draft} {placeholder} aria-label="Message"
-      {disabled} required oninput={update} onkeydown={keydown}></textarea>
-    <div class="composer-buttons">
-      {#if onstop}
-        <IconButton icon="square" label={stopLabel} tone="plain" size="btn-icon-sm" onclick={() => onstop()} />
-      {/if}
-      <IconButton type="submit" icon="send-horizontal" label="Send message" title="Send message. Shift+Enter adds a new line." tone="plain" size="btn-icon-sm"
-        disabled={disabled || !canSend || sending || !draft.trim()} />
+    {#if context}
+      <div class="composer-context">{@render context()}</div>
+    {/if}
+    <div class="composer-row">
+      <textarea bind:this={input} rows="1" value={draft} {placeholder} aria-label="Message"
+        {disabled} required oninput={update} onkeydown={keydown}></textarea>
+      <div class="composer-buttons">
+        <IconButton type="submit" icon="send-horizontal" label="Send message" title="Send message. Shift+Enter adds a new line." tone="plain" size="btn-icon-sm"
+          disabled={disabled || !canSend || sending || !draft.trim()} />
+      </div>
     </div>
   </div>
 </form>
@@ -109,11 +110,22 @@
   .chat-form { display: flex; flex-direction: column; padding-bottom: env(safe-area-inset-bottom, 0px); }
   .composer-box {
     display: flex;
-    align-items: flex-end;
+    flex-direction: column;
     border: 1px solid var(--color-border);
     border-radius: calc(var(--radius-base) * 2);
   }
   .composer-box:focus-within { border-color: var(--color-brand); }
+  .composer-context {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2) 0;
+  }
+  .composer-row {
+    display: flex;
+    align-items: flex-end;
+  }
+  .composer-context + .composer-row textarea { padding-top: calc(var(--spacing) * 0.5); }
   .composer-box textarea {
     flex: 1;
     min-width: 0;
