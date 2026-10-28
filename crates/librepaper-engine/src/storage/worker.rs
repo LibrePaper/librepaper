@@ -733,27 +733,8 @@ impl Worker {
                 return Err(format!("could not scan for background work: {error}"));
             }
         };
-        let mut next = cursor;
-        if let Some(id) = pending.compaction.last() {
-            next.compaction = *id;
-        }
-        if let Some(id) = pending.deleting.last() {
-            next.deleting = *id;
-        }
-        if let Some(id) = pending.archives.last() {
-            next.archives = *id;
-        }
-        if let Some(id) = pending.erasing.last() {
-            next.erasing = *id;
-        }
-        next.compaction_done = cursor.compaction_done || (pending.compaction.len() as i64) < PAGE;
-        next.deleting_done = cursor.deleting_done || (pending.deleting.len() as i64) < PAGE;
-        next.archives_done = cursor.archives_done || (pending.archives.len() as i64) < PAGE;
-        next.erasing_done = cursor.erasing_done || (pending.erasing.len() as i64) < PAGE;
-        let continues = !next.compaction_done
-            || !next.deleting_done
-            || !next.archives_done
-            || !next.erasing_done;
+        let next = pending.next;
+        let continues = next.continues();
         let mut tasks = Vec::with_capacity(
             pending.compaction.len()
                 + pending.deleting.len()
@@ -1498,7 +1479,7 @@ mod tests {
             meter: Arc::new(Meter::default()),
         };
         let cursor = PendingWorkCursor {
-            archives: Uuid::from_u128(42),
+            archives: Some(Uuid::from_u128(42)),
             ..Default::default()
         };
         let mut local = VecDeque::from([Task::Scan(cursor)]);

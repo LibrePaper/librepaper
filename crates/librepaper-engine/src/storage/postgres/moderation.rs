@@ -5,6 +5,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::{new_id, Error, PostgresCatalog, Result};
+use crate::storage::split_page;
 
 /// One account as the operator's accounts list shows it.
 #[derive(Clone, Debug, sqlx::FromRow)]
@@ -67,6 +68,7 @@ pub struct HiddenProject {
 /// One entry of the moderation audit trail.
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct AuditEntry {
+    pub id: Uuid,
     pub occurred_at: OffsetDateTime,
     pub actor: String,
     pub action: String,
@@ -75,6 +77,63 @@ pub struct AuditEntry {
     pub reason: String,
 }
 
+/// Where a moderation list resumes: the sort key and id of the last row of
+/// the page before. `key` is `None` for a blocked account with no audit entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModerationCursor {
+    pub key: Option<OffsetDateTime>,
+    pub id: Uuid,
+}
+
+impl ModerationCursor {
+    /// The cursor as text: the key in microseconds since the epoch, empty for
+    /// no key, then `|` and the id.
+    pub fn encode(&self) -> String {
+        let key = self
+            .key
+            .map(|at| (at.unix_timestamp_nanos() / 1000).to_string())
+            .unwrap_or_default();
+        format!("{key}|{}", self.id)
+    }
+
+    pub fn decode(text: &str) -> Option<Self> {
+        let (key, id) = text.split_once('|')?;
+        let key = if key.is_empty() {
+            None
+        } else {
+            let micros: i128 = key.parse().ok()?;
+            Some(OffsetDateTime::from_unix_timestamp_nanos(micros.checked_mul(1000)?).ok()?)
+        };
+        Some(Self {
+            key,
+            id: Uuid::parse_str(id).ok()?,
+        })
+    }
+}
+
+/// Where each of the four moderation lists starts. A list with no cursor
+/// starts at its top.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ModerationAfter {
+    pub blocked: Option<ModerationCursor>,
+    pub banned: Option<ModerationCursor>,
+    pub hidden: Option<ModerationCursor>,
+    pub recent: Option<ModerationCursor>,
+}
+
+/// Which lists have a row after the page that was returned.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModerationMore {
+    pub blocked: bool,
+    pub banned: bool,
+    pub hidden: bool,
+    pub recent: bool,
+}
+
+/// How many rows the moderation lists hold per page.
+pub const MODERATION_LIST_PAGE: u32 = 500;
+pub const MODERATION_RECENT_PAGE: u32 = 50;
+
 /// Everything the operator's moderation page lists.
 #[derive(Clone, Debug)]
 pub struct ModerationOverview {
@@ -82,6 +141,7 @@ pub struct ModerationOverview {
     pub banned_handles: Vec<BannedHandle>,
     pub hidden_projects: Vec<HiddenProject>,
     pub recent: Vec<AuditEntry>,
+    pub more: ModerationMore,
 }
 
 /// Per-owner bytes: the same five sources `usage_bytes` charges each owner.
@@ -395,9 +455,26 @@ impl PostgresCatalog {
         Ok(label)
     }
 
-    /// The blocked accounts, name bans, hidden projects and latest audit
-    /// entries that the operator's moderation page lists.
+    /// The first page of each moderation list.
     pub async fn moderation_overview(&self) -> Result<ModerationOverview> {
+        self.moderation_page(
+            &ModerationAfter::default(),
+            MODERATION_LIST_PAGE,
+            MODERATION_RECENT_PAGE,
+        )
+        .await
+    }
+
+    /// One keyset page of the blocked accounts, name bans, hidden projects and
+    /// audit entries that the operator's moderation page lists, each starting
+    /// after its cursor. Each query asks for one row past its page, and the
+    /// extra row alone says the list goes on. Every list is newest first.
+    pub async fn moderation_page(
+        &self,
+        after: &ModerationAfter,
+        list_limit: u32,
+        recent_limit: u32,
+    ) -> Result<ModerationOverview> {
         let blocked_accounts = sqlx::query_as::<_, BlockedAccount>(
             "SELECT a.id, a.handle, a.provider, a.kind, m.occurred_at AS blocked_at, m.actor, m.reason
                FROM accounts a
@@ -407,15 +484,26 @@ impl PostgresCatalog {
                   ORDER BY occurred_at DESC, id DESC LIMIT 1
                ) m ON true
               WHERE a.status='blocked'
-              ORDER BY m.occurred_at DESC NULLS LAST, a.id
-              LIMIT 500",
+                AND (NOT $3 OR (COALESCE(m.occurred_at,'-infinity'::timestamptz), a.id)
+                     < (COALESCE($1::timestamptz,'-infinity'::timestamptz), $2::uuid))
+              ORDER BY COALESCE(m.occurred_at,'-infinity'::timestamptz) DESC, a.id DESC
+              LIMIT $4",
         )
+        .bind(after.blocked.and_then(|cursor| cursor.key))
+        .bind(after.blocked.map(|cursor| cursor.id))
+        .bind(after.blocked.is_some())
+        .bind(i64::from(list_limit) + 1)
         .fetch_all(&self.pool)
         .await?;
         let banned_handles = sqlx::query_as::<_, BannedHandle>(
             "SELECT id, provider, handle, actor, reason, created_at FROM banned_handles
-              ORDER BY created_at DESC, id DESC LIMIT 500",
+              WHERE (NOT $3 OR (created_at, id) < ($1::timestamptz, $2::uuid))
+              ORDER BY created_at DESC, id DESC LIMIT $4",
         )
+        .bind(after.banned.and_then(|cursor| cursor.key))
+        .bind(after.banned.map(|cursor| cursor.id))
+        .bind(after.banned.is_some())
+        .bind(i64::from(list_limit) + 1)
         .fetch_all(&self.pool)
         .await?;
         let hidden_projects = sqlx::query_as::<_, HiddenProject>(
@@ -428,22 +516,43 @@ impl PostgresCatalog {
                   WHERE target_kind='project' AND target_id=d.id AND action='hide_project'
                   ORDER BY occurred_at DESC, id DESC LIMIT 1
                ) m ON true
-              ORDER BY mp.hidden_at DESC, d.id
-              LIMIT 500",
+              WHERE (NOT $3 OR (mp.hidden_at, d.id) < ($1::timestamptz, $2::uuid))
+              ORDER BY mp.hidden_at DESC, d.id DESC
+              LIMIT $4",
         )
+        .bind(after.hidden.and_then(|cursor| cursor.key))
+        .bind(after.hidden.map(|cursor| cursor.id))
+        .bind(after.hidden.is_some())
+        .bind(i64::from(list_limit) + 1)
         .fetch_all(&self.pool)
         .await?;
         let recent = sqlx::query_as::<_, AuditEntry>(
-            "SELECT occurred_at, actor, action, target_kind, target_label, reason
-               FROM moderation_audit ORDER BY occurred_at DESC, id DESC LIMIT 50",
+            "SELECT id, occurred_at, actor, action, target_kind, target_label, reason
+               FROM moderation_audit
+              WHERE (NOT $3 OR (occurred_at, id) < ($1::timestamptz, $2::uuid))
+              ORDER BY occurred_at DESC, id DESC LIMIT $4",
         )
+        .bind(after.recent.and_then(|cursor| cursor.key))
+        .bind(after.recent.map(|cursor| cursor.id))
+        .bind(after.recent.is_some())
+        .bind(i64::from(recent_limit) + 1)
         .fetch_all(&self.pool)
         .await?;
+        let (blocked_accounts, blocked) = split_page(blocked_accounts, list_limit);
+        let (banned_handles, banned) = split_page(banned_handles, list_limit);
+        let (hidden_projects, hidden) = split_page(hidden_projects, list_limit);
+        let (recent, recent_more) = split_page(recent, recent_limit);
         Ok(ModerationOverview {
             blocked_accounts,
             banned_handles,
             hidden_projects,
             recent,
+            more: ModerationMore {
+                blocked,
+                banned,
+                hidden,
+                recent: recent_more,
+            },
         })
     }
 
@@ -1145,6 +1254,67 @@ mod tests {
         let cutoff = time::OffsetDateTime::now_utc() - time::Duration::days(365);
 
         assert_eq!(catalog.inactive_summary(cutoff).await.unwrap(), (2, 700));
+        catalog.close().await;
+    }
+
+    #[test]
+    fn a_moderation_cursor_round_trips_and_refuses_junk() {
+        let id = Uuid::now_v7();
+        let keyed = ModerationCursor {
+            key: Some(OffsetDateTime::from_unix_timestamp_nanos(1_700_000_000_123_456_000).unwrap()),
+            id,
+        };
+        assert_eq!(ModerationCursor::decode(&keyed.encode()), Some(keyed));
+        let unkeyed = ModerationCursor { key: None, id };
+        assert_eq!(ModerationCursor::decode(&unkeyed.encode()), Some(unkeyed));
+        assert_eq!(ModerationCursor::decode("nonsense"), None);
+        assert_eq!(ModerationCursor::decode("x|y"), None);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn moderation_lists_report_more_exactly_when_a_row_follows() {
+        let catalog = test_catalog().await;
+        crate::testing::reset(&catalog).await;
+        let suffix = Uuid::now_v7().simple().to_string();
+        for index in 0..3 {
+            catalog
+                .block_or_ban("github", &format!("@page-{index}-{suffix}"), "operator", "spam")
+                .await
+                .unwrap();
+        }
+        let none = ModerationAfter::default();
+        let full = catalog.moderation_page(&none, 3, 3).await.unwrap();
+        assert_eq!(full.banned_handles.len(), 3);
+        assert_eq!(full.recent.len(), 3);
+        assert_eq!(full.more, ModerationMore::default());
+
+        let first = catalog.moderation_page(&none, 2, 2).await.unwrap();
+        assert_eq!(first.banned_handles.len(), 2);
+        assert!(first.more.banned && first.more.recent);
+        let last = first.banned_handles.last().unwrap();
+        let last_audit = first.recent.last().unwrap();
+        let after = ModerationAfter {
+            banned: Some(ModerationCursor {
+                key: Some(last.created_at),
+                id: last.id,
+            }),
+            recent: Some(ModerationCursor {
+                key: Some(last_audit.occurred_at),
+                id: last_audit.id,
+            }),
+            ..ModerationAfter::default()
+        };
+        let second = catalog.moderation_page(&after, 2, 2).await.unwrap();
+        assert_eq!(second.banned_handles.len(), 1);
+        assert_eq!(second.recent.len(), 1);
+        assert_eq!(second.more, ModerationMore::default());
+        let mut seen: Vec<Uuid> = first.banned_handles.iter().map(|ban| ban.id).collect();
+        seen.extend(second.banned_handles.iter().map(|ban| ban.id));
+        let mut expected: Vec<Uuid> = full.banned_handles.iter().map(|ban| ban.id).collect();
+        assert_eq!(seen, expected);
+        expected.dedup();
+        assert_eq!(expected.len(), 3);
         catalog.close().await;
     }
 

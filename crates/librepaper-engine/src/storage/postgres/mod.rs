@@ -46,7 +46,8 @@ pub use document_log::{FlushRow, LogRow, NewSnapshot, PendingWorkCursor, RowCove
 pub use labels::{ArchiveAttach, ArchiveObject, LabelRecord, NewLabel, TrimOutcome};
 pub use moderation::{
     AccountUsage, AuditEntry, BannedHandle, BlockOutcome, BlockedAccount, HiddenProject,
-    ModerationAction, ModerationOverview,
+    ModerationAction, ModerationAfter, ModerationCursor, ModerationMore, ModerationOverview,
+    MODERATION_LIST_PAGE, MODERATION_RECENT_PAGE,
 };
 pub use ownership::WriterLease;
 pub use repository::{

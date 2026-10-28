@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use crate::log::{Command, CommandError, Evidence, Head, PreparedSource, Registry};
 use crate::storage::blob::BlobStore;
+use crate::storage::split_page;
 use crate::storage::postgres::{
     built_in_refusal, Authority, DuplicateOf, Error as CatalogError, NewAsset, NewLabel,
     PostgresCatalog as Catalog, QuotaScope, TagRecord, FAVORITES_COLOUR, FAVORITES_NAME,
@@ -754,17 +755,20 @@ impl Store {
 
     /// Reads a bounded active-document maintenance page, including moderated
     /// projects that users must not see but retention still processes.
-    /// Returns the next cursor only when another page may exist.
+    /// Returns the next cursor only when one more row exists.
     pub async fn maintenance_page(
         &self,
         before: Option<(time::OffsetDateTime, Uuid)>,
         limit: u32,
     ) -> Result<(Vec<IndexEntry>, Option<(time::OffsetDateTime, Uuid)>), CatalogError> {
         let catalog = &self.catalog;
-        let documents = catalog
-            .list_documents_for_maintenance(before, i64::from(limit))
-            .await?;
-        let next = if documents.len() == limit as usize {
+        let (documents, has_more) = split_page(
+            catalog
+                .list_documents_for_maintenance(before, i64::from(limit) + 1)
+                .await?,
+            limit,
+        );
+        let next = if has_more {
             documents
                 .last()
                 .map(|document| (document.updated_at, document.id))
@@ -775,13 +779,15 @@ impl Store {
         Ok((entries, next))
     }
 
+    /// One keyset page of what the caller may list, and whether one more row
+    /// exists after it.
     pub async fn visible_page_with_options(
         &self,
         account_id: Option<&str>,
         cursor: Option<(&str, &str)>,
         limit: u32,
         include_templates: bool,
-    ) -> Result<Vec<IndexEntry>, CatalogError> {
+    ) -> Result<(Vec<IndexEntry>, bool), CatalogError> {
         let catalog = &self.catalog;
         let account_id = account_id
             .map(uuid::Uuid::parse_str)
@@ -818,10 +824,13 @@ impl Store {
             }
             None => None,
         };
-        let documents = catalog
-            .visible_documents(account_id, before, i64::from(limit), include_templates)
-            .await?;
-        entries_from_documents(catalog, &documents).await
+        let (documents, has_more) = split_page(
+            catalog
+                .visible_documents(account_id, before, i64::from(limit) + 1, include_templates)
+                .await?,
+            limit,
+        );
+        Ok((entries_from_documents(catalog, &documents).await?, has_more))
     }
 
     /// One keyset page of this account's completed custom templates.
@@ -852,10 +861,13 @@ impl Store {
             }
             None => None,
         };
-        let documents = catalog
-            .templates_by_owner(account_id, before, i64::from(limit))
-            .await?;
-        let next = if documents.len() == limit as usize {
+        let (documents, has_more) = split_page(
+            catalog
+                .templates_by_owner(account_id, before, i64::from(limit) + 1)
+                .await?,
+            limit,
+        );
+        let next = if has_more {
             match documents.last() {
                 Some(document) => Some((
                     document

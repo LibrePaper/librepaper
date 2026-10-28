@@ -24,6 +24,28 @@ use std::sync::Arc;
 use crate::storage::blob::{BlobStore, ObjectBlobStore};
 use librepaper_base::config::DeploymentPaths;
 
+/// Splits the rows of a `LIMIT limit + 1` query into the page and whether
+/// the extra row came back. A page that is exactly full with nothing after
+/// it has no more rows.
+pub(crate) fn split_page<T>(mut rows: Vec<T>, limit: u32) -> (Vec<T>, bool) {
+    let has_more = rows.len() > limit as usize;
+    rows.truncate(limit as usize);
+    (rows, has_more)
+}
+
+#[cfg(test)]
+mod split_page_tests {
+    use super::split_page;
+
+    #[test]
+    fn more_is_true_exactly_when_the_extra_row_exists() {
+        assert_eq!(split_page(vec![1, 2], 3), (vec![1, 2], false));
+        assert_eq!(split_page(vec![1, 2, 3], 3), (vec![1, 2, 3], false));
+        assert_eq!(split_page(vec![1, 2, 3, 4], 3), (vec![1, 2, 3], true));
+        assert_eq!(split_page(Vec::<u8>::new(), 3), (vec![], false));
+    }
+}
+
 #[derive(Clone)]
 pub struct StorageOptions {
     pub dir: PathBuf,

@@ -1355,7 +1355,7 @@ impl Server {
         let listing_cursor = listing_cursor
             .as_ref()
             .map(|cursor| (cursor.after_updated.as_str(), cursor.after_slug.as_str()));
-        let entries = match self
+        let (entries, has_more) = match self
             .store
             .visible_page_with_options(
                 (!who.id.is_empty()).then_some(who.id.as_str()),
@@ -1365,7 +1365,7 @@ impl Server {
             )
             .await
         {
-            Ok(entries) => entries,
+            Ok(page) => page,
             Err(error) => {
                 tracing::warn!("could not query document listing: {error}");
                 return write_json(503, &json!({"error": "catalogue temporarily unavailable"}));
@@ -1415,7 +1415,7 @@ impl Server {
             })
             .collect();
         let mut body = json!({"documents": documents, "tags": account_tags});
-        if entries.len() == listing_limit as usize {
+        if has_more {
             if let Some(last) = entries.last() {
                 body["next_cursor"] = ListingCursor {
                     after_updated: last.updated_at.clone(),
@@ -1459,12 +1459,12 @@ impl Server {
         let listing_cursor = listing_cursor
             .as_ref()
             .map(|cursor| (cursor.after_updated.as_str(), cursor.after_slug.as_str()));
-        let entries = match self
+        let (entries, has_more) = match self
             .store
             .visible_page_with_options(Some(&account_id), listing_cursor, listing_limit, true)
             .await
         {
-            Ok(entries) => entries,
+            Ok(page) => page,
             Err(error) => {
                 tracing::warn!("could not query backup project listing: {error}");
                 return write_json(503, &json!({"error": "catalogue temporarily unavailable"}));
@@ -1482,7 +1482,7 @@ impl Server {
             })
             .collect();
         let mut body = json!({"documents": documents});
-        if entries.len() == listing_limit as usize {
+        if has_more {
             if let Some(last) = entries.last() {
                 body["next_cursor"] = ListingCursor {
                     after_updated: last.updated_at.clone(),

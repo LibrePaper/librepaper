@@ -296,11 +296,14 @@ impl Maintenance {
                 .await
                 .map_err(|error| error.to_string())?
                 .and_then(|value| value.as_str().map(str::to_string));
-            let page = self
-                .blobs
-                .list_page(prefix, cursor.as_deref(), batch)
-                .await
-                .map_err(|error| error.to_string())?;
+            // One object past the batch says whether the prefix goes on.
+            let (page, has_more) = crate::storage::split_page(
+                self.blobs
+                    .list_page(prefix, cursor.as_deref(), batch + 1)
+                    .await
+                    .map_err(|error| error.to_string())?,
+                batch as u32,
+            );
             let keys: Vec<String> = page.iter().map(|item| item.key.clone()).collect();
             let cutoff = std::time::SystemTime::now()
                 .checked_sub(retention.unsigned_abs())
@@ -355,11 +358,7 @@ impl Maintenance {
                     lock.release(&key).await?;
                 }
             }
-            let next = if page.len() < batch {
-                None
-            } else {
-                keys.last().cloned()
-            };
+            let next = if has_more { keys.last().cloned() } else { None };
             self.catalog
                 .set_runtime_state(
                     &format!("sweep.{name}"),
