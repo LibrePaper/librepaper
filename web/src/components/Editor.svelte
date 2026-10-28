@@ -584,6 +584,18 @@
     onbibliography?.({ entries: bibliographyEntries(), diagnostics: [{ severity: "warning", message, file: pathOfDoc(session.doc, showing), line: 0 }] }, bibliographyRequest());
   }
 
+  // Maps a Zotero search response into the entries the completion list reads.
+  function zoteroEntries(response) {
+    return (response?.entries || []).map((found) => ({
+      ...found, key: found.citation_key, year: found.year || "", type: found.item_type,
+    }));
+  }
+
+  /// Searches Zotero for the Insert > Citation dialog. It throws when Zotero cannot answer.
+  export async function zoteroSearch(query) {
+    return zoteroEntries(await searchZotero(query));
+  }
+
   async function remoteBibliography(query) {
     if (!formatOf(pathOfDoc(session.doc, showing))) return [];
     // Zotero lives on this computer, so a browser says where it can be used.
@@ -603,12 +615,38 @@
       return [];
     }
     if (generation !== zoteroSearchGeneration) return [];
-    return (response?.entries || []).map((entry) => ({
-      ...entry, key: entry.citation_key, year: entry.year || "", type: entry.item_type,
-    }));
+    return zoteroEntries(response);
   }
 
-  async function importZotero(entry, target) {
+  // Writes an imported item's BibTeX and its bibliography registration. The
+  // registration is written here only when it belongs to another file. The
+  // caller dispatches it through the view when it belongs to the file on screen.
+  function writeZoteroImport(doc, activeFile, activePath, fetched, zoteroItemKey) {
+    const tree = treeForDoc(doc);
+    // The bibliography is registered in the preview's file when it shares the citing file's format family, else in the citing file.
+    const sameFamily = Boolean(entry) && formatOf(entry) === formatOf(activePath);
+    const regPath = sameFamily ? entry : activePath;
+    const regId = sameFamily ? textIdForPath(doc, entry) : activeFile;
+    const reg = getTextFromDoc(regId);
+    const plan = planZoteroImport({
+      source: reg?.toString() || "", targetPath: regPath, texts: tree.texts,
+      item: { ...fetched, zotero_item: zoteroItemKey }, format: formatOf(regPath),
+    });
+    const bibId = textIdForPath(doc, plan.path);
+    const bib = bibId ? getTextFromDoc(bibId) : null;
+    if (bib) {
+      if (plan.addition) {
+        const end = bib.toString().length;
+        writeText(bibId, bib, end, end, plan.addition);
+      }
+    } else addTextToDoc(doc, plan.path, plan.bibtex);
+    if (plan.registration && reg && regId !== activeFile) {
+      writeText(regId, reg, plan.registration.from, plan.registration.to, plan.registration.insert);
+    }
+    return { plan, regId };
+  }
+
+  async function importZotero(item, target) {
     if (!editable || !session || target.view !== view || !showing) return false;
     const doc = session.doc;
     const active = getTextFromDoc(showing);
@@ -620,7 +658,7 @@
     let toCursor = active.getCursor(toUnicode, 0);
     const activeSession = session, activeFile = showing, activePath = pathOfDoc(doc, showing);
     try {
-      const fetched = await zoteroItem(entry.zotero_item);
+      const fetched = await zoteroItem(item.zotero_item);
       if (session !== activeSession || session.doc !== doc || showing !== activeFile || pathOfDoc(doc, activeFile) !== activePath || view !== target.view || !editable) return false;
 
       const fromResult = doc.getCursorPos(fromCursor);
@@ -633,32 +671,12 @@
       const start_utf16 = active.convertPos(fromResult.offset, "unicode", "utf16") ?? 0;
       const end_utf16 = active.convertPos(toResult.offset, "unicode", "utf16") ?? 0;
 
-      const tree = treeForDoc(doc);
-      // The bibliography is registered in the preview's file when it shares the citing file's format family, else in the citing file.
-      const sameFamily = Boolean(entry) && formatOf(entry) === formatOf(activePath);
-      const regPath = sameFamily ? entry : activePath;
-      const regId = sameFamily ? textIdForPath(doc, entry) : activeFile;
-      const reg = getTextFromDoc(regId);
-      const plan = planZoteroImport({
-        source: reg?.toString() || "", targetPath: regPath, texts: tree.texts,
-        item: { ...fetched, zotero_item: entry.zotero_item }, format: formatOf(regPath),
-      });
-      const bibId = textIdForPath(doc, plan.path);
-      const bib = bibId ? getTextFromDoc(bibId) : null;
+      const { plan, regId } = writeZoteroImport(doc, activeFile, activePath, fetched, item.zotero_item);
       const changes = [{ from: Math.min(start_utf16, end_utf16), to: Math.max(start_utf16, end_utf16), insert: plan.key }];
       if (plan.registration && regId === activeFile) changes.push(plan.registration);
       changes.sort((a, b) => a.from - b.from || a.to - b.to);
       const setupShift = plan.registration && regId === activeFile && plan.registration.from <= Math.min(start_utf16, end_utf16)
         ? plan.registration.insert.length - (plan.registration.to - plan.registration.from) : 0;
-      if (bib) {
-        if (plan.addition) {
-          const end = bib.toString().length;
-          writeText(bibId, bib, end, end, plan.addition);
-        }
-      } else addTextToDoc(doc, plan.path, plan.bibtex);
-      if (plan.registration && reg && regId !== activeFile) {
-        writeText(regId, reg, plan.registration.from, plan.registration.to, plan.registration.insert);
-      }
       target.view.dispatch({ changes, selection: { anchor: Math.min(start_utf16, end_utf16) + setupShift + plan.key.length }, annotations: Transaction.userEvent.of("input.complete") });
       if (tracked) prune(doc);
       doc.commit();
@@ -668,6 +686,27 @@
       onbibliography?.({ entries: bibliographyEntries(), diagnostics: [{ severity: "warning", message: `Zotero import failed: ${error?.message || error}`, file: pathOfDoc(session.doc, showing), line: 0 }] }, bibliographyRequest());
       return false;
     }
+  }
+
+  /// Imports several Zotero items for the Insert > Citation dialog. Errors throw to the caller. It returns the citation key of each item, in order.
+  export async function importZoteroItems(items) {
+    if (!editable || !session || !showing || !view) throw new Error("Open a file that can be edited before importing from Zotero.");
+    const activeSession = session, doc = session.doc, activeFile = showing, activePath = pathOfDoc(doc, showing);
+    const fetchedItems = await Promise.all(items.map((item) => zoteroItem(item.zotero_item)));
+    if (session !== activeSession || session.doc !== doc || showing !== activeFile || pathOfDoc(doc, activeFile) !== activePath || !editable) {
+      throw new Error("The document changed while Zotero answered. Try again.");
+    }
+    const keys = [];
+    for (let index = 0; index < items.length; index++) {
+      const { plan, regId } = writeZoteroImport(doc, activeFile, activePath, fetchedItems[index], items[index].zotero_item);
+      keys.push(plan.key);
+      // The file on screen goes through the view, because writeText would bypass the editor for it.
+      if (plan.registration && regId === activeFile) view.dispatch({ changes: plan.registration });
+    }
+    if (tracked) prune(doc);
+    doc.commit();
+    scheduleBibliography();
+    return keys;
   }
 
   let host = $state(null);
