@@ -293,6 +293,18 @@ impl BlobStore for ObjectBlobStore {
         };
         let offset = Self::path(after.unwrap_or(prefix.as_ref().map_or("", ObjectPath::as_ref)))?;
         let mut stream = self.inner.list_with_offset(prefix.as_ref(), &offset);
+        // The local filesystem lists in directory order, not key order, so its
+        // page is cut only after sorting. A cut before sorting would let the
+        // cursor skip keys. Object stores list in key order and stream.
+        if self.local_root.is_some() {
+            let mut all = Vec::new();
+            while let Some(row) = stream.next().await {
+                all.push(row.map_err(map_error)?);
+            }
+            all.sort_by(|left, right| left.location.cmp(&right.location));
+            all.truncate(limit);
+            return Ok(all.into_iter().map(info).collect());
+        }
         let mut remaining = limit;
         let mut rows = Vec::new();
         while remaining > 0 {
