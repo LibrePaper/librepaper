@@ -216,6 +216,42 @@ const titleSample = [
   "\\title{After}",
   "Text.",
 ].join("\n");
+// A Typst kitchen-sink document. The setup lines at the top (page, text, heading
+// numbering, show, import and a definition) fold into one chip, and the body
+// holds the markup, link, figure, layout and unknown-call cases. The caret stays
+// on the "Caret here." line in the body.
+const typstSinkSample = [
+  '#set page(paper: "a5", margin: 2cm)',
+  '#set text(font: "Libertinus Serif", size: 11pt, lang: "en")',
+  '#set heading(numbering: "1.")',
+  "#show heading: it => it.body",
+  '#import "@preview/x:0.1.0": *',
+  "#let f(x) = x",
+  "= Sink",
+  "== Level two",
+  "*strong* and _emph_ words with `code` inline.",
+  "",
+  "```rust",
+  "fn main() {}",
+  "```",
+  "",
+  "- item",
+  "",
+  "+ item",
+  "",
+  "/ Term: def",
+  "",
+  'Colour: #text(fill: red)[warm], #rgb("#ff0000") swatch, #underline[u], #strike[s], #highlight[h], #smallcaps[sc], #super[2].',
+  'Links: #link("https://example.org")[site], https://typst.app, a note#footnote[note] and #quote[said].',
+  "Symbols: #sym.dash.em, #sym.arrow.r, #emoji.rocket, -- and --- and ... and ~ here.",
+  '#figure(image("a.png"), caption: [A plot]) <fig-a>',
+  "As @fig-a shows, #lorem(5)",
+  "#pagebreak()",
+  "#outline()",
+  '#bibliography("refs.bib")',
+  "#my-func(1)[x]",
+  "Caret here.",
+].join("\n");
 
 // Runs in the page. It refers only to names the generated entry defines
 // (component, session, ids, samples, tick, EditorView), so its source is
@@ -539,6 +575,34 @@ async function visualCheck() {
   await settle();
   sink.tikzClicked = visibleText();
 
+  // Check 6f: the Typst kitchen-sink document. The caret sits on "Caret here.", so
+  // the setup lines fold into one chip and each construct in the body is drawn.
+  // A click on the setup chip shows its source.
+  component.$set({ visual: true, file: ids.sinkTyp, format: "typst" });
+  await settle();
+  await wait(800);
+  view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("Caret here.") + 6 } });
+  await settle();
+  const setupChip = Array.from(document.querySelectorAll(".cm-editor .cm-lp-hidden"))
+    .find((node) => node.textContent.trim().startsWith("Setup:"));
+  // The innermost element whose whole text is "warm" carries the colour style.
+  const warmStyle = Array.from(document.querySelectorAll(".cm-editor [style]"))
+    .filter((node) => node.textContent.trim() === "warm")
+    .pop()?.getAttribute("style") ?? null;
+  const typstSink = {
+    text: visibleText(),
+    hidden: texts(".cm-lp-hidden"),
+    setupChip: Boolean(setupChip),
+    warmStyle,
+    footnotes: document.querySelectorAll(".cm-editor .cm-lp-footnote").length,
+    links: document.querySelectorAll(".cm-editor .cm-lp-link").length,
+    swatches: document.querySelectorAll(".cm-editor .cm-lp-swatch").length,
+    katexErrors: document.querySelectorAll(".cm-editor .katex-error").length,
+  };
+  setupChip?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  await settle();
+  typstSink.clicked = visibleText();
+
   // Check 7: timing, reported and not asserted. Each typing run makes 50
   // single character insertions at the middle of the file, one dispatch at a
   // time. The caret run makes 50 selection-only dispatches, each moving the
@@ -595,7 +659,8 @@ async function visualCheck() {
     titleBlock,
     figure,
     sink,
-    timing: { lines: timingOn.lines, on: { median: timingOn.median, max: timingOn.max }, off: { median: timingOff.median, max: timingOff.max } },
+    typstSink,
+    timing:{ lines: timingOn.lines, on: { median: timingOn.median, max: timingOn.max }, off: { median: timingOff.median, max: timingOff.max } },
     caret,
     hugeTiming: { lines: hugeOn.lines, on: { median: hugeOn.median, max: hugeOn.max }, off: { median: hugeOff.median, max: hugeOff.max } },
   };
@@ -608,7 +673,7 @@ const source = [
   `import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};`,
   `import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};`,
   `import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};`,
-  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, paper: paperSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample, sink: sinkSample, title: titleSample })};`,
+  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, paper: paperSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample, sink: sinkSample, title: titleSample, typstSink: typstSinkSample })};`,
   `document.documentElement.dataset.theme = "librepaper";`,
   `document.documentElement.dataset.palette = "librepaper";`,
   `document.documentElement.dataset.mode = "light";`,
@@ -629,6 +694,7 @@ const source = [
   `  refs: session.addText("refs.tex", samples.refs),`,
   `  figure: session.addText("figure.tex", samples.figure),`,
   `  sink: session.addText("sink.tex", samples.sink),`,
+  `  sinkTyp: session.addText("sink.typ", samples.typstSink),`,
   `  title: session.addText("title.tex", samples.title),`,
   `  intro: session.addText("sections/intro.tex", samples.intro),`,
   `};`,
@@ -962,6 +1028,26 @@ try {
   assert.equal(result.sink.katexErrors, 0, "sink.tex has KaTeX parse errors (.katex-error inside .cm-editor)");
   assert.ok(result.sink.tikzClicked.includes("\\begin{tikzpicture}"), "a click on the TikZ chip did not show \\begin{tikzpicture}");
   console.log("visual-markup-browser: sink.tex draws its text commands, environments and citations, and a click on the TikZ chip shows its source");
+
+  // Check 6f: sink.typ draws its markup, links, footnote, swatch and references,
+  // folds its setup lines into one chip, hides its source, and shows the setup
+  // source after a click on the chip.
+  const typstBody = result.typstSink.text.replace(/\s+/g, " ");
+  for (const drawn of ["strong and emph", "warm", "—", "→", "🚀", "–", "…", "site", "Figure 1", "Table of contents", "Page break", "Bibliography", "Placeholder text", "#my-func"]) {
+    assert.ok(typstBody.includes(drawn), `sink.typ does not draw '${drawn}'; visible text: ${typstBody}`);
+  }
+  for (const source of ["*strong*", "_emph_", "#underline", "#text(", "#link(", "#footnote", "#sym.", "#emoji.", "#set page", "#lorem", "#pagebreak"]) {
+    assert.equal(typstBody.includes(source), false, `${source} is still visible in sink.typ with the caret on its last body line`);
+  }
+  assert.equal(result.typstSink.hidden.filter((text) => text.startsWith("Setup:")).length, 1, `expected one hidden chip starting with 'Setup:'; chips: ${JSON.stringify(result.typstSink.hidden)}`);
+  assert.equal(result.typstSink.setupChip, true, "no .cm-lp-hidden chip starts with 'Setup:'");
+  assert.ok(result.typstSink.footnotes > 0, "the #footnote did not draw as a .cm-lp-footnote");
+  assert.ok(result.typstSink.links > 0, "the #link did not draw as a .cm-lp-link");
+  assert.ok(result.typstSink.swatches > 0, "the #rgb did not draw as a .cm-lp-swatch");
+  assert.equal(result.typstSink.katexErrors, 0, "sink.typ has KaTeX parse errors (.katex-error inside .cm-editor)");
+  assert.ok(result.typstSink.warmStyle !== null && /color/.test(result.typstSink.warmStyle), `the #text(fill: red) text has no inline colour style; style: ${JSON.stringify(result.typstSink.warmStyle)}`);
+  assert.ok(result.typstSink.clicked.includes("#set page"), "a click on the Setup chip did not show #set page");
+  console.log("visual-markup-browser: sink.typ draws its markup, links, footnote, swatch and references, folds its setup lines, and a click on the setup chip shows its source");
 
   // Check 7: timing, printed only.
   console.log(`visual-markup-browser timing (informational, not asserted, ${result.timing.lines} lines): ` +
