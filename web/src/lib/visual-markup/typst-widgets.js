@@ -4,6 +4,7 @@
 import { WidgetType } from "@codemirror/view";
 import { ElementWidget, factsOf, includeOpener, nameList } from "./index.js";
 import { registerWidget, revealOnMousedown, textOf } from "./markup.ts";
+import { TYPST_FUNCTIONS } from "./languages/typst/catalog.ts";
 import "./typst.css";
 
 // ---- Text helpers ----------------------------------------------------------
@@ -368,3 +369,18 @@ class SwatchWidget extends WidgetType {
 }
 
 registerWidget("swatch", (context) => new SwatchWidget(context));
+
+// A chip from the Typst catalog (page break, outline, bibliography, placeholder
+// text, drawings), with its first argument when the catalog asks for it.
+registerWidget("typchip", ({ token, source }) => {
+  const name = token.name ?? "";
+  const render = (TYPST_FUNCTIONS.get(name) ?? TYPST_FUNCTIONS.get(name.split(".")[0]))?.render;
+  if (!render || render.kind !== "chip") return null;
+  let text = render.text;
+  const first = token.args?.[0] ? textOf(source, token.args[0]).replace(/^"|"$/g, "").trim() : "";
+  if (render.argument && first) text += `: ${first}`;
+  return new ElementWidget({
+    className: render.block ? "cm-lp-chip cm-lp-chip-block" : "cm-lp-chip",
+    content: [text],
+  });
+});

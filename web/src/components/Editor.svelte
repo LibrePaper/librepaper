@@ -248,6 +248,7 @@
   import { visualMarkup, factsUpdate } from "../lib/visual-markup/index.js";
   import { documentFacts } from "../lib/visual-markup/facts.js";
   import { markdownFacts } from "../lib/visual-markup/markdown-facts.js";
+  import { typstFacts } from "../lib/visual-markup/typst-facts.js";
 
   // Whether what is typed here is recorded as a tracked change is not a prop
   // to follow. It starts from `tracking` and is flipped by `startTracking` and
@@ -579,10 +580,9 @@
     untrack(() => {
       const path = pathOfDoc(session.doc, id);
       const format = formatOf(path);
-      if (!target || !visual || (format !== "latex" && format !== "markdown")) return;
-      const facts = format === "markdown"
-        ? markdownFacts(treeForDoc(session.doc).texts, entry || path, path, bibliographyEntries())
-        : documentFacts(treeForDoc(session.doc).texts, entry || path, path, bibliographyEntries());
+      const compute = { latex: documentFacts, markdown: markdownFacts, typst: typstFacts }[format];
+      if (!target || !visual || !compute) return;
+      const facts = compute(treeForDoc(session.doc).texts, entry || path, path, bibliographyEntries());
       const sent = JSON.stringify(facts, factsJson);
       if (!fresh && sentFacts.get(target) === sent) return;
       sentFacts.set(target, sent);

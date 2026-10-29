@@ -109,11 +109,9 @@ export function visualMarkup(format, { path = () => "", imageUrl = null, dark = 
   }
 
   if (format === "latex") extensions.push(preambleFold());
-  // Markdown draws from the same facts and opens includes the same way.
-  if (format === "latex" || format === "markdown") {
-    extensions.push(factsField);
-    if (openInclude) extensions.push(includeOpener.of(openInclude));
-  }
+  // Every format draws from document facts and opens includes the same way.
+  extensions.push(factsField);
+  if (openInclude) extensions.push(includeOpener.of(openInclude));
 
   return extensions;
 }
@@ -670,6 +668,11 @@ registerWidget("link", ({ token, source }) => {
     const label = token.options?.[0] ? argText(source, token.options[0]) : "";
     url = `#${label}`;
     text = cleanTitle(args[0] ?? "");
+  } else if (name === "link") {
+    // Typst: #link("url")[text]; without a trailing block it shows the address.
+    url = (args[0] ?? "").replace(/^"|"$/g, "");
+    const content = token.meta?.raw === "true" || !token.body ? "" : cleanTitle(argText(source, token.body));
+    text = content || url;
   } else {
     // \url, \nolinkurl and \path show the address itself.
     url = args[0] ?? "";

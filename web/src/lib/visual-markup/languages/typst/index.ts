@@ -212,6 +212,11 @@ function style(token: Token): TokenStyle | null {
         // if, for, while, context, code blocks and expressions show as code.
         return { class: 'cm-lp-code-inline', keepSyntax: true };
       }
+      // A call without a content block, such as #pagebreak(), #lorem(5) or #rgb("#f00"),
+      // is still a chip or widget when the catalog says so; other such calls show their arguments.
+      const callRender = (TYPST_FUNCTIONS.get(name) ?? TYPST_FUNCTIONS.get(name.split('.')[0]))?.render;
+      if (token.meta?.args === 'code' && callRender?.kind === 'chip') return { widget: 'typchip', block: callRender.block };
+      if (token.meta?.args === 'code' && callRender?.kind === 'widget') return { widget: callRender.widget, block: callRender.block };
       if (token.meta?.args === 'code') return {};
       if (name === 'sym' || name === 'emoji') {
         const glyph = (name === 'sym' ? TYPST_SYMBOLS : TYPST_EMOJI).get(token.meta?.path ?? '');

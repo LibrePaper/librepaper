@@ -193,10 +193,12 @@ const FUNCTION_ROWS: FunctionRow[] = [
   ['version', source],
 
   // Section 15: specialized output (preserved as source)
+  ['pdf', source],
   ['pdf.attach', source],
   ['pdf.artifact', source],
   ['pdf.header-cell', source],
   ['pdf.data-cell', source],
+  ['html', source],
   ['html.elem', source],
   ['html.frame', source],
 ];
