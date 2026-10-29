@@ -34,6 +34,9 @@
   const bracketsCompartment = new Compartment();
   const spellcheckCompartment = new Compartment();
   const checkCompartment = new Compartment();
+  // The visual layer is drawn only for LaTeX and Typst, and its colours follow
+  // the page's mode, so it is brought into line when a file or the mode changes.
+  const visualCompartment = new Compartment();
   // The bracket keymap goes with auto-closing brackets. Its Backspace deletes an
   // empty pair even without closeBrackets, so leaving it in the main keymap
   // would leave the switch half off.
@@ -242,6 +245,7 @@
   import { harperAvailable } from "../lib/harper/client.js";
   import { isEnglishDocument } from "../lib/harper/language.js";
   import { untrack } from "svelte";
+  import { visualMarkup } from "../lib/visual-markup/index.js";
 
   // Whether what is typed here is recorded as a tracked change is not a prop
   // to follow. It starts from `tracking` and is flipped by `startTracking` and
@@ -254,6 +258,7 @@
   let { session, format = "", file = "", keys = "default", editable = true,
     completion = true, brackets = true, proofing = "browser", dialect = "american", check = true,
     tracking = false, me = { who: "", author: "" }, selectedChange = null,
+    visual = false, imageUrl = null,
     analyze = analyzeBibliography,
     onchange, oncaret, onfilechange, onbibliography, onsave, onquit,
     rules = null,
@@ -1133,6 +1138,7 @@
         // underline and the hover the lint extension draws. Drawn only while
         // the check is on.
         checkCompartment.of(checkOn(untrack(() => check), citationKeys)),
+        visualCompartment.of(visualOn(untrack(() => visual), path)),
         EditorView.lineWrapping,
         // Pending changes, drawn in the text they changed.
         pendingChanges,
@@ -1261,6 +1267,19 @@
         checkCompartment.reconfigure(checkOn(untrack(() => check), citationKeys)),
       ],
     });
+  }
+
+  // The visual layer for a file, or nothing where it draws no such format. The
+  // colours depend on the page's mode, so this is read again on a theme change.
+  function visualOn(on, path) {
+    return on ? visualMarkup(formatOf(path), { path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark" }) : [];
+  }
+
+  // Reconfigures the live view's visual layer for the file it shows.
+  function syncVisual(target, id = showing) {
+    if (!target) return;
+    const path = pathOfDoc(session.doc, id);
+    target.dispatch({ effects: visualCompartment.reconfigure(visualOn(untrack(() => visual), path)) });
   }
 
   // The prose format of a file, or empty for code and data files, which spellcheck leaves alone.
@@ -1411,6 +1430,7 @@
     syncKeys(view);
     syncFeatures(view, id);
     syncTheme(view);
+    syncVisual(view, id);
     showing = id;
     announced = "";
     // A file this browser has open is where its caret is, which is what the
@@ -1458,7 +1478,7 @@
       untrack(() => viewCallbacks.set(view, { onsave, onquit }));
       syncKeys(view);
       syncFeatures(view, initial.first);
-      const unsubscribeMode = onMode(() => syncTheme(view));
+      const unsubscribeMode = onMode(() => { syncTheme(view); syncVisual(view); });
       // The font and line height are the person's, and a change in the settings row lands here.
       startEditorType();
       const unsubscribeFont = onFont(() => {
@@ -1561,6 +1581,12 @@
       syncFeatures(view);
       untrack(() => setDiagnostics(all));
     }
+  });
+
+  // The visual layer switch works the same way, and redraws nothing else.
+  $effect(() => {
+    void visual;
+    if (view) untrack(() => syncVisual(view));
   });
 
 </script>
