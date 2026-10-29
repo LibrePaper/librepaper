@@ -1,9 +1,10 @@
 import { EditorState, Extension, Facet, Range as CMRange, RangeSet } from '@codemirror/state';
-import { Decoration, DecorationSet, WidgetType } from '@codemirror/view';
+import { Decoration, DecorationSet, EditorView, WidgetType } from '@codemirror/view';
 import { Language, TokenStyle } from '../core/language';
 import { Tokenizer } from '../core/tokenizer';
 import { Range, Token } from '../core/tokens';
 import { createWidget } from './widget-registry';
+import { revealOnMousedown } from './widgets';
 
 export interface BuildOptions {
   language: Language;
@@ -69,17 +70,18 @@ class HiddenRunWidget extends WidgetType {
     return other instanceof HiddenRunWidget && other.summary === this.summary;
   }
 
-  toDOM(): HTMLElement {
+  toDOM(view: EditorView): HTMLElement {
     const element = document.createElement('div');
     element.className = 'cm-lp-hidden';
     element.textContent = this.summary;
     element.title = 'Show the source';
+    revealOnMousedown(view, element);
     return element;
   }
 
-  // Let the editor handle clicks so the caret moves into the run and reveals it.
+  // The click is handled by revealOnMousedown, which moves the caret into the run.
   ignoreEvent(): boolean {
-    return false;
+    return true;
   }
 }
 
@@ -186,7 +188,8 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
     }
   };
 
-  const emit = (list: Token[]) => {
+  // scopeEnd is where a declaration (\bfseries) stops: its enclosing group or environment body.
+  const emit = (list: Token[], scopeEnd: number) => {
     for (const token of list) {
       // A figure shows as source, descendants included, while the caret is anywhere in it.
       if (
@@ -196,9 +199,10 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
       ) continue;
 
       const style = options.language.style(token);
+      const childScope = token.body?.to ?? scopeEnd;
 
       if (!style) {
-        if (token.children) emit(token.children);
+        if (token.children) emit(token.children, childScope);
         continue;
       }
 
@@ -233,17 +237,48 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
 
       applyStyle(state, decorations, token, style);
 
+      if (style.declaration && token.to < scopeEnd) {
+        decorations.push(Decoration.mark({ class: style.declaration }).range(token.to, scopeEnd));
+      }
+
+      // An environment header is replaced by its widget; the default concealment below still
+      // hides the same range, which the replacement then overrides.
+      if (style.header && token.body && !options.showCommands && !inScope) {
+        const range = { from: token.from, to: token.body.from };
+        const widget = createWidget(style.header, { token, source, state, language: options.language });
+        const spansLines = state.doc.lineAt(range.from).number !== state.doc.lineAt(range.to).number;
+        const startLine = state.doc.lineAt(range.from);
+        const endLine = state.doc.lineAt(range.to);
+        const block = range.from === startLine.from && (range.to === endLine.to || range.to === endLine.from);
+        if (widget && (block || !spansLines)) {
+          const decoration = Decoration.replace({ widget, block });
+          decorations.push(decoration.range(range.from, range.to));
+          atomic.push(decoration.range(range.from, range.to));
+          replaced.push(range);
+        }
+      }
+
+      if (style.footer !== undefined && token.body && !options.showCommands && !inScope) {
+        // Drawn after the last visible character of the body, not after a trailing newline.
+        let position = token.body.to;
+        while (position > token.body.from && /\s/.test(source[position - 1])) position--;
+        const marker = new MarkerWidget(style.footer, 'cm-lp-footer');
+        decorations.push(Decoration.widget({ widget: marker, side: 1 }).range(position));
+      }
+
       if (style.hidden) {
         if (!inScope) hide(token.from, token.to);
       } else if (style.replaceWith !== undefined) {
         if (!options.showCommands && !inScope) {
           const marker = Decoration.replace({ widget: new MarkerWidget(style.replaceWith) });
-          const end = token.body?.from ?? token.to;
+          // A command, accent or ligature is replaced as a whole. An item keeps its optional label.
+          const end = token.kind === 'item' ? token.body?.from ?? token.to : token.to;
           decorations.push(marker.range(token.from, end));
           replaced.push({ from: token.from, to: end });
         }
       } else if (!style.keepSyntax && !inScope) {
-        const body = token.body;
+        // \replaced{new}{old} conceals around the argument it shows.
+        const body = style.argument !== undefined ? token.args?.[style.argument] : token.body;
         if (body) {
           hide(token.from, body.from);
           hide(body.to, token.to);
@@ -254,11 +289,11 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
         layoutTable(state, source, options.language, token, decorations, hide, joinedBreaks);
       }
 
-      if (token.children && !style.keepSyntax) emit(token.children);
+      if (token.children && !style.keepSyntax) emit(token.children, childScope);
     }
   };
 
-  emit(parsed);
+  emit(parsed, state.doc.length);
 
   const spans = subtract(merge(concealed), merge(replaced));
 

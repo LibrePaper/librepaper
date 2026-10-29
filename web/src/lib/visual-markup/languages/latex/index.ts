@@ -1,6 +1,7 @@
 import { cssColor } from '../../core/color';
 import { registerLanguage, Language, LanguageCommands, TokenStyle } from '../../core/language';
 import { Token } from '../../core/tokens';
+import { COMMANDS, ENVIRONMENTS, type EnvironmentRender, type Render } from './catalog';
 import { ARGUMENT_COUNT, COMMAND_CLASSES, EDITABLE_COMMANDS, INCLUDE_COMMANDS, LIST_ENVIRONMENTS, REF_COMMANDS, VERBATIM_ENVIRONMENTS } from './commands';
 import { rules } from './rules';
 import { table } from './table';
@@ -57,6 +58,58 @@ const commands: LanguageCommands = {
 };
 
 
+// Tokens store names without the star. The tables below still key starred forms
+// (caption*, hspace*), so they are looked up with the star restored.
+function fullName(token: Token): string {
+  return token.star ? `${token.name}*` : token.name ?? '';
+}
+
+function commandStyle(render: Render): TokenStyle {
+  switch (render.kind) {
+    case 'mark':
+      return { class: render.class };
+    case 'declaration':
+      return { hidden: true, declaration: render.class };
+    case 'hide':
+      return { hidden: true };
+    case 'symbol':
+      return { replaceWith: render.text };
+    case 'chip':
+      return { widget: 'chip', block: render.block };
+    case 'widget':
+      return { widget: render.widget, block: render.block };
+    case 'source':
+      return { class: 'cm-lv-cmd-unknown', keepSyntax: true };
+  }
+}
+
+function environmentStyle(render: EnvironmentRender): TokenStyle {
+  switch (render.kind) {
+    case 'theorem':
+    case 'abstract':
+    case 'keywords':
+      return { class: `cm-lp-env cm-lp-env-${render.kind}`, block: true, header: 'envhead' };
+    case 'proof':
+      return { class: 'cm-lp-env cm-lp-env-proof', block: true, header: 'envhead', footer: '∎' };
+    case 'quote':
+      return { class: 'cm-lp-quote', block: true };
+    case 'align':
+      return { class: `cm-lp-align-${render.align}`, block: true };
+    case 'columns':
+      return { class: 'cm-lp-columns', block: true };
+    case 'box':
+      return { class: 'cm-lp-box', block: true };
+    case 'code':
+      return { class: 'cm-lp-code', block: true, keepSyntax: true };
+    case 'opaque':
+      return { widget: 'chip', block: true };
+    case 'bibliography':
+      return { class: 'cm-lp-thebibliography', block: true };
+    case 'plain':
+      return { block: true };
+  }
+}
+
 function style(token: Token): TokenStyle | null {
   switch (token.kind) {
     case 'comment':
@@ -69,7 +122,7 @@ function style(token: Token): TokenStyle | null {
       return { class: `cm-lv-heading cm-lv-h${token.level}`, block: true };
     case 'item':
       return { replaceWith: '•' };
-    case 'container':
+    case 'container': {
       if (token.meta?.figureComposite === 'true') return { widget: 'figure', block: true, keepSyntax: true };
       if (token.meta?.figure === 'true') {
         const classes = ['cm-lv-figure', 'cm-lv-figure-simple'];
@@ -81,34 +134,55 @@ function style(token: Token): TokenStyle | null {
           attributes: token.meta.figureWidth ? { style: `width:${token.meta.figureWidth};max-width:100%` } : undefined
         };
       }
-      return {
-        class: LIST_ENVIRONMENTS.has(token.name!) ? 'cm-lv-list' : 'cm-lv-env',
-        block: true,
-        keepSyntax: VERBATIM_ENVIRONMENTS.has(token.name!)
-      };
+      const name = token.name ?? '';
+      const full = fullName(token);
+      if (LIST_ENVIRONMENTS.has(full)) return { class: 'cm-lv-list', block: true };
+      if (VERBATIM_ENVIRONMENTS.has(full)) return { class: 'cm-lv-env', block: true, keepSyntax: true };
+      const spec = ENVIRONMENTS.get(name);
+      if (spec) return environmentStyle(spec.render);
+      return { class: 'cm-lv-env', block: true };
+    }
     case 'tie':
-      return { replaceWith: ' ' };
+      return { replaceWith: ' ' };
+    case 'ligature':
+    case 'accent': {
+      const text = token.meta?.text;
+      return text === undefined ? null : { replaceWith: text };
+    }
+    case 'linebreak':
+      return { replaceWith: '↵' };
+    case 'verb':
+      return { widget: 'verb' };
+    // Braces are hidden by the default concealment of a body; the children stay visible.
+    case 'group':
+      return { class: '' };
     case 'command': {
-      if (REF_COMMANDS.has(token.name ?? '')) return { widget: 'ref' };
-      if (INCLUDE_COMMANDS.has(token.name ?? '')) return { widget: 'include' };
-      if (token.name === 'maketitle') return { widget: 'title', block: true };
-      if (token.name === 'includegraphics' || token.name === 'includegraphics*') return { widget: 'image' };
+      const name = token.name ?? '';
+      const full = fullName(token);
+      if (REF_COMMANDS.has(full)) return { widget: 'ref' };
+      if (INCLUDE_COMMANDS.has(full)) return { widget: 'include' };
+      if (name === 'maketitle') return { widget: 'title', block: true };
+      if (name === 'includegraphics') return { widget: 'image' };
       // Shown as a tag rather than hidden, so a standalone label stays visible in the document.
-      if (token.name === 'label') return { widget: 'label' };
-      if (HIDDEN_LAYOUT_COMMANDS.has(token.name ?? '')) return { hidden: true };
-      const known = COMMAND_CLASSES.get(token.name!);
+      if (name === 'label') return { widget: 'label' };
+      // \replaced{new}{old} shows only the new text.
+      if (name === 'replaced' && token.args?.length) return { argument: 0 };
+      if (HIDDEN_LAYOUT_COMMANDS.has(full)) return { hidden: true };
+      const known = COMMAND_CLASSES.get(full);
       if (known) {
         const color = cssColor(token.meta?.color);
         const border = cssColor(token.meta?.borderColor);
         const properties: string[] = [];
-        if (color) properties.push(token.name === 'textcolor' ? `color:${color}` : `background-color:${color}`);
+        if (color) properties.push(name === 'textcolor' ? `color:${color}` : `background-color:${color}`);
         if (border) properties.push(`box-shadow:inset 0 0 0 1px ${border}`);
         return {
           class: known,
           attributes: properties.length ? { style: properties.join(';') } : undefined
         };
       }
-      if (EDITABLE_COMMANDS.has(token.name!)) return { class: 'cm-lv-cmd' };
+      const spec = COMMANDS.get(name);
+      if (spec) return commandStyle(spec.render);
+      if (EDITABLE_COMMANDS.has(full)) return { class: 'cm-lv-cmd' };
       return { class: 'cm-lv-cmd-unknown', keepSyntax: true };
     }
     default:
