@@ -178,8 +178,15 @@ function style(token: Token): TokenStyle | null {
         const text = token.meta?.text;
         return text === undefined ? null : { replaceWith: text };
       }
-      return token.name ? { class: 'cm-lv-mono', keepSyntax: token.name === 'block' } : null;
+      return token.name ? { class: 'cm-lv-mono' } : null;
     case 'container':
+      // A raw block draws like a Markdown code block: its language line becomes the cellhead
+      // header and its closing fence collapses through the default concealment.
+      if (token.name === 'codeblock') {
+        return token.meta?.lang
+          ? { class: 'cm-lp-code', block: true, header: 'cellhead' }
+          : { class: 'cm-lp-code', block: true };
+      }
       if (token.meta?.figureCaption === 'true') return { class: 'cm-lv-caption' };
       return { class: 'cm-lv-content' };
     case 'table':
