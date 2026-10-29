@@ -132,6 +132,22 @@ const sinkSample = [
   "Caret here.",
   "\\end{document}",
 ].join("\n");
+// A title block in the body. The preamble has a title that the body overrides,
+// the authors take an optional argument and a \thanks, an affiliation is given,
+// and a title after \maketitle must not be used.
+const titleSample = [
+  "\\documentclass{article}",
+  "\\usepackage{authblk}",
+  "\\title{Old}",
+  "\\begin{document}",
+  "\\title{New}",
+  "\\author[1]{Ada\\thanks{x}}",
+  "\\author[2]{Bob}",
+  "\\affil[1]{Uni A}",
+  "\\maketitle",
+  "\\title{After}",
+  "Text.",
+].join("\n");
 
 // Runs in the page. It refers only to names the generated entry defines
 // (component, session, ids, samples, tick, EditorView), so its source is
@@ -328,6 +344,59 @@ async function visualCheck() {
     text: visibleText(),
   };
 
+  // Check 6c2: the parts of the title block in refs.tex. A mousedown on a part
+  // puts the caret at the start of its argument in the source, and the preamble
+  // shows only the lines around that command. A title edit draws at once, and
+  // the edit is taken out again afterwards.
+  const partClick = async (selector) => {
+    document.querySelector(`.cm-editor ${selector}`)?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    await settle();
+  };
+  const refsSource = view().state.doc.toString();
+  await partClick(".cm-lp-title-main");
+  const titleClick = {
+    head: view().state.selection.main.head,
+    text: visibleText(),
+    chips: texts(".cm-lp-preamble"),
+    main: textOf(".cm-lp-title-main"),
+  };
+  const titleEnd = refsSource.indexOf("A Study") + "A Study".length;
+  view().dispatch({ changes: { from: titleEnd, insert: " II" } });
+  await wait(300);
+  const liveTitle = textOf(".cm-lp-title-main");
+  view().dispatch({ changes: { from: titleEnd, to: titleEnd + " II".length } });
+  await settle();
+  const restored = view().state.doc.toString() === refsSource;
+  await partClick('[data-part="author"][data-index="1"]');
+  const authorClick = { head: view().state.selection.main.head, text: visibleText() };
+  await partClick('[data-part="date"]');
+  const dateClick = { head: view().state.selection.main.head };
+  view().dispatch({ selection: { anchor: 5 } });
+  await settle();
+  const preambleAt5 = { chips: texts(".cm-lp-preamble"), text: visibleText() };
+  view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("\\maketitle") + 2 } });
+  await settle();
+  const maketitleText = visibleText();
+
+  // Check 6c3: a title block drawn from title.tex, a body title before \maketitle.
+  // Its part click lands in the body argument and the preamble stays folded.
+  component.$set({ visual: true, file: ids.title, format: "latex" });
+  await settle();
+  const sampleShown = await poll(() => document.querySelectorAll(".cm-editor .cm-lp-title-main").length);
+  const titleSourceText = view().state.doc.toString();
+  view().dispatch({ selection: { anchor: titleSourceText.indexOf("Text.") + 1 } });
+  await settle();
+  const sample = {
+    shown: sampleShown,
+    main: textOf(".cm-lp-title-main"),
+    author: textOf(".cm-lp-title-author"),
+    affils: texts(".cm-lp-title-affil"),
+  };
+  await partClick(".cm-lp-title-main");
+  sample.click = { head: view().state.selection.main.head, preambles: texts(".cm-lp-preamble").length };
+
+  const titleBlock = { titleClick, liveTitle, restored, authorClick, dateClick, preambleAt5, maketitleText, sample };
+
   // Check 6d: a figure. With the caret in the body the figure folds into a drawn
   // image; with the caret inside its caption the source shows and the image does
   // not; a click on the image shows the source again.
@@ -426,6 +495,7 @@ async function visualCheck() {
     markdown,
     full: { body: fullBody, preambleClick: fullPreambleClick, preamble: fullPreamble, end: fullEnd, display: fullDisplay },
     refs: refsCheck,
+    titleBlock,
     figure,
     sink,
     timing: { lines: timingOn.lines, on: { median: timingOn.median, max: timingOn.max }, off: { median: timingOff.median, max: timingOff.max } },
@@ -441,7 +511,7 @@ const source = [
   `import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};`,
   `import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};`,
   `import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};`,
-  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample, sink: sinkSample })};`,
+  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample, sink: sinkSample, title: titleSample })};`,
   `document.documentElement.dataset.theme = "librepaper";`,
   `document.documentElement.dataset.palette = "librepaper";`,
   `document.documentElement.dataset.mode = "light";`,
@@ -461,6 +531,7 @@ const source = [
   `  refs: session.addText("refs.tex", samples.refs),`,
   `  figure: session.addText("figure.tex", samples.figure),`,
   `  sink: session.addText("sink.tex", samples.sink),`,
+  `  title: session.addText("title.tex", samples.title),`,
   `  intro: session.addText("sections/intro.tex", samples.intro),`,
   `};`,
   `const component = createClassComponent({`,
@@ -696,6 +767,39 @@ try {
   }
   assert.ok(result.refs.katexTexts.some((text) => text.includes("(1)")), "the labelled equation did not show its number (1) through KaTeX");
   console.log(`visual-markup-browser: refs.tex draws its title, include, references ${JSON.stringify(result.refs.refTexts)} and equation number`);
+
+  // Check 6c2: the parts of the title block open their source lines in refs.tex.
+  // The expected preamble summary is computed from the sample's own preamble.
+  const refsPreamble = refsSample.slice(0, refsSample.indexOf("\\begin{document}"));
+  const refsClass = refsPreamble.match(/\\documentclass(?:\[[^\]]*\])?\{([^}]*)\}/)[1];
+  const refsPackages = [...refsPreamble.matchAll(/\\usepackage(?:\[[^\]]*\])?\{([^}]*)\}/g)]
+    .reduce((count, match) => count + match[1].split(",").length, 0);
+  const refsSummary = `Preamble: ${refsClass}, ${refsPackages} ${refsPackages === 1 ? "package" : "packages"}`;
+  const tb = result.titleBlock;
+  assert.equal(tb.titleClick.head, refsSample.indexOf("\\title{") + 7, "a click on the title did not put the caret at the start of the \\title argument");
+  assert.ok(tb.titleClick.text.includes("\\title{A Study}"), "a click on the title did not show \\title{A Study}");
+  for (const source of ["\\documentclass", "\\author", "\\maketitle"]) {
+    assert.equal(tb.titleClick.text.includes(source), false, `${source} is still visible after a click on the title`);
+  }
+  assert.deepEqual(tb.titleClick.chips, [refsSummary, "More preamble"], `the preamble chips after a click on the title were ${JSON.stringify(tb.titleClick.chips)}`);
+  assert.equal(tb.titleClick.main, "A Study", "the title block changed after a click on the title");
+  assert.equal(tb.liveTitle, "A Study II", "an edit to the title did not draw in the title block within 300 ms");
+  assert.equal(tb.restored, true, "the title edit was not taken out of refs.tex");
+  assert.equal(tb.authorClick.head, refsSample.indexOf("Bob"), "a click on the second author did not put the caret at Bob");
+  assert.ok(tb.authorClick.text.includes("\\author{Ada \\and Bob}"), "a click on the second author did not show \\author{Ada \\and Bob}");
+  assert.equal(tb.authorClick.text.includes("\\title{"), false, "\\title{ is still visible after a click on the author");
+  assert.equal(tb.dateClick.head, refsSample.indexOf("\\date{") + 6, "a click on the date did not put the caret at the start of the \\date argument");
+  assert.deepEqual(tb.preambleAt5.chips, [], "the preamble fold stayed with the caret at offset 5");
+  assert.ok(tb.preambleAt5.text.includes("\\date{2020}"), "\\date{2020} was not visible with the caret in the preamble");
+  assert.ok(tb.maketitleText.includes("\\maketitle"), "\\maketitle was not revealed with the caret on it");
+  assert.equal(tb.sample.shown, true, "no .cm-lp-title-main was drawn for title.tex");
+  assert.equal(tb.sample.main, "New", `the title before \\maketitle was not drawn as New; got ${JSON.stringify(tb.sample.main)}`);
+  assert.ok(tb.sample.author.includes("Ada") && tb.sample.author.includes("Bob"), "the authors of title.tex were not drawn in .cm-lp-title-author");
+  assert.equal(tb.sample.author.includes("x"), false, "the \\thanks text showed in the author line of title.tex");
+  assert.ok(tb.sample.affils.some((text) => text.includes("Uni A")), `the \\affil was not drawn in .cm-lp-title-affil; got ${JSON.stringify(tb.sample.affils)}`);
+  assert.equal(tb.sample.click.head, titleSample.indexOf("\\title{New}") + 7, "a click on the body title did not put the caret at the start of its argument");
+  assert.equal(tb.sample.click.preambles, 1, "the preamble did not stay folded after a click on the body title");
+  console.log(`visual-markup-browser: the title block's parts open their source lines, the preamble splits around them, and the title draws its edits (${tb.titleClick.chips.join(" | ")})`);
 
   // Check 6d: a figure folds into an image with the caret outside it, shows its
   // source with the caret inside it, and shows its source after a click on the image.
