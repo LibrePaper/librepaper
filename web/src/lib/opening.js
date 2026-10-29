@@ -132,8 +132,12 @@ function includedNames(format, body) {
   return [];
 }
 
-// The file a name inside `from` points at, when it is a text of the project.
-function resolve(format, from, name, texts) {
+/// The project path that `name`, included from the file `from`, refers to, or
+/// null when `texts` (`{ [path]: body }`) has no such text. LaTeX adds `.tex` to
+/// a name without an extension and looks beside `from`, then at the root.
+/// Typst reads a leading `/` as the root and any other name as beside `from`.
+/// Quarto and Markdown read every name as beside `from`.
+export function resolveInclude(format, from, name, texts) {
   const folder = folderOf(from);
   const found = (candidate) => (candidate !== null && Object.hasOwn(texts, candidate) ? candidate : null);
   if (format === "latex") {
@@ -153,7 +157,7 @@ export function includersOf(texts) {
     const format = formatOf(path);
     if (!format) continue;
     for (const name of includedNames(format, body)) {
-      const target = resolve(format, path, name, texts);
+      const target = resolveInclude(format, path, name, texts);
       if (target === null || target === path) continue;
       if (!found.has(target)) found.set(target, new Set());
       found.get(target).add(path);
@@ -171,7 +175,7 @@ export function includesOf(path, texts) {
   if (!format || !Object.hasOwn(texts, path)) return [];
   const out = [];
   for (const name of includedNames(format, texts[path])) {
-    const target = resolve(format, path, name, texts);
+    const target = resolveInclude(format, path, name, texts);
     if (target === null || target === path || out.includes(target)) continue;
     out.push(target);
   }

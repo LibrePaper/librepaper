@@ -234,7 +234,7 @@
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
   import { projectDirectory } from "../lib/projection.js";
-  import { openingFile } from "../lib/opening.js";
+  import { openingFile, resolveInclude } from "../lib/opening.js";
   import { toLf, healLineEndings, LINE_ENDINGS_ORIGIN } from "../lib/line-endings.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
   import { start as startEditorType, onFont, onLineHeight, size, setSize, DEFAULT_SIZE } from "../lib/editor-type.js";
@@ -245,7 +245,8 @@
   import { harperAvailable } from "../lib/harper/client.js";
   import { isEnglishDocument } from "../lib/harper/language.js";
   import { untrack } from "svelte";
-  import { visualMarkup } from "../lib/visual-markup/index.js";
+  import { visualMarkup, labelsUpdate } from "../lib/visual-markup/index.js";
+  import { numberLabels } from "../lib/visual-markup/labels.js";
 
   // Whether what is typed here is recorded as a tracked change is not a prop
   // to follow. It starts from `tracking` and is flipped by `startTracking` and
@@ -555,10 +556,29 @@
       onbibliography?.({ entries: [], diagnostics: [{ severity: "warning", message: `Bibliography unavailable: ${error?.message || "the parser could not be loaded"}`, file: request.main, line: 0 }] }, request);
     });
   }
+  // The reference numbers of the visual layer count the whole project, so they
+  // follow the same changes the bibliography does: any edit to any text, local
+  // or remote, and any file switch.
+  let labelsTimer = null;
+  function scheduleLabels() {
+    clearTimeout(labelsTimer);
+    labelsTimer = setTimeout(refreshLabels, 300);
+  }
+  // Sets the reference numbers on a view. Reconfiguring the visual layer empties
+  // them, so this runs again after each reconfigure.
+  function refreshLabels(target = view, id = showing) {
+    untrack(() => {
+      const path = pathOfDoc(session.doc, id);
+      if (!target || !visual || formatOf(path) !== "latex") return;
+      const texts = treeForDoc(session.doc).texts;
+      target.dispatch({ effects: labelsUpdate(numberLabels(texts, entry || path)) });
+    });
+  }
   function scheduleBibliography() {
     bibliographyGeneration += 1;
     clearTimeout(bibliographyTimer);
     bibliographyTimer = setTimeout(refreshBibliography, 120);
+    scheduleLabels();
   }
 
   // Redraws the citation underlines once the bibliography has changed.
@@ -1272,7 +1292,14 @@
   // The visual layer for a file, or nothing where it draws no such format. The
   // colours depend on the page's mode, so this is read again on a theme change.
   function visualOn(on, path) {
-    return on ? visualMarkup(formatOf(path), { path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark" }) : [];
+    return on ? visualMarkup(formatOf(path), { path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark", openInclude: (name) => openIncluded(path, name) }) : [];
+  }
+  // Opens the project text an include names, for a click on it in the visual layer.
+  function openIncluded(from, name) {
+    const doc = session?.doc;
+    if (!doc) return;
+    const id = textIdForPath(doc, resolveInclude("latex", from, name, treeForDoc(doc).texts));
+    if (id) openAt(id, 1);
   }
 
   // Reconfigures the live view's visual layer for the file it shows.
@@ -1280,6 +1307,7 @@
     if (!target) return;
     const path = pathOfDoc(session.doc, id);
     target.dispatch({ effects: visualCompartment.reconfigure(visualOn(untrack(() => visual), path)) });
+    refreshLabels(target, id);
   }
 
   // The prose format of a file, or empty for code and data files, which spellcheck leaves alone.
@@ -1499,10 +1527,12 @@
         scheduleDraw();
       }));
       refreshBibliography();
+      refreshLabels(view);
       view.focus();
       return () => {
         bibliographyGeneration += 1;
         clearTimeout(bibliographyTimer);
+        clearTimeout(labelsTimer);
         if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
         unsubscribeChanges();
         unsubscribeMode();
