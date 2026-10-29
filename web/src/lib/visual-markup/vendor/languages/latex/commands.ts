@@ -70,5 +70,14 @@ export const ARGUMENT_COUNT = new Map([
   ['textcolor', 2],
   ['colorbox', 2],
   ['href', 2],
-  ['fcolorbox', 3]
+  ['fcolorbox', 3],
+  ['label', 1],
+  ['bibliographystyle', 1],
+  ['bibliography', 1],
+  ['nocite', 1],
+  ['pagestyle', 1],
+  ['thispagestyle', 1],
+  ['newpage', 0],
+  ['clearpage', 0],
+  ['noindent', 0]
 ]);

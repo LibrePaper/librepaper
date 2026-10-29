@@ -9,7 +9,9 @@ import { figure, latexImageStyle } from './figure';
 
 const HIDDEN_LAYOUT_COMMANDS = new Set([
   'centering', 'raggedleft', 'raggedright', 'hfill', 'hfil',
-  'hspace', 'hspace*', 'vspace', 'vspace*', 'smallskip', 'medskip', 'bigskip'
+  'hspace', 'hspace*', 'vspace', 'vspace*', 'smallskip', 'medskip', 'bigskip',
+  'label', 'bibliographystyle', 'bibliography', 'nocite', 'pagestyle', 'thispagestyle',
+  'newpage', 'clearpage', 'noindent'
 ]);
 
 const commands: LanguageCommands = {

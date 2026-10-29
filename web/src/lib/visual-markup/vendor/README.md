@@ -19,3 +19,6 @@ Changes from upstream:
 - view/visual-editor.ts keeps the parse across cursor moves, maps the
   decorations through an edit and rebuilds once typing pauses. The
   `refreshVisual` effect forces that rebuild.
+- view/decorations.ts reveals an environment's \begin and \end only when the
+  caret is on them, and languages/latex hides commands that draw nothing, such
+  as \label and \bibliography.

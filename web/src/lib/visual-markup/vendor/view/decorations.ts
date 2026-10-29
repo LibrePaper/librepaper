@@ -97,7 +97,11 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
         continue;
       }
 
-      const inScope = isRevealed(token.from, token.to);
+      // Environments reveal only on their \begin and \end, not anywhere in the body.
+      const inScope =
+        token.kind === 'container' && token.body
+          ? isRevealed(token.from, token.body.from) || isRevealed(token.body.to, token.to)
+          : isRevealed(token.from, token.to);
 
       if (style.widget && !options.showCommands && !inScope) {
         const widget = createWidget(style.widget, {
