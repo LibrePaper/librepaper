@@ -86,13 +86,27 @@ const refsSample = [
   "\\maketitle",
   "\\input{sections/intro}",
   "\\section{Method}\\label{sec:m}",
-  "See Equation~\\eqref{eq:a} and Section~\\ref{sec:m} and \\ref{sec:none}.",
+  "See Equation~\\eqref{eq:a} and Section~\\ref{sec:m} and \\ref{sec:none}, \\cref{eq:a}, \\Cref{sec:m}, \\autoref{eq:a} and \\cref{sec:m}.",
   "\\begin{equation}",
   "a = b \\label{eq:a}",
   "\\end{equation}",
   "\\end{document}",
 ].join("\n");
 const introSample = "\\section{Intro}\nText.";
+// A figure with a caption and a label, between two paragraphs of text.
+const figureSample = [
+  "\\documentclass{article}",
+  "\\begin{document}",
+  "Intro text.",
+  "\\begin{figure}[h]",
+  "\\centering",
+  "\\includegraphics[width=0.5\\textwidth]{plot.png}",
+  "\\caption{A plot.}",
+  "\\label{fig:plot}",
+  "\\end{figure}",
+  "After text.",
+  "\\end{document}",
+].join("\n");
 
 // Runs in the page. It refers only to names the generated entry defines
 // (component, session, ids, samples, tick, EditorView), so its source is
@@ -109,6 +123,11 @@ async function visualCheck() {
   const mathKatexCount = () => document.querySelectorAll(".cm-editor .cm-lv-math .katex").length;
   const mathWidgets = () => document.querySelectorAll(".cm-editor .cm-lv-math").length;
   const visibleText = () => document.querySelector(".cm-content").innerText;
+  // Rendered editor rows whose visible text is empty.
+  const blankRows = () => Array.from(document.querySelectorAll(".cm-editor .cm-line"), (node) => node.innerText.trim())
+    .filter((text) => text === "").length;
+  const texts = (selector) => Array.from(document.querySelectorAll(`.cm-editor ${selector}`), (node) => node.textContent.trim());
+  const imageCount = () => document.querySelectorAll(".cm-editor .cm-lv-image").length;
   // Polls for up to five seconds, so a slow KaTeX load has time to land.
   const poll = async (count) => {
     for (let attempt = 0; attempt < 50; attempt++) {
@@ -226,6 +245,9 @@ async function visualCheck() {
     preambleText: fullPreambles.length ? fullPreambles[0].textContent : "",
     katex: mathKatexCount(),
     katexErrors: document.querySelectorAll(".cm-editor .katex-error").length,
+    blankRows: blankRows(),
+    hiddenTexts: texts(".cm-lp-hidden"),
+    labelTexts: texts(".cm-lp-label"),
     text: visibleText(),
   };
   view().dispatch({ selection: { anchor: 5 } });
@@ -263,6 +285,27 @@ async function visualCheck() {
     katexTexts: Array.from(document.querySelectorAll(".cm-editor .katex"), (node) => node.textContent),
     text: visibleText(),
   };
+
+  // Check 6d: a figure. With the caret in the body the figure folds into a drawn
+  // image; with the caret inside its caption the source shows and the image does
+  // not; a click on the image shows the source again.
+  component.$set({ visual: true, file: ids.figure, format: "latex" });
+  await settle();
+  await wait(800);
+  view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("Intro") + 2 } });
+  await settle();
+  const figureImageShown = await poll(imageCount);
+  const figureIntro = { imageShown: figureImageShown, images: imageCount(), blankRows: blankRows(), text: visibleText() };
+  view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("A plot") + 2 } });
+  await settle();
+  const figureInside = { images: imageCount(), text: visibleText() };
+  view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("Intro") + 2 } });
+  await settle();
+  const figureImage = document.querySelector(".cm-editor .cm-lv-image");
+  const figure = { hadImage: Boolean(figureImage), intro: figureIntro, inside: figureInside };
+  figureImage?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  await wait(200);
+  figure.clicked = { text: visibleText() };
 
   // Check 7: timing, reported and not asserted. Each typing run makes 50
   // single character insertions at the middle of the file, one dispatch at a
@@ -316,6 +359,7 @@ async function visualCheck() {
     markdown,
     full: { body: fullBody, preamble: fullPreamble, end: fullEnd },
     refs: refsCheck,
+    figure,
     timing: { lines: timingOn.lines, on: { median: timingOn.median, max: timingOn.max }, off: { median: timingOff.median, max: timingOff.max } },
     caret,
     hugeTiming: { lines: hugeOn.lines, on: { median: hugeOn.median, max: hugeOn.max }, off: { median: hugeOff.median, max: hugeOff.max } },
@@ -329,7 +373,7 @@ const source = [
   `import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};`,
   `import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};`,
   `import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};`,
-  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample })};`,
+  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample })};`,
   `document.documentElement.dataset.theme = "librepaper";`,
   `document.documentElement.dataset.palette = "librepaper";`,
   `document.documentElement.dataset.mode = "light";`,
@@ -347,6 +391,7 @@ const source = [
   `  huge: session.addText("huge.tex", samples.huge),`,
   `  hugeOff: session.addText("huge-off.tex", samples.huge),`,
   `  refs: session.addText("refs.tex", samples.refs),`,
+  `  figure: session.addText("figure.tex", samples.figure),`,
   `  intro: session.addText("sections/intro.tex", samples.intro),`,
   `};`,
   `const component = createClassComponent({`,
@@ -529,19 +574,29 @@ try {
   assert.equal(result.markdown.marks, 0, "Markdown was drawn by the visual layer");
   console.log("visual-markup-browser: Markdown is left alone");
 
-  // Check 6b: a LaTeX preamble folds, labels and the bibliography are hidden,
-  // math environments are typeset, and the preamble source shows with the caret in it.
+  // Check 6b: a LaTeX preamble folds, labels show as small tags, the bibliography
+  // and page break fold into chips, math environments are typeset, and the
+  // preamble source shows with the caret in it.
   assert.equal(result.full.body.katexShown, true, "KaTeX did not typeset the math environments in full.tex within five seconds");
   assert.equal(result.full.body.preambleCount, 1, "the LaTeX preamble did not fold into exactly one .cm-lp-preamble block with the caret in the body");
   assert.match(result.full.body.preambleText, /Preamble: article, 4 packages/, "the preamble block did not read as 'Preamble: article, 4 packages'");
+  // The label keys show as tags now, so only the command names are hidden here.
+  // The bibliography chip names its style and database, so "references" is not
+  // checked as absent.
   const hiddenInBody = [
-    "\\documentclass", "\\usepackage", "\\label", "eq:se", "sec:results",
-    "\\bibliographystyle", "\\bibliography", "references", "\\newpage",
+    "\\documentclass", "\\usepackage", "\\label", "eq:se",
+    "\\bibliographystyle", "\\bibliography", "\\newpage",
     "\\begin{document}", "\\end{document}", "\\begin{equation}", "\\begin{align}",
   ];
   for (const source of hiddenInBody) {
     assert.equal(result.full.body.text.includes(source), false, `${source} is still visible in full.tex with the caret in the body`);
   }
+  assert.ok(result.full.body.labelTexts.includes("sec:results"), `the \\label{sec:results} did not show its key as a .cm-lp-label; label tags: ${JSON.stringify(result.full.body.labelTexts)}`);
+  for (const chip of ["Bibliography: references (plain)", "Page break", "End of document"]) {
+    assert.ok(result.full.body.hiddenTexts.includes(chip), `no .cm-lp-hidden chip reads '${chip}'; chips: ${JSON.stringify(result.full.body.hiddenTexts)}`);
+  }
+  const fullBlank = fullSample.split("\n").filter((line) => !line.trim()).length;
+  assert.ok(result.full.body.blankRows <= fullBlank, `full.tex has ${result.full.body.blankRows} blank rendered rows; the source has ${fullBlank} empty lines`);
   assert.ok(result.full.body.katex >= 4, `expected at least 4 KaTeX formulas inside .cm-lv-math in full.tex, found ${result.full.body.katex}`);
   assert.equal(result.full.body.katexErrors, 0, "full.tex has KaTeX parse errors (.katex-error inside .cm-editor)");
   assert.equal(result.full.preamble.preambleCount, 0, "the preamble block stayed when the caret moved into the preamble");
@@ -558,11 +613,30 @@ try {
   assert.ok(result.refs.refTexts.includes("(1)"), `the \\eqref did not show (1); .cm-lp-ref texts: ${JSON.stringify(result.refs.refTexts)}`);
   assert.ok(result.refs.refTexts.includes("2"), `the \\ref to Method did not show 2; .cm-lp-ref texts: ${JSON.stringify(result.refs.refTexts)}`);
   assert.ok(result.refs.refTexts.includes("??"), `the \\ref to a missing label did not show ??; .cm-lp-ref texts: ${JSON.stringify(result.refs.refTexts)}`);
+  for (const word of ["eq. (1)", "Section 2", "Equation 1", "section 2"]) {
+    assert.ok(result.refs.refTexts.includes(word), `the reference word '${word}' was not drawn; .cm-lp-ref texts: ${JSON.stringify(result.refs.refTexts)}`);
+  }
   for (const source of ["~", "\\ref", "\\eqref", "\\maketitle", "\\input"]) {
     assert.equal(result.refs.text.includes(source), false, `${source} is still visible in refs.tex with the caret in the body`);
   }
   assert.ok(result.refs.katexTexts.some((text) => text.includes("(1)")), "the labelled equation did not show its number (1) through KaTeX");
   console.log(`visual-markup-browser: refs.tex draws its title, include, references ${JSON.stringify(result.refs.refTexts)} and equation number`);
+
+  // Check 6d: a figure folds into an image with the caret outside it, shows its
+  // source with the caret inside it, and shows its source after a click on the image.
+  const figureBlank = figureSample.split("\n").filter((line) => !line.trim()).length;
+  for (const source of ["\\begin{figure}", "\\centering", "\\includegraphics", "\\end{figure}"]) {
+    assert.equal(result.figure.intro.text.includes(source), false, `${source} is still visible in figure.tex with the caret on Intro`);
+  }
+  assert.equal(result.figure.intro.imageShown, true, "no .cm-lv-image was drawn for the figure with the caret on Intro");
+  assert.ok(result.figure.intro.blankRows <= figureBlank, `figure.tex has ${result.figure.intro.blankRows} blank rendered rows; the source has ${figureBlank} empty lines`);
+  for (const source of ["\\begin{figure}", "\\includegraphics", "\\end{figure}"]) {
+    assert.ok(result.figure.inside.text.includes(source), `${source} was not shown with the caret inside the figure's caption`);
+  }
+  assert.equal(result.figure.inside.images, 0, ".cm-lv-image stayed with the caret inside the figure");
+  assert.equal(result.figure.hadImage, true, "there was no .cm-lv-image to click");
+  assert.ok(result.figure.clicked.text.includes("\\begin{figure}"), "a click on the figure image did not show its source");
+  console.log("visual-markup-browser: a figure folds into an image, shows its source with the caret inside, and after a click");
 
   // Check 7: timing, printed only.
   console.log(`visual-markup-browser timing (informational, not asserted, ${result.timing.lines} lines): ` +
