@@ -90,7 +90,7 @@ librepaper pull https://app.librepaper.org/docs/<slug> --preview
 - Outside a repository, pull writes the current project into the folder. A file that changed only on the web is written. A file that changed only in the folder is kept. A file deleted on the web goes to the trash.
 - A file that changed on both sides is not written. Pull lists it. Run pull again with `--mine PATH` to keep your copy, or `--theirs PATH` to take the web copy.
 - A file the folder itself excludes (ignored by `.gitignore`, hidden, or not a file the project can hold) is left alone even when the web has it. Pull lists those too.
-- A pull with nothing new, when the project has not changed since the last pull, reads nothing else from the project.
+- A pull with nothing new makes one small request to the server and reads no files.
 - `--preview` lists what a first pull would do. It shows these paths:
   - only in the project;
   - only in the folder or repository;
@@ -197,7 +197,23 @@ The Action takes three inputs.
 
 GitHub gives each run its own `GITHUB_TOKEN`. The `permissions` line lets it write to the repository and open pull requests. You do not add it.
 
-Each scheduled run spends GitHub Actions minutes. The default is hourly. GitHub also delays frequent scheduled runs. Do not set an interval shorter than 15 minutes.
+- Pushes to `main` reach the project right away.
+- The schedule only sets how soon web edits reach the repository.
+- Hourly is the default.
+- Each run is billed as at least one minute.
+- Hourly is about 730 minutes a month. That fits the 2,000 free minutes of a private repository on GitHub Free.
+- Every 15 minutes is about 2,900 minutes a month. That does not fit.
+- Public repositories run free.
+- GitHub delays frequent scheduled runs, so an interval under 15 minutes buys nothing.
+- To sync only during working hours, replace the cron line with this.
+
+```yaml
+schedule:
+  - cron: "*/30 8-20 * * 1-5"   # every 30 minutes, 8:00 to 20:59 UTC, Monday to Friday
+```
+
+- A manual run (Actions tab, Run workflow) pulls at once.
+- A run that finds nothing new costs the LibrePaper server one small request.
 
 On its first run, the Action links the repository to the project itself. It pulls the project's versions into the branch, pushes the branch, and pushes the repository's files that the project lacks. If a file differs on both sides, the run stops with an error. A person then merges it once on a computer.
 
@@ -263,7 +279,6 @@ These files and features stay where they are.
 - In a repository, each named version becomes one commit when you pull. The commit's author is the person who saved the version, shown as `handle@site`. Its date is when the version was saved. Its message is the version's name.
 - Each commit has a `LibrePaper-Version` trailer that names the version.
 - After the named versions, pull adds the current project as one commit named "Current version" when its files differ from the last commit it imported. This holds edits that were never named. Pending suggestions are left out, as before.
-- A quiet pull, where the project has not changed since the last pull, reads nothing else.
 - Renders stay out of the project, so they never become commits.
 - A push makes one named version in History. The name is the commit message. History shows it as pushed by the git author.
 - A version that a push from this folder created is not committed a second time. The commit you pushed stands in for it.
