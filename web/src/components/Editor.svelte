@@ -34,7 +34,7 @@
   const bracketsCompartment = new Compartment();
   const spellcheckCompartment = new Compartment();
   const checkCompartment = new Compartment();
-  // The visual layer is drawn only for LaTeX and Typst, and its colours follow
+  // The visual layer is drawn only for LaTeX, Typst and Markdown, and its colours follow
   // the page's mode, so it is brought into line when a file or the mode changes.
   const visualCompartment = new Compartment();
   // The bracket keymap goes with auto-closing brackets. Its Backspace deletes an
@@ -247,6 +247,7 @@
   import { untrack } from "svelte";
   import { visualMarkup, factsUpdate } from "../lib/visual-markup/index.js";
   import { documentFacts } from "../lib/visual-markup/facts.js";
+  import { markdownFacts } from "../lib/visual-markup/markdown-facts.js";
 
   // Whether what is typed here is recorded as a tracked change is not a prop
   // to follow. It starts from `tracking` and is flipped by `startTracking` and
@@ -577,8 +578,11 @@
   function refreshFacts(target = view, id = showing, fresh = false) {
     untrack(() => {
       const path = pathOfDoc(session.doc, id);
-      if (!target || !visual || formatOf(path) !== "latex") return;
-      const facts = documentFacts(treeForDoc(session.doc).texts, entry || path, path, bibliographyEntries());
+      const format = formatOf(path);
+      if (!target || !visual || (format !== "latex" && format !== "markdown")) return;
+      const facts = format === "markdown"
+        ? markdownFacts(treeForDoc(session.doc).texts, entry || path, path, bibliographyEntries())
+        : documentFacts(treeForDoc(session.doc).texts, entry || path, path, bibliographyEntries());
       const sent = JSON.stringify(facts, factsJson);
       if (!fresh && sentFacts.get(target) === sent) return;
       sentFacts.set(target, sent);
