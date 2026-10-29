@@ -12,7 +12,7 @@ const TOKENS = new RegExp(
   [
     String.raw`\\(input|include|subfile)\s*\{([^{}]*)\}`,
     String.raw`\\(begin|end)\s*\{([^{}]*)\}`,
-    String.raw`\\(chapter|section|subsection|subsubsection)(\*?)(?![a-zA-Z])`,
+    String.raw`\\(part|chapter|section|subsection|subsubsection)(\*?)(?![a-zA-Z])`,
     String.raw`\\(appendix|caption)(?![a-zA-Z])`,
     String.raw`\\label\s*\{([^{}]*)\}`,
     String.raw`\\(item)(?![a-zA-Z])`,
@@ -166,13 +166,15 @@ export function theoremDefinitions(texts) {
 /// Options: `theorems` (from theoremDefinitions, computed when missing), `open`
 /// (the path of the file in the editor), `environments` (a Map that receives
 /// the number of each numbered theorem-like \begin in the open file, keyed by
-/// its offset in that file), and `cited` (called with each citation key in
-/// reading order).
+/// its offset in that file), `headings` (a Map that receives the number of each
+/// numbered sectioning command in the open file, keyed by the offset of its
+/// backslash), and `cited` (called with each citation key in reading order).
 export function numberLabels(texts, main, options = {}) {
   const root = normalize(main);
   const theorems = options.theorems ?? theoremDefinitions(texts);
   const focus = options.open == null ? null : normalize(options.open);
   const environments = options.environments;
+  const headings = options.headings;
   const cited = options.cited;
   const state = {
     labels: new Map(),
@@ -189,6 +191,7 @@ export function numberLabels(texts, main, options = {}) {
     theorem: null, // the numbered theorem the scan is in
     theoremEnv: null,
     lists: [], // open lists, innermost last
+    parts: 0,
   };
 
   // The top level is the chapter in books and the section in articles.
@@ -223,6 +226,19 @@ export function numberLabels(texts, main, options = {}) {
       if (counter.depth !== null && counter.depth >= depth) counter.count = 0;
     }
     state.section = { number: numberAt(depth), kind: "section" };
+  };
+
+  // The number a numbered heading shows: a part counts in arabic and is not
+  // reset by the sections; a section or chapter takes the number of its level.
+  const heading = (name, at, path) => {
+    let number;
+    if (name === "part") {
+      number = String(++state.parts);
+    } else {
+      sectioning(name, LEVELS.get(name));
+      number = state.section.number;
+    }
+    if (path === focus) headings?.set(at, number);
   };
 
   const appendix = () => {
@@ -369,7 +385,7 @@ export function numberLabels(texts, main, options = {}) {
           theoremBegins(environment, match.index, path);
         }
       } else if (match[5]) {
-        if (!match[6]) sectioning(match[5], LEVELS.get(match[5]));
+        if (!match[6]) heading(match[5], match.index, path);
       } else if (match[7] === "appendix") {
         appendix();
       } else if (match[7] === "caption") {

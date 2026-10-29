@@ -258,6 +258,15 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
         }
       }
 
+      // A widget drawn before the body. It is inline and not atomic, so the caret may sit beside it.
+      if (style.before && !options.showCommands && !inScope) {
+        const widget = createWidget(style.before, { token, source, state, language: options.language });
+        if (widget) {
+          const at = token.body?.from ?? token.from;
+          decorations.push(Decoration.widget({ widget, side: -1 }).range(at));
+        }
+      }
+
       if (style.footer !== undefined && token.body && !options.showCommands && !inScope) {
         // Drawn after the last visible character of the body, not after a trailing newline.
         let position = token.body.to;

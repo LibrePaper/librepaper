@@ -14,6 +14,9 @@ const INLINE_CODE = /(`+)(?!`)[\s\S]*?[^`]\1(?!`)/g;
 const DISPLAY_MATH = /\$\$[\s\S]*?\$\$(?:[ \t]*\{([^{}\n]*)\})?/g;
 const INLINE_MATH = /(?<![\\$])\$(?![\s$])[^$\n]*?[^\s\\$]\$(?!\d)/g;
 const HEADING = /^(#{1,6})[ \t]+(.+?)[ \t]*$/gm;
+// A setext heading: a text line over a line of = or -. A line that starts another
+// block (a list item, a quote, an ATX heading) is not one.
+const SETEXT = /^(?![ \t]*(?:[-+*>#]|\d+[.)])[ \t])(.*\S.*)\n {0,3}(=+|-+)[ \t]*$/gm;
 const IMAGE = /!\[[^\]\n]*\]\([^)\n]*\)(?:[ \t]*\{([^{}\n]*)\})?/g;
 const DIV = /^:{3,}[ \t]*\{([^{}\n]*)\}/gm;
 const CAPTION = /^:[ \t]+(.*)$/gm;
@@ -81,6 +84,9 @@ function eventsOf(source) {
   for (const match of text.matchAll(HEADING)) {
     events.push({ at: match.index, type: "heading", level: match[1].length, attributes: /\{([^{}\n]*)\}[ \t]*$/.exec(match[2])?.[1] ?? "" });
   }
+  for (const match of text.matchAll(SETEXT)) {
+    events.push({ at: match.index, type: "heading", level: match[2][0] === "=" ? 1 : 2, attributes: "" });
+  }
   for (const match of text.matchAll(IMAGE)) events.push({ at: match.index, type: "label", id: idOf(match[1]) });
   for (const match of text.matchAll(DIV)) events.push({ at: match.index, type: "label", id: idOf(match[1]) });
   for (const match of text.matchAll(CAPTION)) {
@@ -120,10 +126,9 @@ function scanFile(path, source, state, stack) {
         state.sections[level - 1] += 1;
         state.sections.fill(0, level);
       }
-      if (id?.startsWith("sec-")) {
-        const number = state.numberSections && !unnumbered ? state.sections.slice(0, level).join(".") : "";
-        state.labels.set(id, { number, kind: "section" });
-      }
+      const number = state.numberSections && !unnumbered ? state.sections.slice(0, level).join(".") : "";
+      if (number && path === state.focus) state.headingNumbers.set(event.at, number);
+      if (id?.startsWith("sec-")) state.labels.set(id, { number, kind: "section" });
     } else if (event.type === "label") {
       const id = event.id;
       const prefix = /^([a-z]+)-/i.exec(id ?? "")?.[1].toLowerCase();
@@ -170,14 +175,17 @@ function citeStyleOf(yaml) {
 
 /// The facts of a Markdown project, in the shape documentFacts returns. `texts`
 /// maps each project path to its source, `main` is the main file, and `entries`
-/// the parsed bibliography entries. `open` is taken for parity with
-/// documentFacts: Markdown numbers carry no offsets, so it is not read.
+/// the parsed bibliography entries. `open` is the file shown in the editor: its
+/// numbered headings are listed in `headingNumbers`, keyed by the offset of the
+/// heading's first character (the # of an ATX heading, the text of a setext one).
 export function markdownFacts(texts, main, open, entries = []) {
   const root = normalize(main);
   const source = typeof texts[root] === "string" ? texts[root] : "";
   const yaml = frontMatter(source);
   const state = {
     texts,
+    focus: open == null ? null : normalize(open),
+    headingNumbers: new Map(),
     labels: new Map(),
     order: new Map(),
     numberSections: /^(?:true|yes)$/i.test(yamlValue(yaml, "number-sections")),
@@ -193,6 +201,7 @@ export function markdownFacts(texts, main, open, entries = []) {
     mathMacros: {},
     theorems: new Map(),
     environmentNumbers: new Map(),
+    headingNumbers: state.headingNumbers,
     citeStyle: citeStyleOf(yaml),
   };
 }

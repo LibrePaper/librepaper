@@ -119,7 +119,7 @@ function style(token: Token): TokenStyle | null {
     case 'table':
       return { class: 'cm-lv-table', block: true };
     case 'heading':
-      return { class: `cm-lv-heading cm-lv-h${token.level}`, block: true };
+      return { class: `cm-lv-heading cm-lv-h${token.level}`, block: true, before: 'headnum' };
     case 'item':
       return { replaceWith: '•' };
     case 'container': {

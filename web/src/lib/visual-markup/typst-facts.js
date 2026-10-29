@@ -229,7 +229,8 @@ function eventsOf(text, maths) {
   const events = [];
   for (const match of text.matchAll(HEADING_LINE)) {
     events.push({
-      at: match.index,
+      // The offset of the = marker, which is what the editor's token starts at.
+      at: match.index + match[0].indexOf("="),
       type: "heading",
       level: Math.min(match[1].length, 6),
       numbering: undefined,
@@ -337,7 +338,8 @@ function bump(map, key) {
 /// Computes the facts of a Typst project, in the shape documentFacts returns.
 /// `texts` maps each project path (no leading slash) to its source, `main` is
 /// the main file, and `entries` the parsed bibliography entries. `open` is the
-/// file shown in the editor: Typst has no environment numbers, so it is unused.
+/// file shown in the editor: its numbered headings are listed in `headingNumbers`,
+/// keyed by the offset of the = marker or of the #heading call.
 ///
 /// Labels map to { number, kind }, where kind is 'section', 'equation' or a
 /// figure kind ('figure', 'table', 'listing', or the name of a `kind:`). Only
@@ -345,6 +347,8 @@ function bump(map, key) {
 /// bibliography key, or a @key that is no label of the project, and it takes
 /// its number at its first use in reading order.
 export function typstFacts(texts, main, open, entries = []) {
+  const focus = open == null ? null : normalize(open);
+  const headingNumbers = new Map();
   const masks = new Map();
   for (const path of Object.keys(texts)) masks.set(path, maskTypst(texts[path] ?? ""));
   const labelNames = new Set();
@@ -389,6 +393,7 @@ export function typstFacts(texts, main, open, entries = []) {
           if (event.level === 1) chapters.clear();
           const values = symbolCount(pattern) >= 2 ? counters.slice(0, event.level) : [counters[event.level - 1]];
           const number = render(pattern, values);
+          if (number && path === focus) headingNumbers.set(event.at, number);
           if (event.label && number) labels.set(event.label, { number, kind: "section" });
           break;
         }
@@ -451,6 +456,7 @@ export function typstFacts(texts, main, open, entries = []) {
     mathMacros: {},
     theorems: new Map(),
     environmentNumbers: new Map(),
+    headingNumbers,
     citeStyle: style && AUTHOR_YEAR.test(style) ? "author-year" : "numeric",
   };
 }

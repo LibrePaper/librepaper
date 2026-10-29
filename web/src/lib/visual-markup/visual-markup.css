@@ -50,6 +50,13 @@
   cursor: pointer;
 }
 
+/* The number of a numbered heading, before its text: muted, with a space after it. */
+.cm-lp-headnum {
+  color: var(--lv-secondary);
+  margin-right: calc(var(--spacing) * 2);
+  white-space: nowrap;
+}
+
 /* An \input, \include or \subfile: a chip with the file's name and an Open button. */
 .cm-lp-include {
   display: inline-flex;

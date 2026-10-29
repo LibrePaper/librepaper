@@ -32,7 +32,7 @@ export { VISUAL_FORMATS } from "./formats.js";
 const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".svg", ".pdf"];
 
 // The facts about the open LaTeX project that the widgets read: labels, citations,
-// acronyms, macros, theorems and the citation style. Every field starts empty.
+// acronyms, macros, theorems, heading numbers and the citation style. Every field starts empty.
 function emptyFacts() {
   return {
     labels: new Map(),
@@ -42,6 +42,7 @@ function emptyFacts() {
     mathMacros: {},
     theorems: new Map(),
     environmentNumbers: new Map(),
+    headingNumbers: new Map(),
     citeStyle: "author-year",
   };
 }
@@ -319,6 +320,35 @@ class LabelWidget extends WidgetType {
 }
 
 registerWidget("label", (context) => new LabelWidget(context));
+
+// The number of a numbered heading, drawn before its text in the heading's own font.
+// Pointer events reach the editor, so a click on the number places the caret.
+class HeadNumWidget extends WidgetType {
+  constructor(number) {
+    super();
+    this.number = number;
+  }
+
+  eq(other) {
+    return other instanceof HeadNumWidget && other.number === this.number;
+  }
+
+  toDOM() {
+    const element = document.createElement("span");
+    element.className = "cm-lp-headnum";
+    element.textContent = this.number;
+    return element;
+  }
+
+  ignoreEvent() {
+    return false;
+  }
+}
+
+registerWidget("headnum", ({ token, state }) => {
+  const number = factsOf(state).headingNumbers.get(token.from);
+  return number ? new HeadNumWidget(number) : null;
+});
 
 // An \input, \include or \subfile, shown as a chip with the file's name.
 class IncludeWidget extends WidgetType {
