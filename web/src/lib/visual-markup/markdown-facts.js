@@ -72,6 +72,7 @@ function maskCode(source) {
 function eventsOf(source) {
   const { masked, labels } = maskCode(source);
   const noCode = masked.replace(INLINE_CODE, blank);
+  /** @type {Array<{ at: number, type: string, id?: string, level?: number, attributes?: string, key?: string, name?: string }>} */
   const events = labels.map(({ label, at }) => ({ at, type: "label", id: label }));
   for (const match of noCode.matchAll(DISPLAY_MATH)) {
     events.push({ at: match.index, type: "label", id: idOf(match[1]) });

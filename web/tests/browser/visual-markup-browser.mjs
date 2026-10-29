@@ -698,6 +698,9 @@ try {
 
   browser = spawn(requireChromiumExecutable(), [
     "--headless=new",
+    // CodeMirror renders only the lines near the window; a tall window puts
+    // every line of the longer samples in the DOM, where the checks read them.
+    "--window-size=1280,20000",
     "--no-sandbox",
     "--disable-gpu",
     `--user-data-dir=${profile}`,
