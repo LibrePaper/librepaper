@@ -17,7 +17,10 @@ export type Rule = (source: string, pos: number, ctx: RuleContext) => Token | nu
 export type WidgetKind =
   | 'math' | 'image' | 'figure' | 'ref' | 'include' | 'title' | 'label'
   | 'cite' | 'link' | 'footnote' | 'verb' | 'chip' | 'unit' | 'gloss' | 'quote'
-  | 'envhead' | 'macro' | 'bibitem' | 'symbol';
+  | 'envhead' | 'macro' | 'bibitem' | 'symbol'
+  // Typst: reference, label tag, included file, title block, colour swatch, and a catalog chip
+  // (the Typst catalog's chip text, not the LaTeX one).
+  | 'typref' | 'typlabel' | 'typinclude' | 'typtitle' | 'swatch' | 'typchip';
 
 export interface TokenStyle {
   class?: string;
