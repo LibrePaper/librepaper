@@ -486,13 +486,15 @@ try {
   assert.equal(result.full.body.preambleCount, 1, "the LaTeX preamble did not fold into exactly one .cm-lp-preamble block with the caret in the body");
   assert.match(result.full.body.preambleText, /Preamble: article, 4 packages/, "the preamble block did not read as 'Preamble: article, 4 packages'");
   const hiddenInBody = [
-    "\\documentclass", "\\usepackage", "\\label", "eq:se", "sec:results",
+    "\\documentclass", "\\usepackage", "\\label", "sec:results",
     "\\bibliographystyle", "\\bibliography", "references", "\\newpage",
     "\\begin{document}", "\\end{document}", "\\begin{equation}", "\\begin{align}",
   ];
   for (const source of hiddenInBody) {
     assert.equal(result.full.body.text.includes(source), false, `${source} is still visible in full.tex with the caret in the body`);
   }
+  // The \ref keeps its key on show; only the \label's copy must be gone.
+  assert.equal(result.full.body.text.split("eq:se").length - 1, 1, "eq:se should show once, in the \\ref, and not in the hidden \\label");
   assert.ok(result.full.body.katex >= 4, `expected at least 4 KaTeX formulas inside .cm-lv-math in full.tex, found ${result.full.body.katex}`);
   assert.equal(result.full.body.katexErrors, 0, "full.tex has KaTeX parse errors (.katex-error inside .cm-editor)");
   assert.equal(result.full.preamble.preambleCount, 0, "the preamble block stayed when the caret moved into the preamble");
