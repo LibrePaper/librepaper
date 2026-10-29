@@ -58,6 +58,90 @@ class MarkerWidget extends WidgetType {
   }
 }
 
+// A run of fully hidden lines (for example \newpage or \end{document}) shows as one chip.
+// Clicking it places the caret in the run, which reveals the source.
+class HiddenRunWidget extends WidgetType {
+  constructor(private summary: string) {
+    super();
+  }
+
+  eq(other: WidgetType): boolean {
+    return other instanceof HiddenRunWidget && other.summary === this.summary;
+  }
+
+  toDOM(): HTMLElement {
+    const element = document.createElement('div');
+    element.className = 'cm-lp-hidden';
+    element.textContent = this.summary;
+    element.title = 'Show the source';
+    return element;
+  }
+
+  // Let the editor handle clicks so the caret moves into the run and reveals it.
+  ignoreEvent(): boolean {
+    return false;
+  }
+}
+
+interface HiddenRun extends Range {
+  firstLine: number;
+  lastLine: number;
+}
+
+// Finds runs of consecutive lines whose text is entirely hidden spans plus whitespace.
+function hiddenRuns(state: EditorState, spans: Range[], replaced: Range[], joinedBreaks: Set<number>): HiddenRun[] {
+  const byLine = new Map<number, Range[]>();
+  for (const span of spans) {
+    let start = span.from;
+    while (start < span.to) {
+      const line = state.doc.lineAt(start);
+      const end = Math.min(span.to, line.to);
+      if (end > start) {
+        const parts = byLine.get(line.number) ?? [];
+        parts.push({ from: start, to: end });
+        byLine.set(line.number, parts);
+      }
+      start = line.to + 1;
+    }
+  }
+
+  const full: number[] = [];
+  for (const [number, parts] of byLine) {
+    const line = state.doc.line(number);
+    if (line.length === 0 || joinedBreaks.has(line.to) || joinedBreaks.has(line.from - 1)) continue;
+    // A replaced range on this line (such as a widget) must stay visible, so the line is not collapsed.
+    if (replaced.some(range => range.from < line.to && range.to > line.from)) continue;
+
+    const hiddenMask = new Array<boolean>(line.length).fill(false);
+    for (const part of parts) {
+      for (let pos = part.from; pos < part.to; pos++) hiddenMask[pos - line.from] = true;
+    }
+    const text = state.doc.sliceString(line.from, line.to);
+    let whole = true;
+    for (let index = 0; index < text.length; index++) {
+      if (!hiddenMask[index] && !/\s/.test(text[index])) {
+        whole = false;
+        break;
+      }
+    }
+    if (whole) full.push(number);
+  }
+  full.sort((a, b) => a - b);
+
+  const runs: HiddenRun[] = [];
+  for (const number of full) {
+    const last = runs[runs.length - 1];
+    if (last && number === last.lastLine + 1) {
+      last.lastLine = number;
+      last.to = state.doc.line(number).to;
+    } else {
+      const line = state.doc.line(number);
+      runs.push({ from: line.from, to: line.to, firstLine: number, lastLine: number });
+    }
+  }
+  return runs;
+}
+
 export function buildDecorations(state: EditorState, options: BuildOptions, tokens?: Token[]): BuildResult {
   const source = state.doc.toString();
   const parsed = tokens ?? new Tokenizer(options.language, { maxDepth: options.maxDepth }).tokenize(source);
@@ -164,10 +248,24 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
 
   const spans = subtract(merge(concealed), merge(replaced));
 
-  for (const span of spans) {
-    decorations.push(hidden.range(span.from, span.to));
+  // A collapsed run is one block replacement, so its spans get neither a per-span
+  // replace nor a syntax-line decoration. Those would overlap the run's replacement.
+  // The run is not added to `atomic`: the caret reaching its edge reveals the source.
+  const collapsedLines = new Set<number>();
+  for (const run of hiddenRuns(state, spans, replaced, joinedBreaks)) {
+    for (let number = run.firstLine; number <= run.lastLine; number++) collapsedLines.add(number);
+    const summary = options.language.hiddenSummary?.(state.doc.sliceString(run.from, run.to)) ?? null;
+    const decoration = summary === null
+      ? Decoration.replace({ block: true })
+      : Decoration.replace({ widget: new HiddenRunWidget(summary), block: true });
+    decorations.push(decoration.range(run.from, run.to));
+  }
 
+  for (const span of spans) {
     const line = state.doc.lineAt(span.from);
+    if (collapsedLines.has(line.number)) continue;
+
+    decorations.push(hidden.range(span.from, span.to));
     if (
       span.from === line.from &&
       span.to === line.to &&

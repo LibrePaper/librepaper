@@ -13,7 +13,8 @@ export interface RuleContext {
 
 export type Rule = (source: string, pos: number, ctx: RuleContext) => Token | null;
 
-export type WidgetKind = 'math' | 'image' | 'figure' | 'ref' | 'include' | 'title';
+// 'label' shows a standalone \label as a small tag instead of hiding it.
+export type WidgetKind = 'math' | 'image' | 'figure' | 'ref' | 'include' | 'title' | 'label';
 
 export interface TokenStyle {
   class?: string;
@@ -100,6 +101,9 @@ export interface Language {
   colorCommands?: string[];
   imageSrc?(source: string, token: Token): string | null;
   imageStyle?(source: string, token: Token): string | null;
+  // Summarises a run of fully hidden source lines. Returns a short chip label, or null
+  // to remove the run without a chip (it is then layout-only source).
+  hiddenSummary?(text: string): string | null;
   toolbar?(scope: EditorScope): ToolbarEntry[];
 }
 

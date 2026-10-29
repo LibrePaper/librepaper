@@ -7,12 +7,21 @@ import { table } from './table';
 import { figure, latexImageStyle } from './figure';
 
 
+// `label` is not here: a standalone \label shows as a tag (see style()).
 const HIDDEN_LAYOUT_COMMANDS = new Set([
   'centering', 'raggedleft', 'raggedright', 'hfill', 'hfil',
   'hspace', 'hspace*', 'vspace', 'vspace*', 'smallskip', 'medskip', 'bigskip',
-  'label', 'bibliographystyle', 'bibliography', 'nocite', 'pagestyle', 'thispagestyle',
+  'bibliographystyle', 'bibliography', 'nocite', 'pagestyle', 'thispagestyle',
   'newpage', 'clearpage', 'noindent'
 ]);
+
+// Matches a layout command with its optional and mandatory arguments, for example \vspace*{1em}.
+const LAYOUT_PATTERN = new RegExp(
+  `\\\\(?:${[...HIDDEN_LAYOUT_COMMANDS].map(name => name.replace('*', '\\*')).join('|')})(?![a-zA-Z])(?:\\[[^\\]]*\\])?(?:\\{[^}]*\\})?`,
+  'g'
+);
+// Matches \begin{...} with its optional arguments, and \end{...}.
+const ENVIRONMENT_PATTERN = /\\begin\{[^}]*\}(?:\[[^\]]*\])?(?:\{[^}]*\})?|\\end\{[^}]*\}/g;
 
 const commands: LanguageCommands = {
   wrap: {
@@ -84,6 +93,8 @@ function style(token: Token): TokenStyle | null {
       if (INCLUDE_COMMANDS.has(token.name ?? '')) return { widget: 'include' };
       if (token.name === 'maketitle') return { widget: 'title', block: true };
       if (token.name === 'includegraphics' || token.name === 'includegraphics*') return { widget: 'image' };
+      // Shown as a tag rather than hidden, so a standalone label stays visible in the document.
+      if (token.name === 'label') return { widget: 'label' };
       if (HIDDEN_LAYOUT_COMMANDS.has(token.name ?? '')) return { hidden: true };
       const known = COMMAND_CLASSES.get(token.name!);
       if (known) {
@@ -105,6 +116,33 @@ function style(token: Token): TokenStyle | null {
   }
 }
 
+// Names a fully hidden run of source lines for its chip. Returns null when the run is
+// only environment delimiters and layout, which belong to the block around them.
+function hiddenSummary(text: string): string | null {
+  if (/\\end\{document\}/.test(text)) return 'End of document';
+
+  const bibliography = /\\bibliography\{([^}]*)\}/.exec(text);
+  if (bibliography) {
+    const database = bibliography[1].trim();
+    const bibliographyStyle = /\\bibliographystyle\{([^}]*)\}/.exec(text);
+    return bibliographyStyle
+      ? `Bibliography: ${database} (${bibliographyStyle[1].trim()})`
+      : `Bibliography: ${database}`;
+  }
+
+  if (/\\(?:newpage|clearpage|pagebreak)\b/.test(text)) return 'Page break';
+
+  const rest = text.replace(ENVIRONMENT_PATTERN, '').replace(LAYOUT_PATTERN, '');
+  if (!rest.trim()) return null;
+
+  // Environment names are not listed: the chip names what the run does, not the block around it.
+  const names = new Set<string>();
+  for (const match of text.matchAll(/\\([a-zA-Z]+\*?)/g)) {
+    if (match[1] !== 'begin' && match[1] !== 'end') names.add(match[1]);
+  }
+  return names.size ? [...names].map(name => `\\${name}`).join(', ') : null;
+}
+
 export const latex: Language = {
   id: 'latex',
   name: 'LaTeX',
@@ -117,7 +155,8 @@ export const latex: Language = {
   imageSrc(source, token) {
     return token.body ? source.slice(token.body.from, token.body.to).trim() : null;
   },
-  imageStyle: latexImageStyle
+  imageStyle: latexImageStyle,
+  hiddenSummary
 };
 
 export function setMacroSignatures(signatures: Record<string, { signature?: string } | number>): void {
