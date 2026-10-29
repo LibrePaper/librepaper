@@ -1,3 +1,5 @@
+import { GIT_DOCS_URL } from "../site-links.js";
+
 /// The steps to take when Git could not sign in to a remote. `remote` is the
 /// remote as typed or as the connection stores it: a URL without credentials,
 /// or scp-style `host:path`. `platform` is "mac", "windows" or "linux".
@@ -10,7 +12,7 @@ export function signInHelp(remote, platform, name = "origin") {
   if (!target) {
     return {
       title: "Git could not sign in to the remote.",
-      steps: [{ text: "Set up a credential helper or an SSH key for this remote, then try again.", href: "/docs/git.html#credentials" }],
+      steps: [{ text: "Set up a credential helper or an SSH key for this remote, then try again.", href: `${GIT_DOCS_URL}#credentials` }],
     };
   }
   if (target.transport === "ssh") return sshHelp(target.host, platform);

@@ -62,7 +62,7 @@ assert.ok(!hostile.steps[1].command.includes("$("));
 // A value that is neither SSH nor HTTPS gets the generic steps.
 assert.deepEqual(signInHelp("not a remote", "linux"), {
   title: "Git could not sign in to the remote.",
-  steps: [{ text: "Set up a credential helper or an SSH key for this remote, then try again.", href: "/docs/git.html#credentials" }],
+  steps: [{ text: "Set up a credential helper or an SSH key for this remote, then try again.", href: "https://librepaper.org/git.html#credentials" }],
 });
 
 // A remote name a repository config made up never reaches the command.

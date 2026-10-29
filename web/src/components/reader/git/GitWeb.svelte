@@ -12,6 +12,7 @@
   import { untrack } from "svelte";
   import { since } from "../../../lib/dates.js";
   import { remoteUrlProblem } from "../../../lib/git-url.js";
+  import { GIT_DOCS_URL as DOCS } from "../../../lib/site-links.js";
   import GitSignInHelp from "./GitSignInHelp.svelte";
 
   let {
@@ -24,7 +25,6 @@
     connection = null,
   } = $props();
 
-  const DOCS = "/docs/git.html";
   const view = $derived(web.state);
   const link = $derived(connection?.state);
   const status = $derived(link?.status ?? null);
