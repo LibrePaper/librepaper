@@ -18,10 +18,10 @@ Every event finishes its own transfer, or reports what is left. The Action's own
 | --- | --- | --- | --- |
 | `project` | yes | | The project page, `https://<site>/docs/<slug>`. |
 | `token` | yes | | A project token with the Edit role. Store it as a secret. |
-| `version` | no | `v0.0.52` | The `librepaper` release tag to download. |
+| `version` | no | `v0.0.56` | The `librepaper` release tag to download. |
 | `branch` | no | `main` | The branch to sync. The workflow checks it out with `ref` set to this branch. The script stops when the checkout is on another branch or a detached HEAD. |
 
-The default `version` follows the workspace version in `Cargo.toml`. Bump it in `action.yml` when a release ships `push` and `pull`.
+The default `version` is the release this commit was cut with. `tools/release/version` sets it at each release.
 
 ## Create the token
 

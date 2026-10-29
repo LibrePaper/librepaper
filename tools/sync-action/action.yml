@@ -8,11 +8,11 @@ inputs:
     description: A LibrePaper project token with the Edit role. Store it as a secret.
     required: true
   version:
-    # The default is the release matching the workspace version in Cargo.toml.
-    # Bump it when a release ships the push and pull commands.
-    description: The librepaper release tag to download, such as v0.0.52.
+    # The release this commit was cut with. tools/release/version sets it, and
+    # tools/release/kit.test.mjs fails when it differs from Cargo.toml.
+    description: The librepaper release tag to download, such as v0.0.56.
     required: false
-    default: v0.0.52
+    default: v0.0.56
   branch:
     description: The branch to sync. The workflow must check it out with actions/checkout ref set to this branch. The script stops when the checkout is on another branch or a detached HEAD.
     required: false
