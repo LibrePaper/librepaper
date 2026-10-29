@@ -5,8 +5,8 @@
 // the shared document only. Formulas are typeset by KaTeX, concealed commands
 // drop out of the visible text, a caret inside a formula shows its source,
 // edits reach the shared text, the visual switch turns the layer off and on
-// in place, Typst is drawn too, and Markdown is left alone. Timings for a long
-// file are printed for information and asserted nowhere.
+// in place, Typst is drawn too, and Markdown is left alone. Timings for long
+// files and caret moves are printed for information and asserted nowhere.
 
 import assert from "node:assert/strict";
 import { build } from "vite";
@@ -42,6 +42,7 @@ const texSample = [
 const typstSample = "= Heading\nSome *bold* and $x^2 + y^2$ here.";
 const markdownSample = "# Readme\n\nSome *emphasis* and $x$ here.";
 const longSample = Array.from({ length: 600 }, () => texSample).join("\n");
+const hugeSample = Array.from({ length: 5 }, () => longSample).join("\n");
 
 // Runs in the page. It refers only to names the generated entry defines
 // (component, session, ids, samples, tick, EditorView), so its source is
@@ -56,6 +57,7 @@ async function visualCheck() {
   const markCount = () => document.querySelectorAll('.cm-editor [class*="cm-lv-"]').length;
   const katexCount = () => document.querySelectorAll(".cm-editor .katex").length;
   const mathKatexCount = () => document.querySelectorAll(".cm-editor .cm-lv-math .katex").length;
+  const mathWidgets = () => document.querySelectorAll(".cm-editor .cm-lv-math").length;
   const visibleText = () => document.querySelector(".cm-content").innerText;
   // Polls for up to five seconds, so a slow KaTeX load has time to land.
   const poll = async (count) => {
@@ -69,6 +71,10 @@ async function visualCheck() {
     const sorted = [...values].sort((a, b) => a - b);
     return sorted[Math.floor(sorted.length / 2)];
   };
+  const summary = (values) => ({
+    median: Math.round(median(values) * 100) / 100,
+    max: Math.round(Math.max(...values) * 100) / 100,
+  });
 
   await settle();
   const first = {
@@ -79,6 +85,24 @@ async function visualCheck() {
     docUnchanged: view().state.doc.toString() === samples.tex,
   };
 
+  // Check 1b: a keystroke schedules a rebuild about 100 ms later, so the new
+  // formula is typeset only after the wait. The caret stays at 0, outside
+  // every formula, so no formula is revealed.
+  view().dispatch({ selection: { anchor: 0 } });
+  await settle();
+  const lineTwoEnd = view().state.doc.line(2).to;
+  const insertion = " $a+b$";
+  const formulasBefore = mathWidgets();
+  view().dispatch({ changes: { from: lineTwoEnd, insert: insertion }, selection: { anchor: 0 } });
+  const deferred = { before: formulasBefore, afterDispatch: mathWidgets() };
+  await wait(400);
+  deferred.later = mathWidgets();
+  deferred.typeset = Array.from(document.querySelectorAll(".cm-editor .cm-lv-math .katex"))
+    .some((node) => node.textContent.replace(/\s/g, "").includes("a+b"));
+  // Take the formula out again so that later checks see the sample as it was.
+  view().dispatch({ changes: { from: lineTwoEnd, to: lineTwoEnd + insertion.length } });
+  await settle();
+
   // Check 2: a caret inside the formula shows its source.
   const mathAt = view().state.doc.toString().indexOf("$E = mc^2$");
   view().dispatch({ selection: { anchor: mathAt + 3 } });
@@ -88,6 +112,19 @@ async function visualCheck() {
     mathWidgets: document.querySelectorAll(".cm-editor .cm-lv-math").length,
     text: visibleText(),
   };
+
+  // Check 2b: a caret move right after a keystroke reveals at once. The caret
+  // leaves the formula, a keystroke lands on line 1, and the caret moves back
+  // into the formula with no wait, so a pending rebuild must not leave stale
+  // atomic ranges behind.
+  view().dispatch({ selection: { anchor: 0 } });
+  await settle();
+  view().dispatch({ changes: { from: view().state.doc.line(1).to, insert: "x" } });
+  const quickAt = view().state.doc.toString().indexOf("$E = mc^2$");
+  view().dispatch({ selection: { anchor: quickAt + 3 } });
+  await tick();
+  const quick = { mathWidgets: mathWidgets(), text: visibleText() };
+  await settle();
 
   // Check 3: an insertion reaches the shared document.
   const lineTwo = view().state.doc.line(2).from;
@@ -124,8 +161,10 @@ async function visualCheck() {
   await settle();
   const markdown = { marks: markCount(), text: visibleText() };
 
-  // Check 7: timing, reported and not asserted. Each run makes 50 single
-  // character insertions at the middle of the file, one dispatch at a time.
+  // Check 7: timing, reported and not asserted. Each typing run makes 50
+  // single character insertions at the middle of the file, one dispatch at a
+  // time. The caret run makes 50 selection-only dispatches, each moving the
+  // caret down one line from the middle, with the layer on.
   const measure = async (visual, file, format) => {
     component.$set({ visual, file, format });
     await settle();
@@ -139,18 +178,33 @@ async function visualCheck() {
       view().dispatch({ changes: { from: at, insert: "x" } });
       samplesMs.push(performance.now() - start);
     }
-    return {
-      lines,
-      median: Math.round(median(samplesMs) * 100) / 100,
-      max: Math.round(Math.max(...samplesMs) * 100) / 100,
-    };
+    return { lines, ...summary(samplesMs) };
   };
   const timingOn = await measure(true, ids.big, "latex");
   const timingOff = await measure(false, ids.bigOff, "latex");
 
+  component.$set({ visual: true, file: ids.big, format: "latex" });
+  await settle();
+  await wait(300);
+  const caretLine = Math.floor(view().state.doc.lines / 2);
+  const caretMs = [];
+  for (let index = 0; index < 50; index++) {
+    const at = view().state.doc.line(caretLine + index).from;
+    const start = performance.now();
+    view().dispatch({ selection: { anchor: at } });
+    caretMs.push(performance.now() - start);
+  }
+  const caret = { lines: view().state.doc.lines, ...summary(caretMs) };
+
+  // Five times the long sample: 15,000 lines.
+  const hugeOn = await measure(true, ids.huge, "latex");
+  const hugeOff = await measure(false, ids.hugeOff, "latex");
+
   return {
     first,
+    deferred,
     revealed,
+    quick,
     edited,
     off,
     back,
@@ -158,6 +212,8 @@ async function visualCheck() {
     typst,
     markdown,
     timing: { lines: timingOn.lines, on: { median: timingOn.median, max: timingOn.max }, off: { median: timingOff.median, max: timingOff.max } },
+    caret,
+    hugeTiming: { lines: hugeOn.lines, on: { median: hugeOn.median, max: hugeOn.max }, off: { median: hugeOff.median, max: hugeOff.max } },
   };
 }
 
@@ -168,7 +224,7 @@ const source = [
   `import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};`,
   `import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};`,
   `import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};`,
-  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, long: longSample })};`,
+  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, long: longSample, huge: hugeSample })};`,
   `document.documentElement.dataset.theme = "librepaper";`,
   `document.documentElement.dataset.palette = "librepaper";`,
   `document.documentElement.dataset.mode = "light";`,
@@ -182,6 +238,8 @@ const source = [
   `  md: session.addText("readme.md", samples.markdown),`,
   `  big: session.addText("big.tex", samples.long),`,
   `  bigOff: session.addText("big-off.tex", samples.long),`,
+  `  huge: session.addText("huge.tex", samples.huge),`,
+  `  hugeOff: session.addText("huge-off.tex", samples.huge),`,
   `};`,
   `const component = createClassComponent({`,
   `  component: Editor,`,
@@ -325,11 +383,21 @@ try {
   assert.equal(result.first.docUnchanged, true, "the visual layer changed the document text");
   console.log("visual-markup-browser: LaTeX formulas are typeset and commands concealed, with the document unchanged");
 
+  // Check 1b: a keystroke schedules a rebuild that typesets the new formula.
+  assert.equal(result.deferred.later, result.deferred.before + 1, "the formula typed at the end of line 2 was not drawn after the deferred rebuild");
+  assert.equal(result.deferred.typeset, true, "the formula typed at the end of line 2 did not typeset as KaTeX inside .cm-lv-math with a+b in it");
+  console.log(`visual-markup-browser: a keystroke's formula is drawn after the deferred rebuild (widgets: ${result.deferred.before} before, ${result.deferred.afterDispatch} right after the dispatch, ${result.deferred.later} later)`);
+
   // Check 2: a caret inside a formula reveals its source.
   assert.equal(result.revealed.katex, 0, "the formula widget stayed when the caret moved into its source");
   assert.equal(result.revealed.mathWidgets, 0, "a math widget remained with the caret inside its source");
   assert.ok(result.revealed.text.includes("E = mc^2"), "the formula source was not shown with the caret inside it");
   console.log("visual-markup-browser: a caret inside a formula shows its source");
+
+  // Check 2b: a caret move straight after a keystroke reveals at once.
+  assert.equal(result.quick.mathWidgets, 0, "a math widget covered the formula when the caret moved in straight after a keystroke");
+  assert.ok(result.quick.text.includes("E = mc^2"), "the formula source was not visible when the caret moved in straight after a keystroke");
+  console.log("visual-markup-browser: a caret move straight after a keystroke reveals the source at once");
 
   // Check 3: edits reach the shared document.
   assert.ok(result.edited.shared.split("\n")[1].startsWith("X"), "the insertion did not reach the shared text for the file");
@@ -357,6 +425,11 @@ try {
   console.log(`visual-markup-browser timing (informational, not asserted, ${result.timing.lines} lines): ` +
     `layer on median ${result.timing.on.median} ms, max ${result.timing.on.max} ms; ` +
     `layer off median ${result.timing.off.median} ms, max ${result.timing.off.max} ms`);
+  console.log(`visual-markup-browser caret moves (informational, not asserted, ${result.caret.lines} lines, layer on): ` +
+    `median ${result.caret.median} ms, max ${result.caret.max} ms`);
+  console.log(`visual-markup-browser 15,000-line typing (informational, not asserted, ${result.hugeTiming.lines} lines): ` +
+    `layer on median ${result.hugeTiming.on.median} ms, max ${result.hugeTiming.on.max} ms; ` +
+    `layer off median ${result.hugeTiming.off.median} ms, max ${result.hugeTiming.off.max} ms`);
 
   assert.equal(errors.length, 0, ["Browser errors or exceptions during the visual markup check:", ...errors].join("\n"));
   console.log("visual-markup-browser: no browser errors or exceptions");
