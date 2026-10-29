@@ -509,16 +509,21 @@ export const raw: Rule = (source, pos) => {
   const end = findRun(source, pos + n, Math.min(source.length, pos + MAX_SPAN), '`'.repeat(n));
   if (end < 0) return null;
 
-  const body = { from: pos + n, to: end - n };
-  if (n < 3) return { kind: 'raw', name: 'inline', from: pos, to: end, body };
+  if (n < 3) return { kind: 'raw', name: 'inline', from: pos, to: end, body: { from: pos + n, to: end - n } };
 
+  // A block is a container codeblock, as a Markdown code block is. Its body starts on the line
+  // after the language and ends before the newline that precedes the closing fence, so the
+  // fence and language lines are outside the body and a header can replace them.
   const lang = sticky(LANG, source, pos + n)?.[0] ?? '';
+  const inner = source.slice(pos + n + lang.length, end - n);
+  const from = pos + n + lang.length + (/^\r?\n/.exec(inner)?.[0].length ?? 0);
+  const to = Math.max(from, end - n - (/\r?\n$/.exec(inner)?.[0].length ?? 0));
   return {
-    kind: 'raw',
-    name: 'block',
+    kind: 'container',
+    name: 'codeblock',
     from: pos,
     to: end,
-    body,
+    body: { from, to },
     meta: lang ? { lang } : undefined
   };
 };
