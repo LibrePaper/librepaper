@@ -25,11 +25,25 @@ const ERROR_LINE = /^(?:! )?((?:LaTeX|Package \S+|Class \S+) Error: .*)$/;
 const TEX_ERROR_LINE = /^! (.*)$/;
 const CONTINUATION_LINE = /^\([^)]+\)\s*(.*)$/;
 const MAX_DIAGNOSTICS = 10;
+const ANSI = /\x1b\[[0-9;]*m/g;
+const LATEXML_HEADER = /^(Error|Warning|Fatal):([^:\s]*):(\S*)\s*(.*)$/;
+const LATEXML_AT = /^\tat (.+?); line (\d+) col (\d+)(?: - line (\d+) col (\d+))?/;
 
-function diagnostic(message, hints, main) {
+/** @param {{file?: string, line?: number, column?: number, end_line?: number, end_column?: number}} [at] */
+function diagnostic(message, hints, main, severity = "error", at = {}) {
+  const line = at.line ?? 0;
+  const column = at.column ?? 0;
   return {
-    severity: "error", message, hints, file: main, line: 0, column: 0, end_line: 0, end_column: 0,
+    severity, message, hints, file: at.file ?? main, line, column,
+    end_line: at.end_line ?? line, end_column: at.end_column ?? column,
   };
+}
+
+/** Finds the project file a LaTeXML source name refers to, if any. */
+function resolvePath(name, paths) {
+  if (paths.includes(name)) return name;
+  if (paths.includes(`${name}.tex`)) return `${name}.tex`;
+  return paths.find((path) => path.split("/").pop().replace(/\.[^.]*$/, "") === name) ?? null;
 }
 
 function hintsFor(message) {
@@ -42,12 +56,49 @@ function hintsFor(message) {
   return [];
 }
 
-/** Turns a LaTeXML log into the short list of errors worth showing. */
-export function logDiagnostics(log, main) {
-  const lines = String(log ?? "").split("\n");
+/**
+ * Turns a LaTeX or LaTeXML log into the diagnostics worth showing: errors
+ * first, then warnings, each capped. Returns [] when nothing was recognised.
+ * @param {string|null|undefined} log
+ * @param {{main: string, paths: string[]}} project
+ */
+export function logDiagnostics(log, { main, paths }) {
+  const lines = String(log ?? "").split("\n").map((line) => line.replace(ANSI, ""));
   const seen = new Set();
-  const diagnostics = [];
-  for (let i = 0; i < lines.length && diagnostics.length < MAX_DIAGNOSTICS; i++) {
+  const errors = [];
+  const warnings = [];
+  const add = (severity, message, at) => {
+    if (!message) return;
+    const item = diagnostic(message, hintsFor(message), main, severity, at);
+    const key = [item.severity, item.file, item.line, item.message].join("\0");
+    if (seen.has(key)) return;
+    seen.add(key);
+    (severity === "warning" ? warnings : errors).push(item);
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const record = lines[i].match(LATEXML_HEADER);
+    if (record) {
+      const [, kind, category, object, rest] = record;
+      const parts = [rest.trim() || `${category} ${object}`.trim()];
+      let location = null;
+      for (let j = i + 1; j < lines.length && lines[j].startsWith("\t"); j++) {
+        i = j;
+        const found = lines[j].match(LATEXML_AT);
+        if (found) location = found;
+        else if (lines[j].startsWith("\tIn /")) continue;
+        else if (lines[j].trim()) parts.push(lines[j].trim());
+      }
+      const file = location ? resolvePath(location[1], paths) : null;
+      const at = file ? {
+        file,
+        line: Number(location[2]),
+        column: Number(location[3]),
+        end_line: location[4] && Number(location[4]),
+        end_column: location[5] && Number(location[5]),
+      } : {};
+      add(kind === "Warning" ? "warning" : "error", parts.join(" "), at);
+      continue;
+    }
     const match = lines[i].match(ERROR_LINE) ?? lines[i].match(TEX_ERROR_LINE);
     if (!match) continue;
     const parts = [match[1].trim()];
@@ -57,14 +108,9 @@ export function logDiagnostics(log, main) {
       if (next[1].trim()) parts.push(next[1].trim());
       i = j;
     }
-    const message = parts.join(" ");
-    if (!message || seen.has(message)) continue;
-    seen.add(message);
-    diagnostics.push(diagnostic(message, hintsFor(message), main));
+    add("error", parts.join(" "), {});
   }
-  if (diagnostics.length) return diagnostics;
-  const tail = lines.filter((line) => line.trim()).slice(-12).join("\n");
-  return [diagnostic(tail || "LaTeX HTML conversion failed", [], main)];
+  return [...errors.slice(0, MAX_DIAGNOSTICS), ...warnings.slice(0, MAX_DIAGNOSTICS)];
 }
 
 /** @param {{makeEngine?: typeof createEngine, request?: (input: string|URL, init?: RequestInit) => Promise<Response>, verified?: typeof fetchVerified, deadline?: number}} [options] */
@@ -214,13 +260,19 @@ export function createHtmlCompiler({
       startup.latexml = target.timings;
     }
     const ok = result.ok && typeof result.html === "string" && result.html.length > 0;
+    const diagnostics = logDiagnostics(result.log, { main: tree.main, paths: Object.keys({ ...tree.texts, ...tree.assets }) });
+    if (!ok && !diagnostics.some((item) => item.severity === "error")) {
+      // A log the parser found nothing in still ends with the engine's last word.
+      const tail = String(result.log ?? "").split("\n").filter((line) => line.trim()).slice(-12).join("\n");
+      diagnostics.push(diagnostic(tail || "LaTeX HTML conversion failed", [], tree.main));
+    }
     return {
       html: ok ? result.html : null,
       pdf: null,
       ok,
       seconds: (Date.now() - started) / 1000,
       log: result.log,
-      diagnostics: result.diagnostics?.length ? result.diagnostics : ok ? [] : logDiagnostics(result.log, tree.main),
+      diagnostics,
       timings: {
         startup,
         passes: [{ kind: "latexml", phaseTimings: result.phaseTimings ?? null, bundleStats: result.bundleStats ?? null }],

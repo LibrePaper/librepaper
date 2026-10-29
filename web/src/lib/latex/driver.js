@@ -350,7 +350,12 @@ class EngineDriver {
     // pdfTeX/XeTeX/dvipdfm/LuaTeX: result "ok"/"failed" plus a numeric exit
     // status (0 and 1 both "compiled", 1 meaning warnings). BibTeX/makeindex:
     // result "ok"/"error", no status at all -- treated as exit 0 or 1.
-    const ok = reply.result === "ok" && (reply.status === undefined || reply.status === 0 || reply.status === 1);
+    // LaTeXML: status 2 means recoverable errors with the document still
+    // produced, so any page it wrote is shown alongside its errors.
+    const ok = this.kind === "latexml"
+      ? typeof reply.status === "number" && reply.status >= 0 && reply.status <= 2 &&
+        typeof reply.html === "string" && reply.html.length > 0
+      : reply.result === "ok" && (reply.status === undefined || reply.status === 0 || reply.status === 1);
     let bundleStats = null;
     // A trapped engine (negative status) may never answer again.
     if (BUNDLE_CAPABLE.has(this.kind) && !(typeof reply.status === "number" && reply.status < 0)) {
@@ -368,7 +373,6 @@ class EngineDriver {
       pdf: reply.pdf ? new Uint8Array(reply.pdf) : null,
       ...(this.kind === "latexml" ? {
         html: typeof reply.html === "string" ? reply.html : null,
-        diagnostics: Array.isArray(reply.diagnostics) ? reply.diagnostics : [],
       } : {}),
       synctex: reply.synctex ? new Uint8Array(reply.synctex) : null,
       log: reply.log || "",
