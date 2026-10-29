@@ -1,5 +1,6 @@
-import { Compartment, EditorState, Extension, Facet, RangeSet, StateEffect, StateField } from '@codemirror/state';
-import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from '@codemirror/view';
+import { foldedRanges } from '@codemirror/language';
+import { Compartment, EditorState, Extension, Facet, Prec, RangeSet, StateEffect, StateField } from '@codemirror/state';
+import { Decoration, DecorationSet, EditorView, keymap, ViewPlugin, ViewUpdate } from '@codemirror/view';
 import { ConfigService, DEFAULT_CONFIG, EditorConfig } from '../core/config';
 import { getLanguage } from '../core/language';
 import { Token } from '../core/tokens';
@@ -151,8 +152,80 @@ const rebuildAfterPause = ViewPlugin.fromClass(
   }
 );
 
+function isFoldedAt(state: EditorState, pos: number): boolean {
+  let folded = false;
+  foldedRanges(state).between(pos, pos, (from, to) => {
+    if (from <= pos && pos < to) folded = true;
+  });
+  return folded;
+}
+
+// CodeMirror moves the caret over replaced (collapsed or widget) lines without
+// stopping on them, so their source is never revealed from the keyboard. When
+// a vertical move skips a document line, land on that line instead. Only a
+// skip is intercepted; ordinary motion keeps the default behaviour.
+function stepLine(view: EditorView, forward: boolean): boolean {
+  const { state } = view;
+  if (!state.field(visualState).enabled) return false;
+  const { selection, doc } = state;
+  if (selection.ranges.length !== 1 || !selection.main.empty) return false;
+
+  const line = doc.lineAt(selection.main.head);
+  const next = forward ? line.number + 1 : line.number - 1;
+  if (next < 1 || next > doc.lines) return false;
+
+  const target = view.moveVertically(selection.main, forward);
+  const landed = doc.lineAt(target.head).number;
+  const skipped = forward ? landed > next : landed < next;
+  if (!skipped) return false;
+
+  // A folded range hides the line on purpose, so the default motion stays.
+  const skippedLine = doc.line(next);
+  if (isFoldedAt(state, skippedLine.from)) return false;
+
+  view.dispatch({
+    selection: { anchor: forward ? skippedLine.from : skippedLine.to },
+    scrollIntoView: true,
+    userEvent: 'select'
+  });
+  return true;
+}
+
+// CodeMirror's atomic ranges make a horizontal move jump a whole inline widget
+// in one key press, so the caret never sits inside it. A jump longer than one
+// character on the same line steps one position into the range instead.
+function stepChar(view: EditorView, forward: boolean): boolean {
+  const { state } = view;
+  if (!state.field(visualState).enabled) return false;
+  const { selection, doc } = state;
+  if (selection.ranges.length !== 1 || !selection.main.empty) return false;
+
+  const head = selection.main.head;
+  const target = view.moveByChar(selection.main, forward);
+  if (doc.lineAt(target.head).number !== doc.lineAt(head).number) return false;
+  if (Math.abs(target.head - head) <= 1) return false;
+
+  view.dispatch({
+    selection: { anchor: forward ? head + 1 : head - 1 },
+    scrollIntoView: true,
+    userEvent: 'select'
+  });
+  return true;
+}
+
+// Prec.high runs before the default cursor keymap. Only the plain keys are
+// bound, so Shift and modifier variants keep their default behaviour.
+const arrowKeymap = Prec.high(
+  keymap.of([
+    { key: 'ArrowDown', run: view => stepLine(view, true) },
+    { key: 'ArrowUp', run: view => stepLine(view, false) },
+    { key: 'ArrowRight', run: view => stepChar(view, true) },
+    { key: 'ArrowLeft', run: view => stepChar(view, false) }
+  ])
+);
+
 export function visualExtension(): Extension {
-  return [visualState, decorationField, rebuildAfterPause];
+  return [visualState, decorationField, rebuildAfterPause, arrowKeymap];
 }
 
 export class VisualCodeMirrorEditor {
