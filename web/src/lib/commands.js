@@ -217,8 +217,8 @@ export const COMMANDS = [
   { id: "focus-preview", label: "Focus Preview", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+V"], available: (c) => Boolean(c.preview), note: "Preview visible" },
 
   // The two insertion palettes, which open over the editor.
-  { id: "symbols", label: "Insert symbol", category: "Insert", scope: "workspace", keys: ["Mod+Alt+S"], available: editable, note: "Source open" },
-  { id: "math", label: "Insert math", category: "Insert", scope: "workspace", keys: ["Mod+Alt+T"], available: editable, note: "Source open" },
+  { id: "symbols", label: "Insert symbol", category: "Insert", scope: "workspace", keys: ["Mod+Alt+S"], available: editable, note: "Editor open" },
+  { id: "math", label: "Insert math", category: "Insert", scope: "workspace", keys: ["Mod+Alt+T"], available: editable, note: "Editor open" },
 
   // One palette entry per math template. They have no key: they are found by
   // name, and each opens the Math overlay on its template.
@@ -235,19 +235,19 @@ export const COMMANDS = [
 
   // The workspace itself: which panes are up, and whether they scroll
   // together. The two that had shortcuts before this file existed keep them.
-  { id: "layout-cycle", label: "Toggle source / preview / split", category: "Workspace", scope: "workspace", keys: ["Mod+\\"], available: (c) => Boolean(c.editing) },
+  { id: "layout-cycle", label: "Toggle editor / preview / split", category: "Workspace", scope: "workspace", keys: ["Mod+\\"], available: (c) => Boolean(c.editing) },
   { id: "linked", label: "Toggle linked scrolling", category: "Workspace", scope: "workspace", menu: "view", keys: ["Mod+Alt+L"], available: (c) => Boolean(c.editing) },
   // The browser's zoom keys, taken only while the focus is in the source: there
   // they size the source like a pinch, and everywhere else the browser keeps
   // them. The editor owns them, so the window never listens for them.
-  { id: "text-bigger", label: "Bigger source text", category: "Workspace", scope: "editor", owner: "editor", menu: "view", keys: ["Mod+="], browserKeys: true, available: (c) => Boolean(c.editing) },
-  { id: "text-smaller", label: "Smaller source text", category: "Workspace", scope: "editor", owner: "editor", menu: "view", keys: ["Mod+-"], browserKeys: true, available: (c) => Boolean(c.editing) },
-  { id: "text-reset", label: "Reset source text size", category: "Workspace", scope: "editor", owner: "editor", menu: "view", keys: ["Mod+0"], browserKeys: true, available: (c) => Boolean(c.editing) },
-  { id: "layout-source", label: "Show source only", category: "Workspace", scope: "workspace", keys: [], available: (c) => Boolean(c.editing) },
+  { id: "text-bigger", label: "Bigger editor text", category: "Workspace", scope: "editor", owner: "editor", menu: "view", keys: ["Mod+="], browserKeys: true, available: (c) => Boolean(c.editing) },
+  { id: "text-smaller", label: "Smaller editor text", category: "Workspace", scope: "editor", owner: "editor", menu: "view", keys: ["Mod+-"], browserKeys: true, available: (c) => Boolean(c.editing) },
+  { id: "text-reset", label: "Reset editor text size", category: "Workspace", scope: "editor", owner: "editor", menu: "view", keys: ["Mod+0"], browserKeys: true, available: (c) => Boolean(c.editing) },
+  { id: "layout-source", label: "Show editor only", category: "Workspace", scope: "workspace", keys: [], available: (c) => Boolean(c.editing) },
   { id: "layout-document", label: "Show preview only", category: "Workspace", scope: "workspace", keys: [], available: (c) => Boolean(c.editing) },
-  { id: "layout-split", label: "Show source and preview", category: "Workspace", scope: "workspace", keys: [], available: (c) => Boolean(c.editing) && !c.compact },
-  { id: "side-left", label: "Source on left", category: "Workspace", scope: "workspace", help: true, keys: [], available: (c) => Boolean(c.editing) && !c.compact, note: "Wide layout" },
-  { id: "side-right", label: "Source on right", category: "Workspace", scope: "workspace", help: true, keys: [], available: (c) => Boolean(c.editing) && !c.compact, note: "Wide layout" },
+  { id: "layout-split", label: "Show editor and preview", category: "Workspace", scope: "workspace", keys: [], available: (c) => Boolean(c.editing) && !c.compact },
+  { id: "side-left", label: "Editor on left", category: "Workspace", scope: "workspace", help: true, keys: [], available: (c) => Boolean(c.editing) && !c.compact, note: "Wide layout" },
+  { id: "side-right", label: "Editor on right", category: "Workspace", scope: "workspace", help: true, keys: [], available: (c) => Boolean(c.editing) && !c.compact, note: "Wide layout" },
 
   // The preview.
   { id: "compile", label: "Compile now", category: "Preview", scope: "preview", menu: "file", keys: ["Mod+Alt+B"], available: (c) => Boolean(c.compilable), note: "Compiled document" },

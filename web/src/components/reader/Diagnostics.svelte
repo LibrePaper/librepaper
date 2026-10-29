@@ -113,7 +113,7 @@
               <div class="panel-meta mt-2 break-all">
                 {#if canOpen(item)}
                   <button type="button" class="anchor text-left" onclick={() => onopen?.(item)}
-                          title="Go to this location in the source">
+                          title="Go to this location in the editor">
                     {item.file || entry}:{item.line}{item.column > 0 ? `:${item.column}` : ""}
                   </button>
                 {:else}

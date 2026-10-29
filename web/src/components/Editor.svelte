@@ -1102,7 +1102,7 @@
       doc: text.toString(),
       extensions: [
         EditorView.editable.of(Boolean(editable)),
-        EditorView.contentAttributes.of({ "aria-label": path ? `Source of ${path}` : "Source", "aria-readonly": Boolean(editable) ? "false" : "true" }),
+        EditorView.contentAttributes.of({ "aria-label": path ? `Editor of ${path}` : "Editor", "aria-readonly": Boolean(editable) ? "false" : "true" }),
         spellcheckCompartment.of(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(id), () => text.toString())),
         // Vim, when the setting says so, and always first: an earlier
         // extension has precedence, and Vim has to see a key before the

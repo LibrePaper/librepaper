@@ -22,7 +22,7 @@ Pandoc is the official `pandoc.wasm` build, pinned in `assets.lock` and fetched 
 
 ## The live head
 
-There is no publish step or stored rendered page. A reader sees the same head an editor sees, projected as text tree, format and assets, identified by tree digest not version number. The preview renders the file open in the source, or the file that includes it. The parent reader requests this projection from the application origin and renders it. It sends the resulting preview to the isolated document frame. Opening, reconnecting and every edit resolve to fetch-and-render.
+There is no publish step or stored rendered page. A reader sees the same head an editor sees, projected as text tree, format and assets, identified by tree digest not version number. The preview renders the file open in the editor, or the file that includes it. The parent reader requests this projection from the application origin and renders it. It sends the resulting preview to the isolated document frame. Opening, reconnecting and every edit resolve to fetch-and-render.
 
 The projection algorithm is implemented in Rust and JavaScript, held to the same behaviour by `web/tests/fixtures/projection.json`. When a document changes, the socket carries `source-changed {digest}` with only the digest. The reader refetches using digest as etag. Unchanged files reuse cache.
 

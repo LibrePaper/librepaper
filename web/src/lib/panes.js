@@ -59,7 +59,7 @@ export const ACTIVITY_WIDTH = 3; // rem
 // are the same list on purpose: what the pointer finds and what the menu says
 // should not be different places.
 export const RATIOS = [
-  { share: 2 / 3, says: "Wide source" },
+  { share: 2 / 3, says: "Wide editor" },
   { share: 1 / 3, says: "Wide preview" },
   { share: 1 / 2, says: "Even" },
 ];

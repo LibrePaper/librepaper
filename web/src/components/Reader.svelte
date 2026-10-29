@@ -865,7 +865,7 @@
   function attachComment(comment) {
     const selection = editor?.selection?.();
     if (!mayEdit || !session || !selection) {
-      say("Select the passage in the source first.", { kind: "note", id: "reader:attach-selection" });
+      say("Select the passage in the editor first.", { kind: "note", id: "reader:attach-selection" });
       return;
     }
     if (
@@ -2483,7 +2483,7 @@
   // as much a statement of where you are as a way of leaving.
   const ARRANGEMENTS = {
     split: { icon: "columns-2", says: "Split", next: "document" },
-    source: { icon: "panel-left", says: "Source", next: "split" },
+    source: { icon: "panel-left", says: "Editor", next: "split" },
     document: { icon: "file-text", says: "Preview", next: "source" },
   };
 
@@ -3917,13 +3917,13 @@
 {/snippet}
 
 {#snippet layoutItems()}
-  {#each [["source", "Source"], ["document", "Preview"], ["split", "Split"]] as [value, label]}
+  {#each [["source", "Editor"], ["document", "Preview"], ["split", "Split"]] as [value, label]}
     <Menu.Item value="layout-{value}" class="menuitem" disabled={compact && value === "split"}>
       <span class="menuitem-check">{(compact ? activeMobileView === value : layout === value) ? "✓" : ""}</span>{label}
     </Menu.Item>
   {/each}
   <hr class="hr my-1" />
-  {#each [["left", "Source on left"], ["right", "Source on right"]] as [side, label]}
+  {#each [["left", "Editor on left"], ["right", "Editor on right"]] as [side, label]}
     <Menu.Item value="side-{side}" class="menuitem" disabled={compact}>
       <span class="menuitem-check">{sourceSide === side ? "✓" : ""}</span>{label}
     </Menu.Item>
@@ -3975,7 +3975,7 @@
     <IconButton icon="eye" label="Preview" visibleLabel={compact ? "Preview" : null} pressed={shown.document}
                 onclick={() => showMobileView("document")} />
     {#if sourceOpen}
-      <IconButton icon="writing-hand" label="Source" visibleLabel={compact ? "Source" : null} pressed={shown.source}
+      <IconButton icon="writing-hand" label="Editor" visibleLabel={compact ? "Editor" : null} pressed={shown.source}
                   onclick={() => showMobileView("source")} />
     {/if}
   </div>
@@ -4238,7 +4238,7 @@
 
   <!-- A separator only where there are two things to separate. -->
   {#if shown.source && shown.document}
-    <Grip pane={PANES.editor} label="Split between the source and the document" panes={panes}
+    <Grip pane={PANES.editor} label="Split between the editor and the document" panes={panes}
           controls="reader-source"
           onsize={(size) => setSize(PANES.editor, size)}
           onguide={(where) => (guide = where)}
