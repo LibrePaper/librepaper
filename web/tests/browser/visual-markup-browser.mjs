@@ -5,7 +5,8 @@
 // the shared document only. Formulas are typeset by KaTeX, concealed commands
 // drop out of the visible text, a caret inside a formula shows its source,
 // edits reach the shared text, the visual switch turns the layer off and on
-// in place, Typst is drawn too, and Markdown is left alone. Timings for long
+// in place, Typst is drawn too, Markdown is drawn, and a Quarto paper with
+// front matter, cells, cross-references and callouts is drawn. Timings for long
 // files and caret moves are printed for information and asserted nowhere.
 
 import assert from "node:assert/strict";
@@ -41,6 +42,73 @@ const texSample = [
 ].join("\n");
 const typstSample = "= Heading\nSome *bold* and $x^2 + y^2$ here.";
 const markdownSample = "# Readme\n\nSome *emphasis* and $x$ here.";
+// A Quarto paper: front matter, numbered sections, inline and block markup, a
+// code cell with a label, an image figure, a captioned table, display and inline
+// math, a callout, a theorem, citations, cross-references, a footnote and a
+// shortcode. The caret stays on the "Caret here." line.
+const paperSample = [
+  "---",
+  "title: \"Quarto Paper\"",
+  "author:",
+  "  - Ada Lovelace",
+  "  - Bob Smith",
+  "date: \"2026-01-02\"",
+  "number-sections: true",
+  "---",
+  "",
+  "# Introduction {#sec-intro}",
+  "",
+  "Some **bold**, *italic*, ~~strike~~ and `inline code` text with a [link](https://example.org) and <https://example.com>.",
+  "",
+  "- [ ] open task",
+  "- [x] done task",
+  "",
+  "1. first step",
+  "2. second step",
+  "",
+  "> A quoted line.",
+  "",
+  "```python",
+  "print(\"hi\")",
+  "```",
+  "",
+  "```{r}",
+  "#| label: fig-plot",
+  "#| fig-cap: \"A plot\"",
+  "plot(1:10)",
+  "```",
+  "",
+  "![A chart](chart.png){#fig-chart}",
+  "",
+  "| Name | Score |",
+  "|:-----|------:|",
+  "| A    |     1 |",
+  "| B    |     2 |",
+  "",
+  ": Results {#tbl-res}",
+  "",
+  "$$ E = mc^2 $$ {#eq-energy}",
+  "",
+  "Inline $x^2$ math and a citation [@knuth] and @knuth wrote.",
+  "",
+  "::: {.callout-note}",
+  "A note with text.",
+  ":::",
+  "",
+  "::: {#thm-main}",
+  "Every bounded monotone sequence converges.",
+  ":::",
+  "",
+  "Cross references: @fig-chart, @tbl-res, @eq-energy, @sec-intro and @fig-plot.",
+  "",
+  "A note[^1] in text.",
+  "",
+  "{{< pagebreak >}}",
+  "",
+  "[^1]: The footnote text.",
+  "",
+  "Caret here.",
+].join("\n");
 // A whole LaTeX paper: a preamble, math environments, labels and a bibliography.
 const fullSample = [
   "\\documentclass[11pt]{article}",
@@ -267,10 +335,38 @@ async function visualCheck() {
     marks: markCount(),
   };
 
-  // Check 6: Markdown is left alone.
+  // Check 6: Markdown is drawn. The caret goes to the end of the file, on the
+  // plain text after the emphasis, so the emphasis markers stay hidden.
   component.$set({ file: ids.md, format: "markdown" });
   await settle();
+  view().dispatch({ selection: { anchor: view().state.doc.length } });
+  await settle();
   const markdown = { marks: markCount(), text: visibleText() };
+
+  // Check 6a: a Quarto paper. The front matter folds into a title block with the
+  // caret on a plain line, and the markup, cells, figures, tables, math, callouts,
+  // theorems, citations and cross-references are drawn. A click on the front
+  // matter shows its YAML.
+  component.$set({ visual: true, file: ids.paper, format: "markdown" });
+  await settle();
+  await wait(800);
+  view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("Caret here.") + 3 } });
+  await settle();
+  const paperKatexShown = await poll(katexCount);
+  const frontmatter = document.querySelector(".cm-editor [class*='frontmatter']");
+  const quarto = {
+    katexShown: paperKatexShown,
+    katex: katexCount(),
+    katexErrors: document.querySelectorAll(".cm-editor .katex-error").length,
+    tables: document.querySelectorAll(".cm-editor table").length,
+    verbs: document.querySelectorAll(".cm-editor .cm-lp-verb").length,
+    links: document.querySelectorAll(".cm-editor .cm-lp-link").length,
+    frontmatterShown: Boolean(frontmatter),
+    text: visibleText(),
+  };
+  frontmatter?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  await settle();
+  quarto.frontmatterClick = visibleText();
 
   // Check 6b: a LaTeX paper. The preamble folds into one block while the caret
   // is in the body, labels and the bibliography are hidden, math environments
@@ -493,6 +589,7 @@ async function visualCheck() {
     sameView,
     typst,
     markdown,
+    quarto,
     full: { body: fullBody, preambleClick: fullPreambleClick, preamble: fullPreamble, end: fullEnd, display: fullDisplay },
     refs: refsCheck,
     titleBlock,
@@ -511,7 +608,7 @@ const source = [
   `import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};`,
   `import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};`,
   `import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};`,
-  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample, sink: sinkSample, title: titleSample })};`,
+  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, paper: paperSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample, sink: sinkSample, title: titleSample })};`,
   `document.documentElement.dataset.theme = "librepaper";`,
   `document.documentElement.dataset.palette = "librepaper";`,
   `document.documentElement.dataset.mode = "light";`,
@@ -523,6 +620,7 @@ const source = [
   `  tex: session.addText("paper.tex", samples.tex),`,
   `  typ: session.addText("notes.typ", samples.typst),`,
   `  md: session.addText("readme.md", samples.markdown),`,
+  `  paper: session.addText("paper.qmd", samples.paper),`,
   `  full: session.addText("full.tex", samples.full),`,
   `  big: session.addText("big.tex", samples.long),`,
   `  bigOff: session.addText("big-off.tex", samples.long),`,
@@ -710,9 +808,35 @@ try {
   assert.equal(result.typst.katex, true, "a Typst formula was not drawn as KaTeX inside .cm-lv-math");
   console.log("visual-markup-browser: a Typst formula is drawn");
 
-  // Check 6: Markdown is left alone.
-  assert.equal(result.markdown.marks, 0, "Markdown was drawn by the visual layer");
-  console.log("visual-markup-browser: Markdown is left alone");
+  // Check 6: Markdown is drawn. Its emphasis markers are hidden, and its math is typeset.
+  assert.ok(result.markdown.marks > 0, "no visual markup decorations were drawn for readme.md");
+  assert.ok(result.markdown.text.includes("emphasis"), "the emphasis text was not visible in readme.md");
+  assert.equal(result.markdown.text.includes("*emphasis*"), false, "the emphasis markers are still visible in readme.md");
+  console.log("visual-markup-browser: Markdown is drawn and its emphasis markers are hidden");
+
+  // Check 6a: a Quarto paper is drawn. Its front matter is a title block that shows
+  // its YAML after a click, and the source of each construct is hidden with the
+  // caret on the last line.
+  assert.equal(result.quarto.katexShown, true, "KaTeX did not typeset the formulas in paper.qmd within five seconds");
+  for (const drawn of ["Quarto Paper", "Ada Lovelace", "Bob Smith", "Introduction", "Figure", "Table", "Equation", "Section 1", "Note", "Theorem 1"]) {
+    assert.ok(result.quarto.text.includes(drawn), `paper.qmd does not draw '${drawn}'; visible text: ${result.quarto.text}`);
+  }
+  for (const source of ["**", "~~", "{#", ":::", "{{<", "](", "$$"]) {
+    assert.equal(result.quarto.text.includes(source), false, `${source} is still visible in paper.qmd with the caret on its last line`);
+  }
+  // The footnote definition line is shown as source, so it is taken out before the
+  // check; what must not show is the reference [^1] in the paragraph.
+  const quartoBody = result.quarto.text.replace(/\[\^1\]:[^\n]*/g, "");
+  assert.equal(quartoBody.includes("[^1]"), false, "the footnote reference [^1] is still visible in paper.qmd");
+  assert.ok(result.quarto.katex >= 2, `expected at least 2 KaTeX formulas in paper.qmd, found ${result.quarto.katex}`);
+  assert.equal(result.quarto.katexErrors, 0, "paper.qmd has KaTeX parse errors (.katex-error inside .cm-editor)");
+  assert.ok(result.quarto.tables > 0, "the pipe table was not drawn as a <table> inside the editor");
+  assert.ok(result.quarto.verbs > 0, "the inline code was not drawn as .cm-lp-verb");
+  assert.ok(result.quarto.links > 0, "the link was not drawn as .cm-lp-link");
+  assert.equal(result.quarto.frontmatterShown, true, "no front matter title block was drawn for paper.qmd");
+  assert.equal(result.quarto.text.includes("title:"), false, "the front matter YAML showed before a click on the title block");
+  assert.ok(result.quarto.frontmatterClick.includes("title:"), "a click on the front matter title block did not reveal title:");
+  console.log("visual-markup-browser: paper.qmd draws its front matter, markup, cells, figures, tables, math, callouts, theorems and references");
 
   // Check 6b: a LaTeX preamble folds, labels show as small tags, the bibliography
   // and page break fold into chips, math environments are typeset, and the
