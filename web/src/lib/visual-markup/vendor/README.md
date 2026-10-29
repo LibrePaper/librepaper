@@ -6,4 +6,5 @@ copied; the bundled toolbar and dual editor (src/ui) are left out, since
 LibrePaper has its own chrome. One change: view/math-field.ts no longer
 imports the optional MathLive peer, so the bundler never looks for it.
 A second change: view/visual-editor.ts exports a `visualDefaults` facet whose values seed the initial visual state, so the mode can start on from configuration instead of a dispatch after creation.
+A third change: view/decorations.ts makes range subtraction linear (a two-pointer sweep instead of a quadratic loop) and lets `buildDecorations` take precomputed tokens as an optional third argument.
 LibrePaper draws math with its own KaTeX instead (see ../index.js). See LICENSE.

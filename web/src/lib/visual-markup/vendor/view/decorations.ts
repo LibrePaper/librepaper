@@ -58,9 +58,9 @@ class MarkerWidget extends WidgetType {
   }
 }
 
-export function buildDecorations(state: EditorState, options: BuildOptions): BuildResult {
+export function buildDecorations(state: EditorState, options: BuildOptions, tokens?: Token[]): BuildResult {
   const source = state.doc.toString();
-  const tokens = new Tokenizer(options.language, { maxDepth: options.maxDepth }).tokenize(source);
+  const parsed = tokens ?? new Tokenizer(options.language, { maxDepth: options.maxDepth }).tokenize(source);
 
   const decorations: CMRange<Decoration>[] = [];
   const atomic: CMRange<Decoration>[] = [];
@@ -149,7 +149,7 @@ export function buildDecorations(state: EditorState, options: BuildOptions): Bui
     }
   };
 
-  emit(tokens);
+  emit(parsed);
 
   const spans = subtract(merge(concealed), merge(replaced));
 
@@ -171,7 +171,7 @@ export function buildDecorations(state: EditorState, options: BuildOptions): Bui
   return {
     decorations: Decoration.set(decorations, true),
     atomic: RangeSet.of(atomic, true),
-    tokens
+    tokens: parsed
   };
 }
 
@@ -511,13 +511,18 @@ function merge(ranges: Range[]): Range[] {
 }
 
 function subtract(ranges: Range[], holes: Range[]): Range[] {
+  // Both inputs are sorted and merged (see merge()), so one hole index can advance monotonically.
   const result: Range[] = [];
+  let first = 0;
 
   for (const range of ranges) {
+    while (first < holes.length && holes[first].to <= range.from) first++;
+
     let start = range.from;
 
-    for (const hole of holes) {
-      if (hole.to <= start || hole.from >= range.to) continue;
+    for (let index = first; index < holes.length && holes[index].from < range.to; index++) {
+      const hole = holes[index];
+      if (hole.to <= start) continue;
       if (hole.from > start) result.push({ from: start, to: hole.from });
       start = Math.max(start, hole.to);
     }
