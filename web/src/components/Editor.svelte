@@ -203,7 +203,7 @@
   // each of them keeps their own caret, selection and undo history.
   import { EditorState, Prec, Transaction } from "@codemirror/state";
   import { EditorView, lineNumbers, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars, dropCursor, rectangularSelection, drawSelection } from "@codemirror/view";
-  import { defaultKeymap, indentWithTab, selectAll } from "@codemirror/commands";
+  import { defaultKeymap, indentWithTab, selectAll, toggleTabFocusMode } from "@codemirror/commands";
   import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, snippet, startCompletion } from "@codemirror/autocomplete";
   import { searchKeymap, highlightSelectionMatches, openSearchPanel } from "@codemirror/search";
   import { bracketMatching, foldGutter, foldKeymap, indentOnInput } from "@codemirror/language";
@@ -670,6 +670,8 @@
   // here.
   let all = [];
   let shown = [];
+  // The last problem count spoken, so a compile that changes nothing is silent.
+  let announced = "";
 
   /// Which file a diagnostic is about. The engines agree on this: `file` is
   /// empty for the file the preview renders and a path otherwise, and `line: 0`
@@ -720,6 +722,15 @@
     // With the check off nothing is drawn in the source, and the reader's list
     // of messages is unchanged.
     view.dispatch(setLintDiagnostics(view.state, untrack(() => check) ? shown : []));
+    // The gutter marks are the only sign of a compile's result, and a screen
+    // reader gets none of them, so the counts are spoken when they change.
+    const errors = shown.filter((diagnostic) => diagnostic.severity === "error").length;
+    const warnings = shown.filter((diagnostic) => diagnostic.severity === "warning").length;
+    const summary = !errors && !warnings ? (announced ? "No problems in this file" : "") : [errors && `${errors} ${errors === 1 ? "error" : "errors"}`, warnings && `${warnings} ${warnings === 1 ? "warning" : "warnings"}`].filter(Boolean).join(", ") + " in this file";
+    if (summary !== announced && untrack(() => check)) {
+      announced = summary;
+      if (summary) view.dispatch({ effects: EditorView.announce.of(summary) });
+    }
   }
 
   /// Moves the caret to the diagnostic after the one the caret is at, round
@@ -825,6 +836,7 @@
       cut: editable && selected, copy: selected,
       paste: editable, "select-all": true, find: true, replace: editable,
       bold: editable, italic: editable,
+      "tab-focus": Boolean(view),
     };
   }
 
@@ -838,6 +850,7 @@
     else if (command === "select-all") selectAll(target);
     else if (command === "bold") boldCommand(target);
     else if (command === "italic") italicCommand(target);
+    else if (command === "tab-focus") toggleTabFocusMode(target);
     else if (command === "find" || command === "replace") {
       openSearchPanel(target);
       if (command === "replace") target.dom.querySelector('[name="replace"]')?.focus();
@@ -1089,7 +1102,7 @@
       doc: text.toString(),
       extensions: [
         EditorView.editable.of(Boolean(editable)),
-        EditorView.contentAttributes.of({ "aria-label": path ? `Source of ${path}` : "Source" }),
+        EditorView.contentAttributes.of({ "aria-label": path ? `Source of ${path}` : "Source", "aria-readonly": Boolean(editable) ? "false" : "true" }),
         spellcheckCompartment.of(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(id), () => text.toString())),
         // Vim, when the setting says so, and always first: an earlier
         // extension has precedence, and Vim has to see a key before the
@@ -1399,6 +1412,7 @@
     syncFeatures(view, id);
     syncTheme(view);
     showing = id;
+    announced = "";
     // A file this browser has open is where its caret is, which is what the
     // file list shows beside each name.
     session.inFile?.(id);
