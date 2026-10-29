@@ -1,0 +1,368 @@
+// A browser-level check for the visual markup spike: the layer that draws
+// LaTeX and Typst sources in their rendered form while they stay plain text.
+//
+// The Editor is mounted with the layer on, and every check reads the DOM and
+// the shared document only. Formulas are typeset by KaTeX, concealed commands
+// drop out of the visible text, a caret inside a formula shows its source,
+// edits reach the shared text, the visual switch turns the layer off and on
+// in place, Typst is drawn too, and Markdown is left alone. Timings for a long
+// file are printed for information and asserted nowhere.
+
+import assert from "node:assert/strict";
+import { build } from "vite";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
+import tailwindcss from "@tailwindcss/vite";
+import { createServer } from "node:http";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname, join, sep } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { contentType, loroAlias } from "../helpers/loro.mjs";
+import { requireChromiumExecutable } from "../helpers/browser-executable.mjs";
+import { stopBrowserProcess, removeTemporary } from "../helpers/browser-driver.mjs";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const root = dirname(dirname(dirname(here)));
+const temporary = mkdtempSync(join(tmpdir(), "librepaper-visual-markup-check-"));
+const output = join(temporary, "build");
+const profile = join(temporary, "chrome");
+const entry = join(temporary, "entry.js");
+const katexDist = join(root, "web/node_modules/katex/dist");
+const port = 19000 + Math.floor(Math.random() * 1000);
+
+// The same five lines as the LaTeX check, repeated to make a long file.
+const texSample = [
+  "\\section{Introduction}",
+  "Some \\textbf{bold} and \\emph{italic} text with $E = mc^2$ inline.",
+  "\\begin{itemize}",
+  "\\item first",
+  "\\end{itemize}",
+].join("\n");
+const typstSample = "= Heading\nSome *bold* and $x^2 + y^2$ here.";
+const markdownSample = "# Readme\n\nSome *emphasis* and $x$ here.";
+const longSample = Array.from({ length: 600 }, () => texSample).join("\n");
+
+// Runs in the page. It refers only to names the generated entry defines
+// (component, session, ids, samples, tick, EditorView), so its source is
+// copied into the entry as it stands.
+async function visualCheck() {
+  const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+  const settle = async () => {
+    await tick();
+    await wait(100);
+  };
+  const view = () => EditorView.findFromDOM(document.querySelector(".cm-editor"));
+  const markCount = () => document.querySelectorAll('.cm-editor [class*="cm-lv-"]').length;
+  const katexCount = () => document.querySelectorAll(".cm-editor .katex").length;
+  const mathKatexCount = () => document.querySelectorAll(".cm-editor .cm-lv-math .katex").length;
+  const visibleText = () => document.querySelector(".cm-content").innerText;
+  // Polls for up to five seconds, so a slow KaTeX load has time to land.
+  const poll = async (count) => {
+    for (let attempt = 0; attempt < 50; attempt++) {
+      if (count() > 0) return true;
+      await wait(100);
+    }
+    return false;
+  };
+  const median = (values) => {
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  };
+
+  await settle();
+  const first = {
+    katexShown: await poll(katexCount),
+    markCount: markCount(),
+    mathKatex: mathKatexCount(),
+    visibleText: visibleText(),
+    docUnchanged: view().state.doc.toString() === samples.tex,
+  };
+
+  // Check 2: a caret inside the formula shows its source.
+  const mathAt = view().state.doc.toString().indexOf("$E = mc^2$");
+  view().dispatch({ selection: { anchor: mathAt + 3 } });
+  await settle();
+  const revealed = {
+    katex: mathKatexCount(),
+    mathWidgets: document.querySelectorAll(".cm-editor .cm-lv-math").length,
+    text: visibleText(),
+  };
+
+  // Check 3: an insertion reaches the shared document.
+  const lineTwo = view().state.doc.line(2).from;
+  view().dispatch({ changes: { from: lineTwo, insert: "X" }, selection: { anchor: lineTwo + 1 } });
+  await settle();
+  const edited = {
+    doc: view().state.doc.toString(),
+    shared: session.doc.getMap("files").get(ids.tex).toString(),
+  };
+
+  // Check 4: the switch turns the layer off and on without rebuilding the view.
+  const viewBefore = view();
+  view().dispatch({ selection: { anchor: 0 } });
+  await settle();
+  component.$set({ visual: false });
+  await settle();
+  const off = { marks: markCount(), katex: katexCount(), text: visibleText() };
+  component.$set({ visual: true });
+  await settle();
+  const back = { marks: markCount(), katex: await poll(katexCount) };
+  const sameView = view() === viewBefore;
+
+  // Check 5: Typst is drawn.
+  component.$set({ file: ids.typ, format: "typst" });
+  await settle();
+  const typst = {
+    katex: await poll(mathKatexCount),
+    text: visibleText(),
+    marks: markCount(),
+  };
+
+  // Check 6: Markdown is left alone.
+  component.$set({ file: ids.md, format: "markdown" });
+  await settle();
+  const markdown = { marks: markCount(), text: visibleText() };
+
+  // Check 7: timing, reported and not asserted. Each run makes 50 single
+  // character insertions at the middle of the file, one dispatch at a time.
+  const measure = async (visual, file, format) => {
+    component.$set({ visual, file, format });
+    await settle();
+    await wait(300);
+    const line = Math.floor(view().state.doc.lines / 2);
+    const lines = view().state.doc.lines;
+    const samplesMs = [];
+    for (let index = 0; index < 50; index++) {
+      const at = view().state.doc.line(line).from;
+      const start = performance.now();
+      view().dispatch({ changes: { from: at, insert: "x" } });
+      samplesMs.push(performance.now() - start);
+    }
+    return {
+      lines,
+      median: Math.round(median(samplesMs) * 100) / 100,
+      max: Math.round(Math.max(...samplesMs) * 100) / 100,
+    };
+  };
+  const timingOn = await measure(true, ids.big, "latex");
+  const timingOff = await measure(false, ids.bigOff, "latex");
+
+  return {
+    first,
+    revealed,
+    edited,
+    off,
+    back,
+    sameView,
+    typst,
+    markdown,
+    timing: { lines: timingOn.lines, on: { median: timingOn.median, max: timingOn.max }, off: { median: timingOff.median, max: timingOff.max } },
+  };
+}
+
+const source = [
+  `import ${JSON.stringify(join(root, "web/src/styles/app.css"))};`,
+  `import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};`,
+  `import { EditorView } from ${JSON.stringify(join(root, "web/node_modules/@codemirror/view/dist/index.js"))};`,
+  `import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};`,
+  `import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};`,
+  `import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};`,
+  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, long: longSample })};`,
+  `document.documentElement.dataset.theme = "librepaper";`,
+  `document.documentElement.dataset.palette = "librepaper";`,
+  `document.documentElement.dataset.mode = "light";`,
+  `const host = document.createElement("main");`,
+  `host.style.cssText = "height: 100vh; width: 100vw; display: flex; flex-direction: column; overflow: hidden;";`,
+  `document.body.append(host);`,
+  `const session = joinSession({ send: () => {}, mayEdit: true });`,
+  `const ids = {`,
+  `  tex: session.addText("paper.tex", samples.tex),`,
+  `  typ: session.addText("notes.typ", samples.typst),`,
+  `  md: session.addText("readme.md", samples.markdown),`,
+  `  big: session.addText("big.tex", samples.long),`,
+  `  bigOff: session.addText("big-off.tex", samples.long),`,
+  `};`,
+  `const component = createClassComponent({`,
+  `  component: Editor,`,
+  `  target: host,`,
+  `  props: { session, format: "latex", file: ids.tex, visual: true },`,
+  `});`,
+  `window.visualCheck = ${visualCheck.toString()};`,
+  `window.visualCheckReady = true;`,
+  "",
+].join("\n");
+
+writeFileSync(entry, source);
+let server;
+let browser;
+let socket;
+// Browser errors and uncaught exceptions, gathered over CDP while the check runs.
+const errors = [];
+try {
+  await build({
+    configFile: false,
+    root: join(root, "web"),
+    define: { __KATEX__: JSON.stringify("/katex/") },
+    resolve: { alias: loroAlias },
+    plugins: [tailwindcss(), svelte()],
+    logLevel: "error",
+    build: {
+      outDir: output,
+      emptyOutDir: true,
+      lib: { entry, formats: ["es"], fileName: () => "visual-markup-check.js", cssFileName: "visual-markup-check" },
+    },
+  });
+
+  // KaTeX is served where the build's __KATEX__ points, so that
+  // createKatexLoader requests `/katex/katex.min.js` and
+  // `/katex/katex.min.css`, and the stylesheet's fonts/ paths resolve below it.
+  server = createServer((request, response) => {
+    const path = decodeURIComponent(request.url.split("?")[0]);
+    if (path.startsWith("/katex/")) {
+      const file = join(katexDist, path.slice("/katex/".length));
+      if (file.startsWith(katexDist + sep) && existsSync(file)) {
+        response.setHeader("Content-Type", file.endsWith(".woff2") ? "font/woff2" : contentType(file));
+        response.end(readFileSync(file));
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+      return;
+    }
+    const file = join(output, path.slice(1));
+    if (path !== "/" && existsSync(file)) {
+      response.setHeader("Content-Type", contentType(file));
+      response.end(readFileSync(file));
+      return;
+    }
+    response.setHeader("Content-Type", "text/html");
+    response.end('<body><link rel="stylesheet" href="/visual-markup-check.css"><script type="module" src="/visual-markup-check.js"></script></body>');
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  const httpPort = typeof address === "object" && address ? address.port : 0;
+  if (!httpPort) throw new Error("local visual markup server did not start");
+
+  browser = spawn(requireChromiumExecutable(), [
+    "--headless=new",
+    "--no-sandbox",
+    "--disable-gpu",
+    `--user-data-dir=${profile}`,
+    `--remote-debugging-port=${port}`,
+    "about:blank",
+  ], { stdio: "ignore", detached: true });
+  const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+  let browserInfo;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      browserInfo = await fetch(`http://127.0.0.1:${port}/json`).then((answer) => answer.json());
+      break;
+    } catch {
+      await wait(100);
+    }
+  }
+  const page = browserInfo?.find((target) => target.type === "page");
+  if (!page) throw new Error("Chromium did not expose a page target");
+  socket = new WebSocket(page.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    socket.addEventListener("open", resolve, { once: true });
+    socket.addEventListener("error", reject, { once: true });
+  });
+
+  let sequence = 0;
+  const pending = new Map();
+  socket.addEventListener("message", (event) => {
+    const message = JSON.parse(event.data);
+    if (message.method === "Runtime.exceptionThrown") {
+      const details = message.params.exceptionDetails;
+      errors.push(details.exception?.description ?? details.text);
+    }
+    if (message.method === "Runtime.consoleAPICalled" && message.params.type === "error") {
+      errors.push(message.params.args.map((argument) => argument.value ?? argument.description ?? "").join(" "));
+    }
+    const resolve = pending.get(message.id);
+    if (resolve) {
+      pending.delete(message.id);
+      resolve(message);
+    }
+  });
+  const send = (method, params = {}) => new Promise((resolve) => {
+    const id = ++sequence;
+    pending.set(id, resolve);
+    socket.send(JSON.stringify({ id, method, params }));
+  });
+  const evaluate = async (expression) => {
+    const message = await send("Runtime.evaluate", {
+      expression,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    if (message.result?.exceptionDetails) throw new Error(JSON.stringify(message.result.exceptionDetails));
+    return message.result.result.value;
+  };
+
+  await send("Runtime.enable");
+  await send("Page.navigate", { url: `http://127.0.0.1:${httpPort}/` });
+  let ready = false;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    ready = await evaluate("Boolean(window.visualCheckReady && document.querySelector('.cm-editor'))");
+    if (ready) break;
+    await wait(100);
+  }
+  assert.equal(ready, true, "Editor did not mount in Chromium");
+
+  const result = await evaluate("visualCheck()");
+
+  // Check 1: the layer is on for LaTeX.
+  assert.equal(result.first.katexShown, true, "KaTeX did not typeset the inline formula within five seconds");
+  assert.ok(result.first.markCount > 0, "no visual markup decorations were drawn for a LaTeX file with the layer on");
+  assert.ok(result.first.mathKatex > 0, "the inline formula was not drawn as a KaTeX widget inside .cm-lv-math");
+  assert.equal(result.first.visibleText.includes("\\textbf{"), false, "\\textbf{ is still visible; the command was not concealed");
+  assert.equal(result.first.docUnchanged, true, "the visual layer changed the document text");
+  console.log("visual-markup-browser: LaTeX formulas are typeset and commands concealed, with the document unchanged");
+
+  // Check 2: a caret inside a formula reveals its source.
+  assert.equal(result.revealed.katex, 0, "the formula widget stayed when the caret moved into its source");
+  assert.equal(result.revealed.mathWidgets, 0, "a math widget remained with the caret inside its source");
+  assert.ok(result.revealed.text.includes("E = mc^2"), "the formula source was not shown with the caret inside it");
+  console.log("visual-markup-browser: a caret inside a formula shows its source");
+
+  // Check 3: edits reach the shared document.
+  assert.ok(result.edited.shared.split("\n")[1].startsWith("X"), "the insertion did not reach the shared text for the file");
+  assert.equal(result.edited.shared, result.edited.doc, "the shared text and the editor document disagree after an insertion");
+  console.log("visual-markup-browser: an edit with the layer on reaches the shared document");
+
+  // Check 4: the visual switch reconfigures the open editor.
+  assert.equal(result.off.marks, 0, "visual markup decorations remained after the layer was switched off");
+  assert.equal(result.off.katex, 0, "KaTeX output remained after the layer was switched off");
+  assert.ok(result.off.text.includes("\\textbf{"), "the command was still concealed after the layer was switched off");
+  assert.ok(result.back.marks > 0, "the decorations did not come back when the layer was switched on again");
+  assert.equal(result.back.katex, true, "KaTeX did not come back when the layer was switched on again");
+  assert.equal(result.sameView, true, "switching the visual layer rebuilt the editor");
+  console.log("visual-markup-browser: the visual switch turns the layer off and on in place");
+
+  // Check 5: Typst is drawn.
+  assert.equal(result.typst.katex, true, "a Typst formula was not drawn as KaTeX inside .cm-lv-math");
+  console.log("visual-markup-browser: a Typst formula is drawn");
+
+  // Check 6: Markdown is left alone.
+  assert.equal(result.markdown.marks, 0, "Markdown was drawn by the visual layer");
+  console.log("visual-markup-browser: Markdown is left alone");
+
+  // Check 7: timing, printed only.
+  console.log(`visual-markup-browser timing (informational, not asserted, ${result.timing.lines} lines): ` +
+    `layer on median ${result.timing.on.median} ms, max ${result.timing.on.max} ms; ` +
+    `layer off median ${result.timing.off.median} ms, max ${result.timing.off.max} ms`);
+
+  assert.equal(errors.length, 0, ["Browser errors or exceptions during the visual markup check:", ...errors].join("\n"));
+  console.log("visual-markup-browser: no browser errors or exceptions");
+} finally {
+  socket?.close();
+  await stopBrowserProcess(browser);
+  if (server?.listening) await new Promise((resolve) => server.close(resolve));
+  removeTemporary(temporary);
+}
