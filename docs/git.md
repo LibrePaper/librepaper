@@ -14,7 +14,7 @@ The panel shows the **last push**, the newest version pushed from Git, such as "
 
 In the desktop app, the panel also connects the project to a git repository. The panel shows the project, the repository and the branch.
 
-- **Connect** takes the repository's address. The desktop app keeps a copy of the repository on your computer, out of sight.
+- **Connect** takes the repository's address. The desktop app keeps a copy of the repository on your computer, out of sight. On GitHub, use the SSH address, as described in [Credentials](#credentials).
 - **Get repository changes** imports the repository's changes into the project and its History.
 - **Send project changes** sends the project's files to the selected branch of the repository.
 - When a file changed in both the project and the repository, the panel lists it. Choose **Keep project's** or **Take repository's** for each file. Then choose **Get repository changes** or **Send project changes** again.
@@ -28,6 +28,17 @@ In the browser, the panel says to open the project in the desktop app. Git signs
 ### Credentials
 
 Git signs in to the remote with your own credential helper or SSH key. LibrePaper holds no credential for GitHub or any other host. When a pull or a push fails on sign-in, the panel shows the steps for your host and your system, and Try again repeats the command.
+
+For GitHub, the GitHub CLI can set up the sign-in for you, and it can create and upload an SSH key.
+
+```sh
+# Sign in to GitHub once. Choose SSH when gh asks for the Git protocol
+gh auth login
+```
+
+- Connect the project with the repository's SSH address, such as `git@github.com:owner/repo.git`. Do not use its `https://` address.
+- On GitHub, you find the SSH address under Code, then SSH.
+- In the desktop app, the `https://` address does not sign in through the GitHub CLI. Use the SSH address.
 
 ## Requirements
 
