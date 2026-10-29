@@ -52,6 +52,17 @@ pub(crate) fn version_name(row: &LabelRow) -> String {
     }
 }
 
+/// What the server says about a project without listing its versions.
+#[derive(Debug)]
+pub(crate) struct HeadCheck {
+    /// The identity of the project's accepted state.
+    pub head: String,
+    /// A named version newer than the one asked about exists.
+    pub newer: bool,
+    /// A version at or below the one asked about is still held.
+    pub base: bool,
+}
+
 /// One page of a project's version list.
 #[derive(Debug)]
 pub(crate) struct LabelPage {
@@ -229,6 +240,37 @@ impl Client {
             .and_then(Value::as_str)
             .map(str::to_string);
         Ok(LabelPage { labels, next, head })
+    }
+
+    /// The project's head identity and whether anything named is newer than
+    /// `pulled`, in one small read, so a poll that finds nothing new costs the
+    /// server one indexed lookup. `None` when the server does not have the
+    /// route, so the caller reads the version list instead.
+    pub(crate) async fn quiet_check(
+        &self,
+        slug: &str,
+        pulled: i64,
+    ) -> Result<Option<HeadCheck>, Error> {
+        let path = format!("/api/documents/{slug}/history/head?pulled={pulled}");
+        let (status, raw) = self.call(Method::GET, &path, &[], None, QUICK).await?;
+        let value = decode(&raw);
+        if status == 404 {
+            return Ok(None);
+        }
+        if !(200..300).contains(&status) {
+            return Err(refusal(status, &value));
+        }
+        let head = value.get("head").and_then(Value::as_str);
+        let newer = value.get("newer").and_then(Value::as_bool);
+        let base = value.get("base").and_then(Value::as_bool);
+        match (head, newer, base) {
+            (Some(head), Some(newer), Some(base)) => Ok(Some(HeadCheck {
+                head: head.to_string(),
+                newer,
+                base,
+            })),
+            _ => Err(Error::Invalid("the head check is unreadable".into())),
+        }
     }
 
     /// The files of one version.

@@ -119,10 +119,9 @@ pub async fn pull(
     if state.pin_branch(store.repository(), options.branch.as_deref())? {
         store.save(&state)?;
     }
-    let rules = client.rules().await?;
     match store.repository() {
-        Some(root) => pull_repository(client, root, store, options, state, &rules).await,
-        None => pull_folder(client, dir, store, options, state, &rules).await,
+        Some(root) => pull_repository(client, root, store, options, state).await,
+        None => pull_folder(client, dir, store, options, state).await,
     }
 }
 
@@ -188,7 +187,28 @@ pub(crate) fn plan(mut take: Vec<LabelRow>, pulled: Option<i64>, base_found: boo
     }
 }
 
-async fn discover(client: &Client, slug: &str, pulled: Option<i64>) -> Result<Discovery, Error> {
+/// `known` is the head the state recorded. When the server confirms it, with
+/// nothing newer and the base still held, no history page is read: a quiet
+/// poll costs one request. Any other answer, or a server without the check,
+/// reads the pages, and the first page stays the authority on the head.
+async fn discover(
+    client: &Client,
+    slug: &str,
+    pulled: Option<i64>,
+    known: Option<&str>,
+) -> Result<Discovery, Error> {
+    if let (Some(pulled), Some(known)) = (pulled, known) {
+        if let Some(check) = client.quiet_check(slug, pulled).await? {
+            if check.head == known && !check.newer && check.base {
+                return Ok(Discovery {
+                    versions: Vec::new(),
+                    trimmed: false,
+                    from_head: false,
+                    head: Some(check.head),
+                });
+            }
+        }
+    }
     let mut seen: Vec<LabelRow> = Vec::new();
     let mut after: Option<i64> = None;
     // The first page is the one read before the project, so its identity is
@@ -236,12 +256,11 @@ async fn pull_repository(
     store: &dyn StateStore,
     options: &PullOptions,
     mut state: State,
-    rules: &Rules,
 ) -> Result<PullOutcome, Error> {
     let git = Git::at(root);
     let settled = settle(&git, &mut state);
     let slug = state.link.slug.clone();
-    let found = discover(client, &slug, state.pulled).await?;
+    let found = discover(client, &slug, state.pulled, state.web_head.as_deref()).await?;
     let nothing_new = found.is_quiet(&state);
     let pending = state.fetched.is_some();
     // A trim is said even when the project holds what the chain already has,
@@ -263,6 +282,8 @@ async fn pull_repository(
         }
         return Ok(unchanged(found.trimmed));
     }
+    // Fetched only now, so a quiet pull never asks for the configuration.
+    let rules = client.rules().await?;
 
     // A tree with uncommitted changes refuses before anything is fetched.
     if options.merge {
@@ -281,7 +302,7 @@ async fn pull_repository(
 
     let mut versions = Vec::new();
     if !nothing_new {
-        versions = fetch(client, &git, &mut state, &found, rules, &options.exclude).await?;
+        versions = fetch(client, &git, &mut state, &found, &rules, &options.exclude).await?;
         if versions.is_empty() && state.fetched.is_none() {
             // The project as it stands is what the branch already has. The
             // head it was read at is recorded, so the next pull can skip it.
@@ -673,13 +694,14 @@ async fn pull_folder(
     store: &dyn StateStore,
     options: &PullOptions,
     mut state: State,
-    rules: &Rules,
 ) -> Result<PullOutcome, Error> {
     let slug = state.link.slug.clone();
-    let found = discover(client, &slug, state.pulled).await?;
+    let found = discover(client, &slug, state.pulled, state.web_head.as_deref()).await?;
     if found.is_quiet(&state) {
         return Ok(PullOutcome::UpToDate);
     }
+    let rules = client.rules().await?;
+    let rules = &rules;
     // The project as it stands is newer than every named version, so it is
     // what the folder takes. The history page was read first, so its identity
     // cannot be newer than this read.
@@ -1723,6 +1745,96 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(outcome, PullOutcome::UpToDate);
+    }
+
+    /// A linked repository that has pulled the fake's one named version.
+    async fn pulled_once() -> Option<(Fake, tempfile::TempDir, Git, GitRefStore)> {
+        let (fake, dir, git, store) = linked().await?;
+        let first = fake::files(&[("a.tex", "one\n")]);
+        fake.name(1, first.clone());
+        fake.set_current(first);
+        fake.set_head(Some("h1"));
+        pull(&fake.client(), git.dir(), &store, &fetch_only())
+            .await
+            .unwrap();
+        Some((fake, dir, git, store))
+    }
+
+    #[tokio::test]
+    async fn a_quiet_pull_costs_one_request() {
+        let Some((fake, _dir, git, store)) = pulled_once().await else {
+            return;
+        };
+        let configs = fake.count("/api/config");
+        let pages = fake.count("/history");
+        let outcome = pull(&fake.client(), git.dir(), &store, &fetch_only())
+            .await
+            .unwrap();
+        assert_eq!(outcome, PullOutcome::UpToDate);
+        assert_eq!(fake.count("/history/head"), 1);
+        assert_eq!(fake.count("/api/config"), configs);
+        assert_eq!(fake.count("/history"), pages);
+    }
+
+    #[tokio::test]
+    async fn a_new_named_version_is_pulled_though_the_head_is_known() {
+        let Some((fake, _dir, git, store)) = pulled_once().await else {
+            return;
+        };
+        fake.name(2, fake::files(&[("a.tex", "two\n")]));
+        let outcome = pull(&fake.client(), git.dir(), &store, &fetch_only())
+            .await
+            .unwrap();
+        assert_eq!(versions_of(outcome), ["Version 2"]);
+    }
+
+    #[tokio::test]
+    async fn an_edit_that_moves_only_the_head_is_still_seen() {
+        let Some((fake, _dir, git, store)) = pulled_once().await else {
+            return;
+        };
+        fake.set_current(fake::files(&[("a.tex", "edited\n")]));
+        fake.set_head(Some("h2"));
+        let outcome = pull(&fake.client(), git.dir(), &store, &fetch_only())
+            .await
+            .unwrap();
+        assert_eq!(versions_of(outcome), ["Current version"]);
+        assert_eq!(
+            store.load().unwrap().unwrap().web_head.as_deref(),
+            Some("h2")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_without_the_check_is_read_page_by_page() {
+        let Some((fake, _dir, git, store)) = pulled_once().await else {
+            return;
+        };
+        fake.set_head_check(false);
+        let pages = fake.count("/history");
+        let outcome = pull(&fake.client(), git.dir(), &store, &fetch_only())
+            .await
+            .unwrap();
+        assert_eq!(outcome, PullOutcome::UpToDate);
+        assert_eq!(fake.count("/history"), pages + 1);
+    }
+
+    #[tokio::test]
+    async fn trimmed_history_is_not_called_quiet() {
+        let Some((fake, _dir, git, store)) = pulled_once().await else {
+            return;
+        };
+        // The state remembers a version older than any the project still holds.
+        let mut state = store.load().unwrap().unwrap();
+        state.pulled = Some(0);
+        store.save(&state).unwrap();
+        let outcome = pull(&fake.client(), git.dir(), &store, &fetch_only())
+            .await
+            .unwrap();
+        match outcome {
+            PullOutcome::Repository { trimmed, .. } => assert!(trimmed),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[tokio::test]

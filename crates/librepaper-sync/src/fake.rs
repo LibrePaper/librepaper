@@ -37,12 +37,13 @@ pub(crate) fn accepted(sha: &str, sequence: i64) -> Answer {
     Answer::Reply(200, json!({"label": {"sha": sha, "sequence": sequence}}))
 }
 
-#[derive(Default)]
 struct Data {
     /// Oldest first: sequence, files.
     versions: Vec<(i64, Files)>,
     current: Files,
     head: Option<String>,
+    /// Whether the head check route answers; an older server does not.
+    head_check: bool,
     requests: Vec<String>,
     /// What the project holds once a source change lands.
     after_push: Files,
@@ -50,6 +51,21 @@ struct Data {
     script: VecDeque<Answer>,
     /// The body of every source change that came in.
     posted: Vec<Value>,
+}
+
+impl Default for Data {
+    fn default() -> Data {
+        Data {
+            versions: Vec::new(),
+            current: Files::new(),
+            head: None,
+            head_check: true,
+            requests: Vec::new(),
+            after_push: Files::new(),
+            script: VecDeque::new(),
+            posted: Vec::new(),
+        }
+    }
 }
 
 pub(crate) struct Fake {
@@ -118,6 +134,12 @@ impl Fake {
         self.data.lock().unwrap().head = head.map(str::to_string);
     }
 
+    /// Whether the head check route answers; `false` is a server that does
+    /// not have it, which answers 404.
+    pub(crate) fn set_head_check(&self, answers: bool) {
+        self.data.lock().unwrap().head_check = answers;
+    }
+
     /// How many requests whose path ends with `suffix` came in.
     pub(crate) fn count(&self, suffix: &str) -> usize {
         self.data
@@ -179,6 +201,17 @@ fn reply(data: &mut Data, method: &str, target: &str, sent: &[u8]) -> Option<(u1
     }
     if path == "/api/config" {
         return Some((200, json!({})));
+    }
+    if path.ends_with("/history/head") {
+        let (Some(head), true) = (&data.head, data.head_check) else {
+            return Some((404, json!({"error": "no such route"})));
+        };
+        let pulled = query(target, "pulled")
+            .and_then(|pulled| pulled.parse::<i64>().ok())
+            .unwrap_or(0);
+        let newer = data.versions.iter().any(|(sequence, _)| *sequence > pulled);
+        let base = data.versions.iter().any(|(sequence, _)| *sequence <= pulled);
+        return Some((200, json!({"head": head, "newer": newer, "base": base})));
     }
     if path.ends_with("/history") {
         let limit = query(target, "limit")
