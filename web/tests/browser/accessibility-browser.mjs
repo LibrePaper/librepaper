@@ -146,6 +146,9 @@ const say = (found) => found
   .map((violation) => `  ${violation.where}: ${violation.id} (${violation.impact}) -- ${violation.help}\n    ${violation.nodes.join("\n    ")}`)
   .join("\n");
 
+// Two animation frames let Svelte flush a DOM change before axe reads the page.
+const settle = "new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))";
+
 let server, tab;
 const failures = [];
 try {
@@ -204,6 +207,14 @@ try {
         await tab.evaluate("new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))");
         failures.push(...await violations(tab, `landing: new project ${label}`));
       }
+
+      // Dark mode is the second theme the page can be painted in. The mode is
+      // read from the attribute the theme script writes, and put back after.
+      const landingMode = await tab.evaluate("document.documentElement.getAttribute('data-mode')");
+      await tab.evaluate("document.documentElement.dataset.mode = 'dark'");
+      await tab.evaluate(settle);
+      failures.push(...await violations(tab, "landing: dark"));
+      await tab.evaluate(landingMode === null ? "document.documentElement.removeAttribute('data-mode')" : `document.documentElement.dataset.mode = ${JSON.stringify(landingMode)}`);
     }
 
     if (name === "reader") {
@@ -218,7 +229,6 @@ try {
       // panel, and both are tables of controls, which is where an id printed
       // twice or a listbox with no name would land. The shortcuts chord opens
       // the settings on the editor page, where the shortcut table is.
-      const settle = "new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))";
       await tab.evaluate("window.dispatchEvent(new KeyboardEvent('keydown', {key:'/', code:'Slash', ctrlKey:true, altKey:true, bubbles:true}))");
       await tab.evaluate(settle);
       failures.push(...await violations(tab, "reader: keyboard shortcuts"));
@@ -230,6 +240,36 @@ try {
       failures.push(...await violations(tab, "reader: command palette"));
       await tab.evaluate("document.querySelector('[role=\"dialog\"][data-state=\"open\"] [aria-label=Close]').click()");
       await tab.evaluate(settle);
+
+      // The settings page keeps its category list beside the body, so every
+      // section is one click away and is read in turn. Its Back link closes
+      // the page, which is the same exit the shortcut step used.
+      await tab.evaluate("window.dispatchEvent(new KeyboardEvent('keydown', {key:'/', code:'Slash', ctrlKey:true, altKey:true, bubbles:true}))");
+      await tab.evaluate(settle);
+      const sections = await tab.evaluate(`[...document.querySelectorAll('[role="dialog"][data-state="open"] .settings-nav-item')].map(node => node.textContent.trim())`);
+      assert.ok(sections.length > 1, `the settings page lists its sections; found ${JSON.stringify(sections)}`);
+      for (const [index, label] of sections.entries()) {
+        await tab.evaluate(`document.querySelectorAll('[role="dialog"][data-state="open"] .settings-nav-item')[${index}].click()`);
+        await tab.evaluate(settle);
+        failures.push(...await violations(tab, `reader: settings ${label}`));
+      }
+      await tab.evaluate("document.querySelector('[role=\"dialog\"][data-state=\"open\"] .modal-back').click()");
+      await tab.evaluate(settle);
+
+      // A phone is a different layout, not a smaller desktop, so it is read
+      // on its own. The viewport goes back to the desktop size afterwards.
+      await tab.resize(390, 844);
+      await tab.evaluate(settle);
+      await tab.evaluate(settle);
+      failures.push(...await violations(tab, "reader: phone"));
+      await tab.resize(1280, 900);
+
+      // The Reader in dark mode, restored to whatever the page had before.
+      const readerMode = await tab.evaluate("document.documentElement.getAttribute('data-mode')");
+      await tab.evaluate("document.documentElement.dataset.mode = 'dark'");
+      await tab.evaluate(settle);
+      failures.push(...await violations(tab, "reader: dark"));
+      await tab.evaluate(readerMode === null ? "document.documentElement.removeAttribute('data-mode')" : `document.documentElement.dataset.mode = ${JSON.stringify(readerMode)}`);
     }
   }
 
@@ -291,7 +331,7 @@ try {
   };
   checkContrast("light", light);
   checkContrast("dark", dark);
-  console.log(`accessibility-browser: landing and reader, every panel, clean against ${TAGS.join(", ")}`);
+  console.log(`accessibility-browser: landing and reader, every panel, every settings section, phone and dark mode, clean against ${TAGS.join(", ")}`);
 } finally {
   await tab?.close();
   server?.close();
