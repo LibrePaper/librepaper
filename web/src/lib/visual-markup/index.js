@@ -1,6 +1,8 @@
 import { WidgetType } from "@codemirror/view";
 import { typst2tex } from "tex2typst";
 import "./vendor/styles.css";
+import "./visual-markup.css";
+import { preambleFold } from "./preamble.js";
 import {
   createImageResolver,
   createTheme,
@@ -53,6 +55,8 @@ export function visualMarkup(format, { path = () => "", imageUrl = null, dark = 
     );
   }
 
+  if (format === "latex") extensions.push(preambleFold());
+
   return extensions;
 }
 
@@ -66,6 +70,23 @@ async function resolveImage(imageUrl, file) {
   return null;
 }
 
+// KaTeX lacks some math environments and has no \label. The environment is
+// rebuilt in a form KaTeX accepts, then the labels are removed.
+function latexMath(body, environment) {
+  let tex;
+  if (!environment || environment === "equation" || environment === "equation*") {
+    tex = body;
+  } else if (environment === "multline" || environment === "multline*") {
+    tex = `\\begin{gather*}${body}\\end{gather*}`;
+  } else if (environment === "eqnarray" || environment === "eqnarray*") {
+    tex = `\\begin{array}{rcl}${body}\\end{array}`;
+  } else {
+    // align, align*, gather and gather* are KaTeX's own environments.
+    tex = `\\begin{${environment}}${body}\\end{${environment}}`;
+  }
+  return tex.replace(/\\label\s*\{[^{}]*\}/g, "");
+}
+
 // Typesets a math token with KaTeX. The raw source shows until KaTeX loads,
 // and stays if it fails.
 class KatexMath extends WidgetType {
@@ -74,6 +95,7 @@ class KatexMath extends WidgetType {
     const { token, source, language } = context;
     this.text = textOf(source, token);
     this.tex = token.body ? textOf(source, token.body) : this.text;
+    this.environment = token.name;
     this.display = Boolean(token.display);
     this.language = language.id;
   }
@@ -105,9 +127,10 @@ class KatexMath extends WidgetType {
     return element;
   }
 
-  // Typst source is converted to TeX for KaTeX; on failure the raw text stays.
+  // LaTeX is rebuilt for KaTeX; Typst source is converted to TeX, and on
+  // failure the raw text stays.
   toTex() {
-    if (this.language !== "typst") return this.tex;
+    if (this.language !== "typst") return latexMath(this.tex, this.environment);
     try {
       return typst2tex(this.tex, { blockMathMode: this.display });
     } catch {
