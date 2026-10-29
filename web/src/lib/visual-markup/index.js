@@ -193,20 +193,26 @@ class KatexMath extends WidgetType {
 // overwrites it.
 registerWidget("math", (context) => new KatexMath(context));
 
-// The words a reference shows, by the kind of thing it points at.
-const REF_PREFIX = { section: "Section", equation: "Equation", figure: "Figure", table: "Table" };
+// The words a reference shows before its number, by the kind of thing it points
+// at. Each package has its own: cleveref lowercases them in \cref and capitalises
+// them in \Cref, and hyperref's \autoref writes an equation without parentheses.
+const REF_WORDS = {
+  cref: { section: "section", equation: "eq.", figure: "fig.", table: "table" },
+  Cref: { section: "Section", equation: "Eq.", figure: "Fig.", table: "Table" },
+  autoref: { section: "section", equation: "Equation", figure: "Figure", table: "Table" },
+};
 
-// The text of one key in a reference. An unknown key shows as ??.
+// The text of one key in a reference. An unknown key shows as ??. \ref, \pageref
+// and \nameref show the bare number, as do kinds with no words of their own.
 function describeRef(name, key, labels) {
   const found = labels.get(key);
   if (!found) return "??";
   const { number, kind } = found;
   if (name === "eqref") return `(${number})`;
-  if (name === "autoref" || name === "cref" || name === "Cref") {
-    if (kind === "equation") return name === "autoref" ? `Equation (${number})` : `Eq. (${number})`;
-    return `${REF_PREFIX[kind]} ${number}`;
-  }
-  return number;
+  const word = REF_WORDS[name]?.[kind];
+  if (!word) return number;
+  if (kind === "equation" && name !== "autoref") return `${word} (${number})`;
+  return `${word} ${number}`;
 }
 
 // A \ref-style command, shown as the number of the label it names.
@@ -241,6 +247,34 @@ class RefWidget extends WidgetType {
 }
 
 registerWidget("ref", (context) => new RefWidget(context));
+
+// A \label outside maths, shown as a small tag at the right edge of its line.
+class LabelWidget extends WidgetType {
+  constructor(context) {
+    super();
+    const { token, source } = context;
+    this.key = token.args?.[0] ? source.slice(token.args[0].from, token.args[0].to).trim() : "";
+  }
+
+  eq(other) {
+    return other instanceof LabelWidget && other.key === this.key;
+  }
+
+  toDOM() {
+    const element = document.createElement("span");
+    element.className = "cm-lp-label";
+    element.title = "Label";
+    element.textContent = this.key;
+    return element;
+  }
+
+  // A click reveals the source.
+  ignoreEvent() {
+    return false;
+  }
+}
+
+registerWidget("label", (context) => new LabelWidget(context));
 
 // An \input, \include or \subfile, shown as a chip with the file's name.
 class IncludeWidget extends WidgetType {

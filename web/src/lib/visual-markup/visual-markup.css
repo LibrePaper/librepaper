@@ -1,6 +1,8 @@
-/* The folded LaTeX preamble: a quiet line standing in for the source above
-   the document body. */
-.cm-lp-preamble {
+/* The folded LaTeX preamble, and the chips that stand in for hidden runs of
+   source (page breaks, the end of the document, the bibliography): a quiet
+   line in place of the source. */
+.cm-lp-preamble,
+.cm-lp-hidden {
   margin: calc(var(--spacing) * 2) 0;
   padding: calc(var(--spacing) * 1) calc(var(--spacing) * 3);
   border: 1px solid var(--color-border);
@@ -8,6 +10,33 @@
   background: var(--color-subtle);
   color: var(--color-text-muted);
   font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+/* Hidden chips are more compact than the preamble, which is the page's header. */
+.cm-lp-hidden {
+  margin: calc(var(--spacing) * 1) 0;
+  padding: calc(var(--spacing) * 1) calc(var(--spacing) * 2);
+}
+
+/* A \label outside maths: a small tag at the right edge of its line. The line
+   becomes a block formatting context so that a line holding only the tag keeps
+   its height. */
+.cm-line:has(.cm-lp-label) {
+  display: flow-root;
+}
+
+.cm-lp-label {
+  float: right;
+  margin: 0 0 0 calc(var(--spacing) * 2);
+  padding: 0 calc(var(--spacing) * 2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-subtle);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -82,4 +111,54 @@
 .cm-lp-title-muted {
   color: var(--color-text-muted);
   font-weight: 400;
+}
+
+/* Rendered blocks show nothing extra at rest. On hover they take the look of
+   the preamble, and a hint says that a click opens the source. The border is an
+   outline, which takes no room, so the hover does not move the text. */
+.cm-lv-math-display,
+.cm-lv-figure-preview,
+.cm-line.cm-lv-figure-simple,
+.cm-line.cm-lv-table,
+.cm-lp-title {
+  position: relative;
+  border-radius: var(--radius-base);
+  outline: 1px solid transparent;
+  cursor: text;
+}
+
+.cm-lv-math-display:hover,
+.cm-lv-figure-preview:hover,
+.cm-line.cm-lv-figure-simple:hover,
+.cm-line.cm-lv-table:hover,
+.cm-lp-title:hover {
+  outline-color: var(--color-border);
+  background: var(--color-subtle);
+}
+
+.cm-lv-math-display:hover::after,
+.cm-lv-figure-preview:hover::after,
+.cm-line.cm-lv-figure-simple:hover::after,
+.cm-line.cm-lv-table:hover::after,
+.cm-lp-title:hover::after {
+  content: "Edit source";
+  position: absolute;
+  top: calc(var(--spacing) * 1);
+  right: calc(var(--spacing) * 2);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+/* Table cells carry their own borders, so a formula or figure inside one keeps its look. */
+.cm-lv-table-row .cm-lv-math-display:hover,
+.cm-lv-table-row .cm-lv-figure-preview:hover {
+  outline-color: transparent;
+  background: none;
+}
+
+.cm-lv-table-row .cm-lv-math-display:hover::after,
+.cm-lv-table-row .cm-lv-figure-preview:hover::after {
+  content: none;
 }
