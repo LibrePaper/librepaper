@@ -105,12 +105,26 @@ function hiddenRuns(state: EditorState, spans: Range[], replaced: Range[], joine
     }
   }
 
+  // Sorted and merged, so the replaced range a line meets is a binary search
+  // away rather than a scan of every widget in the document.
+  const widgets = merge(replaced);
+  const meetsWidget = (from: number, to: number) => {
+    let low = 0;
+    let high = widgets.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (widgets[middle].to <= from) low = middle + 1;
+      else high = middle;
+    }
+    return low < widgets.length && widgets[low].from < to;
+  };
+
   const full: number[] = [];
   for (const [number, parts] of byLine) {
     const line = state.doc.line(number);
     if (line.length === 0 || joinedBreaks.has(line.to) || joinedBreaks.has(line.from - 1)) continue;
     // A replaced range on this line (such as a widget) must stay visible, so the line is not collapsed.
-    if (replaced.some(range => range.from < line.to && range.to > line.from)) continue;
+    if (meetsWidget(line.from, line.to)) continue;
 
     const hiddenMask = new Array<boolean>(line.length).fill(false);
     for (const part of parts) {

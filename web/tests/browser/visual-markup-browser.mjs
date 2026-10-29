@@ -124,8 +124,9 @@ async function visualCheck() {
   const mathWidgets = () => document.querySelectorAll(".cm-editor .cm-lv-math").length;
   const visibleText = () => document.querySelector(".cm-content").innerText;
   // Rendered editor rows whose visible text is empty.
-  const blankRows = () => Array.from(document.querySelectorAll(".cm-editor .cm-line"), (node) => node.innerText.trim())
-    .filter((text) => text === "").length;
+  // A row holding only a widget, such as an image, is not blank.
+  const blankRows = () => Array.from(document.querySelectorAll(".cm-editor .cm-line"))
+    .filter((node) => node.innerText.trim() === "" && !node.querySelector(".cm-lv-widget")).length;
   const texts = (selector) => Array.from(document.querySelectorAll(`.cm-editor ${selector}`), (node) => node.textContent.trim());
   const imageCount = () => document.querySelectorAll(".cm-editor .cm-lv-image").length;
   // Polls for up to five seconds, so a slow KaTeX load has time to land.
@@ -593,7 +594,8 @@ try {
   }
   assert.ok(result.full.body.labelTexts.includes("sec:results"), `the \\label{sec:results} did not show its key as a .cm-lp-label; label tags: ${JSON.stringify(result.full.body.labelTexts)}`);
   for (const chip of ["Bibliography: references (plain)", "Page break", "End of document"]) {
-    assert.ok(result.full.body.hiddenTexts.includes(chip), `no .cm-lp-hidden chip reads '${chip}'; chips: ${JSON.stringify(result.full.body.hiddenTexts)}`);
+    // Adjacent hidden lines share one chip that names each part.
+    assert.ok(result.full.body.hiddenTexts.some((text) => text.split(" · ").includes(chip)), `no .cm-lp-hidden chip names '${chip}'; chips: ${JSON.stringify(result.full.body.hiddenTexts)}`);
   }
   const fullBlank = fullSample.split("\n").filter((line) => !line.trim()).length;
   assert.ok(result.full.body.blankRows <= fullBlank, `full.tex has ${result.full.body.blankRows} blank rendered rows; the source has ${fullBlank} empty lines`);

@@ -119,18 +119,18 @@ function style(token: Token): TokenStyle | null {
 // Names a fully hidden run of source lines for its chip. Returns null when the run is
 // only environment delimiters and layout, which belong to the block around them.
 function hiddenSummary(text: string): string | null {
-  if (/\\end\{document\}/.test(text)) return 'End of document';
-
-  const bibliography = /\\bibliography\{([^}]*)\}/.exec(text);
-  if (bibliography) {
-    const database = bibliography[1].trim();
-    const bibliographyStyle = /\\bibliographystyle\{([^}]*)\}/.exec(text);
-    return bibliographyStyle
-      ? `Bibliography: ${database} (${bibliographyStyle[1].trim()})`
-      : `Bibliography: ${database}`;
+  // A run can hold several things worth naming, such as the page break, the
+  // bibliography and the end of a paper; each is named, in source order.
+  const parts: string[] = [];
+  const style = /\\bibliographystyle\{([^}]*)\}/.exec(text);
+  for (const match of text.matchAll(/\\(newpage|clearpage|pagebreak)(?![a-zA-Z])|\\bibliography\{([^}]*)\}|\\end\{document\}/g)) {
+    if (match[1]) parts.push('Page break');
+    else if (match[2] !== undefined) {
+      const database = match[2].trim();
+      parts.push(style ? `Bibliography: ${database} (${style[1].trim()})` : `Bibliography: ${database}`);
+    } else parts.push('End of document');
   }
-
-  if (/\\(?:newpage|clearpage|pagebreak)\b/.test(text)) return 'Page break';
+  if (parts.length) return [...new Set(parts)].join(' · ');
 
   const rest = text.replace(ENVIRONMENT_PATTERN, '').replace(LAYOUT_PATTERN, '');
   if (!rest.trim()) return null;
