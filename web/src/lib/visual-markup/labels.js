@@ -1,11 +1,13 @@
 // Numbers the labels of a LaTeX project the way the article, report and book
 // classes would, so that a \ref can show the number a reader sees. The scan is
 // one forward pass: the counters only move on, and a \label binds to the
-// numbered thing it most recently follows.
+// numbered thing it most recently follows. The same pass reports the citation
+// keys in reading order and the numbers of the theorem-like environments.
 
 // Commands and environments the scan reacts to. Groups: 1 and 2 are an include
 // and its name; 3 and 4 are begin or end and the environment; 5 and 6 are a
-// sectioning command and its star; 7 is appendix or caption; 8 is a label key.
+// sectioning command and its star; 7 is appendix or caption; 8 is a label key;
+// 9 is an item; 10 is a citation command.
 const TOKENS = new RegExp(
   [
     String.raw`\\(input|include|subfile)\s*\{([^{}]*)\}`,
@@ -13,6 +15,8 @@ const TOKENS = new RegExp(
     String.raw`\\(chapter|section|subsection|subsubsection)(\*?)(?![a-zA-Z])`,
     String.raw`\\(appendix|caption)(?![a-zA-Z])`,
     String.raw`\\label\s*\{([^{}]*)\}`,
+    String.raw`\\(item)(?![a-zA-Z])`,
+    String.raw`\\([A-Za-z]*[Cc]ite[A-Za-z]*)\*?`,
   ].join("|"),
   "g",
 );
@@ -38,6 +42,30 @@ const FLOATS = new Map([
   ["table*", "table"],
 ]);
 
+// Theorem-like environments numbered without any \newtheorem. A document that
+// defines one of these names again replaces the default.
+const DEFAULT_THEOREMS = [
+  ["theorem", "Theorem"],
+  ["lemma", "Lemma"],
+  ["proposition", "Proposition"],
+  ["corollary", "Corollary"],
+  ["definition", "Definition"],
+  ["assumption", "Assumption"],
+  ["remark", "Remark"],
+  ["example", "Example"],
+  ["claim", "Claim"],
+  ["conjecture", "Conjecture"],
+  ["axiom", "Axiom"],
+  ["hypothesis", "Hypothesis"],
+];
+
+// Lists whose items the scan numbers. Only an enumerate counts its items.
+const LISTS = new Set(["enumerate", "itemize", "description"]);
+
+const NEWTHEOREM = /\\newtheorem(\*?)\s*\{([^{}]*)\}\s*(?:\[([^\]]*)\])?\s*\{((?:[^{}]|\{[^{}]*\})*)\}\s*(?:\[([^\]]*)\])?/g;
+const ITEM_OPTION = /\s*\[([^\]]*)\]/y;
+const CITE_ARGUMENTS = /\s*(?:\[[^\]]*\]\s*)*\{([^{}]*)\}/y;
+
 const ROW_TOKENS = /\\\\\*?(?:\[[^\]]*\])?|\\(begin|end)\s*\{[^{}]*\}/g;
 const UNNUMBERED = /\\(?:nonumber|notag)(?![a-zA-Z])/;
 const TAG = /\\tag\s*\{([^{}]*)\}/;
@@ -46,6 +74,12 @@ const LABEL = /\\label\s*\{([^{}]*)\}/g;
 /// Strips % comments, keeping \% and an escaped backslash before a comment.
 export function stripComments(text) {
   return text.replace(/((?:^|[^\\])(?:\\\\)*)%[^\n]*/gm, "$1");
+}
+
+// The same comments as stripComments, blanked instead of removed, so that an
+// offset into the blanked text is an offset into the source.
+function blankComments(text) {
+  return text.replace(/((?:^|[^\\])(?:\\\\)*)%[^\n]*/gm, (match, kept) => kept + " ".repeat(match.length - kept.length));
 }
 
 // Joins and resolves . and .. so that paths compare as project paths.
@@ -85,13 +119,61 @@ function splitRows(body) {
   return rows;
 }
 
+// The keys of a cite command, read from the text after its name. Optional
+// arguments are skipped. The plural forms (\cites and the like) take one key
+// list per mandatory argument, the others just the first.
+function citedKeys(text, at, plural) {
+  const keys = [];
+  let next = at;
+  for (;;) {
+    CITE_ARGUMENTS.lastIndex = next;
+    const match = CITE_ARGUMENTS.exec(text);
+    if (!match) break;
+    keys.push(...match[1].split(",").map((key) => key.trim()).filter((key) => key && key !== "*"));
+    next = CITE_ARGUMENTS.lastIndex;
+    if (!plural) break;
+  }
+  return keys;
+}
+
+/// The theorem-like environments of a project: the defaults, then each
+/// \newtheorem in any text. A shared counter is the one of the environment it
+/// names, and `within` is the sectioning command that resets the counter.
+/// Returns a Map from environment name to { title, counter, numbered, within }.
+export function theoremDefinitions(texts) {
+  const theorems = new Map();
+  for (const [name, title] of DEFAULT_THEOREMS) {
+    theorems.set(name, { title, counter: name, numbered: true, within: null });
+  }
+  for (const path of Object.keys(texts)) {
+    const text = stripComments(texts[path] ?? "");
+    for (const match of text.matchAll(NEWTHEOREM)) {
+      const name = match[2].trim();
+      const shared = match[3]?.trim();
+      const counter = shared ? (theorems.get(shared)?.counter ?? shared) : name;
+      theorems.set(name, { title: match[4].trim(), counter, numbered: !match[1], within: match[5]?.trim() || null });
+    }
+  }
+  return theorems;
+}
+
 /// Numbers every \label in a LaTeX project.
 /// `texts` maps each project path (no leading slash) to its source, `main` is
 /// the main file's path. Returns a Map from label key to { number, kind }, where
-/// kind is 'section', 'equation', 'figure' or 'table'. Labels with nothing
-/// numbered before them are left out.
-export function numberLabels(texts, main) {
+/// kind is 'section', 'equation', 'figure', 'table', 'theorem' or 'item'. Labels
+/// with nothing numbered before them are left out.
+///
+/// Options: `theorems` (from theoremDefinitions, computed when missing), `open`
+/// (the path of the file in the editor), `environments` (a Map that receives
+/// the number of each numbered theorem-like \begin in the open file, keyed by
+/// its offset in that file), and `cited` (called with each citation key in
+/// reading order).
+export function numberLabels(texts, main, options = {}) {
   const root = normalize(main);
+  const theorems = options.theorems ?? theoremDefinitions(texts);
+  const focus = options.open == null ? null : normalize(options.open);
+  const environments = options.environments;
+  const cited = options.cited;
   const state = {
     labels: new Map(),
     hasChapter: false,
@@ -103,6 +185,10 @@ export function numberLabels(texts, main) {
     section: null,
     float: null,
     subfigures: 0,
+    counters: new Map(), // theorem counter -> { count, depth }, depth null when global
+    theorem: null, // the numbered theorem the scan is in
+    theoremEnv: null,
+    lists: [], // open lists, innermost last
   };
 
   // The top level is the chapter in books and the section in articles.
@@ -115,6 +201,15 @@ export function numberLabels(texts, main) {
     return `${chapter}.${n}`;
   };
 
+  // The number of the sectioning level `depth`, with the chapter in front in books.
+  const numberAt = (depth) => {
+    const parts = [];
+    for (let k = top(); k <= depth; k++) {
+      parts.push(k === top() && state.appendix ? letter(state.counts[k]) : String(state.counts[k]));
+    }
+    return parts.join(".");
+  };
+
   const sectioning = (name, depth) => {
     if (depth === 0) {
       state.hasChapter = true;
@@ -124,11 +219,10 @@ export function numberLabels(texts, main) {
     }
     state.counts[depth] += 1;
     for (let k = depth + 1; k < 4; k++) state.counts[k] = 0;
-    const parts = [];
-    for (let k = top(); k <= depth; k++) {
-      parts.push(k === top() && state.appendix ? letter(state.counts[k]) : String(state.counts[k]));
+    for (const counter of state.counters.values()) {
+      if (counter.depth !== null && counter.depth >= depth) counter.count = 0;
     }
-    state.section = { number: parts.join("."), kind: "section" };
+    state.section = { number: numberAt(depth), kind: "section" };
   };
 
   const appendix = () => {
@@ -158,10 +252,62 @@ export function numberLabels(texts, main) {
     return { body: text.slice(from, end), next: end + close.length };
   };
 
-  // As in LaTeX, a \label in a float before its \caption takes the section.
-  const label = (key) => {
-    const target = state.float?.current ?? state.section;
-    if (target) state.labels.set(key, target);
+  // A theorem-like environment. Numbered ones advance their counter, which
+  // resets with the sectioning level it is within. A starred name, or a
+  // \newtheorem*, is unnumbered.
+  const theoremAt = (environment) => {
+    if (theorems.has(environment)) return theorems.get(environment);
+    const base = environment.endsWith("*") ? theorems.get(environment.slice(0, -1)) : null;
+    return base ? { ...base, numbered: false } : null;
+  };
+  const theoremBegins = (environment, index, path) => {
+    const definition = theoremAt(environment);
+    if (!definition || !definition.numbered) return;
+    const counter = state.counters.get(definition.counter) ?? { count: 0, depth: null };
+    counter.count += 1;
+    counter.depth = LEVELS.get(definition.within) ?? null;
+    state.counters.set(definition.counter, counter);
+    const head = counter.depth === null ? "" : numberAt(counter.depth);
+    const number = head ? `${head}.${counter.count}` : String(counter.count);
+    state.theorem = { number, kind: "theorem" };
+    state.theoremEnv = environment;
+    if (path === focus) environments?.set(index, number);
+  };
+
+  // \item counts in an enumerate, and a label after it takes its number. An
+  // optional label replaces the number and does not count. Other lists give
+  // their items no number, so a label there takes the enclosing number.
+  const item = (text, at) => {
+    const list = state.lists.at(-1);
+    if (!list) return;
+    if (list.env !== "enumerate") {
+      list.item = null;
+      return;
+    }
+    ITEM_OPTION.lastIndex = at;
+    const option = ITEM_OPTION.exec(text);
+    if (option) {
+      const shown = option[1].trim();
+      list.item = shown ? { number: shown, kind: "item" } : null;
+      return;
+    }
+    list.count += 1;
+    list.item = { number: String(list.count), kind: "item" };
+  };
+
+  const citation = (text, at, name) => {
+    // \nocite adds to the bibliography without citing anything in the text.
+    if (!cited || name === "nocite") return;
+    for (const key of citedKeys(text, at, /cites$/i.test(name))) cited(key);
+  };
+
+  const closing = (environment) => {
+    if (environment === "subfigure") state.subfigures = Math.max(0, state.subfigures - 1);
+    else if (state.float && FLOATS.has(environment) && state.float.env === environment) state.float = null;
+    else if (environment === state.theoremEnv) {
+      state.theorem = null;
+      state.theoremEnv = null;
+    } else if (LISTS.has(environment) && state.lists.at(-1)?.env === environment) state.lists.pop();
   };
 
   const caption = () => {
@@ -169,6 +315,13 @@ export function numberLabels(texts, main) {
     const float = state.float;
     const n = float.kind === "figure" ? ++state.figures : ++state.tables;
     float.current = { number: scoped(n), kind: float.kind };
+  };
+
+  // As in LaTeX, a \label in a float before its \caption takes the section, and
+  // one in a theorem or an item takes the theorem or the item it is in.
+  const label = (key) => {
+    const target = state.float?.current ?? state.theorem ?? state.lists.at(-1)?.item ?? state.section;
+    if (target) state.labels.set(key, target);
   };
 
   // Resolves an include name against the main file's folder, then the
@@ -187,19 +340,19 @@ export function numberLabels(texts, main) {
     const path = resolve(name, from);
     if (!path || stack.includes(path)) return;
     stack.push(path);
-    scan(path, stripComments(texts[path]), stack);
+    scan(path, blankComments(texts[path]), stack);
     stack.pop();
   };
 
-  const scan = (path, text, stack) => {
+  const scan = (path, text, stack, from = 0) => {
     const tokens = new RegExp(TOKENS.source, "g");
+    tokens.lastIndex = from;
     let match;
     while ((match = tokens.exec(text))) {
       if (match[1]) {
         include(match[2], path, stack);
       } else if (match[3] === "end") {
-        if (match[4] === "subfigure") state.subfigures = Math.max(0, state.subfigures - 1);
-        else if (state.float && FLOATS.has(match[4]) && state.float.env === match[4]) state.float = null;
+        closing(match[4]);
       } else if (match[3] === "begin") {
         const environment = match[4];
         if (EQUATIONS.has(environment)) {
@@ -210,6 +363,10 @@ export function numberLabels(texts, main) {
           state.float = { env: environment, kind: FLOATS.get(environment), current: null };
         } else if (environment === "subfigure") {
           state.subfigures += 1;
+        } else if (LISTS.has(environment)) {
+          state.lists.push({ env: environment, count: 0, item: null });
+        } else {
+          theoremBegins(environment, match.index, path);
         }
       } else if (match[5]) {
         if (!match[6]) sectioning(match[5], LEVELS.get(match[5]));
@@ -219,15 +376,20 @@ export function numberLabels(texts, main) {
         caption();
       } else if (match[8] !== undefined) {
         label(match[8].trim());
+      } else if (match[9]) {
+        item(text, tokens.lastIndex);
+      } else if (match[10]) {
+        citation(text, tokens.lastIndex, match[10]);
       }
     }
   };
 
   if (typeof texts[root] !== "string") return state.labels;
 
-  let body = stripComments(texts[root]);
+  // Only the body is scanned: the preamble holds no numbered text. The text is
+  // blanked rather than cut, so that offsets still point into the source.
+  const body = blankComments(texts[root]);
   const start = body.indexOf("\\begin{document}");
-  if (start !== -1) body = body.slice(start + "\\begin{document}".length);
-  scan(root, body, [root]);
+  scan(root, body, [root], start === -1 ? 0 : start + "\\begin{document}".length);
   return state.labels;
 }

@@ -245,8 +245,8 @@
   import { harperAvailable } from "../lib/harper/client.js";
   import { isEnglishDocument } from "../lib/harper/language.js";
   import { untrack } from "svelte";
-  import { visualMarkup, labelsUpdate } from "../lib/visual-markup/index.js";
-  import { numberLabels } from "../lib/visual-markup/labels.js";
+  import { visualMarkup, factsUpdate } from "../lib/visual-markup/index.js";
+  import { documentFacts } from "../lib/visual-markup/facts.js";
 
   // Whether what is typed here is recorded as a tracked change is not a prop
   // to follow. It starts from `tracking` and is flipped by `startTracking` and
@@ -545,6 +545,7 @@
       const newlyAvailable = !parsedBibliography && result.entries.length > 0;
       parsedBibliography = result;
       citationsUpdated();
+      scheduleFacts();
       onbibliography?.(result, request);
       const currentFormat = formatOf(pathOfDoc(session.doc, showing));
       const currentContext = view && citationContext(view.state.doc.toString(), view.state.selection.main.head, currentFormat);
@@ -553,37 +554,42 @@
       if (generation !== bibliographyGeneration) return;
       parsedBibliography = null;
       citationsUpdated();
+      scheduleFacts();
       onbibliography?.({ entries: [], diagnostics: [{ severity: "warning", message: `Bibliography unavailable: ${error?.message || "the parser could not be loaded"}`, file: request.main, line: 0 }] }, request);
     });
   }
-  // The reference numbers of the visual layer count the whole project, so they
-  // follow the same changes the bibliography does: any edit to any text, local
-  // or remote, and any file switch.
-  let labelsTimer = null;
-  function scheduleLabels() {
-    clearTimeout(labelsTimer);
-    labelsTimer = setTimeout(refreshLabels, 300);
+  // The document facts of the visual layer (reference numbers, citations,
+  // macros, and so on) count the whole project, so they follow the same changes
+  // the bibliography does: any edit to any text, local or remote, and any file
+  // switch. They also read the parsed bibliography, so they run again when it
+  // arrives.
+  let factsTimer = null;
+  function scheduleFacts() {
+    clearTimeout(factsTimer);
+    factsTimer = setTimeout(refreshFacts, 300);
   }
-  // Sets the reference numbers on a view. Reconfiguring the visual layer empties
+  // Sets the document facts on a view. Reconfiguring the visual layer empties
   // them, so this runs again after each reconfigure with `fresh` set. Otherwise
-  // unchanged numbers are not sent: each update redraws the whole document.
-  const sentLabels = new WeakMap(); // view -> the numbers it was last sent, as JSON
-  function refreshLabels(target = view, id = showing, fresh = false) {
+  // unchanged facts are not sent: each update redraws the whole document.
+  const sentFacts = new WeakMap(); // view -> the facts it was last sent, as JSON
+  // JSON has no Map, so the facts' maps are sent as their entries.
+  const factsJson = (_key, value) => (value instanceof Map ? [...value] : value);
+  function refreshFacts(target = view, id = showing, fresh = false) {
     untrack(() => {
       const path = pathOfDoc(session.doc, id);
       if (!target || !visual || formatOf(path) !== "latex") return;
-      const labels = numberLabels(treeForDoc(session.doc).texts, entry || path);
-      const sent = JSON.stringify([...labels]);
-      if (!fresh && sentLabels.get(target) === sent) return;
-      sentLabels.set(target, sent);
-      target.dispatch({ effects: labelsUpdate(labels) });
+      const facts = documentFacts(treeForDoc(session.doc).texts, entry || path, path, bibliographyEntries());
+      const sent = JSON.stringify(facts, factsJson);
+      if (!fresh && sentFacts.get(target) === sent) return;
+      sentFacts.set(target, sent);
+      target.dispatch({ effects: factsUpdate(facts) });
     });
   }
   function scheduleBibliography() {
     bibliographyGeneration += 1;
     clearTimeout(bibliographyTimer);
     bibliographyTimer = setTimeout(refreshBibliography, 120);
-    scheduleLabels();
+    scheduleFacts();
   }
 
   // Redraws the citation underlines once the bibliography has changed.
@@ -1312,7 +1318,7 @@
     if (!target) return;
     const path = pathOfDoc(session.doc, id);
     target.dispatch({ effects: visualCompartment.reconfigure(visualOn(untrack(() => visual), path)) });
-    refreshLabels(target, id, true);
+    refreshFacts(target, id, true);
   }
 
   // The prose format of a file, or empty for code and data files, which spellcheck leaves alone.
@@ -1532,12 +1538,12 @@
         scheduleDraw();
       }));
       refreshBibliography();
-      refreshLabels(view, showing, true);
+      refreshFacts(view, showing, true);
       view.focus();
       return () => {
         bibliographyGeneration += 1;
         clearTimeout(bibliographyTimer);
-        clearTimeout(labelsTimer);
+        clearTimeout(factsTimer);
         if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
         unsubscribeChanges();
         unsubscribeMode();
