@@ -246,6 +246,7 @@
   import { isEnglishDocument } from "../lib/harper/language.js";
   import { untrack } from "svelte";
   import { visualMarkup, factsUpdate } from "../lib/visual-markup/index.js";
+  import { applyFormat, formatState } from "../lib/visual-markup/formatting.js";
   import { documentFacts } from "../lib/visual-markup/facts.js";
   import { markdownFacts } from "../lib/visual-markup/markdown-facts.js";
   import { typstFacts } from "../lib/visual-markup/typst-facts.js";
@@ -264,6 +265,8 @@
     visual = false, imageUrl = null,
     analyze = analyzeBibliography,
     onchange, oncaret, onfilechange, onbibliography, onsave, onquit,
+    // Called with the caret's formatting (formatState) while visual mode is on.
+    onformatstate,
     rules = null,
     // The path the preview renders, which Reader passes. It stands in for the
     // open file wherever the project as a whole is read.
@@ -866,6 +869,16 @@
     view?.focus();
   }
 
+  // Applies a formatting tool from lib/visual-markup/formatting.js to the open
+  // file, in its own format, then puts the caret back in the editor. Named
+  // formatSelection because `format` is the document's format prop.
+  export function formatSelection(id) {
+    if (!view || editable === false) return false;
+    const done = applyFormat(view, formatOf(pathOfDoc(session.doc, showing)), id);
+    view.focus();
+    return done;
+  }
+
   export function editAvailability() {
     if (!view) return {};
     const selected = !view.state.selection.main.empty;
@@ -1237,6 +1250,8 @@
           // and scrolling the document on every keystroke would make the
           // preview unreadable.
           if (update.selectionSet && !update.docChanged) oncaret?.();
+          // The formatting toolbar reads the caret's markup, so it is told on every move or edit.
+          if (update.docChanged || update.selectionSet) reportFormat(update.view);
           // On a phone the keyboard covers the lower half of the screen, and a
           // tap is what raises it, so the tapped line goes to the top of the
           // editor where it stays in sight. Only a pointer tap that places the
@@ -1323,6 +1338,13 @@
     const path = pathOfDoc(session.doc, id);
     target.dispatch({ effects: visualCompartment.reconfigure(visualOn(untrack(() => visual), path)) });
     refreshFacts(target, id, true);
+    reportFormat(target, path);
+  }
+
+  // Tells the formatting toolbar the formatting at the caret. Only while visual mode is on.
+  function reportFormat(target, path) {
+    if (!visual || !onformatstate || !target) return;
+    onformatstate(formatState(target, formatOf(path ?? pathOfDoc(session.doc, showing))));
   }
 
   // The prose format of a file, or empty for code and data files, which spellcheck leaves alone.

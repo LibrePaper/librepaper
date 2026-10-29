@@ -71,6 +71,7 @@
   import MenubarMenu from "./MenubarMenu.svelte";
   import { menubar } from "../lib/menubar.svelte.js";
   import Nav from "./Nav.svelte";
+  import FormatToolbar from "./FormatToolbar.svelte";
   import Icon from "./Icon.svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import IconButton from "./IconButton.svelte";
@@ -722,7 +723,9 @@
   function belowTheBar() {
     const declared = getComputedStyle(document.documentElement).getPropertyValue("--librepaper-bar").trim();
     const height = declared.endsWith("px") ? Number.parseFloat(declared) : (Number.parseFloat(declared) || 3.5) * unit;
-    return Math.round(height) + 9;
+    // The formatting row, when it is showing, sits under the top bar too.
+    const format = document.querySelector(".format-bar")?.offsetHeight ?? 0;
+    return Math.round(height) + format + 9;
   }
 
   // How wide the bar is is only knowable once it is drawn, so the placing
@@ -1274,6 +1277,8 @@
   let participants = $state([]);
   let linked = $state(read(LINKED, false) === true);
   let visual = $state(read(VISUAL, false) === true);
+  // The formatting at the caret, from the Editor while visual mode is on.
+  let formatActive = $state(null);
 
   // Routine saving stays quiet; losing the connection still needs a warning,
   // and the warning has to say what is happening to the typing meanwhile.
@@ -2895,6 +2900,8 @@
   // The visual layer draws only the formats in VISUAL_FORMATS, so the toggle is offered for those alone.
   // The visual layer reads Quarto as Markdown.
   const visualAvailable = $derived(VISUAL_FORMATS.has(editorFormat === "quarto" ? "markdown" : editorFormat));
+  // The formatting row under the top bar: only while the source is open and editable in visual mode.
+  const formatBarShown = $derived(visual && sourceOpen && mayEdit && visualAvailable);
   // Why the pane shows what it shows, when it is not simply the open file.
   const previewChip = $derived(Boolean(previewPath) && (previewReason === "locked" || (previewReason === "inside" && toolbarPath)));
   // What the card says when the open file has nothing the preview could draw.
@@ -4090,11 +4097,15 @@
   {/snippet}
 </Nav>
 
+{#if formatBarShown}
+  <FormatToolbar active={formatActive} hidden={barHidden} onformat={(id) => editor?.formatSelection?.(id)} />
+{/if}
+
 <main id="main" tabindex="-1" class="reader" class:editing={shown.source} class:no-preview={!shown.document}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact} class:bar-hidden={barHidden}
-      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar))); --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
+      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - var(--librepaper-format-used, 0px)); --librepaper-format-used: {formatBarShown ? 'var(--librepaper-format-bar)' : '0px'}; --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- What this page is. The title is in the bar, where it is a span beside
        the menus rather than a heading, so the one heading a screen reader
        looks for first is here instead: said once, seen by nobody. -->
@@ -4265,6 +4276,7 @@
       {:else if Editor && sourceBound}
         <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
+                  onformatstate={(state) => { formatActive = state; }}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />
       {/if}
     </section>
