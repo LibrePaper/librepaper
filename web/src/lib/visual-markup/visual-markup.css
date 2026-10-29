@@ -10,3 +10,76 @@
   font-size: var(--text-xs);
   cursor: pointer;
 }
+
+/* A reference to a numbered label: a subtle chip in the accent colour. */
+.cm-lp-ref {
+  padding: 0 calc(var(--spacing) * 1);
+  border-radius: var(--radius-base);
+  background: var(--color-subtle);
+  color: var(--color-link);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* An \input, \include or \subfile: a chip with the file's name and an Open button. */
+.cm-lp-include {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--spacing) * 2);
+  padding: 0 calc(var(--spacing) * 2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cm-lp-include-open {
+  padding: 0 calc(var(--spacing) * 2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-raised);
+  color: var(--color-link);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.cm-lp-include-open:hover {
+  background: var(--color-row-hover);
+}
+
+/* The title block drawn for \maketitle. Line breaks in the title and author
+   come from the source, so they are kept. */
+.cm-lp-title {
+  margin: calc(var(--spacing) * 6) 0;
+  text-align: center;
+  color: var(--color-text);
+}
+
+.cm-lp-title-main {
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  line-height: 1.25;
+  white-space: pre-line;
+}
+
+.cm-lp-title-author {
+  margin-top: calc(var(--spacing) * 3);
+  font-size: var(--text-base);
+  color: var(--color-text-secondary);
+  white-space: pre-line;
+}
+
+.cm-lp-title-date {
+  margin-top: calc(var(--spacing) * 1);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.cm-lp-title-muted {
+  color: var(--color-text-muted);
+  font-weight: 400;
+}
