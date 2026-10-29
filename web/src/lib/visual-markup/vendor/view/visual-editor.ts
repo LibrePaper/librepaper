@@ -1,4 +1,4 @@
-import { Compartment, EditorState, Extension, RangeSet, StateEffect, StateField } from '@codemirror/state';
+import { Compartment, EditorState, Extension, Facet, RangeSet, StateEffect, StateField } from '@codemirror/state';
 import { Decoration, DecorationSet, EditorView } from '@codemirror/view';
 import { ConfigService, DEFAULT_CONFIG, EditorConfig } from '../core/config';
 import { getLanguage } from '../core/language';
@@ -22,12 +22,19 @@ interface VisualState {
 
 export const setVisualState = StateEffect.define<Partial<VisualState>>();
 
+// Seeds the initial visual state, so a host can turn the visual mode on from
+// configuration rather than with a dispatch after the state exists.
+export const visualDefaults = Facet.define<Partial<VisualState>, Partial<VisualState>>({
+  combine: values => Object.assign({}, ...values)
+});
+
 const visualState = StateField.define<VisualState>({
-  create: () => ({
+  create: state => ({
     enabled: false,
     showCommands: DEFAULT_CONFIG.showCommands,
     language: DEFAULT_CONFIG.language,
-    maxDepth: DEFAULT_CONFIG.maxDepth
+    maxDepth: DEFAULT_CONFIG.maxDepth,
+    ...state.facet(visualDefaults)
   }),
   update(value, tr) {
     for (const effect of tr.effects) {
