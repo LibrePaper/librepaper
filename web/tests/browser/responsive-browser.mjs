@@ -487,9 +487,9 @@ try {
   })()`);
   assert.equal(compactNav.triggers,1,'top bar has one Menu trigger');
   assert.equal(compactNav.face,true,'top bar includes the source/document switch beside Menu');
-  assert.deepEqual(compactNav.faceLabels,['Preview','Source'],'both mobile workspace faces remain available');
+  assert.deepEqual(compactNav.faceLabels,['Preview','Editor'],'both mobile workspace faces remain available');
   assert.ok(compactNav.sizes.every(([width,height]) => height === 44 && width >= 56),'all three top bar controls are 44px tall and at least 56px wide');
-  assert.deepEqual(compactNav.captions,['Menu','Preview','Source'],'each top bar control shows its visible caption');
+  assert.deepEqual(compactNav.captions,['Menu','Preview','Editor'],'each top bar control shows its visible caption');
   assert.equal(new Set(compactNav.radii).size,1,'all three controls share a corner radius');
   assert.equal(new Set(compactNav.borders.map(border => border.join('|'))).size,1,'all three controls share a border');
   assert.equal(new Set(compactNav.iconSizes.map(size => size?.join('|'))).size,1,'all three controls share an icon size');
@@ -669,7 +669,7 @@ try {
   assert.equal(await visible('.sidebar'),false);
   await bounded();
   await b.evaluate('window.savedFrame.contentWindow.scrollTo(0, 800)');
-  await click(face('Source'));
+  await click(face('Editor'));
   assert.equal(await visible('.editorpane'),true);
   assert.equal(await visible('.viewport'),false);
   assert.equal(await b.evaluate('document.querySelector(".cm-editor") === window.savedEditor'), true);
@@ -709,7 +709,7 @@ try {
   await flush();
   assert.equal(await b.evaluate('document.querySelector(".cm-scroller").scrollTop'), 0, 'beside the document a tap leaves the scroll position alone');
   await b.resize(390, 844); await flush();
-  await click(face('Source'));
+  await click(face('Editor'));
   assert.equal(await visible('.editorpane'), true);
   await until('top bar at rest after the tap', () => b.evaluate(barAtRest), 3000);
   await nav('Files');
@@ -733,7 +733,7 @@ try {
     document.querySelector('.agent-panel .chat-transcript').scrollTop = 100;
   })()`);
   await flush();
-  await click(face('Source'));
+  await click(face('Editor'));
   await nav('Agent');
   assert.equal(await b.evaluate('document.querySelector(".agent-panel .chat-form textarea").value'), 'An unsent thought');
   assert.equal(await b.evaluate('document.querySelector(".agent-panel .chat-transcript").scrollTop'),100);
@@ -762,7 +762,7 @@ try {
   assert.equal(await visible('.viewport'),true);
   assert.equal(await visible('.editorpane'),false);
   assert.equal(await visible('.sidebar'),true);
-  await click(face('Source'));
+  await click(face('Editor'));
   assert.equal(await visible('.editorpane'),true);
   assert.equal(await visible('.viewport'),false);
   await bounded();

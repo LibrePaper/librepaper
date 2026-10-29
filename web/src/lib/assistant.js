@@ -281,8 +281,8 @@ export function taskBlocker(capabilities, task, { attached = null, path = "", de
   if (!deferAccess && !caps.verified) return "Connect an agent to check access for this task.";
   if (checkAccess && !caps.can_read) return "You need read access to run this task.";
   if (["tighten", "rewrite"].includes(task.kind) && task.scope !== "selection") return "This task works on a selected passage.";
-  if (task.scope === "selection" && !attached) return "Select the passage in the source to use this task.";
-  if (taskNeedsAnchor(task) && !text(attached?.selection?.exact).trim()) return "Select the passage in the source to use this task.";
+  if (task.scope === "selection" && !attached) return "Select the passage in the editor to use this task.";
+  if (taskNeedsAnchor(task) && !text(attached?.selection?.exact).trim()) return "Select the passage in the editor to use this task.";
   if (task.scope === "file" && !path) return "Open a file to use this task.";
   if (checkAccess && ["tighten", "rewrite", "proofread", "fix"].includes(task.kind) && !caps.can_suggest) return "You need edit access to run this task.";
   if (checkAccess && task.kind === "respond" && !caps.can_reply) return "You need comment access to run this task.";

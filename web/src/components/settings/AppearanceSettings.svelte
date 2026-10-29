@@ -75,7 +75,7 @@
 </SettingRow>
 
 <SettingRow id="appearance-font-size" title="Font size"
-            description="Pinch or Ctrl and scroll over the source to change it there too.">
+            description="Pinch or Ctrl and scroll over the editor to change it there too.">
   <span class="setting-inline">
     <input type="number" class="input input-sm setting-input setting-number" min={MIN_SIZE} max={MAX_SIZE} step="1"
            aria-label="Font size in pixels" value={currentSize}

@@ -363,7 +363,7 @@
         <Row gap={2} wrap>
           <button type="button" class="btn btn-sm lp-control-tonal-brand"
             disabled={!attachable}
-            title={attachable ? "Make the selected passage this comment's passage" : "Select the passage in the source first"}
+            title={attachable ? "Make the selected passage this comment's passage" : "Select the passage in the editor first"}
             onclick={(e) => {
               e.stopPropagation();
               onattach?.(comment);

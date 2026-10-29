@@ -75,7 +75,7 @@
 {/if}
 
 <SettingRow id="editor-check" title="Code check"
-            description="Underline errors and warnings from the last render in the source. The list of messages stays available.">
+            description="Underline errors and warnings from the last render in the editor. The list of messages stays available.">
   <button type="button" role="switch" class="switch" aria-checked={check} aria-label="Code check"
           data-state={check ? "checked" : "unchecked"} onclick={() => oncheck?.(!check)}>
     <span class="switch-thumb" data-state={check ? "checked" : "unchecked"}></span>
@@ -88,6 +88,6 @@
      the next thing anybody does after changing it. Stacked, because a table is
      not a control that fits beside a sentence. -->
 <SettingRow id="editor-shortcuts" stacked title="Keyboard shortcuts"
-            description="Press ? anywhere outside the source to come back here.">
+            description="Press ? anywhere outside the editor to come back here.">
   <ShortcutTable context={commands} />
 </SettingRow>
