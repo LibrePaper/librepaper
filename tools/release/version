@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Set the release version everywhere a release names it: the workspace
 # version, the workspace entries in Cargo.lock, the desktop app's version in
-# its Cargo.toml, tauri.conf.json and Cargo.lock, and the deployment kit's
-# image pins. tools/release/kit.test.mjs fails when the pins or the desktop
-# version differ from the workspace version.
+# its Cargo.toml, tauri.conf.json and Cargo.lock, the deployment kit's image
+# pins, and the release the GitHub Action downloads. tools/release/kit.test.mjs
+# fails when the pins, the Action or the desktop version differ from the
+# workspace version.
 #
 #   tools/release/version 0.0.25
 set -euo pipefail
@@ -22,4 +23,5 @@ sed -i -E '0,/^version = "[^"]*"/s//version = "'"$version"'"/' desktop/Cargo.tom
 sed -i -E '0,/^  "version": "[^"]*"/s//  "version": "'"$version"'"/' desktop/tauri.conf.json
 cargo update --workspace --quiet --manifest-path desktop/Cargo.toml
 sed -i -E 's#(ghcr\.io/librepaper/librepaper(-backup)?):v[0-9]+\.[0-9]+\.[0-9]+#\1:v'"$version"'#' deploy/compose.yaml
-git diff --stat -- Cargo.toml Cargo.lock deploy/compose.yaml desktop/Cargo.toml desktop/Cargo.lock desktop/tauri.conf.json
+sed -i -E 's#v[0-9]+\.[0-9]+\.[0-9]+#v'"$version"'#g' tools/sync-action/action.yml tools/sync-action/README.md tools/sync-action/sync.sh
+git diff --stat -- Cargo.toml Cargo.lock deploy/compose.yaml desktop/Cargo.toml desktop/Cargo.lock desktop/tauri.conf.json tools/sync-action

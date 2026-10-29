@@ -32,6 +32,16 @@ test('the kit pins the application and backup images to the workspace version', 
   assert.deepEqual(pins, [`v${version}`, `v${version}`], 'run tools/release/version to update the kit pins');
 });
 
+// tools/release/version sets it; an Action that downloads an older release
+// may lack the commands sync.sh runs.
+test('the GitHub Action downloads the workspace version', () => {
+  const version = readFileSync(path.join(repo, 'Cargo.toml'), 'utf8').match(/^version = "([^"]+)"/m)[1];
+  const named = ['action.yml', 'README.md', 'sync.sh']
+    .flatMap((file) => [...readFileSync(path.join(repo, 'tools/sync-action', file), 'utf8').matchAll(/\bv\d+\.\d+\.\d+\b/g)].map((match) => match[0]));
+  assert.ok(named.length >= 3, 'the Action names its release');
+  assert.deepEqual([...new Set(named)], [`v${version}`], 'run tools/release/version to update the Action');
+});
+
 // tools/release/version sets both desktop files.
 test('the desktop app carries the workspace version', () => {
   const version = readFileSync(path.join(repo, 'Cargo.toml'), 'utf8').match(/^version = "([^"]+)"/m)[1];
