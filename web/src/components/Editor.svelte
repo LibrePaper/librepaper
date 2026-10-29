@@ -34,6 +34,9 @@
   const bracketsCompartment = new Compartment();
   const spellcheckCompartment = new Compartment();
   const checkCompartment = new Compartment();
+  // The visual layer is drawn only for LaTeX, Typst and Markdown, and its colours follow
+  // the page's mode, so it is brought into line when a file or the mode changes.
+  const visualCompartment = new Compartment();
   // The bracket keymap goes with auto-closing brackets. Its Backspace deletes an
   // empty pair even without closeBrackets, so leaving it in the main keymap
   // would leave the switch half off.
@@ -231,7 +234,7 @@
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
   import { projectDirectory } from "../lib/projection.js";
-  import { openingFile } from "../lib/opening.js";
+  import { openingFile, resolveInclude } from "../lib/opening.js";
   import { toLf, healLineEndings, LINE_ENDINGS_ORIGIN } from "../lib/line-endings.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
   import { start as startEditorType, onFont, onLineHeight, size, setSize, DEFAULT_SIZE } from "../lib/editor-type.js";
@@ -242,6 +245,11 @@
   import { harperAvailable } from "../lib/harper/client.js";
   import { isEnglishDocument } from "../lib/harper/language.js";
   import { untrack } from "svelte";
+  import { visualMarkup, factsUpdate } from "../lib/visual-markup/index.js";
+  import { applyFormat, formatState } from "../lib/visual-markup/formatting.js";
+  import { documentFacts } from "../lib/visual-markup/facts.js";
+  import { markdownFacts } from "../lib/visual-markup/markdown-facts.js";
+  import { typstFacts } from "../lib/visual-markup/typst-facts.js";
 
   // Whether what is typed here is recorded as a tracked change is not a prop
   // to follow. It starts from `tracking` and is flipped by `startTracking` and
@@ -254,8 +262,11 @@
   let { session, format = "", file = "", keys = "default", editable = true,
     completion = true, brackets = true, proofing = "browser", dialect = "american", check = true,
     tracking = false, me = { who: "", author: "" }, selectedChange = null,
+    visual = false, imageUrl = null,
     analyze = analyzeBibliography,
     onchange, oncaret, onfilechange, onbibliography, onsave, onquit,
+    // Called with the caret's formatting (formatState) while visual mode is on.
+    onformatstate,
     rules = null,
     // The path the preview renders, which Reader passes. It stands in for the
     // open file wherever the project as a whole is read.
@@ -539,6 +550,7 @@
       const newlyAvailable = !parsedBibliography && result.entries.length > 0;
       parsedBibliography = result;
       citationsUpdated();
+      scheduleFacts();
       onbibliography?.(result, request);
       const currentFormat = formatOf(pathOfDoc(session.doc, showing));
       const currentContext = view && citationContext(view.state.doc.toString(), view.state.selection.main.head, currentFormat);
@@ -547,13 +559,44 @@
       if (generation !== bibliographyGeneration) return;
       parsedBibliography = null;
       citationsUpdated();
+      scheduleFacts();
       onbibliography?.({ entries: [], diagnostics: [{ severity: "warning", message: `Bibliography unavailable: ${error?.message || "the parser could not be loaded"}`, file: request.main, line: 0 }] }, request);
+    });
+  }
+  // The document facts of the visual layer (reference numbers, citations,
+  // macros, and so on) count the whole project, so they follow the same changes
+  // the bibliography does: any edit to any text, local or remote, and any file
+  // switch. They also read the parsed bibliography, so they run again when it
+  // arrives.
+  let factsTimer = null;
+  function scheduleFacts() {
+    clearTimeout(factsTimer);
+    factsTimer = setTimeout(refreshFacts, 300);
+  }
+  // Sets the document facts on a view. Reconfiguring the visual layer empties
+  // them, so this runs again after each reconfigure with `fresh` set. Otherwise
+  // unchanged facts are not sent: each update redraws the whole document.
+  const sentFacts = new WeakMap(); // view -> the facts it was last sent, as JSON
+  // JSON has no Map, so the facts' maps are sent as their entries.
+  const factsJson = (_key, value) => (value instanceof Map ? [...value] : value);
+  function refreshFacts(target = view, id = showing, fresh = false) {
+    untrack(() => {
+      const path = pathOfDoc(session.doc, id);
+      const format = formatOf(path);
+      const compute = { latex: documentFacts, markdown: markdownFacts, typst: typstFacts }[format];
+      if (!target || !visual || !compute) return;
+      const facts = compute(treeForDoc(session.doc).texts, entry || path, path, bibliographyEntries());
+      const sent = JSON.stringify(facts, factsJson);
+      if (!fresh && sentFacts.get(target) === sent) return;
+      sentFacts.set(target, sent);
+      target.dispatch({ effects: factsUpdate(facts) });
     });
   }
   function scheduleBibliography() {
     bibliographyGeneration += 1;
     clearTimeout(bibliographyTimer);
     bibliographyTimer = setTimeout(refreshBibliography, 120);
+    scheduleFacts();
   }
 
   // Redraws the citation underlines once the bibliography has changed.
@@ -824,6 +867,16 @@
 
   export function focus() {
     view?.focus();
+  }
+
+  // Applies a formatting tool from lib/visual-markup/formatting.js to the open
+  // file, in its own format, then puts the caret back in the editor. Named
+  // formatSelection because `format` is the document's format prop.
+  export function formatSelection(id) {
+    if (!view || editable === false) return false;
+    const done = applyFormat(view, formatOf(pathOfDoc(session.doc, showing)), id);
+    view.focus();
+    return done;
   }
 
   export function editAvailability() {
@@ -1133,6 +1186,7 @@
         // underline and the hover the lint extension draws. Drawn only while
         // the check is on.
         checkCompartment.of(checkOn(untrack(() => check), citationKeys)),
+        visualCompartment.of(visualOn(untrack(() => visual), path)),
         EditorView.lineWrapping,
         // Pending changes, drawn in the text they changed.
         pendingChanges,
@@ -1196,6 +1250,8 @@
           // and scrolling the document on every keystroke would make the
           // preview unreadable.
           if (update.selectionSet && !update.docChanged) oncaret?.();
+          // The formatting toolbar reads the caret's markup, so it is told on every move or edit.
+          if (update.docChanged || update.selectionSet) reportFormat(update.view);
           // On a phone the keyboard covers the lower half of the screen, and a
           // tap is what raises it, so the tapped line goes to the top of the
           // editor where it stays in sight. Only a pointer tap that places the
@@ -1261,6 +1317,34 @@
         checkCompartment.reconfigure(checkOn(untrack(() => check), citationKeys)),
       ],
     });
+  }
+
+  // The visual layer for a file, or nothing where it draws no such format. The
+  // colours depend on the page's mode, so this is read again on a theme change.
+  function visualOn(on, path) {
+    return on ? visualMarkup(formatOf(path), { path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark", openInclude: (name) => openIncluded(path, name) }) : [];
+  }
+  // Opens the project text an include names, for a click on it in the visual layer.
+  function openIncluded(from, name) {
+    const doc = session?.doc;
+    if (!doc) return;
+    const id = textIdForPath(doc, resolveInclude("latex", from, name, treeForDoc(doc).texts));
+    if (id) openAt(id, 1);
+  }
+
+  // Reconfigures the live view's visual layer for the file it shows.
+  function syncVisual(target, id = showing) {
+    if (!target) return;
+    const path = pathOfDoc(session.doc, id);
+    target.dispatch({ effects: visualCompartment.reconfigure(visualOn(untrack(() => visual), path)) });
+    refreshFacts(target, id, true);
+    reportFormat(target, path);
+  }
+
+  // Tells the formatting toolbar the formatting at the caret. Only while visual mode is on.
+  function reportFormat(target, path) {
+    if (!visual || !onformatstate || !target) return;
+    onformatstate(formatState(target, formatOf(path ?? pathOfDoc(session.doc, showing))));
   }
 
   // The prose format of a file, or empty for code and data files, which spellcheck leaves alone.
@@ -1411,6 +1495,7 @@
     syncKeys(view);
     syncFeatures(view, id);
     syncTheme(view);
+    syncVisual(view, id);
     showing = id;
     announced = "";
     // A file this browser has open is where its caret is, which is what the
@@ -1458,7 +1543,7 @@
       untrack(() => viewCallbacks.set(view, { onsave, onquit }));
       syncKeys(view);
       syncFeatures(view, initial.first);
-      const unsubscribeMode = onMode(() => syncTheme(view));
+      const unsubscribeMode = onMode(() => { syncTheme(view); syncVisual(view); });
       // The font and line height are the person's, and a change in the settings row lands here.
       startEditorType();
       const unsubscribeFont = onFont(() => {
@@ -1479,10 +1564,12 @@
         scheduleDraw();
       }));
       refreshBibliography();
+      refreshFacts(view, showing, true);
       view.focus();
       return () => {
         bibliographyGeneration += 1;
         clearTimeout(bibliographyTimer);
+        clearTimeout(factsTimer);
         if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
         unsubscribeChanges();
         unsubscribeMode();
@@ -1561,6 +1648,12 @@
       syncFeatures(view);
       untrack(() => setDiagnostics(all));
     }
+  });
+
+  // The visual layer switch works the same way, and redraws nothing else.
+  $effect(() => {
+    void visual;
+    if (view) untrack(() => syncVisual(view));
   });
 
 </script>

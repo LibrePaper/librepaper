@@ -29,6 +29,9 @@ export function write(key, value) {
 export const AGENT_SESSION_PREFIX = "librepaper.agent.session.";
 export const VIEWED = "librepaper-viewed";
 export const LINKED = "librepaper-linked";
+// Whether the source draws LaTeX and Typst in place (figures, headings, maths).
+// A habit of the person reading rather than of the document.
+export const VISUAL = "librepaper-visual";
 // Whether PDF pages are drawn inverted while the application is dark. A habit
 // of the person reading rather than of the document.
 export const PDF_INVERT = "librepaper-pdf-invert";

@@ -51,6 +51,7 @@
   import {
     LINKED,
     PDF_INVERT,
+    VISUAL,
     linkFor,
     markViewed,
     read,
@@ -70,9 +71,11 @@
   import MenubarMenu from "./MenubarMenu.svelte";
   import { menubar } from "../lib/menubar.svelte.js";
   import Nav from "./Nav.svelte";
+  import FormatToolbar from "./FormatToolbar.svelte";
   import Icon from "./Icon.svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import IconButton from "./IconButton.svelte";
+  import { VISUAL_FORMATS } from "../lib/visual-markup/formats.js";
   import Modal from "./Modal.svelte";
   import CommandPalette from "./CommandPalette.svelte";
   import Toasts from "./Toasts.svelte";
@@ -720,7 +723,9 @@
   function belowTheBar() {
     const declared = getComputedStyle(document.documentElement).getPropertyValue("--librepaper-bar").trim();
     const height = declared.endsWith("px") ? Number.parseFloat(declared) : (Number.parseFloat(declared) || 3.5) * unit;
-    return Math.round(height) + 9;
+    // The formatting row, when it is showing, sits under the top bar too.
+    const format = /** @type {HTMLElement | null} */ (document.querySelector(".format-bar"))?.offsetHeight ?? 0;
+    return Math.round(height) + format + 9;
   }
 
   // How wide the bar is is only knowable once it is drawn, so the placing
@@ -1271,6 +1276,9 @@
   let peers = $state(1);
   let participants = $state([]);
   let linked = $state(read(LINKED, false) === true);
+  let visual = $state(read(VISUAL, false) === true);
+  // The formatting at the caret, from the Editor while visual mode is on.
+  let formatActive = $state(null);
 
   // Routine saving stays quiet; losing the connection still needs a warning,
   // and the warning has to say what is happening to the typing meanwhile.
@@ -1537,6 +1545,14 @@
       (path) => !Object.prototype.hasOwnProperty.call(held.assets, path),
     );
     return { held, missing };
+  }
+
+  /// A loadable URL for a figure in the open project, for the editor's visual markup.
+  async function figureUrlFor(path) {
+    const digest = treeNow().digests?.[path];
+    if (!digest) return null;
+    const held = await figures.gather(SLUG, { [path]: digest }, authHeaders(KEY));
+    return held.urls[path] ?? null;
   }
 
   // Quitting exits the native app, which ends every window. The app asks each
@@ -2246,6 +2262,11 @@
     if (!localDataForgotten()) write(LINKED, on);
   }
 
+  function setVisual(on) {
+    visual = on;
+    if (!localDataForgotten()) write(VISUAL, on);
+  }
+
   /* ------------------------------------------------------------------ panes */
 
   // Which side the source is on, which keys the editor answers to and how
@@ -2556,6 +2577,7 @@
     if (what === "side-left" || what === "side-right") return putSourceOn(what.slice(5));
     if (what.startsWith("ratio-")) return setSize(PANES.editor, Number(what.slice(6)));
     if (what === "linked") return setLinked(!linked);
+    if (what === "visual-markup") return setVisual(!visual);
     if (TEXT_SIZE_COMMANDS.includes(what)) return changeTextSize(what);
   }
 
@@ -2875,6 +2897,11 @@
     target: { path: previewPath, reason: previewReason },
   }));
   const editorFormat = $derived(toolbarPath ? renderers.formatOf(toolbarPath) : sourceFormat);
+  // The visual layer draws only the formats in VISUAL_FORMATS, so the toggle is offered for those alone.
+  // The visual layer reads Quarto as Markdown.
+  const visualAvailable = $derived(VISUAL_FORMATS.has(editorFormat === "quarto" ? "markdown" : editorFormat));
+  // The formatting row under the top bar: only while the source is open and editable in visual mode.
+  const formatBarShown = $derived(visual && sourceOpen && mayEdit && visualAvailable);
   // Why the pane shows what it shows, when it is not simply the open file.
   const previewChip = $derived(Boolean(previewPath) && (previewReason === "locked" || (previewReason === "inside" && toolbarPath)));
   // What the card says when the open file has nothing the preview could draw.
@@ -3726,6 +3753,7 @@
     if (id === "focus-preview") return focusPreview();
     if (id === "layout-cycle") return cycleLayout();
     if (LAYOUT_COMMANDS.includes(id)) return chose(id);
+    if (id === "visual-markup") return setVisual(!visual);
     if (id === "lock-preview" || id === "unlock-preview") return chooseViewCommand(id);
     if (TEXT_SIZE_COMMANDS.includes(id)) return changeTextSize(id);
     return chooseFileCommand(id);
@@ -3938,6 +3966,9 @@
   <Menu.Item value="linked" class="menuitem">
     <span class="menuitem-check">{linked ? "✓" : ""}</span><span class="menuitem-label">Keep in step</span>{#if MENU_KEYS.linked}<span class="menuitem-keys">{MENU_KEYS.linked}</span>{/if}
   </Menu.Item>
+  <Menu.Item value="visual-markup" class="menuitem">
+    <span class="menuitem-check">{visual ? "✓" : ""}</span><span class="menuitem-label">Visual markup</span>{#if MENU_KEYS["visual-markup"]}<span class="menuitem-keys">{MENU_KEYS["visual-markup"]}</span>{/if}
+  </Menu.Item>
   <hr class="hr my-1" />
   <Menu.Item value="text-bigger" class="menuitem">
     <span class="menuitem-check"></span><span class="menuitem-label">Bigger text</span>{#if MENU_KEYS["text-bigger"]}<span class="menuitem-keys">{MENU_KEYS["text-bigger"]}</span>{/if}
@@ -3980,6 +4011,14 @@
     {/if}
   </div>
 {/snippet}
+{#snippet visualModeControl()}
+  {#if sourceOpen && mayEdit && visualAvailable}
+    <button type="button" class="visual-mode" aria-pressed={visual} title={visual ? "Switch to source editor" : "Switch to visual editor"} onclick={() => setVisual(!visual)}>
+      {#if visual}<Icon name="check" size={14} />{/if}
+      <span>Visual mode</span>
+    </button>
+  {/if}
+{/snippet}
 {#snippet localExecutionControl()}
   {#if runCodeOffered}
     <label class="run-code-toggle" title="Run this document's code on this computer. Off whenever a document opens.">
@@ -4001,6 +4040,7 @@
       <CompactPanelMenu tabs={tabs} {panel} {me} {badges} open={shown.comments} onselect={openPanel} onsettings={() => openSettings()}
                         menus={compactMenus} onmenu={(id, anchor) => menubar.show(id, anchor)} />
       {@render faceSwitch()}
+      {@render visualModeControl()}
       {#if !connected}<span class="presence-offline" title={connectionNote} aria-label={connectionNote}><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
     {:else}
       <!-- Between 761px and the split's narrow point, the face choice stays in
@@ -4010,6 +4050,7 @@
       {/if}
       <!-- The build's state is told by the preview pane's progress line and
            by Diagnostics, so the bar only carries the local execution switch. -->
+      {@render visualModeControl()}
       {@render localExecutionControl()}
       <div class="presence" role="group" aria-label={connected ? `${peers} people connected` : connectionNote} title={connected ? `${peers} people connected` : connectionNote}>
         {#each participants.slice(0, 3) as person (person.key)}
@@ -4056,11 +4097,15 @@
   {/snippet}
 </Nav>
 
+{#if formatBarShown}
+  <FormatToolbar active={formatActive} hidden={barHidden} onformat={(id) => editor?.formatSelection?.(id)} />
+{/if}
+
 <main id="main" tabindex="-1" class="reader" class:editing={shown.source} class:no-preview={!shown.document}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact} class:bar-hidden={barHidden}
-      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar))); --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
+      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - var(--librepaper-format-used, 0px)); --librepaper-format-used: {formatBarShown ? 'var(--librepaper-format-bar)' : '0px'}; --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- What this page is. The title is in the bar, where it is a span beside
        the menus rather than a heading, so the one heading a screen reader
        looks for first is here instead: said once, seen by nobody. -->
@@ -4229,8 +4274,9 @@
       {:else if shownFigure}
         {@render figureBody()}
       {:else if Editor && sourceBound}
-        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {proofing} {dialect} {check} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
+        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
+                  onformatstate={(state) => { formatActive = state; }}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />
       {/if}
     </section>
@@ -4595,6 +4641,29 @@
   .menuitem-chevron { display: inline-flex; margin-left: auto; padding-left: calc(var(--spacing) * 2); }
   .export-reason { flex: 0 0 auto; margin-left: auto; max-width: 12rem; overflow: hidden; color: var(--color-text-secondary); font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
   .run-code-toggle { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1.5); cursor: pointer; font-size: var(--text-sm); white-space: nowrap; }
+  /* Outlined when the source editor is active; a subtle fill when visual editing is on. */
+  .visual-mode {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: calc(var(--spacing) * 1.5);
+    min-height: calc(var(--spacing) * 8);
+    padding: 0 calc(var(--spacing) * 2.5);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-base);
+    background: transparent;
+    color: var(--color-text);
+    font-size: var(--text-sm);
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .visual-mode:hover { background: var(--color-row-hover); }
+  .visual-mode[aria-pressed="true"] { background: var(--color-subtle); }
+  .visual-mode[aria-pressed="true"]:hover { background: var(--color-row-selected); }
+  .visual-mode:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+  @media (max-width: 760px) {
+    .visual-mode { padding: 0 calc(var(--spacing) * 2); }
+  }
   .nav-document {
     display: block;
     max-width: min(38vw, 20rem);

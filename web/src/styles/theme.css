@@ -161,6 +161,8 @@
 
 	/* Workspace bar, spacing, and corners */
 	--librepaper-bar: 3.5rem;
+	/* The formatting row under the bar, shown in visual mode. */
+	--librepaper-format-bar: 2.5rem;
 	--spacing: 0.25rem;
 	--radius-base: 0.375rem;
 	--radius-container: 0.5rem;

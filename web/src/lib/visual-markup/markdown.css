@@ -1,0 +1,136 @@
+/* The Markdown and Quarto blocks drawn by markdown-widgets.js. Colours and sizes
+   come from the theme, as in visual-markup.css. */
+
+/* The count line under a front matter title block. */
+.cm-lp-md-keys {
+  margin-top: calc(var(--spacing) * 1);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+/* The header of an executable cell, in place of its opening fence. */
+.cm-lp-cellhead {
+  display: flex;
+  align-items: baseline;
+  gap: calc(var(--spacing) * 2);
+  min-width: 0;
+  padding: calc(var(--spacing) * 1) calc(var(--spacing) * 3);
+  border: 1px solid var(--color-border);
+  border-bottom: 0;
+  border-radius: var(--radius-base) var(--radius-base) 0 0;
+  background: var(--color-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+.cm-lp-cellhead-engine {
+  font-weight: 600;
+}
+
+.cm-lp-cellhead-label {
+  font-family: var(--font-mono);
+}
+
+.cm-lp-cellhead-caption {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A thematic break. */
+.cm-lp-hr {
+  margin: calc(var(--spacing) * 4) 0;
+  border: 0;
+  border-top: 1px solid var(--color-border);
+}
+
+/* Callouts: a tinted block with an accent edge, its colour by kind. */
+.cm-lp-callout {
+  margin: calc(var(--spacing) * 2) 0;
+  padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3);
+  border-left: 3px solid var(--color-link);
+  border-radius: var(--radius-base);
+  background: var(--color-subtle);
+}
+
+.cm-lp-callout-tip {
+  border-left-color: var(--color-success-solid);
+}
+
+.cm-lp-callout-important {
+  border-left-color: var(--color-brand);
+}
+
+.cm-lp-callout-warning {
+  border-left-color: var(--color-warning-solid);
+}
+
+.cm-lp-callout-caution {
+  border-left-color: var(--color-error-solid);
+}
+
+.cm-lp-callout-head {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+/* Tables: a rule under each row, a heavier one under the header. */
+.cm-lp-md-table {
+  margin: calc(var(--spacing) * 2) 0;
+  overflow-x: auto;
+}
+
+.cm-lp-md-table-caption {
+  margin-bottom: calc(var(--spacing) * 1);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.cm-lp-md-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.cm-lp-md-table th,
+.cm-lp-md-table td {
+  padding: calc(var(--spacing) * 1) calc(var(--spacing) * 3);
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: top;
+  text-align: left;
+}
+
+.cm-lp-md-table th {
+  border-bottom-color: var(--color-border-strong);
+  font-weight: 600;
+}
+
+/* Figures: centred, with the caption under the image. */
+.cm-lp-md-figure {
+  margin: calc(var(--spacing) * 3) 0;
+  text-align: center;
+}
+
+.cm-lp-md-figure img {
+  max-width: 100%;
+  height: auto;
+}
+
+.cm-lp-md-caption {
+  margin-top: calc(var(--spacing) * 1);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+/* A footnote marker in the text, and the definition of a note. */
+.cm-lp-mdnote {
+  color: var(--color-link);
+  font-size: 0.75em;
+}
+
+.cm-lp-fndef {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}

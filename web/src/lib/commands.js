@@ -237,6 +237,7 @@ export const COMMANDS = [
   // together. The two that had shortcuts before this file existed keep them.
   { id: "layout-cycle", label: "Toggle editor / preview / split", category: "Workspace", scope: "workspace", keys: ["Mod+\\"], available: (c) => Boolean(c.editing) },
   { id: "linked", label: "Toggle linked scrolling", category: "Workspace", scope: "workspace", menu: "view", keys: ["Mod+Alt+L"], available: (c) => Boolean(c.editing) },
+  { id: "visual-markup", label: "Toggle visual markup", category: "Workspace", scope: "workspace", menu: "view", keys: [], available: (c) => Boolean(c.editing) },
   // The browser's zoom keys, taken only while the focus is in the source: there
   // they size the source like a pinch, and everywhere else the browser keeps
   // them. The editor owns them, so the window never listens for them.

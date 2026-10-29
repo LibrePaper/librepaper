@@ -1,0 +1,404 @@
+/* The folded LaTeX preamble, and the chips that stand in for hidden runs of
+   source (page breaks, the end of the document, the bibliography): a quiet
+   line in place of the source. */
+.cm-lp-preamble,
+.cm-lp-hidden {
+  margin: calc(var(--spacing) * 2) 0;
+  padding: calc(var(--spacing) * 1) calc(var(--spacing) * 3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-subtle);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+/* Hidden chips are more compact than the preamble, which is the page's header. */
+.cm-lp-hidden {
+  margin: calc(var(--spacing) * 1) 0;
+  padding: calc(var(--spacing) * 1) calc(var(--spacing) * 2);
+}
+
+/* A \label outside maths: a small tag at the right edge of its line. The line
+   becomes a block formatting context so that a line holding only the tag keeps
+   its height. */
+.cm-line:has(.cm-lp-label) {
+  display: flow-root;
+}
+
+.cm-lp-label {
+  float: right;
+  margin: 0 0 0 calc(var(--spacing) * 2);
+  padding: 0 calc(var(--spacing) * 2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-subtle);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* A reference to a numbered label: a subtle chip in the accent colour. */
+.cm-lp-ref {
+  padding: 0 calc(var(--spacing) * 1);
+  border-radius: var(--radius-base);
+  background: var(--color-subtle);
+  color: var(--color-link);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* The number of a numbered heading, before its text: muted, with a space after it. */
+.cm-lp-headnum {
+  color: var(--lv-secondary);
+  margin-right: calc(var(--spacing) * 2);
+  white-space: nowrap;
+}
+
+/* An \input, \include or \subfile: a chip with the file's name and an Open button. */
+.cm-lp-include {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--spacing) * 2);
+  padding: 0 calc(var(--spacing) * 2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cm-lp-include-open {
+  padding: 0 calc(var(--spacing) * 2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-raised);
+  color: var(--color-link);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.cm-lp-include-open:hover {
+  background: var(--color-row-hover);
+}
+
+/* The title block drawn for \maketitle. Line breaks in the title and author
+   come from the source, so they are kept. */
+.cm-lp-title {
+  margin: calc(var(--spacing) * 6) 0;
+  text-align: center;
+  color: var(--color-text);
+}
+
+.cm-lp-title-main {
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  line-height: 1.25;
+  white-space: pre-line;
+}
+
+.cm-lp-title-author {
+  margin-top: calc(var(--spacing) * 3);
+  font-size: var(--text-base);
+  color: var(--color-text-secondary);
+  white-space: pre-line;
+}
+
+.cm-lp-title-date {
+  margin-top: calc(var(--spacing) * 1);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.cm-lp-title-muted {
+  color: var(--color-text-muted);
+  font-weight: 400;
+}
+
+.cm-lp-title-affil {
+  margin-top: calc(var(--spacing) * 1);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  white-space: pre-line;
+}
+
+/* Each part of the title block is its own click target: a click opens its command
+   in the source. Only the part takes the hover, so the block keeps its look. */
+.cm-lp-title [data-part] {
+  border-radius: var(--radius-base);
+  cursor: pointer;
+}
+
+.cm-lp-title [data-part]:hover {
+  background: var(--color-subtle);
+}
+
+/* Rendered blocks show nothing extra at rest. On hover they take the look of
+   the preamble, and a hint says that a click opens the source. The border is an
+   outline, which takes no room, so the hover does not move the text. */
+.cm-lv-math-display,
+.cm-lv-figure-preview,
+.cm-line.cm-lv-figure-simple,
+.cm-line.cm-lv-table,
+.cm-lp-title {
+  position: relative;
+  border-radius: var(--radius-base);
+  outline: 1px solid transparent;
+  cursor: text;
+}
+
+.cm-lv-math-display:hover,
+.cm-lv-figure-preview:hover,
+.cm-line.cm-lv-figure-simple:hover,
+.cm-line.cm-lv-table:hover {
+  outline-color: var(--color-border);
+  background: var(--color-subtle);
+}
+
+.cm-lv-math-display:hover::after,
+.cm-lv-figure-preview:hover::after,
+.cm-line.cm-lv-figure-simple:hover::after,
+.cm-line.cm-lv-table:hover::after {
+  content: "Edit source";
+  position: absolute;
+  top: calc(var(--spacing) * 1);
+  right: calc(var(--spacing) * 2);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+/* Table cells carry their own borders, so a formula or figure inside one keeps its look. */
+.cm-lv-table-row .cm-lv-math-display:hover,
+.cm-lv-table-row .cm-lv-figure-preview:hover {
+  outline-color: transparent;
+  background: none;
+}
+
+.cm-lv-table-row .cm-lv-math-display:hover::after,
+.cm-lv-table-row .cm-lv-figure-preview:hover::after {
+  content: none;
+}
+
+/* Text styles from the LaTeX catalog. Each follows the command it stands for, and
+   sizes are em so they scale with the surrounding text. */
+.cm-lp-roman { font-family: ui-serif, Georgia, serif; }
+.cm-lp-slanted { font-style: oblique; }
+.cm-lp-upright { font-style: normal; }
+.cm-lp-medium { font-weight: 500; }
+.cm-lp-normal {
+  font-family: inherit;
+  font-style: normal;
+  font-weight: 400;
+  font-variant: normal;
+}
+.cm-lp-sup { vertical-align: super; font-size: 0.75em; }
+.cm-lp-sub { vertical-align: sub; font-size: 0.75em; }
+.cm-lp-strike { text-decoration: line-through; }
+.cm-lp-double-underline { text-decoration: underline double; }
+.cm-lp-wave { text-decoration: underline wavy; }
+.cm-lp-highlight {
+  border-radius: var(--radius-base);
+  background: var(--color-warning-bg);
+}
+.cm-lp-spaced { letter-spacing: 0.12em; }
+.cm-lp-uppercase { text-transform: uppercase; }
+.cm-lp-lowercase { text-transform: lowercase; }
+
+.cm-lp-size-tiny { font-size: 0.6em; }
+.cm-lp-size-scriptsize { font-size: 0.7em; }
+.cm-lp-size-footnotesize { font-size: 0.8em; }
+.cm-lp-size-small { font-size: 0.9em; }
+.cm-lp-size-normalsize { font-size: 1em; }
+.cm-lp-size-large { font-size: 1.2em; }
+.cm-lp-size-Large { font-size: 1.4em; }
+.cm-lp-size-LARGE { font-size: 1.6em; }
+.cm-lp-size-huge { font-size: 1.8em; }
+.cm-lp-size-Huge { font-size: 2em; }
+
+.cm-lp-frame {
+  padding: 0 calc(var(--spacing) * 1);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-base);
+}
+.cm-lp-added { color: var(--color-success-text); }
+.cm-lp-deleted { color: var(--color-error-text); text-decoration: line-through; }
+.cm-lp-foreign { font-style: italic; }
+
+/* Citations, links and notes. A link and a citation read as text in the link colour;
+   a footnote is a small raised marker. */
+.cm-lp-cite {
+  color: var(--color-link);
+}
+
+.cm-lp-cite-hidden {
+  display: none;
+}
+
+/* A key the project does not define, shown muted with a question mark. */
+.cm-lp-unknown {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.cm-lp-link {
+  color: var(--color-link);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--color-link) 40%, transparent);
+  cursor: pointer;
+}
+
+.cm-lp-footnote {
+  padding: 0 calc(var(--spacing) * 0.5);
+  color: var(--color-link);
+  font-size: 0.75em;
+  cursor: pointer;
+}
+
+/* Verbatim code: monospace on a subtle background, which keeps its spaces. */
+.cm-lp-verb,
+.cm-lp-code {
+  font-family: var(--font-mono);
+  background: var(--color-subtle);
+  border-radius: var(--radius-base);
+  white-space: pre-wrap;
+}
+
+.cm-lp-verb {
+  padding: 0 calc(var(--spacing) * 1);
+}
+
+.cm-lp-code {
+  display: block;
+  padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* A generic chip: a bordered label, inline or on a block of its own. */
+.cm-lp-chip {
+  display: inline-block;
+  padding: 0 calc(var(--spacing) * 2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cm-lp-chip-block {
+  display: block;
+  margin: calc(var(--spacing) * 2) 0;
+  padding: calc(var(--spacing) * 1) calc(var(--spacing) * 3);
+  white-space: normal;
+  font-size: var(--text-xs);
+}
+
+.cm-lp-unit {
+  white-space: nowrap;
+}
+
+/* A glossary term: a dotted underline shows that its full form is a click away. */
+.cm-lp-gloss {
+  border-bottom: 1px dotted var(--color-border-strong);
+  cursor: pointer;
+}
+
+.cm-lp-quote-inline {
+  white-space: normal;
+}
+
+/* Environment headers and blocks: theorems, proofs, abstracts and quotations. */
+.cm-lp-env {
+  margin: calc(var(--spacing) * 2) 0;
+  padding-left: calc(var(--spacing) * 3);
+  border-left: 2px solid var(--color-border);
+}
+
+.cm-lp-env-theorem {
+  font-style: italic;
+}
+
+.cm-lp-env-proof {
+  font-style: normal;
+}
+
+.cm-lp-env-abstract {
+  margin-inline: calc(var(--spacing) * 8);
+  padding-left: 0;
+  border-left: 0;
+  font-size: 0.9em;
+  text-align: justify;
+}
+
+.cm-lp-envhead {
+  font-weight: 600;
+  font-style: normal;
+}
+
+.cm-lp-envhead-proof {
+  font-style: italic;
+  font-weight: 400;
+}
+
+.cm-lp-envhead-abstract,
+.cm-lp-env-abstract > .cm-lp-envhead {
+  display: block;
+  text-align: center;
+}
+
+.cm-lp-quote {
+  margin: calc(var(--spacing) * 2) calc(var(--spacing) * 8);
+  color: var(--color-text-secondary);
+}
+
+.cm-lp-align-center { text-align: center; }
+.cm-lp-align-left { text-align: left; }
+.cm-lp-align-right { text-align: right; }
+
+.cm-lp-columns {
+  column-count: 2;
+  column-gap: calc(var(--spacing) * 6);
+}
+
+.cm-lp-box {
+  padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+}
+
+/* A macro with its text filled in: a dotted underline, as with a glossary term. */
+.cm-lp-macro {
+  border-bottom: 1px dotted var(--color-border-strong);
+  cursor: pointer;
+}
+
+/* The bibliography: each item's marker hangs in front of its text. */
+.cm-lp-thebibliography {
+  padding-left: calc(var(--spacing) * 2);
+}
+
+.cm-lp-bibitem {
+  display: inline-block;
+  min-width: 2.2em;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+/* LaTeX and TeX as logos: small capitals. */
+.cm-lp-symbol {
+  white-space: nowrap;
+}
+
+.cm-lp-logo {
+  font-variant: small-caps;
+  letter-spacing: 0.02em;
+}
