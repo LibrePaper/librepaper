@@ -1,7 +1,8 @@
 import { Compartment, EditorState, Extension, Facet, RangeSet, StateEffect, StateField } from '@codemirror/state';
-import { Decoration, DecorationSet, EditorView } from '@codemirror/view';
+import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from '@codemirror/view';
 import { ConfigService, DEFAULT_CONFIG, EditorConfig } from '../core/config';
 import { getLanguage } from '../core/language';
+import { Token } from '../core/tokens';
 import { buildDecorations, revealRanges } from './decorations';
 import { createTheme } from './theme';
 import './widgets';
@@ -21,6 +22,18 @@ interface VisualState {
 }
 
 export const setVisualState = StateEffect.define<Partial<VisualState>>();
+export const refreshVisual = StateEffect.define<null>();
+
+// Rebuilding on every keystroke re-parses the whole document. Waiting for a
+// pause in typing costs one rebuild per pause instead of one per key.
+const REBUILD_DELAY = 100;
+
+interface VisualDecorations {
+  decorations: DecorationSet;
+  atomic: RangeSet<Decoration>;
+  // Null while a rebuild is pending (the document changed since the parse).
+  tokens: Token[] | null;
+}
 
 // Seeds the initial visual state, so a host can turn the visual mode on from
 // configuration rather than with a dispatch after the state exists.
@@ -44,18 +57,42 @@ const visualState = StateField.define<VisualState>({
   }
 });
 
-const decorationField = StateField.define<{ decorations: DecorationSet; atomic: RangeSet<Decoration> }>({
+const emptyDecorations: VisualDecorations = {
+  decorations: Decoration.none,
+  atomic: RangeSet.empty,
+  tokens: null
+};
+
+const decorationField = StateField.define<VisualDecorations>({
   create: state => compute(state),
   update(value, tr) {
     const state = tr.state.field(visualState);
-    if (!state.enabled) return { decorations: Decoration.none, atomic: RangeSet.empty };
+    if (!state.enabled) return emptyDecorations;
 
-    const dirty =
-      tr.docChanged ||
-      tr.selection ||
-      tr.effects.some(effect => effect.is(setVisualState)) ||
-      tr.startState.facet(revealRanges) !== tr.state.facet(revealRanges);
-    return dirty ? compute(tr.state) : value;
+    if (
+      tr.effects.some(effect => effect.is(setVisualState) || effect.is(refreshVisual)) ||
+      tr.startState.facet(revealRanges) !== tr.state.facet(revealRanges)
+    ) {
+      return compute(tr.state);
+    }
+
+    // Typing maps the old decorations and leaves the rebuild to the plugin
+    // below. The text around the caret is shown as source anyway.
+    if (tr.docChanged) {
+      return {
+        decorations: value.decorations.map(tr.changes),
+        atomic: value.atomic.map(tr.changes),
+        tokens: null
+      };
+    }
+
+    // A cursor move keeps the parse. A stale mapped set cannot be used here,
+    // since its atomic ranges would make the caret jump over stale widgets.
+    if (tr.selection) {
+      return value.tokens === null ? compute(tr.state) : compute(tr.state, value.tokens);
+    }
+
+    return value;
   },
   provide: field => [
     EditorView.decorations.from(field, value => value.decorations),
@@ -63,21 +100,52 @@ const decorationField = StateField.define<{ decorations: DecorationSet; atomic: 
   ]
 });
 
-function compute(state: EditorState) {
+function compute(state: EditorState, tokens?: Token[]): VisualDecorations {
   const options = state.field(visualState, false);
-  if (!options?.enabled) return { decorations: Decoration.none, atomic: RangeSet.empty };
+  if (!options?.enabled) return emptyDecorations;
 
-  const result = buildDecorations(state, {
-    language: getLanguage(options.language),
-    showCommands: options.showCommands,
-    maxDepth: options.maxDepth
-  });
+  const result = buildDecorations(
+    state,
+    {
+      language: getLanguage(options.language),
+      showCommands: options.showCommands,
+      maxDepth: options.maxDepth
+    },
+    tokens
+  );
 
-  return { decorations: result.decorations, atomic: result.atomic };
+  return { decorations: result.decorations, atomic: result.atomic, tokens: result.tokens };
 }
 
+// Runs the full rebuild once typing pauses, so a fresh parse follows the
+// mapped decorations. Dispatching from update() would re-enter the view, so
+// the dispatch waits for a timer.
+const rebuildAfterPause = ViewPlugin.fromClass(
+  class {
+    private timer: ReturnType<typeof setTimeout> | undefined;
+
+    constructor(private view: EditorView) {}
+
+    update(update: ViewUpdate): void {
+      if (!update.docChanged || !update.state.field(visualState).enabled) return;
+
+      clearTimeout(this.timer);
+      this.timer = setTimeout(() => {
+        this.timer = undefined;
+        if (this.view.state.field(decorationField).tokens === null) {
+          this.view.dispatch({ effects: refreshVisual.of(null) });
+        }
+      }, REBUILD_DELAY);
+    }
+
+    destroy(): void {
+      clearTimeout(this.timer);
+    }
+  }
+);
+
 export function visualExtension(): Extension {
-  return [visualState, decorationField];
+  return [visualState, decorationField, rebuildAfterPause];
 }
 
 export class VisualCodeMirrorEditor {
