@@ -197,23 +197,19 @@ The Action takes three inputs.
 
 GitHub gives each run its own `GITHUB_TOKEN`. The `permissions` line lets it write to the repository and open pull requests. You do not add it.
 
-- Pushes to `main` reach the project right away.
-- The schedule only sets how soon web edits reach the repository.
-- Hourly is the default.
-- Each run is billed as at least one minute.
-- Hourly is about 730 minutes a month. That fits the 2,000 free minutes of a private repository on GitHub Free.
-- Every 15 minutes is about 2,900 minutes a month. That does not fit.
-- Public repositories run free.
+A push to `main` reaches the project right away. The schedule only sets how soon web edits reach the repository.
+
+- Hourly is the default. A run that finds nothing new costs the LibrePaper server one small request.
+- GitHub bills each run as at least one minute. Hourly is about 730 minutes a month, which fits the 2,000 free minutes a private repository gets on GitHub Free. Every 15 minutes is about 2,900, which does not. Public repositories run free.
 - GitHub delays frequent scheduled runs, so an interval under 15 minutes buys nothing.
-- To sync only during working hours, replace the cron line with this.
+- A manual run, from the Actions tab with Run workflow, pulls at once.
+
+To sync only during working hours, change the cron line.
 
 ```yaml
 schedule:
   - cron: "*/30 8-20 * * 1-5"   # every 30 minutes, 8:00 to 20:59 UTC, Monday to Friday
 ```
-
-- A manual run (Actions tab, Run workflow) pulls at once.
-- A run that finds nothing new costs the LibrePaper server one small request.
 
 On its first run, the Action links the repository to the project itself. It pulls the project's versions into the branch, pushes the branch, and pushes the repository's files that the project lacks. If a file differs on both sides, the run stops with an error. A person then merges it once on a computer.
 
