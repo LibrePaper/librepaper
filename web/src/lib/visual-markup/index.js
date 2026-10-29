@@ -21,9 +21,11 @@ import {
 } from "./markup.ts";
 import { COMMANDS, ENVIRONMENTS } from "./languages/latex/catalog.ts";
 import { loadKatex } from "../katex.js";
+// The Markdown and Quarto widgets. They import helpers back from this file.
+import "./markdown-widgets.js";
 
 /// The formats the visual layer draws.
-export const VISUAL_FORMATS = new Set(["latex", "typst"]);
+export const VISUAL_FORMATS = new Set(["latex", "typst", "markdown"]);
 
 // LaTeX's \includegraphics often leaves the extension off, so these are tried in turn.
 const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".svg", ".pdf"];
@@ -60,7 +62,7 @@ const factsField = StateField.define({
 });
 
 // The facts in force for a state; a state without the field gets empty ones.
-function factsOf(state) {
+export function factsOf(state) {
   return state.field(factsField, false) ?? NO_FACTS;
 }
 
@@ -70,7 +72,7 @@ export function factsUpdate(facts) {
 }
 
 // The callback that opens an included file, given its raw name. The first one wins.
-const includeOpener = Facet.define({ combine: (values) => values[0] ?? null });
+export const includeOpener = Facet.define({ combine: (values) => values[0] ?? null });
 
 /// The visual layer for one file, or nothing for a format it does not draw.
 /// `path` returns the open file's project path (no leading slash), for resolving relative image paths.
@@ -105,8 +107,10 @@ export function visualMarkup(format, { path = () => "", imageUrl = null, dark = 
     );
   }
 
-  if (format === "latex") {
-    extensions.push(preambleFold(), factsField);
+  if (format === "latex") extensions.push(preambleFold());
+  // Markdown draws from the same facts and opens includes the same way.
+  if (format === "latex" || format === "markdown") {
+    extensions.push(factsField);
     if (openInclude) extensions.push(includeOpener.of(openInclude));
   }
 
@@ -189,6 +193,9 @@ class KatexMath extends WidgetType {
       this.language === "typst"
         ? typstTex(this.tex, this.display, this.text)
         : latexMath(this.tex, this.environment, this.display ? facts.labels : null);
+    // A Markdown equation is numbered by its {#eq-x} id, not by a \label, so its tag comes from the facts.
+    const tag = this.display ? facts.labels.get(token.meta?.id) : undefined;
+    if (tag?.number && !/\\tag\s*\{/.test(this.formula)) this.formula += `\\tag{${tag.number}}`;
   }
 
   eq(other) {
@@ -474,7 +481,7 @@ function appendParts(element, parts) {
 
 // An element with text drawn in it. A click reveals the source; a Ctrl or Cmd click
 // opens `openUrl` in a new tab when it is given.
-class ElementWidget extends WidgetType {
+export class ElementWidget extends WidgetType {
   constructor({ className, content, title = "", tag = "span", openUrl = "" }) {
     super();
     this.className = className;
@@ -526,7 +533,7 @@ function argsOf(source, token) {
 }
 
 // Joins arrays of content parts with a separator between them.
-function joinParts(items, separator) {
+export function joinParts(items, separator) {
   return items.flatMap((item, index) => (index ? [separator, ...item] : item));
 }
 
@@ -559,7 +566,7 @@ function citeMode(name) {
 }
 
 // Two authors read "Smith and Jones"; three or more read "Smith et al.".
-function nameList(authors) {
+export function nameList(authors) {
   if (authors.length === 0) return "";
   if (authors.length === 1) return authors[0];
   if (authors.length === 2) return `${authors[0]} and ${authors[1]}`;
