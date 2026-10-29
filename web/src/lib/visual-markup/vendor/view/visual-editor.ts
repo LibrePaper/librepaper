@@ -124,11 +124,18 @@ const rebuildAfterPause = ViewPlugin.fromClass(
   class {
     private timer: ReturnType<typeof setTimeout> | undefined;
 
-    constructor(private view: EditorView) {}
+    // A state put back into a view (an editor keeping one state per file) can
+    // arrive with its rebuild still pending.
+    constructor(private view: EditorView) {
+      if (view.state.field(visualState).enabled && view.state.field(decorationField).tokens === null) this.schedule();
+    }
 
     update(update: ViewUpdate): void {
       if (!update.docChanged || !update.state.field(visualState).enabled) return;
+      this.schedule();
+    }
 
+    private schedule(): void {
       clearTimeout(this.timer);
       this.timer = setTimeout(() => {
         this.timer = undefined;
