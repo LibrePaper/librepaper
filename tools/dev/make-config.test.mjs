@@ -163,6 +163,7 @@ async function demoFixture({ configEnvironment, githubId, decryptable = false } 
   await executable(mockMake, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$MAKE_LOG\"\n");
   await executable(join(mockBin, "sops"),
     "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$SOPS_LOG\"\n" +
+    "printf 'env SOPS_AGE_KEY=%s SOPS_AGE_KEY_CMD=%s\\n' \"${SOPS_AGE_KEY-unset}\" \"${SOPS_AGE_KEY_CMD-unset}\" >> \"$SOPS_LOG\"\n" +
     "if [ \"$1\" = --decrypt ]; then [ \"$KEYS_DECRYPTABLE\" = 1 ]; exit $?; fi\n" +
     "if [ \"$1\" = exec-env ]; then /bin/sh -c \"$3\"; exit $?; fi\nexit 2\n");
   const environment = {
@@ -177,6 +178,8 @@ async function demoFixture({ configEnvironment, githubId, decryptable = false } 
   };
   delete environment.CONFIG;
   delete environment.DEV_GITHUB_CLIENT_ID;
+  delete environment.SOPS_AGE_KEY;
+  delete environment.SOPS_AGE_KEY_CMD;
   if (configEnvironment !== undefined) environment.CONFIG = configEnvironment;
   if (githubId !== undefined) environment.DEV_GITHUB_CLIENT_ID = githubId;
   return {
@@ -216,6 +219,32 @@ test("demo defaults to OAuth config when SOPS keys decrypt", async () => {
     assert.match(logs.make, /demo-run CONFIG=tools\/dev\/demo\/config-oauth\.toml/);
     assert.match(logs.sops, /--decrypt/);
     assert.match(logs.sops, /exec-env .*CONFIG=tools\/dev\/demo\/config-oauth\.toml/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("demo unlocks a passphrase-protected age identity once", async () => {
+  const fixture = await demoFixture({ decryptable: true });
+  const keyCommand = join(fixture.directory, "unlock-identity");
+  const keyLog = join(fixture.directory, "key-command.log");
+  await executable(keyCommand,
+    "#!/bin/sh\nprintf 'ran\\n' >> \"$KEY_COMMAND_LOG\"\nprintf 'AGE-SECRET-KEY-1TEST\\n'\n");
+  fixture.environment.KEY_COMMAND_LOG = keyLog;
+  fixture.environment.SOPS_AGE_KEY_CMD = keyCommand;
+  try {
+    const result = runDemo(fixture);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(await readFile(keyLog, "utf8"), "ran\n");
+    const logs = await demoLogs(fixture);
+    const lines = logs.sops.trim().split("\n");
+    const seen = lines.filter((line) => line.startsWith("env "));
+    const invocations = lines.filter((line) => !line.startsWith("env "));
+    const expected = "env SOPS_AGE_KEY=AGE-SECRET-KEY-1TEST SOPS_AGE_KEY_CMD=unset";
+    assert.equal(invocations.length, 2);
+    assert.deepEqual(seen, [expected, expected]);
+    assert.match(logs.sops, /exec-env .*env -u SOPS_AGE_KEY/);
+    assert.match(logs.make, /demo-run CONFIG=tools\/dev\/demo\/config-oauth\.toml/);
   } finally {
     await fixture.cleanup();
   }

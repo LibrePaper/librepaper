@@ -251,20 +251,32 @@ demo:  ## Run a local Docker deployment of dev (DEMO_REF= picks another commit)
 
 # demo-checkout runs in the demo worktree. demo builds web first, because the
 # image copies web/dist and a new worktree has none.
+# A passphrase-protected age identity is unlocked once, here: sops runs
+# SOPS_AGE_KEY_CMD once for each recipient it tries, and this recipe decrypts
+# twice, which would ask for the passphrase repeatedly. The unlocked identity is
+# passed to the decrypts as SOPS_AGE_KEY and kept out of the demo run itself.
+# A failed unlock drops the command too, so the demo starts without sign-in
+# rather than asking again.
 demo-checkout:
-	@if [ "$(CONFIG_WAS_SUPPLIED)" = yes ]; then \
+	@if [ "$(CONFIG_WAS_SUPPLIED)" != yes ] && [ -z "$$DEV_GITHUB_CLIENT_ID" ] \
+		&& [ -z "$$SOPS_AGE_KEY" ] && [ -n "$$SOPS_AGE_KEY_CMD" ]; then \
+		if identity=$$(eval "$$SOPS_AGE_KEY_CMD"); then \
+			SOPS_AGE_KEY=$$identity; export SOPS_AGE_KEY; unset SOPS_AGE_KEY_CMD; \
+		else echo "demo: could not unlock the age identity" >&2; unset SOPS_AGE_KEY_CMD; fi; \
+	fi; \
+	if [ "$(CONFIG_WAS_SUPPLIED)" = yes ]; then \
 		echo "demo: using CONFIG=$(CONFIG)"; \
 		exec $(MAKE) --no-print-directory demo-run CONFIG="$(CONFIG)"; \
 	elif [ -z "$$DEV_GITHUB_CLIENT_ID" ] && command -v sops >/dev/null 2>&1 \
 		&& sops --decrypt --extract '["DEV_GITHUB_CLIENT_ID"]' $(DEMO_KEYS) >/dev/null 2>&1; then \
 		echo "demo: GitHub sign-in from $(DEMO_KEYS)"; \
-		exec sops exec-env $(DEMO_KEYS) '$(MAKE) --no-print-directory demo-run CONFIG=tools/dev/demo/config-oauth.toml'; \
+		exec sops exec-env $(DEMO_KEYS) 'env -u SOPS_AGE_KEY $(MAKE) --no-print-directory demo-run CONFIG=tools/dev/demo/config-oauth.toml'; \
 	elif [ -n "$$DEV_GITHUB_CLIENT_ID" ]; then \
 		echo "demo: GitHub sign-in from the environment"; \
 		exec $(MAKE) --no-print-directory demo-run CONFIG=tools/dev/demo/config-oauth.toml; \
 	else \
 		echo "demo: no sign-in (sops cannot decrypt $(DEMO_KEYS)); publishing is off"; \
-		exec $(MAKE) --no-print-directory demo-run CONFIG=tools/dev/demo/config.toml; \
+		exec env -u SOPS_AGE_KEY $(MAKE) --no-print-directory demo-run CONFIG=tools/dev/demo/config.toml; \
 	fi
 
 demo-run: CONFIG := $(if $(CONFIG_WAS_SUPPLIED),$(CONFIG),tools/dev/demo/config.toml)
