@@ -1781,7 +1781,9 @@ mod tests {
         let Some((fake, _dir, git, store)) = pulled_once().await else {
             return;
         };
-        fake.name(2, fake::files(&[("a.tex", "two\n")]));
+        let second = fake::files(&[("a.tex", "two\n")]);
+        fake.name(2, second.clone());
+        fake.set_current(second);
         let outcome = pull(&fake.client(), git.dir(), &store, &fetch_only())
             .await
             .unwrap();
