@@ -90,6 +90,13 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
 
   const emit = (list: Token[]) => {
     for (const token of list) {
+      // A figure shows as source, descendants included, while the caret is anywhere in it.
+      if (
+        token.kind === 'container' &&
+        (token.meta?.figure === 'true' || token.meta?.figureComposite === 'true') &&
+        isRevealed(token.from, token.to)
+      ) continue;
+
       const style = options.language.style(token);
 
       if (!style) {

@@ -22,3 +22,9 @@ Changes from upstream:
 - view/decorations.ts reveals an environment's \begin and \end only when the
   caret is on them, and languages/latex hides commands that draw nothing, such
   as \label and \bibliography.
+- view/decorations.ts shows a figure as source while the caret is anywhere in
+  it, and view/widgets.ts moves the caret into a figure on a click on an
+  image, the figure or a caption. Captions are no longer edited in place.
+  languages/latex/commands.ts gives the hidden layout commands (\centering,
+  \hfill, \hspace, \vspace and similar) their argument counts, so they do not
+  swallow the braces that follow them.

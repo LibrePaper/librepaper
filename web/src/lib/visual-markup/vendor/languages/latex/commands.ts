@@ -79,5 +79,17 @@ export const ARGUMENT_COUNT = new Map([
   ['thispagestyle', 1],
   ['newpage', 0],
   ['clearpage', 0],
-  ['noindent', 0]
+  ['noindent', 0],
+  ['centering', 0],
+  ['raggedleft', 0],
+  ['raggedright', 0],
+  ['hfill', 0],
+  ['hfil', 0],
+  ['hspace', 1],
+  ['hspace*', 1],
+  ['vspace', 1],
+  ['vspace*', 1],
+  ['smallskip', 0],
+  ['medskip', 0],
+  ['bigskip', 0]
 ]);
