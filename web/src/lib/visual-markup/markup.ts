@@ -1,8 +1,10 @@
 import './languages/latex';
 import './languages/typst';
+import './languages/markdown';
 
 export { latex, setMacroSignatures } from './languages/latex';
 export { typst } from './languages/typst';
+export { markdown } from './languages/markdown';
 
 export {
   ConfigService,
