@@ -206,7 +206,7 @@
           <div class="flex shrink-0 flex-col gap-3" class:sheet-grab={sheet}
                onpointerdown={startDrag} onpointermove={moveDrag} onpointerup={endDrag} onpointercancel={cancelDrag}>
             {#if sheet}
-              <button type="button" class="sheet-handle" tabindex="-1" aria-label={expanded ? "Shrink" : "Expand"}
+              <button type="button" class="sheet-handle" aria-label={expanded ? "Shrink" : "Expand"} aria-expanded={expanded}
                       onclick={() => (expanded = !expanded)}></button>
             {/if}
             <header class="flex shrink-0 items-start gap-3">
