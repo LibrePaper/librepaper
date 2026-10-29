@@ -225,6 +225,23 @@ impl Registry {
         self.resident.lock().await.get(&document_id).cloned()
     }
 
+    /// The encoded head vector of this document, without admitting it. A
+    /// quiet poll asks this, and opening a sequencer for it would cost a
+    /// ledger refresh and a resident slot to learn what the log head row
+    /// already says.
+    ///
+    /// A resident sequencer answers from memory, buffer included. Otherwise
+    /// the catalogue's head is the head, because a sequencer is retired only
+    /// with an empty buffer. The vector is decoded and encoded again so the
+    /// bytes match what a freshly admitted sequencer reports.
+    pub async fn head_vector(&self, document_id: Uuid) -> sequencer::Result<Vec<u8>> {
+        if let Some(sequencer) = self.resident(document_id).await {
+            return Ok(sequencer.log_state().await.head_vector);
+        }
+        let head = self.catalog.log_head(document_id).await?;
+        Ok(sequencer::decode_vector(&head.vector)?.encode())
+    }
+
     /// Retires a newly admitted, empty document after its first write was
     /// refused and its catalogue row was discarded. A sequencer with a live
     /// subscriber, buffered update, or another strong reference stays in the

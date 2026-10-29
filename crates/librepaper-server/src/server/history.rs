@@ -545,6 +545,63 @@ impl Server {
         response
     }
 
+    /// Whether anything is new since a pull, without opening the room.
+    ///
+    /// The hourly sync poll lands here: the room's admission and anchor
+    /// backfill are far more work than a quiet poll deserves, so this reads
+    /// the head vector and two label probes straight from storage. `head` is
+    /// the string `handle_history` names; `newer` says a named label sits
+    /// above `pulled`, and `base` says `pulled` still names a moment that
+    /// exists. Same access as `handle_history`.
+    pub(super) async fn handle_history_head(
+        &self,
+        headers: &HeaderMap,
+        context: &RequestContext,
+        slug: &str,
+        query: Option<&str>,
+    ) -> Reply {
+        let arrival = &context.arrival;
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let entry = match self
+            .authorize::<access::rung::Edit>(context, headers, slug, None)
+            .await
+        {
+            Ok(auth) => auth.entry,
+            Err(refusal) => return access::deny(&refusal),
+        };
+        let Some(pulled) = query.and_then(|raw| {
+            url::form_urlencoded::parse(raw.as_bytes())
+                .find(|(name, _)| name == "pulled")
+                .and_then(|(_, value)| value.parse::<i64>().ok())
+        }) else {
+            return plain(400, "bad pulled");
+        };
+        let Ok(document_id) = uuid::Uuid::parse_str(&entry.storage_id) else {
+            return plain(404, "not found");
+        };
+        let head_vector = match self.rooms.registry().head_vector(document_id).await {
+            Ok(vector) => vector,
+            Err(error) => return refused("read the head", &error.into()),
+        };
+        let (newer, base) = match self.store.catalog.label_marks(document_id, pulled).await {
+            Ok(marks) => marks,
+            Err(error) => return refused("read the catalogue", &error.into()),
+        };
+        let body = json!({
+            "head": hex::encode(Sha256::digest(&head_vector)),
+            "newer": newer,
+            "base": base,
+        });
+        let mut response = write_json(200, &body);
+        set(&mut response, "cache-control", "private, no-store");
+        response
+    }
+
     /// The document at one position in its own history, and -- on
     /// `?archive=1` -- the state of a plain-source export of it (§8.5).
     ///

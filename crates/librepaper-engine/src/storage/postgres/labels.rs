@@ -237,6 +237,25 @@ impl PostgresCatalog {
         .map_err(Error::from)
     }
 
+    /// What a quiet poll asks about the labels, in one statement: whether a
+    /// named label sits above `pulled`, and whether any label sits at or
+    /// below it. Two `EXISTS` probes on the `(document_id, sequence)` index,
+    /// so the answer costs no page of rows.
+    pub async fn label_marks(&self, document_id: Uuid, pulled: i64) -> Result<(bool, bool)> {
+        sqlx::query_as::<_, (bool, bool)>(
+            "SELECT \
+               EXISTS (SELECT 1 FROM document_labels \
+                       WHERE document_id=$1 AND sequence > $2 AND label IS NOT NULL), \
+               EXISTS (SELECT 1 FROM document_labels \
+                       WHERE document_id=$1 AND sequence <= $2)",
+        )
+        .bind(document_id)
+        .bind(pulled)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
     /// Renames one. Naming a moment does not move the document, so unlike
     /// every other write here this one needs no source and no fence beyond
     /// the writer epoch.

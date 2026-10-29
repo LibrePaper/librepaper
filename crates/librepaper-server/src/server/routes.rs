@@ -25,6 +25,7 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         .route("/api/documents/{slug}/state", get(document_state))
         .route("/api/documents/{slug}/project", get(document_project))
         .route("/api/documents/{slug}/history", get(history))
+        .route("/api/documents/{slug}/history/head", get(history_head))
         .route(
             "/api/documents/{slug}/history/{sha}",
             get(label_read).patch(label_patch),
@@ -253,6 +254,17 @@ async fn history(
 ) -> Reply {
     server
         .handle_history(request.headers(), &ctx, &slug, request.uri().query())
+        .await
+}
+
+async fn history_head(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_history_head(request.headers(), &ctx, &slug, request.uri().query())
         .await
 }
 
