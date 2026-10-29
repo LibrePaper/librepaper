@@ -21,9 +21,9 @@ import {
 } from "./markup.ts";
 import { COMMANDS, ENVIRONMENTS } from "./languages/latex/catalog.ts";
 import { loadKatex } from "../katex.js";
+import { VISUAL_FORMATS } from "./formats.js";
 
-/// The formats the visual layer draws.
-export const VISUAL_FORMATS = new Set(["latex", "typst"]);
+export { VISUAL_FORMATS } from "./formats.js";
 
 // LaTeX's \includegraphics often leaves the extension off, so these are tried in turn.
 const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".svg", ".pdf"];
