@@ -28,6 +28,8 @@ export interface Token extends Range {
   display?: boolean;
   body?: Range;
   args?: Range[];
+  // Named arguments of a call (Typst `name: value`), keyed by name, valued by the trimmed value.
+  named?: Record<string, Range>;
   // Inner ranges of `[...]` arguments, including the ones a signature skips.
   options?: Range[];
   // The command or environment was written with a star.
