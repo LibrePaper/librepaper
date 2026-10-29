@@ -161,6 +161,16 @@ async fn history(d: &Deployment, headers: &HeaderMap, query: &str) -> Value {
     value
 }
 
+/// `GET /history/head` with a query.
+async fn history_head(d: &Deployment, headers: &HeaderMap, query: &str) -> (u16, Value, HeaderMap) {
+    let context = context(d, headers).await;
+    let reply = d
+        .server
+        .handle_history_head(headers, &context, &d.slug, Some(query))
+        .await;
+    read(reply).await
+}
+
 /// `GET /history/{sha}` with a query.
 async fn version(d: &Deployment, headers: &HeaderMap, sha: &str, query: &str) -> Value {
     let context = context(d, headers).await;
@@ -571,4 +581,108 @@ async fn a_version_read_unsuggested_omits_the_suggestion_of_that_moment() {
     assert_eq!(clean["label"], "Add an intro");
     assert_eq!(clean["reason"], "push");
     assert_eq!(clean["files"], plain["files"]);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_head_poll_agrees_with_the_history_list() {
+    let Some(d) = deployment("sync-head-poll").await else {
+        return;
+    };
+    let owner = owner_bearer(&d);
+    let body = edit_body(&operation(), &sha(SOURCE), sync_block("Edit the intro"));
+    let (status, value) = source_change(&d, &owner, &body).await;
+    assert_eq!(status, 200, "{value}");
+    let sequence = value["label"]["sequence"].as_i64().unwrap();
+    let head = history(&d, &owner, "named=1").await["head"].clone();
+
+    let (status, value, headers) = history_head(&d, &owner, &format!("pulled={sequence}")).await;
+    assert_eq!(status, 200, "{value}");
+    assert_eq!(headers["cache-control"], "private, no-store");
+    assert_eq!(value["head"], head);
+    assert_eq!(value["newer"], false);
+    assert_eq!(value["base"], true);
+
+    let (_, value, _) = history_head(&d, &owner, &format!("pulled={}", sequence - 1)).await;
+    assert_eq!(value["newer"], true);
+
+    for query in ["", "pulled=", "pulled=soon"] {
+        let (status, _, _) = history_head(&d, &owner, query).await;
+        assert_eq!(status, 400, "{query:?}");
+    }
+    let (status, _, _) = history_head(&d, &anonymous(), "pulled=0").await;
+    assert!(matches!(status, 401 | 403 | 404), "answered {status}");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_head_poll_names_the_same_head_without_a_resident_sequencer() {
+    let Some(d) = deployment("sync-head-cold").await else {
+        return;
+    };
+    let owner = owner_bearer(&d);
+    let body = edit_body(&operation(), &sha(SOURCE), sync_block("Edit the intro"));
+    let (status, value) = source_change(&d, &owner, &body).await;
+    assert_eq!(status, 200, "{value}");
+    let sequence = value["label"]["sequence"].as_i64().unwrap();
+    let head = history(&d, &owner, "named=1").await["head"].clone();
+
+    // Empty the buffer, let go of every holder and let the sweep retire it.
+    let rooms = &d.server.documents.rooms;
+    let room = rooms.get(&d.slug).await.unwrap();
+    let document_id = room.document_id;
+    room.log()
+        .flush(librepaper_engine::log::FlushReason::Barrier)
+        .await
+        .unwrap();
+    drop(room);
+    rooms.close(&d.slug).await;
+    rooms.registry().housekeep().await;
+    assert!(
+        rooms.registry().resident(document_id).await.is_none(),
+        "the sequencer should have been retired"
+    );
+
+    let (status, value, _) = history_head(&d, &owner, &format!("pulled={sequence}")).await;
+    assert_eq!(status, 200, "{value}");
+    assert_eq!(value["head"], head);
+    assert!(
+        rooms.registry().resident(document_id).await.is_none(),
+        "the poll must not admit a sequencer"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn naming_a_label_above_the_pulled_sequence_makes_the_poll_see_it() {
+    let Some(d) = deployment("sync-head-rename").await else {
+        return;
+    };
+    let owner = owner_bearer(&d);
+    let body = edit_body(&operation(), &sha(SOURCE), sync_block("Edit the intro"));
+    let (status, first) = source_change(&d, &owner, &body).await;
+    assert_eq!(status, 200, "{first}");
+    let pulled = first["label"]["sequence"].as_i64().unwrap();
+    let body = create_body(&operation(), "second.md", sync_block("Add a second file"));
+    let (status, second) = source_change(&d, &owner, &body).await;
+    assert_eq!(status, 200, "{second}");
+    let id = uuid::Uuid::parse_str(second["label"]["sha"].as_str().unwrap()).unwrap();
+    let document_id = d.server.documents.rooms.get(&d.slug).await.unwrap().document_id;
+    let query = format!("pulled={pulled}");
+
+    // An unnamed label above `pulled` is not news.
+    assert!(d.catalog.rename_label(document_id, id, None).await.unwrap());
+    let (_, unnamed, _) = history_head(&d, &owner, &query).await;
+    assert_eq!(unnamed["newer"], false);
+    assert_eq!(unnamed["base"], true);
+
+    // Naming it is, and the head does not move.
+    assert!(d
+        .catalog
+        .rename_label(document_id, id, Some("Named later"))
+        .await
+        .unwrap());
+    let (_, named, _) = history_head(&d, &owner, &query).await;
+    assert_eq!(named["newer"], true);
+    assert_eq!(named["head"], unnamed["head"]);
 }

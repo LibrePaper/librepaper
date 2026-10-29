@@ -2965,7 +2965,7 @@ fn durable_reservation_key(
     Uuid::new_v8(bytes)
 }
 
-fn decode_vector(bytes: &[u8]) -> Result<VersionVector> {
+pub(super) fn decode_vector(bytes: &[u8]) -> Result<VersionVector> {
     if bytes.is_empty() {
         return Ok(VersionVector::default());
     }
