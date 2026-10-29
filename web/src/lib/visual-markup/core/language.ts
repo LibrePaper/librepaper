@@ -14,7 +14,10 @@ export interface RuleContext {
 export type Rule = (source: string, pos: number, ctx: RuleContext) => Token | null;
 
 // 'label' shows a standalone \label as a small tag instead of hiding it.
-export type WidgetKind = 'math' | 'image' | 'figure' | 'ref' | 'include' | 'title' | 'label';
+export type WidgetKind =
+  | 'math' | 'image' | 'figure' | 'ref' | 'include' | 'title' | 'label'
+  | 'cite' | 'link' | 'footnote' | 'verb' | 'chip' | 'unit' | 'gloss' | 'quote'
+  | 'envhead' | 'macro' | 'bibitem' | 'symbol';
 
 export interface TokenStyle {
   class?: string;
@@ -25,6 +28,14 @@ export interface TokenStyle {
   granular?: boolean;
   keepSyntax?: boolean;
   replaceWith?: string;
+  // Widget for an environment's header, from token.from to the start of its body.
+  header?: WidgetKind;
+  // Text drawn at the end of an environment's body, such as the proof mark.
+  footer?: string;
+  // Class for the text from a declaration (\bfseries) to the end of its group or environment.
+  declaration?: string;
+  // Index of the mandatory argument shown in place of the last one (\replaced{new}{old} shows new).
+  argument?: number;
 }
 
 export interface LanguageCommands {

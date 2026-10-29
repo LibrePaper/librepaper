@@ -113,7 +113,7 @@ export class ImageWidget extends WidgetType {
     const container = document.createElement('span');
     container.className = 'cm-lv-widget cm-lv-image';
     applyTablePresentation(container, this.table);
-    moveCaretOnMousedown(view, container);
+    revealOnMousedown(view, container);
 
     const image = document.createElement('img');
     image.decoding = 'async';
@@ -184,7 +184,7 @@ export class FigureWidget extends WidgetType {
     if (this.model.width) container.style.setProperty('--lv-figure-width', this.model.width);
     container.style.setProperty('--lv-figure-columns', String(Math.max(1, this.model.columns ?? 1)));
     applyTablePresentation(container, this.table);
-    moveCaretOnMousedown(view, container);
+    revealOnMousedown(view, container);
 
     const caption = this.model.caption ? figureCaption(
       view,
@@ -261,7 +261,8 @@ export class FigureWidget extends WidgetType {
 }
 
 // Clicks on a widget must reach the editor as a caret move, not be swallowed by the widget.
-function moveCaretOnMousedown(view: EditorView, element: HTMLElement): void {
+// Clicking a widget moves the caret onto it, which reveals its source.
+export function revealOnMousedown(view: EditorView, element: HTMLElement): void {
   element.addEventListener('mousedown', event => {
     event.preventDefault();
     view.dispatch({ selection: { anchor: view.posAtDOM(element) } });
