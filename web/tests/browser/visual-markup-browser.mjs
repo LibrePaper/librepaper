@@ -107,6 +107,31 @@ const figureSample = [
   "After text.",
   "\\end{document}",
 ].join("\n");
+// A kitchen-sink paper: most of the text commands, the common environments and
+// the citation commands. The caret stays on the "Caret here." line in the body.
+const sinkSample = [
+  "\\documentclass{article}",
+  "\\usepackage[numbers]{natbib}",
+  "\\newcommand{\\R}{\\mathbb{R}}",
+  "\\newcommand{\\pkg}[1]{\\texttt{#1}}",
+  "\\newtheorem{lemma}{Lemma}",
+  "\\newacronym{ml}{ML}{machine learning}",
+  "\\begin{document}",
+  "\\textbf{a} {\\bfseries b} {\\small c} \\textsuperscript{2} \\verb|x_1|",
+  "Dashes -- and --- with ``q'' and \\'e, \\\"o, \\ldots, \\LaTeX, \\copyright.",
+  "Links \\href{https://example.org}{site}, \\url{https://a.b/~c}, a note\\footnote{note}, \\enquote{hi}.",
+  "Units \\SI{3}{\\meter\\per\\second}, \\num{12345}, \\gls{ml}, \\pkg{numpy}, and $x \\in \\R$.",
+  "\\begin{lemma}[Key] text \\end{lemma}",
+  "\\begin{proof} done \\end{proof}",
+  "\\begin{abstract} sum \\end{abstract}",
+  "\\begin{quote} said \\end{quote}",
+  "\\begin{center} mid \\end{center}",
+  "\\begin{tikzpicture} \\draw (0,0); \\end{tikzpicture}",
+  "\\tableofcontents",
+  "\\citep[p.~3]{knuth}, \\citet{knuth}, \\cite{knuth}.",
+  "Caret here.",
+  "\\end{document}",
+].join("\n");
 
 // Runs in the page. It refers only to names the generated entry defines
 // (component, session, ids, samples, tick, EditorView), so its source is
@@ -251,6 +276,15 @@ async function visualCheck() {
     labelTexts: texts(".cm-lp-label"),
     text: visibleText(),
   };
+  // A click on the folded preamble shows its source, with the caret still in the body.
+  const preambleBlock = document.querySelector(".cm-editor .cm-lp-preamble");
+  preambleBlock?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  await settle();
+  const fullPreambleClick = {
+    found: Boolean(preambleBlock),
+    preambleCount: document.querySelectorAll(".cm-editor .cm-lp-preamble").length,
+    text: visibleText(),
+  };
   view().dispatch({ selection: { anchor: 5 } });
   await settle();
   const fullPreamble = {
@@ -260,6 +294,13 @@ async function visualCheck() {
   view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("\\end{document}") + 2 } });
   await settle();
   const fullEnd = { text: visibleText() };
+
+  // A click on the display equation shows its source, with the caret on \end{document}.
+  const displayShown = await poll(() => document.querySelectorAll(".cm-editor .cm-lv-math-display").length);
+  document.querySelector(".cm-editor .cm-lv-math-display")
+    ?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  await settle();
+  const fullDisplay = { shown: displayShown, text: visibleText() };
 
   // Check 6c: the labels of the project. refs.tex has a title block, an input,
   // a section and an equation reference, and a reference to a missing label.
@@ -307,6 +348,31 @@ async function visualCheck() {
   figureImage?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
   await wait(200);
   figure.clicked = { text: visibleText() };
+
+  // Check 6e: the kitchen-sink paper. The caret sits on the last body line, so the
+  // preamble folds and each construct in the body is drawn. A click on the TikZ
+  // chip shows its source.
+  component.$set({ visual: true, file: ids.sink, format: "latex" });
+  await settle();
+  await wait(800);
+  view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("Caret here.") + 6 } });
+  await settle();
+  const sinkKatexShown = await poll(katexCount);
+  const tikzChip = Array.from(document.querySelectorAll(".cm-editor .cm-lp-chip")).find((node) => /tikz/i.test(node.textContent));
+  const sink = {
+    katexShown: sinkKatexShown,
+    text: visibleText(),
+    verbs: texts(".cm-lp-verb"),
+    footnotes: document.querySelectorAll(".cm-editor .cm-lp-footnote").length,
+    chips: texts(".cm-lp-chip"),
+    links: document.querySelectorAll(".cm-editor .cm-lp-link").length,
+    cites: document.querySelectorAll(".cm-editor .cm-lp-cite").length,
+    katexErrors: document.querySelectorAll(".cm-editor .katex-error").length,
+    tikzChip: Boolean(tikzChip),
+  };
+  tikzChip?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  await settle();
+  sink.tikzClicked = visibleText();
 
   // Check 7: timing, reported and not asserted. Each typing run makes 50
   // single character insertions at the middle of the file, one dispatch at a
@@ -358,9 +424,10 @@ async function visualCheck() {
     sameView,
     typst,
     markdown,
-    full: { body: fullBody, preamble: fullPreamble, end: fullEnd },
+    full: { body: fullBody, preambleClick: fullPreambleClick, preamble: fullPreamble, end: fullEnd, display: fullDisplay },
     refs: refsCheck,
     figure,
+    sink,
     timing: { lines: timingOn.lines, on: { median: timingOn.median, max: timingOn.max }, off: { median: timingOff.median, max: timingOff.max } },
     caret,
     hugeTiming: { lines: hugeOn.lines, on: { median: hugeOn.median, max: hugeOn.max }, off: { median: hugeOff.median, max: hugeOff.max } },
@@ -374,7 +441,7 @@ const source = [
   `import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};`,
   `import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};`,
   `import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};`,
-  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample })};`,
+  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample, sink: sinkSample })};`,
   `document.documentElement.dataset.theme = "librepaper";`,
   `document.documentElement.dataset.palette = "librepaper";`,
   `document.documentElement.dataset.mode = "light";`,
@@ -393,6 +460,7 @@ const source = [
   `  hugeOff: session.addText("huge-off.tex", samples.huge),`,
   `  refs: session.addText("refs.tex", samples.refs),`,
   `  figure: session.addText("figure.tex", samples.figure),`,
+  `  sink: session.addText("sink.tex", samples.sink),`,
   `  intro: session.addText("sections/intro.tex", samples.intro),`,
   `};`,
   `const component = createClassComponent({`,
@@ -604,6 +672,11 @@ try {
   assert.equal(result.full.preamble.preambleCount, 0, "the preamble block stayed when the caret moved into the preamble");
   assert.ok(result.full.preamble.text.includes("\\documentclass"), "the preamble source did not show with the caret in the preamble");
   assert.ok(result.full.end.text.includes("\\end{document}"), "\\end{document} did not show with the caret on that line");
+  assert.equal(result.full.preambleClick.found, true, "no .cm-lp-preamble block to click with the caret in the body");
+  assert.ok(result.full.preambleClick.text.includes("\\documentclass"), "a click on the preamble block did not show its source");
+  assert.equal(result.full.preambleClick.preambleCount, 0, "the preamble block stayed after a click on it");
+  assert.equal(result.full.display.shown, true, "no .cm-lv-math-display was drawn in full.tex");
+  assert.ok(result.full.display.text.includes("\\frac{\\sigma}"), "a click on the display equation did not show its source");
   console.log(`visual-markup-browser: full.tex folds its preamble, hides labels and the bibliography, and typesets ${result.full.body.katex} math environments`);
 
   // Check 6c: title, include, references and the labelled equation in refs.tex.
@@ -639,6 +712,25 @@ try {
   assert.equal(result.figure.hadImage, true, "there was no .cm-lv-image to click");
   assert.ok(result.figure.clicked.text.includes("\\begin{figure}"), "a click on the figure image did not show its source");
   console.log("visual-markup-browser: a figure folds into an image, shows its source with the caret inside, and after a click");
+
+  // Check 6e: the kitchen-sink paper draws each construct, hides its source, and
+  // shows the TikZ source after a click on its chip.
+  const sinkBody = result.sink.text.replace(/\s+/g, " ");
+  assert.equal(result.sink.katexShown, true, "KaTeX did not typeset $x \\in \\R$ in sink.tex within five seconds");
+  for (const drawn of ["a", "b", "c", "–", "—", "“q”", "é", "ö", "…", "LaTeX", "©", "site", "“hi”", "3 m/s", "12 345", "ML", "numpy", "Lemma 1 (Key).", "Proof.", "∎", "Abstract", "Table of contents"]) {
+    assert.ok(sinkBody.includes(drawn), `sink.tex does not draw '${drawn}'; visible text: ${sinkBody}`);
+  }
+  for (const source of ["\\textbf", "\\bfseries", "\\small", "\\verb", "\\'", "\\ldots", "\\href", "\\footnote", "\\enquote", "\\SI", "\\num", "\\gls", "\\pkg", "\\begin{lemma}", "\\begin{tikzpicture}", "\\draw", "\\tableofcontents"]) {
+    assert.equal(sinkBody.includes(source), false, `${source} is still visible in sink.tex with the caret on its last body line`);
+  }
+  assert.ok(result.sink.verbs.includes("x_1"), `the \\verb|x_1| did not draw as .cm-lp-verb 'x_1'; verb texts: ${JSON.stringify(result.sink.verbs)}`);
+  assert.ok(result.sink.footnotes > 0, "the \\footnote did not draw as a .cm-lp-footnote");
+  assert.equal(result.sink.tikzChip, true, `the tikzpicture did not fold into a .cm-lp-chip; chips: ${JSON.stringify(result.sink.chips)}`);
+  assert.ok(result.sink.links > 0, "the \\href did not draw as a .cm-lp-link");
+  assert.equal(result.sink.cites, 3, `expected 3 .cm-lp-cite elements for the three citation commands, found ${result.sink.cites}`);
+  assert.equal(result.sink.katexErrors, 0, "sink.tex has KaTeX parse errors (.katex-error inside .cm-editor)");
+  assert.ok(result.sink.tikzClicked.includes("\\begin{tikzpicture}"), "a click on the TikZ chip did not show \\begin{tikzpicture}");
+  console.log("visual-markup-browser: sink.tex draws its text commands, environments and citations, and a click on the TikZ chip shows its source");
 
   // Check 7: timing, printed only.
   console.log(`visual-markup-browser timing (informational, not asserted, ${result.timing.lines} lines): ` +
