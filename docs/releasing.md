@@ -41,7 +41,7 @@ librepaper.org; that is an operator command described in the private runbook
 
 ## Automated updates
 
-- A successful stable tag release triggers the Homebrew, Scoop and Nix
+- A successful stable tag release triggers the Homebrew, Scoop, Sync Action and Nix
   update workflows. Pull request runs, failed releases, prerelease tags, and
   releases from other repositories are ignored.
 - Each updater runs the helper script from the workflow revision, then resolves
@@ -55,6 +55,10 @@ librepaper.org; that is an operator command described in the private runbook
 - Homebrew publishes only the cask `Casks/librepaper.rb`. It installs the
   notarized macOS app from `LibrePaper_<version>_universal.dmg` and links both
   commands.
+- "Update Sync Action" copies `tools/sync-action/` as of the release tag to
+  `LibrePaper/sync-action`, tags the next `v1.<minor>.0` and moves `v1` to it.
+  It stops when the tag's `action.yml` does not pin the tag. A breaking change
+  to the Action's inputs needs a person to cut `v2`.
 - "Update Nix package" commits `nix/source.json` to main.
 - User install commands live on the [desktop app page](desktop-app.md). Update it when
   a distribution channel changes.
@@ -71,6 +75,7 @@ Configure these Actions secrets in `LibrePaper/librepaper`:
 | --- | --- | --- |
 | `HOMEBREW_TAP_GITHUB_TOKEN` | Push `Casks/librepaper.rb` to `vincentarelbundock/homebrew-tap` | Contents write |
 | `SCOOP_BUCKET_GITHUB_TOKEN` | Push `bucket/librepaper.json` to `vincentarelbundock/scoop-bucket` | Contents write |
+| `SYNC_ACTION_GITHUB_TOKEN` | Push to `LibrePaper/sync-action` and move its `v1` tag | Contents write |
 
 Each token is used only by its matching update workflow. Keep the Release
 workflow's `GITHUB_TOKEN` permissions limited to release tasks. Update scripts
