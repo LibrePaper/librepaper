@@ -5,6 +5,7 @@
   // so all it can do is say what to set up and try again.
   import IconButton from "../../IconButton.svelte";
   import { currentPlatform, signInHelp } from "../../../lib/gitsync/sign-in-help.js";
+  import { GIT_DOCS_URL } from "../../../lib/site-links.js";
 
   let { remote = "", name = "origin", detail = "", busy = false, onretry, ondismiss } = $props();
 
@@ -51,7 +52,7 @@
   <div class="git-alert-actions">
     <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => onretry?.()}>Try again</button>
     <button type="button" class="git-link-button" onclick={() => ondismiss?.()}>Dismiss</button>
-    <a class="git-more" href="/docs/git.html#credentials" target="_blank" rel="noopener noreferrer">Read more</a>
+    <a class="git-more" href="{GIT_DOCS_URL}#credentials" target="_blank" rel="noopener noreferrer">Read more</a>
   </div>
 </div>
 
