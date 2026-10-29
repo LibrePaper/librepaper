@@ -253,8 +253,87 @@ const typstSinkSample = [
   "Caret here.",
 ].join("\n");
 
+// A LaTeX file with a display equation on its own lines, between two text lines.
+// The caret starts on the text line above it, so one step down reaches the source.
+const vimSample = [
+  "\\documentclass{article}",
+  "\\begin{document}",
+  "Intro line above the equation.",
+  "\\begin{equation}",
+  "E = mc^2",
+  "\\end{equation}",
+  "Text line below the equation.",
+  "\\end{document}",
+].join("\n");
+
+// A change from another peer, the way editor-browser.mjs makes one: a separate
+// document imports this one, is edited, and its update is imported back. It is
+// copied into the entry, which defines LoroDoc.
+const fromAPeer = (target, edit) => {
+  const peer = new LoroDoc();
+  peer.import(target.export({ mode: "update" }));
+  edit(peer);
+  peer.commit();
+  target.import(peer.export({ mode: "update", from: target.oplogVersion() }));
+};
+
+// Runs in the page. Mounts an Editor on vimSample with the given keys, the layer
+// on, and the caret at the start of line 3, the text line above the equation. It
+// refers only to names the generated entry defines (joinSession, createClassComponent,
+// Editor, tick, EditorView, samples), so its source is copied into the entry as it stands.
+async function vimMount(keys) {
+  const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+  const value = joinSession({ send: () => {}, mayEdit: true });
+  const file = value.addText("vim-equation.tex", samples.vim);
+  const host = document.createElement("section");
+  document.body.append(host);
+  const component = createClassComponent({
+    component: Editor,
+    target: host,
+    props: { session: value, format: "latex", file, visual: true, keys },
+  });
+  await tick();
+  // Vim loads asynchronously; its status panel, mode class or fat cursor marks the end of the wait.
+  const vimReady = () => Boolean(host.querySelector(".cm-vimMode, .cm-vim-panel, .cm-fat-cursor"));
+  for (let attempt = 0; keys === "vim" && attempt < 50 && !vimReady(); attempt++) await wait(100);
+  const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  view.dispatch({ selection: { anchor: view.state.doc.line(3).from } });
+  view.focus();
+  await wait(200);
+  window.vimHarness = { component, host, value, view };
+  return { vimReady: keys === "vim" ? vimReady() : null };
+}
+
+// Runs in the page. Reads the mounted vimMount editor: where the caret is, whether
+// it sits inside the equation's source, the visible text and the drawn displays.
+function vimRead() {
+  const { view, host } = window.vimHarness;
+  const source = view.state.doc.toString();
+  const start = source.indexOf("\\begin{equation}");
+  const endTag = "\\end{equation}";
+  const end = source.indexOf(endTag) + endTag.length;
+  const head = view.state.selection.main.head;
+  return {
+    head,
+    line: view.state.doc.lineAt(head).number,
+    inside: head >= start && head < end,
+    text: host.querySelector(".cm-content").innerText,
+    displays: host.querySelectorAll(".cm-lv-math-display").length,
+    vimMode: Boolean(host.querySelector(".cm-vimMode, .cm-vim-panel, .cm-fat-cursor")),
+  };
+}
+
+// Runs in the page. Takes the vimMount editor out again.
+function vimDestroy() {
+  const { component, host, value } = window.vimHarness;
+  component.$destroy();
+  host.remove();
+  value.leave();
+  window.vimHarness = null;
+}
+
 // Runs in the page. It refers only to names the generated entry defines
-// (component, session, ids, samples, tick, EditorView), so its source is
+// (component, session, ids, samples, tick, EditorView, fromAPeer), so its source is
 // copied into the entry as it stands.
 async function visualCheck() {
   const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -362,6 +441,36 @@ async function visualCheck() {
   const back = { marks: markCount(), katex: await poll(katexCount) };
   const sameView = view() === viewBefore;
 
+  // Check 4b: a peer's change arrives while the layer is on. A separate document
+  // inserts " and $y^3$" at the end of line 2, with the caret on line 1 at offset 3,
+  // away from the change. The new formula is drawn after the wait and the caret
+  // keeps its offset. A second peer change edits the source of the existing formula
+  // (mc^2 to mc^3); the drawn formula follows it and the caret stays put.
+  view().dispatch({ selection: { anchor: 3 } });
+  await settle();
+  const collabKatexBefore = mathKatexCount();
+  const collabAt = view().state.doc.line(2).to;
+  fromAPeer(session.doc, (peer) => peer.getMap("files").get(ids.tex).insert(collabAt, " and $y^3$"));
+  await wait(400);
+  const collab = {
+    line2: view().state.doc.line(2).text,
+    text: view().state.doc.toString(),
+    katexBefore: collabKatexBefore,
+    katexAfter: mathKatexCount(),
+    head: view().state.selection.main.head,
+  };
+  const collabMc = view().state.doc.toString().indexOf("mc^2");
+  fromAPeer(session.doc, (peer) => {
+    const file = peer.getMap("files").get(ids.tex);
+    file.delete(collabMc, "mc^2".length);
+    file.insert(collabMc, "mc^3");
+  });
+  await wait(400);
+  collab.editedText = view().state.doc.toString();
+  collab.editedDrawn = Array.from(document.querySelectorAll(".cm-editor .cm-lv-math .katex"), (node) => node.textContent)
+    .some((text) => /mc\^?3/.test(text));
+  collab.editedHead = view().state.selection.main.head;
+
   // Check 5: Typst is drawn.
   component.$set({ file: ids.typ, format: "typst" });
   await settle();
@@ -400,6 +509,7 @@ async function visualCheck() {
     frontmatterShown: Boolean(frontmatter),
     text: visibleText(),
   };
+  quarto.headnums = texts(".cm-lp-headnum");
   frontmatter?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
   await settle();
   quarto.frontmatterClick = visibleText();
@@ -442,6 +552,18 @@ async function visualCheck() {
   view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("\\end{document}") + 2 } });
   await settle();
   const fullEnd = { text: visibleText() };
+  // Heading numbers: Results is section 1, so a number reading 1 must sit before
+  // the Results line, either inside it or on an earlier line.
+  const resultsLine = Array.from(document.querySelectorAll(".cm-editor .cm-line")).find((node) => node.textContent.includes("Results"));
+  const fullHeadings = {
+    line: Boolean(resultsLine),
+    headnums: texts(".cm-lp-headnum"),
+    before: resultsLine
+      ? Array.from(document.querySelectorAll(".cm-editor .cm-lp-headnum"))
+        .filter((node) => node.textContent.trim() === "1" && (node === resultsLine || resultsLine.contains(node)
+          || Boolean(node.compareDocumentPosition(resultsLine) & Node.DOCUMENT_POSITION_FOLLOWING))).length
+      : 0,
+  };
 
   // A click on the display equation shows its source, with the caret on \end{document}.
   const displayShown = await poll(() => document.querySelectorAll(".cm-editor .cm-lv-math-display").length);
@@ -599,6 +721,9 @@ async function visualCheck() {
     swatches: document.querySelectorAll(".cm-editor .cm-lp-swatch").length,
     katexErrors: document.querySelectorAll(".cm-editor .katex-error").length,
   };
+  // The caret is still on "Caret here.", so the code fence is out of the way: its
+  // fence markers must not show, its code must, and the heading numbers are read here.
+  const typstFence = { text: visibleText(), headnums: texts(".cm-lp-headnum") };
   setupChip?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
   await settle();
   typstSink.clicked = visibleText();
@@ -648,18 +773,20 @@ async function visualCheck() {
     revealed,
     quick,
     edited,
+    collab,
     off,
     back,
     sameView,
     typst,
     markdown,
     quarto,
-    full: { body: fullBody, preambleClick: fullPreambleClick, preamble: fullPreamble, end: fullEnd, display: fullDisplay },
+    full: { body: fullBody, preambleClick: fullPreambleClick, preamble: fullPreamble, end: fullEnd, display: fullDisplay, headings: fullHeadings },
     refs: refsCheck,
     titleBlock,
     figure,
     sink,
     typstSink,
+    typstFence,
     timing:{ lines: timingOn.lines, on: { median: timingOn.median, max: timingOn.max }, off: { median: timingOff.median, max: timingOff.max } },
     caret,
     hugeTiming: { lines: hugeOn.lines, on: { median: hugeOn.median, max: hugeOn.max }, off: { median: hugeOff.median, max: hugeOff.max } },
@@ -672,8 +799,9 @@ const source = [
   `import { EditorView } from ${JSON.stringify(join(root, "web/node_modules/@codemirror/view/dist/index.js"))};`,
   `import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};`,
   `import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};`,
+  `import { LoroDoc } from "loro-crdt";`,
   `import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};`,
-  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, paper: paperSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample, sink: sinkSample, title: titleSample, typstSink: typstSinkSample })};`,
+  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, paper: paperSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample, sink: sinkSample, title: titleSample, typstSink: typstSinkSample, vim: vimSample })};`,
   `document.documentElement.dataset.theme = "librepaper";`,
   `document.documentElement.dataset.palette = "librepaper";`,
   `document.documentElement.dataset.mode = "light";`,
@@ -703,6 +831,10 @@ const source = [
   `  target: host,`,
   `  props: { session, format: "latex", file: ids.tex, visual: true },`,
   `});`,
+  `const fromAPeer = ${fromAPeer.toString()};`,
+  `window.vimMount = ${vimMount.toString()};`,
+  `window.vimRead = ${vimRead.toString()};`,
+  `window.vimDestroy = ${vimDestroy.toString()};`,
   `window.visualCheck = ${visualCheck.toString()};`,
   `window.visualCheckReady = true;`,
   "",
@@ -835,6 +967,25 @@ try {
 
   const result = await evaluate("visualCheck()");
 
+  // Check 2c, run after the page checks: with the caret on the text line above a
+  // display equation, one step down reveals its source, with plain keys (ArrowDown)
+  // and with Vim (j). Keys go over CDP so that Vim sees them as the browser's own.
+  const keyPress = async (key, code, keyCode) => {
+    await send("Input.dispatchKeyEvent", { type: "keyDown", key, code, windowsVirtualKeyCode: keyCode });
+    await send("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: keyCode });
+    await wait(300);
+  };
+  const keyRun = async (keys, key, code, keyCode) => {
+    const mounted = await evaluate(`vimMount(${JSON.stringify(keys)})`);
+    const before = await evaluate("vimRead()");
+    await keyPress(key, code, keyCode);
+    const after = await evaluate("vimRead()");
+    await evaluate("vimDestroy()");
+    return { mounted, before, after };
+  };
+  const plainKeys = await keyRun("default", "ArrowDown", "ArrowDown", 40);
+  const vimKeys = await keyRun("vim", "j", "KeyJ", 74);
+
   // Check 1: the layer is on for LaTeX.
   assert.equal(result.first.katexShown, true, "KaTeX did not typeset the inline formula within five seconds");
   assert.ok(result.first.markCount > 0, "no visual markup decorations were drawn for a LaTeX file with the layer on");
@@ -873,6 +1024,16 @@ try {
   assert.equal(result.sameView, true, "switching the visual layer rebuilt the editor");
   console.log("visual-markup-browser: the visual switch turns the layer off and on in place");
 
+  // Check 4b: a peer's change arrives while the layer is on, and is drawn.
+  assert.ok(result.collab.line2.endsWith(" and $y^3$"), `the peer's change did not land at the end of line 2; line 2: ${JSON.stringify(result.collab.line2)}`);
+  assert.ok(result.collab.text.includes(" and $y^3$"), "the peer's \" and $y^3$\" is not in the editor text");
+  assert.equal(result.collab.katexAfter, result.collab.katexBefore + 1, `the peer's formula was not drawn: ${result.collab.katexBefore} KaTeX formulas in .cm-lv-math before, ${result.collab.katexAfter} after`);
+  assert.equal(result.collab.head, 3, "the caret offset changed when a peer inserted text after it");
+  assert.ok(result.collab.editedText.includes("mc^3"), "the peer's mc^3 edit is not in the editor text");
+  assert.equal(result.collab.editedDrawn, true, "no drawn formula shows the mc^3 edit a peer made inside its source");
+  assert.equal(result.collab.editedHead, 3, "the caret offset changed when a peer edited a formula's source");
+  console.log("visual-markup-browser: a peer's inserted formula is drawn, and a peer's edit inside a formula is drawn, with the caret unmoved");
+
   // Check 5: Typst is drawn.
   assert.equal(result.typst.katex, true, "a Typst formula was not drawn as KaTeX inside .cm-lv-math");
   console.log("visual-markup-browser: a Typst formula is drawn");
@@ -906,6 +1067,8 @@ try {
   assert.equal(result.quarto.text.includes("title:"), false, "the front matter YAML showed before a click on the title block");
   assert.ok(result.quarto.frontmatterClick.includes("title:"), "a click on the front matter title block did not reveal title:");
   console.log("visual-markup-browser: paper.qmd draws its front matter, markup, cells, figures, tables, math, callouts, theorems and references");
+  // Heading numbers: number-sections is true, so the first section reads 1.
+  assert.ok(result.quarto.headnums.includes("1"), `paper.qmd has no .cm-lp-headnum reading 1 with number-sections: true; headnums: ${JSON.stringify(result.quarto.headnums)}`);
 
   // Check 6b: a LaTeX preamble folds, labels show as small tags, the bibliography
   // and page break fold into chips, math environments are typeset, and the
@@ -942,6 +1105,11 @@ try {
   assert.equal(result.full.display.shown, true, "no .cm-lv-math-display was drawn in full.tex");
   assert.ok(result.full.display.text.includes("\\frac{\\sigma}"), "a click on the display equation did not show its source");
   console.log(`visual-markup-browser: full.tex folds its preamble, hides labels and the bibliography, and typesets ${result.full.body.katex} math environments`);
+  // Heading numbers: \section{Results} is section 1, so a number reading 1 sits before its line.
+  assert.equal(result.full.headings.line, true, "no drawn line holds the \\section{Results} heading in full.tex");
+  assert.ok(result.full.headings.headnums.includes("1"), `no .cm-lp-headnum reads 1 in full.tex; headnums: ${JSON.stringify(result.full.headings.headnums)}`);
+  assert.ok(result.full.headings.before > 0, "no .cm-lp-headnum reading 1 sits before the Results heading in full.tex");
+  console.log("visual-markup-browser: full.tex numbers the Results section 1");
 
   // Check 6c: title, include, references and the labelled equation in refs.tex.
   assert.equal(result.refs.title.main, "A Study", "the \\title text was not drawn in .cm-lp-title-main");
@@ -1048,6 +1216,27 @@ try {
   assert.ok(result.typstSink.warmStyle !== null && /color/.test(result.typstSink.warmStyle), `the #text(fill: red) text has no inline colour style; style: ${JSON.stringify(result.typstSink.warmStyle)}`);
   assert.ok(result.typstSink.clicked.includes("#set page"), "a click on the Setup chip did not show #set page");
   console.log("visual-markup-browser: sink.typ draws its markup, links, footnote, swatch and references, folds its setup lines, and a click on the setup chip shows its source");
+
+  // Check 6g: Typst code fences. With the caret away from the block, the fence
+  // markers are hidden and the code shows; sink.typ numbers its headings.
+  assert.equal(result.typstFence.text.includes("```"), false, "the ``` fence markers are still visible in sink.typ with the caret away from the block");
+  assert.ok(result.typstFence.text.includes("fn main() {}"), `the code of the fence is not visible in sink.typ; visible text: ${result.typstFence.text}`);
+  assert.ok(result.typstFence.headnums.length >= 1, `sink.typ has no .cm-lp-headnum with #set heading(numbering: "1."); headnums: ${JSON.stringify(result.typstFence.headnums)}`);
+  console.log("visual-markup-browser: sink.typ hides its code fence markers, shows its code, and numbers its headings");
+
+  // Check 6h: the Vim and plain-key runs. Each starts with the caret on the text
+  // line above the display equation, and the equation is drawn there.
+  assert.equal(vimKeys.mounted.vimReady, true, "Vim did not load within five seconds");
+  assert.equal(vimKeys.after.vimMode, true, "the Vim status panel or mode class is gone after the j key");
+  for (const [label, run] of [["ArrowDown", plainKeys], ["j in Vim", vimKeys]]) {
+    assert.equal(run.before.line, 3, `the caret was not on the text line above the equation before ${label}; line ${run.before.line}`);
+    assert.ok(run.before.displays > 0, `no display equation was drawn before ${label}`);
+    assert.equal(run.before.text.includes("\\begin{equation}"), false, `the equation source was visible before ${label}, with the caret above it`);
+    assert.equal(run.after.line, 4, `${label} did not move the caret onto the equation's first line; line ${run.after.line}`);
+    assert.ok(run.after.text.includes("\\begin{equation}"), `${label} did not reveal the equation's source; visible text: ${run.after.text}`);
+    assert.equal(run.after.inside, true, `the caret is not inside the equation's range after ${label}`);
+  }
+  console.log("visual-markup-browser: one step down onto a display equation reveals its source, with plain keys and in Vim");
 
   // Check 7: timing, printed only.
   console.log(`visual-markup-browser timing (informational, not asserted, ${result.timing.lines} lines): ` +
