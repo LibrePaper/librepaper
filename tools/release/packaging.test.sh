@@ -49,17 +49,39 @@ case "$1" in
     touch "$MOCK_CAPTURE_DIR/removed-$(basename "${@: -1}")"
     ;;
   add)
-    destination="$MOCK_CAPTURE_DIR/$2"
-    mkdir -p "$(dirname "$destination")"
-    cp "$2" "$destination"
+    for path in "${@:2}"; do
+      destination="$MOCK_CAPTURE_DIR/$path"
+      mkdir -p "$(dirname "$destination")"
+      cp "$path" "$destination"
+    done
     ;;
   diff)
-    exit 1
+    exit "${MOCK_DIFF_STATUS:-1}"
     ;;
-  config|commit)
+  config)
+    ;;
+  commit)
+    printf '%s\n' "$*" >> "$MOCK_GIT_COMMITS"
+    ;;
+  fetch)
+    ;;
+  show)
+    # "<tag>:tools/sync-action/<file>"; action.yml carries the version pin.
+    if [[ "${2##*/}" == action.yml ]]; then
+      printf 'inputs:\n  version:\n    required: false\n    default: %s\n  branch:\n    default: main\n' "${MOCK_ACTION_PIN:-v1.2.3}"
+    else
+      printf 'fixture %s\n' "${2##*/}"
+    fi
+    ;;
+  tag)
+    if [[ "$2" == -l ]]; then
+      printf '%s' "${MOCK_ACTION_TAGS:-}"
+    else
+      printf '%s\n' "$*" >> "$MOCK_GIT_TAGS"
+    fi
     ;;
   push)
-    touch "$MOCK_GIT_PUSHED"
+    printf '%s\n' "$*" >> "$MOCK_GIT_PUSHED"
     ;;
   *)
     echo "unexpected git command: $*" >&2
@@ -74,6 +96,7 @@ export MOCK_ARCHIVE_CONTENT='offline release archive fixture'
 export MOCK_HASH="$(printf '%s' "$MOCK_ARCHIVE_CONTENT" | sha256sum | awk '{print $1}')"
 export HOMEBREW_TAP_GITHUB_TOKEN=test-token
 export SCOOP_BUCKET_GITHUB_TOKEN=test-token
+export SYNC_ACTION_GITHUB_TOKEN=test-token
 
 fail() {
   echo "$*" >&2
@@ -81,10 +104,15 @@ fail() {
 }
 
 reset_mock() {
-  rm -f "$tmp/cloned" "$tmp/pushed"
+  rm -f "$tmp/cloned" "$tmp/pushed" "$tmp/commits" "$tmp/tags"
   rm -rf "$tmp/capture"
   export MOCK_GIT_CLONED="$tmp/cloned"
   export MOCK_GIT_PUSHED="$tmp/pushed"
+  export MOCK_GIT_COMMITS="$tmp/commits"
+  export MOCK_GIT_TAGS="$tmp/tags"
+  export MOCK_DIFF_STATUS=1
+  export MOCK_ACTION_PIN=v1.2.3
+  export MOCK_ACTION_TAGS=$'v1.0.0\nv1.2.0\nv1.1.0\n'
   export MOCK_CAPTURE_DIR="$tmp/capture"
   export MOCK_BAD_CHECKSUM=0
 }
@@ -127,6 +155,35 @@ grep -Fq '"bin": ["librepaper.exe", "librepaper-desktop.exe"]' "$tmp/capture/buc
 grep -Fq 'LibrePaper_$version_x64-portable.zip' "$tmp/capture/bucket/librepaper.json" || fail 'manifest autoupdate missing the portable desktop zip'
 grep -Fq "\"hash\": \"$MOCK_HASH\"" "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing verified archive hash'
 [[ -e "$tmp/pushed" ]] || fail 'Scoop manifest was not pushed'
+
+reset_mock
+if LIBREPAPER_RELEASE_TAG=v1.2.3-rc.1 bash "$root/tools/release/update-sync-action.sh" >/dev/null 2>&1; then
+  fail 'sync-action updater accepted a prerelease tag'
+fi
+[[ ! -e "$tmp/cloned" ]] || fail 'invalid sync-action tag reached git clone'
+
+reset_mock
+export MOCK_ACTION_PIN=v1.2.2
+if LIBREPAPER_RELEASE_TAG=v1.2.3 bash "$root/tools/release/update-sync-action.sh" >/dev/null 2>&1; then
+  fail 'sync-action updater accepted a stale version pin'
+fi
+[[ ! -e "$tmp/cloned" ]] || fail 'stale version pin reached git clone'
+
+reset_mock
+LIBREPAPER_RELEASE_TAG=v1.2.3 bash "$root/tools/release/update-sync-action.sh" >/dev/null
+for file in action.yml sync.sh workflow.yml README.md; do
+  [[ -f "$tmp/capture/$file" ]] || fail "sync-action file $file was not added"
+done
+grep -Fq 'Sync from LibrePaper/librepaper v1.2.3' "$tmp/commits" || fail 'sync-action commit message is wrong'
+grep -Fxq 'tag v1.3.0' "$tmp/tags" || fail 'sync-action did not tag the next minor'
+grep -Fxq 'push origin HEAD:main refs/tags/v1.3.0' "$tmp/pushed" || fail 'sync-action did not push main and the new tag'
+grep -Fxq 'push --force origin refs/tags/v1' "$tmp/pushed" || fail 'sync-action did not force-push v1'
+
+reset_mock
+export MOCK_DIFF_STATUS=0
+LIBREPAPER_RELEASE_TAG=v1.2.3 bash "$root/tools/release/update-sync-action.sh" >/dev/null
+[[ ! -e "$tmp/pushed" ]] || fail 'unchanged sync-action was pushed'
+[[ ! -e "$tmp/tags" ]] || fail 'unchanged sync-action was tagged'
 
 # A release kit uses committed bytes even when the checkout has dirty config
 # and untracked credentials. It pins the release tag in its image references.

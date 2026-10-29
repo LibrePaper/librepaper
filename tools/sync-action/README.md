@@ -21,7 +21,7 @@ Every event finishes its own transfer, or reports what is left. The Action's own
 | `version` | no | `v0.0.56` | The `librepaper` release tag to download. |
 | `branch` | no | `main` | The branch to sync. The workflow checks it out with `ref` set to this branch. The script stops when the checkout is on another branch or a detached HEAD. |
 
-The default `version` is the release this commit was cut with. `tools/release/version` sets it at each release.
+The default `version` is the release this commit was cut with. `tools/release/version` sets it at each release. The release workflow then publishes this directory to `LibrePaper/sync-action` and moves `v1`.
 
 ## Create the token
 
