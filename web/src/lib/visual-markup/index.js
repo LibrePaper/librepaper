@@ -21,6 +21,7 @@ import {
 } from "./markup.ts";
 import { COMMANDS, ENVIRONMENTS } from "./languages/latex/catalog.ts";
 import { loadKatex } from "../katex.js";
+import "./typst-widgets.js";
 
 /// The formats the visual layer draws.
 export const VISUAL_FORMATS = new Set(["latex", "typst"]);
@@ -60,7 +61,7 @@ const factsField = StateField.define({
 });
 
 // The facts in force for a state; a state without the field gets empty ones.
-function factsOf(state) {
+export function factsOf(state) {
   return state.field(factsField, false) ?? NO_FACTS;
 }
 
@@ -70,7 +71,7 @@ export function factsUpdate(facts) {
 }
 
 // The callback that opens an included file, given its raw name. The first one wins.
-const includeOpener = Facet.define({ combine: (values) => values[0] ?? null });
+export const includeOpener = Facet.define({ combine: (values) => values[0] ?? null });
 
 /// The visual layer for one file, or nothing for a format it does not draw.
 /// `path` returns the open file's project path (no leading slash), for resolving relative image paths.
@@ -474,7 +475,7 @@ function appendParts(element, parts) {
 
 // An element with text drawn in it. A click reveals the source; a Ctrl or Cmd click
 // opens `openUrl` in a new tab when it is given.
-class ElementWidget extends WidgetType {
+export class ElementWidget extends WidgetType {
   constructor({ className, content, title = "", tag = "span", openUrl = "" }) {
     super();
     this.className = className;
@@ -559,7 +560,7 @@ function citeMode(name) {
 }
 
 // Two authors read "Smith and Jones"; three or more read "Smith et al.".
-function nameList(authors) {
+export function nameList(authors) {
   if (authors.length === 0) return "";
   if (authors.length === 1) return authors[0];
   if (authors.length === 2) return `${authors[0]} and ${authors[1]}`;
