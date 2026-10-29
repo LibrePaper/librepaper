@@ -73,6 +73,26 @@ const fullSample = [
 ].join("\n");
 const longSample = Array.from({ length: 600 }, () => texSample).join("\n");
 const hugeSample = Array.from({ length: 5 }, () => longSample).join("\n");
+// A main file with a title block, an input, a cross reference to a section
+// and to an equation, a reference to a label that does not exist, and a
+// labelled equation. The included file is numbered before the main file's
+// own section.
+const refsSample = [
+  "\\documentclass{article}",
+  "\\title{A Study}",
+  "\\author{Ada \\and Bob}",
+  "\\date{2020}",
+  "\\begin{document}",
+  "\\maketitle",
+  "\\input{sections/intro}",
+  "\\section{Method}\\label{sec:m}",
+  "See Equation~\\eqref{eq:a} and Section~\\ref{sec:m} and \\ref{sec:none}.",
+  "\\begin{equation}",
+  "a = b \\label{eq:a}",
+  "\\end{equation}",
+  "\\end{document}",
+].join("\n");
+const introSample = "\\section{Intro}\nText.";
 
 // Runs in the page. It refers only to names the generated entry defines
 // (component, session, ids, samples, tick, EditorView), so its source is
@@ -218,6 +238,32 @@ async function visualCheck() {
   await settle();
   const fullEnd = { text: visibleText() };
 
+  // Check 6c: the labels of the project. refs.tex has a title block, an input,
+  // a section and an equation reference, and a reference to a missing label.
+  // The caret sits inside the word Method, away from every asserted command.
+  // Labels settle about 300 ms after a change, so the wait is 800 ms.
+  component.$set({ visual: true, file: ids.refs, format: "latex" });
+  await settle();
+  await wait(800);
+  view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("Method") + 2 } });
+  await settle();
+  const textOf = (selector) => document.querySelector(`.cm-editor ${selector}`)?.textContent.trim() ?? null;
+  const include = document.querySelector(".cm-editor .cm-lp-include");
+  const refsCheck = {
+    title: {
+      main: textOf(".cm-lp-title-main"),
+      author: textOf(".cm-lp-title-author"),
+      date: textOf(".cm-lp-title-date"),
+    },
+    include: {
+      text: include?.textContent ?? null,
+      open: Boolean(include?.querySelector(".cm-lp-include-open")),
+    },
+    refTexts: Array.from(document.querySelectorAll(".cm-editor .cm-lp-ref"), (node) => node.textContent.trim()),
+    katexTexts: Array.from(document.querySelectorAll(".cm-editor .katex"), (node) => node.textContent),
+    text: visibleText(),
+  };
+
   // Check 7: timing, reported and not asserted. Each typing run makes 50
   // single character insertions at the middle of the file, one dispatch at a
   // time. The caret run makes 50 selection-only dispatches, each moving the
@@ -269,6 +315,7 @@ async function visualCheck() {
     typst,
     markdown,
     full: { body: fullBody, preamble: fullPreamble, end: fullEnd },
+    refs: refsCheck,
     timing: { lines: timingOn.lines, on: { median: timingOn.median, max: timingOn.max }, off: { median: timingOff.median, max: timingOff.max } },
     caret,
     hugeTiming: { lines: hugeOn.lines, on: { median: hugeOn.median, max: hugeOn.max }, off: { median: hugeOff.median, max: hugeOff.max } },
@@ -282,7 +329,7 @@ const source = [
   `import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};`,
   `import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};`,
   `import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};`,
-  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, full: fullSample, long: longSample, huge: hugeSample })};`,
+  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample })};`,
   `document.documentElement.dataset.theme = "librepaper";`,
   `document.documentElement.dataset.palette = "librepaper";`,
   `document.documentElement.dataset.mode = "light";`,
@@ -299,6 +346,8 @@ const source = [
   `  bigOff: session.addText("big-off.tex", samples.long),`,
   `  huge: session.addText("huge.tex", samples.huge),`,
   `  hugeOff: session.addText("huge-off.tex", samples.huge),`,
+  `  refs: session.addText("refs.tex", samples.refs),`,
+  `  intro: session.addText("sections/intro.tex", samples.intro),`,
   `};`,
   `const component = createClassComponent({`,
   `  component: Editor,`,
@@ -501,6 +550,21 @@ try {
   assert.ok(result.full.preamble.text.includes("\\documentclass"), "the preamble source did not show with the caret in the preamble");
   assert.ok(result.full.end.text.includes("\\end{document}"), "\\end{document} did not show with the caret on that line");
   console.log(`visual-markup-browser: full.tex folds its preamble, hides labels and the bibliography, and typesets ${result.full.body.katex} math environments`);
+
+  // Check 6c: title, include, references and the labelled equation in refs.tex.
+  assert.equal(result.refs.title.main, "A Study", "the \\title text was not drawn in .cm-lp-title-main");
+  assert.ok(result.refs.title.author.includes("Ada") && result.refs.title.author.includes("Bob"), "the \\author names were not drawn in .cm-lp-title-author");
+  assert.equal(result.refs.title.date, "2020", "the \\date text was not drawn in .cm-lp-title-date");
+  assert.ok(result.refs.include.text.includes("sections/intro"), "the \\input name was not drawn in .cm-lp-include");
+  assert.equal(result.refs.include.open, true, "the \\input widget has no .cm-lp-include-open button");
+  assert.ok(result.refs.refTexts.includes("(1)"), `the \\eqref did not show (1); .cm-lp-ref texts: ${JSON.stringify(result.refs.refTexts)}`);
+  assert.ok(result.refs.refTexts.includes("2"), `the \\ref to Method did not show 2; .cm-lp-ref texts: ${JSON.stringify(result.refs.refTexts)}`);
+  assert.ok(result.refs.refTexts.includes("??"), `the \\ref to a missing label did not show ??; .cm-lp-ref texts: ${JSON.stringify(result.refs.refTexts)}`);
+  for (const source of ["~", "\\ref", "\\eqref", "\\maketitle", "\\input"]) {
+    assert.equal(result.refs.text.includes(source), false, `${source} is still visible in refs.tex with the caret in the body`);
+  }
+  assert.ok(result.refs.katexTexts.some((text) => text.includes("(1)")), "the labelled equation did not show its number (1) through KaTeX");
+  console.log(`visual-markup-browser: refs.tex draws its title, include, references ${JSON.stringify(result.refs.refTexts)} and equation number`);
 
   // Check 7: timing, printed only.
   console.log(`visual-markup-browser timing (informational, not asserted, ${result.timing.lines} lines): ` +
