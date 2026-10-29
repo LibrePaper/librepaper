@@ -43,11 +43,13 @@ export function documentFacts(texts, main, open, entries = []) {
   for (const path of Object.keys(texts)) plain[path] = stripComments(texts[path] ?? "");
   const theorems = theoremDefinitions(texts);
   const environmentNumbers = new Map();
+  const headingNumbers = new Map();
   const order = new Map();
   const labels = numberLabels(texts, main, {
     theorems,
     open,
     environments: environmentNumbers,
+    headings: headingNumbers,
     cited: (key) => {
       if (!order.has(key)) order.set(key, order.size + 1);
     },
@@ -61,6 +63,7 @@ export function documentFacts(texts, main, open, entries = []) {
     mathMacros,
     theorems,
     environmentNumbers,
+    headingNumbers,
     citeStyle: citeStyleOf(plain),
   };
 }

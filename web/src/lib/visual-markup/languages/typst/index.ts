@@ -167,7 +167,7 @@ function style(token: Token): TokenStyle | null {
     case 'math':
       return { widget: 'math', block: token.display };
     case 'heading':
-      return { class: `cm-lv-heading cm-lv-h${Math.min(token.level ?? 1, 3)}`, block: true };
+      return { class: `cm-lv-heading cm-lv-h${Math.min(token.level ?? 1, 3)}`, block: true, before: 'headnum' };
     case 'item':
       return { replaceWith: token.name === 'number' ? '1.' : '•' };
     case 'raw':
@@ -226,7 +226,7 @@ function style(token: Token): TokenStyle | null {
       if (name === 'ref' || name === 'cite') return { widget: 'typref' };
       if (name === 'url') return { widget: 'link' };
       if (name === 'text') return { class: 'cm-lp-text', attributes: textAttributes(token.meta) };
-      if (name === 'heading') return { class: `cm-lv-heading cm-lv-h${headingLevel(token.meta)}`, block: true };
+      if (name === 'heading') return { class: `cm-lv-heading cm-lv-h${headingLevel(token.meta)}`, block: true, before: 'headnum' };
       if (name === 'highlight') {
         const color = cssColor(token.meta?.color);
         if (color) return { class: 'cm-lv-colorbox', attributes: { style: `background-color:${color}` } };

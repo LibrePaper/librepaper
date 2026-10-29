@@ -22,7 +22,9 @@ export type WidgetKind =
   | 'frontmatter' | 'cellhead' | 'hr' | 'mdtable' | 'divhead' | 'mdfigure' | 'mdcite' | 'xref' | 'mdnote' | 'shortcode'
   // Typst: reference, label tag, included file, title block, colour swatch, and a catalog chip
   // (the Typst catalog's chip text, not the LaTeX one).
-  | 'typref' | 'typlabel' | 'typinclude' | 'typtitle' | 'swatch' | 'typchip';
+  | 'typref' | 'typlabel' | 'typinclude' | 'typtitle' | 'swatch' | 'typchip'
+  // The number of a numbered heading, drawn before its text.
+  | 'headnum';
 
 export interface TokenStyle {
   class?: string;
@@ -37,6 +39,8 @@ export interface TokenStyle {
   header?: WidgetKind;
   // Text drawn at the end of an environment's body, such as the proof mark.
   footer?: string;
+  // Widget drawn just before the body (or at the token when it has none), such as a heading's number.
+  before?: WidgetKind;
   // Class for the text from a declaration (\bfseries) to the end of its group or environment.
   declaration?: string;
   // Index of the mandatory argument shown in place of the last one (\replaced{new}{old} shows new).
