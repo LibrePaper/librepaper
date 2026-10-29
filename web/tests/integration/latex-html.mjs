@@ -181,7 +181,7 @@ const sampleLog = [
   ...mismatch, "Library (tcolorbox): 'tcbraster.code.tex' version '6.9.0'",
   errorLine, ...mismatch, "post-processing complete",
 ].join("\n");
-const logged = logDiagnostics(sampleLog, "main.tex");
+const logged = logDiagnostics(sampleLog, { main: "main.tex", paths: ["main.tex"] });
 assert.equal(logged.length, 2);
 assert.equal(logged[0].message, errorLine);
 assert.ok(logged[1].message.startsWith("LaTeX Error: Mismatched LaTeX support files detected. Loading 'expl3.sty' aborted!"));
@@ -190,7 +190,46 @@ assert.equal(logged[0].hints.length, 1);
 assert.equal(logged[1].hints.length, 1);
 assert.equal(logged[0].file, "main.tex");
 assert.equal(logged[1].file, "main.tex");
-assert.equal(logDiagnostics("", "main.tex")[0].message, "LaTeX HTML conversion failed");
+assert.deepEqual(logDiagnostics("", { main: "main.tex", paths: ["main.tex"] }), []);
+
+const latexmlError = [
+  "\u001b[31mError:undefined:\\sectionhead \u001b[0mThe token T_CS[\\sectionhead] is not defined.",
+  "\tat article; line 12 col 3 - line 12 col 14",
+  "\tDefining it now as <ltx:ERROR/>",
+  "\tIn /latexml-oxide/latexml_core/src/state.rs:1290:7",
+].join("\n");
+const latexmlLog = [
+  "(Loading article_cls.rs... )", latexmlError,
+  "Info:xslt:stylesheet Applying XSLT stylesheet: article.xsl",
+  "Warning:deprecated:\\oldcmd The command is deprecated.",
+  "post-processing complete",
+].join("\n");
+const latexmlLogged = logDiagnostics(latexmlLog, { main: "main.tex", paths: ["main.tex", "article.tex"] });
+assert.equal(latexmlLogged.length, 2);
+assert.equal(latexmlLogged[0].severity, "error");
+assert.equal(latexmlLogged[0].file, "article.tex");
+assert.equal(latexmlLogged[0].line, 12);
+assert.equal(latexmlLogged[0].column, 3);
+assert.equal(latexmlLogged[0].end_column, 14);
+assert.ok(latexmlLogged[0].message.includes("is not defined."));
+assert.ok(latexmlLogged[0].message.includes("Defining it now"));
+assert.ok(!latexmlLogged[0].message.includes("\u001b"));
+assert.ok(!latexmlLogged[0].message.includes("state.rs"));
+assert.equal(latexmlLogged[1].severity, "warning");
+assert.equal(latexmlLogged[1].file, "main.tex");
+assert.equal(latexmlLogged[1].line, 0);
+
+const latexmlPartial = harness({ run: () => ({ ok: true, status: 2, html: "<p>x</p>", log: latexmlError }) });
+const partial = await latexmlPartial.compile({
+  main: "paper/main.tex", texts: { "paper/main.tex": "x", "paper/article.tex": "y" }, assets: {},
+}, { base });
+assert.equal(partial.ok, true);
+assert.equal(partial.html, "<p>x</p>");
+assert.equal(partial.diagnostics.length, 1);
+assert.equal(partial.diagnostics[0].severity, "error");
+assert.equal(partial.diagnostics[0].file, "paper/article.tex");
+assert.equal(partial.diagnostics[0].line, 12);
+latexmlPartial.cancel();
 
 let trapRuns = 0;
 const trapped = harness({ run: () => ++trapRuns === 1
