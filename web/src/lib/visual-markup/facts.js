@@ -68,7 +68,7 @@ export function documentFacts(texts, main, open, entries = []) {
 // Citations keep the bibliography's own normalization. A query of "" keeps every
 // entry in order, so rankEntries serves here as the normalizer. Uncited entries
 // have number 0.
-function citationFacts(entries, order) {
+export function citationFacts(entries, order) {
   const citations = new Map();
   for (const entry of rankEntries(entries)) {
     if (!entry.key || citations.has(entry.key)) continue;
