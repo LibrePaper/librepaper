@@ -55,12 +55,3 @@ export { setVisualState, visualDefaults, visualExtension, VisualCodeMirrorEditor
 export type { VisualEditorOptions } from './view/visual-editor';
 
 export { createMathHoverExtension, mathHover, MathHoverManager, setMathHoverEnabled } from './view/math-hover';
-
-export { DualLatexEditor, DualVisualEditor, latexVisualKeymap } from './ui/dual-editor';
-export type { DualEditorOptions } from './ui/dual-editor';
-
-export { Toolbar } from './ui/toolbar';
-export type { ToolbarOptions } from './ui/toolbar';
-
-export { TableSelector } from './ui/table-selector';
-export type { TableDimensions } from './ui/table-selector';
