@@ -1,5 +1,6 @@
 import { StateField } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType } from "@codemirror/view";
+import { revealOnMousedown } from "./markup.ts";
 
 // The preamble is looked for in the first lines only; a document whose
 // \begin{document} is further down is left unfolded.
@@ -84,16 +85,16 @@ class PreambleWidget extends WidgetType {
     return other instanceof PreambleWidget && other.summary === this.summary;
   }
 
-  toDOM() {
+  toDOM(view) {
     const element = document.createElement("div");
     element.className = "cm-lp-preamble";
     element.title = "Show the preamble";
     element.textContent = this.summary;
+    revealOnMousedown(view, element);
     return element;
   }
 
-  // A click places the caret at the widget, which reveals the source.
   ignoreEvent() {
-    return false;
+    return true;
   }
 }
