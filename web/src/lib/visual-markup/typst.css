@@ -1,0 +1,40 @@
+/* The Typst widgets and the Typst catalog's own classes. The LaTeX classes they
+   share with the catalog live in visual-markup.css. */
+
+.cm-lp-overline {
+  text-decoration: overline;
+}
+
+/* Inline raw text: monospace on a subtle background, as verbatim code is. */
+.cm-lp-code-inline {
+  padding: 0 calc(var(--spacing) * 1);
+  font-family: var(--font-mono);
+  background: var(--color-subtle);
+  border-radius: var(--radius-base);
+  white-space: pre-wrap;
+}
+
+/* A colour call: a small square in the colour, then the call as written. */
+.cm-lp-swatch {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cm-lp-swatch-chip {
+  display: inline-block;
+  width: 0.9em;
+  height: 0.9em;
+  margin-right: calc(var(--spacing) * 1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  vertical-align: -0.1em;
+}
+
+/* A colour the widget cannot read is drawn as an empty, dashed square. */
+.cm-lp-swatch-unknown {
+  border-style: dashed;
+  background: var(--color-subtle);
+}

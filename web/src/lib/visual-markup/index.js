@@ -22,8 +22,9 @@ import {
 import { COMMANDS, ENVIRONMENTS } from "./languages/latex/catalog.ts";
 import { loadKatex } from "../katex.js";
 import { VISUAL_FORMATS } from "./formats.js";
-// The Markdown and Quarto widgets. They import helpers back from this file.
+// The Markdown, Quarto and Typst widgets. They import helpers back from this file.
 import "./markdown-widgets.js";
+import "./typst-widgets.js";
 
 export { VISUAL_FORMATS } from "./formats.js";
 
