@@ -9,7 +9,12 @@ export type TokenKind =
   | 'command'
   | 'table'
   | 'raw'
-  | 'tie';
+  | 'tie'
+  | 'group'
+  | 'verb'
+  | 'ligature'
+  | 'accent'
+  | 'linebreak';
 
 export interface Range {
   from: number;
@@ -23,6 +28,10 @@ export interface Token extends Range {
   display?: boolean;
   body?: Range;
   args?: Range[];
+  // Inner ranges of `[...]` arguments, including the ones a signature skips.
+  options?: Range[];
+  // The command or environment was written with a star.
+  star?: boolean;
   children?: Token[];
   meta?: Record<string, string>;
 }
