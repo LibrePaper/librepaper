@@ -1,7 +1,7 @@
 import { Facet, StateEffect, StateField } from "@codemirror/state";
 import { WidgetType } from "@codemirror/view";
 import { typst2tex } from "tex2typst";
-import "./vendor/styles.css";
+import "./markup.css";
 import "./visual-markup.css";
 import { preambleFold } from "./preamble.js";
 import { stripComments } from "./labels.js";
@@ -17,7 +17,7 @@ import {
   textOf,
   visualDefaults,
   visualExtension,
-} from "./vendor/index.ts";
+} from "./markup.ts";
 import { loadKatex } from "../katex.js";
 
 /// The formats the visual layer draws.
@@ -183,13 +183,13 @@ class KatexMath extends WidgetType {
     return element;
   }
 
-  // A click places the caret, which makes the vendor reveal the source.
+  // A click places the caret, which reveals the source.
   ignoreEvent() {
     return false;
   }
 }
 
-// Runs after the vendor import, which registers upstream's math widget; this
+// Runs after the markup.ts import, which registers the MathLive math widget; this
 // overwrites it.
 registerWidget("math", (context) => new KatexMath(context));
 

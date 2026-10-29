@@ -565,13 +565,18 @@
     labelsTimer = setTimeout(refreshLabels, 300);
   }
   // Sets the reference numbers on a view. Reconfiguring the visual layer empties
-  // them, so this runs again after each reconfigure.
-  function refreshLabels(target = view, id = showing) {
+  // them, so this runs again after each reconfigure with `fresh` set. Otherwise
+  // unchanged numbers are not sent: each update redraws the whole document.
+  const sentLabels = new WeakMap(); // view -> the numbers it was last sent, as JSON
+  function refreshLabels(target = view, id = showing, fresh = false) {
     untrack(() => {
       const path = pathOfDoc(session.doc, id);
       if (!target || !visual || formatOf(path) !== "latex") return;
-      const texts = treeForDoc(session.doc).texts;
-      target.dispatch({ effects: labelsUpdate(numberLabels(texts, entry || path)) });
+      const labels = numberLabels(treeForDoc(session.doc).texts, entry || path);
+      const sent = JSON.stringify([...labels]);
+      if (!fresh && sentLabels.get(target) === sent) return;
+      sentLabels.set(target, sent);
+      target.dispatch({ effects: labelsUpdate(labels) });
     });
   }
   function scheduleBibliography() {
@@ -1307,7 +1312,7 @@
     if (!target) return;
     const path = pathOfDoc(session.doc, id);
     target.dispatch({ effects: visualCompartment.reconfigure(visualOn(untrack(() => visual), path)) });
-    refreshLabels(target, id);
+    refreshLabels(target, id, true);
   }
 
   // The prose format of a file, or empty for code and data files, which spellcheck leaves alone.
@@ -1527,7 +1532,7 @@
         scheduleDraw();
       }));
       refreshBibliography();
-      refreshLabels(view);
+      refreshLabels(view, showing, true);
       view.focus();
       return () => {
         bibliographyGeneration += 1;

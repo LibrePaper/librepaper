@@ -1,122 +1,3 @@
-.lv-dual-editor {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
-  border: 1px solid var(--lv-border);
-  border-radius: 6px;
-  background: var(--lv-bg);
-  color: var(--lv-fg);
-  font-family: system-ui, -apple-system, sans-serif;
-}
-
-.lv-mode-bar,
-.lv-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  flex-shrink: 0;
-  padding: var(--lv-spacing-container);
-  background: var(--lv-surface);
-  border-bottom: 1px solid var(--lv-border);
-}
-
-.lv-toolbar-items {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.lv-toolbar-group {
-  display: flex;
-  gap: 4px;
-  padding-right: 8px;
-  border-right: 1px solid var(--lv-border);
-}
-
-.lv-toolbar-group:last-of-type {
-  border-right: none;
-}
-
-.lv-mode-bar button,
-.lv-toolbar button {
-  min-width: 30px;
-  padding: 4px 10px;
-  cursor: pointer;
-  color: var(--lv-fg);
-  background: var(--lv-bg);
-  border: 1px solid var(--lv-border);
-  border-radius: 4px;
-  font-size: 13px;
-  line-height: 1.4;
-}
-
-.lv-mode-bar button:hover,
-.lv-toolbar button:hover {
-  border-color: var(--lv-primary);
-}
-
-.lv-mode-bar button.active {
-  color: #fff;
-  background: var(--lv-primary);
-  border-color: var(--lv-primary);
-}
-
-.lv-mode-bar button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.lv-toolbar input[type='color'] {
-  width: 30px;
-  height: 26px;
-  padding: 0;
-  cursor: pointer;
-  background: none;
-  border: 1px solid var(--lv-border);
-  border-radius: 4px;
-}
-
-.lv-editor-host {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
-
-.table-selector-dropdown {
-  position: absolute;
-  z-index: 20;
-  padding: 8px;
-  background: var(--lv-bg);
-  border: 1px solid var(--lv-border);
-  border-radius: 4px;
-  box-shadow: 0 4px 12px rgb(0 0 0 / 15%);
-}
-
-.table-grid {
-  display: grid;
-  grid-template-columns: repeat(8, 16px);
-  gap: 2px;
-}
-
-.table-grid-cell {
-  width: 16px;
-  height: 16px;
-  border: 1px solid var(--lv-border);
-}
-
-.table-grid-cell.active {
-  background: var(--lv-primary);
-  border-color: var(--lv-primary);
-}
-
-.table-selector-label {
-  margin-top: 6px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--lv-secondary);
-}
-
 .cm-lv-heading {
   font-weight: 700;
   line-height: 1.3;
@@ -128,14 +9,9 @@
 .cm-lv-h4,
 .cm-lv-h5 { font-size: 1.05em; }
 
-.cm-lv-env,
 .cm-lv-list {
   padding-left: 12px;
-  border-left: 3px solid var(--lv-environment);
-}
-
-.cm-lv-list {
-  border-left-color: var(--lv-secondary);
+  border-left: 3px solid var(--lv-secondary);
 }
 
 .cm-lv-comment {
@@ -377,8 +253,8 @@
 
 .cm-lv-math-tooltip {
   padding: 6px 10px;
-  background: var(--lv-surface, #fff);
-  border: 1px solid var(--lv-border, #ddd);
+  background: var(--lv-surface);
+  border: 1px solid var(--lv-border);
   border-radius: 4px;
 }
 

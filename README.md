@@ -50,6 +50,8 @@ document.
 
 ## Credits
 
+The visual markup layer in the source editor began as [codemirror-visual-markup](https://github.com/TeXlyre/codemirror-visual-markup) by Fares Abawi, under the MIT License. Its notice is kept in `web/src/lib/visual-markup/LICENSE`.
+
 The typewriter photograph on the landing page is by [Annie Spratt](https://pixabay.com/users/anniespratt-5063125/), from [Pixabay](https://pixabay.com/photos/vintage-typewriter-2168174/).
 
 ## License

@@ -34,9 +34,7 @@ const PALETTE = /^src\/styles\/palettes\/[a-z]+\.css$/;
 // of the application's theme; only this shared palette may define them.
 // The plain-text preview page is painted on the documents origin, so its
 // highlighting colours travel with the page.
-// The visual markup layer's stylesheet is upstream's, kept as it was released
-// so that it can be compared with the next release.
-const OUTSIDE = [/^src\/agent\//, /^src\/lib\/presence-colour\.js$/, /^src\/lib\/annotation-colors\.js$/, /^src\/lib\/text-page\.js$/, /^src\/lib\/visual-markup\/vendor\//];
+const OUTSIDE = [/^src\/agent\//, /^src\/lib\/presence-colour\.js$/, /^src\/lib\/annotation-colors\.js$/, /^src\/lib\/text-page\.js$/];
 
 function files(dir) {
   return readdirSync(dir).flatMap((name) => {

@@ -158,14 +158,10 @@ export function numberLabels(texts, main) {
     return { body: text.slice(from, end), next: end + close.length };
   };
 
+  // As in LaTeX, a \label in a float before its \caption takes the section.
   const label = (key) => {
-    if (state.float) {
-      const float = state.float;
-      if (float.current) state.labels.set(key, float.current);
-      else float.pending.push(key);
-    } else if (state.section) {
-      state.labels.set(key, state.section);
-    }
+    const target = state.float?.current ?? state.section;
+    if (target) state.labels.set(key, target);
   };
 
   const caption = () => {
@@ -173,8 +169,6 @@ export function numberLabels(texts, main) {
     const float = state.float;
     const n = float.kind === "figure" ? ++state.figures : ++state.tables;
     float.current = { number: scoped(n), kind: float.kind };
-    for (const key of float.pending) state.labels.set(key, float.current);
-    float.pending = [];
   };
 
   // Resolves an include name against the main file's folder, then the
@@ -213,7 +207,7 @@ export function numberLabels(texts, main) {
           displayed(environment, body);
           tokens.lastIndex = next;
         } else if (FLOATS.has(environment)) {
-          state.float = { env: environment, kind: FLOATS.get(environment), current: null, pending: [] };
+          state.float = { env: environment, kind: FLOATS.get(environment), current: null };
         } else if (environment === "subfigure") {
           state.subfigures += 1;
         }
