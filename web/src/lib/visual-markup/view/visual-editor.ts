@@ -236,6 +236,12 @@ export function visualExtension(): Extension {
   return [visualState, decorationField, rebuildAfterPause, arrowKeymap];
 }
 
+// The tokens of the parse the visual layer last drew, or null when there is no
+// visual layer or its parse is waiting for a rebuild after an edit.
+export function visualTokens(state: EditorState): Token[] | null {
+  return state.field(decorationField, false)?.tokens ?? null;
+}
+
 export class VisualCodeMirrorEditor {
   private view: EditorView;
   private options: VisualEditorOptions;

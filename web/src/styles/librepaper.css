@@ -998,7 +998,7 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
      of independently scrolling documents. */
   main.reader {
     position: relative;
-    height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)));
+    height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - var(--librepaper-format-used, 0px));
     overflow: hidden;
     transition: margin-top 200ms ease, height 200ms ease;
   }
