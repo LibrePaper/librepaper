@@ -244,11 +244,10 @@
 <!-- The whole card is the click target for opening a resolved note, which is
      what `summary` says it is. It is not a button: it holds buttons, and a
      button inside a button is a worse thing than a click handler on an
-     article. The keyboard reaches everything in it through those. The click
-     that reveals the comment in the document is also reachable through the
-     Show in document button in the actions row. Except when it is collapsed,
-     where the card holds no buttons at all and the click was the only way
-     in. There, the summary is the button. -->
+     article. The keyboard reaches everything in it through those, and the
+     open card's click, which shows the passage in the document, is the Show
+     in document button. A collapsed card holds no buttons at all, so there
+     the summary is the button. -->
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
 <article
   id="{cardIdPrefix}-{comment.id}"

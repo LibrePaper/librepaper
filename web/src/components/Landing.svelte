@@ -1127,6 +1127,27 @@
     return () => window.removeEventListener("popstate", reread);
   });
 
+  // The New project page replaces the workspace, so the focus goes with it:
+  // into the page when it opens, and back to what opened it when it closes.
+  // Left alone, it stays on a control that is no longer on the screen. The
+  // effect runs after the DOM has changed, so the page is already there.
+  let newOpener = null;
+  let newShown = untrack(() => Boolean(newTab));
+  $effect(() => {
+    const open = Boolean(newTab);
+    if (open === newShown) return;
+    newShown = open;
+    if (open) {
+      newOpener = document.activeElement;
+      /** @type {HTMLElement} */ (document.querySelector(".new-page"))?.focus();
+    } else {
+      /** @type {HTMLElement} */
+      const back = newOpener?.isConnected ? newOpener : document.querySelector('[aria-label="New project"]');
+      newOpener = null;
+      back?.focus();
+    }
+  });
+
   $effect(() => provide("account", () => ({ id: me.id, signedIn: Boolean(me.provider) })));
 
   $effect(() => {

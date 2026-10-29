@@ -247,6 +247,7 @@ try {
       await tab.evaluate("window.dispatchEvent(new KeyboardEvent('keydown', {key:'/', code:'Slash', ctrlKey:true, altKey:true, bubbles:true}))");
       await tab.evaluate(settle);
       const sections = await tab.evaluate(`[...document.querySelectorAll('[role="dialog"][data-state="open"] .settings-nav-item')].map(node => node.textContent.trim())`);
+      assert.ok(sections.length > 1, `the settings page lists its sections; found ${JSON.stringify(sections)}`);
       for (const [index, label] of sections.entries()) {
         await tab.evaluate(`document.querySelectorAll('[role="dialog"][data-state="open"] .settings-nav-item')[${index}].click()`);
         await tab.evaluate(settle);
