@@ -5,6 +5,7 @@
 // source in which comments, raw text and math are blanked, so offsets still
 // point into the source.
 
+import { roman } from "./labels.js";
 import { rankEntries } from "../bibliography.js";
 import { citationFacts } from "./facts.js";
 
@@ -285,23 +286,6 @@ function alpha(n) {
   return n >= 1 && n <= 26 ? String.fromCharCode(64 + n) : String(n);
 }
 
-function roman(n) {
-  if (n < 1) return String(n);
-  /** @type {Array<[number, string]>} */
-  const table = [
-    [1000, "M"], [900, "CM"], [500, "D"], [400, "CD"], [100, "C"], [90, "XC"],
-    [50, "L"], [40, "XL"], [10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"],
-  ];
-  let rest = n;
-  let out = "";
-  for (const [value, digits] of table) {
-    while (rest >= value) {
-      out += digits;
-      rest -= value;
-    }
-  }
-  return out;
-}
 
 function format(n, symbol) {
   switch (symbol) {

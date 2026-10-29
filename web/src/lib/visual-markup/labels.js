@@ -228,12 +228,13 @@ export function numberLabels(texts, main, options = {}) {
     state.section = { number: numberAt(depth), kind: "section" };
   };
 
-  // The number a numbered heading shows: a part counts in arabic and is not
-  // reset by the sections; a section or chapter takes the number of its level.
+  // The number a numbered heading shows: a part counts in Roman numerals, as
+  // LaTeX prints it, and is not reset by the sections; a section or chapter
+  // takes the number of its level.
   const heading = (name, at, path) => {
     let number;
     if (name === "part") {
-      number = String(++state.parts);
+      number = roman(++state.parts);
     } else {
       sectioning(name, LEVELS.get(name));
       number = state.section.number;
@@ -408,4 +409,23 @@ export function numberLabels(texts, main, options = {}) {
   const start = body.indexOf("\\begin{document}");
   scan(root, body, [root], start === -1 ? 0 : start + "\\begin{document}".length);
   return state.labels;
+}
+
+/// A number in upper-case Roman numerals, as LaTeX numbers parts and Typst's "I" pattern.
+export function roman(n) {
+  if (n < 1) return String(n);
+  /** @type {Array<[number, string]>} */
+  const table = [
+    [1000, "M"], [900, "CM"], [500, "D"], [400, "CD"], [100, "C"], [90, "XC"],
+    [50, "L"], [40, "XL"], [10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"],
+  ];
+  let rest = n;
+  let out = "";
+  for (const [value, digits] of table) {
+    while (rest >= value) {
+      out += digits;
+      rest -= value;
+    }
+  }
+  return out;
 }

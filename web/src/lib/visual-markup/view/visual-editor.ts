@@ -1,6 +1,6 @@
 import { foldedRanges } from '@codemirror/language';
 import { Compartment, EditorState, Extension, Facet, Prec, RangeSet, StateEffect, StateField } from '@codemirror/state';
-import { Decoration, DecorationSet, EditorView, keymap, ViewPlugin, ViewUpdate } from '@codemirror/view';
+import { BlockType, Decoration, DecorationSet, EditorView, keymap, ViewPlugin, ViewUpdate } from '@codemirror/view';
 import { ConfigService, DEFAULT_CONFIG, EditorConfig } from '../core/config';
 import { getLanguage } from '../core/language';
 import { Token } from '../core/tokens';
@@ -232,8 +232,63 @@ const arrowKeymap = Prec.high(
   ])
 );
 
+// Motions that bypass the keymap (Vim's j and k, for one) can still jump over a
+// rendered block. When a keyboard move crosses only lines this view does not
+// draw as text, the caret is put on the first of them instead, which shows its
+// source. A move that also crosses drawn lines (a page down, 5j, a search) and a
+// pointer click are left alone, and so is a move made in code: Vim labels its
+// moves no differently from a program's, so the sign of a keyboard move is a
+// key pressed just before it.
+const KEY_WINDOW = 250;
+const stepIntoBlocks = ViewPlugin.fromClass(
+  class {
+    keyAt = 0;
+    // Capture phase: Vim handles its keys before CodeMirror's own handlers run.
+    private onKey = () => {
+      this.keyAt = Date.now();
+    };
+
+    constructor(private view: EditorView) {
+      view.contentDOM.addEventListener('keydown', this.onKey, true);
+    }
+
+    destroy(): void {
+      this.view.contentDOM.removeEventListener('keydown', this.onKey, true);
+    }
+
+    update(update: ViewUpdate): void {
+      if (!update.selectionSet || update.docChanged) return;
+      if (!update.state.field(visualState).enabled) return;
+      if (Date.now() - this.keyAt > KEY_WINDOW) return;
+      if (update.transactions.some(tr => tr.isUserEvent('select.pointer'))) return;
+      const before = update.startState.selection;
+      const after = update.state.selection;
+      if (after.ranges.length !== 1 || !after.main.empty || before.ranges.length !== 1) return;
+
+      const doc = update.state.doc;
+      const from = doc.lineAt(before.main.head).number;
+      const to = doc.lineAt(after.main.head).number;
+      if (Math.abs(to - from) < 2) return;
+      const forward = to > from;
+      for (let n = forward ? from + 1 : from - 1; n !== to; n += forward ? 1 : -1) {
+        const line = doc.line(n);
+        // A drawn line is a text block that starts at the line itself.
+        const block = this.view.lineBlockAt(line.from);
+        if (block.type === BlockType.Text && block.from === line.from) return;
+      }
+      const first = doc.line(forward ? from + 1 : from - 1);
+      const anchor = forward ? first.from : first.to;
+      // Dispatching inside an update is not allowed; the step follows at once.
+      queueMicrotask(() => {
+        if (this.view.state.selection.main.head !== after.main.head) return;
+        this.view.dispatch({ selection: { anchor }, scrollIntoView: true, userEvent: 'select' });
+      });
+    }
+  }
+);
+
 export function visualExtension(): Extension {
-  return [visualState, decorationField, rebuildAfterPause, arrowKeymap];
+  return [visualState, decorationField, rebuildAfterPause, arrowKeymap, stepIntoBlocks];
 }
 
 // The tokens of the parse the visual layer last drew, or null when there is no
