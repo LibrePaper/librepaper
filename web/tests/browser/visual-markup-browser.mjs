@@ -41,6 +41,36 @@ const texSample = [
 ].join("\n");
 const typstSample = "= Heading\nSome *bold* and $x^2 + y^2$ here.";
 const markdownSample = "# Readme\n\nSome *emphasis* and $x$ here.";
+// A whole LaTeX paper: a preamble, math environments, labels and a bibliography.
+const fullSample = [
+  "\\documentclass[11pt]{article}",
+  "\\usepackage[T1]{fontenc}",
+  "\\usepackage{amsmath}",
+  "\\usepackage{booktabs,graphicx}",
+  "\\begin{document}",
+  "\\section{Results}",
+  "The estimate is in Equation \\ref{eq:se}.",
+  "\\begin{equation}",
+  "\\label{eq:se}",
+  "SE = \\frac{\\sigma}{\\sqrt{n}}",
+  "\\end{equation}",
+  "\\begin{align}",
+  "a &= b \\\\",
+  "c &= d",
+  "\\end{align}",
+  "\\begin{multline}",
+  "x + y \\\\",
+  "= z",
+  "\\end{multline}",
+  "\\begin{eqnarray}",
+  "a & = & b",
+  "\\end{eqnarray}",
+  "\\label{sec:results}",
+  "\\newpage",
+  "\\bibliographystyle{plain}",
+  "\\bibliography{references}",
+  "\\end{document}",
+].join("\n");
 const longSample = Array.from({ length: 600 }, () => texSample).join("\n");
 const hugeSample = Array.from({ length: 5 }, () => longSample).join("\n");
 
@@ -161,6 +191,33 @@ async function visualCheck() {
   await settle();
   const markdown = { marks: markCount(), text: visibleText() };
 
+  // Check 6b: a LaTeX paper. The preamble folds into one block while the caret
+  // is in the body, labels and the bibliography are hidden, math environments
+  // are typeset, and a caret in the preamble shows the source again.
+  component.$set({ visual: true, file: ids.full, format: "latex" });
+  await settle();
+  const fullKatexShown = await poll(mathKatexCount);
+  view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("\\section{Results}") + 2 } });
+  await settle();
+  const fullPreambles = document.querySelectorAll(".cm-editor .cm-lp-preamble");
+  const fullBody = {
+    katexShown: fullKatexShown,
+    preambleCount: fullPreambles.length,
+    preambleText: fullPreambles.length ? fullPreambles[0].textContent : "",
+    katex: mathKatexCount(),
+    katexErrors: document.querySelectorAll(".cm-editor .katex-error").length,
+    text: visibleText(),
+  };
+  view().dispatch({ selection: { anchor: 5 } });
+  await settle();
+  const fullPreamble = {
+    preambleCount: document.querySelectorAll(".cm-editor .cm-lp-preamble").length,
+    text: visibleText(),
+  };
+  view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("\\end{document}") + 2 } });
+  await settle();
+  const fullEnd = { text: visibleText() };
+
   // Check 7: timing, reported and not asserted. Each typing run makes 50
   // single character insertions at the middle of the file, one dispatch at a
   // time. The caret run makes 50 selection-only dispatches, each moving the
@@ -211,6 +268,7 @@ async function visualCheck() {
     sameView,
     typst,
     markdown,
+    full: { body: fullBody, preamble: fullPreamble, end: fullEnd },
     timing: { lines: timingOn.lines, on: { median: timingOn.median, max: timingOn.max }, off: { median: timingOff.median, max: timingOff.max } },
     caret,
     hugeTiming: { lines: hugeOn.lines, on: { median: hugeOn.median, max: hugeOn.max }, off: { median: hugeOff.median, max: hugeOff.max } },
@@ -224,7 +282,7 @@ const source = [
   `import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};`,
   `import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};`,
   `import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};`,
-  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, long: longSample, huge: hugeSample })};`,
+  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, full: fullSample, long: longSample, huge: hugeSample })};`,
   `document.documentElement.dataset.theme = "librepaper";`,
   `document.documentElement.dataset.palette = "librepaper";`,
   `document.documentElement.dataset.mode = "light";`,
@@ -236,6 +294,7 @@ const source = [
   `  tex: session.addText("paper.tex", samples.tex),`,
   `  typ: session.addText("notes.typ", samples.typst),`,
   `  md: session.addText("readme.md", samples.markdown),`,
+  `  full: session.addText("full.tex", samples.full),`,
   `  big: session.addText("big.tex", samples.long),`,
   `  bigOff: session.addText("big-off.tex", samples.long),`,
   `  huge: session.addText("huge.tex", samples.huge),`,
@@ -420,6 +479,28 @@ try {
   // Check 6: Markdown is left alone.
   assert.equal(result.markdown.marks, 0, "Markdown was drawn by the visual layer");
   console.log("visual-markup-browser: Markdown is left alone");
+
+  // Check 6b: a LaTeX preamble folds, labels and the bibliography are hidden,
+  // math environments are typeset, and the preamble source shows with the caret in it.
+  assert.equal(result.full.body.katexShown, true, "KaTeX did not typeset the math environments in full.tex within five seconds");
+  assert.equal(result.full.body.preambleCount, 1, "the LaTeX preamble did not fold into exactly one .cm-lp-preamble block with the caret in the body");
+  assert.match(result.full.body.preambleText, /Preamble: article, 4 packages/, "the preamble block did not read as 'Preamble: article, 4 packages'");
+  const hiddenInBody = [
+    "\\documentclass", "\\usepackage", "\\label", "sec:results",
+    "\\bibliographystyle", "\\bibliography", "references", "\\newpage",
+    "\\begin{document}", "\\end{document}", "\\begin{equation}", "\\begin{align}",
+  ];
+  for (const source of hiddenInBody) {
+    assert.equal(result.full.body.text.includes(source), false, `${source} is still visible in full.tex with the caret in the body`);
+  }
+  // The \ref keeps its key on show; only the \label's copy must be gone.
+  assert.equal(result.full.body.text.split("eq:se").length - 1, 1, "eq:se should show once, in the \\ref, and not in the hidden \\label");
+  assert.ok(result.full.body.katex >= 4, `expected at least 4 KaTeX formulas inside .cm-lv-math in full.tex, found ${result.full.body.katex}`);
+  assert.equal(result.full.body.katexErrors, 0, "full.tex has KaTeX parse errors (.katex-error inside .cm-editor)");
+  assert.equal(result.full.preamble.preambleCount, 0, "the preamble block stayed when the caret moved into the preamble");
+  assert.ok(result.full.preamble.text.includes("\\documentclass"), "the preamble source did not show with the caret in the preamble");
+  assert.ok(result.full.end.text.includes("\\end{document}"), "\\end{document} did not show with the caret on that line");
+  console.log(`visual-markup-browser: full.tex folds its preamble, hides labels and the bibliography, and typesets ${result.full.body.katex} math environments`);
 
   // Check 7: timing, printed only.
   console.log(`visual-markup-browser timing (informational, not asserted, ${result.timing.lines} lines): ` +
