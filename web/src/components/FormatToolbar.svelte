@@ -55,7 +55,7 @@
           onmousedown={(event) => event.preventDefault()}
           onclick={() => onformat(tool.id)}
         >
-          {#if tool.icon}<Icon name={tool.icon} size={16} />{:else}{tool.glyph}{/if}
+          <Icon name={tool.icon} size={16} />
         </button>
       {/each}
     </div>

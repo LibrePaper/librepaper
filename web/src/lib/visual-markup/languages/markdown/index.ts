@@ -55,10 +55,10 @@ function containerStyle(token: Token): TokenStyle | null {
     case 'frontmatter':
       return { widget: 'frontmatter', block: true };
     case 'codeblock':
-      // Cells draw their header in place of the opening fence; the closing fence collapses
-      // through the default concealment. Plain code keeps its fences as source.
-      if (token.meta?.cell === 'true') return { class: 'cm-lp-code', block: true, header: 'cellhead' };
-      return { class: 'cm-lp-code', block: true, keepSyntax: true };
+      // Cells and fenced code with a language draw a header in place of the opening fence,
+      // as Typst code blocks do; the fences collapse through the default concealment.
+      if (token.meta?.cell === 'true' || token.meta?.lang) return { class: 'cm-lp-code', block: true, header: 'cellhead' };
+      return { class: 'cm-lp-code', block: true };
     case 'blockquote':
       return { class: 'cm-lp-quote', block: true };
     case 'mdtable':
