@@ -213,6 +213,30 @@
       ["path", "M3 12h.01"], ["path", "M3 18h.01"], ["path", "M3 6h.01"],
       ["path", "M8 12h13"], ["path", "M8 18h13"], ["path", "M8 6h13"],
     ],
+    // Lucide's bold, italic, underline, heading-1 to heading-3 and list-ordered,
+    // for the formatting toolbar. Italic and underline have lines, drawn as
+    // "line" shapes below.
+    bold: [["path", "M6 12h9a4 4 0 0 1 0 8H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h7a4 4 0 0 1 0 8"]],
+    italic: [
+      ["line", { x1: 19, x2: 10, y1: 4, y2: 4 }],
+      ["line", { x1: 14, x2: 5, y1: 20, y2: 20 }],
+      ["line", { x1: 15, x2: 9, y1: 4, y2: 20 }],
+    ],
+    underline: [["path", "M6 4v6a6 6 0 0 0 12 0V4"], ["line", { x1: 4, x2: 20, y1: 20, y2: 20 }]],
+    "heading-1": [["path", "M4 12h8"], ["path", "M4 18V6"], ["path", "M12 18V6"], ["path", "m17 12 3-2v8"]],
+    "heading-2": [
+      ["path", "M4 12h8"], ["path", "M4 18V6"], ["path", "M12 18V6"],
+      ["path", "M21 18h-4c0-4 4-3 4-6 0-1.5-2-2.5-4-1"],
+    ],
+    "heading-3": [
+      ["path", "M4 12h8"], ["path", "M4 18V6"], ["path", "M12 18V6"],
+      ["path", "M17.5 10.5c1.7-1 3.5 0 3.5 1.5a2 2 0 0 1-2 2"],
+      ["path", "M17 17.5c2 1.5 4 .3 4-1.5a2 2 0 0 0-2-2"],
+    ],
+    "list-ordered": [
+      ["path", "M10 12h11"], ["path", "M10 18h11"], ["path", "M10 6h11"],
+      ["path", "M4 10h2"], ["path", "M4 6h1v4"], ["path", "M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"],
+    ],
     // Lucide's sliders-horizontal, for the settings panel: preferences are
     // things set along a line, not a machine to open up.
     sliders: [
@@ -310,6 +334,8 @@
       <rect {...geometry} />
     {:else if shape === "circle"}
       <circle {...geometry} />
+    {:else if shape === "line"}
+      <line {...geometry} />
     {:else}
       <path d={geometry} />
     {/if}

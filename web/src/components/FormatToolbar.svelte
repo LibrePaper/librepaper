@@ -126,8 +126,4 @@
     outline: 2px solid var(--color-brand);
     outline-offset: 1px;
   }
-  /* The glyphs look like the markup they make. */
-  .format-tool[data-tool="bold"] { font-weight: 700; }
-  .format-tool[data-tool="italic"] { font-style: italic; }
-  .format-tool[data-tool="underline"] { text-decoration: underline; }
 </style>

@@ -21,17 +21,18 @@ const KEYS = menuKeys();
 //   mark     "bold" | "italic" | "underline": toggles that markup on the selection
 //   heading  1 | 2 | 3: makes the lines a heading of that level, or a paragraph again
 //   list     "bullet" | "number": makes the lines a list, or removes the list
-// `glyph` is the text on the button, `icon` a name from Icon.svelte drawn instead.
-// `shortcut` is the printed key from lib/commands.js, when one exists.
+// `icon` is a name from Icon.svelte's ICONS table, drawn on the button. `label`
+// is the tooltip and accessible name. `shortcut` is the printed key from
+// lib/commands.js, when one exists.
 export const FORMAT_TOOLS = [
-  { id: "bold", label: "Bold", group: "emphasis", mark: "bold", glyph: "B", shortcut: KEYS.bold },
-  { id: "italic", label: "Italic", group: "emphasis", mark: "italic", glyph: "I", shortcut: KEYS.italic },
-  { id: "underline", label: "Underline", group: "emphasis", mark: "underline", glyph: "U" },
-  { id: "h1", label: "Heading 1", group: "heading", heading: 1, glyph: "H1" },
-  { id: "h2", label: "Heading 2", group: "heading", heading: 2, glyph: "H2" },
-  { id: "h3", label: "Heading 3", group: "heading", heading: 3, glyph: "H3" },
+  { id: "bold", label: "Bold", group: "emphasis", mark: "bold", icon: "bold", shortcut: KEYS.bold },
+  { id: "italic", label: "Italic", group: "emphasis", mark: "italic", icon: "italic", shortcut: KEYS.italic },
+  { id: "underline", label: "Underline", group: "emphasis", mark: "underline", icon: "underline" },
+  { id: "h1", label: "Heading 1", group: "heading", heading: 1, icon: "heading-1" },
+  { id: "h2", label: "Heading 2", group: "heading", heading: 2, icon: "heading-2" },
+  { id: "h3", label: "Heading 3", group: "heading", heading: 3, icon: "heading-3" },
   { id: "bullets", label: "Bulleted list", group: "list", list: "bullet", icon: "list" },
-  { id: "numbers", label: "Numbered list", group: "list", list: "number", glyph: "1." },
+  { id: "numbers", label: "Numbered list", group: "list", list: "number", icon: "list-ordered" },
 ];
 
 // Markdown's markup, used where no language definition supplies it. Its bold
