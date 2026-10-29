@@ -237,7 +237,7 @@ try {
       return;
     }
     response.setHeader("Content-Type", "text/html");
-    response.end('<body><link rel="stylesheet" href="/visual-markup-check.css"><script type="module" src="/visual-markup-check.js"></script></body>');
+    response.end('<!doctype html><body><link rel="stylesheet" href="/visual-markup-check.css"><script type="module" src="/visual-markup-check.js"></script></body>');
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
