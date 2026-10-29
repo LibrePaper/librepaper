@@ -210,7 +210,10 @@ fn reply(data: &mut Data, method: &str, target: &str, sent: &[u8]) -> Option<(u1
             .and_then(|pulled| pulled.parse::<i64>().ok())
             .unwrap_or(0);
         let newer = data.versions.iter().any(|(sequence, _)| *sequence > pulled);
-        let base = data.versions.iter().any(|(sequence, _)| *sequence <= pulled);
+        let base = data
+            .versions
+            .iter()
+            .any(|(sequence, _)| *sequence <= pulled);
         return Some((200, json!({"head": head, "newer": newer, "base": base})));
     }
     if path.ends_with("/history") {

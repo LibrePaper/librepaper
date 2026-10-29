@@ -667,7 +667,14 @@ async fn naming_a_label_above_the_pulled_sequence_makes_the_poll_see_it() {
     let (status, second) = source_change(&d, &owner, &body).await;
     assert_eq!(status, 200, "{second}");
     let id = uuid::Uuid::parse_str(second["label"]["sha"].as_str().unwrap()).unwrap();
-    let document_id = d.server.documents.rooms.get(&d.slug).await.unwrap().document_id;
+    let document_id = d
+        .server
+        .documents
+        .rooms
+        .get(&d.slug)
+        .await
+        .unwrap()
+        .document_id;
     let query = format!("pulled={pulled}");
 
     // An unnamed label above `pulled` is not news.
