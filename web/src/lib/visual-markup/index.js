@@ -983,9 +983,10 @@ registerWidget("envhead", ({ token, source, state }) => {
   const option = token.options?.[0] ? cleanTitle(argText(source, token.options[0])) : "";
   const shared = facts.theorems.get(token.name);
 
-  if (shared || catalog?.kind === "theorem") {
-    const title = shared ? shared.title : catalog.title;
-    const numbered = shared ? shared.numbered : catalog.numbered;
+  const known = catalog?.kind === "theorem" ? catalog : null;
+  if (shared || known) {
+    const title = shared ? shared.title : known.title;
+    const numbered = shared ? shared.numbered : known.numbered;
     const number = numbered ? facts.environmentNumbers.get(token.from) : undefined;
     let text = [title, number ? String(number) : ""].filter(Boolean).join(" ");
     if (option) text += ` (${option})`;

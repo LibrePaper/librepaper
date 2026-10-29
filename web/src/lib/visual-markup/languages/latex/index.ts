@@ -140,7 +140,9 @@ function style(token: Token): TokenStyle | null {
       if (VERBATIM_ENVIRONMENTS.has(full)) return { class: 'cm-lv-env', block: true, keepSyntax: true };
       const spec = ENVIRONMENTS.get(name);
       if (spec) return environmentStyle(spec.render);
-      return { class: 'cm-lv-env', block: true };
+      // A \newtheorem environment is known only from the document, so an unknown
+      // one asks for a header; the widget draws nothing when the name is not a theorem.
+      return { class: 'cm-lv-env', block: true, header: 'envhead' };
     }
     case 'tie':
       return { replaceWith: ' ' };
@@ -183,7 +185,9 @@ function style(token: Token): TokenStyle | null {
       const spec = COMMANDS.get(name);
       if (spec) return commandStyle(spec.render);
       if (EDITABLE_COMMANDS.has(full)) return { class: 'cm-lv-cmd' };
-      return { class: 'cm-lv-cmd-unknown', keepSyntax: true };
+      // A user macro is known only from the document: the widget expands it, or
+      // draws nothing and the command shows as source.
+      return { widget: 'macro', class: 'cm-lv-cmd-unknown', keepSyntax: true };
     }
     default:
       return null;

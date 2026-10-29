@@ -204,6 +204,14 @@ function stepChar(view: EditorView, forward: boolean): boolean {
   const target = view.moveByChar(selection.main, forward);
   if (doc.lineAt(target.head).number !== doc.lineAt(head).number) return false;
   if (Math.abs(target.head - head) <= 1) return false;
+  // Only a jump over one of this layer's atomic widgets is stepped into: a long
+  // move can also be a single character made of several code units (an emoji, a
+  // letter with combining marks), where a step of one would split it.
+  let widget = false;
+  state.field(decorationField).atomic.between(head, head, (from, to) => {
+    if (forward ? from === head && to > head : to === head && from < head) widget = true;
+  });
+  if (!widget) return false;
 
   view.dispatch({
     selection: { anchor: forward ? head + 1 : head - 1 },

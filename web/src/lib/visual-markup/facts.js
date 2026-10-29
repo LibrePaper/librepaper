@@ -216,7 +216,8 @@ function macroFacts(texts) {
       }
       const name = macroName(text, at);
       if (!name) continue;
-      const key = `\\${name.name}`;
+      // Text macros are keyed by bare name, as command tokens carry them.
+      const key = name.name;
       let definition = null;
       if (match[3]) {
         const body = group(text, skip(text, name.next));
@@ -234,7 +235,7 @@ function macroFacts(texts) {
   }
   const mathMacros = {};
   for (const [key, macro] of textMacros) {
-    if (macro.optional === null) mathMacros[key] = macro.body;
+    if (macro.optional === null) mathMacros[`\\${key}`] = macro.body;
   }
   return { textMacros, mathMacros: { ...mathMacros, ...operators } };
 }

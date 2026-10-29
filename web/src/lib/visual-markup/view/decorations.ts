@@ -293,7 +293,10 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
     }
   };
 
-  emit(parsed, state.doc.length);
+  // A LaTeX preamble is source: the preamble fold draws it, folded or revealed
+  // as plain text, so nothing before \begin{document} is decorated here.
+  const body = parsed.findIndex(token => token.kind === 'container' && token.name === 'document');
+  emit(body > 0 ? parsed.slice(body) : parsed, state.doc.length);
 
   const spans = subtract(merge(concealed), merge(replaced));
 

@@ -230,6 +230,7 @@ const COMMAND_ROWS: CommandRow[] = [
   ['makebox', 'oom', mark('')],
   ['framebox', 'oom', mark('cm-lp-frame')],
   ['fbox', 'm', mark('cm-lp-frame')],
+  ['parbox', 'ooomm', mark('')],
   ['phantom', 'm', hide],
   ['hphantom', 'm', hide],
   ['vphantom', 'm', hide],
@@ -348,6 +349,9 @@ const COMMAND_ROWS: CommandRow[] = [
   ['tikz', 'om', chip('TikZ')],
   ['pgfplotsset', 'm', hide],
   ['put', '', source],
+  // Only the environment forms exist; the list names them as commands too.
+  ['picture', '', source],
+  ['Verbatim', '', source],
   ['includepdf', 'om', chip('PDF pages', { block: true, argument: true })],
   ['includepdfmerge', 'om', chip('PDF pages', { block: true, argument: true })],
   ['includestandalone', 'om', chip('Standalone figure', { block: true, argument: true })],

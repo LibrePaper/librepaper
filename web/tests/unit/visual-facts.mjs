@@ -22,7 +22,7 @@ import { documentFacts } from "../../src/lib/visual-markup/facts.js";
     "\\end{remark}",
     "\\end{document}",
   ].join("\n");
-  const facts = documentFacts({ "main.tex": paper }, "main.tex", []);
+  const facts = documentFacts({ "main.tex": paper }, "main.tex", "main.tex", []);
   assert.equal(facts.theorems.get("theorem").title, "Theorem");
   assert.equal(facts.theorems.get("theorem").numbered, true);
   assert.equal(facts.theorems.get("lemma").counter, "theorem");
@@ -30,7 +30,8 @@ import { documentFacts } from "../../src/lib/visual-markup/facts.js";
   assert.deepEqual(facts.labels.get("thm:main"), { number: "1", kind: "theorem" });
   assert.deepEqual(facts.labels.get("lem:key"), { number: "2", kind: "theorem" });
   assert.deepEqual(facts.labels.get("cor:one"), { number: "1.1", kind: "theorem" });
-  assert.equal(facts.labels.get("rem:note")?.kind, "theorem");
+  // An unnumbered theorem has no number of its own, so, as in LaTeX, its label takes the section's.
+  assert.deepEqual(facts.labels.get("rem:note"), { number: "1", kind: "section" });
   // Environment numbers are keyed by the offset of \begin in the open file.
   assert.equal(facts.environmentNumbers.get(paper.indexOf("\\begin{theorem}")), "1");
   assert.equal(facts.environmentNumbers.get(paper.indexOf("\\begin{lemma}")), "2");
@@ -45,7 +46,7 @@ import { documentFacts } from "../../src/lib/visual-markup/facts.js";
     { key: "dijkstra", authors: ["Edsger W. Dijkstra"], year: "1968", title: "Go to statement considered harmful" },
   ];
   const paper = "\\citep{knuth} then \\cite{lamport,dijkstra} and \\textcite{knuth}.";
-  const facts = documentFacts({ "main.tex": paper }, "main.tex", entries);
+  const facts = documentFacts({ "main.tex": paper }, "main.tex", "main.tex", entries);
   assert.equal(facts.citations.get("knuth").number, 1);
   assert.equal(facts.citations.get("lamport").number, 2);
   assert.equal(facts.citations.get("dijkstra").number, 3);
@@ -57,7 +58,7 @@ import { documentFacts } from "../../src/lib/visual-markup/facts.js";
 // Acronyms from \newacronym and from the acro package's \DeclareAcronym.
 {
   const paper = "\\newacronym{ml}{ML}{machine learning}\n\\DeclareAcronym{nn}{short=NN, long=neural network}\n";
-  const facts = documentFacts({ "main.tex": paper }, "main.tex", []);
+  const facts = documentFacts({ "main.tex": paper }, "main.tex", "main.tex", []);
   assert.deepEqual(facts.acronyms.get("ml"), { short: "ML", long: "machine learning" });
   assert.deepEqual(facts.acronyms.get("nn"), { short: "NN", long: "neural network" });
 }
@@ -66,7 +67,7 @@ import { documentFacts } from "../../src/lib/visual-markup/facts.js";
 // optional default, and from a plain \def.
 {
   const paper = "\\newcommand{\\foo}[1]{x #1}\n\\newcommand{\\qux}[2][none]{[#1 #2]}\n\\def\\bar{y}\n";
-  const facts = documentFacts({ "main.tex": paper }, "main.tex", []);
+  const facts = documentFacts({ "main.tex": paper }, "main.tex", "main.tex", []);
   assert.deepEqual(facts.textMacros.get("foo"), { args: 1, optional: null, body: "x #1" });
   assert.deepEqual(facts.textMacros.get("qux"), { args: 2, optional: "none", body: "[#1 #2]" });
   assert.deepEqual(facts.textMacros.get("bar"), { args: 0, optional: null, body: "y" });
@@ -76,14 +77,14 @@ import { documentFacts } from "../../src/lib/visual-markup/facts.js";
 // plain \newcommand is passed through as its body.
 {
   const paper = "\\DeclareMathOperator{\\argmax}{arg\\,max}\n\\newcommand{\\R}{\\mathbb{R}}\n";
-  const facts = documentFacts({ "main.tex": paper }, "main.tex", []);
+  const facts = documentFacts({ "main.tex": paper }, "main.tex", "main.tex", []);
   assert.equal(facts.mathMacros["\\argmax"], "\\operatorname{arg\\,max}");
   assert.equal(facts.mathMacros["\\R"], "\\mathbb{R}");
 }
 
 // The citation style follows the natbib, plainnat and biblatex settings.
 {
-  const style = (paper) => documentFacts({ "main.tex": paper }, "main.tex", []).citeStyle;
+  const style = (paper) => documentFacts({ "main.tex": paper }, "main.tex", "main.tex", []).citeStyle;
   assert.equal(style("\\usepackage[numbers]{natbib}\n\\bibliographystyle{plain}"), "numeric");
   assert.equal(style("\\usepackage{natbib}\n\\bibliographystyle{plainnat}"), "author-year");
   assert.equal(style("\\usepackage[style=numeric]{biblatex}"), "numeric");
