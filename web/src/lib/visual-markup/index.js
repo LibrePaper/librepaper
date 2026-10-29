@@ -4,7 +4,7 @@ import { typst2tex } from "tex2typst";
 import "./markup.css";
 import "./visual-markup.css";
 import { preambleFold } from "./preamble.js";
-import { stripComments } from "./labels.js";
+import { cleanTitle, longToday, titleParts } from "./metadata.js";
 import {
   createImageResolver,
   createTheme,
@@ -359,126 +359,87 @@ class IncludeWidget extends WidgetType {
 
 registerWidget("include", (context) => new IncludeWidget(context));
 
-// The argument of the last \command{...} in the source, without its braces, or null.
-function lastArgument(source, command) {
-  let found = null;
-  const pattern = new RegExp(`\\\\${command}\\s*\\{`, "g");
-  let match;
-  while ((match = pattern.exec(source))) {
-    const start = match.index + match[0].length;
-    const close = closingBrace(source, start);
-    if (close !== -1) found = source.slice(start, close);
-  }
-  return found;
+// Makes one part of the title block open its command in the source. The listener
+// sits on the part, a child of the block, so it runs before the block's own reveal,
+// and stopping it there keeps that reveal from moving the caret to \maketitle.
+function linkPart(view, block, element, part) {
+  if (part.from === null) return;
+  element.dataset.part = part.kind;
+  element.dataset.index = String(part.index);
+  element.title = "Edit in source";
+  element.addEventListener("mousedown", (event) => {
+    // The offset from build time may be stale, so the part is found again in the current text.
+    const current = titleParts(view.state.doc.toString(), view.posAtDOM(block)).find(
+      (candidate) => candidate.kind === part.kind && candidate.index === part.index,
+    );
+    if (!current || current.from === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    view.dispatch({ selection: { anchor: current.from }, scrollIntoView: true });
+    view.focus();
+  });
 }
 
-// The index of the brace that closes one opened just before `from`, or -1.
-function closingBrace(source, from) {
-  let depth = 1;
-  for (let i = from; i < source.length; i++) {
-    const character = source[i];
-    if (character === "\\") i++;
-    else if (character === "{") depth++;
-    else if (character === "}" && --depth === 0) return i;
-  }
-  return -1;
-}
-
-// The text without every \command{...} of this name, braces and contents included.
-function withoutCommand(text, command) {
-  const pattern = new RegExp(`\\\\${command}\\s*\\{`, "g");
-  let out = "";
-  let kept = 0;
-  let match;
-  while ((match = pattern.exec(text))) {
-    const close = closingBrace(text, match.index + match[0].length);
-    if (close === -1) break;
-    out += text.slice(kept, match.index);
-    kept = close + 1;
-    pattern.lastIndex = kept;
-  }
-  return out + text.slice(kept);
-}
-
-// Today's date in the reader's locale, in long form.
-function longToday() {
-  return new Date().toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
-}
-
-// Turns LaTeX source into plain text: formatting is unwrapped, commands and braces
-// are dropped, and ~ is a space. Titles, notes and quotations all read this way.
-function cleanTitle(text) {
-  let out = withoutCommand(text, "thanks");
-  out = out.replace(/\\\\\*?(?:\[[^\]]*\])?/g, "\n");
-  out = out.replace(/\\and(?![a-zA-Z])/g, ", ");
-  out = out.replace(/\\today(?![a-zA-Z])/g, longToday());
-
-  // Formatting wrappers can nest, so they are unwrapped until none is left.
-  const formatting = /\\(?:textbf|textit|emph|textsc|textrm|textsf|texttt|textsl|underline|mbox)\s*\{([^{}]*)\}/g;
-  let previous;
-  do {
-    previous = out;
-    out = out.replace(formatting, "$1");
-  } while (out !== previous);
-
-  out = out.replace(/\\([&%$#_{}])/g, "$1");
-  out = out.replace(/\\[a-zA-Z]+\*?/g, "");
-  out = out.replace(/[{}]/g, "");
-  out = out.replace(/~/g, " ");
-  return out
-    .split("\n")
-    .map((line) => line.replace(/\s+/g, " ").trim())
-    .join("\n")
-    .trim();
-}
-
-// The title block that \maketitle draws, from the document's \title, \author and \date.
+// The title block that \maketitle draws, from the document's \title, \author, \date
+// and affiliation lines. Each part is a click target for its command's argument.
 class TitleWidget extends WidgetType {
   constructor(context) {
     super();
-    const source = stripComments(context.source);
-    this.title = cleanTitle(lastArgument(source, "title") ?? "");
-    this.author = cleanTitle(lastArgument(source, "author") ?? "");
-    // LaTeX prints today's date when there is no \date; an empty \date prints nothing.
-    const date = lastArgument(source, "date");
-    this.date = date === null ? longToday() : cleanTitle(date);
+    this.parts = titleParts(context.source, context.token.from);
+    // The parts' display strings and targets, which is what the DOM is built from.
+    this.signature = JSON.stringify(this.parts.map(({ kind, index, text, from }) => [kind, index, text, from !== null]));
   }
 
   eq(other) {
-    return (
-      other instanceof TitleWidget &&
-      other.title === this.title &&
-      other.author === this.author &&
-      other.date === this.date
-    );
+    return other instanceof TitleWidget && other.signature === this.signature;
   }
 
   toDOM(view) {
     const block = document.createElement("div");
     block.className = "cm-lp-title";
+    const of = (kind) => this.parts.filter((part) => part.kind === kind);
 
+    const [title] = of("title");
     const main = document.createElement("div");
     main.className = "cm-lp-title-main";
-    if (this.title) {
-      main.textContent = this.title;
+    if (title.text) {
+      main.textContent = title.text;
     } else {
       main.textContent = "Untitled";
       main.classList.add("cm-lp-title-muted");
     }
+    linkPart(view, block, main, title);
     block.appendChild(main);
 
-    if (this.author) {
+    const authors = of("author");
+    if (authors.length) {
       const author = document.createElement("div");
       author.className = "cm-lp-title-author";
-      author.textContent = this.author;
+      authors.forEach((part, index) => {
+        if (index) author.append(", ");
+        const span = document.createElement("span");
+        span.textContent = part.text;
+        linkPart(view, block, span, part);
+        author.appendChild(span);
+      });
       block.appendChild(author);
     }
 
-    if (this.date) {
-      const date = document.createElement("div");
-      date.className = "cm-lp-title-date";
-      date.textContent = this.date;
-      block.appendChild(date);
+    for (const part of of("affil")) {
+      const affil = document.createElement("div");
+      affil.className = "cm-lp-title-affil";
+      affil.textContent = part.text;
+      linkPart(view, block, affil, part);
+      block.appendChild(affil);
+    }
+
+    const [date] = of("date");
+    if (date.text) {
+      const element = document.createElement("div");
+      element.className = "cm-lp-title-date";
+      element.textContent = date.text;
+      linkPart(view, block, element, date);
+      block.appendChild(element);
     }
 
     revealOnMousedown(view, block);

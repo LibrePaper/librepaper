@@ -113,6 +113,24 @@
   font-weight: 400;
 }
 
+.cm-lp-title-affil {
+  margin-top: calc(var(--spacing) * 1);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  white-space: pre-line;
+}
+
+/* Each part of the title block is its own click target: a click opens its command
+   in the source. Only the part takes the hover, so the block keeps its look. */
+.cm-lp-title [data-part] {
+  border-radius: var(--radius-base);
+  cursor: pointer;
+}
+
+.cm-lp-title [data-part]:hover {
+  background: var(--color-subtle);
+}
+
 /* Rendered blocks show nothing extra at rest. On hover they take the look of
    the preamble, and a hint says that a click opens the source. The border is an
    outline, which takes no room, so the hover does not move the text. */
@@ -130,8 +148,7 @@
 .cm-lv-math-display:hover,
 .cm-lv-figure-preview:hover,
 .cm-line.cm-lv-figure-simple:hover,
-.cm-line.cm-lv-table:hover,
-.cm-lp-title:hover {
+.cm-line.cm-lv-table:hover {
   outline-color: var(--color-border);
   background: var(--color-subtle);
 }
@@ -139,8 +156,7 @@
 .cm-lv-math-display:hover::after,
 .cm-lv-figure-preview:hover::after,
 .cm-line.cm-lv-figure-simple:hover::after,
-.cm-line.cm-lv-table:hover::after,
-.cm-lp-title:hover::after {
+.cm-line.cm-lv-table:hover::after {
   content: "Edit source";
   position: absolute;
   top: calc(var(--spacing) * 1);
