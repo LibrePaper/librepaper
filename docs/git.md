@@ -36,9 +36,8 @@ For GitHub, the GitHub CLI can set up the sign-in for you, and it can create and
 gh auth login
 ```
 
-- Connect the project with the repository's SSH address, such as `git@github.com:owner/repo.git`. Do not use its `https://` address.
-- On GitHub, you find the SSH address under Code, then SSH.
-- In the desktop app, the `https://` address does not sign in through the GitHub CLI. Use the SSH address.
+- Connect the project with the repository's SSH address, such as `git@github.com:owner/repo.git`. In the desktop app, the `https://` address does not sign in through the GitHub CLI.
+- On GitHub, the SSH address is under Code, then SSH.
 
 ## Requirements
 
