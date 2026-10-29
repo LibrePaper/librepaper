@@ -28,3 +28,4 @@ Changes from upstream:
   languages/latex/commands.ts gives the hidden layout commands (\centering,
   \hfill, \hspace, \vspace and similar) their argument counts, so they do not
   swallow the braces that follow them.
+- languages/latex adds a `tie` token for an unescaped `~`, drawn as a non-breaking space, and gives \ref-style, include and \maketitle commands the `ref`, `include` and `title` widget kinds. The arguments of \url and \href are not parsed, so a `~` in them stays literal.

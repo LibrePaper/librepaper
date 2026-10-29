@@ -1,7 +1,7 @@
 import { cssColor } from '../../core/color';
 import { registerLanguage, Language, LanguageCommands, TokenStyle } from '../../core/language';
 import { Token } from '../../core/tokens';
-import { ARGUMENT_COUNT, COMMAND_CLASSES, EDITABLE_COMMANDS, LIST_ENVIRONMENTS, VERBATIM_ENVIRONMENTS } from './commands';
+import { ARGUMENT_COUNT, COMMAND_CLASSES, EDITABLE_COMMANDS, INCLUDE_COMMANDS, LIST_ENVIRONMENTS, REF_COMMANDS, VERBATIM_ENVIRONMENTS } from './commands';
 import { rules } from './rules';
 import { table } from './table';
 import { figure, latexImageStyle } from './figure';
@@ -77,7 +77,12 @@ function style(token: Token): TokenStyle | null {
         block: true,
         keepSyntax: VERBATIM_ENVIRONMENTS.has(token.name!)
       };
+    case 'tie':
+      return { replaceWith: ' ' };
     case 'command': {
+      if (REF_COMMANDS.has(token.name ?? '')) return { widget: 'ref' };
+      if (INCLUDE_COMMANDS.has(token.name ?? '')) return { widget: 'include' };
+      if (token.name === 'maketitle') return { widget: 'title', block: true };
       if (token.name === 'includegraphics' || token.name === 'includegraphics*') return { widget: 'image' };
       if (HIDDEN_LAYOUT_COMMANDS.has(token.name ?? '')) return { hidden: true };
       const known = COMMAND_CLASSES.get(token.name!);

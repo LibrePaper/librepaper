@@ -13,7 +13,7 @@ export interface RuleContext {
 
 export type Rule = (source: string, pos: number, ctx: RuleContext) => Token | null;
 
-export type WidgetKind = 'math' | 'image' | 'figure';
+export type WidgetKind = 'math' | 'image' | 'figure' | 'ref' | 'include' | 'title';
 
 export interface TokenStyle {
   class?: string;

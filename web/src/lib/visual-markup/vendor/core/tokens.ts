@@ -8,7 +8,8 @@ export type TokenKind =
   | 'item'
   | 'command'
   | 'table'
-  | 'raw';
+  | 'raw'
+  | 'tie';
 
 export interface Range {
   from: number;

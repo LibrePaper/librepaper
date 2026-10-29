@@ -1,7 +1,7 @@
 import { Rule } from '../../core/language';
 import { Range, Token } from '../../core/tokens';
 import { inner, isEscaped, matchDelimited, matchFenced, matchLine, skipSpace } from '../../core/scanner';
-import { ARGUMENT_COUNT, ESCAPABLE, HEADING_LEVELS, MATH_ENVIRONMENTS, TABLE_ENVIRONMENT_ARGS, TABLE_ENVIRONMENTS, VERBATIM_ENVIRONMENTS } from './commands';
+import { ARGUMENT_COUNT, ESCAPABLE, HEADING_LEVELS, LITERAL_ARGUMENT_COMMANDS, MATH_ENVIRONMENTS, TABLE_ENVIRONMENT_ARGS, TABLE_ENVIRONMENTS, VERBATIM_ENVIRONMENTS } from './commands';
 import { FIGURE_ENVIRONMENTS, isCompositeFigure, latexDimension } from './figure';
 
 const MATH_DELIMITERS: Array<[string, string, boolean]> = [
@@ -144,11 +144,17 @@ export const command: Rule = (source, pos, ctx) => {
     };
   }
 
-  if (body) token.children = ctx.parse(body.from, body.to);
+  if (body && !LITERAL_ARGUMENT_COMMANDS.has(name)) token.children = ctx.parse(body.from, body.to);
   return token;
 };
 
-export const rules: Rule[] = [comment, math, environment, heading, item, escape, command];
+export const tie: Rule = (source, pos) => {
+  if (source[pos] !== '~' || isEscaped(source, pos)) return null;
+  return { kind: 'tie', from: pos, to: pos + 1 };
+};
+
+// `tie` comes last so that math, comments and verbatim environments, which consume their whole range, claim a `~` first.
+export const rules: Rule[] = [comment, math, environment, heading, item, escape, command, tie];
 
 function consumeArguments(
   source: string,

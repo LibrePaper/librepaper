@@ -39,6 +39,15 @@ export const HEADING_LEVELS = new Map([
   ['subparagraph', 5]
 ]);
 
+export const REF_COMMANDS = new Set([
+  'ref', 'eqref', 'autoref', 'cref', 'Cref', 'pageref', 'nameref'
+]);
+
+export const INCLUDE_COMMANDS = new Set(['input', 'include', 'subfile']);
+
+// Commands whose arguments are literal (URLs), so markup such as `~` inside them is not parsed.
+export const LITERAL_ARGUMENT_COMMANDS = new Set(['url', 'href']);
+
 export const LIST_ENVIRONMENTS = new Set(['itemize', 'enumerate', 'description']);
 
 export const TABLE_ENVIRONMENT_ARGS = new Map<string, number>([
@@ -91,5 +100,16 @@ export const ARGUMENT_COUNT = new Map([
   ['vspace*', 1],
   ['smallskip', 0],
   ['medskip', 0],
-  ['bigskip', 0]
+  ['bigskip', 0],
+  ['ref', 1],
+  ['eqref', 1],
+  ['autoref', 1],
+  ['cref', 1],
+  ['Cref', 1],
+  ['pageref', 1],
+  ['nameref', 1],
+  ['input', 1],
+  ['include', 1],
+  ['subfile', 1],
+  ['maketitle', 0]
 ]);
