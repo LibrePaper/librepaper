@@ -27,9 +27,9 @@ export const FORMAT_TOOLS = [
   { id: "bold", label: "Bold", group: "emphasis", mark: "bold", glyph: "B", shortcut: KEYS.bold },
   { id: "italic", label: "Italic", group: "emphasis", mark: "italic", glyph: "I", shortcut: KEYS.italic },
   { id: "underline", label: "Underline", group: "emphasis", mark: "underline", glyph: "U" },
-  { id: "heading-1", label: "Heading 1", group: "heading", heading: 1, glyph: "H1" },
-  { id: "heading-2", label: "Heading 2", group: "heading", heading: 2, glyph: "H2" },
-  { id: "heading-3", label: "Heading 3", group: "heading", heading: 3, glyph: "H3" },
+  { id: "h1", label: "Heading 1", group: "heading", heading: 1, glyph: "H1" },
+  { id: "h2", label: "Heading 2", group: "heading", heading: 2, glyph: "H2" },
+  { id: "h3", label: "Heading 3", group: "heading", heading: 3, glyph: "H3" },
   { id: "bullets", label: "Bulleted list", group: "list", list: "bullet", icon: "list" },
   { id: "numbers", label: "Numbered list", group: "list", list: "number", glyph: "1." },
 ];
@@ -108,7 +108,9 @@ function blockLines(doc, block) {
 }
 
 // Replaces whole lines with `text`. `at` is the selection, as offsets into `text`.
-function replaceBlock(view, block, text, [start, end]) {
+/** @param {number[]} at */
+function replaceBlock(view, block, text, at) {
+  const [start, end] = at;
   view.dispatch({
     changes: { from: block.from, to: block.to, insert: text },
     selection: EditorSelection.range(block.from + start, block.from + end),
@@ -378,11 +380,13 @@ function applyLatexList(view, kind, block, lines, range) {
   const environment = listEnvironment(doc, block.first.number);
   if (environment && KIND_OF[environment.name] === kind) {
     const changes = [deleteLine(doc, doc.line(environment.begin)), deleteLine(doc, doc.line(environment.end))];
+    // Items go back to the indentation of the environment, which the list template added to.
+    const [outer] = splitIndent(doc.line(environment.begin).text);
     for (let n = environment.begin + 1; n < environment.end; n++) {
       const line = doc.line(n);
-      const [indent, body] = splitIndent(line.text);
+      const body = splitIndent(line.text)[1];
       const plain = stripList("latex", body);
-      if (plain !== body) changes.push({ from: line.from, to: line.to, insert: indent + plain });
+      if (plain !== body) changes.push({ from: line.from, to: line.to, insert: outer + plain });
     }
     return commitMapped(view, changes, range);
   }
@@ -399,7 +403,8 @@ function applyLatexList(view, kind, block, lines, range) {
   const filled = lines.map((line) => stripList("latex", splitIndent(line.text)[1])).filter((item) => item !== "");
   const items = filled.length ? filled : [PLACEHOLDER_ITEM];
   const text = commandsFor("latex").list(kind, items).split("\n").map((line) => indent + line).join("\n");
-  const at = filled.length ? [0, text.length] : [text.lastIndexOf(PLACEHOLDER_ITEM), text.length];
+  // The items are selected, not the \begin and \end lines: a caret on those is outside the list.
+  const at = filled.length ? [text.indexOf("\n") + 1, text.lastIndexOf("\n")] : [text.lastIndexOf(PLACEHOLDER_ITEM), text.length];
   return replaceBlock(view, block, text, at);
 }
 

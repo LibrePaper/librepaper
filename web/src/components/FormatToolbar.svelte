@@ -35,7 +35,7 @@
   }
 </script>
 
-<div class="format-bar" class:bar-hidden={hidden} role="toolbar" aria-label="Formatting" bind:this={bar} {onkeydown}>
+<div class="format-bar" class:bar-hidden={hidden} role="toolbar" tabindex="-1" aria-label="Formatting" bind:this={bar} {onkeydown}>
   {#each GROUPS as group, index (group.name)}
     {#if index}<span class="format-divider" aria-hidden="true"></span>{/if}
     <div class="format-group">

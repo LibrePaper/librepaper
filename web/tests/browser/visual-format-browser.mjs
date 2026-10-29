@@ -45,8 +45,8 @@ const formats = {
       underline: [(text) => `\\underline{${text}}`],
     },
     heading: (level, text) => `${["\\section{", "\\subsection{", "\\subsubsection{"][level - 1]}${text}}`,
-    bullet: /^\\item\s+(.+)$/,
-    number: /^\\item\s+(.+)$/,
+    bullet: /^\s*\\item\s+(.+)$/,
+    number: /^\s*\\item\s+(.+)$/,
     environment: { bullet: "\\begin{itemize}", number: "\\begin{enumerate}" },
   },
   typst: {

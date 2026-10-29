@@ -724,7 +724,7 @@
     const declared = getComputedStyle(document.documentElement).getPropertyValue("--librepaper-bar").trim();
     const height = declared.endsWith("px") ? Number.parseFloat(declared) : (Number.parseFloat(declared) || 3.5) * unit;
     // The formatting row, when it is showing, sits under the top bar too.
-    const format = document.querySelector(".format-bar")?.offsetHeight ?? 0;
+    const format = /** @type {HTMLElement | null} */ (document.querySelector(".format-bar"))?.offsetHeight ?? 0;
     return Math.round(height) + format + 9;
   }
 
