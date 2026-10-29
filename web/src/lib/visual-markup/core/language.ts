@@ -17,7 +17,8 @@ export type Rule = (source: string, pos: number, ctx: RuleContext) => Token | nu
 export type WidgetKind =
   | 'math' | 'image' | 'figure' | 'ref' | 'include' | 'title' | 'label'
   | 'cite' | 'link' | 'footnote' | 'verb' | 'chip' | 'unit' | 'gloss' | 'quote'
-  | 'envhead' | 'macro' | 'bibitem' | 'symbol';
+  | 'envhead' | 'macro' | 'bibitem' | 'symbol'
+  | 'frontmatter' | 'cellhead' | 'hr' | 'mdtable' | 'divhead' | 'mdfigure' | 'mdcite' | 'xref' | 'mdnote' | 'shortcode';
 
 export interface TokenStyle {
   class?: string;
