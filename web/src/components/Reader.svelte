@@ -51,6 +51,7 @@
   import {
     LINKED,
     PDF_INVERT,
+    VISUAL,
     linkFor,
     markViewed,
     read,
@@ -1271,6 +1272,7 @@
   let peers = $state(1);
   let participants = $state([]);
   let linked = $state(read(LINKED, false) === true);
+  let visual = $state(read(VISUAL, false) === true);
 
   // Routine saving stays quiet; losing the connection still needs a warning,
   // and the warning has to say what is happening to the typing meanwhile.
@@ -1537,6 +1539,14 @@
       (path) => !Object.prototype.hasOwnProperty.call(held.assets, path),
     );
     return { held, missing };
+  }
+
+  /// A loadable URL for a figure in the open project, for the editor's visual markup.
+  async function figureUrlFor(path) {
+    const digest = treeNow().digests?.[path];
+    if (!digest) return null;
+    const held = await figures.gather(SLUG, { [path]: digest }, authHeaders(KEY));
+    return held.urls[path] ?? null;
   }
 
   // Quitting exits the native app, which ends every window. The app asks each
@@ -2246,6 +2256,11 @@
     if (!localDataForgotten()) write(LINKED, on);
   }
 
+  function setVisual(on) {
+    visual = on;
+    if (!localDataForgotten()) write(VISUAL, on);
+  }
+
   /* ------------------------------------------------------------------ panes */
 
   // Which side the source is on, which keys the editor answers to and how
@@ -2556,6 +2571,7 @@
     if (what === "side-left" || what === "side-right") return putSourceOn(what.slice(5));
     if (what.startsWith("ratio-")) return setSize(PANES.editor, Number(what.slice(6)));
     if (what === "linked") return setLinked(!linked);
+    if (what === "visual-markup") return setVisual(!visual);
     if (TEXT_SIZE_COMMANDS.includes(what)) return changeTextSize(what);
   }
 
@@ -3726,6 +3742,7 @@
     if (id === "focus-preview") return focusPreview();
     if (id === "layout-cycle") return cycleLayout();
     if (LAYOUT_COMMANDS.includes(id)) return chose(id);
+    if (id === "visual-markup") return setVisual(!visual);
     if (id === "lock-preview" || id === "unlock-preview") return chooseViewCommand(id);
     if (TEXT_SIZE_COMMANDS.includes(id)) return changeTextSize(id);
     return chooseFileCommand(id);
@@ -3937,6 +3954,9 @@
   <hr class="hr my-1" />
   <Menu.Item value="linked" class="menuitem">
     <span class="menuitem-check">{linked ? "✓" : ""}</span><span class="menuitem-label">Keep in step</span>{#if MENU_KEYS.linked}<span class="menuitem-keys">{MENU_KEYS.linked}</span>{/if}
+  </Menu.Item>
+  <Menu.Item value="visual-markup" class="menuitem">
+    <span class="menuitem-check">{visual ? "✓" : ""}</span><span class="menuitem-label">Visual markup</span>{#if MENU_KEYS["visual-markup"]}<span class="menuitem-keys">{MENU_KEYS["visual-markup"]}</span>{/if}
   </Menu.Item>
   <hr class="hr my-1" />
   <Menu.Item value="text-bigger" class="menuitem">
@@ -4229,7 +4249,7 @@
       {:else if shownFigure}
         {@render figureBody()}
       {:else if Editor && sourceBound}
-        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {proofing} {dialect} {check} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
+        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />
       {/if}
