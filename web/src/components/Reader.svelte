@@ -3270,7 +3270,7 @@
     for (const change of [...changes].reverse()) untrackedSplice(session.doc, id, change.from, change.to, change.insert);
     session.doc.commit();
     // Comments on the text move with it, as they do for an edit in the editor.
-    session.anchors.record([{ fileId: id, edits: composeEdits(changes.map((edit) => [edit])), fragments: [] }], session.anchorMemory);
+    session.anchors.record([{ fileId: id, edits: composeEdits([changes]), fragments: [] }], session.anchorMemory);
     session.doc.commit({ origin: ANCHORS_ORIGIN });
   }
 
