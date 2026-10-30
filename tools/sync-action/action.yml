@@ -10,9 +10,9 @@ inputs:
   version:
     # The release this commit was cut with. tools/release/version sets it, and
     # tools/release/kit.test.mjs fails when it differs from Cargo.toml.
-    description: The librepaper release tag to download, such as v0.0.58.
+    description: The librepaper release tag to download, such as v0.0.59.
     required: false
-    default: v0.0.58
+    default: v0.0.59
   branch:
     description: The branch to sync. The workflow must check it out with actions/checkout ref set to this branch. The script stops when the checkout is on another branch or a detached HEAD.
     required: false
