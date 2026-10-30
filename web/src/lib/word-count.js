@@ -5,22 +5,41 @@ import { proseText } from "./harper/prose.js";
 import { formatOf } from "./formats.js";
 import { includesOf } from "./opening.js";
 
-// A word is a run of letters, marks or digits, joined by one apostrophe
-// (ASCII or typographic) or hyphen to another run.
-const WORD = /[\p{L}\p{M}\p{N}]+(?:['\u2019-][\p{L}\p{M}\p{N}]+)*/gu;
+// A word is a run of letters, marks or digits. Runs join across one apostrophe
+// (ASCII or typographic), hyphen or period, so "co-author's" and "U.S." are one
+// word each. A comma joins two digit runs only, so "1,000" is one word and
+// "a,b" is two.
+const WORD = /[\p{L}\p{M}\p{N}]+(?:(?:['\u2019.-]|(?<=\p{N}),(?=\p{N}))[\p{L}\p{M}\p{N}]+)*/gu;
+// A LaTeX bibliography is left out of the count. Its span runs from \begin to
+// the matching \end, or to the end of the text when it never closes.
+const BIBLIOGRAPHY = /\\begin\{(thebibliography|CSLReferences)\}[\s\S]*?(?:\\end\{\1\}|$)/g;
 // Han, Hiragana and Katakana have no spaces, so each character is a word.
 const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/gu;
 // An ordered-list marker at the start of a line, such as "1." or "2)". Its
 // digits are a number, not a word. Bullets hold no letters or digits.
 const LIST_MARKER = /^[ \t]*\d+[.)](?=[ \t])/gm;
 
-// The blanked prose that counting reads. In Markdown and Quarto the list
-// markers are blanked too. Blanking keeps every offset and newline, so slices
-// of the result line up with the source.
+// Blanks the bibliography spans found in the source text. The spans are read
+// from text, and blanking keeps every offset and newline.
+function blankBibliographies(text, prose) {
+  let blanked = prose;
+  for (const match of text.matchAll(BIBLIOGRAPHY)) {
+    const end = match.index + match[0].length;
+    const span = blanked.slice(match.index, end).replace(/[^\n]/g, " ");
+    blanked = blanked.slice(0, match.index) + span + blanked.slice(end);
+  }
+  return blanked;
+}
+
+// The blanked prose that counting reads. In LaTeX the bibliographies are
+// blanked. In Markdown and Quarto the list markers are blanked too. Blanking
+// keeps every offset and newline, so slices of the result line up with the
+// source.
 function countedProse(text, format) {
   const prose = proseText(text, format).text;
-  if (format !== "markdown" && format !== "quarto") return prose;
-  return prose.replace(LIST_MARKER, (marker) => " ".repeat(marker.length));
+  const counted = format === "latex" ? blankBibliographies(text, prose) : prose;
+  if (format !== "markdown" && format !== "quarto") return counted;
+  return counted.replace(LIST_MARKER, (marker) => " ".repeat(marker.length));
 }
 
 // The number of words in text that has already been blanked.

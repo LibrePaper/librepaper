@@ -115,3 +115,32 @@ import { includesOf } from "../../src/lib/opening.js";
   const texts = { "main.tex": "\\include{a}\n\\input{b}", "a.tex": "", "b.tex": "" };
   assert.deepEqual(includesOf("main.tex", texts), ["a.tex", "b.tex"]);
 }
+
+// Numbers with one period or comma between digits are one word, and a trailing
+// period or a comma before a space joins nothing.
+{
+  assert.equal(countWords("p = 0.05 and N = 1,234.5 rows", "markdown"), 6);
+  assert.equal(countWords("In 2020. Then", "markdown"), 3);
+  assert.equal(countWords("3.14 and 1,000", "markdown"), 3);
+  assert.equal(countWords("apples, pears", "markdown"), 2);
+  assert.equal(countWords("a,b", "markdown"), 2);
+}
+
+// Dotted abbreviations are one word, and a sentence break still splits words.
+{
+  assert.equal(countWords("e.g. this, i.e. that", "markdown"), 4);
+  assert.equal(countWords("the U.S. and Ph.D. holders", "markdown"), 5);
+  assert.equal(countWords("It ended. Then", "markdown"), 3);
+}
+
+// LaTeX bibliographies do not count, closed or unclosed.
+{
+  const thebib =
+    "Body text.\n\\begin{thebibliography}{9}\n\\bibitem{a} Some Author. A title.\n\\end{thebibliography}\n";
+  assert.equal(countWords(thebib, "latex"), 2);
+  const csl =
+    "Body text.\n\\begin{CSLReferences}{1}{0}\n\\bibitem{a} Some Author. A title.\n\\end{CSLReferences}\n";
+  assert.equal(countWords(csl, "latex"), 2);
+  const unclosed = "Body text.\n\\begin{thebibliography}{9}\n\\bibitem{a} Some Author.";
+  assert.equal(countWords(unclosed, "latex"), 2);
+}
