@@ -269,7 +269,9 @@ registerWidget("cellhead", ({ token }) => {
 // ---- Rules -----------------------------------------------------------------
 
 function drawRule() {
-  return el("hr", "cm-lp-hr");
+  const rule = el("div", "cm-lp-hr");
+  rule.append(el("hr"));
+  return rule;
 }
 
 registerWidget("hr", () => new MarkdownWidget("hr", {}));

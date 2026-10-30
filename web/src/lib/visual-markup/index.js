@@ -542,8 +542,16 @@ export class ElementWidget extends WidgetType {
       });
     }
 
-    revealOnMousedown(view, element);
-    return element;
+    // A block chip is wrapped so that its vertical gap is padding, which CodeMirror measures.
+    if (!this.className.includes("cm-lp-chip-block")) {
+      revealOnMousedown(view, element);
+      return element;
+    }
+    const gap = document.createElement("div");
+    gap.className = "cm-lp-block-gap";
+    gap.append(element);
+    revealOnMousedown(view, gap);
+    return gap;
   }
 
   ignoreEvent() {
