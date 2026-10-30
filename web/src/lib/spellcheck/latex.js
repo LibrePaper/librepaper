@@ -12,7 +12,7 @@ const NAME_ARGUMENT = new Set([
   "setlength", "addtolength", "setcounter", "addtocounter", "newcounter",
   "pagestyle", "thispagestyle", "hypersetup", "graphicspath",
   "lstinputlisting", "inputminted", "usetikzlibrary", "definecolor", "color",
-  "textcolor",
+  "textcolor", "author",
 ]);
 
 // Definition commands are followed by an optional count and a body, as in
@@ -29,7 +29,7 @@ const PROSE_REFERENCES = new Set(["hyperref", "citetext"]);
 // the command name is skipped and the option text stays prose.
 const PROSE_OPTIONS = new Set([
   "item", "section", "subsection", "subsubsection", "chapter", "part",
-  "paragraph", "subparagraph", "caption", "footnote", "title", "author",
+  "paragraph", "subparagraph", "caption", "footnote", "title",
 ]);
 
 // Environments whose body is not prose. The math ones also come starred.
@@ -40,8 +40,38 @@ const MATH_ENVIRONMENTS = [
 const SKIPPED_ENVIRONMENTS = new Set([
   ...MATH_ENVIRONMENTS,
   ...MATH_ENVIRONMENTS.map((name) => `${name}*`),
-  "verbatim", "Verbatim", "lstlisting", "minted", "comment", "tikzpicture",
-  "filecontents",
+  "verbatim", "Verbatim", "Verbatim*", "BVerbatim", "LVerbatim", "lstlisting",
+  "minted", "comment", "tikzpicture",
+  // Code chunks from literate and knitr documents: Journal of Statistical
+  // Software, Sweave, knitr, and the code output that Pandoc writes.
+  "CodeChunk", "CodeInput", "CodeOutput", "Schunk", "Sinput", "Soutput",
+  "Scode", "Highlighting", "Shaded", "kframe", "knitrout",
+  // Python and Lua code embedded in a document.
+  "pycode", "luacode", "luacode*",
+  // Files written out by the document itself.
+  "filecontents", "filecontents*",
+]);
+
+// Commands whose leading braced arguments are lengths or specs, not words. The
+// number is how many braced groups are markup. Optional groups before each of
+// them are markup too, and the first braced group after the last one is prose.
+const MARKUP_ARGUMENTS = new Map([
+  ["vspace", 1], ["hspace", 1], ["addvspace", 1], ["linespread", 1],
+  ["scalebox", 1], ["parbox", 1], ["raisebox", 1], ["cline", 1],
+  ["cmidrule", 1], ["rotatebox", 1], ["enlargethispage", 1],
+  ["rule", 2], ["fontsize", 2], ["resizebox", 2], ["multicolumn", 2],
+  ["multirow", 2],
+]);
+
+// Table and box environments whose leading arguments are specs or widths. The
+// number is how many braced groups follow \begin{NAME} as markup. The body is
+// prose, so only the begin tag and these groups are skipped.
+const SPEC_ENVIRONMENTS = new Map([
+  ["tabular", 1], ["longtable", 1], ["array", 1], ["tblr", 1], ["longtblr", 1],
+  ["talltblr", 1], ["minipage", 1], ["multicols", 1], ["multicols*", 1],
+  ["supertabular", 1], ["xtabular", 1],
+  ["tabular*", 2], ["tabularx", 2], ["tabulary", 2], ["wrapfigure", 2],
+  ["wraptable", 2],
 ]);
 
 // A command name: letters and @, with an optional trailing star.
@@ -110,6 +140,8 @@ export function latexSkips(text) {
   // The first "]" at or after a position. Without the memo, every unclosed "["
   // would rescan to the end of the text.
   const nextClose = matcher("\\]");
+  // The first ")" at or after a position, memoized the same way.
+  const nextParen = matcher("\\)");
 
   // One matcher per verbatim delimiter and per skipped environment, so each
   // search over a stretch of text happens at most once per pattern.
@@ -138,6 +170,15 @@ export function latexSkips(text) {
       k++;
       while (text[k] === " " || text[k] === "\t") k++;
     }
+    return k;
+  }
+
+  // Index of the first character after the blanks at `at`. With `comments`, a
+  // "%" comment and its line end also count as blanks, so a table spec may
+  // run over lines of comments.
+  function gapEnd(at, comments) {
+    let k = argumentStart(at);
+    while (comments && text[k] === "%") k = argumentStart(lineEnd(k));
     return k;
   }
 
@@ -210,6 +251,33 @@ export function latexSkips(text) {
     return hit && hit.index < eol ? hit.index + 1 : eol;
   }
 
+  // Index just past the leading groups of a command or environment whose
+  // arguments are markup. Each of the first `count` braced groups may have
+  // optional [...] groups before it. With `comments`, blanks and comments may
+  // separate the groups. A missing group ends the run at the last group taken.
+  function markupArguments(at, count, comments) {
+    let k = at;
+    for (let g = 0; g < count; g++) {
+      let open = gapEnd(k, comments);
+      while (text[open] === "[") {
+        const hit = nextClose(open + 1);
+        if (!hit) break;
+        open = gapEnd(hit.index + 1, comments);
+      }
+      if (text[open] !== "{") break;
+      k = skipGroup(open);
+    }
+    return k;
+  }
+
+  // Index just past a "(...)" trim spec at `at` whose ")" is on the same line,
+  // as \cmidrule(lr) has. Without one, the index is `at`.
+  function trimSpec(at) {
+    if (text[at] !== "(") return at;
+    const hit = nextParen(at + 1);
+    return hit && hit.index < lineEnd(at) ? hit.index + 1 : at;
+  }
+
   function takesName(name) {
     if (PROSE_REFERENCES.has(name)) return false;
     return NAME_ARGUMENT.has(name) || name.includes("cite") || name.endsWith("ref");
@@ -257,6 +325,16 @@ export function latexSkips(text) {
         const hit = envCloser(env[1])(at + env[0].length);
         return push(i, hit ? hit.index + hit[0].length : n);
       }
+      if (name === "begin" && env && SPEC_ENVIRONMENTS.has(env[1])) {
+        // The spec groups are markup, and the body after them stays prose.
+        const count = SPEC_ENVIRONMENTS.get(env[1]);
+        return push(i, markupArguments(at + env[0].length, count, true));
+      }
+    }
+    const markup = MARKUP_ARGUMENTS.get(name);
+    if (markup !== undefined) {
+      const from = name === "cmidrule" ? trimSpec(at) : at;
+      return push(i, markupArguments(from, markup, false));
     }
     if (takesName(name)) return push(i, argumentCommand(name, at));
     if (PROSE_OPTIONS.has(name)) return push(i, at);

@@ -190,4 +190,49 @@ function words(text) {
   assert.deepEqual(words("\\verb|x| ".repeat(20000) + "word"), ["word"]);
 }
 
+{
+  // A code chunk is skipped whole, nested code input included.
+  assert.deepEqual(words("\\begin{CodeChunk}\n\\begin{CodeInput}\nR> fit <- glm(y ~ x)\n\\end{CodeInput}\n\\end{CodeChunk}\nAfter"), ["After"]);
+}
+{
+  // A starred filecontents environment is skipped with its file body.
+  assert.deepEqual(words("\\begin{filecontents*}{a.bib}\n@article{k, title={Words}}\n\\end{filecontents*}\nAfter"), ["After"]);
+}
+{
+  // A tabular's column spec is markup, and its cells stay prose.
+  assert.deepEqual(words("\\begin{tabular}{lcr} a & b & c \\\\ \\end{tabular}"), ["a", "b", "c"]);
+}
+{
+  // A tabular* takes two spec groups, and the body after them stays prose.
+  assert.deepEqual(words("\\begin{tabular*}{\\textwidth}{@{}lr@{}} x \\end{tabular*}"), ["x"]);
+}
+{
+  // A minipage's position and width are markup, and its text stays prose.
+  assert.deepEqual(words("\\begin{minipage}[t]{0.5\\textwidth} Text \\end{minipage}"), ["Text"]);
+}
+{
+  // A tblr's optional groups and inner spec are skipped, with comments between them.
+  assert.deepEqual(words("\\begin{tblr}[         %% tabularray outer open\n]                     %% tabularray outer close\n{                     %% tabularray inner open\ncolspec={Q[]Q[]},\n}                     %% tabularray inner close\nField & N \\\\\n\\end{tblr}"), ["Field", "N"]);
+}
+{
+  // The span and alignment of \multicolumn are markup, and its text is prose.
+  assert.deepEqual(words("\\multicolumn{2}{c}{Total}"), ["Total"]);
+}
+{
+  // A starred \vspace takes one length, and the word after it stays prose.
+  assert.deepEqual(words("\\vspace*{2em} r"), ["r"]);
+}
+{
+  // A cmidrule's trim spec in parentheses is skipped with its column range.
+  assert.deepEqual(words("\\cmidrule(lr){2-3} x"), ["x"]);
+}
+{
+  // A parbox's width is markup, and its braced text stays prose.
+  assert.deepEqual(words("\\parbox{3cm}{Some text}"), ["Some", "text"]);
+}
+{
+  // Author names are skipped, and a title stays prose.
+  assert.deepEqual(words("\\author{Jane Doe} \\title{My Paper}"), ["My", "Paper"]);
+}
+
 console.log("spellcheck-latex: markup is skipped and prose is kept");
