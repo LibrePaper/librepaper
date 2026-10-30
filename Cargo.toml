@@ -39,6 +39,10 @@ publish-jobs = ["./publish-updater"]
 publish-prereleases = true
 github-custom-job-permissions = { "desktop-windows" = { contents = "read", id-token = "write" }, "desktop-macos" = { contents = "read" }, "desktop-linux" = { contents = "read" }, "publish-updater" = { contents = "write" } }
 install-success-msg = "The LibrePaper command line is installed. In a new terminal, run: librepaper --help"
+# dist 0.33 builds aarch64-apple-darwin on macos-14 by default. GitHub retires that
+# image on 2026-11-02 and fails its jobs in brownouts before then (v0.0.59).
+[workspace.metadata.dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
 
 [profile.release]
 opt-level = 3
