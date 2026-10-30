@@ -302,7 +302,9 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
         hide(token.from, token.to);
       } else if (style.replaceWith !== undefined) {
         if (!options.showCommands) {
-          const marker = Decoration.replace({ widget: new MarkerWidget(style.replaceWith) });
+          // List bullets and line breaks get a marker's fixed width; a glyph such as ’ or « takes only its own.
+          const className = token.kind === 'item' || token.kind === 'linebreak' ? 'cm-lv-marker' : 'cm-lv-glyph';
+          const marker = Decoration.replace({ widget: new MarkerWidget(style.replaceWith, className) });
           // A command, accent or ligature is replaced as a whole. An item keeps its optional label.
           const end = token.kind === 'item' ? token.body?.from ?? token.to : token.to;
           decorations.push(marker.range(token.from, end));

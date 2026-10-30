@@ -75,7 +75,11 @@ export const MATH_ENVIRONMENTS = new Set([
 
 export const ESCAPABLE = new Set(['\\', '%', '&', '_', '$', '#', '{', '}', '~', '^', ' ']);
 
+// Commands drawn as their first argument alone: \replaced{new}{old} and \texorpdfstring{tex}{pdf}.
+export const FIRST_ARGUMENT_COMMANDS = new Set(['replaced', 'texorpdfstring']);
+
 export const ARGUMENT_COUNT = new Map([
+  ['texorpdfstring', 2],
   ['textcolor', 2],
   ['colorbox', 2],
   ['href', 2],
