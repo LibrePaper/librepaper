@@ -1140,7 +1140,9 @@ try {
   for (const source of hiddenInBody) {
     assert.equal(result.full.body.text.includes(source), false, `${source} is still visible in full.tex with the caret in the body`);
   }
-  assert.ok(result.full.body.labelTexts.includes("sec:results"), `the \\label{sec:results} did not show its key as a .cm-lp-label; label tags: ${JSON.stringify(result.full.body.labelTexts)}`);
+  assert.equal(result.full.body.text.includes("sec:results"), false, "the \\label{sec:results} key is still visible in full.tex with the caret in the body");
+  assert.deepEqual(result.full.body.labelTexts, [], `a \\label still shows as a .cm-lp-label tag: ${JSON.stringify(result.full.body.labelTexts)}`);
+  assert.equal(result.full.body.hiddenTexts.some((text) => text.includes("\\label")), false, `a hidden-line chip names \\label: ${JSON.stringify(result.full.body.hiddenTexts)}`);
   for (const chip of ["Bibliography: references (plain)", "Page break", "End of document"]) {
     // Adjacent hidden lines share one chip that names each part.
     assert.ok(result.full.body.hiddenTexts.some((text) => text.split(" · ").includes(chip)), `no .cm-lp-hidden chip names '${chip}'; chips: ${JSON.stringify(result.full.body.hiddenTexts)}`);

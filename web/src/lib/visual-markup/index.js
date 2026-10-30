@@ -296,34 +296,6 @@ class RefWidget extends WidgetType {
 
 registerWidget("ref", (context) => new RefWidget(context));
 
-// A \label outside maths, shown as a small tag at the right edge of its line.
-class LabelWidget extends WidgetType {
-  constructor(context) {
-    super();
-    const { token, source } = context;
-    this.key = token.args?.[0] ? source.slice(token.args[0].from, token.args[0].to).trim() : "";
-  }
-
-  eq(other) {
-    return other instanceof LabelWidget && other.key === this.key;
-  }
-
-  toDOM(view) {
-    const element = document.createElement("span");
-    element.className = "cm-lp-label";
-    element.title = "Label";
-    element.textContent = this.key;
-    revealOnMousedown(view, element);
-    return element;
-  }
-
-  ignoreEvent() {
-    return true;
-  }
-}
-
-registerWidget("label", (context) => new LabelWidget(context));
-
 // The number of a numbered heading, drawn before its text in the heading's own font.
 // Pointer events reach the editor, so a click on the number places the caret.
 class HeadNumWidget extends WidgetType {

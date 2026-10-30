@@ -8,9 +8,8 @@ import { table } from './table';
 import { figure, latexImageStyle } from './figure';
 
 
-// `label` is not here: a standalone \label shows as a tag (see style()).
 const HIDDEN_LAYOUT_COMMANDS = new Set([
-  'centering', 'raggedleft', 'raggedright', 'hfill', 'hfil',
+  'label', 'centering', 'raggedleft', 'raggedright', 'hfill', 'hfil',
   'hspace', 'hspace*', 'vspace', 'vspace*', 'smallskip', 'medskip', 'bigskip',
   'bibliographystyle', 'bibliography', 'nocite', 'pagestyle', 'thispagestyle',
   'newpage', 'clearpage', 'noindent'
@@ -167,8 +166,6 @@ function style(token: Token): TokenStyle | null {
       if (INCLUDE_COMMANDS.has(full)) return { widget: 'include' };
       if (name === 'maketitle') return { widget: 'title', block: true };
       if (name === 'includegraphics') return { widget: 'image' };
-      // Shown as a tag rather than hidden, so a standalone label stays visible in the document.
-      if (name === 'label') return { widget: 'label' };
       // \replaced{new}{old} shows only the new text.
       if (name === 'replaced' && token.args?.length) return { argument: 0 };
       if (HIDDEN_LAYOUT_COMMANDS.has(full)) return { hidden: true };
@@ -215,10 +212,10 @@ function hiddenSummary(text: string): string | null {
   const rest = text.replace(ENVIRONMENT_PATTERN, '').replace(LAYOUT_PATTERN, '');
   if (!rest.trim()) return null;
 
-  // Environment names are not listed: the chip names what the run does, not the block around it.
+  // Environment names and labels are not listed: the chip names what the run does, not the block around it.
   const names = new Set<string>();
   for (const match of text.matchAll(/\\([a-zA-Z]+\*?)/g)) {
-    if (match[1] !== 'begin' && match[1] !== 'end') names.add(match[1]);
+    if (match[1] !== 'begin' && match[1] !== 'end' && match[1] !== 'label') names.add(match[1]);
   }
   return names.size ? [...names].map(name => `\\${name}`).join(', ') : null;
 }
