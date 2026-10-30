@@ -96,6 +96,8 @@ export interface FigurePanel {
 export interface FigureModel {
   panels: FigurePanel[];
   caption?: string;
+  // Typst caption body to draw with its markup and maths; caption stays the plain fallback.
+  captionTypst?: string;
   captionRange?: Range;
   captionEditable?: boolean;
   columns?: number;
