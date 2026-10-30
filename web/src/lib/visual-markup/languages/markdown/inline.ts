@@ -378,9 +378,14 @@ export const taskmeta: Rule = (source, pos) => {
 
   if (field) {
     const key = field[1];
-    const value = field[2];
+    const gap = field[2];
+    const value = field[3];
+    const invalid = validateField(key, value);
+    // A gap after the colon makes the text a field only when the value is valid, so prose such as
+    // "done: the tables" stays text. Without a gap an invalid field is still a field, with a warning.
+    if (gap !== '' && invalid !== null) return null;
     const boxEnd = lineStart + head[0].length;
-    const warning = validateField(key, value) ?? (taskKeyBefore(source, boxEnd, pos, key) ? `Duplicate ${key}.` : null);
+    const warning = invalid ?? (taskKeyBefore(source, boxEnd, pos, key) ? `Duplicate ${key}.` : null);
     const meta: Record<string, string> = { key, value, state };
     if (warning) meta.warning = warning;
     return { kind: 'command', name: 'taskfield', from: pos, to: pos + field[0].length, meta };
@@ -393,13 +398,15 @@ function taskTagEnd(char: string | undefined): boolean {
   return char === undefined || /[\s.,;:!?)]/.test(char);
 }
 
-// True when `key:` starts a field between from and to, after a space or tab.
+// True when `key:` starts a field between from and to, after a space or tab. An earlier field
+// written with a gap counts only when its value is valid, the same rule that makes it a field.
 function taskKeyBefore(source: string, from: number, to: number, key: string): boolean {
   for (let index = from + 1; index < to; index++) {
     if (source[index - 1] !== ' ' && source[index - 1] !== '\t') continue;
     FIELD.lastIndex = index;
     const earlier = FIELD.exec(source);
-    if (earlier && earlier[1] === key) return true;
+    if (!earlier || earlier[1] !== key) continue;
+    if (earlier[2] === '' || validateField(key, earlier[3]) === null) return true;
   }
   return false;
 }

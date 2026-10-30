@@ -1,9 +1,10 @@
 // Completion for task items in Markdown and Quarto sources: field names, field
 // values, and tags. Only the first line of a task item is completed, and never
 // inside inline code, since a tag or field there is not read as metadata.
-import { projectTasks, taskVocabulary } from "../tasks/project.js";
-import { addRepeat, DATE_FIELDS, FIELDS, PRIORITIES, TASK_LINE, todayISO } from "../tasks/syntax.js";
+import { readTasks } from "../tasks/model.js";
+import { DATE_FIELDS, FIELDS, PRIORITIES, TASK_LINE, todayISO } from "../tasks/syntax.js";
 
+const MARKDOWN = /\.(?:md|markdown|qmd)$/i;
 // What each field takes, shown beside its name.
 const FIELD_DETAIL = {
   priority: "1 to 5",
@@ -14,15 +15,12 @@ const FIELD_DETAIL = {
   done: "date",
   cancelled: "date",
   assignee: "handles",
-  repeat: "daily, weekly, 2w",
-  id: "id",
-  after: "ids",
   estimate: "2h, 30m, 1d",
 };
-const REPEATS = ["daily", "weekly", "monthly", "yearly"];
 // The word before the caret: a space or tab, then the text up to the caret.
 const WORD = /[ \t]([^ \t]*)$/;
-const FIELD_WORD = /^([a-z]+):(.*)$/;
+// A field key before the caret, then any spaces or tabs, then the value typed so far.
+const FIELD_VALUE = /[ \t]([a-z]+):([ \t]*)([^ \t]*)$/;
 const FIELD_NAME = /^[A-Za-z]+$/;
 const TAG_PARTIAL = /^(?:[A-Za-z][A-Za-z0-9_/-]*)?$/;
 
@@ -36,6 +34,12 @@ function lastItem(value) {
   return value.slice(value.lastIndexOf(",") + 1);
 }
 
+// The ISO date `days` after `iso`, counted in whole calendar days.
+function addDays(iso, days) {
+  const [year, month, day] = iso.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+}
+
 // Today, tomorrow and the next Monday, as ISO dates. A Monday today gives the
 // Monday a week on, so the suggestion is always later than today.
 function dateOptions(today) {
@@ -44,19 +48,47 @@ function dateOptions(today) {
   const toMonday = ((1 - weekday + 7) % 7) || 7;
   return [
     { label: today, type: "constant", detail: "today" },
-    { label: addRepeat(today, "1d"), type: "constant", detail: "tomorrow" },
-    { label: addRepeat(today, `${toMonday}d`), type: "constant", detail: "next Monday" },
+    { label: addDays(today, 1), type: "constant", detail: "tomorrow" },
+    { label: addDays(today, toMonday), type: "constant", detail: "next Monday" },
   ];
+}
+
+// Every assignee and tag in the project's Markdown texts and in the open document, sorted and unique.
+function vocabulary(current, doc) {
+  const texts = [doc, ...Object.entries(current.texts)
+    .filter(([path]) => MARKDOWN.test(path))
+    .map(([, text]) => text)];
+  const assignees = new Set();
+  const tags = new Set();
+  for (const text of texts) {
+    for (const task of readTasks(text)) {
+      for (const field of task.fields) {
+        if (field.key !== "assignee") continue;
+        for (const name of field.value.split(",")) {
+          if (name) assignees.add(name);
+        }
+      }
+      for (const tag of task.tags) tags.add(tag.name);
+    }
+  }
+  return { assignees: [...assignees].sort(), tags: [...tags].sort() };
 }
 
 function fieldNameOptions(pos, partial) {
   const wanted = partial.toLowerCase();
   const names = FIELDS.filter((name) => name.startsWith(wanted));
-  const options = names.map((name) => ({ label: `${name}:`, type: "property", detail: FIELD_DETAIL[name] }));
+  // The name is applied with its space, so the value can be typed straight after it.
+  const options = names.map((name) => ({
+    label: `${name}:`,
+    apply: `${name}: `,
+    type: "property",
+    detail: FIELD_DETAIL[name],
+  }));
   return result(pos - partial.length, /^[A-Za-z]*$/, options);
 }
 
-function fieldValueOptions(pos, current, key, value) {
+// The value starts after the colon and any gap, so the completion starts at the value, whatever the gap.
+function fieldValueOptions(pos, current, doc, key, value) {
   if (!FIELDS.includes(key)) return null;
   if (key === "priority") {
     const options = PRIORITIES
@@ -68,42 +100,22 @@ function fieldValueOptions(pos, current, key, value) {
     const options = dateOptions(todayISO()).filter((option) => option.label.startsWith(value));
     return result(pos - value.length, /^[0-9-]*$/, options);
   }
-  if (key === "repeat") {
-    const options = REPEATS
-      .filter((rule) => rule.startsWith(value))
-      .map((rule) => ({ label: rule, type: "constant", detail: "" }));
-    return result(pos - value.length, /^[a-z]*$/, options);
-  }
   if (key === "assignee") {
     const partial = lastItem(value);
-    const { assignees } = taskVocabulary(projectTasks(current.texts));
+    const { assignees } = vocabulary(current, doc);
     const options = assignees
       .filter((assignee) => assignee.startsWith(partial))
       .map((assignee) => ({ label: assignee, type: "variable", detail: "" }));
     return result(pos - partial.length, /^[A-Za-z0-9_.-]*$/, options);
-  }
-  if (key === "after") {
-    const partial = lastItem(value);
-    // Several tasks may share an id, so each one is offered once.
-    const ids = new Set();
-    for (const task of projectTasks(current.texts)) {
-      for (const field of task.fields) {
-        if (field.key === "id" && field.value) ids.add(field.value);
-      }
-    }
-    const options = [...ids]
-      .filter((id) => id.startsWith(partial))
-      .map((id) => ({ label: id, type: "variable", detail: "" }));
-    return result(pos - partial.length, /^[A-Za-z0-9_-]*$/, options);
   }
   return null;
 }
 
 // A tag typed after "#". The "#" is already in the document, so the completion
 // starts after it and applies the bare tag name.
-function tagOptions(pos, current, partial) {
+function tagOptions(pos, current, doc, partial) {
   if (!TAG_PARTIAL.test(partial)) return null;
-  const { tags } = taskVocabulary(projectTasks(current.texts));
+  const { tags } = vocabulary(current, doc);
   const options = tags
     .filter((tag) => tag.startsWith(partial))
     .map((tag) => ({ label: tag, type: "keyword", detail: "" }));
@@ -125,12 +137,14 @@ export function taskCompletion(project) {
     // An odd number of backticks means the caret is inside inline code.
     if ((before.match(/`/g) || []).length % 2) return null;
 
-    const word = before.slice(box).match(WORD);
+    const rest = before.slice(box);
+    const field = rest.match(FIELD_VALUE);
+    if (field) return fieldValueOptions(context.pos, current, context.state.doc.toString(), field[1], field[3]);
+
+    const word = rest.match(WORD);
     if (!word) return null;
     const text = word[1];
-    if (text.startsWith("#")) return tagOptions(context.pos, current, text.slice(1));
-    const field = text.match(FIELD_WORD);
-    if (field) return fieldValueOptions(context.pos, current, field[1], field[2]);
+    if (text.startsWith("#")) return tagOptions(context.pos, current, context.state.doc.toString(), text.slice(1));
     if (FIELD_NAME.test(text)) return fieldNameOptions(context.pos, text);
     return null;
   };

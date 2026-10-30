@@ -50,16 +50,15 @@ function items(source) {
 
 // Fields and tags on a task line, with exact ranges and meta.
 {
-  const source = "- [ ] Write #paper/intro priority:1 due:2026-11-05 assignee:alice,bob id:t-1 estimate:2h";
+  const source = "- [ ] Write #paper/intro priority:1 due:2026-11-05 assignee:alice,bob estimate:2h";
   const fields = named(source, "taskfield");
   assert.deepEqual(fields.map(token => source.slice(token.from, token.to)), [
-    "priority:1", "due:2026-11-05", "assignee:alice,bob", "id:t-1", "estimate:2h",
+    "priority:1", "due:2026-11-05", "assignee:alice,bob", "estimate:2h",
   ]);
   assert.deepEqual(fields.map(token => token.meta), [
     { key: "priority", value: "1", state: "todo" },
     { key: "due", value: "2026-11-05", state: "todo" },
     { key: "assignee", value: "alice,bob", state: "todo" },
-    { key: "id", value: "t-1", state: "todo" },
     { key: "estimate", value: "2h", state: "todo" },
   ]);
 
@@ -73,6 +72,24 @@ function items(source) {
 {
   const [field] = named("- [x] Done thing due:2026-11-05", "taskfield");
   assert.equal(field.meta.state, "done");
+}
+
+// A gap after the colon is still a field: the token runs from the key to the end of the value.
+{
+  const source = "- [ ] Write due: 2026-11-05 priority:  2";
+  const fields = named(source, "taskfield");
+  assert.deepEqual(fields.map(token => source.slice(token.from, token.to)), ["due: 2026-11-05", "priority:  2"]);
+  assert.deepEqual(fields.map(token => token.meta.value), ["2026-11-05", "2"]);
+  assert.deepEqual(fields.map(token => token.meta.warning ?? null), [null, null]);
+}
+
+// A gap makes text a field only when the value is valid, so prose stays text.
+{
+  assert.deepEqual(named("- [ ] what is done: the tables", "taskfield"), []);
+  assert.deepEqual(named("- [ ] Ship priority: 9", "taskfield"), []);
+  // The same field without the gap is a field with a warning.
+  const [field] = named("- [ ] Ship priority:9", "taskfield");
+  assert.equal(field.meta.warning, "Priority must be 1 to 5.");
 }
 
 // A tag ends at punctuation, so the sentence's full stop is not part of it.
@@ -93,6 +110,13 @@ function items(source) {
     const found = tokensOf(source).filter(token => token.name === "taskfield" || token.name === "tasktag");
     assert.deepEqual(found, [], source);
   }
+}
+
+// A key written after an earlier field with a gap is a duplicate of it.
+{
+  const source = "- [ ] Task due: 2026-11-05 due:2026-11-06";
+  const fields = named(source, "taskfield");
+  assert.deepEqual(fields.map(token => token.meta.warning ?? null), [null, "Duplicate due."]);
 }
 
 // Warnings: an invalid value keeps its text and warns, and a repeated key warns after the first.
