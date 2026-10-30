@@ -98,37 +98,6 @@
   font-weight: 600;
 }
 
-/* Tables: a rule under each row, a heavier one under the header. */
-.cm-lp-md-table {
-  padding: calc(var(--spacing) * 2) 0;
-  overflow-x: auto;
-}
-
-.cm-lp-md-table-caption {
-  margin-bottom: calc(var(--spacing) * 1);
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-}
-
-.cm-lp-md-table table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-sm);
-}
-
-.cm-lp-md-table th,
-.cm-lp-md-table td {
-  padding: calc(var(--spacing) * 1) calc(var(--spacing) * 3);
-  border-bottom: 1px solid var(--color-border);
-  vertical-align: top;
-  text-align: left;
-}
-
-.cm-lp-md-table th {
-  border-bottom-color: var(--color-border-strong);
-  font-weight: 600;
-}
-
 /* Figures: centred, with the caption under the image. */
 .cm-lp-md-figure {
   margin: 0;

@@ -190,7 +190,7 @@ function style(token: Token): TokenStyle | null {
       if (token.meta?.figureCaption === 'true') return { class: 'cm-lv-caption' };
       return { class: 'cm-lv-content' };
     case 'table':
-      return { class: 'cm-lv-table', block: true };
+      return { widget: 'tablebox', block: true };
     case 'tie':
       return { replaceWith: ' ' };
     case 'ligature':
@@ -206,6 +206,7 @@ function style(token: Token): TokenStyle | null {
     case 'command': {
       const name = token.name ?? '';
       if (name === 'image') return { widget: 'image' };
+      if (token.meta?.figureTable === 'true') return { widget: 'tablebox', block: true };
       if (token.meta?.figure === 'true') return { widget: 'figure', block: true, keepSyntax: true };
       if (token.meta?.statement) {
         if (HIDDEN_STATEMENTS.has(name)) return { hidden: true };

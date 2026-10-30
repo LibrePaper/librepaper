@@ -19,10 +19,11 @@
   padding: calc(var(--spacing) * 1) 0;
 }
 
-/* The folded LaTeX preamble, and the chips that stand in for hidden runs of
-   source (page breaks, the end of the document, the bibliography): a quiet
-   line in place of the source. */
+/* The folded LaTeX preamble, the box that stands in for a table, and the chips
+   that stand in for hidden runs of source (page breaks, the end of the
+   document, the bibliography): a quiet line in place of the source. */
 .cm-lp-preamble,
+.cm-lp-table-box,
 .cm-lp-hidden {
   padding: calc(var(--spacing) * 1) calc(var(--spacing) * 3);
   border: 1px solid var(--color-border);
@@ -163,7 +164,6 @@
 .cm-lv-math-display,
 .cm-lv-figure-preview,
 .cm-line.cm-lv-figure-simple,
-.cm-line.cm-lv-table,
 .cm-lp-title {
   position: relative;
   border-radius: var(--radius-base);
@@ -173,17 +173,9 @@
 
 .cm-lv-math-display:hover,
 .cm-lv-figure-preview:hover,
-.cm-line.cm-lv-figure-simple:hover,
-.cm-line.cm-lv-table:hover {
+.cm-line.cm-lv-figure-simple:hover {
   outline-color: var(--color-border);
   background: var(--color-subtle);
-}
-
-/* Table cells carry their own borders, so a formula or figure inside one keeps its look. */
-.cm-lv-table-row .cm-lv-math-display:hover,
-.cm-lv-table-row .cm-lv-figure-preview:hover {
-  outline-color: transparent;
-  background: none;
 }
 
 /* Text styles from the LaTeX catalog. Each follows the command it stands for, and

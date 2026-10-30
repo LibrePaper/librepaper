@@ -7,7 +7,6 @@ export const table: TableAdapter = {
       row.map(cell => source.slice(cell.from, cell.to).trim())
     );
   },
-  ranges: tableRanges,
   locate(source, token, pos) {
     const rows = tableRanges(source, token);
     for (let row = 0; row < rows.length; row++) {

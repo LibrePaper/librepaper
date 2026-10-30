@@ -532,6 +532,7 @@ async function visualCheck() {
     katex: katexCount(),
     katexErrors: document.querySelectorAll(".cm-editor .katex-error").length,
     tables: document.querySelectorAll(".cm-editor table").length,
+    tableBoxes: texts(".cm-lp-table-box"),
     verbs: document.querySelectorAll(".cm-editor .cm-lp-verb").length,
     links: document.querySelectorAll(".cm-editor .cm-lp-link").length,
     frontmatterShown: Boolean(frontmatter),
@@ -1111,7 +1112,8 @@ try {
   assert.equal(quartoBody.includes("[^1]"), false, "the footnote reference [^1] is still visible in paper.qmd");
   assert.ok(result.quarto.katex >= 2, `expected at least 2 KaTeX formulas in paper.qmd, found ${result.quarto.katex}`);
   assert.equal(result.quarto.katexErrors, 0, "paper.qmd has KaTeX parse errors (.katex-error inside .cm-editor)");
-  assert.ok(result.quarto.tables > 0, "the pipe table was not drawn as a <table> inside the editor");
+  assert.equal(result.quarto.tables, 0, "the pipe table was laid out as a <table> inside the editor");
+  assert.deepEqual(result.quarto.tableBoxes, ["Table: Results"], "the pipe table was not drawn as a box with its caption and no cells");
   assert.ok(result.quarto.verbs > 0, "the inline code was not drawn as .cm-lp-verb");
   assert.ok(result.quarto.links > 0, "the link was not drawn as .cm-lp-link");
   assert.equal(result.quarto.frontmatterShown, true, "no front matter title block was drawn for paper.qmd");

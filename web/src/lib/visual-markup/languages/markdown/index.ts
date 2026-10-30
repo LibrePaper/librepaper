@@ -62,7 +62,7 @@ function containerStyle(token: Token): TokenStyle | null {
     case 'blockquote':
       return { class: 'cm-lp-quote', block: true };
     case 'mdtable':
-      return { widget: 'mdtable', block: true };
+      return { widget: 'tablebox', block: true };
     case 'fndef':
       return { class: 'cm-lp-fndef', block: true };
     case 'div':

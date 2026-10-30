@@ -15,6 +15,11 @@ export function prepareFigureToken(source: string, token: Token): void {
   // Every figure is drawn by the block figure widget, which reads its layout from the source.
   const entries = argumentEntries(source, token.body);
   const caption = entries.find(entry => entry.name === 'caption')?.range;
+  // A figure around a table is drawn as the table box, not as a figure.
+  const first = entries.find(entry => !entry.name)?.range;
+  if (first && /^(?:table|grid)\s*\(/.test(source.slice(first.from, first.to).trim())) {
+    token.meta = { ...token.meta, figureTable: 'true' };
+  }
   const bodyRange = caption ? captionBodyRange(source, caption) : null;
   if (bodyRange) markCaptionToken(token.children, bodyRange);
 }
