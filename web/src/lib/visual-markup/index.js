@@ -25,7 +25,7 @@ import { loadKatex } from "../katex.js";
 import { VISUAL_FORMATS } from "./formats.js";
 // The Markdown, Quarto and Typst widgets. They import helpers back from this file.
 import "./markdown-widgets.js";
-import { taskOptions } from "./task-widgets.js";
+import "./task-widgets.js";
 import "./typst-widgets.js";
 
 export { VISUAL_FORMATS } from "./formats.js";
@@ -83,8 +83,7 @@ export const includeOpener = Facet.define({ combine: (values) => values[0] ?? nu
 /// `imageUrl(path)` resolves a project path (no leading slash) to a URL an <img> can load, or null.
 /// `dark` picks the dark colours.
 /// `openInclude(name)` opens the file an \input, \include or \subfile names; without it the chip has no button.
-/// `tasks` is the task hooks of the Markdown task controls (see task-widgets.js).
-export function visualMarkup(format, { path = () => "", imageUrl = null, dark = false, openInclude = null, tasks = null } = {}) {
+export function visualMarkup(format, { path = () => "", imageUrl = null, dark = false, openInclude = null } = {}) {
   if (!VISUAL_FORMATS.has(format)) return [];
 
   const extensions = [
@@ -118,7 +117,6 @@ export function visualMarkup(format, { path = () => "", imageUrl = null, dark = 
   // Every format draws from document facts and opens includes the same way.
   extensions.push(factsField);
   if (openInclude) extensions.push(includeOpener.of(openInclude));
-  if (tasks) extensions.push(taskOptions.of(tasks));
 
   return extensions;
 }
