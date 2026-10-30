@@ -35,12 +35,12 @@ export const CATEGORIES = [
       { id: "appearance-font-size", says: "Font size", terms: "font size text size zoom bigger smaller pinch scale pixels" },
       { id: "appearance-line-height", says: "Line height", terms: "line height spacing leading compact wide dense" },
       { id: "editor-keys", says: "Key bindings", terms: "vim emacs keymap keyboard bindings modal source standard" },
-      { id: "editor-shortcuts", says: "Keyboard shortcuts", terms: "shortcut shortcuts keys keyboard chord binding hotkey accelerator palette command undo redo find" },
       { id: "editor-completion", says: "Autocomplete", terms: "autocomplete completion suggestions suggest popup intellisense commands citations" },
       { id: "editor-brackets", says: "Close brackets", terms: "close brackets auto pair braces parentheses quotes dollar autoclose" },
       { id: "editor-check", says: "Code check", terms: "code check lint errors warnings underline gutter diagnostics squiggle" },
       { id: "editor-proofing", says: "Grammar and spelling", terms: "spellcheck spelling spell check typo dictionary misspelled grammar harper proofreading" },
       { id: "editor-dialect", says: "English dialect", terms: "dialect british american canadian australian indian english harper" },
+      { id: "editor-shortcuts", says: "Keyboard shortcuts", terms: "shortcut shortcuts keys keyboard chord binding hotkey accelerator palette command undo redo find" },
     ],
   },
   {
