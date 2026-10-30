@@ -511,7 +511,8 @@ async function visualCheck() {
   // plain text after the emphasis, so the emphasis markers stay hidden.
   component.$set({ file: ids.md, format: "markdown" });
   await settle();
-  view().dispatch({ selection: { anchor: view().state.doc.length } });
+  // The caret sits on the heading, so the line with the emphasis is drawn.
+  view().dispatch({ selection: { anchor: 0 } });
   await settle();
   const markdown = { marks: markCount(), text: visibleText() };
 
@@ -740,7 +741,10 @@ async function visualCheck() {
     const hit = at === null ? null : view().state.doc.lineAt(at).number;
     if (hit !== drawn) offsetMisses.push({ text: line.textContent.trim(), drawn, hit });
   }
-  const offset = { misses: offsetMisses };
+  // A caret inside a block shows the whole block as source, and nothing of it drawn.
+  view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("Second line.") + 2 } });
+  await settle();
+  const offset = { misses: offsetMisses, inBlock: visibleText(), envheads: document.querySelectorAll(".cm-editor .cm-lp-envhead-theorem").length };
 
   // Check 6f: the Typst kitchen-sink document. The caret sits on "Caret here.", so
   // the setup lines fold into one chip and each construct in the body is drawn.
@@ -1245,6 +1249,11 @@ try {
   console.log("visual-markup-browser: sink.tex draws its text commands, environments and citations, and a click on the TikZ chip shows its source");
   assert.deepEqual(result.offset.misses, [], `clicks at the middle of drawn lines landed on other lines: ${JSON.stringify(result.offset.misses)}`);
   console.log("visual-markup-browser: a click at the middle of each drawn line in multi-line blocks lands in that line");
+  for (const source of ["\\begin{theorem}", "First line.", "\\end{theorem}"]) {
+    assert.ok(result.offset.inBlock.includes(source), `with the caret inside the theorem, '${source}' is not shown as source`);
+  }
+  assert.equal(result.offset.envheads, 0, "with the caret inside the theorem, its header is still drawn");
+  console.log("visual-markup-browser: a caret inside an environment shows the whole environment as source");
 
   // Check 6f: sink.typ draws its markup, links, footnote, swatch and references,
   // folds its setup lines into one chip, hides its source, and shows the setup
