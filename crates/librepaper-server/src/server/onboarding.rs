@@ -32,6 +32,13 @@ const STARTER: Starter = Starter {
                 "/examples/tutorial-markdown/sections/rendering.md"
             )),
         ),
+        (
+            "todo.md",
+            include_bytes!(concat!(
+                env!("LIBREPAPER_DOCS"),
+                "/examples/tutorial-markdown/todo.md"
+            )),
+        ),
         // Typst
         (
             "librepaper.typ",

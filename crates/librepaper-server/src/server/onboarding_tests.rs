@@ -8,9 +8,10 @@ use librepaper_engine::storage::store::DocumentInput;
 
 use crate::server::http_test_support::deployment;
 
-const EXPECTED: [&str; 12] = [
+const EXPECTED: [&str; 13] = [
     "librepaper.md",
     "sections/rendering.md",
+    "todo.md",
     "librepaper.typ",
     "sections/rendering.typ",
     "librepaper.tex",
