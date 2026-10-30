@@ -154,7 +154,7 @@ try {
   await until("harness mounted", () => b.evaluate("typeof window.show === \"function\""), 10000);
   await show("rendering", "quarto", "Rendering");
   assert.deepEqual(JSON.parse(await b.evaluate(`JSON.stringify([...document.querySelectorAll(".settings-nav-item")].map((node) => node.textContent.trim()))`)),
-    ["Appearance", "Editor", "Rendering", "Tools", "AI agents", "Backups", "Account", "Diagnostics"]);
+    ["General", "Editor", "Rendering", "Tools", "AI agents", "Backups", "Account"]);
 
   // Settings is a page, not a card: it covers the window, Back closes it and
   // so does Escape.
@@ -235,7 +235,7 @@ try {
   assert.equal(await b.evaluate(`document.querySelector(".tool-row-toggle")`), null, "no program has a command to edit here");
 
   // The desktop app offers its Diagnostics page with Open logs among the buttons.
-  await show("diagnostics", "quarto", "Diagnostics");
+  await show("general", "quarto", "General");
   assert.equal(await b.evaluate(`document.querySelector("#diagnostics-report .diagnostics-buttons")?.textContent.includes("Open logs")`), true, "the desktop app offers Open logs");
 
   // A visitor's Account page is the server; storage and erasure need an account.
@@ -267,13 +267,13 @@ try {
   }
   await capture("tools-browser");
 
-  await show("diagnostics", "quarto", "Diagnostics");
-  assert.equal(await b.evaluate(`[...document.querySelectorAll(".settings-nav-item")].some((node) => node.textContent.trim() === "Diagnostics")`), true, "a browser is offered Diagnostics");
+  await show("general", "quarto", "General");
+  assert.equal(await b.evaluate(`document.querySelector("#general-close") === null`), true, "a browser is not offered the window close choice");
   assert.equal(await b.evaluate(`[...document.querySelectorAll("#diagnostics-report button")].some((node) => node.textContent.trim() === "Copy diagnostics")`), true, "the panel has Copy diagnostics");
   await b.evaluate(`document.querySelector("#diagnostics-report details summary").click()`);
   await until("the report fills", () => b.evaluate(`/## App/.test(document.querySelector("#diagnostics-report textarea").value) && /## Environment/.test(document.querySelector("#diagnostics-report textarea").value)`), 5000);
 
-  console.log("settings-pages-browser: Rendering shows one section per format with a default preview and, in the desktop app, where it renders and its commands, Tools lists the programs, a browser gets one notice on each desktop page, and a browser has a Diagnostics page");
+  console.log("settings-pages-browser: Rendering shows one section per format with a default preview and, in the desktop app, where it renders and its commands, Tools lists the programs, a browser gets one notice on each desktop page, and a browser has Diagnostics on General");
 } finally {
   if (b) await b.close();
   server.close();

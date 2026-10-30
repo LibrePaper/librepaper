@@ -35,5 +35,5 @@ title: "FAQ"
 ## Is there a dark mode?
 
 - Yes. The app follows your computer's setting by default.
-- Settings > Appearance > Theme offers Light, Dark and System. The choice is remembered per browser.
+- Settings > General > Theme offers Light, Dark and System. The choice is remembered per browser.
 - The rendered document keeps its own colours. Only the interface changes.

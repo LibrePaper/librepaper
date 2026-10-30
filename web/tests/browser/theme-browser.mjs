@@ -151,12 +151,12 @@ try {
   await emulate("light");
   console.log("theme-browser: System follows the emulated scheme without a reload");
 
-  // Settings opens on the editor category; Appearance is the first entry in
+  // Settings opens on the editor category; General is the first entry in
   // the navigation.
   await tab.evaluate("window.theme.setChoice('light')");
   await tab.evaluate('window.dispatchEvent(new CustomEvent("librepaper:open-settings"))');
   await until("settings shown", () => tab.evaluate("Boolean(document.querySelector('.settings-nav')?.checkVisibility())"), 5000);
-  await tab.evaluate(`[...document.querySelectorAll(".settings-nav-item")].find((node) => node.textContent.trim() === "Appearance").click()`);
+  await tab.evaluate(`[...document.querySelectorAll(".settings-nav-item")].find((node) => node.textContent.trim() === "General").click()`);
   const select = "#appearance-theme select[aria-label=Theme]";
   await until("theme select visible", () => tab.evaluate(`document.querySelector(${JSON.stringify(select)})?.checkVisibility() === true`), 5000);
   await tab.evaluate(`(() => {

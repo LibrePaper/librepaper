@@ -7,7 +7,7 @@
   import { createMachineView } from "../../lib/desktop/machine.svelte.js";
   import Modal from "../Modal.svelte";
   import { offered, search, has } from "./registry.js";
-  import AppearanceSettings from "./AppearanceSettings.svelte";
+  import GeneralSettings from "./GeneralSettings.svelte";
   import EditorSettings from "./EditorSettings.svelte";
   import LatexFilesSettings from "./LatexFilesSettings.svelte";
   import QuotaSettings from "./QuotaSettings.svelte";
@@ -19,7 +19,6 @@
   import BackupsSettings from "./BackupsSettings.svelte";
   import AgentSettings from "./AgentSettings.svelte";
   import ToolsSettings from "./ToolsSettings.svelte";
-  import DiagnosticsPanel from "./DiagnosticsPanel.svelte";
 
   let {
     open = $bindable(false),
@@ -99,8 +98,8 @@
             <span class="settings-scope">Version {view.state.version} · This computer</span>
           {:else if shown.note}<span class="settings-scope">{shown.note}</span>{/if}
         </header>
-        {#if shown.id === "appearance"}
-          <AppearanceSettings />
+        {#if shown.id === "general"}
+          <GeneralSettings />
         {:else if shown.id === "editor"}
           <EditorSettings {keys} {onkeys} {completion} {oncompletion} {brackets} {onbrackets} {proofing} {onproofing} {dialect} {ondialect} {check} {oncheck} {commands} />
         {:else if shown.id === "rendering"}
@@ -143,8 +142,6 @@
           {#if row("account-erase")}<AccountSettings {account} />{/if}
         {:else if shown.id === "tools"}
           <ToolsSettings {view} />
-        {:else if shown.id === "diagnostics"}
-          <section id="diagnostics-report" class="settings-subsection"><DiagnosticsPanel /></section>
         {/if}
       {/if}
     </div>

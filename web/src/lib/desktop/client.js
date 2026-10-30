@@ -81,7 +81,7 @@ export const _testing = {
 };
 
 /** The desktop app's page global, or null in an ordinary browser.
- * @returns {{ base: string, version: string, zoom?: number } | null} */
+ * @returns {{ base: string, version: string, zoom?: number, close?: "quit" | "tray" } | null} */
 export function desktop() {
   return globalThis.window?.__LIBREPAPER_DESKTOP__ ?? null;
 }
