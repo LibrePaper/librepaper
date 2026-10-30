@@ -373,27 +373,28 @@ function tableCaption({ token, source, language }: WidgetContext): string {
   return '';
 }
 
-// A table is drawn as a box like the preamble's: the caption when there is one,
-// never the cells. A caret in the table or a click on the box shows the source.
-class TableBoxWidget extends WidgetType {
-  constructor(private caption: string) {
+// A block pill: one framed line standing in for source that is not drawn. A
+// click shows the source. `kind` adds a class that tests and other code select.
+export class PillWidget extends WidgetType {
+  constructor(
+    readonly text: string,
+    readonly title = 'Show the source',
+    private kind = ''
+  ) {
     super();
   }
 
   eq(other: WidgetType): boolean {
-    return other instanceof TableBoxWidget && other.caption === this.caption;
+    return other instanceof PillWidget && other.text === this.text && other.title === this.title && other.kind === this.kind;
   }
 
   toDOM(view: EditorView): HTMLElement {
     const gap = document.createElement('div');
-    gap.className = 'cm-lp-block-gap';
+    gap.className = 'cm-lp-pill-gap';
     const box = document.createElement('div');
-    box.className = 'cm-lp-table-box';
-    box.title = 'Show the table source';
-    const label = document.createElement('strong');
-    label.textContent = 'Table';
-    box.append(label);
-    if (this.caption) box.append(`: ${this.caption}`);
+    box.className = this.kind ? `cm-lp-pill ${this.kind}` : 'cm-lp-pill';
+    box.title = this.title;
+    box.textContent = this.text;
     gap.append(box);
     revealOnMousedown(view, gap);
     return gap;
@@ -402,6 +403,12 @@ class TableBoxWidget extends WidgetType {
   ignoreEvent(): boolean {
     return true;
   }
+}
+
+// A table is drawn as a pill: the caption when there is one, never the cells.
+// A caret in the table or a click on the pill shows the source.
+function tableBox(caption: string): PillWidget {
+  return new PillWidget(caption ? `Table: ${caption}` : 'Table', 'Show the table source', 'cm-lp-table-box');
 }
 
 function keepsFocus(event: FocusEvent, container: HTMLElement): boolean {
@@ -417,5 +424,5 @@ function keepsFocus(event: FocusEvent, container: HTMLElement): boolean {
 
 registerWidget('math', context => new MathWidget(context));
 registerWidget('image', context => new ImageWidget(context));
-registerWidget('tablebox', context => new TableBoxWidget(tableCaption(context)));
+registerWidget('tablebox', context => tableBox(tableCaption(context)));
 registerWidget('figure', context => context.language.figure ? new FigureWidget(context) : null);

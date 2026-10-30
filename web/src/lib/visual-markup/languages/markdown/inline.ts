@@ -131,6 +131,11 @@ export const comment: Rule = (source, pos) => {
   return { kind: 'comment', from: pos, to: close + 3, body: { from: pos + 4, to: close } };
 };
 
+// True when nothing but whitespace shares the line with the range.
+function isAlone(source: string, from: number, to: number): boolean {
+  return source.slice(lineStartAt(source, from), from).trim() === '' && source.slice(to, lineEndAt(source, to)).trim() === '';
+}
+
 // Quarto shortcode {{< name args >}}, within the paragraph.
 export const shortcode: Rule = (source, pos) => {
   if (!source.startsWith('{{<', pos)) return null;
@@ -144,7 +149,7 @@ export const shortcode: Rule = (source, pos) => {
     name: 'shortcode',
     from: pos,
     to: pos + 3 + close + 3,
-    meta: { name, args: content.slice(name.length).trim() }
+    meta: { name, args: content.slice(name.length).trim(), alone: String(isAlone(source, pos, pos + 3 + close + 3)) }
   };
 };
 

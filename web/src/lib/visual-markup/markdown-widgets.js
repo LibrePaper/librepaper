@@ -10,7 +10,7 @@
 import { WidgetType } from "@codemirror/view";
 import "./markdown.css";
 import { imageResolver, isExternal, registerWidget, resolveImagePath, revealOnMousedown, textOf } from "./markup.ts";
-import { ElementWidget, factsOf, includeOpener, joinParts, nameList } from "./index.js";
+import { chipWidget, ElementWidget, factsOf, includeOpener, joinParts, nameList } from "./index.js";
 
 const own = (object, key) => Object.hasOwn(object, key);
 
@@ -536,14 +536,13 @@ registerWidget("shortcode", ({ token, state }) => {
   if (name === "include") {
     return new MarkdownWidget("include", { file: first }, { opener: state.facet(includeOpener) });
   }
+  // The language draws a shortcode alone on its line as a block.
+  const block = token.meta?.alone === "true";
   if (own(SHORTCODE_CHIPS, name)) {
-    const text = first ? `${SHORTCODE_CHIPS[name]}: ${first}` : SHORTCODE_CHIPS[name];
-    return new ElementWidget({ className: "cm-lp-chip", content: [text] });
+    return chipWidget(first ? `${SHORTCODE_CHIPS[name]}: ${first}` : SHORTCODE_CHIPS[name], block);
   }
-  if (name === "pagebreak") {
-    return new ElementWidget({ className: "cm-lp-chip cm-lp-chip-block", content: ["Page break"] });
-  }
-  return new ElementWidget({ className: "cm-lp-chip", content: [`Shortcode: ${name}`] });
+  if (name === "pagebreak") return chipWidget("Page break", block);
+  return chipWidget(`Shortcode: ${name}`, block);
 });
 
 // The draw functions by widget name, for MarkdownWidget.
