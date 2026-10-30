@@ -28,15 +28,16 @@ const entry = join(temporary, "entry.js");
 const port = 19000 + Math.floor(Math.random() * 1000);
 
 // The task list under test. The caret is parked on "End.", the last line, so that
-// no task line is drawn as source. The top level has five tasks and the parent has
+// no task line is drawn as source. The top level has six tasks and the parent has
 // two children, so eight task boxes are drawn.
 const sample = [
   "# Tasks",
   "",
-  "- [ ] Write intro priority: 2 due: 2026-11-05 #paper",
+  "- [ ] Write intro priority: 2 due: 2026-11-05 assignee: alice #paper",
   "- [/] Analyze results",
   "- [x] Submit abstract",
   "- [ ] Bad priority priority:9",
+  "- [ ] Pair task assignee:alice,bob",
   "- [ ] Parent",
   "  - [x] child one",
   "  - [ ] child two",
@@ -86,6 +87,11 @@ function tasksClick(words, selector) {
   return true;
 }
 
+// Runs in the page. Whether the row with the words holds a control matching the selector.
+function tasksHas(words, selector) {
+  return Boolean(tasksRow(words)?.querySelector(selector));
+}
+
 const entrySource = [
   `import ${JSON.stringify(join(root, "web/src/styles/app.css"))};`,
   `import { EditorView } from ${JSON.stringify(join(root, "web/node_modules/@codemirror/view/dist/index.js"))};`,
@@ -111,7 +117,8 @@ const entrySource = [
   tasksRow.toString(),
   tasksRead.toString(),
   tasksClick.toString(),
-  `Object.assign(window, { tasksText, tasksPark, tasksRead, tasksClick });`,
+  tasksHas.toString(),
+  `Object.assign(window, { tasksText, tasksPark, tasksRead, tasksClick, tasksHas });`,
   `window.tasksReady = true;`,
   "",
 ].join("\n");
@@ -216,6 +223,7 @@ try {
   const read = () => evaluate("tasksText()");
   const readControl = (words, selector) => evaluate(`tasksRead(${JSON.stringify(words)}, ${JSON.stringify(selector)})`);
   const clickControl = (words, selector) => evaluate(`tasksClick(${JSON.stringify(words)}, ${JSON.stringify(selector)})`);
+  const hasControl = (words, selector) => evaluate(`tasksHas(${JSON.stringify(words)}, ${JSON.stringify(selector)})`);
   const checkedOf = async (words) => (await readControl(words, BOX))?.checked ?? null;
   const popupCount = () => evaluate("document.querySelectorAll('.cm-lp-task-popup').length");
   // Waits until the shared text is the expected text, then returns the text read last.
@@ -232,21 +240,25 @@ try {
 
   // Check 1: drawing changes nothing, and each control shows its task's state.
   assert.equal(await read(), sample, "drawing the task list changed the shared text");
-  assert.equal(await evaluate(`document.querySelectorAll(".cm-editor ${BOX}").length`), 7, "the seven task boxes of the source were not all drawn");
+  assert.equal(await evaluate(`document.querySelectorAll(".cm-editor ${BOX}").length`), 8, "the eight task boxes of the source were not all drawn");
   assert.equal(await checkedOf(["Write intro"]), "false", "the todo box does not read aria-checked false");
   assert.equal(await checkedOf(["Analyze results"]), "mixed", "the in-progress box does not read aria-checked mixed");
   assert.equal(await checkedOf(["Submit abstract"]), "true", "the done box does not read aria-checked true");
-  assert.equal((await readControl(["Write intro"], ".cm-lp-field-priority"))?.tag, "SPAN", "the P2 chip is not drawn as a span");
-  assert.equal((await readControl(["Write intro"], ".cm-lp-field-priority"))?.text, "P2", "the priority chip on the Write intro line does not read P2");
-  assert.equal((await readControl(["Write intro"], ".cm-lp-field-due"))?.tag, "SPAN", "the due chip is not drawn as a span");
+  assert.equal((await readControl(["Write intro"], ".cm-lp-field-priority"))?.tag, "SPAN", "the priority 2 field is not drawn as a span");
+  assert.equal((await readControl(["Write intro"], ".cm-lp-field-priority"))?.text, "❷", "the priority field on the Write intro line does not read the glyph for 2");
+  assert.equal((await readControl(["Write intro"], ".cm-lp-field-due"))?.tag, "SPAN", "the due field is not drawn as a span");
+  assert.equal(await hasControl(["Write intro"], ".cm-lp-field-due svg"), true, "the due field has no clock icon");
+  assert.equal(await hasControl(["Write intro"], ".cm-lp-field-assignee svg"), true, "the assignee field has no user icon");
+  assert.equal((await readControl(["Pair task"], ".cm-lp-field-assignee"))?.text, "alice, bob", "the two assignees do not read alice, bob");
+  assert.equal(await hasControl(["Pair task"], ".cm-lp-field-assignee svg"), true, "the two assignees have no icon");
   assert.equal((await readControl(["Parent"], ".cm-lp-task-progress"))?.text, "1 of 2", "the parent does not show its progress 1 of 2");
   assert.notEqual(await readControl(["Bad priority"], ".cm-lp-task-invalid"), null, "the priority:9 chip does not have the class cm-lp-task-invalid");
   console.log("tasks-browser: the controls are drawn with the states, the progress and the warning, and the text is unchanged");
 
-  // Check 2: each click on the first box moves its task to the next state. The fifth
+  // Check 2: each click on the first box moves its task to the next state. The fourth
   // click returns the task to to do, and the text is the original again.
   let expected = sample;
-  const states = ["[ ]", "[x]", "[/]", "[?]", "[-]", "[ ]"];
+  const states = ["[ ]", "[x]", "[/]", "[-]", "[ ]"];
   for (let index = 1; index < states.length; index++) {
     assert.equal(await clickControl(["Write intro"], BOX), true, `no task box on the Write intro line before ${states[index]}`);
     expected = expected.replace(`- ${states[index - 1]} Write intro`, `- ${states[index]} Write intro`);
@@ -255,14 +267,14 @@ try {
   assert.equal(expected, sample, "the cycle did not return the Write intro line to the original text");
   console.log("tasks-browser: each click on a box moves the task to the next state, and the cycle returns to to do");
 
-  // Check 3: a click on the in-progress box writes [?], and a click on the done box writes [/].
+  // Check 3: a click on the in-progress box writes [-], and a click on the done box writes [/].
   assert.equal(await clickControl(["Analyze results"], BOX), true, "no task box on the Analyze results line");
-  expected = sample.replace("- [/] Analyze results", "- [?] Analyze results");
-  assert.equal(await settle(expected), expected, "a click on the in-progress box did not write [?]");
+  expected = sample.replace("- [/] Analyze results", "- [-] Analyze results");
+  assert.equal(await settle(expected), expected, "a click on the in-progress box did not write [-]");
   assert.equal(await clickControl(["Submit abstract"], BOX), true, "no task box on the Submit abstract line");
   expected = expected.replace("- [x] Submit abstract", "- [/] Submit abstract");
   assert.equal(await settle(expected), expected, "a click on the done box did not write [/]");
-  console.log("tasks-browser: the in-progress box moves to blocked, and the done box moves to in progress");
+  console.log("tasks-browser: the in-progress box moves to cancelled, and the done box moves to in progress");
 
   // Check 4: no click opens a popup, and the chips change no text.
   assert.equal(await clickControl(["Write intro"], ".cm-lp-field-priority"), true, "no priority chip on the Write intro line");

@@ -1,18 +1,17 @@
 // The task grammar shared by the visual layer and the edits: states, field names,
 // the tag and field grammars, validators and date arithmetic. Pure, no DOM.
 
-// The box character to its state. "X" is done and keeps its case.
-export const STATE_OF = { " ": "todo", x: "done", X: "done", "/": "doing", "?": "blocked", "-": "cancelled" };
+// The box character to its state. "X" is done and keeps its case. Any other character is not a task box.
+export const STATE_OF = { " ": "todo", x: "done", X: "done", "/": "doing", "-": "cancelled" };
 // Menu order, with the character each state writes.
 export const STATES = [
   { state: "todo", char: " ", label: "To do" },
   { state: "doing", char: "/", label: "In progress" },
-  { state: "blocked", char: "?", label: "Blocked" },
   { state: "done", char: "x", label: "Done" },
   { state: "cancelled", char: "-", label: "Cancelled" },
 ];
 // The order a click cycles the box through. Each state is followed by the next one, and the last wraps to the first.
-export const CYCLE = [" ", "x", "/", "?", "-"];
+export const CYCLE = [" ", "x", "/", "-"];
 export const FIELDS = ["priority", "due", "start", "scheduled", "created", "done", "cancelled", "assignee", "estimate"];
 export const DATE_FIELDS = ["due", "start", "scheduled", "created", "done", "cancelled"];
 export const PRIORITIES = [
@@ -26,7 +25,7 @@ export const FIELD = /(priority|due|start|scheduled|created|done|cancelled|assig
 export const TAG = /#[A-Za-z][A-Za-z0-9_\/-]*/y;
 // The head of a task item's first line: indent, optional quote markers, list marker, box.
 // Group 1 is the indent and markers before the list marker, group 2 the box character.
-export const TASK_LINE = /^((?:[ \t]*>)*[ \t]*)(?:[-*+]|\d{1,9}[.)])[ \t]+\[([ xX\/?-])\](?=[ \t]|$)/;
+export const TASK_LINE = /^((?:[ \t]*>)*[ \t]*)(?:[-*+]|\d{1,9}[.)])[ \t]+\[([ xX\/-])\](?=[ \t]|$)/;
 
 const ASSIGNEES = /^[A-Za-z0-9_.-]+(?:,[A-Za-z0-9_.-]+)*$/;
 const ESTIMATE = /^\d+(?:\.\d+)?[mhd]$/;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {
-  CYCLE, FIELD, isDate, isOverdue, shortDate, todayISO, validateField,
+  CYCLE, FIELD, isDate, isOverdue, shortDate, TASK_LINE, todayISO, validateField,
 } from "../../src/lib/tasks/syntax.js";
 
 // Field values: each valid value passes, each invalid one returns a warning sentence.
@@ -54,7 +54,11 @@ import {
 }
 
 // The cycle order: each box character, then the next one, and the last wraps to the first.
-assert.deepEqual(CYCLE, [" ", "x", "/", "?", "-"]);
+assert.deepEqual(CYCLE, [" ", "x", "/", "-"]);
+
+// A question mark is not a box, so a line with [?] is a plain list item.
+assert.equal(TASK_LINE.test("- [?] x"), false);
+assert.equal(TASK_LINE.test("- [-] x"), true);
 
 // Calendar dates: real days only, leap years by the Gregorian rule.
 {
@@ -80,7 +84,6 @@ assert.deepEqual(CYCLE, [" ", "x", "/", "?", "-"]);
 // Overdue: incomplete tasks due before today. Today itself is not overdue.
 {
   assert.equal(isOverdue("todo", "2026-10-29", "2026-10-30"), true);
-  assert.equal(isOverdue("blocked", "2026-10-29", "2026-10-30"), true);
   assert.equal(isOverdue("doing", "2026-10-29", "2026-10-30"), true);
   assert.equal(isOverdue("todo", "2026-10-30", "2026-10-30"), false);
   assert.equal(isOverdue("todo", "2026-10-31", "2026-10-30"), false);

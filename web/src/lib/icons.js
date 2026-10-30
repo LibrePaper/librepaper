@@ -64,6 +64,9 @@ export const ICONS = {
   // whole year at a time beside the single chevrons that step a month.
   "chevrons-left": [["path", "m11 17-5-5 5-5"], ["path", "m18 17-5-5 5-5"]],
   "chevrons-right": [["path", "m6 17 5-5-5-5"], ["path", "m13 17 5-5-5-5"]],
+  // Lucide's user and clock, for a task's assignee and its dates.
+  user: [["path", "M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"], ["circle", { cx: 12, cy: 7, r: 4 }]],
+  clock: [["circle", { cx: 12, cy: 12, r: 10 }], ["path", "M12 6v6l4 2"]],
   x: [["path", "M18 6 6 18"], ["path", "m6 6 12 12"]],
   // Lucide's presentation, for the PDF preview's full-screen slide mode, and
   // moon, for inverting the pages while the application is dark.

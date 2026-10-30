@@ -7,6 +7,7 @@
 import { WidgetType } from "@codemirror/view";
 import "./tasks.css";
 import { registerWidget, revealOnMousedown } from "./markup.ts";
+import { iconElement } from "../icons.js";
 import { taskAt } from "../tasks/model.js";
 import { cycle } from "../tasks/edit.js";
 import { CYCLE, isOverdue, PRIORITIES, shortDate, STATE_OF, STATES, todayISO } from "../tasks/syntax.js";
@@ -17,6 +18,10 @@ const ORDER = CYCLE.map((char) => STATE_OF[char]);
 const NEXT_LABEL = Object.fromEntries(ORDER.map((state, index) => [state, STATE_LABEL[ORDER[(index + 1) % ORDER.length]]]));
 // The value aria-checked takes for each box. A partly done task is "mixed".
 const CHECKED = { done: "true", doing: "mixed" };
+// The mark drawn inside the box. A to do task has no mark.
+const MARK = { done: "✓", doing: "•", cancelled: "×" };
+// The circled digit each priority is drawn as, after the Obsidian Tasks plugin's glyphs.
+const PRIORITY_GLYPH = { 1: "❶", 2: "❷", 3: "❸", 4: "❹", 5: "❺" };
 
 // The date fields, with the words a chip puts before the date and the name of the date.
 const DATE_LABEL = {
@@ -56,11 +61,12 @@ function cycleTask(view, button) {
   if (changes.length) view.dispatch({ changes });
 }
 
-// The checkbox and its progress. The glyph is drawn by CSS, except the question mark,
-// which is text so that a blocked task reads as blocked without the stylesheet.
+// The checkbox and its progress. Every box is drawn alike: an outlined square with one
+// mark inside. The mark is text, so it is centred by the box and reads without the
+// stylesheet.
 function buildTaskBox(view, { task, progress }) {
   const root = el("span", "cm-lv-widget cm-lp-taskbox");
-  const button = el("button", `cm-lp-taskbox-button cm-lp-taskbox-${task}`, task === "blocked" ? "?" : "");
+  const button = el("button", "cm-lp-taskbox-button", MARK[task] ?? "");
   button.type = "button";
   button.setAttribute("role", "checkbox");
   button.setAttribute("aria-checked", CHECKED[task] ?? "false");
@@ -83,13 +89,17 @@ function buildTaskBox(view, { task, progress }) {
 }
 
 
-// The chip's text, its accessible name and its title for one field. A warning
-// keeps the source as written, and says so in the name and the title.
+// The chip's text, its icon, its accessible name and its title for one field. A warning
+// keeps the source as written, and says so in the name and the title. A priority's title
+// is its name, so a pointer rests on the same words a screen reader gets.
 function describeField(key, value, state, warning) {
   if (warning) return { text: `${key}:${value}`, name: `${key}:${value}. ${warning}`, title: warning };
   if (key === "priority") {
     const rank = PRIORITIES.find((item) => String(item.value) === value);
-    if (rank) return { text: `P${rank.value}`, name: `Priority ${rank.value}, ${rank.label.toLowerCase()}` };
+    if (rank) {
+      const name = `Priority ${rank.value}, ${rank.label.toLowerCase()}`;
+      return { text: PRIORITY_GLYPH[rank.value], name, title: name };
+    }
     return { text: value, name: `Priority ${value}` };
   }
   if (key in DATE_LABEL) {
@@ -99,11 +109,16 @@ function describeField(key, value, state, warning) {
     return {
       text: prefix ? `${prefix} ${short}` : short,
       name: `${DATE_LABEL[key]} ${short}${overdue ? ", overdue" : ""}`,
+      icon: "clock",
       overdue,
     };
   }
-  const names = { assignee: "Assignee", estimate: "Estimate" };
-  return { text: value, name: `${names[key]} ${value}` };
+  if (key === "assignee") {
+    const names = value.split(",");
+    if (names.length > 1) return { text: names.join(", "), name: `Assignees ${names.join(", ")}`, icon: "users" };
+    return { text: value, name: `Assignee ${value}`, icon: "user" };
+  }
+  return { text: value, name: `Estimate ${value}` };
 }
 
 // A field chip. The chip shows the short form and its name says the whole field.
@@ -117,7 +132,13 @@ function buildField(view, { key, value, state, warning }) {
   if (described.overdue) classes.push("cm-lp-task-overdue");
   if (warning) classes.push("cm-lp-task-invalid");
 
-  const chip = el("span", classes.join(" "), described.text);
+  const chip = el("span", classes.join(" "));
+  if (described.icon) {
+    const icon = iconElement(described.icon);
+    icon.classList.add("cm-lp-field-icon");
+    chip.append(icon);
+  }
+  chip.append(described.text);
   chip.setAttribute("aria-label", described.name);
   if (described.title) chip.title = described.title;
   revealOnMousedown(view, chip);
