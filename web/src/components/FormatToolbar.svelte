@@ -4,8 +4,9 @@
 
   // The formatting row under the top bar, shown in visual mode. What it
   // offers is FORMAT_TOOLS; `active` is the formatting at the caret, and
-  // `onformat(id)` is asked to apply a tool.
-  let { active = null, hidden = false, onformat = () => {} } = $props();
+  // `onformat(id)` is asked to apply a tool, and
+  // `oninsert(actionId)` to open the Insert menu flow of an insert tool.
+  let { active = null, hidden = false, onformat = () => {}, oninsert = () => {} } = $props();
 
   // Consecutive tools that share a group are drawn together.
   const GROUPS = FORMAT_TOOLS.reduce((groups, tool) => {
@@ -53,7 +54,7 @@
           tabindex={focused === tool.id ? 0 : -1}
           onfocus={() => (focused = tool.id)}
           onmousedown={(event) => event.preventDefault()}
-          onclick={() => onformat(tool.id)}
+          onclick={() => (tool.insert ? oninsert(tool.insert) : onformat(tool.id))}
         >
           <Icon name={tool.icon} size={16} />
         </button>

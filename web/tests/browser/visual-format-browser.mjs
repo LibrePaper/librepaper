@@ -43,6 +43,8 @@ const formats = {
       bold: [(text) => `\\textbf{${text}}`],
       italic: [(text) => `\\textit{${text}}`, (text) => `\\emph{${text}}`],
       underline: [(text) => `\\underline{${text}}`],
+      mono: [(text) => `\\texttt{${text}}`],
+      inlineMath: [(text) => `$${text}$`],
     },
     heading: (level, text) => `${["\\section{", "\\subsection{", "\\subsubsection{"][level - 1]}${text}}`,
     bullet: /^\s*\\item\s+(.+)$/,
@@ -54,6 +56,8 @@ const formats = {
       bold: [(text) => `*${text}*`],
       italic: [(text) => `_${text}_`],
       underline: [(text) => `#underline[${text}]`],
+      mono: [(text) => `\`${text}\``],
+      inlineMath: [(text) => `$${text}$`],
     },
     heading: (level, text) => `${"=".repeat(level)} ${text}`,
     bullet: /^- (.+)$/,
@@ -65,6 +69,8 @@ const formats = {
       bold: [(text) => `**${text}**`],
       italic: [(text) => `*${text}*`],
       underline: [(text) => `[${text}]{.underline}`],
+      mono: [(text) => `\`${text}\``],
+      inlineMath: [(text) => `$${text}$`],
     },
     heading: (level, text) => `${"#".repeat(level)} ${text}`,
     bullet: /^- (.+)$/,
@@ -128,6 +134,10 @@ async function formatCheck(format, sample) {
   step("italic off", () => applyFormat(view, format, "italic"));
   step("underline on", () => { select("words"); applyFormat(view, format, "underline"); });
   step("underline off", () => applyFormat(view, format, "underline"));
+  step("mono on", () => { select("words"); applyFormat(view, format, "mono"); });
+  step("mono off", () => applyFormat(view, format, "mono"));
+  step("inlineMath on", () => { select("words"); applyFormat(view, format, "inlineMath"); });
+  step("inlineMath off", () => applyFormat(view, format, "inlineMath"));
   step("heading 2 on", () => { caretIn("A plain line."); applyFormat(view, format, "h2"); });
   step("heading 2 off", () => applyFormat(view, format, "h2"));
   step("bullets on", () => { selectBetween("First item", "Second item"); applyFormat(view, format, "bullets"); });
@@ -296,7 +306,7 @@ try {
       && at.start.format.heading === 0 && at.start.format.list === null,
     `start: a plain sample reported formatting ${JSON.stringify(at.start.format)}`);
 
-    for (const kind of ["bold", "italic", "underline"]) {
+    for (const kind of ["bold", "italic", "underline", "mono", "inlineMath"]) {
       const on = at[`${kind} on`];
       const off = at[`${kind} off`];
       const expected = wrapped(kind, 0);
@@ -359,7 +369,7 @@ try {
       console.log(`visual-format-browser: ${format} FAILED ${problems.length} of ${checks} checks`);
       for (const problem of problems) console.log(`  - ${problem}`);
     } else {
-      console.log(`visual-format-browser: ${format} passed ${checks} checks (bold, italic, underline, headings and lists)`);
+      console.log(`visual-format-browser: ${format} passed ${checks} checks (bold, italic, underline, code, math, headings and lists)`);
     }
   }
 

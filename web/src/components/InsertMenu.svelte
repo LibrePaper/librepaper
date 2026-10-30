@@ -142,6 +142,10 @@
     }, 0);
   }
   /** @param {string} id */
+  export function insertAction(id) {
+    choose(id);
+  }
+  /** @param {string} id */
   function choose(id) {
     // A palette opener is answered by the reader, which owns the overlays. It
     // is handed on after the menu has closed, so the menu's focus restore does

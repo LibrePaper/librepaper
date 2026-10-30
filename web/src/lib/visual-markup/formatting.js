@@ -9,6 +9,8 @@ import { emphasisCommand, MARKUP } from "../emphasis.js";
 
 const FORMATS = new Set(["latex", "typst", "markdown"]);
 const MARKS = ["bold", "italic", "underline"];
+// Marks the tokens do not name, so they are read from the source.
+const SOURCE_MARKS = ["mono", "inlineMath"];
 const PLACEHOLDER = "Heading";
 const PLACEHOLDER_ITEM = "Item";
 const SLOT = "\u0001";
@@ -18,9 +20,10 @@ const KEYS = menuKeys();
 // Every tool the bar shows, in the order it draws them. Consecutive tools that
 // share a `group` are drawn together, with a divider before the next group.
 // To add a tool, add an entry here. Exactly one of these keys says what it does:
-//   mark     "bold" | "italic" | "underline": toggles that markup on the selection
+//   mark     "bold" | "italic" | "underline" | "mono" | "inlineMath": toggles that markup on the selection
 //   heading  1 | 2 | 3: makes the lines a heading of that level, or a paragraph again
 //   list     "bullet" | "number": makes the lines a list, or removes the list
+//   insert   an id from INSERT_ACTIONS in lib/insert.js: opens that Insert menu flow
 // `icon` is a name from Icon.svelte's ICONS table, drawn on the button. `label`
 // is the tooltip and accessible name. `shortcut` is the printed key from
 // lib/commands.js, when one exists.
@@ -33,12 +36,19 @@ export const FORMAT_TOOLS = [
   { id: "h3", label: "Heading 3", group: "heading", heading: 3, icon: "heading-3" },
   { id: "bullets", label: "Bulleted list", group: "list", list: "bullet", icon: "list" },
   { id: "numbers", label: "Numbered list", group: "list", list: "number", icon: "list-ordered" },
+  { id: "mono", label: "Inline code", group: "code", mark: "mono", icon: "code" },
+  { id: "inlineMath", label: "Inline math", group: "code", mark: "inlineMath", icon: "sigma" },
+  { id: "link", label: "Link", group: "insert", insert: "link", icon: "link" },
+  { id: "citation", label: "Citation", group: "insert", insert: "citation", icon: "quote" },
+  { id: "cross-reference", label: "Cross-reference", group: "insert", insert: "cross-reference", icon: "hash" },
+  { id: "figure", label: "Image or figure", group: "insert", insert: "figure", icon: "image" },
+  { id: "table", label: "Table", group: "insert", insert: "table", icon: "table" },
 ];
 
 // Markdown's markup, used where no language definition supplies it. Its bold
 // and italic come from MARKUP in lib/emphasis.js.
 const MARKDOWN = {
-  wrap: { underline: ["[", "]{.underline}"] },
+  wrap: { underline: ["[", "]{.underline}"], mono: ["`", "`"], inlineMath: ["$", "$"] },
   heading: (level, text) => `${"#".repeat(level)} ${text}`,
   list: (kind, items) => items.map((item, index) => (kind === "number" ? `${index + 1}. ${item}` : `- ${item}`)).join("\n"),
 };
@@ -423,7 +433,7 @@ export function applyFormat(view, format, id) {
 // on, the heading level of the caret's line (0 for none), and its list kind.
 // The visual layer's tokens are read when they are current, else the source.
 export function formatState(view, format) {
-  const none = { bold: false, italic: false, underline: false, heading: 0, list: null };
+  const none = { bold: false, italic: false, underline: false, mono: false, inlineMath: false, heading: 0, list: null };
   if (!FORMATS.has(format)) return none;
   const state = view.state;
   const range = state.selection.main;
@@ -435,6 +445,7 @@ export function formatState(view, format) {
       ? markedInTokens(tokens, format, mark, range)
       : enclosingMarkup(state, range, markersFor(format, mark)) !== null;
   }
+  for (const mark of SOURCE_MARKS) marks[mark] = enclosingMarkup(state, range, markersFor(format, mark)) !== null;
   return {
     ...marks,
     heading: tokens ? headingInTokens(tokens, line) : headingLevelOf(format, line.text),

@@ -222,6 +222,14 @@
       ["line", { x1: 14, x2: 5, y1: 20, y2: 20 }],
       ["line", { x1: 15, x2: 9, y1: 4, y2: 20 }],
     ],
+    code: [["polyline", { points: "16 18 22 12 16 6" }], ["polyline", { points: "8 6 2 12 8 18" }]],
+    sigma: [["path", "M18 7V5a1 1 0 0 0-1-1H6.5a.5.5 0 0 0-.4.8l4.5 6a2 2 0 0 1 0 2.4l-4.5 6a.5.5 0 0 0 .4.8H17a1 1 0 0 0 1-1v-2"]],
+    quote: [
+      ["path", "M16 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z"],
+      ["path", "M5 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z"],
+    ],
+    hash: [["line", { x1: 4, x2: 20, y1: 9, y2: 9 }], ["line", { x1: 4, x2: 20, y1: 15, y2: 15 }], ["line", { x1: 10, x2: 8, y1: 3, y2: 21 }], ["line", { x1: 16, x2: 14, y1: 3, y2: 21 }]],
+    table: [["path", "M12 3v18"], ["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }], ["path", "M3 9h18"], ["path", "M3 15h18"]],
     underline: [["path", "M6 4v6a6 6 0 0 0 12 0V4"], ["line", { x1: 4, x2: 20, y1: 20, y2: 20 }]],
     "heading-1": [["path", "M4 12h8"], ["path", "M4 18V6"], ["path", "M12 18V6"], ["path", "m17 12 3-2v8"]],
     "heading-2": [
@@ -336,6 +344,8 @@
       <circle {...geometry} />
     {:else if shape === "line"}
       <line {...geometry} />
+    {:else if shape === "polyline"}
+      <polyline {...geometry} />
     {:else}
       <path d={geometry} />
     {/if}
