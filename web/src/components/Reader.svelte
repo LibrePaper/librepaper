@@ -4013,19 +4013,21 @@
 {/snippet}
 {#snippet visualModeControl()}
   {#if sourceOpen && mayEdit && visualAvailable}
-    <button type="button" class="visual-mode" aria-pressed={visual} title={visual ? "Switch to source editor" : "Switch to visual editor"} onclick={() => setVisual(!visual)}>
-      {#if visual}<Icon name="check" size={14} />{/if}
-      <span>Visual mode</span>
-    </button>
+    <label class="bar-toggle" title="Draw the source as formatted text while you edit.">
+      <button type="button" role="switch" class="switch" aria-checked={visual} aria-label="Visual mode" data-state={visual ? "checked" : "unchecked"} onclick={() => setVisual(!visual)}>
+        <span class="switch-thumb" data-state={visual ? "checked" : "unchecked"}></span>
+      </button>
+      <span class="bar-toggle-label">Visual mode</span>
+    </label>
   {/if}
 {/snippet}
 {#snippet localExecutionControl()}
   {#if runCodeOffered}
-    <label class="run-code-toggle" title="Run this document's code on this computer. Off whenever a document opens.">
+    <label class="bar-toggle" title="Run this document's code on this computer. Off whenever a document opens.">
       <button type="button" role="switch" class="switch" aria-checked={localExecution} aria-label="Run code" data-state={localExecution ? "checked" : "unchecked"} onclick={toggleLocalExecution}>
         <span class="switch-thumb" data-state={localExecution ? "checked" : "unchecked"}></span>
       </button>
-      <span class="run-code-label">Run code</span>
+      <span class="bar-toggle-label">Run code</span>
     </label>
   {/if}
 {/snippet}
@@ -4640,30 +4642,7 @@
   .editorpane.comparing { grid-template-rows: auto minmax(0, 1fr); }
   .menuitem-chevron { display: inline-flex; margin-left: auto; padding-left: calc(var(--spacing) * 2); }
   .export-reason { flex: 0 0 auto; margin-left: auto; max-width: 12rem; overflow: hidden; color: var(--color-text-secondary); font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
-  .run-code-toggle { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1.5); cursor: pointer; font-size: var(--text-sm); white-space: nowrap; }
-  /* Outlined when the source editor is active; a subtle fill when visual editing is on. */
-  .visual-mode {
-    display: inline-flex;
-    flex: none;
-    align-items: center;
-    gap: calc(var(--spacing) * 1.5);
-    min-height: calc(var(--spacing) * 8);
-    padding: 0 calc(var(--spacing) * 2.5);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-base);
-    background: transparent;
-    color: var(--color-text);
-    font-size: var(--text-sm);
-    white-space: nowrap;
-    cursor: pointer;
-  }
-  .visual-mode:hover { background: var(--color-row-hover); }
-  .visual-mode[aria-pressed="true"] { background: var(--color-subtle); }
-  .visual-mode[aria-pressed="true"]:hover { background: var(--color-row-selected); }
-  .visual-mode:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
-  @media (max-width: 760px) {
-    .visual-mode { padding: 0 calc(var(--spacing) * 2); }
-  }
+  .bar-toggle { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1.5); cursor: pointer; font-size: var(--text-sm); white-space: nowrap; }
   .nav-document {
     display: block;
     max-width: min(38vw, 20rem);
