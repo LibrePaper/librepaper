@@ -1282,8 +1282,6 @@
   let peers = $state(1);
   let participants = $state([]);
   let linked = $state(read(LINKED, false) === true);
-  // Visual mode starts off on every open and is never stored.
-  let visual = $state(false);
   // The formatting at the caret, from the Editor while visual mode is on.
   let formatActive = $state(null);
 
@@ -2286,6 +2284,8 @@
   // `reader/preferences.svelte.js` for why those are one act and not two.
   const preferences = createPreferences();
   const prefs = preferences.state;
+  // Visual mode starts from the Editor setting on every open. The top-bar switch changes it for this session only.
+  let visual = $state(prefs.visual);
   // Every project opens the same way: the files, the file it opens on and its
   // preview, or the preview alone on a phone. Where the last visit ended is
   // not kept.
@@ -2563,6 +2563,8 @@
   const setProofing = (value) => preferences.setProofing(value);
   const setDialect = (value) => preferences.setDialect(value);
   const setCheck = (on) => preferences.setCheck(on);
+  // The Editor setting also sets the session value, so the change shows at once.
+  const setVisualDefault = (on) => { preferences.setVisual(on); visual = on; };
 
   // What ":q" in Vim mode asks for: the document alone, set directly rather
   // than reached by cycling.
@@ -4584,6 +4586,7 @@
                 remoteConnected={connected} remoteNote={connectionNote}
                 {keys} onkeys={setKeys}
                 {completion} oncompletion={setCompletion} {brackets} onbrackets={setBrackets} {proofing} onproofing={setProofing} {dialect} ondialect={setDialect} {check} oncheck={setCheck}
+                visual={prefs.visual} onvisual={setVisualDefault}
                 commands={commandContext}
                 userId={buildUserId}
                 onbuildpreferences={(format, next) => { if (format === sourceFormat) setBuildPreferences(next); }}
