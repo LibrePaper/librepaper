@@ -118,6 +118,7 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(Service::new(&first));
     app.manage(zoom::Zoom::load(app.handle()));
     app.manage(theme::Theme::load(app.handle()));
+    app.manage(tray::CloseChoice::load(app.handle()));
     app.manage(download::Downloads::default());
     theme::watch_system(app.handle());
     #[cfg(target_os = "linux")]
@@ -164,8 +165,9 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 
 // The page reads its base URL before any script of its own runs. The
 // new-window shortcut is added after that line. `zoom` is the level the
-// window opens at; later changes arrive as a `librepaper:zoom` event.
-fn desktop_script(zoom: f64) -> String {
+// window opens at; later changes arrive as a `librepaper:zoom` event. `close`
+// is the current close choice.
+fn desktop_script(zoom: f64, close: tray::Close) -> String {
     let base = if cfg!(windows) {
         "http://lp-local.localhost/"
     } else {
@@ -177,8 +179,9 @@ fn desktop_script(zoom: f64) -> String {
         shortcut.push_str(&DROP_SCRIPT.replace("{base}", base));
     }
     format!(
-        "window.__LIBREPAPER_DESKTOP__ = Object.freeze({{ base: \"{base}\", version: \"{}\", zoom: {zoom} }});\n{shortcut}",
-        env!("CARGO_PKG_VERSION")
+        "window.__LIBREPAPER_DESKTOP__ = Object.freeze({{ base: \"{base}\", version: \"{}\", zoom: {zoom}, close: \"{}\" }});\n{shortcut}",
+        env!("CARGO_PKG_VERSION"),
+        close.as_str()
     )
 }
 
@@ -299,7 +302,10 @@ fn open_window(app: &AppHandle, url: Url) -> tauri::Result<tauri::WebviewWindow>
         .theme(theme.tauri_theme(choice))
         .background_color(theme::background(choice, theme.system_dark(app)))
         .inner_size(1280.0, 860.0)
-        .initialization_script(desktop_script(app.state::<zoom::Zoom>().get()))
+        .initialization_script(desktop_script(
+            app.state::<zoom::Zoom>().get(),
+            app.state::<tray::CloseChoice>().get(),
+        ))
         .on_new_window(move |url, _features| {
             let origin = url.origin().ascii_serialization();
             if trusted(&opener, &origin) {
@@ -725,6 +731,21 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
         {
             shell_log::write(&format!("could not set the theme: {err}"));
         }
+        return responder.respond(with_origin(no_content(), &origin));
+    }
+    // The page's choice for what closing the last window does.
+    if request.method() == Method::POST && request.uri().path() == "/shell/close" {
+        let choice = serde_json::from_slice::<serde_json::Value>(request.body())
+            .ok()
+            .and_then(|body| body["close"].as_str()?.parse::<tray::Close>().ok());
+        let Some(choice) = choice else {
+            let res = json_error(
+                StatusCode::BAD_REQUEST,
+                "The close choice must be quit or tray.",
+            );
+            return responder.respond(with_origin(res, &origin));
+        };
+        app.state::<tray::CloseChoice>().set(app, choice);
         return responder.respond(with_origin(no_content(), &origin));
     }
     // A system notification from the page, such as automatic Git sync pausing.
