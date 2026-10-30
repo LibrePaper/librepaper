@@ -161,6 +161,65 @@ function hiddenRuns(state: EditorState, spans: Range[], replaced: Range[], joine
   return runs;
 }
 
+// A LaTeX preamble is source: the preamble fold draws it, folded or revealed
+// as plain text, so nothing before \begin{document} is decorated here.
+function bodyTokens(parsed: Token[]): Token[] {
+  const body = parsed.findIndex(token => token.kind === 'container' && token.name === 'document');
+  return body > 0 ? parsed.slice(body) : parsed;
+}
+
+// The lines drawn as plain source: every line a selection or a reveal range
+// touches, widened to the whole of any block that is drawn as more than one
+// line (an environment, list, callout, code block, figure, table, widget).
+// The document environment covers the whole body and never widens.
+export function revealedLines(state: EditorState, language: Language, parsed: Token[]): Set<number> {
+  const doc = state.doc;
+  const revealed = new Set<number>();
+  for (const range of [...state.selection.ranges, ...state.facet(revealRanges)]) {
+    const last = doc.lineAt(Math.min(range.to, doc.length)).number;
+    for (let n = doc.lineAt(Math.min(range.from, doc.length)).number; n <= last; n++) revealed.add(n);
+  }
+
+  const blocks: Array<[number, number]> = [];
+  const visit = (list: Token[]) => {
+    for (const token of list) {
+      const style = language.style(token);
+      if (style && (style.block || style.widget) && !(token.kind === 'container' && token.name === 'document')) {
+        const first = doc.lineAt(token.from).number;
+        const end = token.to > token.from && doc.sliceString(token.to - 1, token.to) === '\n' ? token.to - 1 : token.to;
+        const last = doc.lineAt(end).number;
+        if (last > first) blocks.push([first, last]);
+      }
+      if (token.children) visit(token.children);
+    }
+  };
+  visit(bodyTokens(parsed));
+
+  // Widening can bring in lines of other blocks, so repeat until nothing is added.
+  let changed = blocks.length > 0;
+  while (changed) {
+    changed = false;
+    const sorted = [...revealed].sort((a, b) => a - b);
+    for (const [first, last] of blocks) {
+      let low = 0;
+      let high = sorted.length;
+      while (low < high) {
+        const middle = (low + high) >> 1;
+        if (sorted[middle] < first) low = middle + 1;
+        else high = middle;
+      }
+      if (low === sorted.length || sorted[low] > last) continue;
+      for (let n = first; n <= last; n++) {
+        if (!revealed.has(n)) {
+          revealed.add(n);
+          changed = true;
+        }
+      }
+    }
+  }
+  return revealed;
+}
+
 export function buildDecorations(state: EditorState, options: BuildOptions, tokens?: Token[]): BuildResult {
   const source = state.doc.toString();
   const parsed = tokens ?? new Tokenizer(options.language, { maxDepth: options.maxDepth }).tokenize(source);
@@ -170,14 +229,19 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
   const replaced: Range[] = [];
   const concealed: Range[] = [];
   const joinedBreaks = new Set<number>();
-  const local: RevealRange[] = [...state.selection.ranges];
-  const external = state.facet(revealRanges);
+  const revealed = revealedLines(state, options.language, parsed);
 
-  const overlap = (list: readonly RevealRange[], from: number, to: number) =>
-    list.filter(range => from <= range.to && to >= range.from);
-
-  const isRevealed = (from: number, to: number) =>
-    overlap(local, from, to).length > 0 || overlap(external, from, to).length > 0;
+  const touchesRevealed = (from: number, to: number) => {
+    if (revealed.size === 0) return false;
+    const first = state.doc.lineAt(from).number;
+    const last = state.doc.lineAt(to).number;
+    if (last - first > revealed.size) {
+      for (const n of revealed) if (n >= first && n <= last) return true;
+      return false;
+    }
+    for (let n = first; n <= last; n++) if (revealed.has(n)) return true;
+    return false;
+  };
 
   const hide = (from: number, to: number) => {
     if (to <= from || options.showCommands) return;
@@ -186,7 +250,7 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
     while (start < to) {
       const line = state.doc.lineAt(start);
       const end = Math.min(to, line.to);
-      if (end > start) concealed.push({ from: start, to: end });
+      if (end > start && !revealed.has(line.number)) concealed.push({ from: start, to: end });
       start = line.to + 1;
     }
   };
@@ -194,13 +258,6 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
   // scopeEnd is where a declaration (\bfseries) stops: its enclosing group or environment body.
   const emit = (list: Token[], scopeEnd: number) => {
     for (const token of list) {
-      // A figure shows as source, descendants included, while the caret is anywhere in it.
-      if (
-        token.kind === 'container' &&
-        (token.meta?.figure === 'true' || token.meta?.figureComposite === 'true') &&
-        isRevealed(token.from, token.to)
-      ) continue;
-
       const style = options.language.style(token);
       const childScope = token.body?.to ?? scopeEnd;
 
@@ -209,13 +266,7 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
         continue;
       }
 
-      // Environments reveal only on their \begin and \end, not anywhere in the body.
-      const inScope =
-        token.kind === 'container' && token.body
-          ? isRevealed(token.from, token.body.from) || isRevealed(token.body.to, token.to)
-          : isRevealed(token.from, token.to);
-
-      if (style.widget && !options.showCommands && !inScope) {
+      if (style.widget && !options.showCommands) {
         const widget = createWidget(style.widget, {
           token,
           source,
@@ -246,7 +297,7 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
 
       // An environment header is replaced by its widget; the default concealment below still
       // hides the same range, which the replacement then overrides.
-      if (style.header && token.body && !options.showCommands && !inScope) {
+      if (style.header && token.body && !options.showCommands) {
         // A body that starts a line ends the header at the previous newline, or that line loses its line class.
         const atLineStart = state.doc.lineAt(token.body.from).from === token.body.from;
         const headTo = atLineStart && token.body.from > token.from ? token.body.from - 1 : token.body.from;
@@ -265,7 +316,7 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
       }
 
       // A widget drawn before the body. It is inline and not atomic, so the caret may sit beside it.
-      if (style.before && !options.showCommands && !inScope) {
+      if (style.before && !options.showCommands) {
         const widget = createWidget(style.before, { token, source, state, language: options.language });
         if (widget) {
           const at = token.body?.from ?? token.from;
@@ -273,7 +324,7 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
         }
       }
 
-      if (style.footer !== undefined && token.body && !options.showCommands && !inScope) {
+      if (style.footer !== undefined && token.body && !options.showCommands) {
         // Drawn after the last visible character of the body, not after a trailing newline.
         let position = token.body.to;
         while (position > token.body.from && /\s/.test(source[position - 1])) position--;
@@ -282,16 +333,16 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
       }
 
       if (style.hidden) {
-        if (!inScope) hide(token.from, token.to);
+        hide(token.from, token.to);
       } else if (style.replaceWith !== undefined) {
-        if (!options.showCommands && !inScope) {
+        if (!options.showCommands) {
           const marker = Decoration.replace({ widget: new MarkerWidget(style.replaceWith) });
           // A command, accent or ligature is replaced as a whole. An item keeps its optional label.
           const end = token.kind === 'item' ? token.body?.from ?? token.to : token.to;
           decorations.push(marker.range(token.from, end));
           replaced.push({ from: token.from, to: end });
         }
-      } else if (!style.keepSyntax && !inScope) {
+      } else if (!style.keepSyntax) {
         // \replaced{new}{old} conceals around the argument it shows.
         const body = style.argument !== undefined ? token.args?.[style.argument] : token.body;
         if (body) {
@@ -300,7 +351,7 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
         }
       }
 
-      if (token.kind === 'table' && !options.showCommands && !inScope) {
+      if (token.kind === 'table' && !options.showCommands) {
         layoutTable(state, source, options.language, token, decorations, hide, joinedBreaks);
       }
 
@@ -308,10 +359,36 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
     }
   };
 
-  // A LaTeX preamble is source: the preamble fold draws it, folded or revealed
-  // as plain text, so nothing before \begin{document} is decorated here.
-  const body = parsed.findIndex(token => token.kind === 'container' && token.name === 'document');
-  emit(body > 0 ? parsed.slice(body) : parsed, state.doc.length);
+  emit(bodyTokens(parsed), state.doc.length);
+
+  // Lines drawn as source carry no decoration of ours. Points and replacements
+  // that touch one are dropped; marks keep only their parts on other lines.
+  const drawn: CMRange<Decoration>[] = [];
+  for (const range of decorations) {
+    const spec = range.value.spec;
+    const isMark = range.from < range.to && (spec.class !== undefined || spec.attributes !== undefined);
+    if (!isMark) {
+      if (!touchesRevealed(range.from, range.to)) drawn.push(range);
+      continue;
+    }
+    // A mark spanning several lines is cut at each revealed line.
+    let start = -1;
+    for (let line = state.doc.lineAt(range.from); ; line = state.doc.line(line.number + 1)) {
+      if (revealed.has(line.number)) {
+        if (start >= 0) drawn.push(range.value.range(start, state.doc.line(line.number - 1).to));
+        start = -1;
+      } else if (start < 0) {
+        start = Math.max(range.from, line.from);
+      }
+      if (line.to >= range.to) {
+        if (start >= 0 && Math.min(range.to, line.to) > start) drawn.push(range.value.range(start, Math.min(range.to, line.to)));
+        break;
+      }
+    }
+  }
+  decorations.splice(0, decorations.length, ...drawn);
+  atomic.splice(0, atomic.length, ...atomic.filter(range => !touchesRevealed(range.from, range.to)));
+  replaced.splice(0, replaced.length, ...replaced.filter(range => !touchesRevealed(range.from, range.to)));
 
   const spans = subtract(merge(concealed), merge(replaced));
 
