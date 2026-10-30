@@ -71,12 +71,15 @@ class HiddenRunWidget extends WidgetType {
   }
 
   toDOM(view: EditorView): HTMLElement {
+    const gap = document.createElement('div');
+    gap.className = 'cm-lp-block-gap cm-lp-block-gap-tight';
     const element = document.createElement('div');
     element.className = 'cm-lp-hidden';
     element.textContent = this.summary;
     element.title = 'Show the source';
-    revealOnMousedown(view, element);
-    return element;
+    gap.append(element);
+    revealOnMousedown(view, gap);
+    return gap;
   }
 
   // The click is handled by revealOnMousedown, which moves the caret into the run.
@@ -355,13 +358,24 @@ function applyStyle(
 
   if (style.block) {
     const last = state.doc.lineAt(Math.max(token.from, Math.min(token.to, state.doc.length)));
-    let line = state.doc.lineAt(token.from);
-    const decoration = Decoration.line({ class: style.class, attributes: style.attributes });
+    const first = state.doc.lineAt(token.from);
+    // The edge lines carry classes so that their padding can replace the margin,
+    // which CodeMirror does not measure.
+    const line = (extra: string) =>
+      Decoration.line({ class: `${style.class}${extra}`, attributes: style.attributes });
+    const middle = line('');
+    const top = line(' cm-lp-block-first');
+    const bottom = line(' cm-lp-block-last');
+    const single = line(' cm-lp-block-first cm-lp-block-last');
 
+    let current = first;
     while (true) {
-      decorations.push(decoration.range(line.from));
-      if (line.number >= last.number) break;
-      line = state.doc.line(line.number + 1);
+      const starts = current.number === first.number;
+      const ends = current.number >= last.number;
+      const decoration = starts && ends ? single : starts ? top : ends ? bottom : middle;
+      decorations.push(decoration.range(current.from));
+      if (ends) break;
+      current = state.doc.line(current.number + 1);
     }
     return;
   }

@@ -139,12 +139,15 @@ class PreambleWidget extends WidgetType {
   }
 
   toDOM(view) {
+    const gap = document.createElement("div");
+    gap.className = "cm-lp-block-gap";
     const element = document.createElement("div");
     element.className = "cm-lp-preamble";
     element.title = "Show the preamble";
     element.textContent = this.summary;
-    revealOnMousedown(view, element);
-    return element;
+    gap.append(element);
+    revealOnMousedown(view, gap);
+    return gap;
   }
 
   ignoreEvent() {

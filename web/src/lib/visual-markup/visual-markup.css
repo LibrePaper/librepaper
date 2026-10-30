@@ -1,9 +1,18 @@
+/* The vertical gap around a block widget. It is padding on a wrapper, because
+   CodeMirror does not measure margins. */
+.cm-lp-block-gap {
+  padding: calc(var(--spacing) * 2) 0;
+}
+
+.cm-lp-block-gap-tight {
+  padding: calc(var(--spacing) * 1) 0;
+}
+
 /* The folded LaTeX preamble, and the chips that stand in for hidden runs of
    source (page breaks, the end of the document, the bibliography): a quiet
    line in place of the source. */
 .cm-lp-preamble,
 .cm-lp-hidden {
-  margin: calc(var(--spacing) * 2) 0;
   padding: calc(var(--spacing) * 1) calc(var(--spacing) * 3);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-base);
@@ -15,7 +24,6 @@
 
 /* Hidden chips are more compact than the preamble, which is the page's header. */
 .cm-lp-hidden {
-  margin: calc(var(--spacing) * 1) 0;
   padding: calc(var(--spacing) * 1) calc(var(--spacing) * 2);
 }
 
@@ -90,7 +98,7 @@
 /* The title block drawn for \maketitle. Line breaks in the title and author
    come from the source, so they are kept. */
 .cm-lp-title {
-  margin: calc(var(--spacing) * 6) 0;
+  padding: calc(var(--spacing) * 6) 0;
   text-align: center;
   color: var(--color-text);
 }
@@ -296,7 +304,6 @@
 
 .cm-lp-chip-block {
   display: block;
-  margin: calc(var(--spacing) * 2) 0;
   padding: calc(var(--spacing) * 1) calc(var(--spacing) * 3);
   white-space: normal;
   font-size: var(--text-xs);
@@ -318,9 +325,16 @@
 
 /* Environment headers and blocks: theorems, proofs, abstracts and quotations. */
 .cm-lp-env {
-  margin: calc(var(--spacing) * 2) 0;
   padding-left: calc(var(--spacing) * 3);
   border-left: 2px solid var(--color-border);
+}
+
+.cm-lp-env.cm-lp-block-first {
+  padding-top: calc(var(--spacing) * 2);
+}
+
+.cm-lp-env.cm-lp-block-last {
+  padding-bottom: calc(var(--spacing) * 2);
 }
 
 .cm-lp-env-theorem {
@@ -337,6 +351,12 @@
   border-left: 0;
   font-size: 0.9em;
   text-align: justify;
+}
+
+/* A header on its own line is a block widget. An inline root measures only its
+   text box, shorter than the line it takes, and CodeMirror would lose the rest. */
+.cm-content > .cm-lp-envhead {
+  display: block;
 }
 
 .cm-lp-envhead {
@@ -356,8 +376,16 @@
 }
 
 .cm-lp-quote {
-  margin: calc(var(--spacing) * 2) calc(var(--spacing) * 8);
+  margin-inline: calc(var(--spacing) * 8);
   color: var(--color-text-secondary);
+}
+
+.cm-lp-quote.cm-lp-block-first {
+  padding-top: calc(var(--spacing) * 2);
+}
+
+.cm-lp-quote.cm-lp-block-last {
+  padding-bottom: calc(var(--spacing) * 2);
 }
 
 .cm-lp-align-center { text-align: center; }

@@ -203,6 +203,33 @@ const sinkSample = [
 // A title block in the body. The preamble has a title that the body overrides,
 // the authors take an optional argument and a \thanks, an affiliation is given,
 // and a title after \maketitle must not be used.
+// Multi-line blocks whose spacing CodeMirror must measure: a click at the middle
+// of a drawn line has to land in that line.
+const offsetSample = [
+  "\\documentclass{article}",
+  "\\newtheorem{theorem}{Theorem}",
+  "\\title{Offsets}",
+  "\\author{A}",
+  "\\begin{document}",
+  "\\maketitle",
+  "\\begin{theorem}",
+  "First line.",
+  "Second line.",
+  "Third line.",
+  "\\end{theorem}",
+  "\\begin{quote}",
+  "One.",
+  "Two.",
+  "\\end{quote}",
+  "\\newpage",
+  "\\begin{proof}",
+  "Step one.",
+  "Step two.",
+  "\\end{proof}",
+  "Caret here.",
+  "\\end{document}",
+].join("\n");
+
 const titleSample = [
   "\\documentclass{article}",
   "\\usepackage{authblk}",
@@ -697,6 +724,24 @@ async function visualCheck() {
   await settle();
   sink.tikzClicked = visibleText();
 
+  // Check 6e2: a click at the middle of each drawn line lands in that line, so
+  // block spacing is padding CodeMirror measures, not margin it skips.
+  component.$set({ visual: true, file: ids.offset, format: "latex" });
+  await settle();
+  await wait(800);
+  view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("Caret here.") + 6 } });
+  await settle();
+  const offsetMisses = [];
+  for (const line of document.querySelectorAll(".cm-editor .cm-content > .cm-line")) {
+    const rect = line.getBoundingClientRect();
+    if (!line.textContent.trim() || rect.height === 0) continue;
+    const at = view().posAtCoords({ x: rect.left + 4, y: rect.top + rect.height / 2 });
+    const drawn = view().state.doc.lineAt(view().posAtDOM(line)).number;
+    const hit = at === null ? null : view().state.doc.lineAt(at).number;
+    if (hit !== drawn) offsetMisses.push({ text: line.textContent.trim(), drawn, hit });
+  }
+  const offset = { misses: offsetMisses };
+
   // Check 6f: the Typst kitchen-sink document. The caret sits on "Caret here.", so
   // the setup lines fold into one chip and each construct in the body is drawn.
   // A click on the setup chip shows its source.
@@ -785,6 +830,7 @@ async function visualCheck() {
     titleBlock,
     figure,
     sink,
+    offset,
     typstSink,
     typstFence,
     timing:{ lines: timingOn.lines, on: { median: timingOn.median, max: timingOn.max }, off: { median: timingOff.median, max: timingOff.max } },
@@ -801,7 +847,7 @@ const source = [
   `import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};`,
   `import { LoroDoc } from "loro-crdt";`,
   `import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};`,
-  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, paper: paperSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample, sink: sinkSample, title: titleSample, typstSink: typstSinkSample, vim: vimSample })};`,
+  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, paper: paperSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample, sink: sinkSample, offset: offsetSample, title: titleSample, typstSink: typstSinkSample, vim: vimSample })};`,
   `document.documentElement.dataset.theme = "librepaper";`,
   `document.documentElement.dataset.palette = "librepaper";`,
   `document.documentElement.dataset.mode = "light";`,
@@ -823,6 +869,7 @@ const source = [
   `  figure: session.addText("figure.tex", samples.figure),`,
   `  sink: session.addText("sink.tex", samples.sink),`,
   `  sinkTyp: session.addText("sink.typ", samples.typstSink),`,
+  `  offset: session.addText("offset.tex", samples.offset),`,
   `  title: session.addText("title.tex", samples.title),`,
   `  intro: session.addText("sections/intro.tex", samples.intro),`,
   `};`,
@@ -1196,6 +1243,8 @@ try {
   assert.equal(result.sink.katexErrors, 0, "sink.tex has KaTeX parse errors (.katex-error inside .cm-editor)");
   assert.ok(result.sink.tikzClicked.includes("\\begin{tikzpicture}"), "a click on the TikZ chip did not show \\begin{tikzpicture}");
   console.log("visual-markup-browser: sink.tex draws its text commands, environments and citations, and a click on the TikZ chip shows its source");
+  assert.deepEqual(result.offset.misses, [], `clicks at the middle of drawn lines landed on other lines: ${JSON.stringify(result.offset.misses)}`);
+  console.log("visual-markup-browser: a click at the middle of each drawn line in multi-line blocks lands in that line");
 
   // Check 6f: sink.typ draws its markup, links, footnote, swatch and references,
   // folds its setup lines into one chip, hides its source, and shows the setup
