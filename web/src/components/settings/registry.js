@@ -3,10 +3,13 @@
 // shows is a component beside this file.
 //
 // The categories are the same on every page: the landing page and a project.
-// Browser-scoped pages: Appearance, Editor, Rendering, Diagnostics. Computer-scoped
-// pages: Tools, AI agents. Account-scoped pages: Backups, Account.
+// App-scoped page: General. Browser-scoped pages: Editor, Rendering.
+// Computer-scoped pages: Tools, AI agents. Account-scoped pages: Backups, Account.
 
-// `offered` answers only with whether somebody is signed in. `terms` are the
+import { desktop } from "../../lib/desktop/client.js";
+
+// `offered` answers with whether somebody is signed in; a row may also ask
+// whether this is the desktop app. `terms` are the
 // words somebody might type when looking for a row and not finding its title.
 const always = (_context) => true;
 // The account is the deployment's, not the document's: whoever is signed in
@@ -15,27 +18,29 @@ const account = ({ signedIn }) => Boolean(signedIn);
 
 export const CATEGORIES = [
   {
-    id: "appearance", says: "Appearance", offered: always,
-    note: "This browser",
+    id: "general", says: "General", offered: always,
+    note: "This app",
     entries: [
       { id: "appearance-theme", says: "Theme", terms: "dark light theme mode night colour color scheme system appearance" },
       { id: "appearance-colours", says: "Colours", terms: "colours colors palette theme scheme flexoki solarized gruvbox catppuccin nord syntax highlighting editor" },
-      { id: "appearance-font", says: "Font", terms: "font family typeface monospace serif sans dyslexia opendyslexic fira jetbrains source code pro cascadia plex" },
-      { id: "appearance-font-size", says: "Font size", terms: "font size text size zoom bigger smaller pinch scale pixels" },
-      { id: "appearance-line-height", says: "Line height", terms: "line height spacing leading compact wide dense" },
+      { id: "general-close", says: "When the window closes", terms: "close window quit tray minimize exit background keep running", offered: () => Boolean(desktop()) },
+      { id: "diagnostics-report", says: "Diagnostics", terms: "diagnostics report bug issue support copy logs troubleshoot errors" },
     ],
   },
   {
     id: "editor", says: "Editor", offered: always,
     note: "This browser",
     entries: [
+      { id: "appearance-font", says: "Font", terms: "font family typeface monospace serif sans dyslexia opendyslexic fira jetbrains source code pro cascadia plex" },
+      { id: "appearance-font-size", says: "Font size", terms: "font size text size zoom bigger smaller pinch scale pixels" },
+      { id: "appearance-line-height", says: "Line height", terms: "line height spacing leading compact wide dense" },
       { id: "editor-keys", says: "Key bindings", terms: "vim emacs keymap keyboard bindings modal source standard" },
+      { id: "editor-shortcuts", says: "Keyboard shortcuts", terms: "shortcut shortcuts keys keyboard chord binding hotkey accelerator palette command undo redo find" },
       { id: "editor-completion", says: "Autocomplete", terms: "autocomplete completion suggestions suggest popup intellisense commands citations" },
       { id: "editor-brackets", says: "Close brackets", terms: "close brackets auto pair braces parentheses quotes dollar autoclose" },
+      { id: "editor-check", says: "Code check", terms: "code check lint errors warnings underline gutter diagnostics squiggle" },
       { id: "editor-proofing", says: "Grammar and spelling", terms: "spellcheck spelling spell check typo dictionary misspelled grammar harper proofreading" },
       { id: "editor-dialect", says: "English dialect", terms: "dialect british american canadian australian indian english harper" },
-      { id: "editor-check", says: "Code check", terms: "code check lint errors warnings underline gutter diagnostics squiggle" },
-      { id: "editor-shortcuts", says: "Keyboard shortcuts", terms: "shortcut shortcuts keys keyboard chord binding hotkey accelerator palette command undo redo find" },
     ],
   },
   {
@@ -89,13 +94,6 @@ export const CATEGORIES = [
       { id: "remote-status", says: "Remote connection", terms: "connected disconnected offline online server address url sync status collaboration" },
       { id: "storage-account", says: "Account storage", terms: "quota usage space used limit bytes", offered: account },
       { id: "account-erase", says: "Erase this account", terms: "erase delete account remove close gdpr right erasure forget", offered: account },
-    ],
-  },
-  {
-    id: "diagnostics", says: "Diagnostics", offered: always,
-    note: "This app",
-    entries: [
-      { id: "diagnostics-report", says: "Diagnostics", terms: "diagnostics report bug issue support copy logs troubleshoot errors" },
     ],
   },
 ];

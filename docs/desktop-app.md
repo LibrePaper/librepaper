@@ -107,13 +107,13 @@ On macOS and with the Windows installer, the app checks for a new version when i
 - Ctrl+, (Cmd+, on macOS) opens Settings.
 - Starting the app again shows the windows hidden in the tray, or opens another window when one is already showing.
 - A link to your server that opens in a new tab opens in a new window. Other links open in your browser.
-- Closing the last window keeps the app running in the system tray (the menu bar on macOS).
+- Closing the last window quits the app. To keep it running in the system tray (the menu bar on macOS) instead, set Settings, General, When the window closes to Keep running in the tray.
 - The tray menu shows the window again, opens a new window or quits the app.
 - Quit in the tray (or the File menu) stops the local service.
-- On Linux, the tray needs AppIndicator support (on GNOME, the AppIndicator extension). Without it, closing the last window quits the app.
+- On Linux, the tray needs AppIndicator support (on GNOME, the AppIndicator extension). Without it, closing the last window always quits the app.
 
 ### Help
 
-On macOS, the Help menu copies diagnostics, opens the issue tracker and checks for updates. On every system, Settings, Desktop app, Diagnostics copies the same report.
+On macOS, the Help menu copies diagnostics, opens the issue tracker and checks for updates. On every system, Settings, General, Diagnostics copies the same report.
 
 To build from a checkout, see [building from source](architecture/building.html).
