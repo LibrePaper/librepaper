@@ -9,6 +9,18 @@
   font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
 }
 
+/* Until the caret first moves, visual mode draws the whole page: no caret and
+   no current-line highlight on the line the caret happens to sit on. */
+.cm-editor.cm-lp-visual.cm-lv-parked .cm-cursorLayer,
+.cm-editor.cm-lp-visual.cm-lv-parked .cm-vimCursorLayer {
+  visibility: hidden;
+}
+
+.cm-editor.cm-lp-visual.cm-lv-parked .cm-activeLine,
+.cm-editor.cm-lp-visual.cm-lv-parked .cm-activeLineGutter {
+  background: transparent;
+}
+
 /* A pill is a framed line standing in for source that is not drawn: the folded
    preamble, a hidden run, a table, a catalog chip on a block of its own. Every
    block pill looks the same, whatever surrounds it: left aligned and upright

@@ -4,7 +4,7 @@ import { BlockType, Decoration, DecorationSet, EditorView, keymap, ViewPlugin, V
 import { ConfigService, DEFAULT_CONFIG, EditorConfig } from '../core/config';
 import { getLanguage } from '../core/language';
 import { Token } from '../core/tokens';
-import { buildDecorations, revealRanges } from './decorations';
+import { buildDecorations, caretParked, revealRanges } from './decorations';
 import { createTheme } from './theme';
 import './widgets';
 
@@ -288,7 +288,8 @@ const stepIntoBlocks = ViewPlugin.fromClass(
 );
 
 export function visualExtension(): Extension {
-  return [visualState, decorationField, rebuildAfterPause, arrowKeymap, stepIntoBlocks];
+  // caretParked comes first: the decoration field reads it when it is created.
+  return [caretParked, visualState, decorationField, rebuildAfterPause, arrowKeymap, stepIntoBlocks];
 }
 
 // The tokens of the parse the visual layer last drew, or null when there is no

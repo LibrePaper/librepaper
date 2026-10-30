@@ -1,6 +1,6 @@
 import { StateField } from "@codemirror/state";
 import { Decoration, EditorView } from "@codemirror/view";
-import { PillWidget } from "./markup.ts";
+import { PillWidget, revealingSelection } from "./markup.ts";
 import { findMetadata } from "./metadata.js";
 
 // The preamble is looked for in the first lines only; a document whose
@@ -31,7 +31,7 @@ function preambleDecorations(state) {
   const { from, to, summary } = preamble;
   // Atomic ranges are left out on purpose: a caret moved into the preamble
   // reveals it.
-  const touching = state.selection.ranges.filter((range) => range.from <= to && range.to >= from);
+  const touching = revealingSelection(state).filter((range) => range.from <= to && range.to >= from);
   if (touching.length === 0) return foldAll(from, to, summary);
 
   // A caret on a metadata line (\title, \author and the like) reveals that line
