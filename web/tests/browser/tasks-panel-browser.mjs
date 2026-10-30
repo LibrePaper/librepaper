@@ -18,7 +18,7 @@ import { contentType, loroAlias } from "../helpers/loro.mjs";
 import { KATEX_DEFINE, serveKatex } from "../helpers/katex.mjs";
 
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
-const temp = mkdtempSync(join(tmpdir(), "librepaper-tasks-browser-"));
+const temp = mkdtempSync(join(tmpdir(), "librepaper-tasks-panel-browser-"));
 const entry = join(temp, "entry.js");
 const room = join(temp, "room.js");
 const out = join(temp, "build");
@@ -237,7 +237,7 @@ try {
 
   await flush();
   assert.deepEqual(await tab.evaluate("window.testErrors"), []);
-  console.log("tasks-browser: open list, overdue and missing-id warnings, tag filter, All status, checkbox toggle and jump to source passed");
+  console.log("tasks-panel-browser: open list, overdue and missing-id warnings, tag filter, All status, checkbox toggle and jump to source passed");
 } finally {
   await tab?.close();
   httpServer?.close();
