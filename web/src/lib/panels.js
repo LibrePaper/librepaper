@@ -15,6 +15,9 @@
 export const TABS = [
   { id: "files", says: "Files", icon: "folder", when: (who) => who.mayEdit },
   { id: "outline", says: "Outline", icon: "list", when: (who) => who.mayEdit },
+  // The tasks of every Markdown file in the project. Like the outline it reads
+  // the live text, so it is offered to whoever can edit that text.
+  { id: "tasks", says: "Tasks", icon: "list-checks", when: (who) => who.mayEdit },
   { id: "collaboration", says: "Collaboration", icon: "comment" },
   { id: "changes", says: "Changes", icon: "pencil" },
   { id: "agent", says: "Agent", icon: "bot" },
