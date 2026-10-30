@@ -172,9 +172,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: oven-sh/setup-bun@v2
       # Each test bundles its own page with vite and drives it through the
-      # Chrome DevTools Protocol, so chromium is the whole of what it needs --
-      # no binary, no database.
-      - run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends chromium-browser
+      # Chrome DevTools Protocol, so a browser is the whole of what it needs:
+      # no binary, no database. The runner image ships Google Chrome, which the
+      # tests find on PATH. Ubuntu's chromium-browser package is a snap whose
+      # store downloads failed on the runner twice in a row for v0.0.60.
       - run: cd web && bun install --frozen-lockfile
       # Several of the tests read the built pages in web/dist, which the job
       # did not build.
