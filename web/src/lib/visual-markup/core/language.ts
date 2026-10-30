@@ -25,10 +25,14 @@ export type WidgetKind =
   // The number of a numbered heading, drawn before its text.
   | 'headnum'
   // A table drawn as a box naming it.
-  | 'tablebox';
+  | 'tablebox'
+  // A task's checkbox, and its metadata chips: a field and a tag.
+  | 'taskbox' | 'taskfield' | 'tasktag';
 
 export interface TokenStyle {
   class?: string;
+  // Class for a line decoration on the token's first line, drawn with its widget.
+  lineClass?: string;
   attributes?: Record<string, string>;
   hidden?: boolean;
   block?: boolean;

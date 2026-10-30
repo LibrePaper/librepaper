@@ -1,5 +1,6 @@
 import { Rule } from '../../core/language';
 import { Token } from '../../core/tokens';
+import { STATE_OF, TASK_LINE } from '../../../tasks/syntax.js';
 import { atBlockStart, atLineHead, lineEndAt, lineStartAt, parseAttributes, previousNonBlank } from './scan';
 
 const CAPTION = /^[ \t]*(?:Table:|:)[ \t]+(.*?)[ \t]*$/;
@@ -13,7 +14,7 @@ const DIV_OPEN = /^(:{3,})[ \t]*(.*?)[ \t]*$/;
 const DIV_CLOSE = /^(:{3,})$/;
 const DIV_NESTED = /^:{3,}[ \t]*\S/;
 const ORDERED = /(\d{1,9})([.)])(?=[ \t\n]|$)/y;
-const TASK = /[ \t]+\[([ xX])\](?=[ \t\n]|$)/y;
+const TASK = /[ \t]+\[([ xX\/-])\](?=[ \t\n]|$)/y;
 const FOOTNOTE_DEF = /\[\^([^\]\s^]+)\]:[ \t]*/y;
 const LINK_DEF = /\[([^\]\n]+)\]:[ \t]*\S/y;
 // A line that starts another block, so it cannot be the text line of a setext heading.
@@ -416,11 +417,44 @@ export const list: Rule = (source, pos) => {
   TASK.lastIndex = markerEnd;
   const task = TASK.exec(source);
   if (task) {
-    meta.task = task[1] === ' ' ? 'open' : 'done';
+    meta.task = (STATE_OF as Record<string, string>)[task[1]];
+    meta.box = task[1];
+    const progress = taskProgress(source, pos);
+    if (progress) meta.progress = progress;
     to = markerEnd + task[0].length;
   }
   return { kind: 'item', name: number ? 'number' : 'bullet', from: pos, to, meta };
 };
+
+// "done/total" over the task descendants of the item at pos, or null when it has none. Following
+// lines belong to the item while they are blank or indented past its marker. Cancelled tasks are
+// left out of both numbers.
+function taskProgress(source: string, pos: number): string | null {
+  const column = pos - lineStartAt(source, pos);
+  let done = 0;
+  let total = 0;
+  let lineFrom = lineEndAt(source, pos) + 1;
+  while (lineFrom <= source.length) {
+    const lineTo = lineEndAt(source, lineFrom);
+    const line = source.slice(lineFrom, lineTo);
+    // Quote markers do not count as indentation, so a quoted list reads the same as a plain one.
+    const content = line.replace(/^[ \t>]*/, '');
+    if (content.trim() !== '') {
+      const indent = line.length - content.length;
+      if (indent <= column) break;
+      const child = TASK_LINE.exec(line);
+      if (child && child[1].length > column) {
+        const state = (STATE_OF as Record<string, string>)[child[2]];
+        if (state !== 'cancelled') {
+          total++;
+          if (state === 'done') done++;
+        }
+      }
+    }
+    lineFrom = lineTo + 1;
+  }
+  return total > 0 ? `${done}/${total}` : null;
+}
 
 function blankAbove(source: string, pos: number): boolean {
   const start = lineStartAt(source, pos);

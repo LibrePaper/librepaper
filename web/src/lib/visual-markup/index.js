@@ -25,6 +25,7 @@ import { loadKatex } from "../katex.js";
 import { VISUAL_FORMATS } from "./formats.js";
 // The Markdown, Quarto and Typst widgets. They import helpers back from this file.
 import "./markdown-widgets.js";
+import "./task-widgets.js";
 import "./typst-widgets.js";
 
 export { VISUAL_FORMATS } from "./formats.js";

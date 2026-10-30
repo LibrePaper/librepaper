@@ -1,0 +1,128 @@
+/* Task controls. A task reads as a list item: the box, the text, then quiet fields.
+   Every box is the same outlined square, and its state is one mark inside. Colour is
+   never the only signal; priority also differs in its glyph and weight, and overdue
+   also differs in its wording. Every colour comes from the theme variables, so dark
+   mode follows the page. */
+
+/* A done task mutes its text and strikes it through. The fields and the box set
+   their own decoration, so the line-through stops at the text. */
+.cm-lp-task-done {
+  color: var(--color-text-muted);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+/* Cancelled reads as dropped, not finished: muted, with no line through it. */
+.cm-lp-task-cancelled {
+  color: var(--color-text-muted);
+}
+
+.cm-lp-taskbox,
+.cm-lp-field,
+.cm-lp-task-tag,
+.cm-lp-task-progress {
+  text-decoration: none;
+}
+
+/* The box. The button is the checkbox, so its border is the only outline, and the
+   mark is centred inside it. */
+.cm-lp-taskbox {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--spacing) * 2);
+  margin-inline-end: calc(var(--spacing) * 2);
+  vertical-align: middle;
+}
+
+.cm-lp-taskbox-button {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 1.05em;
+  height: 1.05em;
+  padding: 0;
+  border: 1.5px solid var(--color-text-secondary);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.8em;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.cm-lp-task-progress {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Fields are plain text with an icon or a glyph in front. A field is a span, so it is
+   not focusable: a press places the caret on its source instead. */
+.cm-lp-field {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--spacing) * 0.5);
+  margin-inline: var(--spacing);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.7;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.cm-lp-field-icon {
+  flex: none;
+  width: 0.9em;
+  height: 0.9em;
+}
+
+/* Created and estimate recede into the muted colour. */
+.cm-lp-task-quiet {
+  color: var(--color-text-muted);
+}
+
+/* Priorities 1 and 2 are the strongest, 3 is plain, and 4 and 5 recede. */
+.cm-lp-field-p1,
+.cm-lp-field-p2 {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.cm-lp-field-p4,
+.cm-lp-field-p5 {
+  opacity: 0.6;
+}
+
+/* Overdue uses the warning colour and the word "overdue" in its name. */
+.cm-lp-task-overdue {
+  color: var(--color-warning-text);
+  font-weight: 600;
+}
+
+/* A field the parser could not read keeps its text and shows a dashed frame. */
+.cm-lp-task-invalid {
+  border: 1px dashed var(--color-error-border);
+  border-radius: var(--radius-base);
+  padding: 0 calc(var(--spacing) * 2);
+  color: var(--color-error-text);
+}
+
+/* Tags are small labels with no frame of their own. */
+.cm-lp-task-tag {
+  display: inline-block;
+  margin: 0 calc(var(--spacing) * 0.5);
+  padding: 0 1px;
+  border: 1px solid transparent;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.7;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.cm-lp-taskbox-button:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
