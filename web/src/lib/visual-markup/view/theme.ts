@@ -14,7 +14,6 @@ export function cssVariables(config: EditorConfig): Record<string, string> {
     '--lv-math': colors.math,
     '--lv-environment': colors.environment,
     '--lv-command': colors.command,
-    '--lv-table': colors.table,
     '--lv-bg': colors.background,
     '--lv-fg': colors.foreground,
     '--lv-surface': colors.surface,

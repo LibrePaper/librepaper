@@ -117,7 +117,7 @@ function style(token: Token): TokenStyle | null {
     case 'math':
       return { widget: 'math', block: token.display };
     case 'table':
-      return { class: 'cm-lv-table', block: true };
+      return { widget: 'tablebox', block: true };
     case 'heading':
       return { class: `cm-lv-heading cm-lv-h${token.level}`, block: true, before: 'headnum' };
     case 'item':
@@ -135,6 +135,8 @@ function style(token: Token): TokenStyle | null {
         };
       }
       const name = token.name ?? '';
+      // A table float is one box, caption included.
+      if (/^(?:wrap|sideways)?table$/.test(name)) return { widget: 'tablebox', block: true };
       const full = fullName(token);
       if (LIST_ENVIRONMENTS.has(full)) return { class: 'cm-lv-list', block: true };
       if (VERBATIM_ENVIRONMENTS.has(full)) return { class: 'cm-lv-env', block: true, keepSyntax: true };

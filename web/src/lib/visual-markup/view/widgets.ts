@@ -7,14 +7,6 @@ import { typst2tex } from 'tex2typst';
 import { loadKatex } from '../../katex.js';
 import { registerWidget, replaceRange, WidgetContext } from './widget-registry';
 
-interface TablePresentation {
-  className: string;
-  style: string;
-  column: string;
-  colspan: string;
-  rowspan: string;
-}
-
 export class MathWidget extends WidgetType {
   private text: string;
   private content: string;
@@ -22,7 +14,6 @@ export class MathWidget extends WidgetType {
   private open: string;
   private close: string;
   private syntax: MathSyntax;
-  private table: TablePresentation | null;
 
   constructor(context: WidgetContext) {
     super();
@@ -33,22 +24,15 @@ export class MathWidget extends WidgetType {
     this.open = token.meta?.open ?? '$';
     this.close = token.meta?.close ?? '$';
     this.syntax = context.language.id === 'typst' ? 'typst' : 'latex';
-    this.table = tablePresentation(token);
   }
 
   eq(other: WidgetType): boolean {
-    return (
-      other instanceof MathWidget &&
-      other.text === this.text &&
-      other.syntax === this.syntax &&
-      sameTablePresentation(other.table, this.table)
-    );
+    return other instanceof MathWidget && other.text === this.text && other.syntax === this.syntax;
   }
 
   toDOM(view: EditorView): HTMLElement {
     const container = document.createElement(this.display ? 'div' : 'span');
     container.className = `cm-lv-widget cm-lv-math ${this.display ? 'cm-lv-math-display' : 'cm-lv-math-inline'}`;
-    applyTablePresentation(container, this.table);
 
     const field = () => container.firstElementChild as (HTMLElement & { value?: string }) | null;
 
@@ -96,25 +80,17 @@ export class ImageWidget extends WidgetType {
     this.alt = this.src.slice(this.src.lastIndexOf('/') + 1);
     this.style = context.language.imageStyle?.(context.source, context.token) ?? '';
     this.resolver = context.state.facet(imageResolver);
-    this.table = tablePresentation(context.token);
   }
 
   private resolver: ImageResolver | null;
-  private table: TablePresentation | null;
 
   eq(other: WidgetType): boolean {
-    return (
-      other instanceof ImageWidget &&
-      other.src === this.src &&
-      other.style === this.style &&
-      sameTablePresentation(other.table, this.table)
-    );
+    return other instanceof ImageWidget && other.src === this.src && other.style === this.style;
   }
 
   toDOM(view: EditorView): HTMLElement {
     const container = document.createElement('span');
     container.className = 'cm-lv-widget cm-lv-image';
-    applyTablePresentation(container, this.table);
     revealOnMousedown(view, container);
 
     const image = document.createElement('img');
@@ -161,7 +137,6 @@ export class FigureWidget extends WidgetType {
   private key: string;
   private resolver: ImageResolver | null;
   private destroyed = false;
-  private table: TablePresentation | null;
   private source: string;
 
   constructor(context: WidgetContext) {
@@ -170,11 +145,10 @@ export class FigureWidget extends WidgetType {
     this.source = context.source;
     this.key = JSON.stringify(this.model);
     this.resolver = context.state.facet(imageResolver);
-    this.table = tablePresentation(context.token);
   }
 
   eq(other: WidgetType): boolean {
-    return other instanceof FigureWidget && other.key === this.key && sameTablePresentation(other.table, this.table);
+    return other instanceof FigureWidget && other.key === this.key;
   }
 
   toDOM(view: EditorView): HTMLElement {
@@ -185,7 +159,6 @@ export class FigureWidget extends WidgetType {
     if (this.model.captionPosition === 'side') container.classList.add('cm-lv-figure-caption-side');
     if (this.model.width) container.style.setProperty('--lv-figure-width', this.model.width);
     container.style.setProperty('--lv-figure-columns', String(Math.max(1, this.model.columns ?? 1)));
-    applyTablePresentation(container, this.table);
     revealOnMousedown(view, container);
 
     const caption = this.model.caption ? figureCaption(
@@ -358,36 +331,77 @@ function drawTypstInline(parent: HTMLElement, text: string): void {
   parent.append(text.slice(last));
 }
 
-function tablePresentation(token: WidgetContext['token']): TablePresentation | null {
-  const meta = token.meta;
-  if (!meta?.tableClass || !meta.tableStyle) return null;
-  return {
-    className: meta.tableClass,
-    style: meta.tableStyle,
-    column: meta.tableColumn ?? '0',
-    colspan: meta.tableColspan ?? '1',
-    rowspan: meta.tableRowspan ?? '1'
-  };
+// The text after the closing delimiter that matches the one at `open`, or null.
+function balanced(source: string, open: number, pair: string): string | null {
+  let depth = 0;
+  for (let index = open; index < source.length; index++) {
+    const char = source[index];
+    if (char === '\\') index++;
+    else if (char === pair[0]) depth++;
+    else if (char === pair[1] && --depth === 0) return source.slice(open + 1, index);
+  }
+  return null;
 }
 
-function sameTablePresentation(a: TablePresentation | null, b: TablePresentation | null): boolean {
-  return a === b || Boolean(
-    a && b &&
-    a.className === b.className &&
-    a.style === b.style &&
-    a.column === b.column &&
-    a.colspan === b.colspan &&
-    a.rowspan === b.rowspan
-  );
+// Markup reduced to the words it shows, for a one-line caption.
+function plainCaption(text: string): string {
+  return text
+    .replace(/\\(?:emph|textbf|textit|texttt|textrm|textsc)\s*\{([^{}]*)\}/g, '$1')
+    .replace(/\\[a-zA-Z]+\*?/g, '')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/[\\{}*_`$#~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
-function applyTablePresentation(element: HTMLElement, table: TablePresentation | null): void {
-  if (!table) return;
-  element.classList.add(...table.className.split(/\s+/).filter(Boolean));
-  element.style.cssText = [element.style.cssText, table.style].filter(Boolean).join(';');
-  element.dataset.lvColumn = table.column;
-  element.dataset.lvColspan = table.colspan;
-  element.dataset.lvRowspan = table.rowspan;
+// The caption of a table: Markdown keeps it on the token. A LaTeX table float
+// and a Typst figure around a table are the token itself, so the caption is read
+// from inside its range.
+function tableCaption({ token, source, language }: WidgetContext): string {
+  if (token.meta?.caption) return plainCaption(token.meta.caption);
+  const text = source.slice(token.from, token.to);
+  if (language.id === 'latex') {
+    const caption = /\\caption\s*(?:\[[^\]]*\])?\s*\{/.exec(text);
+    return caption ? plainCaption(balanced(text, caption.index + caption[0].length - 1, '{}') ?? '') : '';
+  }
+  if (language.id === 'typst' && token.meta?.figureTable === 'true') {
+    const open = text.indexOf('(');
+    const inner = open < 0 ? null : balanced(text, open, '()');
+    const caption = inner === null ? null : /caption\s*:\s*\[/.exec(inner);
+    return caption ? plainCaption(balanced(inner, caption.index + caption[0].length - 1, '[]') ?? '') : '';
+  }
+  return '';
+}
+
+// A table is drawn as a box like the preamble's: the caption when there is one,
+// never the cells. A caret in the table or a click on the box shows the source.
+class TableBoxWidget extends WidgetType {
+  constructor(private caption: string) {
+    super();
+  }
+
+  eq(other: WidgetType): boolean {
+    return other instanceof TableBoxWidget && other.caption === this.caption;
+  }
+
+  toDOM(view: EditorView): HTMLElement {
+    const gap = document.createElement('div');
+    gap.className = 'cm-lp-block-gap';
+    const box = document.createElement('div');
+    box.className = 'cm-lp-table-box';
+    box.title = 'Show the table source';
+    const label = document.createElement('strong');
+    label.textContent = 'Table';
+    box.append(label);
+    if (this.caption) box.append(`: ${this.caption}`);
+    gap.append(box);
+    revealOnMousedown(view, gap);
+    return gap;
+  }
+
+  ignoreEvent(): boolean {
+    return true;
+  }
 }
 
 function keepsFocus(event: FocusEvent, container: HTMLElement): boolean {
@@ -403,4 +417,5 @@ function keepsFocus(event: FocusEvent, container: HTMLElement): boolean {
 
 registerWidget('math', context => new MathWidget(context));
 registerWidget('image', context => new ImageWidget(context));
+registerWidget('tablebox', context => new TableBoxWidget(tableCaption(context)));
 registerWidget('figure', context => context.language.figure ? new FigureWidget(context) : null);

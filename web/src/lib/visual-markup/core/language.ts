@@ -19,12 +19,14 @@ export type WidgetKind =
   | 'cite' | 'link' | 'footnote' | 'verb' | 'chip' | 'unit' | 'gloss' | 'quote'
   | 'envhead' | 'macro' | 'bibitem' | 'symbol'
   // Markdown and Quarto.
-  | 'frontmatter' | 'cellhead' | 'hr' | 'mdtable' | 'divhead' | 'mdfigure' | 'mdcite' | 'xref' | 'mdnote' | 'shortcode'
+  | 'frontmatter' | 'cellhead' | 'hr' | 'divhead' | 'mdfigure' | 'mdcite' | 'xref' | 'mdnote' | 'shortcode'
   // Typst: reference, label tag, included file, title block, colour swatch, and a catalog chip
   // (the Typst catalog's chip text, not the LaTeX one).
   | 'typref' | 'typlabel' | 'typinclude' | 'typtitle' | 'swatch' | 'typchip'
   // The number of a numbered heading, drawn before its text.
-  | 'headnum';
+  | 'headnum'
+  // A table drawn as a box naming it.
+  | 'tablebox';
 
 export interface TokenStyle {
   class?: string;
@@ -73,7 +75,6 @@ export interface TableCellRange extends Range {
 export interface TableAdapter {
   parse(source: string, token: Token): string[][];
   serialize(cells: string[][], token: Token, source: string): string;
-  ranges?(source: string, token: Token): TableCellRange[][];
   locate?(source: string, token: Token, pos: number): CellPosition | null;
   editable?(source: string, token: Token): boolean;
 }

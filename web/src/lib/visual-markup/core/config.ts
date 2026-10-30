@@ -7,7 +7,6 @@ export interface ThemeColors {
   math: string;
   environment: string;
   command: string;
-  table: string;
   background: string;
   foreground: string;
   surface: string;
@@ -37,7 +36,6 @@ export const DARK_THEME_COLORS: ThemeColors = {
   math: '#a78bfa',
   environment: '#10b981',
   command: '#4da6ff',
-  table: '#a78bfa',
   background: '#1f2937',
   foreground: '#f9fafb',
   surface: '#374151',
@@ -53,7 +51,6 @@ export const LIGHT_THEME_COLORS: ThemeColors = {
   math: '#6f42c1',
   environment: '#28a745',
   command: '#007acc',
-  table: '#6f42c1',
   background: '#ffffff',
   foreground: '#000000',
   surface: '#f8f9fa',
