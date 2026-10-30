@@ -21,6 +21,7 @@
   background: var(--color-subtle);
   color: var(--color-text-secondary);
   font-size: var(--text-xs);
+  flex-wrap: wrap;
 }
 
 .cm-lp-cellhead-engine {
@@ -36,6 +37,12 @@
   overflow: hidden;
   color: var(--color-text-muted);
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cm-lp-cellhead-option {
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
   white-space: nowrap;
 }
 

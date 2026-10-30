@@ -128,8 +128,23 @@ export const fence: Rule = (source, pos) => {
   if (cell) {
     meta.cell = 'true';
     meta.lang = /^\{\s*([A-Za-z][\w-]*)/.exec(info)?.[1] ?? '';
-    const inline = /label\s*=\s*"?([^",}\s]+)/.exec(info);
-    if (inline) meta.label = inline[1];
+    // Inline options, `{r setup, include=FALSE}`: a bare first word is the chunk label.
+    const options: [string, string][] = [];
+    const inlineText = /^\{\s*[A-Za-z][\w-]*([^}]*)/.exec(info)?.[1] ?? '';
+    const parts = inlineText.split(',').map((part) => part.trim()).filter(Boolean);
+    for (const [index, part] of parts.entries()) {
+      const eq = part.indexOf('=');
+      if (eq < 0) {
+        if (index === 0 && !meta.label) meta.label = part;
+        continue;
+      }
+      const key = part.slice(0, eq).trim();
+      const value = part.slice(eq + 1).trim().replace(/^(["'])(.*)\1$/, '$2');
+      if (!key) continue;
+      if (key === 'label') meta.label = value;
+      else if (key === 'fig-cap' || key === 'tbl-cap' || key === 'fig.cap') meta.caption = value;
+      else options.push([key, value]);
+    }
 
     let line = bodyFrom;
     while (line < closeStart) {
@@ -140,9 +155,11 @@ export const fence: Rule = (source, pos) => {
       const value = unquote(option[2]);
       if (key === 'label') meta.label = value;
       else if (key === 'fig-cap' || key === 'tbl-cap') meta.caption = value;
+      else options.push([key, value]);
       line = nextLineStart(source, lineEnd);
       contentFrom = Math.min(line, source.length);
     }
+    if (options.length) meta.options = JSON.stringify(options);
   } else {
     meta.lang = info.split(/\s+/)[0] ?? '';
   }
