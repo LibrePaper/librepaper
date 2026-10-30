@@ -118,6 +118,7 @@ const fullSample = [
   "\\begin{document}",
   "\\section{Results}",
   "The estimate is in Equation \\ref{eq:se}.",
+  "\\subsection{Main~estimate}",
   "\\begin{equation}",
   "\\label{eq:se}",
   "SE = \\frac{\\sigma}{\\sqrt{n}}",
@@ -1135,12 +1136,13 @@ try {
   const hiddenInBody = [
     "\\documentclass", "\\usepackage", "\\label", "eq:se",
     "\\bibliographystyle", "\\bibliography", "\\newpage",
-    "\\begin{document}", "\\end{document}", "\\begin{equation}", "\\begin{align}",
+    "\\begin{document}", "\\end{document}", "\\begin{equation}", "\\begin{align}", "~",
   ];
   for (const source of hiddenInBody) {
     assert.equal(result.full.body.text.includes(source), false, `${source} is still visible in full.tex with the caret in the body`);
   }
   assert.equal(result.full.body.text.includes("sec:results"), false, "the \\label{sec:results} key is still visible in full.tex with the caret in the body");
+  assert.ok(result.full.body.text.includes("Main estimate"), "the tie in \\subsection{Main~estimate} was not drawn as a space in full.tex");
   assert.deepEqual(result.full.body.labelTexts, [], `a \\label still shows as a .cm-lp-label tag: ${JSON.stringify(result.full.body.labelTexts)}`);
   assert.equal(result.full.body.hiddenTexts.some((text) => text.includes("\\label")), false, `a hidden-line chip names \\label: ${JSON.stringify(result.full.body.hiddenTexts)}`);
   for (const chip of ["Bibliography: references (plain)", "Page break", "End of document"]) {

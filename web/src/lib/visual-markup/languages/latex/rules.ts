@@ -128,7 +128,7 @@ export const environment: Rule = (source, pos, ctx) => {
   return token;
 };
 
-export const heading: Rule = (source, pos) => {
+export const heading: Rule = (source, pos, ctx) => {
   if (source[pos] !== '\\') return null;
 
   HEADING_NAME.lastIndex = pos;
@@ -149,6 +149,8 @@ export const heading: Rule = (source, pos) => {
     to: braces.to,
     body: inner(braces, 1, 1)
   };
+  // The title is markup: a tie, a dash or \emph inside it is drawn like body text.
+  token.children = ctx.parse(token.body!.from, token.body!.to);
   if (match[2]) token.star = true;
   return token;
 };
