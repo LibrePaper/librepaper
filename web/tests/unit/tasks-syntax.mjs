@@ -38,9 +38,11 @@ import {
   const tight = FIELD.exec("due:2026-11-05");
   assert.deepEqual([tight[1], tight[2], tight[3]], ["due", "", "2026-11-05"]);
 
+  FIELD.lastIndex = 0;
   const spaced = FIELD.exec("priority:  2 rest");
   assert.deepEqual([spaced[1], spaced[2], spaced[3]], ["priority", "  ", "2"]);
 
+  FIELD.lastIndex = 0;
   const tabbed = FIELD.exec("due:\t2026-11-05");
   assert.deepEqual([tabbed[1], tabbed[2], tabbed[3]], ["due", "\t", "2026-11-05"]);
 

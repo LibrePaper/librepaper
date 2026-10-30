@@ -9,12 +9,12 @@ import "./tasks.css";
 import { registerWidget, revealOnMousedown } from "./markup.ts";
 import { taskAt } from "../tasks/model.js";
 import { cycle } from "../tasks/edit.js";
-import { isOverdue, PRIORITIES, shortDate, STATES, todayISO } from "../tasks/syntax.js";
+import { CYCLE, isOverdue, PRIORITIES, shortDate, STATE_OF, STATES, todayISO } from "../tasks/syntax.js";
 
 const STATE_LABEL = Object.fromEntries(STATES.map((item) => [item.state, item.label]));
-// The order a click moves through. The box cycles to the next state in this list.
-const CYCLE = ["todo", "done", "doing", "blocked", "cancelled"];
-const NEXT_LABEL = Object.fromEntries(CYCLE.map((state, index) => [state, STATE_LABEL[CYCLE[(index + 1) % CYCLE.length]]]));
+// What a click on a box in each state moves it to, for the box's accessible name.
+const ORDER = CYCLE.map((char) => STATE_OF[char]);
+const NEXT_LABEL = Object.fromEntries(ORDER.map((state, index) => [state, STATE_LABEL[ORDER[(index + 1) % ORDER.length]]]));
 // The value aria-checked takes for each box. A partly done task is "mixed".
 const CHECKED = { done: "true", doing: "mixed" };
 
@@ -82,7 +82,6 @@ function buildTaskBox(view, { task, progress }) {
   return root;
 }
 
-// ---- Fields ----------------------------------------------------------------
 
 // The chip's text, its accessible name and its title for one field. A warning
 // keeps the source as written, and says so in the name and the title.
@@ -125,7 +124,6 @@ function buildField(view, { key, value, state, warning }) {
   return chip;
 }
 
-// ---- Tags ------------------------------------------------------------------
 
 function buildTag(view, { tag }) {
   const chip = el("span", "cm-lv-widget cm-lp-task-tag", `#${tag}`);
@@ -134,7 +132,6 @@ function buildTag(view, { tag }) {
   return chip;
 }
 
-// ---- Widget ----------------------------------------------------------------
 
 const BUILDERS = { taskbox: buildTaskBox, taskfield: buildField, tasktag: buildTag };
 

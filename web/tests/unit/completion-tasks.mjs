@@ -96,7 +96,7 @@ assert.deepEqual(labels(complete("- [ ] c assignee:|", { texts: people }).result
 }
 
 // --- Tags --------------------------------------------------------------------
-const writing = { "tasks.md": "- [ ] a #writing #paper/intro\n- [ ] b #writing" };
+const writing = { "notes.md": "- [ ] a #writing #paper/intro\n- [ ] b #writing" };
 {
   const { result, pos } = complete("- [ ] c #|", { texts: writing });
   assert.deepEqual(labels(result), ["paper/intro", "writing"]);

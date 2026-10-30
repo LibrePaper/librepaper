@@ -53,10 +53,19 @@ function dateOptions(today) {
   ];
 }
 
+// The editor's text with the caret's line left out.
+function otherLines(context) {
+  const line = context.state.doc.lineAt(context.pos);
+  const text = context.state.doc.toString();
+  return text.slice(0, line.from) + text.slice(line.to);
+}
+
 // Every assignee and tag in the project's Markdown texts and in the open document, sorted and unique.
+// The open document is read from the editor without the line being typed, so a half-typed name
+// is not offered back; its copy in the project texts is skipped for the same reason.
 function vocabulary(current, doc) {
   const texts = [doc, ...Object.entries(current.texts)
-    .filter(([path]) => MARKDOWN.test(path))
+    .filter(([path]) => MARKDOWN.test(path) && path !== current.path)
     .map(([, text]) => text)];
   const assignees = new Set();
   const tags = new Set();
@@ -139,12 +148,12 @@ export function taskCompletion(project) {
 
     const rest = before.slice(box);
     const field = rest.match(FIELD_VALUE);
-    if (field) return fieldValueOptions(context.pos, current, context.state.doc.toString(), field[1], field[3]);
+    if (field) return fieldValueOptions(context.pos, current, otherLines(context), field[1], field[3]);
 
     const word = rest.match(WORD);
     if (!word) return null;
     const text = word[1];
-    if (text.startsWith("#")) return tagOptions(context.pos, current, context.state.doc.toString(), text.slice(1));
+    if (text.startsWith("#")) return tagOptions(context.pos, current, otherLines(context), text.slice(1));
     if (FIELD_NAME.test(text)) return fieldNameOptions(context.pos, text);
     return null;
   };
