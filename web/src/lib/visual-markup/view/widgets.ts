@@ -3,6 +3,8 @@ import type { FigureModel } from '../core/language';
 import { textOf, type Range } from '../core/tokens';
 import { createEditableMath, readEditableMath, type MathSyntax } from './math-field';
 import { ImageResolver, imageResolver, isExternal, resolveImagePath } from './images';
+import { typst2tex } from 'tex2typst';
+import { loadKatex } from '../../katex.js';
 import { registerWidget, replaceRange, WidgetContext } from './widget-registry';
 
 interface TablePresentation {
@@ -193,7 +195,8 @@ export class FigureWidget extends WidgetType {
       this.model.captionRange,
       // Figures never edit captions in place; a click moves the caret to the caption source.
       false,
-      this.source
+      this.source,
+      this.model.captionTypst
     ) : null;
     if (caption && this.model.captionPosition === 'top') container.appendChild(caption);
 
@@ -276,11 +279,13 @@ function figureCaption(
   className: string,
   range?: Range,
   editable = false,
-  source = ''
+  source = '',
+  typst = ''
 ): HTMLElement {
   const caption = document.createElement('span');
   caption.className = className;
-  caption.textContent = text;
+  if (typst) drawTypstInline(caption, typst);
+  else caption.textContent = text;
 
   if (!range) return caption;
 
@@ -321,6 +326,37 @@ function figureCaption(
   return caption;
 }
 
+// Draws Typst inline markup: *strong*, _emphasis_ and $maths$. Anything else stays text.
+function drawTypstInline(parent: HTMLElement, text: string): void {
+  const pattern = /\$([^$]+)\$|\*([^*]+)\*|(?<![\w])_([^_]+)_(?![\w])/g;
+  let last = 0;
+  for (const match of text.matchAll(pattern)) {
+    parent.append(text.slice(last, match.index));
+    last = match.index + match[0].length;
+    if (match[1] !== undefined) {
+      const math = document.createElement('span');
+      math.className = 'cm-lv-math cm-lv-math-inline';
+      math.textContent = match[0];
+      let tex = '';
+      try {
+        tex = typst2tex(match[1].trim(), { blockMathMode: false });
+      } catch {
+        // The raw source stays.
+      }
+      if (tex) {
+        loadKatex().then(katex => {
+          if (math.isConnected) katex.render(tex, math, { displayMode: false, throwOnError: false });
+        }).catch(() => {});
+      }
+      parent.append(math);
+    } else {
+      const mark = document.createElement(match[2] !== undefined ? 'strong' : 'em');
+      drawTypstInline(mark, match[2] ?? match[3]);
+      parent.append(mark);
+    }
+  }
+  parent.append(text.slice(last));
+}
 
 function tablePresentation(token: WidgetContext['token']): TablePresentation | null {
   const meta = token.meta;

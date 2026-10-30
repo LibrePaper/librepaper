@@ -75,6 +75,7 @@ function figureModel(source: string, range: Range): FigureModel | null {
   return {
     panels,
     caption,
+    captionTypst: captionRange ? markupCaption(source.slice(captionRange.from, captionRange.to)) : undefined,
     captionRange,
     captionEditable: captionRange ? editableCaption(source, captionRange) : false,
     captionPosition,
@@ -509,6 +510,21 @@ function plainCaption(value: string): string {
   return text
     .replace(/#(?:strong|emph|underline|smallcaps|text)\([^)]*\)?\[([\s\S]*?)\]/g, '$1')
     .replace(/[*_]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// The caption body with its strong and emph calls as `*` and `_` markup and
+// other styling calls reduced to their content, for drawing with its markup.
+function markupCaption(value: string): string {
+  let text = value.trim();
+  if (text.startsWith('[') && text.endsWith(']')) text = text.slice(1, -1);
+  // A figure.caption(...) call keeps the plain caption.
+  if (/^figure\.caption\s*\(/.test(text)) return '';
+  return text
+    .replace(/#strong(?:\([^)]*\))?\[([\s\S]*?)\]/g, '*$1*')
+    .replace(/#emph(?:\([^)]*\))?\[([\s\S]*?)\]/g, '_$1_')
+    .replace(/#(?:underline|smallcaps|text)\([^)]*\)?\[([\s\S]*?)\]/g, '$1')
     .replace(/\s+/g, ' ')
     .trim();
 }
