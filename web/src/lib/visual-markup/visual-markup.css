@@ -147,8 +147,8 @@
 }
 
 /* Rendered blocks show nothing extra at rest. On hover they take the look of
-   the preamble, and a hint says that a click opens the source. The border is an
-   outline, which takes no room, so the hover does not move the text. */
+   the preamble. The border is an outline, which takes no room, so the hover does not
+   move the text. */
 .cm-lv-math-display,
 .cm-lv-figure-preview,
 .cm-line.cm-lv-figure-simple,
@@ -168,30 +168,11 @@
   background: var(--color-subtle);
 }
 
-.cm-lv-math-display:hover::after,
-.cm-lv-figure-preview:hover::after,
-.cm-line.cm-lv-figure-simple:hover::after,
-.cm-line.cm-lv-table:hover::after {
-  content: "Edit source";
-  position: absolute;
-  top: calc(var(--spacing) * 1);
-  right: calc(var(--spacing) * 2);
-  color: var(--color-text-muted);
-  font-size: var(--text-xs);
-  line-height: 1.4;
-  pointer-events: none;
-}
-
 /* Table cells carry their own borders, so a formula or figure inside one keeps its look. */
 .cm-lv-table-row .cm-lv-math-display:hover,
 .cm-lv-table-row .cm-lv-figure-preview:hover {
   outline-color: transparent;
   background: none;
-}
-
-.cm-lv-table-row .cm-lv-math-display:hover::after,
-.cm-lv-table-row .cm-lv-figure-preview:hover::after {
-  content: none;
 }
 
 /* Text styles from the LaTeX catalog. Each follows the command it stands for, and

@@ -20,6 +20,8 @@ export function prepareFigureToken(source: string, token: Token): void {
     if (bodyRange) markCaptionToken(token.children, bodyRange);
     return;
   }
+  // The one-line flex layout of a simple figure cannot draw a figure over several lines.
+  if (source.slice(token.from, token.to).includes('\n')) token.meta.figureComposite = 'true';
   const scope = valueOf(source, entries, 'scope');
   if (/^\s*["']parent["']\s*$/.test(scope ?? '')) token.meta.figureWide = 'true';
   const captionEntry = entries.find(entry => entry.name === 'caption');
