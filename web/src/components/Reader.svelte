@@ -1258,6 +1258,7 @@
   // reader joins it too, because that is where the text comes from.
   let Editor = $state(null);
   let editor = $state(null);
+  let insertMenu = $state(null);
   // The palettes are overlays over the editor. Their components are kept so a
   // command can ask the Math overlay to open a template, or the Symbols overlay
   // to take the focus.
@@ -4084,7 +4085,7 @@
           {/each}
         {/each}
       </MenubarMenu>
-      <InsertMenu getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpalette={(id) => void openPalette(id)} keys={{ symbols: MENU_KEYS.symbols, math: MENU_KEYS.math }} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} onzoterosearch={localQuarto.desktop() ? (query) => editor?.zoteroSearch?.(query) : null} onzoteroimport={(items) => editor?.importZoteroItems?.(items)} disabled={!mayEdit || !editor} />
+      <InsertMenu bind:this={insertMenu} getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpalette={(id) => void openPalette(id)} keys={{ symbols: MENU_KEYS.symbols, math: MENU_KEYS.math }} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} onzoterosearch={localQuarto.desktop() ? (query) => editor?.zoteroSearch?.(query) : null} onzoteroimport={(items) => editor?.importZoteroItems?.(items)} disabled={!mayEdit || !editor} />
     {/if}
     {#if editing}
       <MenubarMenu id="view" label="View" onselect={chooseViewCommand}>
@@ -4100,7 +4101,7 @@
 </Nav>
 
 {#if formatBarShown}
-  <FormatToolbar active={formatActive} hidden={barHidden} onformat={(id) => editor?.formatSelection?.(id)} />
+  <FormatToolbar active={formatActive} hidden={barHidden} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} />
 {/if}
 
 <main id="main" tabindex="-1" class="reader" class:editing={shown.source} class:no-preview={!shown.document}
