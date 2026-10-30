@@ -12,11 +12,10 @@ A task is a list item whose marker is followed by a box:
 | `[ ]` | To do |
 | `[x]` or `[X]` | Done |
 | `[/]` | In progress |
-| `[?]` | Blocked |
 | `[-]` | Cancelled |
 
 Only `[ ]` and `[x]` are GitHub Flavored Markdown; the others read as plain
-text elsewhere.
+text elsewhere. A `[?]` is not a box: the line is a plain list item.
 
 Fields are `key:value` or `key: value` on the task's first line:
 
@@ -48,12 +47,18 @@ Tags are `#` followed by a letter, then letters, digits, `_`, `-` and `/`.
 
 ## Visual mode
 
-- The box is a checkbox drawn by state. A click, Space or Enter moves it to
-  the next state: `[ ]`, `[x]`, `[/]`, `[?]`, `[-]`, then `[ ]` again. `[X]`
-  counts as `[x]`. Only the box character changes.
-- Fields are quiet chips: `P1` to `P5`, "Nov 5", "start Nov 1", the
-  assignees, the estimate. Priorities 1 and 2 and overdue dates are
-  emphasised in text, not by colour alone. Tags are small labels.
+- Every box is drawn alike: one outlined square with no fill. Its state is one
+  mark inside: none for to do, a check for done, a dot for in progress, a cross
+  for cancelled. A click, Space or Enter moves it to the next state: `[ ]`,
+  `[x]`, `[/]`, `[-]`, then `[ ]` again. `[X]` counts as `[x]`. Only the box
+  character changes.
+- Fields are plain text with a glyph or icon in front, not pills. Assignees
+  have a user icon, or a users icon for several, then the names: "alice, bob".
+  Dates have a clock icon, then the short date: "Nov 5", "start Nov 1". Priority
+  is one circled digit per level: `❶` to `❺`, with 1 and 2 in the strong text
+  colour, 3 in the secondary colour, and 4 and 5 faded. Overdue dates use the
+  warning colour and say "overdue" in their name. Estimates are quiet text, and
+  tags are small labels.
 - Done tasks are muted and struck through; cancelled ones are muted.
 - A parent task shows "n of m" for its task children, cancelled ones left out.
 - A click on a chip puts the caret there, and the line is drawn as source

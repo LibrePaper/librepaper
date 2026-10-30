@@ -15,7 +15,7 @@ function firstTask(source) {
 
 // Each box steps to the next state in the cycle, and the last wraps to the first. X counts as x.
 {
-  const steps = [[" ", "x"], ["x", "/"], ["X", "/"], ["/", "?"], ["?", "-"], ["-", " "]];
+  const steps = [[" ", "x"], ["x", "/"], ["X", "/"], ["/", "-"], ["-", " "]];
   for (const [box, next] of steps) {
     const source = `- [${box}] Task due:2026-11-05\n`;
     const changes = cycle(firstTask(source));
@@ -27,6 +27,6 @@ function firstTask(source) {
 
 // A cycle changes the box character only, so the rest of the line keeps its exact text.
 {
-  const source = "- [?]   Blocked   priority:2  #writing  \n";
-  assert.equal(applyChanges(source, cycle(firstTask(source))), "- [-]   Blocked   priority:2  #writing  \n");
+  const source = "- [/]   Working   priority:2  #writing  \n";
+  assert.equal(applyChanges(source, cycle(firstTask(source))), "- [-]   Working   priority:2  #writing  \n");
 }

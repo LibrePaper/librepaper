@@ -1,9 +1,10 @@
-/* Task controls. A task reads as a list item: the box, the text, then quiet chips.
-   Colour is never the only signal; priority, overdue and blocked also differ in
-   weight, glyph, dash or wording. Every colour comes from the theme variables, so
-   dark mode follows the page. */
+/* Task controls. A task reads as a list item: the box, the text, then quiet fields.
+   Every box is the same outlined square, and its state is one mark inside. Colour is
+   never the only signal; priority also differs in its glyph and weight, and overdue
+   also differs in its wording. Every colour comes from the theme variables, so dark
+   mode follows the page. */
 
-/* A done task mutes its text and strikes it through. The chips and the box set
+/* A done task mutes its text and strikes it through. The fields and the box set
    their own decoration, so the line-through stops at the text. */
 .cm-lp-task-done {
   color: var(--color-text-muted);
@@ -23,7 +24,8 @@
   text-decoration: none;
 }
 
-/* The box. The button is the checkbox, so its border is the only outline. */
+/* The box. The button is the checkbox, so its border is the only outline, and the
+   mark is centred inside it. */
 .cm-lp-taskbox {
   display: inline-flex;
   align-items: center;
@@ -33,7 +35,6 @@
 }
 
 .cm-lp-taskbox-button {
-  position: relative;
   display: inline-grid;
   place-items: center;
   flex: none;
@@ -42,53 +43,12 @@
   padding: 0;
   border: 1.5px solid var(--color-text-secondary);
   border-radius: 3px;
-  background: var(--color-raised);
+  background: transparent;
   color: var(--color-text);
   font: inherit;
   font-size: 0.8em;
   line-height: 1;
   cursor: pointer;
-}
-
-/* In progress: the box is half filled. */
-.cm-lp-taskbox-doing {
-  background: linear-gradient(to right, var(--color-text-secondary) 50%, var(--color-raised) 50%);
-}
-
-/* Blocked: a dashed border and a question mark, so it differs from a todo by shape. */
-.cm-lp-taskbox-blocked {
-  border: 2px dashed var(--color-warning-text);
-  color: var(--color-warning-text);
-  font-weight: 700;
-}
-
-/* Done: a check drawn from borders, in the muted text colour. */
-.cm-lp-taskbox-done {
-  border-color: var(--color-text-muted);
-  background: var(--color-subtle);
-  color: var(--color-text);
-}
-
-.cm-lp-taskbox-done::after {
-  content: "";
-  width: 0.3em;
-  height: 0.6em;
-  margin-top: -0.1em;
-  border: solid currentColor;
-  border-width: 0 2px 2px 0;
-  transform: rotate(45deg);
-}
-
-/* Cancelled: a muted box with a dash drawn across it. */
-.cm-lp-taskbox-cancelled {
-  border-color: var(--color-text-muted);
-  color: var(--color-text-muted);
-}
-
-.cm-lp-taskbox-cancelled::after {
-  content: "";
-  width: 50%;
-  border-top: 2px solid currentColor;
 }
 
 .cm-lp-task-progress {
@@ -98,15 +58,13 @@
   white-space: nowrap;
 }
 
-/* Field chips. Neutral and small; the text itself is the emphasis. A chip is a span,
-   so it is not focusable: a press places the caret on its source instead. */
-.cm-lp-field,
-.cm-lp-task-tag {
-  display: inline-block;
-  margin: 0 calc(var(--spacing) * 0.5);
-  padding: 0 calc(var(--spacing) * 2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-base);
+/* Fields are plain text with an icon or a glyph in front. A field is a span, so it is
+   not focusable: a press places the caret on its source instead. */
+.cm-lp-field {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--spacing) * 0.5);
+  margin-inline: var(--spacing);
   color: var(--color-text-secondary);
   font-size: var(--text-xs);
   line-height: 1.7;
@@ -114,44 +72,54 @@
   vertical-align: middle;
 }
 
-/* Quiet chips drop their frame and sit back in the muted colour. */
+.cm-lp-field-icon {
+  flex: none;
+  width: 0.9em;
+  height: 0.9em;
+}
+
+/* Created and estimate recede into the muted colour. */
 .cm-lp-task-quiet {
-  border-color: transparent;
   color: var(--color-text-muted);
 }
 
-/* Priorities 1 and 2 are bold and carry their number; 4 and 5 recede. */
+/* Priorities 1 and 2 are the strongest, 3 is plain, and 4 and 5 recede. */
 .cm-lp-field-p1,
 .cm-lp-field-p2 {
   color: var(--color-text);
-  font-weight: 700;
-  border-color: var(--color-text-secondary);
+  font-weight: 600;
 }
 
 .cm-lp-field-p4,
 .cm-lp-field-p5 {
-  color: var(--color-text-muted);
+  opacity: 0.6;
 }
 
-/* Overdue uses the warning colours and the word "overdue" in its name. */
+/* Overdue uses the warning colour and the word "overdue" in its name. */
 .cm-lp-task-overdue {
-  background: var(--color-warning-bg);
-  border-color: var(--color-warning-border);
   color: var(--color-warning-text);
   font-weight: 600;
 }
 
 /* A field the parser could not read keeps its text and shows a dashed frame. */
 .cm-lp-task-invalid {
-  border-style: dashed;
-  border-color: var(--color-error-border);
+  border: 1px dashed var(--color-error-border);
+  border-radius: var(--radius-base);
+  padding: 0 calc(var(--spacing) * 2);
   color: var(--color-error-text);
 }
 
+/* Tags are small labels with no frame of their own. */
 .cm-lp-task-tag {
-  border-color: transparent;
-  color: var(--color-text-muted);
+  display: inline-block;
+  margin: 0 calc(var(--spacing) * 0.5);
   padding: 0 1px;
+  border: 1px solid transparent;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.7;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
 .cm-lp-taskbox-button:focus-visible {

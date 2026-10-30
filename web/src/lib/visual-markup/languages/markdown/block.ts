@@ -14,7 +14,7 @@ const DIV_OPEN = /^(:{3,})[ \t]*(.*?)[ \t]*$/;
 const DIV_CLOSE = /^(:{3,})$/;
 const DIV_NESTED = /^:{3,}[ \t]*\S/;
 const ORDERED = /(\d{1,9})([.)])(?=[ \t\n]|$)/y;
-const TASK = /[ \t]+\[([ xX\/?-])\](?=[ \t\n]|$)/y;
+const TASK = /[ \t]+\[([ xX\/-])\](?=[ \t\n]|$)/y;
 const FOOTNOTE_DEF = /\[\^([^\]\s^]+)\]:[ \t]*/y;
 const LINK_DEF = /\[([^\]\n]+)\]:[ \t]*\S/y;
 // A line that starts another block, so it cannot be the text line of a setext heading.

@@ -20,7 +20,7 @@ function items(source) {
 
 // Every box character maps to its state, and the item token ends just after the box.
 {
-  const states = { " ": "todo", x: "done", X: "done", "/": "doing", "?": "blocked", "-": "cancelled" };
+  const states = { " ": "todo", x: "done", X: "done", "/": "doing", "-": "cancelled" };
   for (const [box, state] of Object.entries(states)) {
     const source = `- [${box}] Task`;
     const [item] = items(source);
@@ -36,6 +36,11 @@ function items(source) {
   assert.equal(ordered.meta.task, "doing");
 
   assert.deepEqual(items("- [ ] Task")[0].meta, { marker: "-", task: "todo", box: " " });
+  // A question mark is no longer a box, so the line is a plain item with no task meta.
+  const [question] = items("- [?] x");
+  assert.equal(question.name, "bullet");
+  assert.equal(question.meta.task, undefined);
+  assert.equal(question.meta.box, undefined);
   assert.equal(items("- plain bullet")[0].meta.task, undefined);
   assert.equal(items("- plain bullet")[0].meta.box, undefined);
 }
