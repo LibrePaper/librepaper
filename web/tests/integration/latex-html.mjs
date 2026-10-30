@@ -240,4 +240,8 @@ assert.equal(trapped.instances[0].dead, true, "a runtime trap retires the damage
 assert.equal((await trapped.compile(tree("fixed"), { base })).html, "recovered");
 assert.equal(trapped.instances.length, 2);
 trapped.cancel();
+const footer = '<footer class="ltx_page_footer">\n<div class="ltx_page_logo">Generated  by <a href="http://dlmf.nist.gov/LaTeXML/">LaTeXML <img alt="Mascot Sammy" src="data:image/png;base64,AA=="></a>\n</div></footer>';
+const footed = harness({ run: () => ({ ok: true, status: 0, html: `<div class="ltx_page_main"><p>body</p></div>${footer}` }) });
+assert.equal((await footed.compile(tree("x"), { base })).html, '<div class="ltx_page_main"><p>body</p></div>', "the LaTeXML page footer is removed from the preview");
+
 console.log("latex-html: warm resources, snapshots, queued edits, cancellation, deadlines, paths and failures passed");

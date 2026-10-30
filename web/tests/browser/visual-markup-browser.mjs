@@ -198,6 +198,7 @@ const sinkSample = [
   "\\begin{tikzpicture} \\draw (0,0); \\end{tikzpicture}",
   "\\tableofcontents",
   "\\citep[p.~3]{knuth}, \\citet{knuth}, \\cite{knuth}.",
+  "L'homme~dit \\og{}oui\\fg{}, \\texorpdfstring{shown $x$}{pdf alt}.",
   "Caret here.",
   "\\end{document}",
 ].join("\n");
@@ -722,6 +723,11 @@ async function visualCheck() {
     cites: document.querySelectorAll(".cm-editor .cm-lp-cite").length,
     katexErrors: document.querySelectorAll(".cm-editor .katex-error").length,
     tikzChip: Boolean(tikzChip),
+    // A glyph drawn in place of source, such as ’ for ' or a space for ~, takes its own width: a list marker's 1.2em would leave a gap after it.
+    glyphWidths: Array.from(document.querySelectorAll(".cm-editor .cm-lv-glyph"))
+      .filter((node) => ["’", "«", "»", " "].includes(node.textContent))
+      .map((node) => node.getBoundingClientRect().width / parseFloat(getComputedStyle(node).fontSize)),
+    markerTexts: texts(".cm-lv-marker"),
   };
   tikzChip?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
   await settle();
@@ -1239,13 +1245,15 @@ try {
   // shows the TikZ source after a click on its chip.
   const sinkBody = result.sink.text.replace(/\s+/g, " ");
   assert.equal(result.sink.katexShown, true, "KaTeX did not typeset $x \\in \\R$ in sink.tex within five seconds");
-  for (const drawn of ["a", "b", "c", "–", "—", "“q”", "é", "ö", "…", "LaTeX", "©", "site", "“hi”", "3 m/s", "12 345", "ML", "numpy", "Lemma 1 (Key).", "Proof.", "∎", "Abstract", "Table of contents"]) {
+  for (const drawn of ["a", "b", "c", "–", "—", "“q”", "é", "ö", "…", "LaTeX", "©", "site", "“hi”", "3 m/s", "12 345", "ML", "numpy", "Lemma 1 (Key).", "Proof.", "∎", "Abstract", "Table of contents", "L’homme dit", "«oui»", "shown"]) {
     assert.ok(sinkBody.includes(drawn), `sink.tex does not draw '${drawn}'; visible text: ${sinkBody}`);
   }
-  for (const source of ["\\textbf", "\\bfseries", "\\small", "\\verb", "\\'", "\\ldots", "\\href", "\\footnote", "\\enquote", "\\SI", "\\num", "\\gls", "\\pkg", "\\begin{lemma}", "\\begin{tikzpicture}", "\\draw", "\\tableofcontents"]) {
+  for (const source of ["\\textbf", "\\bfseries", "\\small", "\\verb", "\\'", "\\ldots", "\\href", "\\footnote", "\\enquote", "\\SI", "\\num", "\\gls", "\\pkg", "\\begin{lemma}", "\\begin{tikzpicture}", "\\draw", "\\tableofcontents", "\\texorpdfstring", "pdf alt", "\\og"]) {
     assert.equal(sinkBody.includes(source), false, `${source} is still visible in sink.tex with the caret on its last body line`);
   }
   assert.ok(result.sink.verbs.includes("x_1"), `the \\verb|x_1| did not draw as .cm-lp-verb 'x_1'; verb texts: ${JSON.stringify(result.sink.verbs)}`);
+  assert.equal(result.sink.glyphWidths.length, 4, `the apostrophe, tie and French quotes did not draw as .cm-lv-glyph; markers: ${JSON.stringify(result.sink.markerTexts)}`);
+  assert.ok(result.sink.glyphWidths.every((width) => width < 0.8), `a drawn glyph is wider than its character (in em): ${JSON.stringify(result.sink.glyphWidths)}`);
   assert.ok(result.sink.footnotes > 0, "the \\footnote did not draw as a .cm-lp-footnote");
   assert.equal(result.sink.tikzChip, true, `the tikzpicture did not fold into a pill; chips: ${JSON.stringify(result.sink.chips)}`);
   assert.ok(result.sink.links > 0, "the \\href did not draw as a .cm-lp-link");

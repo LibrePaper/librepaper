@@ -1,7 +1,7 @@
 import { Rule } from '../../core/language';
 import { Range, Token } from '../../core/tokens';
 import { inner, isEscaped, matchDelimited, matchFenced, matchLine, skipSpace } from '../../core/scanner';
-import { ARGUMENT_COUNT, ESCAPABLE, HEADING_LEVELS, LITERAL_ARGUMENT_COMMANDS, MATH_ENVIRONMENTS, TABLE_ENVIRONMENT_ARGS, TABLE_ENVIRONMENTS, VERBATIM_ENVIRONMENTS } from './commands';
+import { ARGUMENT_COUNT, ESCAPABLE, FIRST_ARGUMENT_COMMANDS, HEADING_LEVELS, LITERAL_ARGUMENT_COMMANDS, MATH_ENVIRONMENTS, TABLE_ENVIRONMENT_ARGS, TABLE_ENVIRONMENTS, VERBATIM_ENVIRONMENTS } from './commands';
 import { COMMANDS, ENVIRONMENTS } from './catalog';
 import { FIGURE_ENVIRONMENTS, isCompositeFigure, latexDimension } from './figure';
 
@@ -311,7 +311,9 @@ export const command: Rule = (source, pos, ctx) => {
   // Kept beside the star flag for consumers that still compare names such as `caption*`.
   if (parsed.star) token.meta = { ...token.meta, starred: 'true' };
 
-  if (body && !LITERAL_ARGUMENT_COMMANDS.has(name)) token.children = ctx.parse(body.from, body.to);
+  // A command drawn as its first argument parses that one, not the last.
+  const shown = FIRST_ARGUMENT_COMMANDS.has(name) ? parsed.args[0] : body;
+  if (shown && !LITERAL_ARGUMENT_COMMANDS.has(name)) token.children = ctx.parse(shown.from, shown.to);
   return token;
 };
 

@@ -2,7 +2,7 @@ import { cssColor } from '../../core/color';
 import { registerLanguage, Language, LanguageCommands, TokenStyle } from '../../core/language';
 import { Token } from '../../core/tokens';
 import { COMMANDS, ENVIRONMENTS, type EnvironmentRender, type Render } from './catalog';
-import { ARGUMENT_COUNT, COMMAND_CLASSES, EDITABLE_COMMANDS, INCLUDE_COMMANDS, LIST_ENVIRONMENTS, REF_COMMANDS, VERBATIM_ENVIRONMENTS } from './commands';
+import { ARGUMENT_COUNT, COMMAND_CLASSES, EDITABLE_COMMANDS, FIRST_ARGUMENT_COMMANDS, INCLUDE_COMMANDS, LIST_ENVIRONMENTS, REF_COMMANDS, VERBATIM_ENVIRONMENTS } from './commands';
 import { rules } from './rules';
 import { table } from './table';
 import { figure, latexImageStyle } from './figure';
@@ -166,8 +166,7 @@ function style(token: Token): TokenStyle | null {
       if (INCLUDE_COMMANDS.has(full)) return { widget: 'include' };
       if (name === 'maketitle') return { widget: 'title', block: true };
       if (name === 'includegraphics') return { widget: 'image' };
-      // \replaced{new}{old} shows only the new text.
-      if (name === 'replaced' && token.args?.length) return { argument: 0 };
+      if (FIRST_ARGUMENT_COMMANDS.has(name) && token.args?.length) return { argument: 0 };
       if (HIDDEN_LAYOUT_COMMANDS.has(full)) return { hidden: true };
       const known = COMMAND_CLASSES.get(full);
       if (known) {
