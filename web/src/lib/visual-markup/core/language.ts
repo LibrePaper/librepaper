@@ -13,9 +13,8 @@ export interface RuleContext {
 
 export type Rule = (source: string, pos: number, ctx: RuleContext) => Token | null;
 
-// 'label' shows a standalone \label as a small tag instead of hiding it.
 export type WidgetKind =
-  | 'math' | 'image' | 'figure' | 'ref' | 'include' | 'title' | 'label'
+  | 'math' | 'image' | 'figure' | 'ref' | 'include' | 'title'
   | 'cite' | 'link' | 'footnote' | 'verb' | 'chip' | 'unit' | 'gloss' | 'quote'
   | 'envhead' | 'macro' | 'bibitem' | 'symbol'
   // Markdown and Quarto.

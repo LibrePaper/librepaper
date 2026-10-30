@@ -40,7 +40,7 @@
   white-space: normal;
 }
 
-/* A \label outside maths: a small tag at the right edge of its line. The line
+/* A Typst <label>: a small tag at the right edge of its line. The line
    becomes a block formatting context so that a line holding only the tag keeps
    its height. */
 .cm-line:has(.cm-lp-label) {
