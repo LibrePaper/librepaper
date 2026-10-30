@@ -1,0 +1,16 @@
+{
+  "id": "/",
+  "name": "LibrePaper",
+  "short_name": "LibrePaper",
+  "description": "Write papers with co-authors in the browser: LaTeX, Typst, Quarto and Markdown.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fbfdfc",
+  "theme_color": "#fbfdfc",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

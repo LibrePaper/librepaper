@@ -12,6 +12,7 @@ pub fn content_type(name: &str) -> &'static str {
         // the browser before it runs a line.
         Some("js") | Some("mjs") => "text/javascript; charset=utf-8",
         Some("json") => "application/json; charset=utf-8",
+        Some("webmanifest") => "application/manifest+json",
         Some("map") => "application/json; charset=utf-8",
         Some("png") => "image/png",
         Some("jpg") | Some("jpeg") => "image/jpeg",
