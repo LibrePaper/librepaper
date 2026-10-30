@@ -1,5 +1,5 @@
 import { Facet, StateEffect, StateField } from "@codemirror/state";
-import { WidgetType } from "@codemirror/view";
+import { EditorView, WidgetType } from "@codemirror/view";
 import { typst2tex } from "tex2typst";
 import "./markup.css";
 import "./visual-markup.css";
@@ -87,6 +87,8 @@ export function visualMarkup(format, { path = () => "", imageUrl = null, dark = 
   const extensions = [
     visualExtension(),
     visualDefaults.of({ enabled: true, language: format }),
+    // The class sets the text in a serif face; see visual-markup.css.
+    EditorView.editorAttributes.of({ class: "cm-lp-visual" }),
     createTheme({
       ...DEFAULT_CONFIG,
       theme: dark ? "dark" : "light",
