@@ -9,22 +9,20 @@
   font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
 }
 
-/* The vertical gap around a block widget. It is padding on a wrapper, because
-   CodeMirror does not measure margins. */
-.cm-lp-block-gap {
+/* A pill is a framed line standing in for source that is not drawn: the folded
+   preamble, a hidden run, a table, a catalog chip on a block of its own. Every
+   block pill looks the same, whatever surrounds it: left aligned and upright
+   even inside a centred environment, a theorem or a quotation. The vertical gap
+   is padding on a wrapper, because CodeMirror does not measure margins. */
+.cm-lp-pill-gap {
   padding: calc(var(--spacing) * 2) 0;
+  text-align: left;
+  font-style: normal;
+  font-weight: normal;
 }
 
-.cm-lp-block-gap-tight {
-  padding: calc(var(--spacing) * 1) 0;
-}
-
-/* The folded LaTeX preamble, the box that stands in for a table, and the chips
-   that stand in for hidden runs of source (page breaks, the end of the
-   document, the bibliography): a quiet line in place of the source. */
-.cm-lp-preamble,
-.cm-lp-table-box,
-.cm-lp-hidden {
+.cm-lp-pill,
+.cm-lp-chip {
   padding: calc(var(--spacing) * 1) calc(var(--spacing) * 3);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-base);
@@ -34,9 +32,12 @@
   cursor: pointer;
 }
 
-/* Hidden chips are more compact than the preamble, which is the page's header. */
-.cm-lp-hidden {
-  padding: calc(var(--spacing) * 1) calc(var(--spacing) * 2);
+.cm-lp-pill {
+  display: block;
+  text-align: left;
+  font-style: normal;
+  font-weight: normal;
+  white-space: normal;
 }
 
 /* A \label outside maths: a small tag at the right edge of its line. The line
@@ -273,24 +274,11 @@
   white-space: pre;
 }
 
-/* A generic chip: a bordered label, inline or on a block of its own. */
-.cm-lp-chip {
+/* An inline chip: a pill's frame inside the line. */
+.cm-lp-chip:not(.cm-lp-pill) {
   display: inline-block;
   padding: 0 calc(var(--spacing) * 2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-base);
-  background: var(--color-subtle);
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
   white-space: nowrap;
-  cursor: pointer;
-}
-
-.cm-lp-chip-block {
-  display: block;
-  padding: calc(var(--spacing) * 1) calc(var(--spacing) * 3);
-  white-space: normal;
-  font-size: var(--text-xs);
 }
 
 .cm-lp-unit {

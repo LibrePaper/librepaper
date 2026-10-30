@@ -2,7 +2,7 @@
 // the title block and colour swatches. index.js imports this file, so nothing here
 // reads an index.js export at load time; the factories and toDOM are where they are used.
 import { WidgetType } from "@codemirror/view";
-import { ElementWidget, factsOf, includeOpener, nameList } from "./index.js";
+import { chipWidget, ElementWidget, factsOf, includeOpener, nameList } from "./index.js";
 import { registerWidget, revealOnMousedown, textOf } from "./markup.ts";
 import { TYPST_FUNCTIONS } from "./languages/typst/catalog.ts";
 import "./typst.css";
@@ -379,8 +379,5 @@ registerWidget("typchip", ({ token, source }) => {
   let text = render.text;
   const first = token.args?.[0] ? textOf(source, token.args[0]).replace(/^"|"$/g, "").trim() : "";
   if (render.argument && first) text += `: ${first}`;
-  return new ElementWidget({
-    className: render.block ? "cm-lp-chip cm-lp-chip-block" : "cm-lp-chip",
-    content: [text],
-  });
+  return chipWidget(text, render.block);
 });

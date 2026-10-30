@@ -710,13 +710,13 @@ async function visualCheck() {
   view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("Caret here.") + 6 } });
   await settle();
   const sinkKatexShown = await poll(katexCount);
-  const tikzChip = Array.from(document.querySelectorAll(".cm-editor .cm-lp-chip")).find((node) => /tikz/i.test(node.textContent));
+  const tikzChip = Array.from(document.querySelectorAll(".cm-editor .cm-lp-pill, .cm-editor .cm-lp-chip")).find((node) => /tikz/i.test(node.textContent));
   const sink = {
     katexShown: sinkKatexShown,
     text: visibleText(),
     verbs: texts(".cm-lp-verb"),
     footnotes: document.querySelectorAll(".cm-editor .cm-lp-footnote").length,
-    chips: texts(".cm-lp-chip"),
+    chips: texts(".cm-lp-pill, .cm-lp-chip"),
     links: document.querySelectorAll(".cm-editor .cm-lp-link").length,
     cites: document.querySelectorAll(".cm-editor .cm-lp-cite").length,
     katexErrors: document.querySelectorAll(".cm-editor .katex-error").length,
@@ -1243,7 +1243,7 @@ try {
   }
   assert.ok(result.sink.verbs.includes("x_1"), `the \\verb|x_1| did not draw as .cm-lp-verb 'x_1'; verb texts: ${JSON.stringify(result.sink.verbs)}`);
   assert.ok(result.sink.footnotes > 0, "the \\footnote did not draw as a .cm-lp-footnote");
-  assert.equal(result.sink.tikzChip, true, `the tikzpicture did not fold into a .cm-lp-chip; chips: ${JSON.stringify(result.sink.chips)}`);
+  assert.equal(result.sink.tikzChip, true, `the tikzpicture did not fold into a pill; chips: ${JSON.stringify(result.sink.chips)}`);
   assert.ok(result.sink.links > 0, "the \\href did not draw as a .cm-lp-link");
   assert.equal(result.sink.cites, 3, `expected 3 .cm-lp-cite elements for the three citation commands, found ${result.sink.cites}`);
   assert.equal(result.sink.katexErrors, 0, "sink.tex has KaTeX parse errors (.katex-error inside .cm-editor)");

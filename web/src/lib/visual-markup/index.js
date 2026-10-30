@@ -12,6 +12,7 @@ import {
   DEFAULT_CONFIG,
   imageResolver,
   LIGHT_THEME_COLORS,
+  PillWidget,
   refreshVisual,
   registerWidget,
   revealOnMousedown,
@@ -544,21 +545,19 @@ export class ElementWidget extends WidgetType {
       });
     }
 
-    // A block chip is wrapped so that its vertical gap is padding, which CodeMirror measures.
-    if (!this.className.includes("cm-lp-chip-block")) {
-      revealOnMousedown(view, element);
-      return element;
-    }
-    const gap = document.createElement("div");
-    gap.className = "cm-lp-block-gap";
-    gap.append(element);
-    revealOnMousedown(view, gap);
-    return gap;
+    revealOnMousedown(view, element);
+    return element;
   }
 
   ignoreEvent() {
     return true;
   }
+}
+
+// A catalog chip: a pill on a block of its own, or a chip inside the line.
+export function chipWidget(text, block) {
+  if (block) return new PillWidget(text, "Show the source", "cm-lp-chip");
+  return new ElementWidget({ className: "cm-lp-chip", content: [text] });
 }
 
 // The trimmed source text of a range, or "" when the argument is missing.
@@ -764,10 +763,7 @@ registerWidget("chip", ({ token, source }) => {
   let text = render.text;
   const first = cleanTitle(argText(source, token.args?.[0]));
   if (render.argument && first) text += `: ${first}`;
-  return new ElementWidget({
-    className: render.block ? "cm-lp-chip cm-lp-chip-block" : "cm-lp-chip",
-    content: [text],
-  });
+  return chipWidget(text, render.block);
 });
 
 // ---- Units (siunitx) -------------------------------------------------------

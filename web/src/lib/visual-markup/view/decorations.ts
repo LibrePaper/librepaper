@@ -4,7 +4,7 @@ import { Language, TokenStyle } from '../core/language';
 import { Tokenizer } from '../core/tokenizer';
 import { Range, Token } from '../core/tokens';
 import { createWidget } from './widget-registry';
-import { revealOnMousedown } from './widgets';
+import { PillWidget } from './widgets';
 
 export interface BuildOptions {
   language: Language;
@@ -56,35 +56,6 @@ class MarkerWidget extends WidgetType {
     element.className = this.className;
     element.textContent = this.label;
     return element;
-  }
-}
-
-// A run of fully hidden lines (for example \newpage or \end{document}) shows as one chip.
-// Clicking it places the caret in the run, which reveals the source.
-class HiddenRunWidget extends WidgetType {
-  constructor(private summary: string) {
-    super();
-  }
-
-  eq(other: WidgetType): boolean {
-    return other instanceof HiddenRunWidget && other.summary === this.summary;
-  }
-
-  toDOM(view: EditorView): HTMLElement {
-    const gap = document.createElement('div');
-    gap.className = 'cm-lp-block-gap cm-lp-block-gap-tight';
-    const element = document.createElement('div');
-    element.className = 'cm-lp-hidden';
-    element.textContent = this.summary;
-    element.title = 'Show the source';
-    gap.append(element);
-    revealOnMousedown(view, gap);
-    return gap;
-  }
-
-  // The click is handled by revealOnMousedown, which moves the caret into the run.
-  ignoreEvent(): boolean {
-    return true;
   }
 }
 
@@ -392,9 +363,11 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
     const summary = options.language.hiddenSummary?.(state.doc.sliceString(run.from, run.to)) ?? null;
     const decoration = summary === null
       ? Decoration.replace({ block: true })
-      : Decoration.replace({ widget: new HiddenRunWidget(summary), block: true });
+      : Decoration.replace({ widget: new PillWidget(summary, 'Show the source', 'cm-lp-hidden'), block: true });
     decorations.push(decoration.range(run.from, run.to));
   }
+
+  mergePills(state, decorations, atomic, touchesRevealed);
 
   for (const span of spans) {
     const line = state.doc.lineAt(span.from);
@@ -411,6 +384,55 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
     atomic: RangeSet.of(atomic, true),
     tokens: parsed
   };
+}
+
+// Block pills with only whitespace between them, none of it on a revealed line,
+// are drawn as one pill that joins their texts. The merged range is atomic only
+// when every part was; a hidden run never is.
+function mergePills(
+  state: EditorState,
+  decorations: CMRange<Decoration>[],
+  atomic: CMRange<Decoration>[],
+  touchesRevealed: (from: number, to: number) => boolean
+): void {
+  const pills = decorations
+    .filter(range => range.value.spec.block && range.value.spec.widget instanceof PillWidget)
+    .sort((a, b) => a.from - b.from);
+
+  const groups: CMRange<Decoration>[][] = [];
+  for (const pill of pills) {
+    const group = groups[groups.length - 1];
+    const last = group?.[group.length - 1];
+    if (last && /^\s*$/.test(state.doc.sliceString(last.to, pill.from)) && !touchesRevealed(last.to, pill.from)) {
+      group.push(pill);
+    } else {
+      groups.push([pill]);
+    }
+  }
+
+  const merged = groups.filter(group => group.length > 1);
+  if (merged.length === 0) return;
+
+  const key = (range: CMRange<Decoration>) => `${range.from}:${range.to}`;
+  const atomicKeys = new Set(atomic.map(key));
+  const parts = new Set<CMRange<Decoration>>();
+  const partKeys = new Set<string>();
+  const added: CMRange<Decoration>[] = [];
+  const addedAtomic: CMRange<Decoration>[] = [];
+  for (const group of merged) {
+    for (const part of group) {
+      parts.add(part);
+      partKeys.add(key(part));
+    }
+    const text = group.map(part => (part.value.spec.widget as PillWidget).text).join(' · ');
+    const decoration = Decoration.replace({ widget: new PillWidget(text), block: true });
+    const range = decoration.range(group[0].from, group[group.length - 1].to);
+    added.push(range);
+    if (group.every(part => atomicKeys.has(key(part)))) addedAtomic.push(range);
+  }
+
+  decorations.splice(0, decorations.length, ...decorations.filter(range => !parts.has(range)), ...added);
+  atomic.splice(0, atomic.length, ...atomic.filter(range => !partKeys.has(key(range))), ...addedAtomic);
 }
 
 function applyStyle(

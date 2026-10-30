@@ -107,7 +107,9 @@ function commandStyle(token: Token): TokenStyle | null {
     case 'fnref':
       return { widget: 'mdnote' };
     case 'shortcode':
-      return { widget: 'shortcode' };
+      return token.meta?.alone === 'true' && token.meta?.name !== 'include'
+        ? { widget: 'shortcode', block: true }
+        : { widget: 'shortcode' };
     case 'hr':
       return { widget: 'hr', block: true };
     default:

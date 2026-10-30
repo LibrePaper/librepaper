@@ -1,6 +1,6 @@
 import { StateField } from "@codemirror/state";
-import { Decoration, EditorView, WidgetType } from "@codemirror/view";
-import { revealOnMousedown } from "./markup.ts";
+import { Decoration, EditorView } from "@codemirror/view";
+import { PillWidget } from "./markup.ts";
 import { findMetadata } from "./metadata.js";
 
 // The preamble is looked for in the first lines only; a document whose
@@ -69,7 +69,7 @@ function foldAround(revealed, from, to, summary) {
 }
 
 function widgetFor(from, to, text) {
-  return Decoration.replace({ widget: new PreambleWidget(text), block: true }).range(from, to);
+  return Decoration.replace({ widget: new PillWidget(text, "Show the preamble", "cm-lp-preamble"), block: true }).range(from, to);
 }
 
 // The lines that hold a metadata command in the preamble, widened to whole lines.
@@ -126,31 +126,4 @@ function summarise(text) {
 // Drops the text of each % comment, so a commented-out package is not counted.
 function withoutComments(text) {
   return text.replace(/(^|[^\\])%.*$/gm, "$1");
-}
-
-class PreambleWidget extends WidgetType {
-  constructor(summary) {
-    super();
-    this.summary = summary;
-  }
-
-  eq(other) {
-    return other instanceof PreambleWidget && other.summary === this.summary;
-  }
-
-  toDOM(view) {
-    const gap = document.createElement("div");
-    gap.className = "cm-lp-block-gap";
-    const element = document.createElement("div");
-    element.className = "cm-lp-preamble";
-    element.title = "Show the preamble";
-    element.textContent = this.summary;
-    gap.append(element);
-    revealOnMousedown(view, gap);
-    return gap;
-  }
-
-  ignoreEvent() {
-    return true;
-  }
 }
