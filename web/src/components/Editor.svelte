@@ -246,7 +246,6 @@
   import { isEnglishDocument } from "../lib/harper/language.js";
   import { untrack } from "svelte";
   import { visualMarkup, factsUpdate } from "../lib/visual-markup/index.js";
-  import { projectTasks, taskVocabulary } from "../lib/tasks/project.js";
   import { applyFormat, formatState } from "../lib/visual-markup/formatting.js";
   import { documentFacts } from "../lib/visual-markup/facts.js";
   import { markdownFacts } from "../lib/visual-markup/markdown-facts.js";
@@ -266,8 +265,6 @@
     visual = false, imageUrl = null,
     analyze = analyzeBibliography,
     onchange, oncaret, onfilechange, onbibliography, onsave, onquit,
-    // Called with a tag when a task tag is clicked in visual mode.
-    ontasktag,
     // Called with the caret's formatting (formatState) while visual mode is on.
     onformatstate,
     rules = null,
@@ -1325,26 +1322,7 @@
   // The visual layer for a file, or nothing where it draws no such format. The
   // colours depend on the page's mode, so this is read again on a theme change.
   function visualOn(on, path) {
-    return on ? visualMarkup(formatOf(path), { path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark", openInclude: (name) => openIncluded(path, name), tasks: taskHooks() }) : [];
-  }
-  // The task hooks of the visual layer: suggestions from the whole project, a link to
-  // the task with an id, and a search for a tag in the Tasks panel.
-  function taskHooks() {
-    return {
-      vocabulary: () => {
-        const doc = session?.doc;
-        if (!doc) return { assignees: [], tags: [] };
-        return taskVocabulary(projectTasks(treeForDoc(doc).texts));
-      },
-      openTask: (id) => {
-        const doc = session?.doc;
-        if (!doc) return;
-        const task = projectTasks(treeForDoc(doc).texts).find((item) => item.fields.some((field) => field.key === "id" && field.value === id));
-        const textId = task ? textIdForPath(doc, task.path) : "";
-        if (textId) openAt(textId, task.line);
-      },
-      searchTag: (tag) => ontasktag?.(tag),
-    };
+    return on ? visualMarkup(formatOf(path), { path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark", openInclude: (name) => openIncluded(path, name) }) : [];
   }
   // Opens the project text an include names, for a click on it in the visual layer.
   function openIncluded(from, name) {

@@ -33,6 +33,8 @@ const nextMonday = isoOf(todayUTC + (((1 - weekday + 7) % 7) || 7) * DAY);
   assert.equal(result.from, pos - "pri".length);
   assert.ok(result.validFor.test("pri"));
   assert.equal(result.options[0].detail, "1 to 5");
+  // The name is applied with its space, so the value is typed straight after it.
+  assert.equal(result.options[0].apply, "priority: ");
 }
 // Several fields share a prefix, in field order.
 assert.deepEqual(labels(complete("- [ ] d|").result), ["due:", "done:"]);
@@ -62,16 +64,26 @@ assert.deepEqual(labels(complete("- [ ] priority:2|").result), ["2"]);
   assert.deepEqual(result.options.map((option) => option.detail), ["today", "tomorrow", "next Monday"]);
   assert.equal(result.from, pos);
 }
+// After a gap the value starts at the first character typed, so the date replaces only the value.
+{
+  const { result, pos } = complete(`- [ ] due: ${today.slice(0, 4)}|`);
+  assert.ok(labels(result).includes(today));
+  assert.equal(result.from, pos - 4);
+}
+{
+  const { result, pos } = complete("- [ ] priority:  2|");
+  assert.deepEqual(labels(result), ["2"]);
+  assert.equal(result.from, pos - 1);
+}
+// A gapped key with text that is not a value gives nothing, so prose stays unchanged.
+assert.equal(complete("- [ ] what is done: the|").result, null);
+
 // Typed digits narrow the dates.
 assert.deepEqual(labels(complete(`- [ ] start:${today}|`).result), [today]);
 // Every date field gets the same options.
 assert.deepEqual(labels(complete("- [ ] scheduled:|").result), [today, isoOf(todayUTC + DAY), nextMonday]);
 // Estimates have no completions.
 assert.equal(complete("- [ ] estimate:|").result, null);
-
-// --- Repeat ------------------------------------------------------------------
-assert.deepEqual(labels(complete("- [ ] repeat:|").result), ["daily", "weekly", "monthly", "yearly"]);
-assert.deepEqual(labels(complete("- [ ] repeat:w|").result), ["weekly"]);
 
 // --- Assignees ---------------------------------------------------------------
 const people = { "people.md": "- [ ] a assignee:alice,bob\n- [ ] b assignee:carol" };
@@ -81,16 +93,6 @@ assert.deepEqual(labels(complete("- [ ] c assignee:|", { texts: people }).result
   const { result, pos } = complete("- [ ] c assignee:alice,c|", { texts: people });
   assert.deepEqual(labels(result), ["carol"]);
   assert.equal(result.from, pos - 1);
-}
-
-// --- Dependencies ------------------------------------------------------------
-const plan = { "plan.md": "- [ ] write id:write-intro\n- [ ] review id:review\n- [ ] no id here" };
-assert.deepEqual(labels(complete("- [ ] c after:|", { texts: plan }).result), ["write-intro", "review"]);
-{
-  // Only the item after the last comma is matched.
-  const { result, pos } = complete("- [ ] c after:write-intro,re|", { texts: plan });
-  assert.deepEqual(labels(result), ["review"]);
-  assert.equal(result.from, pos - 2);
 }
 
 // --- Tags --------------------------------------------------------------------
@@ -106,6 +108,9 @@ const writing = { "tasks.md": "- [ ] a #writing #paper/intro\n- [ ] b #writing" 
   assert.deepEqual(labels(result), ["paper/intro"]);
   assert.equal(result.from, pos - 2);
 }
+// Tags in the open document count too, even when no other file has them.
+assert.deepEqual(labels(complete("- [ ] c #|\n- [ ] d #local", { texts: writing }).result), ["local", "paper/intro", "writing"]);
+
 // A tag must start after a space, so a "#" inside a word is not a tag.
 assert.equal(complete("- [ ] c x#w|", { texts: writing }).result, null);
 // Digits cannot start a tag.

@@ -1,8 +1,9 @@
 // A browser-level check for the task controls of the Markdown visual layer: the
-// task boxes, the state menu, the priority menu, the tag chip and Escape in an
-// open popup. Each action is checked against the shared document, read from the
-// Loro text, so every assertion is about what the editor writes. The Editor is
-// mounted with the layer on over a Loro-backed session.
+// task boxes, which cycle a task's state on each click, and the quiet field and
+// tag chips, which are drawn as spans and never open a popup. Each action is
+// checked against the shared document, read from the Loro text, so every assertion
+// is about what the editor writes. The Editor is mounted with the layer on over a
+// Loro-backed session.
 
 import assert from "node:assert/strict";
 import { build } from "vite";
@@ -27,15 +28,14 @@ const entry = join(temporary, "entry.js");
 const port = 19000 + Math.floor(Math.random() * 1000);
 
 // The task list under test. The caret is parked on "End.", the last line, so that
-// no task line is drawn as source. The top level has six tasks and the parent has
+// no task line is drawn as source. The top level has five tasks and the parent has
 // two children, so eight task boxes are drawn.
 const sample = [
   "# Tasks",
   "",
-  "- [ ] Write intro priority:2 due:2026-11-05 #paper",
+  "- [ ] Write intro priority: 2 due: 2026-11-05 #paper",
   "- [/] Analyze results",
   "- [x] Submit abstract",
-  "- [ ] Weekly review repeat:weekly due:2026-11-05 id:review",
   "- [ ] Bad priority priority:9",
   "- [ ] Parent",
   "  - [x] child one",
@@ -65,11 +65,12 @@ function tasksRow(words) {
 }
 
 // Runs in the page. Reads the first control matching the selector in the row with the words.
-// Returns its text, its aria-checked value and its class names, or null when it is missing.
+// Returns its tag, text, its aria-checked value and its class names, or null when it is missing.
 function tasksRead(words, selector) {
   const control = tasksRow(words)?.querySelector(selector);
   if (!control) return null;
   return {
+    tag: control.tagName,
     text: control.textContent.trim(),
     checked: control.getAttribute("aria-checked"),
     classes: control.className,
@@ -82,24 +83,6 @@ function tasksClick(words, selector) {
   const control = tasksRow(words)?.querySelector(selector);
   if (!control) return false;
   control.click();
-  return true;
-}
-
-// Runs in the page. The number of task popups open.
-function tasksPopups() {
-  return document.querySelectorAll(".cm-lp-task-popup").length;
-}
-
-// Runs in the page. Clicks the popup menu item whose text is the prefix exactly, or starts with it.
-// Returns whether an item was clicked.
-function tasksMenuItem(prefix, exact) {
-  const items = Array.from(document.querySelectorAll(".cm-lp-task-popup .cm-lp-task-item"));
-  const item = items.find((node) => {
-    const text = node.textContent.trim();
-    return exact ? text === prefix : text.startsWith(prefix);
-  });
-  if (!item) return false;
-  item.click();
   return true;
 }
 
@@ -118,20 +101,17 @@ const entrySource = [
   `const session = joinSession({ send: () => {}, mayEdit: true });`,
   `const file = session.addText("tasks.md", ${JSON.stringify(sample)});`,
   `window.tasksHarness = { session, file };`,
-  `window.taskTags = [];`,
   `createClassComponent({`,
   `  component: Editor,`,
   `  target: host,`,
-  `  props: { session, format: "markdown", file, visual: true, ontasktag: (tag) => window.taskTags.push(tag) },`,
+  `  props: { session, format: "markdown", file, visual: true },`,
   `});`,
   tasksText.toString(),
   tasksPark.toString(),
   tasksRow.toString(),
   tasksRead.toString(),
   tasksClick.toString(),
-  tasksPopups.toString(),
-  tasksMenuItem.toString(),
-  `Object.assign(window, { tasksText, tasksPark, tasksRead, tasksClick, tasksPopups, tasksMenuItem });`,
+  `Object.assign(window, { tasksText, tasksPark, tasksRead, tasksClick });`,
   `window.tasksReady = true;`,
   "",
 ].join("\n");
@@ -233,17 +213,11 @@ try {
     if (message.result?.exceptionDetails) throw new Error(JSON.stringify(message.result.exceptionDetails));
     return message.result.result.value;
   };
-  // Escape goes over CDP to whichever element holds focus, as a real key press does.
-  const pressEscape = async () => {
-    await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
-    await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
-  };
   const read = () => evaluate("tasksText()");
   const readControl = (words, selector) => evaluate(`tasksRead(${JSON.stringify(words)}, ${JSON.stringify(selector)})`);
   const clickControl = (words, selector) => evaluate(`tasksClick(${JSON.stringify(words)}, ${JSON.stringify(selector)})`);
-  const menuItem = (prefix, exact = false) => evaluate(`tasksMenuItem(${JSON.stringify(prefix)}, ${exact})`);
-  const popupCount = () => evaluate("tasksPopups()");
   const checkedOf = async (words) => (await readControl(words, BOX))?.checked ?? null;
+  const popupCount = () => evaluate("document.querySelectorAll('.cm-lp-task-popup').length");
   // Waits until the shared text is the expected text, then returns the text read last.
   const settle = async (expected) => {
     await until("the shared text", async () => (await read()) === expected, 5000).catch(() => {});
@@ -258,65 +232,44 @@ try {
 
   // Check 1: drawing changes nothing, and each control shows its task's state.
   assert.equal(await read(), sample, "drawing the task list changed the shared text");
-  assert.equal(await evaluate(`document.querySelectorAll(".cm-editor ${BOX}").length`), 8, "the eight task boxes of the source were not all drawn");
+  assert.equal(await evaluate(`document.querySelectorAll(".cm-editor ${BOX}").length`), 7, "the seven task boxes of the source were not all drawn");
   assert.equal(await checkedOf(["Write intro"]), "false", "the todo box does not read aria-checked false");
   assert.equal(await checkedOf(["Analyze results"]), "mixed", "the in-progress box does not read aria-checked mixed");
   assert.equal(await checkedOf(["Submit abstract"]), "true", "the done box does not read aria-checked true");
+  assert.equal((await readControl(["Write intro"], ".cm-lp-field-priority"))?.tag, "SPAN", "the P2 chip is not drawn as a span");
+  assert.equal((await readControl(["Write intro"], ".cm-lp-field-priority"))?.text, "P2", "the priority chip on the Write intro line does not read P2");
+  assert.equal((await readControl(["Write intro"], ".cm-lp-field-due"))?.tag, "SPAN", "the due chip is not drawn as a span");
   assert.equal((await readControl(["Parent"], ".cm-lp-task-progress"))?.text, "1 of 2", "the parent does not show its progress 1 of 2");
   assert.notEqual(await readControl(["Bad priority"], ".cm-lp-task-invalid"), null, "the priority:9 chip does not have the class cm-lp-task-invalid");
   console.log("tasks-browser: the controls are drawn with the states, the progress and the warning, and the text is unchanged");
 
-  // Check 2: a click on the todo box completes the task, and a second click restores it.
+  // Check 2: each click on the first box moves its task to the next state. The fifth
+  // click returns the task to to do, and the text is the original again.
   let expected = sample;
-  assert.equal(await clickControl(["Write intro"], BOX), true, "no task box on the Write intro line");
-  expected = sample.replace("- [ ] Write intro priority:2", "- [x] Write intro priority:2");
-  assert.equal(await settle(expected), expected, "a click on the todo box did not change only its box");
-  assert.equal(await clickControl(["Write intro"], BOX), true, "no task box on the Write intro line after the first click");
-  expected = sample;
-  assert.equal(await settle(expected), expected, "a second click on the box did not restore the original text");
-  console.log("tasks-browser: a click on a todo box completes it, and a second click restores it");
+  const states = ["[ ]", "[x]", "[/]", "[?]", "[-]", "[ ]"];
+  for (let index = 1; index < states.length; index++) {
+    assert.equal(await clickControl(["Write intro"], BOX), true, `no task box on the Write intro line before ${states[index]}`);
+    expected = expected.replace(`- ${states[index - 1]} Write intro`, `- ${states[index]} Write intro`);
+    assert.equal(await settle(expected), expected, `a click on the Write intro box did not write ${states[index]}`);
+  }
+  assert.equal(expected, sample, "the cycle did not return the Write intro line to the original text");
+  console.log("tasks-browser: each click on a box moves the task to the next state, and the cycle returns to to do");
 
-  // Check 3: a click on the in-progress box opens the state menu, and Done writes [x].
+  // Check 3: a click on the in-progress box writes [?], and a click on the done box writes [/].
   assert.equal(await clickControl(["Analyze results"], BOX), true, "no task box on the Analyze results line");
-  await until("the task menu", async () => (await popupCount()) > 0, 5000);
-  assert.equal(await read(), expected, "a click on the in-progress box changed the shared text");
-  assert.equal(await menuItem("Done", true), true, "the state menu has no Done item");
-  expected = expected.replace("- [/] Analyze results", "- [x] Analyze results");
-  assert.equal(await settle(expected), expected, "choosing Done in the state menu did not write [x] on the Analyze results line");
-  console.log("tasks-browser: a click on the in-progress box opens the state menu, and Done completes it");
+  expected = sample.replace("- [/] Analyze results", "- [?] Analyze results");
+  assert.equal(await settle(expected), expected, "a click on the in-progress box did not write [?]");
+  assert.equal(await clickControl(["Submit abstract"], BOX), true, "no task box on the Submit abstract line");
+  expected = expected.replace("- [x] Submit abstract", "- [/] Submit abstract");
+  assert.equal(await settle(expected), expected, "a click on the done box did not write [/]");
+  console.log("tasks-browser: the in-progress box moves to blocked, and the done box moves to in progress");
 
-  // Check 4: the priority chip opens its menu, and P1 replaces only the digit.
-  assert.equal((await readControl(["Write intro"], ".cm-lp-field-priority"))?.text, "P2", "the priority chip on the Write intro line does not read P2");
+  // Check 4: no click opens a popup, and the chips change no text.
   assert.equal(await clickControl(["Write intro"], ".cm-lp-field-priority"), true, "no priority chip on the Write intro line");
-  await until("the priority menu", async () => (await popupCount()) > 0, 5000);
-  assert.equal(await menuItem("P1"), true, "the priority menu has no P1 item");
-  expected = expected.replace("- [ ] Write intro priority:2", "- [ ] Write intro priority:1");
-  assert.equal(await settle(expected), expected, "choosing P1 did not change only the priority digit");
-  console.log("tasks-browser: the priority menu writes P1 as priority:1 and nothing else");
-
-  // Check 5: completing a repeating task marks it done and writes the next copy after it.
-  assert.equal(await clickControl(["Weekly review"], BOX), true, "no task box on the Weekly review line");
-  expected = expected.replace(
-    "- [ ] Weekly review repeat:weekly due:2026-11-05 id:review",
-    "- [x] Weekly review repeat:weekly due:2026-11-05 id:review\n- [ ] Weekly review repeat:weekly due:2026-11-12 id:review-2",
-  );
-  assert.equal(await settle(expected), expected, "completing the repeating task did not write its done line and next copy");
-  console.log("tasks-browser: completing a repeating task writes the done line and the next copy");
-
-  // Check 6: the tag chip sends its tag to the host and changes no text.
   assert.equal(await clickControl(["Write intro"], ".cm-lp-task-tag"), true, "no tag chip on the Write intro line");
-  await until("the tag", () => evaluate("window.taskTags.length > 0"), 5000);
-  assert.deepEqual(await evaluate("window.taskTags"), ["paper"], "the tag chip did not record paper");
-  assert.equal(await read(), expected, "a click on the tag chip changed the shared text");
-  console.log("tasks-browser: a click on the tag chip records the tag with the host");
-
-  // Check 7: Escape closes an open popup and leaves the text alone.
-  assert.equal(await clickControl(["Write intro"], ".cm-lp-field-priority"), true, "no priority chip to open the menu with Escape");
-  await until("the priority menu before Escape", async () => (await popupCount()) > 0, 5000);
-  await pressEscape();
-  await until("the popup to close on Escape", async () => (await popupCount()) === 0, 5000);
-  assert.equal(await read(), expected, "Escape changed the shared text");
-  console.log("tasks-browser: Escape closes an open popup");
+  assert.equal(await popupCount(), 0, "a chip opened a popup");
+  assert.equal(await read(), expected, "a click on a chip changed the shared text");
+  console.log("tasks-browser: chip clicks open no popup and change no text");
 
   assert.equal(errors.length, 0, ["Browser errors or exceptions during the tasks check:", ...errors].join("\n"));
   console.log("tasks-browser: ok");

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { fieldOf, readTasks, taskAt } from "../../src/lib/tasks/model.js";
 
-// Nesting, states, fields, tags and the first line's text come from one source.
+// States, fields, tags and the first line's text come from one source.
 {
   const source = [
     "# Plan",
@@ -28,12 +28,7 @@ import { fieldOf, readTasks, taskAt } from "../../src/lib/tasks/model.js";
     ["due", "2026-11-05"],
   ]);
   assert.deepEqual(intro.tags.map(tag => tag.name), ["writing/intro"]);
-  assert.equal(intro.parent, null);
-  assert.deepEqual(intro.children, [1, 2]);
-  assert.equal(intro.insertAt, intro.lineEnd);
-  assert.equal(intro.blockEnd, source.indexOf("  - [X] Old note") + "  - [X] Old note".length);
 
-  assert.equal(outline.parent, 0);
   assert.equal(outline.state, "doing");
   assert.equal(outline.indent, 2);
   assert.equal(outline.text, "Outline");
@@ -41,11 +36,8 @@ import { fieldOf, readTasks, taskAt } from "../../src/lib/tasks/model.js";
 
   assert.equal(old.state, "done");
   assert.equal(old.box, "X");
-  assert.equal(old.parent, 0);
 
   assert.equal(dropped.state, "cancelled");
-  assert.equal(dropped.parent, null);
-  assert.equal(dropped.blockEnd, dropped.lineEnd);
 }
 
 // Each field's range is its exact token, so the source can be cut at it.
@@ -58,11 +50,23 @@ import { fieldOf, readTasks, taskAt } from "../../src/lib/tasks/model.js";
   }
 }
 
+// The value starts after the gap, whatever its width, and the token runs to the end of the value.
+{
+  const source = "- [ ] Draft due:   2026-11-05 priority:\t2\n";
+  const [task] = readTasks(source);
+  const [due, priority] = task.fields;
+  assert.equal(due.value, "2026-11-05");
+  assert.equal(source.slice(due.valueFrom, due.to), "2026-11-05");
+  assert.equal(due.valueFrom, source.indexOf("2026-11-05"));
+  assert.equal(due.to, source.indexOf("2026-11-05") + "2026-11-05".length);
+  assert.equal(priority.value, "2");
+  assert.equal(source.slice(priority.valueFrom, priority.to), "2");
+}
+
 // Fields are read on the first line only, and unknown or unescaped tokens are text.
 {
   const [plain] = readTasks("- [ ] Title\n  due:2026-11-05\n");
   assert.deepEqual(plain.fields, []);
-  assert.equal(plain.blockEnd, "- [ ] Title\n  due:2026-11-05".length);
 
   const [noise] = readTasks("- [ ] Item #123 unknown:thing\n");
   assert.deepEqual(noise.fields, []);
@@ -72,20 +76,12 @@ import { fieldOf, readTasks, taskAt } from "../../src/lib/tasks/model.js";
 
 // A repeated field keeps its source and carries a warning.
 {
-  const source = "- [ ] Bad priority:9 id:a id:b\n";
+  const source = "- [ ] Bad priority:9 due:2026-11-05 due:2026-11-06\n";
   const [task] = readTasks(source);
   assert.notEqual(task.fields[0].warning, null);
   assert.equal(task.fields[1].warning, null);
-  assert.equal(task.fields[2].warning, "Duplicate id.");
-  assert.equal(source.slice(task.fields[2].from, task.fields[2].to), "id:b");
-}
-
-// A task with no continuation ends on its first line, and trailing blank lines are left out.
-{
-  const source = "- [ ] One\n\n\nTwo\n";
-  const [task] = readTasks(source);
-  assert.equal(task.blockEnd, task.lineEnd);
-  assert.equal(task.lineEnd, "- [ ] One".length);
+  assert.equal(task.fields[2].warning, "Duplicate due.");
+  assert.equal(source.slice(task.fields[2].from, task.fields[2].to), "due:2026-11-06");
 }
 
 // taskAt finds the task on the line the position falls on.
@@ -93,11 +89,4 @@ import { fieldOf, readTasks, taskAt } from "../../src/lib/tasks/model.js";
   const source = "- [ ] First\n- [ ] Second due:2026-11-05\n\nText\n";
   assert.equal(taskAt(source, source.indexOf("Second")).index, 1);
   assert.equal(taskAt(source, source.indexOf("Text")), null);
-}
-
-// Trailing spaces stay after the insertion point.
-{
-  const source = "- [ ] Write intro   \n";
-  const [task] = readTasks(source);
-  assert.equal(task.insertAt, "- [ ] Write intro".length);
 }

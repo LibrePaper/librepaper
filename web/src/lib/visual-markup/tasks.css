@@ -98,7 +98,8 @@
   white-space: nowrap;
 }
 
-/* Field chips. Neutral and small; the text itself is the emphasis. */
+/* Field chips. Neutral and small; the text itself is the emphasis. A chip is a span,
+   so it is not focusable: a press places the caret on its source instead. */
 .cm-lp-field,
 .cm-lp-task-tag {
   display: inline-block;
@@ -106,18 +107,11 @@
   padding: 0 calc(var(--spacing) * 2);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-base);
-  background: transparent;
   color: var(--color-text-secondary);
-  font: inherit;
   font-size: var(--text-xs);
   line-height: 1.7;
   white-space: nowrap;
   vertical-align: middle;
-  cursor: pointer;
-}
-
-.cm-lp-field:hover {
-  border-color: var(--color-text-secondary);
 }
 
 /* Quiet chips drop their frame and sit back in the muted colour. */
@@ -156,109 +150,11 @@
 
 .cm-lp-task-tag {
   border-color: transparent;
-  background: none;
   color: var(--color-text-muted);
   padding: 0 1px;
 }
 
-.cm-lp-task-tag:hover {
-  color: var(--color-text);
-}
-
-.cm-lp-taskbox-button:focus-visible,
-.cm-lp-field:focus-visible,
-.cm-lp-task-tag:focus-visible,
-.cm-lp-task-item:focus-visible,
-.cm-lp-task-input:focus-visible {
+.cm-lp-taskbox-button:focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;
-}
-
-/* The popup: a small surface with the theme's border, not a card. */
-.cm-lp-task-popup {
-  position: absolute;
-  z-index: 10;
-  display: grid;
-  gap: 2px;
-  min-width: 13em;
-  max-width: 20em;
-  padding: calc(var(--spacing) * 1);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-container);
-  background: var(--color-raised);
-  color: var(--color-text);
-  box-shadow: var(--shadow-xl);
-  font-family: system-ui, sans-serif;
-  font-size: var(--text-sm);
-  line-height: 1.4;
-  text-decoration: none;
-}
-
-.cm-lp-task-item {
-  display: flex;
-  align-items: center;
-  gap: calc(var(--spacing) * 2);
-  width: 100%;
-  padding: 0.3em 0.6em;
-  border: 0;
-  border-radius: var(--radius-base);
-  background: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.cm-lp-task-item:hover,
-.cm-lp-task-item:focus-visible {
-  background: var(--color-row-hover);
-}
-
-/* A radio item shows a dot when it is the current choice. */
-.cm-lp-task-item[role="menuitemradio"]::before {
-  content: "";
-  flex: none;
-  width: 0.6em;
-  height: 0.6em;
-  border: 1px solid var(--color-text-muted);
-  border-radius: 50%;
-}
-
-.cm-lp-task-item[aria-checked="true"]::before {
-  background: currentColor;
-  border-color: currentColor;
-}
-
-.cm-lp-task-item[aria-checked="true"] {
-  font-weight: 600;
-}
-
-.cm-lp-task-sep {
-  height: 1px;
-  margin: calc(var(--spacing) * 1) 0;
-  background: var(--color-divider);
-}
-
-.cm-lp-task-form {
-  display: grid;
-  gap: calc(var(--spacing) * 1);
-}
-
-.cm-lp-task-input {
-  min-width: 10em;
-  padding: 0.3em 0.5em;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-base);
-  background: var(--color-raised);
-  color: var(--color-text);
-  font: inherit;
-}
-
-.cm-lp-task-status:empty {
-  display: none;
-}
-
-.cm-lp-task-status {
-  color: var(--color-error-text);
-  font-size: var(--text-xs);
 }

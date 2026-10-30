@@ -1,5 +1,5 @@
 // The tasks of a Markdown source, read through the same tokenizer the editor
-// draws from, so the panel and the editor agree on what a task is.
+// draws from, so the visual layer and the edits agree on what a task is.
 
 import { Tokenizer } from "../visual-markup/core/tokenizer.ts";
 import { markdown } from "../visual-markup/languages/markdown/index.ts";
@@ -12,7 +12,6 @@ import { markdown } from "../visual-markup/languages/markdown/index.ts";
  *   line: number,
  *   from: number,
  *   lineEnd: number,
- *   blockEnd: number,
  *   boxAt: number,
  *   box: string,
  *   state: string,
@@ -20,10 +19,6 @@ import { markdown } from "../visual-markup/languages/markdown/index.ts";
  *   text: string,
  *   fields: TaskField[],
  *   tags: TaskTag[],
- *   insertAt: number,
- *   parent: number|null,
- *   children: number[],
- *   source: string,
  * }} Task
  */
 
@@ -38,7 +33,6 @@ export function readTasks(source) {
       tasks.push(readTask(source, starts, tokens, at, tasks.length));
     }
   });
-  linkParents(tasks);
   return tasks;
 }
 
@@ -100,12 +94,14 @@ function readTask(source, starts, tokens, at, index) {
     if (token.kind !== "command") continue;
     if (token.name === "taskfield") {
       const key = token.meta?.key ?? "";
+      const value = token.meta?.value ?? "";
       fields.push({
         key,
-        value: token.meta?.value ?? "",
+        value,
         from: token.from,
         to: token.to,
-        valueFrom: token.from + key.length + 1,
+        // The value is the last thing in the token, so the gap after the colon may be any width.
+        valueFrom: token.to - value.length,
         warning: token.meta?.warning ?? null,
       });
     } else if (token.name === "tasktag") {
@@ -118,7 +114,6 @@ function readTask(source, starts, tokens, at, index) {
     line: line + 1,
     from,
     lineEnd,
-    blockEnd: blockEndOf(source, starts, line, indent, lineEnd),
     boxAt,
     box: item.meta?.box ?? source[boxAt],
     state: item.meta.task,
@@ -126,11 +121,6 @@ function readTask(source, starts, tokens, at, index) {
     text: plainText(source, item.to, lineEnd, [...fields, ...tags]),
     fields,
     tags,
-    // Trailing spaces stay after new metadata, and a CR of a CRLF line stays last.
-    insertAt: insertionPoint(source, item.to, lineEnd),
-    parent: null,
-    children: [],
-    source,
   };
 }
 
@@ -144,48 +134,4 @@ function plainText(source, from, to, cuts) {
   }
   text += source.slice(cursor, to);
   return text.replace(/\s+/g, " ").trim();
-}
-
-// The last line of the task's block. Blank lines count only when a deeper
-// line follows them, so trailing blank lines are left out.
-function blockEndOf(source, starts, line, indent, lineEnd) {
-  let end = lineEnd;
-  for (let k = line + 1; k < starts.length; k++) {
-    const stop = k + 1 < starts.length ? starts[k + 1] - 1 : source.length;
-    const text = source.slice(starts[k], stop);
-    if (text.trim() === "") continue;
-    if (leadingWidth(text) <= indent) break;
-    end = stop;
-  }
-  return end;
-}
-
-function leadingWidth(text) {
-  return text.match(/^[ \t]*/)[0].length;
-}
-
-function insertionPoint(source, floor, lineEnd) {
-  let at = lineEnd;
-  while (at > floor && /[ \t\r]/.test(source[at - 1])) at--;
-  return at;
-}
-
-// A task is a child of the nearest earlier task that is less indented and
-// whose block still covers this one.
-function linkParents(tasks) {
-  /** @type {Task[]} */
-  const open = [];
-  for (const task of tasks) {
-    while (open.length > 0) {
-      const top = open[open.length - 1];
-      if (top.blockEnd >= task.from && top.indent < task.indent) break;
-      open.pop();
-    }
-    const parent = open[open.length - 1];
-    if (parent) {
-      task.parent = parent.index;
-      parent.children.push(task.index);
-    }
-    open.push(task);
-  }
 }

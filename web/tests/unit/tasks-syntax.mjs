@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {
-  addRepeat, isDate, isOverdue, shortDate, todayISO, validateField,
+  CYCLE, FIELD, isDate, isOverdue, shortDate, todayISO, validateField,
 } from "../../src/lib/tasks/syntax.js";
 
 // Field values: each valid value passes, each invalid one returns a warning sentence.
@@ -25,18 +25,6 @@ import {
   assert.notEqual(validateField("assignee", "alice,"), null);
   assert.notEqual(validateField("assignee", "al ice"), null);
 
-  for (const rule of ["daily", "weekly", "monthly", "yearly", "2w", "1d", "999m", "12y"]) {
-    assert.equal(validateField("repeat", rule), null, rule);
-  }
-  for (const rule of ["fortnightly", "0d", "1000d", "2x", "w"]) {
-    assert.notEqual(validateField("repeat", rule), null, rule);
-  }
-
-  assert.equal(validateField("id", "task-123"), null);
-  assert.notEqual(validateField("id", "task 123"), null);
-  assert.equal(validateField("after", "task-122,review"), null);
-  assert.notEqual(validateField("after", "task-122,"), null);
-
   assert.equal(validateField("estimate", "2h"), null);
   assert.equal(validateField("estimate", "1.5d"), null);
   assert.equal(validateField("estimate", "30m"), null);
@@ -44,6 +32,27 @@ import {
   assert.notEqual(validateField("estimate", "2x"), null);
   assert.notEqual(validateField("estimate", "h"), null);
 }
+
+// Fields take an optional gap of spaces or tabs after the colon. The value is group 3.
+{
+  const tight = FIELD.exec("due:2026-11-05");
+  assert.deepEqual([tight[1], tight[2], tight[3]], ["due", "", "2026-11-05"]);
+
+  const spaced = FIELD.exec("priority:  2 rest");
+  assert.deepEqual([spaced[1], spaced[2], spaced[3]], ["priority", "  ", "2"]);
+
+  const tabbed = FIELD.exec("due:\t2026-11-05");
+  assert.deepEqual([tabbed[1], tabbed[2], tabbed[3]], ["due", "\t", "2026-11-05"]);
+
+  // Repeat, id and after are no longer fields.
+  for (const text of ["repeat:weekly", "id:task-1", "after:task-0"]) {
+    FIELD.lastIndex = 0;
+    assert.equal(FIELD.exec(text), null, text);
+  }
+}
+
+// The cycle order: each box character, then the next one, and the last wraps to the first.
+assert.deepEqual(CYCLE, [" ", "x", "/", "?", "-"]);
 
 // Calendar dates: real days only, leap years by the Gregorian rule.
 {
@@ -57,27 +66,6 @@ import {
   assert.equal(isDate("2026-1-05"), false);
   assert.equal(isDate(""), false);
   assert.equal(isDate(null), false);
-}
-
-// Repeat rules: days and weeks are plain, months and years clamp to the last day.
-{
-  assert.equal(addRepeat("2026-01-31", "monthly"), "2026-02-28");
-  assert.equal(addRepeat("2024-01-31", "1m"), "2024-02-29");
-  assert.equal(addRepeat("2026-01-31", "2m"), "2026-03-31");
-  assert.equal(addRepeat("2026-11-30", "monthly"), "2026-12-30");
-  assert.equal(addRepeat("2026-11-15", "12m"), "2027-11-15");
-  assert.equal(addRepeat("2026-10-30", "2w"), "2026-11-13");
-  assert.equal(addRepeat("2026-10-30", "3d"), "2026-11-02");
-  assert.equal(addRepeat("2026-12-31", "daily"), "2027-01-01");
-  assert.equal(addRepeat("2026-10-30", "weekly"), "2026-11-06");
-  assert.equal(addRepeat("2024-02-29", "yearly"), "2025-02-28");
-  assert.equal(addRepeat("2024-02-29", "1y"), "2025-02-28");
-  assert.equal(addRepeat("2028-02-29", "yearly"), "2029-02-28");
-
-  assert.equal(addRepeat("2026-02-30", "weekly"), null);
-  assert.equal(addRepeat("2026-01-01", "0d"), null);
-  assert.equal(addRepeat("2026-01-01", "fortnightly"), null);
-  assert.equal(addRepeat("", "daily"), null);
 }
 
 // Short labels: the year appears only when it is not today's year.
