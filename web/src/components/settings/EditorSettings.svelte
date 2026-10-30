@@ -18,6 +18,8 @@
     ondialect,
     check = true,
     oncheck,
+    visual = false,
+    onvisual,
     commands = {},
   } = $props();
 
@@ -145,6 +147,14 @@
   <button type="button" role="switch" class="switch" aria-checked={check} aria-label="Code check"
           data-state={check ? "checked" : "unchecked"} onclick={() => oncheck?.(!check)}>
     <span class="switch-thumb" data-state={check ? "checked" : "unchecked"}></span>
+  </button>
+</SettingRow>
+
+<SettingRow id="editor-visual" title="Visual mode"
+            description="Open sources with headings, figures and maths drawn in place. The switch in the top bar changes it for one session.">
+  <button type="button" role="switch" class="switch" aria-checked={visual} aria-label="Visual mode"
+          data-state={visual ? "checked" : "unchecked"} onclick={() => onvisual?.(!visual)}>
+    <span class="switch-thumb" data-state={visual ? "checked" : "unchecked"}></span>
   </button>
 </SettingRow>
 

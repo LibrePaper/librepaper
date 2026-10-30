@@ -36,6 +36,7 @@ const got = (key) => JSON.parse(store.get(key));
   assert.equal(prefs.state.proofing, "browser");
   assert.equal(prefs.state.dialect, "american");
   assert.equal(prefs.state.check, true);
+  assert.equal(prefs.state.visual, false);
   assert.equal(store.size, 0, "reading remembers nothing");
 }
 
@@ -124,6 +125,10 @@ const got = (key) => JSON.parse(store.get(key));
   prefs.setCheck(true);
   assert.equal(prefs.state.check, true);
   assert.equal(got("librepaper-editor-check"), true);
+
+  prefs.setVisual(true);
+  assert.equal(prefs.state.visual, true);
+  assert.equal(got("librepaper-editor-visual"), true);
 }
 
 // Storage can be switched off, and a page that threw when it was would be a
