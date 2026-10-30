@@ -42,7 +42,7 @@ export type { TokenizeOptions } from './core/tokenizer';
 export { textOf, tokenAt, walk } from './core/tokens';
 export type { Range, Token, TokenKind } from './core/tokens';
 
-export { buildDecorations, revealAt, revealFrom, revealRanges } from './view/decorations';
+export { buildDecorations, caretParked, revealAt, revealFrom, revealingSelection, revealRanges } from './view/decorations';
 export type { RevealRange } from './view/decorations';
 export type { BuildOptions, BuildResult } from './view/decorations';
 export { createWidget, registerWidget, replaceRange } from './view/widget-registry';

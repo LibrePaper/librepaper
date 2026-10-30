@@ -551,10 +551,20 @@ async function visualCheck() {
   component.$set({ visual: true, file: ids.full, format: "latex" });
   await settle();
   const fullKatexShown = await poll(mathKatexCount);
+  // A file opened in visual mode draws the whole page: the caret has not moved
+  // yet, so it is hidden and the preamble around it stays folded.
+  const parked = {
+    editor: document.querySelector(".cm-editor")?.classList.contains("cm-lv-parked") ?? false,
+    cursor: getComputedStyle(document.querySelector(".cm-editor .cm-cursorLayer")).visibility,
+    preambles: document.querySelectorAll(".cm-editor .cm-lp-preamble").length,
+    documentclass: visibleText().includes("\\documentclass"),
+  };
   view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("\\section{Results}") + 2 } });
   await settle();
+  parked.afterMove = document.querySelector(".cm-editor")?.classList.contains("cm-lv-parked") ?? false;
   const fullPreambles = document.querySelectorAll(".cm-editor .cm-lp-preamble");
   const fullBody = {
+    parked,
     katexShown: fullKatexShown,
     preambleCount: fullPreambles.length,
     preambleText: fullPreambles.length ? fullPreambles[0].textContent : "",
@@ -1139,6 +1149,12 @@ try {
   // The label keys show as tags now, so only the command names are hidden here.
   // The bibliography chip names its style and database, so "references" is not
   // checked as absent.
+  const parked = result.full.body.parked;
+  assert.equal(parked.editor, true, "full.tex opened in visual mode without the caret parked");
+  assert.equal(parked.cursor, "hidden", "the parked caret is still drawn in full.tex");
+  assert.equal(parked.preambles, 1, "the preamble of full.tex is not folded before the caret moves");
+  assert.equal(parked.documentclass, false, "\\documentclass shows as source in full.tex before the caret moves");
+  assert.equal(parked.afterMove, false, "a caret move did not end the parked caret in full.tex");
   const hiddenInBody = [
     "\\documentclass", "\\usepackage", "\\label", "eq:se",
     "\\bibliographystyle", "\\bibliography", "\\newpage",

@@ -1,4 +1,4 @@
-import { EditorState, Extension, Facet, Range as CMRange, RangeSet } from '@codemirror/state';
+import { EditorState, Extension, Facet, Range as CMRange, RangeSet, StateField } from '@codemirror/state';
 import { Decoration, DecorationSet, EditorView, WidgetType } from '@codemirror/view';
 import { Language, TokenStyle } from '../core/language';
 import { Tokenizer } from '../core/tokenizer';
@@ -27,6 +27,20 @@ export interface RevealRange extends Range {
 export const revealRanges = Facet.define<readonly RevealRange[], readonly RevealRange[]>({
   combine: values => values.flat()
 });
+
+// True from the moment the visual layer turns on until the selection first
+// changes: a parked caret is not drawn and reveals no source, so the whole page,
+// preamble included, draws. A peer's edit leaves it parked.
+export const caretParked = StateField.define<boolean>({
+  create: () => true,
+  update: (parked, tr) => parked && !tr.selection,
+  provide: field => EditorView.editorAttributes.from(field, parked => (parked ? { class: 'cm-lv-parked' } : {}))
+});
+
+// The selection ranges that reveal source: none while the caret is parked.
+export function revealingSelection(state: EditorState): readonly { from: number; to: number }[] {
+  return state.field(caretParked, false) ? [] : state.selection.ranges;
+}
 
 export function revealAt(positions: readonly number[], color?: string): Extension {
   return revealRanges.of(positions.map(pos => ({ from: pos, to: pos, color })));
@@ -146,7 +160,7 @@ function bodyTokens(parsed: Token[]): Token[] {
 export function revealedLines(state: EditorState, language: Language, parsed: Token[]): Set<number> {
   const doc = state.doc;
   const revealed = new Set<number>();
-  for (const range of [...state.selection.ranges, ...state.facet(revealRanges)]) {
+  for (const range of [...revealingSelection(state), ...state.facet(revealRanges)]) {
     const last = doc.lineAt(Math.min(range.to, doc.length)).number;
     for (let n = doc.lineAt(Math.min(range.from, doc.length)).number; n <= last; n++) revealed.add(n);
   }
