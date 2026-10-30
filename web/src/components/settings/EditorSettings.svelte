@@ -94,16 +94,6 @@
   </select>
 </SettingRow>
 
-<!-- The table is shown here and only here: `?` and the keyboard button both
-     lead to this page. It sits under the choice that changes half of it: the
-     row above decides who owns the editing keys, and reading what they are is
-     the next thing anybody does after changing it. Stacked, because a table is
-     not a control that fits beside a sentence. -->
-<SettingRow id="editor-shortcuts" stacked title="Keyboard shortcuts"
-            description="Press ? anywhere outside the editor to come back here.">
-  <ShortcutTable context={commands} />
-</SettingRow>
-
 <SettingRow id="editor-completion" title="Autocomplete"
             description="Suggest commands, labels and citations while you type.">
   <button type="button" role="switch" class="switch" aria-checked={completion} aria-label="Autocomplete"
@@ -156,6 +146,15 @@
           data-state={visual ? "checked" : "unchecked"} onclick={() => onvisual?.(!visual)}>
     <span class="switch-thumb" data-state={visual ? "checked" : "unchecked"}></span>
   </button>
+</SettingRow>
+
+<!-- The table is shown here and only here: `?` and the keyboard button both
+     lead to this page. It comes last so it never pushes the switches above
+     out of view. Stacked, because a table is not a control that fits beside
+     a sentence. -->
+<SettingRow id="editor-shortcuts" stacked title="Keyboard shortcuts"
+            description="Press ? anywhere outside the editor to come back here.">
+  <ShortcutTable context={commands} />
 </SettingRow>
 
 <style>
