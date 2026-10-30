@@ -74,6 +74,10 @@ function containerStyle(token: Token): TokenStyle | null {
 
 function commandStyle(token: Token): TokenStyle | null {
   switch (token.name) {
+    case 'taskfield':
+      return { widget: 'taskfield' };
+    case 'tasktag':
+      return { widget: 'tasktag' };
     case 'strong':
       return { class: 'cm-lv-bold' };
     case 'emph':
@@ -126,7 +130,7 @@ function style(token: Token): TokenStyle | null {
     case 'heading':
       return { class: `cm-lv-heading cm-lv-h${token.level}`, block: true, before: 'headnum' };
     case 'item':
-      if (token.meta?.task) return { replaceWith: token.meta.task === 'done' ? '☑' : '☐' };
+      if (token.meta?.task) return { widget: 'taskbox', lineClass: `cm-lp-task cm-lp-task-${token.meta.task}` };
       // Numbers keep the marker as written, `1)` included.
       return { replaceWith: token.name === 'number' ? token.meta?.marker ?? '' : '•' };
     case 'linebreak':

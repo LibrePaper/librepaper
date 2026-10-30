@@ -1,5 +1,6 @@
 import { Rule, RuleContext } from '../../core/language';
 import { Range, Token } from '../../core/tokens';
+import { FIELD, STATE_OF, TAG, TASK_LINE, validateField } from '../../../tasks/syntax.js';
 import {
   closingRun, delimiterAt, findBacktickRun, lineEndAt, lineStartAt, matchClose,
   paragraphEnd, parseAttributes, runLength
@@ -356,6 +357,52 @@ export const bareUrl: Rule = (source, pos) => {
   const url: Range = { from: pos, to: pos + text.length };
   return { kind: 'command', name: 'url', from: pos, to: url.to, body: url, args: [url] };
 };
+
+// Task metadata on the first line of a task item: `key:value` fields and `#tags` after the box.
+// Both need a space or tab before them. Code, links, URLs and escapes are matched by their own
+// rules before this one reaches their text, so their contents are never metadata.
+export const taskmeta: Rule = (source, pos) => {
+  if (pos === 0 || (source[pos - 1] !== ' ' && source[pos - 1] !== '\t')) return null;
+  FIELD.lastIndex = pos;
+  const field = FIELD.exec(source);
+  TAG.lastIndex = pos;
+  const tag = field ? null : TAG.exec(source);
+  if (!field && !tag) return null;
+  // A tag ends where its name ends, so `#paper.` is the tag `paper` and `#paper#x` is not a tag.
+  if (tag && !taskTagEnd(source[pos + tag[0].length])) return null;
+
+  const lineStart = lineStartAt(source, pos);
+  const head = TASK_LINE.exec(source.slice(lineStart, lineEndAt(source, pos)));
+  if (!head || pos <= lineStart + head[0].length) return null;
+  const state = (STATE_OF as Record<string, string>)[head[2]];
+
+  if (field) {
+    const key = field[1];
+    const value = field[2];
+    const boxEnd = lineStart + head[0].length;
+    const warning = validateField(key, value) ?? (taskKeyBefore(source, boxEnd, pos, key) ? `Duplicate ${key}.` : null);
+    const meta: Record<string, string> = { key, value, state };
+    if (warning) meta.warning = warning;
+    return { kind: 'command', name: 'taskfield', from: pos, to: pos + field[0].length, meta };
+  }
+  return { kind: 'command', name: 'tasktag', from: pos, to: pos + tag[0].length, meta: { tag: tag[0].slice(1) } };
+};
+
+// A tag name ends before whitespace, the end of the input or closing punctuation.
+function taskTagEnd(char: string | undefined): boolean {
+  return char === undefined || /[\s.,;:!?)]/.test(char);
+}
+
+// True when `key:` starts a field between from and to, after a space or tab.
+function taskKeyBefore(source: string, from: number, to: number, key: string): boolean {
+  for (let index = from + 1; index < to; index++) {
+    if (source[index - 1] !== ' ' && source[index - 1] !== '\t') continue;
+    FIELD.lastIndex = index;
+    const earlier = FIELD.exec(source);
+    if (earlier && earlier[1] === key) return true;
+  }
+  return false;
+}
 
 // Emphasis (* and _), strong, strikethrough (~~), subscript (~), superscript (^),
 // mark (==) and inline footnotes (^[note]). Only the first character of a run is tested.

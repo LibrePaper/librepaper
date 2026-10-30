@@ -265,6 +265,9 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
           decorations.push(decoration.range(token.from, token.to));
           atomic.push(decoration.range(token.from, token.to));
           replaced.push({ from: token.from, to: token.to });
+          if (style.lineClass) {
+            decorations.push(Decoration.line({ class: style.lineClass }).range(state.doc.lineAt(token.from).from));
+          }
           continue;
         }
       }
