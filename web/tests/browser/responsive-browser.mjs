@@ -133,7 +133,7 @@ try {
     await b.evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].find(node => node.textContent.trim().startsWith(${JSON.stringify(label)})).click()`);
     await flush();
   };
-  const panelId = (name) => ({ Files:'files', Outline:'outline', Tasks:'tasks', Agent:'agent', Collaboration:'collaboration', Changes:'changes', Share:'share', Diagnostics:'diagnostics', History:'history' })[name];
+  const panelId = (name) => ({ Files:'files', Outline:'outline', Agent:'agent', Collaboration:'collaboration', Changes:'changes', Share:'share', Diagnostics:'diagnostics', History:'history' })[name];
   const panelMenu = '.explorer-menu[data-state="open"]';
   const nav = async (name) => {
     await click('.compact-panels-trigger[aria-label="Menu"]');
@@ -572,7 +572,7 @@ try {
   assert.ok(menuItems.some(item => item.id === 'file' && item.text.includes('File')), 'File menu item has correct id and text');
   const menuPanels = await b.evaluate(`(() => [...document.querySelectorAll(${JSON.stringify(`${panelMenu} [data-panel-id]`)})].map(node => ({id:node.dataset.panelId,label:node.getAttribute('aria-label'),text:node.textContent.trim()})))()`);
   assert.deepEqual(menuPanels.map(item => [item.id,item.label,item.text]), [
-    ['files','Files','Files'],['outline','Outline','Outline'],['tasks','Tasks','Tasks'],
+    ['files','Files','Files'],['outline','Outline','Outline'],
     ['collaboration','Collaboration','Collaboration'],
     ['changes','Changes','Changes'],['agent','Agent','Agent'],['history','History','History'],
     ['git','Git','Git'],['share','Share','Share'],['diagnostics','Diagnostics','Diagnostics']

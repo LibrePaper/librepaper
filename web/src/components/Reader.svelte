@@ -1,13 +1,9 @@
 <script>
-  import { listChanges, accept, rejectRestoring, untrackedSplice } from "../lib/track-changes.js";
+  import { listChanges, accept, rejectRestoring } from "../lib/track-changes.js";
   // One document: the source beside it, the page itself, and everything said
   // about it.
   import { aboutWholeDocument, anchorAll, flatten, placeSources, shownSelector } from "../lib/anchor.js";
   import { ANCHORS_ORIGIN, attachByHand, composeEdits, deriveAttachment, restoreByFragments } from "../lib/anchors.js";
-  import { projectTasks } from "../lib/tasks/project.js";
-  import { taskAt } from "../lib/tasks/model.js";
-  import { toggle } from "../lib/tasks/edit.js";
-  import { todayISO } from "../lib/tasks/syntax.js";
   import { barHiddenAfter, revealOnNavFocus, watchScrolls } from "../lib/bar-scroll.js";
   import * as renderers from "../lib/renderers.js";
   import * as sync from "../lib/sync.js";
@@ -119,7 +115,6 @@
   import CompactPanelMenu from "./layout/CompactPanelMenu.svelte";
   import Files from "./reader/Files.svelte";
   import Outline from "./reader/Outline.svelte";
-  import Tasks from "./reader/Tasks.svelte";
   import WordCount from "./reader/WordCount.svelte";
   import Agent from "./reader/Agent.svelte";
   import Collaboration from "./reader/Collaboration.svelte";
@@ -1626,13 +1621,6 @@
   // Word counts for each heading in the Outline panel.
   const outlineSections = $derived.by(() => panel === "outline" && mayEdit
     ? sectionWords(outlineSource, outlineFormat, outlineHeadings) : []);
-  // The Tasks panel reads every Markdown file, not only the open one. Any
-  // text edit is a source change through sourceChanged, which bumps the same
-  // revision, so this list is redrawn whichever file was edited.
-  const projectTaskList = $derived.by(() => {
-    void outlineRevision;
-    return panel === "tasks" && mayEdit ? projectTasks(liveTreeNow().texts) : [];
-  });
   // The Word count dialog: the open file's document with its includes, and
   // the selection in the open file. A preview lock does not change the count.
   // Nothing is counted while the dialog is shut.
@@ -2303,9 +2291,6 @@
   // not kept.
   let layout = $state("split");
   let panel = $state("files");
-  // The tag the Tasks panel is filtered to. The editor sets it when a tag is
-  // chosen in the document, and the panel opens on it.
-  let tasksTag = $state("");
   let mobileView = $state("document");
   let preferredPane = $state("document");
   let collaborationTab = $state("comments");
@@ -3234,47 +3219,6 @@
         || !outlineHeadings.some((item) => item.from === heading.from)) return;
     if (editor.goToIn) editor.goToIn(id, heading.from);
     else editor.openAt?.(id, heading.line, 1);
-  }
-
-  // A task in the Tasks panel opens its file at the task's line, in any file
-  // of the project. The same steps as an outline entry, found by path.
-  async function openProjectTask(task) {
-    if (!mayEdit || !session || !task) return;
-    const file = files.find((entry) => entry.kind === "text" && entry.path === task.path);
-    if (!file) return;
-    rememberPlace(file.id, task.from);
-    openTheFile(file);
-    if (!editing) await startEditing();
-    if (readerDisposed || openFile !== file.id) return;
-    showMobileView("source");
-    await tick();
-    if (readerDisposed || !editor) return;
-    editor.goToIn?.(file.id, task.from);
-  }
-
-  // A checkbox in the Tasks panel asks for the same toggle the editor makes.
-  // The task is read again from the current text, because the list may be a
-  // moment old. The change goes through the shared document that the editor
-  // is bound to, so an open editor shows it at once.
-  function changeProjectTask(task, change) {
-    if (!mayEdit || change !== "toggle" || !session || !task) return;
-    const text = liveTreeNow().texts[task.path];
-    const fresh = text == null ? null : taskAt(text, task.from);
-    if (!fresh) return;
-    const changes = toggle(text, fresh, todayISO());
-    if (!changes.length) return;
-    const id = session.idOf(task.path);
-    if (!id || !session.textOf(id)) return;
-    // The anchor index plans from the text before the edit, so a file no
-    // editor has opened is read into it first.
-    if (!session.anchors.has(id)) session.anchors.load(id);
-    // Changes are sorted by position, so the last one is applied first and
-    // the earlier positions stay valid.
-    for (const change of [...changes].reverse()) untrackedSplice(session.doc, id, change.from, change.to, change.insert);
-    session.doc.commit();
-    // Comments on the text move with it, as they do for an edit in the editor.
-    session.anchors.record([{ fileId: id, edits: composeEdits([changes]), fragments: [] }], session.anchorMemory);
-    session.doc.commit({ origin: ANCHORS_ORIGIN });
   }
 
   // The bytes of the figure being looked at are fetched by the workspace;
@@ -4217,10 +4161,6 @@
     <Outline headings={outlineHeadings} counts={outlineSections} activeFrom={outlineActiveFrom} onselect={openOutlineHeading} />
   {/snippet}
 
-  {#snippet tasksPanel()}
-    <Tasks tasks={projectTaskList} today={todayISO()} tag={tasksTag} onselect={openProjectTask} onchange={changeProjectTask} />
-  {/snippet}
-
   {#snippet agentPanel()}
     <Agent slug={SLUG} link={linkFor(SLUG)} canShare={doc.role === "owner"}
       path={session?.paths?.get(openFile) || ""} selection={agentSelection}
@@ -4307,7 +4247,7 @@
   <Sidebar
     {shown} {tabs} {panel} {settled} {compact} mounted={mountedPanels} {badges}
     label="Document"
-    panels={{ files: filesPanel, outline: outlinePanel, tasks: tasksPanel, agent: agentPanel,
+    panels={{ files: filesPanel, outline: outlinePanel, agent: agentPanel,
               collaboration: collaborationPanel, changes: changesPanel,
               share: sharePanel, git: gitPanel, diagnostics: diagnosticsPanel, history: historyPanel }}
     panes={panes} sidebarPane={PANES.sidebar}
@@ -4352,7 +4292,6 @@
         <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   onformatstate={(state) => { formatActive = state; }}
-                  ontasktag={(tag) => { tasksTag = tag; showPanel("tasks"); }}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />
       {/if}
     </section>
