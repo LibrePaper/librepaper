@@ -247,7 +247,10 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
       // An environment header is replaced by its widget; the default concealment below still
       // hides the same range, which the replacement then overrides.
       if (style.header && token.body && !options.showCommands && !inScope) {
-        const range = { from: token.from, to: token.body.from };
+        // A body that starts a line ends the header at the previous newline, or that line loses its line class.
+        const atLineStart = state.doc.lineAt(token.body.from).from === token.body.from;
+        const headTo = atLineStart && token.body.from > token.from ? token.body.from - 1 : token.body.from;
+        const range = { from: token.from, to: headTo };
         const widget = createWidget(style.header, { token, source, state, language: options.language });
         const spansLines = state.doc.lineAt(range.from).number !== state.doc.lineAt(range.to).number;
         const startLine = state.doc.lineAt(range.from);

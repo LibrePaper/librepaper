@@ -253,6 +253,9 @@ function drawCellhead(data) {
   head.append(el("span", "cm-lp-cellhead-engine", data.engine));
   if (data.label) head.append(el("span", "cm-lp-cellhead-label", data.label));
   if (data.caption) head.append(el("span", "cm-lp-cellhead-caption", data.caption));
+  for (const [key, value] of data.options) {
+    head.append(el("span", "cm-lp-cellhead-option", `${key}: ${value}`));
+  }
   return head;
 }
 
@@ -263,6 +266,7 @@ registerWidget("cellhead", ({ token }) => {
     engine,
     label: token.meta?.label ?? "",
     caption: token.meta?.caption ?? "",
+    options: JSON.parse(token.meta?.options ?? "[]"),
   });
 });
 
