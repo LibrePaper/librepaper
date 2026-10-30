@@ -1,9 +1,78 @@
+use std::str::FromStr;
+use std::sync::Mutex;
+
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 
 use crate::shell_log;
 use crate::{first_server, show, Target};
+
+const FILE: &str = "close";
+
+// What closing the last window does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Close {
+    Quit,
+    Tray,
+}
+
+impl Close {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Close::Quit => "quit",
+            Close::Tray => "tray",
+        }
+    }
+}
+
+impl FromStr for Close {
+    type Err = ();
+
+    fn from_str(word: &str) -> Result<Self, ()> {
+        match word {
+            "quit" => Ok(Close::Quit),
+            "tray" => Ok(Close::Tray),
+            _ => Err(()),
+        }
+    }
+}
+
+// The choice is one value for the whole app, kept in the config dir.
+pub struct CloseChoice(Mutex<Close>);
+
+impl CloseChoice {
+    // A missing or broken file means quit.
+    pub fn load(app: &AppHandle) -> Self {
+        let choice = app
+            .path()
+            .app_config_dir()
+            .ok()
+            .and_then(|dir| std::fs::read_to_string(dir.join(FILE)).ok())
+            .and_then(|text| text.trim().parse::<Close>().ok())
+            .unwrap_or(Close::Quit);
+        Self(Mutex::new(choice))
+    }
+
+    pub fn get(&self) -> Close {
+        *self.0.lock().unwrap_or_else(|err| err.into_inner())
+    }
+
+    // Sets the choice and saves it for the next launch.
+    pub fn set(&self, app: &AppHandle, choice: Close) {
+        *self.0.lock().unwrap_or_else(|err| err.into_inner()) = choice;
+        if let Err(err) = save(app, choice) {
+            shell_log::write(&format!("could not save the close choice: {err}"));
+        }
+    }
+}
+
+fn save(app: &AppHandle, choice: Close) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = app.path().app_config_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join(FILE), choice.as_str())?;
+    Ok(())
+}
 
 // The icon is kept in state so it lives as long as the app. Nothing reads it.
 #[allow(dead_code)]
@@ -114,10 +183,10 @@ pub fn reveal(app: &AppHandle) -> bool {
     true
 }
 
-// With a tray icon, closing the last visible window hides it instead of quitting.
+// With a tray icon and the tray choice, closing the last visible window hides it instead of quitting.
 pub fn close_requested(window: &tauri::Window, api: &tauri::CloseRequestApi) {
     let app = window.app_handle();
-    if app.try_state::<Tray>().is_none() {
+    if app.state::<CloseChoice>().get() == Close::Quit || app.try_state::<Tray>().is_none() {
         return;
     }
     let others_visible = app
@@ -140,4 +209,17 @@ pub fn all_hidden(app: &AppHandle) -> bool {
         && windows
             .values()
             .all(|window| !window.is_visible().unwrap_or(false))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_the_two_words() {
+        assert_eq!("quit".parse::<Close>(), Ok(Close::Quit));
+        assert_eq!("tray".parse::<Close>(), Ok(Close::Tray));
+        assert!("hide".parse::<Close>().is_err());
+        assert_eq!(Close::Tray.as_str(), "tray");
+    }
 }
