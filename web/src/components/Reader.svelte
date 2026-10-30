@@ -3265,6 +3265,9 @@
     if (!changes.length) return;
     const id = session.idOf(task.path);
     if (!id || !session.textOf(id)) return;
+    // The anchor index plans from the text before the edit, so a file no
+    // editor has opened is read into it first.
+    if (!session.anchors.has(id)) session.anchors.load(id);
     // Changes are sorted by position, so the last one is applied first and
     // the earlier positions stay valid.
     for (const change of [...changes].reverse()) untrackedSplice(session.doc, id, change.from, change.to, change.insert);
