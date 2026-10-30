@@ -12,30 +12,8 @@ export function prepareFigureToken(source: string, token: Token): void {
   if (!token.body || (token.name !== 'figure' && token.name !== 'subpar.grid')) return;
   token.meta = { ...token.meta, figure: 'true' };
 
+  // Every figure is drawn by the block figure widget, which reads its layout from the source.
   const entries = argumentEntries(source, token.body);
-  if (token.name === 'subpar.grid') {
-    token.meta.figureComposite = 'true';
-    const caption = entries.find(entry => entry.name === 'caption')?.range;
-    const bodyRange = caption ? captionBodyRange(source, caption) : null;
-    if (bodyRange) markCaptionToken(token.children, bodyRange);
-    return;
-  }
-  // The one-line flex layout of a simple figure cannot draw a figure over several lines.
-  if (source.slice(token.from, token.to).includes('\n')) token.meta.figureComposite = 'true';
-  const scope = valueOf(source, entries, 'scope');
-  if (/^\s*["']parent["']\s*$/.test(scope ?? '')) token.meta.figureWide = 'true';
-  const captionEntry = entries.find(entry => entry.name === 'caption');
-  if (captionEntry && /\bposition\s*:\s*top\b/.test(source.slice(captionEntry.range.from, captionEntry.range.to))) {
-    token.meta.figureCaptionTop = 'true';
-  }
-  const body = entries.find(entry => !entry.name)?.range;
-  if (body) {
-    const text = source.slice(body.from, body.to).trim();
-    if (/^(?:grid|stack|columns)\s*\(/.test(text) || countCalls(text, 'image') > 1 || countCalls(text, 'figure') > 0) {
-      token.meta.figureComposite = 'true';
-    }
-  }
-
   const caption = entries.find(entry => entry.name === 'caption')?.range;
   const bodyRange = caption ? captionBodyRange(source, caption) : null;
   if (bodyRange) markCaptionToken(token.children, bodyRange);
@@ -476,10 +454,6 @@ function namedArgument(value: string): boolean {
 function unwrapContent(value: string): string {
   const text = value.trim();
   return text.startsWith('[') && text.endsWith(']') ? text.slice(1, -1) : text;
-}
-
-function countCalls(text: string, name: string): number {
-  return (text.match(new RegExp(`\\b${escapeRegExp(name)}\\s*\\(`, 'g')) ?? []).length;
 }
 
 function dimension(value?: string): string | null {

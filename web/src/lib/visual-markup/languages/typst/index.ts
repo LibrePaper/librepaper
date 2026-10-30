@@ -206,13 +206,7 @@ function style(token: Token): TokenStyle | null {
     case 'command': {
       const name = token.name ?? '';
       if (name === 'image') return { widget: 'image' };
-      if (token.meta?.figureComposite === 'true') return { widget: 'figure', block: true, keepSyntax: true };
-      if (token.meta?.figure === 'true') {
-        const classes = ['cm-lv-figure', 'cm-lv-figure-simple'];
-        if (token.meta.figureWide === 'true') classes.push('cm-lv-figure-wide');
-        if (token.meta.figureCaptionTop === 'true') classes.push('cm-lv-figure-caption-top');
-        return { class: classes.join(' '), block: true };
-      }
+      if (token.meta?.figure === 'true') return { widget: 'figure', block: true, keepSyntax: true };
       if (token.meta?.statement) {
         if (HIDDEN_STATEMENTS.has(name)) return { hidden: true };
         if (name === 'include') return { widget: 'typinclude' };
