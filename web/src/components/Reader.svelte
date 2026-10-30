@@ -1015,12 +1015,18 @@
         { kind: "problem", id: "reader:change-file" });
       return;
     }
-    showMobileView("source");
+    // A narrow window shows one pane at a time and the panel is covering it,
+    // so the source comes forward. A wide window keeps the layout the reader
+    // chose: with the preview alone, the preview goes to the change.
+    if (compact) showMobileView("source");
     await tick();
-    if (shown.source && editor) {
-      rememberPlace(row.file_id, row.position);
-      ws.openFile = row.file_id;
-      editor.goToIn(row.file_id, row.position);
+    if (!editor) return;
+    rememberPlace(row.file_id, row.position);
+    ws.openFile = row.file_id;
+    editor.goToIn(row.file_id, row.position);
+    if (!shown.source && shown.document) {
+      clearTimeout(stepTimer);
+      showCaretInDocument();
     }
   }
 
@@ -2201,26 +2207,31 @@
   function followCaret() {
     if (!linked || !editing || docText === null) return;
     clearTimeout(stepTimer);
-    stepTimer = setTimeout(() => {
-      // The format of the file being edited, which is not always the
-      // document's: a .bib beside a .tex has comments of its own kind, and
-      // stripping .tex comments out of it would blank the wrong runs.
-      const openPath = session?.paths?.get(openFile) || "";
-      const format = openPath ? renderers.formatOf(openPath) : sourceFormat;
-      if (format === "latex" && typeof activeSynctex !== "undefined" && activeSynctex) {
-        const path = session?.paths?.get(openFile) || "";
-        const precise = activeSynctex.forward(path, synctexLineAt(editor.text(), editor.caret()));
-        if (precise) {
-          tell({ type: "synctex-locate", page: precise.page, x: precise.x, y: precise.y });
-          return;
-        }
-      }
-      const place = sync.documentPlaceFor(editor.text(), editor.caret(), docText, format);
-      if (place) {
-        tell({ type: "locate", start: place.at, length: place.length });
+    stepTimer = setTimeout(showCaretInDocument, 120);
+  }
+
+  // Shows the document at the place the caret is in the source, whether or not
+  // the two are kept in step.
+  function showCaretInDocument() {
+    if (!editing || docText === null || !editor) return;
+    // The format of the file being edited, which is not always the
+    // document's: a .bib beside a .tex has comments of its own kind, and
+    // stripping .tex comments out of it would blank the wrong runs.
+    const openPath = session?.paths?.get(openFile) || "";
+    const format = openPath ? renderers.formatOf(openPath) : sourceFormat;
+    if (format === "latex" && typeof activeSynctex !== "undefined" && activeSynctex) {
+      const path = session?.paths?.get(openFile) || "";
+      const precise = activeSynctex.forward(path, synctexLineAt(editor.text(), editor.caret()));
+      if (precise) {
+        tell({ type: "synctex-locate", page: precise.page, x: precise.x, y: precise.y });
         return;
       }
-    }, 120);
+    }
+    const place = sync.documentPlaceFor(editor.text(), editor.caret(), docText, format);
+    if (place) {
+      tell({ type: "locate", start: place.at, length: place.length });
+      return;
+    }
   }
 
   function followDocumentClick(offset, pdfPoint = null) {
