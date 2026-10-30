@@ -109,6 +109,7 @@ export function shortDate(iso, today = todayISO(), locale = undefined) {
   const date = parts(iso);
   if (!date) return iso;
   const todayYear = parts(today)?.year;
+  /** @type {Intl.DateTimeFormatOptions} */
   const options = { month: "short", day: "numeric", timeZone: "UTC" };
   if (date.year !== todayYear) options.year = "numeric";
   return new Intl.DateTimeFormat(locale, options).format(new Date(Date.UTC(date.year, date.month - 1, date.day)));

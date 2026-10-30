@@ -32,6 +32,7 @@
 
   let query = $state("");
   let status = $state("open");
+  /** @type {"" | "overdue" | "today" | "week" | "none"} */
   let due = $state("");
   let priority = $state("");
   let assignee = $state("");
