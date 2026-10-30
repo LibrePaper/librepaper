@@ -51,7 +51,6 @@
   import {
     LINKED,
     PDF_INVERT,
-    VISUAL,
     linkFor,
     markViewed,
     read,
@@ -1283,7 +1282,8 @@
   let peers = $state(1);
   let participants = $state([]);
   let linked = $state(read(LINKED, false) === true);
-  let visual = $state(read(VISUAL, false) === true);
+  // Visual mode starts off on every open and is never stored.
+  let visual = $state(false);
   // The formatting at the caret, from the Editor while visual mode is on.
   let formatActive = $state(null);
 
@@ -2276,7 +2276,6 @@
 
   function setVisual(on) {
     visual = on;
-    if (!localDataForgotten()) write(VISUAL, on);
   }
 
   /* ------------------------------------------------------------------ panes */
