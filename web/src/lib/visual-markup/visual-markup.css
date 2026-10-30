@@ -1,3 +1,14 @@
+/* Visual mode sets the text in a serif face, as it reads on the page. Code,
+   verbatim and cell bodies ask for --font-mono, which here is the editor's own
+   font, so they stay monospaced. */
+.cm-editor.cm-lp-visual {
+  --font-mono: var(--editor-font-family, var(--font-editor));
+}
+
+.cm-editor.cm-lp-visual .cm-content {
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
+}
+
 /* The vertical gap around a block widget. It is padding on a wrapper, because
    CodeMirror does not measure margins. */
 .cm-lp-block-gap {
