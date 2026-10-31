@@ -1,0 +1,42 @@
+{
+  "readerb_version_download_failed": "Cette version n’a pas pu être téléchargée.",
+  "readerb_quit_failed": "L’application de bureau n’a pas pu quitter.",
+  "readerb_comparing_says": "Comparaison de {path} avec {version}",
+  "readerb_current_version": "la version actuelle",
+  "readerb_edits_unsaved": "Vos dernières modifications n’ont pas encore atteint le serveur. Réessayez une fois qu’elles sont enregistrées.",
+  "readerb_count_errors": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": { "countPlural=one": "{count} erreur", "countPlural=*": "{count} erreurs" }
+  }],
+  "readerb_count_warnings": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": { "countPlural=one": "{count} avertissement", "countPlural=*": "{count} avertissements" }
+  }],
+  "readerb_count_both": "{errors}, {warnings}",
+  "readerb_diagnostics_says": "Diagnostics : {badge}",
+  "readerb_collaboration_unread": "Collaboration : messages non lus",
+  "readerb_build_failed_latex": "La compilation LaTeX a échoué sans indiquer la raison.",
+  "readerb_build_failed": "La compilation a échoué sans indiquer la raison.",
+  "readerb_run_code_for_render": "Activez « Exécuter le code » pour compiler sur cet ordinateur.",
+  "readerb_backup_lost_access": "Les sauvegardes sont activées, mais l’application de bureau a perdu l’accès à ce compte. Ouvrez Paramètres, puis Sauvegardes, pour vous reconnecter.",
+  "readerb_backup_failing": "Les sauvegardes sont activées, mais échouent : {error}. Ouvrez Paramètres, puis Sauvegardes.",
+  "readerb_backup_no_destination": "Les sauvegardes sont activées, mais aucune destination n’est définie. Ouvrez Paramètres, puis Sauvegardes.",
+  "readerb_clipboard_refused": "Le navigateur a refusé l’accès au presse-papiers. Utilisez plutôt le raccourci clavier.",
+  "readerb_arrangement_split": "Divisé",
+  "readerb_arrangement_editor": "Éditeur",
+  "readerb_arrangement_preview": "Aperçu",
+  "readerb_edit_undo": "Annuler",
+  "readerb_edit_redo": "Rétablir",
+  "readerb_edit_cut": "Couper",
+  "readerb_edit_copy": "Copier",
+  "readerb_edit_paste": "Coller",
+  "readerb_edit_select_all": "Tout sélectionner",
+  "readerb_edit_find": "Rechercher…",
+  "readerb_edit_replace": "Remplacer…",
+  "readerb_edit_word_count": "Nombre de mots…",
+  "readerb_edit_bold": "Gras",
+  "readerb_edit_italic": "Italique",
+  "readerb_preparing_export": "Préparation du {format}."
+}
