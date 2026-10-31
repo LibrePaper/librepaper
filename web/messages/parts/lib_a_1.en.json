@@ -1,0 +1,12 @@
+{
+  "dates_just_now": "just now",
+  "dates_minutes_ago": "{minutes} min ago",
+  "dates_hours_ago": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": { "countPlural=one": "{count} hour ago", "countPlural=*": "{count} hours ago" }
+  }],
+  "dates_today": "today",
+  "dates_yesterday": "yesterday",
+  "dates_days_ago": "{days} days ago"
+}
