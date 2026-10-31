@@ -1,18 +1,19 @@
 <script>
   import ChatTranscript from "./ChatTranscript.svelte";
   import ChatComposer from "./ChatComposer.svelte";
+  import { m } from "../lib/paraglide/messages.js";
   let { messages = [], connected = false, canPost = false, onsend, more = false, loadingOlder = false, loadError = "", onloadolder = undefined } = $props();
 </script>
-<section class="live-chat" aria-label="Chat">
-  <h2 class="sr-only">Chat</h2>
-  {#if !connected}<p class="chat-status panel-meta" role="status">Offline. Chat reconnects on its own.</p>{/if}
+<section class="live-chat" aria-label={m.chat_title()}>
+  <h2 class="sr-only">{m.chat_title()}</h2>
+  {#if !connected}<p class="chat-status panel-meta" role="status">{m.chat_offline()}</p>{/if}
   <div class="chat-body">
     <ChatTranscript {messages} {more} {loadingOlder} {loadError} {onloadolder}
-      emptyTitle="No messages yet" emptyText="Messages are shared with everyone who can comment on this project."
-      roleLabel={(message) => message.creator || "Anonymous"} />
+      emptyTitle={m.chat_empty_title()} emptyText={m.chat_empty_text()}
+      roleLabel={(message) => message.creator || m.chat_anonymous()} />
   </div>
-  {#if !canPost}<p class="panel-muted">Comment access is required to chat.</p>{/if}
-  <ChatComposer placeholder="Message everyone…" disabled={!connected || !canPost} {onsend} />
+  {#if !canPost}<p class="panel-muted">{m.chat_comment_required()}</p>{/if}
+  <ChatComposer placeholder={m.chat_placeholder()} disabled={!connected || !canPost} {onsend} />
 </section>
 <style>
   /* The pane the collaboration panel puts this in carries the padding. */

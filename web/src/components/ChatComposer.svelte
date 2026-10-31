@@ -1,8 +1,9 @@
 <script>
   import { tick } from "svelte";
   import IconButton from "./IconButton.svelte";
+  import { m } from "../lib/paraglide/messages.js";
   let {
-    placeholder = "Message…",
+    placeholder = m.chatcomposer_placeholder(),
     disabled = false,
     canSend = !disabled,
     onsend,
@@ -97,10 +98,10 @@
       <div class="composer-context">{@render context()}</div>
     {/if}
     <div class="composer-row">
-      <textarea bind:this={input} rows="1" value={draft} {placeholder} aria-label="Message"
+      <textarea bind:this={input} rows="1" value={draft} {placeholder} aria-label={m.chatcomposer_label()}
         {disabled} required oninput={update} onkeydown={keydown}></textarea>
       <div class="composer-buttons">
-        <IconButton type="submit" icon="send-horizontal" label="Send message" title="Send message. Shift+Enter adds a new line." tone="plain" size="btn-icon-sm"
+        <IconButton type="submit" icon="send-horizontal" label={m.chatcomposer_send()} title={m.chatcomposer_send_title()} tone="plain" size="btn-icon-sm"
           disabled={disabled || !canSend || sending || !draft.trim()} />
       </div>
     </div>
