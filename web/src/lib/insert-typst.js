@@ -2,6 +2,8 @@
 // is always an exact substring of text, allowing the editor to put the caret
 // in the first useful field after insertion.
 
+import { m } from "./paraglide/messages.js";
+
 const textOf = (value, fallback = "") => value == null ? fallback : String(value);
 const numberOf = (value, fallback, minimum = 1, maximum = 100) =>
   Math.min(maximum, Math.max(minimum, Math.floor(Number.isFinite(+value) ? +value : fallback)));
@@ -65,7 +67,7 @@ export function buildTypst(id, options = {}, context = {}) {
 = Appendix`, "Appendix");
     case "toc": return finish("#outline()", "#outline()");
     case "figure": {
-      if (!options.src) throw Error("Choose an image first.");
+      if (!options.src) throw Error(m.insert_typst_choose_image());
       const source = string(options.src);
       const width = options.width ? `, width: ${string(options.width)}` : "";
       const caption = markup(options.caption, "Figure");
@@ -74,14 +76,14 @@ export function buildTypst(id, options = {}, context = {}) {
     case "table": return table(options);
     case "citation": {
       const keys = Array.isArray(options.keys) ? options.keys.filter(Boolean) : [];
-      if (!keys.length) throw Error("Choose at least one bibliography entry.");
+      if (!keys.length) throw Error(m.insert_typst_choose_entry());
       const locator = textOf(options.locator).trim();
-      for (const key of keys) if (!/^[\p{L}\p{N}_.:+-]+$/u.test(key)) throw Error("Unsupported citation key.");
+      for (const key of keys) if (!/^[\p{L}\p{N}_.:+-]+$/u.test(key)) throw Error(m.insert_typst_citation_key());
       const form = options.style === "narrative" ? ', form: "prose"' : options.style === "parenthetical" ? ', form: "normal"' : '';
       return finish(keys.map(key => '#cite(<' + key + '>' + form + (locator ? ', supplement: [' + markup(locator) + ']' : '') + ')').join(' '));
     }
     case "bibliography": {
-      if (!options.file) throw Error("Choose a bibliography file.");
+      if (!options.file) throw Error(m.insert_typst_choose_bib());
       return finish('#bibliography("' + string(options.file) + '")');
     }
     case "cross-reference": {
@@ -125,19 +127,19 @@ export function buildTypst(id, options = {}, context = {}) {
     }
     case "custom-environment": {
       const name = textOf(options.environment).trim();
-      if (!/^[A-Za-z][\w-]*$/.test(name)) throw Error("Choose a defined content function.");
+      if (!/^[A-Za-z][\w-]*$/.test(name)) throw Error(m.insert_typst_choose_function());
       const source = [context.text, context.entryText, ...(context.files || []).map(file => file.text)].filter(Boolean).join('\n');
-      if (!new RegExp('#let\\s+' + name + '\\s*\\([^)]*\\bbody\\b[^)]*\\)').test(source)) throw Error("Define this content function before inserting it.");
+      if (!new RegExp('#let\\s+' + name + '\\s*\\([^)]*\\bbody\\b[^)]*\\)').test(source)) throw Error(m.insert_typst_define_function());
       const signature=source.match(new RegExp('#let\\s+'+name+'\\s*\\(([^)]*)\\)'));
       let index=0;
       const args=signature[1].split(',').map(part=>part.trim()).filter(part=>part&&!part.includes(':')).map(part=>{
         if(part==='body')return '['+content+']';
         const value=options.arguments?.[index++];
-        if(!value)throw Error('Enter the '+part+' argument for '+name+'.');
+        if(!value)throw Error(m.insert_typst_enter_argument({ part, name }));
         return value;
       });
       return finish('#'+name+'('+args.join(', ')+')',choice||'Content.');
     }
-    default: return finish("", "", ["Unsupported Typst insertion."]);
+    default: return finish("", "", [m.insert_typst_unsupported()]);
   }
 }

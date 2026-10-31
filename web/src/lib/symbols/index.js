@@ -3,11 +3,12 @@
 // an insertion writes. Emoji come from a generated file (see loadEmoji).
 import { insertSyntaxContext } from "../insert.js";
 import { latexPackageEdits } from "../insert-latex.js";
+import { m } from "../paraglide/messages.js";
 
 export const CATEGORIES = [
-  { id: "greek", label: "Greek" }, { id: "operators", label: "Operators" }, { id: "relations", label: "Relations" },
-  { id: "arrows", label: "Arrows" }, { id: "logic", label: "Logic and sets" }, { id: "accents", label: "Accents" },
-  { id: "delimiters", label: "Delimiters" }, { id: "text", label: "Text" }, { id: "emoji", label: "Emoji" },
+  { id: "greek", label: m.index_category_greek() }, { id: "operators", label: m.index_category_operators() }, { id: "relations", label: m.index_category_relations() },
+  { id: "arrows", label: m.index_category_arrows() }, { id: "logic", label: m.index_category_logic() }, { id: "accents", label: m.index_category_accents() },
+  { id: "delimiters", label: m.index_category_delimiters() }, { id: "text", label: m.index_category_text() }, { id: "emoji", label: m.index_category_emoji() },
 ];
 
 const sym = (category, id, glyph, latex, typst, extra = {}) => ({
@@ -516,7 +517,7 @@ export function symbolInsertion(symbol, context = {}) {
   if (symbol.category === "emoji") {
     if (format === "latex") {
       additionalEdits = packages("emoji");
-      notes.push("The emoji package needs LuaLaTeX.");
+      notes.push(m.index_emoji_lualatex());
       text = symbol.latex;
     } else {
       text = symbol.glyph;

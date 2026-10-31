@@ -4,6 +4,7 @@
  */
 import { buildLatex, latexRoot } from './insert-latex.js';
 import { buildTypst } from './insert-typst.js';
+import { m } from './paraglide/messages.js';
 
 /**
  * @typedef InsertItem
@@ -25,18 +26,18 @@ import { buildTypst } from './insert-typst.js';
  */
 const item = (id, label, group, dialog, keywords = '') => ({ id, label, group, dialog, keywords });
 export const INSERT_ACTIONS = [
-  item('heading', 'Heading / section', 'Structure', 'heading', 'subsection subsubsection'),
-  item('abstract', 'Abstract', 'Structure'), item('appendix', 'Appendix', 'Structure'), item('toc', 'Table of contents', 'Structure'),
-  item('figure', 'Image / figure', 'Figures and tables', 'figure', 'includegraphics'), item('table', 'Table', 'Figures and tables', 'table', 'tabular'),
-  item('citation', 'Citation', 'References', 'citation'), item('bibliography', 'Bibliography', 'References', 'bibliography'),
-  item('cross-reference', 'Cross-reference', 'References', 'cross-reference'), item('label', 'Label / anchor', 'References', 'label'),
-  item('inline-math', 'Inline math', 'Math'), item('display-math', 'Displayed equation', 'Math', 'math', 'equation'),
-  item('bulleted-list', 'Bulleted list', 'Lists', null, 'itemize'), item('numbered-list', 'Numbered list', 'Lists', null, 'enumerate'), item('description-list', 'Description list', 'Lists', null, 'description terms'),
-  item('quote', 'Block quotation', 'Text blocks', null, 'quote'), item('quotation', 'Indented quotation', 'Text blocks', null, 'quotation'),
-  item('code-block', 'Code block', 'Text blocks', 'code', 'verbatim listings'), item('footnote', 'Footnote', 'Text blocks'), item('link', 'Link', 'Text blocks', 'link'),
-  ...['theorem', 'lemma', 'proposition', 'definition', 'proof', 'example', 'remark'].map(id => item(id, id[0].toUpperCase() + id.slice(1), 'Scholarly blocks', 'environment')),
-  item('page-break', 'Page break', 'Layout'), item('horizontal-rule', 'Horizontal rule', 'Layout'), item('columns', 'Columns', 'Layout', 'columns', 'multicols'),
-  item('custom-environment', 'Environment', 'Advanced', 'environment', 'custom newenvironment newtheorem'),
+  item('heading', m.insert_heading(), 'Structure', 'heading', 'subsection subsubsection'),
+  item('abstract', m.insert_abstract(), 'Structure'), item('appendix', m.insert_appendix(), 'Structure'), item('toc', m.insert_toc(), 'Structure'),
+  item('figure', m.insert_figure(), 'Figures and tables', 'figure', 'includegraphics'), item('table', m.insert_table(), 'Figures and tables', 'table', 'tabular'),
+  item('citation', m.insert_citation(), 'References', 'citation'), item('bibliography', m.insert_bibliography(), 'References', 'bibliography'),
+  item('cross-reference', m.insert_cross_reference(), 'References', 'cross-reference'), item('label', m.insert_label(), 'References', 'label'),
+  item('inline-math', m.insert_inline_math(), 'Math'), item('display-math', m.insert_display_math(), 'Math', 'math', 'equation'),
+  item('bulleted-list', m.insert_bulleted_list(), 'Lists', null, 'itemize'), item('numbered-list', m.insert_numbered_list(), 'Lists', null, 'enumerate'), item('description-list', m.insert_description_list(), 'Lists', null, 'description terms'),
+  item('quote', m.insert_quote(), 'Text blocks', null, 'quote'), item('quotation', m.insert_quotation(), 'Text blocks', null, 'quotation'),
+  item('code-block', m.insert_code_block(), 'Text blocks', 'code', 'verbatim listings'), item('footnote', m.insert_footnote(), 'Text blocks'), item('link', m.insert_link(), 'Text blocks', 'link'),
+  ...[['theorem', m.insert_theorem()], ['lemma', m.insert_lemma()], ['proposition', m.insert_proposition()], ['definition', m.insert_definition()], ['proof', m.insert_proof()], ['example', m.insert_example()], ['remark', m.insert_remark()]].map(([id, label]) => item(id, label, 'Scholarly blocks', 'environment')),
+  item('page-break', m.insert_page_break(), 'Layout'), item('horizontal-rule', m.insert_horizontal_rule(), 'Layout'), item('columns', m.insert_columns(), 'Layout', 'columns', 'multicols'),
+  item('custom-environment', m.insert_custom_environment(), 'Advanced', 'environment', 'custom newenvironment newtheorem'),
 ];
 const formats = new Set(['latex', 'typst', 'markdown', 'quarto']);
 const scholarly = new Set(['theorem','lemma','proposition','definition','proof','example','remark']);
@@ -133,7 +134,7 @@ const slug = value => plain(value).trim().replace(/[^\p{L}\p{N}_.:-]+/gu, '-').r
  * @param {any} value
  * @returns {string}
  */
-const url = value => { const s=plain(value).trim(); if (/^(?:javascript|data|vbscript):/i.test(s)) throw Error('Use a project path or an http, https, or mailto link.'); return s.replace(/[\s<>"()]/g,c=>encodeURIComponent(c)); };
+const url = value => { const s=plain(value).trim(); if (/^(?:javascript|data|vbscript):/i.test(s)) throw Error(m.insert_url_scheme_unsafe()); return s.replace(/[\s<>"()]/g,c=>encodeURIComponent(c)); };
 
 /** @param {InsertContext} [c] @returns {NormalizedInsertContext} */
 function context(c = {}) { const text=plain(c.text); const selection=c.selection || {from:text.length,to:text.length,text:''}; const files=(c.files || []).map(file=>typeof file==='string'?{path:file,text:''}:file); return {...c, text, selection, files}; }
@@ -183,14 +184,14 @@ export function insertSyntaxContext(input) {
  */
 export function insertionAvailability(id, input = {}) {
   const c=context(input);
-  if(!INSERT_ACTIONS.some(a=>a.id===id))return {enabled:false,reason:'Unknown insertion.'};
-  if(!formats.has(c.format))return {enabled:false,reason:'Open a LaTeX, Typst, Markdown, or Quarto source file.'};
+  if(!INSERT_ACTIONS.some(a=>a.id===id))return {enabled:false,reason:m.insert_unknown_insertion()};
+  if(!formats.has(c.format))return {enabled:false,reason:m.insert_open_source_file()};
   const mode=insertSyntaxContext(c);
-  if(['code','comment','metadata'].includes(mode))return {enabled:false,reason:`Move the caret out of the ${mode==='metadata'?'document metadata':mode+' block'} to insert document content.`};
-  if(mode==='math' && id!=='label')return {enabled:false,reason:'Move outside the current equation to insert this item.'};
-  if(id==='custom-environment' && !['latex','typst','quarto'].includes(c.format))return {enabled:false,reason:'Custom environments need LaTeX, Typst, or Quarto.'};
-  if(id==='custom-environment' && c.format==='typst' && !gatherInsertEnvironments(c).length)return {enabled:false,reason:'Define a content function in this Typst project first.'};
-  if(id==='cross-reference' && !gatherInsertTargets(c).length)return {enabled:false,reason:'Add a heading or a labelled element first.'};
+  if(['code','comment','metadata'].includes(mode))return {enabled:false,reason:mode==='metadata'?m.insert_move_out_metadata():mode==='code'?m.insert_move_out_code():m.insert_move_out_comment()};
+  if(mode==='math' && id!=='label')return {enabled:false,reason:m.insert_move_out_equation()};
+  if(id==='custom-environment' && !['latex','typst','quarto'].includes(c.format))return {enabled:false,reason:m.insert_custom_needs_format()};
+  if(id==='custom-environment' && c.format==='typst' && !gatherInsertEnvironments(c).length)return {enabled:false,reason:m.insert_define_typst_function()};
+  if(id==='cross-reference' && !gatherInsertTargets(c).length)return {enabled:false,reason:m.insert_add_target_first()};
   return {enabled:true};
 }
 /**
@@ -221,7 +222,7 @@ export function insertEnvironmentFields(name,input={}) {
   const c=context(input),source=[c.text,c.entryText,...c.files.map(f=>f.text)].filter(Boolean).join('\n');
   if(c.format==='latex'){
     const match=source.match(new RegExp('\\\\(?:newenvironment|renewenvironment)\\s*\\{'+name+'\\}\\s*\\[(\\d+)\\](?:\\s*\\[([^\\]]*)\\])?'));
-    return Array.from({length:Math.min(9,Number(match?.[1])||0)},(_,i)=>({label:'Argument '+(i+1),defaultValue:i===0?match?.[2]||'':'',optional:i===0&&match?.[2]!=null}));
+    return Array.from({length:Math.min(9,Number(match?.[1])||0)},(_,i)=>({label:m.insert_argument_label({ index: i + 1 }),defaultValue:i===0?match?.[2]||'':'',optional:i===0&&match?.[2]!=null}));
   }
   if(c.format==='typst'){
     const match=source.match(new RegExp('#let\\s+'+name+'\\s*\\(([^)]*)\\)'));
@@ -301,7 +302,7 @@ function metadata(c, additions) {
     if(!existing){pending.push(key+': '+value);continue;}
     const old=existing[0].slice(existing[0].indexOf(':')+1).trim();
     if(old===value)continue;
-    if(!old)throw Error('The '+key+' metadata has a structured value. Edit that setting in the source.');
+    if(!old)throw Error(m.insert_metadata_structured({ name: key }));
     edits.push({from:existing.index,to:existing.index+existing[0].length,insert:key+': '+value});
   }
   if(pending.length){const insert=pending.join('\n')+'\n',at=match?source.indexOf('\n')+1:0;edits.push({from:at,to:at,insert:match?insert:'---\n'+insert+'---\n\n'});}
@@ -344,46 +345,46 @@ function buildMarkdown(id,o,c) {
   }else if(id==='abstract')text=q?`::: {.abstract}\n\n${selected||'Abstract text.'}\n\n:::`:`## Abstract\n\n${selected||'Abstract text.'}`;
   else if(id==='appendix')text=q?'## Appendix {.appendix}':'## Appendix';
   else if(id==='toc'){
-    if(q){additionalEdits.push(...metadata(c,{toc:'true'}));text='';notes.push('Enable the table of contents in document metadata.');}
-    else {text=gatherInsertTargets(c).filter(t=>t.kind==='heading').map(t=>`- [${markdown(t.label)}](#${url(t.id)})`).join('\n');if(!text)throw Error('Add a heading before inserting a table of contents.');notes.push('This table of contents contains links to the current headings.');}
+    if(q){additionalEdits.push(...metadata(c,{toc:'true'}));text='';notes.push(m.insert_note_enable_toc());}
+    else {text=gatherInsertTargets(c).filter(t=>t.kind==='heading').map(t=>`- [${markdown(t.label)}](#${url(t.id)})`).join('\n');if(!text)throw Error(m.insert_add_heading_before_toc());notes.push(m.insert_note_toc_links());}
   }else if(id==='figure'){
-    if(!o.src)throw Error('Choose an image first.');
+    if(!o.src)throw Error(m.insert_choose_image());
     const caption=markdown(o.caption||''); text=`![${caption}](${url(o.src)})`;
     if(q)text+=`{${[o.label?'#'+o.label:'',o.width?`width="${o.width}"`:''].filter(Boolean).join(' ')}}`.replace('{}','');
     else if(o.width || o.label || o.caption)text=`<figure${o.label?` id="${html(o.label)}"`:''}>\n<img src="${html(url(o.src))}" alt="${html(o.caption)}"${o.width?` style="width: ${o.width}"`:''}>${o.caption?`\n<figcaption>${html(o.caption)}</figcaption>`:''}\n</figure>`;
   }else if(id==='table'){
-    const r=o.rows||3,m=o.columns||3, header=o.header!==false;
-    const cells=Array.from({length:r},(_,i)=>Array.from({length:m},(_,j)=>i===0&&header?`Header ${j+1}`:`Cell ${i+1},${j+1}`));
+    const r=o.rows||3,cols=o.columns||3, header=o.header!==false;
+    const cells=Array.from({length:r},(_,i)=>Array.from({length:cols},(_,j)=>i===0&&header?`Header ${j+1}`:`Cell ${i+1},${j+1}`));
     if(!header && q){
-      const widths=Array.from({length:m},(_,j)=>Math.max(...cells.map(row=>row[j].length))+2);
+      const widths=Array.from({length:cols},(_,j)=>Math.max(...cells.map(row=>row[j].length))+2);
       const border='+'+widths.map(w=>'-'.repeat(w)).join('+')+'+';
       text=border+'\n'+cells.map(row=>'|'+row.map((cell,j)=>(' '+cell).padEnd(widths[j])).join('|')+'|\n'+border).join('\n');
       if(o.caption||o.label)text+='\n\n: '+markdown(o.caption||'Table')+(o.label?' {#'+o.label+'}':'');
-    }else if(!header){text=`<table${o.label?` id="${html(o.label)}"`:''}>${o.caption?`\n<caption>${html(o.caption)}</caption>`:''}\n<tbody>\n${cells.map(row=>'<tr>'+row.map(cell=>`<td${o.alignment!=='default'?` style="text-align: ${o.alignment}"`:''}>${cell}</td>`).join('')+'</tr>').join('\n')}\n</tbody>\n</table>`; if(q)notes.push('A table without a header uses HTML and is intended for HTML output.');}
+    }else if(!header){text=`<table${o.label?` id="${html(o.label)}"`:''}>${o.caption?`\n<caption>${html(o.caption)}</caption>`:''}\n<tbody>\n${cells.map(row=>'<tr>'+row.map(cell=>`<td${o.alignment!=='default'?` style="text-align: ${o.alignment}"`:''}>${cell}</td>`).join('')+'</tr>').join('\n')}\n</tbody>\n</table>`; if(q)notes.push(m.insert_note_table_html());}
     else {
       const align=({left:':---',center:':---:',right:'---:'})[o.alignment]||'---';
-      text=[cells[0],Array(m).fill(align),...cells.slice(1)].map(row=>'| '+row.join(' | ')+' |').join('\n');
+      text=[cells[0],Array(cols).fill(align),...cells.slice(1)].map(row=>'| '+row.join(' | ')+' |').join('\n');
       if(q&&(o.caption||o.label))text+=`\n\n: ${markdown(o.caption||'Table')}${o.label?` {#${o.label}}`:''}`;
       else if(o.label||o.caption)text=(o.label?`<a id="${html(o.label)}"></a>\n\n`:'')+text+(o.caption?`\n\n${markdown(o.caption)}`:'');
     }
     placeholder=cells[0][0];
   }else if(id==='citation'){
-    if(!o.keys?.length)throw Error('Select at least one reference.');
-    const keys=o.keys.map(key=>{if(!/^[\p{L}\p{N}_:.+-]+$/u.test(key))throw Error('This citation key contains unsupported characters.');return '@'+key;});
+    if(!o.keys?.length)throw Error(m.insert_select_reference());
+    const keys=o.keys.map(key=>{if(!/^[\p{L}\p{N}_:.+-]+$/u.test(key))throw Error(m.insert_citation_key_unsupported());return '@'+key;});
     text=o.style==='narrative'?keys.join('; ')+(o.locator?` [${markdown(o.locator)}]`:''):`[${keys.join('; ')}${o.locator?', '+markdown(o.locator):''}]`;
     if(!/^bibliography\s*:/m.test(c.text)){
       const files=c.files.filter(f=>/\.(bib|json|ya?ml)$/i.test(f.path));
       if(files.length===1)additionalEdits.push(...metadata(c,{bibliography:JSON.stringify(relativePath(files[0].path,c.path))}));
-      else throw Error('Insert a bibliography first to choose the reference source.');
+      else throw Error(m.insert_bib_first_for_citation());
     }
   }else if(id==='bibliography'){
-    if(!o.file)throw Error('Choose a bibliography file.');
+    if(!o.file)throw Error(m.insert_choose_bib_file());
     const existing=c.text.match(/^bibliography\s*:\s*(.+)$/m);
-    if(existing && !existing[1].includes(o.file))throw Error('This document already names another bibliography. Update its metadata to combine or replace sources.');
+    if(existing && !existing[1].includes(o.file))throw Error(m.insert_bib_already_named());
     additionalEdits.push(...metadata(c,{bibliography:JSON.stringify(o.file)}));
     text=q?'::: {#refs}\n:::':'## References';
   }else if(id==='cross-reference'){
-    if(!o.target)throw Error('Choose a reference target.');
+    if(!o.target)throw Error(m.insert_choose_target());
     const target=gatherInsertTargets(c).find(t=>t.id===o.target);
     text=q && /^(sec|fig|tbl|eq|thm|lem|prp|def|exm)-/.test(o.target)?'@'+o.target:`[${markdown(target?.label||o.target)}](${target?.path&&target.path!==c.path?url(relativePath(target.path,c.path)):''}#${url(o.target)})`;
   }else if(id==='label')text=q?`[]{#${o.label}}`:`<a id="${html(o.label)}"></a>`;
@@ -410,10 +411,10 @@ function buildMarkdown(id,o,c) {
   else if(id==='columns'){
     const count=o.columns||2, gap=o.gap||'1em';
     text=q?`:::: {layout-ncol=${count}}\n\n${Array.from({length:count},(_,i)=>`::: {}\n${i===0?body:'Column content.'}\n:::`).join('\n\n')}\n\n::::`:`<div style="column-count: ${count}; column-gap: ${gap}">\n\n${body}\n\n</div>`;
-    if(q&&o.gap)notes.push('Quarto panel spacing follows the document theme.');
+    if(q&&o.gap)notes.push(m.insert_note_quarto_spacing());
   }else if(id==='custom-environment'){
-    if(!/^[A-Za-z][\w-]*$/.test(o.environment||''))throw Error('Enter an environment name using letters, numbers, or hyphens.');
-    text=`::: {.${o.environment}}\n\n${body}\n\n:::`;notes.push('This div uses the styling defined by your document or extension.');
+    if(!/^[A-Za-z][\w-]*$/.test(o.environment||''))throw Error(m.insert_env_name_invalid());
+    text=`::: {.${o.environment}}\n\n${body}\n\n:::`;notes.push(m.insert_note_div_styling());
   }
   return {text,placeholder,additionalEdits,notes};
 }
@@ -442,34 +443,34 @@ export function buildInsertion(id, options = {}, input = {}) {
   for(const [key,max] of numericValidations) {
     if(o[key]!=null) {
       const n=Number(o[key]);
-      if(!Number.isInteger(n)||n<1||n>max) throw Error(`${key[0].toUpperCase()+key.slice(1)} must be between 1 and ${max}.`);
+      if(!Number.isInteger(n)||n<1||n>max) throw Error(m.insert_number_range({ field: key === 'rows' ? m.insert_field_rows() : key === 'columns' ? m.insert_field_columns() : m.insert_field_level(), max }));
       o[key]=n;
     }
   }
-  if(o.width && !/^\d+(?:\.\d+)?(?:%|cm|mm|in|pt|px|em)$/.test(o.width) && !(c.format==='latex' && /^(?:\d*\.?\d+)?\\(?:line|text)width$/.test(o.width)))throw Error('Use a width such as 80%, 8cm, or 200pt.');
-  if(o.gap && !/^\d+(?:\.\d+)?(?:cm|mm|in|pt|px|em)$/.test(o.gap))throw Error('Use spacing such as 1em or 12pt.');
-  if(c.format==='latex'&&o.level>5)throw Error('LaTeX section levels range from 1 to 5.');
-  if(o.language && !/^[\w.+-]+$/.test(o.language))throw Error('Use a language name such as python, r, or javascript.');
-  if(o.alignment && !['default','left','center','right'].includes(o.alignment))throw Error('Choose left, center, or right alignment.');
+  if(o.width && !/^\d+(?:\.\d+)?(?:%|cm|mm|in|pt|px|em)$/.test(o.width) && !(c.format==='latex' && /^(?:\d*\.?\d+)?\\(?:line|text)width$/.test(o.width)))throw Error(m.insert_width_format());
+  if(o.gap && !/^\d+(?:\.\d+)?(?:cm|mm|in|pt|px|em)$/.test(o.gap))throw Error(m.insert_gap_format());
+  if(c.format==='latex'&&o.level>5)throw Error(m.insert_latex_levels());
+  if(o.language && !/^[\w.+-]+$/.test(o.language))throw Error(m.insert_language_format());
+  if(o.alignment && !['default','left','center','right'].includes(o.alignment))throw Error(m.insert_alignment_choice());
   const prefixes={heading:'sec',figure:'fig',table:'tbl','display-math':'eq',theorem:'thm',lemma:'lem',proposition:'prp',definition:'def',example:'exm',proof:'prf',remark:'rem'};
   if(c.format==='quarto'&&id==='display-math'&&o.numbered===true&&!o.label)o.label=id;
   if(o.label || id==='label' || (c.format==='quarto'&&scholarly.has(id)&&!['proof','remark'].includes(id)))o.label=uniqueLabel(o.label||id,c,c.format==='quarto'?prefixes[id]:'');
   if(id==='bibliography'){
     const whole=[c.text,c.entryText].filter(Boolean).join('\n');
     const exists=c.format==='typst'?/#bibliography\s*\(/.test(whole):c.format==='latex'?/\\(?:printbibliography|bibliography\s*\{)/.test(whole):c.format==='quarto'?/\{#refs\}/.test(c.text):/^#{1,6}\s+References\s*$/im.test(c.text);
-    if(exists)throw Error('This document already contains a bibliography. Edit or move the existing one.');
+    if(exists)throw Error(m.insert_bib_exists());
   }
   const basePath=c.format==='latex' ? latexRoot(c) || c.path : c.path;
   if(o.src){
-    if(c.format==='latex'&&!/\.(png|jpe?g|pdf)$/i.test(o.src))throw Error('Choose a PNG, JPEG, or PDF figure for LaTeX.');
-    if(c.format==='typst'&&!/\.(png|jpe?g|svg|gif|webp)$/i.test(o.src))throw Error('Choose a PNG, JPEG, SVG, GIF, or WebP image for Typst.');
+    if(c.format==='latex'&&!/\.(png|jpe?g|pdf)$/i.test(o.src))throw Error(m.insert_choose_latex_figure());
+    if(c.format==='typst'&&!/\.(png|jpe?g|svg|gif|webp)$/i.test(o.src))throw Error(m.insert_choose_typst_image());
     o.src=relativePath(o.src,basePath);
   }
   if(o.file)o.file=relativePath(o.file,basePath);
   if(o.url)url(o.url);
   if(id==='citation' && ['latex','typst'].includes(c.format)){
     const setup=[c.text,c.entryText].filter(Boolean).join('\n');
-    if(!(c.format==='latex'?/\\(?:bibliography|addbibresource|begin\{thebibliography\})/.test(setup):/#bibliography\s*\(/.test(setup)))throw Error('Insert a bibliography first so citations have a reference source.');
+    if(!(c.format==='latex'?/\\(?:bibliography|addbibresource|begin\{thebibliography\})/.test(setup):/#bibliography\s*\(/.test(setup)))throw Error(m.insert_bib_first_citation());
   }
   let result=c.format==='latex'?buildLatex(id,o,c):c.format==='typst'?buildTypst(id,o,c):buildMarkdown(id,o,c);
   if(typeof result==='string')result={text:result};
@@ -489,5 +490,5 @@ export function buildInsertion(id, options = {}, input = {}) {
     const previous=additionalEdits.find(e=>e.path===edit.path&&e.from===edit.from&&e.to===edit.to&&e.from===e.to);
     if(previous)previous.insert+=edit.insert;else additionalEdits.push({...edit});
   }
-  return {...resultObj,text:prefix+text+suffix,selection,notes:[...(resultObj.notes||[]),...(id==='appendix'&&['typst','latex'].includes(c.format)?['This starts appendix numbering for the following sections.']:[])],additionalEdits};
+  return {...resultObj,text:prefix+text+suffix,selection,notes:[...(resultObj.notes||[]),...(id==='appendix'&&['typst','latex'].includes(c.format)?[m.insert_note_appendix_numbering()]:[])],additionalEdits};
 }

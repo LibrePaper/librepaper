@@ -3,13 +3,14 @@
 // templates, so their syntax is the one already checked against the Typst engine.
 import { CATEGORIES, SYMBOLS, symbolInsertion } from "./index.js";
 import { MATH_TEMPLATES, templateInsertion } from "./templates.js";
+import { m } from "../paraglide/messages.js";
 
 export { symbolSpellings as entrySpellings } from "./index.js";
 
 export const PICKER_CATEGORIES = [
-  { id: "recent", label: "Recent" },
-  { id: "favorites", label: "Favorites" },
-  ...CATEGORIES.flatMap(category => (category.id === "delimiters" ? [category, { id: "templates", label: "Templates" }] : [category])),
+  { id: "recent", label: m.catalog_recent() },
+  { id: "favorites", label: m.catalog_favorites() },
+  ...CATEGORIES.flatMap(category => (category.id === "delimiters" ? [category, { id: "templates", label: m.catalog_templates() }] : [category])),
 ];
 
 // Each template tile names the template it writes, and its spellings are the
@@ -61,7 +62,7 @@ export function entryInsertion(entry, context = {}) {
 
   if (entry.kind === "template") {
     if (context.format === "html") {
-      return { text: "", additionalEdits: [], notes: ["Templates need LaTeX, Typst, Markdown or Quarto."], snippet: false };
+      return { text: "", additionalEdits: [], notes: [m.catalog_templates_need_format()], snippet: false };
     }
     const template = MATH_TEMPLATES.find(item => item.id === entry.template);
     const values = { style: "inline" };
