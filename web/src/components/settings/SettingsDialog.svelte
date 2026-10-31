@@ -22,7 +22,7 @@
 
   let {
     open = $bindable(false),
-    category = $bindable("editor"),
+    category = $bindable("general"),
     // The editor.
     keys = "default",
     onkeys = undefined,
