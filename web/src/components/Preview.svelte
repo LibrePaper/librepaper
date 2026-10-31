@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { mode, onMode, paperMode, onPaper } from "../lib/theme.js";
   import { createFrameMessageReceiver } from "../lib/frame-messages.js";
+  import { m } from "../lib/paraglide/messages.js";
   // The document, on its own origin, in a frame.
   //
   // Nothing here can touch it: the agent injected into it does the DOM work
@@ -122,7 +123,7 @@
 <section class="viewport" class:away bind:this={viewport} inert={away}
          style:--held-width="{heldWidth}px" style:--held-height="{heldHeight}px">
   {#if busy}
-    <div class="render-line" role="progressbar" aria-label="Rendering preview" aria-valuemin="0" aria-valuemax={progress ? progress.total : undefined} aria-valuenow={progress ? progress.done : undefined}>
+    <div class="render-line" role="progressbar" aria-label={m.preview_rendering_label()} aria-valuemin="0" aria-valuemax={progress ? progress.total : undefined} aria-valuenow={progress ? progress.done : undefined}>
       <span class="render-line-bar" class:indeterminate={!progress} style:width={progress ? `${Math.min(100, (progress.done / progress.total) * 100)}%` : null}></span>
     </div>
   {/if}
@@ -139,7 +140,7 @@
   {#key src}
     <iframe
       bind:this={frame}
-      title="Document"
+      title={m.preview_document_title()}
       {src}
       onload={() => {
         receiver?.frameLoaded();

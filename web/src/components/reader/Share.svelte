@@ -9,6 +9,7 @@
   import ShareForm from "./share/ShareForm.svelte";
   import TokenReveal from "./share/TokenReveal.svelte";
   import { getPrivate, post } from "../../lib/api.js";
+  import { m } from "../../lib/paraglide/messages.js";
 
   let { open = $bindable(false), slug, onclose, inline = false, canShare = false } = $props();
   let sharing = $state(null);
@@ -36,7 +37,7 @@
   // never written to any storage.
   let reveal = $state(null);
 
-  const TABS = [{ id: "links", label: "Links" }, { id: "tokens", label: "Agent tokens" }];
+  const TABS = [{ id: "links", label: m.share_tab_links() }, { id: "tokens", label: m.share_tab_tokens() }];
   const kindOf = (id) => (id === "links" ? "link" : "token");
   const itemsOf = (kind) => (kind === "link" ? sharing?.links : sharing?.tokens) ?? [];
   // `publishers` and `commenters_policy` describe who the deployment lets
@@ -54,7 +55,7 @@
       if (request !== generation) return;
       sharing = answer;
     } catch (failure) {
-      if (request === generation) error = failure.message || "Could not load sharing settings.";
+      if (request === generation) error = failure.message || m.share_error_load();
     } finally {
       if (request === generation) loading = false;
     }
@@ -82,7 +83,7 @@
       sharing = answer;
       return answer;
     } catch (failure) {
-      if (request === generation) error = failure.message || "Could not update access.";
+      if (request === generation) error = failure.message || m.share_error_update();
       return null;
     } finally { busy = false; }
   }
@@ -145,13 +146,13 @@
     } catch {
       if (attempt !== copyGeneration) return;
       copyFallback = value;
-      error = "Copy was blocked. Select this text and copy it manually.";
+      error = m.share_error_copy_blocked();
     }
   }
 
   const CONFIRM = {
-    link: ["Revoke link?", "This link will stop working. People who only have access through this link will lose access.", "Revoke link"],
-    token: ["Revoke token?", "This token will stop working. The agent loses access at once.", "Revoke token"],
+    link: [m.share_revoke_link_title(), m.share_revoke_link_body(), m.share_revoke_link_action()],
+    token: [m.share_revoke_token_title(), m.share_revoke_token_body(), m.share_revoke_token_action()],
   };
   const ask = $derived(confirming ? CONFIRM[confirming.kind] : null);
 </script>
@@ -161,7 +162,7 @@
     <p class="lp-text-error" role="alert">{error}</p>
   {/if}
   {#if copyFallback}
-    <textarea class="share-copy-fallback w-full" readonly rows="3" aria-label="Text to copy manually" value={copyFallback} onclick={(event) => event.currentTarget.select()}></textarea>
+    <textarea class="share-copy-fallback w-full" readonly rows="3" aria-label={m.share_copy_manual_label()} value={copyFallback} onclick={(event) => event.currentTarget.select()}></textarea>
   {/if}
 {/snippet}
 
@@ -170,7 +171,7 @@
   {#if creating !== kind}
     <div class="share-toolbar">
       <button type="button" class="share-new" data-share-new disabled={busy || creating !== null} onclick={() => startCreate(kind)}>
-        <Icon name="plus" size={14} />New
+        <Icon name="plus" size={14} />{m.share_new()}
       </button>
     </div>
   {/if}
@@ -180,14 +181,14 @@
       <ShareForm {kind} bind:draft {busy} {allowed} onsubmit={commit} oncancel={cancelForm} />
     {/if}
     {#if kind === "link"}
-      <p class="panel-meta">Every link opens the whole project. The permission decides what people can do.</p>
+      <p class="panel-meta">{m.share_links_scope_note()}</p>
     {:else}
-      <p class="panel-meta">A token with the Edit role is also what the librepaper command line and the GitHub Action use to sync this project.</p>
+      <p class="panel-meta">{m.share_tokens_scope_note()}</p>
     {/if}
     {#if active.length === 0}
-      <p class="panel-meta">{kind === "link" ? "No sharing links yet." : "No agent tokens yet."}</p>
+      <p class="panel-meta">{kind === "link" ? m.share_no_links() : m.share_no_tokens()}</p>
     {:else}
-      <ul class="share-list" aria-label={kind === "link" ? "Share links" : "Agent tokens"}>
+      <ul class="share-list" aria-label={kind === "link" ? m.share_links_list_label() : m.share_tab_tokens()}>
         {#each active as item (item.id)}
           <ShareRow {kind} {item} {busy} {copied} oncopy={copy} onrevoke={() => (confirming = { item, kind })} />
         {/each}
@@ -204,29 +205,29 @@
       {@render messages()}
     </div>
   {:else if loading}
-    <p class="panel-muted share-pad" role="status">Loading sharing settings…</p>
+    <p class="panel-muted share-pad" role="status">{m.share_loading()}</p>
   {:else if sharing && canShare}
-    <PanelTabs id="share" label="Share" tabs={TABS} value={tab} onchange={(value) => { tab = value; creating = null; }}>
+    <PanelTabs id="share" label={m.share_title()} tabs={TABS} value={tab} onchange={(value) => { tab = value; creating = null; }}>
       <Tabs.Content value="links">{#if tab === "links"}{@render list("link")}{/if}</Tabs.Content>
       <Tabs.Content value="tokens">{#if tab === "tokens"}{@render list("token")}{/if}</Tabs.Content>
     </PanelTabs>
   {:else}
     <div class="share-pad">
       {@render messages()}
-      {#if error && !sharing}<button class="btn btn-sm lp-control-tonal-brand" onclick={() => load(slug)}>Try again</button>{/if}
+      {#if error && !sharing}<button class="btn btn-sm lp-control-tonal-brand" onclick={() => load(slug)}>{m.share_try_again()}</button>{/if}
     </div>
   {/if}
 {/snippet}
 
 <div bind:this={root} class="share-root">
   {#if inline}
-    <section class="panel panel-tabbed share-sidebar" aria-label="Share">
-      <PanelHeader title="Share" />
+    <section class="panel panel-tabbed share-sidebar" aria-label={m.share_title()}>
+      <PanelHeader title={m.share_title()} />
       {@render content()}
     </section>
   {:else}
-    <Modal bind:open title="Share" onclose={onclose}
-           confirm={{ label: "Done", cancel: false, onclick: () => (open = false) }}>
+    <Modal bind:open title={m.share_title()} onclose={onclose}
+           confirm={{ label: m.share_done(), cancel: false, onclick: () => (open = false) }}>
       <div class="panel-tabbed share-modal-body">
         {@render content()}
       </div>

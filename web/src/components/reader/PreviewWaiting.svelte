@@ -1,11 +1,12 @@
 <script>
+  import { m } from "../../lib/paraglide/messages.js";
   // The one waiting display of the preview pane, for every format. The layout
   // is fixed: one spinner that is always there and one stage line. Only the
   // words change as the stages go by, and a stage that can count says how far
   // it has got.
   let { stage, progress = null } = $props();
   const counted = $derived(progress && progress.total > 1
-    ? `${stage} (${Math.min(progress.done, progress.total)} of ${progress.total})`
+    ? m.previewwaiting_counted({ stage, done: Math.min(progress.done, progress.total), total: progress.total })
     : stage);
 </script>
 

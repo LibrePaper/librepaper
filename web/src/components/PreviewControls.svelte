@@ -17,6 +17,7 @@
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import MenuIconButton from "./MenuIconButton.svelte";
   import IconButton from "./IconButton.svelte";
+  import { m } from "../lib/paraglide/messages.js";
 
   // `view` is the whole validated viewer-state. `send` puts a message on the
   // channel to the frame. `ondownload` is null when there is nothing to save
@@ -114,7 +115,7 @@
     }
   }
   const found = $derived(
-    !query ? "" : view.find && view.find.total > 0 ? `${view.find.current} of ${view.find.total}` : view.find ? "No results" : "",
+    !query ? "" : view.find && view.find.total > 0 ? m.previewcontrols_find_count({ current: view.find.current, total: view.find.total }) : view.find ? m.previewcontrols_find_none() : "",
   );
 
   function chosen(item) {
@@ -126,26 +127,26 @@
 </script>
 
 <div class="preview-band">
-  <div class="preview-controls" role="group" aria-label="Page view">
-    <IconButton icon="panel-left" label="Pages" tone="plain" size="btn-icon-sm"
+  <div class="preview-controls" role="group" aria-label={m.previewcontrols_page_view()}>
+    <IconButton icon="panel-left" label={m.previewcontrols_pages()}tone="plain" size="btn-icon-sm"
                 pressed={view.sidebar} onclick={() => send({ type: "viewer-sidebar", open: !view.sidebar })} />
-    <IconButton icon="search" label="Search" tone="plain" size="btn-icon-sm"
+    <IconButton icon="search" label={m.previewcontrols_search()}tone="plain" size="btn-icon-sm"
                 pressed={searching} onclick={() => (searching ? closeSearch() : void reveal())} />
     <span class="preview-page">
-      <input class="preview-page-input" inputmode="numeric" aria-label="Page" autocomplete="off"
+      <input class="preview-page-input" inputmode="numeric" aria-label={m.previewcontrols_page()}autocomplete="off"
              bind:value={pageText} onkeydown={jump}
              onfocus={() => (editingPage = true)}
              onblur={() => { editingPage = false; pageText = view.page ? String(view.page) : ""; }} />
       <span class="preview-page-total">/ {view.pages}</span>
     </span>
-    <IconButton icon="zoom-out" label="Zoom out" tone="plain" size="btn-icon-sm"
+    <IconButton icon="zoom-out" label={m.previewcontrols_zoom_out()}tone="plain" size="btn-icon-sm"
                 disabled={at <= MIN} onclick={() => step(1 / 1.1)} />
-    <select class="preview-zoom" aria-label="Zoom" value={view.mode}
+    <select class="preview-zoom" aria-label={m.previewcontrols_zoom()} value={view.mode}
             onchange={(event) => onmode(event.currentTarget.value)}>
-      <option value="auto">Automatic</option>
-      <option value="page-actual">Actual size</option>
-      <option value="page-fit">Fit page</option>
-      <option value="page-width">Fit width</option>
+      <option value="auto">{m.previewcontrols_zoom_automatic()}</option>
+      <option value="page-actual">{m.previewcontrols_zoom_actual()}</option>
+      <option value="page-fit">{m.previewcontrols_zoom_fit_page()}</option>
+      <option value="page-width">{m.previewcontrols_zoom_fit_width()}</option>
       <!-- Where a reader lands after pressing a zoom button: a percentage that
            is not one of the steps, shown rather than left as an empty box. -->
       {#if percent !== null && !STEPS.includes(percent) && !["auto", "page-actual", "page-fit", "page-width"].includes(view.mode)}
@@ -155,54 +156,54 @@
         <option value={String(number / 100)}>{number}%</option>
       {/each}
     </select>
-    <IconButton icon="zoom-in" label="Zoom in" tone="plain" size="btn-icon-sm"
+    <IconButton icon="zoom-in" label={m.previewcontrols_zoom_in()}tone="plain" size="btn-icon-sm"
                 disabled={at >= MAX} onclick={() => step(1.1)} />
     <div class="preview-tools">
-      <IconButton icon="text-cursor" label="Select text" size="btn-icon-sm"
+      <IconButton icon="text-cursor" label={m.previewcontrols_select_text()}size="btn-icon-sm"
                   pressed={tool !== "hand"} onclick={() => ontool("select")} />
-      <IconButton icon="hand" label="Move the page" size="btn-icon-sm"
+      <IconButton icon="hand" label={m.previewcontrols_move_page()}size="btn-icon-sm"
                   pressed={tool === "hand"} onclick={() => ontool("hand")} />
     </div>
     <span class="preview-spacer"></span>
-    {#if busy}<span class="preview-busy" role="status" aria-label="Compiling"><span class="spinner"></span></span>{/if}
+    {#if busy}<span class="preview-busy" role="status" aria-label={m.previewcontrols_compiling()}><span class="spinner"></span></span>{/if}
     <Menu onSelect={chosen} positioning={{ placement: "bottom-end" }}>
-      <MenuIconButton icon="more-horizontal" label="More" size="1rem" />
+      <MenuIconButton icon="more-horizontal" label={m.previewcontrols_more()}size="1rem" />
       <ExplorerMenu>
         <Menu.Item value="spread" class="menuitem">
           <span class="menuitem-check" aria-hidden="true">{view.spread ? "✓" : ""}</span>
-          <span class="menuitem-label">Two pages side by side</span>
+          <span class="menuitem-label">{m.previewcontrols_spread()}</span>
         </Menu.Item>
         {#if dark}
           <Menu.Item value="invert" class="menuitem">
             <span class="menuitem-check" aria-hidden="true">{view.invert ? "✓" : ""}</span>
-            <span class="menuitem-label">Invert pages</span>
+            <span class="menuitem-label">{m.previewcontrols_invert()}</span>
           </Menu.Item>
         {/if}
         <Menu.Item value="present" class="menuitem">
           <span class="menuitem-check" aria-hidden="true"></span>
-          <span class="menuitem-label">Present</span>
+          <span class="menuitem-label">{m.previewcontrols_present()}</span>
         </Menu.Item>
         {#if ondownload}
           <hr class="hr my-1" />
           <Menu.Item value="download" class="menuitem">
             <span class="menuitem-check" aria-hidden="true"></span>
-            <span class="menuitem-label">Download PDF</span>
+            <span class="menuitem-label">{m.previewcontrols_download_pdf()}</span>
           </Menu.Item>
         {/if}
       </ExplorerMenu>
     </Menu>
   </div>
   {#if searching}
-    <div class="preview-find" role="search" aria-label="Search the document">
-      <input class="preview-find-input" type="text" placeholder="Search" aria-label="Search the document"
+    <div class="preview-find" role="search" aria-label={m.previewcontrols_search_document()}>
+      <input class="preview-find-input" type="text" placeholder={m.previewcontrols_search()} aria-label={m.previewcontrols_search_document()}
              autocomplete="off" spellcheck="false" maxlength="200"
              bind:this={field} bind:value={query} oninput={typed} onkeydown={searchKey} />
       <span class="preview-find-count" role="status" aria-live="polite">{found}</span>
-      <IconButton icon="chevron-up" label="Previous match" tone="plain" size="btn-icon-sm"
+      <IconButton icon="chevron-up" label={m.previewcontrols_previous_match()}tone="plain" size="btn-icon-sm"
                   disabled={!query} onclick={() => stepFind(-1)} />
-      <IconButton icon="chevron-down" label="Next match" tone="plain" size="btn-icon-sm"
+      <IconButton icon="chevron-down" label={m.previewcontrols_next_match()}tone="plain" size="btn-icon-sm"
                   disabled={!query} onclick={() => stepFind(1)} />
-      <IconButton icon="x" label="Close search" tone="plain" size="btn-icon-sm" onclick={closeSearch} />
+      <IconButton icon="x" label={m.previewcontrols_close_search()}tone="plain" size="btn-icon-sm" onclick={closeSearch} />
     </div>
   {/if}
 </div>

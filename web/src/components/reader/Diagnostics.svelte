@@ -1,6 +1,7 @@
 <script>
   import PanelHeader from "../PanelHeader.svelte";
   import IconButton from "../IconButton.svelte";
+  import { m } from "../../lib/paraglide/messages.js";
   import { provenanceSentence } from "../../lib/latex/status-text.js";
 
   let {
@@ -68,11 +69,11 @@
   }
 </script>
 
-<section class="panel" aria-label="Warnings and errors">
-  <PanelHeader title="Diagnostics" />
+<section class="panel" aria-label={m.diagnostics_section_label()}>
+  <PanelHeader title={m.diagnostics_title()} />
   {#if provenance}
     <details class="mb-4">
-      <summary class="panel-section-title">Compiled with</summary>
+      <summary class="panel-section-title">{m.diagnostics_compiled_with()}</summary>
       <p class="lp-text-secondary text-sm mt-2">{provenanceSentence(provenance)}</p>
     </details>
   {/if}
@@ -80,21 +81,21 @@
     <!-- Open on a failed compile: a run that produced no document is exactly
          when the transcript is what the person came here for. -->
     <details class="mb-4" open={logOpen ?? errors.length > 0}>
-      <summary class="panel-section-title">Compile log</summary>
+      <summary class="panel-section-title">{m.diagnostics_compile_log()}</summary>
       <div class="mt-2 flex gap-2">
         <button type="button" class="btn btn-sm lp-control-tonal-brand"
-                onclick={() => download(logName, transcript)}>Download {logName}</button>
+                onclick={() => download(logName, transcript)}>{m.diagnostics_download_log({ name: logName })}</button>
         <button type="button" class="btn btn-sm lp-control-tonal"
-                onclick={() => navigator.clipboard?.writeText(transcript)}>Copy</button>
+                onclick={() => navigator.clipboard?.writeText(transcript)}>{m.diagnostics_copy()}</button>
       </div>
       <pre class="lp-text-secondary text-xs whitespace-pre-wrap break-words mt-2 max-h-96 overflow-auto"
-           aria-label="Compile log">{transcript}</pre>
+           aria-label={m.diagnostics_compile_log()}>{transcript}</pre>
     </details>
   {/if}
   {#if errors.length === 0 && warnings.length === 0}
-    <p class="panel-muted">No warnings or errors.</p>
+    <p class="panel-muted">{m.diagnostics_no_problems()}</p>
   {/if}
-  {#each [{ title: "Errors", items: errors, tone: "error" }, { title: "Warnings", items: warnings, tone: "warning" }, { title: "Notes", items: notes, tone: "neutral" }] as group}
+  {#each [{ title: m.diagnostics_group_errors(), items: errors, tone: "error" }, { title: m.diagnostics_group_warnings(), items: warnings, tone: "warning" }, { title: m.diagnostics_group_notes(), items: notes, tone: "neutral" }] as group}
     {#if group.items.length}
       <h3 class="panel-section-title mb-2">{group.title} ({group.items.length})</h3>
       <ul class="space-y-3 mb-4">
@@ -102,10 +103,10 @@
           <li class="rounded-container border border-[var(--color-divider)] p-3">
             <div class="flex items-center justify-between gap-2 mb-2 diagnostic-head">
               <span class="badge lp-tone-{group.tone}">
-                {group.tone === "error" ? "Error" : group.tone === "warning" ? "Warning" : "Note"}
+                {group.tone === "error" ? m.diagnostics_badge_error() : group.tone === "warning" ? m.diagnostics_badge_warning() : m.diagnostics_badge_note()}
               </span>
               {#if onagent}
-                <IconButton icon="bot" label="Fix diagnostic with agent" onclick={() => onagent(item)} />
+                <IconButton icon="bot" label={m.diagnostics_fix_with_agent()}onclick={() => onagent(item)} />
               {/if}
             </div>
             <p class="whitespace-pre-wrap break-words">{item.message}</p>
@@ -113,7 +114,7 @@
               <div class="panel-meta mt-2 break-all">
                 {#if canOpen(item)}
                   <button type="button" class="anchor text-left" onclick={() => onopen?.(item)}
-                          title="Go to this location in the editor">
+                          title={m.diagnostics_go_to_location()}>
                     {item.file || entry}:{item.line}{item.column > 0 ? `:${item.column}` : ""}
                   </button>
                 {:else}
@@ -133,7 +134,7 @@
   {/each}
   {#if earlier.length}
     <details>
-      <summary class="panel-section-title">Earlier attempts ({earlier.length})</summary>
+      <summary class="panel-section-title">{m.diagnostics_earlier_attempts({ count: earlier.length })}</summary>
       <ul class="space-y-3 mt-2">
         {#each earlier as attempt, index (index)}
           <li class="rounded-container border border-[var(--color-divider)] p-3">
@@ -146,7 +147,7 @@
                    in full on the result, so it can be taken away whole. -->
               <button type="button" class="btn btn-sm lp-control-tonal mt-2"
                       onclick={() => download(`${attempt.stage || "attempt"}-${index + 1}-${logName}`, attempt.log)}>
-                Download full log
+                {m.diagnostics_download_full_log()}
               </button>
             {/if}
           </li>
