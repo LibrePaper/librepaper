@@ -60,7 +60,7 @@ const capability = (document_) => JSON.stringify([
  * onDocumentChanged?: (reason: string) => void,
  * onFiles?: (events: DirectoryEvents, session: ReaderSession) => void,
  * onAwareness?: (session: ReaderSession) => void,
- * sourceSync?: boolean, retryMs?: number, setTimer?: typeof setTimeout, clearTimer?: typeof clearTimeout,
+ * sourceSync?: boolean, standalone?: boolean, retryMs?: number, setTimer?: typeof setTimeout, clearTimer?: typeof clearTimeout,
  * }} options
  */
 export function createReaderCollaboration({
@@ -80,6 +80,8 @@ export function createReaderCollaboration({
   onFiles = () => {},
   onAwareness = () => {},
   sourceSync = true,
+  // A standalone session is the demo sandbox: no room, no storage.
+  standalone = false,
   retryMs = 1000,
   setTimer = globalThis.setTimeout,
   clearTimer = globalThis.clearTimeout,
@@ -147,6 +149,8 @@ export function createReaderCollaboration({
       createdAt: nextDocument.created_at,
       key,
       mayEdit: canEdit,
+      // Only a standalone session opts out of IndexedDB; `undefined` keeps the default.
+      ...(standalone ? { standalone: true, persistence: null } : {}),
     });
     const active = session;
     filesCleanup = active.onFiles((events) => { if (live()) onFiles(events, active); });
@@ -233,7 +237,7 @@ export function createReaderCollaboration({
   /** @param {CollaborationDocument} nextDocument */
   function start(nextDocument) {
     openLocal(nextDocument);
-    connect();
+    if (!standalone) connect();
     return session;
   }
 
