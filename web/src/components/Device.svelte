@@ -3,6 +3,7 @@
   import Page from "./layout/Page.svelte";
   import Stack from "./layout/Stack.svelte";
   import { me as whoami, post } from "../lib/api.js";
+  import { m } from "../lib/paraglide/messages.js";
 
   // Where a terminal's `librepaper login` sends the person. The server has
   // already sent anyone without a session through /auth/login, so by the time
@@ -32,7 +33,7 @@
       await post("/api/auth/device/approve", { user_code: code });
       done = true;
     } catch (problem) {
-      error = problem.message || "that did not work";
+      error = problem.message || m.device_failed();
     } finally {
       sending = false;
     }
@@ -43,15 +44,14 @@
 <Page>
   <Stack gap={4}>
     {#if done}
-      <h1 class="h2">Approved</h1>
+      <h1 class="h2">{m.device_approved_title()}</h1>
       <p class="lp-text-secondary">
-        The terminal is signed in as {me.name}. You can close this page.
+        {m.device_approved_body({ name: me.name ?? "" })}
       </p>
     {:else}
-      <h1 class="h2">Sign in the terminal as {me.name}?</h1>
+      <h1 class="h2">{m.device_sign_in_title({ name: me.name ?? "" })}</h1>
       <p class="lp-text-secondary">
-        A terminal asked to sign in with this code. Approve it only if the code below is the one it
-        is showing you.
+        {m.device_intro()}
       </p>
       <p class="text-2xl font-mono tracking-widest">{code}</p>
       {#if error}
@@ -62,7 +62,7 @@
         disabled={sending || !code}
         onclick={approve}
       >
-        Approve
+        {m.device_approve()}
       </button>
     {/if}
   </Stack>

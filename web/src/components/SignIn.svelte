@@ -5,6 +5,7 @@
   import { me as whoami } from "../lib/api.js";
   import { INSTALL_URL, desktop, shellAction } from "../lib/desktop/client.js";
   import { BACKUPS_URL } from "../lib/site-links.js";
+  import { m } from "../lib/paraglide/messages.js";
 
   // The page the server shows when there is more than one way in. It is served
   // for /auth/login, so the choice is made here and every other page can link
@@ -32,7 +33,7 @@
     serverError = "";
     choosing = true;
     try { await shellAction("server", { url: serverUrl.trim() }); }
-    catch (error) { serverError = error?.message || "The server was not changed."; }
+    catch (error) { serverError = error?.message || m.signin_server_unchanged(); }
     finally { choosing = false; }
   }
 </script>
@@ -42,14 +43,14 @@
   <section class="signin-form" aria-labelledby="signin-title">
     <div class="signin-head">
       <Logo size="signin" />
-      <h1 id="signin-title">Sign in or create an account</h1>
+      <h1 id="signin-title">{m.signin_title()}</h1>
     </div>
-    {#if signedOut}<p class="signin-signed-out" role="status">You are signed out.</p>{/if}
+    {#if signedOut}<p class="signin-signed-out" role="status">{m.signin_signed_out()}</p>{/if}
     <!-- The service is young and may change under people, so a local copy kept
          by the desktop app is the safety net. -->
     <div class="signin-warning" role="note">
-      <p><strong>LibrePaper is experimental.</strong> The website and service may change at any time.</p>
-      <p>We recommend you use the <a href={INSTALL_URL} target="_blank" rel="noreferrer">desktop app</a> to make <a href={BACKUPS_URL} target="_blank" rel="noreferrer">automatic local backups</a> of your projects as you edit them.</p>
+      <p><strong>{m.signin_experimental()}</strong> {m.signin_may_change()}</p>
+      <p>{m.signin_recommend_before_app()} <a href={INSTALL_URL} target="_blank" rel="noreferrer">{m.signin_app_link()}</a> {m.signin_recommend_before_backups()} <a href={BACKUPS_URL} target="_blank" rel="noreferrer">{m.signin_backups_link()}</a> {m.signin_recommend_after()}</p>
     </div>
     <div class="signin-providers">
       {#each me.providers ?? [] as provider (provider.id)}
@@ -66,7 +67,7 @@
                 <Icon name="key" size={20} />
               {/if}
             </span>
-            <span>Continue with {provider.label}</span>
+            <span>{m.signin_continue({ label: provider.label })}</span>
           </span>
         </a>
       {/each}
@@ -77,17 +78,17 @@
     <footer class="signin-server">
       {#if changing}
         <form class="signin-server-form" onsubmit={chooseServer}>
-          <label for="signin-server-url">You are signing in to {location.host}. Enter another server's address.</label>
+          <label for="signin-server-url">{m.signin_server_prompt({ host: location.host })}</label>
           <div class="signin-server-row">
             <input id="signin-server-url" class="input input-sm" type="url" required placeholder="https://paper.example.org" bind:value={serverUrl} disabled={choosing} />
-            <button class="btn btn-sm lp-control-brand" type="submit" disabled={choosing}>{choosing ? "Waiting..." : "Use this server"}</button>
+            <button class="btn btn-sm lp-control-brand" type="submit" disabled={choosing}>{choosing ? m.signin_waiting() : m.signin_use_server()}</button>
           </div>
-          <button class="signin-server-link" type="button" onclick={() => { changing = false; serverError = ""; }}>Cancel</button>
+          <button class="signin-server-link" type="button" onclick={() => { changing = false; serverError = ""; }}>{m.signin_cancel()}</button>
           {#if serverError}<p class="signin-server-error" role="alert">{serverError}</p>{/if}
         </form>
       {:else}
         <span class="signin-server-host">{location.host}</span>
-        <button class="signin-server-link signin-server-change" type="button" onclick={() => (changing = true)}>Change server</button>
+        <button class="signin-server-link signin-server-change" type="button" onclick={() => (changing = true)}>{m.signin_change_server()}</button>
       {/if}
     </footer>
   {/if}
