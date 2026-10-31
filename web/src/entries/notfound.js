@@ -2,6 +2,9 @@ import { mount } from "svelte";
 import "../styles/app.css";
 import { start as startTheme } from "../lib/theme.js";
 import NotFound from "../components/NotFound.svelte";
+import { markDocumentLanguage } from "../lib/locale.js";
+
+markDocumentLanguage();
 
 startTheme();
 

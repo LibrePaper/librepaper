@@ -5,6 +5,9 @@ import { watchNetwork } from "../lib/support/network.js";
 import "../styles/app.css";
 import { start as startTheme } from "../lib/theme.js";
 import Device from "../components/Device.svelte";
+import { markDocumentLanguage } from "../lib/locale.js";
+
+markDocumentLanguage();
 
 startTheme();
 

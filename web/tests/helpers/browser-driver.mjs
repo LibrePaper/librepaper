@@ -128,7 +128,7 @@ async function launch(name, directory, port) {
   mkdirSync(directory, { recursive: true });
   const browserArgs = name === "firefox"
     ? ["--headless", "--no-remote", "--profile", directory, "--remote-debugging-port", String(port)]
-    : ["--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-features=BackForwardCache", ...(process.env.LIBREPAPER_BROWSER_IGNORE_CERT_ERRORS === "1" ? ["--ignore-certificate-errors"] : []), `--user-data-dir=${directory}`, `--remote-debugging-port=${port}`, "about:blank"];
+    : ["--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-features=BackForwardCache", "--lang=en-US", ...(process.env.LIBREPAPER_BROWSER_IGNORE_CERT_ERRORS === "1" ? ["--ignore-certificate-errors"] : []), `--user-data-dir=${directory}`, `--remote-debugging-port=${port}`, "about:blank"];
   const child = spawn(executable, browserArgs,
   { stdio: "ignore", detached: true });
   let spawnError;

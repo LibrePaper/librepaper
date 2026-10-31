@@ -7,6 +7,7 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
+import { paraglideVitePlugin } from "@inlang/paraglide-js";
 import { resolve } from "node:path";
 import { readFileSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -60,7 +61,9 @@ export default defineConfig({
   // out loud, because the plugin otherwise looks for one in the Vite root --
   // `pages/`, not `web/` -- and announces on every build that it did not find
   // it, which reads like something is missing.
-  plugins: [clearOwnOutput, vendorWatchAssets, tailwindcss(), svelte({ configFile: false })],
+  // The messages compile into src/lib/paraglide (generated, not committed); the
+  // plugin recompiles them when a message file changes under --watch.
+  plugins: [clearOwnOutput, vendorWatchAssets, paraglideVitePlugin({ project: "./project.inlang", outdir: "./src/lib/paraglide" }), tailwindcss(), svelte({ configFile: false })],
   // The pages are served from the site root by the Go-free Rust server, which
   // knows nothing about this build beyond where the files are.
   base: "/",

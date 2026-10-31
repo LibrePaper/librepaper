@@ -5,6 +5,9 @@
   import { choice, onChoice, setChoice, PALETTES, PALETTE_NAMES, palette, onPalette, setPalette, PAPERS, paper, onPaper, setPaper } from "../../lib/theme.js";
   import DiagnosticsPanel from "./DiagnosticsPanel.svelte";
   import { desktop, shellAction } from "../../lib/desktop/client.js";
+  import { LANGUAGES, chosenLanguage, chooseLanguage } from "../../lib/locale.js";
+
+  const language = chosenLanguage();
 
   // Follows the choice, which another tab of this browser may make too.
   let current = $state(choice());
@@ -31,6 +34,16 @@
     }
   }
 </script>
+
+<SettingRow id="general-language" title="Language">
+  <select class="select setting-select" aria-label="Language" value={language}
+          onchange={(event) => chooseLanguage(event.currentTarget.value)}>
+    <option value="system">Browser language</option>
+    {#each Object.entries(LANGUAGES) as [code, name] (code)}
+      <option value={code} lang={code}>{name}</option>
+    {/each}
+  </select>
+</SettingRow>
 
 <SettingRow id="appearance-theme" title="Theme">
   <select class="select setting-select" aria-label="Theme" value={current}

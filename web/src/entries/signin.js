@@ -5,6 +5,9 @@ import { watchNetwork } from "../lib/support/network.js";
 import "../styles/app.css";
 import { start as startTheme } from "../lib/theme.js";
 import SignIn from "../components/SignIn.svelte";
+import { markDocumentLanguage } from "../lib/locale.js";
+
+markDocumentLanguage();
 
 startTheme();
 

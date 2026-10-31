@@ -21,6 +21,7 @@ export const CATEGORIES = [
     id: "general", says: "General", offered: always,
     note: "This app",
     entries: [
+      { id: "general-language", says: "Language", terms: "language langue interface translation french english français" },
       { id: "appearance-theme", says: "Theme", terms: "dark light theme mode night colour color scheme system appearance" },
       { id: "appearance-colours", says: "Colours", terms: "colours colors palette theme scheme flexoki solarized gruvbox catppuccin nord syntax highlighting editor" },
       { id: "general-close", says: "When the window closes", terms: "close window quit tray minimize exit background keep running", offered: () => Boolean(desktop()) },

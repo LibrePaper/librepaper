@@ -20,6 +20,9 @@ import { createSidebar, SIDEBAR_WIDTH } from "../lib/pdf/sidebar.js";
 import { createFind } from "../lib/pdf/find.js";
 import { installInput } from "../lib/pdf/input.js";
 import { GUTTER } from "../lib/pdf/fit.js";
+import { markDocumentLanguage } from "../lib/locale.js";
+
+markDocumentLanguage();
 
 let viewer = null; // the render module, once something has needed it
 let stage = null;

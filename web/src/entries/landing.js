@@ -10,6 +10,9 @@ import { registerOfflineShell } from "../lib/offline-shell.js";
 import { intake } from "../lib/desktop/client.js";
 import { listenForSignOut } from "../lib/local-data.js";
 import { signedOutHref } from "../lib/api.js";
+import { markDocumentLanguage } from "../lib/locale.js";
+
+markDocumentLanguage();
 
 startTheme();
 // The settings can be open before any editor is, and still follow another tab.

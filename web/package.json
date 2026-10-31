@@ -3,11 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node tests/unit/vocabulary.js && vite build && vite build --config vite.frame.config.js && node tools/vendor-katex.mjs && node tools/compress-shell.mjs",
+    "i18n": "paraglide-js compile --project ./project.inlang --silent",
+    "build": "paraglide-js compile --project ./project.inlang --silent && node tests/unit/vocabulary.js && vite build && vite build --config vite.frame.config.js && node tools/vendor-katex.mjs && node tools/compress-shell.mjs",
     "build:site": "node tools/build-site.mjs && vite build --config vite.site.config.js",
     "serve:site": "vite preview --config vite.site.config.js",
-    "dev": "vite build --watch",
-    "check:types": "svelte-check --tsconfig ./jsconfig.json --output human",
+    "dev": "paraglide-js compile --project ./project.inlang --silent && vite build --watch",
+    "check:types": "paraglide-js compile --project ./project.inlang --silent && svelte-check --tsconfig ./jsconfig.json --output human",
     "check:review": "node tests/unit/change-marks.mjs && node tests/browser/changes-browser.mjs",
     "check:frame-overlays": "node tests/unit/frame-overlays.mjs",
     "check:render-diagnostics": "node tests/unit/render-diagnostics.mjs",
@@ -21,7 +22,7 @@
     "check:upload": "node tests/unit/zip.mjs && node tests/unit/project-upload.mjs && node tests/unit/landing.mjs && node tests/browser/upload-browser.mjs",
     "check:shortcuts": "node tests/unit/commands.mjs && node tests/browser/shortcuts-browser.mjs",
     "check:synctex": "node tests/unit/synctex.mjs",
-    "check": "node --experimental-transform-types --import ./tests/helpers/ts-resolve.mjs --test 'tests/unit/*.mjs' 'tests/unit/*.js' 'tests/integration/*.mjs' 'tests/integration/*.js'",
+    "check": "paraglide-js compile --project ./project.inlang --silent && node --experimental-transform-types --import ./tests/helpers/ts-resolve.mjs --test 'tests/unit/*.mjs' 'tests/unit/*.js' 'tests/integration/*.mjs' 'tests/integration/*.js'",
     "check:local-service": "node tests/integration/local-service.mjs",
     "check:browser": "node --test --test-concurrency=4 'tests/browser/*.mjs'",
     "check:math-browser": "node tests/browser/math-browser.mjs",
@@ -42,6 +43,8 @@
     "check:insert-renderers": "node tests/integration/insert-latex-render.mjs && node tests/integration/insert-typst-render.mjs && node tests/integration/insert-quarto-render.mjs"
   },
   "devDependencies": {
+    "@inlang/paraglide-js": "2.29.3",
+    "@inlang/plugin-message-format": "4.5.0",
     "@sveltejs/vite-plugin-svelte": "^7.3.0",
     "axe-core": "^4.13.0",
     "svelte-check": "^4.7.6",

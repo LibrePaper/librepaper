@@ -12,6 +12,9 @@ import { intake } from "../lib/desktop/client.js";
 import { blockPageZoom } from "../lib/pinch.js";
 import { listenForSignOut } from "../lib/local-data.js";
 import { signedOutHref } from "../lib/api.js";
+import { markDocumentLanguage } from "../lib/locale.js";
+
+markDocumentLanguage();
 
 // The editor font URLs arrive the same way and are read first, because the
 // font is applied as soon as the editor type starts.
