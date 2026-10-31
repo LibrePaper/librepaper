@@ -5,6 +5,7 @@ import { Tokenizer } from '../core/tokenizer';
 import { Range, Token } from '../core/tokens';
 import { createWidget } from './widget-registry';
 import { PillWidget } from './widgets';
+import { m } from "../../paraglide/messages.js";
 
 export interface BuildOptions {
   language: Language;
@@ -382,7 +383,7 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
     const summary = options.language.hiddenSummary?.(state.doc.sliceString(run.from, run.to)) ?? null;
     const decoration = summary === null
       ? Decoration.replace({ block: true })
-      : Decoration.replace({ widget: new PillWidget(summary, 'Show the source', 'cm-lp-hidden'), block: true });
+      : Decoration.replace({ widget: new PillWidget(summary, m.decorations_show_source(), 'cm-lp-hidden'), block: true });
     decorations.push(decoration.range(run.from, run.to));
   }
 

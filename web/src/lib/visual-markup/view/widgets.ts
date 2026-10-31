@@ -6,6 +6,7 @@ import { ImageResolver, imageResolver, isExternal, resolveImagePath } from './im
 import { typst2tex } from 'tex2typst';
 import { loadKatex } from '../../katex.js';
 import { registerWidget, replaceRange, WidgetContext } from './widget-registry';
+import { m } from "../../paraglide/messages.js";
 
 export class MathWidget extends WidgetType {
   private text: string;
@@ -264,7 +265,7 @@ function figureCaption(
 
   if (!editable) {
     caption.classList.add('cm-lv-caption-source');
-    caption.title = 'Click to edit caption source';
+    caption.title = m.widgets_click_edit_caption_source();
     caption.addEventListener('mousedown', event => {
       event.preventDefault();
       event.stopPropagation();
@@ -277,7 +278,7 @@ function figureCaption(
   caption.classList.add('cm-lv-caption-editor');
   caption.setAttribute('contenteditable', 'plaintext-only');
   caption.setAttribute('role', 'textbox');
-  caption.setAttribute('aria-label', className.includes('subcaption') ? 'Edit subcaption' : 'Edit caption');
+  caption.setAttribute('aria-label', className.includes('subcaption') ? m.widgets_edit_subcaption() : m.widgets_edit_caption());
   caption.spellcheck = true;
   const original = text;
   const originalSource = source.slice(range.from, range.to);
@@ -378,7 +379,7 @@ function tableCaption({ token, source, language }: WidgetContext): string {
 export class PillWidget extends WidgetType {
   constructor(
     readonly text: string,
-    readonly title = 'Show the source',
+    readonly title = m.widgets_show_source(),
     private kind = ''
   ) {
     super();
@@ -408,7 +409,7 @@ export class PillWidget extends WidgetType {
 // A table is drawn as a pill: the caption when there is one, never the cells.
 // A caret in the table or a click on the pill shows the source.
 function tableBox(caption: string): PillWidget {
-  return new PillWidget(caption ? `Table: ${caption}` : 'Table', 'Show the table source', 'cm-lp-table-box');
+  return new PillWidget(caption ? `Table: ${caption}` : 'Table', m.widgets_show_table_source(), 'cm-lp-table-box');
 }
 
 function keepsFocus(event: FocusEvent, container: HTMLElement): boolean {
