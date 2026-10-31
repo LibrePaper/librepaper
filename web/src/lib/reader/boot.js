@@ -9,7 +9,7 @@ import { createGeneration } from "./generation.js";
 /** @typedef {Error & { status?: number }} ReaderBootError */
 
 /** @param {{
- * slug: string, key?: string, fetcher?: typeof fetch,
+ * slug: string, key?: string, documentUrl?: string, fetcher?: typeof fetch,
  * whoami?: () => Promise<ReaderIdentity>,
  * findLocal?: (query: { server?: string, slug: string }) => Promise<{ document: ReaderDocument } | null>,
  * onIdentity?: (identity: ReaderIdentity) => void,
@@ -20,6 +20,7 @@ import { createGeneration } from "./generation.js";
 export function createReaderBoot({
   slug,
   key = "",
+  documentUrl = `/api/documents/${slug}`,
   fetcher = globalThis.fetch,
   whoami = defaultWhoami,
   findLocal = localProject,
@@ -35,7 +36,7 @@ export function createReaderBoot({
     const controller = new AbortController();
     controllers.add(controller);
     try {
-      const response = await fetcher(`/api/documents/${slug}`, {
+      const response = await fetcher(documentUrl, {
         headers: keyHeaders(key),
         signal: controller.signal,
       });

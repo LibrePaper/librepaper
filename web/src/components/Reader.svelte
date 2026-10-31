@@ -125,14 +125,21 @@
   import History from "./reader/History.svelte";
   import PendingAnnotations from "./reader/PendingAnnotations.svelte";
 
-  const SLUG = location.pathname.split("/")[2];
+  // The demo sandbox at /try runs wholly in this browser. Its slug and
+  // document URL are the ones in lib/try-project.js, which is imported only
+  // when the demo starts so that no other reader loads the template sources.
+  const DEMO = location.pathname === "/try";
+  const SLUG = DEMO ? "try-librepaper" : location.pathname.split("/")[2];
+  // Panels that need the server. The demo draws them greyed out.
+  const DEMO_OFF = ["collaboration", "agent", "history", "git", "share"];
+  const DEMO_HINT = "(not available in the demo)";
 
   // The key a reader arrived with, taken out of the address before anything
   // asks the server a question. From here it is kept under the slug and
   // presented on every request for this document.
   // The sign-in return path carries only the path and query: the key stays in
   // this browser's storage and never travels in a URL the server sees.
-  const KEY = takeLinkKey(SLUG);
+  const KEY = DEMO ? "" : takeLinkKey(SLUG);
 
   let { initialSettings = "" } = $props();
 
@@ -2375,6 +2382,7 @@
     if (view === "sidebar" && !panel) showPanel(home);
   }
   function selectPanel(name) {
+    if (DEMO && DEMO_OFF.includes(name)) return;
     const next = panel === name && (!compact || activeMobileView === "sidebar") ? "" : name;
     showPanel(next);
     if (width <= 760) showMobileView(next ? "sidebar" : "document");
@@ -2386,10 +2394,13 @@
   }
   // The tabs this browser is offered. Which reader may see which panel is
   // written with the panels, in lib/panels.js; this only says who is asking.
-  const tabs = $derived(tabsFor({ role: doc.role, mayEdit, editing, canSeeSharing, canPublish, desktop: hasDesktop }));
+  const tabs = $derived(
+    tabsFor({ role: doc.role, mayEdit, editing, canSeeSharing: DEMO || canSeeSharing, canPublish, desktop: hasDesktop })
+      .map((tab) => (DEMO && DEMO_OFF.includes(tab.id) ? { ...tab, disabled: true } : tab)),
+  );
   // The robot buttons hand work to the agent. The agent runs only in the
   // desktop app, so in a browser they say so rather than disappear.
-  const agentOffered = $derived(tabs.some((tab) => tab.id === "agent"));
+  const agentOffered = $derived(!DEMO && tabs.some((tab) => tab.id === "agent"));
   // Where the column goes back to when what it showed is taken away: the
   // files, for every role that is offered them, which is every role that has
   // opened a project. Before the document has answered nobody is offered
@@ -2402,6 +2413,8 @@
   // Whether the document has said who this browser is. Until it has, the
   // column is drawn empty rather than as one audience's and then the other's.
   let settled = $state(false);
+  // The height of the demo banner, taken off the workspace so the page does not scroll.
+  let demoBannerHeight = $state(0);
 
   // Kept current for the background work that consults it.
   $effect(() => {
@@ -2435,6 +2448,7 @@
   // panel ever held -- the document pane shows the current document
   // throughout.
   function showPanel(name) {
+    if (DEMO && DEMO_OFF.includes(name)) return Promise.resolve();
     // Leaving the panel a comparison belongs to ends the comparison.
     if (comparison.kind && comparison.kind !== name) endComparison();
     panel = name;
@@ -2834,6 +2848,7 @@
   // Open a panel from the menu: unlike the activity bar, choosing an item
   // that is already open leaves it open rather than closing the column.
   function openPanel(name) {
+    if (DEMO && DEMO_OFF.includes(name)) return Promise.resolve();
     if (!visitedPanels.includes(name)) visitedPanels = [...visitedPanels, name];
     const opening = showPanel(name);
     if (width <= 760) showMobileView("sidebar");
@@ -3231,7 +3246,10 @@
   const addFile = (path) => workspace.addText(path);
   const relocateFiles = (entries, destination, rename) => workspace.relocate(entries, destination, rename);
   const deleteFiles = (entries) => workspace.remove(entries);
-  const addFigure = (file, path) => workspace.addFigure(file, path);
+  const addFigure = (file, path) => {
+    if (DEMO) return Promise.reject(new Error("Images and other uploads are not available in the demo."));
+    return workspace.addFigure(file, path);
+  };
 
   function insertContext() {
     if (!mayEdit) return null;
@@ -3373,6 +3391,7 @@
       getIdentity: () => identity,
       getCanEdit: () => mayEdit,
       sourceSync,
+      standalone: DEMO,
       onMessage: receive,
       onConnected: (up) => {
         connected = up;
@@ -3391,6 +3410,11 @@
       },
     });
     session = collaboration.start(document_);
+    if (DEMO) {
+      const { seedTryProject } = await import("../lib/try-project.js");
+      if (readerDisposed) return;
+      await seedTryProject(session);
+    }
   }
 
   async function refreshCurrentProject() {
@@ -3560,13 +3584,14 @@
   }
 
   $effect(() => {
-    markViewed(SLUG);
+    if (!DEMO) markViewed(SLUG);
     pendingChat = createPendingChat({
       send: (message) => collaboration?.sendLive(message) || { ok: false },
     });
     const boot = createReaderBoot({
       slug: SLUG,
       key: KEY,
+      documentUrl: DEMO ? "/api/try" : undefined,
       onIdentity: (who) => {
         me = who;
         if (who.name) session?.rename(who.name);
@@ -3638,7 +3663,7 @@
 
   // Account scope and the desktop app are the only triggers for reading
   // backup status. A signed-out page or a browser never makes a request.
-  $effect(() => backupStatusStore.setScope(me?.id, hasDesktop));
+  $effect(() => backupStatusStore.setScope(DEMO ? undefined : me?.id, hasDesktop));
   $effect(() => () => backupStatusStore.reset());
 
   // Every project an editor opens is kept in this browser, so it can be opened
@@ -3651,7 +3676,7 @@
   let localCopyRunning = false;
   let localCopyRemembered = false;
   $effect(() => {
-    const ready = mayEdit && !openedLocally && persistence.local && Editor;
+    const ready = !DEMO && mayEdit && !openedLocally && persistence.local && Editor;
     if (!ready || localCopyRunning || localCopyRemembered) return;
     localCopyRunning = true;
     const server = location.origin;
@@ -3718,7 +3743,7 @@
 
   const commandContext = $derived({
     mayEdit, editing, compact,
-    panels: tabs.map((tab) => tab.id),
+    panels: tabs.filter((tab) => !tab.disabled).map((tab) => tab.id),
     preview: shown.document,
     compilable: mayEdit && sourceFormat === "latex" && compilesHere,
     canLockPreview,
@@ -3919,7 +3944,7 @@
       {@render exportItem("download-html", "HTML", "html")}
       {@render exportItem("download-pdf", "PDF", "pdf")}
       {@render exportItem("download-docx", "DOCX", "docx")}
-      {#if canExportComments}<Menu.Item value="download-comments" class="menuitem"><span class="menuitem-label">Comments</span></Menu.Item>{/if}
+      {#if canExportComments && !DEMO}<Menu.Item value="download-comments" class="menuitem"><span class="menuitem-label">Comments</span></Menu.Item>{/if}
       {#if mayEdit}
         <Menu.Item value="download-source" class="menuitem" disabled={!toolbarPath}>
           <span class="menuitem-label">Source</span>
@@ -3934,18 +3959,18 @@
   {#if mayEdit}
     <Menu.Item value="new-file" class="menuitem">New file…</Menu.Item>
     <Menu.Item value="new-folder" class="menuitem">New folder…</Menu.Item>
-    <Menu.Item value="upload" class="menuitem">Upload files…</Menu.Item>
+    <Menu.Item value="upload" class="menuitem" disabled={DEMO}>Upload files…{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>
     <hr class="hr my-1" />
   {/if}
   {@render downloadMenu()}
-  {#if me?.id}<Menu.Item value="save-template" class="menuitem">Save as template…</Menu.Item>{/if}
+  {#if me?.id || DEMO}<Menu.Item value="save-template" class="menuitem" disabled={DEMO}>Save as template…{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
   <hr class="hr my-1" />
-  {#if tabs.some((tab) => tab.id === "git")}<Menu.Item value="git" class="menuitem">Git…</Menu.Item>{/if}
-  {#if canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem">Share…</Menu.Item>{/if}
+  {#if tabs.some((tab) => tab.id === "git")}<Menu.Item value="git" class="menuitem" disabled={DEMO}>Git…{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
+  {#if DEMO || canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem" disabled={DEMO}>Share…{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
   <!-- Only where the panel behind it is one this reader is offered: a menu
        that opens a column the rail does not have is the second list of who
        may see what that lib/panels.js exists to prevent. -->
-  {#if tabs.some((tab) => tab.id === "history")}<Menu.Item value="history" class="menuitem">History</Menu.Item>{/if}
+  {#if tabs.some((tab) => tab.id === "history")}<Menu.Item value="history" class="menuitem" disabled={DEMO}>History{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
   <hr class="hr my-1" />
   {#if mayEdit && sourceFormat === "latex" && compilesHere}
     <Menu.Item value="compile" class="menuitem"><span class="menuitem-label">Compile now</span>{#if MENU_KEYS.compile}<span class="menuitem-keys">{MENU_KEYS.compile}</span>{/if}</Menu.Item>
@@ -4045,6 +4070,16 @@
   {/if}
 {/snippet}
 
+{#if DEMO}
+  <div class="demo-banner" role="status" bind:clientHeight={demoBannerHeight}>
+    <span>Demo sandbox. Nothing is saved, and some features are disabled. Sign in to keep your work.</span>
+    <span class="demo-banner-actions">
+      <a class="btn btn-sm lp-control-brand" href="/signin">Sign in</a>
+      <button type="button" class="btn btn-sm lp-control-neutral" onclick={() => location.reload()}>Start over</button>
+    </span>
+  </div>
+{/if}
+
 <Nav {me} phoneMenu hidden={barHidden}>
   {#snippet tools()}
     {#if compact}
@@ -4056,7 +4091,7 @@
                         menus={compactMenus} onmenu={(id, anchor) => menubar.show(id, anchor)} />
       {@render faceSwitch()}
       {@render visualModeControl()}
-      {#if !connected}<span class="presence-offline" title={connectionNote} aria-label={connectionNote}><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
+      {#if !connected && !DEMO}<span class="presence-offline" title={connectionNote} aria-label={connectionNote}><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
     {:else}
       <!-- Between 761px and the split's narrow point, the face choice stays in
            the top bar. Compact widths render it beside the hamburger above. -->
@@ -4072,7 +4107,7 @@
           <Avatar name={person.name} key={person.key} colour={person.colour} size={6} />
         {/each}
         {#if participants.length > 3}<span class="presence-more">+{participants.length - 3}</span>{/if}
-        {#if !connected}<span class="presence-offline"><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
+        {#if !connected && !DEMO}<span class="presence-offline"><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
       </div>
     {/if}
   {/snippet}
@@ -4097,7 +4132,7 @@
           {/each}
         {/each}
       </MenubarMenu>
-      <InsertMenu bind:this={insertMenu} getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpalette={(id) => void openPalette(id)} keys={{ symbols: MENU_KEYS.symbols, math: MENU_KEYS.math }} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} onzoterosearch={localQuarto.desktop() ? (query) => editor?.zoteroSearch?.(query) : null} onzoteroimport={(items) => editor?.importZoteroItems?.(items)} disabled={!mayEdit || !editor} />
+      <InsertMenu bind:this={insertMenu} getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpalette={(id) => void openPalette(id)} keys={{ symbols: MENU_KEYS.symbols, math: MENU_KEYS.math }} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} onzoterosearch={localQuarto.desktop() ? (query) => editor?.zoteroSearch?.(query) : null} onzoteroimport={(items) => editor?.importZoteroItems?.(items)} disabled={!mayEdit || !editor} demo={DEMO} />
     {/if}
     {#if editing}
       <MenubarMenu id="view" label="View" onselect={chooseViewCommand}>
@@ -4120,7 +4155,7 @@
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact} class:bar-hidden={barHidden}
-      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - var(--librepaper-format-used, 0px)); --librepaper-format-used: {formatBarShown ? 'var(--librepaper-format-bar)' : '0px'}; --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
+      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - var(--librepaper-format-used, 0px) - {demoBannerHeight}px); --librepaper-format-used: {formatBarShown ? 'var(--librepaper-format-bar)' : '0px'}; --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- What this page is. The title is in the bar, where it is a span beside
        the menus rather than a heading, so the one heading a screen reader
        looks for first is here instead: said once, seen by nobody. -->
@@ -4133,7 +4168,7 @@
       {mayEdit} {rules} onopen={(file) => openTheFile(file, { fromList: true })} onadd={addFile}
       onmkdir={(path) => workspace.addFolder(path)} onrelocate={relocateFiles}
       ondelete={deleteFiles} onduplicate={(entry, path) => workspace.duplicate(entry, path)}
-      onfigure={addFigure} ontext={addDroppedText}
+      onfigure={addFigure} ontext={addDroppedText} demo={DEMO}
       ondownload={downloadTree} ondownloaditem={downloadEntry}
       previewable={(path) => aloneSet.has(path)} onlock={(entry) => lockPreview(entry.id)} onunlock={unlockPreview} />
   {/snippet}
@@ -4653,6 +4688,8 @@
 <Toasts />
 
 <style>
+  .demo-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--spacing) calc(var(--spacing) * 3); padding: calc(var(--spacing) * 1.5) var(--panel-padding, calc(var(--spacing) * 4)); border-bottom: 1px solid var(--color-pane-edge); background: var(--color-subtle); color: var(--color-text); font-size: var(--text-sm); }
+  .demo-banner-actions { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 2); }
   .editorpane.comparing { grid-template-rows: auto minmax(0, 1fr); }
   .menuitem-chevron { display: inline-flex; margin-left: auto; padding-left: calc(var(--spacing) * 2); }
   .export-reason { flex: 0 0 auto; margin-left: auto; max-width: 12rem; overflow: hidden; color: var(--color-text-secondary); font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }

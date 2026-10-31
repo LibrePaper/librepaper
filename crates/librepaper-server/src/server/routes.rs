@@ -763,6 +763,29 @@ pub(super) async fn dispatch(
         return redirect(&format!("{}/raw/{slug}/", arrival.docs_origin()));
     }
 
+    // The demo project behind /try. The browser reads it for the documents
+    // origin that its preview frames load from. Nothing is stored.
+    if path == "/api/try" && matches!(method, Method::GET | Method::HEAD) {
+        let mut response = write_json(
+            200,
+            &json!({
+                "slug": "try-librepaper",
+                "title": "Try LibrePaper",
+                "role": "editor",
+                "can_edit": true,
+                "can_moderate": false,
+                "can_share": false,
+                "can_see_sharing": false,
+                "demo": true,
+                "docs_origin": arrival.docs_origin(),
+                "renderers": server.renderers(),
+                "source_format": "typst",
+            }),
+        );
+        set(&mut response, "cache-control", "no-store");
+        return response;
+    }
+
     // Public, fixed documentation assets linked by the README. Keep this
     // allowlist compile-time embedded; no request may turn it into an arbitrary
     // filesystem read.
@@ -805,6 +828,9 @@ pub(super) async fn dispatch(
             if !server.valid_slug(slug) {
                 return server.not_found(request.headers());
             }
+            page = "/reader.html".to_string();
+        } else if path == "/try" {
+            // The demo reader. Its project comes from /api/try, not the URL.
             page = "/reader.html".to_string();
         } else if path == "/" {
             page = "/index.html".to_string();

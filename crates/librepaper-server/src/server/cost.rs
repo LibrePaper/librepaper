@@ -240,6 +240,7 @@ fn control(path: &str, method: &Method) -> bool {
     path == "/health"
         || path == "/api/status"
         || path == "/api/config"
+        || path == "/api/try"
         || path == "/api/me"
         || path.starts_with("/auth/")
         || path.starts_with("/api/auth/")

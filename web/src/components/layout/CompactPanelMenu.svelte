@@ -116,12 +116,13 @@
           value={tab.id}
           class="menuitem compact-panel-item"
           data-panel-id={tab.id}
-          aria-label={badges[tab.id]?.says || tab.says}
+          disabled={tab.disabled}
+          aria-label={tab.disabled ? `${tab.says} (not available in the demo)` : badges[tab.id]?.says || tab.says}
           aria-current={selected ? "true" : undefined}
         >
           <span class="menuitem-check" aria-hidden="true">{selected ? "✓" : ""}</span>
           <Icon name={tab.icon} size="1rem" />
-          <span class="menuitem-label">{tab.says}</span>
+          <span class="menuitem-label">{tab.says}{tab.disabled ? " (not available in the demo)" : ""}</span>
           {#if counts[tab.id]}<span class="menuitem-count">{counts[tab.id]}</span>{/if}
           {#if badges[tab.id]?.dot}<span class="menuitem-dot" aria-hidden="true"></span>{/if}
         </Menu.Item>

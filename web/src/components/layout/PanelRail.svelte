@@ -25,10 +25,11 @@
 {#each tabs as tab (tab.id)}
   {@const badge = badges[tab.id] ?? {}}
   <div class="rail-item">
-    <IconButton icon={tab.icon} label={badge.says || tab.says}
+    <IconButton icon={tab.icon} label={tab.disabled ? `${tab.says} (not available in the demo)` : badge.says || tab.says}
+      disabled={tab.disabled}
       pressed={panel === tab.id && (open || marksWhenClosed)}
       controls={slotId(tab.id)} expanded={panel === tab.id && open}
-      onclick={() => onselect?.(tab.id)} />
+      onclick={() => { if (!tab.disabled) onselect?.(tab.id); }} />
     {#if badge.dot}<span class="rail-dot" aria-hidden="true"></span>{/if}
     {#if Array.isArray(badge.counts)}
       <span class="rail-counts" aria-hidden="true">

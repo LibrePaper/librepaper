@@ -35,6 +35,7 @@ const ROUTES: &[&str] = &[
     "admin",
     "api_status",
     "api_config",
+    "api_try",
     "api_auth",
     "api_documents",
     "api_comments",
@@ -471,6 +472,8 @@ pub fn route_class(path: &str) -> &'static str {
         "api_status"
     } else if path == "/api/config" {
         "api_config"
+    } else if path == "/api/try" {
+        "api_try"
     } else if path.starts_with("/api/auth/") {
         "api_auth"
     } else if path.starts_with("/api/documents") {
@@ -865,6 +868,7 @@ mod tests {
             "/ready",
             "/api/status",
             "/api/config",
+            "/api/try",
             "/api/auth/device",
             "/api/documents/x",
             "/api/comments/x",

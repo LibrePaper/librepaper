@@ -29,9 +29,10 @@
    * onzoteroimport?: (items: ZoteroEntry[]) => Promise<string[]>;
    * keys?: Record<string, string>;
    * disabled?: boolean;
+   * demo?: boolean;
    * }} InsertMenuProps */
   /** @type {InsertMenuProps} */
-  let { getContext, oninsert, onupload, onpreview, onpalette, onfocus, oncancel, onzoterosearch = null, onzoteroimport, keys = {}, disabled = false } = $props();
+  let { getContext, oninsert, onupload, onpreview, onpalette, onfocus, oncancel, onzoterosearch = null, onzoteroimport, keys = {}, disabled = false, demo = false } = $props();
 
   /** @type {string | null} */
   let dialog = $state(null);
@@ -394,7 +395,7 @@
     <label class="label">Page or locator (optional) <input class="input" bind:value={draft.locator} /></label>
   {:else if dialog === "figure"}
     <label class="label">Project image <select class="select" bind:value={draft.path}><option value="">Choose an image…</option>{#if draft.path && !selectedImage}<option value={draft.path}>{draft.path}</option>{/if}{#each (captured?.files || []) as file}{@const path = typeof file === "string" ? file : file.path}{#if /\.(png|jpe?g|gif|svg|pdf|webp)$/i.test(path || "")}<option value={path}>{path}</option>{/if}{/each}</select></label>
-    <label class="label">Upload image <input type="file" accept="image/*,.pdf" onchange={upload} /></label>
+    <label class="label">Upload image{demo ? " (not available in the demo)" : ""} <input type="file" accept="image/*,.pdf" onchange={upload} disabled={demo} /></label>
     {#if draft.path}<p class="panel-muted">{draft.path}</p>{/if}
     {#if draft.path && onpreview}
       {#await onpreview(draft.path) then url}{#if url}<img class="insert-image-preview" src={url} alt="Selected project asset" />{/if}{/await}

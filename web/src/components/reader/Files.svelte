@@ -14,7 +14,9 @@
 
   let { files = [], folders = [], open = "", preview = "", locked = "", mayEdit = false, rules = {},
     onopen, onadd, onmkdir, onrelocate, ondelete, onduplicate, onfigure, ontext, ondownload, ondownloaditem,
-    previewable = () => false, onlock = undefined, onunlock = undefined } = $props();
+    previewable = () => false, onlock = undefined, onunlock = undefined,
+    // The demo cannot store files on the server, so uploads are greyed out.
+    demo = false } = $props();
 
   let selected = $state([]);
   let expanded = $state([]);
@@ -273,7 +275,7 @@
         <IconButton icon="chevrons-down" label="Expand all folders" tone="plain" size="btn-icon-sm" disabled={allFolders.every((value) => expanded.includes(value))} onclick={() => expanded = allFolders} />
         <IconButton icon="chevrons-up" label="Collapse all folders" tone="plain" size="btn-icon-sm" disabled={!expanded.length} onclick={() => expanded = []} />
         {#if mayEdit}
-          <IconButton icon="upload" label="Upload files" tone="plain" size="btn-icon-sm" disabled={busy} onclick={() => choose()} />
+          <IconButton icon="upload" label={demo ? "Upload files (not available in the demo)" : "Upload files"} tone="plain" size="btn-icon-sm" disabled={busy || demo} onclick={() => choose()} />
         {/if}
         {#if mayEdit}<IconButton icon="download" label="Download project" tone="plain" size="btn-icon-sm" onclick={() => ondownload?.()} />{/if}
       </div>
@@ -362,7 +364,7 @@
       {#if node.kind === "folder"}
         <Menu.Item value="file" class="menuitem">New file</Menu.Item>
         <Menu.Item value="folder" class="menuitem">New folder</Menu.Item>
-        <Menu.Item value="upload" class="menuitem" disabled={busy}>Upload files</Menu.Item>
+        <Menu.Item value="upload" class="menuitem" disabled={busy || demo}>Upload files{demo ? " (not available in the demo)" : ""}</Menu.Item>
       {/if}
       <Menu.Item value="rename" class="menuitem">Rename <span class="ml-auto text-xs">F2</span></Menu.Item>
       <Menu.Item value="move" class="menuitem">Move to…</Menu.Item>
