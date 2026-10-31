@@ -25,6 +25,7 @@ import * as localBridge from "./desktop/client.js";
 import { snapshotDigest } from "./projection-digest.js";
 
 import { rendererRequest } from "./renderer-client.js";
+import { m } from "./paraglide/messages.js";
 
 /// This browser's identity for a render tree -- `{ main, texts, digests }`
 /// -- used only as a transient cache key: whether a local build's job
@@ -212,7 +213,7 @@ export async function render(tree, title, { manual = false, format: requestedFor
       log: result.log,
       provenance: result.provenance,
       ok: result.ok,
-      failure: result.ok ? null : { kind: "local", message: result.error || `Rendering ${format} on this computer failed.` },
+      failure: result.ok ? null : { kind: "local", message: result.error || m.renderers_local_failed({ format }) },
     };
   }
   // A historical render receives a configuration snapshot resolved before

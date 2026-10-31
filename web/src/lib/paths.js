@@ -1,3 +1,5 @@
+import { m } from "./paraglide/messages.js";
+
 // What a path in a document's directory may be.
 //
 // This is the shell's copy of `paths.rs`, and it is a copy on purpose: the
@@ -45,29 +47,29 @@ export function checkDirectoryPath(rules, path) {
   const it = normalisePath(path);
   const bytes = new TextEncoder().encode(it).length;
   const max = rules?.max_path || 200;
-  if (!it) return "a file or folder needs a name";
-  if (bytes > max) return `${it}: a path may be at most ${max} bytes`;
+  if (!it) return m.paths_needs_name();
+  if (bytes > max) return m.paths_too_long({ path: it, max });
   if (it.startsWith("/")) {
-    return `${it}: a path is relative, so it cannot begin with /`;
+    return m.paths_relative({ path: it });
   }
-  if (it.includes("\\")) return `${it}: paths are separated by /, not by \\`;
+  if (it.includes("\\")) return m.paths_backslash({ path: it });
   // Anything a terminal would obey rather than print, written as escapes so
   // the rule survives being read and copied about.
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(it)) {
-    return `${it}: a path cannot carry control characters`;
+    return m.paths_control({ path: it });
   }
   const segments = it.split("/");
   if (segments.length > MAX_SEGMENTS) {
-    return `${it}: a path may be at most ${MAX_SEGMENTS} segments deep`;
+    return m.paths_too_deep({ path: it, segments: MAX_SEGMENTS });
   }
   for (const segment of segments) {
-    if (!segment) return `${it}: a path cannot have an empty segment`;
+    if (!segment) return m.paths_empty_segment({ path: it });
     if (segment === "." || segment === "..") {
-      return `${it}: a path cannot climb with . or ..`;
+      return m.paths_climb({ path: it });
     }
     if (segment.startsWith(".")) {
-      return `${it}: a dotfile is not part of a document`;
+      return m.paths_dotfile({ path: it });
     }
   }
   return "";
@@ -81,7 +83,7 @@ export function kindOf(rules, path) {
     ...(rules?.text_extensions || []),
     ...(rules?.asset_extensions || []),
   ])];
-  const error = `${path}: allowed file extensions are ${allowed.join(", ") || "none"}`;
+  const error = m.paths_extensions({ path, allowed: allowed.join(", ") || m.paths_none() });
   // Derived extensions are refused even when their names look plausible.
   if (ends(rules?.derived_extensions)) {
     return { error };

@@ -15,6 +15,7 @@
 // still there, and a missing answer is treated as the close that never came.
 
 import { authHeaders } from "./api.js";
+import { m } from "./paraglide/messages.js";
 
 /** @param {string} slug @param {{onMessage: (message: object) => void, onConnected: (connected: boolean) => void, onSourceChanged?: (digest?: string|null) => void, key?: string}} options */
 export function openRoom(slug, { onMessage, onConnected, onSourceChanged, key = "" }) {
@@ -202,7 +203,7 @@ export function openRoom(slug, { onMessage, onConnected, onSourceChanged, key = 
             // wording, and with it `stale_source`/`digest` (§7.1's
             // `StaleSelection`), which a caller needs to re-render before
             // retrying.
-            const failure = new Error(body.message || body.error || `comment submission failed (${response.status})`);
+            const failure = new Error(body.message || body.error || m.room_submission_failed_status({ status: response.status }));
             throw Object.assign(failure, { body });
           }
           const event = await response.json();
@@ -226,7 +227,7 @@ export function openRoom(slug, { onMessage, onConnected, onSourceChanged, key = 
               type: body.stale_source ? "error" : "submission-failed",
               temp_id: message.temp_id,
               comment_id: body.comment_id,
-              message: error?.message || "comment submission failed",
+              message: error?.message || m.room_submission_failed(),
               stale_source: body.stale_source,
               digest: body.digest,
             });
