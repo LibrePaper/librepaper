@@ -5,6 +5,7 @@ import { WidgetType } from "@codemirror/view";
 import { chipWidget, ElementWidget, factsOf, includeOpener, nameList } from "./index.js";
 import { registerWidget, revealOnMousedown, textOf } from "./markup.ts";
 import { TYPST_FUNCTIONS } from "./languages/typst/catalog.ts";
+import { m } from "../paraglide/messages.js";
 import "./typst.css";
 
 // ---- Text helpers ----------------------------------------------------------
@@ -193,7 +194,7 @@ registerWidget("typref", ({ token, source, state }) => {
 
 // A <label> in the text, shown as the tag a LaTeX label gets.
 registerWidget("typlabel", ({ token, source }) => {
-  return new ElementWidget({ className: "cm-lp-label", content: [keyOf(token, source)], title: "Label" });
+  return new ElementWidget({ className: "cm-lp-label", content: [keyOf(token, source)], title: m.typst_widgets_label() });
 });
 
 // ---- Includes --------------------------------------------------------------
@@ -221,7 +222,7 @@ class TypIncludeWidget extends WidgetType {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "cm-lp-include-open";
-      button.textContent = "Open";
+      button.textContent = m.typst_widgets_include_open();
       // The button stops its own mousedown, so the reveal below does not see it.
       button.addEventListener("mousedown", (event) => {
         event.preventDefault();
@@ -268,7 +269,7 @@ class TypTitleWidget extends WidgetType {
     if (this.title) {
       main.textContent = this.title;
     } else {
-      main.textContent = "Untitled";
+      main.textContent = m.typst_widgets_untitled();
       main.classList.add("cm-lp-title-muted");
     }
     block.appendChild(main);

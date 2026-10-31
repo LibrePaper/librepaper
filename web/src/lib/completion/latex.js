@@ -7,6 +7,7 @@ import { snippet, snippetCompletion } from "@codemirror/autocomplete";
 import workshop from "./latex-workshop.json" with { type: "json" };
 import { CORE, PACKAGES } from "./latex-packages.js";
 import { pathOptions } from "./paths.js";
+import { m } from "../paraglide/messages.js";
 
 const REFERENCE = /\\(?:ref|eqref|pageref|autoref|cref|Cref|nameref)\*?\{([^{}]*)$/;
 const INCLUDE = /\\(input|include|subfile)\{([^{}]*)$/;
@@ -134,7 +135,7 @@ const PACKAGE_ENVIRONMENTS = Object.fromEntries(Object.entries(PACKAGES).map(([n
   name,
   entry.environments.map((item) => environmentEntry(item.name, item.snippet, name)),
 ]));
-const PACKAGE_OPTIONS = Object.keys(PACKAGES).map((label) => ({ label, type: "namespace", detail: "package" }));
+const PACKAGE_OPTIONS = Object.keys(PACKAGES).map((label) => ({ label, type: "namespace", detail: m.latex_package_detail() }));
 
 // Completes \begin{name} with its closing brace, the body, and the matching
 // \end unless the next line already has one. closeBrackets() may have
@@ -229,7 +230,7 @@ export function latexCompletion(project) {
       const found = definitions(texts);
       const packages = loadedPackages(found.packages);
       const entries = unique([
-        ...found.environments.map((name) => environmentEntry(name, undefined, "defined in project")),
+        ...found.environments.map((name) => environmentEntry(name, undefined, m.latex_defined_in_project())),
         ...CORE_ENVIRONMENTS,
         ...WORKSHOP_ENVIRONMENTS,
         ...packages.flatMap((name) => PACKAGE_ENVIRONMENTS[name]),
@@ -251,7 +252,7 @@ export function latexCompletion(project) {
         ...found.commands.map((item) => commandEntry(
           item.name,
           item.arity ? `${item.name}${arityTemplate(item.arity)}` : undefined,
-          "defined in project",
+          m.latex_defined_in_project(),
         )),
         ...CORE_COMMANDS,
         ...WORKSHOP_COMMANDS,

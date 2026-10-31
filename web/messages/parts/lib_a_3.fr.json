@@ -1,0 +1,23 @@
+{
+  "annotating_comment_label": "Commenter",
+  "annotating_comment_title": "Commenter le passage sélectionné",
+  "annotating_highlight_label": "Surligner",
+  "annotating_highlight_title": "Surligner, sans commentaire",
+  "annotation_colors_yellow": "Jaune",
+  "annotation_colors_green": "Vert",
+  "annotation_colors_blue": "Bleu",
+  "annotation_colors_pink": "Rose",
+  "annotation_colors_custom": "Personnalisée",
+  "api_upload_failed": "Le téléversement a échoué. Vérifiez votre connexion et réessayez.",
+  "api_upload_interrupted": "Le téléversement a été interrompu.",
+  "bibliography_et_al": "{author} et al.",
+  "file_manager_kind_change": "Le renommage ne peut pas changer un texte en figure, ni une figure en texte.",
+  "file_manager_name_taken": "{path} : il existe déjà un fichier ou un dossier portant ce nom.",
+  "file_manager_file_parent": "{parent} : un fichier ne peut pas contenir d’autres fichiers.",
+  "file_manager_folder_case": "{parent} : utilisez la casse du dossier existant.",
+  "file_manager_item_changed": "{path} : cet élément a été modifié ou supprimé. Sélectionnez-le de nouveau.",
+  "file_manager_move_inside": "Un dossier ne peut pas être déplacé dans lui-même.",
+  "history_groups_today": "Aujourd’hui",
+  "history_groups_yesterday": "Hier",
+  "history_groups_earlier_in": "Plus tôt en {name}"
+}

@@ -19,13 +19,15 @@
 // gesture that is otherwise "say something about these words"; proposing text
 // is the agent's job, and the Changes panel reviews what it proposes.
 
+import { m } from "./paraglide/messages.js";
+
 /// What the reader can do to a passage they have selected, in the order the
 /// bar offers them. `icon` names a Lucide glyph in `Icon.svelte`: the bar is
 /// two icons over the words, so the label is what the button is called rather
 /// than what it says.
 export const VERBS = [
-  { id: "comment", label: "Comment", icon: "comment", title: "Comment on the selected passage" },
-  { id: "highlight", label: "Highlight", icon: "highlight", title: "Highlight, with no comment" },
+  { id: "comment", label: m.annotating_comment_label(), icon: "comment", title: m.annotating_comment_title() },
+  { id: "highlight", label: m.annotating_highlight_label(), icon: "highlight", title: m.annotating_highlight_title() },
 ];
 
 /// The W3C motivation an annotation is stored under. The server knows nothing

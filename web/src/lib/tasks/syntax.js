@@ -1,3 +1,6 @@
+import { m } from "../paraglide/messages.js";
+import { locale as interfaceLocale } from "../locale.js";
+
 // The task grammar shared by the visual layer and the edits: states, field names,
 // the tag and field grammars, validators and date arithmetic. Pure, no DOM.
 
@@ -5,18 +8,18 @@
 export const STATE_OF = { " ": "todo", x: "done", X: "done", "/": "doing", "-": "cancelled" };
 // Menu order, with the character each state writes.
 export const STATES = [
-  { state: "todo", char: " ", label: "To do" },
-  { state: "doing", char: "/", label: "In progress" },
-  { state: "done", char: "x", label: "Done" },
-  { state: "cancelled", char: "-", label: "Cancelled" },
+  { state: "todo", char: " ", label: m.syntax_state_todo() },
+  { state: "doing", char: "/", label: m.syntax_state_doing() },
+  { state: "done", char: "x", label: m.syntax_state_done() },
+  { state: "cancelled", char: "-", label: m.syntax_state_cancelled() },
 ];
 // The order a click cycles the box through. Each state is followed by the next one, and the last wraps to the first.
 export const CYCLE = [" ", "x", "/", "-"];
 export const FIELDS = ["priority", "due", "start", "scheduled", "created", "done", "cancelled", "assignee", "estimate"];
 export const DATE_FIELDS = ["due", "start", "scheduled", "created", "done", "cancelled"];
 export const PRIORITIES = [
-  { value: 1, label: "Critical" }, { value: 2, label: "High" }, { value: 3, label: "Normal" },
-  { value: 4, label: "Low" }, { value: 5, label: "Minimal" },
+  { value: 1, label: m.syntax_priority_critical() }, { value: 2, label: m.syntax_priority_high() }, { value: 3, label: m.syntax_priority_normal() },
+  { value: 4, label: m.syntax_priority_low() }, { value: 5, label: m.syntax_priority_minimal() },
 ];
 // A field token at a position: `key:value`, with optional spaces or tabs after the colon. Sticky.
 // Group 1 is the key, group 2 the gap after the colon (may be empty), group 3 the value (may be empty).
@@ -38,11 +41,11 @@ const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
  * @returns {string | null}
  */
 export function validateField(key, value) {
-  if (value === "") return `${key} needs a value.`;
-  if (key === "priority") return /^[1-5]$/.test(value) ? null : "Priority must be 1 to 5.";
-  if (DATE_FIELDS.includes(key)) return isDate(value) ? null : `${key} must be a real date as YYYY-MM-DD.`;
-  if (key === "assignee") return ASSIGNEES.test(value) ? null : "Assignee must be one or more comma-separated handles.";
-  if (key === "estimate") return ESTIMATE.test(value) ? null : "Estimate must be a number with m, h or d, such as 2h.";
+  if (value === "") return m.syntax_field_needs_value({ key });
+  if (key === "priority") return /^[1-5]$/.test(value) ? null : m.syntax_priority_range();
+  if (DATE_FIELDS.includes(key)) return isDate(value) ? null : m.syntax_date_invalid({ key });
+  if (key === "assignee") return ASSIGNEES.test(value) ? null : m.syntax_assignee_invalid();
+  if (key === "estimate") return ESTIMATE.test(value) ? null : m.syntax_estimate_invalid();
   return null;
 }
 
@@ -77,7 +80,7 @@ export function isDate(iso) {
 }
 
 /** A short human label for a date, e.g. "Nov 5", with the year added when it is not `today`'s year. */
-export function shortDate(iso, today = todayISO(), locale = undefined) {
+export function shortDate(iso, today = todayISO(), locale = interfaceLocale()) {
   const date = parts(iso);
   if (!date) return iso;
   const todayYear = parts(today)?.year;
