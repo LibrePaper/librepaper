@@ -17,7 +17,7 @@
   onMount(() => onPaper((now) => { currentPaper = now; }));
 
   // What closing the last window does in the desktop app. The shell saves it.
-  let closing = $state(desktop()?.close === "tray" ? "tray" : "quit");
+  let closing = $state(desktop()?.close === "quit" ? "quit" : "tray");
   let closeError = $state("");
   async function chooseClose(next) {
     const before = closing;
@@ -65,8 +65,8 @@
               description="With the tray, LibrePaper keeps running after its last window closes.">
     <select class="select setting-select" aria-label="When the window closes" value={closing}
             onchange={(event) => chooseClose(event.currentTarget.value)}>
-      <option value="quit">Quit LibrePaper</option>
       <option value="tray">Keep running in the tray</option>
+      <option value="quit">Quit LibrePaper</option>
     </select>
     {#snippet note()}{#if closeError}<span class="close-error" role="alert">{closeError}</span>{/if}{/snippet}
   </SettingRow>

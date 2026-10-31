@@ -42,7 +42,7 @@ impl FromStr for Close {
 pub struct CloseChoice(Mutex<Close>);
 
 impl CloseChoice {
-    // A missing or broken file means quit.
+    // A missing or broken file means the tray.
     pub fn load(app: &AppHandle) -> Self {
         let choice = app
             .path()
@@ -50,7 +50,7 @@ impl CloseChoice {
             .ok()
             .and_then(|dir| std::fs::read_to_string(dir.join(FILE)).ok())
             .and_then(|text| text.trim().parse::<Close>().ok())
-            .unwrap_or(Close::Quit);
+            .unwrap_or(Close::Tray);
         Self(Mutex::new(choice))
     }
 
