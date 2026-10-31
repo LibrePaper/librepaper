@@ -8,6 +8,7 @@
 // Nothing here may need a document or a window at load, so the unit tests can
 // import it under node.
 import { read, write, EDITOR_SIZE, EDITOR_FONT, EDITOR_LINE_HEIGHT } from "./storage.js";
+import { m } from "./paraglide/messages.js";
 
 export const DEFAULT_SIZE = 14;
 export const MIN_SIZE = 10;
@@ -16,7 +17,7 @@ export const MAX_SIZE = 28;
 export const DEFAULT_STACK = '"JetBrains Mono", "IBM Plex Mono", "Geist Mono", ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace';
 
 export const FONTS = [
-  { id: "default", name: "Default" },
+  { id: "default", name: m.editor_type_font_default() },
   { id: "jetbrains-mono", name: "JetBrains Mono", family: "JetBrains Mono", files: [
     { file: "jetbrains-mono.woff2", weight: "400", style: "normal" },
     { file: "jetbrains-mono-italic.woff2", weight: "400", style: "italic" },
@@ -43,9 +44,9 @@ export const FONTS = [
     { file: "opendyslexic-italic.woff2", weight: "400", style: "italic" },
     { file: "opendyslexic-bold.woff2", weight: "700", style: "normal" },
   ] },
-  { id: "sans", name: "System sans serif", stack: 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif' },
-  { id: "serif", name: "System serif", stack: 'ui-serif, Georgia, Cambria, "Times New Roman", serif' },
-  { id: "custom", name: "Another font" },
+  { id: "sans", name: m.editor_type_font_system_sans(), stack: 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif' },
+  { id: "serif", name: m.editor_type_font_system_serif(), stack: 'ui-serif, Georgia, Cambria, "Times New Roman", serif' },
+  { id: "custom", name: m.editor_type_font_custom() },
 ];
 
 export const LINE_HEIGHTS = { compact: 1.35, normal: 1.6, wide: 1.9 };

@@ -1,3 +1,4 @@
+import { m } from "./paraglide/messages.js";
 import { MATH_TEMPLATES } from "./symbols/templates.js";
 
 /** @typedef {{ id: string, label: string, category: string, scope: string, keys: Array<string | {apple?: string, other?: string}>, available: (context: any) => boolean, owner?: string, menu?: string, browserKeys?: boolean, note?: string, palette?: boolean, help?: boolean }} Command */
@@ -195,84 +196,84 @@ const editable = (c) => Boolean(c.mayEdit && c.editing);
 /** @type {Command[]} */
 export const COMMANDS = [
   // Editing. CodeMirror's, every one of them, including the search panel.
-  { id: "undo", label: "Undo", category: "Editing", scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+Z"], available: (c) => Boolean(c.edit?.undo) },
-  { id: "redo", label: "Redo", category: "Editing", scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+Shift+Z", { other: "Mod+Y" }], available: (c) => Boolean(c.edit?.redo) },
-  { id: "cut", label: "Cut", category: "Editing", scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+X"], available: (c) => Boolean(c.edit?.cut) },
-  { id: "copy", label: "Copy", category: "Editing", scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+C"], available: (c) => Boolean(c.edit?.copy) },
-  { id: "paste", label: "Paste", category: "Editing", scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+V"], available: (c) => Boolean(c.edit?.paste) },
-  { id: "select-all", label: "Select All", category: "Editing", scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+A"], available: (c) => Boolean(c.edit?.["select-all"]) },
-  { id: "find", label: "Find", category: "Editing", scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+F"], available: (c) => Boolean(c.edit?.find) },
-  { id: "replace", label: "Replace", category: "Editing", scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+Alt+F"], available: (c) => Boolean(c.edit?.replace) },
-  { id: "tab-focus", label: "Toggle Tab key moves focus", category: "Editing", scope: "editor", owner: "editor", menu: "edit", keys: [{ other: "Mod+M" }, { apple: "Shift+Alt+M" }], available: (c) => Boolean(c.edit?.["tab-focus"]) },
-  { id: "word-count", label: "Word count", category: "Editing", scope: "workspace", menu: "edit", keys: [], available: editable },
-  { id: "bold", label: "Bold", category: "Editing", scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+B"], available: (c) => Boolean(c.edit?.bold) },
-  { id: "italic", label: "Italic", category: "Editing", scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+I"], available: (c) => Boolean(c.edit?.italic) },
+  { id: "undo", label: m.commands_undo(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+Z"], available: (c) => Boolean(c.edit?.undo) },
+  { id: "redo", label: m.commands_redo(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+Shift+Z", { other: "Mod+Y" }], available: (c) => Boolean(c.edit?.redo) },
+  { id: "cut", label: m.commands_cut(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+X"], available: (c) => Boolean(c.edit?.cut) },
+  { id: "copy", label: m.commands_copy(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+C"], available: (c) => Boolean(c.edit?.copy) },
+  { id: "paste", label: m.commands_paste(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+V"], available: (c) => Boolean(c.edit?.paste) },
+  { id: "select-all", label: m.commands_select_all(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+A"], available: (c) => Boolean(c.edit?.["select-all"]) },
+  { id: "find", label: m.commands_find(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+F"], available: (c) => Boolean(c.edit?.find) },
+  { id: "replace", label: m.commands_replace(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+Alt+F"], available: (c) => Boolean(c.edit?.replace) },
+  { id: "tab-focus", label: m.commands_tab_focus(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: [{ other: "Mod+M" }, { apple: "Shift+Alt+M" }], available: (c) => Boolean(c.edit?.["tab-focus"]) },
+  { id: "word-count", label: m.commands_word_count(), category: m.commands_category_editing(), scope: "workspace", menu: "edit", keys: [], available: editable },
+  { id: "bold", label: m.commands_bold(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+B"], available: (c) => Boolean(c.edit?.bold) },
+  { id: "italic", label: m.commands_italic(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+I"], available: (c) => Boolean(c.edit?.italic) },
 
   // Navigation. Where the focus goes, which is the part of a workspace a
   // pointer does well and a keyboard has to be told about.
-  { id: "palette", label: "Command palette", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+P"], palette: false, available: ALWAYS },
-  { id: "focus-files", label: "Focus Files", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+E"], available: panel("files"), note: "Files panel" },
-  { id: "focus-outline", label: "Focus Outline", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+O"], available: panel("outline"), note: "Outline panel" },
-  { id: "focus-comments", label: "Focus Comments", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+M"], available: panel("collaboration"), note: "Comments panel" },
-  { id: "focus-preview", label: "Focus Preview", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+V"], available: (c) => Boolean(c.preview), note: "Preview visible" },
+  { id: "palette", label: m.commands_palette(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+P"], palette: false, available: ALWAYS },
+  { id: "focus-files", label: m.commands_focus_files(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+E"], available: panel("files"), note: m.commands_note_files_panel() },
+  { id: "focus-outline", label: m.commands_focus_outline(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+O"], available: panel("outline"), note: m.commands_note_outline_panel() },
+  { id: "focus-comments", label: m.commands_focus_comments(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+M"], available: panel("collaboration"), note: m.commands_note_comments_panel() },
+  { id: "focus-preview", label: m.commands_focus_preview(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+V"], available: (c) => Boolean(c.preview), note: m.commands_note_preview_visible() },
 
   // The two insertion palettes, which open over the editor.
-  { id: "symbols", label: "Insert symbol", category: "Insert", scope: "workspace", keys: ["Mod+Alt+S"], available: editable, note: "Editor open" },
-  { id: "math", label: "Insert math", category: "Insert", scope: "workspace", keys: ["Mod+Alt+T"], available: editable, note: "Editor open" },
+  { id: "symbols", label: m.commands_symbols(), category: m.commands_category_insert(), scope: "workspace", keys: ["Mod+Alt+S"], available: editable, note: m.commands_note_editor_open() },
+  { id: "math", label: m.commands_math(), category: m.commands_category_insert(), scope: "workspace", keys: ["Mod+Alt+T"], available: editable, note: m.commands_note_editor_open() },
 
   // One palette entry per math template. They have no key: they are found by
   // name, and each opens the Math overlay on its template.
   ...MATH_TEMPLATES.map((template) => ({
-    id: "math-" + template.id, label: "Insert " + template.label.toLowerCase(), category: "Math", scope: "workspace", keys: [], available: editable,
+    id: "math-" + template.id, label: m.commands_math_template({ label: template.label.toLowerCase() }), category: m.commands_category_math(), scope: "workspace", keys: [], available: editable,
   })),
 
   // Changes panel navigation and review. These keys are answered by the
   // panel itself when it has focus, listed here for the help table.
-  { id: "changes-next", label: "Next change", category: "Changes", scope: "panel", owner: "changes", palette: false, keys: ["J", "ArrowDown"], available: panel("changes"), note: "Changes panel" },
-  { id: "changes-previous", label: "Previous change", category: "Changes", scope: "panel", owner: "changes", palette: false, keys: ["K", "ArrowUp"], available: panel("changes"), note: "Changes panel" },
-  { id: "changes-accept", label: "Accept change", category: "Changes", scope: "panel", owner: "changes", palette: false, keys: ["A"], available: panel("changes"), note: "Changes panel" },
-  { id: "changes-reject", label: "Reject change", category: "Changes", scope: "panel", owner: "changes", palette: false, keys: ["R"], available: panel("changes"), note: "Changes panel" },
+  { id: "changes-next", label: m.commands_changes_next(), category: m.commands_category_changes(), scope: "panel", owner: "changes", palette: false, keys: ["J", "ArrowDown"], available: panel("changes"), note: m.commands_note_changes_panel() },
+  { id: "changes-previous", label: m.commands_changes_previous(), category: m.commands_category_changes(), scope: "panel", owner: "changes", palette: false, keys: ["K", "ArrowUp"], available: panel("changes"), note: m.commands_note_changes_panel() },
+  { id: "changes-accept", label: m.commands_changes_accept(), category: m.commands_category_changes(), scope: "panel", owner: "changes", palette: false, keys: ["A"], available: panel("changes"), note: m.commands_note_changes_panel() },
+  { id: "changes-reject", label: m.commands_changes_reject(), category: m.commands_category_changes(), scope: "panel", owner: "changes", palette: false, keys: ["R"], available: panel("changes"), note: m.commands_note_changes_panel() },
 
   // The workspace itself: which panes are up, and whether they scroll
   // together. The two that had shortcuts before this file existed keep them.
-  { id: "layout-cycle", label: "Toggle editor / preview / split", category: "Workspace", scope: "workspace", keys: ["Mod+\\"], available: (c) => Boolean(c.editing) },
-  { id: "linked", label: "Toggle linked scrolling", category: "Workspace", scope: "workspace", menu: "view", keys: ["Mod+Alt+L"], available: (c) => Boolean(c.editing) },
-  { id: "visual-markup", label: "Toggle visual markup", category: "Workspace", scope: "workspace", menu: "view", keys: [], available: (c) => Boolean(c.editing) },
+  { id: "layout-cycle", label: m.commands_layout_cycle(), category: m.commands_category_workspace(), scope: "workspace", keys: ["Mod+\\"], available: (c) => Boolean(c.editing) },
+  { id: "linked", label: m.commands_linked(), category: m.commands_category_workspace(), scope: "workspace", menu: "view", keys: ["Mod+Alt+L"], available: (c) => Boolean(c.editing) },
+  { id: "visual-markup", label: m.commands_visual_markup(), category: m.commands_category_workspace(), scope: "workspace", menu: "view", keys: [], available: (c) => Boolean(c.editing) },
   // The browser's zoom keys, taken only while the focus is in the source: there
   // they size the source like a pinch, and everywhere else the browser keeps
   // them. The editor owns them, so the window never listens for them.
-  { id: "text-bigger", label: "Bigger editor text", category: "Workspace", scope: "editor", owner: "editor", menu: "view", keys: ["Mod+="], browserKeys: true, available: (c) => Boolean(c.editing) },
-  { id: "text-smaller", label: "Smaller editor text", category: "Workspace", scope: "editor", owner: "editor", menu: "view", keys: ["Mod+-"], browserKeys: true, available: (c) => Boolean(c.editing) },
-  { id: "text-reset", label: "Reset editor text size", category: "Workspace", scope: "editor", owner: "editor", menu: "view", keys: ["Mod+0"], browserKeys: true, available: (c) => Boolean(c.editing) },
-  { id: "layout-source", label: "Show editor only", category: "Workspace", scope: "workspace", keys: [], available: (c) => Boolean(c.editing) },
-  { id: "layout-document", label: "Show preview only", category: "Workspace", scope: "workspace", keys: [], available: (c) => Boolean(c.editing) },
-  { id: "layout-split", label: "Show editor and preview", category: "Workspace", scope: "workspace", keys: [], available: (c) => Boolean(c.editing) && !c.compact },
-  { id: "side-left", label: "Editor on left", category: "Workspace", scope: "workspace", help: true, keys: [], available: (c) => Boolean(c.editing) && !c.compact, note: "Wide layout" },
-  { id: "side-right", label: "Editor on right", category: "Workspace", scope: "workspace", help: true, keys: [], available: (c) => Boolean(c.editing) && !c.compact, note: "Wide layout" },
+  { id: "text-bigger", label: m.commands_text_bigger(), category: m.commands_category_workspace(), scope: "editor", owner: "editor", menu: "view", keys: ["Mod+="], browserKeys: true, available: (c) => Boolean(c.editing) },
+  { id: "text-smaller", label: m.commands_text_smaller(), category: m.commands_category_workspace(), scope: "editor", owner: "editor", menu: "view", keys: ["Mod+-"], browserKeys: true, available: (c) => Boolean(c.editing) },
+  { id: "text-reset", label: m.commands_text_reset(), category: m.commands_category_workspace(), scope: "editor", owner: "editor", menu: "view", keys: ["Mod+0"], browserKeys: true, available: (c) => Boolean(c.editing) },
+  { id: "layout-source", label: m.commands_layout_source(), category: m.commands_category_workspace(), scope: "workspace", keys: [], available: (c) => Boolean(c.editing) },
+  { id: "layout-document", label: m.commands_layout_document(), category: m.commands_category_workspace(), scope: "workspace", keys: [], available: (c) => Boolean(c.editing) },
+  { id: "layout-split", label: m.commands_layout_split(), category: m.commands_category_workspace(), scope: "workspace", keys: [], available: (c) => Boolean(c.editing) && !c.compact },
+  { id: "side-left", label: m.commands_side_left(), category: m.commands_category_workspace(), scope: "workspace", help: true, keys: [], available: (c) => Boolean(c.editing) && !c.compact, note: m.commands_note_wide_layout() },
+  { id: "side-right", label: m.commands_side_right(), category: m.commands_category_workspace(), scope: "workspace", help: true, keys: [], available: (c) => Boolean(c.editing) && !c.compact, note: m.commands_note_wide_layout() },
 
   // The preview.
-  { id: "compile", label: "Compile now", category: "Preview", scope: "preview", menu: "file", keys: ["Mod+Alt+B"], available: (c) => Boolean(c.compilable), note: "Compiled document" },
-  { id: "lock-preview", label: "Lock preview on this file", category: "Preview", scope: "preview", menu: "view", keys: [], available: (c) => Boolean(c.canLockPreview) },
-  { id: "unlock-preview", label: "Unlock the preview", category: "Preview", scope: "preview", menu: "view", keys: [], available: (c) => Boolean(c.previewLocked) },
+  { id: "compile", label: m.commands_compile(), category: m.commands_category_preview(), scope: "preview", menu: "file", keys: ["Mod+Alt+B"], available: (c) => Boolean(c.compilable), note: m.commands_note_compiled_document() },
+  { id: "lock-preview", label: m.commands_lock_preview(), category: m.commands_category_preview(), scope: "preview", menu: "view", keys: [], available: (c) => Boolean(c.canLockPreview) },
+  { id: "unlock-preview", label: m.commands_unlock_preview(), category: m.commands_category_preview(), scope: "preview", menu: "view", keys: [], available: (c) => Boolean(c.previewLocked) },
 
   // The project. None of these is bound to anything: they are here so the
   // palette can offer them by name and so the one list stays the one list.
-  { id: "new-file", label: "New file", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
-  { id: "new-folder", label: "New folder", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
-  { id: "upload", label: "Upload files", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
-  { id: "download-pdf", label: "Download PDF", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.pdf) },
-  { id: "download-html", label: "Download HTML", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.html) },
-  { id: "download-docx", label: "Download DOCX", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.docx) },
-  { id: "download-comments", label: "Download comments", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.comments) },
-  { id: "download", label: "Download project", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
-  { id: "download-source", label: "Download source file", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit && c.downloads?.source) },
-  { id: "share", label: "Share", category: "Project", scope: "workspace", menu: "file", keys: [], available: panel("share") },
-  { id: "chat-clear", label: "Clear chat history", category: "Project", scope: "workspace", keys: [], available: (c) => Boolean(c.canClearChat) },
-  { id: "history", label: "History", category: "Project", scope: "workspace", menu: "file", keys: [], available: panel("history") },
-  { id: "settings", label: "Open Settings", category: "Project", scope: "workspace", menu: "file", keys: ["Mod+,"], available: ALWAYS },
+  { id: "new-file", label: m.commands_new_file(), category: m.commands_category_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
+  { id: "new-folder", label: m.commands_new_folder(), category: m.commands_category_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
+  { id: "upload", label: m.commands_upload(), category: m.commands_category_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
+  { id: "download-pdf", label: m.commands_download_pdf(), category: m.commands_category_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.pdf) },
+  { id: "download-html", label: m.commands_download_html(), category: m.commands_category_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.html) },
+  { id: "download-docx", label: m.commands_download_docx(), category: m.commands_category_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.docx) },
+  { id: "download-comments", label: m.commands_download_comments(), category: m.commands_category_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.comments) },
+  { id: "download", label: m.commands_download(), category: m.commands_category_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
+  { id: "download-source", label: m.commands_download_source(), category: m.commands_category_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit && c.downloads?.source) },
+  { id: "share", label: m.commands_share(), category: m.commands_category_project(), scope: "workspace", menu: "file", keys: [], available: panel("share") },
+  { id: "chat-clear", label: m.commands_chat_clear(), category: m.commands_category_project(), scope: "workspace", keys: [], available: (c) => Boolean(c.canClearChat) },
+  { id: "history", label: m.commands_history(), category: m.commands_category_project(), scope: "workspace", menu: "file", keys: [], available: panel("history") },
+  { id: "settings", label: m.commands_settings(), category: m.commands_category_project(), scope: "workspace", menu: "file", keys: ["Mod+,"], available: ALWAYS },
 
   // Help, which is this list about itself.
-  { id: "shortcuts", label: "Show keyboard shortcuts", category: "Help", scope: "workspace", keys: ["?", "Mod+Alt+/"], available: ALWAYS, note: "Not while typing" },
+  { id: "shortcuts", label: m.commands_shortcuts(), category: m.commands_category_help(), scope: "workspace", keys: ["?", "Mod+Alt+/"], available: ALWAYS, note: m.commands_note_not_while_typing() },
 ];
 
 /// The bindings a command has on this platform, canonical, most-preferred
