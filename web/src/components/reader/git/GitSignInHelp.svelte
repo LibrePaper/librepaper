@@ -4,6 +4,7 @@
   // the person's own credential helper or SSH key; LibrePaper holds neither,
   // so all it can do is say what to set up and try again.
   import IconButton from "../../IconButton.svelte";
+  import { m } from "../../../lib/paraglide/messages.js";
   import { currentPlatform, signInHelp } from "../../../lib/gitsync/sign-in-help.js";
   import { GIT_DOCS_URL } from "../../../lib/site-links.js";
 
@@ -42,7 +43,7 @@
         {#if step.command}
           <span class="git-command">
             <code>{step.command}</code>
-            <IconButton icon={copied === step.command ? "check" : "copy"} label={`Copy ${step.command}`} tone="plain" size="btn-icon-sm"
+            <IconButton icon={copied === step.command ? "check" : "copy"} label={m.gitsigninhelp_copy_command({ command: step.command })} tone="plain" size="btn-icon-sm"
                         onclick={() => copyCommand(step.command)} />
           </span>
         {/if}
@@ -50,9 +51,9 @@
     {/each}
   </ol>
   <div class="git-alert-actions">
-    <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => onretry?.()}>Try again</button>
-    <button type="button" class="git-link-button" onclick={() => ondismiss?.()}>Dismiss</button>
-    <a class="git-more" href="{GIT_DOCS_URL}#credentials" target="_blank" rel="noopener noreferrer">Read more</a>
+    <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => onretry?.()}>{m.gitsigninhelp_retry()}</button>
+    <button type="button" class="git-link-button" onclick={() => ondismiss?.()}>{m.gitsigninhelp_dismiss()}</button>
+    <a class="git-more" href="{GIT_DOCS_URL}#credentials" target="_blank" rel="noopener noreferrer">{m.gitsigninhelp_read_more()}</a>
   </div>
 </div>
 

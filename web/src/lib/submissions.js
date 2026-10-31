@@ -1,4 +1,5 @@
 import { read, write } from "./storage.js";
+import { m } from "./paraglide/messages.js";
 
 function stableRequest(message) {
   // Creation uses request_id as the durable annotation ID. Matching it to the
@@ -22,7 +23,7 @@ export function submissions({ slug, changed = () => {} }) {
         const message = stableRequest(item.message);
         return [message.temp_id, {
           message,
-          error: "Submission not confirmed. Retry to check or send it.",
+          error: m.submissions_not_confirmed_retry(),
         }];
       }),
   );
@@ -44,12 +45,12 @@ export function submissions({ slug, changed = () => {} }) {
     failed(id, error) {
       const item = items.get(id);
       if (!item) return;
-      items.set(id, { ...item, error: error || "Submission not confirmed. You can retry." });
+      items.set(id, { ...item, error: error || m.submissions_not_confirmed() });
       publish();
     },
     disconnected() {
       for (const [id, item] of items) {
-        items.set(id, { ...item, error: "Connection lost before confirmation. You can retry." });
+        items.set(id, { ...item, error: m.submissions_connection_lost() });
       }
       publish();
     },

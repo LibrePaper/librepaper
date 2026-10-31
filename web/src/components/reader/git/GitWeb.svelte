@@ -11,6 +11,8 @@
   // described in the docs.
   import { untrack } from "svelte";
   import { since } from "../../../lib/dates.js";
+  import { locale } from "../../../lib/locale.js";
+  import { m } from "../../../lib/paraglide/messages.js";
   import { remoteUrlProblem } from "../../../lib/git-url.js";
   import { GIT_DOCS_URL as DOCS } from "../../../lib/site-links.js";
   import GitSignInHelp from "./GitSignInHelp.svelte";
@@ -33,7 +35,7 @@
   // whose files are settled but whose commit failed is retried by either.
   const merging = $derived(Boolean(status?.merging?.conflicts?.length));
   // What a refused transfer is called in the panel's sentences.
-  const ACTION = { pull: "getting repository changes", push: "sending project changes" };
+  const ACTION = { pull: m.gitweb_action_pull(), push: m.gitweb_action_push() };
 
   // A local repository is a folder on this computer; the status names its path.
   const local = $derived(Boolean(status?.local));
@@ -68,13 +70,16 @@
 
   // The project's last change from a repository, which the server records as a push.
   const pushText = $derived.by(() => {
-    if (!view.loaded) return "Checking for changes sent from a repository…";
-    if (view.pushProblem) return "The last change sent from a repository could not be read.";
-    if (!view.push) return "No changes sent from a repository yet.";
-    const who = view.push.by ? ` by ${view.push.by},` : "";
-    return `Last sent from a repository${who} ${since(view.push.at)}${view.push.label ? `: ${view.push.label}` : ""}`;
+    if (!view.loaded) return m.gitweb_push_loading();
+    if (view.pushProblem) return m.gitweb_push_problem();
+    if (!view.push) return m.gitweb_push_none();
+    const when = since(view.push.at);
+    const by = view.push.by;
+    const label = view.push.label;
+    if (by) return label ? m.gitweb_push_sent_by_label({ by, when, label }) : m.gitweb_push_sent_by({ by, when });
+    return label ? m.gitweb_push_sent_label({ when, label }) : m.gitweb_push_sent({ when });
   });
-  const pushTitle = $derived(view.push?.at ? new Date(view.push.at).toLocaleString() : "");
+  const pushTitle = $derived(view.push?.at ? new Date(view.push.at).toLocaleString(locale()) : "");
 
   async function connect(event) {
     event.preventDefault();
@@ -93,108 +98,108 @@
 </script>
 
 {#snippet signIn()}
-  <p class="git-lead">Sign in so the desktop app can reach this project.</p>
+  <p class="git-lead">{m.gitweb_signin_lead()}</p>
   <div class="git-row">
     <button type="button" class="btn btn-sm lp-control-brand" disabled={busy} onclick={() => connection.login()}>
-      {link.busy === "login" ? "Signing in…" : "Sign in"}
+      {link.busy === "login" ? m.gitweb_sign_in_busy() : m.gitweb_sign_in()}
     </button>
   </div>
 {/snippet}
 
 {#snippet connectForm()}
   <form class="git-form" onsubmit={connect}>
-    <label class="git-field panel-meta">Repository address
+    <label class="git-field panel-meta">{m.gitweb_address_label()}
       <input class="input git-input" type="text" placeholder="https://github.com/owner/repo.git" autocomplete="off" spellcheck="false"
              bind:value={address} disabled={busy} />
     </label>
     <div class="git-row">
       <button type="submit" class="btn btn-sm lp-control-tonal-brand" disabled={busy}>
-        {link.busy === "connect" ? "Connecting…" : "Connect"}
+        {link.busy === "connect" ? m.gitweb_connecting() : m.gitweb_connect()}
       </button>
     </div>
   </form>
   <div class="git-row">
     <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={connectLocal}>
-      {link.busy === "connect-local" ? "Choosing…" : "Use a local repository…"}
+      {link.busy === "connect-local" ? m.gitweb_choosing() : m.gitweb_use_local()}
     </button>
   </div>
-  <p class="panel-meta git-note">A git repository on this computer. LibrePaper works in it directly.</p>
+  <p class="panel-meta git-note">{m.gitweb_local_note()}</p>
 {/snippet}
 
 {#snippet disconnectFoot()}
   <div class="git-foot">
     <button type="button" class="git-action" disabled={busy} onclick={() => connection.disconnect()}>
-      {link.busy === "disconnect" ? "Disconnecting…" : "Disconnect"}
+      {link.busy === "disconnect" ? m.gitweb_disconnecting() : m.gitweb_disconnect()}
     </button>
-    <p class="panel-meta">{local ? "Disconnecting forgets the link. The folder and the project stay as they are." : "Disconnecting forgets the copy on this computer. The repository and the project stay as they are."}</p>
+    <p class="panel-meta">{local ? m.gitweb_disconnect_local_note() : m.gitweb_disconnect_note()}</p>
   </div>
 {/snippet}
 
 {#snippet connected()}
   {#if missing}
-    <p class="git-remote" title={status.path}>Repository {status.path}</p>
-    <p class="git-lead" role="alert">The repository folder is gone.</p>
+    <p class="git-remote" title={status.path}>{m.gitweb_repo_path({ path: status.path })}</p>
+    <p class="git-lead" role="alert">{m.gitweb_folder_gone()}</p>
     {@render disconnectFoot()}
   {:else}
-    <p class="git-remote" title={local ? status.path : status.url}>Repository {local ? status.path : status.url}, branch {status.branch}</p>
+    <p class="git-remote" title={local ? status.path : status.url}>{m.gitweb_repo_branch({ location: local ? status.path : status.url, branch: status.branch })}</p>
     {#if !status.signed_in}
       {@render signIn()}
     {:else}
       <div class="git-row">
         <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy || merging} onclick={() => connection.pull()}>
-          {link.busy === "pull" ? "Getting repository changes…" : "Get repository changes"}
+          {link.busy === "pull" ? m.gitweb_get_changes_busy() : m.gitweb_get_changes()}
         </button>
         <button type="button" class="btn btn-sm lp-control-brand" disabled={busy || merging} onclick={() => connection.push()}>
-          {link.busy === "push" ? "Sending project changes…" : "Send project changes"}
+          {link.busy === "push" ? m.gitweb_send_changes_busy() : m.gitweb_send_changes()}
         </button>
       </div>
-      <p class="panel-meta git-note">Get repository changes imports the repository's commits into this project. Send project changes sends this project's changes to the repository branch above.</p>
+      <p class="panel-meta git-note">{m.gitweb_transfer_note()}</p>
     {/if}
 
     {#if link.result}<p class="git-line" role="status">{link.result}</p>{/if}
     {#if link.interrupted}
       <div class="git-box" role="alert">
         <p>{link.interrupted}</p>
-        <p>Getting and sending wait until it is settled.</p>
+        <p>{m.gitweb_interrupted_wait()}</p>
         <div class="git-row">
           <button type="button" class="btn btn-sm lp-control-brand" disabled={busy} onclick={() => connection.retryTransfer()}>
-            {link.busy === "retry" ? "Retrying…" : "Retry interrupted transfer"}
+            {link.busy === "retry" ? m.gitweb_retry_busy() : m.gitweb_retry_transfer()}
           </button>
         </div>
       </div>
     {/if}
     {#if link.refusal?.reason === "changed"}
       <div class="git-box" role="alert">
-        <p>The project changed these files since the repository was last read:</p>
+        <p>{m.gitweb_changed_files()}</p>
         <ul class="git-list">{#each link.refusal.paths as path (path)}<li>{path}</li>{/each}</ul>
-        <p>Get repository changes again.</p>
+        <p>{m.gitweb_get_changes_again()}</p>
       </div>
     {:else if link.refusal?.reason === "suggestion"}
       <div class="git-box" role="alert">
-        <p>A pending suggestion in {link.refusal.path || "a file"} stops {ACTION[link.refusal.action]}. Accept or reject it, then try again.</p>
+        <p>{m.gitweb_suggestion_refusal({ path: link.refusal.path || m.gitweb_a_file(), action: ACTION[link.refusal.action] })}</p>
       </div>
     {/if}
 
     {#if status.merging && !merging && local}
-      <p class="git-lead" role="status">A merge is waiting for its commit. Commit it in the repository, then choose Get repository changes or Send project changes again.</p>
+      <p class="git-lead" role="status">{m.gitweb_merge_wait_local()}</p>
     {:else if status.merging && !merging}
-      <p class="git-lead" role="status">The files are settled, but the merge could not be committed. Get repository changes or send project changes to try again.</p>
+      <p class="git-lead" role="status">{m.gitweb_merge_wait_remote()}</p>
     {:else if status.merging && local}
       <div class="git-box">
-        <p>These files changed in both the project and the repository.</p>
-        <ul class="git-list" aria-label="Files that changed on both sides">{#each status.merging.conflicts as path (path)}<li>{path}</li>{/each}</ul>
-        <p>Resolve these files in your editor and commit the merge. Then choose Get repository changes or Send project changes again.</p>
+        <p>{m.gitweb_conflict_both()}</p>
+        <ul class="git-list" aria-label={m.gitweb_conflict_files()}>{#each status.merging.conflicts as path (path)}<li>{path}</li>{/each}</ul>
+        <p>{m.gitweb_conflict_resolve_local()}</p>
       </div>
     {:else if status.merging}
       <div class="git-box">
-        <p>These files changed in both the project and the repository. Choose which version to keep.</p>
-        <ul class="git-conflicts" aria-label="Files that changed on both sides">
+        <p>{m.gitweb_conflict_both_choose()}</p>
+        <ul class="git-conflicts" aria-label={m.gitweb_conflict_files()}>
           {#each status.merging.conflicts as path (path)}
             <li class="git-conflict">
               <span class="git-path" title={path}>{path}</span>
               <span class="git-choices">
-                <button type="button" class="git-action" disabled={busy} onclick={() => connection.resolve(path, "project")}>Keep project's</button>
-                <button type="button" class="git-action" disabled={busy} onclick={() => connection.resolve(path, "repository")}>Take repository's</button>
+                <button type="button" class="git-action" disabled={busy} onclick={() => connection.resolve(path, "project")}>{m.gitweb_keep_project()}</button>
+                <button type="button" class="git-action" disabled={busy} onclick={() => connection.resolve(path, "repository")}>{m.gitweb_take_repository()}</button>
               </span>
             </li>
           {/each}
@@ -208,23 +213,23 @@
 
 <div class="git-web">
   <section class="git-block" aria-labelledby="git-web-repository">
-    <h3 id="git-web-repository" class="panel-section-title">Repository</h3>
+    <h3 id="git-web-repository" class="panel-section-title">{m.gitweb_repository_heading()}</h3>
     <p class="git-push" role="status" title={pushTitle}>{pushText}</p>
     {#if !desktop}
-      <p class="git-lead">To send and get changes with git, open this project in the LibrePaper desktop app.</p>
-      <p class="git-lead">You can also keep a GitHub repository in sync with this project through a <a href="{DOCS}#github-action" target="_blank" rel="noopener noreferrer">GitHub Action</a>, with no desktop app. <a href={DOCS} target="_blank" rel="noopener noreferrer">Read the Git docs</a> to set it up.</p>
+      <p class="git-lead">{m.gitweb_open_desktop()}</p>
+      <p class="git-lead">{m.gitweb_sync_intro()} <a href="{DOCS}#github-action" target="_blank" rel="noopener noreferrer">GitHub Action</a>, {m.gitweb_sync_no_desktop()} <a href={DOCS} target="_blank" rel="noopener noreferrer">{m.gitweb_read_git_docs()}</a> {m.gitweb_setup_text()}</p>
     {/if}
   </section>
 
   {#if desktop && connection}
     <section class="git-block" aria-labelledby="git-web-connect">
-      <h3 id="git-web-connect" class="panel-section-title">{status?.connected ? "Repository on this computer" : "Connect a repository"}</h3>
+      <h3 id="git-web-connect" class="panel-section-title">{status?.connected ? m.gitweb_connected_heading() : m.gitweb_connect_heading()}</h3>
       {#if !link.loaded}
-        <p class="panel-muted" role="status">Loading…</p>
+        <p class="panel-muted" role="status">{m.gitweb_loading()}</p>
       {:else if status?.connected}
         {@render connected()}
       {:else if status}
-        <p class="git-lead">Connect this project to a git repository. Git uses your own sign-in.</p>
+        <p class="git-lead">{m.gitweb_connect_lead()}</p>
         {#if !status.signed_in}{@render signIn()}{/if}
         {@render connectForm()}
       {/if}
@@ -237,7 +242,7 @@
   {/if}
 
   {#if desktop}
-    <p class="panel-meta git-note"><a href={DOCS} target="_blank" rel="noopener noreferrer">Read the Git docs</a>. The docs also show a <a href="{DOCS}#github-action" target="_blank" rel="noopener noreferrer">GitHub Action</a> that keeps a repository in step without this computer.</p>
+    <p class="panel-meta git-note"><a href={DOCS} target="_blank" rel="noopener noreferrer">{m.gitweb_read_git_docs()}</a>. {m.gitweb_docs_show_action()} <a href="{DOCS}#github-action" target="_blank" rel="noopener noreferrer">GitHub Action</a> {m.gitweb_docs_keeps_repo()}</p>
   {/if}
 </div>
 
