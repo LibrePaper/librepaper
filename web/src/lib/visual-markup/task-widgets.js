@@ -11,6 +11,7 @@ import { iconElement } from "../icons.js";
 import { taskAt } from "../tasks/model.js";
 import { cycle } from "../tasks/edit.js";
 import { CYCLE, isOverdue, PRIORITIES, shortDate, STATE_OF, STATES, todayISO } from "../tasks/syntax.js";
+import { m } from "../paraglide/messages.js";
 
 const STATE_LABEL = Object.fromEntries(STATES.map((item) => [item.state, item.label]));
 // What a click on a box in each state moves it to, for the box's accessible name.
@@ -25,14 +26,21 @@ const PRIORITY_GLYPH = { 1: "❶", 2: "❷", 3: "❸", 4: "❹", 5: "❺" };
 
 // The date fields, with the words a chip puts before the date and the name of the date.
 const DATE_LABEL = {
-  due: "Due date",
-  start: "Start date",
-  scheduled: "Scheduled date",
-  created: "Created date",
-  done: "Completed date",
-  cancelled: "Cancelled date",
+  due: m.task_widgets_due_label(),
+  start: m.task_widgets_start_label(),
+  scheduled: m.task_widgets_scheduled_label(),
+  created: m.task_widgets_created_label(),
+  done: m.task_widgets_done_label(),
+  cancelled: m.task_widgets_cancelled_label(),
 };
-const DATE_PREFIX = { due: "", start: "start", scheduled: "sched.", created: "created", done: "done", cancelled: "cancelled" };
+const DATE_PREFIX = {
+  due: "",
+  start: m.task_widgets_prefix_start(),
+  scheduled: m.task_widgets_prefix_scheduled(),
+  created: m.task_widgets_prefix_created(),
+  done: m.task_widgets_prefix_done(),
+  cancelled: m.task_widgets_prefix_cancelled(),
+};
 
 // Fields that are useful to read but should not compete with the task's text.
 const QUIET_FIELDS = new Set(["created", "estimate"]);
@@ -70,7 +78,10 @@ function buildTaskBox(view, { task, progress }) {
   button.type = "button";
   button.setAttribute("role", "checkbox");
   button.setAttribute("aria-checked", CHECKED[task] ?? "false");
-  button.setAttribute("aria-label", `Task, ${STATE_LABEL[task].toLowerCase()}. Click for ${NEXT_LABEL[task].toLowerCase()}.`);
+  button.setAttribute(
+    "aria-label",
+    m.task_widgets_task_box_name({ state: STATE_LABEL[task].toLowerCase(), next: NEXT_LABEL[task].toLowerCase() }),
+  );
   // Presses stay inside the box. The editor's keymap and caret must not act on them.
   button.addEventListener("mousedown", (event) => event.stopPropagation());
   button.addEventListener("keydown", (event) => event.stopPropagation());
@@ -84,7 +95,10 @@ function buildTaskBox(view, { task, progress }) {
   });
 
   root.append(button);
-  if (progress) root.append(el("span", "cm-lp-task-progress", progress.replace("/", " of ")));
+  if (progress) {
+    const [done, total] = progress.split("/");
+    root.append(el("span", "cm-lp-task-progress", m.task_widgets_progress({ done, total })));
+  }
   return root;
 }
 
@@ -93,32 +107,34 @@ function buildTaskBox(view, { task, progress }) {
 // keeps the source as written, and says so in the name and the title. A priority's title
 // is its name, so a pointer rests on the same words a screen reader gets.
 function describeField(key, value, state, warning) {
-  if (warning) return { text: `${key}:${value}`, name: `${key}:${value}. ${warning}`, title: warning };
+  if (warning) return { text: `${key}:${value}`, name: m.task_widgets_field_warning_name({ key, value, warning }), title: warning };
   if (key === "priority") {
     const rank = PRIORITIES.find((item) => String(item.value) === value);
     if (rank) {
-      const name = `Priority ${rank.value}, ${rank.label.toLowerCase()}`;
+      const name = m.task_widgets_priority_name({ value: rank.value, label: rank.label.toLowerCase() });
       return { text: PRIORITY_GLYPH[rank.value], name, title: name };
     }
-    return { text: value, name: `Priority ${value}` };
+    return { text: value, name: m.task_widgets_priority_plain({ value }) };
   }
   if (key in DATE_LABEL) {
     const short = shortDate(value);
     const overdue = key === "due" && isOverdue(state, value);
     const prefix = DATE_PREFIX[key];
     return {
-      text: prefix ? `${prefix} ${short}` : short,
-      name: `${DATE_LABEL[key]} ${short}${overdue ? ", overdue" : ""}`,
+      text: prefix ? m.task_widgets_date_chip({ prefix, date: short }) : short,
+      name: overdue
+        ? m.task_widgets_date_name_overdue({ label: DATE_LABEL[key], date: short })
+        : m.task_widgets_date_name({ label: DATE_LABEL[key], date: short }),
       icon: "clock",
       overdue,
     };
   }
   if (key === "assignee") {
     const names = value.split(",");
-    if (names.length > 1) return { text: names.join(", "), name: `Assignees ${names.join(", ")}`, icon: "users" };
-    return { text: value, name: `Assignee ${value}`, icon: "user" };
+    if (names.length > 1) return { text: names.join(", "), name: m.task_widgets_assignees({ names: names.join(", ") }), icon: "users" };
+    return { text: value, name: m.task_widgets_assignee({ value }), icon: "user" };
   }
-  return { text: value, name: `Estimate ${value}` };
+  return { text: value, name: m.task_widgets_estimate({ value }) };
 }
 
 // A field chip. The chip shows the short form and its name says the whole field.
@@ -148,7 +164,7 @@ function buildField(view, { key, value, state, warning }) {
 
 function buildTag(view, { tag }) {
   const chip = el("span", "cm-lv-widget cm-lp-task-tag", `#${tag}`);
-  chip.setAttribute("aria-label", `Tag ${tag}`);
+  chip.setAttribute("aria-label", m.task_widgets_tag_name({ tag }));
   revealOnMousedown(view, chip);
   return chip;
 }

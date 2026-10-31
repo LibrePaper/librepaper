@@ -2,6 +2,7 @@ import { StateField } from "@codemirror/state";
 import { Decoration, EditorView } from "@codemirror/view";
 import { PillWidget, revealingSelection } from "./markup.ts";
 import { findMetadata } from "./metadata.js";
+import { m } from "../paraglide/messages.js";
 
 // The preamble is looked for in the first lines only; a document whose
 // \begin{document} is further down is left unfolded.
@@ -63,13 +64,13 @@ function foldAround(revealed, from, to, summary) {
   // The summary names the document's class and packages; the other folds say so.
   return Decoration.set(
     pieces.map(([pieceFrom, pieceTo], index) =>
-      widgetFor(pieceFrom, pieceTo, index === 0 ? summary : "More preamble"),
+      widgetFor(pieceFrom, pieceTo, index === 0 ? summary : m.preamble_more()),
     ),
   );
 }
 
 function widgetFor(from, to, text) {
-  return Decoration.replace({ widget: new PillWidget(text, "Show the preamble", "cm-lp-preamble"), block: true }).range(from, to);
+  return Decoration.replace({ widget: new PillWidget(text, m.preamble_show(), "cm-lp-preamble"), block: true }).range(from, to);
 }
 
 // The lines that hold a metadata command in the preamble, widened to whole lines.
@@ -117,10 +118,10 @@ function summarise(text) {
     packages += match[1].split(",").filter((name) => name.trim() !== "").length;
   }
 
-  const parts = [];
-  if (documentClass && documentClass[1].trim() !== "") parts.push(documentClass[1].trim());
-  parts.push(`${packages} ${packages === 1 ? "package" : "packages"}`);
-  return `Preamble: ${parts.join(", ")}`;
+  if (documentClass && documentClass[1].trim() !== "") {
+    return m.preamble_summary_class({ documentClass: documentClass[1].trim(), count: packages });
+  }
+  return m.preamble_summary_packages({ count: packages });
 }
 
 // Drops the text of each % comment, so a commented-out package is not counted.

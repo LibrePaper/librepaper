@@ -13,6 +13,8 @@
 // The pure arithmetic is exported so `tests/unit/pdf-links.mjs` can check it
 // without a browser or a PDF.
 
+import { m } from "../paraglide/messages.js";
+
 const EXTERNAL = new Set(["http:", "https:", "mailto:"]);
 
 /// `url` if it is an absolute http, https or mailto address, else null.
@@ -142,7 +144,7 @@ export async function linkLayer(page, viewport, pdfDocument, ongo) {
       if (!target) continue;
       anchor.href = `#page=${target.page}`;
       anchor.dataset.page = String(target.page);
-      anchor.setAttribute("aria-label", `Go to page ${target.page}`);
+      anchor.setAttribute("aria-label", m.links_go_to_page({ page: target.page }));
       anchor.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
