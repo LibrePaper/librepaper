@@ -1,0 +1,5 @@
+{
+  "name": "Slides",
+  "description": "A research talk with sections, overlays, a two-column frame, a table and a backup frame.",
+  "keywords": ["presentation", "talk", "beamer", "deck", "lecture"]
+}
