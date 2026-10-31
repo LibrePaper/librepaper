@@ -4,11 +4,12 @@
   import Comments from "../Comments.svelte";
   import PanelTabs from "../PanelTabs.svelte";
   import IconButton from "../IconButton.svelte";
+  import { m } from "../../lib/paraglide/messages.js";
 
   let {
     messages = [], connected = false, canPost = false, onsend = undefined,
     more = false, loadingOlder = false, loadError = "", canClear = false, onloadolder = undefined, onclear = undefined,
-    comments = [], identity = "", commentingAs = "Anonymous",
+    comments = [], identity = "", commentingAs = m.collaboration_anonymous(),
     canModerate = false, canComment = true,
     onreveal = undefined, onresolve = undefined, ondelete = undefined,
     ondeletemany = undefined, onreply = undefined, onedit = undefined, onagent = undefined, pending = undefined,
@@ -26,9 +27,9 @@
   } = $props();
   // View-only links never see the chat, so there is no tab for it.
   const VIEWS = $derived([
-    ...(canComment ? [{ id: "chat", label: "Chat" }] : []),
-    { id: "comments", label: "Comments" },
-    { id: "highlights", label: "Highlights" },
+    ...(canComment ? [{ id: "chat", label: m.collaboration_chat() }] : []),
+    { id: "comments", label: m.collaboration_comments() },
+    { id: "highlights", label: m.collaboration_highlights() },
   ]);
   $effect(() => { if (!canComment && tab === "chat") tab = "comments"; });
   const common = () => ({ identity, commentingAs, canModerate, canComment,
@@ -39,13 +40,13 @@
 
 <!-- The strip, its ids and the layout of a pane are PanelTabs', shared with
      the agent panel. What is left here is what the tabs contain. -->
-<section class="collaboration panel panel-tabbed" aria-label="Collaboration">
+<section class="collaboration panel panel-tabbed" aria-label={m.collaboration_section_label()}>
   {#snippet clearChat()}
-    <IconButton icon="trash" label="Clear chat" tone="plain" size="btn-icon-sm" onclick={() => onclear?.()} />
+    <IconButton icon="trash" label={m.collaboration_clear_chat()} tone="plain" size="btn-icon-sm" onclick={() => onclear?.()} />
   {/snippet}
-  <PanelTabs id="collaboration" label="Collaboration views" listClass="collab-tabs"
+  <PanelTabs id="collaboration" label={m.collaboration_views_label()} listClass="collab-tabs"
              tabs={VIEWS.map((view) => ({ ...view,
-               dot: view.id === "chat" && unreadChat ? "Unread messages" : "" }))}
+               dot: view.id === "chat" && unreadChat ? m.collaboration_unread() : "" }))}
              value={tab} onchange={(value) => (tab = value)}
              actions={tab === "chat" && canClear && messages.length > 0 ? clearChat : undefined}>
     <Tabs.Content value="chat"><Chat {messages} {more} {loadingOlder} {loadError} {onloadolder} {connected} {canPost} {onsend} /></Tabs.Content>
@@ -54,9 +55,9 @@
         {composing} {needsLogin} {signInHref} onsend={oncommentsend} oncancel={oncommentcancel} />
     </Tabs.Content>
     <Tabs.Content value="highlights">
-      <Comments {...common()} {comments} filter="highlights" title="Highlights"
+      <Comments {...common()} {comments} filter="highlights" title={m.collaboration_highlights()}
         cardIdPrefix="collaboration-highlight"
-        hint="Select text in the preview window to highlight." />
+        hint={m.collaboration_highlight_hint()} />
     </Tabs.Content>
   </PanelTabs>
 </section>
