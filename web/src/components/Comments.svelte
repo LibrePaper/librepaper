@@ -1,4 +1,5 @@
 <script>
+  import { m } from "../lib/paraglide/messages.js";
   import IconButton from "./IconButton.svelte";
   import CommentCard from "./CommentCard.svelte";
   import CommentComposer from "./CommentComposer.svelte";
@@ -34,11 +35,11 @@
     // Optional view filter used by the collaboration tabs. Highlight notes
     // remain in both views when they carry a discussion.
     filter = "all",
-    title = "Comments",
+    title = m.comments_title(),
     // The standing line at the top of the panel: how a comment gets made at
     // all. It is not an empty state -- someone who has read one comment still
     // has to be told where the next one comes from -- so it stays put.
-    hint = "Select text in the preview window to comment.",
+    hint = m.comments_hint(),
     onhistory = undefined,
     cardIdPrefix = "comment",
     // The id of the annotation the page has singled out, if any.
@@ -86,16 +87,16 @@
   // wording there rather than a document-wide figure this cannot know.
   const partial = $derived(Boolean(page) && !page.complete);
   const meta = $derived.by(() => {
-    if (!page) return filtered.length ? `${open} open · ${filtered.length} total` : undefined;
-    if (page.loading) return "Loading…";
+    if (!page) return filtered.length ? m.comments_meta_total({ open, total: filtered.length }) : undefined;
+    if (page.loading) return m.comments_loading();
     if (filter === "all") {
       return partial
-        ? `${page.open} open · ${page.total} total · ${comments.length} loaded`
-        : `${page.open} open · ${page.total} total`;
+        ? m.comments_meta_loaded({ open: page.open, total: page.total, loaded: comments.length })
+        : m.comments_meta_total({ open: page.open, total: page.total });
     }
     return partial
-      ? `${open} open · ${filtered.length} of the ${comments.length} loaded so far`
-      : `${open} open · ${filtered.length} total`;
+      ? m.comments_meta_filtered({ open, filtered: filtered.length, loaded: comments.length })
+      : m.comments_meta_total({ open, total: filtered.length });
   });
   // Against everything loaded, not against this tab's share of it: what
   // "Load more" fetches is comments, not comments of one kind.
@@ -138,33 +139,33 @@
     {#snippet actions()}
       <div class="flex flex-wrap items-center gap-1">
         {#if onhistory}
-          <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={onhistory}>Show changes since…</button>
+          <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={onhistory}>{m.comments_show_changes()}</button>
         {/if}
         {#if canComment && (resolvable.length || clearable.length || (canModerate && deletable.length))}
-          <div class="bulk flex gap-1" role="group" aria-label={partial ? "Loaded comments" : "All comments"}>
+          <div class="bulk flex gap-1" role="group" aria-label={partial ? m.comments_group_loaded() : m.comments_group_all()}>
             {#if resolvable.length}
               <button type="button" class="btn btn-sm lp-control-tonal-brand"
-                title={partial ? "Resolve every open comment that is loaded" : "Resolve every open comment"}
-                onclick={resolveAll}>{partial ? "Resolve loaded" : "Resolve all"}</button>
+                title={partial ? m.comments_resolve_loaded_title() : m.comments_resolve_all_title()}
+                onclick={resolveAll}>{partial ? m.comments_resolve_loaded() : m.comments_resolve_all()}</button>
             {/if}
             {#if clearable.length}
               <button type="button" class="btn btn-sm lp-control-tonal-brand"
-                title={partial ? "Delete every resolved comment that is loaded" : "Delete every resolved comment"}
+                title={partial ? m.comments_clear_loaded_title() : m.comments_clear_all_title()}
                 disabled={!ondeletemany}
-                onclick={() => ondeletemany?.(clearable)}>Clear resolved</button>
+                onclick={() => ondeletemany?.(clearable)}>{m.comments_clear()}</button>
             {/if}
             {#if canModerate && deletable.length}
               <button type="button" class="btn btn-sm lp-control-tonal-brand"
-                title={partial ? "Delete every comment that is loaded" : "Delete every comment"}
+                title={partial ? m.comments_delete_loaded_title() : m.comments_delete_all_title()}
                 disabled={!ondeletemany}
-                onclick={() => ondeletemany?.(deletable)}>{partial ? "Delete loaded" : "Delete all"}</button>
+                onclick={() => ondeletemany?.(deletable)}>{partial ? m.comments_delete_loaded() : m.comments_delete_all()}</button>
             {/if}
           </div>
         {/if}
       </div>
     {/snippet}
     {#if !canComment}
-      <p class="panel-muted">Read-only access. Ask the owner for a Comment or Edit link to participate.</p>
+      <p class="panel-muted">{m.comments_read_only()}</p>
     {:else}
       <p class="panel-muted">{hint}</p>
     {/if}
@@ -222,18 +223,18 @@
           <span>{page.error}</span>
           <button type="button" class="btn btn-sm lp-control-tonal-brand"
             disabled={page.busy}
-            onclick={() => onloadmore?.()}>Try again</button>
+            onclick={() => onloadmore?.()}>{m.comments_try_again()}</button>
         </p>
       {/if}
       {#if page.loading}
-        <p class="panel-muted" role="status">Loading comments…</p>
+        <p class="panel-muted" role="status">{m.comments_loading_list()}</p>
       {:else if !page.total}
-        <p class="panel-muted" role="status">No comments yet.</p>
+        <p class="panel-muted" role="status">{m.comments_empty()}</p>
       {:else if partial}
         <button type="button" class="load-more btn btn-sm lp-control-tonal-brand"
           disabled={page.busy}
           onclick={() => onloadmore?.()}>
-          {page.busy ? "Loading…" : `Load more (${remaining} not loaded)`}
+          {page.busy ? m.comments_loading() : m.comments_load_more({ count: remaining })}
         </button>
       {/if}
     {/if}

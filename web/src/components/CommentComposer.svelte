@@ -1,4 +1,5 @@
 <script>
+  import { m } from "../lib/paraglide/messages.js";
   // Writing the note, in the column where it will live rather than in a
   // dialog over the document it is about. It is the same card as the notes
   // around it, in the place the new one will take, so the passage stays
@@ -21,7 +22,7 @@
   let field = $state(null);
 
   const quotation = $derived(
-    `“${pending?.exact ?? ""}”`,
+    m.commentcomposer_quotation({ exact: pending?.exact ?? "" }),
   );
 
   $effect(() => {
@@ -49,38 +50,38 @@
   }
 </script>
 
-<article id="composer" class="card composer lp-control-tonal-brand p-2" aria-label="New comment">
+<article id="composer" class="card composer lp-control-tonal-brand p-2" aria-label={m.commentcomposer_aria()}>
   <div class="flex flex-col gap-2">
     <blockquote class="quote border-[var(--color-brand)] border-l-2 pl-3 text-sm">{quotation}</blockquote>
 
     {#if needsLogin}
       <p class="text-sm">
-        <a class="anchor" href={signInHref}>Sign in</a>
-        to comment on this document.
+        <a class="anchor" href={signInHref}>{m.commentcomposer_sign_in()}</a>
+        {m.commentcomposer_sign_in_rest()}
       </p>
     {:else}
       <!-- No name to type: the server hands out a per-document pseudonym for
            an anonymous commenter, so this is only ever a statement. -->
-      <p class="panel-meta">commenting as {identity || commentingAs}</p>
+      <p class="panel-meta">{m.commentcomposer_commenting_as({ name: identity || commentingAs })}</p>
     {/if}
 
     <textarea
       class="textarea"
-      aria-label="Comment"
+      aria-label={m.commentcomposer_field()}
       rows="3"
       maxlength="5000"
       disabled={needsLogin}
       bind:this={field}
       bind:value={body}
       onkeydown={key}
-      placeholder="Comment · Enter sends · Esc cancels"
+      placeholder={m.commentcomposer_placeholder()}
     ></textarea>
 
     <div class="flex items-center justify-end gap-2">
-      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncancel?.()}>Cancel</button>
+      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncancel?.()}>{m.commentcomposer_cancel()}</button>
       <button type="button" class="btn btn-sm lp-control-brand" data-send
               disabled={needsLogin || !body.trim()}
-              onclick={send}>Comment</button>
+              onclick={send}>{m.commentcomposer_send()}</button>
     </div>
   </div>
 </article>
