@@ -1,6 +1,7 @@
 <script>
   import IconButton from "../IconButton.svelte";
   import { slotId } from "../../lib/panels.js";
+  import { m } from "../../lib/paraglide/messages.js";
 
   // The row of panel icons. It is drawn twice -- down the side of the column
   // beside a mouse, along the bottom of the window under a thumb -- and an
@@ -25,7 +26,7 @@
 {#each tabs as tab (tab.id)}
   {@const badge = badges[tab.id] ?? {}}
   <div class="rail-item">
-    <IconButton icon={tab.icon} label={tab.disabled ? `${tab.says} (not available in the demo)` : badge.says || tab.says}
+    <IconButton icon={tab.icon} label={tab.disabled ? m.panelrail_demo_unavailable({ says: tab.says }) : badge.says || tab.says}
       disabled={tab.disabled}
       pressed={panel === tab.id && (open || marksWhenClosed)}
       controls={slotId(tab.id)} expanded={panel === tab.id && open}

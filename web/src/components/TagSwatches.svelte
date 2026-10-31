@@ -1,10 +1,11 @@
 <script>
   import { TAG_COLOURS, tagColour } from "../lib/tag-colours.js";
+  import { m } from "../lib/paraglide/messages.js";
 
   // The fixed palette as a row of swatches. Each one is a toggle button that
   // says which colour is chosen, so a keyboard user tabs through the row and
   // hears the colour names rather than nine unlabelled squares.
-  let { value = "gray", label = "Colour", onchange = undefined } = $props();
+  let { value = "gray", label = m.tagswatches_label(), onchange = undefined } = $props();
 </script>
 
 <div class="tag-swatches" role="group" aria-label={label}>

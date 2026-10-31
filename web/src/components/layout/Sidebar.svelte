@@ -3,6 +3,7 @@
   import PanelRail from "./PanelRail.svelte";
   import Grip from "../Grip.svelte";
   import { slotId } from "../../lib/panels.js";
+  import { m } from "../../lib/paraglide/messages.js";
 
   // The column at the left: a rail of icons, and one panel at a time beside
   // it. What is *in* a panel is none of this component's business -- each
@@ -45,7 +46,7 @@
     // expected. The landing page's rail is navigation with nothing beside it,
     // so it takes neither.
     resizable = true,
-    label = "Sidebar",
+    label = m.sidebar_default_label(),
     compact = false,
     panes = undefined,
     sidebarPane = undefined,
@@ -68,12 +69,12 @@
 <aside class="sidebar" class:collapsed={!shown.comments} aria-label={label}
        ondragover={(event) => event.preventDefault()} ondrop={ondrop}>
   <div class="sidebar-activity">
-    <div class="activity-sections" role="group" aria-label="{label} sections">
+    <div class="activity-sections" role="group" aria-label={m.sidebar_sections({ label })}>
       <PanelRail {tabs} {panel} {badges} open={shown.comments} marksWhenClosed
         onselect={(id) => onselectpanel?.(id)} />
       {@render places?.()}
     </div>
-    <div class="activity-bottom" role="group" aria-label="Workspace controls">
+    <div class="activity-bottom" role="group" aria-label={m.sidebar_workspace_controls()}>
       {@render controls?.()}
     </div>
   </div>
@@ -91,7 +92,7 @@
 {/if}
 
 {#if tabs.length && shown.comments && resizable && !compact}
-  <Grip pane={sidebarPane} label="Resize the left-hand column" {panes}
+  <Grip pane={sidebarPane} label={m.sidebar_resize_column()} {panes}
     controls={panel ? slotId(panel) : undefined}
     onsize={onsize} onguide={onguide} ongrab={ongrab} />
 {/if}

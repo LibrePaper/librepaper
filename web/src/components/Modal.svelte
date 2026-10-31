@@ -2,6 +2,7 @@
   import { Dialog, Portal } from "@skeletonlabs/skeleton-svelte";
   import IconButton from "./IconButton.svelte";
   import Icon from "./Icon.svelte";
+  import { m } from "../lib/paraglide/messages.js";
 
   // Every dialog in the application, so there is one answer to what a dialog
   // is: a card in the middle of a dimmed page, with a heading, whatever it is
@@ -31,7 +32,7 @@
     description = null,
     children = undefined,
     confirm = null,
-    cancelLabel = "Cancel",
+    cancelLabel = m.modal_cancel(),
     onclose = undefined,
     wide = false,
     wider = false,
@@ -193,7 +194,7 @@
             <div class="modal-page-bar-inner">
               <button type="button" class="modal-back" onclick={close}>
                 <Icon name="arrow-left" size={18} />
-                Back
+                {m.modal_back()}
               </button>
               <Dialog.Title class="modal-page-title">{title}</Dialog.Title>
             </div>
@@ -206,7 +207,7 @@
           <div class="flex shrink-0 flex-col gap-3" class:sheet-grab={sheet}
                onpointerdown={startDrag} onpointermove={moveDrag} onpointerup={endDrag} onpointercancel={cancelDrag}>
             {#if sheet}
-              <button type="button" class="sheet-handle" aria-label={expanded ? "Shrink" : "Expand"} aria-expanded={expanded}
+              <button type="button" class="sheet-handle" aria-label={expanded ? m.modal_shrink() : m.modal_expand()} aria-expanded={expanded}
                       onclick={() => (expanded = !expanded)}></button>
             {/if}
             <header class="flex shrink-0 items-start gap-3">
@@ -216,7 +217,7 @@
                   <Dialog.Description class="lp-text-secondary text-sm">{description}</Dialog.Description>
                 {/if}
               </div>
-              <IconButton icon="x" label="Close" tone="plain" size="btn-icon-sm" onclick={close} />
+              <IconButton icon="x" label={m.modal_close()} tone="plain" size="btn-icon-sm" onclick={close} />
             </header>
           </div>
           <div class={compact ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "flex min-h-0 flex-col gap-3 overflow-y-auto"}>

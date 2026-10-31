@@ -12,6 +12,7 @@
   // from matching.
   import { report } from "../lib/crash.js";
   import DiagnosticsPanel from "./settings/DiagnosticsPanel.svelte";
+  import { m } from "../lib/paraglide/messages.js";
 
   let showDiagnostics = $state(false);
 
@@ -28,20 +29,16 @@
     <!-- Deliberately plain. Whatever broke may be the toast store, the theme,
          or the icon set, so this leans on none of them. -->
     <div class="crash" role="alert">
-      <h1>Something in LibrePaper stopped working</h1>
-      <p>
-        The rest of the page could not be drawn. Nothing you have written has
-        been sent anywhere or lost — a document you were editing is still in
-        this browser, and reloading will pick it up again.
-      </p>
-      <p class="crash-detail">{error && typeof error === "object" && "message" in error ? String(error.message) : "An unknown error"}</p>
+      <h1>{m.boundary_crash_title()}</h1>
+      <p>{m.boundary_crash_body()}</p>
+      <p class="crash-detail">{error && typeof error === "object" && "message" in error ? String(error.message) : m.boundary_unknown_error()}</p>
       <div class="crash-actions">
         <!-- Trying again costs nothing and sometimes works: a chunk that
              failed to load is fetched again, and a bad bit of state is built
              from scratch. Reloading is the way out when it does not. -->
-        <button type="button" onclick={reset}>Try again</button>
-        <button type="button" onclick={() => location.reload()}>Reload the page</button>
-        <button type="button" aria-expanded={showDiagnostics} onclick={() => (showDiagnostics = !showDiagnostics)}>Diagnostics</button>
+        <button type="button" onclick={reset}>{m.boundary_try_again()}</button>
+        <button type="button" onclick={() => location.reload()}>{m.boundary_reload()}</button>
+        <button type="button" aria-expanded={showDiagnostics} onclick={() => (showDiagnostics = !showDiagnostics)}>{m.boundary_diagnostics()}</button>
       </div>
       {#if showDiagnostics}<DiagnosticsPanel compact />{/if}
     </div>

@@ -1,6 +1,7 @@
 <script>
   import { Toast } from "@skeletonlabs/skeleton-svelte";
   import { toaster } from "../lib/toast.svelte.js";
+  import { m } from "../lib/paraglide/messages.js";
 
   // Where what the application has to say appears. One of these per page, at
   // the bottom, out of the way of both the document and the comment column.
@@ -18,7 +19,7 @@
     >
       <div class="flex items-start justify-between gap-3">
         <Toast.Description class="text-sm">{toast.description}</Toast.Description>
-        <Toast.CloseTrigger class="btn-icon btn-icon-sm" aria-label="Dismiss">×</Toast.CloseTrigger>
+        <Toast.CloseTrigger class="btn-icon btn-icon-sm" aria-label={m.toasts_dismiss()}>×</Toast.CloseTrigger>
       </div>
       {#if toast.action}
         <Toast.ActionTrigger class="btn btn-sm lp-control-tonal-brand mt-3">{toast.action.label}</Toast.ActionTrigger>

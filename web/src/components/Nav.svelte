@@ -4,6 +4,7 @@
   import Menubar from "./Menubar.svelte";
   import Avatar from "./Avatar.svelte";
   import { signInHref, signOut } from "../lib/api.js";
+  import { m } from "../lib/paraglide/messages.js";
 
   // The bar every page wears: whatever the page puts in the middle, and who
   // you are.
@@ -25,7 +26,7 @@
      title, presence, the account -- and this is one Tab and one Enter over
      all of them. It shows itself when it takes the focus and is
      invisible otherwise, which is the only time anyone needs it. -->
-<a class="skip-link" href="#main">Skip to content</a>
+<a class="skip-link" href="#main">{m.nav_skip_to_content()}</a>
 
 <nav class="flex items-center justify-between gap-4" class:phone-menu={phoneMenu} class:bar-hidden={hidden}>
   <div class="nav-identity flex min-w-0 items-center gap-3">
@@ -49,16 +50,16 @@
       {#if me.name}
         {@const shown = me.provider === "github" ? `@${me.name}` : me.name}
         <Menu onSelect={(chosen) => { if (chosen.value === "signout") void signOut(); }}>
-          <Menu.Trigger class="account icon-control" aria-label={`Account menu, signed in as ${shown}`} title={shown}>
+          <Menu.Trigger class="account icon-control" aria-label={m.nav_account_menu_label({ shown })} title={shown}>
             <Avatar name={me.name} key={me.handle || me.name} size={7} title="" />
           </Menu.Trigger>
           <ExplorerMenu>
             <div class="account-who" aria-hidden="true">{shown}</div>
-            <Menu.Item value="signout" class="menuitem">Sign out</Menu.Item>
+            <Menu.Item value="signout" class="menuitem">{m.nav_sign_out()}</Menu.Item>
           </ExplorerMenu>
         </Menu>
       {:else if signIn && me.providers?.length}
-        <a class="btn btn-sm lp-control-brand" href={signInHref()}>Sign in</a>
+        <a class="btn btn-sm lp-control-brand" href={signInHref()}>{m.nav_sign_in()}</a>
       {/if}
     </span>
   </div>
