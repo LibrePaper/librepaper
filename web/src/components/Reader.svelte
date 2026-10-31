@@ -3936,19 +3936,19 @@
         onOpenChange={(event) => (downloadOpen = event.open)}
         onSelect={(chosen) => void chooseFileCommand(chosen.value)}>
     <Menu.TriggerItem value="submenu:download" class="menuitem">
-      <span class="menuitem-label">Download</span>
+      <span class="menuitem-label">{m.readerd_download_menu()}</span>
       <span class="menuitem-chevron" aria-hidden="true"><Icon name="chevron-right" size="1rem" /></span>
     </Menu.TriggerItem>
     <ExplorerMenu>
-      {#if mayEdit}<Menu.Item value="download" class="menuitem"><span class="menuitem-label">Project</span></Menu.Item>{/if}
+      {#if mayEdit}<Menu.Item value="download" class="menuitem"><span class="menuitem-label">{m.readerd_download_project()}</span></Menu.Item>{/if}
       {@render exportItem("download-html", "HTML", "html")}
       {@render exportItem("download-pdf", "PDF", "pdf")}
       {@render exportItem("download-docx", "DOCX", "docx")}
-      {#if canExportComments && !DEMO}<Menu.Item value="download-comments" class="menuitem"><span class="menuitem-label">Comments</span></Menu.Item>{/if}
+      {#if canExportComments && !DEMO}<Menu.Item value="download-comments" class="menuitem"><span class="menuitem-label">{m.readerd_download_comments()}</span></Menu.Item>{/if}
       {#if mayEdit}
         <Menu.Item value="download-source" class="menuitem" disabled={!toolbarPath}>
-          <span class="menuitem-label">Source</span>
-          {#if !toolbarPath}<span class="export-reason">Open a file to download its source.</span>{/if}
+          <span class="menuitem-label">{m.readerd_download_source()}</span>
+          {#if !toolbarPath}<span class="export-reason">{m.readerd_download_source_reason()}</span>{/if}
         </Menu.Item>
       {/if}
     </ExplorerMenu>
@@ -3957,39 +3957,39 @@
 
 {#snippet fileItems()}
   {#if mayEdit}
-    <Menu.Item value="new-file" class="menuitem">New file…</Menu.Item>
-    <Menu.Item value="new-folder" class="menuitem">New folder…</Menu.Item>
-    <Menu.Item value="upload" class="menuitem" disabled={DEMO}>Upload files…{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>
+    <Menu.Item value="new-file" class="menuitem">{m.readerd_new_file()}</Menu.Item>
+    <Menu.Item value="new-folder" class="menuitem">{m.readerd_new_folder()}</Menu.Item>
+    <Menu.Item value="upload" class="menuitem" disabled={DEMO}>{m.readerd_upload_files()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>
     <hr class="hr my-1" />
   {/if}
   {@render downloadMenu()}
-  {#if me?.id || DEMO}<Menu.Item value="save-template" class="menuitem" disabled={DEMO}>Save as template…{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
+  {#if me?.id || DEMO}<Menu.Item value="save-template" class="menuitem" disabled={DEMO}>{m.readerd_save_as_template_item()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
   <hr class="hr my-1" />
-  {#if tabs.some((tab) => tab.id === "git")}<Menu.Item value="git" class="menuitem" disabled={DEMO}>Git…{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
-  {#if DEMO || canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem" disabled={DEMO}>Share…{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
+  {#if tabs.some((tab) => tab.id === "git")}<Menu.Item value="git" class="menuitem" disabled={DEMO}>{m.readerd_git_item()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
+  {#if DEMO || canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem" disabled={DEMO}>{m.readerd_share_item()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
   <!-- Only where the panel behind it is one this reader is offered: a menu
        that opens a column the rail does not have is the second list of who
        may see what that lib/panels.js exists to prevent. -->
-  {#if tabs.some((tab) => tab.id === "history")}<Menu.Item value="history" class="menuitem" disabled={DEMO}>History{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
+  {#if tabs.some((tab) => tab.id === "history")}<Menu.Item value="history" class="menuitem" disabled={DEMO}>{m.readerd_history_item()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
   <hr class="hr my-1" />
   {#if mayEdit && sourceFormat === "latex" && compilesHere}
-    <Menu.Item value="compile" class="menuitem"><span class="menuitem-label">Compile now</span>{#if MENU_KEYS.compile}<span class="menuitem-keys">{MENU_KEYS.compile}</span>{/if}</Menu.Item>
+    <Menu.Item value="compile" class="menuitem"><span class="menuitem-label">{m.readerd_compile_now()}</span>{#if MENU_KEYS.compile}<span class="menuitem-keys">{MENU_KEYS.compile}</span>{/if}</Menu.Item>
   {/if}
-  <Menu.Item value="settings" class="menuitem"><span class="menuitem-label">Settings…</span>{#if MENU_KEYS.settings}<span class="menuitem-keys">{MENU_KEYS.settings}</span>{/if}</Menu.Item>
+  <Menu.Item value="settings" class="menuitem"><span class="menuitem-label">{m.readerd_settings_item()}</span>{#if MENU_KEYS.settings}<span class="menuitem-keys">{MENU_KEYS.settings}</span>{/if}</Menu.Item>
   {#if hasDesktop}
     <hr class="hr my-1" />
-    <Menu.Item value="quit" class="menuitem">Quit</Menu.Item>
+    <Menu.Item value="quit" class="menuitem">{m.readerd_quit()}</Menu.Item>
   {/if}
 {/snippet}
 
 {#snippet layoutItems()}
-  {#each [["source", "Editor"], ["document", "Preview"], ["split", "Split"]] as [value, label]}
+  {#each [["source", m.readerd_editor()], ["document", m.readerd_preview()], ["split", m.readerd_split()]] as [value, label]}
     <Menu.Item value="layout-{value}" class="menuitem" disabled={compact && value === "split"}>
       <span class="menuitem-check">{(compact ? activeMobileView === value : layout === value) ? "✓" : ""}</span>{label}
     </Menu.Item>
   {/each}
   <hr class="hr my-1" />
-  {#each [["left", "Editor on left"], ["right", "Editor on right"]] as [side, label]}
+  {#each [["left", m.readerd_editor_on_left()], ["right", m.readerd_editor_on_right()]] as [side, label]}
     <Menu.Item value="side-{side}" class="menuitem" disabled={compact}>
       <span class="menuitem-check">{sourceSide === side ? "✓" : ""}</span>{label}
     </Menu.Item>
@@ -4002,20 +4002,20 @@
   {/each}
   <hr class="hr my-1" />
   <Menu.Item value="linked" class="menuitem">
-    <span class="menuitem-check">{linked ? "✓" : ""}</span><span class="menuitem-label">Keep in step</span>{#if MENU_KEYS.linked}<span class="menuitem-keys">{MENU_KEYS.linked}</span>{/if}
+    <span class="menuitem-check">{linked ? "✓" : ""}</span><span class="menuitem-label">{m.readerd_keep_in_step()}</span>{#if MENU_KEYS.linked}<span class="menuitem-keys">{MENU_KEYS.linked}</span>{/if}
   </Menu.Item>
   <Menu.Item value="visual-markup" class="menuitem">
-    <span class="menuitem-check">{visual ? "✓" : ""}</span><span class="menuitem-label">Visual markup</span>{#if MENU_KEYS["visual-markup"]}<span class="menuitem-keys">{MENU_KEYS["visual-markup"]}</span>{/if}
+    <span class="menuitem-check">{visual ? "✓" : ""}</span><span class="menuitem-label">{m.readerd_visual_markup()}</span>{#if MENU_KEYS["visual-markup"]}<span class="menuitem-keys">{MENU_KEYS["visual-markup"]}</span>{/if}
   </Menu.Item>
   <hr class="hr my-1" />
   <Menu.Item value="text-bigger" class="menuitem">
-    <span class="menuitem-check"></span><span class="menuitem-label">Bigger text</span>{#if MENU_KEYS["text-bigger"]}<span class="menuitem-keys">{MENU_KEYS["text-bigger"]}</span>{/if}
+    <span class="menuitem-check"></span><span class="menuitem-label">{m.readerd_bigger_text()}</span>{#if MENU_KEYS["text-bigger"]}<span class="menuitem-keys">{MENU_KEYS["text-bigger"]}</span>{/if}
   </Menu.Item>
   <Menu.Item value="text-smaller" class="menuitem">
-    <span class="menuitem-check"></span><span class="menuitem-label">Smaller text</span>{#if MENU_KEYS["text-smaller"]}<span class="menuitem-keys">{MENU_KEYS["text-smaller"]}</span>{/if}
+    <span class="menuitem-check"></span><span class="menuitem-label">{m.readerd_smaller_text()}</span>{#if MENU_KEYS["text-smaller"]}<span class="menuitem-keys">{MENU_KEYS["text-smaller"]}</span>{/if}
   </Menu.Item>
   <Menu.Item value="text-reset" class="menuitem">
-    <span class="menuitem-check"></span><span class="menuitem-label">Reset text size</span>{#if MENU_KEYS["text-reset"]}<span class="menuitem-keys">{MENU_KEYS["text-reset"]}</span>{/if}
+    <span class="menuitem-check"></span><span class="menuitem-label">{m.readerd_reset_text_size()}</span>{#if MENU_KEYS["text-reset"]}<span class="menuitem-keys">{MENU_KEYS["text-reset"]}</span>{/if}
   </Menu.Item>
 {/snippet}
 
@@ -4031,8 +4031,8 @@
 {/snippet}
 
 {#snippet viewItems()}
-  <Menu.Item value="lock-preview" class="menuitem" disabled={!can["lock-preview"]}>Lock preview on this file</Menu.Item>
-  {#if can["unlock-preview"]}<Menu.Item value="unlock-preview" class="menuitem">Unlock the preview</Menu.Item>{/if}
+  <Menu.Item value="lock-preview" class="menuitem" disabled={!can["lock-preview"]}>{m.readerd_lock_preview_file()}</Menu.Item>
+  {#if can["unlock-preview"]}<Menu.Item value="unlock-preview" class="menuitem">{m.readerd_unlock_preview()}</Menu.Item>{/if}
   <hr class="hr my-1" />
   {@render previewItems()}
   <hr class="hr my-1" />
@@ -4040,42 +4040,42 @@
 {/snippet}
 
 {#snippet faceSwitch()}
-  <div class="face-switch" role="group" aria-label="Workspace view">
-    <IconButton icon="eye" label="Preview" visibleLabel={compact ? "Preview" : null} pressed={shown.document}
+  <div class="face-switch" role="group" aria-label={m.readerd_workspace_view()}>
+    <IconButton icon="eye" label={m.readerd_preview()} visibleLabel={compact ? m.readerd_preview() : null} pressed={shown.document}
                 onclick={() => showMobileView("document")} />
     {#if sourceOpen}
-      <IconButton icon="writing-hand" label="Editor" visibleLabel={compact ? "Editor" : null} pressed={shown.source}
+      <IconButton icon="writing-hand" label={m.readerd_editor()} visibleLabel={compact ? m.readerd_editor() : null} pressed={shown.source}
                   onclick={() => showMobileView("source")} />
     {/if}
   </div>
 {/snippet}
 {#snippet visualModeControl()}
   {#if sourceOpen && mayEdit && visualAvailable}
-    <label class="bar-toggle" title="Draw the source as formatted text while you edit.">
-      <button type="button" role="switch" class="switch" aria-checked={visual} aria-label="Visual mode" data-state={visual ? "checked" : "unchecked"} onclick={() => setVisual(!visual)}>
+    <label class="bar-toggle" title={m.readerd_visual_mode_hint()}>
+      <button type="button" role="switch" class="switch" aria-checked={visual} aria-label={m.readerd_visual_mode()} data-state={visual ? "checked" : "unchecked"} onclick={() => setVisual(!visual)}>
         <span class="switch-thumb" data-state={visual ? "checked" : "unchecked"}></span>
       </button>
-      <span class="bar-toggle-label">Visual mode</span>
+      <span class="bar-toggle-label">{m.readerd_visual_mode()}</span>
     </label>
   {/if}
 {/snippet}
 {#snippet localExecutionControl()}
   {#if runCodeOffered}
-    <label class="bar-toggle" title="Run this document's code on this computer. Off whenever a document opens.">
-      <button type="button" role="switch" class="switch" aria-checked={localExecution} aria-label="Run code" data-state={localExecution ? "checked" : "unchecked"} onclick={toggleLocalExecution}>
+    <label class="bar-toggle" title={m.readerd_run_code_hint()}>
+      <button type="button" role="switch" class="switch" aria-checked={localExecution} aria-label={m.readerd_run_code()} data-state={localExecution ? "checked" : "unchecked"} onclick={toggleLocalExecution}>
         <span class="switch-thumb" data-state={localExecution ? "checked" : "unchecked"}></span>
       </button>
-      <span class="bar-toggle-label">Run code</span>
+      <span class="bar-toggle-label">{m.readerd_run_code()}</span>
     </label>
   {/if}
 {/snippet}
 
 {#if DEMO}
   <div class="demo-banner" role="status" bind:clientHeight={demoBannerHeight}>
-    <span>Demo sandbox. Nothing is saved, and some features are disabled. Sign in to keep your work.</span>
+    <span>{m.readerd_demo_banner()}</span>
     <span class="demo-banner-actions">
-      <a class="btn btn-sm lp-control-brand" href="/signin">Sign in</a>
-      <button type="button" class="btn btn-sm lp-control-neutral" onclick={() => location.reload()}>Start over</button>
+      <a class="btn btn-sm lp-control-brand" href="/signin">{m.readerd_sign_in()}</a>
+      <button type="button" class="btn btn-sm lp-control-neutral" onclick={() => location.reload()}>{m.readerd_start_over()}</button>
     </span>
   </div>
 {/if}
@@ -4091,7 +4091,7 @@
                         menus={compactMenus} onmenu={(id, anchor) => menubar.show(id, anchor)} />
       {@render faceSwitch()}
       {@render visualModeControl()}
-      {#if !connected && !DEMO}<span class="presence-offline" title={connectionNote} aria-label={connectionNote}><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
+      {#if !connected && !DEMO}<span class="presence-offline" title={connectionNote} aria-label={connectionNote}><span class="presence-offline-dot" aria-hidden="true"></span>{m.readerd_offline()}</span>{/if}
     {:else}
       <!-- Between 761px and the split's narrow point, the face choice stays in
            the top bar. Compact widths render it beside the hamburger above. -->
@@ -4102,12 +4102,12 @@
            by Diagnostics, so the bar only carries the local execution switch. -->
       {@render visualModeControl()}
       {@render localExecutionControl()}
-      <div class="presence" role="group" aria-label={connected ? `${peers} people connected` : connectionNote} title={connected ? `${peers} people connected` : connectionNote}>
+      <div class="presence" role="group" aria-label={connected ? m.readerd_people_connected({ count: peers }) : connectionNote} title={connected ? m.readerd_people_connected({ count: peers }) : connectionNote}>
         {#each participants.slice(0, 3) as person (person.key)}
           <Avatar name={person.name} key={person.key} colour={person.colour} size={6} />
         {/each}
         {#if participants.length > 3}<span class="presence-more">+{participants.length - 3}</span>{/if}
-        {#if !connected && !DEMO}<span class="presence-offline"><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
+        {#if !connected && !DEMO}<span class="presence-offline"><span class="presence-offline-dot" aria-hidden="true"></span>{m.readerd_offline()}</span>{/if}
       </div>
     {/if}
   {/snippet}
@@ -4116,11 +4116,11 @@
          downloads, sharing, history and settings all belong to the project
          whatever pane is on screen, so it stays put when the document pane is
          hidden. -->
-    <MenubarMenu id="file" label="File" onselect={(command) => void chooseFileCommand(command)}>
+    <MenubarMenu id="file" label={m.readerd_file_menu()} onselect={(command) => void chooseFileCommand(command)}>
       {@render fileItems()}
     </MenubarMenu>
     {#if editing && mayEdit}
-      <MenubarMenu id="edit" label="Edit" disabled={!editor || !!shownFigure}
+      <MenubarMenu id="edit" label={m.readerd_edit_menu()} disabled={!editor || !!shownFigure}
                    onopen={refreshEditAvailability}
                    onselect={chooseEditCommand}>
         {#each editGroups as group, index}
@@ -4135,7 +4135,7 @@
       <InsertMenu bind:this={insertMenu} getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpalette={(id) => void openPalette(id)} keys={{ symbols: MENU_KEYS.symbols, math: MENU_KEYS.math }} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} onzoterosearch={localQuarto.desktop() ? (query) => editor?.zoteroSearch?.(query) : null} onzoteroimport={(items) => editor?.importZoteroItems?.(items)} disabled={!mayEdit || !editor} demo={DEMO} />
     {/if}
     {#if editing}
-      <MenubarMenu id="view" label="View" onselect={chooseViewCommand}>
+      <MenubarMenu id="view" label={m.readerd_view_menu()} onselect={chooseViewCommand}>
         {@render viewItems()}
       </MenubarMenu>
     {/if}
@@ -4159,7 +4159,7 @@
   <!-- What this page is. The title is in the bar, where it is a span beside
        the menus rather than a heading, so the one heading a screen reader
        looks for first is here instead: said once, seen by nobody. -->
-  <h1 class="sr-only">{doc.title || "Untitled document"}</h1>
+  <h1 class="sr-only">{doc.title || m.readerd_untitled_document()}</h1>
   <!-- Each panel, wired where its state lives. The column renders whichever
        of these its rail has selected; none of it travels through the column
        as props, so a panel can grow a field without the column hearing of it. -->
@@ -4178,10 +4178,10 @@
     <div class="figureview">
       {#if !isDisplayableImage(shownFigure.path) && !shownFigure.path.toLowerCase().endsWith(".pdf")}
         <div class="notyet">
-          <p class="lp-text-secondary text-sm">{basename(shownFigure.path)} can't be displayed here.</p>
+          <p class="lp-text-secondary text-sm">{m.readerd_figure_not_displayable({ name: basename(shownFigure.path) })}</p>
         </div>
       {:else if !figureUrl}
-        <p>Fetching {shownFigure.path}…</p>
+        <p>{m.readerd_figure_fetching({ path: shownFigure.path })}</p>
       {:else if shownFigure.path.toLowerCase().endsWith(".pdf")}
         <object data={figureUrl} type="application/pdf" title={shownFigure.path}>
           <p>{shownFigure.path}</p>
@@ -4201,7 +4201,7 @@
       path={session?.paths?.get(openFile) || ""} selection={agentSelection}
       revision={agentSelection?.revision || ""} request={assistantRequest}
       {comments} changes={changeRows} {diagnostics} onreview={reviewAssistantResults} onpreview={previewAssistant}
-      onsettings={() => openSettings("agents")} userName={identity || doc.commenting_as || "You"} />
+      onsettings={() => openSettings("agents")} userName={identity || doc.commenting_as || m.readerd_you()} />
   {/snippet}
 
   {#snippet collaborationPanel()}
@@ -4209,7 +4209,7 @@
       loadError={chatState.loadError} canClear={chatState.canClear} onloadolder={liveChat.loadOlder}
       onclear={askClearChat} {connected} canPost={mayChat} onsend={sendLiveChat}
       {unreadChat} bind:tab={collaborationTab} {comments} {identity}
-      commentingAs={doc.commenting_as || "Anonymous"} {canModerate}
+      commentingAs={doc.commenting_as || m.readerd_anonymous()} {canModerate}
       canComment={mayChat}
       onreveal={revealAnnotation} selected={selectedAnnotation} onresolve={resolve}
       ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply} onedit={edit}
@@ -4281,7 +4281,7 @@
 
   <Sidebar
     {shown} {tabs} {panel} {settled} {compact} mounted={mountedPanels} {badges}
-    label="Document"
+    label={m.readerd_document_label()}
     panels={{ files: filesPanel, outline: outlinePanel, agent: agentPanel,
               collaboration: collaborationPanel, changes: changesPanel,
               share: sharePanel, git: gitPanel, diagnostics: diagnosticsPanel, history: historyPanel }}
@@ -4294,14 +4294,14 @@
       <!-- Back out to the projects. The rail it returns to is this rail, in
            the same place, which is why this is a plain link and not a
            gesture: the page changes, the furniture does not. -->
-      <IconButton icon="home" label="All projects" href="/" />
-      <IconButton icon="help" label="What is LibrePaper?" href="https://librepaper.org/what.html" external />
+      <IconButton icon="home" label={m.readerd_all_projects()} href="/" />
+      <IconButton icon="help" label={m.readerd_what_is_librepaper()} href="https://librepaper.org/what.html" external />
       {#if editing}
         <IconButton icon={ARRANGEMENTS[layout].icon}
-          label={`Layout: ${ARRANGEMENTS[layout].says}. Switch to ${ARRANGEMENTS[ARRANGEMENTS[layout].next].says}`}
+          label={m.readerd_layout_switch({ current: ARRANGEMENTS[layout].says, next: ARRANGEMENTS[ARRANGEMENTS[layout].next].says })}
           onclick={cycleLayout} />
       {/if}
-      <IconButton icon="settings" label="Settings" tone="plain"
+      <IconButton icon="settings" label={m.readerd_settings()} tone="plain"
                   onclick={() => openSettings()} />
     {/snippet}
   </Sidebar>
@@ -4357,7 +4357,7 @@
     <section class="latexpane fileview" aria-label={heldFile.path}>
       <div class="fileview-head">
         <span class="fileview-path">{heldFile.path}</span>
-        <button class="btn btn-sm lp-control-tonal-brand" onclick={backToPreview}>Back to preview</button>
+        <button class="btn btn-sm lp-control-tonal-brand" onclick={backToPreview}>{m.readerd_back_to_preview()}</button>
       </div>
       {#if heldFile.kind === "asset" && shownFigure}
         {@render figureBody()}
@@ -4368,12 +4368,12 @@
   {:else if documentNeedsSignIn}
     <section class="latexpane">
       <div class="notyet">
-        <h2 class="h4">Sign in to open this document</h2>
+        <h2 class="h4">{m.readerd_sign_in_to_open()}</h2>
         <p class="lp-text-secondary text-sm">
-          Readers, commenters, and editors need to sign in before they can open a shared document.
+          {m.readerd_sign_in_to_open_body()}
         </p>
         <div class="notyet-actions">
-          <a class="btn btn-sm lp-control-brand" href={signInHref()}>Sign in</a>
+          <a class="btn btn-sm lp-control-brand" href={signInHref()}>{m.readerd_sign_in()}</a>
         </div>
       </div>
     </section>
@@ -4385,24 +4385,24 @@
          or a spinner that `settled` silently ended (§2.2). -->
     <section class="latexpane">
       <div class="notyet">
-        <h2 class="h4">This document cannot be shown right now</h2>
+        <h2 class="h4">{m.readerd_cannot_show()}</h2>
         <p class="lp-text-secondary text-sm">{projectUnreadable}</p>
         <div class="notyet-actions">
-          <button class="btn btn-sm lp-control-tonal-brand" onclick={() => void refreshCurrentProject()}>Try again</button>
+          <button class="btn btn-sm lp-control-tonal-brand" onclick={() => void refreshCurrentProject()}>{m.readerd_try_again()}</button>
         </div>
       </div>
     </section>
   {:else if shown.document && projectEmpty}
     <section class="latexpane">
       <div class="notyet">
-        <h2 class="h4">Nothing to preview</h2>
+        <h2 class="h4">{m.readerd_nothing_to_preview()}</h2>
         <p class="lp-text-secondary text-sm">
-          This project has no files yet.
-          {#if mayEdit}Add one from Files.{/if}
+          {m.readerd_project_no_files()}
+          {#if mayEdit}{m.readerd_add_one_from_files()}{/if}
         </p>
         {#if mayEdit}
           <div class="notyet-actions">
-            <button class="btn btn-sm lp-control-tonal-brand" onclick={openFilesPanel}>Open Files</button>
+            <button class="btn btn-sm lp-control-tonal-brand" onclick={openFilesPanel}>{m.readerd_open_files()}</button>
           </div>
         {/if}
       </div>
@@ -4412,49 +4412,49 @@
          is part of a larger document that no single file stands for. -->
     <section class="latexpane">
       <div class="notyet">
-        <h2 class="h4">Nothing to preview</h2>
+        <h2 class="h4">{m.readerd_nothing_to_preview()}</h2>
         <p class="lp-text-secondary text-sm">{previewCard}</p>
         {#if previewChoices.length}
-          <p class="lp-text-secondary text-sm">It can be previewed inside:</p>
+          <p class="lp-text-secondary text-sm">{m.readerd_preview_inside()}</p>
           <div class="notyet-actions">
             {#each previewChoices as includer (includer)}
-              <button class="btn btn-sm lp-control-tonal-brand" onclick={() => lockPreviewOn(session ? session.idOf(includer) || "" : includer)}>Lock preview on {includer}</button>
+              <button class="btn btn-sm lp-control-tonal-brand" onclick={() => lockPreviewOn(session ? session.idOf(includer) || "" : includer)}>{m.readerd_lock_preview_on({ name: includer })}</button>
             {/each}
           </div>
         {:else}
-          <p class="lp-text-secondary text-sm">Lock the preview on a file with the eye in Files to keep a page here while you edit this one.</p>
+          <p class="lp-text-secondary text-sm">{m.readerd_lock_preview_hint()}</p>
         {/if}
       </div>
     </section>
   {:else if shown.document && failedBeforeRender}
     <section class="latexpane">
       <div class="notyet">
-        <h2 class="h4">Could not render</h2>
+        <h2 class="h4">{m.readerd_could_not_render()}</h2>
         {#if latexHtmlPreview}
           <p class="lp-text-secondary text-sm">
-            The HTML converter could not convert this document. It supports fewer LaTeX packages than the PDF compiler, so the PDF view (View &gt; PDF) may still work.
+            {m.readerd_html_convert_failed()}
           </p>
           <p class="lp-text-secondary text-sm">
-            <Icon name="triangle-alert" /> Diagnostics in the sidebar lists what the converter reported.
+            <Icon name="triangle-alert" /> {m.readerd_diagnostics_converter()}
           </p>
           <div class="notyet-actions">
-            <button class="btn btn-sm lp-control-brand" onclick={() => void setLatexOutput("pdf")}>Show the PDF</button>
-            <button class="btn btn-sm lp-control-tonal-brand" onclick={() => showPanel("diagnostics")}>Open Diagnostics</button>
+            <button class="btn btn-sm lp-control-brand" onclick={() => void setLatexOutput("pdf")}>{m.readerd_show_pdf()}</button>
+            <button class="btn btn-sm lp-control-tonal-brand" onclick={() => showPanel("diagnostics")}>{m.readerd_open_diagnostics()}</button>
           </div>
         {:else if renderState.failureReason}
           <p class="lp-text-secondary text-sm">
-            The compiler produced no {pdfOutput ? "PDF" : "HTML preview"}, and Diagnostics has nothing to show for it. What it said:
+            {m.readerd_compiler_no_output({ kind: pdfOutput ? "PDF" : m.readerd_html_preview_kind() })}
           </p>
           <pre class="lp-text-secondary text-xs">{renderState.failureReason}</pre>
         {:else}
           <p class="lp-text-secondary text-sm">
             {#if !compilesHere}
-              This browser cannot render this {sourceFormat === "latex" ? "LaTeX" : sourceFormat === "typst" ? "Typst" : sourceFormat === "quarto" ? "Quarto/Markdown" : "Markdown"} source. {sourceFormat === "latex" ? "Configure the browser LaTeX renderer to view it." : "The LibrePaper desktop app can render it on this computer."}
+              {m.readerd_browser_cannot_render_source({ format: sourceFormat === "latex" ? "LaTeX" : sourceFormat === "typst" ? "Typst" : sourceFormat === "quarto" ? "Quarto/Markdown" : "Markdown" })} {sourceFormat === "latex" ? m.readerd_configure_latex() : m.readerd_desktop_can_render()}
             {:else}
-              Fix the errors in Diagnostics to produce a PDF preview.
+              {m.readerd_fix_errors()}
             {/if}
           </p>
-          {#if !compilesHere && sourceFormat !== "latex"}<DesktopOnly feature="This preview" />{/if}
+          {#if !compilesHere && sourceFormat !== "latex"}<DesktopOnly feature={m.readerd_this_preview()} />{/if}
         {/if}
       </div>
     </section>
@@ -4463,11 +4463,11 @@
       <div class="notyet">
         <h2 class="h4">Not rendered</h2>
         <p class="lp-text-secondary text-sm">
-          This browser cannot render this {sourceFormat === "typst" ? "Typst" : "paged"} document from source.
+          {m.readerd_browser_cannot_render_paged({ kind: sourceFormat === "typst" ? "Typst" : m.readerd_paged() })}
         </p>
         {#if session && previewPath}
-          <section aria-label="Source of {previewPath}">
-            <h3 class="h6">Source · {previewPath}</h3>
+          <section aria-label={m.readerd_source_of({ path: previewPath })}>
+            <h3 class="h6">{m.readerd_source_heading({ path: previewPath })}</h3>
             <pre>{String(session.textOf(session.idOf(previewPath))?.toString?.() ?? "")}</pre>
           </section>
         {/if}
@@ -4508,11 +4508,11 @@
   {#snippet previewNotice()}
     {#if previewReason === "locked"}
       <span class="notice-chip">
-        <span>Locked: {previewPath}</span>
-        <button type="button" aria-label="Unlock the preview" title="Unlock the preview" onclick={unlockPreview}><Icon name="x" /></button>
+        <span>{m.readerd_locked_path({ path: previewPath })}</span>
+        <button type="button" aria-label={m.readerd_unlock_preview()} title={m.readerd_unlock_preview()} onclick={unlockPreview}><Icon name="x" /></button>
       </span>
     {:else}
-      <span class="notice-chip"><span>{basename(toolbarPath)}, shown inside {previewPath}</span></span>
+      <span class="notice-chip"><span>{m.readerd_shown_inside({ name: basename(toolbarPath), path: previewPath })}</span></span>
     {/if}
   {/snippet}
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
@@ -4560,17 +4560,17 @@
               <Icon name={item.icon} size={18} />
             </button>
             <button type="button" class="ink" aria-expanded={palette} aria-haspopup="true"
-                    aria-label="Choose highlight colour" title="Choose highlight colour"
+                    aria-label={m.readerd_choose_highlight_colour()} title={m.readerd_choose_highlight_colour()}
                     style="--ink: {highlightColor}"
                     onclick={() => (palette = !palette)}></button>
             {#if palette}
-              <div class="highlight-colors" role="group" aria-label="Highlight colour">
+              <div class="highlight-colors" role="group" aria-label={m.readerd_highlight_colour_group()}>
                 {#each HIGHLIGHT_COLORS as color}
                   <button type="button" class:selected={highlightColor === color} class="color-swatch" style="background:{color}"
-                    aria-label="Highlight in {colorName(color)}" onclick={() => highlightWith(color)}></button>
+                    aria-label={m.readerd_highlight_in({ color: colorName(color) })} onclick={() => highlightWith(color)}></button>
                 {/each}
-                <label class="custom-color" title="Choose highlight colour">
-                  <span class="sr-only">Custom highlight colour</span>
+                <label class="custom-color" title={m.readerd_choose_highlight_colour()}>
+                  <span class="sr-only">{m.readerd_custom_highlight_colour()}</span>
                   <input type="color" bind:value={highlightColor} onchange={() => highlightWith(highlightColor)} />
                 </label>
               </div>
@@ -4595,13 +4595,13 @@
 
 <!-- The palettes open over the editor rather than in the sidebar. Each is
      mounted only while open, so a form left half filled does not come back. -->
-<Modal bind:open={symbolsOpen} title="Insert symbol" compact sheet onclose={returnToEditorUnlessTouch}
+<Modal bind:open={symbolsOpen} title={m.readerd_insert_symbol()} compact sheet onclose={returnToEditorUnlessTouch}
        initialFocus={() => symbolPalette?.focusTarget?.()} onEscapeKeyDown={(event) => paletteEscape(symbolPalette, event)}>
   {#if symbolsOpen}
     <SymbolPalette bind:this={symbolPalette} format={editorFormat} getContext={insertContext} oninsert={(result, context) => applyInsertion(result, context, { focus: false })} oncancel={(context) => editor?.releaseInsertContext?.(context)} />
   {/if}
 </Modal>
-<Modal bind:open={mathOpen} title="Math" wider onclose={returnToEditor}
+<Modal bind:open={mathOpen} title={m.readerd_math()} wider onclose={returnToEditor}
        initialFocus={() => mathPalette?.focusTarget?.()} onEscapeKeyDown={(event) => paletteEscape(mathPalette, event)}>
   {#if mathOpen}
     <MathPalette bind:this={mathPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={closePalette} oncancel={(context) => editor?.releaseInsertContext?.(context)} />
@@ -4609,8 +4609,8 @@
 </Modal>
 
 <!-- Word counts for the open file, read on open and as the text changes. -->
-<Modal bind:open={wordCountOpen} title="Word count" onclose={returnToEditor}
-  confirm={{ label: "Close", cancel: false, onclick: () => (wordCountOpen = false) }}>
+<Modal bind:open={wordCountOpen} title={m.readerd_word_count()} onclose={returnToEditor}
+  confirm={{ label: m.readerd_close(), cancel: false, onclick: () => (wordCountOpen = false) }}>
   {#snippet children()}
     <WordCount count={wordCount} />
   {/snippet}
@@ -4627,12 +4627,12 @@
                 onbuildpreferences={(format, next) => { if (format === sourceFormat) setBuildPreferences(next); }}
                 account={me} />
 
-<Modal bind:open={templateModalOpen} title="Save as template"
+<Modal bind:open={templateModalOpen} title={m.readerd_save_as_template()}
   onclose={() => { templateError = ""; templateName = ""; }}
-  confirm={{ label: savingTemplate ? "Saving..." : "Save", disabled: savingTemplate, onclick: saveTemplate }}>
+  confirm={{ label: savingTemplate ? m.readerd_saving() : m.readerd_save(), disabled: savingTemplate, onclick: saveTemplate }}>
   {#snippet children()}
     <label class="label">
-      <span class="label-text">Template name</span>
+      <span class="label-text">{m.readerd_template_name()}</span>
       <!-- svelte-ignore a11y_autofocus -- the dialog exists to ask this one thing -->
       <input class="input" autofocus bind:value={templateName} />
     </label>
@@ -4640,12 +4640,12 @@
   {/snippet}
 </Modal>
 
-<Modal bind:open={timeline.state.restoring} title="Restore this version?"
+<Modal bind:open={timeline.state.restoring} title={m.readerd_restore_version_title()}
   description={restoreMoved
-    ? `The project changed while this was open. Restore ${restoreName} over the project as it now stands? The current version will be preserved in history.`
-    : `Restore ${restoreName}. Every file in the project is replaced, and the current version is preserved in history.`}
+    ? m.readerd_restore_moved({ name: restoreName })
+    : m.readerd_restore_description({ name: restoreName })}
   confirm={{
-    label: restoreBusy ? "Restoring…" : restoreMoved ? "Restore anyway" : "Restore version",
+    label: restoreBusy ? m.readerd_restoring() : restoreMoved ? m.readerd_restore_anyway() : m.readerd_restore_version(),
     disabled: restoreBusy || !mayEdit,
     onclick: confirmRestore,
   }}>
@@ -4657,29 +4657,29 @@
 <!-- Deleting a thread cannot be undone, so it is confirmed. -->
 <Modal
   bind:open={deleting}
-  title={pendingDelete.length > 1 ? `Delete ${pendingDelete.length} comments?` : "Delete comment?"}
+  title={pendingDelete.length > 1 ? m.readerd_delete_many_comments_title({ count: pendingDelete.length }) : m.readerd_delete_comment_title()}
   description={pendingDelete.length > 1
-    ? "This removes these comments and their replies for everyone. It cannot be undone."
-    : "This removes the comment and its replies for everyone. It cannot be undone."}
-  confirm={{ label: "Delete", tone: "error", onclick: confirmDelete }}
+    ? m.readerd_delete_many_comments_body()
+    : m.readerd_delete_comment_body()}
+  confirm={{ label: m.readerd_delete(), tone: "error", onclick: confirmDelete }}
 ></Modal>
 
 <!-- Clearing the chat deletes it for everyone, so it is confirmed. -->
 <Modal
   bind:open={clearingChat}
-  title="Delete chat history?"
-  description="This permanently deletes the shared chat history of this project for everyone who has access to it."
-  confirm={{ label: "Delete history", tone: "error", onclick: confirmClearChat }}
+  title={m.readerd_delete_chat_title()}
+  description={m.readerd_delete_chat_body()}
+  confirm={{ label: m.readerd_delete_history(), tone: "error", onclick: confirmClearChat }}
 ></Modal>
 
 <!-- Signed out, a commenter chooses how to be named before they write. -->
 <Modal
   bind:open={identifying}
-  title="Who are you?"
-  description="Choose how to identify yourself in this comment."
-  cancelLabel="Sign in"
+  title={m.readerd_who_are_you()}
+  description={m.readerd_choose_identity()}
+  cancelLabel={m.readerd_sign_in()}
   confirm={{
-    label: `Continue as ${doc.commenting_as || "Anonymous"}`,
+    label: m.readerd_continue_as({ name: doc.commenting_as || m.readerd_anonymous() }),
     oncancel: () => { identifying = false; location.href = signInHref(); },
     onclick: () => { identifying = false; openDraft(); },
   }}
