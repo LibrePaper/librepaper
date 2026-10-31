@@ -4,6 +4,7 @@
   import SettingRow from "./SettingRow.svelte";
   import ShortcutTable from "../ShortcutTable.svelte";
   import { FONTS, installed, MIN_SIZE, MAX_SIZE, font, setFont, onFont, size, setSize, onSize, lineHeight, setLineHeight, onLineHeight } from "../../lib/editor-type.js";
+  import { m } from "../../lib/paraglide/messages.js";
 
   let {
     keys = "default",
@@ -34,38 +35,38 @@
   onMount(() => onLineHeight((now) => { currentLineHeight = now; }));
 
   const PROOFING_DESCRIPTIONS = {
-    off: "Nothing is underlined.",
-    browser: "Your browser underlines misspelled words in prose, skipping commands, code, math and citation keys. Its language and dictionary decide what counts as a word.",
-    harper: "Harper checks English spelling and grammar in prose. It downloads 7 MB the first time and uses about 300 MB of memory while a document is open. Documents that declare another language get the browser's spellcheck instead.",
+    off: m.editorsettings_proofing_description_off(),
+    browser: m.editorsettings_proofing_description_browser(),
+    harper: m.editorsettings_proofing_description_harper(),
   };
   const proofingDescription = $derived(PROOFING_DESCRIPTIONS[proofing] ?? PROOFING_DESCRIPTIONS.browser);
 </script>
 
-<SettingRow id="appearance-font" title="Font"
-            description="Six fonts are included and download when you pick one. Another font has to be installed on this computer.">
+<SettingRow id="appearance-font" title={m.editorsettings_font()}
+            description={m.editorsettings_font_description()}>
   <span class="setting-inline">
-    <select class="select setting-select" aria-label="Font" value={currentFont.id}
+    <select class="select setting-select" aria-label={m.editorsettings_font()} value={currentFont.id}
             onchange={(event) => setFont(event.currentTarget.value, currentFont.custom)}>
       {#each FONTS as entry (entry.id)}
         <option value={entry.id}>{entry.name}</option>
       {/each}
     </select>
     {#if currentFont.id === "custom"}
-      <input type="text" class="input input-sm setting-input" aria-label="Font name" placeholder="Font name"
+      <input type="text" class="input input-sm setting-input" aria-label={m.editorsettings_font_name()} placeholder={m.editorsettings_font_name()}
              value={currentFont.custom}
              onchange={(event) => setFont("custom", event.currentTarget.value)} />
       {#if currentFont.custom && !installed(currentFont.custom)}
-        <span class="font-missing">Not found on this computer.</span>
+        <span class="font-missing">{m.editorsettings_font_missing()}</span>
       {/if}
     {/if}
   </span>
 </SettingRow>
 
-<SettingRow id="appearance-font-size" title="Font size"
-            description="Pinch or Ctrl and scroll over the editor to change it there too.">
+<SettingRow id="appearance-font-size" title={m.editorsettings_font_size()}
+            description={m.editorsettings_font_size_description()}>
   <span class="setting-inline">
     <input type="number" class="input input-sm setting-input setting-number" min={MIN_SIZE} max={MAX_SIZE} step="1"
-           aria-label="Font size in pixels" value={currentSize}
+           aria-label={m.editorsettings_font_size_pixels()} value={currentSize}
            onchange={(event) => {
              const field = event.currentTarget;
              const next = field.value.trim() === "" ? NaN : Number(field.value);
@@ -76,73 +77,73 @@
   </span>
 </SettingRow>
 
-<SettingRow id="appearance-line-height" title="Line height">
-  <select class="select setting-select" aria-label="Line height" value={currentLineHeight}
+<SettingRow id="appearance-line-height" title={m.editorsettings_line_height()}>
+  <select class="select setting-select" aria-label={m.editorsettings_line_height()} value={currentLineHeight}
           onchange={(event) => setLineHeight(event.currentTarget.value)}>
-    <option value="compact">Compact</option>
-    <option value="normal">Normal</option>
-    <option value="wide">Wide</option>
+    <option value="compact">{m.editorsettings_line_height_compact()}</option>
+    <option value="normal">{m.editorsettings_line_height_normal()}</option>
+    <option value="wide">{m.editorsettings_line_height_wide()}</option>
   </select>
 </SettingRow>
 
-<SettingRow id="editor-keys" title="Key bindings">
-  <select class="select setting-select" aria-label="Editor keys" value={keys}
+<SettingRow id="editor-keys" title={m.editorsettings_keys()}>
+  <select class="select setting-select" aria-label={m.editorsettings_keys_label()} value={keys}
           onchange={(event) => onkeys?.(event.currentTarget.value)}>
-    <option value="default">Standard</option>
+    <option value="default">{m.editorsettings_keys_standard()}</option>
     <option value="vim">Vim</option>
     <option value="emacs">Emacs</option>
   </select>
 </SettingRow>
 
-<SettingRow id="editor-completion" title="Autocomplete"
-            description="Suggest commands, labels and citations while you type.">
-  <button type="button" role="switch" class="switch" aria-checked={completion} aria-label="Autocomplete"
+<SettingRow id="editor-completion" title={m.editorsettings_completion()}
+            description={m.editorsettings_completion_description()}>
+  <button type="button" role="switch" class="switch" aria-checked={completion} aria-label={m.editorsettings_completion()}
           data-state={completion ? "checked" : "unchecked"} onclick={() => oncompletion?.(!completion)}>
     <span class="switch-thumb" data-state={completion ? "checked" : "unchecked"}></span>
   </button>
 </SettingRow>
 
-<SettingRow id="editor-brackets" title="Close brackets"
-            description="Typing an opening bracket adds the closing one.">
-  <button type="button" role="switch" class="switch" aria-checked={brackets} aria-label="Close brackets"
+<SettingRow id="editor-brackets" title={m.editorsettings_brackets()}
+            description={m.editorsettings_brackets_description()}>
+  <button type="button" role="switch" class="switch" aria-checked={brackets} aria-label={m.editorsettings_brackets()}
           data-state={brackets ? "checked" : "unchecked"} onclick={() => onbrackets?.(!brackets)}>
     <span class="switch-thumb" data-state={brackets ? "checked" : "unchecked"}></span>
   </button>
 </SettingRow>
 
-<SettingRow id="editor-proofing" title="Grammar and spelling" description={proofingDescription}>
-  <select class="select setting-select" aria-label="Grammar and spelling" value={proofing}
+<SettingRow id="editor-proofing" title={m.editorsettings_proofing()} description={proofingDescription}>
+  <select class="select setting-select" aria-label={m.editorsettings_proofing()} value={proofing}
           onchange={(event) => onproofing?.(event.currentTarget.value)}>
-    <option value="off">Off</option>
-    <option value="browser">Browser</option>
+    <option value="off">{m.editorsettings_proofing_off()}</option>
+    <option value="browser">{m.editorsettings_proofing_browser()}</option>
     <option value="harper">Harper</option>
   </select>
 </SettingRow>
 
 {#if proofing === "harper"}
-  <SettingRow id="editor-dialect" title="English dialect">
-    <select class="select setting-select" aria-label="English dialect" value={dialect}
+  <SettingRow id="editor-dialect" title={m.editorsettings_dialect()}>
+    <select class="select setting-select" aria-label={m.editorsettings_dialect()} value={dialect}
             onchange={(event) => ondialect?.(event.currentTarget.value)}>
-      <option value="american">American</option>
-      <option value="british">British</option>
-      <option value="canadian">Canadian</option>
-      <option value="australian">Australian</option>
-      <option value="indian">Indian</option>
+      <option value="american">{m.editorsettings_dialect_american()}</option>
+      <option value="british">{m.editorsettings_dialect_british()}</option>
+      <option value="canadian">{m.editorsettings_dialect_canadian()}</option>
+      <option value="australian">{m.editorsettings_dialect_australian()}</option>
+      <option value="indian">{m.editorsettings_dialect_indian()}</option>
     </select>
   </SettingRow>
 {/if}
 
-<SettingRow id="editor-check" title="Code check"
-            description="Underline errors and warnings from the last render in the editor. The list of messages stays available.">
-  <button type="button" role="switch" class="switch" aria-checked={check} aria-label="Code check"
+<SettingRow id="editor-check" title={m.editorsettings_check()}
+            description={m.editorsettings_check_description()}>
+  <button type="button" role="switch" class="switch" aria-checked={check} aria-label={m.editorsettings_check()}
           data-state={check ? "checked" : "unchecked"} onclick={() => oncheck?.(!check)}>
     <span class="switch-thumb" data-state={check ? "checked" : "unchecked"}></span>
   </button>
 </SettingRow>
 
-<SettingRow id="editor-visual" title="Visual mode"
-            description="Open sources with headings, figures and maths drawn in place. The switch in the top bar changes it for one session.">
-  <button type="button" role="switch" class="switch" aria-checked={visual} aria-label="Visual mode"
+<SettingRow id="editor-visual" title={m.editorsettings_visual()}
+            description={m.editorsettings_visual_description()}>
+  <button type="button" role="switch" class="switch" aria-checked={visual} aria-label={m.editorsettings_visual()}
           data-state={visual ? "checked" : "unchecked"} onclick={() => onvisual?.(!visual)}>
     <span class="switch-thumb" data-state={visual ? "checked" : "unchecked"}></span>
   </button>
@@ -152,8 +153,8 @@
      lead to this page. It comes last so it never pushes the switches above
      out of view. Stacked, because a table is not a control that fits beside
      a sentence. -->
-<SettingRow id="editor-shortcuts" stacked title="Keyboard shortcuts"
-            description="Press ? anywhere outside the editor to come back here.">
+<SettingRow id="editor-shortcuts" stacked title={m.editorsettings_shortcuts()}
+            description={m.editorsettings_shortcuts_description()}>
   <ShortcutTable context={commands} />
 </SettingRow>
 

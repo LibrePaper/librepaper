@@ -6,6 +6,8 @@
   import { backups } from "../../lib/desktop/backups.svelte.js";
   import { me, post } from "../../lib/api.js";
   import { BACKUPS_URL } from "../../lib/site-links.js";
+  import { m } from "../../lib/paraglide/messages.js";
+  import { locale } from "../../lib/locale.js";
 
   let { account = {} } = $props();
   const accountId = $derived(typeof account.id === "string" ? account.id : "");
@@ -49,10 +51,10 @@
       await desktopClient.authorizeBackups(requestedAccount, async (userCode, pairingCurrent) => {
         const browserAccount = await me();
         if (!pairingCurrent() || !isCurrent()) {
-          throw new Error("The backup authorization scope changed. Retry authorization.");
+          throw new Error(m.backupssettings_scope_changed());
         }
         if (browserAccount?.id !== requestedAccount || browserAccount?.provider !== requestedProvider) {
-          throw new Error("The signed-in browser account changed. Retry backup authorization.");
+          throw new Error(m.backupssettings_account_changed());
         }
         await post("/api/auth/device/approve", { user_code: userCode });
       }, isCurrent);
@@ -60,7 +62,7 @@
       await backups.refresh();
       return isCurrent();
     } catch (cause) {
-      if (isCurrent()) error = cause?.message || "Backup authorization could not be completed.";
+      if (isCurrent()) error = cause?.message || m.backupssettings_auth_failed();
       return false;
     } finally {
       if (isCurrent()) busy = "";
@@ -100,7 +102,7 @@
         if (actionScope === requestScope && !backups.status.error) saved = true;
       }
     } catch (cause) {
-      if (actionScope === requestScope) error = cause?.message || "Backup settings could not be saved.";
+      if (actionScope === requestScope) error = cause?.message || m.backupssettings_save_failed();
     } finally {
       if (actionScope === requestScope) busy = "";
     }
@@ -117,7 +119,7 @@
       await desktopClient.chooseBackupFolder(requestedAccount);
       if (actionScope === requestScope) await backups.refresh();
     } catch (cause) {
-      if (actionScope === requestScope) error = cause?.message || "The desktop app could not choose a backup folder.";
+      if (actionScope === requestScope) error = cause?.message || m.backupssettings_folder_failed();
     } finally {
       if (actionScope === requestScope) busy = "";
     }
@@ -134,7 +136,7 @@
       await desktopClient.runBackups(requestedAccount);
       if (actionScope === requestScope) await backups.refresh();
     } catch (cause) {
-      if (actionScope === requestScope) error = cause?.message || "The backup could not be started.";
+      if (actionScope === requestScope) error = cause?.message || m.backupssettings_run_failed();
     } finally {
       if (actionScope === requestScope) busy = "";
     }
@@ -145,59 +147,59 @@
 </script>
 
 <p class="setting-description backups-intro">
-  Your account's projects, copied as ZIP files to a folder on this computer by the desktop app. <a href={BACKUPS_URL} target="_blank" rel="noreferrer">Backup guide</a>
+  {m.backupssettings_intro()} <a href={BACKUPS_URL} target="_blank" rel="noreferrer">{m.backupssettings_guide()}</a>
 </p>
 
 <DesktopOnly>
 
 {#if !signedIn}
-  <SettingRow id="backup-connection" title="Account connection" description="Sign in to load account backup settings.">
-    <StatusPill label="Signed out" />
+  <SettingRow id="backup-connection" title={m.backupssettings_connection()} description={m.backupssettings_sign_in_to_load()}>
+    <StatusPill label={m.backupssettings_signed_out()} />
   </SettingRow>
 {:else if backupStatus.error}
   <div class="setting-status" data-tone="warn" role="alert">
     <span class="setting-status-dot" aria-hidden="true"></span>
-    <div class="setting-status-words"><div class="setting-title">Backup status unavailable</div><div class="setting-description">{backupStatus.error}</div></div>
-    <div class="setting-control"><button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy !== ""} onclick={() => void backups.refresh()}>Retry</button></div>
+    <div class="setting-status-words"><div class="setting-title">{m.backupssettings_status_unavailable()}</div><div class="setting-description">{backupStatus.error}</div></div>
+    <div class="setting-control"><button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy !== ""} onclick={() => void backups.refresh()}>{m.backupssettings_retry()}</button></div>
   </div>
 {:else if backupStatus.loading && !backupStatus.data}
-  <p class="setting-description" role="status">Loading backup status…</p>
+  <p class="setting-description" role="status">{m.backupssettings_loading()}</p>
 {/if}
 
-  <SettingRow id="backup-enable" title="Automatic backups" description={!destinationSet ? "Choose a folder first." : ""}>
-    {#if !hasStatus}<StatusPill label="Unknown" />{/if}
-    <button type="button" role="switch" class="switch backup-enable-switch" aria-label="Automatic backups" aria-checked={Boolean(data.enabled)} aria-describedby={!hasStatus ? "backup-enable-state" : undefined} data-state={!hasStatus ? "unknown" : data.enabled ? "checked" : "unchecked"} disabled={busy !== "" || !canUseDesktop || (!data.enabled && !destinationSet)} onclick={() => void (data.enabled ? changeSettings(false) : enable())}>
+  <SettingRow id="backup-enable" title={m.backupssettings_enable()} description={!destinationSet ? m.backupssettings_choose_folder_first() : ""}>
+    {#if !hasStatus}<StatusPill label={m.backupssettings_unknown()} />{/if}
+    <button type="button" role="switch" class="switch backup-enable-switch" aria-label={m.backupssettings_enable()} aria-checked={Boolean(data.enabled)} aria-describedby={!hasStatus ? "backup-enable-state" : undefined} data-state={!hasStatus ? "unknown" : data.enabled ? "checked" : "unchecked"} disabled={busy !== "" || !canUseDesktop || (!data.enabled && !destinationSet)} onclick={() => void (data.enabled ? changeSettings(false) : enable())}>
       <span class="switch-thumb" data-state={!hasStatus ? "unknown" : data.enabled ? "checked" : "unchecked"}></span>
     </button>
-    {#if !hasStatus}<span id="backup-enable-state" class="sr-only">Unknown</span>{/if}
+    {#if !hasStatus}<span id="backup-enable-state" class="sr-only">{m.backupssettings_unknown()}</span>{/if}
   </SettingRow>
-  <SettingRow id="backup-destination" title="Backup folder">
+  <SettingRow id="backup-destination" title={m.backupssettings_folder()}>
     <div class="backup-folder-control setting-actions">
-      <input class="input input-sm setting-input backup-path" aria-label="Selected backup folder" value={destinationLabel} readonly disabled={!canUseDesktop || busy !== ""} />
-      <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={!canUseDesktop || busy !== ""} onclick={() => void chooseFolder()}>{busy === "folder" ? "Choosing…" : destinationSet ? "Change folder…" : "Choose folder…"}</button>
+      <input class="input input-sm setting-input backup-path" aria-label={m.backupssettings_folder_selected()} value={destinationLabel} readonly disabled={!canUseDesktop || busy !== ""} />
+      <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={!canUseDesktop || busy !== ""} onclick={() => void chooseFolder()}>{busy === "folder" ? m.backupssettings_choosing() : destinationSet ? m.backupssettings_change_folder() : m.backupssettings_choose_folder()}</button>
     </div>
   </SettingRow>
-  <SettingRow id="backup-frequency" title="Frequency">
-    <select class="input input-sm setting-select backup-frequency" aria-label="Backup frequency" value={hasStatus ? Number(data.frequency_minutes) || 5 : ""} disabled={busy !== "" || !destinationSet || !canUseDesktop || needsLogin} onchange={(event) => void changeSettings(Boolean(data.enabled), Number(event.currentTarget.value))}>
-      {#if !hasStatus}<option value="" disabled>Unknown</option>{/if}
+  <SettingRow id="backup-frequency" title={m.backupssettings_frequency()}>
+    <select class="input input-sm setting-select backup-frequency" aria-label={m.backupssettings_frequency_label()} value={hasStatus ? Number(data.frequency_minutes) || 5 : ""} disabled={busy !== "" || !destinationSet || !canUseDesktop || needsLogin} onchange={(event) => void changeSettings(Boolean(data.enabled), Number(event.currentTarget.value))}>
+      {#if !hasStatus}<option value="" disabled>{m.backupssettings_unknown()}</option>{/if}
       {#each intervals as minutes}<option value={minutes}>{minutes} min</option>{/each}
     </select>
   </SettingRow>
   <div class="backup-status" role="status" aria-live="polite">
     {#if !hasStatus}
-      <span class="backup-state">{signedIn && paired && backupStatus.loading ? "Loading…" : signedIn && paired && backupStatus.error ? "Status unavailable." : ""}</span>
+      <span class="backup-state">{signedIn && paired && backupStatus.loading ? m.backupssettings_loading_short() : signedIn && paired && backupStatus.error ? m.backupssettings_status_unavailable_short() : ""}</span>
     {:else if data.error}
-      <span class="backup-state error">Backup error: {data.error}</span>
+      <span class="backup-state error">{m.backupssettings_error({ error: data.error })}</span>
     {:else if data.running}
-      <span class="backup-state">Backing up {Number(data.projects) || 0} projects…</span>
+      <span class="backup-state">{m.backupssettings_backing_up({ projects: Number(data.projects) || 0 })}</span>
     {:else if data.enabled}
-      <span class="backup-state">{data.last_success ? `Last backup ${new Date(Number(data.last_success) * 1000).toLocaleString()}` : "No backup yet."}</span>
+      <span class="backup-state">{data.last_success ? m.backupssettings_last_backup({ when: new Date(Number(data.last_success) * 1000).toLocaleString(locale()) }) : m.backupssettings_no_backup_yet()}</span>
     {:else}
-      <span class="backup-state">Backups are off.</span>
+      <span class="backup-state">{m.backupssettings_off()}</span>
     {/if}
-    <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy !== "" || !destinationSet || !canUseDesktop || needsLogin || !data.enabled || data.running} onclick={() => void runNow()}>{busy === "run" ? "Starting…" : "Back up now"}</button>
+    <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy !== "" || !destinationSet || !canUseDesktop || needsLogin || !data.enabled || data.running} onclick={() => void runNow()}>{busy === "run" ? m.backupssettings_starting() : m.backupssettings_back_up_now()}</button>
   </div>
-  {#if saved && !busy && !error && !backupStatus.error}<p class="setting-feedback" role="status">Saved</p>{/if}
+  {#if saved && !busy && !error && !backupStatus.error}<p class="setting-feedback" role="status">{m.backupssettings_saved()}</p>{/if}
 
 {#if error}<p class="setting-description backup-error" role="alert">{error}</p>{/if}
 </DesktopOnly>

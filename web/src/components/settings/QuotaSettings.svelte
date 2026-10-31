@@ -9,6 +9,7 @@
   import SettingRow from "./SettingRow.svelte";
   import { loadStorageStatus, storageBytes, trimHistory } from "../../lib/quota-preferences.js";
   import { SHELL_HEADERS } from "../../lib/api.js";
+  import { m } from "../../lib/paraglide/messages.js";
 
   let snapshot = $state(null);
   let loading = $state(true);
@@ -38,19 +39,21 @@
   // keeps its shape while the numbers are on their way or never arrive.
   const used = $derived(
     error ? error
-    : loading ? "Measuring…"
-    : `${storageBytes(usage?.chargedBytes)} of ${storageBytes(usage?.hardQuotaBytes)}${percent == null ? "" : ` (${percent}%)`} used.`,
+    : loading ? m.quotasettings_measuring()
+    : percent == null
+      ? m.quotasettings_used({ used: storageBytes(usage?.chargedBytes), quota: storageBytes(usage?.hardQuotaBytes) })
+      : m.quotasettings_used_percent({ used: storageBytes(usage?.chargedBytes), quota: storageBytes(usage?.hardQuotaBytes), percent }),
   );
 
   const nameOf = (doc) => doc.title || doc.slug;
   const totalOf = (doc) => doc.figureBytes + doc.archiveBytes + doc.historyBytes;
   const partsOf = (doc) => [
-    { key: "figure", name: "Figures", bytes: doc.figureBytes },
-    { key: "versions", name: "Versions", bytes: doc.archiveBytes },
-    { key: "history", name: "History", bytes: doc.historyBytes },
+    { key: "figure", name: m.quotasettings_part_figures(), bytes: doc.figureBytes },
+    { key: "versions", name: m.quotasettings_part_versions(), bytes: doc.archiveBytes },
+    { key: "history", name: m.quotasettings_part_history(), bytes: doc.historyBytes },
   ];
   const labelOf = (parts) =>
-    parts.filter((p) => p.bytes > 0).map((p) => `${p.name} ${storageBytes(p.bytes)}`).join(", ") || "Empty";
+    parts.filter((p) => p.bytes > 0).map((p) => m.quotasettings_part_label({ name: p.name, size: storageBytes(p.bytes) })).join(", ") || m.quotasettings_empty();
 
   // The account bar is drawn against the quota, so what is left of it is the
   // free space; each document's bar is its own composition, always full.
@@ -60,7 +63,7 @@
   )));
   const totalUsed = $derived(totalParts.reduce((sum, p) => sum + p.bytes, 0));
   const quotaBase = $derived(usage?.hardQuotaBytes > 0 ? Math.max(usage.hardQuotaBytes, totalUsed) : totalUsed || 1);
-  const totalLabel = $derived(`${labelOf(totalParts)}, of ${storageBytes(usage?.hardQuotaBytes)}`);
+  const totalLabel = $derived(m.quotasettings_total_label({ parts: labelOf(totalParts), quota: storageBytes(usage?.hardQuotaBytes) }));
 
   const SORTS = {
     largest: (a, b) => totalOf(b) - totalOf(a),
@@ -95,7 +98,7 @@
       }
       void reload();
     } catch (cause) {
-      if (alive) trimErrors = { ...trimErrors, [slug]: cause.message || "History could not be trimmed." };
+      if (alive) trimErrors = { ...trimErrors, [slug]: cause.message || m.quotasettings_trim_failed() };
     } finally {
       trimPending = false;
       trimOpen = false;
@@ -118,12 +121,12 @@
         headers: SHELL_HEADERS,
       });
       if (!response.ok) {
-        deleteTemplateErrors = { ...deleteTemplateErrors, [slug]: "The template could not be deleted." };
+        deleteTemplateErrors = { ...deleteTemplateErrors, [slug]: m.quotasettings_template_failed() };
         return;
       }
       void reload();
     } catch (cause) {
-      if (alive) deleteTemplateErrors = { ...deleteTemplateErrors, [slug]: cause.message || "The template could not be deleted." };
+      if (alive) deleteTemplateErrors = { ...deleteTemplateErrors, [slug]: cause.message || m.quotasettings_template_failed() };
     } finally {
       deleteTemplatePending = false;
       deleteTemplateOpen = false;
@@ -138,7 +141,7 @@
       const result = await loadStorageStatus();
       if (alive && job === generation) snapshot = result;
     } catch (cause) {
-      if (alive && job === generation) error = cause.message || "Storage status could not be loaded.";
+      if (alive && job === generation) error = cause.message || m.quotasettings_load_failed();
     } finally {
       if (alive && job === generation) loading = false;
     }
@@ -157,48 +160,48 @@
   <div class="storage-bar {cls}" role="img" aria-label={label}>
     {#each parts as part (part.key)}
       {#if part.bytes > 0}
-        <div class="bar-segment {part.key}" title={`${part.name}\n${storageBytes(part.bytes)}`}
+        <div class="bar-segment {part.key}" title={m.quotasettings_part_tooltip({ name: part.name, size: storageBytes(part.bytes) })}
              style:width={`${(100 * part.bytes) / base}%`}></div>
       {/if}
     {/each}
   </div>
 {/snippet}
 
-<SettingRow id="storage-account" stacked title="Account storage" description={used}>
+<SettingRow id="storage-account" stacked title={m.quotasettings_account_storage()} description={used}>
   <div class="account-line">
     {@render bar(totalParts, quotaBase, totalLabel, "account-bar")}
-    <button class="btn btn-sm lp-control-tonal-brand" type="button" onclick={reload}>Refresh</button>
+    <button class="btn btn-sm lp-control-tonal-brand" type="button" onclick={reload}>{m.quotasettings_refresh()}</button>
   </div>
 </SettingRow>
 
 {#if documents.length > 0}
-  <SettingRow id="storage-documents" stacked title="Storage by document"
-              description="Trimming keeps a document as it is now and deletes everything before it: its editing history, its named versions, its chat history, and figures it no longer uses. Comments stay.">
+  <SettingRow id="storage-documents" stacked title={m.quotasettings_by_document()}
+              description={m.quotasettings_trim_description()}>
     <div class="storage-toolbar">
       <div class="legend" aria-hidden="true">
-        <span><i class="swatch figure"></i>Figures</span>
-        <span><i class="swatch versions"></i>Versions</span>
-        <span><i class="swatch history"></i>History</span>
+        <span><i class="swatch figure"></i>{m.quotasettings_part_figures()}</span>
+        <span><i class="swatch versions"></i>{m.quotasettings_part_versions()}</span>
+        <span><i class="swatch history"></i>{m.quotasettings_part_history()}</span>
       </div>
       <div class="toolbar-controls">
-        <input type="search" class="input input-sm" placeholder="Filter documents"
-               aria-label="Filter documents by title" bind:value={filterText} />
-        <select class="select select-sm" bind:value={sortBy} aria-label="Sort documents">
-          <option value="largest">Largest first</option>
-          <option value="history">Most history</option>
-          <option value="name">Name</option>
+        <input type="search" class="input input-sm" placeholder={m.quotasettings_filter_placeholder()}
+               aria-label={m.quotasettings_filter_label()} bind:value={filterText} />
+        <select class="select select-sm" bind:value={sortBy} aria-label={m.quotasettings_sort_label()}>
+          <option value="largest">{m.quotasettings_sort_largest()}</option>
+          <option value="history">{m.quotasettings_sort_history()}</option>
+          <option value="name">{m.quotasettings_sort_name()}</option>
         </select>
       </div>
     </div>
 
     {#if visibleDocs.length > 0}
-      <div role="table" aria-label="Storage by document">
+      <div role="table" aria-label={m.quotasettings_by_document()}>
         {#each visibleDocs as doc (doc.id)}
           <div role="row" class="doc-row">
             <div role="cell" class="doc-title">
               <div class="title-with-badge">
                 <a class="title-text" href="/docs/{doc.slug}" title={nameOf(doc)}>{nameOf(doc)}</a>
-                {#if doc.template}<span class="badge lp-tone-neutral">Template</span>{/if}
+                {#if doc.template}<span class="badge lp-tone-neutral">{m.quotasettings_template()}</span>{/if}
               </div>
               {#if trimErrors[doc.slug]}<div class="trim-error">{trimErrors[doc.slug]}</div>{/if}
               {#if deleteTemplateErrors[doc.slug]}<div class="trim-error">{deleteTemplateErrors[doc.slug]}</div>{/if}
@@ -208,11 +211,11 @@
               <span class="doc-total">{storageBytes(totalOf(doc))}</span>
             </div>
             <div role="cell" class="doc-actions">
-              <IconButton icon="history" title="Trim history" label={`Trim history for ${nameOf(doc)}`}
+              <IconButton icon="history" title={m.quotasettings_trim_history()} label={m.quotasettings_trim_history_for({ name: nameOf(doc) })}
                           size="btn-icon-sm" disabled={doc.historyBytes === 0}
                           onclick={() => openTrimDialog(doc)} />
               {#if doc.template}
-                <IconButton icon="trash" title="Delete template" label={`Delete template ${nameOf(doc)}`}
+                <IconButton icon="trash" title={m.quotasettings_delete_template()} label={m.quotasettings_delete_template_for({ name: nameOf(doc) })}
                             size="btn-icon-sm"
                             onclick={() => openDeleteTemplateDialog(doc)} />
               {/if}
@@ -221,29 +224,29 @@
         {/each}
       </div>
     {:else}
-      <p class="no-match">No documents match.</p>
+      <p class="no-match">{m.quotasettings_no_match()}</p>
     {/if}
   </SettingRow>
 {/if}
 
-<Modal bind:open={trimOpen} title="Trim history?"
-       confirm={{ label: trimPending ? "Trimming…" : "Trim history", tone: "error", disabled: trimPending, onclick: confirmTrim }}>
+<Modal bind:open={trimOpen} title={m.quotasettings_trim_title()}
+       confirm={{ label: trimPending ? m.quotasettings_trimming() : m.quotasettings_trim_confirm(), tone: "error", disabled: trimPending, onclick: confirmTrim }}>
   {#if trimTarget}
-    <p>This keeps “<strong>{trimTarget.title}</strong>” as it is now and permanently deletes everything before it:</p>
+    <p>{m.quotasettings_trim_keeps_before()}<strong>{trimTarget.title}</strong>{m.quotasettings_trim_keeps_after()}</p>
     <ul class="trim-list">
-      <li>Its editing history ({storageBytes(trimTarget.historyBytes)})</li>
-      <li>All its named versions ({storageBytes(trimTarget.archiveBytes)})</li>
-      <li>Its chat history</li>
-      <li>Figures its current files no longer use, except ones uploaded in the last hour</li>
+      <li>{m.quotasettings_trim_history_item({ size: storageBytes(trimTarget.historyBytes) })}</li>
+      <li>{m.quotasettings_trim_versions_item({ size: storageBytes(trimTarget.archiveBytes) })}</li>
+      <li>{m.quotasettings_trim_chat_item()}</li>
+      <li>{m.quotasettings_trim_figures_item()}</li>
     </ul>
-    <p class="lp-text-secondary text-sm">Comments stay. This cannot be undone.</p>
+    <p class="lp-text-secondary text-sm">{m.quotasettings_trim_footer()}</p>
   {/if}
 </Modal>
 
-<Modal bind:open={deleteTemplateOpen} title="Delete template?"
-       confirm={{ label: deleteTemplatePending ? "Deleting..." : "Delete", tone: "error", disabled: deleteTemplatePending, onclick: confirmDeleteTemplate }}>
+<Modal bind:open={deleteTemplateOpen} title={m.quotasettings_delete_template_title()}
+       confirm={{ label: deleteTemplatePending ? m.quotasettings_deleting() : m.quotasettings_delete(), tone: "error", disabled: deleteTemplatePending, onclick: confirmDeleteTemplate }}>
   {#if deleteTemplateTarget}
-    <p>“<strong>{deleteTemplateTarget.title}</strong>” will move to the trash, where it stays for seven days. Until then you can put it back.</p>
+    <p>{m.quotasettings_delete_template_lead()}<strong>{deleteTemplateTarget.title}</strong>{m.quotasettings_delete_template_rest()}</p>
   {/if}
 </Modal>
 

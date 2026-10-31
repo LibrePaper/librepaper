@@ -7,6 +7,7 @@
   import { createMachineView } from "../../lib/desktop/machine.svelte.js";
   import Modal from "../Modal.svelte";
   import { offered, search, has } from "./registry.js";
+  import { m } from "../../lib/paraglide/messages.js";
   import GeneralSettings from "./GeneralSettings.svelte";
   import EditorSettings from "./EditorSettings.svelte";
   import LatexFilesSettings from "./LatexFilesSettings.svelte";
@@ -76,10 +77,10 @@
   }
 </script>
 
-<Modal bind:open title="Settings" page>
+<Modal bind:open title={m.settingsdialog_title()} page>
   <div class="settings">
-    <nav class="settings-nav" aria-label="Settings categories">
-      <input class="input input-sm settings-search" type="search" placeholder="Search settings" aria-label="Search settings" bind:value={query} />
+    <nav class="settings-nav" aria-label={m.settingsdialog_categories_label()}>
+      <input class="input input-sm settings-search" type="search" placeholder={m.settingsdialog_search()} aria-label={m.settingsdialog_search()} bind:value={query} />
       {#each nav as item (item.id)}
         <button type="button" class="settings-nav-item" class:current={shown?.id === item.id}
                 aria-current={shown?.id === item.id ? "page" : undefined} onclick={() => go(item.id)}>
@@ -89,7 +90,7 @@
           <button type="button" class="settings-nav-entry" onclick={() => go(item.id, entry.id)}>{entry.says}</button>
         {/each}
       {/each}
-      {#if found && !nav.length}<p class="settings-nav-empty">Nothing matches.</p>{/if}
+      {#if found && !nav.length}<p class="settings-nav-empty">{m.settingsdialog_nothing_matches()}</p>{/if}
     </nav>
 
     <div class="settings-body" bind:this={body}>
@@ -97,7 +98,7 @@
         <header class="settings-head">
           <h3 class="settings-category">{shown.says}</h3>
           {#if shown.id === "tools" && view.state?.version}
-            <span class="settings-scope">Version {view.state.version} · This computer</span>
+            <span class="settings-scope">{m.settingsdialog_version({ version: view.state.version })}</span>
           {:else if shown.note}<span class="settings-scope">{shown.note}</span>{/if}
         </header>
         {#if shown.id === "general"}
@@ -107,7 +108,7 @@
         {:else if shown.id === "rendering"}
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">LaTeX</h4></div>
-            <p class="settings-section-note">LaTeX documents render in the browser, or on this computer while Run code is on.</p>
+            <p class="settings-section-note">{m.settingsdialog_latex_note()}</p>
             <DefaultPreviewSetting format="latex" {userId} onpreferences={onbuildpreferences} />
             <BuildSettings format="latex" {userId} onpreferences={onbuildpreferences} />
             <RendererSettings format="latex" {userId} onpreferences={onbuildpreferences} />
@@ -116,21 +117,21 @@
 
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">Typst</h4></div>
-            <p class="settings-section-note">Typst documents render in the browser, or on this computer while Run code is on.</p>
+            <p class="settings-section-note">{m.settingsdialog_typst_note()}</p>
             <DefaultPreviewSetting format="typst" {userId} onpreferences={onbuildpreferences} />
             <RendererSettings format="typst" {userId} onpreferences={onbuildpreferences} />
           </section>
 
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">Markdown</h4></div>
-            <p class="settings-section-note">Markdown documents render in the browser, or on this computer while Run code is on.</p>
+            <p class="settings-section-note">{m.settingsdialog_markdown_note()}</p>
             <DefaultPreviewSetting format="markdown" {userId} onpreferences={onbuildpreferences} />
             <RendererSettings format="markdown" {userId} onpreferences={onbuildpreferences} />
           </section>
 
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">Quarto</h4></div>
-            <p class="settings-section-note">Quarto documents render a draft in the browser. With Run code on, Quarto renders them on this computer.</p>
+            <p class="settings-section-note">{m.settingsdialog_quarto_note()}</p>
             <DefaultPreviewSetting format="quarto" {userId} onpreferences={onbuildpreferences} />
             <RendererSettings format="quarto" {userId} onpreferences={onbuildpreferences} />
           </section>
