@@ -7,6 +7,7 @@
   import { signInHref, signOut } from "../../lib/api.js";
   import { DOCUMENTATION_URL } from "../../lib/site-links.js";
   import { tagColour } from "../../lib/tag-colours.js";
+  import { m } from "../../lib/paraglide/messages.js";
 
   // `open` marks the current tab and, by default, tints the trigger; a page
   // whose places are always open passes `pressed={false}` to keep it plain.
@@ -92,11 +93,11 @@
 >
   <Menu.Trigger
     class={`btn-icon icon-control icon-standard compact-panels-trigger ${pressed ? "lp-control-tonal-brand" : "icon-plain"}`}
-    aria-label={marked ? `Menu, ${badges[marked.id].says || marked.says}` : "Menu"}
+    aria-label={marked ? m.compactpanelmenu_menu_marked({ name: badges[marked.id].says || marked.says }) : m.compactpanelmenu_menu()}
   >
     <Icon name="menu" />
     {#if marked}<span class="compact-dot" aria-hidden="true"></span>{/if}
-    <span class="compact-label" aria-hidden="true">Menu</span>
+    <span class="compact-label" aria-hidden="true">{m.compactpanelmenu_menu()}</span>
   </Menu.Trigger>
   <ExplorerMenu>
     <div class="compact-panels-items" use:sizeMenu>
@@ -117,12 +118,12 @@
           class="menuitem compact-panel-item"
           data-panel-id={tab.id}
           disabled={tab.disabled}
-          aria-label={tab.disabled ? `${tab.says} (not available in the demo)` : badges[tab.id]?.says || tab.says}
+          aria-label={tab.disabled ? m.compactpanelmenu_demo_unavailable({ says: tab.says }) : badges[tab.id]?.says || tab.says}
           aria-current={selected ? "true" : undefined}
         >
           <span class="menuitem-check" aria-hidden="true">{selected ? "✓" : ""}</span>
           <Icon name={tab.icon} size="1rem" />
-          <span class="menuitem-label">{tab.says}{tab.disabled ? " (not available in the demo)" : ""}</span>
+          <span class="menuitem-label">{tab.disabled ? m.compactpanelmenu_demo_unavailable({ says: tab.says }) : tab.says}</span>
           {#if counts[tab.id]}<span class="menuitem-count">{counts[tab.id]}</span>{/if}
           {#if badges[tab.id]?.dot}<span class="menuitem-dot" aria-hidden="true"></span>{/if}
         </Menu.Item>
@@ -140,13 +141,13 @@
         <Menu.Item value="tags:new" class="menuitem workspace-action" data-workspace-action="new-tag">
           <span class="menuitem-check" aria-hidden="true"></span>
           <Icon name="plus" size="1rem" />
-          <span class="menuitem-label">New tag</span>
+          <span class="menuitem-label">{m.compactpanelmenu_new_tag()}</span>
         </Menu.Item>
         {#if tags.length}
           <Menu.Item value="tags:manage" class="menuitem workspace-action" data-workspace-action="manage-tags">
             <span class="menuitem-check" aria-hidden="true"></span>
             <Icon name="pencil" size="1rem" />
-            <span class="menuitem-label">Manage tags</span>
+            <span class="menuitem-label">{m.compactpanelmenu_manage_tags()}</span>
           </Menu.Item>
         {/if}
       {/if}
@@ -154,14 +155,14 @@
       <Menu.Item value="settings" class="menuitem workspace-action" data-workspace-action="settings">
         <span class="menuitem-check" aria-hidden="true"></span>
         <Icon name="settings" size="1rem" />
-        <span class="menuitem-label">Settings</span>
+        <span class="menuitem-label">{m.compactpanelmenu_settings()}</span>
       </Menu.Item>
       <Menu.Item value="home" class="menuitem workspace-action" data-workspace-action="home">
         {#snippet element(attributes)}
           <a {...retargetElementAttributes(attributes)} href="/" class="menuitem workspace-action" data-workspace-action="home">
             <span class="menuitem-check" aria-hidden="true"></span>
             <Icon name="home" size="1rem" />
-            <span class="menuitem-label">Home</span>
+            <span class="menuitem-label">{m.compactpanelmenu_home()}</span>
           </a>
         {/snippet}
       </Menu.Item>
@@ -170,7 +171,7 @@
           <a {...retargetElementAttributes(attributes)} href={DOCUMENTATION_URL} target="_blank" rel="noreferrer" class="menuitem workspace-action" data-workspace-action="docs">
             <span class="menuitem-check" aria-hidden="true"></span>
             <Icon name="help" size="1rem" />
-            <span class="menuitem-label">Docs</span>
+            <span class="menuitem-label">{m.compactpanelmenu_docs()}</span>
           </a>
         {/snippet}
       </Menu.Item>
@@ -181,7 +182,7 @@
         <Menu.Item value="signout" class="menuitem workspace-action" data-workspace-action="signout">
           <span class="menuitem-check" aria-hidden="true"></span>
           <Icon name="log-out" size="1rem" />
-          <span class="menuitem-label">Sign out</span>
+          <span class="menuitem-label">{m.compactpanelmenu_sign_out()}</span>
         </Menu.Item>
       {:else if me.providers?.length}
         <div class="compact-panels-divider" role="separator"></div>
@@ -190,7 +191,7 @@
             <a {...retargetElementAttributes(attributes)} href={signInHref()} class="menuitem workspace-action" data-workspace-action="signin">
               <span class="menuitem-check" aria-hidden="true"></span>
               <Icon name="log-in" size="1rem" />
-              <span class="menuitem-label">Sign in</span>
+              <span class="menuitem-label">{m.compactpanelmenu_sign_in()}</span>
             </a>
           {/snippet}
         </Menu.Item>

@@ -1,5 +1,6 @@
 /* LaTeX adapter for the Insert menu.  Positions in additionalEdits are
  * absolute offsets in the source file named by edit.path. */
+import { m } from "./paraglide/messages.js";
 const s = (x, d = "") => x == null ? d : String(x);
 const n = (x, d, min = 1, max = 100) => Math.min(max, Math.max(min, Number.isFinite(+x) ? Math.floor(+x) : d));
 const tex = value => s(value).replace(/[\\{}%#$&_~^]/g, c => ({'\\':'\\textbackslash{}','~':'\\textasciitilde{}','^':'\\textasciicircum{}'}[c] || '\\'+c));
@@ -36,13 +37,13 @@ const packageEdit = (name, c, notes, options = "") => {
   const anchor = preambleAnchor(c, { afterClass: name === "amsthm" }), bracket = options ? `[${options}]` : "";
   const text = [anchor?.text, c.text, c.entryText].map(value => s(value)).join("\n");
   if (new RegExp(`\\\\usepackage(?:\\[[^\\]]*\\])?\\{[^}]*\\b${name}\\b[^}]*\\}`).test(text)) return [];
-  if (!anchor) { notes.push(`Add \\usepackage${bracket}{${name}} to the preamble.`); return []; }
+  if (!anchor) { notes.push(m.insert_latex_add_package({ package: `\\usepackage${bracket}{${name}}` })); return []; }
   return [{ path: anchor.path, from: anchor.at, to: anchor.at, insert: `\\usepackage${bracket}{${name}}\n` }];
 };
 export const latexPackageEdits = (name, c, notes, options = "") => packageEdit(name, c, notes, options);
 const preambleEdit = (insert, c, notes) => {
   const anchor = preambleAnchor(c);
-  if (!anchor) { notes.push(`Add ${insert} to the preamble.`); return []; }
+  if (!anchor) { notes.push(m.insert_latex_add_preamble({ code: insert })); return []; }
   return [{ path: anchor.path, from: anchor.at, to: anchor.at, insert: insert + "\n" }];
 };
 const result = (text, additionalEdits = [], notes = [], placeholder) => ({ text, additionalEdits, notes, ...(placeholder ? { placeholder } : {}) });
@@ -59,7 +60,7 @@ export function buildLatex(id, options = {}, context = {}) {
   if (id === "toc") return result("\\tableofcontents", [], notes);
   if (id === "figure") {
     add("graphicx");
-    if (!options.src) throw Error("Choose an image first.");
+    if (!options.src) throw Error(m.insert_latex_choose_image());
     const src=s(options.src).replace(/[{}%#]/g,c=>'\\'+c),rawWidth=options.width;
     const width=/%$/.test(rawWidth||'')?(parseFloat(rawWidth)/100)+'\\linewidth':rawWidth||'\\linewidth';
     const caption=options.caption||options.label?'\\caption{'+tex(options.caption||'Figure')+'}\n':'';
@@ -67,7 +68,7 @@ export function buildLatex(id, options = {}, context = {}) {
     return result('\\begin{figure}[htbp]\n\\centering\n\\includegraphics[width='+width+']{'+src+'}\n'+caption+anchor+'\\end{figure}',additionalEdits,notes);
   }
   if (id === "table") { const header = options.header !== false, alignment = { left: "l", center: "c", right: "r" }[options.alignment] || (options.alignment === "default" ? "c" : s(options.alignment, "c").slice(0, 1)), align = alignment.repeat(colCount); const cells = []; for (let r = 0; r < rowCount; r++) cells.push(Array.from({ length: colCount }, (_, j) => r === 0 && header ? tex(options.headers?.[j] || `Header ${j + 1}`) : tex(options.cells?.[r]?.[j] || `Cell ${r + 1},${j + 1}`)).join(" & ")); const tabular = `\\begin{tabular}{${align}}\n${header ? "\\toprule\n" : ""}${cells.join(" \\\\\n")}${header ? " \\\\\n\\bottomrule" : ""}\n\\end{tabular}`; if (header) add("booktabs"); const caption = options.caption || options.label ? `\\caption{${tex(options.caption || "Table")}}\n` : ""; const lab = options.label ? `\\label{${key(options.label)}}\n` : ""; return result(`\\begin{table}[${options.placement || "htbp"}]\n\\centering\n${caption}${lab}${tabular}\n\\end{table}`, additionalEdits, notes, header ? "Header 1" : "Cell 1,1"); }
-  if (id === "citation") { const keys = options.keys || []; if (!keys.length) throw Error("Choose at least one reference."); if (keys.some(k => !/^[\p{L}\p{N}_.:+-]+$/u.test(k))) throw Error("Unsupported citation key."); const loc = options.locator ? `[${tex(options.locator)}]` : ""; const biblatex = /usepackage(?:\[[^\]]*\])?\{biblatex\}/.test(text) || c.biblatex; const natbib = /usepackage(?:\[[^\]]*\])?\{natbib\}/.test(text); const style = options.style || "parenthetical"; if (!biblatex && !natbib && style === "narrative") {
+  if (id === "citation") { const keys = options.keys || []; if (!keys.length) throw Error(m.insert_latex_choose_reference()); if (keys.some(k => !/^[\p{L}\p{N}_.:+-]+$/u.test(k))) throw Error(m.insert_latex_citation_key()); const loc = options.locator ? `[${tex(options.locator)}]` : ""; const biblatex = /usepackage(?:\[[^\]]*\])?\{biblatex\}/.test(text) || c.biblatex; const natbib = /usepackage(?:\[[^\]]*\])?\{natbib\}/.test(text); const style = options.style || "parenthetical"; if (!biblatex && !natbib && style === "narrative") {
       additionalEdits.push(...packageEdit("natbib", c, notes));
       const existing = text.match(/\\bibliographystyle\{plain\}/);
       if (existing) additionalEdits.push({path:c.entryPath || c.path,from:existing.index,to:existing.index+existing[0].length,insert:'\\bibliographystyle{plainnat}'});
@@ -79,7 +80,7 @@ export function buildLatex(id, options = {}, context = {}) {
   if (id === "display-math") { add("amsmath"); const formula = body || "x = y", labelText = options.label ? `\\label{${key(options.label)}}\n` : "", star = options.numbered === false ? "*" : ""; if (options.inMath) return result(`\\begin{aligned}\n${formula}\n\\end{aligned}`, additionalEdits, notes, formula); return result(`\\begin{equation${star}}\n${labelText}${formula}\n\\end{equation${star}}`, additionalEdits, notes, formula); }
   if (["bulleted-list", "numbered-list", "description-list"].includes(id)) { const items = (body ? body.split(/\r?\n/).filter(Boolean) : ["First item", "Second item"]); const env = id === "bulleted-list" ? "itemize" : id === "numbered-list" ? "enumerate" : "description"; const content = id === "description-list" ? items.map((x, i) => `\\item[${tex(options.terms?.[i] || `Term ${i + 1}`)}] ${x}`).join("\n") : items.map((x) => `\\item ${x}`).join("\n"); return result(`\\begin{${env}}\n${content}\n\\end{${env}}`, [], notes, "First item"); }
   if (["quote", "quotation"].includes(id)) return result(`\\begin{${id}}\n${body || "Quote"}\n\\end{${id}}`, [], notes, "Quote");
-  if (id === "code-block") { const language = s(options.language).toLowerCase(), known = { python: "Python", r: "R", javascript: "JavaScript", js: "JavaScript", bash: "bash", sh: "bash", rust: "Rust" }; if (!language) return result(`\\begin{verbatim}\n${body || "code"}\n\\end{verbatim}`, [], notes, "code"); if (!known[language]) throw new Error(`Unsupported listings language: ${language}`); add("listings");
+  if (id === "code-block") { const language = s(options.language).toLowerCase(), known = { python: "Python", r: "R", javascript: "JavaScript", js: "JavaScript", bash: "bash", sh: "bash", rust: "Rust" }; if (!language) return result(`\\begin{verbatim}\n${body || "code"}\n\\end{verbatim}`, [], notes, "code"); if (!known[language]) throw new Error(m.insert_latex_listings_language({ language })); add("listings");
     if (["JavaScript","Rust"].includes(known[language]) && !text.includes('\\lstdefinelanguage{'+known[language]+'}')) additionalEdits.push(...preambleEdit('\\lstdefinelanguage{'+known[language]+'}{morekeywords={function,let,const,var,return,if,else,for,while,fn,impl,struct,pub,use,match},sensitive=true,morecomment=[l]{//},morestring=[b]"}',c,notes));
     return result(`\\begin{lstlisting}[language=${known[language]}]\n${body || "code"}\n\\end{lstlisting}`, additionalEdits, notes, "code"); }
   if (id === "footnote") return result(`\\footnote{${body || "Note"}}`, [], notes, "Note");
@@ -91,15 +92,15 @@ export function buildLatex(id, options = {}, context = {}) {
   if (id === "custom-environment") {
     const env=key(options.environment||'environment');
     const all=[text,...(c.files||[]).map(file=>file.text)].filter(Boolean).join('\n');
-    if(!new RegExp('\\\\(?:newenvironment|renewenvironment|newtheorem)\\s*\\{'+env+'\\}').test(all))throw Error("LaTeX environment '"+env+"' is not defined in the document.");
+    if(!new RegExp('\\\\(?:newenvironment|renewenvironment|newtheorem)\\s*\\{'+env+'\\}').test(all))throw Error(m.insert_latex_env_undefined({ env }));
     const signature=all.match(new RegExp('\\\\(?:newenvironment|renewenvironment)\\s*\\{'+env+'\\}\\s*\\[(\\d+)\\](?:\\s*\\[([^\\]]*)\\])?'));
     const count=Number(signature?.[1])||0;let args='';
     for(let i=0;i<count;i++){
       const value=options.arguments?.[i] || (i===0?signature?.[2]:'');
-      if(!value)throw Error('Enter argument '+(i+1)+' for '+env+'.');
+      if(!value)throw Error(m.insert_latex_enter_argument({ index: i + 1, env }));
       args+=i===0&&signature?.[2]!=null?'['+value+']':'{'+value+'}';
     }
     return result('\\begin{'+env+'}'+args+'\n'+(body||'Content.')+'\n\\end{'+env+'}',[],notes,body||'Content.');
   }
-  return result("", [], [`Unknown LaTeX insertion: ${id}`]);
+  return result("", [], [m.insert_latex_unknown({ id })]);
 }

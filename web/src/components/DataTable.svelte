@@ -1,4 +1,5 @@
 <script>
+  import { m } from "../lib/paraglide/messages.js";
   // Every table in the project management pages, once.
   //
   // The listing used to build its own table on every page it has: the header
@@ -212,7 +213,7 @@
                 class:col-gripping={dragging === column.key}
                 role="separator"
                 aria-orientation="vertical"
-                aria-label="Resize the {column.label || column.key} column"
+                aria-label={m.datatable_resize_column({ column: column.label || column.key })}
                 aria-valuenow={currentWidth(column)}
                 aria-valuemin={floor(column)}
                 tabindex="0"

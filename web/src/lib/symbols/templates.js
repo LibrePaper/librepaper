@@ -5,6 +5,7 @@ import { insertSyntaxContext, uniqueLabel } from "../insert.js";
 import { key as latexKey, latexPackageEdits } from "../insert-latex.js";
 import { identifier as typstIdentifier } from "../insert-typst.js";
 import { separated } from "./index.js";
+import { m } from "../paraglide/messages.js";
 
 const slot = (id, label, placeholder, extra = {}) => ({ id, label, placeholder, ...extra });
 
@@ -40,85 +41,85 @@ const grouped = (base, typst) => {
 
 export const MATH_TEMPLATES = [
   {
-    id: "fraction", label: "Fraction", preview: "\\frac{a}{b}",
-    slots: [slot("num", "Numerator", "a"), slot("den", "Denominator", "b")],
+    id: "fraction", label: m.templates_label_fraction(), preview: "\\frac{a}{b}",
+    slots: [slot("num", m.templates_slot_numerator(), "a"), slot("den", m.templates_slot_denominator(), "b")],
     latex: v => `\\frac{${v.num}}{${v.den}}`,
     typst: v => `frac(${v.num}, ${v.den})`,
   },
   {
-    id: "root", label: "Root", preview: "\\sqrt[n]{x}",
-    slots: [slot("radicand", "Radicand", "x"), slot("index", "Index", "n", { optional: true })],
+    id: "root", label: m.templates_label_root(), preview: "\\sqrt[n]{x}",
+    slots: [slot("radicand", m.templates_slot_radicand(), "x"), slot("index", m.templates_slot_index(), "n", { optional: true })],
     latex: v => (v.index ? `\\sqrt[${v.index}]{${v.radicand}}` : `\\sqrt{${v.radicand}}`),
     typst: v => (v.index ? `root(${v.index}, ${v.radicand})` : `sqrt(${v.radicand})`),
   },
   {
-    id: "subscript", label: "Subscript", preview: "x_{i}",
-    slots: [slot("base", "Base", "x"), slot("sub", "Subscript", "i")],
+    id: "subscript", label: m.templates_label_subscript(), preview: "x_{i}",
+    slots: [slot("base", m.templates_slot_base(), "x"), slot("sub", m.templates_slot_subscript(), "i")],
     latex: v => `${grouped(v.base, false)}_{${v.sub}}`,
     typst: v => `${grouped(v.base, true)}_(${v.sub})`,
   },
   {
-    id: "superscript", label: "Superscript", preview: "x^{2}",
-    slots: [slot("base", "Base", "x"), slot("sup", "Superscript", "2")],
+    id: "superscript", label: m.templates_label_superscript(), preview: "x^{2}",
+    slots: [slot("base", m.templates_slot_base(), "x"), slot("sup", m.templates_slot_superscript(), "2")],
     latex: v => `${grouped(v.base, false)}^{${v.sup}}`,
     typst: v => `${grouped(v.base, true)}^(${v.sup})`,
   },
   {
-    id: "subsup", label: "Subscript and superscript", preview: "x_{i}^{2}",
-    slots: [slot("base", "Base", "x"), slot("sub", "Subscript", "i"), slot("sup", "Superscript", "2")],
+    id: "subsup", label: m.templates_label_subsup(), preview: "x_{i}^{2}",
+    slots: [slot("base", m.templates_slot_base(), "x"), slot("sub", m.templates_slot_subscript(), "i"), slot("sup", m.templates_slot_superscript(), "2")],
     latex: v => `${grouped(v.base, false)}_{${v.sub}}^{${v.sup}}`,
     typst: v => `${grouped(v.base, true)}_(${v.sub})^(${v.sup})`,
   },
   {
-    id: "sum", label: "Sum", preview: "\\sum_{i=1}^{n} x_i",
-    slots: [slot("from", "From", "i=1"), slot("to", "To", "n"), slot("body", "Body", "x_i")],
+    id: "sum", label: m.templates_label_sum(), preview: "\\sum_{i=1}^{n} x_i",
+    slots: [slot("from", m.templates_slot_from(), "i=1"), slot("to", m.templates_slot_to(), "n"), slot("body", m.templates_slot_body(), "x_i")],
     latex: v => `\\sum_{${v.from}}^{${v.to}} ${v.body}`,
     typst: v => `sum_(${v.from})^(${v.to}) ${v.body}`,
   },
   {
-    id: "product", label: "Product", preview: "\\prod_{i=1}^{n} x_i",
-    slots: [slot("from", "From", "i=1"), slot("to", "To", "n"), slot("body", "Body", "x_i")],
+    id: "product", label: m.templates_label_product(), preview: "\\prod_{i=1}^{n} x_i",
+    slots: [slot("from", m.templates_slot_from(), "i=1"), slot("to", m.templates_slot_to(), "n"), slot("body", m.templates_slot_body(), "x_i")],
     latex: v => `\\prod_{${v.from}}^{${v.to}} ${v.body}`,
     typst: v => `product_(${v.from})^(${v.to}) ${v.body}`,
   },
   {
-    id: "integral", label: "Integral", preview: "\\int_a^b f \\, dx",
+    id: "integral", label: m.templates_label_integral(), preview: "\\int_a^b f \\, dx",
     slots: [
-      slot("from", "Lower limit", "a"), slot("to", "Upper limit", "b"), slot("body", "Integrand", "f"),
-      slot("variable", "Variable", "x", { default: "x" }),
+      slot("from", m.templates_slot_lower_limit(), "a"), slot("to", m.templates_slot_upper_limit(), "b"), slot("body", m.templates_slot_integrand(), "f"),
+      slot("variable", m.templates_slot_variable(), "x", { default: "x" }),
     ],
     latex: v => `\\int_{${v.from}}^{${v.to}} ${v.body} \\, d${v.variable}`,
     typst: v => `integral_(${v.from})^(${v.to}) ${v.body} dif ${v.variable}`,
   },
   {
-    id: "limit", label: "Limit", preview: "\\lim_{x \\to a} f",
-    slots: [slot("variable", "Variable", "x"), slot("to", "Approaches", "a"), slot("body", "Body", "f")],
+    id: "limit", label: m.templates_label_limit(), preview: "\\lim_{x \\to a} f",
+    slots: [slot("variable", m.templates_slot_variable(), "x"), slot("to", m.templates_slot_approaches(), "a"), slot("body", m.templates_slot_body(), "f")],
     latex: v => `\\lim_{${v.variable} \\to ${v.to}} ${v.body}`,
     typst: v => `lim_(${v.variable} -> ${v.to}) ${v.body}`,
   },
   {
-    id: "binomial", label: "Binomial", preview: "\\binom{n}{k}", package: "amsmath",
-    slots: [slot("top", "Top", "n"), slot("bottom", "Bottom", "k")],
+    id: "binomial", label: m.templates_label_binomial(), preview: "\\binom{n}{k}", package: "amsmath",
+    slots: [slot("top", m.templates_slot_top(), "n"), slot("bottom", m.templates_slot_bottom(), "k")],
     latex: v => `\\binom{${v.top}}{${v.bottom}}`,
     typst: v => `binom(${v.top}, ${v.bottom})`,
   },
   {
-    id: "overbrace", label: "Overbrace", preview: "\\overbrace{x}^{n}",
-    slots: [slot("body", "Body", "x"), slot("note", "Label", "label")],
+    id: "overbrace", label: m.templates_label_overbrace(), preview: "\\overbrace{x}^{n}",
+    slots: [slot("body", m.templates_slot_body(), "x"), slot("note", m.templates_slot_label(), "label")],
     latex: v => `\\overbrace{${v.body}}^{${v.note}}`,
     typst: v => `overbrace(${v.body}, ${v.note})`,
   },
   {
-    id: "underbrace", label: "Underbrace", preview: "\\underbrace{x}_{n}",
-    slots: [slot("body", "Body", "x"), slot("note", "Label", "label")],
+    id: "underbrace", label: m.templates_label_underbrace(), preview: "\\underbrace{x}_{n}",
+    slots: [slot("body", m.templates_slot_body(), "x"), slot("note", m.templates_slot_label(), "label")],
     latex: v => `\\underbrace{${v.body}}_{${v.note}}`,
     typst: v => `underbrace(${v.body}, ${v.note})`,
   },
   {
-    id: "brackets", label: "Brackets", preview: "\\left( x \\right)",
+    id: "brackets", label: m.templates_label_brackets(), preview: "\\left( x \\right)",
     // The bar and norm delimiters are amsmath commands.
     package: v => (v.kind === "bars" || v.kind === "norm" ? "amsmath" : null),
-    slots: [slot("body", "Body", "x")],
+    slots: [slot("body", m.templates_slot_body(), "x")],
     latex: v => {
       const [open, close] = BRACKETS_LATEX[v.kind ?? "parentheses"] ?? BRACKETS_LATEX.parentheses;
       return `\\left${open} ${v.body} \\right${close}`;
@@ -140,31 +141,31 @@ export const MATH_TEMPLATES = [
     // In LaTeX display, templateInsertion sets the environment, so the star
     // and the number live there. Everywhere else, and in the preview, it is
     // aligned, which KaTeX and LaTeX accept inline and in display.
-    id: "aligned", label: "Aligned equations", preview: "\\begin{aligned} x &= y \\end{aligned}", package: "amsmath",
+    id: "aligned", label: m.templates_label_aligned(), preview: "\\begin{aligned} x &= y \\end{aligned}", package: "amsmath",
     grid: true, selfDisplay: true, displayEnvironment: "align",
-    slots: [slot("rows", "Equations", "x")],
+    slots: [slot("rows", m.templates_slot_equations(), "x")],
     latex: v => rowsIn(v.environment ?? "aligned", v.rows.map(row => `${row.left} &= ${row.right}`).join(" \\\\\n"), v.labelLine),
     typst: v => v.rows.map(row => `${row.left} &= ${row.right}`).join(" \\ "),
   },
   {
     // Same rules as aligned, with one value per row and gather for display.
-    id: "gathered", label: "Gathered equations", preview: "\\begin{gathered} x = y \\\\ z = w \\end{gathered}", package: "amsmath",
+    id: "gathered", label: m.templates_label_gathered(), preview: "\\begin{gathered} x = y \\\\ z = w \\end{gathered}", package: "amsmath",
     grid: true, selfDisplay: true, displayEnvironment: "gather",
-    slots: [slot("rows", "Equations", "x")],
+    slots: [slot("rows", m.templates_slot_equations(), "x")],
     latex: v => rowsIn(v.environment ?? "gathered", v.rows.map(row => row.value).join(" \\\\\n"), v.labelLine),
     typst: v => v.rows.map(row => row.value).join(" \\ "),
   },
   {
-    id: "cases", label: "Cases", preview: "\\begin{cases} 1 & x > 0 \\end{cases}", package: "amsmath",
+    id: "cases", label: m.templates_label_cases(), preview: "\\begin{cases} 1 & x > 0 \\end{cases}", package: "amsmath",
     grid: true,
-    slots: [slot("rows", "Cases", "1")],
+    slots: [slot("rows", m.templates_slot_cases(), "1")],
     latex: v => `\\begin{cases}\n${v.rows.map(row => `${row.value} & ${row.condition}`).join(" \\\\\n")}\n\\end{cases}`,
     typst: v => `cases(${v.rows.map(row => `${row.value} "if" ${row.condition}`).join(", ")})`,
   },
   {
-    id: "matrix", label: "Matrix", preview: "\\begin{pmatrix} a & b \\end{pmatrix}", package: "amsmath",
+    id: "matrix", label: m.templates_label_matrix(), preview: "\\begin{pmatrix} a & b \\end{pmatrix}", package: "amsmath",
     grid: true,
-    slots: [slot("cells", "Cells", "0")],
+    slots: [slot("cells", m.templates_slot_cells(), "0")],
     latex: v => {
       const env = MATRIX_ENV[v.brackets ?? "parentheses"] ?? "pmatrix";
       const rows = v.cells.map(row => row.join(" & ")).join(" \\\\\n");
@@ -194,7 +195,7 @@ const GRID_DEFAULTS = {
  */
 export function templateInsertion(template, values = {}, context = {}) {
   const format = context.format;
-  if (format === "html") return { text: "", notes: ["Math templates need a math-capable format."], additionalEdits: [], snippet: false };
+  if (format === "html") return { text: "", notes: [m.templates_note_math_format()], additionalEdits: [], snippet: false };
 
   const inMath = insertSyntaxContext(context) === "math";
   const inline = values.style === "inline";
