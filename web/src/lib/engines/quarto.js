@@ -6,6 +6,7 @@
 // It deliberately does not execute code, filters, shortcodes, or JavaScript.
 
 import { sha256, sha256Bytes } from "../results-hash.js";
+import { m } from "../paraglide/messages.js";
 
 export { sha256, sha256Bytes };
 
@@ -73,7 +74,7 @@ export function parseFrontMatter(source) {
   // Keep an unfinished header in the visible draft.  There is no safe
   // metadata boundary yet, so callers must leave the original bytes alone
   // and report the localized diagnostic rather than dropping the document.
-  if (close < 0) return { value: {}, raw: "", start: 0, end: 0, diagnostics: [{ severity: "warning", message: "unfinished YAML front matter", line: 1, column: 1 }] };
+  if (close < 0) return { value: {}, raw: "", start: 0, end: 0, diagnostics: [{ severity: "warning", message: m.quarto_yaml_unfinished(), line: 1, column: 1 }] };
   const value = {};
   const diagnostics = [];
   let current = value;
@@ -97,7 +98,7 @@ export function parseFrontMatter(source) {
     }
     const match = /^(\s*)([^:#][^:]*):(?:\s*(.*))?$/.exec(line);
     if (!match) {
-      diagnostics.push({ severity: "warning", message: "could not parse YAML front matter", line: i + 1, column: 1 });
+      diagnostics.push({ severity: "warning", message: m.quarto_yaml_parse_failed(), line: i + 1, column: 1 });
       continue;
     }
     const indent = match[1].length;
@@ -119,7 +120,7 @@ export function parseFrontMatter(source) {
       current = value[currentKey];
       current[key] = scalar(rest);
     } else {
-      diagnostics.push({ severity: "warning", message: "unsupported YAML nesting", line: i + 1, column: indent + 1 });
+      diagnostics.push({ severity: "warning", message: m.quarto_yaml_nesting(), line: i + 1, column: indent + 1 });
     }
   }
   const offsets = lineOffsets(source);
@@ -272,8 +273,8 @@ export function parseQuarto(source, { path = "main.qmd" } = {}) {
       }
     }
   }
-  if (fence) diagnostics.push({ severity: "warning", message: "unfinished code cell", line: fence.startLine + 1, column: 1 });
-  if (stack.length) diagnostics.push({ severity: "warning", message: "unfinished fenced div", line: stack[stack.length - 1].startLine + 1, column: 1 });
+  if (fence) diagnostics.push({ severity: "warning", message: m.quarto_cell_unfinished(), line: fence.startLine + 1, column: 1 });
+  if (stack.length) diagnostics.push({ severity: "warning", message: m.quarto_div_unfinished(), line: stack[stack.length - 1].startLine + 1, column: 1 });
   const duplicateLabels = new Set();
   const labels = new Set();
   for (const cell of cells) {
@@ -283,7 +284,7 @@ export function parseQuarto(source, { path = "main.qmd" } = {}) {
   }
   for (const cell of cells) if (duplicateLabels.has(cell.label)) {
     cell.ambiguous = true;
-    diagnostics.push({ severity: "warning", message: `duplicate cell label ${cell.label}`, line: cell.startLine + 1, column: 1, cell: cell.id });
+    diagnostics.push({ severity: "warning", message: m.quarto_cell_label_duplicate({ label: cell.label }), line: cell.startLine + 1, column: 1, cell: cell.id });
   }
   return {
     schema: "librepaper-quarto-source/v1", path, source,
@@ -436,12 +437,12 @@ export function composeDraft(source, { path = "main.qmd", assets = {}, expandInc
   const expandedInclude = (name, depth = 0, seen = new Set(), sourceName = path, sourceLine = 0) => {
     const normalized = resolveInclude(name, sourceName);
     if (!normalized) {
-      generatedDiagnostics.push({ severity: "warning", generated: true, message: `Include unavailable or unauthorized: ${name}`, file: sourceName, line: sourceLine, column: 0 });
-      return `<span class="quarto-diagnostic">Include unavailable: ${escapeHtml(name)}</span>`;
+      generatedDiagnostics.push({ severity: "warning", generated: true, message: m.quarto_include_unauthorized({ name }), file: sourceName, line: sourceLine, column: 0 });
+      return `<span class="quarto-diagnostic">${m.quarto_include_unavailable({ name: escapeHtml(name) })}</span>`;
     }
     if (depth >= maxIncludeDepth || seen.has(normalized)) {
-      generatedDiagnostics.push({ severity: "warning", generated: true, message: `Include cycle or depth limit: ${normalized}`, file: sourceName, line: sourceLine, column: 0 });
-      return `<span class="quarto-diagnostic">Include cycle or depth limit: ${escapeHtml(normalized)}</span>`;
+      generatedDiagnostics.push({ severity: "warning", generated: true, message: m.quarto_include_cycle({ normalized }), file: sourceName, line: sourceLine, column: 0 });
+      return `<span class="quarto-diagnostic">${m.quarto_include_cycle({ normalized: escapeHtml(normalized) })}</span>`;
     }
     const value = includes[normalized];
     const next = new Set(seen).add(normalized);

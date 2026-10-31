@@ -1,3 +1,4 @@
+import { m } from "../paraglide/messages.js";
 // One Pandoc worker, started on first use and shared by every conversion.
 // The module is large, so nothing loads until a download asks for it, and
 // conversions run one at a time because the module holds a single file system.
@@ -33,7 +34,7 @@ function start() {
     job.reject(new Error(data.error));
     if (data.fatal) discard(data.error);
   };
-  const failed = (event) => discard(event.message || "Pandoc worker failed");
+  const failed = (event) => discard(event.message || m.client_worker_failed());
   worker.onerror = failed;
   worker.onmessageerror = failed;
   return current;
@@ -41,7 +42,7 @@ function start() {
 
 function run(options, files) {
   const url = moduleUrl();
-  if (!url) return Promise.reject(new Error("Pandoc is not available"));
+  if (!url) return Promise.reject(new Error(m.client_unavailable()));
   client ||= start();
   const current = client;
   const id = ++sequence;

@@ -1,6 +1,7 @@
 // Biber WASM from the selected LaTeX release. Every executable/data byte is
 // verified before use. A fresh worker isolates each run and can be terminated.
 import { fetchVerified } from './resources.js';
+import { m } from '../paraglide/messages.js';
 
 let assets = null;
 const active = new Set();
@@ -19,7 +20,7 @@ async function load(base, release, signal, onProgress) {
   if (!assets || assets.key !== key) {
     const promise = (async () => {
       const spec = release.engines?.biber;
-      if (!spec) throw new Error('This release has no Biber WASM backend');
+      if (!spec) throw new Error(m.biber_no_backend());
       // The manifest is the inventory for this release.  In particular,
       // biber.build.json is part of the published Biber receipt and must be
       // present and verified along with the executable bytes, even though the
@@ -86,10 +87,10 @@ export async function runBiber(request, { base, release, signal, onProgress }) {
     };
     const aborted = () => finish(abortError());
     const stop = () => finish(abortError());
-    const timer = setTimeout(() => finish(new Error('Biber timed out')), TIMEOUT_MS);
+    const timer = setTimeout(() => finish(new Error(m.biber_timed_out())), TIMEOUT_MS);
     active.add(stop);
     signal?.addEventListener('abort', aborted, { once: true });
-    worker.onerror = event => finish(new Error(event.message || 'Biber worker failed'));
+    worker.onerror = event => finish(new Error(event.message || m.biber_worker_failed()));
     worker.onmessage = ({ data }) => {
       if (data.infrastructure) { finish(new Error(data.error)); return; }
       finish(null, { ...data, identity: request.identity,
