@@ -6,7 +6,7 @@
 // keyboard key. A literal sentence here would show in English to everybody,
 // whatever language they chose.
 //
-// The messages files are checked too: the French has every English key, with
+// The message catalogues are checked too: each has every English key, with
 // the same placeholders.
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -62,16 +62,19 @@ for (const path of files(join(SRC, "components")).filter((p) => p.endsWith(".sve
 }
 assert.deepEqual(found, [], `interface text written straight into components; move it to messages/en.json:\n${found.join("\n")}`);
 
-// The two catalogues agree.
+// Every catalogue agrees with the English one.
+const settings = JSON.parse(readFileSync(join(ROOT, "project.inlang/settings.json"), "utf8"));
 const english = JSON.parse(readFileSync(join(ROOT, "messages/en.json"), "utf8"));
-const french = JSON.parse(readFileSync(join(ROOT, "messages/fr.json"), "utf8"));
 const placeholders = (value) => [...new Set([...JSON.stringify(value).matchAll(/\{([A-Za-z_]\w*)\}/g)].map((m) => m[1]))].sort().join(",");
 const problems = [];
-for (const key of Object.keys(english)) {
-  if (!(key in french)) problems.push(`${key}: no French`);
-  else if (placeholders(english[key]) !== placeholders(french[key])) problems.push(`${key}: placeholders differ`);
+for (const locale of settings.locales.filter((code) => code !== settings.baseLocale)) {
+  const other = JSON.parse(readFileSync(join(ROOT, `messages/${locale}.json`), "utf8"));
+  for (const key of Object.keys(english)) {
+    if (!(key in other)) problems.push(`${locale}: ${key} missing`);
+    else if (placeholders(english[key]) !== placeholders(other[key])) problems.push(`${locale}: ${key} placeholders differ`);
+  }
+  for (const key of Object.keys(other)) if (!(key in english)) problems.push(`${locale}: ${key} not in English`);
 }
-for (const key of Object.keys(french)) if (!(key in english)) problems.push(`${key}: French only`);
 assert.deepEqual(problems, [], problems.join("\n"));
 
-console.log("untranslated: every component string is a message, and the French matches the English");
+console.log("untranslated: every component string is a message, and every catalogue matches the English");

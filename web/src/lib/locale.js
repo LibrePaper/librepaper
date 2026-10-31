@@ -10,10 +10,24 @@ import { getLocale, setLocale, localStorageKey } from "./paraglide/runtime.js";
 
 // Each language is named in itself, so somebody who cannot read the current
 // one can still find their own.
-export const LANGUAGES = { en: "English", fr: "Français" };
+export const LANGUAGES = {
+  en: "English",
+  fr: "Français",
+  es: "Español",
+  pt: "Português (Brasil)",
+  de: "Deutsch",
+  ja: "日本語",
+  zh: "简体中文",
+};
 
-/** The language the interface is showing, such as "en" or "fr". */
-export const locale = () => getLocale();
+// The locales are bare language codes, so a browser asking for pt-PT or zh-TW
+// still gets Portuguese or Chinese rather than English. The text itself is
+// Brazilian Portuguese and Simplified Chinese, and the page says so: the tag
+// picks the right Han glyphs and the right date and number formats.
+const TAGS = { pt: "pt-BR", zh: "zh-CN" };
+
+/** The language tag the interface is showing, such as "en", "fr" or "pt-BR", for Intl formatting. */
+export const locale = () => TAGS[getLocale()] ?? getLocale();
 
 /** "system" when nothing is saved and the browser decides, else the saved language. */
 export function chosenLanguage() {
@@ -36,5 +50,5 @@ export function chooseLanguage(next) {
 
 /** Tells the browser, screen readers and the spellchecker what language the page is in. */
 export function markDocumentLanguage() {
-  document.documentElement.lang = getLocale();
+  document.documentElement.lang = locale();
 }
