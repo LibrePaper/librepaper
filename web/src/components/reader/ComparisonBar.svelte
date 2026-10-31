@@ -1,4 +1,5 @@
 <script>
+  import { m } from "../../lib/paraglide/messages.js";
   // The bar across the top of the editor area while a comparison is open. It
   // names what is being compared, and Close gives the editor area back.
   let { says, onclose } = $props();
@@ -6,7 +7,7 @@
 
 <div class="comparison-bar" role="status">
   <p class="comparison-says">{says}</p>
-  <button type="button" class="btn btn-sm" onclick={onclose}>Close</button>
+  <button type="button" class="btn btn-sm" onclick={onclose}>{m.comparisonbar_close()}</button>
 </div>
 
 <style>

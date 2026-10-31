@@ -1,4 +1,6 @@
 <script>
+  import { m } from "../../lib/paraglide/messages.js";
+  import { locale } from "../../lib/locale.js";
   // This panel deliberately stays small: heading extraction belongs to
   // `lib/outline.js` and section word counts to `lib/word-count.js`, while this
   // component only presents a navigable outline with those counts and reports
@@ -22,8 +24,8 @@
   }
 </script>
 
-<nav class="outline" aria-label="Document outline">
-  <h2 class="sr-only">Document outline</h2>
+<nav class="outline" aria-label={m.outline_document()}>
+  <h2 class="sr-only">{m.outline_document()}</h2>
   {#if headings.length}
     <div class="outline-list">
       {#each headings as heading, i (heading.from)}
@@ -37,12 +39,12 @@
           onclick={() => choose(heading)}
         >
           <span class="outline-title">{heading.title}</span>
-          {#if counts[i] != null}<span class="outline-count">{counts[i].toLocaleString()}</span>{/if}
+          {#if counts[i] != null}<span class="outline-count">{counts[i].toLocaleString(locale())}</span>{/if}
         </button>
       {/each}
     </div>
   {:else}
-    <p class="outline-empty">No headings in this file.</p>
+    <p class="outline-empty">{m.outline_no_headings()}</p>
   {/if}
 </nav>
 
