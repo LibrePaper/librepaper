@@ -250,6 +250,7 @@
   import { documentFacts } from "../lib/visual-markup/facts.js";
   import { markdownFacts } from "../lib/visual-markup/markdown-facts.js";
   import { typstFacts } from "../lib/visual-markup/typst-facts.js";
+  import { m } from "../lib/paraglide/messages.js";
 
   // Whether what is typed here is recorded as a tracked change is not a prop
   // to follow. It starts from `tracking` and is flipped by `startTracking` and
@@ -560,7 +561,7 @@
       parsedBibliography = null;
       citationsUpdated();
       scheduleFacts();
-      onbibliography?.({ entries: [], diagnostics: [{ severity: "warning", message: `Bibliography unavailable: ${error?.message || "the parser could not be loaded"}`, file: request.main, line: 0 }] }, request);
+      onbibliography?.({ entries: [], diagnostics: [{ severity: "warning", message: m.editor_bibliography_unavailable({ reason: error?.message || m.editor_parser_not_loaded() }), file: request.main, line: 0 }] }, request);
     });
   }
   // The document facts of the visual layer (reference numbers, citations,
@@ -660,11 +661,11 @@
 
   /// Imports several Zotero items for the Insert > Citation dialog. Errors throw to the caller. It returns the citation key of each item, in order.
   export async function importZoteroItems(items) {
-    if (!editable || !session || !showing || !view) throw new Error("Open a file that can be edited before importing from Zotero.");
+    if (!editable || !session || !showing || !view) throw new Error(m.editor_zotero_needs_file());
     const activeSession = session, doc = session.doc, activeFile = showing, activePath = pathOfDoc(doc, showing);
     const fetchedItems = await Promise.all(items.map((item) => zoteroItem(item.zotero_item)));
     if (session !== activeSession || session.doc !== doc || showing !== activeFile || pathOfDoc(doc, activeFile) !== activePath || !editable) {
-      throw new Error("The document changed while Zotero answered. Try again.");
+      throw new Error(m.editor_zotero_changed());
     }
     const keys = [];
     for (let index = 0; index < items.length; index++) {
@@ -769,7 +770,7 @@
     // reader gets none of them, so the counts are spoken when they change.
     const errors = shown.filter((diagnostic) => diagnostic.severity === "error").length;
     const warnings = shown.filter((diagnostic) => diagnostic.severity === "warning").length;
-    const summary = !errors && !warnings ? (announced ? "No problems in this file" : "") : [errors && `${errors} ${errors === 1 ? "error" : "errors"}`, warnings && `${warnings} ${warnings === 1 ? "warning" : "warnings"}`].filter(Boolean).join(", ") + " in this file";
+    const summary = !errors && !warnings ? (announced ? m.editor_problems_none() : "") : errors && warnings ? m.editor_problems_both({ errors, warnings }) : errors ? m.editor_problems_errors({ count: errors }) : m.editor_problems_warnings({ count: warnings });
     if (summary !== announced && untrack(() => check)) {
       announced = summary;
       if (summary) view.dispatch({ effects: EditorView.announce.of(summary) });
@@ -911,12 +912,12 @@
       const { from, to } = state.selection.main;
       await navigator.clipboard.writeText(state.sliceDoc(from, to));
       if (command === "cut") {
-        if (view !== target || target.state !== state || !editable) throw new Error("The source changed before Cut finished. Select the text again.");
+        if (view !== target || target.state !== state || !editable) throw new Error(m.editor_cut_changed());
         target.dispatch({ changes: { from, to }, selection: { anchor: from }, annotations: Transaction.userEvent.of("delete.cut") });
       }
     } else if (command === "paste") {
       const text = await navigator.clipboard.readText();
-      if (view !== target || target.state !== state || !editable) throw new Error("The source changed before Paste finished. Try again.");
+      if (view !== target || target.state !== state || !editable) throw new Error(m.editor_paste_changed());
       target.dispatch({ ...state.replaceSelection(text), annotations: Transaction.userEvent.of("input.paste"), scrollIntoView: true });
     }
   }
@@ -1155,7 +1156,7 @@
       doc: text.toString(),
       extensions: [
         EditorView.editable.of(Boolean(editable)),
-        EditorView.contentAttributes.of({ "aria-label": path ? `Editor of ${path}` : "Editor", "aria-readonly": Boolean(editable) ? "false" : "true" }),
+        EditorView.contentAttributes.of({ "aria-label": path ? m.editor_aria_label_of({ path }) : m.editor_aria_label(), "aria-readonly": Boolean(editable) ? "false" : "true" }),
         spellcheckCompartment.of(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(id), () => text.toString())),
         // Vim, when the setting says so, and always first: an earlier
         // extension has precedence, and Vim has to see a key before the

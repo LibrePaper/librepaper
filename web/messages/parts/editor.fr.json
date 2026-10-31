@@ -1,0 +1,31 @@
+{
+  "editor_bibliography_unavailable": "Bibliographie indisponible : {reason}",
+  "editor_parser_not_loaded": "l’analyseur n’a pas pu être chargé",
+  "editor_zotero_needs_file": "Ouvrez un fichier modifiable avant d’importer depuis Zotero.",
+  "editor_zotero_changed": "Le document a changé pendant la réponse de Zotero. Réessayez.",
+  "editor_cut_changed": "La source a changé avant la fin de la coupure. Sélectionnez à nouveau le texte.",
+  "editor_paste_changed": "La source a changé avant la fin du collage. Réessayez.",
+  "editor_problems_none": "Aucun problème dans ce fichier",
+  "editor_problems_errors": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": { "countPlural=one": "{count} erreur dans ce fichier", "countPlural=*": "{count} erreurs dans ce fichier" }
+  }],
+  "editor_problems_warnings": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": { "countPlural=one": "{count} avertissement dans ce fichier", "countPlural=*": "{count} avertissements dans ce fichier" }
+  }],
+  "editor_problems_both": [{
+    "declarations": ["input errors", "input warnings", "local errorsPlural = errors: plural", "local warningsPlural = warnings: plural"],
+    "selectors": ["errorsPlural", "warningsPlural"],
+    "match": {
+      "errorsPlural=one warningsPlural=one": "{errors} erreur, {warnings} avertissement dans ce fichier",
+      "errorsPlural=one warningsPlural=*": "{errors} erreur, {warnings} avertissements dans ce fichier",
+      "errorsPlural=* warningsPlural=one": "{errors} erreurs, {warnings} avertissement dans ce fichier",
+      "errorsPlural=* warningsPlural=*": "{errors} erreurs, {warnings} avertissements dans ce fichier"
+    }
+  }],
+  "editor_aria_label_of": "Éditeur de {path}",
+  "editor_aria_label": "Éditeur"
+}
