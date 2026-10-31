@@ -5,6 +5,7 @@
   import SettingRow from "./SettingRow.svelte";
   import * as latex from "../../lib/latex.js";
   import { megabytes } from "./words.js";
+  import { m } from "../../lib/paraglide/messages.js";
 
   let cacheSize = $state(null);
   $effect(() => {
@@ -23,7 +24,7 @@
   }
 </script>
 
-<SettingRow id="render-latex-files" title="Downloaded LaTeX files"
-            description="{cacheSize === null ? 'Measuring…' : cacheSize < 100_000 ? 'Nothing downloaded yet.' : 'Storage used: ' + megabytes(cacheSize) + '.'} Cached compiler files speed up PDF builds. Removing them keeps your documents.">
-  <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={clearCache}>Remove</button>
+<SettingRow id="render-latex-files" title={m.latexfilessettings_title()}
+            description={cacheSize === null ? m.latexfilessettings_measuring() : cacheSize < 100_000 ? m.latexfilessettings_empty() : m.latexfilessettings_used({ size: megabytes(cacheSize) })}>
+  <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={clearCache}>{m.latexfilessettings_remove()}</button>
 </SettingRow>
