@@ -124,6 +124,7 @@
   import Diagnostics from "./reader/Diagnostics.svelte";
   import History from "./reader/History.svelte";
   import PendingAnnotations from "./reader/PendingAnnotations.svelte";
+  import { m } from "../lib/paraglide/messages.js";
 
   // The demo sandbox at /try runs wholly in this browser. Its slug and
   // document URL are the ones in lib/try-project.js, which is imported only
@@ -132,7 +133,7 @@
   const SLUG = DEMO ? "try-librepaper" : location.pathname.split("/")[2];
   // Panels that need the server. The demo draws them greyed out.
   const DEMO_OFF = ["collaboration", "agent", "history", "git", "share"];
-  const DEMO_HINT = "(not available in the demo)";
+  const DEMO_HINT = m.reader_demo_hint();
 
   // The key a reader arrived with, taken out of the address before anything
   // asks the server a question. From here it is kept under the slug and
@@ -153,7 +154,7 @@
   /** @type {boolean} */
   let readerDisposed = false;
   let docsOrigin = $state(null);
-  const NO_DOCS_ORIGIN = "This server has no separate documents origin, so the preview cannot be shown.";
+  const NO_DOCS_ORIGIN = m.reader_no_docs_origin();
   let frameSrc = $state(null);
   // Non-editors render this allowlisted current-state projection. It has the
   // same shape as the editor adapter but contains no CRDT or history payload.
@@ -562,10 +563,10 @@
   // The agent runs only in the desktop app. A browser says so, with a way to get it.
   function agentNeedsDesktop() {
     if (hasDesktop) return false;
-    say("The agent needs the LibrePaper desktop app.", {
+    say(m.reader_agent_needs_desktop(), {
       kind: "note",
       id: "reader:agent-desktop-only",
-      action: { label: "Get the desktop app", onClick: () => window.open(localQuarto.INSTALL_URL, "_blank", "noopener") },
+      action: { label: m.reader_get_desktop_app(), onClick: () => window.open(localQuarto.INSTALL_URL, "_blank", "noopener") },
     });
     return true;
   }
@@ -783,7 +784,7 @@
   function annotate(which) {
     if (!pending || !mayChat) return;
     if (!renderedProjectCurrent) {
-      say("The source changed and the current page is still rendering. Your selection is kept; retry after the page updates.", { kind: "problem", id: "reader:source-rendering" });
+      say(m.reader_source_rendering(), { kind: "problem", id: "reader:source-rendering" });
       return;
     }
     bar = { ...bar, shown: false };
@@ -810,7 +811,7 @@
   function submitAnnotation({ motivation, body }) {
     if (!pending || !mayChat) return false;
     if (!mayEdit && pending.render_digest !== currentProject?.project_digest) {
-      say("The source changed since this passage was selected. Wait for the current page to finish rendering, then select the passage again; the draft is kept.", { kind: "problem", id: "reader:source-moved" });
+      say(m.reader_source_moved(), { kind: "problem", id: "reader:source-moved" });
       return false;
     }
     // The server determines the author when it acknowledges the submission.
@@ -876,7 +877,7 @@
   function attachComment(comment) {
     const selection = editor?.selection?.();
     if (!mayEdit || !session || !selection) {
-      say("Select the passage in the editor first.", { kind: "note", id: "reader:attach-selection" });
+      say(m.reader_select_passage_first(), { kind: "note", id: "reader:attach-selection" });
       return;
     }
     if (
@@ -890,7 +891,7 @@
         selection.to,
       )
     ) {
-      say("That passage could not be attached to this comment.", { kind: "problem", id: "reader:attach-failed" });
+      say(m.reader_attach_failed(), { kind: "problem", id: "reader:attach-failed" });
       return;
     }
     annotations.deriveNow();
@@ -1006,7 +1007,7 @@
     // What the editor actually did, not what was asked of it.
     tracking = editor.trackingOn?.() ?? Boolean(on);
     if (on && !tracking) {
-      say("Track changes could not be turned on: this document is not connected for editing.", { kind: "problem", id: "reader:tracking" });
+      say(m.reader_tracking_failed(), { kind: "problem", id: "reader:tracking" });
     }
   }
 
@@ -1017,7 +1018,7 @@
     selectedChange = row.id;
     if (!editing) return;
     if (!row.file_id || session?.textOf && !session.textOf(row.file_id)) {
-      say("The file of this change cannot be opened in the current paper.",
+      say(m.reader_change_file(),
         { kind: "problem", id: "reader:change-file" });
       return;
     }
@@ -1120,13 +1121,13 @@
       // unsaved work, and a refusal a second is not news.
       if (event.retryable && event.vector && session) {
         session.pressure(event.vector);
-        say("This server is busy saving; your work is kept here and will be saved shortly.",
+        say(m.reader_save_delayed(),
           { kind: "problem", id: "reader:save-delayed" });
         return;
       }
       if (event.temp_id && pendingChat?.has(event.temp_id)) {
         pendingChat.acknowledge(event.temp_id, false);
-        say(event.message || "The server rejected that chat message.", { kind: "problem", id: "reader:chat-rejected" });
+        say(event.message || m.reader_chat_refused(), { kind: "problem", id: "reader:chat-rejected" });
         return;
       }
       // A comment on rendered text was refused because the passage's
@@ -1138,12 +1139,12 @@
       // brings `renderedProjectDigest` current for the next attempt -- and
       // ask the reader to reselect, rather than a generic conflict toast.
       if (event.stale_source && event.digest) {
-        outbox.failed(event.temp_id, "That passage changed before the comment could be attached.");
+        outbox.failed(event.temp_id, m.reader_passage_changed());
         if (event.temp_id) annotations.removePending(event.temp_id);
         renderedProjectDigest = event.digest;
         if (!mayEdit) void refreshCurrentProject();
         say(
-          "The page changed while that comment was being placed. It has been refreshed to the current text; reselect the passage and try again.",
+          m.reader_stale_selection(),
           { kind: "problem", id: "reader:stale-selection" },
         );
         return;
@@ -1163,7 +1164,7 @@
         // leaves the comments on screen alone if it fails.
         void annotations.refresh();
       }
-      say(event.message || "The server refused that change. Nothing on screen has changed.", { kind: "problem", id: "reader:change-refused" });
+      say(event.message || m.reader_change_refused(), { kind: "problem", id: "reader:change-refused" });
       return;
     }
 
@@ -1180,7 +1181,7 @@
           paintPreview();
         })
         .catch((error) => {
-          say(error.message || "This document could not be opened.", { kind: "problem", id: "reader:open-failed" });
+          say(error.message || m.reader_open_failed(), { kind: "problem", id: "reader:open-failed" });
         });
       peers = event.count || 1;
       return;
@@ -1201,7 +1202,7 @@
           paintPreview();
         })
         .catch((error) => {
-          say(error.message || "This document could not be opened.", { kind: "problem", id: "reader:open-failed" });
+          say(error.message || m.reader_open_failed(), { kind: "problem", id: "reader:open-failed" });
         });
       return;
     }
@@ -1296,11 +1297,11 @@
   // and the warning has to say what is happening to the typing meanwhile.
   const connectionNote = $derived.by(() => {
     if (connected) return "";
-    if (openedLocally) return "Offline. This is the copy saved in this browser, and it may be missing changes made elsewhere.";
-    if (!mayEdit || !session) return "Reconnecting…";
+    if (openedLocally) return m.reader_offline_local_copy();
+    if (!mayEdit || !session) return m.reader_reconnecting();
     return persistence.local
-      ? "Offline; changes are kept in this browser while reconnecting…"
-      : "Offline; reconnecting…";
+      ? m.reader_offline_kept_locally()
+      : m.reader_offline_reconnecting();
   });
 
   // A close is only worth interrupting when the work has reached neither this
@@ -1312,7 +1313,7 @@
   // named by its own first heading, the way `publish` names one -- the heading
   // of the file the preview draws, since a chapter's heading names the chapter.
   async function headingOf(tree) {
-    return doc.title || (await renderers.titleOf(tree)) || "Untitled";
+    return doc.title || (await renderers.titleOf(tree)) || m.reader_untitled();
   }
 
   /* --------------------------------------------------------- the timeline */
@@ -1359,7 +1360,7 @@
         while (!readerDisposed && (!session || session.joined === false) && Date.now() < deadline) {
           await new Promise(resolve => setTimeout(resolve, 25));
         }
-        if (readerDisposed || !session || session.joined === false) throw new Error("The current document is still connecting. Please retry when it has loaded.");
+        if (readerDisposed || !session || session.joined === false) throw new Error(m.reader_still_connecting());
         return session.tree();
       })();
     },
