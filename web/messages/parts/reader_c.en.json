@@ -1,0 +1,51 @@
+{
+  "readerc_figures_missing": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Could not fetch figure: {missing}.",
+        "countPlural=*": "Could not fetch figures: {missing}."
+      }
+    }
+  ],
+  "readerc_cells_not_run": "Code cells were not run. Turn on Run code in the LibrePaper desktop app to include their results.",
+  "readerc_export_failed": "The {target} could not be made.",
+  "readerc_comments_preparing": "Preparing the comments.",
+  "readerc_comments_read_failed": "Comments could not be read ({status}).",
+  "readerc_comments_export_failed": "The comments could not be exported.",
+  "readerc_template_saved": "Saved \"{title}\" as a template.",
+  "readerc_template_name_required": "Give the template a name.",
+  "readerc_template_save_failed": "The template could not be saved.",
+  "readerc_preview_no_own": "{name} has no preview of its own.",
+  "readerc_preview_part_latex": "{name} has no {cmd}, so it is part of a larger document.",
+  "readerc_preview_part": "{name} is part of a larger document.",
+  "readerc_insertion_changed": "The document or selected text changed. Close this dialog and choose the insertion point again.",
+  "readerc_download_no_files": "This project has no files to download.",
+  "readerc_download_project_failed": "The project could not be downloaded.",
+  "readerc_download_entry_failed": "That file could not be downloaded.",
+  "readerc_local_storage_failed": "{error}. This browser can no longer keep its own copy of the project, so a reload while the connection is down would lose what is not yet on the server. Download the project to have a copy that does not depend on either.",
+  "readerc_no_renderer": "A {format} document is read where its renderer is built, and this browser has none for it.",
+  "readerc_doc_missing_sign_in": "No document at this address. If it was shared with you, sign in: a document shared with an account opens only for that account.",
+  "readerc_doc_missing": "No document at this address. The link may be wrong, or the document may have been deleted.",
+  "readerc_server_open_failed": "The server could not open this document (error {status}). Reload the page to try again.",
+  "readerc_server_unreachable": "Could not reach the server. Check your connection, then reload the page.",
+  "readerc_title_sign_in": "Sign in required",
+  "readerc_title_not_found": "Document not found",
+  "readerc_title_unavailable": "Document unavailable",
+  "readerc_offline_pending": "Offline. Your latest changes are in this browser only, and will be sent as soon as the connection returns.",
+  "readerc_offline_saved": "Offline. Everything typed so far has already reached the server.",
+  "readerc_saved_on_server": "Saved on the server.",
+  "readerc_menu_file": "File",
+  "readerc_menu_edit": "Edit",
+  "readerc_menu_insert": "Insert",
+  "readerc_menu_view": "View",
+  "readerc_too_large": "This document is too large to render right now. It stays unreadable here until its editors bring it back under the limit; they can still type and export locally in the meantime.",
+  "readerc_project_load_failed": "The current project could not be loaded.",
+  "readerc_demo_no_uploads": "Images and other uploads are not available in the demo."
+}
