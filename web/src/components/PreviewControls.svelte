@@ -128,18 +128,18 @@
 
 <div class="preview-band">
   <div class="preview-controls" role="group" aria-label={m.previewcontrols_page_view()}>
-    <IconButton icon="panel-left" label={m.previewcontrols_pages()}tone="plain" size="btn-icon-sm"
+    <IconButton icon="panel-left" label={m.previewcontrols_pages()} tone="plain" size="btn-icon-sm"
                 pressed={view.sidebar} onclick={() => send({ type: "viewer-sidebar", open: !view.sidebar })} />
-    <IconButton icon="search" label={m.previewcontrols_search()}tone="plain" size="btn-icon-sm"
+    <IconButton icon="search" label={m.previewcontrols_search()} tone="plain" size="btn-icon-sm"
                 pressed={searching} onclick={() => (searching ? closeSearch() : void reveal())} />
     <span class="preview-page">
-      <input class="preview-page-input" inputmode="numeric" aria-label={m.previewcontrols_page()}autocomplete="off"
+      <input class="preview-page-input" inputmode="numeric" aria-label={m.previewcontrols_page()} autocomplete="off"
              bind:value={pageText} onkeydown={jump}
              onfocus={() => (editingPage = true)}
              onblur={() => { editingPage = false; pageText = view.page ? String(view.page) : ""; }} />
       <span class="preview-page-total">/ {view.pages}</span>
     </span>
-    <IconButton icon="zoom-out" label={m.previewcontrols_zoom_out()}tone="plain" size="btn-icon-sm"
+    <IconButton icon="zoom-out" label={m.previewcontrols_zoom_out()} tone="plain" size="btn-icon-sm"
                 disabled={at <= MIN} onclick={() => step(1 / 1.1)} />
     <select class="preview-zoom" aria-label={m.previewcontrols_zoom()} value={view.mode}
             onchange={(event) => onmode(event.currentTarget.value)}>
@@ -156,18 +156,18 @@
         <option value={String(number / 100)}>{number}%</option>
       {/each}
     </select>
-    <IconButton icon="zoom-in" label={m.previewcontrols_zoom_in()}tone="plain" size="btn-icon-sm"
+    <IconButton icon="zoom-in" label={m.previewcontrols_zoom_in()} tone="plain" size="btn-icon-sm"
                 disabled={at >= MAX} onclick={() => step(1.1)} />
     <div class="preview-tools">
-      <IconButton icon="text-cursor" label={m.previewcontrols_select_text()}size="btn-icon-sm"
+      <IconButton icon="text-cursor" label={m.previewcontrols_select_text()} size="btn-icon-sm"
                   pressed={tool !== "hand"} onclick={() => ontool("select")} />
-      <IconButton icon="hand" label={m.previewcontrols_move_page()}size="btn-icon-sm"
+      <IconButton icon="hand" label={m.previewcontrols_move_page()} size="btn-icon-sm"
                   pressed={tool === "hand"} onclick={() => ontool("hand")} />
     </div>
     <span class="preview-spacer"></span>
     {#if busy}<span class="preview-busy" role="status" aria-label={m.previewcontrols_compiling()}><span class="spinner"></span></span>{/if}
     <Menu onSelect={chosen} positioning={{ placement: "bottom-end" }}>
-      <MenuIconButton icon="more-horizontal" label={m.previewcontrols_more()}size="1rem" />
+      <MenuIconButton icon="more-horizontal" label={m.previewcontrols_more()} size="1rem" />
       <ExplorerMenu>
         <Menu.Item value="spread" class="menuitem">
           <span class="menuitem-check" aria-hidden="true">{view.spread ? "✓" : ""}</span>
@@ -199,11 +199,11 @@
              autocomplete="off" spellcheck="false" maxlength="200"
              bind:this={field} bind:value={query} oninput={typed} onkeydown={searchKey} />
       <span class="preview-find-count" role="status" aria-live="polite">{found}</span>
-      <IconButton icon="chevron-up" label={m.previewcontrols_previous_match()}tone="plain" size="btn-icon-sm"
+      <IconButton icon="chevron-up" label={m.previewcontrols_previous_match()} tone="plain" size="btn-icon-sm"
                   disabled={!query} onclick={() => stepFind(-1)} />
-      <IconButton icon="chevron-down" label={m.previewcontrols_next_match()}tone="plain" size="btn-icon-sm"
+      <IconButton icon="chevron-down" label={m.previewcontrols_next_match()} tone="plain" size="btn-icon-sm"
                   disabled={!query} onclick={() => stepFind(1)} />
-      <IconButton icon="x" label={m.previewcontrols_close_search()}tone="plain" size="btn-icon-sm" onclick={closeSearch} />
+      <IconButton icon="x" label={m.previewcontrols_close_search()} tone="plain" size="btn-icon-sm" onclick={closeSearch} />
     </div>
   {/if}
 </div>

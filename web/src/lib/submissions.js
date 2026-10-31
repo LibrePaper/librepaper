@@ -23,7 +23,7 @@ export function submissions({ slug, changed = () => {} }) {
         const message = stableRequest(item.message);
         return [message.temp_id, {
           message,
-          error: m.submissions_not_confirmed_retry(),
+          error: String(m.submissions_not_confirmed_retry()),
         }];
       }),
   );

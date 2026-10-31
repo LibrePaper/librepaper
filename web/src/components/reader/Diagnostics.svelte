@@ -106,7 +106,7 @@
                 {group.tone === "error" ? m.diagnostics_badge_error() : group.tone === "warning" ? m.diagnostics_badge_warning() : m.diagnostics_badge_note()}
               </span>
               {#if onagent}
-                <IconButton icon="bot" label={m.diagnostics_fix_with_agent()}onclick={() => onagent(item)} />
+                <IconButton icon="bot" label={m.diagnostics_fix_with_agent()} onclick={() => onagent(item)} />
               {/if}
             </div>
             <p class="whitespace-pre-wrap break-words">{item.message}</p>

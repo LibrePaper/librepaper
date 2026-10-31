@@ -3,7 +3,11 @@
     "target": "esnext",
     "module": "esnext",
     "moduleResolution": "bundler",
-    "lib": ["esnext", "dom", "dom.iterable"],
+    "lib": [
+      "esnext",
+      "dom",
+      "dom.iterable"
+    ],
     "allowJs": true,
     "checkJs": true,
     "allowImportingTsExtensions": true,
@@ -15,5 +19,12 @@
     "noImplicitAny": false,
     "strictNullChecks": false
   },
-  "include": ["src/**/*.js", "src/**/*.svelte", "src/**/*.d.ts"]
+  "include": [
+    "src/**/*.js",
+    "src/**/*.svelte",
+    "src/**/*.d.ts"
+  ],
+  "exclude": [
+    "src/lib/paraglide/server.js"
+  ]
 }
