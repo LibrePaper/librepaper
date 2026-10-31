@@ -49,8 +49,8 @@
   let { initialSettings = "" } = $props();
   const preferences = createPreferences();
   let settingsOpen = $state(untrack(() => initialSettings === "tools"));
-  let settingsCategory = $state(untrack(() => initialSettings || "editor"));
-  function openSettings(category = "editor") {
+  let settingsCategory = $state(untrack(() => initialSettings || "general"));
+  function openSettings(category = "general") {
     settingsCategory = category;
     settingsOpen = true;
   }

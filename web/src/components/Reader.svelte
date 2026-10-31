@@ -2319,7 +2319,7 @@
   // Settings open as a dialog from the navbar menu or the sidebar. Every entry
   // point opens the same dialog on the category it is about.
   let settingsOpen = $state(untrack(() => initialSettings === "tools"));
-  let settingsCategory = $state(untrack(() => initialSettings || "editor"));
+  let settingsCategory = $state(untrack(() => initialSettings || "general"));
   let savingTemplate = $state(false);
   let templateModalOpen = $state(false);
   let templateName = $state("");
@@ -2327,7 +2327,7 @@
   let templateSaveKey = "";
   let templateSaveRequestId = "";
 
-  function openSettings(category = "editor") {
+  function openSettings(category = "general") {
     // The editor category carries the shortcut table, and the table greys what
     // the source cannot currently do, so the editor is asked before the page
     // that shows the answer is drawn.
@@ -2623,7 +2623,7 @@
   // focuses, so the panel is opened and the DOM given a turn before the panel
   // is asked.
   async function chooseFileCommand(value) {
-    if (value === "settings") return openSettings("editor");
+    if (value === "settings") return openSettings();
     if (value === "quit") return void quit();
     if (value === "compile") return compileNow();
     if (value === "download") return downloadTree();
