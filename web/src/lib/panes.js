@@ -24,6 +24,7 @@
 // that is a size chosen by hand, on the screen in front of them.
 
 import { read, write } from "./storage.js";
+import { m } from "./paraglide/messages.js";
 
 // One rem, in pixels. Measured rather than assumed, so the arithmetic here and
 // the stylesheet it feeds agree about what a rem is.
@@ -59,9 +60,9 @@ export const ACTIVITY_WIDTH = 3; // rem
 // are the same list on purpose: what the pointer finds and what the menu says
 // should not be different places.
 export const RATIOS = [
-  { share: 2 / 3, says: "Wide editor" },
-  { share: 1 / 3, says: "Wide preview" },
-  { share: 1 / 2, says: "Even" },
+  { share: 2 / 3, says: m.panes_ratio_wide_editor() },
+  { share: 1 / 3, says: m.panes_ratio_wide_preview() },
+  { share: 1 / 2, says: m.panes_ratio_even() },
 ];
 // How close to a ratio the pointer has to be to be taken there.
 const MAGNET = 12;

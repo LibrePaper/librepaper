@@ -1,3 +1,5 @@
+import { m } from "./paraglide/messages.js";
+
 // The column's panels: what each one is called, the icon it is known by, and
 // who is offered it.
 //
@@ -13,21 +15,21 @@
 // role the document answers with, and `editing` whether the source pane is
 // open.
 export const TABS = [
-  { id: "files", says: "Files", icon: "folder", when: (who) => who.mayEdit },
-  { id: "outline", says: "Outline", icon: "list", when: (who) => who.mayEdit },
-  { id: "collaboration", says: "Collaboration", icon: "comment" },
-  { id: "changes", says: "Changes", icon: "pencil" },
-  { id: "agent", says: "Agent", icon: "bot" },
+  { id: "files", says: m.panels_files(), icon: "folder", when: (who) => who.mayEdit },
+  { id: "outline", says: m.panels_outline(), icon: "list", when: (who) => who.mayEdit },
+  { id: "collaboration", says: m.panels_collaboration(), icon: "comment" },
+  { id: "changes", says: m.panels_changes(), icon: "pencil" },
+  { id: "agent", says: m.panels_agent(), icon: "bot" },
   // History is readable by link-holders too: reviewers need the “since”
   // view even when they cannot edit or restore the live source.
-  { id: "history", says: "History", icon: "history" },
+  { id: "history", says: m.panels_history(), icon: "history" },
   // Every project that can be edited has a Git panel. A web project cannot
   // run git: its panel sets up the GitHub Action that does.
-  { id: "git", says: "Git", icon: "git-branch", when: (who) => who.mayEdit },
-  { id: "share", says: "Share", icon: "users", when: (who) => who.canSeeSharing || who.canPublish },
+  { id: "git", says: m.panels_git(), icon: "git-branch", when: (who) => who.mayEdit },
+  { id: "share", says: m.panels_share(), icon: "users", when: (who) => who.canSeeSharing || who.canPublish },
   // Last, because it comes and goes with the source pane: at the end of the
   // rail its arrival moves nothing else.
-  { id: "diagnostics", says: "Diagnostics", icon: "triangle-alert", when: (who) => who.editing },
+  { id: "diagnostics", says: m.panels_diagnostics(), icon: "triangle-alert", when: (who) => who.editing },
 ];
 
 // What a role is offered, where that is less than what the conditions above
@@ -65,15 +67,15 @@ export const tabsFor = (who) => {
 // there; in both cases the icon means the same thing one level apart, which is
 // the rule that lets the rail be read as one thing across the navigation.
 export const PROJECT_TABS = [
-  { id: "projects", says: "Projects", icon: "folder" },
-  { id: "recent", says: "Recent", icon: "history" },
-  { id: "shared", says: "Shared with me", icon: "users" },
-  { id: "favorites", says: "Favorites", icon: "star" },
-  { id: "templates", says: "Templates", icon: "layout-template" },
+  { id: "projects", says: m.panels_projects(), icon: "folder" },
+  { id: "recent", says: m.panels_recent(), icon: "history" },
+  { id: "shared", says: m.panels_shared(), icon: "users" },
+  { id: "favorites", says: m.panels_favorites(), icon: "star" },
+  { id: "templates", says: m.panels_templates(), icon: "layout-template" },
   // Last, and after a gap the stylesheet puts there: the trash is a place you
   // go on purpose, and never the one you land on next to Favorites by being
   // slightly off with the pointer.
-  { id: "trash", says: "Trash", icon: "trash" },
+  { id: "trash", says: m.panels_trash(), icon: "trash" },
 ];
 
 export const PROJECT_TAB_IDS = PROJECT_TABS.map((tab) => tab.id);
