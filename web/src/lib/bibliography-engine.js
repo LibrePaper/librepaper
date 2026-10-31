@@ -1,4 +1,5 @@
 import { rendererRequest } from "./renderer-client.js";
+import { m } from "./paraglide/messages.js";
 
 /// Parses the document's bibliography into the library completion matches
 /// against. Independent of the renderer, because an author writing typst or
@@ -16,7 +17,7 @@ export function analyzeBibliography(request) {
   const alreadyLoaded =
     request.format === "markdown" && needsBibliography({ source: request.source || "" });
   const url = (alreadyLoaded && modules.citations) || modules.bibliography;
-  if (!url) return Promise.reject(new Error("Bibliography support is unavailable in this build."));
+  if (!url) return Promise.reject(new Error(m.bibliography_engine_unavailable()));
   return rendererRequest(new URL(url, globalThis.location.href).href, "bibliography", {
     main: request.main || "", format: request.format || "", source: request.source || "", texts: { ...request.texts },
   });
