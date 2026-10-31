@@ -1488,7 +1488,7 @@
       if (downloadingSha !== sha) return; // superseded by a later request
       saveBlob(await archive(files), `${SLUG}-${versionStamp(point.at, sha)}.zip`);
     } catch (error) {
-      if (downloadingSha === sha) downloadProblem = error.message || "That version could not be downloaded.";
+      if (downloadingSha === sha) downloadProblem = error.message || m.readerb_version_download_failed();
     } finally {
       if (downloadingSha === sha) downloadingSha = "";
     }
@@ -1574,12 +1574,12 @@
     try {
       await localQuarto.shellAction("quit");
     } catch (error) {
-      say(error.message || "The desktop app could not quit.", { kind: "problem", id: "reader:quit" });
+      say(error.message || m.readerb_quit_failed(), { kind: "problem", id: "reader:quit" });
     }
   }
   // What the comparison bar says is compared.
   const comparisonSays = $derived(comparing === "history"
-    ? `Comparing ${historySource.path} with ${historyHeading || "the current version"}`
+    ? m.readerb_comparing_says({ path: historySource.path, version: historyHeading || m.readerb_current_version() })
     : "");
   // A web project's Git panel: the last push.
   const webGit = createWebGit();
@@ -1599,7 +1599,7 @@
         while (!readerDisposed && (!persistence.joined || persistence.pending) && Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 50));
         }
-        if (!persistence.joined || persistence.pending) throw new Error("Your latest edits have not reached the server yet. Try again once they are saved.");
+        if (!persistence.joined || persistence.pending) throw new Error(m.readerb_edits_unsaved());
       },
       signedIn: async () => Boolean((await whoami())?.provider),
       approve: (userCode) => post("/api/auth/device/approve", { user_code: userCode }),
@@ -1701,14 +1701,13 @@
 
   const errorCount = $derived(diagnostics.filter((d) => d.severity !== "warning" && d.severity !== "info").length);
   const warningCount = $derived(diagnostics.filter((d) => d.severity === "warning").length);
-  const counted = (n, thing) => `${n} ${thing}${n === 1 ? "" : "s"}`;
   const diagnosticBadge = $derived(
     errorCount && warningCount
-      ? `${counted(errorCount, "error")}, ${counted(warningCount, "warning")}`
+      ? m.readerb_count_both({ errors: m.readerb_count_errors({ count: errorCount }), warnings: m.readerb_count_warnings({ count: warningCount }) })
       : errorCount
-        ? counted(errorCount, "error")
+        ? m.readerb_count_errors({ count: errorCount })
         : warningCount
-          ? counted(warningCount, "warning")
+          ? m.readerb_count_warnings({ count: warningCount })
           : "",
   );
 
@@ -1718,7 +1717,7 @@
   // something; the rail draws whatever it is handed.
   const badges = $derived({
     diagnostics: {
-      says: diagnosticBadge ? `Diagnostics: ${diagnosticBadge}` : "",
+      says: diagnosticBadge ? m.readerb_diagnostics_says({ badge: diagnosticBadge }) : "",
       counts: diagnostics.length
         ? [
             errorCount ? { tone: "errors", of: errorCount } : null,
@@ -1727,7 +1726,7 @@
         : [],
     },
     changes: {},
-    collaboration: unreadChat ? { says: "Collaboration: unread messages", dot: true } : {},
+    collaboration: unreadChat ? { says: m.readerb_collaboration_unread(), dot: true } : {},
   });
 
   // A reader is told nothing about live editor diagnostics. They cannot fix
@@ -1908,8 +1907,8 @@
   // still be reported somewhere.
   const buildFailure = $derived(
     sourceFormat === "latex" && !latexHtmlPreview
-      ? (latexPhase === "failed" ? latexState.message || "The LaTeX build failed without reporting why." : "")
-      : renderState.failure ? renderState.failureReason || "The build failed without reporting why." : "",
+      ? (latexPhase === "failed" ? latexState.message || m.readerb_build_failed_latex() : "")
+      : renderState.failure ? renderState.failureReason || m.readerb_build_failed() : "",
   );
 
   // A Quarto document is drawn as the Markdown it is until Run code is on,
@@ -1917,7 +1916,7 @@
   const quartoNeedsRunCode = $derived(sourceFormat === "quarto" && hasDesktop && mayEdit && !localExecution);
 
   const localAppDiagnostics = $derived([
-    quartoNeedsRunCode ? { severity: "warning", message: "Turn on Run code to render on this computer." } : null,
+    quartoNeedsRunCode ? { severity: "warning", message: m.readerb_run_code_for_render() } : null,
   // An item with no message is dropped. An empty error would show as a blank
   // entry and would hide the failed render's own message.
   ].filter((item) => item?.message).map((item) => ({ ...item, source: "local-app" })));
@@ -1925,9 +1924,9 @@
   const backupDiagnostics = $derived.by(() => {
     const data = backupStatus.active ? backupStatus.data : null;
     if (!data?.enabled) return [];
-    const message = data.needs_login ? "Backups are on but the desktop app lost access to this account. Open Settings, then Backups, to reconnect."
-      : data.error ? `Backups are on but failing: ${data.error}. Open Settings, then Backups.`
-      : !data.destination_set ? "Backups are on but have no destination. Open Settings, then Backups."
+    const message = data.needs_login ? m.readerb_backup_lost_access()
+      : data.error ? m.readerb_backup_failing({ error: data.error })
+      : !data.destination_set ? m.readerb_backup_no_destination()
       : "";
     return message ? [{ severity: "warning", message, source: "backups" }] : [];
   });
@@ -2529,18 +2528,18 @@
   // icon is the one it is in rather than the one it is going to: the button is
   // as much a statement of where you are as a way of leaving.
   const ARRANGEMENTS = {
-    split: { icon: "columns-2", says: "Split", next: "document" },
-    source: { icon: "panel-left", says: "Editor", next: "split" },
-    document: { icon: "file-text", says: "Preview", next: "source" },
+    split: { icon: "columns-2", says: m.readerb_arrangement_split(), next: "document" },
+    source: { icon: "panel-left", says: m.readerb_arrangement_editor(), next: "split" },
+    document: { icon: "file-text", says: m.readerb_arrangement_preview(), next: "source" },
   };
 
   let editAvailability = $state({});
   const editGroups = [
-    [["undo", "Undo"], ["redo", "Redo"]],
-    [["cut", "Cut"], ["copy", "Copy"], ["paste", "Paste"]],
-    [["select-all", "Select All"]],
-    [["find", "Find…"], ["replace", "Replace…"], ["word-count", "Word count…"]],
-    [["bold", "Bold"], ["italic", "Italic"]],
+    [["undo", m.readerb_edit_undo()], ["redo", m.readerb_edit_redo()]],
+    [["cut", m.readerb_edit_cut()], ["copy", m.readerb_edit_copy()], ["paste", m.readerb_edit_paste()]],
+    [["select-all", m.readerb_edit_select_all()]],
+    [["find", m.readerb_edit_find()], ["replace", m.readerb_edit_replace()], ["word-count", m.readerb_edit_word_count()]],
+    [["bold", m.readerb_edit_bold()], ["italic", m.readerb_edit_italic()]],
   ];
 
   // What the keyboard already does, named beside the item the way a desktop
@@ -2561,7 +2560,7 @@
     setTimeout(async () => {
       if (editor !== target || !mayEdit) return;
       try { await target?.editCommand(command); }
-      catch (error) { say(error.message || "The browser refused clipboard access. Use the keyboard shortcut instead.", { kind: "problem", id: "reader:clipboard" }); }
+      catch (error) { say(error.message || m.readerb_clipboard_refused(), { kind: "problem", id: "reader:clipboard" }); }
     }, 0);
   }
 
@@ -2689,7 +2688,7 @@
     }
     exporting = true;
     const id = "reader:export";
-    say(`Preparing the ${target.toUpperCase()}.`, { id });
+    say(m.readerb_preparing_export({ format: target.toUpperCase() }), { id });
     try {
       // Everything that names the document is read before the first await, so
       // a file switched to while figures load cannot pair one source with

@@ -1,0 +1,42 @@
+{
+  "readerb_version_download_failed": "That version could not be downloaded.",
+  "readerb_quit_failed": "The desktop app could not quit.",
+  "readerb_comparing_says": "Comparing {path} with {version}",
+  "readerb_current_version": "the current version",
+  "readerb_edits_unsaved": "Your latest edits have not reached the server yet. Try again once they are saved.",
+  "readerb_count_errors": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": { "countPlural=one": "{count} error", "countPlural=*": "{count} errors" }
+  }],
+  "readerb_count_warnings": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": { "countPlural=one": "{count} warning", "countPlural=*": "{count} warnings" }
+  }],
+  "readerb_count_both": "{errors}, {warnings}",
+  "readerb_diagnostics_says": "Diagnostics: {badge}",
+  "readerb_collaboration_unread": "Collaboration: unread messages",
+  "readerb_build_failed_latex": "The LaTeX build failed without reporting why.",
+  "readerb_build_failed": "The build failed without reporting why.",
+  "readerb_run_code_for_render": "Turn on Run code to render on this computer.",
+  "readerb_backup_lost_access": "Backups are on but the desktop app lost access to this account. Open Settings, then Backups, to reconnect.",
+  "readerb_backup_failing": "Backups are on but failing: {error}. Open Settings, then Backups.",
+  "readerb_backup_no_destination": "Backups are on but have no destination. Open Settings, then Backups.",
+  "readerb_clipboard_refused": "The browser refused clipboard access. Use the keyboard shortcut instead.",
+  "readerb_arrangement_split": "Split",
+  "readerb_arrangement_editor": "Editor",
+  "readerb_arrangement_preview": "Preview",
+  "readerb_edit_undo": "Undo",
+  "readerb_edit_redo": "Redo",
+  "readerb_edit_cut": "Cut",
+  "readerb_edit_copy": "Copy",
+  "readerb_edit_paste": "Paste",
+  "readerb_edit_select_all": "Select All",
+  "readerb_edit_find": "Find…",
+  "readerb_edit_replace": "Replace…",
+  "readerb_edit_word_count": "Word count…",
+  "readerb_edit_bold": "Bold",
+  "readerb_edit_italic": "Italic",
+  "readerb_preparing_export": "Preparing the {format}."
+}
