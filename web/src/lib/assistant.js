@@ -1,5 +1,6 @@
 // Pure assistant-panel helpers. Keeping task and context composition here
 // makes it possible to verify the wire contract without mounting Svelte.
+import { m } from "./paraglide/messages.js";
 
 export const TASK_KINDS = ["proofread", "tighten", "rewrite", "explain", "fix", "outline", "respond"];
 export const TASK_SCOPES = ["selection", "file", "document"];
@@ -67,62 +68,74 @@ export function captureAttachment(selection, path = "", revision = "") {
 // without touching the protocol. An entry may sit in several categories and is
 // still one definition.
 export const TASK_CATALOG = [
-  { id: "proofread", kind: "proofread", categories: ["Writing"], label: "Proofread",
-    description: "Correct spelling, grammar, and wording while preserving meaning.",
-    keywords: ["grammar", "spelling", "typos", "errors", "mistakes"],
+  { id: "proofread", kind: "proofread", categories: ["Writing"], label: m.assistant_task_proofread_label(),
+    description: m.assistant_task_proofread_description(),
+    keywords: m.assistant_task_proofread_terms().split(" "),
     prompt: "Proofread {target}." },
-  { id: "tighten", kind: "tighten", categories: ["Writing"], label: "Tighten",
-    description: "Cut redundancy and shorten without losing substance.",
-    keywords: ["shorter", "concise", "shorten", "trim", "cut"],
+  { id: "tighten", kind: "tighten", categories: ["Writing"], label: m.assistant_task_tighten_label(),
+    description: m.assistant_task_tighten_description(),
+    keywords: m.assistant_task_tighten_terms().split(" "),
     scopes: ["selection"], prompt: "Tighten {target}." },
-  { id: "rewrite", kind: "rewrite", categories: ["Writing"], label: "Rewrite",
-    description: "Rework the wording for clarity and flow.",
-    keywords: ["rephrase", "reword", "clarity", "flow"],
+  { id: "rewrite", kind: "rewrite", categories: ["Writing"], label: m.assistant_task_rewrite_label(),
+    description: m.assistant_task_rewrite_description(),
+    keywords: m.assistant_task_rewrite_terms().split(" "),
     scopes: ["selection"], prompt: "Rewrite {target}." },
-  { id: "explain", kind: "explain", categories: ["Writing", "Review"], label: "Explain",
-    description: "Say what this passage claims and how it is put together.",
-    keywords: ["meaning", "understand", "clarify", "unclear"],
+  { id: "explain", kind: "explain", categories: ["Writing", "Review"], label: m.assistant_task_explain_label(),
+    description: m.assistant_task_explain_description(),
+    keywords: m.assistant_task_explain_terms().split(" "),
     prompt: "Explain {target}." },
 
-  { id: "review-argument", kind: "explain", categories: ["Review"], label: "Review the argument",
-    description: "Name unsupported claims, gaps in reasoning, and weak transitions.",
-    keywords: ["logic", "reasoning", "claims", "critique", "support"],
+  { id: "review-argument", kind: "explain", categories: ["Review"], label: m.assistant_task_review_argument_label(),
+    description: m.assistant_task_review_argument_description(),
+    keywords: m.assistant_task_review_argument_terms().split(" "),
     prompt: "Review the argument in {target}. Name unsupported claims, gaps in reasoning, and weak transitions." },
-  { id: "check-consistency", kind: "explain", categories: ["Review"], label: "Check consistency",
-    description: "Find contradictions and inconsistent terminology, notation, or definitions.",
-    keywords: ["terminology", "notation", "definitions", "consistent", "conflicts", "contradictions", "contradict"],
+  { id: "check-consistency", kind: "explain", categories: ["Review"], label: m.assistant_task_check_consistency_label(),
+    description: m.assistant_task_check_consistency_description(),
+    keywords: m.assistant_task_check_consistency_terms().split(" "),
     prompt: "Check {target} for inconsistent terminology, notation, and definitions." },
-  { id: "check-citations", kind: "explain", categories: ["Review"], label: "Check citations",
-    description: "Check that each citation resolves in the bibliography and supports its claim.",
-    keywords: ["references", "bibliography", "sources", "cite", "refs"],
+  { id: "check-citations", kind: "explain", categories: ["Review"], label: m.assistant_task_check_citations_label(),
+    description: m.assistant_task_check_citations_description(),
+    keywords: m.assistant_task_check_citations_terms().split(" "),
     prompt: "Check the citations in {target}: each one should resolve in the bibliography and support the claim it is attached to." },
-  { id: "suggest-improvements", kind: "proofread", categories: ["Review"], label: "Suggest improvements",
-    description: "Propose concrete anchored edits rather than commentary.",
-    keywords: ["edits", "feedback", "improve", "suggestions", "better"],
+  { id: "suggest-improvements", kind: "proofread", categories: ["Review"], label: m.assistant_task_suggest_improvements_label(),
+    description: m.assistant_task_suggest_improvements_description(),
+    keywords: m.assistant_task_suggest_improvements_terms().split(" "),
     prompt: "Suggest concrete improvements to {target} as anchored edits." },
 
-  { id: "outline", kind: "outline", categories: ["Document"], label: "Outline",
-    description: "List the headings and what each section does.",
-    keywords: ["headings", "structure", "sections", "layout", "toc"],
+  { id: "outline", kind: "outline", categories: ["Document"], label: m.assistant_task_outline_label(),
+    description: m.assistant_task_outline_description(),
+    keywords: m.assistant_task_outline_terms().split(" "),
     scopes: ["file", "document"], prompt: "Outline {target}: list the headings and say what each section does." },
-  { id: "summarize", kind: "explain", categories: ["Document", "Review"], label: "Summarize",
-    description: "Summarize the argument in a few paragraphs.",
-    keywords: ["summary", "abstract", "overview", "tldr", "recap"],
+  { id: "summarize", kind: "explain", categories: ["Document", "Review"], label: m.assistant_task_summarize_label(),
+    description: m.assistant_task_summarize_description(),
+    keywords: m.assistant_task_summarize_terms().split(" "),
     scopes: ["file", "document"], prompt: "Summarize {target}." },
 ];
 
 // Context tasks are offered only when the reader is already looking at a
 // comment or diagnostic. They are never searched or browsed.
 export const CONTEXT_TASKS = [
-  { id: "address-comment", kind: "respond", categories: ["Context"], label: "Address comment",
-    description: "Answer the comment, and change the passage it is about when that helps.",
+  { id: "address-comment", kind: "respond", categories: ["Context"], label: m.assistant_task_address_comment_label(),
+    description: m.assistant_task_address_comment_description(),
     prompt: "Address this comment." },
-  { id: "fix-diagnostic", kind: "fix", categories: ["Context"], label: "Fix diagnostic",
-    description: "Find what causes this compiler message and fix the source.",
+  { id: "fix-diagnostic", kind: "fix", categories: ["Context"], label: m.assistant_task_fix_diagnostic_label(),
+    description: m.assistant_task_fix_diagnostic_description(),
     scopes: ["file", "document"], prompt: "Fix this diagnostic." },
 ];
 
 export const TASK_CATEGORIES = [...new Set(TASK_CATALOG.flatMap((entry) => entry.categories))];
+
+// The category names are identifiers (they are stored and compared), so the
+// label a reader sees is looked up here rather than changing the name.
+const CATEGORY_LABELS = {
+  Writing: m.assistant_category_writing(),
+  Review: m.assistant_category_review(),
+  Document: m.assistant_category_document(),
+};
+
+export function taskCategoryLabel(category) {
+  return CATEGORY_LABELS[category] || category;
+}
 
 export const TASK_TARGETS = { selection: "the selected passage", file: "this file", document: "the whole document" };
 
@@ -228,9 +241,9 @@ export function taskSections(catalog = TASK_CATALOG) {
 }
 
 export function scopeLabel(scope, { path = "", attached = null } = {}) {
-  if (scope === "selection") return attached?.path ? `Selected passage · ${attached.path}` : "Selected passage";
-  if (scope === "file") return path ? `Current file · ${path}` : "Current file";
-  return "Whole document";
+  if (scope === "selection") return attached?.path ? m.assistant_scope_selection_path({ path: attached.path }) : m.assistant_scope_selection();
+  if (scope === "file") return path ? m.assistant_scope_file_path({ path }) : m.assistant_scope_file();
+  return m.assistant_scope_document();
 }
 
 // How a diagnostic is named in the launcher. The compiler's own message is
@@ -238,10 +251,12 @@ export function scopeLabel(scope, { path = "", attached = null } = {}) {
 // of engine prose sitting in a list of one-line tasks, so the launcher says
 // only which diagnostic this is -- its severity and where it is.
 export function diagnosticLabel(item, fallbackPath = "") {
-  const severity = item?.severity === "warning" ? "Warning" : "Error";
+  const warning = item?.severity === "warning";
   const path = text(item?.file || item?.path || fallbackPath);
   const line = Number(item?.line) > 0 ? `:${item.line}` : "";
-  return path ? `${severity} · ${path}${line}` : severity;
+  if (!path) return warning ? m.assistant_diagnostic_warning() : m.assistant_diagnostic_error();
+  const location = `${path}${line}`;
+  return warning ? m.assistant_diagnostic_warning_at({ location }) : m.assistant_diagnostic_error_at({ location });
 }
 
 // The server's capability flags are taken exactly as given. A commenter must
@@ -277,15 +292,15 @@ export function taskNeedsAnchor(task) {
 export function taskBlocker(capabilities, task, { attached = null, path = "", deferAccess = false } = {}) {
   const caps = normalizeCapabilities(capabilities);
   const checkAccess = !deferAccess;
-  if (!task || !TASK_KINDS.includes(task.kind) || !TASK_SCOPES.includes(task.scope)) return "This task cannot run here.";
-  if (!deferAccess && !caps.verified) return "Connect an agent to check access for this task.";
-  if (checkAccess && !caps.can_read) return "You need read access to run this task.";
-  if (["tighten", "rewrite"].includes(task.kind) && task.scope !== "selection") return "This task works on a selected passage.";
-  if (task.scope === "selection" && !attached) return "Select the passage in the editor to use this task.";
-  if (taskNeedsAnchor(task) && !text(attached?.selection?.exact).trim()) return "Select the passage in the editor to use this task.";
-  if (task.scope === "file" && !path) return "Open a file to use this task.";
-  if (checkAccess && ["tighten", "rewrite", "proofread", "fix"].includes(task.kind) && !caps.can_suggest) return "You need edit access to run this task.";
-  if (checkAccess && task.kind === "respond" && !caps.can_reply) return "You need comment access to run this task.";
+  if (!task || !TASK_KINDS.includes(task.kind) || !TASK_SCOPES.includes(task.scope)) return m.assistant_blocked_unavailable();
+  if (!deferAccess && !caps.verified) return m.assistant_blocked_connect();
+  if (checkAccess && !caps.can_read) return m.assistant_blocked_read();
+  if (["tighten", "rewrite"].includes(task.kind) && task.scope !== "selection") return m.assistant_blocked_selection_only();
+  if (task.scope === "selection" && !attached) return m.assistant_blocked_select();
+  if (taskNeedsAnchor(task) && !text(attached?.selection?.exact).trim()) return m.assistant_blocked_select();
+  if (task.scope === "file" && !path) return m.assistant_blocked_open_file();
+  if (checkAccess && ["tighten", "rewrite", "proofread", "fix"].includes(task.kind) && !caps.can_suggest) return m.assistant_blocked_edit();
+  if (checkAccess && task.kind === "respond" && !caps.can_reply) return m.assistant_blocked_comment();
   return "";
 }
 
@@ -300,9 +315,9 @@ export function taskHint(entry, { attached = null, path = "" } = {}) {
   const scope = inferScope(entry, { attached, path });
   const reason = taskBlocker({}, { kind: entry.kind, scope }, { attached, path, deferAccess: true });
   if (!reason) return null;
-  const short = scope === "selection" ? "Needs a source selection"
-    : scope === "file" ? "Needs an open file"
-      : "Unavailable";
+  const short = scope === "selection" ? m.assistant_hint_selection()
+    : scope === "file" ? m.assistant_hint_file()
+      : m.assistant_hint_unavailable();
   return { short, reason };
 }
 
