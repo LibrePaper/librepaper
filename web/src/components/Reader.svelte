@@ -2700,7 +2700,7 @@
       if (Object.keys(tree.digests || {}).length) {
         const { held, missing } = await gatherFigures(tree.digests);
         if (target !== "html" && missing.length) {
-          throw new Error(`Could not fetch figure${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}.`);
+          throw new Error(m.readerc_figures_missing({ count: missing.length, missing: missing.join(", ") }));
         }
         tree.assets = held.assets;
         tree.urls = { ...(tree.urls || {}), ...held.urls };
@@ -2720,12 +2720,12 @@
       });
       saveBlob(file.blob, file.name);
       if (!local && unrunCells(format, tree) > 0) {
-        say("Code cells were not run. Turn on Run code in the LibrePaper desktop app to include their results.", { id });
+        say(m.readerc_cells_not_run(), { id });
       } else {
         toaster.dismiss(id);
       }
     } catch (error) {
-      say(error.message || `The ${target.toUpperCase()} could not be made.`, { kind: "problem", id });
+      say(error.message || m.readerc_export_failed({ target: target.toUpperCase() }), { kind: "problem", id });
     } finally {
       exporting = false;
     }
@@ -2739,12 +2739,12 @@
     if (exporting) return;
     exporting = true;
     const id = "reader:export";
-    say("Preparing the comments.", { id });
+    say(m.readerc_comments_preparing(), { id });
     try {
       const read = async (path) => {
         const response = await fetch(`/api/documents/${SLUG}/comments${path}`, { headers: authHeaders(KEY) });
         const body = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(body.error || `Comments could not be read (${response.status}).`);
+        if (!response.ok) throw new Error(body.error || m.readerc_comments_read_failed({ status: response.status }));
         return body;
       };
       const loaded = await loadAllComments({
@@ -2789,7 +2789,7 @@
       saveBlob(new Blob([markdown], { type: "text/markdown" }), `${SLUG}-comments.md`);
       toaster.dismiss(id);
     } catch (error) {
-      say(error.message || "The comments could not be exported.", { kind: "problem", id });
+      say(error.message || m.readerc_comments_export_failed(), { kind: "problem", id });
     } finally {
       exporting = false;
     }
@@ -2806,7 +2806,7 @@
   async function saveTemplate() {
     const title = templateName.trim();
     if (!title) {
-      templateError = "Give the template a name.";
+      templateError = m.readerc_template_name_required();
       return;
     }
     const key = `librepaper:template-save:${SLUG}:${title}`;
@@ -2830,16 +2830,16 @@
         body: JSON.stringify({ title, request_id: templateSaveRequestId }),
       });
       if (!response.ok) {
-        templateError = (await response.json().catch(() => ({}))).error || "The template could not be saved.";
+        templateError = (await response.json().catch(() => ({}))).error || m.readerc_template_save_failed();
         return;
       }
       try { sessionStorage.removeItem(key); } catch { /* no persistent key was available */ }
       templateSaveKey = "";
       templateSaveRequestId = "";
       templateModalOpen = false;
-      say(`Saved "${title}" as a template.`, { id: "reader:saved-template" });
+      say(m.readerc_template_saved({ title }), { id: "reader:saved-template" });
     } catch (error) {
-      templateError = error?.message || "The template could not be saved.";
+      templateError = error?.message || m.readerc_template_save_failed();
     } finally {
       savingTemplate = false;
     }
@@ -2892,12 +2892,12 @@
   // hamburger menu instead of being visible in the top bar. This array mirrors
   // exactly when each MenubarMenu is rendered in the menus() snippet.
   const compactMenus = $derived([
-    { id: "file", label: "File" },
+    { id: "file", label: m.readerc_menu_file() },
     ...(editing && mayEdit ? [
-      { id: "edit", label: "Edit", disabled: !editor || !!shownFigure },
-      { id: "insert", label: "Insert", disabled: !mayEdit || !editor },
+      { id: "edit", label: m.readerc_menu_edit(), disabled: !editor || !!shownFigure },
+      { id: "insert", label: m.readerc_menu_insert(), disabled: !mayEdit || !editor },
     ] : []),
-    ...(editing ? [{ id: "view", label: "View" }] : []),
+    ...(editing ? [{ id: "view", label: m.readerc_menu_view() }] : []),
   ]);
   let outlineActiveFrom = $state(null);
   let outlineRevision = $state(0);
@@ -2938,10 +2938,10 @@
     if (previewReason !== "none" || projectEmpty || !openTextPath) return "";
     const name = basename(openTextPath);
     const format = renderers.formatOf(openTextPath);
-    if (!format) return `${name} has no preview of its own.`;
+    if (!format) return m.readerc_preview_no_own({ name });
     return format === "latex"
-      ? `${name} has no \\documentclass, so it is part of a larger document.`
-      : `${name} is part of a larger document.`;
+      ? m.readerc_preview_part_latex({ name, cmd: "\\documentclass" })
+      : m.readerc_preview_part({ name });
   });
   const canLockPreview = $derived(Boolean(openTextPath && aloneSet.has(openTextPath) && lockedFile !== openFile));
   // The server checks every path again, but a project opens only with
@@ -3247,7 +3247,7 @@
   const relocateFiles = (entries, destination, rename) => workspace.relocate(entries, destination, rename);
   const deleteFiles = (entries) => workspace.remove(entries);
   const addFigure = (file, path) => {
-    if (DEMO) return Promise.reject(new Error("Images and other uploads are not available in the demo."));
+    if (DEMO) return Promise.reject(new Error(m.readerc_demo_no_uploads()));
     return workspace.addFigure(file, path);
   };
 
@@ -3259,7 +3259,7 @@
   }
   function applyInsertion(result, context, options) {
     if (!mayEdit || !editor?.applyInsertResult?.(result, context, options)) {
-      throw new Error("The document or selected text changed. Close this dialog and choose the insertion point again.");
+      throw new Error(m.readerc_insertion_changed());
     }
     return true;
   }
@@ -3275,7 +3275,7 @@
   /// to be told what we know.
   async function downloadTree() {
     if (projectEmpty) {
-      say("This project has no files to download.", { kind: "problem", id: "reader:download-project" });
+      say(m.readerc_download_no_files(), { kind: "problem", id: "reader:download-project" });
       return;
     }
     try {
@@ -3287,7 +3287,7 @@
       // downloaded is the directory, and the slug is what a person knows it by.
       saveBlob(await archive(files), `${SLUG}.zip`);
     } catch (error) {
-      say(error.message || "The project could not be downloaded.", { kind: "problem", id: "reader:download-project" });
+      say(error.message || m.readerc_download_project_failed(), { kind: "problem", id: "reader:download-project" });
     }
   }
 
@@ -3297,7 +3297,7 @@
     try {
       const chosen = await entryDownload({ entry, tree: liveTreeNow(), folders: [...folders], gather: gatherFigures });
       saveBlob(chosen.files ? await archive(chosen.files) : new Blob([chosen.bytes]), chosen.name);
-    } catch (error) { say(error.message || "That file could not be downloaded.", { kind: "problem", id: "reader:download-entry" }); }
+    } catch (error) { say(error.message || m.readerc_download_entry_failed(), { kind: "problem", id: "reader:download-entry" }); }
   }
 
   // The file open in the editor, as written, not the project archive.
@@ -3345,7 +3345,7 @@
         if (readerDisposed) return;
         const newlyFailed = state_.localError && state_.localError !== persistence.localError;
         persistence = state_;
-        if (newlyFailed) say(`${state_.localError}. This browser can no longer keep its own copy of the project, so a reload while the connection is down would lose what is not yet on the server. Download the project to have a copy that does not depend on either.`, { kind: "problem", id: "reader:local-storage-failed" });
+        if (newlyFailed) say(m.readerc_local_storage_failed({ error: state_.localError }), { kind: "problem", id: "reader:local-storage-failed" });
       },
       onSession: (active) => {
         session = active;
@@ -3436,7 +3436,7 @@
         // reader with no source of its own to fall back to. Carry the status
         // so the catch below can say that plainly rather than the generic
         // "could not be loaded" a transient network failure gets.
-        const failure = Object.assign(new Error(body.error || "The current project could not be loaded."), { status: response.status });
+        const failure = Object.assign(new Error(body.error || m.readerc_project_load_failed()), { status: response.status });
         throw failure;
       }
       const next = await response.json();
@@ -3458,8 +3458,8 @@
     })().catch((error) => {
       if (readerDisposed) return;
       const message = error?.status === 503
-        ? (error.message || "This document is too large to render right now. It stays unreadable here until its editors bring it back under the limit; they can still type and export locally in the meantime.")
-        : (error?.message || "The current project could not be loaded.");
+        ? (error.message || m.readerc_too_large())
+        : (error?.message || m.readerc_project_load_failed());
       // Never leave the pane spinning on a project this browser has not yet
       // shown anything for: a reader with no source of its own has nothing
       // else to paint while this stays broken, so the loading state has to
@@ -3537,7 +3537,7 @@
     // Every reader compiles from source when the browser has the engine. A
     // missing engine produces an actionable local-tool message below.
     if (format && !renderers.outputKind(format)) {
-      say(`A ${format} document is read where its renderer is built, and this browser has none for it.`, { kind: "problem", id: "reader:no-renderer" });
+      say(m.readerc_no_renderer({ format }), { kind: "problem", id: "reader:no-renderer" });
       settled = true;
       return;
     }
@@ -3605,25 +3605,25 @@
       onError: (error) => {
         if (error?.status === 401) {
           documentNeedsSignIn = true;
-          doc = { title: "Sign in required" };
+          doc = { title: m.readerc_title_sign_in() };
         } else if (error?.status === 404) {
-          doc = { title: "Document not found" };
+          doc = { title: m.readerc_title_not_found() };
           say(
             me.providers?.length && !identity
-              ? "No document at this address. If it was shared with you, sign in: a document shared with an account opens only for that account."
-            : "No document at this address. The link may be wrong, or the document may have been deleted.",
+              ? m.readerc_doc_missing_sign_in()
+            : m.readerc_doc_missing(),
             { kind: "problem", id: "reader:not-found" },
           );
         } else if (error?.status) {
-          doc = { title: "Document unavailable" };
+          doc = { title: m.readerc_title_unavailable() };
           say(
-            `The server could not open this document (error ${error.status}). Reload the page to try again.`,
+            m.readerc_server_open_failed({ status: error.status }),
             { kind: "problem", id: "reader:not-found" },
           );
         } else {
-          doc = { title: "Document unavailable" };
+          doc = { title: m.readerc_title_unavailable() };
           say(
-            "Could not reach the server. Check your connection, then reload the page.",
+            m.readerc_server_unreachable(),
             { kind: "problem", id: "reader:not-found" },
           );
         }
@@ -3710,14 +3710,14 @@
       if (!persistence.local) return;
       say(
         persistence.pending
-          ? "Offline. Your latest changes are in this browser only, and will be sent as soon as the connection returns."
-          : "Offline. Everything typed so far has already reached the server.",
+          ? m.readerc_offline_pending()
+          : m.readerc_offline_saved(),
         { id: "reader:persistence" },
       );
       return;
     }
     if (!persistence.joined || persistence.pending) return;
-    say("Saved on the server.", { id: "reader:persistence" });
+    say(m.readerc_saved_on_server(), { id: "reader:persistence" });
   }
 
   // There is no save, so a close is almost never worth interrupting: the
