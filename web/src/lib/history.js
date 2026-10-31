@@ -10,6 +10,7 @@
 
 import { SHELL_HEADERS } from "./api.js";
 import * as renderers from "./renderers.js";
+import { m } from "./paraglide/messages.js";
 
 const asked = (headers) => ({ ...SHELL_HEADERS, ...headers });
 
@@ -49,11 +50,11 @@ export async function loadPage(slug, headers = {}, { after = null, limit = 200, 
     headers: asked(headers),
     cache: "no-store",
   });
-  if (!response.ok) throw new Error("this document's history is not readable");
+  if (!response.ok) throw new Error(m.history_not_readable());
   const payload = await response.json();
   const next = payload.next_cursor ?? null;
   if (next !== null && (!Number.isSafeInteger(next) || next <= 0 || (after !== null && next >= after))) {
-    throw new Error("The history server returned an invalid page cursor.");
+    throw new Error(m.history_invalid_cursor());
   }
   return { labels: (payload.labels || []).map(fromWire), next };
 }
@@ -82,7 +83,7 @@ export async function read(slug, sha, headers = {}) {
   if (!response.ok) {
     // 410 is a moment before a trim: gone for good, and the error says so.
     const said = response.status === 410 ? await response.json().catch(() => ({})) : {};
-    throw new Error(said.error || "that label is not readable");
+    throw new Error(said.error || m.history_label_unreadable());
   }
   const payload = await response.json();
   const files = payload.files && typeof payload.files === "object"
@@ -101,7 +102,7 @@ export async function label(slug, sha, text, headers = {}, requestId = null) {
   });
   if (!response.ok) {
     const said = await response.json().catch(() => ({}));
-    throw new Error(said.error || "that label could not be named");
+    throw new Error(said.error || m.history_label_not_named());
   }
   return await response.json();
 }

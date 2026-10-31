@@ -4,6 +4,7 @@ import { EditorView, Decoration, ViewPlugin, hoverTooltip } from "@codemirror/vi
 import { StateEffect } from "@codemirror/state";
 import { citedKeys, unknownCitations } from "./citation-keys.js";
 import { entryLabel } from "./bibliography.js";
+import { m } from "./paraglide/messages.js";
 
 const MAX_SCAN_LENGTH = 2_000_000;
 const RESCAN_DELAY = 400;
@@ -97,7 +98,7 @@ function card(entry, key) {
   const dom = document.createElement("div");
   dom.className = "cm-citation-card";
   if (!entry) {
-    dom.textContent = `No bibliography entry for "${key}"`;
+    dom.textContent = m.citation_keys_extension_no_entry({ key });
     return dom;
   }
   const label = document.createElement("div");

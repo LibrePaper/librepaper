@@ -1,0 +1,8 @@
+{
+  "citation_keys_extension_no_entry": "Aucune entrée de bibliographie pour « {key} »",
+  "bibliography_engine_unavailable": "La prise en charge de la bibliographie n’est pas disponible dans cette version.",
+  "history_not_readable": "L’historique de ce document n’est pas lisible",
+  "history_invalid_cursor": "Le serveur d’historique a renvoyé un curseur de page non valide.",
+  "history_label_unreadable": "ce signet n’est pas lisible",
+  "history_label_not_named": "ce signet n’a pas pu être nommé"
+}
