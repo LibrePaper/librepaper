@@ -11,6 +11,8 @@
 // wording below uses the controller messages verbatim; this file never
 // invents a `status.message`.
 
+import { m } from "../paraglide/messages.js";
+
 const ENGINE_NAMES = { pdflatex: "pdfLaTeX", xelatex: "XeLaTeX", lualatex: "LuaLaTeX" };
 
 function engineName(engine) {
@@ -19,7 +21,7 @@ function engineName(engine) {
 
 const BIBLIOGRAPHY_NAMES = {
   bibtex: "BibTeX",
-  "browser-biber": "browser Biber",
+  "browser-biber": m.status_text_bibliography_browser_biber(),
 };
 
 function bibliographyName(kind) {
@@ -31,11 +33,18 @@ function bibliographyName(kind) {
 /// pdfLaTeX (release r1); bibliography via browser Biber."
 export function provenanceSentence(provenance) {
   if (!provenance) return "";
-  if (provenance.backend === "local") return "Rendered on this computer.";
+  if (provenance.backend === "local") return m.status_text_rendered_local();
   const engine = engineName(provenance.engine);
-  const detail = provenance.release ? ` (release ${provenance.release})` : "";
-  const bibliography = provenance.bibliography
-    ? `; bibliography via ${bibliographyName(provenance.bibliography)}`
-    : "";
-  return `Compiled in the browser${engine ? ` with ${engine}` : ""}${detail}${bibliography}.`;
+  const release = provenance.release;
+  if (provenance.bibliography) {
+    const bibliography = bibliographyName(provenance.bibliography);
+    if (engine && release) return m.status_text_browser_engine_release_bibliography({ engine, release, bibliography });
+    if (engine) return m.status_text_browser_engine_bibliography({ engine, bibliography });
+    if (release) return m.status_text_browser_release_bibliography({ release, bibliography });
+    return m.status_text_browser_bibliography({ bibliography });
+  }
+  if (engine && release) return m.status_text_browser_engine_release({ engine, release });
+  if (engine) return m.status_text_browser_engine({ engine });
+  if (release) return m.status_text_browser_release({ release });
+  return m.status_text_browser();
 }

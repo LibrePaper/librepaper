@@ -6,6 +6,8 @@
 // the shape the browser engines produce, so the gutter mark and the badge
 // treat it like any other.
 
+import { m } from "./paraglide/messages.js";
+
 const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const LOCATION = /┌─\s*([^:]+):(\d+):(\d+)/g;
 
@@ -46,7 +48,7 @@ export function parse(log, { paths = [] } = {}) {
   }
   return [{
     severity: "error",
-    message: failureReason(log) ?? "The Typst command failed.",
+    message: failureReason(log) ?? m.typst_log_command_failed(),
     hints: [],
     file,
     line,

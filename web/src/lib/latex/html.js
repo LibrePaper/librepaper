@@ -2,6 +2,7 @@
 // not change the PDF compiler's settings or bibliography state.
 import { createEngine } from "./driver.js";
 import { fetchVerified } from "./resources.js";
+import { m } from "../paraglide/messages.js";
 
 const DEADLINE_MS = 240_000;
 
@@ -48,10 +49,10 @@ function resolvePath(name, paths) {
 
 function hintsFor(message) {
   if (message.includes("Cannot run piped system commands")) {
-    return ["The HTML converter cannot run external programs, so packages that shell out (minted, some tcolorbox listings) fail here. The PDF view may still work."];
+    return [m.html_hint_external_programs()];
   }
   if (message.includes("Mismatched LaTeX support files")) {
-    return ["The HTML converter's copy of LaTeX is older than the packages this document loads. This is a limitation of LibrePaper's HTML preview, not an error in your document. The PDF view may still work."];
+    return [m.html_hint_support_files()];
   }
   return [];
 }
@@ -163,7 +164,7 @@ export function createHtmlCompiler({
       if (!pinnedRequest || pinnedRequest.base !== base) {
         const pending = (async () => {
           const response = await request(new URL("release.json", base));
-          if (!response.ok) throw new Error(`LaTeX release unavailable (${response.status})`);
+          if (!response.ok) throw new Error(m.html_release_unavailable({ status: response.status }));
           const data = await response.json();
           if (data.format !== 2) throw new Error("Unsupported LaTeX release format");
           return /** @type {LatexRelease} */ (data);
@@ -181,7 +182,7 @@ export function createHtmlCompiler({
     const release = pinned;
     const releaseId = release.id;
     const spec = release?.engines?.latexml;
-    if (!spec) throw new Error("This LaTeX release does not include the HTML preview renderer.");
+    if (!spec) throw new Error(m.html_renderer_missing());
     const capturedRelease = structuredClone(release);
     return {
       base, releaseId, release: capturedRelease, settings: capturedSettings,
@@ -231,7 +232,7 @@ export function createHtmlCompiler({
     if (current !== epoch) throw superseded();
     const loaded = await target.loadBundleIndex(index);
     if (current !== epoch) throw superseded();
-    if (loaded?.result !== "ok") throw new Error("Could not load the TeX bundle index");
+    if (loaded?.result !== "ok") throw new Error(m.html_bundle_index_failed());
     engineKey = key;
     return target;
   }
@@ -269,7 +270,7 @@ export function createHtmlCompiler({
     if (!ok && !diagnostics.some((item) => item.severity === "error")) {
       // A log the parser found nothing in still ends with the engine's last word.
       const tail = String(result.log ?? "").split("\n").filter((line) => line.trim()).slice(-12).join("\n");
-      diagnostics.push(diagnostic(tail || "LaTeX HTML conversion failed", [], tree.main));
+      diagnostics.push(diagnostic(tail || m.html_conversion_failed(), [], tree.main));
     }
     return {
       html: ok ? withoutFooter(result.html) : null,
@@ -301,7 +302,7 @@ export function createHtmlCompiler({
             timer = setTimeout(() => {
               epoch++;
               retire();
-              reject(new Error("LaTeX HTML preview timed out"));
+              reject(new Error(m.html_timeout()));
             }, deadline);
           }),
         ]);
