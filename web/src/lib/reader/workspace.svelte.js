@@ -17,6 +17,7 @@ import * as figures from "../figures.js";
 import * as renderers from "../renderers.js";
 import { authHeaders, uploadAsset } from "../api.js";
 import { openingFile } from "../opening.js";
+import { m } from "../paraglide/messages.js";
 
 /** @typedef {ReturnType<typeof import("../collab.js").join>} WorkspaceSession */
 /** @typedef {ReturnType<WorkspaceSession["list"]>[number]} WorkspaceFile */
@@ -170,7 +171,7 @@ export function createWorkspace({
   }
 
   function editable() {
-    if (!state.canEdit) throw new Error("This project is read-only.");
+    if (!state.canEdit) throw new Error(m.workspace_project_read_only());
   }
 
   /** @param {string} path */
@@ -188,7 +189,7 @@ export function createWorkspace({
     editable();
     const active = session;
     const text = await file.text();
-    if (session !== active || !state.canEdit) throw new Error("The editing session changed during upload.");
+    if (session !== active || !state.canEdit) throw new Error(m.workspace_session_changed());
     const placed = checkPlacement(state.rules, { kind: "text", path }, session.list(), session.folders());
     state.openFile = session.addText(placed, text);
     paint();
@@ -208,7 +209,7 @@ export function createWorkspace({
     const placed = checkPlacement(state.rules, { kind: "asset", path }, active.list(), active.folders());
     const { sha } = await upload(slug, file, key);
     // An upload yields to other editors; recheck before installing its name.
-    if (session !== active || !state.canEdit) throw new Error("The editing session changed during upload.");
+    if (session !== active || !state.canEdit) throw new Error(m.workspace_session_changed());
     checkPlacement(state.rules, { kind: "asset", path: placed }, session.list(), session.folders());
     session.putAsset(placed, sha);
     paint();
@@ -224,7 +225,7 @@ export function createWorkspace({
   function relocate(entries, destination, rename) {
     const plan = session.relocate(entries, destination, state.rules, rename);
     if (plan.files.some((file) => file.path !== file.previousPath)) {
-      say("Files moved. Paths to them inside source files were not rewritten, so an include or an image that named the old location still names it.");
+      say(m.workspace_files_moved());
     }
   }
 

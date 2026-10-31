@@ -1,0 +1,23 @@
+{
+  "project_session_read_only": "Ce projet est en lecture seule.",
+  "project_session_item_changed": "{path} : cet élément a changé ou a été supprimé. Sélectionnez-le de nouveau.",
+  "project_session_file_changed": "Ce fichier a changé ou a été supprimé. Sélectionnez-le de nouveau.",
+  "project_session_newer_version": "Ce document exige une version plus récente de LibrePaper.",
+  "project_session_cannot_verify": "ce navigateur ne peut pas vérifier l’état du document référencé",
+  "project_session_cannot_fetch_reference": "ce client ne peut pas récupérer l’état du document référencé",
+  "project_session_integrity": "l’état du document référencé n’a pas réussi la vérification d’intégrité",
+  "project_session_local_persistence_failed": "l’enregistrement local a échoué",
+  "workspace_project_read_only": "Ce projet est en lecture seule.",
+  "workspace_session_changed": "La session de modification a changé pendant le téléversement.",
+  "workspace_files_moved": "Fichiers déplacés. Les chemins vers ces fichiers dans les fichiers source n’ont pas été réécrits, donc une inclusion ou une image qui nommait l’ancien emplacement le nomme toujours.",
+  "history_source_earlier_moment": "Un moment antérieur",
+  "history_source_current_version": "Version actuelle",
+  "history_source_label_load_failed": "Impossible de charger les sources de la version.",
+  "history_source_label_no_source": "Cette version n’a pas renvoyé ses fichiers source.",
+  "downloads_missing_files": "impossible de télécharger {files}",
+  "downloads_selection_incomplete": "Impossible de télécharger tous les fichiers sélectionnés.",
+  "downloads_file_gone": "Ce fichier n’est plus disponible.",
+  "web_git_history_unreadable": "L’historique n’a pas pu être lu.",
+  "comments_export_comments_unread": "Les commentaires n’ont pas pu être lus jusqu’au bout.",
+  "comments_export_replies_unread": "Les réponses n’ont pas pu être lues jusqu’au bout."
+}

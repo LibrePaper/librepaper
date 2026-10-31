@@ -7,6 +7,7 @@
 
 import { basename, inside } from "../file-manager.js";
 import { toBase64 } from "../figures.js";
+import { m } from "../paraglide/messages.js";
 
 /// A page painted in this browser names its figures by object URL
 /// (`figures.gather`), which is dead the moment the page leaves the tab.
@@ -66,7 +67,7 @@ export async function projectFiles({ tree, folders, gather }) {
   for (const path of folders) files[`${path}/`] = new Uint8Array();
   if (Object.keys(tree.digests || {}).length) {
     const { held, missing } = await gather(tree.digests);
-    if (missing.length) throw new Error(`could not download ${missing.join(", ")}`);
+    if (missing.length) throw new Error(m.downloads_missing_files({ files: missing.join(", ") }));
     Object.assign(files, held.assets);
   }
   return files;
@@ -80,7 +81,7 @@ export async function entryDownload({ entry, tree, folders, gather }) {
   const digests = Object.fromEntries(Object.entries(tree.digests || {}).filter(([path]) => selected(path)));
   if (Object.keys(digests).length) {
     const { held, missing } = await gather(digests);
-    if (missing.length) throw new Error("Could not download all selected files.");
+    if (missing.length) throw new Error(m.downloads_selection_incomplete());
     Object.assign(content, held.assets);
   }
   if (entry.kind === "folder") {
@@ -88,7 +89,7 @@ export async function entryDownload({ entry, tree, folders, gather }) {
     content[`${entry.path}/`] = new Uint8Array();
     return { name: `${basename(entry.path)}.zip`, files: content };
   }
-  if (!(entry.path in content)) throw new Error("This file is no longer available.");
+  if (!(entry.path in content)) throw new Error(m.downloads_file_gone());
   return { name: basename(entry.path), bytes: content[entry.path] };
 }
 

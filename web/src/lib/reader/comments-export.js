@@ -5,6 +5,7 @@
 // The formatter below is pure: it is handed threads that are already loaded.
 
 import { named } from "../thread.js";
+import { m } from "../paraglide/messages.js";
 
 /// Reads every page of comments and every page of each comment's replies.
 /// `fetchPage(cursor)` answers one annotation page and
@@ -23,7 +24,7 @@ export async function loadAllComments({ fetchPage, fetchReplies }) {
       threads.push({ ...comment, replies: [...(comment.replies || [])] });
     }
     const next = page.complete ? null : page.next_cursor ?? null;
-    if (next !== null && next === cursor) throw new Error("The comments could not be read to the end.");
+    if (next !== null && next === cursor) throw new Error(m.comments_export_comments_unread());
     cursor = next;
   } while (cursor !== null);
 
@@ -38,7 +39,7 @@ export async function loadAllComments({ fetchPage, fetchReplies }) {
         thread.replies.push(reply);
       }
       const next = page.complete ? null : page.next_cursor ?? null;
-      if (next !== null && next === replyCursor) throw new Error("The replies could not be read to the end.");
+      if (next !== null && next === replyCursor) throw new Error(m.comments_export_replies_unread());
       replyCursor = next;
     }
   }
