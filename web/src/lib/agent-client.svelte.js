@@ -3,6 +3,7 @@ import { composeTaskMessage, checkContextSize, CONTEXT_LIMIT } from "./assistant
 import { validPath } from "./assistant-preview.js";
 import { AGENT_SESSION_PREFIX } from "./storage.js";
 import { localDataForgotten } from "./signed-out.js";
+import { m } from "./paraglide/messages.js";
 
 const REQUEST_TIMEOUT_MS = 15000;
 const ACK_TIMEOUT_MS = 10000;
@@ -188,8 +189,8 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     try {
       return await run(controller.signal);
     } catch (error) {
-      if (error.name === "AbortError") throw new Error("Assistant request timed out.");
-      if (error instanceof TypeError) throw new Error("The server is unavailable. Your draft remains in the composer.");
+      if (error.name === "AbortError") throw new Error(m.agent_client_request_timeout());
+      if (error instanceof TypeError) throw new Error(m.agent_client_server_unavailable());
       throw error;
     } finally { clearTimeout(timeout); requests.delete(controller); }
   }
@@ -202,7 +203,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
         method, headers, body: body === undefined ? undefined : JSON.stringify(body),
         credentials: "same-origin", cache: "no-store", signal });
       const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw Object.assign(new Error(result.error || `Assistant request failed (${response.status}).`), { status: response.status });
+      if (!response.ok) throw Object.assign(new Error(result.error || m.agent_client_request_failed({ status: response.status })), { status: response.status });
       return result;
     });
   }
@@ -214,7 +215,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       });
       if (!response.ok) {
         const body = await response.text().catch(() => "");
-        throw new Error(body || `Assistant request failed (${response.status}).`);
+        throw new Error(body || m.agent_client_request_failed({ status: response.status }));
       }
       const advertised = Number(response.headers.get("content-length"));
       if (Number.isFinite(advertised) && advertised > MAX_CANDIDATE_SOURCE_BYTES) {
@@ -372,18 +373,18 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
   // Shared by `transmit` and `respond`: register a pending acknowledgement,
   // time it out, and (when the frame carries a delivery) mark it uncertain.
   /** @param {string} ackId @param {{message?: {id: string}, timeoutMessage?: string}} [options] */
-  function awaitAck(ackId, { message, timeoutMessage = "The assistant did not acknowledge the request." } = {}) {
+  function awaitAck(ackId, { message, timeoutMessage = m.agent_client_ack_timeout() } = {}) {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         sends.delete(ackId);
-        if (message) markDeliveryUncertain(message, "Delivery was not confirmed. Retry when the runner is connected.");
+        if (message) markDeliveryUncertain(message, m.agent_client_delivery_unconfirmed());
         reject(new Error(timeoutMessage));
       }, ACK_TIMEOUT_MS);
       sends.set(ackId, { resolve, reject, timeout, message });
     });
   }
   function transmit(message) {
-    if (!canTransmit()) throw new Error("Start the LibrePaper runner before sending a message.");
+    if (!canTransmit()) throw new Error(m.agent_client_runner_required());
     const accepted = awaitAck(message.id, { message });
     try {
       socket.send(JSON.stringify(message));
@@ -391,7 +392,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       const pending = sends.get(message.id);
       clearTimeout(pending?.timeout);
       sends.delete(message.id);
-      markDeliveryUncertain(message, error?.message || "Delivery failed before confirmation.");
+      markDeliveryUncertain(message, error?.message || m.agent_client_delivery_failed());
       pending?.reject(error);
     }
     return accepted;
@@ -450,14 +451,14 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     if (frame.type === "capabilities" && typeof frame.session_id === "string" && frame.session_id.length <= 128 && frame.session_id && frame.session_id !== runtimeSessionId) {
       const hadSession = Boolean(runtimeSessionId);
       runtimeSessionId = frame.session_id;
-      if (hadSession || view.messages.length) addMessage({ id: `session-${runtimeSessionId}`, role: "agent", text: "New agent session. The agent does not remember earlier messages in this conversation.", context: { session_boundary: true } });
+      if (hadSession || view.messages.length) addMessage({ id: `session-${runtimeSessionId}`, role: "agent", text: m.agent_client_session_boundary(), context: { session_boundary: true } });
       saveSoon();
     }
     if (frame.type === "ready" || frame.type === "presence") {
       const runnerConnected = Boolean(frame.agent);
       publish({ connected: true, runnerConnected, status: runnerConnected ? "ready" : "waiting", capabilities: frame.capabilities || view.capabilities, error: "" });
       if (runnerConnected) retryDeliveries();
-      else markDeliveriesUncertain("The runner is disconnected; the request will be reconciled when it returns.");
+      else markDeliveriesUncertain(m.agent_client_runner_disconnected());
       return;
     }
     if (frame.type === "message" && frame.message) {
@@ -504,7 +505,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
         addMessage({
           id: `task-${taskId}`,
           role: "agent",
-          text: frame.text || (frame.status === "cancelled" ? "Task cancelled." : frame.status === "interrupted" ? "Task interrupted; reconcile its document operations before retrying." : "Task failed."),
+          text: frame.text || (frame.status === "cancelled" ? m.agent_client_task_cancelled() : frame.status === "interrupted" ? m.agent_client_task_interrupted() : m.agent_client_task_failed()),
           context: { task_id: taskId, task_status: true, ...(context.results ? { results: context.results } : {}) },
         });
       }
@@ -530,7 +531,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       return;
     }
     if (frame.type === "error") {
-      const message = frame.message || "The assistant rejected this request.";
+      const message = frame.message || m.agent_client_assistant_rejected();
       if (frame.id && sends.has(frame.id)) {
         const pending = sends.get(frame.id);
         clearTimeout(pending.timeout);
@@ -573,7 +574,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       if (frame.type === "error" && frame.status === 409 && !joined) {
         manuallyClosed = true;
         clearTimeout(reconnectTimer); reconnectTimer = undefined;
-        publish({ connected: false, runnerConnected: false, status: "idle", error: "This conversation is already open in another browser tab." });
+        publish({ connected: false, runnerConnected: false, status: "idle", error: m.agent_client_other_tab() });
         current.close();
         return;
       }
@@ -582,9 +583,9 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     current.onclose = () => {
       if (disposed || generation !== owner || socket !== current) return;
       socket = undefined;
-      rejectSends("The assistant connection closed before the message was accepted.");
+      rejectSends(m.agent_client_connection_closed_before_accept());
       if (manuallyClosed) return;
-      markDeliveriesUncertain("The connection closed before the runner confirmed the task.");
+      markDeliveriesUncertain(m.agent_client_connection_closed_unconfirmed());
       publish({ connected: false, runnerConnected: false, status: "reconnecting" }); scheduleReconnect();
     };
     current.onerror = () => {
@@ -606,7 +607,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     manuallyClosed = false;
     publish({ status: "connecting", error: "" });
     const result = await request("POST", "/chat", {}, false).catch((error) => { publish({ status: "idle" }); throw error; });
-    if (!result.id || !result.token) throw new Error("The server returned an invalid assistant channel.");
+    if (!result.id || !result.token) throw new Error(m.agent_client_channel_invalid());
     id = result.id; token = result.token;
     runtimeSessionId = "";
     publish({ ...emptyView(), id, token, status: "connecting" });
@@ -617,10 +618,10 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     const value = String(body || "").trim();
     if (!value) return null;
     if (!id || !token) await create();
-    if (!canTransmit()) throw new Error("Start the LibrePaper runner before sending a message.");
+    if (!canTransmit()) throw new Error(m.agent_client_runner_required());
     const message = composeTaskMessage({ id: randomId(), text: value, ...context });
     const size = checkContextSize({ task: message.task, context: message.context });
-    if (!size.ok) throw new Error(`The attached context is too large (${size.bytes} bytes; limit ${size.limit}). Remove or replace the passage.`);
+    if (!size.ok) throw new Error(m.agent_client_context_too_large({ bytes: size.bytes, limit: size.limit }));
     // Every request is a task, including free-form chat. The runner can then
     // report status, cancellation and completion against one stable id.
     const taskId = message.id;
@@ -649,7 +650,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
   async function respond(taskId, requestId, response) {
     if (!taskId || !requestId || !socket || socket.readyState !== WebSocketImpl.OPEN) return false;
     const ackId = randomId();
-    const accepted = awaitAck(ackId, { timeoutMessage: "The assistant did not acknowledge the response." });
+    const accepted = awaitAck(ackId, { timeoutMessage: m.agent_client_ack_timeout_response() });
     try {
       socket.send(JSON.stringify({ type: "input", id: ackId, task_id: taskId, request_id: requestId, response }));
     } catch (error) {
@@ -664,7 +665,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       socket.send(JSON.stringify({ type: "preview_result", ...result, diagnostics: boundedDiagnostics(result?.diagnostics) }));
       return true;
     } catch (error) {
-      publish({ error: error?.message || "The preview result could not be delivered." });
+      publish({ error: error?.message || m.agent_client_preview_undelivered() });
       return false;
     }
   }
@@ -673,7 +674,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     const oldId = id;
     closeSocket(socket);
     socket = undefined;
-    rejectSends("The assistant channel was closed.");
+    rejectSends(m.agent_client_channel_closed());
     if (oldId && token) { try { await request("DELETE", `/chat/${encodeURIComponent(oldId)}`); } catch (error) { if (error.status !== 404) throw error; } }
     deliveries.clear();
     previewResponses.clear();
@@ -694,7 +695,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           runnerWaiters = runnerWaiters.filter((waiter) => waiter !== done);
-          reject(new Error("The agent started but did not join the conversation."));
+          reject(new Error(m.agent_client_runner_not_joined()));
         }, ms);
         const done = () => { clearTimeout(timer); resolve(); };
         runnerWaiters.push(done);
@@ -708,7 +709,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       disposed = true; manuallyClosed = true; generation++; clearTimeout(reconnectTimer);
       closeSocket(socket);
       socket = undefined;
-      rejectSends("The assistant panel was closed.");
+      rejectSends(m.agent_client_panel_closed());
       for (const controller of requests) controller.abort();
     },
   };

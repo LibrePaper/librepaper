@@ -2,16 +2,17 @@
 // speaks in tool names -- its own, or an MCP server's -- and this turns those
 // into the plain words a reader sees, without inventing anything the agent
 // did not actually say.
+import { m } from "./paraglide/messages.js";
 
 // The LibrePaper MCP surface, named for what each tool actually does rather
 // than its wire name. Kept here, not in the server, because this is a display
 // concern only: the request itself still carries the real tool name.
 const LIBREPAPER_TOOLS = {
-  document_read: "Read the current document",
-  document_propose: "Suggest changes to the document",
-  document_apply: "Edit the document",
-  document_comment: "Comment on the document",
-  document_result: "Report the result",
+  document_read: m.agent_permission_tool_read(),
+  document_propose: m.agent_permission_tool_propose(),
+  document_apply: m.agent_permission_tool_apply(),
+  document_comment: m.agent_permission_tool_comment(),
+  document_result: m.agent_permission_tool_result(),
 };
 
 const MCP_TOKEN = /\bmcp__([a-z0-9_-]+)__([a-z0-9_-]+)\b/gi;
@@ -26,7 +27,7 @@ export function humanizeTool(text) {
     .replace(MCP_TOKEN, (whole, server, tool) => {
       const known = LIBREPAPER_TOOLS[tool.toLowerCase()];
       if (known) return known;
-      return `Use ${tool.replace(/_/g, " ")} (${server})`;
+      return m.agent_permission_tool_use({ tool: tool.replace(/_/g, " "), server });
     })
     .replace(BARE_TOOL, (tool) => LIBREPAPER_TOOLS[tool] || tool);
 }
@@ -35,15 +36,15 @@ export function humanizeTool(text) {
 /// its own words once humanized, or a neutral fallback when it said nothing.
 export function permissionAction(input) {
   const humanized = humanizeTool(input?.message || "").trim();
-  return humanized || "Allow the agent to continue";
+  return humanized || m.agent_permission_continue();
 }
 
 const KIND_ORDER = ["allow_once", "allow_always", "reject_once", "reject_always"];
 const KIND_LABELS = {
-  allow_once: "Allow",
-  allow_always: "Always allow",
-  reject_once: "Reject",
-  reject_always: "Always reject",
+  allow_once: m.agent_permission_allow_once(),
+  allow_always: m.agent_permission_allow_always(),
+  reject_once: m.agent_permission_reject_once(),
+  reject_always: m.agent_permission_reject_always(),
 };
 
 /// The agent names its own options; this only orders and labels them. A kind

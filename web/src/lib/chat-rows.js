@@ -1,5 +1,8 @@
 // Rows for a chat transcript: each message with the author, the local time,
 // the day separator it opens (if any) and whether it starts a new group.
+import { m } from "./paraglide/messages.js";
+import { locale } from "./locale.js";
+
 const MINUTE = 60 * 1000;
 
 function sameDay(a, b) {
@@ -8,13 +11,13 @@ function sameDay(a, b) {
 
 // "Today", "Yesterday", or a month and day; the year is added when it is not this one.
 export function dayLabel(at, now = new Date()) {
-  if (sameDay(at, now)) return "Today";
+  if (sameDay(at, now)) return m.chat_rows_today();
   const yesterday = new Date(now);
   yesterday.setDate(now.getDate() - 1);
-  if (sameDay(at, yesterday)) return "Yesterday";
+  if (sameDay(at, yesterday)) return m.chat_rows_yesterday();
   const options = { month: "long", day: "numeric" };
   if (at.getFullYear() !== now.getFullYear()) options.year = "numeric";
-  return at.toLocaleDateString(undefined, options);
+  return at.toLocaleDateString(locale(), options);
 }
 
 function parseTime(created) {
@@ -40,8 +43,8 @@ export function chatRows(messages, { authorKey, roleLabel, now = new Date(), gro
       name: roleLabel(message),
       starts,
       date,
-      time: at ? at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : "",
-      stamp: at ? at.toLocaleString() : "",
+      time: at ? at.toLocaleTimeString(locale(), { hour: "numeric", minute: "2-digit" }) : "",
+      stamp: at ? at.toLocaleString(locale()) : "",
     };
   });
 }
