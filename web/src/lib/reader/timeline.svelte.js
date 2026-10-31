@@ -22,6 +22,8 @@ import * as defaultHistory from "../history.js";
 import { labelOrder } from "../history.js";
 import { authHeaders, keyHeaders } from "../api.js";
 import { createGeneration } from "./generation.js";
+import { m } from "../paraglide/messages.js";
+import { locale } from "../locale.js";
 
 export function createTimeline({
   slug,
@@ -125,7 +127,7 @@ export function createTimeline({
       if (disposed() || stale()) return;
       // A failed refresh is not evidence that the previous save state still
       // applies; keep the old rows for selection.
-      state.problem = error.message || "The version history could not be read.";
+      state.problem = error.message || m.timeline_history_read_failed();
     }
   }
 
@@ -160,7 +162,7 @@ export function createTimeline({
     } catch (error) {
       if (disposed()) return;
       // The rows already shown stay, and the reader can try again.
-      state.moreProblem = error.message || "Older versions could not be read.";
+      state.moreProblem = error.message || m.timeline_older_read_failed();
     } finally {
       state.loadingMore = false;
     }
@@ -195,7 +197,7 @@ export function createTimeline({
       state.savedProblem = "";
     } catch (error) {
       if (disposed() || stale()) return;
-      state.savedProblem = error.message || "Saved versions could not be read.";
+      state.savedProblem = error.message || m.timeline_saved_read_failed();
     } finally {
       if (!stale()) state.savedLoading = false;
     }
@@ -240,7 +242,7 @@ export function createTimeline({
         // The server's own wording already says what to do (§7.1: refresh
         // and try again when the head moved under this restore), so it is
         // shown as-is rather than folded into one generic failure.
-        throw new Error(payload.error || "That version could not be restored. The project is unchanged.");
+        throw new Error(payload.error || m.timeline_restore_failed());
       }
       state.restoring = false;
       state.restoreMoved = false;
@@ -250,7 +252,7 @@ export function createTimeline({
       // Reported rather than thrown: the restore dialog stays open and the
       // history panel keeps the line, so both places the reader might be
       // looking already say why. A toast would be a third.
-      state.problem = error.message || "That version could not be restored. The project is unchanged.";
+      state.problem = error.message || m.timeline_restore_failed();
     } finally {
       state.restoreBusy = false;
     }
@@ -271,7 +273,7 @@ export function createTimeline({
       if (!requestId) {
         requestId = globalThis.crypto?.randomUUID?.();
         if (!requestId) {
-          state.problem = "This browser cannot safely retry a current label.";
+          state.problem = m.timeline_current_label_retry();
           return;
         }
         pendingCurrentLabels.set(operationKey, requestId);
@@ -280,7 +282,7 @@ export function createTimeline({
     try {
       await history.label(slug, sha, given, keyHeaders(key), requestId);
     } catch (error) {
-      state.problem = error.message || "That version could not be named.";
+      state.problem = error.message || m.timeline_name_failed();
       return;
     }
     if (sha === "current") pendingCurrentLabels.delete(operationKey);
@@ -299,8 +301,8 @@ export function createTimeline({
   function describe(sha) {
     const point = state.labels.find((entry) => entry.sha === sha);
     return point
-      ? `${point.label ? `${point.label} · ` : ""}${new Date(point.at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`
-      : "this version";
+      ? `${point.label ? `${point.label} · ` : ""}${new Date(point.at).toLocaleString(locale(), { dateStyle: "medium", timeStyle: "short" })}`
+      : m.timeline_this_version();
   }
 
   return { state, load, loadMore, loadUntil, loadSaved, ask, confirm, name, describe };

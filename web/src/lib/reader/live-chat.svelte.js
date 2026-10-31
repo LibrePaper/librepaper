@@ -1,4 +1,5 @@
 import { authHeaders } from "../api.js";
+import { m } from "../paraglide/messages.js";
 
 // This tab holds every message it has been sent, and no more. The server
 // bounds the chat by the owner's storage quota, and older pages are fetched
@@ -114,7 +115,7 @@ export function createLiveChat({ slug, key = "" }) {
       // The server could not read the history. Keep what this tab holds and
       // try again. Live messages still arrive meanwhile.
       state.canClear = Boolean(hello.chat_can_clear);
-      state.loadError = "Chat history could not be read. Trying again.";
+      state.loadError = m.live_chat_history_read_failed();
       recovering = state.messages;
       recoveredLive = [];
       retryHistory(0);
@@ -185,7 +186,7 @@ export function createLiveChat({ slug, key = "" }) {
         headers: authHeaders(key),
       });
       const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.error || `Older messages could not be read (${response.status}).`);
+      if (!response.ok) throw new Error(body.error || m.live_chat_older_failed_status({ status: response.status }));
       if (issued !== generation) return;
       const page = Array.isArray(body.messages) ? body.messages : [];
       state.messages = union(page, state.messages);
@@ -193,7 +194,7 @@ export function createLiveChat({ slug, key = "" }) {
       if (recovering !== null) recovering = union(page, recovering);
       state.more = Boolean(body.more);
     } catch (cause) {
-      if (issued === generation) state.loadError = cause?.message || "Older messages could not be read.";
+      if (issued === generation) state.loadError = cause?.message || m.live_chat_older_failed();
     } finally {
       if (issued === generation) state.loadingOlder = false;
     }

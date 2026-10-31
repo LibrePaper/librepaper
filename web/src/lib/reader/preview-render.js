@@ -1,3 +1,5 @@
+import { m } from "../paraglide/messages.js";
+
 // One render of the document, from the source in this tab.
 //
 // This is the long one, and it stays long on purpose: what it does is a
@@ -244,7 +246,7 @@ export function createPreviewRenderer({
         // still require a complete tree.
         if (paged || (format === "latex" && htmlPreview)) {
           if (missing.length) {
-            throw new Error(`could not fetch figure${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`);
+            throw new Error(m.preview_render_missing_figures({ count: missing.length, names: missing.join(", ") }));
           }
         }
         source.assets = held.assets;
@@ -360,7 +362,7 @@ export function createPreviewRenderer({
       const reason = hasError
         ? ""
         : rendered.failure?.message || (log || "").trim().split("\n").slice(-12).join("\n")
-          || "the compiler produced no preview and no log";
+          || m.preview_render_no_output();
       const failed = hasError
         ? contextual
         : [...contextual, diagnosticContext({ severity: "error", message: reason }, source, identity)];
@@ -386,7 +388,7 @@ export function createPreviewRenderer({
       if (coordinator.isNewer(ticket) && stillCurrent && error.name !== "Superseded") {
         // The same string the status is set to, said once: what the reader is
         // told and what the diagnostics record must not be able to differ.
-        const reason = String(error.message || "could not render");
+        const reason = String(error.message || m.preview_render_could_not_render());
         status.failed(reason);
         console.error(`${format}: could not render:`, error);
         diagnostics.rendered({

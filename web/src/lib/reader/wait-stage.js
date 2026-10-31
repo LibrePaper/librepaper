@@ -1,3 +1,5 @@
+import { m } from "../paraglide/messages.js";
+
 // The words on the preview's waiting display. One stage line stands for
 // whatever the preview is doing before the first page is on the screen, and
 // this is the whole of how that line is chosen.
@@ -11,17 +13,17 @@ const ENGINE_NAMES = { typst: "Typst", markdown: "Markdown", quarto: "Markdown" 
  */
 export function waitStageOf({ pageDelivered = false, latexPhase = "", latexScope = "", engineLoading = "", compiling = false } = {}) {
   // A page the viewer has been handed and has not drawn yet.
-  if (pageDelivered) return "Drawing the pages";
+  if (pageDelivered) return m.wait_stage_drawing_pages();
   const latexBusy = latexPhase === "loading" || latexPhase === "compiling" || latexPhase === "browser-biber";
   if (latexBusy) {
-    if (latexPhase === "browser-biber" || latexScope === "biber") return "Updating the bibliography";
-    if (latexScope === "resources") return "Fetching LaTeX packages";
-    if (latexPhase === "loading") return "Loading the LaTeX engine";
-    return "Compiling";
+    if (latexPhase === "browser-biber" || latexScope === "biber") return m.wait_stage_bibliography();
+    if (latexScope === "resources") return m.wait_stage_packages();
+    if (latexPhase === "loading") return m.wait_stage_latex_engine();
+    return m.wait_stage_compiling();
   }
   // The renderer for Typst or Markdown is downloaded on first use, and the
   // first render waits for it.
-  if (engineLoading) return `Loading the ${ENGINE_NAMES[engineLoading] || engineLoading} engine`;
-  if (compiling) return "Compiling";
-  return "Preparing the preview";
+  if (engineLoading) return m.wait_stage_loading_engine({ engine: ENGINE_NAMES[engineLoading] || engineLoading });
+  if (compiling) return m.wait_stage_compiling();
+  return m.wait_stage_preparing();
 }

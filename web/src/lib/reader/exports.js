@@ -19,10 +19,9 @@ import { compilerAvailable } from "../renderers.js";
 import { LOCAL_OUTPUTS } from "../desktop/client.js";
 import { parseQuarto } from "../engines/quarto.js";
 import { docxFile, inlineBlobUrls } from "./downloads.js";
+import { m } from "../paraglide/messages.js";
 
 export const EXPORT_TARGETS = ["pdf", "html", "docx"];
-
-const NAMES = { pdf: "PDF", html: "HTML page", docx: "Word file" };
 
 const MARKDOWN_PDF = { backend: "browser", output: "pdf" };
 const MARKDOWN_HTML = { backend: "browser", output: "html" };
@@ -57,17 +56,17 @@ export function madeLocally(format, target, local, outputs = LOCAL_OUTPUTS) {
 export function exportAvailability(format, target, deps = {}) {
   const hasPandoc = deps.pandoc ?? pandocAvailable();
   const compiler = deps.compiler ?? compilerAvailable;
-  if (!EXPORT_TARGETS.includes(target)) return { ok: false, reason: "That kind of file cannot be exported." };
+  if (!EXPORT_TARGETS.includes(target)) return { ok: false, reason: m.exports_kind_not_exportable() };
   if (!["latex", "typst", "markdown", "quarto", "html"].includes(format)) {
-    return { ok: false, reason: "Only LaTeX, Typst, Markdown, Quarto and HTML documents can be exported." };
+    return { ok: false, reason: m.exports_formats_only() };
   }
   if (madeLocally(format, target, deps.local, deps.outputs)) return { ok: true };
   const needs = (...requirements) => {
     for (const [ok, reason] of requirements) if (!ok) return { ok: false, reason };
     return { ok: true };
   };
-  const pandocNeed = [hasPandoc, "This deployment does not offer Pandoc."];
-  const noRenderer = (name) => [compiler(name), `This deployment cannot render ${name === "latex" ? "LaTeX" : name === "typst" ? "Typst" : "Markdown"} documents.`];
+  const pandocNeed = [hasPandoc, m.exports_no_pandoc()];
+  const noRenderer = (name) => [compiler(name), m.exports_no_renderer({ name: name === "latex" ? "LaTeX" : name === "typst" ? "Typst" : "Markdown" })];
   if (format === "html") {
     if (target === "html") return { ok: true };
     return target === "pdf" ? needs(noRenderer("typst"), pandocNeed) : needs(pandocNeed);
@@ -84,7 +83,9 @@ export function exportAvailability(format, target, deps = {}) {
 // the compiler had to say, when it said anything.
 function failure(result, target) {
   const message = result?.diagnostics?.find((d) => d?.message)?.message || result?.failure?.message;
-  return new Error(message ? `The ${NAMES[target]} could not be made: ${message}` : `The ${NAMES[target]} could not be made.`);
+  if (target === "pdf") return new Error(message ? m.exports_pdf_not_made_reason({ message }) : m.exports_pdf_not_made());
+  if (target === "html") return new Error(message ? m.exports_html_not_made_reason({ message }) : m.exports_html_not_made());
+  return new Error(message ? m.exports_docx_not_made_reason({ message }) : m.exports_docx_not_made());
 }
 
 /// Pandoc's HTML reader takes equations only from MathML, and from a MathML
@@ -159,7 +160,7 @@ export async function exportFile({ target, format, tree, title, slug, project = 
   async function htmlText() {
     if (format === "html") {
       const source = tree.texts?.[tree.main];
-      if (typeof source !== "string") throw new Error("The HTML page could not be read.");
+      if (typeof source !== "string") throw new Error(m.exports_html_unreadable());
       return source;
     }
     if (previewCurrent && preview?.kind === "html") return inlineBlobUrls(preview.html);
@@ -187,5 +188,5 @@ export async function exportFile({ target, format, tree, title, slug, project = 
     );
     return docxFile(output, slug);
   }
-  throw new Error("That kind of file cannot be exported.");
+  throw new Error(m.exports_kind_not_exportable());
 }
