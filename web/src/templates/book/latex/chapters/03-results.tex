@@ -1,0 +1,25 @@
+\chapter{Results}\label{chap:results}
+
+This chapter reports the simulation results. The estimates in \cref{tab:book-results} come from 500 replications, and each row follows the design in \cref{chap:methods}.
+
+\section{Simulation summary}\label{sec:simulation}
+
+\begin{table}[ht]
+  \centering
+  \caption{Estimated treatment effect by estimator. Standard errors in parentheses.}\label{tab:book-results}
+  \begin{tabular}{lcc}
+    \toprule
+    Estimator & Estimate & Coverage \\
+    \midrule
+    Difference in means & 0.52 (0.11) & 0.94 \\
+    Regression adjustment & 0.49 (0.08) & 0.95 \\
+    Bootstrap percentile & 0.50 (0.09) & 0.93 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Regression adjustment has the smallest standard error. The bootstrap intervals cover close to the nominal rate, which supports the check described in \cref{eq:bootstrap-se}.
+
+\section{Interpretation}\label{sec:interpretation}
+
+The three estimators agree on the size of the effect. The choice between them comes down to precision and the cost of the extra modeling step, as \citet{rubin1974} anticipated for randomized designs. Chapter~\ref{chap:introduction} frames why these trade-offs matter for the questions the book opens with.

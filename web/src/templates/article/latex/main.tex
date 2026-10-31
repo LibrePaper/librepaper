@@ -1,57 +1,93 @@
 \documentclass[11pt]{article}
+
+% Fonts and typography
 \usepackage[T1]{fontenc}
-\usepackage{amsmath}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[margin=1in]{geometry}
+
+% Mathematics, figures and tables
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
 \usepackage{booktabs}
 
+% Citations: \citet{key} gives Author (Year), \citep{key} gives (Author, Year)
+\usepackage[round,authoryear]{natbib}
+
+% Links, then cross-references (cleveref must load after hyperref)
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=green!40!black,urlcolor=blue!50!black]{hyperref}
+\usepackage[capitalise,noabbrev]{cleveref}
+
+\newtheorem{theorem}{Theorem}
+
+% Edit the title, author and affiliation below
 \title{{{title}}}
-\author{{{author}}}
-\date{}
+\author{{{author}}\thanks{Department of Statistics, University of Example. \href{mailto:author@example.org}{author@example.org}}}
+\date{\today}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-This is a placeholder abstract. Replace this text with a summary of your research, findings, or main argument.
+  We study how a simple linear model recovers a treatment effect from a randomized experiment. We compare three estimators in a small simulation and report their bias and coverage. The results favour regression adjustment when the outcome has a strong predictor, and the bootstrap gives reliable intervals in both settings.
 \end{abstract}
 
-\section{Introduction}
+\noindent\textbf{Keywords:} causal inference, regression adjustment, bootstrap, simulation
 
-This is the introduction section. Present the background and context for your work. You can cite other authors, such as the foundational work by Smith \cite{smith2020}.
+\section{Introduction}\label{sec:introduction}
 
-\section{Methods}
+Information theory \citep{shannon1948} and resampling \citep{efron1979} remain the workhorses of statistical inference. This paper asks how much a simple model can recover from a randomized experiment, and how much an analyst should trust the resulting intervals.
 
-Describe your methodology or approach in this section. Include relevant details about your process, tools, or theoretical framework.
+Work on the potential outcomes framework \citet{rubin1974} and on ensemble methods \citep{breiman2001} motivates the design of the study. Our contributions are threefold. First, we state the identification result in \cref{sec:model}. Second, we compare three estimators in \cref{sec:results}. Third, we discuss when each estimator should be preferred in \cref{sec:conclusion}.
 
-\section{Results}
+\section{Related work}\label{sec:related}
 
-Present your findings in this section. The equation below shows an important relationship:
-\begin{equation}
-  y = mx + b
-  \label{eq:linear}
+Early treatments of experimental design focus on randomization as the source of identification. Modern practice adds covariates to gain precision, a step that is now standard in applied work \citep{rubin1974}. Resampling methods provide intervals without distributional assumptions \citep{efron1979}, and they have been studied extensively for ensembles of trees \citep{breiman2001}.
+
+\section{Model}\label{sec:model}
+
+Let $Y_i$ denote the outcome for unit $i$ and let $D_i \in \{0,1\}$ indicate treatment. We assume the linear model
+\begin{equation}\label{eq:model}
+  Y_i = \beta_0 + \beta_1 D_i + \varepsilon_i,
+  \qquad
+  \mathbb{E}[\varepsilon_i \mid D_i] = 0.
 \end{equation}
+Under \cref{eq:model}, the difference in means recovers the treatment effect, as stated in the following result.
 
-The results can be summarized in a table, as shown in Table~\ref{tbl:example}.
+\begin{theorem}\label{thm:identification}
+  Suppose \cref{eq:model} holds and treatment is randomly assigned, so that $\varepsilon_i$ is independent of $D_i$. Then $\beta_1 = \mathbb{E}[Y_i \mid D_i = 1] - \mathbb{E}[Y_i \mid D_i = 0]$.
+\end{theorem}
+
+\begin{proof}
+  Take conditional expectations of \cref{eq:model} given $D_i$. The error term has mean zero in each arm, so the difference in the two conditional means equals $\beta_1$.
+\end{proof}
+
+\section{Results}\label{sec:results}
+
+\cref{tab:results} reports the estimates from a simulation with 500 replications. Each cell gives the mean estimate with its standard error in parentheses, and the coverage of the nominal 95\% interval.
 
 \begin{table}[ht]
   \centering
-  \caption{Example results table.}
-  \label{tbl:example}
+  \caption{Estimated treatment effect by estimator. Standard errors in parentheses.}\label{tab:results}
   \begin{tabular}{lcc}
     \toprule
-    Variable & Value & Unit \\
+    Estimator & Estimate & Coverage \\
     \midrule
-    Sample size & 100 & \\
-    Mean & 42.5 & units \\
-    Std Dev & 5.2 & units \\
+    Difference in means & 0.52 (0.11) & 0.94 \\
+    Regression adjustment & 0.49 (0.08) & 0.95 \\
+    Bootstrap percentile & 0.50 (0.09) & 0.93 \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-\section{Discussion}
+Regression adjustment has the smallest standard error, as expected from the variance reduction it provides. The bootstrap intervals are slightly narrower than the normal approximation and still cover close to the nominal rate.
 
-Interpret your results in the context of existing literature. Discuss the implications, limitations, and potential future directions for this work. A comprehensive overview of the field is provided by Jones \cite{jones2019}.
+\section{Conclusion}\label{sec:conclusion}
 
-\bibliographystyle{plain}
+Under randomization, a linear model gives a transparent route to the treatment effect. Regression adjustment improves precision at little cost, and the bootstrap is a sound check when the distribution of the estimator is unclear. Future work should extend the comparison to clustered designs.
+
+\bibliographystyle{plainnat}
 \bibliography{references}
 
 \end{document}
