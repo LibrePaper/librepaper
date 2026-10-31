@@ -3,6 +3,7 @@
 // stopped is dropped.
 
 import * as desktopClient from "./client.js";
+import { m } from "../paraglide/messages.js";
 
 export function createMachineView() {
   let available = $state(false);
@@ -35,7 +36,7 @@ export function createMachineView() {
           state = null;
           loadError = "";
         } else {
-          loadError = cause?.message || "Could not load this computer's settings.";
+          loadError = cause?.message || m.machine_load_failed();
         }
       }
     }
@@ -59,7 +60,7 @@ export function createMachineView() {
           reachable = false;
           state = null;
         }
-        error = cause?.message || "The request could not be completed.";
+        error = cause?.message || m.machine_request_failed();
       }
       return false;
     } finally {
