@@ -9,6 +9,8 @@
 import { createGeneration } from "./generation.js";
 import { isMoment } from "../moment.js";
 import { openingFile } from "../opening.js";
+import { locale } from "../locale.js";
+import { m } from "../paraglide/messages.js";
 
 /// A selection is a label's id, and nothing else: the timeline lists
 /// versions, and a minute nobody saved is not one.
@@ -20,15 +22,15 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
 
   const snapshot = tree => ({ ...tree, texts: { ...tree.texts }, files: { ...tree.files } });
   const label = point => point.label
-    || (point.at ? new Date(point.at).toLocaleString() : "")
-    || (isMoment(point.sha) ? "An earlier moment" : "")
-    || (point.sha ? point.sha.slice(0, 7) : "An earlier moment");
+    || (point.at ? new Date(point.at).toLocaleString(locale()) : "")
+    || (isMoment(point.sha) ? m.history_source_earlier_moment() : "")
+    || (point.sha ? point.sha.slice(0, 7) : m.history_source_earlier_moment());
 
   async function readPoint(sha) {
     const listed = labels().find(point => point.sha === sha);
     const point = { ...listed, ...(await read(sha)) };
     if (point.sha !== sha || !point.texts || typeof point.texts !== "object") {
-      throw new Error("This label did not return its source files.");
+      throw new Error(m.history_source_label_no_source());
     }
     return snapshot(point);
   }
@@ -95,8 +97,8 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
       state.result = {
         oldTree,
         newTree,
-        oldLabel: oldPoint ? label(oldPoint) : "Current version",
-        newLabel: newPoint ? label(newPoint) : "Current version",
+        oldLabel: oldPoint ? label(oldPoint) : m.history_source_current_version(),
+        newLabel: newPoint ? label(newPoint) : m.history_source_current_version(),
         against: base,
         paths,
         status,
@@ -108,7 +110,7 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
       };
     } catch (error) {
       if (!disposed && !stale()) {
-        state.problem = error.message || "Could not load label source.";
+        state.problem = error.message || m.history_source_label_load_failed();
       }
     } finally {
       if (!disposed && !stale()) state.loading = false;

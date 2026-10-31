@@ -28,6 +28,7 @@ import { projectDirectory } from "./projection.js";
 import { createGeneration } from "./reader/generation.js";
 import { AnchorIndex, MoveMemory } from "./anchors.js";
 import { toLf } from "./line-endings.js";
+import { m } from "./paraglide/messages.js";
 
 /** @typedef {{ name?: string, color?: string, tab?: string, file?: string }} PresenceState */
 /** @typedef {{ type: string, [key: string]: unknown }} SessionMessage */
@@ -48,7 +49,7 @@ const UPDATE_CHUNK_BYTES = 600_000;
 
 async function sha256Hex(bytes) {
   const subtle = globalThis.crypto?.subtle;
-  if (!subtle) throw new Error("this browser cannot verify referenced document state");
+  if (!subtle) throw new Error(m.project_session_cannot_verify());
   const digest = new Uint8Array(await subtle.digest("SHA-256", bytes));
   return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
@@ -384,14 +385,14 @@ export function createProjectSession({
       failed(error) {
         local = false;
         localPending = 0;
-        localError = error?.message || String(error || "local persistence failed");
+        localError = error?.message || String(error || m.project_session_local_persistence_failed());
         report();
       },
       // §6.3: nothing is persisted per batch and there is no replay cursor,
       // so there is no coverage confirmation to record here any more.
     }) || null;
   } catch (error) {
-    localError = error?.message || String(error || "local persistence failed");
+    localError = error?.message || String(error || m.project_session_local_persistence_failed());
   }
   // Sessions without an asynchronous persistence adapter are hydrated at
   // construction. Mark that baseline before a socket can import remote data.
@@ -704,7 +705,7 @@ export function createProjectSession({
     },
 
     addFolder(path, rules) {
-      if (!mayEdit) throw new Error("This project is read-only.");
+      if (!mayEdit) throw new Error(m.project_session_read_only());
       path = checkPlacement(rules, { kind: "folder", path }, this.list(), this.folders());
       meta.set(`folder:${path}`, true);
       doc.commit({ origin: DIRECTORY_ORIGIN });
@@ -712,7 +713,7 @@ export function createProjectSession({
     },
 
     relocate(entries, destination, rules, rename = false) {
-      if (!mayEdit) throw new Error("This project is read-only.");
+      if (!mayEdit) throw new Error(m.project_session_read_only());
       const plan = relocation(this.list(), this.folders(), entries, destination, rules, rename);
       // Remove asset keys first, so a batch move never overwrites a source.
       for (const file of plan.files) if (file.kind === "asset") assets.delete(file.id);
@@ -728,13 +729,13 @@ export function createProjectSession({
 
     /** @param {ProjectEntry[]} entries */
     removeEntries(entries) {
-      if (!mayEdit) throw new Error("This project is read-only.");
+      if (!mayEdit) throw new Error(m.project_session_read_only());
       const roots = topEntries(entries);
       const current = this.list();
       const folders = folderPaths(current, this.folders());
       for (const entry of roots) {
         const exists = entry.kind === "folder" ? folders.includes(entry.path) : current.some((file) => file.id === entry.id && file.kind === entry.kind && file.path === entry.path);
-        if (!exists) throw new Error(`${entry.path}: this item changed or was removed. Select it again.`);
+        if (!exists) throw new Error(m.project_session_item_changed({ path: entry.path }));
       }
       const selected = (path) => roots.some((entry) => path === entry.path || (entry.kind === "folder" && inside(path, entry.path)));
       const removed = current.filter((file) => selected(file.path));
@@ -752,9 +753,9 @@ export function createProjectSession({
 
     /** @param {ProjectFile} entry @param {string} path @param {ProjectRules} rules */
     duplicateEntry(entry, path, rules) {
-      if (!mayEdit) throw new Error("This project is read-only.");
+      if (!mayEdit) throw new Error(m.project_session_read_only());
       const file = this.list().find((file) => file.kind === entry.kind && file.id === entry.id && file.path === entry.path);
-      if (!file) throw new Error("This file changed or was removed. Select it again.");
+      if (!file) throw new Error(m.project_session_file_changed());
       path = checkPlacement(rules, { ...file, path }, this.list(), this.folders());
       if (file.kind === "text") return this.addText(path, this.textOf(file.id).toString());
       assets.set(path, file.sha);
@@ -813,7 +814,7 @@ export function createProjectSession({
     /// lib/line-endings.js.
     /** @param {string} path @param {string} [body] */
     addText(path, body = "") {
-      if (!mayEdit) throw new Error("This project is read-only.");
+      if (!mayEdit) throw new Error(m.project_session_read_only());
       body = toLf(body);
       const id = mintId();
       const text = new LoroText();
@@ -831,7 +832,7 @@ export function createProjectSession({
     /// this file at this moment keeps what they typed.
     /** @param {string} id @param {string} path @param {"text" | "asset"} [kind] */
     renameFile(id, path, kind) {
-      if (!mayEdit) throw new Error("This project is read-only.");
+      if (!mayEdit) throw new Error(m.project_session_read_only());
       const asset = assets.get(id);
       if (kind === "asset" || (kind === undefined && asset !== undefined)) {
         if (asset === undefined) return;
@@ -851,7 +852,7 @@ export function createProjectSession({
     /// Removes a file, its name with it. Empty projects are valid.
     /** @param {string} id */
     removeFile(id) {
-      if (!mayEdit) throw new Error("This project is read-only.");
+      if (!mayEdit) throw new Error(m.project_session_read_only());
       files.delete(id);
       paths.delete(id);
       doc.commit({ origin: DIRECTORY_ORIGIN });
@@ -995,7 +996,7 @@ export function createProjectSession({
         captureHydratedTarget();
         if (!speaksForThisJoin(stale)) return;
         if (state.protocol !== "librepaper.room.v3") {
-          throw new Error("This document requires a newer LibrePaper version.");
+          throw new Error(m.project_session_newer_version());
         }
         if (state.ref) {
           // Same origin, immutable, digest-bound, and short-lived. Whatever arrives during the
@@ -1008,7 +1009,7 @@ export function createProjectSession({
           // same-origin marker rule A turns on, and the link key a reader
           // arrived with. Without them a document too large to send inline was
           // refused, which is what the notebook examples were doing.
-          if (!fetchReference) throw new Error("this client cannot fetch referenced document state");
+          if (!fetchReference) throw new Error(m.project_session_cannot_fetch_reference());
           let referenced;
           try {
             referenced = await fetchReference(state.ref);
@@ -1029,7 +1030,7 @@ export function createProjectSession({
           // Hashing is a turn of its own, and a long one for a large base.
           if (!speaksForThisJoin(stale)) return;
           if (!verified) {
-            throw new Error("referenced document state failed its integrity check");
+            throw new Error(m.project_session_integrity());
           }
           doc.import(referenced);
         } else if (state.base) {
@@ -1063,7 +1064,7 @@ export function createProjectSession({
         captureHydratedTarget();
         if (!speaksForThisJoin(stale)) return;
         if (frame.protocol !== "librepaper.room.v3") {
-          throw new Error("This document requires a newer LibrePaper version.");
+          throw new Error(m.project_session_newer_version());
         }
         if (frame.updates?.length) doc.importBatch(frame.updates.map(decode));
         flushRemoteDuringHydration();

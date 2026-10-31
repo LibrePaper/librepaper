@@ -6,6 +6,7 @@
 // This module owns that state; the panel only reads it and draws it.
 import { keyHeaders } from "../api.js";
 import { loadPage } from "../history.js";
+import { m } from "../paraglide/messages.js";
 
 /// What the panel asks the server, so a check can stand in for it.
 const server = {
@@ -58,7 +59,7 @@ export function createWebGit({ api = server } = {}) {
     set({
       loaded: true,
       push: push.status === "fulfilled" ? push.value : null,
-      pushProblem: push.status === "rejected" ? (push.reason?.message || "The history could not be read.") : "",
+      pushProblem: push.status === "rejected" ? (push.reason?.message || m.web_git_history_unreadable()) : "",
     });
   }
 
