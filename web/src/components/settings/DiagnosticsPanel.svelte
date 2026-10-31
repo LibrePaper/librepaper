@@ -4,6 +4,7 @@
   // before it is copied, downloaded or pasted into an issue.
   import { collectReport, hasBuildLog } from "../../lib/support/report.js";
   import { desktop, desktopReport, shellAction } from "../../lib/desktop/client.js";
+  import { m } from "../../lib/paraglide/messages.js";
 
   let { compact = false } = $props();
 
@@ -50,8 +51,8 @@
   }
 
   async function copyReport() {
-    try { await copy(); say("Copied."); }
-    catch (error) { say(error?.message || "The report could not be copied.", true); }
+    try { await copy(); say(m.diagnosticspanel_copied()); }
+    catch (error) { say(error?.message || m.diagnosticspanel_copy_failed(), true); }
   }
 
   async function download() {
@@ -65,9 +66,9 @@
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      say("Downloaded.");
+      say(m.diagnosticspanel_downloaded());
     } catch (error) {
-      say(error?.message || "The report could not be downloaded.", true);
+      say(error?.message || m.diagnosticspanel_download_failed(), true);
     }
   }
 
@@ -76,15 +77,15 @@
   async function reportIssue() {
     try {
       await copy();
-      say("The report is copied. Paste it into the issue, or email it to admin@librepaper.org.");
+      say(m.diagnosticspanel_issue_copied());
     } catch (error) {
-      say(error?.message || "The report could not be copied.", true);
+      say(error?.message || m.diagnosticspanel_copy_failed(), true);
     }
   }
 
   async function openLogs() {
     try { await shellAction("open-logs"); say(""); }
-    catch (error) { say(error?.message || "The desktop app could not do that.", true); }
+    catch (error) { say(error?.message || m.diagnosticspanel_desktop_failed(), true); }
   }
 
   function toggled(event) {
@@ -94,22 +95,22 @@
 
 <div class="diagnostics" class:compact>
   <div class="diagnostics-buttons">
-    <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void copyReport()}>Copy diagnostics</button>
-    <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void download()}>Download</button>
-    <a href={ISSUES_URL} target="_blank" rel="noreferrer" class="btn btn-sm lp-control-tonal-brand" onclick={() => void reportIssue()}>Report an issue</a>
-    {#if inDesktop}<button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void openLogs()}>Open logs</button>{/if}
+    <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void copyReport()}>{m.diagnosticspanel_copy()}</button>
+    <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void download()}>{m.diagnosticspanel_download()}</button>
+    <a href={ISSUES_URL} target="_blank" rel="noreferrer" class="btn btn-sm lp-control-tonal-brand" onclick={() => void reportIssue()}>{m.diagnosticspanel_report_issue()}</a>
+    {#if inDesktop}<button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void openLogs()}>{m.diagnosticspanel_open_logs()}</button>{/if}
   </div>
-  <p class="setting-description">Diagnostics are copied locally. Nothing is sent automatically.</p>
+  <p class="setting-description">{m.diagnosticspanel_local_note()}</p>
   {#if buildLog}
     <label class="diagnostics-check">
       <input type="checkbox" bind:checked={includeBuildLog} />
-      <span>Include the build log (contains document text)</span>
+      <span>{m.diagnosticspanel_build_log()}</span>
     </label>
   {/if}
   {#if status}<p class="setting-description" class:diagnostics-error={failed} role="status">{status}</p>{/if}
   <details class="diagnostics-report" ontoggle={toggled}>
-    <summary>Show the report</summary>
-    <textarea class="setting-textarea" readonly rows="14" aria-label="Diagnostics report" bind:this={area} value={text}></textarea>
+    <summary>{m.diagnosticspanel_show_report()}</summary>
+    <textarea class="setting-textarea" readonly rows="14" aria-label={m.diagnosticspanel_report_label()} bind:this={area} value={text}></textarea>
   </details>
 </div>
 
