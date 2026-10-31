@@ -7,11 +7,12 @@
   import StatusPill from "./StatusPill.svelte";
   import * as desktopClient from "../../lib/desktop/client.js";
   import { splitArgs, joinArgs } from "../../lib/desktop/args.js";
+  import { m } from "../../lib/paraglide/messages.js";
 
   let { format, output } = $props();
 
-  const TITLES = { pdf: "PDF command", html: "HTML command", docx: "Word command" };
-  const HELP = "{input} is the main file and {stem} is its path without the extension. The command runs in the folder that holds the project files.";
+  const TITLES = { pdf: m.toolcommand_pdf(), html: m.toolcommand_html(), docx: m.toolcommand_docx() };
+  const HELP = m.toolcommand_help({ input: "{input}", stem: "{stem}" });
 
   let settingsError = $state("");
   let pendingDialogAction = $state(false);
@@ -39,10 +40,10 @@
       const loaded = (await desktopClient.manage("/state"))?.settings?.renderers?.[requestedKey];
       if (requestId !== loadId || requestedKey !== key) return;
       if (loaded) show(loaded);
-      else settingsError = "The desktop app has no command for this output.";
+      else settingsError = m.toolcommand_no_command();
     } catch (error) {
       if (requestId === loadId && requestedKey === key) {
-        settingsError = error?.message || "Could not load the desktop app settings.";
+        settingsError = error?.message || m.toolcommand_load_failed();
       }
     }
   }
@@ -70,8 +71,8 @@
     } catch (error) {
       if (requestId === loadId) {
         settingsError = error?.name === "Refused" && error?.status === 403
-          ? "The command was not changed."
-          : error?.message || "Could not change the command.";
+          ? m.toolcommand_not_changed()
+          : error?.message || m.toolcommand_change_failed();
       }
     } finally {
       if (requestId === loadId) pendingDialogAction = false;
@@ -85,28 +86,28 @@
   const unchanged = $derived(record !== null && joinArgs(splitArgs(editingCommand)) === joinArgs(record.command) && editingResult.trim() === record.result);
   const invalid = $derived(!splitArgs(editingCommand).length || !editingResult.trim());
   const status = $derived(record === null ? null
-    : record.found ? { label: record.version ? `Found · ${record.version}` : "Found", tone: "good" }
-    : { label: "Not found", tone: "warn" });
+    : record.found ? { label: record.version ? m.toolcommand_found_version({ version: record.version }) : m.toolcommand_found(), tone: "good" }
+    : { label: m.toolcommand_not_found(), tone: "warn" });
 </script>
 
 <SettingRow id={`render-${format}-${output}`} title={TITLES[output] || `${output} command`} description={HELP} stacked>
   <div class="tool-command">
     {#if status}<StatusPill label={status.label} tone={status.tone} />{/if}
-    <input class="input input-sm setting-input" type="text" spellcheck="false" aria-label={`${TITLES[output] || output} for ${format}`}
+    <input class="input input-sm setting-input" type="text" spellcheck="false" aria-label={m.toolcommand_aria_command({ title: TITLES[output] || output, format })}
            bind:value={editingCommand} oninput={() => savedFeedback = false} disabled={!canEdit} />
     <label class="tool-command-result">
-      <span class="setting-description">Result file</span>
-      <input class="input input-sm setting-input" type="text" spellcheck="false" aria-label={`Result file for ${format} ${output}`}
+      <span class="setting-description">{m.toolcommand_result_label()}</span>
+      <input class="input input-sm setting-input" type="text" spellcheck="false" aria-label={m.toolcommand_aria_result({ format, output })}
              bind:value={editingResult} oninput={() => savedFeedback = false} disabled={!canEdit} />
     </label>
     {#if settingsError}<p class="setting-description tool-command-error" role="alert">{settingsError}</p>{/if}
     <div class="setting-actions tool-command-actions">
-      <button type="button" class="btn btn-sm lp-control-brand" disabled={!canEdit || unchanged || invalid} onclick={() => void save()}>{pendingDialogAction ? "Saving…" : "Save"}</button>
-      <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={!canEdit || !record?.edited} onclick={() => void reset()}>Reset to default</button>
-      {#if savedFeedback}<span class="setting-feedback" role="status">Saved</span>{/if}
+      <button type="button" class="btn btn-sm lp-control-brand" disabled={!canEdit || unchanged || invalid} onclick={() => void save()}>{pendingDialogAction ? m.toolcommand_saving() : m.toolcommand_save()}</button>
+      <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={!canEdit || !record?.edited} onclick={() => void reset()}>{m.toolcommand_reset()}</button>
+      {#if savedFeedback}<span class="setting-feedback" role="status">{m.toolcommand_saved()}</span>{/if}
     </div>
     {#if pendingDialogAction}
-      <p class="setting-description">Confirm the change in the dialog on this computer.</p>
+      <p class="setting-description">{m.toolcommand_confirm_dialog()}</p>
     {/if}
   </div>
 </SettingRow>

@@ -1,17 +1,18 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
   import StatusPill from "./StatusPill.svelte";
+  import { m } from "../../lib/paraglide/messages.js";
   let { remoteConnected = false, remoteNote = "" } = $props();
-  const address = globalThis.location?.origin || "Unavailable";
+  const address = globalThis.location?.origin || m.remotesettings_unavailable();
 </script>
 
-<SettingRow id="remote-status" title="Remote connection" description={remoteNote || (remoteConnected
-  ? "This server syncs the shared project with collaborators."
-  : "Connection retries while this page is open.")}>
+<SettingRow id="remote-status" title={m.remotesettings_title()} description={remoteNote || (remoteConnected
+  ? m.remotesettings_connected()
+  : m.remotesettings_retrying())}>
   <div class="remote-control setting-actions">
     <code id="remote-address" class="setting-value">{address}</code>
-    <StatusPill label={remoteConnected ? "Connected" : "Disconnected"} tone={remoteConnected ? "good" : "neutral"}
-      accessibleLabel={`Remote connection ${remoteConnected ? "connected" : "disconnected"}`} />
+    <StatusPill label={remoteConnected ? m.remotesettings_status_connected() : m.remotesettings_status_disconnected()} tone={remoteConnected ? "good" : "neutral"}
+      accessibleLabel={remoteConnected ? m.remotesettings_aria_connected() : m.remotesettings_aria_disconnected()} />
   </div>
 </SettingRow>
 

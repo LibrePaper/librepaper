@@ -7,6 +7,7 @@
   import ToolCommand from "./ToolCommand.svelte";
   import { LOCAL_OUTPUTS, desktop } from "../../lib/desktop/client.js";
   import { defaults, read, update } from "../../lib/build-preferences.js";
+  import { m } from "../../lib/paraglide/messages.js";
 
   let { format, userId = "anonymous", onpreferences = undefined } = $props();
 
@@ -27,12 +28,12 @@
 
 {#if hasDesktop}
   {#if format !== "quarto"}
-    <SettingRow id={`render-${format}-where`} title="Renders in"
-                description={`${NAMES[format]} documents render in this browser, or on this computer while Run code is on.`}>
-      <select class="select setting-select" aria-label={`${NAMES[format]} renders in`} value={local ? "local" : "browser"}
+    <SettingRow id={`render-${format}-where`} title={m.renderersettings_title()}
+                description={m.renderersettings_description({ name: NAMES[format] })}>
+      <select class="select setting-select" aria-label={m.renderersettings_aria({ name: NAMES[format] })} value={local ? "local" : "browser"}
               onchange={(event) => choose(event.currentTarget.value)}>
-        <option value="browser">Browser</option>
-        <option value="local">This computer</option>
+        <option value="browser">{m.renderersettings_browser()}</option>
+        <option value="local">{m.renderersettings_this_computer()}</option>
       </select>
     </SettingRow>
   {/if}
@@ -40,6 +41,6 @@
     {#each LOCAL_OUTPUTS[format] as output (output)}
       <ToolCommand {format} {output} />
     {/each}
-    <p class="settings-section-note">The tool may download packages on its own.</p>
+    <p class="settings-section-note">{m.renderersettings_note()}</p>
   {/if}
 {/if}

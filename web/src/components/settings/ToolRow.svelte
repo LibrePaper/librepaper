@@ -5,6 +5,7 @@
   //
   // The `id` is what the search in the navigation scrolls to.
   import StatusPill from "./StatusPill.svelte";
+  import { m } from "../../lib/paraglide/messages.js";
 
   let { id = undefined, title, description = "", status = { label: "", tone: "neutral" }, actions = undefined, children = undefined } = $props();
   let open = $state(false);
@@ -23,7 +24,7 @@
       {#if status.label}<StatusPill label={status.label} tone={status.tone} />{/if}
       {@render actions?.()}
       {#if children}
-        <button type="button" class="btn btn-sm lp-control-tonal-brand tool-row-toggle" aria-expanded={open} aria-controls={detailsId} onclick={() => open = !open}>{open ? "Hide details" : "Details"}</button>
+        <button type="button" class="btn btn-sm lp-control-tonal-brand tool-row-toggle" aria-expanded={open} aria-controls={detailsId} onclick={() => open = !open}>{open ? m.toolrow_hide_details() : m.toolrow_details()}</button>
       {/if}
     </div>
   </div>

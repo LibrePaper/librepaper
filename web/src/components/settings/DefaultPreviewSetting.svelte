@@ -3,15 +3,16 @@
   // this browser. View > HTML and View > PDF change it for one visit only.
   import SettingRow from "./SettingRow.svelte";
   import { readDefaultPreview, writeDefaultPreview } from "../../lib/build-preferences.js";
+  import { m } from "../../lib/paraglide/messages.js";
 
   let { format, userId = "anonymous", onpreferences } = $props();
 
   const NAMES = { latex: "LaTeX", typst: "Typst", markdown: "Markdown", quarto: "Quarto" };
   const DESCRIPTIONS = {
-    latex: "Every LaTeX document opens on this preview. View > HTML and View > PDF switch it until you leave the project.",
-    typst: "Every Typst document opens on this preview. View > HTML and View > PDF switch it until you leave the project.",
-    markdown: "Every Markdown document opens on this preview. View > HTML and View > PDF switch it until you leave the project.",
-    quarto: "Every Quarto document opens on this preview. View > HTML and View > PDF switch it until you leave the project.",
+    latex: m.defaultpreview_description_latex(),
+    typst: m.defaultpreview_description_typst(),
+    markdown: m.defaultpreview_description_markdown(),
+    quarto: m.defaultpreview_description_quarto(),
   };
 
   const name = $derived(NAMES[format]);
@@ -26,8 +27,8 @@
   }
 </script>
 
-<SettingRow id={`render-${format}-preview`} title="Default preview" description={DESCRIPTIONS[format]}>
-  <select class="select setting-select" aria-label={`${name} default preview`} value={value}
+<SettingRow id={`render-${format}-preview`} title={m.defaultpreview_title()} description={DESCRIPTIONS[format]}>
+  <select class="select setting-select" aria-label={m.defaultpreview_aria({ name })} value={value}
           onchange={(event) => choose(event.currentTarget.value)}>
     <option value="html">HTML</option>
     <option value="pdf">PDF</option>

@@ -3,13 +3,14 @@
   import DesktopOnly from "../DesktopOnly.svelte";
   import { forgetCapabilities } from "../../lib/desktop/client.js";
   import { toolItems } from "../../lib/desktop/tools.js";
+  import { m } from "../../lib/paraglide/messages.js";
 
   // The page does not own the machine view; the dialog creates and starts it.
   let { view } = $props();
   const active = (status) => !["done", "complete", "completed", "succeeded", "failed", "error", "cancelled", "canceled", "stopped", "interrupted", "expired", "denied"].includes(String(status || "").toLowerCase());
 
   const DESCRIPTIONS = {
-    zotero: "Citations from your Zotero library.",
+    zotero: m.toolssettings_zotero_description(),
   };
 
   const connected = $derived(view.available);
@@ -20,21 +21,21 @@
 
   // The rescan also refreshes what the rest of the page knows about the tools.
   async function rescan() {
-    if (await view.act("rescan", "Tool scan complete.", "/tools/rescan", { method: "POST" })) forgetCapabilities();
+    if (await view.act("rescan", m.toolssettings_scan_complete(), "/tools/rescan", { method: "POST" })) forgetCapabilities();
   }
 
   function status(tool) {
-    if (!connected) return { label: "Not checked", tone: "neutral" };
-    if (tool?.available) return { label: tool.version ? `Available · ${tool.version}` : "Available", tone: "good" };
-    return { label: "Not found", tone: "warn" };
+    if (!connected) return { label: m.toolssettings_not_checked(), tone: "neutral" };
+    if (tool?.available) return { label: tool.version ? m.toolssettings_available_version({ version: tool.version }) : m.toolssettings_available(), tone: "good" };
+    return { label: m.toolssettings_not_found(), tone: "warn" };
   }
 
   function description(key, title, tool) {
     if (tool?.note) return tool.note;
     if (connected && !tool?.available) {
       return key === "zotero"
-        ? "Open Zotero and allow other applications to communicate with it (Zotero settings, Advanced)."
-        : `Install ${title} on this computer, then rescan.`;
+        ? m.toolssettings_zotero_open()
+        : m.toolssettings_install({ title });
     }
     return DESCRIPTIONS[key] || "";
   }
@@ -47,11 +48,11 @@
   function elapsed(item) {
     const seconds = typeof item.elapsed_seconds === "number" ? item.elapsed_seconds : (Date.now() - Date.parse(item.started_at || item.started || "")) / 1000;
     if (!Number.isFinite(seconds) || seconds < 0) return "";
-    return seconds < 60 ? `${Math.round(seconds)} s` : `${Math.floor(seconds / 60)} min ${Math.round(seconds % 60)} s`;
+    return seconds < 60 ? m.toolssettings_seconds({ count: Math.round(seconds) }) : m.toolssettings_minutes({ minutes: Math.floor(seconds / 60), seconds: Math.round(seconds % 60) });
   }
 </script>
 
-<DesktopOnly description="Render documents with the programs on your computer, run their code locally.">
+<DesktopOnly description={m.toolssettings_desktop_description()}>
 {#if view.error}
   <p class="setting-description desktop-error" role="alert">{view.error}</p>
 {/if}
@@ -65,8 +66,8 @@
 {#if view.available}
   <section id="tools-programs" class="settings-subsection" aria-labelledby="tools-programs-heading">
     <div class="settings-section-title">
-      <h4 class="settings-subhead" id="tools-programs-heading">Programs</h4>
-      <button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void rescan()}>{view.pending === "rescan" ? "Scanning…" : "Rescan"}</button>
+      <h4 class="settings-subhead" id="tools-programs-heading">{m.toolssettings_programs()}</h4>
+      <button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void rescan()}>{view.pending === "rescan" ? m.toolssettings_scanning() : m.toolssettings_rescan()}</button>
     </div>
     {#each tools as { key, title, tool } (key)}
       <ToolRow id={`tools-${key}`} {title} description={description(key, title, tool)} status={status(tool)} />
@@ -76,26 +77,26 @@
   {#if running}
     <section id="tools-activity" class="settings-subsection">
       <div class="settings-section-title">
-        <h4 class="settings-subhead">Activity</h4>
+        <h4 class="settings-subhead">{m.toolssettings_activity()}</h4>
       </div>
       <table class="desktop-table">
-        <thead><tr><th scope="col">Name</th><th scope="col">Elapsed</th><th scope="col">Status</th><th scope="col"><span class="sr-only">Action</span></th></tr></thead>
+        <thead><tr><th scope="col">{m.toolssettings_col_name()}</th><th scope="col">{m.toolssettings_col_elapsed()}</th><th scope="col">{m.toolssettings_col_status()}</th><th scope="col"><span class="sr-only">{m.toolssettings_col_action()}</span></th></tr></thead>
         <tbody>
           {#each jobs as job (job.id)}
             <tr>
-              <th scope="row">{[job.kind, job.stage].filter(Boolean).join(" · ") || "Local job"}</th>
+              <th scope="row">{[job.kind, job.stage].filter(Boolean).join(" · ") || m.toolssettings_local_job()}</th>
               <td>{elapsed(job)}</td>
-              <td>{job.status || "running"}{job.error ? ` · ${job.error}` : ""}</td>
-              <td class="desktop-action">{#if active(job.status)}<button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`job-${job.id}`, "Cancellation requested.", `/jobs/${view.id(job.id)}/cancel`, { method: "POST" })}>Cancel</button>{/if}</td>
+              <td>{job.status || m.toolssettings_running()}{job.error ? ` · ${job.error}` : ""}</td>
+              <td class="desktop-action">{#if active(job.status)}<button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`job-${job.id}`, m.toolssettings_cancel_requested(), `/jobs/${view.id(job.id)}/cancel`, { method: "POST" })}>{m.toolssettings_cancel()}</button>{/if}</td>
             </tr>
           {/each}
           {#each sessions as session (session.id)}
             {@const sessionStatus = session.status || session.state || "active"}
             <tr>
-              <th scope="row">{session.name || session.agent || session.id || "Agent session"}</th>
+              <th scope="row">{session.name || session.agent || session.id || m.toolssettings_agent_session()}</th>
               <td>{elapsed(session)}</td>
               <td>{sessionStatus}</td>
-              <td class="desktop-action">{#if active(sessionStatus)}<button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`session-${session.id}`, "Agent stop requested.", `/agents/sessions/${view.id(session.id)}/cancel`, { method: "POST" })}>Stop</button>{/if}</td>
+              <td class="desktop-action">{#if active(sessionStatus)}<button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`session-${session.id}`, m.toolssettings_stop_requested(), `/agents/sessions/${view.id(session.id)}/cancel`, { method: "POST" })}>{m.toolssettings_stop()}</button>{/if}</td>
             </tr>
           {/each}
         </tbody>
