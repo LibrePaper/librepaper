@@ -1,4 +1,5 @@
 import { forgetLocalData } from "./local-data.js";
+import { m } from "./paraglide/messages.js";
 import { CONFIG, read, write } from "./storage.js";
 
 // Talking to the server.
@@ -67,8 +68,8 @@ export function upload(form, { onprogress } = {}) {
         catch (error) { failed(error); }
       }),
     });
-    request.onerror = () => reject(new Error("The upload failed. Check your connection and try again."));
-    request.onabort = () => reject(new Error("The upload was interrupted."));
+    request.onerror = () => reject(new Error(m.api_upload_failed()));
+    request.onabort = () => reject(new Error(m.api_upload_interrupted()));
     request.send(form);
   });
 }

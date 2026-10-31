@@ -1,5 +1,7 @@
 // Matching and cache policy for bibliography completion. Parsing itself lives
 // in the engine WASM module; these helpers are also usable by check scripts.
+import { m } from "./paraglide/messages.js";
+
 const WORD = /[-\p{L}\p{N}_:.+]/u;
 const KEY = /^[-\p{L}\p{N}_:.+]*$/u;
 const string = (value) => value == null ? "" : String(value);
@@ -104,7 +106,7 @@ export function insertCitation(text, position, key, format = "markdown") {
 }
 export function entryLabel(entry) {
   const value = normalized(entry), names = surnames(value);
-  const author = names.length > 1 ? names[0] + " et al." : names[0] || "";
+  const author = names.length > 1 ? m.bibliography_et_al({ author: names[0] }) : names[0] || "";
   return [author, value.year, value.title, value.container].filter(Boolean).join(" — ");
 }
 export function entryDetail(entry) { const value = normalized(entry); return value.container || value.type || ""; }

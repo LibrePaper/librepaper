@@ -1,0 +1,23 @@
+{
+  "annotating_comment_label": "Comment",
+  "annotating_comment_title": "Comment on the selected passage",
+  "annotating_highlight_label": "Highlight",
+  "annotating_highlight_title": "Highlight, with no comment",
+  "annotation_colors_yellow": "Yellow",
+  "annotation_colors_green": "Green",
+  "annotation_colors_blue": "Blue",
+  "annotation_colors_pink": "Pink",
+  "annotation_colors_custom": "Custom",
+  "api_upload_failed": "The upload failed. Check your connection and try again.",
+  "api_upload_interrupted": "The upload was interrupted.",
+  "bibliography_et_al": "{author} et al.",
+  "file_manager_kind_change": "Renaming cannot change a text into a figure or a figure into a text.",
+  "file_manager_name_taken": "{path}: there is already a file or folder with that name",
+  "file_manager_file_parent": "{parent}: a file cannot contain other files",
+  "file_manager_folder_case": "{parent}: use the existing folder's capitalization",
+  "file_manager_item_changed": "{path}: this item changed or was removed. Select it again.",
+  "file_manager_move_inside": "A folder cannot be moved inside itself.",
+  "history_groups_today": "Today",
+  "history_groups_yesterday": "Yesterday",
+  "history_groups_earlier_in": "Earlier in {name}"
+}

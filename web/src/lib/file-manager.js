@@ -1,4 +1,5 @@
 import { checkDirectoryPath, checkPath, collisionKey, normalisePath } from "./paths.js";
+import { m } from "./paraglide/messages.js";
 
 export const basename = (path) => path.split("/").at(-1);
 export const parentPath = (path) => path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
@@ -83,16 +84,16 @@ export function checkPlacement(rules, entry, files, folders = []) {
   const path = normalisePath(entry.path);
   const answer = entry.kind === "folder" ? { error: checkDirectoryPath(rules, path) } : checkPath(rules, path);
   if (answer.error) throw new Error(answer.error);
-  if (entry.kind !== "folder" && answer.kind !== entry.kind) throw new Error("Renaming cannot change a text into a figure or a figure into a text.");
+  if (entry.kind !== "folder" && answer.kind !== entry.kind) throw new Error(m.file_manager_kind_change());
   const key = collisionKey(path);
   const dirs = folderPaths(files, folders);
   if (files.some((file) => collisionKey(file.path) === key) || dirs.some((dir) => collisionKey(dir) === key)) {
-    throw new Error(`${path}: there is already a file or folder with that name`);
+    throw new Error(m.file_manager_name_taken({ path }));
   }
   let parent = parentPath(path);
   while (parent) {
-    if (files.some((file) => collisionKey(file.path) === collisionKey(parent))) throw new Error(`${parent}: a file cannot contain other files`);
-    if (dirs.some((dir) => collisionKey(dir) === collisionKey(parent) && dir !== parent)) throw new Error(`${parent}: use the existing folder's capitalization`);
+    if (files.some((file) => collisionKey(file.path) === collisionKey(parent))) throw new Error(m.file_manager_file_parent({ parent }));
+    if (dirs.some((dir) => collisionKey(dir) === collisionKey(parent) && dir !== parent)) throw new Error(m.file_manager_folder_case({ parent }));
     parent = parentPath(parent);
   }
   return path;
@@ -104,11 +105,11 @@ export function relocation(files, explicit, entries, destination, rules, rename 
   const folders = folderPaths(files, explicit);
   for (const entry of roots) {
     const exists = entry.kind === "folder" ? folders.includes(entry.path) : files.some((file) => file.id === entry.id && file.kind === entry.kind && file.path === entry.path);
-    if (!exists) throw new Error(`${entry.path}: this item changed or was removed. Select it again.`);
+    if (!exists) throw new Error(m.file_manager_item_changed({ path: entry.path }));
   }
   const moves = roots.map((entry) => ({ entry, path: normalisePath(rename ? destination : [destination, basename(entry.path)].filter(Boolean).join("/")) }));
   for (const { entry, path } of moves) {
-    if (entry.kind === "folder" && inside(collisionKey(path), collisionKey(entry.path))) throw new Error("A folder cannot be moved inside itself.");
+    if (entry.kind === "folder" && inside(collisionKey(path), collisionKey(entry.path))) throw new Error(m.file_manager_move_inside());
   }
   const owner = (path) => moves.find(({ entry }) => path === entry.path || (entry.kind === "folder" && inside(path, entry.path)));
   const changedFiles = files.filter((file) => owner(file.path));

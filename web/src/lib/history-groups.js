@@ -8,6 +8,8 @@
 
 import { labelOrder } from "./history.js";
 import { day as dayOf } from "./dates.js";
+import { locale } from "./locale.js";
+import { m } from "./paraglide/messages.js";
 
 /// The thresholds the grouping reads. A caller overrides any of them by
 /// passing the same name in `options`.
@@ -283,14 +285,14 @@ export function periodTitle(period, today) {
   const { kind, value } = period;
   if (kind === "year") return value;
   if (kind === "day") {
-    if (value === today) return "Today";
-    if (value === shiftDay(today, -1)) return "Yesterday";
+    if (value === today) return m.history_groups_today();
+    if (value === shiftDay(today, -1)) return m.history_groups_yesterday();
     /** @type {Intl.DateTimeFormatOptions} */
     const options = { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" };
     if (value.slice(0, 4) !== today.slice(0, 4)) options.year = "numeric";
-    return new Date(`${value}T12:00:00Z`).toLocaleDateString([], options);
+    return new Date(`${value}T12:00:00Z`).toLocaleDateString(locale(), options);
   }
-  const name = new Date(`${value}-01T12:00:00Z`).toLocaleDateString([], { month: "long", timeZone: "UTC" });
-  if (kind === "rest") return `Earlier in ${name}`;
+  const name = new Date(`${value}-01T12:00:00Z`).toLocaleDateString(locale(), { month: "long", timeZone: "UTC" });
+  if (kind === "rest") return m.history_groups_earlier_in({ name });
   return value.slice(0, 4) === today.slice(0, 4) ? name : `${name} ${value.slice(0, 4)}`;
 }
