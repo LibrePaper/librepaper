@@ -8,7 +8,7 @@
 
   let { compact = false } = $props();
 
-  const ISSUES_URL = "https://github.com/LibrePaper/librepaper/issues/new";
+  import { ISSUES_URL } from "../../lib/site-links.js";
 
   let includeBuildLog = $state(false);
   let text = $state("");

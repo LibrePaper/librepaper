@@ -1066,6 +1066,7 @@
   "generalsettings_paper_theme": "テーマに合わせる",
   "generalsettings_preview_paper": "プレビューの用紙",
   "generalsettings_preview_paper_description": "ダークモードでは、HTMLプレビューを暗い用紙で表示できます。常にライトにすると、エクスポートしたHTMLを読む人が見るとおりに表示されます。",
+  "generalsettings_report_translation": "翻訳の問題を報告",
   "generalsettings_theme": "テーマ",
   "generalsettings_theme_dark": "ダーク",
   "generalsettings_theme_light": "ライト",

@@ -1066,6 +1066,7 @@
   "generalsettings_paper_theme": "跟随主题",
   "generalsettings_preview_paper": "预览纸张",
   "generalsettings_preview_paper_description": "深色模式下，HTML 预览可以显示在深色纸张上。“始终浅色”会按导出 HTML 的读者所见的样子显示页面。",
+  "generalsettings_report_translation": "报告翻译问题",
   "generalsettings_theme": "主题",
   "generalsettings_theme_dark": "深色",
   "generalsettings_theme_light": "浅色",

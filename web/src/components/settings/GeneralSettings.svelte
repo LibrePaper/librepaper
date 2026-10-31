@@ -5,10 +5,20 @@
   import { choice, onChoice, setChoice, PALETTES, PALETTE_NAMES, palette, onPalette, setPalette, PAPERS, paper, onPaper, setPaper } from "../../lib/theme.js";
   import DiagnosticsPanel from "./DiagnosticsPanel.svelte";
   import { desktop, shellAction } from "../../lib/desktop/client.js";
-  import { LANGUAGES, chosenLanguage, chooseLanguage } from "../../lib/locale.js";
+  import { LANGUAGES, chosenLanguage, chooseLanguage, locale } from "../../lib/locale.js";
+  import { ISSUES_URL } from "../../lib/site-links.js";
   import { m } from "../../lib/paraglide/messages.js";
 
   const language = chosenLanguage();
+
+  // A wrong or awkward translation goes to the issue tracker as a new issue,
+  // already titled with the language it is in. The questions stay in English,
+  // because whoever fixes the catalogue reads them.
+  const translationIssue = (() => {
+    const tag = locale();
+    const body = `Language: ${tag}\n\nWhere it appears:\n\nWhat it says now:\n\nWhat it should say:\n`;
+    return `${ISSUES_URL}?title=${encodeURIComponent(`Translation (${tag}): `)}&body=${encodeURIComponent(body)}`;
+  })();
 
   // Follows the choice, which another tab of this browser may make too.
   let current = $state(choice());
@@ -44,6 +54,7 @@
       <option value={code} lang={code}>{name}</option>
     {/each}
   </select>
+  {#snippet note()}<a class="translation-report" href={translationIssue} target="_blank" rel="noreferrer">{m.generalsettings_report_translation()}</a>{/snippet}
 </SettingRow>
 
 <SettingRow id="appearance-theme" title={m.generalsettings_theme()}>
@@ -89,6 +100,12 @@
 <section id="diagnostics-report" class="settings-subsection"><DiagnosticsPanel /></section>
 
 <style>
+  .translation-report {
+    color: var(--color-brand);
+    font-size: var(--panel-meta-size);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
   .close-error {
     color: var(--panel-muted);
     font-size: var(--panel-meta-size);

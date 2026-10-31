@@ -1066,6 +1066,7 @@
   "generalsettings_paper_theme": "Follow theme",
   "generalsettings_preview_paper": "Preview paper",
   "generalsettings_preview_paper_description": "Dark mode can show HTML previews on dark paper. Always light shows the page as readers of the exported HTML see it.",
+  "generalsettings_report_translation": "Report a translation problem",
   "generalsettings_theme": "Theme",
   "generalsettings_theme_dark": "Dark",
   "generalsettings_theme_light": "Light",

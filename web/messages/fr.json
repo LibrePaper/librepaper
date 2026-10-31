@@ -1066,6 +1066,7 @@
   "generalsettings_paper_theme": "Suivre le thème",
   "generalsettings_preview_paper": "Papier de l’aperçu",
   "generalsettings_preview_paper_description": "Le mode sombre peut afficher les aperçus HTML sur un papier sombre. « Toujours clair » affiche la page telle que la voient les lecteurs du HTML exporté.",
+  "generalsettings_report_translation": "Signaler un problème de traduction",
   "generalsettings_theme": "Thème",
   "generalsettings_theme_dark": "Sombre",
   "generalsettings_theme_light": "Clair",

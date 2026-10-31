@@ -1066,6 +1066,7 @@
   "generalsettings_paper_theme": "Seguir el tema",
   "generalsettings_preview_paper": "Papel de la vista previa",
   "generalsettings_preview_paper_description": "El modo oscuro puede mostrar las vistas previas HTML sobre papel oscuro. Siempre claro muestra la página tal como la ven los lectores del HTML exportado.",
+  "generalsettings_report_translation": "Informar de un problema de traducción",
   "generalsettings_theme": "Tema",
   "generalsettings_theme_dark": "Oscuro",
   "generalsettings_theme_light": "Claro",
