@@ -1,22 +1,68 @@
-\documentclass{book}
+\documentclass[11pt,a4paper,openright,headings=optiontoc]{scrbook}
+
+% Fonts and typography
 \usepackage[T1]{fontenc}
-\usepackage{amsmath}
+\usepackage{lmodern}
+\usepackage{microtype}
+
+% Mathematics and tables
+\usepackage{amsmath,amssymb}
 \usepackage{booktabs}
 
+% Citations: \citet{key} gives Author (Year), \citep{key} gives (Author, Year)
+\usepackage[round,authoryear]{natbib}
+
+% Links, then cross-references (cleveref must load after hyperref)
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=green!40!black,urlcolor=blue!50!black]{hyperref}
+\usepackage[capitalise,noabbrev]{cleveref}
+
+% Running heads: chapter title on the left, page number on the right
+\usepackage{scrlayer-scrpage}
+\pagestyle{scrheadings}
+\clearpairofpagestyles
+\ihead{\headmark}
+\ohead{\pagemark}
+
+% Edit the title block below
 \title{{{title}}}
+\subtitle{A short description of the book}
 \author{{{author}}}
+\publishers{Department of Statistics, University of Example}
+\date{\today}
 
 \begin{document}
 
+\frontmatter
 \maketitle
 
+\cleardoublepage
+\thispagestyle{empty}
+\vspace*{\fill}
+\begin{center}
+  \itshape For the students and colleagues who read the early drafts.
+\end{center}
+\vspace{\fill}
+
+\cleardoublepage
 \tableofcontents
 
-\include{chapters/01-introduction}
-\include{chapters/02-content}
-\include{chapters/03-conclusion}
+\addchap{Preface}
 
-\bibliographystyle{plain}
+This book collects the chapters of a single project in one place. Each chapter lives in its own file under \texttt{chapters/}, so you can write and revise them separately. The preface explains the aim, the reader and the way the chapters fit together.
+
+\mainmatter
+
+\include{chapters/01-introduction}
+\include{chapters/02-methods}
+\include{chapters/03-results}
+
+\appendix
+\include{chapters/appendix}
+
+\backmatter
+
+\bibliographystyle{plainnat}
 \bibliography{references}
 
 \end{document}

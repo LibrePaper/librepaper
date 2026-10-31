@@ -1,70 +1,104 @@
-\documentclass[12pt]{article}
+% Problem set with solutions. The `answers` option prints the solutions.
+% Remove `answers` to hide them and print a blank assignment.
+\documentclass[11pt,addpoints,answers]{exam}
+
 \usepackage[T1]{fontenc}
-\usepackage{amsmath}
-\usepackage{amssymb}
+\usepackage{amsmath,amssymb}
+\usepackage[margin=1in]{geometry}
 
-\newcommand{\problem}[2]{
-  \noindent\textbf{Problem #1} \hfill (#2 points)\\
-}
-
-\title{Homework Assignment}
-\author{{{author}}}
-\date{}
+% Header and footer. The first page has its own header.
+\pagestyle{headandfoot}
+\firstpageheader{Course 101}{Problem Set 3}{Due: Friday, 11:59 pm}
+\runningheader{Course 101}{Problem Set 3}{Due: Friday, 11:59 pm}
+\firstpagefooter{}{Page \thepage}{}
+\runningfooter{}{Page \thepage}{}
 
 \begin{document}
 
-\maketitle
+\begin{center}
+  {\Large\bfseries {{title}}}\\[0.6em]
+  Student: {{author}}
+\end{center}
 
-\noindent\textbf{Assignment:} {{title}}
+\vspace{0.5em}
+
+\begin{questions}
+
+  % Parts take their own points; the question total is the sum of its parts.
+  \question[10] Let $f(x) = x^3 - 6x^2 + 9x$.
+  \begin{parts}
+    \part[4] Find the critical points of $f$.
+    \begin{solution}
+      $f'(x) = 3x^2 - 12x + 9 = 3(x-1)(x-3)$, so the critical points are $x = 1$ and $x = 3$.
+    \end{solution}
+
+    \part[3] Classify each critical point as a local maximum or a local minimum.
+    \begin{solution}
+      $f''(x) = 6x - 12$. Since $f''(1) = -6 < 0$, $x = 1$ is a local maximum.
+      Since $f''(3) = 6 > 0$, $x = 3$ is a local minimum.
+    \end{solution}
+
+    \part[3] Explain why $f$ has no absolute maximum on the whole real line.
+    \begin{solution}
+      As $x \to \infty$, $f(x) \to \infty$, so $f$ is unbounded above and no
+      value of $f$ is largest.
+    \end{solution}
+  \end{parts}
+
+  % Multiple choice: \CorrectChoice marks the answer shown in the solutions.
+  \question[5] Which statement about the sample variance $s^2$ is correct?
+  \begin{choices}
+    \choice It divides the sum of squared deviations by $n$.
+    \CorrectChoice It divides the sum of squared deviations by $n-1$, which makes it an unbiased estimator of $\sigma^2$.
+    \choice It is unaffected by a single extreme value.
+    \choice It is always negative.
+  \end{choices}
+  \begin{solution}
+    The denominator $n-1$ corrects for the fact that the deviations are
+    measured from the sample mean, which uses up one degree of freedom.
+  \end{solution}
+
+  \question[12] Calls to a support line arrive as a Poisson process at a rate of
+  3 per minute. Let $X$ be the number of calls in one minute.
+  \begin{parts}
+    \part[4] Compute $P(X = 0)$.
+    \begin{solution}
+      $P(X = 0) = e^{-3} \approx 0.0498$.
+    \end{solution}
+
+    \part[4] Compute $P(X \geq 2)$.
+    \begin{solution}
+      $P(X \geq 2) = 1 - P(X = 0) - P(X = 1) = 1 - 4e^{-3} \approx 0.801$.
+    \end{solution}
+
+    \part[4] Find the mean and the variance of the number of calls in a two-minute interval.
+    \begin{solution}
+      The count in two minutes is Poisson with mean $6$, so the mean and the
+      variance are both $6$.
+    \end{solution}
+  \end{parts}
+
+  \question[10] Prove that the sum of two even integers is even. Write your
+  proof in full sentences.
+  \begin{solution}
+    Let $a = 2m$ and $b = 2n$ for integers $m$ and $n$. Then
+    $a + b = 2(m+n)$, which is twice the integer $m+n$, so $a+b$ is even.
+  \end{solution}
+
+  % Bonus points are counted separately from the regular total.
+  \bonusquestion[5] For a Poisson random variable $X$ with mean $\lambda$, show that $E[X] = \lambda$.
+  \begin{solution}
+    \[
+      E[X] = \sum_{k=0}^{\infty} k\,\frac{e^{-\lambda}\lambda^k}{k!}
+      = \lambda e^{-\lambda} \sum_{k=1}^{\infty} \frac{\lambda^{k-1}}{(k-1)!}
+      = \lambda e^{-\lambda} e^{\lambda} = \lambda.
+    \]
+  \end{solution}
+
+\end{questions}
 
 \vspace{1em}
 
-\problem{1}{10}
-
-Solve the following equation:
-\[
-  x^2 + 3x + 2 = 0
-\]
-\begin{enumerate}
-\item[(a)] Find the roots of this quadratic equation.
-\vspace{2cm}
-\item[(b)] Verify your solutions by substituting back into the original equation.
-\vspace{2cm}
-\end{enumerate}
-
-\problem{2}{8}
-
-Calculate the derivative of the function:
-\[
-  f(x) = 3x^3 - 2x^2 + x - 5
-\]
-Show your work step by step.
-\vspace{3cm}
-
-\problem{3}{7}
-
-Evaluate the definite integral:
-\[
-  \int_0^2 (2x + 1) \, dx
-\]
-\begin{enumerate}
-\item[(a)] Set up the integral.
-\vspace{1cm}
-\item[(b)] Compute the antiderivative.
-\vspace{1cm}
-\item[(c)] Evaluate using the fundamental theorem of calculus.
-\vspace{2cm}
-\end{enumerate}
-
-\problem{4}{5}
-
-Multiple choice: Which of the following is true?
-\begin{enumerate}
-\item[(a)] All prime numbers are odd.
-\item[(b)] The sum of any two even numbers is even.
-\item[(c)] Every positive integer is a prime number.
-\item[(d)] Zero is a positive number.
-\end{enumerate}
-\vspace{2cm}
+\gradetable[h][questions]
 
 \end{document}

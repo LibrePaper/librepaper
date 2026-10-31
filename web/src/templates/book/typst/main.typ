@@ -1,33 +1,27 @@
-#let title = "{{title}}"
-#let author = "{{author}}"
+#import "@preview/ilm:2.1.1": ilm
 
-#set document(title: title, author: author)
-#set page(numbering: "1")
-#set heading(numbering: "1.1")
+// Edit the title and author below. Chapters live in chapters/.
+#show: ilm.with(
+  title: "{{title}}",
+  authors: "{{author}}",
+  abstract: [A short description of the book: the question it asks, the method it uses and who it is for.],
+  preface: [
+    #heading(level: 1, numbering: none)[Preface]
 
-#align(center, text(size: 28pt, weight: "bold", [#title]))
-
-#align(center, text(size: 14pt, [by #author]))
-
-#pagebreak()
-
-#outline(
-  title: [Contents],
-  indent: auto,
+    This book collects the chapters of a single project in one place. Each chapter lives in its own file under `chapters/`, so you can write and revise them separately. The preface explains the aim, the reader and the way the chapters fit together.
+  ],
+  raw-text: "use-typst-default",
+  appendix: (
+    enabled: true,
+    title: "Appendix",
+    heading-numbering-format: "A.1.1.",
+    body: [#include "chapters/appendix.typ"],
+  ),
+  bibliography: bibliography("references.bib"),
 )
-
-#pagebreak()
 
 #include "chapters/01-introduction.typ"
 
-#pagebreak()
+#include "chapters/02-methods.typ"
 
-#include "chapters/02-main-content.typ"
-
-#pagebreak()
-
-#include "chapters/03-conclusion.typ"
-
-#pagebreak()
-
-#bibliography("references.bib", style: "american-psychological-association")
+#include "chapters/03-results.typ"
