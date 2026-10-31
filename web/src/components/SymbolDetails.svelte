@@ -2,6 +2,7 @@
   import Icon from "./Icon.svelte";
   import SymbolTile from "./SymbolTile.svelte";
   import { entrySpellings } from "../lib/symbols/catalog.js";
+  import { m } from "../lib/paraglide/messages.js";
 
   // The row under the grid that names the highlighted symbol, lists how it is
   // spelled in the open format, and holds the favorite toggle. The star is the
@@ -17,7 +18,7 @@
 
 <div class="details">
   {#if !entry}
-    <p class="empty">Hover or focus a symbol to see its name and spelling.</p>
+    <p class="empty">{m.symboldetails_empty()}</p>
   {:else}
     <SymbolTile symbol={entry} {format} large />
     <div class="text">
@@ -26,11 +27,11 @@
         {#each spellings as spelling (spelling.label)}
           <span class="spelling"><span class="label">{spelling.label}</span> <code>{spelling.code}</code></span>
         {/each}
-        {#if entry.package}<span class="hint">Needs {entry.package}</span>{/if}
-        {#if !available}<span class="hint">Not available in HTML</span>{/if}
+        {#if entry.package}<span class="hint">{m.symboldetails_needs_package({ pkg: entry.package })}</span>{/if}
+        {#if !available}<span class="hint">{m.symboldetails_not_in_html()}</span>{/if}
       </span>
     </div>
-    <button type="button" class="star" class:on={favorite} aria-pressed={favorite} aria-label="Favorite" onclick={() => ontogglefavorite?.(entry)}>
+    <button type="button" class="star" class:on={favorite} aria-pressed={favorite} aria-label={m.symboldetails_favorite_label()} onclick={() => ontogglefavorite?.(entry)}>
       <Icon name="star" size={16} filled={favorite} />
     </button>
   {/if}

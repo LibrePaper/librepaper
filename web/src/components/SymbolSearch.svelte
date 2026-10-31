@@ -1,6 +1,7 @@
 <script>
   import SymbolTile from "./SymbolTile.svelte";
   import { CATEGORIES, searchSymbols } from "../lib/symbols/index.js";
+  import { m } from "../lib/paraglide/messages.js";
 
   // A search field over a list of symbols, with the matches as tiles. The
   // palette uses it for the whole sidebar search, and the math forms use it
@@ -12,7 +13,7 @@
     symbols = [],
     format = "latex",
     onpick = undefined,
-    placeholder = "Search symbols",
+    placeholder = m.symbolsearch_placeholder(),
     autofocus = false,
     grouped = false,
     query = $bindable(""),
@@ -69,7 +70,7 @@
   {#if trimmed}
     <div class="results">
       {#if !results.length}
-        <p class="panel-muted">No symbols match "{trimmed}".</p>
+        <p class="panel-muted">{m.symbolsearch_no_match({ query: trimmed })}</p>
       {:else if grouped}
         {#each groups as group (group.id)}
           <p class="group-label">{group.label}</p>

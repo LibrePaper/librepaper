@@ -5,6 +5,7 @@
   import { loadEmoji, searchSymbols } from "../lib/symbols/index.js";
   import { PICKER_CATEGORIES, PICKER_SYMBOLS, entryAvailable, entryInsertion, entrySpellings } from "../lib/symbols/catalog.js";
   import { readRecent, readFavorites, withRecent, withFavorite, saveRecent, saveFavorites } from "../lib/symbols/memory.js";
+  import { m } from "../lib/paraglide/messages.js";
 
   /** @typedef {"html" | "quarto" | "markdown" | "latex" | "typst"} SymbolFormat */
 
@@ -74,15 +75,15 @@
   const sections = $derived.by(() => {
     /** @type {{ label: string, entries: any[] }[]} */
     let runs;
-    if (searching) runs = [{ label: "Results", entries: results }];
+    if (searching) runs = [{ label: m.symbolpalette_results(), entries: results }];
     else if (tab === "recent") runs = [{ label: categoryLabel, entries: recent.map((id) => byId.get(id)).filter(Boolean) }];
     else if (tab === "favorites") runs = [{ label: categoryLabel, entries: favorites.map((id) => byId.get(id)).filter(Boolean) }];
     else if (tab === "emoji") runs = [{ label: categoryLabel, entries: emoji ? emoji.symbols.filter((entry) => entry.group === activeGroup) : [] }];
     else if (tab === "delimiters") {
       const all = inCategory("delimiters");
       runs = [
-        { label: "Pairs", entries: all.filter((entry) => entry.kind === "pair") },
-        { label: "Single", entries: all.filter((entry) => entry.kind !== "pair") },
+        { label: m.symbolpalette_pairs(), entries: all.filter((entry) => entry.kind === "pair") },
+        { label: m.symbolpalette_single(), entries: all.filter((entry) => entry.kind !== "pair") },
       ];
     } else runs = [{ label: categoryLabel, entries: inCategory(tab) }];
     let offset = 0;
@@ -96,9 +97,9 @@
   const activeIndex = $derived(Math.min(active, Math.max(total - 1, 0)));
 
   const emptyText = $derived.by(() => {
-    if (searching) return `No symbols match "${trimmed}". Try a name like alpha, a command like \\alpha, or the character itself.`;
-    if (tab === "recent") return "Symbols you insert appear here.";
-    if (tab === "favorites") return "Star a symbol in the details row to keep it here.";
+    if (searching) return m.symbolpalette_no_match({ query: trimmed });
+    if (tab === "recent") return m.symbolpalette_empty_recent();
+    if (tab === "favorites") return m.symbolpalette_empty_favorites();
     return "";
   });
 
@@ -159,11 +160,11 @@
   function pick(entry, event) {
     const context = getContext?.();
     if (!context) {
-      note = "Open a file you can edit to insert symbols.";
+      note = m.symbolpalette_open_file_first();
       return;
     }
     if (!entryAvailable(entry, context.format)) {
-      note = "Not available in HTML.";
+      note = m.symbolpalette_not_in_html();
       oncancel?.(context);
       return;
     }
@@ -330,11 +331,11 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="symbol-palette" bind:this={root} onkeydown={onrootkeydown}>
-  <input bind:this={input} class="input" type="search" placeholder="Search symbols" aria-label="Search symbols"
+  <input bind:this={input} class="input" type="search" placeholder={m.symbolpalette_search_placeholder()} aria-label={m.symbolpalette_search_placeholder()}
     bind:value={query} oninput={onsearchinput} onkeydown={onsearchkeydown} />
 
   <div class="body">
-    <nav class="categories" aria-label="Symbol categories">
+    <nav class="categories" aria-label={m.symbolpalette_categories_label()}>
       {#each PICKER_CATEGORIES as category (category.id)}
         <button type="button" class="category" class:current={!searching && tab === category.id}
           aria-current={tab === category.id ? "true" : undefined} onclick={() => chooseTab(category.id)}>
@@ -351,15 +352,15 @@
 
     <div class="content">
       {#if noticeShown}
-        <p class="panel-muted notice">Emoji in LaTeX need LuaLaTeX and the emoji package, which is added on insert.</p>
+        <p class="panel-muted notice">{m.symbolpalette_emoji_latex_notice()}</p>
       {/if}
       {#if note}<p class="panel-muted notice" role="status">{note}</p>{/if}
 
       {#if tab === "emoji" && !searching}
         {#if !emoji}
-          <p class="panel-muted" role="status">Loading emoji...</p>
+          <p class="panel-muted" role="status">{m.symbolpalette_loading_emoji()}</p>
         {:else}
-          <div class="group-strip" role="group" aria-label="Emoji groups">
+          <div class="group-strip" role="group" aria-label={m.symbolpalette_emoji_groups_label()}>
             {#each emoji.groups as group (group.id)}
               <button type="button" class="btn btn-sm lp-control-tonal-brand" aria-pressed={group.id === activeGroup}
                 onclick={() => { emojiGroup = group.id; active = 0; }}>{group.label}</button>
