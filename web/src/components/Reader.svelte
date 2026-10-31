@@ -4334,7 +4334,7 @@
 
   <!-- A separator only where there are two things to separate. -->
   {#if shown.source && shown.document}
-    <Grip pane={PANES.editor} label="Split between the editor and the document" panes={panes}
+    <Grip pane={PANES.editor} label={m.readerd_grip_split()} panes={panes}
           controls="reader-source"
           onsize={(size) => setSize(PANES.editor, size)}
           onguide={(where) => (guide = where)}
@@ -4461,7 +4461,7 @@
   {:else if shown.document && noCompiler}
     <section class="latexpane">
       <div class="notyet">
-        <h2 class="h4">Not rendered</h2>
+        <h2 class="h4">{m.readerd_not_rendered()}</h2>
         <p class="lp-text-secondary text-sm">
           {m.readerd_browser_cannot_render_paged({ kind: sourceFormat === "typst" ? "Typst" : m.readerd_paged() })}
         </p>

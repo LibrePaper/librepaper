@@ -16,7 +16,7 @@
     captureAttachment, capabilityAllows, diagnosticLabel,
     normalizeCapabilities, scopeLabel, visibleResults,
     TASK_CATEGORIES, findTask, frequentTasks, inferScope, recordTaskUse, searchTasks, taskBlocker, taskForKind,
-    taskHint, taskPrompt, taskScopes, taskSections,
+    taskCategoryLabel, taskHint, taskPrompt, taskScopes, taskSections,
   } from "../../lib/assistant.js";
   import { humanizeTool, permissionAction, permissionButtons } from "../../lib/agent-permission.js";
   import { m } from "../../lib/paraglide/messages.js";
@@ -1023,7 +1023,7 @@
             {@const open = expanded.includes(section.category)}
             <button class="task-section" data-category={section.category} aria-expanded={open}
                     aria-controls={`task-section-${index}`} onclick={() => toggleSection(section.category)}>
-              <span class="task-chevron" aria-hidden="true">▸</span><span class="task-section-name">{section.category}</span><span class="task-count">{section.entries.length}</span>
+              <span class="task-chevron" aria-hidden="true">▸</span><span class="task-section-name">{taskCategoryLabel(section.category)}</span><span class="task-count">{section.entries.length}</span>
             </button>
             <ul class="task-list" id={`task-section-${index}`} data-category={section.category}>
               {#if open}{#each section.entries as entry (entry.id)}{@render taskRow(entry, section.category)}{/each}{/if}
