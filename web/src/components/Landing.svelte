@@ -45,6 +45,7 @@
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
   import { readDefaultPreview } from "../lib/build-preferences.js";
   import { warmReader } from "../lib/warm-reader.js";
+  import { m } from "../lib/paraglide/messages.js";
 
   let { initialSettings = "" } = $props();
   const preferences = createPreferences();
@@ -189,14 +190,14 @@
     // literal inferred from its first two entries refuses every later one.
     const list = /** @type {Record<string, any>[]} */ ([
       { key: "mark", label: "", width: 44, resizable: false },
-      { key: "title", label: "Project", sortable: true, min: 160, resizable: !narrow },
+      { key: "title", label: m.landing_column_project(), sortable: true, min: 160, resizable: !narrow },
     ]);
-    if (!narrow && !cramped) list.push({ key: "owner", label: "Owner", sortable: true, width: 210, min: 120 });
-    if (!trash && !narrow && !cramped) list.push({ key: "files", label: "Files", sortable: true, width: 90, min: 60 });
+    if (!narrow && !cramped) list.push({ key: "owner", label: m.landing_column_owner(), sortable: true, width: 210, min: 120 });
+    if (!trash && !narrow && !cramped) list.push({ key: "files", label: m.landing_column_files(), sortable: true, width: 90, min: 60 });
     if (!narrow) {
       list.push({
         key: "updated",
-        label: trash ? "Deleted" : place === "recent" ? "Opened" : "Updated",
+        label: trash ? m.landing_column_deleted() : place === "recent" ? m.landing_column_opened() : m.landing_column_updated(),
         sortable: true,
         width: 130,
         min: 90,
@@ -362,20 +363,20 @@
   // listed as groupings in the rail and the menus.
   const userTags = $derived(tags.filter((tag) => !tag.builtin));
   const activeTag = $derived(tags.find((tag) => tag.id === tagId));
-  const placeName = $derived(place === "tag" ? (activeTag?.name || "Projects") : PLACE_NAMES[place]);
+  const placeName = $derived(place === "tag" ? (activeTag?.name || m.landing_projects()) : PLACE_NAMES[place]);
 
   function nothingHere() {
-    if (needle) return "No projects match that search.";
-    if (place === "tag") return `Nothing is tagged ${activeTag?.name ?? ""} yet. Add this tag from a project's menu.`;
+    if (needle) return m.landing_no_match();
+    if (place === "tag") return m.landing_nothing_tagged({ name: activeTag?.name ?? "" });
     return {
       projects: me.can_publish
-        ? "No projects yet. Make one, then drop your files into it."
-        : "No projects yet.",
-      recent: "Nothing opened yet. A project you open shows up here.",
-      shared: "Nothing shared with you yet. A project opened from somebody's link lands here.",
-      favorites: "No favorites yet. Star a project to keep it here.",
-      trash: "The trash is empty.",
-      templates: "No templates yet. Open a project and choose File > Save as template.",
+        ? m.landing_no_projects_publish()
+        : m.landing_no_projects(),
+      recent: m.landing_nothing_opened(),
+      shared: m.landing_nothing_shared(),
+      favorites: m.landing_no_favorites(),
+      trash: m.landing_trash_empty(),
+      templates: m.landing_no_templates(),
     }[place];
   }
 
@@ -479,8 +480,8 @@
   // the tag is, the star included.
   async function setTag(doc, id, on) {
     if (await queueTag(doc, id, on)) return;
-    if (id === "favorites") say("That star could not be saved.", { kind: "problem", id: "landing:favorite" });
-    else say("That tag could not be saved.", { kind: "problem", id: `landing:tag:${doc.slug}` });
+    if (id === "favorites") say(m.landing_star_failed(), { kind: "problem", id: "landing:favorite" });
+    else say(m.landing_tag_save_failed(), { kind: "problem", id: `landing:tag:${doc.slug}` });
   }
 
   // The same change to several projects. Each goes through its own queue, and
@@ -490,7 +491,7 @@
     const saved = await Promise.all(changed.map((doc) => queueTag(doc, id, on)));
     const failed = saved.filter((each) => !each).length;
     if (failed) {
-      say(`${failed} project${failed === 1 ? "" : "s"} could not be tagged.`, { kind: "problem", id: "landing:tag-many" });
+      say(m.landing_tag_many_failed({ count: failed }), { kind: "problem", id: "landing:tag-many" });
     }
   }
 
@@ -531,7 +532,7 @@
     const docs = tagFor;
     if (!docs) return;
     if (!name) {
-      tagError = "Give the tag a name.";
+      tagError = m.landing_tag_name_required();
       return;
     }
     try {
@@ -541,7 +542,7 @@
         body: JSON.stringify({ name, colour: tagShade }),
       });
       if (!response.ok) {
-        tagError = (await response.json().catch(() => ({}))).error || "That tag could not be created.";
+        tagError = (await response.json().catch(() => ({}))).error || m.landing_tag_create_failed();
         return;
       }
       const { tag } = await response.json();
@@ -549,7 +550,7 @@
       tagFor = null;
       if (docs.length) await setTagOnMany(docs, tag.id, true);
     } catch (error) {
-      tagError = error?.message || "That tag could not be created.";
+      tagError = error?.message || m.landing_tag_create_failed();
     }
   }
 
@@ -602,14 +603,14 @@
     const name = input.value.trim();
     if (!name) {
       input.value = tags.find((each) => each.id === tag.id)?.name ?? tag.name;
-      say("Give the tag a name.", { kind: "problem", id: "landing:tag-rename" });
+      say(m.landing_tag_name_required(), { kind: "problem", id: "landing:tag-rename" });
       return;
     }
-    editTag(tag.id, "name", name, "That tag could not be renamed.", "landing:tag-rename");
+    editTag(tag.id, "name", name, m.landing_tag_rename_failed(), "landing:tag-rename");
   }
 
   function recolourTag(tag, colour) {
-    editTag(tag.id, "colour", colour, "That colour could not be saved.", "landing:tag-colour");
+    editTag(tag.id, "colour", colour, m.landing_colour_failed(), "landing:tag-colour");
   }
 
   // Deleting a tag takes it off every project and leaves the projects
@@ -620,15 +621,15 @@
     if (!tag) return;
     try {
       const response = await fetch(`/api/tags/${tag.id}`, { method: "DELETE", headers: SHELL_HEADERS });
-      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "That tag could not be deleted.");
+      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || m.landing_tag_delete_failed());
       tags = tags.filter((each) => each.id !== tag.id);
       for (const doc of documents) {
         if (hasTag(doc, tag.id)) doc.tags = doc.tags.filter((id) => id !== tag.id);
       }
       if (place === "tag" && tagId === tag.id) goTo("projects");
-      say(`${tag.name} was deleted. Its projects are still here.`, { id: "landing:tag-deleted" });
+      say(m.landing_tag_deleted({ name: tag.name }), { id: "landing:tag-deleted" });
     } catch (error) {
-      say(error?.message || "That tag could not be deleted.", { kind: "problem", id: "landing:tag-delete" });
+      say(error?.message || m.landing_tag_delete_failed(), { kind: "problem", id: "landing:tag-delete" });
     }
   }
 
@@ -642,17 +643,17 @@
       });
       if (!response.ok) {
         const detail = (await response.json().catch(() => ({}))).error;
-        throw new Error(detail || (hidden ? "That project could not be removed from Shared." : "That project could not be shown in Shared."));
+        throw new Error(detail || (hidden ? m.landing_shared_remove_failed() : m.landing_shared_show_failed()));
       }
       doc.shared_hidden = hidden;
       say(hidden
-        ? `${doc.title} was removed from your Shared list. You can show it again from All projects.`
-        : `${doc.title} will appear in your Shared list again.`, {
+        ? m.landing_shared_removed({ title: doc.title })
+        : m.landing_shared_restored({ title: doc.title }), {
           id: `landing:shared:${doc.slug}`,
-          ...(!hidden ? {} : { action: { label: "Undo", onClick: () => void setSharedVisibility(doc, false) } }),
+          ...(!hidden ? {} : { action: { label: m.landing_undo(), onClick: () => void setSharedVisibility(doc, false) } }),
         });
     } catch (error) {
-      say(error?.message || (hidden ? "That project could not be removed from Shared." : "That project could not be shown in Shared."), {
+      say(error?.message || (hidden ? m.landing_shared_remove_failed() : m.landing_shared_show_failed()), {
         kind: "problem",
         id: `landing:shared-error:${doc.slug}`,
       });
@@ -693,9 +694,9 @@
           method: "POST",
           headers: SHELL_HEADERS,
         });
-        if (!listing.ok) throw new Error(`refresh failed (${listing.status})`);
+        if (!listing.ok) throw new Error(m.landing_refresh_failed({ status: listing.status }));
         const page = await listing.json();
-        if (!Array.isArray(page.documents)) throw new Error("refresh returned an invalid listing");
+        if (!Array.isArray(page.documents)) throw new Error(m.landing_refresh_invalid());
         for (const doc of page.documents) {
           if (doc?.slug) bySlug.set(doc.slug, doc);
         }
@@ -716,7 +717,7 @@
       // project -- forty projects meant forty-one requests to open this page
       // -- because neither number was in the catalogue. Both are now.
     } catch (error) {
-      if (navigator.onLine !== false) say(error?.message || "The project list could not be refreshed, so what is shown here may be out of date.", { kind: "problem", id: "landing:refresh" });
+      if (navigator.onLine !== false) say(error?.message || m.landing_list_refresh_failed(), { kind: "problem", id: "landing:refresh" });
       // A failed listing still offers the copies kept in this browser.
       await showLocalProjects();
       return false;
@@ -729,11 +730,11 @@
   async function showTrash() {
     try {
       const response = await fetch("/api/trash", { headers: SHELL_HEADERS });
-      if (!response.ok) throw new Error(`the trash could not be read (${response.status})`);
+      if (!response.ok) throw new Error(m.landing_trash_read_failed_status({ status: response.status }));
       const page = await response.json();
       trashed = Array.isArray(page.documents) ? page.documents : [];
     } catch (error) {
-      say(error?.message || "The trash could not be read.", { kind: "problem", id: "landing:trash" });
+      say(error?.message || m.landing_trash_read_failed(), { kind: "problem", id: "landing:trash" });
     }
   }
 
@@ -770,8 +771,7 @@
   async function deleteSelected() {
     const slugs = [...selected];
     if (!slugs.length) return;
-    const plural = slugs.length === 1 ? "" : "s";
-    confirmText = `${slugs.length} project${plural} will move to the trash, where ${slugs.length === 1 ? "it stays" : "they stay"} for seven days. Until then you can put ${slugs.length === 1 ? "it" : "them"} back.`;
+    confirmText = m.landing_trash_selected({ count: slugs.length });
     confirmKind = "trash";
     pendingDeletion = slugs;
     confirming = true;
@@ -781,7 +781,7 @@
   // deleting, and the sentence that says where the project goes is the point
   // of the step.
   function askDelete(doc) {
-    confirmText = `${doc.title} will move to the trash, where it stays for seven days. Until then you can put it back.`;
+    confirmText = m.landing_trash_one({ title: doc.title });
     confirmKind = "trash";
     pendingDeletion = [doc.slug];
     confirming = true;
@@ -818,12 +818,10 @@
     for (const slug of failed) if (wasSelected.has(slug)) stillSelected.add(slug);
     selected = stillSelected;
     if (failed.length) {
-      const plural = failed.length === 1 ? "" : "s";
-      say(`${failed.length} project${plural} could not be deleted and ${failed.length === 1 ? "is" : "are"} still here.`, { kind: "problem", id: "landing:delete" });
+      say(m.landing_delete_failed({ count: failed.length }), { kind: "problem", id: "landing:delete" });
     }
     if (succeeded.length) {
-      const plural = succeeded.length === 1 ? "" : "s";
-      say(`${succeeded.length} project${plural} moved to the trash.`, { id: "landing:trashed" });
+      say(m.landing_trashed({ count: succeeded.length }), { id: "landing:trashed" });
     }
     await showList();
     // A template is a project, so trashing one from the picker or from the
@@ -839,13 +837,13 @@
       });
       if (!response.ok) {
         const said = (await response.json().catch(() => ({}))).error;
-        throw new Error(said || "That project could not be restored.");
+        throw new Error(said || m.landing_restore_failed());
       }
       trashed = trashed.filter((each) => each.slug !== doc.slug);
-      say(`${doc.title} is back in your projects.`, { id: "landing:restored" });
+      say(m.landing_restored({ title: doc.title }), { id: "landing:restored" });
       await showList();
     } catch (error) {
-      say(error?.message || "That project could not be restored.", { kind: "problem", id: "landing:restore" });
+      say(error?.message || m.landing_restore_failed(), { kind: "problem", id: "landing:restore" });
     }
   }
 
@@ -856,8 +854,8 @@
     if (!slugs.length) return;
     const many = slugs.length > 1;
     confirmText = many
-      ? `${slugs.length} projects will be deleted for good. This cannot be undone.`
-      : `${docs[0].title} will be deleted for good. This cannot be undone.`;
+      ? m.landing_purge_many({ count: slugs.length })
+      : m.landing_purge_one({ title: docs[0].title });
     confirmKind = "purge";
     pendingDeletion = slugs;
     confirming = true;
@@ -872,10 +870,10 @@
     selected = new Set([...selected].filter((slug) => !gone.has(slug)));
     const failed = slugs.length - gone.size;
     if (failed) {
-      say(`${failed} project${failed === 1 ? "" : "s"} could not be deleted.`, { kind: "problem", id: "landing:purge" });
+      say(m.landing_purge_failed({ count: failed }), { kind: "problem", id: "landing:purge" });
     }
     if (gone.size) {
-      say(`${gone.size} project${gone.size === 1 ? "" : "s"} deleted for good.`, { id: "landing:purged" });
+      say(m.landing_purged({ count: gone.size }), { id: "landing:purged" });
     }
   }
 
@@ -887,10 +885,10 @@
     selected = new Set([...selected].filter((slug) => !back.has(slug)));
     const failed = slugs.length - back.size;
     if (failed) {
-      say(`${failed} project${failed === 1 ? "" : "s"} could not be restored.`, { kind: "problem", id: "landing:restore" });
+      say(m.landing_restore_many_failed({ count: failed }), { kind: "problem", id: "landing:restore" });
     }
     if (back.size) {
-      say(`${back.size} project${back.size === 1 ? "" : "s"} back in your projects.`, { id: "landing:restored" });
+      say(m.landing_restored_many({ count: back.size }), { id: "landing:restored" });
       await showList();
     }
   }
@@ -930,7 +928,7 @@
     const title = renameTo.trim();
     if (!doc) return;
     if (!title) {
-      renameError = "Give the project a name.";
+      renameError = m.landing_name_required();
       renameInput?.focus();
       return;
     }
@@ -945,14 +943,14 @@
         body: JSON.stringify({ title }),
       });
       if (!response.ok) {
-        renameError = (await response.json().catch(() => ({}))).error || "That name could not be saved.";
+        renameError = (await response.json().catch(() => ({}))).error || m.landing_rename_failed();
         return;
       }
       doc.title = title;
       renaming = null;
       if (place === "templates") await loadTemplates();
     } catch (error) {
-      renameError = error?.message || "That name could not be saved.";
+      renameError = error?.message || m.landing_rename_failed();
     }
   }
 
@@ -966,7 +964,7 @@
   function copyName(title) {
     const taken = new Set(documents.map((doc) => doc.title));
     for (let n = 1; ; n += 1) {
-      const suggestion = `${title} (copy ${n})`;
+      const suggestion = m.landing_copy_name({ title, n });
       if (!taken.has(suggestion)) return suggestion;
     }
   }
@@ -1001,7 +999,7 @@
     const title = copyTo.trim();
     if (!doc || forking) return;
     if (!title) {
-      copyError = "Give the copy a name.";
+      copyError = m.landing_copy_name_required();
       copyInput?.focus();
       return;
     }
@@ -1013,15 +1011,15 @@
         body: JSON.stringify({ title }),
       });
       if (!response.ok) {
-        copyError = (await response.json().catch(() => ({}))).error || "That project could not be copied.";
+        copyError = (await response.json().catch(() => ({}))).error || m.landing_copy_failed();
         return;
       }
       const made = await response.json();
       copying = null;
-      say(`${made.title} is in your projects.`, { id: "landing:forked" });
+      say(m.landing_forked({ title: made.title }), { id: "landing:forked" });
       await showList();
     } catch (error) {
-      copyError = error?.message || "That project could not be copied.";
+      copyError = error?.message || m.landing_copy_failed();
     } finally {
       forking = "";
     }
@@ -1142,7 +1140,7 @@
       /** @type {HTMLElement} */ (document.querySelector(".new-page"))?.focus();
     } else {
       /** @type {HTMLElement} */
-      const back = newOpener?.isConnected ? newOpener : document.querySelector('[aria-label="New project"]');
+      const back = newOpener?.isConnected ? newOpener : document.querySelector('.nav-new');
       newOpener = null;
       back?.focus();
     }
@@ -1187,7 +1185,7 @@
        A check says the project has the tag, and picking the item changes that.
        Tag items carry no data-project-action: the action list is the list of
        what a row can do to the project, and a tag is not one of those. -->
-  <div class="tags-heading" role="presentation">Tags</div>
+  <div class="tags-heading" role="presentation">{m.landing_tags()}</div>
   {#each userTags as tag (tag.id)}
     <Menu.Item value={"tag:" + tag.id} class="menuitem project-action-item" data-project-tag={tag.id}>
       <span class="menuitem-check" aria-hidden="true">{isOn(tag) ? "✓" : ""}</span>
@@ -1196,7 +1194,7 @@
     </Menu.Item>
   {/each}
   <Menu.Item value="new-tag" class="menuitem project-action-item" data-project-tag="new">
-    <Icon name="plus" size="1rem" /><span class="menuitem-label">New tag...</span>
+    <Icon name="plus" size="1rem" /><span class="menuitem-label">{m.landing_new_tag_ellipsis()}</span>
   </Menu.Item>
 {/snippet}
 
@@ -1206,7 +1204,7 @@
        replaces the last segment and nothing else in the bar. -->
   <Nav {me} phoneMenu={narrow} hidden={barHidden && !newTab}>
     {#snippet children()}
-      <span class="nav-place">{newTab ? "New project" : placeName}</span>
+      <span class="nav-place">{newTab ? m.landing_new_project() : placeName}</span>
     {/snippet}
     {#snippet tools()}
       {#if narrow}
@@ -1214,22 +1212,22 @@
                           counts={trashed.length ? { trash: trashed.length } : {}}
                           tags={userTags} activeTag={place === "tag" ? tagId : ""} ontag={goToTag} ontagaction={tagAction} />
         {#if searching}
-          <input class="input project-search" type="search" placeholder="Search projects"
-                 aria-label="Search projects by title or file" bind:value={search} use:focusOnMount
+          <input class="input project-search" type="search" placeholder={m.landing_search_projects()}
+                 aria-label={m.landing_search_aria()} bind:value={search} use:focusOnMount
                  onkeydown={(event) => { if (event.key === "Escape") { search = ""; searching = false; } }} />
-          <IconButton icon="x" label="Close search" onclick={() => { search = ""; searching = false; }} />
+          <IconButton icon="x" label={m.landing_close_search()} onclick={() => { search = ""; searching = false; }} />
         {:else}
-          <IconButton icon="search" label="Search projects" onclick={() => (searching = true)} />
+          <IconButton icon="search" label={m.landing_search_projects()} onclick={() => (searching = true)} />
         {/if}
       {:else}
-        <input class="input project-search" type="search" placeholder="Search projects"
-               aria-label="Search projects by title or file" bind:value={search} />
-        <button type="button" class="btn btn-sm nav-action lp-control-tonal-brand" onclick={() => openSettings()}>Settings</button>
+        <input class="input project-search" type="search" placeholder={m.landing_search_projects()}
+               aria-label={m.landing_search_aria()} bind:value={search} />
+        <button type="button" class="btn btn-sm nav-action lp-control-tonal-brand" onclick={() => openSettings()}>{m.landing_settings()}</button>
       {/if}
       {#if me.can_publish}
-        <button type="button" class="btn btn-sm nav-new nav-action lp-control-tonal-brand" aria-label="New project" onclick={() => openNew()}>
+        <button type="button" class="btn btn-sm nav-new nav-action lp-control-tonal-brand" aria-label={m.landing_new_project()} onclick={() => openNew()}>
           <Icon name="file-plus" size={16} />
-          <span class="nav-new-label">New project</span>
+          <span class="nav-new-label">{m.landing_new_project()}</span>
         </button>
       {/if}
     {/snippet}
@@ -1250,7 +1248,7 @@
          width there are the same width. A phone has its places in the Menu. -->
     {#if !narrow}
       <Sidebar tabs={PROJECT_TABS} panel={place} shown={{ comments: false }}
-               resizable={false} label="Projects" onselectpanel={goTo}
+               resizable={false} label={m.landing_projects()} onselectpanel={goTo}
                badges={trashed.length ? { trash: { counts: [{ tone: "warnings", of: trashed.length }] } } : {}}>
         <!-- The tags of this account are one control under the places. A rail
              three rem wide has no room for a list of names, so the names are in
@@ -1259,7 +1257,7 @@
         {#snippet places()}
           <Menu onSelect={(chosen) => railTagChosen(chosen.value)}
                 positioning={{ placement: "right-start", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}>
-            <MenuIconButton icon="tag" label="Tags" pressed={place === "tag"} />
+            <MenuIconButton icon="tag" label={m.landing_tags()} pressed={place === "tag"} />
             <ExplorerMenu>
               <div class="tags-menu-items">
                 {#each userTags as tag (tag.id)}
@@ -1272,18 +1270,18 @@
               </div>
               <div class="tags-menu-divider" role="separator"></div>
               <Menu.Item value="new-tag" class="menuitem project-action-item" data-rail-action="new-tag">
-                <Icon name="plus" size="1rem" /><span class="menuitem-label">New tag</span>
+                <Icon name="plus" size="1rem" /><span class="menuitem-label">{m.landing_new_tag()}</span>
               </Menu.Item>
               {#if userTags.length}
                 <Menu.Item value="manage-tags" class="menuitem project-action-item" data-rail-action="manage-tags">
-                  <Icon name="pencil" size="1rem" /><span class="menuitem-label">Manage tags</span>
+                  <Icon name="pencil" size="1rem" /><span class="menuitem-label">{m.landing_manage_tags()}</span>
                 </Menu.Item>
               {/if}
             </ExplorerMenu>
           </Menu>
         {/snippet}
         {#snippet controls()}
-          <IconButton icon="settings" label="Settings" tone="plain" onclick={() => openSettings()} />
+          <IconButton icon="settings" label={m.landing_settings()} tone="plain" onclick={() => openSettings()} />
         {/snippet}
       </Sidebar>
     {/if}
@@ -1295,16 +1293,16 @@
         {#if narrow && ["projects", "shared", "favorites", "templates", "tag"].includes(place)}
           <span class="compact-sort">
             <Icon name="arrow-up-down" />
-            <select id="project-sort" class="select" value={compactSort} aria-label="Sort" title="Sort"
+            <select id="project-sort" class="select" value={compactSort} aria-label={m.landing_sort()} title={m.landing_sort()}
                     onchange={(event) => chooseCompactSort(event.currentTarget.value)}>
-              <option value="updated:desc">Updated: newest first</option>
-              <option value="updated:asc">Updated: oldest first</option>
-              <option value="title:asc">Title: A to Z</option>
-              <option value="title:desc">Title: Z to A</option>
+              <option value="updated:desc">{m.landing_sort_updated_desc()}</option>
+              <option value="updated:asc">{m.landing_sort_updated_asc()}</option>
+              <option value="title:asc">{m.landing_sort_title_asc()}</option>
+              <option value="title:desc">{m.landing_sort_title_desc()}</option>
               {#if sortBy === "owner"}
-                <option value={`owner:${ascending ? "asc" : "desc"}`}>Owner: {ascending ? "A to Z" : "Z to A"}</option>
+                <option value={`owner:${ascending ? "asc" : "desc"}`}>{ascending ? m.landing_sort_owner_asc() : m.landing_sort_owner_desc()}</option>
               {:else if sortBy === "files"}
-                <option value={`files:${ascending ? "asc" : "desc"}`}>Files: {ascending ? "fewest first" : "most first"}</option>
+                <option value={`files:${ascending ? "asc" : "desc"}`}>{ascending ? m.landing_sort_files_asc() : m.landing_sort_files_desc()}</option>
               {/if}
             </select>
           </span>
@@ -1319,7 +1317,7 @@
            already have. It leaves once there is real work here. -->
       {#if place === "projects" && me.can_publish && ownWork === 0}
         <div class="starters">
-          <span class="starters-say">Start something new</span>
+          <span class="starters-say">{m.landing_start_something()}</span>
           {#each FORMATS as choice}
             <button type="button" class="btn btn-sm lp-control-tonal-brand"
                     onclick={() => openNew("template", { template: "blank", format: choice.id })}>{choice.name}</button>
@@ -1332,17 +1330,17 @@
            dangerous verb in it is not something to leave sitting beside
            "New project" while nothing is selected. -->
       {#if selected.size}
-        <div class="toolbar selecting" role="group" aria-label="What to do with the selected projects">
-          <span class="selection-count">{selected.size} selected</span>
+        <div class="toolbar selecting" role="group" aria-label={m.landing_selection_group_aria()}>
+          <span class="selection-count">{m.landing_selected_count({ count: selected.size })}</span>
           {#if place === "trash"}
             <!-- The trash has both verbs: everything selected goes back, or
                  everything selected goes for good. -->
             <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={restoreSelected}>
-              <Icon name="undo-2" size={16} /> Put back
+              <Icon name="undo-2" size={16} /> {m.landing_put_back()}
             </button>
             <button type="button" class="btn btn-sm lp-tone-error"
                     onclick={() => askPurge(shown.filter((doc) => selected.has(doc.slug)))}>
-              <Icon name="trash" size={16} /> Delete forever
+              <Icon name="trash" size={16} /> {m.landing_delete_forever()}
             </button>
           {:else}
             <!-- One control for every selected project. Its check marks show
@@ -1353,7 +1351,7 @@
               <Menu onSelect={(chosen) => tagChosen(chosen.value, selectedDocs)}
                     positioning={{ placement: "bottom-start", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}>
                 <Menu.Trigger class="btn btn-sm lp-control-tonal-brand">
-                  <Icon name="tag" size={16} /> Tag
+                  <Icon name="tag" size={16} /> {m.landing_tag()}
                 </Menu.Trigger>
                 <ExplorerMenu>
                   {@render tagItems((tag) => selectedDocs.length > 0 && selectedDocs.every((doc) => hasTag(doc, tag.id)))}
@@ -1361,20 +1359,20 @@
               </Menu>
             {/if}
             <button type="button" class="btn btn-sm lp-tone-error" onclick={deleteSelected}>
-              <Icon name="trash" size={16} /> Delete
+              <Icon name="trash" size={16} /> {m.landing_delete()}
             </button>
           {/if}
-          <IconButton icon="x" label="Clear the selection" onclick={() => (selected = new Set())} />
+          <IconButton icon="x" label={m.landing_clear_selection()} onclick={() => (selected = new Set())} />
         </div>
       {:else if place !== "trash"}
         {#if !narrow}
           <div class="toolbar">
-            <span class="row-count">{shown.length}{place === "templates" ? (shown.length === 1 ? " template" : " templates") : shown.length === 1 ? " project" : " projects"}</span>
+            <span class="row-count">{place === "templates" ? m.landing_template_count({ count: shown.length }) : m.landing_project_count({ count: shown.length })}</span>
           </div>
         {/if}
       {:else}
         <div class="toolbar">
-          <span class="row-count">Projects here are deleted for good seven days after they were put in the trash.</span>
+          <span class="row-count">{m.landing_trash_note()}</span>
         </div>
       {/if}
 
@@ -1398,7 +1396,7 @@
               <input
                 type="checkbox"
                 class="tickbox pick"
-                aria-label="Select every project shown"
+                aria-label={m.landing_select_all_aria()}
                 checked={hereSelected === selectable}
                 indeterminate={hereSelected > 0 && hereSelected < selectable}
                 onchange={(event) => tickAll(event.currentTarget.checked)}
@@ -1417,7 +1415,7 @@
                 <input
                   type="checkbox"
                   class="tickbox pick"
-                  aria-label="Select {doc.title}"
+                  aria-label={m.landing_select_aria({ title: doc.title })}
                   checked={selected.has(doc.slug)}
                   onchange={(event) => tick(doc.slug, event.currentTarget.checked)}
                 />
@@ -1440,7 +1438,7 @@
                 <span class="tag-chips" class:compact={narrow}>
                   {#each chipsShown as tag (tag.id)}
                     <button type="button" class="tag-chip" style="--tag-colour: {tagColour(tag.colour)}" title={tag.name}
-                            aria-label="Show projects tagged {tag.name}" onclick={() => goToTag(tag.id)}><span class="tag-chip-name">{tag.name}</span></button>
+                            aria-label={m.landing_show_tagged_aria({ name: tag.name })} onclick={() => goToTag(tag.id)}><span class="tag-chip-name">{tag.name}</span></button>
                   {/each}
                   {#if chips.length > chipsShown.length}
                     <span class="tag-chip tag-more">+{chips.length - chipsShown.length}</span>
@@ -1449,7 +1447,7 @@
               {/if}
             </span>
             <span class="title-note">
-              {#if doc.local_copy}<span>Offline</span>{/if}
+              {#if doc.local_copy}<span>{m.landing_offline()}</span>{/if}
               <!-- The file the search found, when it was not the title.
                    Opening it opens the project on that file. -->
               {#if found(doc, needle).path}
@@ -1458,7 +1456,7 @@
                 </a>
               {/if}
               {#if place === "trash" && doc.purge_due && !narrow}
-                <span>Deleted for good {since(doc.purge_due)}</span>
+                <span>{m.landing_deleted_for_good({ when: since(doc.purge_due) })}</span>
               {/if}
             </span>
           {:else if column.key === "owner"}
@@ -1466,7 +1464,7 @@
                  a column that is blank on most rows reads as a column that
                  failed to load. -->
             {#if doc.owner}
-              <span class="owner-name">{mine(doc) ? "You" : doc.owner}</span>
+              <span class="owner-name">{mine(doc) ? m.landing_you() : doc.owner}</span>
             {/if}
           {:else if column.key === "files"}
             {doc.files ?? "-"}
@@ -1483,52 +1481,52 @@
                 onSelect={(chosen) => compactProjectAction(chosen.value, doc)}
                 positioning={{ placement: "bottom-end", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}
               >
-                <MenuIconButton icon="more-horizontal" label={`Actions for ${doc.title}`}
+                <MenuIconButton icon="more-horizontal" label={m.landing_actions_for_aria({ title: doc.title })}
                                 projectSlug={doc.slug} class="project-actions-trigger" />
                 <ExplorerMenu>
                   {#if place === "trash"}
                     <Menu.Item value="restore" class="menuitem project-action-item" data-project-action="restore">
-                      <Icon name="undo-2" size="1rem" /><span class="menuitem-label">Put back</span>
+                      <Icon name="undo-2" size="1rem" /><span class="menuitem-label">{m.landing_put_back()}</span>
                     </Menu.Item>
                     <Menu.Item value="purge" class="menuitem project-action-item" data-project-action="purge">
-                      <Icon name="trash" size="1rem" /><span class="menuitem-label">Delete for good</span>
+                      <Icon name="trash" size="1rem" /><span class="menuitem-label">{m.landing_delete_for_good()}</span>
                     </Menu.Item>
                   {:else if place === "templates"}
                     <Menu.Item value="from-template" class="menuitem project-action-item" data-project-action="from-template">
-                      <Icon name="file-plus" size="1rem" /><span class="menuitem-label">New project from template</span>
+                      <Icon name="file-plus" size="1rem" /><span class="menuitem-label">{m.landing_new_from_template()}</span>
                     </Menu.Item>
                     <Menu.Item value="rename" class="menuitem project-action-item" data-project-action="rename">
-                      <Icon name="pencil" size="1rem" /><span class="menuitem-label">Rename</span>
+                      <Icon name="pencil" size="1rem" /><span class="menuitem-label">{m.landing_rename()}</span>
                     </Menu.Item>
                     <Menu.Item value="trash" class="menuitem project-action-item" data-project-action="trash">
-                      <Icon name="trash" size="1rem" /><span class="menuitem-label">Move to trash</span>
+                      <Icon name="trash" size="1rem" /><span class="menuitem-label">{m.landing_move_to_trash()}</span>
                     </Menu.Item>
                   {:else}
                     {#if mine(doc)}
                       <Menu.Item value="rename" class="menuitem project-action-item" data-project-action="rename">
-                        <Icon name="pencil" size="1rem" /><span class="menuitem-label">Rename</span>
+                        <Icon name="pencil" size="1rem" /><span class="menuitem-label">{m.landing_rename()}</span>
                       </Menu.Item>
                     {/if}
                     {#if !mine(doc) && place === "shared"}
                       <Menu.Item value="hide-shared" class="menuitem project-action-item" data-project-action="hide-shared" disabled={sharedVisibilityPending.has(doc.slug)}>
-                        <Icon name="eye-off" size="1rem" /><span class="menuitem-label">Remove from Shared</span>
+                        <Icon name="eye-off" size="1rem" /><span class="menuitem-label">{m.landing_remove_from_shared()}</span>
                       </Menu.Item>
                     {:else if !mine(doc) && place === "projects" && doc.shared_hidden}
                       <Menu.Item value="show-shared" class="menuitem project-action-item" data-project-action="show-shared" disabled={sharedVisibilityPending.has(doc.slug)}>
-                        <Icon name="eye" size="1rem" /><span class="menuitem-label">Show in Shared</span>
+                        <Icon name="eye" size="1rem" /><span class="menuitem-label">{m.landing_show_in_shared()}</span>
                       </Menu.Item>
                     {/if}
                     <Menu.Item value="fork" class="menuitem project-action-item" data-project-action="fork" disabled={forking === doc.slug}>
-                      <Icon name="git-fork" size="1rem" /><span class="menuitem-label">Fork</span>
+                      <Icon name="git-fork" size="1rem" /><span class="menuitem-label">{m.landing_fork()}</span>
                     </Menu.Item>
                     <Menu.Item value="favorite" class="menuitem project-action-item" data-project-action="favorite">
                       <Icon name="star" size="1rem" filled={hasTag(doc, "favorites")} />
-                      <span class="menuitem-label">{hasTag(doc, "favorites") ? "Remove from favorites" : "Add to favorites"}</span>
+                      <span class="menuitem-label">{hasTag(doc, "favorites") ? m.landing_favorite_remove() : m.landing_favorite_add()}</span>
                     </Menu.Item>
                     {@render tagItems((tag) => hasTag(doc, tag.id))}
                     {#if mine(doc)}
                       <Menu.Item value="trash" class="menuitem project-action-item" data-project-action="trash">
-                        <Icon name="trash" size="1rem" /><span class="menuitem-label">Move to trash</span>
+                        <Icon name="trash" size="1rem" /><span class="menuitem-label">{m.landing_move_to_trash()}</span>
                       </Menu.Item>
                     {/if}
                   {/if}
@@ -1536,18 +1534,18 @@
               </Menu>
             {:else if place === "templates"}
               <span class="project-actions">
-                <IconButton icon="file-plus" title="New project from template" label="New project from {doc.title}" onclick={() => askNameFrom(doc)} />
-                <IconButton icon="pencil" title="Rename" label="Rename {doc.title}" onclick={() => askRename(doc)} />
+                <IconButton icon="file-plus" title={m.landing_new_from_template()} label={m.landing_new_project_from_aria({ title: doc.title })} onclick={() => askNameFrom(doc)} />
+                <IconButton icon="pencil" title={m.landing_rename()} label={m.landing_rename_aria({ title: doc.title })} onclick={() => askRename(doc)} />
                 <IconButton icon="trash" colour="lp-text-muted lp-hover-error"
-                            title="Move to trash" label="Move {doc.title} to the trash" onclick={() => askDelete(doc)} />
+                            title={m.landing_move_to_trash()} label={m.landing_move_to_trash_aria({ title: doc.title })} onclick={() => askDelete(doc)} />
               </span>
             {:else if place === "trash"}
               <span class="trash-actions">
                 <!-- The tooltip says the action; the accessible name says the
                      action and which project, because a row of identical
                      icons read aloud is otherwise four unplaced verbs. -->
-                <IconButton icon="undo-2" title="Put back" label="Put {doc.title} back in your projects" onclick={() => restore(doc)} />
-                <IconButton icon="trash" title="Delete for good" label="Delete {doc.title} for good" onclick={() => askPurge([doc])} />
+                <IconButton icon="undo-2" title={m.landing_put_back()} label={m.landing_put_back_aria({ title: doc.title })} onclick={() => restore(doc)} />
+                <IconButton icon="trash" title={m.landing_delete_for_good()} label={m.landing_delete_for_good_aria({ title: doc.title })} onclick={() => askPurge([doc])} />
               </span>
             {:else}
               <!-- What can be done to a project without opening it. Renaming
@@ -1558,22 +1556,22 @@
                    throwing one project away should not need a mode. -->
               <span class="project-actions">
                 {#if mine(doc)}
-                  <IconButton icon="pencil" title="Rename" label="Rename {doc.title}" onclick={() => askRename(doc)} />
+                  <IconButton icon="pencil" title={m.landing_rename()} label={m.landing_rename_aria({ title: doc.title })} onclick={() => askRename(doc)} />
                 {/if}
                 {#if !mine(doc) && place === "shared"}
-                  <IconButton icon="eye-off" title="Remove from Shared" label="Remove {doc.title} from Shared" disabled={sharedVisibilityPending.has(doc.slug)} onclick={() => setSharedVisibility(doc, true)} />
+                  <IconButton icon="eye-off" title={m.landing_remove_from_shared()} label={m.landing_remove_from_shared_aria({ title: doc.title })} disabled={sharedVisibilityPending.has(doc.slug)} onclick={() => setSharedVisibility(doc, true)} />
                 {:else if !mine(doc) && place === "projects" && doc.shared_hidden}
-                  <IconButton icon="eye" title="Show in Shared" label="Show {doc.title} in Shared" disabled={sharedVisibilityPending.has(doc.slug)} onclick={() => setSharedVisibility(doc, false)} />
+                  <IconButton icon="eye" title={m.landing_show_in_shared()} label={m.landing_show_in_shared_aria({ title: doc.title })} disabled={sharedVisibilityPending.has(doc.slug)} onclick={() => setSharedVisibility(doc, false)} />
                 {/if}
-                <IconButton icon="git-fork" title="Fork" label="Fork {doc.title}"
+                <IconButton icon="git-fork" title={m.landing_fork()} label={m.landing_fork_aria({ title: doc.title })}
                             disabled={forking === doc.slug} onclick={() => askFork(doc)} />
                 {#if mine(doc)}
                   <IconButton icon="trash" colour="lp-text-muted lp-hover-error"
-                              title="Move to trash" label="Move {doc.title} to the trash" onclick={() => askDelete(doc)} />
+                              title={m.landing_move_to_trash()} label={m.landing_move_to_trash_aria({ title: doc.title })} onclick={() => askDelete(doc)} />
                 {/if}
                 <Menu onSelect={(chosen) => tagChosen(chosen.value, [doc])}
                       positioning={{ placement: "bottom-end", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}>
-                  <MenuIconButton icon="tag" label="Tags for {doc.title}" projectSlug={doc.slug} />
+                  <MenuIconButton icon="tag" label={m.landing_tags_for_aria({ title: doc.title })} projectSlug={doc.slug} />
                   <ExplorerMenu>
                     {@render tagItems((tag) => hasTag(doc, tag.id))}
                   </ExplorerMenu>
@@ -1585,7 +1583,7 @@
                   colour={hasTag(doc, "favorites") ? "lp-text-warning" : "lp-text-muted"}
                   filled={hasTag(doc, "favorites")}
                   pressed={hasTag(doc, "favorites")}
-                  label={hasTag(doc, "favorites") ? "Remove from favorites" : "Add to favorites"}
+                  label={hasTag(doc, "favorites") ? m.landing_favorite_remove() : m.landing_favorite_add()}
                   onclick={() => star(doc)}
                 />
               </span>
@@ -1604,29 +1602,27 @@
        projects. -->
   <Nav {me}>
     {#snippet tools()}
-      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => openSettings()}>Settings</button>
+      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => openSettings()}>{m.landing_settings()}</button>
     {/snippet}
   </Nav>
   <Page width="measure">
     <Stack gap={8}>
       {#if reachedServer && me.providers && !me.providers.length}
         <aside class="card p-4">
-          This server has no sign-in, so it has no projects to show. A project
-          shared with you opens from its link.
+          {m.landing_no_sign_in()}
         </aside>
       {/if}
       {#if !reachedServer}
         <aside class="card lp-tone-warning p-4">
           {#if documents.length}
-            This page could not reach the server. These projects are kept in this browser and open without a connection.
+            {m.landing_offline_projects()}
           {:else}
-            This page could not reach the server, so it cannot tell whether you
-            are signed in. Your projects will appear once the server answers.
+            {m.landing_unreachable()}
           {/if}
         </aside>
         {#if documents.length}
           <section class="card p-4">
-            <h2 class="h4">Projects kept in this browser</h2>
+            <h2 class="h4">{m.landing_kept_here()}</h2>
             <ul class="list-disc pl-5">
               {#each documents as doc (doc.slug)}
                 <li><a href="/docs/{doc.slug}">{doc.title}</a></li>
@@ -1639,7 +1635,7 @@
            written in handles, and it is shown only to the person it refuses. -->
       {#if me.handle && !me.can_publish}
         <aside class="card lp-tone-warning p-4">
-          {me.handle} may not publish here; this deployment allows {me.publishers}.
+          {m.landing_may_not_publish({ handle: me.handle, publishers: me.publishers })}
         </aside>
       {/if}
     </Stack>
@@ -1654,14 +1650,14 @@
                 dialect={preferences.state.dialect} ondialect={preferences.setDialect}
                 check={preferences.state.check} oncheck={preferences.setCheck} />
 
-<Modal open={Boolean(renaming)} title="Rename project"
-       description="The name changes; the link does not, so anything already shared still works."
+<Modal open={Boolean(renaming)} title={m.landing_rename_title()}
+       description={m.landing_rename_description()}
        onclose={() => { renaming = null; renameError = ""; }}
-       confirm={{ form: "rename-project", label: "Rename", oncancel: () => (renaming = null) }}>
+       confirm={{ form: "rename-project", label: m.landing_rename(), oncancel: () => (renaming = null) }}>
   {#snippet children()}
     <form id="rename-project" onsubmit={reallyRename}>
       <label class="label">
-        <span class="label-text">Name</span>
+        <span class="label-text">{m.landing_name_label()}</span>
         <!-- svelte-ignore a11y_autofocus -- the dialog exists to ask this one thing -->
         <input class="input" autofocus bind:this={renameInput} bind:value={renameTo} />
       </label>
@@ -1673,14 +1669,14 @@
 <!-- Naming the copy, not confirming it. The suggestion is already in the box
      and already selected, so the whole dialog is one keystroke if the
      numbered name will do and one sentence if it will not. -->
-<Modal open={Boolean(copying)} title="Make a copy"
-       description="The copy is a project of its own: its own link, its own history, nothing pointing back."
+<Modal open={Boolean(copying)} title={m.landing_make_copy()}
+       description={m.landing_copy_description()}
        onclose={() => { copying = null; copyError = ""; }}
-       confirm={{ form: "copy-project", label: forking ? "Copying..." : "Make a copy", disabled: Boolean(forking), oncancel: () => (copying = null) }}>
+       confirm={{ form: "copy-project", label: forking ? m.landing_copying() : m.landing_make_copy(), disabled: Boolean(forking), oncancel: () => (copying = null) }}>
   {#snippet children()}
     <form id="copy-project" onsubmit={fork}>
       <label class="label">
-        <span class="label-text">Name</span>
+        <span class="label-text">{m.landing_name_label()}</span>
         <!-- svelte-ignore a11y_autofocus -- the dialog exists to ask this one thing -->
         <input class="input" autofocus bind:this={copyInput} bind:value={copyTo} />
       </label>
@@ -1689,59 +1685,59 @@
   {/snippet}
 </Modal>
 
-<Modal open={Boolean(tagFor)} title="New tag"
-       description="Tags are yours. Nobody else sees the tags you put on a project."
+<Modal open={Boolean(tagFor)} title={m.landing_new_tag()}
+       description={m.landing_tag_new_description()}
        onclose={() => { tagFor = null; tagError = ""; }}
-       confirm={{ form: "new-tag", label: "Make tag", oncancel: () => (tagFor = null) }}>
+       confirm={{ form: "new-tag", label: m.landing_make_tag(), oncancel: () => (tagFor = null) }}>
   {#snippet children()}
     <form id="new-tag" onsubmit={createTag}>
       <label class="label">
-        <span class="label-text">Name</span>
+        <span class="label-text">{m.landing_name_label()}</span>
         <!-- svelte-ignore a11y_autofocus -- the dialog exists to ask this one thing -->
         <input class="input" autofocus maxlength="40" bind:value={tagName} />
       </label>
       <div class="label">
-        <span class="label-text">Colour</span>
-        <TagSwatches value={tagShade} label="Colour" onchange={(key) => (tagShade = key)} />
+        <span class="label-text">{m.landing_colour_label()}</span>
+        <TagSwatches value={tagShade} label={m.landing_colour_label()} onchange={(key) => (tagShade = key)} />
       </div>
       {#if tagError}<p class="lp-text-error text-sm">{tagError}</p>{/if}
     </form>
   {/snippet}
 </Modal>
 
-<Modal open={managing} title="Manage tags" wider
-       description="A change to a tag shows on every project that has it. Deleting a tag does not delete any project."
+<Modal open={managing} title={m.landing_manage_tags()} wider
+       description={m.landing_manage_tags_description()}
        onclose={() => (managing = false)}
-       confirm={{ label: "Done", onclick: () => (managing = false), cancel: false }}>
+       confirm={{ label: m.landing_done(), onclick: () => (managing = false), cancel: false }}>
   {#snippet children()}
     {#if userTags.length}
       <ul class="tag-manage">
         {#each userTags as tag (tag.id)}
           <li class="tag-manage-row">
-            <input class="input" aria-label="Name of {tag.name}" maxlength="40" value={tag.name}
+            <input class="input" aria-label={m.landing_tag_name_aria({ name: tag.name })} maxlength="40" value={tag.name}
                    onchange={(event) => renameTag(tag, event.currentTarget)} />
-            <TagSwatches value={tag.colour} label="Colour of {tag.name}" onchange={(key) => recolourTag(tag, key)} />
-            <IconButton icon="trash" colour="lp-text-muted lp-hover-error" title="Delete tag"
-                        label="Delete {tag.name}" onclick={() => (tagToDelete = tag)} />
+            <TagSwatches value={tag.colour} label={m.landing_tag_colour_aria({ name: tag.name })} onchange={(key) => recolourTag(tag, key)} />
+            <IconButton icon="trash" colour="lp-text-muted lp-hover-error" title={m.landing_delete_tag()}
+                        label={m.landing_delete_tag_aria({ name: tag.name })} onclick={() => (tagToDelete = tag)} />
           </li>
         {/each}
       </ul>
     {:else}
-      <p class="lp-text-secondary text-sm">No tags yet. Use New tag in the rail to make one.</p>
+      <p class="lp-text-secondary text-sm">{m.landing_no_tags()}</p>
     {/if}
   {/snippet}
 </Modal>
 
-<Modal open={Boolean(tagToDelete)} title="Delete this tag?"
-       description={tagToDelete ? `${tagToDelete.name} is taken off every project that has it. The projects themselves stay where they are.` : ""}
+<Modal open={Boolean(tagToDelete)} title={m.landing_delete_tag_question()}
+       description={tagToDelete ? m.landing_tag_delete_description({ name: tagToDelete.name }) : ""}
        onclose={() => (tagToDelete = null)}
-       confirm={{ label: "Delete tag", tone: "error", onclick: reallyDeleteTag, oncancel: () => (tagToDelete = null) }}></Modal>
+       confirm={{ label: m.landing_delete_tag(), tone: "error", onclick: reallyDeleteTag, oncancel: () => (tagToDelete = null) }}></Modal>
 
 <Modal bind:open={confirming}
-       title={confirmKind === "purge" ? "Delete for good?" : "Move to the trash?"}
+       title={confirmKind === "purge" ? m.landing_delete_for_good_question() : m.landing_trash_question()}
        description={confirmText}
        confirm={{
-         label: confirmKind === "purge" ? "Delete for good" : "Move to trash",
+         label: confirmKind === "purge" ? m.landing_delete_for_good() : m.landing_move_to_trash(),
          tone: "error",
          onclick: confirmKind === "purge" ? reallyPurge : reallyDelete,
        }}></Modal>

@@ -1,0 +1,288 @@
+{
+  "landing_column_project": "Projet",
+  "landing_column_owner": "Propriétaire",
+  "landing_column_files": "Fichiers",
+  "landing_column_deleted": "Supprimé",
+  "landing_column_opened": "Ouvert",
+  "landing_column_updated": "Modifié",
+  "landing_sort": "Trier",
+  "landing_sort_updated_desc": "Modifié : le plus récent d’abord",
+  "landing_sort_updated_asc": "Modifié : le plus ancien d’abord",
+  "landing_sort_title_asc": "Titre : de A à Z",
+  "landing_sort_title_desc": "Titre : de Z à A",
+  "landing_sort_owner_asc": "Propriétaire : de A à Z",
+  "landing_sort_owner_desc": "Propriétaire : de Z à A",
+  "landing_sort_files_asc": "Fichiers : le moins d’abord",
+  "landing_sort_files_desc": "Fichiers : le plus d’abord",
+  "landing_projects": "Projets",
+  "landing_tags": "Étiquettes",
+  "landing_no_match": "Aucun projet ne correspond à cette recherche.",
+  "landing_nothing_tagged": "Aucun projet n’est encore étiqueté {name}. Ajoutez cette étiquette depuis le menu d’un projet.",
+  "landing_no_projects_publish": "Aucun projet pour l’instant. Créez-en un, puis déposez-y vos fichiers.",
+  "landing_no_projects": "Aucun projet pour l’instant.",
+  "landing_nothing_opened": "Rien n’a encore été ouvert. Un projet que vous ouvrez apparaît ici.",
+  "landing_nothing_shared": "Rien n’est encore partagé avec vous. Un projet ouvert depuis le lien de quelqu’un apparaît ici.",
+  "landing_no_favorites": "Aucun favori pour l’instant. Ajoutez un projet aux favoris pour le retrouver ici.",
+  "landing_trash_empty": "La corbeille est vide.",
+  "landing_no_templates": "Aucun modèle pour l’instant. Ouvrez un projet et choisissez Fichier > Enregistrer comme modèle.",
+  "landing_selected_count": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} sélectionné",
+        "countPlural=*": "{count} sélectionnés"
+      }
+    }
+  ],
+  "landing_selection_group_aria": "Que faire des projets sélectionnés",
+  "landing_put_back": "Restaurer",
+  "landing_delete_forever": "Supprimer définitivement",
+  "landing_tag": "Étiqueter",
+  "landing_delete": "Supprimer",
+  "landing_clear_selection": "Désélectionner tout",
+  "landing_trash_note": "Les projets de la corbeille sont supprimés définitivement sept jours après y avoir été placés.",
+  "landing_project_count": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} projet",
+        "countPlural=*": "{count} projets"
+      }
+    }
+  ],
+  "landing_template_count": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} modèle",
+        "countPlural=*": "{count} modèles"
+      }
+    }
+  ],
+  "landing_start_something": "Commencer quelque chose de nouveau",
+  "landing_select_all_aria": "Sélectionner tous les projets affichés",
+  "landing_select_aria": "Sélectionner {title}",
+  "landing_show_tagged_aria": "Afficher les projets étiquetés {name}",
+  "landing_offline": "Hors ligne",
+  "landing_deleted_for_good": "Supprimé définitivement {when}",
+  "landing_you": "Vous",
+  "landing_actions_for_aria": "Actions pour {title}",
+  "landing_delete_for_good": "Supprimer définitivement",
+  "landing_delete_for_good_aria": "Supprimer définitivement {title}",
+  "landing_delete_for_good_question": "Supprimer définitivement?",
+  "landing_new_from_template": "Nouveau projet à partir d’un modèle",
+  "landing_new_project_from_aria": "Nouveau projet à partir de {title}",
+  "landing_rename": "Renommer",
+  "landing_rename_aria": "Renommer {title}",
+  "landing_move_to_trash": "Mettre à la corbeille",
+  "landing_move_to_trash_aria": "Mettre {title} à la corbeille",
+  "landing_trash_question": "Mettre à la corbeille?",
+  "landing_put_back_aria": "Restaurer {title} dans vos projets",
+  "landing_remove_from_shared": "Retirer de Partagés",
+  "landing_remove_from_shared_aria": "Retirer {title} de Partagés",
+  "landing_show_in_shared": "Afficher dans Partagés",
+  "landing_show_in_shared_aria": "Afficher {title} dans Partagés",
+  "landing_fork": "Faire une copie",
+  "landing_fork_aria": "Faire une copie de {title}",
+  "landing_favorite_add": "Ajouter aux favoris",
+  "landing_favorite_remove": "Retirer des favoris",
+  "landing_tags_for_aria": "Étiquettes de {title}",
+  "landing_new_tag_ellipsis": "Nouvelle étiquette...",
+  "landing_new_tag": "Nouvelle étiquette",
+  "landing_manage_tags": "Gérer les étiquettes",
+  "landing_new_project": "Nouveau projet",
+  "landing_settings": "Paramètres",
+  "landing_search_projects": "Rechercher des projets",
+  "landing_search_aria": "Rechercher des projets par titre ou par fichier",
+  "landing_close_search": "Fermer la recherche",
+  "landing_rename_title": "Renommer le projet",
+  "landing_rename_description": "Le nom change, mais pas le lien : ce qui est déjà partagé continue de fonctionner.",
+  "landing_name_label": "Nom",
+  "landing_make_copy": "Faire une copie",
+  "landing_copying": "Copie en cours...",
+  "landing_copy_description": "La copie est un projet à part entière : son propre lien, son propre historique, et rien ne renvoie vers l’original.",
+  "landing_tag_new_description": "Les étiquettes vous appartiennent. Personne d’autre ne voit les étiquettes que vous mettez sur un projet.",
+  "landing_make_tag": "Créer l’étiquette",
+  "landing_done": "Terminé",
+  "landing_manage_tags_description": "Une modification d’une étiquette apparaît sur chaque projet qui la porte. Supprimer une étiquette ne supprime aucun projet.",
+  "landing_tag_name_aria": "Nom de {name}",
+  "landing_tag_colour_aria": "Couleur de {name}",
+  "landing_colour_label": "Couleur",
+  "landing_delete_tag": "Supprimer l’étiquette",
+  "landing_delete_tag_aria": "Supprimer {name}",
+  "landing_no_tags": "Aucune étiquette pour l’instant. Utilisez Nouvelle étiquette dans la barre latérale pour en créer une.",
+  "landing_delete_tag_question": "Supprimer cette étiquette?",
+  "landing_tag_delete_description": "{name} est retirée de chaque projet qui la porte. Les projets restent où ils sont.",
+  "landing_trash_one": "{title} sera mis à la corbeille, où il restera sept jours. D’ici là, vous pouvez le restaurer.",
+  "landing_trash_selected": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} projet sera mis à la corbeille, où il restera sept jours. D’ici là, vous pouvez le restaurer.",
+        "countPlural=*": "{count} projets seront mis à la corbeille, où ils resteront sept jours. D’ici là, vous pouvez les restaurer."
+      }
+    }
+  ],
+  "landing_purge_many": "{count} projets seront supprimés définitivement. Cette action est irréversible.",
+  "landing_purge_one": "{title} sera supprimé définitivement. Cette action est irréversible.",
+  "landing_undo": "Annuler",
+  "landing_star_failed": "Le favori n’a pas pu être enregistré.",
+  "landing_tag_save_failed": "L’étiquette n’a pas pu être enregistrée.",
+  "landing_tag_many_failed": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} projet n’a pas pu être étiqueté.",
+        "countPlural=*": "{count} projets n’ont pas pu être étiquetés."
+      }
+    }
+  ],
+  "landing_tag_name_required": "Donnez un nom à l’étiquette.",
+  "landing_tag_create_failed": "L’étiquette n’a pas pu être créée.",
+  "landing_tag_rename_failed": "L’étiquette n’a pas pu être renommée.",
+  "landing_colour_failed": "La couleur n’a pas pu être enregistrée.",
+  "landing_tag_delete_failed": "L’étiquette n’a pas pu être supprimée.",
+  "landing_tag_deleted": "{name} a été supprimée. Ses projets sont toujours là.",
+  "landing_shared_remove_failed": "Le projet n’a pas pu être retiré de Partagés.",
+  "landing_shared_show_failed": "Le projet n’a pas pu être affiché dans Partagés.",
+  "landing_shared_removed": "{title} a été retiré de votre liste Partagés. Vous pouvez de nouveau l’afficher depuis Tous les projets.",
+  "landing_shared_restored": "{title} apparaîtra de nouveau dans votre liste Partagés.",
+  "landing_list_refresh_failed": "La liste des projets n’a pas pu être actualisée. Ce qui est affiché ici peut être périmé.",
+  "landing_refresh_failed": "échec de l’actualisation ({status})",
+  "landing_refresh_invalid": "l’actualisation a renvoyé une liste invalide",
+  "landing_trash_read_failed_status": "la corbeille n’a pas pu être lue ({status})",
+  "landing_trash_read_failed": "La corbeille n’a pas pu être lue.",
+  "landing_delete_failed": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} projet n’a pas pu être supprimé et reste ici.",
+        "countPlural=*": "{count} projets n’ont pas pu être supprimés et restent ici."
+      }
+    }
+  ],
+  "landing_trashed": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} projet mis à la corbeille.",
+        "countPlural=*": "{count} projets mis à la corbeille."
+      }
+    }
+  ],
+  "landing_restored": "{title} est de retour dans vos projets.",
+  "landing_restore_failed": "Le projet n’a pas pu être restauré.",
+  "landing_purge_failed": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} projet n’a pas pu être supprimé.",
+        "countPlural=*": "{count} projets n’ont pas pu être supprimés."
+      }
+    }
+  ],
+  "landing_purged": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} projet supprimé définitivement.",
+        "countPlural=*": "{count} projets supprimés définitivement."
+      }
+    }
+  ],
+  "landing_restore_many_failed": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} projet n’a pas pu être restauré.",
+        "countPlural=*": "{count} projets n’ont pas pu être restaurés."
+      }
+    }
+  ],
+  "landing_restored_many": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} projet de retour dans vos projets.",
+        "countPlural=*": "{count} projets de retour dans vos projets."
+      }
+    }
+  ],
+  "landing_name_required": "Donnez un nom au projet.",
+  "landing_rename_failed": "Le nom n’a pas pu être enregistré.",
+  "landing_copy_name": "{title} (copie {n})",
+  "landing_copy_name_required": "Donnez un nom à la copie.",
+  "landing_copy_failed": "Le projet n’a pas pu être copié.",
+  "landing_forked": "{title} est dans vos projets.",
+  "landing_no_sign_in": "Ce serveur n’offre pas de connexion, il n’a donc aucun projet à afficher. Un projet partagé avec vous s’ouvre depuis son lien.",
+  "landing_offline_projects": "Cette page n’a pas pu joindre le serveur. Ces projets sont conservés dans ce navigateur et s’ouvrent sans connexion.",
+  "landing_unreachable": "Cette page n’a pas pu joindre le serveur, elle ne peut donc pas savoir si vous êtes connecté. Vos projets apparaîtront dès que le serveur répondra.",
+  "landing_kept_here": "Projets conservés dans ce navigateur",
+  "landing_may_not_publish": "{handle} ne peut pas publier ici; ce déploiement autorise {publishers}."
+}
