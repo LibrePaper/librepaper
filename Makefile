@@ -46,7 +46,7 @@ PINNED  := $(WASM) $(BIB) $(CITES) $(TYPST) $(PANDOC) $(HARPER) $(LCM)
 # landing page recompiled the whole crate. The site builds on its own: see the
 # site target at the bottom of this file.
 WEB_BUILD := web/bun.lock web/tools/vendor-katex.mjs web/tools/compress-shell.mjs web/tests/unit/vocabulary.js
-WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js) $(WEB_BUILD)
+WEB     := $(shell find web/src web/public web/messages web/project.inlang -type f -not -path 'web/src/site/*' -not -path 'web/src/lib/paraglide/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js) $(WEB_BUILD)
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find docs/examples -type f) Cargo.toml Cargo.lock .cargo/config.toml assets.lock
 
 .PHONY: help build install desktop test test-web test-web-unit test-web-types test-tools test-rust test-nextest sync-test check fmt serve demo demo-run demo-checkout demo-stop demo-wipe demo-desktop demo-desktop-checkout wipe kill clean snapshot web pins site site-serve
