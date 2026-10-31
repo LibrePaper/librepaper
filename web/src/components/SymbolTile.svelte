@@ -2,6 +2,7 @@
   import { symbolText } from "../lib/symbols/index.js";
   import { entrySpellings } from "../lib/symbols/catalog.js";
   import { loadKatex } from "../lib/katex.js";
+  import { m } from "../lib/paraglide/messages.js";
 
   // One symbol as a button. The palette and the search field both draw their
   // tiles here, so a tile looks the same wherever it is shown. The large form
@@ -36,8 +37,8 @@
     const bare = symbol.kind === "pair" || symbol.kind === "template"
       ? (entrySpellings(symbol, format)[0]?.code ?? "")
       : symbolText(symbol, format, { inMath: true });
-    const head = `${capitalize(symbol.name)}: ${bare}`;
-    return symbol.package ? `${head}, needs ${symbol.package}` : head;
+    const name = capitalize(symbol.name);
+    return symbol.package ? m.symboltile_title_needs({ name, spelling: bare, pkg: symbol.package }) : m.symboltile_title({ name, spelling: bare });
   });
 
   /** @param {any} katex @param {any} symbol @returns {string} */
