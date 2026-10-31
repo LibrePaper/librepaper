@@ -1,0 +1,133 @@
+{
+  "changes_kind_replacement": "Replacement",
+  "changes_kind_addition": "Addition",
+  "changes_kind_deletion": "Deletion",
+  "changes_reject_replacement": "Reject this replacement",
+  "changes_reject_addition": "Reject this addition",
+  "changes_reject_deletion": "Reject this deletion",
+  "changes_accept_replacement": "Accept this replacement",
+  "changes_accept_addition": "Accept this addition",
+  "changes_accept_deletion": "Accept this deletion",
+  "changes_select_replacement": "Select replacement by {who}",
+  "changes_select_addition": "Select addition by {who}",
+  "changes_select_deletion": "Select deletion by {who}",
+  "changes_reject_change": "Reject this change",
+  "changes_accept_change": "Accept this change",
+  "changes_rejecting": "Rejecting…",
+  "changes_accepting": "Accepting…",
+  "changes_reject": "Reject",
+  "changes_accept": "Accept",
+  "changes_reject_all": "Reject all",
+  "changes_accept_all": "Accept all",
+  "changes_unknown_author": "Unknown author",
+  "changes_author_you": "{author} (you)",
+  "changes_you": "You",
+  "changes_untitled": "Untitled",
+  "changes_run": "Run {id}",
+  "changes_empty_task": "No pending changes in this task",
+  "changes_empty_author": "No pending changes from {name}",
+  "changes_empty_file": "No pending changes in {name}",
+  "changes_empty_run": "No pending changes in this run",
+  "changes_empty_none": "No pending changes",
+  "changes_empty_hint": "Changes to review will appear here.",
+  "changes_empty_note_count": "{count} pending in all changes.",
+  "changes_pending_count": "{count} pending",
+  "changes_selected_count": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "{count} selected",
+      "countPlural=*": "{count} selected"
+    }
+  }],
+  "changes_selected_label": "Selected changes",
+  "changes_select": "Select",
+  "changes_select_all": "Select all",
+  "changes_cancel": "Cancel",
+  "changes_title": "Changes",
+  "changes_track_title": "Track subsequent edits in this document",
+  "changes_editing_unavailable": "Editing is unavailable",
+  "changes_track": "Track",
+  "changes_which_show": "Which changes to show: {name}",
+  "changes_all_changes": "All changes",
+  "changes_this_task": "This task",
+  "changes_group_author": "Author",
+  "changes_group_file": "File",
+  "changes_group_run": "Run",
+  "changes_review_label": "Changes review",
+  "changes_queue_label": "Revision queue",
+  "changes_show_less": "Show less",
+  "changes_show_more": "Show more",
+  "changes_hint": "J/K next · A accept · R reject",
+  "changes_unavailable": "Review action is unavailable.",
+  "changes_could_not_accept": "Could not accept this change.",
+  "changes_could_not_reject": "Could not reject this change.",
+  "changes_could_not_accept_selected": "Could not accept the selected changes.",
+  "changes_could_not_reject_selected": "Could not reject the selected changes.",
+  "changes_rejected_count": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "{count} change rejected.",
+      "countPlural=*": "{count} changes rejected."
+    }
+  }],
+  "changes_accepted_count": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "{count} change accepted.",
+      "countPlural=*": "{count} changes accepted."
+    }
+  }],
+  "changes_accepted_some": [{
+    "declarations": ["input succeeded", "local succeededPlural = succeeded: plural"],
+    "selectors": ["succeededPlural"],
+    "match": {
+      "succeededPlural=one": "{succeeded} accepted; {failed} failed.",
+      "succeededPlural=*": "{succeeded} accepted; {failed} failed."
+    }
+  }],
+  "changes_rejected_some": [{
+    "declarations": ["input succeeded", "local succeededPlural = succeeded: plural"],
+    "selectors": ["succeededPlural"],
+    "match": {
+      "succeededPlural=one": "{succeeded} rejected; {failed} failed.",
+      "succeededPlural=*": "{succeeded} rejected; {failed} failed."
+    }
+  }],
+  "changes_accept_count": "Accept {count}",
+  "changes_reject_count": "Reject {count}",
+  "changes_confirm_accept_all": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "Accept all {count} pending change in this project?",
+      "countPlural=*": "Accept all {count} pending changes in this project?"
+    }
+  }],
+  "changes_confirm_reject_all": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "Reject all {count} pending change in this project?",
+      "countPlural=*": "Reject all {count} pending changes in this project?"
+    }
+  }],
+  "changes_confirm_accept_selected": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "Accept {count} selected change?",
+      "countPlural=*": "Accept {count} selected changes?"
+    }
+  }],
+  "changes_confirm_reject_selected": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "Reject {count} selected change?",
+      "countPlural=*": "Reject {count} selected changes?"
+    }
+  }]
+}

@@ -1,5 +1,6 @@
 <script>
   import { Menu, Switch } from "@skeletonlabs/skeleton-svelte";
+  import { m } from "../../lib/paraglide/messages.js";
   import ExplorerMenu from "../ExplorerMenu.svelte";
   import Icon from "../Icon.svelte";
 
@@ -37,14 +38,18 @@
   // and whether those are every pending change or only the ticked ones.
   let confirming = $state(null);
 
-  const authorOf = (item) => item.author || "Unknown author";
-  const pathOf = (item) => item.path || "Untitled";
-  const authorLabel = (item) => (identity && item.author === identity ? `${item.author} (you)` : authorOf(item));
+  const authorOf = (item) => item.author || m.changes_unknown_author();
+  const pathOf = (item) => item.path || m.changes_untitled();
+  const authorLabel = (item) => (identity && item.author === identity ? m.changes_author_you({ author: item.author }) : authorOf(item));
   // A row names its own author as "You" so the reviewer sees at once whose
   // changes they are answering for.
-  const whoLabel = (item) => (identity && item.author === identity ? "You" : authorOf(item));
-  const runLabel = (id) => `Run ${String(id).slice(0, 8)}`;
+  const whoLabel = (item) => (identity && item.author === identity ? m.changes_you() : authorOf(item));
+  const runLabel = (id) => m.changes_run({ id: String(id).slice(0, 8) });
   const kindOf = (item) => (item.before && item.after ? "Replacement" : item.after ? "Addition" : "Deletion");
+  const kindName = (item) => ({ Replacement: m.changes_kind_replacement(), Addition: m.changes_kind_addition(), Deletion: m.changes_kind_deletion() })[kindOf(item)];
+  const rejectKind = (item) => ({ Replacement: m.changes_reject_replacement(), Addition: m.changes_reject_addition(), Deletion: m.changes_reject_deletion() })[kindOf(item)];
+  const acceptKind = (item) => ({ Replacement: m.changes_accept_replacement(), Addition: m.changes_accept_addition(), Deletion: m.changes_accept_deletion() })[kindOf(item)];
+  const selectKind = (item) => ({ Replacement: m.changes_select_replacement({ who: whoLabel(item) }), Addition: m.changes_select_addition({ who: whoLabel(item) }), Deletion: m.changes_select_deletion({ who: whoLabel(item) }) })[kindOf(item)];
   // A row with no offset sorts last within its file.
   const positionOf = (item) => (Number.isFinite(item.position) ? item.position : Number.MAX_SAFE_INTEGER);
   // A change this long shows its first six lines until the reviewer asks for
@@ -89,8 +94,8 @@
   // The scopes the menu offers: all changes, this task when there are ids,
   // then one entry per author, file and run, each under its group's heading.
   const scopes = $derived.by(() => {
-    const list = [{ value: "all", label: "All changes", group: "" }];
-    if (ids.length) list.push({ value: "task", label: "This task", group: "" });
+    const list = [{ value: "all", label: m.changes_all_changes(), group: "" }];
+    if (ids.length) list.push({ value: "task", label: m.changes_this_task(), group: "" });
     if (derivedAuthors.length > 1) for (const author of derivedAuthors) list.push({ value: `author:${author}`, label: authorLabel({ author }), group: "Author" });
     if (derivedFiles.length > 1) for (const file of derivedFiles) list.push({ value: `file:${file}`, label: file, group: "File" });
     for (const id of derivedRuns) list.push({ value: `run:${id}`, label: runLabel(id), group: "Run" });
@@ -103,16 +108,17 @@
     if (key === "author") return authorLabel({ author: answer });
     if (key === "file") return answer;
     if (key === "run") return runLabel(answer);
-    return value === "task" ? "This task" : "All changes";
+    return value === "task" ? m.changes_this_task() : m.changes_all_changes();
   };
   const scopeName = $derived(scopes.find((option) => option.value === scope)?.label ?? labelOf(scope));
   // How an empty queue names the scope it is empty for.
-  const scopePhrase = $derived({
-    task: "in this task",
-    author: `from ${scopeName}`,
-    file: `in ${scopeName}`,
-    run: "in this run",
-  }[scopeOf(scope).key] ?? "");
+  const emptyTitle = $derived({
+    task: m.changes_empty_task(),
+    author: m.changes_empty_author({ name: scopeName }),
+    file: m.changes_empty_file({ name: scopeName }),
+    run: m.changes_empty_run(),
+  }[scopeOf(scope).key] ?? m.changes_empty_none());
+  const groupLabels = { Author: m.changes_group_author(), File: m.changes_group_file(), Run: m.changes_group_run() };
   /// The place a change sits, when the reviewer cannot tell it from the diff:
   /// the filename once several files are under review, and the line once the
   /// change has one.
@@ -144,7 +150,7 @@
   function toggleText(item) { const next = new Set(expandedText); next.has(item.id) ? next.delete(item.id) : next.add(item.id); expandedText = next; }
   function decisionPromise(item, action) {
     const callback = action === "accept" ? onaccept : onreject;
-    if (!callback) return Promise.reject(new Error("Review action is unavailable."));
+    if (!callback) return Promise.reject(new Error(m.changes_unavailable()));
     return callback(item);
   }
   function addBusy(id) { deciding = new Set([...deciding, id]); }
@@ -167,7 +173,7 @@
           if (panel instanceof HTMLElement) panel.focus();
         });
       }
-    } catch (error) { feedback = error?.message || `Could not ${action} this change.`; focusRow(item.id); }
+    } catch (error) { feedback = error?.message || (action === "accept" ? m.changes_could_not_accept() : m.changes_could_not_reject()); focusRow(item.id); }
     finally { removeBusy(item.id); }
   }
 
@@ -185,14 +191,16 @@
       // swallowed others can split its owner and the order matters.
       if (action === "reject" && onrejectmany) {
         const count = Number(await onrejectmany(captured)) || 0;
-        feedback = `${count} change${count === 1 ? "" : "s"} rejected.`;
+        feedback = m.changes_rejected_count({ count });
         return;
       }
       const settled = await Promise.allSettled(captured.map((item) => decisionPromise(item, action)));
       const succeeded = settled.filter((entry) => entry.status === "fulfilled").length;
       const failed = settled.length - succeeded;
-      feedback = failed ? `${succeeded} ${action}ed; ${failed} failed.` : `${succeeded} change${succeeded === 1 ? "" : "s"} ${action}ed.`;
-    } catch (error) { feedback = error?.message || `Could not ${action} the selected changes.`; }
+      feedback = failed
+        ? (action === "accept" ? m.changes_accepted_some({ succeeded, failed }) : m.changes_rejected_some({ succeeded, failed }))
+        : (action === "accept" ? m.changes_accepted_count({ count: succeeded }) : m.changes_rejected_count({ count: succeeded }));
+    } catch (error) { feedback = error?.message || (action === "accept" ? m.changes_could_not_accept_selected() : m.changes_could_not_reject_selected()); }
     finally { captured.forEach((item) => removeBusy(item.id)); }
   }
   // A bulk verb waits for a confirmation, and the confirm button takes focus
@@ -204,14 +212,12 @@
       if (button instanceof HTMLElement) button.focus();
     });
   }
-  const verbOf = (action) => (action === "accept" ? "Accept" : "Reject");
   const confirmText = ({ action, rows, scope }) => {
-    const noun = rows.length === 1 ? "change" : "changes";
-    return scope === "all"
-      ? `${verbOf(action)} all ${rows.length} pending ${noun} in this project?`
-      : `${verbOf(action)} ${rows.length} selected ${noun}?`;
+    const count = rows.length;
+    if (scope === "all") return action === "accept" ? m.changes_confirm_accept_all({ count }) : m.changes_confirm_reject_all({ count });
+    return action === "accept" ? m.changes_confirm_accept_selected({ count }) : m.changes_confirm_reject_selected({ count });
   };
-  const confirmLabel = ({ action, rows }) => `${verbOf(action)} ${rows.length}`;
+  const confirmLabel = ({ action, rows }) => (action === "accept" ? m.changes_accept_count({ count: rows.length }) : m.changes_reject_count({ count: rows.length }));
   // Every ticked change in the all scope is the whole project and asks first,
   // as does any other set of several; one ticked row answers directly.
   function answerSelected(action) {
@@ -236,7 +242,7 @@
 
 {#snippet rowMain(item, isActive)}
   <button id={`change-${item.id}`} type="button" class="row-main" aria-current={isActive ? "true" : undefined} onclick={() => reveal(item)}>
-    <span class="row-meta"><span class="row-kind">{kindOf(item)}</span><span class="row-who"><span class="row-author">{whoLabel(item)}</span>{#if item.run}<span class="row-run">{runLabel(item.run)}</span>{/if}</span></span>
+    <span class="row-meta"><span class="row-kind">{kindName(item)}</span><span class="row-who"><span class="row-author">{whoLabel(item)}</span>{#if item.run}<span class="row-run">{runLabel(item.run)}</span>{/if}</span></span>
     {#if locationOf(item)}<span class="row-location">{locationOf(item)}</span>{/if}
     <span class="row-diff" class:clamped={isLong(item) && !expandedText.has(item.id)}>{#if item.before}<span class="deletion"><span class="sign" aria-hidden="true">−</span><del class="change-text">{item.before}</del></span>{/if}{#if item.after}<span class="insertion"><span class="sign" aria-hidden="true">+</span><ins class="change-text">{item.after}</ins></span>{/if}</span>
   </button>
@@ -245,21 +251,21 @@
 <!-- A focusable review context keeps shortcuts out of source and discussion fields. -->
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div class="panel changes-panel" role="application" tabindex="0" onkeydown={keydown} aria-label="Changes review" aria-keyshortcuts="ArrowDown ArrowUp J K A R">
+<div class="panel changes-panel" role="application" tabindex="0" onkeydown={keydown} aria-label={m.changes_review_label()} aria-keyshortcuts="ArrowDown ArrowUp J K A R">
   <!-- The header is the title row, then one bar: the scope menu with the count,
        or the selection or confirmation bar while either is open. Nothing else
        sits above the queue, so the first reviewable change is near the top. -->
   <header class="changes-header">
     <div class="changes-title-row">
-      <h2 class="panel-section-title">Changes</h2>
+      <h2 class="panel-section-title">{m.changes_title()}</h2>
       <!-- A real switch rather than a checkbox with a switch painted over it:
            the state is the control's own, so the name no longer has to carry
            "On" or "Off" for a screen reader to read it out. -->
       {#if canReview}
       <Switch class="tracking-toggle" checked={tracking} disabled={!canTrack}
-        title={canTrack ? "Track subsequent edits in this document" : "Editing is unavailable"}
+        title={canTrack ? m.changes_track_title() : m.changes_editing_unavailable()}
         onCheckedChange={({ checked }) => ontracking?.(checked)}>
-        <Switch.Label>Track</Switch.Label>
+        <Switch.Label>{m.changes_track()}</Switch.Label>
         <Switch.Control class="switch"><Switch.Thumb class="switch-thumb" /></Switch.Control>
         <Switch.HiddenInput />
       </Switch>
@@ -268,28 +274,28 @@
     {#if confirming}<div class="confirm-bar" role="alertdialog" aria-labelledby="changes-confirm-text">
       <p class="confirm-text" id="changes-confirm-text">{confirmText(confirming)}</p>
       <div class="bar-buttons">
-        <button type="button" class="bar-action cancel" onclick={() => confirming = null}>Cancel</button>
+        <button type="button" class="bar-action cancel" onclick={() => confirming = null}>{m.changes_cancel()}</button>
         <button type="button" class="bar-action confirm {confirming.action}" disabled={busy} onclick={() => bulk(confirming.action, confirming.rows)}>{confirmLabel(confirming)}</button>
       </div>
     </div>
-    {:else if selecting}<div class="select-bar" role="toolbar" aria-label="Selected changes">
+    {:else if selecting}<div class="select-bar" role="toolbar" aria-label={m.changes_selected_label()}>
       <div class="bar-row">
-        <span class="select-count" aria-live="polite">{checked.size} selected</span>
+        <span class="select-count" aria-live="polite">{m.changes_selected_count({ count: checked.size })}</span>
         <div class="bar-end">
-          <button type="button" class="text-action select-all" disabled={filteredRows.every((item) => checked.has(item.id))} onclick={() => checked = new Set(filteredRows.map((item) => item.id))}>Select all</button>
-          <button type="button" class="text-action cancel" onclick={stopSelecting}>Cancel</button>
+          <button type="button" class="text-action select-all" disabled={filteredRows.every((item) => checked.has(item.id))} onclick={() => checked = new Set(filteredRows.map((item) => item.id))}>{m.changes_select_all()}</button>
+          <button type="button" class="text-action cancel" onclick={stopSelecting}>{m.changes_cancel()}</button>
         </div>
       </div>
       <div class="bar-buttons">
-        <button type="button" class="bar-action reject" disabled={!selectedRows.length || busy} onclick={() => answerSelected("reject")}>{allChosen ? "Reject all" : "Reject"}</button>
-        <button type="button" class="bar-action accept" disabled={!selectedRows.length || busy} onclick={() => answerSelected("accept")}>{allChosen ? "Accept all" : "Accept"}</button>
+        <button type="button" class="bar-action reject" disabled={!selectedRows.length || busy} onclick={() => answerSelected("reject")}>{allChosen ? m.changes_reject_all() : m.changes_reject()}</button>
+        <button type="button" class="bar-action accept" disabled={!selectedRows.length || busy} onclick={() => answerSelected("accept")}>{allChosen ? m.changes_accept_all() : m.changes_accept()}</button>
       </div>
     </div>
     {:else if changes.length}<div class="changes-toolbar">
       {#if scopes.length > 1}<Menu onSelect={(chosen) => chooseScope(chosen.value)}>
         <Menu.Trigger>
           {#snippet element(attributes)}
-            <button {...attributes} type="button" class="scope-trigger" aria-label={`Which changes to show: ${scopeName}`}><span class="scope-label">{scopeName}</span><Icon name="chevron-down" size="12px" /></button>
+            <button {...attributes} type="button" class="scope-trigger" aria-label={m.changes_which_show({ name: scopeName })}><span class="scope-label">{scopeName}</span><Icon name="chevron-down" size="12px" /></button>
           {/snippet}
         </Menu.Trigger>
         <ExplorerMenu>
@@ -299,49 +305,49 @@
           {#each ["Author", "File", "Run"] as group}
             {#if scopes.some((option) => option.group === group)}
               <hr class="hr my-1" />
-              <div class="changes-menu-label">{group}</div>
+              <div class="changes-menu-label">{groupLabels[group]}</div>
               {#each scopes.filter((option) => option.group === group) as option (option.value)}
                 <Menu.Item value={option.value} class="menuitem"><span class="menuitem-check">{scope === option.value ? "✓" : ""}</span>{option.label}</Menu.Item>
               {/each}
             {/if}
           {/each}
         </ExplorerMenu>
-      </Menu>{:else}<span class="scope-label scope-static">All changes</span>{/if}
+      </Menu>{:else}<span class="scope-label scope-static">{m.changes_all_changes()}</span>{/if}
       <div class="toolbar-end">
-        <span class="changes-count">{filteredRows.length} pending</span>
-        {#if canReview && filteredRows.length}<button type="button" class="text-action select-start" onclick={startSelecting}>Select</button>{/if}
+        <span class="changes-count">{m.changes_pending_count({ count: filteredRows.length })}</span>
+        {#if canReview && filteredRows.length}<button type="button" class="text-action select-start" onclick={startSelecting}>{m.changes_select()}</button>{/if}
       </div>
     </div>{/if}
-    <span class="changes-live sr-only" aria-live="polite">{filteredRows.length} pending</span>
+    <span class="changes-live sr-only" aria-live="polite">{m.changes_pending_count({ count: filteredRows.length })}</span>
   </header>
   {#if feedback}<p class="panel-status" role="status" aria-live="polite">{feedback}</p>{/if}
   {#if !filteredRows.length}<div class="changes-empty" role="status">
     {#if changes.length}
-      <p class="changes-empty-title">No pending changes {scopePhrase}</p>
-      <p class="changes-empty-note">{changes.length} pending in all changes.</p>
+      <p class="changes-empty-title">{emptyTitle}</p>
+      <p class="changes-empty-note">{m.changes_empty_note_count({ count: changes.length })}</p>
     {:else}
-      <p class="changes-empty-title">No pending changes</p>
-      <p class="changes-empty-note">Changes to review will appear here.</p>
+      <p class="changes-empty-title">{m.changes_empty_none()}</p>
+      <p class="changes-empty-note">{m.changes_empty_hint()}</p>
     {/if}
   </div>{/if}
-  <div class="changes-list" role="list" aria-label="Revision queue">
+  <div class="changes-list" role="list" aria-label={m.changes_queue_label()}>
     {#each filteredRows as item (item.id)}
       {@const isActive = active === item.id}
       <article class="change-row" class:active={isActive} class:picked={checked.has(item.id)} role="listitem">
-        {#if selecting}<div class="row-head"><input type="checkbox" class="row-pick" checked={checked.has(item.id)} aria-label={`Select ${kindOf(item).toLowerCase()} by ${whoLabel(item)}`} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} />{@render rowMain(item, isActive)}</div>{:else}{@render rowMain(item, isActive)}{/if}
-        {#if isLong(item)}<button type="button" class="row-more" aria-expanded={expandedText.has(item.id)} onclick={() => toggleText(item)}>{expandedText.has(item.id) ? "Show less" : "Show more"}</button>{/if}
+        {#if selecting}<div class="row-head"><input type="checkbox" class="row-pick" checked={checked.has(item.id)} aria-label={selectKind(item)} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} />{@render rowMain(item, isActive)}</div>{:else}{@render rowMain(item, isActive)}{/if}
+        {#if isLong(item)}<button type="button" class="row-more" aria-expanded={expandedText.has(item.id)} onclick={() => toggleText(item)}>{expandedText.has(item.id) ? m.changes_show_less() : m.changes_show_more()}</button>{/if}
         <!-- Every change offers its answer, so a reviewer can act on any row
              without first selecting it. -->
         {#if canReview && !selecting}<div class="row-actions">
-          <button type="button" class="row-action reject" aria-label={`Reject this ${kindOf(item).toLowerCase()}`} title="Reject this change" disabled={deciding.has(item.id)} onclick={() => void decide(item, "reject")}><Icon name="x" size="14px" />{deciding.has(item.id) ? "Rejecting…" : "Reject"}</button>
-          <button type="button" class="row-action accept" aria-label={`Accept this ${kindOf(item).toLowerCase()}`} title="Accept this change" disabled={deciding.has(item.id)} onclick={() => void decide(item, "accept")}><Icon name="check" size="14px" />{deciding.has(item.id) ? "Accepting…" : "Accept"}</button>
+          <button type="button" class="row-action reject" aria-label={rejectKind(item)} title={m.changes_reject_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "reject")}><Icon name="x" size="14px" />{deciding.has(item.id) ? m.changes_rejecting() : m.changes_reject()}</button>
+          <button type="button" class="row-action accept" aria-label={acceptKind(item)} title={m.changes_accept_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "accept")}><Icon name="check" size="14px" />{deciding.has(item.id) ? m.changes_accepting() : m.changes_accept()}</button>
         </div>{/if}
       </article>
     {/each}
   </div>
   <!-- The shortcuts, said once and quietly, rather than a panel of
        documentation standing where changes could be. -->
-  {#if filteredRows.length}<footer class="changes-hint">J/K next · A accept · R reject</footer>{/if}
+  {#if filteredRows.length}<footer class="changes-hint">{m.changes_hint()}</footer>{/if}
 </div>
 
 <style>

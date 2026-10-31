@@ -1,4 +1,5 @@
 <script>
+  import { m } from "../../lib/paraglide/messages.js";
   import PanelHeader from "../PanelHeader.svelte";
   import { tick, onDestroy, untrack } from "svelte";
   import { TreeView, createTreeViewCollection, Menu } from "@skeletonlabs/skeleton-svelte";
@@ -92,7 +93,7 @@
     if (!editing || !mayEdit) return;
     try {
       const path = [editing.parent, draft.trim()].filter(Boolean).join("/");
-      if (!draft.trim()) throw new Error("Enter a name.");
+      if (!draft.trim()) throw new Error(m.files_enter_name());
       if (editing.type === "rename") await onrelocate?.([editing.entry], path, true);
       else {
         const kind = editing.type === "folder" ? "folder" : "text";
@@ -203,7 +204,7 @@
       busy = false;
       refusal = errors.join("; ");
       if (skipped.length) {
-        uploadWarning = `Skipped unsupported file${skipped.length === 1 ? "" : "s"}: ${skipped.join(", ")}. Allowed extensions: ${allowedExtensions.join(", ") || "none"}.`;
+        uploadWarning = m.files_skipped({ count: skipped.length, names: skipped.join(", "), extensions: allowedExtensions.join(", ") || m.files_no_extensions() });
       }
     }
   }
@@ -247,7 +248,7 @@
       const payload = event.dataTransfer.getData(dragType);
       if (payload) {
         const data = JSON.parse(payload);
-        if (data.token !== dragToken) throw new Error("Move files within this project's explorer.");
+        if (data.token !== dragToken) throw new Error(m.files_move_within_explorer());
         await onrelocate?.(data.entries, path, false);
         selected = []; expand(path); refusal = "";
       } else {
@@ -258,44 +259,44 @@
   }
 </script>
 
-<div class="panel filelist explorer" class:explorer-drop={hover === ""} role="region" aria-label="File manager"
+<div class="panel filelist explorer" class:explorer-drop={hover === ""} role="region" aria-label={m.files_manager_label()}
   onpointerdown={(event) => { if (!(event.target instanceof Element) || !event.target.closest('[role="treeitem"], button, input, select, header')) selected = []; }}
   ondragover={(event) => dragOver(event, "")} ondrop={(event) => drop(event, "")} ondragleave={(event) => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) dragEnd(); }}>
-  <PanelHeader title="Files">
+  <PanelHeader title={m.files_title()}>
     {#snippet actions()}
       <!-- One run of controls, left to right: what makes something in the
            tree, what folds it, then what moves files across its edge. They
            are all the same kind of thing to press, so they sit in one group
            rather than a pair pushed off to the far end of the header. -->
-      <div class="explorer-actions" aria-label="File actions">
+      <div class="explorer-actions" aria-label={m.files_actions_label()}>
         {#if mayEdit}
-          <IconButton icon="file-plus" label="New file" tone="plain" size="btn-icon-sm" onclick={() => start("file")} />
-          <IconButton icon="folder-plus" label="New folder" tone="plain" size="btn-icon-sm" onclick={() => start("folder")} />
+          <IconButton icon="file-plus" label={m.files_new_file()} tone="plain" size="btn-icon-sm" onclick={() => start("file")} />
+          <IconButton icon="folder-plus" label={m.files_new_folder()} tone="plain" size="btn-icon-sm" onclick={() => start("folder")} />
         {/if}
-        <IconButton icon="chevrons-down" label="Expand all folders" tone="plain" size="btn-icon-sm" disabled={allFolders.every((value) => expanded.includes(value))} onclick={() => expanded = allFolders} />
-        <IconButton icon="chevrons-up" label="Collapse all folders" tone="plain" size="btn-icon-sm" disabled={!expanded.length} onclick={() => expanded = []} />
+        <IconButton icon="chevrons-down" label={m.files_expand_all()} tone="plain" size="btn-icon-sm" disabled={allFolders.every((value) => expanded.includes(value))} onclick={() => expanded = allFolders} />
+        <IconButton icon="chevrons-up" label={m.files_collapse_all()} tone="plain" size="btn-icon-sm" disabled={!expanded.length} onclick={() => expanded = []} />
         {#if mayEdit}
-          <IconButton icon="upload" label={demo ? "Upload files (not available in the demo)" : "Upload files"} tone="plain" size="btn-icon-sm" disabled={busy || demo} onclick={() => choose()} />
+          <IconButton icon="upload" label={demo ? m.files_upload_demo() : m.files_upload()} tone="plain" size="btn-icon-sm" disabled={busy || demo} onclick={() => choose()} />
         {/if}
-        {#if mayEdit}<IconButton icon="download" label="Download project" tone="plain" size="btn-icon-sm" onclick={() => ondownload?.()} />{/if}
+        {#if mayEdit}<IconButton icon="download" label={m.files_download_project()} tone="plain" size="btn-icon-sm" onclick={() => ondownload?.()} />{/if}
       </div>
-      {#if mayEdit}<input class="chooser" type="file" multiple bind:this={chooser} aria-label="Choose files to upload"
+      {#if mayEdit}<input class="chooser" type="file" multiple bind:this={chooser} aria-label={m.files_choose_upload()}
         accept={allowedExtensions.join(",")}
       onchange={(event) => { const input = event.currentTarget; const picked = [...(input.files || [])]; input.value = ""; upload(picked.map((file) => ({ file, path: file.name })), uploadTarget); }} />{/if}
     {/snippet}
     {#if chosen.length > 1 && mayEdit}
-      <span class="panel-meta">{chosen.length} selected</span>
+      <span class="panel-meta">{m.files_selected_count({ count: chosen.length })}</span>
     {/if}
-    {#if busy}<p role="status">Uploading files…</p>{/if}
+    {#if busy}<p role="status">{m.files_uploading()}</p>{/if}
     {#if uploadWarning}<p class="upload-warning" role="status">{uploadWarning}</p>{/if}
     {#if refusal && !dialog}<p class="refusal" role="alert">{refusal}</p>{/if}
     {#if editing && editing.type !== "rename"}
       <div class="space-y-1">
-        <label for="new-project-entry">New {editing.type} in /{editing.parent}</label>
+        <label for="new-project-entry">{editing.type === "folder" ? m.files_new_folder_in({ parent: editing.parent }) : m.files_new_file_in({ parent: editing.parent })}</label>
         <div class="flex items-center gap-1">
-          <input id="new-project-entry" class="name" aria-label="New {editing.type} name" bind:value={draft} use:focusName onkeydown={namingKey} />
-          <IconButton icon="check" label="Create {editing.type}" onclick={commit} />
-          <IconButton icon="x" label="Cancel" onclick={reset} />
+          <input id="new-project-entry" class="name" aria-label={editing.type === "folder" ? m.files_new_folder_name() : m.files_new_file_name()} bind:value={draft} use:focusName onkeydown={namingKey} />
+          <IconButton icon="check" label={editing.type === "folder" ? m.files_create_folder() : m.files_create_file()} onclick={commit} />
+          <IconButton icon="x" label={m.files_cancel()} onclick={reset} />
         </div>
       </div>
     {/if}
@@ -312,7 +313,7 @@
         if (entry && entry.kind !== "folder") onopen?.(entry);
       }
     }}>
-    <TreeView.Label class="sr-only">Project files</TreeView.Label>
+    <TreeView.Label class="sr-only">{m.files_project_files_label()}</TreeView.Label>
     <TreeView.Tree onkeydown={keyed}>
       {#each root.children as node, index (node.id)}{@render branch(node, [index])}{/each}
     </TreeView.Tree>
@@ -333,8 +334,8 @@
   {/if}
   <Icon name={node.kind === "folder" ? "folder" : node.kind === "asset" ? "image" : "file-text"} />
   {#if editing?.type === "rename" && editing.entry.path === node.path}
-    <input class="name" aria-label="Rename {node.path}" bind:value={draft} use:focusName onkeydown={namingKey} onclick={(event) => event.stopPropagation()} />
-    <span onclick={(event) => event.stopPropagation()} role="presentation"><IconButton icon="check" label="Save name" onclick={commit} /><IconButton icon="x" label="Cancel rename" onclick={reset} /></span>
+    <input class="name" aria-label={m.files_rename_path({ path: node.path })} bind:value={draft} use:focusName onkeydown={namingKey} onclick={(event) => event.stopPropagation()} />
+    <span onclick={(event) => event.stopPropagation()} role="presentation"><IconButton icon="check" label={m.files_save_name()} onclick={commit} /><IconButton icon="x" label={m.files_cancel_rename()} onclick={reset} /></span>
   {:else if node.kind === "folder"}
     <TreeView.BranchText class="explorer-name">{node.name}</TreeView.BranchText>
   {:else}
@@ -346,12 +347,12 @@
        being previewed without a lock is the open file, which its row already
        marks. -->
   {#if node.kind !== "folder" && locked && node.path === locked}
-    <button type="button" class="explorer-preview shown" aria-label="Unlock the preview" title="Unlock the preview"
+    <button type="button" class="explorer-preview shown" aria-label={m.files_unlock_preview()} title={m.files_unlock_preview()}
       onclick={(event) => { event.stopPropagation(); onunlock?.(); }}
       ondblclick={(event) => event.stopPropagation()}
       onkeydown={(event) => event.stopPropagation()}><Icon name="eye" /></button>
   {:else if node.kind === "text" && previewable(node.path)}
-    <button type="button" class="explorer-preview" aria-label="Lock preview on {node.name}" title="Lock the preview on this file"
+    <button type="button" class="explorer-preview" aria-label={m.files_lock_preview_on({ name: node.name })} title={m.files_lock_preview_here()}
       onclick={(event) => { event.stopPropagation(); const entry = entryOf(node); if (entry) onlock?.(entry); }}
       ondblclick={(event) => event.stopPropagation()}
       onkeydown={(event) => event.stopPropagation()}><Icon name="eye" /></button>
@@ -362,16 +363,16 @@
   <ExplorerMenu>
     {#if mayEdit}
       {#if node.kind === "folder"}
-        <Menu.Item value="file" class="menuitem">New file</Menu.Item>
-        <Menu.Item value="folder" class="menuitem">New folder</Menu.Item>
-        <Menu.Item value="upload" class="menuitem" disabled={busy || demo}>Upload files{demo ? " (not available in the demo)" : ""}</Menu.Item>
+        <Menu.Item value="file" class="menuitem">{m.files_new_file()}</Menu.Item>
+        <Menu.Item value="folder" class="menuitem">{m.files_new_folder()}</Menu.Item>
+        <Menu.Item value="upload" class="menuitem" disabled={busy || demo}>{demo ? m.files_upload_demo() : m.files_upload()}</Menu.Item>
       {/if}
-      <Menu.Item value="rename" class="menuitem">Rename <span class="ml-auto text-xs">F2</span></Menu.Item>
-      <Menu.Item value="move" class="menuitem">Move to…</Menu.Item>
-      {#if node.kind !== "folder"}<Menu.Item value="duplicate" class="menuitem">Duplicate</Menu.Item>{/if}
+      <Menu.Item value="rename" class="menuitem">{m.files_rename()} <span class="ml-auto text-xs">F2</span></Menu.Item>
+      <Menu.Item value="move" class="menuitem">{m.files_move_to()}</Menu.Item>
+      {#if node.kind !== "folder"}<Menu.Item value="duplicate" class="menuitem">{m.files_duplicate()}</Menu.Item>{/if}
     {/if}
-    <Menu.Item value="download" class="menuitem">Download</Menu.Item>
-    {#if mayEdit}<Menu.Item value="delete" class="menuitem">Delete…</Menu.Item>{/if}
+    <Menu.Item value="download" class="menuitem">{m.files_download()}</Menu.Item>
+    {#if mayEdit}<Menu.Item value="delete" class="menuitem">{m.files_delete_menu()}</Menu.Item>{/if}
   </ExplorerMenu>
 {/snippet}
 
@@ -419,32 +420,32 @@
   </TreeView.NodeProvider>
 {/snippet}
 
-<Modal open={dialog !== null} onclose={() => { dialog = null; refusal = ""; }} title={dialog?.type === "delete" ? "Delete selected items?" : "Move selected items"}
+<Modal open={dialog !== null} onclose={() => { dialog = null; refusal = ""; }} title={dialog?.type === "delete" ? m.files_dialog_delete_title() : m.files_dialog_move_title()}
   confirm={{
-    label: dialog?.type === "delete" ? "Delete" : "Move",
+    label: dialog?.type === "delete" ? m.files_delete() : m.files_move(),
     tone: dialog?.type === "delete" ? "error" : "primary",
     onclick: confirm,
     oncancel: () => { dialog = null; refusal = ""; },
   }}>
   {#if dialog?.type === "delete"}
     <p>{dialog.entries.map((entry) => basename(entry.path)).join(", ")}</p>
-    <p>{deleting.length} {deleting.length === 1 ? "file" : "files"} will be deleted. This cannot be undone.</p>
+    <p>{m.files_will_be_deleted({ count: deleting.length })}</p>
   {:else if dialog}
-    <label for="move-destination">Destination folder</label>
+    <label for="move-destination">{m.files_destination_folder()}</label>
     <select id="move-destination" class="select" bind:value={destination}>
-      <option value="">Top level</option>
+      <option value="">{m.files_top_level()}</option>
       {#each directories.filter((path) => !dialog.entries.some((entry) => entry.kind === "folder" && (entry.path === path || inside(path, entry.path)))) as path}
         <option value={path}>{path}</option>
       {/each}
     </select>
-    <p class="text-sm lp-text-secondary">References in source files are not changed automatically.</p>
+    <p class="text-sm lp-text-secondary">{m.files_references_unchanged()}</p>
   {/if}
   {#if refusal}<p class="refusal" role="alert">{refusal}</p>{/if}
 </Modal>
-<Modal open={conflict !== null} onclose={() => resolveConflict(false)} title="This name is already in use"
-  cancelLabel="Skip"
-  confirm={{ label: "Keep both", onclick: () => resolveConflict(true), oncancel: () => resolveConflict(false) }}>
-  <p>{conflict}</p><p>Keep both files with a new name, or skip this upload.</p>
+<Modal open={conflict !== null} onclose={() => resolveConflict(false)} title={m.files_name_in_use()}
+  cancelLabel={m.files_skip()}
+  confirm={{ label: m.files_keep_both(), onclick: () => resolveConflict(true), oncancel: () => resolveConflict(false) }}>
+  <p>{conflict}</p><p>{m.files_keep_both_note()}</p>
 </Modal>
 
 <style>

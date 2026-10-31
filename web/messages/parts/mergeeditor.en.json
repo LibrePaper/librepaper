@@ -1,0 +1,12 @@
+{
+  "mergeeditor_target_default": "Live document",
+  "mergeeditor_baseline_default": "label",
+  "mergeeditor_source": "Source",
+  "mergeeditor_document": "document",
+  "mergeeditor_sides": " · {baseline} on the left, {target} on the right",
+  "mergeeditor_source_only": " · {baseline} source",
+  "mergeeditor_compare": "Compare {baseline} with {target}",
+  "mergeeditor_label_source": "Label source",
+  "mergeeditor_restore": "Compare with live to restore passages",
+  "mergeeditor_close": "Close diff"
+}
