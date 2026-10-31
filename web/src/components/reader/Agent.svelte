@@ -19,12 +19,13 @@
     taskHint, taskPrompt, taskScopes, taskSections,
   } from "../../lib/assistant.js";
   import { humanizeTool, permissionAction, permissionButtons } from "../../lib/agent-permission.js";
+  import { m } from "../../lib/paraglide/messages.js";
 
   let {
     slug, link, canShare = false, path = "", selection = null, revision = "", request = null,
     diagnostics = [],
     comments = [], changes = [], onreview, onpreview, onsettings,
-    userName = "You",
+    userName = m.agent_you(),
   } = $props();
   let client = $state.raw(null);
   const EMPTY_CONNECTION = { id: "", token: "", messages: [], tasks: {}, connected: false,
@@ -76,8 +77,8 @@
   // the narrowest level that works, and it writes only comments. Edit is needed
   // for tracked changes.
   const roles = [
-    { id: "commenter", label: "Comment", help: "Read and comment. Cannot change text" },
-    { id: "editor", label: "Edit", help: "Make tracked changes and apply edits when asked", warn: true },
+    { id: "commenter", label: m.agent_role_comment(), help: m.agent_role_comment_help() },
+    { id: "editor", label: m.agent_role_edit(), help: m.agent_role_edit_help(), warn: true },
   ];
   const currentRole = $derived.by(() => !caps.verified ? "" : caps.can_edit ? "editor" : caps.can_comment ? "commenter" : caps.can_read ? "reader" : "");
   // Without sharing rights the panel can only hand out the access the reader
@@ -120,16 +121,16 @@
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok || typeof body.token !== "string" || !body.token.startsWith("lpa_")) {
-      throw new Error(body.error || "Sign in again to authorize the local assistant.");
+      throw new Error(body.error || m.agent_sign_in_again());
     }
     return body.token;
   }
   let access = $state(roles.some((entry) => entry.id === lastUsed(LAST_ACCESS)) ? lastUsed(LAST_ACCESS) : "commenter");
-  const runningLabel = $derived(installed.find((entry) => entry.id === assistant.agent)?.label || chosenInstalled?.label || "The agent");
+  const runningLabel = $derived(installed.find((entry) => entry.id === assistant.agent)?.label || chosenInstalled?.label || m.agent_the_agent());
   let tab = $state("chat");
   const TABS = [
-    { id: "chat", label: "Chat" },
-    { id: "tasks", label: "Tasks" },
+    { id: "chat", label: m.agent_tab_chat() },
+    { id: "tasks", label: m.agent_tab_tasks() },
   ];
   let pendingRequest = $state(null);
   let commentContext = $state(null);
@@ -147,8 +148,8 @@
   // and the file wins over the whole document.
   const chatScope = $derived(attachment ? "selection" : scope === "document" || !contextPath ? "document" : "file");
   const contextLabel = $derived(chatScope === "selection"
-    ? (attachment?.path ? `Selection · ${attachment.path}` : "Selection")
-    : chatScope === "file" ? contextPath : "Whole document");
+    ? (attachment?.path ? m.agent_context_selection_path({ path: attachment.path }) : m.agent_context_selection())
+    : chatScope === "file" ? contextPath : m.agent_context_document());
   const runnerReady = $derived(connection.connected && connection.runnerConnected);
   // No agent attached yet, but sending can start the chosen one first.
   const canStart = $derived(!runnerReady && !assistant.running && Boolean(connection.id) && Boolean(chosenInstalled?.assistant));
@@ -172,13 +173,13 @@
     if (!chosen) return "";
     if (COMMENT_TASKS.includes(chosenTaskId) && commentContext) {
       const live = comments.find((item) => String(item.id) === String(commentContext.id));
-      if (!live || live.resolved) return "The attached comment is no longer available.";
+      if (!live || live.resolved) return m.agent_comment_gone();
     }
     if (diagnostic) {
       const file = diagnostic.file || diagnostic.path || "";
       const present = diagnostics.some((item) => (item.file || item.path || "") === file
         && (item.line || 0) === (diagnostic.line || 0) && item.message === diagnostic.message);
-      if (!present) return "This diagnostic is gone after the last compile.";
+      if (!present) return m.agent_diagnostic_gone();
     }
     return "";
   });
@@ -190,7 +191,7 @@
   const canGrantEdit = $derived(roleOffered({ id: "editor" }));
   const agentReady = $derived(runnerReady || canStart);
   const commentTarget = $derived(COMMENT_TASKS.includes(chosenTaskId) && commentContext
-    ? `Comment: "${clip(commentContext.body || commentContext.exact || "", 80)}"` : "");
+    ? m.agent_comment_target({ text: clip(commentContext.body || commentContext.exact || "", 80) }) : "");
   const diagnosticTarget = $derived(diagnostic
     ? (diagnostic.message
       ? `${contextPath}${diagnostic.line ? `:${diagnostic.line}` : ""} ${diagnostic.message}`.trim()
@@ -228,11 +229,11 @@
   }
 
   const activityText = $derived.by(() => {
-    if (activeTask?.status === "working") return `${humanizeTool(activeTask.message) || `${runningLabel} is working`}… · ${formatElapsed(elapsedTime)}`;
-    if (activeTask?.status === "needs_input") return "Waiting for permission";
+    if (activeTask?.status === "working") return `${humanizeTool(activeTask.message) || m.agent_is_working({ agent: runningLabel })}… · ${formatElapsed(elapsedTime)}`;
+    if (activeTask?.status === "needs_input") return m.agent_waiting_permission();
     return "";
   });
-  const queueText = $derived(queueCount === 1 ? "Request queued" : queueCount ? `${queueCount} requests queued` : "");
+  const queueText = $derived(queueCount ? m.agent_queue({ count: queueCount }) : "");
 
   function viewQueued() {
     const id = viewableQueued?.id;
@@ -299,14 +300,14 @@
         const answer = await post(endpoint, { create: { kind: "link", role: mode, until: "7d", name: "Agent" } });
         accessLink = answer.created;
       }
-      if (!accessLink?.url) throw new Error("Could not create an agent access link.");
+      if (!accessLink?.url) throw new Error(m.agent_link_create_failed());
       agentLink = new URL(accessLink.url, location.origin).href;
     }
-    if (!validDocumentLink()) throw new Error("The access link must point to this document.");
+    if (!validDocumentLink()) throw new Error(m.agent_link_wrong_document());
     await checkCapabilities(agentLink, { strict: true });
     if (currentRole !== mode) {
-      const roleName = mode === "editor" ? "edit" : mode === "commenter" ? "comment" : "read";
-      throw new Error(`This access link does not grant ${roleName} access.`);
+      const role = mode === "editor" ? m.agent_role_word_edit() : mode === "commenter" ? m.agent_role_word_comment() : m.agent_role_word_read();
+      throw new Error(m.agent_link_no_grant({ role }));
     }
   }
 
@@ -374,7 +375,7 @@
       link: withoutKey(agentLink || link), conversation: connection.id,
       chatToken: connection.token, agentToken, agent: chosenAgent, access: mode,
     });
-    if (!answer?.running) throw new Error(answer?.error || "The assistant did not start.");
+    if (!answer?.running) throw new Error(answer?.error || m.agent_not_started());
     assistant = { running: true, agent: chosenAgent, access: mode };
     client.rememberAssistant({ agent: chosenAgent, access: mode });
     rememberLastUsed(LAST_AGENT, chosenAgent);
@@ -668,7 +669,7 @@
   function uncertainTasks() { return Object.values(connection.tasks || {}).filter((item) => item?.delivery === "uncertain"); }
   async function retryTask(id) {
     await act(async () => {
-      if (!await client.retry(id)) throw new Error("The original request is no longer available to retry.");
+      if (!await client.retry(id)) throw new Error(m.agent_retry_gone());
     });
   }
   /// Answer a permission request with one of the options the agent offered.
@@ -683,7 +684,7 @@
   function chooseResult(results) {
     const reviewable = visibleResults({ context: { results } }, changes);
     if (reviewable.changes.length) onreview?.(reviewable);
-    else problem = "These changes are no longer pending.";
+    else problem = m.agent_changes_gone();
   }
 
   $effect(() => {
@@ -729,13 +730,13 @@
 
 </script>
 
-<section class="panel panel-tabbed agent-panel" aria-label="Agent chat" bind:this={panelEl}>
-  <PanelHeader title="Agent" />
+<section class="panel panel-tabbed agent-panel" aria-label={m.agent_panel_label()} bind:this={panelEl}>
+  <PanelHeader title={m.agent_title()} />
   <!-- This stays in the local template scope instead of becoming an unknown
        snippet prop on PanelTabs. -->
   {#snippet connectPrompt()}
     <div class="connect-required">
-      <DesktopOnly feature="The agent" description="Chat with Claude, Codex or another coding agent that reads and edits this project." />
+      <DesktopOnly feature={m.agent_the_agent()} description={m.agent_feature_description()} />
     </div>
   {/snippet}
   <!-- Which agent, with what access: one quiet line, since both nearly always
@@ -745,17 +746,17 @@
   {#snippet agentSettings()}
   <div class="agent-settings">
     {#if installed.length}
-      <select class="agent-setting" aria-label="Agent" disabled={busy} value={chosenAgent}
+      <select class="agent-setting" aria-label={m.agent_select_label()} disabled={busy} value={chosenAgent}
               onchange={(event) => void choose(() => chosenAgent = event.currentTarget.value)}>
         {#each installed as entry (entry.id)}<option value={entry.id}>{entry.label}</option>{/each}
       </select>
       <span aria-hidden="true">·</span>
-      <select class="agent-setting" aria-label="Access" disabled={busy || !connection.id} value={access}
+      <select class="agent-setting" aria-label={m.agent_access_label()} disabled={busy || !connection.id} value={access}
               onchange={(event) => void choose(() => access = event.currentTarget.value)}>
         {#each roles as entry}<option value={entry.id} disabled={!roleOffered(entry)} title={entry.help}>{entry.label}</option>{/each}
       </select>
     {:else}
-      <span>No supported coding agent was found on this computer.</span>
+      <span>{m.agent_none_found()}</span>
     {/if}
   </div>
   {/snippet}
@@ -766,10 +767,10 @@
       {#if paired}{@render agentSettings()}{/if}
       <span class="pane-actions">
       {#if withNewConversation && connection.id}
-        <IconButton icon="eraser" label="New conversation" tone="plain" size="btn-icon-sm"
+        <IconButton icon="eraser" label={m.agent_new_conversation()} tone="plain" size="btn-icon-sm"
                     disabled={busy} onclick={() => void newConversation()} />
       {/if}
-      <IconButton icon="sliders" label="Agent settings" tone="plain" size="btn-icon-sm"
+      <IconButton icon="sliders" label={m.agent_settings_label()} tone="plain" size="btn-icon-sm"
                   onclick={() => onsettings?.()} />
       </span>
     </div>
@@ -780,8 +781,8 @@
        dashboard bolted underneath it. -->
   {#snippet permissionCard()}
     {#if inputTask}
-      <div class="permission-card" role="group" aria-label="Assistant input request">
-        <span class="permission-label">Permission required</span>
+      <div class="permission-card" role="group" aria-label={m.agent_input_request_label()}>
+        <span class="permission-label">{m.agent_permission_required()}</span>
         <p>{permissionAction(inputTask.input)}</p>
         <!-- The agent names its own options, so the card renders exactly
              those, ordered and labelled by kind. Inventing an option it
@@ -795,11 +796,11 @@
         {#if inputTask.input.details}
           {@const details = inputTask.input.details}
           <details class="permission-info">
-            <summary>Details</summary>
+            <summary>{m.agent_details()}</summary>
             <div class="permission-details">
-              {#if details.command}<p><strong>Command</strong><code>{details.command.slice(0, 2048)}{#if details.command.length > 2048}…{/if}</code></p>{/if}
-              {#if details.files?.length}<p><strong>Files</strong><span>{details.files.slice(0, 8).map((path) => String(path).slice(0, 512)).join(", ")}{#if details.files.length > 8} and {details.files.length - 8} more{/if}</span></p>{/if}
-              {#if details.diff}<details><summary>Review changes</summary><pre>{details.diff.slice(0, 2048)}{#if details.diff.length > 2048}…{/if}</pre></details>{/if}
+              {#if details.command}<p><strong>{m.agent_command()}</strong><code>{details.command.slice(0, 2048)}{#if details.command.length > 2048}…{/if}</code></p>{/if}
+              {#if details.files?.length}<p><strong>{m.agent_files()}</strong><span>{details.files.slice(0, 8).map((path) => String(path).slice(0, 512)).join(", ")}{#if details.files.length > 8} {m.agent_files_more({ count: details.files.length - 8 })}{/if}</span></p>{/if}
+              {#if details.diff}<details><summary>{m.agent_review_changes()}</summary><pre>{details.diff.slice(0, 2048)}{#if details.diff.length > 2048}…{/if}</pre></details>{/if}
             </div>
           </details>
         {/if}
@@ -816,28 +817,28 @@
   {#snippet queuedNote(message)}
     {#if message.role === "user" && connection.tasks?.[message.id]?.status === "queued"}
       {@const item = connection.tasks[message.id]}
-      <p class="queued-note" data-task-id={message.id}>Queued{#if item.cancelRequested} · Cancelling…{:else} · <button type="button" class="agent-text-action" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(message.id))}>Cancel</button>{/if}</p>
+      <p class="queued-note" data-task-id={message.id}>{m.agent_queued()}{#if item.cancelRequested} · {m.agent_cancelling()}{:else} · <button type="button" class="agent-text-action" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(message.id))}>{m.agent_cancel()}</button>{/if}</p>
     {/if}
   {/snippet}
 
   <!-- The context choice sits inside the composer, as a quiet trigger. -->
   {#snippet chatContext()}
     <Menu onSelect={({ value }) => chooseContext(value)}>
-      <Menu.Trigger class="context-trigger" aria-label={`Context: ${contextLabel}`} title={contextLabel}>
+      <Menu.Trigger class="context-trigger" aria-label={m.agent_context_label({ label: contextLabel })} title={contextLabel}>
         <span class="context-label">{contextLabel}</span><Icon name="chevron-down" size="0.875rem" />
       </Menu.Trigger>
       <ExplorerMenu>
         <Menu.Item value="selection" class="menuitem" disabled={!attachment && !selection?.exact}>
           <span class="menuitem-check" aria-hidden="true">{chatScope === "selection" ? "✓" : ""}</span>
-          <span class="menuitem-label">Selected passage</span>
+          <span class="menuitem-label">{m.agent_context_passage()}</span>
         </Menu.Item>
         <Menu.Item value="file" class="menuitem" disabled={!contextPath}>
           <span class="menuitem-check" aria-hidden="true">{chatScope === "file" ? "✓" : ""}</span>
-          <span class="menuitem-label">{contextPath ? `Current file · ${contextPath}` : "Current file"}</span>
+          <span class="menuitem-label">{contextPath ? m.agent_context_file_path({ path: contextPath }) : m.agent_context_file()}</span>
         </Menu.Item>
         <Menu.Item value="document" class="menuitem">
           <span class="menuitem-check" aria-hidden="true">{chatScope === "document" ? "✓" : ""}</span>
-          <span class="menuitem-label">Whole document</span>
+          <span class="menuitem-label">{m.agent_context_document()}</span>
         </Menu.Item>
       </ExplorerMenu>
     </Menu>
@@ -845,7 +846,7 @@
 
   <!-- The strip, its ids and the layout of a pane are PanelTabs', shared with
        the collaboration panel. What is left here is what the tabs contain. -->
-  <PanelTabs id="agent" label="Agent" listClass="agent-tabs" tabs={TABS}
+  <PanelTabs id="agent" label={m.agent_title()} listClass="agent-tabs" tabs={TABS}
              value={tab} onchange={(value) => tab = value}>
 
   <Tabs.Content value="chat" class="agent-tab-content">
@@ -854,17 +855,17 @@
     {@render connectPrompt()}
   {:else}
     <div class="chat-history">
-    {#if !connection.id}<button class="btn lp-control-brand" disabled={busy || connecting} onclick={() => void act(() => client.create())}>{connecting ? "Connecting…" : "Retry connection"}</button>{/if}
+    {#if !connection.id}<button class="btn lp-control-brand" disabled={busy || connecting} onclick={() => void act(() => client.create())}>{connecting ? m.agent_connecting() : m.agent_retry_connection()}</button>{/if}
     {#if connection.id && !connection.connected}
-      <div role="status"><span class="panel-muted">Reconnecting…</span> <button class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => void reconnect()}>Reconnect now</button></div>
+      <div role="status"><span class="panel-muted">{m.agent_reconnecting()}</span> <button class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => void reconnect()}>{m.agent_reconnect_now()}</button></div>
     {/if}
 
   {#each uncertainTasks() as item (item.id)}
-    <p class="panel-meta" role="alert">Message delivery was not confirmed. <button class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => void retryTask(item.id)}>Retry delivery</button></p>
+    <p class="panel-meta" role="alert">{m.agent_delivery_unconfirmed()} <button class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => void retryTask(item.id)}>{m.agent_retry_delivery()}</button></p>
   {/each}
   <ChatTranscript messages={connection.messages}
-                  emptyTitle="No messages yet"
-                  emptyText={connection.runnerConnected ? "Messages go to the agent on this computer." : "Send a message to start the agent."}
+                  emptyTitle={m.agent_empty_title()}
+                  emptyText={connection.runnerConnected ? m.agent_empty_connected() : m.agent_empty_send()}
                   onresult={chooseResult} after={transcriptEnd} messageEnd={queuedNote}
                   roleLabel={(message) => message.role === "user" ? userName : (message.creator || message.role)} />
 
@@ -872,16 +873,16 @@
        is not there yet starts when the message is sent, so that case gets no
        line here. -->
   {#if !sendable && (uncertainDelivery || connection.runnerConnected)}
-    <p class="panel-meta">{uncertainDelivery ? "This request was not confirmed. Retry delivery above before sending it again." : "This task needs the appropriate access and context. Choose another task or attach a passage."}</p>
+    <p class="panel-meta">{uncertainDelivery ? m.agent_not_confirmed() : m.agent_task_needs_context()}</p>
   {/if}
     </div>
   <!-- Why sending cannot start this agent, or what its route cannot do. -->
   {#if chosenInstalled?.assistant_blocked || chosenInstalled?.assistant_note}
     <!-- An older desktop app sends no assistant_docs, so the link falls back to the agents page. -->
-    <p class="panel-meta" data-agent-note={chosenInstalled.id}>{chosenInstalled.assistant_blocked}{chosenInstalled.assistant_note}{#if chosenInstalled.assistant_blocked} <a href={chosenInstalled.assistant_docs || "https://librepaper.org/agents.html"} target="_blank" rel="noreferrer">Setup instructions</a>{/if}</p>
+    <p class="panel-meta" data-agent-note={chosenInstalled.id}>{chosenInstalled.assistant_blocked}{chosenInstalled.assistant_note}{#if chosenInstalled.assistant_blocked} <a href={chosenInstalled.assistant_docs || "https://librepaper.org/agents.html"} target="_blank" rel="noreferrer">{m.agent_setup_docs()}</a>{/if}</p>
   {/if}
   {#if assistant.agent !== chosenAgent && chosenInstalled?.assistant_fetches}
-    <p class="panel-meta" data-adapter-fetch>Starting it downloads its adapter.{#if chosenInstalled.assistant_install}{" "}To install it for good, run <code>{chosenInstalled.assistant_install}</code>.{/if}</p>
+    <p class="panel-meta" data-adapter-fetch>{m.agent_adapter_download()}{#if chosenInstalled.assistant_install}{" "}{m.agent_adapter_install()} <code>{chosenInstalled.assistant_install}</code>.{/if}</p>
   {/if}
   <!-- The first row says what the running task is doing, with Stop.
        The second appears only while requests wait, with View and Cancel. -->
@@ -893,9 +894,9 @@
           <span class="agent-status-actions">
             {#if assistant.running}
               {#if activeTask.cancelRequested}
-                <span class="agent-status-note">Stopping…</span>
+                <span class="agent-status-note">{m.agent_stopping()}</span>
               {:else}
-                <button type="button" class="agent-text-action" disabled={busy} onclick={() => void act(() => client.cancel(activeTask.id))}>Stop</button>
+                <button type="button" class="agent-text-action" disabled={busy} onclick={() => void act(() => client.cancel(activeTask.id))}>{m.agent_stop()}</button>
               {/if}
             {/if}
           </span>
@@ -906,13 +907,13 @@
           <p class="agent-progress agent-queue-text" role={activeTask ? undefined : "status"}>{queueText}</p>
           <span class="agent-status-actions">
             {#if viewableQueued}
-              <button type="button" class="agent-text-action" onclick={viewQueued}>View</button>
+              <button type="button" class="agent-text-action" onclick={viewQueued}>{m.agent_view()}</button>
             {/if}
             {#if queueCount === 1}
               {#if queuedTasks[0].cancelRequested}
-                <span class="agent-status-note">Cancelling…</span>
+                <span class="agent-status-note">{m.agent_cancelling()}</span>
               {:else}
-                <button type="button" class="agent-text-action" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(queuedTasks[0].id))}>Cancel</button>
+                <button type="button" class="agent-text-action" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(queuedTasks[0].id))}>{m.agent_cancel()}</button>
               {/if}
             {/if}
           </span>
@@ -920,7 +921,7 @@
       {/if}
     </div>
   {/if}
-  <ChatComposer placeholder={`Ask ${chosenInstalled?.label || "your agent"}…`} canSend={!busy && (sendable || startable)} draft={draft} ondraft={(value) => draft = value} onsend={send}
+  <ChatComposer placeholder={m.agent_ask({ agent: chosenInstalled?.label || m.agent_your_agent() })} canSend={!busy && (sendable || startable)} draft={draft} ondraft={(value) => draft = value} onsend={send}
                 context={chatContext} />
   {/if}
   </Tabs.Content>
@@ -931,8 +932,8 @@
   {:else}
   {#if pendingRequest}
     <div class="request-warning" role="alert">
-      <span>A new request arrived. Replace this one?</span>
-      <div class="setup-actions"><button class="btn btn-sm lp-control-brand" onclick={() => applyRequest(pendingRequest)}>Replace</button><button class="btn btn-sm" onclick={() => pendingRequest = null}>Keep current</button></div>
+      <span>{m.agent_request_arrived()}</span>
+      <div class="setup-actions"><button class="btn btn-sm lp-control-brand" onclick={() => applyRequest(pendingRequest)}>{m.agent_replace()}</button><button class="btn btn-sm" onclick={() => pendingRequest = null}>{m.agent_keep_current()}</button></div>
     </div>
   {/if}
   {#if taskView === "prepare" && chosen}
@@ -940,17 +941,17 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="agent-context task-prepare" onkeydown={prepareKeydown}>
       <div class="task-head">
-        <button class="task-back" aria-label="Back to tasks" bind:this={backEl} onclick={() => leavePrepare()}><Icon name="arrow-left" size={18} /></button>
+        <button class="task-back" aria-label={m.agent_back_tasks()} bind:this={backEl} onclick={() => leavePrepare()}><Icon name="arrow-left" size={18} /></button>
         <h3 class="task-title">{chosen.label}</h3>
       </div>
       <p class="panel-muted task-description">{chosen.description}</p>
       {#if commentTarget}<p class="panel-meta task-target" title={commentContext.body || commentContext.exact || ""}>{commentTarget}</p>{/if}
       {#if diagnostic}
         <p class="panel-meta task-target" title={diagnosticTarget}>{diagnosticTarget}</p>
-        {#if !contextTask}<div class="attachment-actions"><button class="btn btn-sm" onclick={() => { diagnostic = null; diagnosticRevision = ""; }}>Remove diagnostic</button></div>{/if}
+        {#if !contextTask}<div class="attachment-actions"><button class="btn btn-sm" onclick={() => { diagnostic = null; diagnosticRevision = ""; }}>{m.agent_remove_diagnostic()}</button></div>{/if}
       {/if}
       {#if !contextTask && taskScopes(chosen).length > 1}
-        <label class="label task-scope">Scope
+        <label class="label task-scope">{m.agent_scope()}
           <select class="select" value={scope} onchange={(event) => scope = event.currentTarget.value}>
             {#each taskScopes(chosen) as id}
               <option value={id} disabled={!scopeAvailable(id)}>{scopeLabel(id, { path: contextPath, attached: id === "selection" ? attachment : null })}</option>
@@ -960,19 +961,19 @@
       {/if}
       {#if scope === "selection" && attachment && !commentTarget}
         <div class="attachment">
-          <strong>{attachment.anchored ? "Selected text" : "Quoted text"}, {selectedWords} {selectedWords === 1 ? "word" : "words"} · {attachment.path || path || "document"}</strong>
+          <strong>{m.agent_attachment_summary({ kind: attachment.anchored ? m.agent_selected_text() : m.agent_quoted_text(), count: selectedWords, path: attachment.path || path || m.agent_document_word() })}</strong>
           <blockquote title={selectedText}>{selectedText}</blockquote>
-          <div class="attachment-actions"><button class="btn btn-sm" onclick={removeSelection}>Remove</button><button class="btn btn-sm" disabled={!selection?.exact} onclick={replaceSelection}>Replace with current selection</button></div>
-          {#if !attachment.anchored}<p class="panel-muted" role="alert">This passage was selected in the preview. Select it in the editor for Tighten and Rewrite.</p>{/if}
+          <div class="attachment-actions"><button class="btn btn-sm" onclick={removeSelection}>{m.agent_remove()}</button><button class="btn btn-sm" disabled={!selection?.exact} onclick={replaceSelection}>{m.agent_replace_selection()}</button></div>
+          {#if !attachment.anchored}<p class="panel-muted" role="alert">{m.agent_preview_passage_note()}</p>{/if}
         </div>
       {/if}
-      <textarea class="input task-extra" rows="1" placeholder="Additional instructions (optional)" aria-label="Additional instructions"
+      <textarea class="input task-extra" rows="1" placeholder={m.agent_extra_placeholder()} aria-label={m.agent_extra_label()}
                 value={extra} oninput={(event) => extra = event.currentTarget.value}
                 onkeydown={(event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void sendTask(); } }}></textarea>
       {#if staleReason || accessGap || blocker || !agentReady}
-        <p class="panel-meta" role="status">{staleReason || (accessGap ? (canGrantEdit ? "This task makes tracked changes. Set the agent's access to Edit above." : "This task makes tracked changes. You need edit access to run it.") : blocker || "Start an agent in the Chat tab before sending a task.")}</p>
+        <p class="panel-meta" role="status">{staleReason || (accessGap ? (canGrantEdit ? m.agent_task_tracked_grant() : m.agent_task_tracked_no_access()) : blocker || m.agent_start_first())}</p>
       {/if}
-      <div class="prepare-actions"><button class="btn btn-sm lp-control-brand" disabled={busy || Boolean(staleReason) || Boolean(blocker) || accessGap || !agentReady} onclick={() => void sendTask()}>Send to agent</button></div>
+      <div class="prepare-actions"><button class="btn btn-sm lp-control-brand" disabled={busy || Boolean(staleReason) || Boolean(blocker) || accessGap || !agentReady} onclick={() => void sendTask()}>{m.agent_send_to_agent()}</button></div>
     </div>
   {:else}
     {#snippet taskRow(entry, group)}
@@ -1001,7 +1002,7 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="agent-context task-launcher" onkeydown={launcherKeydown}>
       <div class="task-browser-head">
-        <input bind:this={searchEl} class="input task-search" type="search" placeholder="Search tasks..." aria-label="Search tasks" aria-controls="agent-task-results"
+        <input bind:this={searchEl} class="input task-search" type="search" placeholder={m.agent_search_placeholder()} aria-label={m.agent_search_label()} aria-controls="agent-task-results"
                value={taskQuery} oninput={(event) => taskQuery = event.currentTarget.value}
                onkeydown={searchKeydown} />
       </div>
@@ -1009,11 +1010,11 @@
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div id="agent-task-results" class="task-results" bind:this={listEl} onkeydown={resultsKeydown}>
         {#if searching}
-          {#if results.length}<ul class="task-list" aria-label="Matching tasks">{#each results as entry (entry.id)}{@render taskRow(entry, "search")}{/each}</ul>
-          {:else}<p class="panel-muted" role="status">No tasks match "{taskQuery.trim()}". Try another word, such as grammar or citations.</p>{/if}
+          {#if results.length}<ul class="task-list" aria-label={m.agent_matching_tasks()}>{#each results as entry (entry.id)}{@render taskRow(entry, "search")}{/each}</ul>
+          {:else}<p class="panel-muted" role="status">{m.agent_no_match({ query: taskQuery.trim() })}</p>{/if}
         {:else}
           {#if frequent.length}
-            <h4 class="task-group-label" id="task-frequent-label">Frequently used</h4>
+            <h4 class="task-group-label" id="task-frequent-label">{m.agent_frequent()}</h4>
             <ul class="task-list" aria-labelledby="task-frequent-label">
               {#each frequent as entry (entry.id)}{@render taskRow(entry, "frequent")}{/each}
             </ul>

@@ -3,6 +3,7 @@
   import Avatar from "./Avatar.svelte";
   import Icon from "./Icon.svelte";
   import { chatRows } from "../lib/chat-rows.js";
+  import { m } from "../lib/paraglide/messages.js";
   // One transcript for every conversation the sidebar holds: the live chat
   // between people and the exchange with an agent render through this same
   // widget. A compact, bubble-free layout in the style of a chat app: a day
@@ -11,9 +12,9 @@
   // in the gutter when hovered.
   let {
     messages = [],
-    emptyTitle = "No messages yet",
+    emptyTitle = m.chattranscript_empty_title(),
     emptyText = "",
-    label = "Conversation",
+    label = m.chattranscript_label(),
     roleLabel = (message) => message.creator || message.role,
     authorKey = (message) => `${message.role || ""}:${message.creator || ""}`,
     onresult = undefined,
@@ -75,7 +76,7 @@
   <div class="chat-transcript" bind:this={transcript} onscroll={scrolled} role="log" aria-label={label} aria-live="polite" aria-relevant="additions text">
     {#if more && onloadolder}
       <button type="button" class="btn btn-sm lp-control-tonal-brand older" disabled={loadingOlder} onclick={older}>
-        {loadingOlder ? "Loading..." : "Load older messages"}
+        {loadingOlder ? m.chattranscript_loading_older() : m.chattranscript_load_older()}
       </button>
     {/if}
     {#if loadError}<p class="panel-muted" role="alert">{loadError}</p>{/if}
@@ -105,19 +106,19 @@
           {/if}
           <p class="chat-text" title={starts ? undefined : stamp}>{message.text}</p>
           {#each confirmed.filter(effect => effect.kind === "application" || effect.kind === "comment") as effect}
-            <p>{effect.kind === "application" ? "Source changes applied." : `Comment action confirmed: ${effect.action}.`}</p>
+            <p>{effect.kind === "application" ? m.chattranscript_source_applied() : m.chattranscript_comment_confirmed({ action: effect.action })}</p>
           {/each}
           {#if confirmedOmitted}
-            <p>{confirmedOmitted} additional confirmed effects omitted from this summary.</p>
+            <p>{m.chattranscript_confirmed_omitted({ count: confirmedOmitted })}</p>
           {/if}
           {#if refusedCount || unresolvedCount}
             <p class="effect-warning" role="alert">
-              {#if refusedCount}{refusedCount} document operation{refusedCount === 1 ? " was" : "s were"} refused.{/if}
-              {#if unresolvedCount} {unresolvedCount} document operation{unresolvedCount === 1 ? " has" : "s have"} an unconfirmed outcome.{/if}
+              {#if refusedCount}{m.chattranscript_refused({ count: refusedCount })}{/if}
+              {#if unresolvedCount} {m.chattranscript_unconfirmed({ count: unresolvedCount })}{/if}
             </p>
           {/if}
           {#if message.context?.results?.changes?.length}
-            <button class="btn btn-sm lp-control-tonal-brand" onclick={() => onresult?.(message.context.results)}>Review changes</button>
+            <button class="btn btn-sm lp-control-tonal-brand" onclick={() => onresult?.(message.context.results)}>{m.chattranscript_review_changes()}</button>
           {/if}
           {@render messageEnd?.(message)}
         </div>
@@ -133,7 +134,7 @@
     {@render after?.()}
   </div>
   {#if unread}
-    <button class="btn btn-sm lp-control-tonal-brand new-messages" onclick={() => { following = true; void follow(); }}>New messages <Icon name="arrow-down" /></button>
+    <button class="btn btn-sm lp-control-tonal-brand new-messages" onclick={() => { following = true; void follow(); }}>{m.chattranscript_new_messages()} <Icon name="arrow-down" /></button>
   {/if}
 </div>
 
