@@ -7,6 +7,7 @@
   import { menubar } from "../lib/menubar.svelte.js";
   import Modal from "./Modal.svelte";
   import { rankEntries, entryLabel } from "../lib/bibliography.js";
+  import { m } from "../lib/paraglide/messages.js";
   import { INSERT_ACTIONS, insertionAvailability, buildInsertion, gatherInsertEnvironments, gatherInsertTargets, insertEnvironmentFields } from "../lib/insert.js";
 
   /** @typedef {import("../lib/insert.js").InsertContext} InsertContext */
@@ -71,11 +72,11 @@
   const menuTree = [
     "figure", "table", "citation", "cross-reference", "footnote", "link", "heading",
     "inline-math", "display-math",
-    { label: "Lists", ids: ["bulleted-list", "numbered-list", "description-list"] },
-    { label: "Theorems", ids: ["theorem", "lemma", "proposition", "definition", "proof", "example", "remark"] },
-    { label: "Blocks", ids: ["quote", "quotation", "code-block"] },
-    { label: "Document", ids: ["abstract", "appendix", "toc", "bibliography", "label"] },
-    { label: "Layout", ids: ["page-break", "horizontal-rule", "columns", "custom-environment"] }
+    { label: m.insertmenu_group_lists(), ids: ["bulleted-list", "numbered-list", "description-list"] },
+    { label: m.insertmenu_group_theorems(), ids: ["theorem", "lemma", "proposition", "definition", "proof", "example", "remark"] },
+    { label: m.insertmenu_group_blocks(), ids: ["quote", "quotation", "code-block"] },
+    { label: m.insertmenu_group_document(), ids: ["abstract", "appendix", "toc", "bibliography", "label"] },
+    { label: m.insertmenu_group_layout(), ids: ["page-break", "horizontal-rule", "columns", "custom-environment"] }
   ];
 
   /** @type {Record<string, InsertionDraft>} */
@@ -115,7 +116,7 @@
   /** @param {string} id @param {InsertionDraft} options @param {InsertMenuContext} context @returns {InsertionResult} */
   function safeBuild(id, options, context) {
     try { error = ""; return buildInsertion(id, options, context); }
-    catch (cause) { const message = errorMessage(cause, "This insertion is not valid yet."); error = message; return { text: "", notes: [message], additionalEdits: [] }; }
+    catch (cause) { const message = errorMessage(cause, m.insertmenu_insertion_invalid()); error = message; return { text: "", notes: [message], additionalEdits: [] }; }
   }
   /** @param {string} id */
   function startsDialog(id) {
@@ -180,9 +181,9 @@
   function insert(id, options, context) {
     let result;
     try { result = buildInsertion(id, options, context); }
-    catch (cause) { error = errorMessage(cause, "This insertion is not valid yet."); return; }
+    catch (cause) { error = errorMessage(cause, m.insertmenu_insertion_invalid()); return; }
     try { oninsert?.(result, context); }
-    catch (cause) { error = errorMessage(cause, "The insertion target changed."); dialog = id; dialogOpen = true; return; }
+    catch (cause) { error = errorMessage(cause, m.insertmenu_target_changed()); dialog = id; dialogOpen = true; return; }
     dialogGeneration += 1;
     dialogOpen = false;
     dialog = null;
@@ -193,7 +194,7 @@
     if (dialog === "citation" && source === "zotero") return submitZotero();
     busy = true;
     try { await insert(dialog, insertionOptions(), captured); }
-    catch (cause) { error = errorMessage(cause, "Could not generate this insertion."); }
+    catch (cause) { error = errorMessage(cause, m.insertmenu_generate_failed()); }
     finally { busy = false; }
   }
   // Importing writes the items into the project bibliography, so the context
@@ -210,12 +211,12 @@
       if (menuContext === stale) menuContext = null;
       captured = getContext?.() ?? null;
       if (!captured) {
-        error = "The document changed. Close this dialog and choose the insertion point again.";
+        error = m.insertmenu_document_changed();
         return;
       }
       insert("citation", { ...insertionOptions(), keys }, captured);
     }
-    catch (cause) { error = errorMessage(cause, "Could not import the Zotero items."); }
+    catch (cause) { error = errorMessage(cause, m.insertmenu_zotero_import_failed()); }
     finally { busy = false; }
   }
   /** @param {Event & {currentTarget: HTMLInputElement}} event */
@@ -228,7 +229,7 @@
       const path = await onupload(file);
       if (generation === dialogGeneration && dialog === "figure") draft.path = path;
     }
-    catch (cause) { error = errorMessage(cause, "Could not upload the image."); }
+    catch (cause) { error = errorMessage(cause, m.insertmenu_upload_failed()); }
     finally { if (generation === dialogGeneration && dialog === "figure") busy = false; }
   }
   /** @returns {InsertBibliographyEntry[]} */
@@ -253,9 +254,9 @@
   }
   /** @returns {string} */
   function zoteroReason() {
-    if (!onzoterosearch) return "desktop app only";
+    if (!onzoterosearch) return m.insertmenu_zotero_desktop_only();
     if (zoteroReady) return "";
-    return zoteroError ? "not running" : "checking";
+    return zoteroError ? m.insertmenu_zotero_not_running() : m.insertmenu_zotero_checking();
   }
   /** @param {string} text */
   async function searchZotero(text) {
@@ -266,7 +267,7 @@
     catch (cause) {
       if (generation === dialogGeneration && search === zoteroSearchCount) {
         zoteroReady = false;
-        zoteroError = errorMessage(cause, "Zotero is not running.");
+        zoteroError = errorMessage(cause, m.insertmenu_zotero_not_running_error());
         zoteroEntries = [];
       }
       return;
@@ -339,7 +340,7 @@
   </Menu>
 {/snippet}
 
-<MenubarMenu id="insert" label="Insert" {disabled}
+<MenubarMenu id="insert" label={m.insertmenu_insert()} {disabled}
              onopen={() => {
                // The context from the last opening is released, unless a dialog took it.
                if (menuContext && !(dialogOpen && captured === menuContext)) oncancel?.(menuContext);
@@ -351,8 +352,8 @@
     {#if typeof entry === "string"}{@render insertItem(entry)}{/if}
   {/each}
   <div class="menu-separator" role="separator"></div>
-  <Menu.Item value="palette:symbols" class="menuitem"><span class="menuitem-label">Symbols…</span>{#if keys.symbols}<span class="menuitem-keys">{keys.symbols}</span>{/if}</Menu.Item>
-  <Menu.Item value="palette:math" class="menuitem"><span class="menuitem-label">Math…</span>{#if keys.math}<span class="menuitem-keys">{keys.math}</span>{/if}</Menu.Item>
+  <Menu.Item value="palette:symbols" class="menuitem"><span class="menuitem-label">{m.insertmenu_symbols()}</span>{#if keys.symbols}<span class="menuitem-keys">{keys.symbols}</span>{/if}</Menu.Item>
+  <Menu.Item value="palette:math" class="menuitem"><span class="menuitem-label">{m.insertmenu_math()}</span>{#if keys.math}<span class="menuitem-keys">{keys.math}</span>{/if}</Menu.Item>
   <div class="menu-separator" role="separator"></div>
   {#each menuTree as entry}
     {#if typeof entry !== "string"}{@render subMenu(entry)}{/if}
@@ -360,10 +361,10 @@
   </div>
 </MenubarMenu>
 
-<Modal bind:open={dialogOpen} title={dialog ? actionLabel(dialog) : "Insert"} description={captured?.format ? `Generated for ${captured.format}` : null} onclose={closeDialog} wide
+<Modal bind:open={dialogOpen} title={dialog ? actionLabel(dialog) : m.insertmenu_insert()} description={captured?.format ? m.insertmenu_generated_for({ format: captured.format }) : null} onclose={closeDialog} wide
   confirm={{
     form: "insert-dialog",
-    label: "Insert",
+    label: m.insertmenu_insert(),
     // A failed Zotero import is retried with Insert, so its error does not disable it.
     disabled: busy || (Boolean(error) && !zoteroMode) || !insertReady,
     oncancel: closeDialog,
@@ -372,66 +373,66 @@
        name field of the rename dialog renames. -->
   <form id="insert-dialog" class="flex min-h-0 flex-col gap-3" onsubmit={(event) => { event.preventDefault(); void submit(); }}>
   {#if dialog === "citation"}
-    <label class="label">Source
+    <label class="label">{m.insertmenu_source()}
       <select class="select" value={source} onchange={(event) => chooseSource(event.currentTarget.value)}>
-        <option value="bibtex" disabled={!entries().length}>{entries().length ? "BibTeX" : "BibTeX (no bibliography)"}</option>
-        <option value="zotero" disabled={!zoteroReady}>{zoteroReason() ? `Zotero (${zoteroReason()})` : "Zotero"}</option>
+        <option value="bibtex" disabled={!entries().length}>{entries().length ? "BibTeX" : m.insertmenu_bibtex_no_bibliography()}</option>
+        <option value="zotero" disabled={!zoteroReady}>{zoteroReason() ? m.insertmenu_zotero_unavailable({ reason: zoteroReason() }) : "Zotero"}</option>
       </select>
     </label>
-    <input class="input" type="search" placeholder="Search author, title, year, or key" aria-label="Search bibliography" value={query}
+    <input class="input" type="search" placeholder={m.insertmenu_search_placeholder()} aria-label={m.insertmenu_search_label()} value={query}
            oninput={(event) => { query = event.currentTarget.value; scheduleZotero(); }} />
-    <div class="insert-results" role="group" aria-label={source === "zotero" ? "Zotero items" : "Bibliography entries"}>
+    <div class="insert-results" role="group" aria-label={source === "zotero" ? m.insertmenu_zotero_items_group() : m.insertmenu_bibliography_group()}>
       {#if source === "zotero"}
         {#each zoteroEntries as entry}
           <label class="insert-result"><input type="checkbox" value={entry.zotero_item} checked={zoteroSelected.some((item) => item.zotero_item === entry.zotero_item)} onchange={(event) => toggleZotero(entry, event.currentTarget.checked)} /><span><strong>{entry.key}</strong> {entryLabel(entry)}</span></label>
-        {:else}<p class="panel-muted">No matching Zotero items.</p>{/each}
+        {:else}<p class="panel-muted">{m.insertmenu_zotero_no_match()}</p>{/each}
       {:else}
         {#each filteredEntries as entry}
           <label class="insert-result"><input type="checkbox" value={entry.key} bind:group={draft.keys} /><span><strong>{entry.key}</strong> {entryLabel(entry)}</span></label>
-        {:else}<p class="panel-muted">No matching bibliography entries.</p>{/each}
+        {:else}<p class="panel-muted">{m.insertmenu_bibliography_no_match()}</p>{/each}
       {/if}
     </div>
-    <label class="label">Citation style <select class="select" bind:value={draft.style}><option value="default">Default</option><option value="narrative">Narrative / textual</option><option value="parenthetical">Parenthetical</option></select></label>
-    <label class="label">Page or locator (optional) <input class="input" bind:value={draft.locator} /></label>
+    <label class="label">{m.insertmenu_citation_style()} <select class="select" bind:value={draft.style}><option value="default">{m.insertmenu_style_default()}</option><option value="narrative">{m.insertmenu_style_narrative()}</option><option value="parenthetical">{m.insertmenu_style_parenthetical()}</option></select></label>
+    <label class="label">{m.insertmenu_locator()} <input class="input" bind:value={draft.locator} /></label>
   {:else if dialog === "figure"}
-    <label class="label">Project image <select class="select" bind:value={draft.path}><option value="">Choose an image…</option>{#if draft.path && !selectedImage}<option value={draft.path}>{draft.path}</option>{/if}{#each (captured?.files || []) as file}{@const path = typeof file === "string" ? file : file.path}{#if /\.(png|jpe?g|gif|svg|pdf|webp)$/i.test(path || "")}<option value={path}>{path}</option>{/if}{/each}</select></label>
-    <label class="label">Upload image{demo ? " (not available in the demo)" : ""} <input type="file" accept="image/*,.pdf" onchange={upload} disabled={demo} /></label>
+    <label class="label">{m.insertmenu_figure_image()} <select class="select" bind:value={draft.path}><option value="">{m.insertmenu_figure_choose()}</option>{#if draft.path && !selectedImage}<option value={draft.path}>{draft.path}</option>{/if}{#each (captured?.files || []) as file}{@const path = typeof file === "string" ? file : file.path}{#if /\.(png|jpe?g|gif|svg|pdf|webp)$/i.test(path || "")}<option value={path}>{path}</option>{/if}{/each}</select></label>
+    <label class="label">{demo ? m.insertmenu_upload_image_demo() : m.insertmenu_upload_image()} <input type="file" accept="image/*,.pdf" onchange={upload} disabled={demo} /></label>
     {#if draft.path}<p class="panel-muted">{draft.path}</p>{/if}
     {#if draft.path && onpreview}
-      {#await onpreview(draft.path) then url}{#if url}<img class="insert-image-preview" src={url} alt="Selected project asset" />{/if}{/await}
-    {:else if selectedImagePreview}<img class="insert-image-preview" src={selectedImagePreview} alt="Selected project asset" />{/if}
-    <label class="label">Caption <input class="input" bind:value={draft.caption} /></label>
-    <label class="label">Label <input class="input" bind:value={draft.label} /></label>
-    <label class="label">Width <input class="input" bind:value={draft.width} /></label>
+      {#await onpreview(draft.path) then url}{#if url}<img class="insert-image-preview" src={url} alt={m.insertmenu_figure_alt()} />{/if}{/await}
+    {:else if selectedImagePreview}<img class="insert-image-preview" src={selectedImagePreview} alt={m.insertmenu_figure_alt()} />{/if}
+    <label class="label">{m.insertmenu_caption()} <input class="input" bind:value={draft.caption} /></label>
+    <label class="label">{m.insertmenu_label()} <input class="input" bind:value={draft.label} /></label>
+    <label class="label">{m.insertmenu_width()} <input class="input" bind:value={draft.width} /></label>
   {:else if dialog === "table"}
-    <div class="grid grid-cols-2 gap-3"><label class="label">Rows <input class="input" type="number" min="1" max="100" bind:value={draft.rows} /></label><label class="label">Columns <input class="input" type="number" min="1" max="30" bind:value={draft.columns} /></label></div>
-    <label class="flex items-center gap-2"><input type="checkbox" bind:checked={draft.header} /> Header row</label>
-    <label class="label">Caption <input class="input" bind:value={draft.caption} /></label><label class="label">Label <input class="input" bind:value={draft.label} /></label>
-    <label class="label">Alignment <select class="select" bind:value={draft.alignment}><option value="default">Default</option><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label>
+    <div class="grid grid-cols-2 gap-3"><label class="label">{m.insertmenu_rows()} <input class="input" type="number" min="1" max="100" bind:value={draft.rows} /></label><label class="label">{m.insertmenu_columns()} <input class="input" type="number" min="1" max="30" bind:value={draft.columns} /></label></div>
+    <label class="flex items-center gap-2"><input type="checkbox" bind:checked={draft.header} /> {m.insertmenu_header_row()}</label>
+    <label class="label">{m.insertmenu_caption()} <input class="input" bind:value={draft.caption} /></label><label class="label">{m.insertmenu_label()} <input class="input" bind:value={draft.label} /></label>
+    <label class="label">{m.insertmenu_alignment()} <select class="select" bind:value={draft.alignment}><option value="default">{m.insertmenu_alignment_default()}</option><option value="left">{m.insertmenu_align_left()}</option><option value="center">{m.insertmenu_align_center()}</option><option value="right">{m.insertmenu_align_right()}</option></select></label>
   {:else if dialog === "bibliography"}
-    <label class="label">Bibliography file <select class="select" bind:value={draft.file}><option value="">Choose a file…</option>{#each files as file}<option value={file}>{file}</option>{/each}</select></label>
+    <label class="label">{m.insertmenu_bibliography_file()} <select class="select" bind:value={draft.file}><option value="">{m.insertmenu_bibliography_choose_file()}</option>{#each files as file}<option value={file}>{file}</option>{/each}</select></label>
   {:else if dialog === "cross-reference"}
-    <label class="label">Reference <select class="select" bind:value={draft.target}><option value="">Choose a heading, figure, table, or equation…</option>{#each references as ref}{@const value = ref.id || ref.label}<option value={value}>{value}</option>{/each}</select></label>
+    <label class="label">{m.insertmenu_reference()} <select class="select" bind:value={draft.target}><option value="">{m.insertmenu_reference_choose()}</option>{#each references as ref}{@const value = ref.id || ref.label}<option value={value}>{value}</option>{/each}</select></label>
   {:else if dialog === "display-math"}
-    <label class="flex items-center gap-2"><input type="checkbox" bind:checked={draft.numbered} disabled={captured?.format === "markdown"} /> Numbered</label>
-    <label class="label">Label <input class="input" bind:value={draft.label} /></label>
+    <label class="flex items-center gap-2"><input type="checkbox" bind:checked={draft.numbered} disabled={captured?.format === "markdown"} /> {m.insertmenu_numbered()}</label>
+    <label class="label">{m.insertmenu_label()} <input class="input" bind:value={draft.label} /></label>
   {:else if dialog === "code-block"}
-    <label class="label">Language <input class="input" bind:value={draft.language} /></label>
+    <label class="label">{m.insertmenu_language()} <input class="input" bind:value={draft.language} /></label>
   {:else if dialog === "link"}
-    <label class="label">Text <input class="input" bind:value={draft.text} /></label><label class="label">URL <input class="input" type="url" bind:value={draft.url} /></label>
+    <label class="label">{m.insertmenu_text()} <input class="input" bind:value={draft.text} /></label><label class="label">{m.insertmenu_url()} <input class="input" type="url" bind:value={draft.url} /></label>
   {:else if ["theorem", "lemma", "proposition", "definition", "proof", "example", "remark"].includes(dialog)}
-    <label class="label">Title (optional) <input class="input" bind:value={draft.title} /></label><label class="label">Label <input class="input" bind:value={draft.label} /></label>
+    <label class="label">{m.insertmenu_title_optional()} <input class="input" bind:value={draft.title} /></label><label class="label">{m.insertmenu_label()} <input class="input" bind:value={draft.label} /></label>
   {:else if dialog === "columns"}
-    <div class="grid grid-cols-2 gap-3"><label class="label">Columns <input class="input" type="number" min="2" max="6" bind:value={draft.columns} /></label>{#if captured?.format !== "quarto"}<label class="label">Gap (optional) <input class="input" bind:value={draft.gap} /></label>{/if}</div>
+    <div class="grid grid-cols-2 gap-3"><label class="label">{m.insertmenu_columns()} <input class="input" type="number" min="2" max="6" bind:value={draft.columns} /></label>{#if captured?.format !== "quarto"}<label class="label">{m.insertmenu_gap_optional()} <input class="input" bind:value={draft.gap} /></label>{/if}</div>
   {:else}
-    {#if dialog === "custom-environment"}<label class="label">Environment <input class="input" bind:value={draft.environment} />{#if environments.length}<select class="select mt-2" aria-label="Defined environments" onchange={(event) => draft.environment = event.currentTarget.value}><option value="">Choose a defined environment…</option>{#each environments as name}<option value={name}>{name}</option>{/each}</select>{/if}</label>{/if}
-    {#if dialog === "custom-environment" && environmentFields.length}<label class="label">Arguments (one per line)<textarea class="textarea" rows={environmentFields.length} bind:value={draft.argumentsText}></textarea><span class="panel-muted">Enter source expressions in this order: {environmentFields.map(field => field.label).join(", ")}.</span></label>{/if}
-    {#if needsText(dialog)}<label class="label">Text <input class="input" bind:value={draft.text} /></label>{/if}
-    {#if dialog === "heading"}<div class="grid grid-cols-2 gap-3"><label class="label">Level <input class="input" type="number" min="1" max={captured?.format === "latex" ? 5 : 6} bind:value={draft.level} /></label><label class="flex items-center gap-2 mt-6"><input type="checkbox" bind:checked={draft.numbered} /> Numbered</label></div><label class="label">Label <input class="input" bind:value={draft.label} /></label>{/if}
-    {#if dialog === "label"}<label class="label">Label <input class="input" bind:value={draft.label} /></label>{/if}
+    {#if dialog === "custom-environment"}<label class="label">{m.insertmenu_environment()} <input class="input" bind:value={draft.environment} />{#if environments.length}<select class="select mt-2" aria-label={m.insertmenu_environments_label()} onchange={(event) => draft.environment = event.currentTarget.value}><option value="">{m.insertmenu_environment_choose()}</option>{#each environments as name}<option value={name}>{name}</option>{/each}</select>{/if}</label>{/if}
+    {#if dialog === "custom-environment" && environmentFields.length}<label class="label">{m.insertmenu_arguments()}<textarea class="textarea" rows={environmentFields.length} bind:value={draft.argumentsText}></textarea><span class="panel-muted">{m.insertmenu_arguments_hint({ fields: environmentFields.map(field => field.label).join(", ") })}</span></label>{/if}
+    {#if needsText(dialog)}<label class="label">{m.insertmenu_text()} <input class="input" bind:value={draft.text} /></label>{/if}
+    {#if dialog === "heading"}<div class="grid grid-cols-2 gap-3"><label class="label">{m.insertmenu_level()} <input class="input" type="number" min="1" max={captured?.format === "latex" ? 5 : 6} bind:value={draft.level} /></label><label class="flex items-center gap-2 mt-6"><input type="checkbox" bind:checked={draft.numbered} /> {m.insertmenu_numbered()}</label></div><label class="label">{m.insertmenu_label()} <input class="input" bind:value={draft.label} /></label>{/if}
+    {#if dialog === "label"}<label class="label">{m.insertmenu_label()} <input class="input" bind:value={draft.label} /></label>{/if}
   {/if}
   {#if preview}
-    <section class="insert-preview" aria-labelledby="insert-preview-heading"><h3 class="insert-preview-heading" id="insert-preview-heading">Source preview</h3>{#if preview.text}<pre>{preview.text}</pre>{:else}<p class="panel-muted">No source will be inserted.</p>{/if}{#if preview.notes?.length}<ul>{#each preview.notes as note}<li>{note}</li>{/each}</ul>{/if}{#if preview.additionalEdits?.length}<p class="panel-muted">Additional source edits:</p>{#each preview.additionalEdits as edit}<pre>{edit.path ? `${edit.path}: ` : ""}{edit.insert || "(delete)"}</pre>{/each}{/if}</section>
+    <section class="insert-preview" aria-labelledby="insert-preview-heading"><h3 class="insert-preview-heading" id="insert-preview-heading">{m.insertmenu_preview_heading()}</h3>{#if preview.text}<pre>{preview.text}</pre>{:else}<p class="panel-muted">{m.insertmenu_preview_empty()}</p>{/if}{#if preview.notes?.length}<ul>{#each preview.notes as note}<li>{note}</li>{/each}</ul>{/if}{#if preview.additionalEdits?.length}<p class="panel-muted">{m.insertmenu_preview_edits()}</p>{#each preview.additionalEdits as edit}<pre>{edit.path ? `${edit.path}: ` : ""}{edit.insert || m.insertmenu_preview_delete()}</pre>{/each}{/if}</section>
   {/if}
   {#if error}<p class="insert-error" role="alert">{error}</p>{/if}
   </form>

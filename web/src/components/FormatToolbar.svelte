@@ -1,5 +1,6 @@
 <script>
   import Icon from "./Icon.svelte";
+  import { m } from "../lib/paraglide/messages.js";
   import { FORMAT_TOOLS, isToolActive } from "../lib/visual-markup/formatting.js";
 
   // The formatting row under the top bar, shown in visual mode. What it
@@ -36,7 +37,7 @@
   }
 </script>
 
-<div class="format-bar" class:bar-hidden={hidden} role="toolbar" tabindex="-1" aria-label="Formatting" bind:this={bar} {onkeydown}>
+<div class="format-bar" class:bar-hidden={hidden} role="toolbar" tabindex="-1" aria-label={m.formattoolbar_label()} bind:this={bar} {onkeydown}>
   {#each GROUPS as group, index (group.name)}
     {#if index}<span class="format-divider" aria-hidden="true"></span>{/if}
     <div class="format-group">
