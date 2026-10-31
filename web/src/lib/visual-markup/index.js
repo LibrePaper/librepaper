@@ -23,6 +23,7 @@ import {
 import { COMMANDS, ENVIRONMENTS } from "./languages/latex/catalog.ts";
 import { loadKatex } from "../katex.js";
 import { VISUAL_FORMATS } from "./formats.js";
+import { m } from "../paraglide/messages.js";
 // The Markdown, Quarto and Typst widgets. They import helpers back from this file.
 import "./markdown-widgets.js";
 import "./task-widgets.js";
@@ -350,7 +351,7 @@ class IncludeWidget extends WidgetType {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "cm-lp-include-open";
-      button.textContent = "Open";
+      button.textContent = m.index_include_open();
       // The button stops its own mousedown, so the reveal below does not see it.
       button.addEventListener("mousedown", (event) => {
         event.preventDefault();
@@ -378,7 +379,7 @@ function linkPart(view, block, element, part) {
   if (part.from === null) return;
   element.dataset.part = part.kind;
   element.dataset.index = String(part.index);
-  element.title = "Edit in source";
+  element.title = m.index_edit_in_source();
   element.addEventListener("mousedown", (event) => {
     // The offset from build time may be stale, so the part is found again in the current text.
     const current = titleParts(view.state.doc.toString(), view.posAtDOM(block)).find(
@@ -417,7 +418,7 @@ class TitleWidget extends WidgetType {
     if (title.text) {
       main.textContent = title.text;
     } else {
-      main.textContent = "Untitled";
+      main.textContent = m.index_title_untitled();
       main.classList.add("cm-lp-title-muted");
     }
     linkPart(view, block, main, title);
@@ -529,7 +530,7 @@ export class ElementWidget extends WidgetType {
 
 // A catalog chip: a pill on a block of its own, or a chip inside the line.
 export function chipWidget(text, block) {
-  if (block) return new PillWidget(text, "Show the source", "cm-lp-chip");
+  if (block) return new PillWidget(text, m.index_show_source(), "cm-lp-chip");
   return new ElementWidget({ className: "cm-lp-chip", content: [text] });
 }
 
@@ -935,7 +936,7 @@ registerWidget("gloss", ({ token, source, state }) => {
     return new ElementWidget({
       className: "cm-lp-gloss cm-lp-unknown",
       content: [key],
-      title: `No acronym named ${key}`,
+      title: m.index_gloss_unknown({ key }),
     });
   }
   return new ElementWidget({
