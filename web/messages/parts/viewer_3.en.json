@@ -20,17 +20,5 @@
   "formatting_citation": "Citation",
   "formatting_cross_reference": "Cross-reference",
   "formatting_image_or_figure": "Image or figure",
-  "formatting_table": "Table",
-  "labels_theorem_theorem": "Theorem",
-  "labels_theorem_lemma": "Lemma",
-  "labels_theorem_proposition": "Proposition",
-  "labels_theorem_corollary": "Corollary",
-  "labels_theorem_definition": "Definition",
-  "labels_theorem_assumption": "Assumption",
-  "labels_theorem_remark": "Remark",
-  "labels_theorem_example": "Example",
-  "labels_theorem_claim": "Claim",
-  "labels_theorem_conjecture": "Conjecture",
-  "labels_theorem_axiom": "Axiom",
-  "labels_theorem_hypothesis": "Hypothesis"
+  "formatting_table": "Table"
 }
