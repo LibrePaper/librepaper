@@ -1,4 +1,5 @@
 <script>
+  import { m } from "../lib/paraglide/messages.js";
   import { tick } from "svelte";
   import IconButton from "./IconButton.svelte";
   import Avatar from "./Avatar.svelte";
@@ -66,11 +67,11 @@
   const unpainted = $derived(Boolean(comment.orphaned) || UNPAINTED.includes(status));
   const showQuote = $derived(isHighlight || unpainted);
   const badge = $derived(
-    comment.attachment?.diagnostic === "removed_file" ? "Source file removed"
-      : status === "pending_deletion" ? "On a pending deletion"
-      : status === "unresolved" ? "Source passage unresolved"
-      : status === "deleted" ? "Passage removed"
-      : "Passage not on this page",
+    comment.attachment?.diagnostic === "removed_file" ? m.commentcard_badge_source_removed()
+      : status === "pending_deletion" ? m.commentcard_badge_pending_deletion()
+      : status === "unresolved" ? m.commentcard_badge_unresolved()
+      : status === "deleted" ? m.commentcard_badge_removed()
+      : m.commentcard_badge_not_on_page(),
   );
   const badgeTone = $derived(status === "pending_deletion" ? "lp-tone-neutral" : "lp-tone-warning");
   const canAttach = $derived(Boolean(onattach) && (status === "deleted" || status === "unresolved"));
@@ -116,7 +117,7 @@
       (comment.body || "").trim(),
     ]
       .filter(Boolean)
-      .join(" — ") || "Resolved",
+      .join(" — ") || m.commentcard_resolved(),
   );
 
   // The note and its replies as one conversation, run together by author.
@@ -275,12 +276,12 @@
           <!-- The rendering lost the words, but the source -- the text that
                is actually versioned -- still has them, so this is not lost,
                only unreachable from the page. -->
-          <span class="badge lp-tone-neutral">In the source, not on the page</span>
+          <span class="badge lp-tone-neutral">{m.commentcard_in_source_only()}</span>
         {/if}
         <!-- The motivation is the W3C annotation type. Commenting is the
              default, so only the others are worth showing. -->
         {#if comment.motivation && comment.motivation !== "commenting"}
-          <span class="badge lp-tone-neutral">Highlight</span>
+          <span class="badge lp-tone-neutral">{m.commentcard_highlight()}</span>
         {/if}
       </Row>
       {/if}
@@ -306,8 +307,8 @@
                 <form class="flex flex-col gap-2" onsubmit={(event) => submitEdit(event, post)}>
                   <textarea
                     class="textarea"
-                    aria-label="Edit"
-                    placeholder="Edit · Ctrl+Enter saves · Esc cancels"
+                    aria-label={m.commentcard_edit_field()}
+                    placeholder={m.commentcard_edit_placeholder()}
                     rows="3"
                     maxlength="5000"
                     bind:this={editField}
@@ -318,8 +319,8 @@
                     <p class="panel-meta" role="alert">{editError}</p>
                   {/if}
                   <div class="edit-actions">
-                    <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={stopEdit}>Cancel</button>
-                    <button type="submit" class="btn btn-sm lp-control-tonal-brand">Save</button>
+                    <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={stopEdit}>{m.commentcard_cancel()}</button>
+                    <button type="submit" class="btn btn-sm lp-control-tonal-brand">{m.commentcard_save()}</button>
                   </div>
                 </form>
               {:else if post.body}
@@ -328,7 +329,7 @@
                   {#if canEditPost(post)}
                     <IconButton
                       icon="pencil"
-                      label="Edit reply"
+                      label={m.commentcard_edit_reply()}
                       tone="plain"
                       size="btn-icon-sm"
                       onclick={(e) => {
@@ -339,7 +340,7 @@
                   {/if}
                 </div>
                 {#if post.edited}
-                  <p class="panel-meta edited" title={`Edited ${stamp(post.edited)}`}>edited {moment(post.edited)}</p>
+                  <p class="panel-meta edited" title={m.commentcard_edited_title({ when: stamp(post.edited) })}>{m.commentcard_edited({ when: moment(post.edited) })}</p>
                 {/if}
               {/if}
             {/each}
@@ -355,7 +356,7 @@
           <button type="button" class="more-replies btn btn-sm lp-control-tonal-brand"
             disabled={comment.repliesBusy}
             onclick={() => onloadreplies?.(comment)}>
-            {#if comment.repliesBusy}Loading…{:else if comment.repliesError}Try again{:else}Show {unshownReplies} more {unshownReplies === 1 ? "reply" : "replies"}{/if}
+            {#if comment.repliesBusy}{m.commentcard_loading()}{:else if comment.repliesError}{m.commentcard_try_again()}{:else}{m.commentcard_show_more_replies({ count: unshownReplies })}{/if}
           </button>
         {/if}
       </div>
@@ -363,11 +364,11 @@
         <Row gap={2} wrap>
           <button type="button" class="btn btn-sm lp-control-tonal-brand"
             disabled={!attachable}
-            title={attachable ? "Make the selected passage this comment's passage" : "Select the passage in the editor first"}
+            title={attachable ? m.commentcard_attach_title() : m.commentcard_attach_title_disabled()}
             onclick={(e) => {
               e.stopPropagation();
               onattach?.(comment);
-            }}>Attach to selection</button>
+            }}>{m.commentcard_attach()}</button>
         </Row>
       {/if}
     </div>
@@ -387,7 +388,7 @@
     {#if onreveal && !comment.orphaned}
       <IconButton
         icon="eye"
-        label="Show in document"
+        label={m.commentcard_show_in_document()}
         onclick={(e) => {
           e.stopPropagation();
           onreveal?.(comment);
@@ -397,7 +398,7 @@
     {#if onagent && !comment.resolved}
       <IconButton
         icon="bot"
-        label="Address comment with agent"
+        label={m.commentcard_agent()}
         disabled={!canComment}
         onclick={(e) => {
           e.stopPropagation();
@@ -408,7 +409,7 @@
     {#if canComment && (Boolean(comment.deletable) || canModerate)}
       <IconButton
         icon="check"
-        label={comment.resolved ? "Reopen" : "Resolve"}
+        label={comment.resolved ? m.commentcard_reopen() : m.commentcard_resolve()}
         pressed={Boolean(comment.resolved)}
         onclick={(e) => {
           e.stopPropagation();
@@ -420,7 +421,7 @@
     {#if canEditNote}
       <IconButton
         icon="pencil"
-        label="Edit comment"
+        label={m.commentcard_edit_comment()}
         onclick={(e) => {
           e.stopPropagation();
           void startEdit(`note-${comment.id}`, comment.body);
@@ -430,7 +431,7 @@
     {#if deletable}
       <IconButton
         icon="trash"
-        label="Delete comment"
+        label={m.commentcard_delete_comment()}
         onclick={(e) => {
           e.stopPropagation();
           ondelete?.(comment);
@@ -439,7 +440,7 @@
     {/if}
     <IconButton
       icon="reply"
-      label="Reply"
+      label={m.commentcard_reply()}
       tone={canComment ? "tonal" : null}
       disabled={!canComment}
       onclick={(e) => {
@@ -452,12 +453,12 @@
   {#if replying && canComment}
     <form class="mt-2 flex flex-col gap-2" onsubmit={submitReply}>
       {#if !identity}
-        <p class="panel-meta">replying as {commentingAs}</p>
+        <p class="panel-meta">{m.commentcard_replying_as({ name: commentingAs })}</p>
       {/if}
       <textarea
         class="textarea"
-        aria-label="Reply"
-        placeholder="Reply · Enter sends · Esc cancels"
+        aria-label={m.commentcard_reply()}
+        placeholder={m.commentcard_reply_placeholder()}
         rows="2"
         maxlength="5000"
         required

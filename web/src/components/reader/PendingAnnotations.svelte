@@ -1,27 +1,28 @@
 <script>
+  import { m } from "../../lib/paraglide/messages.js";
   // Comments and replies the room has not confirmed. Each is one quiet line
   // under the panel; opening it shows the draft and offers a retry.
   let { items = [], onretry, ondiscard } = $props();
 </script>
 
 {#if items.length}
-  <section class="pending text-xs" aria-label="Unconfirmed comments">
+  <section class="pending text-xs" aria-label={m.pendingannotations_section()}>
     {#each items as item (item.message.temp_id)}
       <details>
         <summary class="cursor-pointer">
           <span class="dot" aria-hidden="true"></span>
-          <span class="kind">{item.message.type === "reply" ? "Reply" : "Comment"} not sent</span>
-          <span class="lp-text-secondary truncate">{item.message.body || item.message.exact || "Figure annotation"}</span>
+          <span class="kind">{item.message.type === "reply" ? m.pendingannotations_reply_not_sent() : m.pendingannotations_comment_not_sent()}</span>
+          <span class="lp-text-secondary truncate">{item.message.body || item.message.exact || m.pendingannotations_figure()}</span>
         </summary>
         <div class="body">
-          <textarea class="textarea" rows="2" readonly aria-label="Unconfirmed text"
-                    value={item.message.body || item.message.exact || "Figure annotation"}></textarea>
-          <p class="lp-text-secondary" role="status">{item.error || "Waiting for confirmation…"} Draft saved on this device.</p>
+          <textarea class="textarea" rows="2" readonly aria-label={m.pendingannotations_text()}
+                    value={item.message.body || item.message.exact || m.pendingannotations_figure()}></textarea>
+          <p class="lp-text-secondary" role="status">{item.error || m.pendingannotations_waiting()} {m.pendingannotations_draft_saved()}</p>
           <div class="flex gap-2">
             <button type="button" class="btn btn-sm lp-control-tonal-brand"
-                    onclick={() => onretry(item.message.temp_id)}>Retry</button>
+                    onclick={() => onretry(item.message.temp_id)}>{m.pendingannotations_retry()}</button>
             <button type="button" class="btn btn-sm lp-control-tonal-brand"
-                    onclick={() => ondiscard(item.message.temp_id)}>Discard draft</button>
+                    onclick={() => ondiscard(item.message.temp_id)}>{m.pendingannotations_discard()}</button>
           </div>
         </div>
       </details>
