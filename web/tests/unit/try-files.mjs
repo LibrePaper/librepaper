@@ -59,7 +59,7 @@ test("a colliding file from a later format is dropped", () => {
 test("welcome notes use each format's comment syntax", () => {
   assert.match(textOf("main.typ"), /^\/\/ This is the LibrePaper demo sandbox\./);
   assert.match(textOf("latex.tex"), /^% This is the LibrePaper demo sandbox\./);
-  assert.match(textOf("page.html"), /^<!-- This is the LibrePaper demo sandbox\. .* -->\n\n<!doctype html>/);
+  assert.match(textOf("page.html"), /^<!doctype html>\n<!-- This is the LibrePaper demo sandbox\. .* -->\n\n/);
 });
 
 test("markdown note goes after the front matter", () => {

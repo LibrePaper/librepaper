@@ -29,6 +29,7 @@
    * onzoteroimport?: (items: ZoteroEntry[]) => Promise<string[]>;
    * keys?: Record<string, string>;
    * disabled?: boolean;
+   * demo?: boolean;
    * }} InsertMenuProps */
   /** @type {InsertMenuProps} */
   let { getContext, oninsert, onupload, onpreview, onpalette, onfocus, oncancel, onzoterosearch = null, onzoteroimport, keys = {}, disabled = false, demo = false } = $props();

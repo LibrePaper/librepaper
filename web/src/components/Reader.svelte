@@ -3743,7 +3743,7 @@
 
   const commandContext = $derived({
     mayEdit, editing, compact,
-    panels: tabs.map((tab) => tab.id),
+    panels: tabs.filter((tab) => !tab.disabled).map((tab) => tab.id),
     preview: shown.document,
     compilable: mayEdit && sourceFormat === "latex" && compilesHere,
     canLockPreview,
@@ -4091,7 +4091,7 @@
                         menus={compactMenus} onmenu={(id, anchor) => menubar.show(id, anchor)} />
       {@render faceSwitch()}
       {@render visualModeControl()}
-      {#if !connected}<span class="presence-offline" title={connectionNote} aria-label={connectionNote}><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
+      {#if !connected && !DEMO}<span class="presence-offline" title={connectionNote} aria-label={connectionNote}><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
     {:else}
       <!-- Between 761px and the split's narrow point, the face choice stays in
            the top bar. Compact widths render it beside the hamburger above. -->
@@ -4107,7 +4107,7 @@
           <Avatar name={person.name} key={person.key} colour={person.colour} size={6} />
         {/each}
         {#if participants.length > 3}<span class="presence-more">+{participants.length - 3}</span>{/if}
-        {#if !connected}<span class="presence-offline"><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
+        {#if !connected && !DEMO}<span class="presence-offline"><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
       </div>
     {/if}
   {/snippet}

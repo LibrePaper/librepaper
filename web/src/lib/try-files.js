@@ -6,7 +6,7 @@
 export const TRY_SLUG = "try-librepaper";
 export const TRY_DOCUMENT_URL = "/api/try";
 
-const WELCOME = "This is the LibrePaper demo sandbox. Nothing you type is saved, and reloading the page starts over. The same article is here in Typst, LaTeX, Markdown and HTML: open another file in Files to preview it.";
+const WELCOME = "This is the LibrePaper demo sandbox. Nothing you type is saved, and reloading the page starts over. Each file is the article template in another format: Typst, LaTeX, Markdown or HTML. Open one in Files to preview it.";
 
 // The main file of each format, as the template names it, and the name it
 // takes in the sandbox. Typst keeps its name, so it is the main file.
@@ -27,14 +27,16 @@ const note = {
   html: `<!-- ${WELCOME} -->\n\n`,
 };
 
-// Markdown may open with a YAML front matter block, which has to stay first.
+// Markdown may open with a YAML front matter block, and HTML with a doctype.
+// Either has to stay first.
 const FRONT_MATTER = /^---\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/;
+const DOCTYPE = /^<!doctype[^>]*>[ \t]*(?:\r?\n|$)/i;
 
 function withNote(format, text) {
-  if (format !== "markdown") return note[format] + text;
-  const match = FRONT_MATTER.exec(text);
+  if (format !== "markdown" && format !== "html") return note[format] + text;
+  const match = (format === "markdown" ? FRONT_MATTER : DOCTYPE).exec(text);
   const at = match ? match[0].length : 0;
-  return text.slice(0, at) + note.markdown + text.slice(at);
+  return text.slice(0, at) + note[format] + text.slice(at);
 }
 
 /**

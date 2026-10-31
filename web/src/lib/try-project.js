@@ -13,6 +13,7 @@ const DEMO_FORMATS = ["typst", "latex", "markdown", "html"];
 
 /** The starter files: [{ path, text }]. */
 export async function tryFiles() {
+  /** @type {Record<string, {path: string, text: string}[]>} */
   const byFormat = {};
   for (const formatId of DEMO_FORMATS) {
     const files = await templateFiles("article", formatId);
