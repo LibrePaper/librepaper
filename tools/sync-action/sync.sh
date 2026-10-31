@@ -14,7 +14,7 @@ require_input() {
 }
 require_input "${PROJECT:-}" "the project input is missing. Set it to the project page, https://<site>/docs/<slug>."
 require_input "${LIBREPAPER_TOKEN:-}" "the token input is missing. Store a project token with the Edit role as the repository secret LIBREPAPER_TOKEN."
-require_input "${LIBREPAPER_VERSION:-}" "the version input is missing. Set it to a librepaper release tag, such as v0.0.61."
+require_input "${LIBREPAPER_VERSION:-}" "the version input is missing. Set it to a librepaper release tag, such as v0.0.62."
 require_input "${BRANCH:-}" "the branch input is missing. Set it to the branch the workflow checks out."
 
 # Only these events run the sync. Checked first, so an unknown event never
