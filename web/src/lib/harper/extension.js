@@ -6,6 +6,7 @@ import { EditorView, Decoration, ViewPlugin, closeHoverTooltips, hoverTooltip } 
 import { StateEffect } from "@codemirror/state";
 import { addWord, lintProse } from "./client.js";
 import { keepLint, paragraphs, proseText } from "./prose.js";
+import { m } from "../paraglide/messages.js";
 
 // Above this length a pass costs more than the underlines are worth, so
 // nothing is checked.
@@ -244,9 +245,9 @@ function card(view, instance, lint) {
 
   for (const suggestion of (lint.suggestions ?? []).slice(0, MAX_SUGGESTIONS)) {
     if (suggestion.kind === "remove") {
-      button("Remove", (at) => apply(at.from, at.to, ""));
+      button(m.extension_remove(), (at) => apply(at.from, at.to, ""));
     } else if (suggestion.kind === "insert") {
-      button(`Insert ${suggestion.text}`, (at) => apply(at.to, at.to, suggestion.text));
+      button(m.extension_insert({ text: suggestion.text }), (at) => apply(at.to, at.to, suggestion.text));
     } else {
       button(suggestion.text, (at) => apply(at.from, at.to, suggestion.text));
     }
@@ -256,7 +257,7 @@ function card(view, instance, lint) {
     const element = document.createElement("button");
     element.type = "button";
     element.className = "btn btn-sm";
-    element.textContent = "Add to dictionary";
+    element.textContent = m.extension_add_to_dictionary();
     element.addEventListener("click", () => {
       addWord(lint.problem);
       instance.forget(lint.problem);

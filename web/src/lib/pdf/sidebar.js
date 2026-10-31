@@ -13,6 +13,7 @@
 // sidebar follows the frame's light and dark modes without knowing about them.
 
 import { resolveDest, safeUrl } from "./links.js";
+import { m } from "../paraglide/messages.js";
 
 /// Width in CSS pixels. `viewer.js` offsets the pages by this much while the
 /// sidebar is open.
@@ -75,9 +76,9 @@ export function createSidebar({ ongo }) {
   const panel = el("div", "panel");
   const tabs = el("div", "tabs", { role: "tablist" });
   const pagesTab = el("button", "", { type: "button", role: "tab", "aria-selected": "true" });
-  pagesTab.textContent = "Pages";
+  pagesTab.textContent = m.sidebar_pages_tab();
   const outlineTab = el("button", "", { type: "button", role: "tab", "aria-selected": "false" });
-  outlineTab.textContent = "Outline";
+  outlineTab.textContent = m.sidebar_outline_tab();
   outlineTab.hidden = true;
   tabs.append(pagesTab, outlineTab);
   const pagesBody = el("div", "body pages", { role: "tabpanel" });
@@ -182,7 +183,7 @@ export function createSidebar({ ongo }) {
     items = [];
     for (let number = 1; number <= doc.numPages; number += 1) {
       const li = el("li");
-      const button = el("button", "item", { type: "button", "aria-label": `Page ${number}` });
+      const button = el("button", "item", { type: "button", "aria-label": m.sidebar_page_label({ number }) });
       const thumb = el("div", "thumb");
       thumb.style.aspectRatio = ratio;
       const old = previous[number - 1];
@@ -244,7 +245,7 @@ export function createSidebar({ ongo }) {
       const key = `${path}/${entry.title || "Untitled"}`;
       if (children.length > 0) {
         const collapsed = collapsedPaths.get(key) ?? depth >= 1;
-        const twist = el("button", "twist", { type: "button", "aria-expanded": String(!collapsed), "aria-label": "Toggle section" });
+        const twist = el("button", "twist", { type: "button", "aria-expanded": String(!collapsed), "aria-label": m.sidebar_toggle_section() });
         twist.textContent = collapsed ? "+" : "-";
         if (collapsed) li.dataset.collapsed = "";
         twist.addEventListener("click", () => {
@@ -258,7 +259,7 @@ export function createSidebar({ ongo }) {
         row.append(el("span", "spacer"));
       }
       const link = el("button", "link", { type: "button" });
-      link.textContent = entry.title || "Untitled";
+      link.textContent = entry.title || m.sidebar_untitled();
       link.addEventListener("click", () => go(entry, mine));
       row.append(link);
       li.append(row);
