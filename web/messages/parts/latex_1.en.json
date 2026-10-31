@@ -1,0 +1,32 @@
+{
+  "latex_worker_failed": "The compiler worker failed",
+  "latex_mirror_absent_one": "{name} is not part of TeX Live. If it comes from a publisher or a colleague, upload the file to the project.",
+  "latex_mirror_absent_one_near": "{name} is not part of TeX Live. Did you mean {near}? If it comes from a publisher or a colleague, upload the file to the project.",
+  "latex_mirror_absent_more": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "{name} and {count} more are not part of TeX Live. If it comes from a publisher or a colleague, upload the file to the project.",
+      "countPlural=*": "{name} and {count} more are not part of TeX Live. If it comes from a publisher or a colleague, upload the file to the project."
+    }
+  }],
+  "latex_mirror_absent_more_near": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "{name} and {count} more are not part of TeX Live. Did you mean {near}? If it comes from a publisher or a colleague, upload the file to the project.",
+      "countPlural=*": "{name} and {count} more are not part of TeX Live. Did you mean {near}? If it comes from a publisher or a colleague, upload the file to the project."
+    }
+  }],
+  "latex_unsupported_luatex": "This document needs LuaTeX, which LibrePaper's browser compiler does not include. LuaTeX-only packages and \\directlua cannot be built here.",
+  "latex_unsupported_shell_escape": "This document asks LaTeX to run another program (shell-escape), which a browser cannot do. Packages like minted, svg and gnuplot backends need it; a pre-rendered figure does not.",
+  "latex_compile_timeout": "The compile exceeded its time budget.",
+  "latex_loading_compiler": "Loading browser compiler",
+  "latex_lualatex_unavailable": "LibrePaper's browser compiler does not include LuaTeX. Choose pdfLaTeX or XeLaTeX, or remove the LuaLaTeX directive.",
+  "latex_compiling": "Compiling in browser",
+  "latex_compile_failed": "The document failed to compile.",
+  "latex_updating_bibliography": "Updating bibliography in browser",
+  "latex_biber_failed": "Biber failed",
+  "latex_preview_ready": "Current preview ready",
+  "latex_failed_keeps_previous": "Compilation failed; previous preview shown"
+}

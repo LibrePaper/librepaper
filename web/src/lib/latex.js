@@ -33,6 +33,7 @@ import * as engineMod from "./latex/engine.js";
 import { snapshotDigest } from "./projection-digest.js";
 import { maybeBytes as toBytes } from "./bytes.js";
 import { named } from "./latex/errors.js";
+import { m } from "./paraglide/messages.js";
 
 export const DEBOUNCE = 1500;
 
@@ -364,7 +365,7 @@ function attachHandlers(target) {
   };
   target.onerror = (event) => {
     if (worker !== target) return;
-    const error = new WorkerDied(event?.message || "the compiler worker failed");
+    const error = new WorkerDied(event?.message || m.latex_worker_failed());
     worker = null;
     configuredRelease = null;
     for (const [, call] of pendingCalls) {
@@ -530,11 +531,14 @@ function mirrorAbsentMessage(mirrorAbsent, suggestions = {}) {
   const names = [...new Set(Array.isArray(mirrorAbsent) ? mirrorAbsent : [])];
   if (!names.length) return null;
   const [first] = names;
-  const head = names.length === 1 ? first : `${first} and ${names.length - 1} more`;
-  const verb = names.length === 1 ? "is" : "are";
   const near = suggestions[first];
-  const didYouMean = near ? ` Did you mean ${near}?` : "";
-  return `${head} ${verb} not part of TeX Live.${didYouMean} If it comes from a publisher or a colleague, upload the file to the project.`;
+  if (names.length === 1) {
+    return near ? m.latex_mirror_absent_one_near({ name: first, near }) : m.latex_mirror_absent_one({ name: first });
+  }
+  const more = names.length - 1;
+  return near
+    ? m.latex_mirror_absent_more_near({ name: first, count: more, near })
+    : m.latex_mirror_absent_more({ name: first, count: more });
 }
 
 // What this browser cannot do, in the document's own terms.
@@ -547,10 +551,10 @@ function mirrorAbsentMessage(mirrorAbsent, suggestions = {}) {
 // is more use than a control sequence name.
 function unsupportedReason(source, log) {
   if (engineMod.needsLuaTeX(source)) {
-    return "This document needs LuaTeX, which LibrePaper's browser compiler does not include. LuaTeX-only packages and \\directlua cannot be built here.";
+    return m.latex_unsupported_luatex();
   }
   if (/shell-escape|\\write18|runsystem\(/i.test(log)) {
-    return "This document asks LaTeX to run another program (shell-escape), which a browser cannot do. Packages like minted, svg and gnuplot backends need it; a pre-rendered figure does not.";
+    return m.latex_unsupported_shell_escape();
   }
   return "";
 }
@@ -605,7 +609,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
     attempts: [],
     startedAt,
     ok: false,
-    failure: { kind: "timeout", message: "The compile exceeded its time budget.", stage: "browser" },
+    failure: { kind: "timeout", message: m.latex_compile_timeout(), stage: "browser" },
     provenance: baseProvenance(engine, releaseId === "unknown" ? null : releaseId),
   });
 
@@ -613,7 +617,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
   // Reading the release index and staging the job come before the engine
   // itself, and they are part of starting it as far as anyone watching can
   // tell. A compile that reuses a loaded engine passes through quickly.
-  if (!release) statusStore.set({ phase: "loading", message: "Loading browser compiler", backend: "browser", engine, progress: null });
+  if (!release) statusStore.set({ phase: "loading", message: m.latex_loading_compiler(), backend: "browser", engine, progress: null });
   try {
     const loadingRelease = loadRelease();
     const pendingRelease = releasePromise;
@@ -668,13 +672,13 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       job, attempts, startedAt, ok: false,
       failure: {
         kind: "unsupported",
-        message: "LibrePaper's browser compiler does not include LuaTeX. Choose pdfLaTeX or XeLaTeX, or remove the LuaLaTeX directive.",
+        message: m.latex_lualatex_unavailable(),
         stage: "browser",
       },
       provenance: baseProvenance(engine, releaseId),
     });
   }
-  statusStore.set({ phase: "loading", message: "Loading browser compiler", backend: "browser", release: releaseId, engine, progress: null });
+  statusStore.set({ phase: "loading", message: m.latex_loading_compiler(), backend: "browser", release: releaseId, engine, progress: null });
 
   let target;
   try {
@@ -695,7 +699,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
   }
   checkpoint();
 
-  statusStore.set({ phase: "compiling", message: "Compiling in browser", backend: "browser", release: releaseId, engine });
+  statusStore.set({ phase: "compiling", message: m.latex_compiling(), backend: "browser", release: releaseId, engine });
 
   const generated = lastStaged && lastStaged.project === currentProject ? lastStaged.generated : {};
   try {
@@ -748,7 +752,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         startedAt,
         signal: token.abort.signal,
         kind: "timeout",
-        message: "The compile exceeded its time budget.",
+        message: m.latex_compile_timeout(),
       });
     }
     passes += 1;
@@ -796,7 +800,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         startedAt,
         signal: token.abort.signal,
         kind: "tex",
-        message: missingMessage || "The document failed to compile.",
+        message: missingMessage || m.latex_compile_failed(),
       });
     }
 
@@ -859,7 +863,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
           return buildResult({
             timings: collected(),
             job, attempts, startedAt, ok: false, log: finalLog,
-            failure: { kind: "timeout", message: "The compile exceeded its time budget.", stage: "browser-bibliography" },
+            failure: { kind: "timeout", message: m.latex_compile_timeout(), stage: "browser-bibliography" },
             provenance: baseProvenance(engine, releaseId),
           });
         }
@@ -872,7 +876,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         if (bibResult.tool?.version) bibliographyTools = { ...bibliographyTools, biber: bibResult.tool.version };
       } else if (useBiber) {
         const request = { job, stem, main: tree.main, bcf: controlBytes, files, identity };
-        statusStore.set({ phase: "browser-biber", message: "Updating bibliography in browser", backend: "browser" });
+        statusStore.set({ phase: "browser-biber", message: m.latex_updating_bibliography(), backend: "browser" });
         const biberAbort = new AbortController();
         const relayAbort = () => biberAbort.abort();
         token.abort.signal.addEventListener("abort", relayAbort, { once: true });
@@ -896,7 +900,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
           checkpoint();
           if (token.cancelled || error?.name === "Superseded") throw supersededError();
           if (biberTimedOut || error?.name === "WorkerTimeout" || nowImpl() >= deadlineAt) {
-            return buildResult({ job, attempts, startedAt, ok: false, log: finalLog, failure: { kind: "timeout", message: "The compile exceeded its time budget.", stage: "browser-biber" }, provenance: baseProvenance(engine, releaseId), timings: collected() });
+            return buildResult({ job, attempts, startedAt, ok: false, log: finalLog, failure: { kind: "timeout", message: m.latex_compile_timeout(), stage: "browser-biber" }, provenance: baseProvenance(engine, releaseId), timings: collected() });
           }
           if (token.cancelled || error?.name === "AbortError") throw supersededError();
           bibResult = { ok: false, error: String(error?.message || error), blg: String(error), tool: { backend: "browser" } };
@@ -905,7 +909,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
           if (!bibResult && !token.cancelled) biberAbort.abort();
         }
         attempts.push({ stage: "browser-biber", backend: "browser", ok: bibResult.ok, log: bibResult.blg || "", tool: bibResult.tool?.version });
-        if (!bibResult.ok) return buildResult({ job, attempts, startedAt, ok: false, log: finalLog, failure: { kind: "bibliography", message: bibResult.error || bibResult.blg || "Biber failed", stage: "browser-biber" }, provenance: baseProvenance(engine, releaseId), timings: collected() });
+        if (!bibResult.ok) return buildResult({ job, attempts, startedAt, ok: false, log: finalLog, failure: { kind: "bibliography", message: bibResult.error || bibResult.blg || m.latex_biber_failed(), stage: "browser-biber" }, provenance: baseProvenance(engine, releaseId), timings: collected() });
         bibCache.set(identity, bibResult);
         bibliographyProvenance = "browser-biber";
         if (bibResult.tool?.version) bibliographyTools = { ...bibliographyTools, biber: bibResult.tool.version };
@@ -994,7 +998,7 @@ function settled(result) {
   if (!result) return { phase: "idle", message: "" };
   return {
     phase: result.ok ? "ready" : "failed",
-    message: result.ok ? "Current preview ready" : "Compilation failed; previous preview shown",
+    message: result.ok ? m.latex_preview_ready() : m.latex_failed_keeps_previous(),
   };
 }
 
