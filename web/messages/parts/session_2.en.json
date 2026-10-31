@@ -1,0 +1,87 @@
+{
+  "annotations_comments_read_failed": "Comments could not be read ({status}).",
+  "annotations_page_read_failed": "That page could not be read.",
+  "annotations_comments_reload_failed": "Comments could not be reloaded.",
+  "annotations_replies_read_failed": "Replies could not be read ({status}).",
+  "annotations_replies_read_failed_plain": "Those replies could not be read.",
+  "annotations_edit_pending": "The previous edit is still being saved.",
+  "annotations_edit_failed": "That edit could not be saved.",
+  "exports_kind_not_exportable": "That kind of file cannot be exported.",
+  "exports_formats_only": "Only LaTeX, Typst, Markdown, Quarto and HTML documents can be exported.",
+  "exports_no_pandoc": "This deployment does not offer Pandoc.",
+  "exports_no_renderer": "This deployment cannot render {name} documents.",
+  "exports_pdf_not_made": "The PDF could not be made.",
+  "exports_pdf_not_made_reason": "The PDF could not be made: {message}",
+  "exports_html_not_made": "The HTML page could not be made.",
+  "exports_html_not_made_reason": "The HTML page could not be made: {message}",
+  "exports_docx_not_made": "The Word file could not be made.",
+  "exports_docx_not_made_reason": "The Word file could not be made: {message}",
+  "exports_html_unreadable": "The HTML page could not be read.",
+  "live_chat_history_read_failed": "Chat history could not be read. Trying again.",
+  "live_chat_older_failed_status": "Older messages could not be read ({status}).",
+  "live_chat_older_failed": "Older messages could not be read.",
+  "preview_notes_no_preview": "{name} has no preview of its own.",
+  "preview_notes_shown_inside": "{name} is shown inside {path}.",
+  "preview_render_no_output": "the compiler produced no preview and no log",
+  "preview_render_missing_figures": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "could not fetch figure: {names}",
+      "countPlural=*": "could not fetch figures: {names}"
+    }
+  }],
+  "preview_render_could_not_render": "could not render",
+  "timeline_history_read_failed": "The version history could not be read.",
+  "timeline_older_read_failed": "Older versions could not be read.",
+  "timeline_saved_read_failed": "Saved versions could not be read.",
+  "timeline_restore_failed": "That version could not be restored. The project is unchanged.",
+  "timeline_current_label_retry": "This browser cannot safely retry a current label.",
+  "timeline_name_failed": "That version could not be named.",
+  "timeline_this_version": "this version",
+  "wait_stage_drawing_pages": "Drawing the pages",
+  "wait_stage_bibliography": "Updating the bibliography",
+  "wait_stage_packages": "Fetching LaTeX packages",
+  "wait_stage_latex_engine": "Loading the LaTeX engine",
+  "wait_stage_compiling": "Compiling",
+  "wait_stage_loading_engine": "Loading the {engine} engine",
+  "wait_stage_preparing": "Preparing the preview",
+  "web_connection_behind": "The repository has changes that this project does not have. Get repository changes first, then send project changes again.",
+  "web_connection_interrupted_default": "An earlier send to the project was interrupted before its outcome was known.",
+  "web_connection_merged": "The merge is done. Get repository changes or send project changes again.",
+  "web_connection_sign_in_again": "Sign in to continue.",
+  "web_connection_desktop_read_failed": "The desktop app could not read the connection.",
+  "web_connection_desktop_failed": "The desktop app could not do that.",
+  "web_connection_code_not_approved": "The code was not approved in time. Sign in again to get a new one.",
+  "web_connection_imported_files_branch": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "Imported from repository branch {branch}: {count} file into the project.",
+      "countPlural=*": "Imported from repository branch {branch}: {count} files into the project."
+    }
+  }],
+  "web_connection_imported_files": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "Imported from repository: {count} file into the project.",
+      "countPlural=*": "Imported from repository: {count} files into the project."
+    }
+  }],
+  "web_connection_imported_nothing_branch": "Imported from repository branch {branch}: nothing new.",
+  "web_connection_imported_nothing": "Imported from repository: nothing new.",
+  "web_connection_sent_branch": "Sent to repository branch {branch}.",
+  "web_connection_sent": "Sent to repository.",
+  "web_connection_nothing_to_send_branch": "Nothing new to send to repository branch {branch}.",
+  "web_connection_nothing_to_send": "Nothing new to send to repository.",
+  "web_connection_retry_files": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "The interrupted send finished: {count} file reached the project. Get repository changes or send project changes again to continue.",
+      "countPlural=*": "The interrupted send finished: {count} files reached the project. Get repository changes or send project changes again to continue."
+    }
+  }],
+  "web_connection_retry_nothing": "The interrupted send finished: nothing was left to send to the project. Get repository changes or send project changes again to continue."
+}

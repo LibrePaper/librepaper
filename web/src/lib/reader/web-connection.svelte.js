@@ -13,6 +13,7 @@
 // approved.
 import * as routes from "../desktop/connections.js";
 import { LOGIN_PENDING } from "../desktop/connections.js";
+import { m } from "../paraglide/messages.js";
 
 // How often the second call is repeated while the desktop app has not yet seen
 // the approval, and how long to wait between.
@@ -24,9 +25,9 @@ const COMPLETE_DELAY_MS = 800;
 const APPROVAL_POLL_MS = 3000;
 const APPROVAL_ATTEMPTS = 200;
 
-const BEHIND = "The repository has changes that this project does not have. Get repository changes first, then send project changes again.";
-const INTERRUPTED = "An earlier send to the project was interrupted before its outcome was known.";
-const MERGED = "The merge is done. Get repository changes or send project changes again.";
+const BEHIND = m.web_connection_behind();
+const INTERRUPTED = m.web_connection_interrupted_default();
+const MERGED = m.web_connection_merged();
 
 const realWait = (/** @type {number} */ ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const realOpen = (/** @type {string} */ url) => { globalThis.open?.(url, "_blank", "noopener"); };
@@ -35,7 +36,6 @@ const realOpen = (/** @type {string} */ url) => { globalThis.open?.(url, "_blank
 /// not been approved yet.
 const isPending = (/** @type {any} */ error) => error?.status === 400 && error?.body?.error === LOGIN_PENDING;
 
-const plural = (/** @type {number} */ count, /** @type {string} */ noun) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 const paths = (/** @type {unknown} */ value) => (Array.isArray(value) ? value.map(String) : []);
 
 /** @typedef {{ loaded: boolean, status: any, busy: "" | "connect" | "connect-local" | "pull" | "push" | "retry" | "resolve" | "login" | "disconnect", result: string | null, refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string, action: "pull" | "push" } | null, problem: string, signInHelp: { remote: string, detail: string } | null, interrupted: string }} WebConnectionState */
@@ -71,7 +71,7 @@ export function createWebConnection({ api = routes, project, flush = async () =>
       const status = await api.connectionStatus(project);
       if (request === generation) set({ loaded: true, status });
     } catch (error) {
-      if (request === generation) set({ loaded: true, problem: error?.message || "The desktop app could not read the connection." });
+      if (request === generation) set({ loaded: true, problem: error?.message || m.web_connection_desktop_read_failed() });
     }
   }
 
@@ -87,11 +87,11 @@ export function createWebConnection({ api = routes, project, flush = async () =>
       await work();
     } catch (error) {
       if (error?.status === 401) {
-        set({ problem: "Sign in to continue.", status: { ...current.status, signed_in: false } });
+        set({ problem: m.web_connection_sign_in_again(), status: { ...current.status, signed_in: false } });
       } else if (error?.body?.reason === "auth") {
         set({ signInHelp: { remote: current.status?.url || address, detail: String(error.body.detail ?? "") } });
       } else {
-        set({ problem: error?.message || "The desktop app could not do that." });
+        set({ problem: error?.message || m.web_connection_desktop_failed() });
       }
     } finally {
       set({ busy: "" });
@@ -129,20 +129,21 @@ export function createWebConnection({ api = routes, project, flush = async () =>
   const statusOf = (/** @type {any} */ answer) => answer?.status ?? current.status;
 
   /// Names the repository branch an answer is about, when the status knows it.
-  const branchOf = (/** @type {any} */ answer) => {
-    const branch = statusOf(answer)?.branch;
-    return branch ? ` branch ${branch}` : "";
-  };
+  const branchOf = (/** @type {any} */ answer) => statusOf(answer)?.branch || "";
 
   const importedLine = (/** @type {any} */ answer) => {
     const files = Number(answer.pushed?.files) || 0;
-    const from = `Imported from repository${branchOf(answer)}`;
-    return files ? `${from}: ${plural(files, "file")} into the project.` : `${from}: nothing new.`;
+    const branch = branchOf(answer);
+    if (files) return branch ? m.web_connection_imported_files_branch({ count: files, branch }) : m.web_connection_imported_files({ count: files });
+    return branch ? m.web_connection_imported_nothing_branch({ branch }) : m.web_connection_imported_nothing();
   };
 
-  const sentLine = (/** @type {any} */ answer) => ((typeof answer.pulled === "boolean" ? answer.pulled : answer.pushed === "pushed")
-    ? `Sent to repository${branchOf(answer)}.`
-    : `Nothing new to send to repository${branchOf(answer)}.`);
+  const sentLine = (/** @type {any} */ answer) => {
+    const sent = typeof answer.pulled === "boolean" ? answer.pulled : answer.pushed === "pushed";
+    const branch = branchOf(answer);
+    if (sent) return branch ? m.web_connection_sent_branch({ branch }) : m.web_connection_sent();
+    return branch ? m.web_connection_nothing_to_send_branch({ branch }) : m.web_connection_nothing_to_send();
+  };
 
   /// Connects the project to a repository the desktop app clones.
   const connect = (/** @type {string} */ url) => {
@@ -210,8 +211,7 @@ export function createWebConnection({ api = routes, project, flush = async () =>
       throw error;
     }
     const files = Number(answer.pushed?.files) || 0;
-    const settled = files ? `The interrupted send finished: ${plural(files, "file")} reached the project.` : "The interrupted send finished: nothing was left to send to the project.";
-    set({ status: statusOf(answer), interrupted: "", result: `${settled} Get repository changes or send project changes again to continue.` });
+    set({ status: statusOf(answer), interrupted: "", result: files ? m.web_connection_retry_files({ count: files }) : m.web_connection_retry_nothing() });
   });
 
   /// Keeps one side of a file that changed on both sides during a merge. The
@@ -268,7 +268,7 @@ export function createWebConnection({ api = routes, project, flush = async () =>
         if (!isPending(error)) throw error;
       }
     }
-    throw new Error("The code was not approved in time. Sign in again to get a new one.");
+    throw new Error(m.web_connection_code_not_approved());
   }
 
   /// Where the server asks the person to approve a code, when the desktop app

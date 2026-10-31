@@ -1,5 +1,6 @@
 import { submissions } from "../submissions.js";
 import { authHeaders } from "../api.js";
+import { m } from "../paraglide/messages.js";
 
 // How many pages a refresh re-reads before it gives up and says it is
 // holding a prefix. A reader who has pressed "Load more" eight times has
@@ -82,7 +83,7 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
       headers: authHeaders(key),
     });
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.error || `Comments could not be read (${response.status}).`);
+    if (!response.ok) throw new Error(body.error || m.annotations_comments_read_failed({ status: response.status }));
     return body;
   }
 
@@ -394,7 +395,7 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
     } catch (error) {
       if (mine !== generation) return;
       // The comments already on screen stay exactly as they are.
-      state.page = { ...state.page, busy: false, error: error.message || "That page could not be read." };
+      state.page = { ...state.page, busy: false, error: error.message || m.annotations_page_read_failed() };
     }
   }
 
@@ -424,7 +425,7 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
       }
     } catch (error) {
       if (mine !== generation) return;
-      state.page = { ...state.page, busy: false, error: error.message || "Comments could not be reloaded." };
+      state.page = { ...state.page, busy: false, error: error.message || m.annotations_comments_reload_failed() };
       return;
     }
     if (mine !== generation || !last) return;
@@ -456,7 +457,7 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
         { headers: authHeaders(key) },
       );
       const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.error || `Replies could not be read (${response.status}).`);
+      if (!response.ok) throw new Error(body.error || m.annotations_replies_read_failed({ status: response.status }));
       if (mine !== generation) return;
       const held = new Set(comment.replies.map((reply) => String(reply.id)));
       comment.replies = [
@@ -467,7 +468,7 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
       comment.reply_cursor = body.complete ? null : body.next_cursor ?? null;
     } catch (error) {
       if (mine !== generation) return;
-      comment.repliesError = error.message || "Those replies could not be read.";
+      comment.repliesError = error.message || m.annotations_replies_read_failed_plain();
     } finally {
       if (comment._replyRequest === request) {
         comment.repliesBusy = false;
@@ -502,7 +503,7 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
       // each remember the other's unsaved words as the body to go back to.
       const key = `${item.id}/${reply?.id ?? ""}`;
       if (savingEdits.has(key)) {
-        return { ok: false, stale: false, message: "The previous edit is still being saved." };
+        return { ok: false, stale: false, message: m.annotations_edit_pending() };
       }
       savingEdits.add(key);
       const target = reply || item;
@@ -528,7 +529,7 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
           publish();
           if (!reply) repaint();
         }
-        return { ok: false, stale, message: result?.error?.message || "That edit could not be saved." };
+        return { ok: false, stale, message: result?.error?.message || m.annotations_edit_failed() };
       }
       return { ok: true };
     },
