@@ -1,3 +1,5 @@
+import { m } from "../paraglide/messages.js";
+
 // Numbers the labels of a LaTeX project the way the article, report and book
 // classes would, so that a \ref can show the number a reader sees. The scan is
 // one forward pass: the counters only move on, and a \label binds to the
@@ -45,18 +47,18 @@ const FLOATS = new Map([
 // Theorem-like environments numbered without any \newtheorem. A document that
 // defines one of these names again replaces the default.
 const DEFAULT_THEOREMS = [
-  ["theorem", "Theorem"],
-  ["lemma", "Lemma"],
-  ["proposition", "Proposition"],
-  ["corollary", "Corollary"],
-  ["definition", "Definition"],
-  ["assumption", "Assumption"],
-  ["remark", "Remark"],
-  ["example", "Example"],
-  ["claim", "Claim"],
-  ["conjecture", "Conjecture"],
-  ["axiom", "Axiom"],
-  ["hypothesis", "Hypothesis"],
+  ["theorem", m.labels_theorem_theorem()],
+  ["lemma", m.labels_theorem_lemma()],
+  ["proposition", m.labels_theorem_proposition()],
+  ["corollary", m.labels_theorem_corollary()],
+  ["definition", m.labels_theorem_definition()],
+  ["assumption", m.labels_theorem_assumption()],
+  ["remark", m.labels_theorem_remark()],
+  ["example", m.labels_theorem_example()],
+  ["claim", m.labels_theorem_claim()],
+  ["conjecture", m.labels_theorem_conjecture()],
+  ["axiom", m.labels_theorem_axiom()],
+  ["hypothesis", m.labels_theorem_hypothesis()],
 ];
 
 // Lists whose items the scan numbers. Only an enumerate counts its items.
