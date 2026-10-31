@@ -64,6 +64,12 @@ aside that does not need a marker.}
   \end{tabular}
 \end{table}
 
+\begin{fullwidth}
+  Wide material, such as a long table or a sequence of panels, can run across
+  the text column and into the margin. Use the full width when the content
+  needs room to be read in one glance.
+\end{fullwidth}
+
 \section{Small multiples}
 
 Repeating one small graphic with a shared scale lets the reader compare
@@ -71,15 +77,9 @@ groups at a glance~\cite{tufte2006}. A margin figure keeps such a graphic close 
 that discusses it, without breaking the reading line.
 
 \begin{marginfigure}
-  \fbox{\parbox[c][3.2cm][c]{\linewidth}{\centering Placeholder for a margin figure}}
+  \fbox{\parbox[c][3.2cm][c]{\dimexpr\linewidth-2\fboxsep-2\fboxrule}{\centering Placeholder for a margin figure}}
   \caption{A margin figure keeps its caption beside the text it supports.}
 \end{marginfigure}
-
-\begin{fullwidth}
-  Wide material, such as a long table or a sequence of panels, can run across
-  the text column and into the margin. Use the full width when the content
-  needs room to be read in one glance.
-\end{fullwidth}
 
 \bibliographystyle{plainnat}
 \bibliography{references}
