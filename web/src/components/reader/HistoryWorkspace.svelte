@@ -1,6 +1,7 @@
 <script>
   import { loadMergeEditor } from "../../lib/merge-editor.js";
   import { isMoment } from "../../lib/moment.js";
+  import { m } from "../../lib/paraglide/messages.js";
 
   // The comparison editor is fetched when there is something to compare, not
   // when the reader is built. A static import here would undo the dynamic one
@@ -31,55 +32,55 @@
 
   // What the file selector says about each file, so the choice itself carries
   // the answer to "what changed?" rather than making the reader open each one.
-  const MARK = { added: "added", removed: "removed", changed: "changed" };
-  const nameOf = (name) => (MARK[result?.status?.[name]] ? `${name} · ${MARK[result.status[name]]}` : name);
+  const MARK = { added: m.historyworkspace_mark_added(), removed: m.historyworkspace_mark_removed(), changed: m.historyworkspace_mark_changed() };
+  const nameOf = (name) => (MARK[result?.status?.[name]] ? m.historyworkspace_file_marked({ name, status: MARK[result.status[name]] }) : name);
   // A binary file has no comparison to show, only a fact about it.
   const BINARY_NOTE = {
-    added: "This file was added.",
-    removed: "This file was removed.",
-    changed: "This file changed. Images and other binary files are not compared here.",
-    same: "This file is unchanged.",
+    added: m.historyworkspace_binary_added(),
+    removed: m.historyworkspace_binary_removed(),
+    changed: m.historyworkspace_binary_changed(),
+    same: m.historyworkspace_binary_same(),
   };
-  const fileNote = $derived(status === "added" ? "File added."
-    : status === "removed" ? "File removed."
-      : oldText === "" && newText === "" ? "Empty file." : "");
+  const fileNote = $derived(status === "added" ? m.historyworkspace_file_added()
+    : status === "removed" ? m.historyworkspace_file_removed()
+      : oldText === "" && newText === "" ? m.historyworkspace_empty_file() : "");
 </script>
 
-<section class="history-workspace" aria-label="History source" aria-busy={source.loading}>
+<section class="history-workspace" aria-label={m.historyworkspace_source_label()} aria-busy={source.loading}>
   {#if source.loading}
-    <p role="status">Loading version source…</p>
+    <p role="status">{m.historyworkspace_loading_source()}</p>
   {:else if source.problem}
     <div role="alert">
       <p>{source.problem}</p>
-      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => source.select()}>Retry</button>
+      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => source.select()}>{m.historyworkspace_retry()}</button>
     </div>
   {:else if result}
     <div class="history-source-bar">
       {#if !result.against && source.selected && heading}
         <!-- Says which past version is on screen, so the reader never has to
              work it out from the list. -->
-        <span class="history-source-title"><span class="history-source-name">{heading}</span><span class="panel-meta"> · Historical version</span></span>
+        <span class="history-source-title"><span class="history-source-name">{heading}</span><span class="panel-meta"> · {m.historyworkspace_historical()}</span></span>
       {/if}
       {#if result.against}
         <!-- The base is the old side and the selected version the new one, so
              the line names them in that order. -->
         <span class="history-source-ends">{result.oldLabel} → {result.newLabel}</span>
-        <button type="button" class="btn btn-sm" onclick={() => source.swap()}>Swap</button>
-        <button type="button" class="btn btn-sm" onclick={() => source.compareWith("")}>Compare with current</button>
+        <button type="button" class="btn btn-sm" onclick={() => source.swap()}>{m.historyworkspace_swap()}</button>
+        <button type="button" class="btn btn-sm" onclick={() => source.compareWith("")}>{m.historyworkspace_compare_current()}</button>
       {/if}
       <label class="history-source-file">
-        File
-        <select class="select" aria-label="History file" value={path} onchange={event => source.selectFile(event.currentTarget.value)}>
+        {m.historyworkspace_file()}
+        <select class="select" aria-label={m.historyworkspace_file_select()} value={path} onchange={event => source.selectFile(event.currentTarget.value)}>
           {#each result.paths as name (name)}<option value={name}>{nameOf(name)}</option>{/each}
         </select>
       </label>
       <span class="history-source-summary panel-meta">
         {result.changed.length
-          ? `${result.changed.length} file${result.changed.length === 1 ? "" : "s"} differ`
-          : "No differences"}
+          ? m.historyworkspace_files_differ({ count: result.changed.length })
+          : m.historyworkspace_no_differences()}
       </span>
       <span class="history-source-actions">
-        <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => source.select()}>Refresh</button>
+        <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => source.select()}>{m.historyworkspace_refresh()}</button>
         <!-- A moment is a position in the editing history, not a label: it has
              no archive to download and nothing to restore to by name. -->
         {#if canEdit && source.selected && !isMoment(source.selected)}
@@ -90,11 +91,11 @@
                commenter link cannot reach the history routes this asks. -->
           <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={downloading === source.selected}
                   onclick={() => ondownload?.(source.selected)}>
-            {downloading === source.selected ? "Downloading…" : "Download"}
+            {downloading === source.selected ? m.historyworkspace_downloading() : m.historyworkspace_download()}
           </button>
         {/if}
         {#if canEdit && source.selected && !isMoment(source.selected)}
-          <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => onrestore?.(source.selected)}>Restore</button>
+          <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => onrestore?.(source.selected)}>{m.historyworkspace_restore()}</button>
         {/if}
       </span>
     </div>
@@ -104,20 +105,20 @@
     {#if binary}
       <p role="status">{BINARY_NOTE[status]}</p>
     {:else if oldText === undefined && newText === undefined}
-      <p role="status">{path ? "This file has no text source to display." : "This version has no source files."}</p>
+      <p role="status">{path ? m.historyworkspace_no_text_source() : m.historyworkspace_no_source_files()}</p>
     {:else}
       {#if MergeEditor}
         <MergeEditor {path} oldText={oldText ?? ""} newText={newText ?? ""}
           diff={result.diff} editable={false} baselineLabel={result.oldLabel} targetLabel={result.newLabel}
           note={fileNote} />
       {:else if mergeFailed}
-        <p role="alert">The comparison could not be loaded. Check your connection and reopen this version.</p>
+        <p role="alert">{m.historyworkspace_comparison_failed()}</p>
       {:else}
-        <p role="status">Loading the comparison…</p>
+        <p role="status">{m.historyworkspace_loading_comparison()}</p>
       {/if}
     {/if}
   {:else}
-    <p role="status">Select a version to see how it differs from the current source. Shift-click another version to compare the two.</p>
+    <p role="status">{m.historyworkspace_select_prompt()}</p>
   {/if}
 </section>
 

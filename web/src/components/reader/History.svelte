@@ -13,6 +13,8 @@
   // reports outwards. A bookmark is a version with a name, and naming it uses
   // the same field everywhere in the panel.
   import { tick, untrack } from "svelte";
+  import { m } from "../../lib/paraglide/messages.js";
+  import { locale } from "../../lib/locale.js";
   import { day as dayOf } from "../../lib/dates.js";
   import { shortSha } from "../../lib/history.js";
   import { buildPeriods, nearestPeriod, pathTo, periodTitle } from "../../lib/history-groups.js";
@@ -127,23 +129,23 @@
   // What a label was taken for, in words, for the tooltip and the screen
   // reader. `sync` is the one nobody asked for, and it is said as "Synced".
   const WHY = {
-    comment: "Commented",
-    created: "Created",
-    cli: "Saved",
-    publish: "Shown to readers",
-    restore: "Restored",
-    superseded: "Replaced by a restore",
-    recovered: "Recovered",
-    push: "Pushed",
+    comment: m.history_commented(),
+    created: m.history_created(),
+    cli: m.history_saved(),
+    publish: m.history_shown_to_readers(),
+    restore: m.history_restored(),
+    superseded: m.history_replaced_by_restore(),
+    recovered: m.history_recovered(),
+    push: m.history_push(),
   };
   const said = (point) => point.label || WHY[point.why] || "";
-  const told = (point) => said(point) || "Synced";
+  const told = (point) => said(point) || m.history_synced();
 
   const TITLE = {
-    editing: "Editing session",
-    collaborative: "Collaborative session",
-    restore: "Restored version",
-    created: "Created",
+    editing: m.history_editing_session(),
+    collaborative: m.history_collaborative_session(),
+    restore: m.history_restored_version(),
+    created: m.history_created(),
   };
   const ICON = {
     editing: "pencil",
@@ -157,7 +159,7 @@
   // caller gave, or the account behind the token.
   const titleOf = (event) => {
     if (event.type === "saved") return event.points[0].label;
-    if (event.type === "push") return event.authors.length ? `Pushed by ${event.authors[0]}` : "Pushed";
+    if (event.type === "push") return event.authors.length ? m.history_pushed_by({ author: event.authors[0] }) : m.history_push();
     return TITLE[event.type];
   };
 
@@ -170,7 +172,7 @@
   };
 
   const versionsText = (n, partial = false) =>
-    `${n}${partial ? "+" : ""} version${n === 1 && !partial ? "" : "s"}`;
+    partial ? m.history_versions_partial({ count: n }) : m.history_versions({ count: n });
 
   // The clock time in the reader's timezone, and the same to the second for
   // the tooltip.
@@ -178,11 +180,11 @@
     const when = new Date(value);
     return Number.isNaN(when.getTime())
       ? ""
-      : when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZone: timezone });
+      : when.toLocaleTimeString(locale(), { hour: "numeric", minute: "2-digit", timeZone: timezone });
   };
   function stamp(value) {
     const when = new Date(value);
-    return Number.isNaN(when.getTime()) ? "" : when.toLocaleString([], {
+    return Number.isNaN(when.getTime()) ? "" : when.toLocaleString(locale(), {
       dateStyle: "medium", timeStyle: "short", timeZone: timezone,
     });
   }
@@ -202,8 +204,8 @@
     [
       range(event),
       event.type === "editing" && event.authors.length === 1 ? event.authors[0] : "",
-      event.type === "collaborative" && event.authors.length ? `${event.authors.length} contributors` : "",
-      `${event.points.length} versions`,
+      event.type === "collaborative" && event.authors.length ? m.history_contributors({ count: event.authors.length }) : "",
+      m.history_event_versions({ count: event.points.length }),
     ].filter(Boolean).join(" · ");
   const soloLine = (event) =>
     [clock(event.points[0].at), event.type === "push" ? event.points[0].label : event.authors.length === 1 ? event.authors[0] : ""]
@@ -215,7 +217,7 @@
     const when = new Date(value);
     if (Number.isNaN(when.getTime())) return "";
     const thisYear = dayOf(when, timezone).slice(0, 4) === today.slice(0, 4);
-    const date = when.toLocaleDateString([], {
+    const date = when.toLocaleDateString(locale(), {
       month: "short",
       day: "numeric",
       ...(thisYear ? {} : { year: "numeric" }),
@@ -225,7 +227,7 @@
   }
 
   function monthName(value) {
-    return new Date(`${value}-01T12:00:00Z`).toLocaleDateString([], {
+    return new Date(`${value}-01T12:00:00Z`).toLocaleDateString(locale(), {
       month: "long", year: "numeric", timeZone: "UTC",
     });
   }
@@ -237,9 +239,9 @@
   const defaultName = (point) => {
     const when = new Date(point?.at || Date.now());
     const day = Number.isNaN(when.getTime()) ? new Date() : when;
-    return `Draft of ${day.toLocaleDateString([], {
+    return m.history_draft_name({ date: day.toLocaleDateString(locale(), {
       month: "short", day: "numeric", year: "numeric", timeZone: timezone,
-    })}`;
+    }) });
   };
 
   async function startNaming(point) {
@@ -307,11 +309,11 @@
     const hit = nearestPeriod(periods, month);
     dateOpen = false;
     if (!hit) {
-      note = "No versions to show.";
+      note = m.history_no_versions_shown();
       return;
     }
     for (const key of pathKeys(periods, hit.key) ?? []) setPeriod(key, true);
-    note = hit.exact ? "" : `No versions in ${monthName(month)}. Showing the nearest period.`;
+    note = hit.exact ? "" : m.history_no_versions_in_month({ month: monthName(month) });
     await tick();
     listEl?.querySelector(`[data-period="${hit.key}"]`)?.scrollIntoView({ block: "start" });
   }
@@ -349,33 +351,33 @@
 </script>
 
 <div class="panel timeline">
-  <PanelHeader title="History" />
+  <PanelHeader title={m.history_title()} />
 
   <!-- The filter and the date control share one row: the panel's title is
        for screen readers only, so a header row would hold a lone icon. -->
   <div class="hx-bar">
-    <div class="hx-segment" role="group" aria-label="Filter history">
+    <div class="hx-segment" role="group" aria-label={m.history_filter_group()}>
       <!-- A narrow panel shows the short words. The long ones stay the
            buttons' names, so a screen reader hears the same thing at any width. -->
-      <button type="button" aria-pressed={mode === "all"} aria-label="All history" onclick={showAll}>
-        <span class="hx-long">All history</span><span class="hx-short" aria-hidden="true">All</span>
+      <button type="button" aria-pressed={mode === "all"} aria-label={m.history_all()} onclick={showAll}>
+        <span class="hx-long">{m.history_all()}</span><span class="hx-short" aria-hidden="true">{m.history_all_short()}</span>
       </button>
-      <button type="button" aria-pressed={mode === "saved"} aria-label="Saved versions" onclick={showSaved}>
-        <span class="hx-long">Saved versions</span><span class="hx-short" aria-hidden="true">Saved</span>
+      <button type="button" aria-pressed={mode === "saved"} aria-label={m.history_saved_versions()} onclick={showSaved}>
+        <span class="hx-long">{m.history_saved_versions()}</span><span class="hx-short" aria-hidden="true">{m.history_saved_short()}</span>
       </button>
     </div>
     {#if mode === "all"}
       <span class="hx-date-wrap" bind:this={dateWrap}>
-        <IconButton icon="calendar" tone="plain" size="btn-icon-sm" label="Go to a date"
+        <IconButton icon="calendar" tone="plain" size="btn-icon-sm" label={m.history_go_to_date()}
                     expanded={dateOpen} controls="hx-date" onclick={toggleDate} />
       </span>
     {/if}
     {#if dateOpen && mode === "all"}
-      <div class="hx-popover" id="hx-date" role="group" aria-label="Go to a month">
+      <div class="hx-popover" id="hx-date" role="group" aria-label={m.history_go_to_month()}>
         <input
           type="month"
           class="input"
-          aria-label="Month"
+          aria-label={m.history_month()}
           bind:value={month}
           bind:this={monthField}
           onkeydown={(event) => {
@@ -383,7 +385,7 @@
             if (event.key === "Escape") closeDate();
           }}
         />
-        <button type="button" class="btn btn-sm" disabled={!month} onclick={goTo}>Go</button>
+        <button type="button" class="btn btn-sm" disabled={!month} onclick={goTo}>{m.history_go()}</button>
       </div>
     {/if}
   </div>
@@ -398,7 +400,7 @@
            so it heads the list, and it is not an event. -->
       <li class="hx-current hx-row" class:hx-here={!viewing}>
         {#if naming === "current"}
-          {@render nameField("Name this bookmark")}
+          {@render nameField(m.history_name_bookmark())}
         {:else}
           <button
             type="button"
@@ -408,12 +410,12 @@
             aria-current={!viewing ? "true" : undefined}
             onclick={() => onview?.("")}
           >
-            <span class="hx-text"><span class="hx-line1">Current version</span></span>
+            <span class="hx-text"><span class="hx-line1">{m.history_current_version()}</span></span>
           </button>
           {#if canEdit && !viewing}
             <span class="hx-tools">
               <IconButton icon="bookmark" tone="plain" size="btn-icon-sm"
-                          label="Bookmark the current version"
+                          label={m.history_bookmark_current()}
                           onclick={() => startNaming({ sha: "current", label: "" })} />
             </span>
           {/if}
@@ -423,15 +425,15 @@
       {#if problem}
         <li class="hx-status">
           <p class="lp-text-error" role="status">{problem}</p>
-          {#if !labels.length}<button type="button" class="btn btn-sm" onclick={() => onretry?.()}>Retry</button>{/if}
+          {#if !labels.length}<button type="button" class="btn btn-sm" onclick={() => onretry?.()}>{m.history_retry()}</button>{/if}
         </li>
       {/if}
 
       {#if !labels.length}
         {#if !loaded && !problem}
-          <li class="hx-status panel-muted">Loading history…</li>
+          <li class="hx-status panel-muted">{m.history_loading()}</li>
         {:else if loaded && !problem}
-          <li class="hx-status panel-muted">No previous versions</li>
+          <li class="hx-status panel-muted">{m.history_none()}</li>
         {/if}
       {:else}
         {#each periods as period (period.key)}
@@ -445,12 +447,12 @@
       {#if loaded && (!complete || loadingMore || moreProblem)}
         <li class="hx-older">
           {#if loadingMore}
-            <span class="panel-muted">Loading older history…</span>
+            <span class="panel-muted">{m.history_loading_older()}</span>
           {:else if moreProblem}
             <span class="lp-text-error" role="status">{moreProblem}</span>
-            <button type="button" class="btn btn-sm" onclick={() => onloadmore?.()}>Retry</button>
+            <button type="button" class="btn btn-sm" onclick={() => onloadmore?.()}>{m.history_retry()}</button>
           {:else}
-            <button type="button" class="btn btn-sm" onclick={() => onloadmore?.()}>Load older history</button>
+            <button type="button" class="btn btn-sm" onclick={() => onloadmore?.()}>{m.history_load_older()}</button>
           {/if}
         </li>
       {/if}
@@ -458,12 +460,12 @@
       {#if savedProblem}
         <li class="hx-status">
           <p class="lp-text-error" role="status">{savedProblem}</p>
-          <button type="button" class="btn btn-sm" onclick={() => onloadsaved?.()}>Retry</button>
+          <button type="button" class="btn btn-sm" onclick={() => onloadsaved?.()}>{m.history_retry()}</button>
         </li>
       {:else if savedLoading && !savedLoaded}
-        <li class="hx-status panel-muted">Loading saved versions…</li>
+        <li class="hx-status panel-muted">{m.history_loading_saved()}</li>
       {:else if savedLoaded && !saved.length}
-        <li class="hx-status panel-muted">No saved versions yet. Bookmark a version to save it by name.</li>
+        <li class="hx-status panel-muted">{m.history_no_saved()}</li>
       {/if}
       {#each saved as point (point.sha)}
         {@render savedRow(point)}
@@ -484,7 +486,7 @@
       class="hx-heading"
       data-nav
       aria-expanded={open}
-      aria-label={`${label}, ${count}`}
+      aria-label={m.history_row_tip({ what: label, detail: count })}
       onclick={() => setPeriod(period.key, !open)}
       onkeydown={(event) => arrow(event, open, (want) => setPeriod(period.key, want))}
     >
@@ -522,7 +524,7 @@
   {#if !multi}
     <li class="hx-event" data-event={event.key} data-type={event.type} data-sha={first.sha}>
       {#if naming === first.sha}
-        {@render nameField(first.label ? "Rename this bookmark" : "Name this bookmark")}
+        {@render nameField(first.label ? m.history_rename_bookmark() : m.history_name_bookmark())}
       {:else}
         <div class="hx-row" class:hx-here={viewing === first.sha}>
           <button
@@ -532,8 +534,10 @@
             class:timeline-here={viewing === first.sha}
             class:hx-base={against === first.sha}
             aria-current={viewing === first.sha ? "true" : undefined}
-            title={`${titleOf(event)}, ${soloLine(event)}`}
-            aria-label={`${titleOf(event)}, ${soloLine(event)}${against === first.sha ? ", comparison base" : ""}`}
+            title={m.history_row_tip({ what: titleOf(event), detail: soloLine(event) })}
+            aria-label={against === first.sha
+            ? m.history_row_tip_base({ what: titleOf(event), detail: soloLine(event) })
+            : m.history_row_tip({ what: titleOf(event), detail: soloLine(event) })}
             onclick={(click) => pick(click, first.sha)}
           >
             {@render eventBody(event, soloLine(event))}
@@ -549,7 +553,7 @@
           type="button"
           class="hx-caret-btn"
           aria-expanded={expanded}
-          aria-label={`Show the ${event.points.length} versions`}
+          aria-label={m.history_show_versions({ count: event.points.length })}
           onclick={() => setEvent(event.key, !expanded)}
           onkeydown={(keyed) => arrow(keyed, expanded, (want) => setEvent(event.key, want))}
         >
@@ -561,8 +565,8 @@
           data-nav
           class:timeline-here={!expanded && holds}
           aria-current={!expanded && holds ? "true" : undefined}
-          title={`${titleOf(event)}, ${eventMeta(event)}. Show the latest version in this group`}
-          aria-label={`${titleOf(event)}, ${range(event)}, ${event.points.length} versions. Show the latest version`}
+          title={m.history_group_tip({ what: titleOf(event), detail: eventMeta(event) })}
+          aria-label={m.history_group_label({ what: titleOf(event), range: range(event), count: event.points.length })}
           onclick={(click) => pick(click, first.sha)}
         >
           {@render eventBody(event, eventMeta(event))}
@@ -576,7 +580,7 @@
           {#if left > 0}
             <li>
               <button type="button" class="hx-more" data-nav onclick={() => more(event)}>
-                Show {Math.min(SHOW_MORE, left)} more versions
+                {m.history_more_versions({ count: Math.min(SHOW_MORE, left) })}
               </button>
             </li>
           {/if}
@@ -604,7 +608,7 @@
   {@const base = against === point.sha}
   <li class="hx-version" data-sha={point.sha}>
     {#if naming === point.sha}
-      {@render nameField("Name this bookmark")}
+      {@render nameField(m.history_name_bookmark())}
     {:else}
       <div class="hx-row" class:hx-here={here}>
         <button
@@ -614,8 +618,8 @@
           class:hx-base={base}
           data-nav
           aria-current={here ? "true" : undefined}
-          title={`${told(point)}, ${stamp(point.at) || shortSha(point.sha)}`}
-          aria-label={`Version at ${clock(point.at)}${who ? `, by ${who}` : ""}${why ? `, ${why}` : ""}${base ? ", comparison base" : ""}`}
+          title={m.history_row_tip({ what: told(point), detail: stamp(point.at) || shortSha(point.sha) })}
+          aria-label={[m.history_version_at({ time: clock(point.at) }), who ? m.history_by({ who }) : "", why, base ? m.history_comparison_base() : ""].filter(Boolean).join(", ")}
           onclick={(click) => pick(click, point.sha)}
         >
           <span class="hx-when">{clock(point.at)}</span>
@@ -632,7 +636,7 @@
 {#snippet savedRow(point)}
   <li class="hx-saved" data-sha={point.sha}>
     {#if naming === point.sha}
-      {@render nameField("Rename this bookmark")}
+      {@render nameField(m.history_rename_bookmark())}
     {:else}
       <div class="hx-row" class:hx-here={viewing === point.sha}>
         <button
@@ -641,8 +645,8 @@
           data-nav
           class:timeline-here={viewing === point.sha}
           aria-current={viewing === point.sha ? "true" : undefined}
-          title={`${point.label}, ${savedWhen(point.at)}`}
-          aria-label={`${point.label}, ${savedWhen(point.at)}`}
+          title={m.history_row_tip({ what: point.label, detail: savedWhen(point.at) })}
+          aria-label={m.history_row_tip({ what: point.label, detail: savedWhen(point.at) })}
           onclick={(click) => pick(click, point.sha)}
         >
           <span class="hx-text">
@@ -652,9 +656,9 @@
         </button>
         <span class="hx-tools">
           {#if canEdit}
-            <IconButton icon="pencil" tone="plain" size="btn-icon-sm" label="Rename"
+            <IconButton icon="pencil" tone="plain" size="btn-icon-sm" label={m.history_rename()}
                         onclick={() => startNaming(point)} />
-            <IconButton icon="trash" tone="plain" size="btn-icon-sm" label="Remove from saved versions"
+            <IconButton icon="trash" tone="plain" size="btn-icon-sm" label={m.history_remove_saved()}
                         onclick={() => unbookmark(point)} />
           {/if}
         </span>
@@ -670,7 +674,7 @@
   {#if canEdit}
     <span class="hx-tools">
       <IconButton icon="bookmark" tone="plain" size="btn-icon-sm" filled={Boolean(point.label)}
-                  label={point.label ? "Rename this bookmark" : "Bookmark this version"}
+                  label={point.label ? m.history_rename_bookmark() : m.history_bookmark_version()}
                   onclick={() => startNaming(point)} />
     </span>
   {:else if point.label}
