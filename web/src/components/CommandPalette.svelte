@@ -1,5 +1,6 @@
 <script>
   import Modal from "./Modal.svelte";
+  import { m } from "../lib/paraglide/messages.js";
   import { APPLE, caps, filter, offered } from "../lib/commands.js";
 
   // Every command this workspace can currently run, by name. The same list the
@@ -54,7 +55,7 @@
   }
 </script>
 
-<Modal bind:open title="Run a command" wide>
+<Modal bind:open title={m.commandpalette_title()} wide>
   <div class="palette">
     <!-- svelte-ignore a11y_autofocus -->
     <input
@@ -65,8 +66,8 @@
       autofocus
       autocomplete="off"
       spellcheck="false"
-      placeholder="Type a command"
-      aria-label="Command"
+      placeholder={m.commandpalette_placeholder()}
+      aria-label={m.commandpalette_input_label()}
       aria-expanded="true"
       aria-controls="palette-list"
       aria-activedescendant={entries.length ? `palette-option-${entries[current].id}` : undefined}
@@ -74,7 +75,7 @@
       onkeydown={walk}
     />
     {#if entries.length}
-      <ul class="results" id="palette-list" role="listbox" aria-label="Commands">
+      <ul class="results" id="palette-list" role="listbox" aria-label={m.commandpalette_list_label()}>
         {#each entries as entry, index (entry.id)}
           <!-- The line is the option, with nothing focusable inside it: the
                field keeps the focus while the palette is open and says which
@@ -100,7 +101,7 @@
         {/each}
       </ul>
     {:else}
-      <p class="empty" role="status">No command matches that.</p>
+      <p class="empty" role="status">{m.commandpalette_empty()}</p>
     {/if}
   </div>
 </Modal>

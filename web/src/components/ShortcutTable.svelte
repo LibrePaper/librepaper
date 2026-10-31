@@ -1,5 +1,6 @@
 <script>
   import { APPLE, helpTable } from "../lib/commands.js";
+  import { m } from "../lib/paraglide/messages.js";
 
   // What the keyboard does, drawn from the same list the keyboard is wired
   // from. Nothing here is written out: a row exists because a command exists,
@@ -28,22 +29,22 @@
       <h3 class="group-name" id="shortcuts-{uid}-{group.name}">{group.name}</h3>
       <table class="keytable">
         <thead class="sr-only">
-          <tr><th scope="col">Command</th><th scope="col">Shortcut</th><th scope="col">Where it works</th></tr>
+          <tr><th scope="col">{m.shortcuttable_col_command()}</th><th scope="col">{m.shortcuttable_col_shortcut()}</th><th scope="col">{m.shortcuttable_col_where()}</th></tr>
         </thead>
         <tbody>
           {#each group.rows as row (row.id)}
             <tr class:unavailable={!row.available}>
-              <th scope="row" class="command">{row.label}{#if !row.available}<span class="sr-only"> (not available here)</span>{/if}</th>
+              <th scope="row" class="command">{row.label}{#if !row.available}<span class="sr-only"> {m.shortcuttable_not_available()}</span>{/if}</th>
               <td class="keys">
                 {#if row.keys.length}
                   {#each row.keys as binding, index}
-                    {#if index}<span class="alias">or</span>{/if}
+                    {#if index}<span class="alias">{m.shortcuttable_or()}</span>{/if}
                     <span class="chord">
                       {#each binding as cap}<kbd>{cap}</kbd>{/each}
                     </span>
                   {/each}
                 {:else}
-                  <span class="nokeys">Command palette</span>
+                  <span class="nokeys">{m.shortcuttable_palette_only()}</span>
                 {/if}
               </td>
               <td class="note">{row.note}</td>
