@@ -230,6 +230,9 @@ try {
   await focusBody();
   await key(",", { code: "Comma", modifiers: ["ctrl"], virtual: 188 });
   assert.equal(await dialog(), "Settings", "Ctrl+, opens the settings");
+  // Settings opens on General. The table is on the Editor page.
+  await b.evaluate(`[...document.querySelectorAll(".settings-nav-item")].find((node) => node.textContent.trim() === "Editor").click()`);
+  await until("the editor page", () => b.evaluate(`Boolean(document.getElementById("editor-shortcuts"))`), 4000);
   const listed = await b.evaluate(`(() => {
     const row = document.getElementById("editor-shortcuts");
     if (!row) return null;
