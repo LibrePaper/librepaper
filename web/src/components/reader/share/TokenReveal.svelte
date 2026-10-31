@@ -1,6 +1,7 @@
 <script>
   // The one time a token is shown. It lives in the parent's component state
   // and nowhere else; nothing here writes it to storage.
+  import { m } from "../../../lib/paraglide/messages.js";
   let { token, oncopy, ondone } = $props();
   // Claude Code passes its environment to the servers it starts, so the
   // server is registered once and the token is given at launch. The token is
@@ -15,24 +16,24 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
 </script>
 
 <div class="share-reveal">
-  <p class="share-warning" role="alert">Copy this token now. You won't be able to view it again.</p>
-  <label class="share-field panel-meta">Token
-    <input class="input share-input" type="text" readonly aria-label="Agent token" value={token} onclick={select} />
+  <p class="share-warning" role="alert">{m.tokenreveal_warning()}</p>
+  <label class="share-field panel-meta">{m.tokenreveal_token()}
+    <input class="input share-input" type="text" readonly aria-label={m.tokenreveal_token_aria()} value={token} onclick={select} />
   </label>
-  <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncopy(token)}>Copy token</button>
+  <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncopy(token)}>{m.tokenreveal_copy_token()}</button>
   <label class="share-field panel-meta">Claude Code
-    <textarea class="input share-input share-config" readonly rows="2" aria-label="Claude Code commands" value={commands} onclick={select}></textarea>
-    <span>Run the first line once. The second asks for the token: paste it, press Enter, and Claude starts.</span>
+    <textarea class="input share-input share-config" readonly rows="2" aria-label={m.tokenreveal_commands_aria()} value={commands} onclick={select}></textarea>
+    <span>{m.tokenreveal_commands_help()}</span>
   </label>
-  <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncopy(commands)}>Copy commands</button>
-  <label class="share-field panel-meta">Other MCP clients
-    <textarea class="input share-input share-config" readonly rows="5" aria-label="MCP configuration" value={config} onclick={select}></textarea>
+  <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncopy(commands)}>{m.tokenreveal_copy_commands()}</button>
+  <label class="share-field panel-meta">{m.tokenreveal_other_clients()}
+    <textarea class="input share-input share-config" readonly rows="5" aria-label={m.tokenreveal_config_aria()} value={config} onclick={select}></textarea>
   </label>
-  <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncopy(config)}>Copy configuration</button>
-  <p class="panel-meta">Agents without MCP can call POST /api/documents/{"{slug}"}/tools/{"{name}"} with the token as a Bearer header.</p>
-  <p class="panel-meta"><a href="https://librepaper.org/agents.html#agent-tokens" target="_blank" rel="noreferrer">Agent setup</a></p>
+  <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncopy(config)}>{m.tokenreveal_copy_config()}</button>
+  <p class="panel-meta">{m.tokenreveal_api_hint({ endpoint: "POST /api/documents/{slug}/tools/{name}" })}</p>
+  <p class="panel-meta"><a href="https://librepaper.org/agents.html#agent-tokens" target="_blank" rel="noreferrer">{m.tokenreveal_agent_setup()}</a></p>
   <div class="share-form-actions">
-    <button type="button" class="btn btn-sm lp-control-brand" onclick={ondone}>Done</button>
+    <button type="button" class="btn btn-sm lp-control-brand" onclick={ondone}>{m.tokenreveal_done()}</button>
   </div>
 </div>
 
