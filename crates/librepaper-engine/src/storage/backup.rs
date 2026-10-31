@@ -1,17 +1,22 @@
 //! Snapshot-consistent PostgreSQL and immutable-object recovery points.
 
 use super::{
-    blob::{BlobError, BlobStore},
+    blob::BlobStore,
     maintenance::BlobLifecycleLock,
     postgres::{PostgresCatalog, PostgresOptions},
     StorageOptions,
 };
+use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashSet,
     ffi::OsStr,
     path::{Component, Path, PathBuf},
 };
+
+// Bounds both the requests in flight and the objects held in memory.
+const BACKUP_FETCH_CONCURRENCY: usize = 8;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Reference {
@@ -272,31 +277,32 @@ async fn create(
     Ok(())
 }
 
-/// Splits off the references whose object the store does not have. Only
-/// `NotFound` counts as missing; any other error still fails the backup. The
-/// lifecycle lock is held, so an object present here stays until it is copied.
+/// Splits off the references whose object the store does not have. One listing
+/// of the store gives every key, so this costs one request rather than one per
+/// object. A failed listing fails the backup. The lifecycle lock is held, so an
+/// object present in the listing stays until it is copied.
 async fn drop_missing(
     blobs: &dyn BlobStore,
     references: Vec<Reference>,
 ) -> Result<(Vec<Reference>, Vec<String>), BackupError> {
+    let keys: HashSet<String> = blobs
+        .list("")
+        .await
+        .map_err(|e| BackupError::ObjectStore(format!("backup object listing: {e}")))?
+        .into_iter()
+        .map(|info| info.key)
+        .collect();
     let mut present = Vec::with_capacity(references.len());
     let mut missing = Vec::new();
     for reference in references {
-        match blobs.head(&reference.key).await {
-            Ok(_) => present.push(reference),
-            Err(BlobError::NotFound) => {
-                eprintln!(
-                    "WARNING: backup object {} is missing; the backup leaves it out",
-                    reference.key
-                );
-                missing.push(reference.key);
-            }
-            Err(e) => {
-                return Err(BackupError::ObjectStore(format!(
-                    "backup object {}: {e}",
-                    reference.key
-                )))
-            }
+        if keys.contains(&reference.key) {
+            present.push(reference);
+        } else {
+            eprintln!(
+                "WARNING: backup object {} is missing; the backup leaves it out",
+                reference.key
+            );
+            missing.push(reference.key);
         }
     }
     Ok((present, missing))
@@ -401,9 +407,12 @@ async fn write_archive(
         dump_length,
         dump_file,
     )?;
-    // One object is held in memory at a time.
-    for reference in references {
-        let bytes = blobs.get(&reference.key).await.map_err(|e| {
+    // Fetches run ahead of the writes, but the archive keeps the reference order.
+    let mut fetched = stream::iter(references)
+        .map(|reference| async move { (reference, blobs.get(&reference.key).await) })
+        .buffered(BACKUP_FETCH_CONCURRENCY);
+    while let Some((reference, result)) = fetched.next().await {
+        let bytes = result.map_err(|e| {
             BackupError::ObjectStore(format!("backup object {}: {e}", reference.key))
         })?;
         if reference.bytes != bytes.len() as i64 {
@@ -1169,6 +1178,26 @@ mod archive_tests {
         assert!(!entries(&bytes)
             .iter()
             .any(|(path, _, _)| path.ends_with("gone.png")));
+    }
+
+    #[tokio::test]
+    async fn archive_objects_keep_the_reference_order() {
+        let fixture = fixture().await;
+        let mut references = fixture.references.clone();
+        references.reverse();
+        let bytes = archive(&fixture, &references).await.unwrap();
+        let prefix = format!("{PREFIX}/objects/");
+        let written: Vec<(String, Vec<u8>)> = entries(&bytes)
+            .into_iter()
+            .filter(|(path, _, _)| path.starts_with(&prefix))
+            .map(|(path, body, _)| (path, body))
+            .collect();
+        let expected: Vec<(String, Vec<u8>)> = objects()
+            .into_iter()
+            .rev()
+            .map(|(key, body)| (format!("{prefix}{key}"), body.to_vec()))
+            .collect();
+        assert_eq!(written, expected);
     }
 
     #[test]
