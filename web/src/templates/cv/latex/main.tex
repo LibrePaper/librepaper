@@ -1,66 +1,61 @@
-\documentclass{article}
+% moderncv CV. Edit the personal details, then the sections below.
+\documentclass[11pt,a4paper,sans]{moderncv}
+
+\moderncvstyle{classic}
+\moderncvcolor{blue}
+
 \usepackage[T1]{fontenc}
-\usepackage{geometry}
-\usepackage{booktabs}
+\usepackage{lmodern}
+\usepackage[scale=0.8]{geometry}
 
-\geometry{margin=0.75in}
-
-\pagestyle{empty}
-
-% Small command for entries
-\newcommand{\entry}[4]{
-  \noindent \textbf{#1} \hfill \textit{#2}\\
-  \noindent #3 \hfill #4\\[0.25em]
-}
+% Name: first name and family name are separate arguments
+\name{{{author}}}{}
+\title{Senior Data Scientist}
+\address{45 Maple Avenue}{Toronto, ON M4C 2K1}{Canada}
+\phone[mobile]{+1~(416)~555-0148}
+\email{ada.obrien@example.com}
+\homepage{example.com}
+\social[github]{adaobrien}
 
 \begin{document}
 
-\begin{center}
-\Large\textbf{{{author}}}\\
-\small email@example.com | +1 (555) 123-4567 | city, state
-\end{center}
+\makecvtitle
 
-\vspace{0.5em}
+\section{Education}
+\cventry{2016-2020}{Ph.D. in Economics}{University of Example}{Toronto, ON}{}{Dissertation on household credit and monetary policy.}
+\cventry{2014-2016}{M.Sc. in Statistics}{University of Example}{Toronto, ON}{Distinction}{}
 
-\section*{Education}
+\section{Experience}
+\cventry{2021-present}{Senior Data Scientist}{Northwind Analytics}{Toronto, ON}{}{
+  \begin{itemize}
+    \item Lead a team of four building forecasting models for retail demand.
+    \item Cut weekly reporting time by 60 percent with a reproducible pipeline.
+  \end{itemize}
+}
+\cventry{2019-2021}{Research Fellow}{University of Example}{Toronto, ON}{}{
+  \begin{itemize}
+    \item Estimated panel models of consumer lending with administrative data.
+    \item Taught two undergraduate courses on applied regression.
+  \end{itemize}
+}
 
-\entry{Ph.D. in Field of Study}{2020}
-{University Name}{City, State}
+\section{Projects}
+\cventry{2023}{Open-source package}{Causal inference toolkit}{Remote}{}{
+  \begin{itemize}
+    \item Maintain a Python package for difference-in-differences estimators, with over 2,000 downloads a month.
+  \end{itemize}
+}
 
-\entry{B.S. in Undergraduate Major}{2015}
-{University Name}{City, State}
+\section{Publications}
+\cvitem{2023}{Ada O'Brien and Robert Chen. Credit supply and rate pass-through. \emph{Journal of Money, Credit and Banking}, 55(3), 411-438.}
+\cvitem{2021}{Ada O'Brien. Measuring household debt with transaction data. \emph{Review of Income Studies}, 12(1), 1-24.}
 
-\section*{Positions}
+\section{Skills}
+\cvitem{Programming}{Python, R, SQL, Stan}
+\cvitem{Tools}{Git, Docker, Quarto, LaTeX}
 
-\entry{Senior Position}{2021--present}
-{Company or Institution}{City, State}
-
-\entry{Junior Position}{2019--2021}
-{Company or Institution}{City, State}
-
-\section*{Publications}
-
-\entry{Article Title}{2023}
-{Journal Name, Volume 10, Pages 1--15}{}
-
-\entry{Another Publication}{2022}
-{Conference Proceedings, Pages 100--110}{}
-
-\section*{Grants and Awards}
-
-\entry{Award Name}{2023}
-{Awarding Organization}{}
-
-\entry{Fellowship}{2020}
-{Funding Organization}{}
-
-\section*{Skills}
-
-\noindent
-\begin{tabular}{ll}
-  Languages & English, Spanish, French \\
-  Technical & Python, R, SQL, LaTeX \\
-  Tools & Git, Data analysis, Statistical modeling \\
-\end{tabular}
+\section{Languages}
+\cvitem{English}{Native}
+\cvitem{French}{Professional working proficiency}
 
 \end{document}

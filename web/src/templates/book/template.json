@@ -1,5 +1,5 @@
 {
   "name": "Book",
-  "description": "Chapters in separate files, for long work.",
-  "keywords": ["thesis", "dissertation", "chapters", "report"]
+  "description": "A long work split into chapters in separate files, with front matter, a table of contents, an appendix and a bibliography.",
+  "keywords": ["book", "monograph", "thesis", "dissertation", "chapters", "report"]
 }

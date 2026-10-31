@@ -1,28 +1,53 @@
-\documentclass{letter}
+% KOMA-Script letter. Edit the sender, recipient and body below.
+\documentclass[
+  fontsize=11pt,
+  parskip=half,
+  fromalign=right,
+  fromphone=true,
+  fromemail=true,
+  foldmarks=false,
+  subject=beforeopening,
+]{scrlttr2}
 
 \usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
 
-\address{Your Street\\
-City, Postcode\\
-Country}
-\signature{{{author}}}
+% Sender block
+\setkomavar{fromname}{{{author}}}
+\setkomavar{fromaddress}{45 Maple Avenue\\Toronto, ON M4C 2K1}
+\setkomavar{fromphone}{+1 (416) 555-0148}
+\setkomavar{fromemail}{ada.obrien@example.com}
+\setkomavar{signature}{{{author}}\\Research Fellow, Department of Economics}
+
+% Date, place and subject
+\setkomavar{place}{Toronto}
+\setkomavar{date}{\today}
+\setkomavar{subject}{{{title}}}
 
 \begin{document}
 
-\begin{letter}
-{Recipient Name\\
-Recipient Address\\
-City, State ZIP}
+\begin{letter}{Dr. Jane Smith\\
+Department of Statistics\\
+University of Example\\
+123 College Street\\
+Toronto, ON M5S 1A1}
 
-\opening{Dear Recipient,}
+\opening{Dear Dr. Smith,}
 
-\textbf{Subject: {{title}}}
+Thank you for your invitation to speak at the Spring Research Seminar on 11 March 2027. I am delighted to accept, and I am grateful for the opportunity to share our recent work with your department.
 
-This is the body of your letter. Replace this text with your message. Keep your letter clear, concise, and professional.
+I have reserved the morning of 11 March for travel and will arrive the previous evening. Could you confirm the length of the session, whether a projector and a microphone will be available, and whether you prefer a particular format for the question period? I will send an abstract and slides one week before the event.
 
-You can structure your letter with multiple paragraphs to address different points or ideas.
+Please let me know if you need any other information for your records or the seminar program. I look forward to meeting you and your colleagues, and to the discussion that follows.
 
 \closing{Sincerely,}
+
+\ps
+I would be glad to meet with graduate students during my visit if that would be useful.
+
+\cc{Prof. Robert Chen, Seminar Coordinator}
+\encl{Curriculum vitae\\Seminar abstract}
 
 \end{letter}
 

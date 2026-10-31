@@ -1,0 +1,5 @@
+{
+  "name": "To-do list",
+  "description": "A task list with states, priorities, due dates, tags and subtasks, ready to tick off.",
+  "keywords": ["tasks", "checklist", "todo", "planning"]
+}

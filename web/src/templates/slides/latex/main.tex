@@ -1,0 +1,130 @@
+% A research talk in Beamer with the Metropolis theme.
+% Edit the metadata below, then replace the frames with your own content.
+\documentclass[aspectratio=169]{beamer}
+
+\usetheme{metropolis}
+\usepackage[T1]{fontenc}
+\usepackage{booktabs}
+\usepackage{appendixnumberbeamer}
+
+\title{{{title}}}
+\subtitle{A short research talk}
+\author{{{author}}}
+\institute{Department of Economics\\University Name}
+\date{\today}
+
+\begin{document}
+
+\begin{frame}
+  \titlepage
+\end{frame}
+
+\begin{frame}{Outline}
+  \tableofcontents
+\end{frame}
+
+\section{Motivation}
+
+\begin{frame}{Why this question matters}
+  Survey response rates have fallen for two decades.
+
+  \pause
+
+  Low response makes estimates sensitive to who answers.
+
+  \pause
+
+  Existing corrections rest on strong assumptions.
+\end{frame}
+
+\begin{frame}{What we do}
+  \begin{itemize}
+    \item<1-> Combine survey data with administrative records.
+    \item<2-> Reweight the survey to match known population totals.
+    \item<3-> Bound the effect under weaker assumptions.
+  \end{itemize}
+\end{frame}
+
+\section{Data and design}
+
+\begin{frame}{Two data sources}
+  \begin{columns}[T, onlytextwidth]
+    \column{0.48\textwidth}
+    \begin{block}{Administrative records}
+      Complete for every household, but coarse on income.
+    \end{block}
+
+    \column{0.48\textwidth}
+    \begin{block}{Survey panel}
+      Rich covariates, but response is selective.
+    \end{block}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Estimator}
+  We estimate the coefficient by least squares:
+  \begin{equation}\label{eq:ols}
+    \hat{\beta} = (X^\top X)^{-1} X^\top y
+  \end{equation}
+  Equation~\eqref{eq:ols} holds under the classical assumptions.
+\end{frame}
+
+\begin{frame}{Three kinds of result}
+  \begin{exampleblock}{Main finding}
+    The effect survives reweighting.
+  \end{exampleblock}
+
+  \begin{alertblock}{Caveat}
+    Bounds widen when the response model is misspecified.
+  \end{alertblock}
+
+  \begin{block}{Scope}
+    The estimates describe adults in urban areas.
+  \end{block}
+\end{frame}
+
+\section{Results}
+
+\begin{frame}{Estimated effects}
+  \centering
+  \begin{tabular}{lcc}
+    \toprule
+    Specification & Estimate & Std. error \\
+    \midrule
+    Baseline     & 0.042 & 0.011 \\
+    Reweighted   & 0.037 & 0.013 \\
+    Bounded      & 0.029 & 0.015 \\
+    \bottomrule
+  \end{tabular}
+\end{frame}
+
+\begin{frame}{Robustness}
+  The sign pattern holds across all three specifications.
+
+  \pause
+
+  Magnitudes shrink once the bounds are imposed.
+\end{frame}
+
+\section{Conclusion}
+
+\begin{frame}{Takeaways}
+  \begin{itemize}
+    \item The main estimate is stable under reweighting.
+    \item Weaker assumptions widen the interval but keep its sign.
+    \item Response data should come with a sensitivity analysis.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[standout]
+  Questions?
+\end{frame}
+
+\appendix
+
+\begin{frame}[noframenumbering]{Backup: alternative weights}
+  Inverse probability weights give the same sign pattern.
+  The standard errors are slightly larger.
+\end{frame}
+
+\end{document}

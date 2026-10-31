@@ -98,7 +98,11 @@ for (const id of ids) {
           console.log(`templates-render: ${id}/${format} skipped (typst not on PATH)`);
         } else {
           try {
-            await run('typst', ['compile', 'main.typ', 'out.pdf'], { cwd: tempDir });
+            // The browser engine has only the fonts Typst embeds, so system fonts
+            // are ignored here, and a warning (a missing font, a deprecated call)
+            // fails the template.
+            const { stderr } = await run('typst', ['compile', '--ignore-system-fonts', 'main.typ', 'out.pdf'], { cwd: tempDir });
+            assert.ok(!/warning:/.test(stderr), stderr);
             const pdfData = await readFile(join(tempDir, 'out.pdf'));
             assert.ok(pdfData.length > 0);
           } catch (err) {

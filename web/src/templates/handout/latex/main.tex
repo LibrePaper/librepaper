@@ -1,0 +1,123 @@
+% A course handout: learning goals, colored boxes, a worked example,
+% a theorem with proof, exercises and a summary.
+% Edit the course name and the metadata below.
+\documentclass[11pt,parskip=half]{scrartcl}
+
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[most]{tcolorbox}
+\usepackage{scrlayer-scrpage}
+\usepackage{hyperref}
+
+\definecolor{navy}{HTML}{1F4E79}
+\definecolor{forest}{HTML}{2E6B3A}
+\definecolor{amber}{HTML}{8A5A00}
+
+% Colored boxes. Use them as \begin{definitionbox}{Name} ... \end{definitionbox}.
+\newtcolorbox{definitionbox}[1]{
+  colback=navy!5, colframe=navy, fonttitle=\bfseries,
+  title={Definition: #1}, breakable
+}
+\newtcolorbox{examplebox}[1]{
+  colback=forest!5, colframe=forest, fonttitle=\bfseries,
+  title={Example: #1}, breakable
+}
+\newtcolorbox{summarybox}{
+  colback=amber!6, colframe=amber, fonttitle=\bfseries,
+  title={Summary}, breakable
+}
+
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+
+% Running header with the course name and the page number.
+\pagestyle{scrheadings}
+\clearpairofpagestyles
+\ihead{Course Name, Term Year}
+\ohead{Page \pagemark}
+
+\title{{{title}}}
+\subtitle{Lecture handout}
+\author{{{author}}}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Learning goals}
+
+By the end of this handout you should be able to:
+\begin{itemize}
+  \item state the definition of a convergent sequence;
+  \item prove that a given sequence converges, using the $\varepsilon$-$N$ definition;
+  \item explain why every convergent sequence is bounded.
+\end{itemize}
+
+\section{Key definitions}
+
+\begin{definitionbox}{Convergent sequence}
+  A sequence $(a_n)$ converges to $L$ when, for every $\varepsilon > 0$,
+  there is an $N$ such that
+  \[
+    |a_n - L| < \varepsilon \quad \text{for all } n \ge N.
+  \]
+\end{definitionbox}
+
+\begin{definitionbox}{Bounded sequence}
+  A sequence $(a_n)$ is bounded when there is a constant $M$ with
+  $|a_n| \le M$ for every $n$.
+\end{definitionbox}
+
+\section{Worked example}
+
+\begin{examplebox}{A rational sequence}
+  Show that $a_n = \dfrac{2n+1}{n+3}$ converges to $2$.
+
+  Compute the distance to the limit:
+  \[
+    |a_n - 2| = \left|\frac{2n+1 - 2(n+3)}{n+3}\right| = \frac{5}{n+3}.
+  \]
+  Given $\varepsilon > 0$, the inequality $\frac{5}{n+3} < \varepsilon$ holds
+  as soon as $n > \frac{5}{\varepsilon} - 3$. Choose $N = \left\lceil \frac{5}{\varepsilon} \right\rceil$.
+  Then $n \ge N$ implies $|a_n - 2| < \varepsilon$, so $a_n \to 2$.
+\end{examplebox}
+
+\section{A theorem with proof}
+
+\begin{theorem}[Convergent sequences are bounded]\label{thm:bounded}
+  If $(a_n)$ converges, then $(a_n)$ is bounded.
+\end{theorem}
+
+\begin{proof}
+  Let $L$ be the limit. Taking $\varepsilon = 1$ in the definition gives an
+  index $N$ with $|a_n - L| < 1$ for all $n \ge N$. Hence $|a_n| < |L| + 1$
+  for those $n$. The finitely many terms $a_1, \dots, a_{N-1}$ are bounded
+  by their largest absolute value. Taking $M$ to be the larger of that value
+  and $|L| + 1$ bounds the whole sequence.
+\end{proof}
+
+\section{Exercises}
+
+\begin{enumerate}
+  \item Show that $\dfrac{1}{n}$ converges to $0$.
+  \item Show that if $a_n \to L$ and $b_n \to K$, then $a_n + b_n \to L + K$.
+  \item Find the limit of $\dfrac{3n^2 + 1}{n^2 + 5}$ and justify your answer.
+\end{enumerate}
+
+\begin{summarybox}
+  \begin{itemize}
+    \item A sequence converges when its terms eventually stay within any
+      distance $\varepsilon$ of the limit.
+    \item Convergence implies boundedness, but a bounded sequence need not converge.
+    \item Every example starts from the definition, so practice with
+      $\varepsilon$-$N$ arguments before moving on.
+  \end{itemize}
+\end{summarybox}
+
+\end{document}

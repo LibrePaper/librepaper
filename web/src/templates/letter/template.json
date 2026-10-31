@@ -1,5 +1,5 @@
 {
   "name": "Letter",
-  "description": "A formal letter with sender, recipient and signature.",
-  "keywords": ["cover letter", "reference", "correspondence"]
+  "description": "A formal letter with sender, recipient, subject, body, signature, enclosures and copies, ready for a cover letter or an invitation reply.",
+  "keywords": ["cover letter", "correspondence", "formal"]
 }

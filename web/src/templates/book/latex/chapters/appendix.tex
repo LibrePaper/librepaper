@@ -1,0 +1,9 @@
+\chapter{Supplementary derivation}\label{app:derivation}
+
+This appendix derives the variance of the difference-in-means estimator used in \cref{chap:results}. The derivation assumes the design in \cref{sec:assumptions}.
+
+Under randomization, the two arms have sample sizes $n_1$ and $n_0$, and the difference in means has variance
+\begin{equation}\label{eq:dim-variance}
+  \operatorname{Var}\bigl(\hat\beta_1\bigr) = \frac{\sigma_1^2}{n_1} + \frac{\sigma_0^2}{n_0},
+\end{equation}
+where $\sigma_d^2$ is the outcome variance in arm $d \in \{0,1\}$. Taking square roots of \cref{eq:dim-variance} gives the standard error reported in the main text.

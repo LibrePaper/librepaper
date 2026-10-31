@@ -1,5 +1,5 @@
 {
   "name": "Homework",
-  "description": "Numbered problems with room for your answers.",
-  "keywords": ["problem set", "assignment", "exam", "exercises"]
+  "description": "Numbered problems with worked solutions you can hide before handing out.",
+  "keywords": ["problem set", "assignment", "exercises", "solutions"]
 }
