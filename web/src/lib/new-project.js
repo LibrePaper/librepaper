@@ -4,6 +4,7 @@
 // and named. The page itself is NewProject.svelte.
 import { FORMATS, formatNamed, matchTemplates } from "./starter.js";
 import { checkDirectoryPath, checkPath, collisionKey, normalisePath } from "./paths.js";
+import { m } from "./paraglide/messages.js";
 import { basename, copyPath, inside, parentPath } from "./file-manager.js";
 
 /// Built-in templates and the caller's own, as one list. The Blank tab is not
@@ -58,7 +59,7 @@ export function pickFormat(template, { chosen = "", filter = "", preferred = "" 
 
 /// The first of "Untitled project", "Untitled project 2", 3, ... that no taken
 /// title already is, ignoring case and surrounding spaces.
-export function uniqueName(taken, base = "Untitled project") {
+export function uniqueName(taken, base = m.new_project_untitled()) {
   const used = new Set([...taken].map((title) => title.trim().toLowerCase()));
   if (!used.has(base.toLowerCase())) return base;
   for (let n = 2; ; n++) {
@@ -179,8 +180,8 @@ export function suggestName(staged, { archives = [] } = {}) {
 
 /// A size for a person to read: "512 B", "1.2 KB", "3.4 MB", "1.1 GB".
 export function bytes(size) {
-  if (size < 1024) return `${size} B`;
-  const units = ["KB", "MB", "GB"];
+  if (size < 1024) return m.new_project_size_b({ size });
+  const units = [m.new_project_size_kb, m.new_project_size_mb, m.new_project_size_gb];
   let value = size / 1024;
   let unit = 0;
   while (unit < units.length - 1 && value >= 1023.5) {
@@ -188,5 +189,5 @@ export function bytes(size) {
     unit += 1;
   }
   const text = value < 10 ? value.toFixed(1) : String(Math.round(value));
-  return `${text} ${units[unit]}`;
+  return units[unit]({ size: text });
 }

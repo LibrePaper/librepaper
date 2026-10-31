@@ -2,6 +2,7 @@
 // Loro-backed persistence lives in offline-persistence.js.
 import { projectIdentity, projectIdentityKey } from "./project-identity.js";
 import { OFFLINE_DATABASE as DATABASE, localDataForgotten } from "./local-data.js";
+import { m } from "./paraglide/messages.js";
 
 // Named for the substrate, not only the schema: the v1 database holds Yjs
 // updates, and a Loro document cannot import those -- it rejects them as
@@ -30,8 +31,8 @@ export function transactionDone(transaction) {
 
 export function openOfflineDatabase(indexedDB_ = globalThis.indexedDB) {
   // After a sign-out this tab must not recreate the database it just deleted.
-  if (localDataForgotten()) return Promise.reject(new Error("This browser's copies were cleared at sign-out."));
-  if (!indexedDB_) return Promise.reject(new Error("This browser does not provide offline storage."));
+  if (localDataForgotten()) return Promise.reject(new Error(m.offline_projects_forgotten()));
+  if (!indexedDB_) return Promise.reject(new Error(m.offline_projects_unsupported()));
   return new Promise((resolve, reject) => {
     const request = indexedDB_.open(DATABASE, VERSION);
     let blocked = false;
@@ -55,7 +56,7 @@ export function openOfflineDatabase(indexedDB_ = globalThis.indexedDB) {
     request.onerror = () => reject(request.error || new Error("could not open offline storage"));
     request.onblocked = () => {
       blocked = true;
-      reject(new Error("offline storage is blocked by another tab"));
+      reject(new Error(m.offline_projects_blocked()));
     };
   });
 }
@@ -96,7 +97,7 @@ export async function rememberProject(metadata, indexedDB_ = globalThis.indexedD
   });
   const key = projectIdentityKey(identity);
   const state = await readStore(STATES, key, indexedDB_);
-  if (!state) throw new Error("Wait for the project to finish saving on this device.");
+  if (!state) throw new Error(m.offline_projects_wait_saving());
   const record = {
     key,
     version: VERSION,

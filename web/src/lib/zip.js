@@ -11,6 +11,7 @@
 // PDF are already compressed, and they are most of the bytes. Storing rather
 // than deflating costs a fraction on the texts and nothing on the rest, and
 // buys a file every unzip program on earth opens.
+import { m } from "./paraglide/messages.js";
 
 /// CRC-32, which a zip entry carries for each file. The table is built once,
 /// on first use, because building it costs a millisecond and a document with
@@ -142,8 +143,8 @@ export function zip(files) {
 // Both the compressed input and actual decompressed bytes are bounded: central
 // directory sizes are untrusted and cannot authorize an unbounded allocation.
 export async function unzip(blob, { maxBytes = 64 * 1024 * 1024, maxFiles = 2000 } = {}) {
-  const corrupt = () => new Error("The ZIP archive is corrupt.");
-  const tooLarge = () => new Error("The archive is too large.");
+  const corrupt = () => new Error(m.zip_corrupt());
+  const tooLarge = () => new Error(m.zip_too_large());
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || !Number.isSafeInteger(maxFiles) || maxFiles < 1) {
     throw new Error("Invalid archive limits.");
   }
@@ -159,20 +160,20 @@ export async function unzip(blob, { maxBytes = 64 * 1024 * 1024, maxFiles = 2000
       break;
     }
   }
-  if (eocd < 0) throw new Error("This is not a readable ZIP archive.");
+  if (eocd < 0) throw new Error(m.zip_not_readable());
   const count = view.getUint16(eocd + 10, true);
   const centralSize = view.getUint32(eocd + 12, true);
   const centralAt = view.getUint32(eocd + 16, true);
   if (count === 0xffff || centralAt === 0xffffffff || centralSize === 0xffffffff) {
-    throw new Error("ZIP64 archives are not supported.");
+    throw new Error(m.zip_zip64_unsupported());
   }
   if (view.getUint16(eocd + 4, true) || view.getUint16(eocd + 6, true) || view.getUint16(eocd + 8, true) !== count) {
-    throw new Error("Split ZIP archives are not supported.");
+    throw new Error(m.zip_split_unsupported());
   }
   if (centralAt + centralSize !== eocd) throw corrupt();
   // Directory records do not consume the document's file count, but still
   // have a finite bound independent of how many empty directories were sent.
-  if (count > Math.min(65534, maxFiles * 9)) throw new Error("The archive contains too many entries.");
+  if (count > Math.min(65534, maxFiles * 9)) throw new Error(m.zip_too_many_entries());
   const entries = [];
   const names = new Set();
   let at = centralAt;
@@ -189,24 +190,24 @@ export async function unzip(blob, { maxBytes = 64 * 1024 * 1024, maxFiles = 2000
     const commentSize = view.getUint16(at + 32, true);
     const external = view.getUint32(at + 38, true);
     const localAt = view.getUint32(at + 42, true);
-    if (view.getUint16(at + 34, true)) throw new Error("Split ZIP archives are not supported.");
-    if ([compressed, size, localAt].includes(0xffffffff)) throw new Error("ZIP64 archives are not supported.");
+    if (view.getUint16(at + 34, true)) throw new Error(m.zip_split_unsupported());
+    if ([compressed, size, localAt].includes(0xffffffff)) throw new Error(m.zip_zip64_unsupported());
     if (at + 46 + nameSize + extraSize + commentSize > eocd) throw corrupt();
     const encodedName = bytes.subarray(at + 46, at + 46 + nameSize);
     let name;
     try { name = decoder.decode(encodedName); }
-    catch { throw new Error("ZIP filenames must use UTF-8. Re-export the archive with UTF-8 names."); }
+    catch { throw new Error(m.zip_utf8_names()); }
     at += 46 + nameSize + extraSize + commentSize;
-    if (!name || name.startsWith("/") || name.includes("\\") || /^[a-z]:/i.test(name) || /[\u0000-\u001f\u007f]/.test(name)) throw new Error("The archive contains an invalid path.");
+    if (!name || name.startsWith("/") || name.includes("\\") || /^[a-z]:/i.test(name) || /[\u0000-\u001f\u007f]/.test(name)) throw new Error(m.zip_invalid_path());
     const path = name.endsWith("/") ? name.slice(0, -1) : name;
-    if (path.split("/").some(part => !part || part.trim() === "." || part.trim() === "..")) throw new Error("The archive contains an invalid path.");
+    if (path.split("/").some(part => !part || part.trim() === "." || part.trim() === "..")) throw new Error(m.zip_invalid_path());
     const key = path.trim().normalize("NFC").toLowerCase();
-    if (names.has(key)) throw new Error(name + ": two archive entries cannot share one name.");
+    if (names.has(key)) throw new Error(m.zip_duplicate_name({ name }));
     names.add(key);
-    if (flags & 0x41) throw new Error("The archive contains an encrypted file: " + name);
+    if (flags & 0x41) throw new Error(m.zip_encrypted({ name }));
     const fileType = (external >>> 16) & 0xf000;
-    if (fileType && fileType !== 0x8000 && fileType !== 0x4000) throw new Error("The archive contains a symbolic link or special file: " + name);
-    if (method !== 0 && method !== 8) throw new Error("This archive uses unsupported compression for " + name + ".");
+    if (fileType && fileType !== 0x8000 && fileType !== 0x4000) throw new Error(m.zip_special_file({ name }));
+    if (method !== 0 && method !== 8) throw new Error(m.zip_unsupported_compression({ name }));
     if (localAt + 30 > centralAt || view.getUint32(localAt, true) !== 0x04034b50) throw corrupt();
     const localNameSize = view.getUint16(localAt + 26, true);
     const localExtraSize = view.getUint16(localAt + 28, true);
@@ -218,7 +219,7 @@ export async function unzip(blob, { maxBytes = 64 * 1024 * 1024, maxFiles = 2000
       if (size !== 0) throw corrupt();
       continue;
     }
-    if (entries.length >= maxFiles) throw new Error("The archive contains more than " + maxFiles + " files.");
+    if (entries.length >= maxFiles) throw new Error(m.zip_too_many_files({ max: maxFiles }));
     if (size > maxBytes - total) throw tooLarge();
     total += size;
     entries.push({ path: name, dataAt, compressed, size, method, expectedCrc });
@@ -228,7 +229,7 @@ export async function unzip(blob, { maxBytes = 64 * 1024 * 1024, maxFiles = 2000
   for (const entry of entries) {
     let body = bytes.subarray(entry.dataAt, entry.dataAt + entry.compressed);
     if (entry.method === 8) {
-      if (typeof DecompressionStream === "undefined") throw new Error("This browser cannot unpack compressed ZIP files. Update your browser or publish the directory with the CLI.");
+      if (typeof DecompressionStream === "undefined") throw new Error(m.zip_no_deflate());
       let inflated = 0;
       const limited = new TransformStream({
         transform(chunk, controller) {
@@ -240,10 +241,10 @@ export async function unzip(blob, { maxBytes = 64 * 1024 * 1024, maxFiles = 2000
       try {
         body = new Uint8Array(await new Response(new Blob([body]).stream().pipeThrough(new DecompressionStream("deflate-raw")).pipeThrough(limited)).arrayBuffer());
       } catch {
-        throw new Error("Could not decompress " + entry.path + ": unsupported compression, corrupt data, or exceeded size limit.");
+        throw new Error(m.zip_decompress_failed({ path: entry.path }));
       }
     }
-    if (body.length !== entry.size || crc32(body) !== entry.expectedCrc) throw new Error("The ZIP archive is corrupt near " + entry.path + ".");
+    if (body.length !== entry.size || crc32(body) !== entry.expectedCrc) throw new Error(m.zip_corrupt_near({ path: entry.path }));
     result.push({ path: entry.path, bytes: body });
   }
   return result;

@@ -3,6 +3,7 @@
 // local-only inputs to omit can be read apart from reading the ZIP.
 import { checkPath, collisionKey, normalisePath } from "./paths.js";
 import { openingFile } from "./opening.js";
+import { m } from "./paraglide/messages.js";
 
 const extension = (path) => path.slice(path.lastIndexOf(".")).toLowerCase();
 const basename = (path) => path.slice(path.lastIndexOf("/") + 1);
@@ -24,23 +25,23 @@ export function archiveProject(entries, config) {
   const policy = entries.find((entry) => entry.path === policyPath);
   let include = [];
   if (policy) {
-    if (policy.bytes.length > 64 * 1024) throw new Error(".librepaper-share.json exceeds 64 KiB.");
+    if (policy.bytes.length > 64 * 1024) throw new Error(m.project_upload_policy_size());
     let value;
     try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(policy.bytes)); }
-    catch { throw new Error("Invalid .librepaper-share.json."); }
+    catch { throw new Error(m.project_upload_policy_invalid()); }
     if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => key !== "include") || (value.include !== undefined && (!Array.isArray(value.include) || value.include.some((path) => typeof path !== "string")))) {
-      throw new Error(".librepaper-share.json must contain an include list of file paths.");
+      throw new Error(m.project_upload_policy_shape());
     }
     include = value.include || [];
   }
   const seen = new Set();
   for (const file of files) {
     const key = collisionKey(file.path);
-    if (seen.has(key)) throw new Error(`${file.path}: two files cannot share one name.`);
+    if (seen.has(key)) throw new Error(m.project_upload_duplicate_name({ path: file.path }));
     seen.add(key);
   }
   const candidates = files.filter((entry) => renderable(config, entry.path)).map((entry) => entry.path).sort();
-  if (!candidates.length) throw new Error("The archive contains no supported document file.");
+  if (!candidates.length) throw new Error(m.project_upload_no_documents());
   // Only the documents are read to find the file it opens on, not the output beside them.
   const quartoStems = new Set(files.filter((file) => extension(file.path) === ".qmd").map((file) => stem(file.path)));
   const texts = {};
@@ -52,7 +53,7 @@ export function archiveProject(entries, config) {
 }
 
 export function archiveSelection(project, opening, config) {
-  if (!project.candidates.includes(opening)) throw new Error("The archive has no document to open.");
+  if (!project.candidates.includes(opening)) throw new Error(m.project_upload_no_opening());
   const quarto = extension(opening) === ".qmd";
   const quartoStems = new Set(project.files.filter((file) => extension(file.path) === ".qmd").map((file) => stem(file.path)));
   const skipped = [...project.skipped];
@@ -61,7 +62,7 @@ export function archiveSelection(project, opening, config) {
     for (const path of project.include) {
       const checked = checkPath(config, path);
       if (checked.error) throw new Error(checked.error);
-      if (!project.files.some((file) => file.path === path)) throw new Error(`Shared file ${path} is missing or excluded from the archive.`);
+      if (!project.files.some((file) => file.path === path)) throw new Error(m.project_upload_shared_missing({ path }));
     }
   }
   for (const file of project.files) {
@@ -79,11 +80,11 @@ export function archiveSelection(project, opening, config) {
     if (checked.error) throw new Error(checked.error);
     if (checked.kind === "text") {
       try { new TextDecoder("utf-8", { fatal: true }).decode(file.bytes); }
-      catch { throw new Error(`${file.path}: document source must be UTF-8 text.`); }
+      catch { throw new Error(m.project_upload_not_utf8({ path: file.path })); }
     }
     files.push({ ...file, kind: checked.kind });
   }
-  if (files.length > config.max_files) throw new Error(`A document may hold ${config.max_files} files.`);
+  if (files.length > config.max_files) throw new Error(m.project_upload_max_files({ max: config.max_files }));
   return { files, skipped };
 }
 

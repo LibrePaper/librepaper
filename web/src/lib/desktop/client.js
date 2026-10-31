@@ -16,6 +16,7 @@
 
 import { bytesOf, toArrayBuffer } from "../bytes.js";
 import { named } from "../latex/errors.js";
+import { m } from "../paraglide/messages.js";
 
 /** @typedef {{ fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, now: () => number, wait: (ms: number, signal?: AbortSignal) => Promise<void>, location: () => Location | null, replaceHash: (hash: string) => void }} DesktopDeps */
 /** @typedef {{ generation?: number, deadlineSeconds?: number, snapshot?: string }} DesktopJob */
@@ -28,9 +29,9 @@ import { named } from "../latex/errors.js";
 export const INSTALL_URL = "https://librepaper.org/desktop-app.html";
 
 /** What a feature call says in a plain browser. */
-export const DESKTOP_ONLY_MESSAGE = "This needs the LibrePaper desktop app.";
+export const DESKTOP_ONLY_MESSAGE = m.client_desktop_only();
 
-const UNREACHABLE_MESSAGE = "The LibrePaper desktop app could not reach its local service. Restart the desktop app.";
+const UNREACHABLE_MESSAGE = m.client_unreachable();
 
 // Feature routes and machine management routes, under the desktop base.
 const LOCAL_BASE = "librepaper/local/";
@@ -99,7 +100,7 @@ export async function shellAction(name, body) {
   if (response.ok) return;
   let message = "";
   try { message = (await response.json())?.error || ""; } catch { /* no body */ }
-  throw new Error(message || `The desktop app could not do that (${response.status}).`);
+  throw new Error(message || m.client_action_failed({ status: response.status }));
 }
 
 // Shows a system notification from the desktop app. The browser has none.
@@ -115,7 +116,7 @@ export async function desktopReport() {
   if (response.ok) return String((await response.json())?.text ?? "");
   let message = "";
   try { message = (await response.json())?.error || ""; } catch { /* no body */ }
-  throw new Error(message || `The desktop app could not do that (${response.status}).`);
+  throw new Error(message || m.client_action_failed({ status: response.status }));
 }
 
 // The binding of a web project: the desktop app renders it in a workspace of
@@ -163,7 +164,7 @@ async function throwOnFailure(response) {
   if (response.status === 502 && typeof data?.reason !== "string") throw unavailable();
   const message = typeof data?.error === "string"
     ? data.error
-    : `The LibrePaper desktop app refused the request (${response.status})`;
+    : m.client_refused({ status: response.status });
   throw named("Refused", message, { status: response.status, body: data || {} });
 }
 
@@ -224,9 +225,9 @@ export async function manage(path, { method = "GET", body } = {}) {
     throw unavailable();
   }
   if (response.status === 502) throw unavailable();
-  if (response.status === 403) throw named("Refused", "This is not available for this site.", { status: 403 });
+  if (response.status === 403) throw named("Refused", m.client_not_available_for_site(), { status: 403 });
   if (!response.ok) {
-    let message = `The desktop app request failed (${response.status}).`;
+    let message = m.client_request_failed({ status: response.status });
     try {
       const data = await response.json();
       if (typeof data?.error === "string" && data.error) message = data.error;
@@ -395,10 +396,10 @@ async function fetchVerifiedOutput(id, name, status) {
   const expectedDigest = safeSha256(descriptor.sha256, `${name} output digest`);
   const bytes = await fetchOutput(id, name, status);
   if (!bytes || bytes.byteLength !== expectedSize) {
-    throw named("Refused", `Local builder returned the wrong size for ${name}`);
+    throw named("Refused", m.client_wrong_size({ name }));
   }
   if (await sha256hex(bytes) !== expectedDigest) {
-    throw named("Refused", `Local builder returned the wrong digest for ${name}`);
+    throw named("Refused", m.client_wrong_digest({ name }));
   }
   return bytes;
 }
@@ -497,13 +498,13 @@ export async function authorizeBackups(accountId, approveCode, stillCurrent = ()
     jsonBody: { account_id: String(accountId || "") },
   });
   const { user_code: userCode, authorization_id: authorizationId } = await response.json();
-  if (!userCode || !authorizationId || !stillCurrent()) throw named("Canceled", "The backup authorization scope changed.");
+  if (!userCode || !authorizationId || !stillCurrent()) throw named("Canceled", m.client_scope_changed());
   await approveCode(userCode, stillCurrent);
-  if (!stillCurrent()) throw named("Canceled", "The backup authorization scope changed.");
+  if (!stillCurrent()) throw named("Canceled", m.client_scope_changed());
   const completed = await send("POST", "backups/authorize/complete", {
     jsonBody: { account_id: String(accountId || ""), authorization_id: String(authorizationId) },
   });
-  if (!stillCurrent()) throw named("Canceled", "The backup authorization scope changed.");
+  if (!stillCurrent()) throw named("Canceled", m.client_scope_changed());
   return completed.json();
 }
 

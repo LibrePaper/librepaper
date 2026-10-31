@@ -1,6 +1,7 @@
 // The account-wide backup status shared by the Reader's Diagnostics and Settings.
 // It is polled only inside the desktop app.
 import * as client from "./client.js";
+import { m } from "../paraglide/messages.js";
 
 export function createBackupStatus(bridge = client, { runningPollMs = 1000 } = {}) {
   let current = $state.raw({ accountId: "", active: false, loading: false, data: null, error: "" });
@@ -47,7 +48,7 @@ export function createBackupStatus(bridge = client, { runningPollMs = 1000 } = {
         }
       } catch (error) {
         if (requestScope === scope && accountId === current.accountId && current.active) {
-          current = { ...current, loading: false, data: null, error: error?.message || "Backup status is unavailable." };
+          current = { ...current, loading: false, data: null, error: error?.message || m.backups_status_unavailable() };
         }
       }
       return current;
