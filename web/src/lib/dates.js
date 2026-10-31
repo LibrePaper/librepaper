@@ -1,3 +1,5 @@
+import { m } from "./paraglide/messages.js";
+
 // How a date is written, in the one place that decides it.
 //
 // Every date a reader sees is a calendar day, and the same day has to look
@@ -60,15 +62,15 @@ export function since(at, now = new Date()) {
   const seconds = Math.floor((now.getTime() - when.getTime()) / 1000);
   // A clock that is a little behind the server's reads as the future. There
   // is no useful way to write that, and "just now" is what it means.
-  if (seconds < 90) return "just now";
+  if (seconds < 90) return m.dates_just_now();
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 60) return m.dates_minutes_ago({ minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24 && day(when) === day(now)) return hours === 1 ? "1 hour ago" : `${hours} hours ago`;
+  if (hours < 24 && day(when) === day(now)) return m.dates_hours_ago({ count: hours });
   const days = Math.round((new Date(day(now)).getTime() - new Date(day(when)).getTime()) / 86400000);
-  if (days <= 0) return "today";
-  if (days === 1) return "yesterday";
-  if (days < 7) return `${days} days ago`;
+  if (days <= 0) return m.dates_today();
+  if (days === 1) return m.dates_yesterday();
+  if (days < 7) return m.dates_days_ago({ days });
   return day(when);
 }
 
