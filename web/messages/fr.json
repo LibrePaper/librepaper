@@ -1,3 +1,2780 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format"
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "agent_access_label": "Accès",
+  "agent_adapter_download": "Le démarrage télécharge son adaptateur.",
+  "agent_adapter_install": "Pour l’installer de façon permanente, exécutez",
+  "agent_ask": "Demander à {agent}…",
+  "agent_attachment_summary": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{kind}, {count} mot · {path}",
+        "countPlural=*": "{kind}, {count} mots · {path}"
+      }
+    }
+  ],
+  "agent_back_tasks": "Retour aux tâches",
+  "agent_cancel": "Annuler",
+  "agent_cancelling": "Annulation…",
+  "agent_changes_gone": "Ces modifications ne sont plus en attente.",
+  "agent_client_ack_timeout": "L’assistant n’a pas accusé réception de la requête.",
+  "agent_client_ack_timeout_response": "L’assistant n’a pas accusé réception de la réponse.",
+  "agent_client_assistant_rejected": "L’assistant a refusé cette requête.",
+  "agent_client_channel_closed": "Le canal de l’assistant a été fermé.",
+  "agent_client_channel_invalid": "Le serveur a renvoyé un canal d’assistant invalide.",
+  "agent_client_connection_closed_before_accept": "La connexion à l’assistant s’est fermée avant l’acceptation du message.",
+  "agent_client_connection_closed_unconfirmed": "La connexion s’est fermée avant que l’exécuteur confirme la tâche.",
+  "agent_client_context_too_large": "Le contexte joint est trop volumineux ({bytes} octets; limite {limit}). Retirez ou remplacez le passage.",
+  "agent_client_delivery_failed": "La livraison a échoué avant confirmation.",
+  "agent_client_delivery_unconfirmed": "La livraison n’a pas été confirmée. Réessayez lorsque l’exécuteur est connecté.",
+  "agent_client_other_tab": "Cette conversation est déjà ouverte dans un autre onglet du navigateur.",
+  "agent_client_panel_closed": "Le panneau de l’assistant a été fermé.",
+  "agent_client_preview_undelivered": "Le résultat de l’aperçu n’a pas pu être envoyé.",
+  "agent_client_request_failed": "La requête à l’assistant a échoué ({status}).",
+  "agent_client_request_timeout": "La requête à l’assistant a dépassé le délai.",
+  "agent_client_runner_disconnected": "L’exécuteur est déconnecté; la requête sera vérifiée à son retour.",
+  "agent_client_runner_not_joined": "L’agent a démarré mais n’a pas rejoint la conversation.",
+  "agent_client_runner_required": "Démarrez l’exécuteur LibrePaper avant d’envoyer un message.",
+  "agent_client_server_unavailable": "Le serveur est indisponible. Votre brouillon reste dans la zone de message.",
+  "agent_client_session_boundary": "Nouvelle session d’agent. L’agent ne se souvient pas des messages précédents de cette conversation.",
+  "agent_client_task_cancelled": "Tâche annulée.",
+  "agent_client_task_failed": "La tâche a échoué.",
+  "agent_client_task_interrupted": "Tâche interrompue; vérifiez ses opérations sur le document avant de réessayer.",
+  "agent_command": "Commande",
+  "agent_comment_gone": "Le commentaire joint n’est plus disponible.",
+  "agent_comment_target": "Commentaire : « {text} »",
+  "agent_connecting": "Connexion…",
+  "agent_context_document": "Document entier",
+  "agent_context_file": "Fichier actuel",
+  "agent_context_file_path": "Fichier actuel · {path}",
+  "agent_context_label": "Contexte : {label}",
+  "agent_context_passage": "Passage sélectionné",
+  "agent_context_selection": "Sélection",
+  "agent_context_selection_path": "Sélection · {path}",
+  "agent_delivery_unconfirmed": "La livraison du message n’a pas été confirmée.",
+  "agent_details": "Détails",
+  "agent_diagnostic_gone": "Ce diagnostic a disparu après la dernière compilation.",
+  "agent_document_word": "document",
+  "agent_empty_connected": "Les messages sont envoyés à l’agent sur cet ordinateur.",
+  "agent_empty_send": "Envoyez un message pour démarrer l’agent.",
+  "agent_empty_title": "Aucun message pour le moment",
+  "agent_extra_label": "Instructions supplémentaires",
+  "agent_extra_placeholder": "Instructions supplémentaires (facultatif)",
+  "agent_feature_description": "Clavardez avec Claude, Codex ou un autre agent de programmation qui lit et modifie ce projet.",
+  "agent_files": "Fichiers",
+  "agent_files_more": "et {count} de plus",
+  "agent_frequent": "Utilisées fréquemment",
+  "agent_input_request_label": "Demande de saisie de l’assistant",
+  "agent_is_working": "{agent} travaille",
+  "agent_keep_current": "Garder l’actuelle",
+  "agent_link_create_failed": "Impossible de créer un lien d’accès pour l’agent.",
+  "agent_link_no_grant": "Ce lien d’accès n’accorde pas l’accès en {role}.",
+  "agent_link_wrong_document": "Le lien d’accès doit mener à ce document.",
+  "agent_matching_tasks": "Tâches correspondantes",
+  "agent_new_conversation": "Nouvelle conversation",
+  "agent_no_match": "Aucune tâche ne correspond à “{query}”. Essayez un autre mot, comme grammaire ou citations.",
+  "agent_none_found": "Aucun agent de programmation pris en charge n’a été trouvé sur cet ordinateur.",
+  "agent_not_confirmed": "Cette demande n’a pas été confirmée. Réessayez la livraison ci-dessus avant de la renvoyer.",
+  "agent_not_started": "L’assistant n’a pas démarré.",
+  "agent_panel_label": "Clavardage avec l’agent",
+  "agent_permission_allow_always": "Toujours autoriser",
+  "agent_permission_allow_once": "Autoriser",
+  "agent_permission_continue": "Autoriser l’agent à poursuivre",
+  "agent_permission_reject_always": "Toujours refuser",
+  "agent_permission_reject_once": "Refuser",
+  "agent_permission_required": "Autorisation requise",
+  "agent_permission_tool_apply": "Modifier le document",
+  "agent_permission_tool_comment": "Commenter le document",
+  "agent_permission_tool_propose": "Proposer des modifications au document",
+  "agent_permission_tool_read": "Lire le document actuel",
+  "agent_permission_tool_result": "Signaler le résultat",
+  "agent_permission_tool_use": "Utiliser {tool} ({server})",
+  "agent_preview_passage_note": "Ce passage a été sélectionné dans l’aperçu. Sélectionnez-le dans l’éditeur pour Resserrer et Réécrire.",
+  "agent_queue": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Demande en file d’attente",
+        "countPlural=*": "{count} demandes en file d’attente"
+      }
+    }
+  ],
+  "agent_queued": "En file d’attente",
+  "agent_quoted_text": "Texte cité",
+  "agent_reconnect_now": "Reconnecter maintenant",
+  "agent_reconnecting": "Reconnexion…",
+  "agent_remove": "Retirer",
+  "agent_remove_diagnostic": "Retirer le diagnostic",
+  "agent_replace": "Remplacer",
+  "agent_replace_selection": "Remplacer par la sélection actuelle",
+  "agent_request_arrived": "Une nouvelle demande est arrivée. Remplacer celle-ci?",
+  "agent_retry_connection": "Réessayer la connexion",
+  "agent_retry_delivery": "Réessayer la livraison",
+  "agent_retry_gone": "La demande d’origine n’est plus disponible pour une nouvelle tentative.",
+  "agent_review_changes": "Examiner les modifications",
+  "agent_role_comment": "Commenter",
+  "agent_role_comment_help": "Lire et commenter. Ne peut pas modifier le texte",
+  "agent_role_edit": "Modifier",
+  "agent_role_edit_help": "Faire des modifications suivies et appliquer des changements sur demande",
+  "agent_role_word_comment": "commentaire",
+  "agent_role_word_edit": "modification",
+  "agent_role_word_read": "lecture",
+  "agent_scope": "Portée",
+  "agent_search_label": "Rechercher des tâches",
+  "agent_search_placeholder": "Rechercher des tâches...",
+  "agent_select_label": "Agent",
+  "agent_selected_text": "Texte sélectionné",
+  "agent_send_to_agent": "Envoyer à l’agent",
+  "agent_settings_label": "Paramètres de l’agent",
+  "agent_setup_docs": "Instructions d’installation",
+  "agent_sign_in_again": "Reconnectez-vous pour autoriser l’assistant local.",
+  "agent_start_first": "Démarrez un agent dans l’onglet Clavardage avant d’envoyer une tâche.",
+  "agent_stop": "Arrêter",
+  "agent_stopping": "Arrêt en cours…",
+  "agent_tab_chat": "Clavardage",
+  "agent_tab_tasks": "Tâches",
+  "agent_task_needs_context": "Cette tâche exige l’accès et le contexte appropriés. Choisissez une autre tâche ou joignez un passage.",
+  "agent_task_tracked_grant": "Cette tâche apporte des modifications suivies. Réglez l’accès de l’agent à Modifier ci-dessus.",
+  "agent_task_tracked_no_access": "Cette tâche apporte des modifications suivies. Vous avez besoin d’un accès en modification pour l’exécuter.",
+  "agent_the_agent": "L’agent",
+  "agent_title": "Agent",
+  "agent_view": "Afficher",
+  "agent_waiting_permission": "En attente d’autorisation",
+  "agent_you": "Vous",
+  "agent_your_agent": "votre agent",
+  "annotations_comments_read_failed": "Les commentaires n’ont pas pu être lus ({status}).",
+  "annotations_comments_reload_failed": "Les commentaires n’ont pas pu être rechargés.",
+  "annotations_edit_failed": "Cette modification n’a pas pu être enregistrée.",
+  "annotations_edit_pending": "La modification précédente est toujours en cours d’enregistrement.",
+  "annotations_page_read_failed": "Cette page n’a pas pu être lue.",
+  "annotations_replies_read_failed": "Les réponses n’ont pas pu être lues ({status}).",
+  "annotations_replies_read_failed_plain": "Ces réponses n’ont pas pu être lues.",
+  "assistant_blocked_comment": "Vous avez besoin d’un accès en commentaire pour exécuter cette tâche.",
+  "assistant_blocked_connect": "Connectez un agent pour vérifier l’accès à cette tâche.",
+  "assistant_blocked_edit": "Vous avez besoin d’un accès en modification pour exécuter cette tâche.",
+  "assistant_blocked_open_file": "Ouvrez un fichier pour utiliser cette tâche.",
+  "assistant_blocked_read": "Vous avez besoin d’un accès en lecture pour exécuter cette tâche.",
+  "assistant_blocked_select": "Sélectionnez le passage dans l’éditeur pour utiliser cette tâche.",
+  "assistant_blocked_selection_only": "Cette tâche porte sur un passage sélectionné.",
+  "assistant_blocked_unavailable": "Cette tâche ne peut pas s’exécuter ici.",
+  "assistant_category_document": "Document",
+  "assistant_category_review": "Révision",
+  "assistant_category_writing": "Rédaction",
+  "assistant_diagnostic_error": "Erreur",
+  "assistant_diagnostic_error_at": "Erreur · {location}",
+  "assistant_diagnostic_warning": "Avertissement",
+  "assistant_diagnostic_warning_at": "Avertissement · {location}",
+  "assistant_hint_file": "Nécessite un fichier ouvert",
+  "assistant_hint_selection": "Nécessite une sélection dans la source",
+  "assistant_hint_unavailable": "Indisponible",
+  "assistant_scope_document": "Document entier",
+  "assistant_scope_file": "Fichier actuel",
+  "assistant_scope_file_path": "Fichier actuel · {path}",
+  "assistant_scope_selection": "Passage sélectionné",
+  "assistant_scope_selection_path": "Passage sélectionné · {path}",
+  "assistant_task_address_comment_description": "Répondre au commentaire et modifier le passage concerné si cela aide.",
+  "assistant_task_address_comment_label": "Répondre au commentaire",
+  "assistant_task_check_citations_description": "Vérifier que chaque citation renvoie à la bibliographie et appuie l’affirmation à laquelle elle est liée.",
+  "assistant_task_check_citations_label": "Vérifier les citations",
+  "assistant_task_check_citations_terms": "références bibliographie sources citer citations references bibliography sources cite refs",
+  "assistant_task_check_consistency_description": "Repérer les contradictions et les incohérences de terminologie, de notation ou de définitions.",
+  "assistant_task_check_consistency_label": "Vérifier la cohérence",
+  "assistant_task_check_consistency_terms": "cohérence terminologie notation définitions contradictions incohérences conflits terminology notation definitions consistent conflicts contradictions contradict",
+  "assistant_task_explain_description": "Dire ce que ce passage affirme et comment il est construit.",
+  "assistant_task_explain_label": "Expliquer",
+  "assistant_task_explain_terms": "sens comprendre expliquer clarifier obscur meaning understand clarify unclear",
+  "assistant_task_fix_diagnostic_description": "Trouver la cause de ce message de compilation et corriger la source.",
+  "assistant_task_fix_diagnostic_label": "Corriger le diagnostic",
+  "assistant_task_outline_description": "Lister les titres et dire ce que fait chaque section.",
+  "assistant_task_outline_label": "Plan",
+  "assistant_task_outline_terms": "titres structure sections mise-en-page plan headings structure sections layout toc",
+  "assistant_task_proofread_description": "Corriger l’orthographe, la grammaire et la formulation sans changer le sens.",
+  "assistant_task_proofread_label": "Relire",
+  "assistant_task_proofread_terms": "orthographe grammaire fautes coquilles erreurs grammar spelling typos errors mistakes",
+  "assistant_task_review_argument_description": "Relever les affirmations non étayées, les lacunes du raisonnement et les transitions faibles.",
+  "assistant_task_review_argument_label": "Examiner l’argument",
+  "assistant_task_review_argument_terms": "logique raisonnement affirmations critique appui logic reasoning claims critique support",
+  "assistant_task_rewrite_description": "Reformuler la phrase pour plus de clarté et de fluidité.",
+  "assistant_task_rewrite_label": "Réécrire",
+  "assistant_task_rewrite_terms": "reformuler réécrire clarté fluidité rephrase reword clarity flow",
+  "assistant_task_suggest_improvements_description": "Proposer des modifications concrètes et ancrées plutôt que des commentaires.",
+  "assistant_task_suggest_improvements_label": "Suggérer des améliorations",
+  "assistant_task_suggest_improvements_terms": "modifications commentaires améliorer suggestions meilleur edits feedback improve suggestions better",
+  "assistant_task_summarize_description": "Résumer l’argument en quelques paragraphes.",
+  "assistant_task_summarize_label": "Résumer",
+  "assistant_task_summarize_terms": "résumé synthèse aperçu sommaire récapitulatif summary abstract overview tldr recap",
+  "assistant_task_tighten_description": "Supprimer les redondances et raccourcir sans perdre le fond.",
+  "assistant_task_tighten_label": "Resserrer",
+  "assistant_task_tighten_terms": "court concis raccourcir resserrer couper shorter concise shorten trim cut",
+  "backups_status_unavailable": "L’état des sauvegardes n’est pas disponible.",
+  "backupssettings_account_changed": "Le compte connecté dans le navigateur a changé. Réessayez l’autorisation de la sauvegarde.",
+  "backupssettings_auth_failed": "L’autorisation de la sauvegarde n’a pas pu être terminée.",
+  "backupssettings_back_up_now": "Sauvegarder maintenant",
+  "backupssettings_backing_up": "Sauvegarde de {projects} projets…",
+  "backupssettings_change_folder": "Changer de dossier…",
+  "backupssettings_choose_folder": "Choisir un dossier…",
+  "backupssettings_choose_folder_first": "Choisissez d’abord un dossier.",
+  "backupssettings_choosing": "Choix en cours…",
+  "backupssettings_connection": "Connexion au compte",
+  "backupssettings_enable": "Sauvegardes automatiques",
+  "backupssettings_error": "Erreur de sauvegarde : {error}",
+  "backupssettings_folder": "Dossier de sauvegarde",
+  "backupssettings_folder_failed": "L’application de bureau n’a pas pu choisir un dossier de sauvegarde.",
+  "backupssettings_folder_selected": "Dossier de sauvegarde sélectionné",
+  "backupssettings_frequency": "Fréquence",
+  "backupssettings_frequency_label": "Fréquence des sauvegardes",
+  "backupssettings_guide": "Guide des sauvegardes",
+  "backupssettings_intro": "Les projets de votre compte, copiés en fichiers ZIP dans un dossier de cet ordinateur par l’application de bureau.",
+  "backupssettings_last_backup": "Dernière sauvegarde {when}",
+  "backupssettings_loading": "Chargement de l’état de la sauvegarde…",
+  "backupssettings_loading_short": "Chargement…",
+  "backupssettings_no_backup_yet": "Aucune sauvegarde pour l’instant.",
+  "backupssettings_off": "Les sauvegardes sont désactivées.",
+  "backupssettings_retry": "Réessayer",
+  "backupssettings_run_failed": "La sauvegarde n’a pas pu être démarrée.",
+  "backupssettings_save_failed": "Les paramètres de sauvegarde n’ont pas pu être enregistrés.",
+  "backupssettings_saved": "Enregistré",
+  "backupssettings_scope_changed": "La portée de l’autorisation de la sauvegarde a changé. Réessayez l’autorisation.",
+  "backupssettings_sign_in_to_load": "Connectez-vous pour charger les paramètres de sauvegarde du compte.",
+  "backupssettings_signed_out": "Déconnecté",
+  "backupssettings_starting": "Démarrage…",
+  "backupssettings_status_unavailable": "État de la sauvegarde indisponible",
+  "backupssettings_status_unavailable_short": "État indisponible.",
+  "backupssettings_unknown": "Inconnu",
+  "biber_no_backend": "Cette version ne comprend pas le moteur WASM de Biber.",
+  "biber_timed_out": "Biber a dépassé le délai.",
+  "biber_worker_failed": "Le processus de travail de Biber a échoué.",
+  "bibliography_engine_unavailable": "La prise en charge de la bibliographie n’est pas disponible dans cette version.",
+  "boundary_crash_body": "Le reste de la page n’a pas pu être affiché. Rien de ce que vous avez écrit n’a été envoyé nulle part, ni perdu : un document que vous étiez en train de modifier est toujours dans ce navigateur, et le rechargement de la page le retrouvera.",
+  "boundary_crash_title": "Un élément de LibrePaper a cessé de fonctionner",
+  "boundary_diagnostics": "Diagnostics",
+  "boundary_reload": "Recharger la page",
+  "boundary_try_again": "Réessayer",
+  "boundary_unknown_error": "Erreur inconnue",
+  "catalog_favorites": "Favoris",
+  "catalog_recent": "Récents",
+  "catalog_templates": "Modèles",
+  "catalog_templates_need_format": "Les modèles nécessitent LaTeX, Typst, Markdown ou Quarto.",
+  "changes_accept": "Accepter",
+  "changes_accept_addition": "Accepter cet ajout",
+  "changes_accept_all": "Tout accepter",
+  "changes_accept_change": "Accepter cette modification",
+  "changes_accept_count": "Accepter {count}",
+  "changes_accept_deletion": "Accepter cette suppression",
+  "changes_accept_replacement": "Accepter ce remplacement",
+  "changes_accepted_count": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} modification acceptée.",
+        "countPlural=*": "{count} modifications acceptées."
+      }
+    }
+  ],
+  "changes_accepted_some": [
+    {
+      "declarations": [
+        "input succeeded",
+        "local succeededPlural = succeeded: plural"
+      ],
+      "selectors": [
+        "succeededPlural"
+      ],
+      "match": {
+        "succeededPlural=one": "{succeeded} modification acceptée; {failed} en échec.",
+        "succeededPlural=*": "{succeeded} modifications acceptées; {failed} en échec."
+      }
+    }
+  ],
+  "changes_accepting": "Acceptation en cours…",
+  "changes_all_changes": "Toutes les modifications",
+  "changes_author_you": "{author} (vous)",
+  "changes_cancel": "Annuler",
+  "changes_confirm_accept_all": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Accepter {count} modification en attente dans ce projet?",
+        "countPlural=*": "Accepter toutes les {count} modifications en attente dans ce projet?"
+      }
+    }
+  ],
+  "changes_confirm_accept_selected": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Accepter {count} modification sélectionnée?",
+        "countPlural=*": "Accepter {count} modifications sélectionnées?"
+      }
+    }
+  ],
+  "changes_confirm_reject_all": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Refuser {count} modification en attente dans ce projet?",
+        "countPlural=*": "Refuser toutes les {count} modifications en attente dans ce projet?"
+      }
+    }
+  ],
+  "changes_confirm_reject_selected": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Refuser {count} modification sélectionnée?",
+        "countPlural=*": "Refuser {count} modifications sélectionnées?"
+      }
+    }
+  ],
+  "changes_could_not_accept": "Impossible d’accepter cette modification.",
+  "changes_could_not_accept_selected": "Impossible d’accepter les modifications sélectionnées.",
+  "changes_could_not_reject": "Impossible de refuser cette modification.",
+  "changes_could_not_reject_selected": "Impossible de refuser les modifications sélectionnées.",
+  "changes_editing_unavailable": "La modification n’est pas disponible",
+  "changes_empty_author": "Aucune modification en attente de {name}",
+  "changes_empty_file": "Aucune modification en attente dans {name}",
+  "changes_empty_hint": "Les modifications à réviser apparaîtront ici.",
+  "changes_empty_none": "Aucune modification en attente",
+  "changes_empty_note_count": "{count} en attente dans toutes les modifications.",
+  "changes_empty_run": "Aucune modification en attente dans cette exécution",
+  "changes_empty_task": "Aucune modification en attente dans cette tâche",
+  "changes_group_author": "Auteur",
+  "changes_group_file": "Fichier",
+  "changes_group_run": "Exécution",
+  "changes_hint": "J/K suivant · A accepter · R refuser",
+  "changes_kind_addition": "Ajout",
+  "changes_kind_deletion": "Suppression",
+  "changes_kind_replacement": "Remplacement",
+  "changes_pending_count": "{count} en attente",
+  "changes_queue_label": "File de révision",
+  "changes_reject": "Refuser",
+  "changes_reject_addition": "Refuser cet ajout",
+  "changes_reject_all": "Tout refuser",
+  "changes_reject_change": "Refuser cette modification",
+  "changes_reject_count": "Refuser {count}",
+  "changes_reject_deletion": "Refuser cette suppression",
+  "changes_reject_replacement": "Refuser ce remplacement",
+  "changes_rejected_count": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} modification refusée.",
+        "countPlural=*": "{count} modifications refusées."
+      }
+    }
+  ],
+  "changes_rejected_some": [
+    {
+      "declarations": [
+        "input succeeded",
+        "local succeededPlural = succeeded: plural"
+      ],
+      "selectors": [
+        "succeededPlural"
+      ],
+      "match": {
+        "succeededPlural=one": "{succeeded} modification refusée; {failed} en échec.",
+        "succeededPlural=*": "{succeeded} modifications refusées; {failed} en échec."
+      }
+    }
+  ],
+  "changes_rejecting": "Refus en cours…",
+  "changes_review_label": "Révision des modifications",
+  "changes_run": "Exécution {id}",
+  "changes_select": "Sélectionner",
+  "changes_select_addition": "Sélectionner l’ajout de {who}",
+  "changes_select_all": "Tout sélectionner",
+  "changes_select_deletion": "Sélectionner la suppression de {who}",
+  "changes_select_replacement": "Sélectionner le remplacement de {who}",
+  "changes_selected_count": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} sélectionnée",
+        "countPlural=*": "{count} sélectionnées"
+      }
+    }
+  ],
+  "changes_selected_label": "Modifications sélectionnées",
+  "changes_show_less": "Afficher moins",
+  "changes_show_more": "Afficher plus",
+  "changes_this_task": "Cette tâche",
+  "changes_title": "Modifications",
+  "changes_track": "Suivi des modifications",
+  "changes_track_title": "Suivre les modifications ultérieures dans ce document",
+  "changes_unavailable": "L’action de révision n’est pas disponible.",
+  "changes_unknown_author": "Auteur inconnu",
+  "changes_untitled": "Sans titre",
+  "changes_which_show": "Modifications à afficher : {name}",
+  "changes_you": "Vous",
+  "chat_anonymous": "Anonyme",
+  "chat_comment_required": "Un accès en commentaire est requis pour clavarder.",
+  "chat_empty_text": "Les messages sont partagés avec toutes les personnes qui peuvent commenter ce projet.",
+  "chat_empty_title": "Aucun message pour le moment",
+  "chat_offline": "Hors ligne. Le clavardage se reconnecte seul.",
+  "chat_placeholder": "Écrire à tout le monde…",
+  "chat_rows_today": "Aujourd’hui",
+  "chat_rows_yesterday": "Hier",
+  "chat_title": "Clavardage",
+  "chatcomposer_label": "Message",
+  "chatcomposer_placeholder": "Message…",
+  "chatcomposer_send": "Envoyer le message",
+  "chatcomposer_send_title": "Envoyer le message. Shift+Enter ajoute une nouvelle ligne.",
+  "chattranscript_comment_confirmed": "Action sur le commentaire confirmée : {action}.",
+  "chattranscript_confirmed_omitted": "{count} effets confirmés supplémentaires omis de ce résumé.",
+  "chattranscript_empty_title": "Aucun message pour le moment",
+  "chattranscript_label": "Conversation",
+  "chattranscript_load_older": "Charger les messages plus anciens",
+  "chattranscript_loading_older": "Chargement...",
+  "chattranscript_new_messages": "Nouveaux messages",
+  "chattranscript_refused": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} opération sur le document a été refusée.",
+        "countPlural=*": "{count} opérations sur le document ont été refusées."
+      }
+    }
+  ],
+  "chattranscript_review_changes": "Examiner les modifications",
+  "chattranscript_source_applied": "Modifications de la source appliquées.",
+  "chattranscript_unconfirmed": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} opération sur le document n’a pas de résultat confirmé.",
+        "countPlural=*": "{count} opérations sur le document n’ont pas de résultat confirmé."
+      }
+    }
+  ],
+  "citation_keys_extension_no_entry": "Aucune entrée de bibliographie pour « {key} »",
+  "client_action_failed": "L’application de bureau n’a pas pu effectuer cette action ({status}).",
+  "client_desktop_only": "Ceci nécessite l’application de bureau LibrePaper.",
+  "client_not_available_for_site": "Ceci n’est pas disponible pour ce site.",
+  "client_refused": "L’application de bureau LibrePaper a refusé la requête ({status})",
+  "client_request_failed": "La requête à l’application de bureau a échoué ({status}).",
+  "client_scope_changed": "La portée de l’autorisation de sauvegarde a changé.",
+  "client_unavailable": "Pandoc n’est pas disponible.",
+  "client_unreachable": "L’application de bureau LibrePaper n’a pas pu joindre son service local. Redémarrez l’application de bureau.",
+  "client_worker_failed": "Le processus de travail de Pandoc a échoué.",
+  "client_wrong_digest": "Le générateur local a renvoyé une empreinte incorrecte pour {name}",
+  "client_wrong_size": "Le générateur local a renvoyé une taille incorrecte pour {name}",
+  "collaboration_anonymous": "Anonyme",
+  "collaboration_chat": "Clavardage",
+  "collaboration_clear_chat": "Effacer le clavardage",
+  "collaboration_comments": "Commentaires",
+  "collaboration_highlight_hint": "Sélectionnez du texte dans la fenêtre d’aperçu pour le surligner.",
+  "collaboration_highlights": "Surlignages",
+  "collaboration_section_label": "Collaboration",
+  "collaboration_unread": "Messages non lus",
+  "collaboration_views_label": "Vues de collaboration",
+  "commandpalette_empty": "Aucune commande ne correspond.",
+  "commandpalette_input_label": "Commande",
+  "commandpalette_list_label": "Commandes",
+  "commandpalette_placeholder": "Tapez une commande",
+  "commandpalette_title": "Exécuter une commande",
+  "commands_bold": "Gras",
+  "commands_category_changes": "Modifications",
+  "commands_category_editing": "Édition",
+  "commands_category_help": "Aide",
+  "commands_category_insert": "Insertion",
+  "commands_category_math": "Mathématiques",
+  "commands_category_navigation": "Navigation",
+  "commands_category_preview": "Aperçu",
+  "commands_category_project": "Projet",
+  "commands_category_workspace": "Espace de travail",
+  "commands_changes_accept": "Accepter la modification",
+  "commands_changes_next": "Modification suivante",
+  "commands_changes_previous": "Modification précédente",
+  "commands_changes_reject": "Refuser la modification",
+  "commands_chat_clear": "Effacer l’historique du clavardage",
+  "commands_compile": "Compiler maintenant",
+  "commands_copy": "Copier",
+  "commands_cut": "Couper",
+  "commands_download": "Télécharger le projet",
+  "commands_download_comments": "Télécharger les commentaires",
+  "commands_download_docx": "Télécharger le DOCX",
+  "commands_download_html": "Télécharger le HTML",
+  "commands_download_pdf": "Télécharger le PDF",
+  "commands_download_source": "Télécharger le fichier source",
+  "commands_find": "Rechercher",
+  "commands_focus_comments": "Aller aux commentaires",
+  "commands_focus_files": "Aller aux fichiers",
+  "commands_focus_outline": "Aller au plan",
+  "commands_focus_preview": "Aller à l’aperçu",
+  "commands_history": "Historique",
+  "commands_italic": "Italique",
+  "commands_layout_cycle": "Basculer entre éditeur, aperçu et vue divisée",
+  "commands_layout_document": "Afficher seulement l’aperçu",
+  "commands_layout_source": "Afficher seulement l’éditeur",
+  "commands_layout_split": "Afficher l’éditeur et l’aperçu",
+  "commands_linked": "Basculer le défilement synchronisé",
+  "commands_lock_preview": "Verrouiller l’aperçu sur ce fichier",
+  "commands_math": "Insérer une formule mathématique",
+  "commands_math_template": "Insérer {label}",
+  "commands_new_file": "Nouveau fichier",
+  "commands_new_folder": "Nouveau dossier",
+  "commands_note_changes_panel": "Panneau Modifications",
+  "commands_note_comments_panel": "Panneau Commentaires",
+  "commands_note_compiled_document": "Document compilé",
+  "commands_note_editor_open": "Éditeur ouvert",
+  "commands_note_files_panel": "Panneau Fichiers",
+  "commands_note_not_while_typing": "Pas pendant la saisie",
+  "commands_note_outline_panel": "Panneau Plan",
+  "commands_note_preview_visible": "Aperçu visible",
+  "commands_note_wide_layout": "Disposition large",
+  "commands_palette": "Palette de commandes",
+  "commands_paste": "Coller",
+  "commands_redo": "Rétablir",
+  "commands_replace": "Remplacer",
+  "commands_select_all": "Tout sélectionner",
+  "commands_settings": "Ouvrir les paramètres",
+  "commands_share": "Partager",
+  "commands_shortcuts": "Afficher les raccourcis clavier",
+  "commands_side_left": "Éditeur à gauche",
+  "commands_side_right": "Éditeur à droite",
+  "commands_symbols": "Insérer un symbole",
+  "commands_tab_focus": "Basculer le déplacement du focus avec la touche Tab",
+  "commands_text_bigger": "Texte de l’éditeur plus grand",
+  "commands_text_reset": "Rétablir la taille du texte de l’éditeur",
+  "commands_text_smaller": "Texte de l’éditeur plus petit",
+  "commands_undo": "Annuler",
+  "commands_unlock_preview": "Déverrouiller l’aperçu",
+  "commands_upload": "Téléverser des fichiers",
+  "commands_visual_markup": "Basculer le balisage visuel",
+  "commands_word_count": "Nombre de mots",
+  "commentcard_agent": "Faire traiter le commentaire par l’agent IA",
+  "commentcard_attach": "Associer à la sélection",
+  "commentcard_attach_title": "Faire du passage sélectionné le passage de ce commentaire",
+  "commentcard_attach_title_disabled": "Sélectionnez d’abord le passage dans l’éditeur",
+  "commentcard_badge_not_on_page": "Passage absent de cette page",
+  "commentcard_badge_pending_deletion": "En attente de suppression",
+  "commentcard_badge_removed": "Passage supprimé",
+  "commentcard_badge_source_removed": "Fichier source supprimé",
+  "commentcard_badge_unresolved": "Passage source non résolu",
+  "commentcard_cancel": "Annuler",
+  "commentcard_delete_comment": "Supprimer le commentaire",
+  "commentcard_edit_comment": "Modifier le commentaire",
+  "commentcard_edit_field": "Modifier",
+  "commentcard_edit_placeholder": "Modifier · Ctrl+Enter enregistre · Esc annule",
+  "commentcard_edit_reply": "Modifier la réponse",
+  "commentcard_edited": "modifié {when}",
+  "commentcard_edited_title": "Modifié {when}",
+  "commentcard_highlight": "Surlignage",
+  "commentcard_in_source_only": "Dans la source, pas sur la page",
+  "commentcard_loading": "Chargement…",
+  "commentcard_reopen": "Rouvrir",
+  "commentcard_reply": "Répondre",
+  "commentcard_reply_placeholder": "Répondre · Enter envoie · Esc annule",
+  "commentcard_replying_as": "réponse en tant que {name}",
+  "commentcard_resolve": "Résoudre",
+  "commentcard_resolved": "Résolu",
+  "commentcard_save": "Enregistrer",
+  "commentcard_show_in_document": "Afficher dans le document",
+  "commentcard_show_more_replies": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Afficher {count} réponse de plus",
+        "countPlural=*": "Afficher {count} réponses de plus"
+      }
+    }
+  ],
+  "commentcard_try_again": "Réessayer",
+  "commentcomposer_aria": "Nouveau commentaire",
+  "commentcomposer_cancel": "Annuler",
+  "commentcomposer_commenting_as": "commentaire en tant que {name}",
+  "commentcomposer_field": "Commentaire",
+  "commentcomposer_placeholder": "Commentaire · Enter envoie · Esc annule",
+  "commentcomposer_quotation": "« {exact} »",
+  "commentcomposer_send": "Commenter",
+  "commentcomposer_sign_in": "Se connecter",
+  "commentcomposer_sign_in_rest": "pour commenter ce document.",
+  "comments_clear": "Effacer les résolus",
+  "comments_clear_all_title": "Supprimer chaque commentaire résolu",
+  "comments_clear_loaded_title": "Supprimer chaque commentaire résolu chargé",
+  "comments_delete_all": "Tout supprimer",
+  "comments_delete_all_title": "Supprimer chaque commentaire",
+  "comments_delete_loaded": "Supprimer les chargés",
+  "comments_delete_loaded_title": "Supprimer chaque commentaire chargé",
+  "comments_empty": "Aucun commentaire pour l’instant.",
+  "comments_export_comments_unread": "Les commentaires n’ont pas pu être lus jusqu’au bout.",
+  "comments_export_replies_unread": "Les réponses n’ont pas pu être lues jusqu’au bout.",
+  "comments_group_all": "Tous les commentaires",
+  "comments_group_loaded": "Commentaires chargés",
+  "comments_hint": "Sélectionnez du texte dans la fenêtre d’aperçu pour commenter.",
+  "comments_load_more": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Charger plus ({count} non chargé)",
+        "countPlural=*": "Charger plus ({count} non chargés)"
+      }
+    }
+  ],
+  "comments_loading": "Chargement…",
+  "comments_loading_list": "Chargement des commentaires…",
+  "comments_meta_filtered": "Ouverts : {open} · {filtered} sur les {loaded} chargés jusqu’ici",
+  "comments_meta_loaded": "Ouverts : {open} · Total : {total} · Chargés : {loaded}",
+  "comments_meta_total": "Ouverts : {open} · Total : {total}",
+  "comments_read_only": "Accès en lecture seule. Demandez au propriétaire un lien de commentaire ou de modification pour participer.",
+  "comments_resolve_all": "Tout résoudre",
+  "comments_resolve_all_title": "Résoudre chaque commentaire ouvert",
+  "comments_resolve_loaded": "Résoudre les chargés",
+  "comments_resolve_loaded_title": "Résoudre chaque commentaire ouvert chargé",
+  "comments_show_changes": "Afficher les modifications depuis…",
+  "comments_title": "Commentaires",
+  "comments_try_again": "Réessayer",
+  "compactpanelmenu_demo_unavailable": "{says} (non disponible dans la démo)",
+  "compactpanelmenu_docs": "Documentation",
+  "compactpanelmenu_home": "Accueil",
+  "compactpanelmenu_manage_tags": "Gérer les étiquettes",
+  "compactpanelmenu_menu": "Menu",
+  "compactpanelmenu_menu_marked": "Menu, {name}",
+  "compactpanelmenu_new_tag": "Nouvelle étiquette",
+  "compactpanelmenu_settings": "Paramètres",
+  "compactpanelmenu_sign_in": "Se connecter",
+  "compactpanelmenu_sign_out": "Se déconnecter",
+  "comparisonbar_close": "Fermer",
+  "datatable_resize_column": "Redimensionner la colonne {column}",
+  "dates_days_ago": "il y a {days} jours",
+  "dates_hours_ago": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "il y a {count} heure",
+        "countPlural=*": "il y a {count} heures"
+      }
+    }
+  ],
+  "dates_just_now": "à l’instant",
+  "dates_minutes_ago": "il y a {minutes} min",
+  "dates_today": "aujourd’hui",
+  "dates_yesterday": "hier",
+  "decorations_show_source": "Afficher la source",
+  "desktoponly_feature_message": "{feature} nécessite l’application de bureau LibrePaper.",
+  "desktoponly_get_app": "Obtenir l’application de bureau",
+  "desktoponly_open_app": "Ouvrir dans l’application de bureau",
+  "device_approve": "Approuver",
+  "device_approved_body": "Le terminal est connecté en tant que {name}. Vous pouvez fermer cette page.",
+  "device_approved_title": "Approuvé",
+  "device_failed": "cela n’a pas fonctionné",
+  "device_intro": "Un terminal a demandé à se connecter avec ce code. Approuvez-le seulement si le code ci-dessous est celui qu’il vous affiche.",
+  "device_sign_in_title": "Connecter le terminal en tant que {name}?",
+  "diagnostics_badge_error": "Erreur",
+  "diagnostics_badge_note": "Remarque",
+  "diagnostics_badge_warning": "Avertissement",
+  "diagnostics_compile_log": "Journal de compilation",
+  "diagnostics_compiled_with": "Compilé avec",
+  "diagnostics_copy": "Copier",
+  "diagnostics_download_full_log": "Télécharger le journal complet",
+  "diagnostics_download_log": "Télécharger {name}",
+  "diagnostics_earlier_attempts": "Tentatives précédentes ({count})",
+  "diagnostics_fix_with_agent": "Corriger le diagnostic avec l’agent IA",
+  "diagnostics_go_to_location": "Aller à cet emplacement dans l’éditeur",
+  "diagnostics_group_errors": "Erreurs",
+  "diagnostics_group_notes": "Remarques",
+  "diagnostics_group_warnings": "Avertissements",
+  "diagnostics_no_problems": "Aucun avertissement ni erreur.",
+  "diagnostics_section_label": "Avertissements et erreurs",
+  "diagnostics_title": "Diagnostics",
+  "diagnosticspanel_build_log": "Inclure le journal de compilation (contient le texte des documents)",
+  "diagnosticspanel_copied": "Copié.",
+  "diagnosticspanel_copy": "Copier les diagnostics",
+  "diagnosticspanel_copy_failed": "Le rapport n’a pas pu être copié.",
+  "diagnosticspanel_desktop_failed": "L’application de bureau n’a pas pu le faire.",
+  "diagnosticspanel_download": "Télécharger",
+  "diagnosticspanel_download_failed": "Le rapport n’a pas pu être téléchargé.",
+  "diagnosticspanel_downloaded": "Téléchargé.",
+  "diagnosticspanel_issue_copied": "Le rapport est copié. Collez-le dans le ticket, ou envoyez-le par courriel à admin@librepaper.org.",
+  "diagnosticspanel_local_note": "Les diagnostics sont copiés localement. Rien n’est envoyé automatiquement.",
+  "diagnosticspanel_open_logs": "Ouvrir les journaux",
+  "diagnosticspanel_report_issue": "Signaler un problème",
+  "diagnosticspanel_report_label": "Rapport de diagnostics",
+  "diagnosticspanel_show_report": "Afficher le rapport",
+  "downloads_file_gone": "Ce fichier n’est plus disponible.",
+  "downloads_missing_files": "impossible de télécharger {files}",
+  "downloads_selection_incomplete": "Impossible de télécharger tous les fichiers sélectionnés.",
+  "editor_aria_label": "Éditeur",
+  "editor_aria_label_of": "Éditeur de {path}",
+  "editor_bibliography_unavailable": "Bibliographie indisponible : {reason}",
+  "editor_cut_changed": "La source a changé avant la fin de la coupure. Sélectionnez à nouveau le texte.",
+  "editor_parser_not_loaded": "l’analyseur n’a pas pu être chargé",
+  "editor_paste_changed": "La source a changé avant la fin du collage. Réessayez.",
+  "editor_problems_both": [
+    {
+      "declarations": [
+        "input errors",
+        "input warnings",
+        "local errorsPlural = errors: plural",
+        "local warningsPlural = warnings: plural"
+      ],
+      "selectors": [
+        "errorsPlural",
+        "warningsPlural"
+      ],
+      "match": {
+        "errorsPlural=one warningsPlural=one": "{errors} erreur, {warnings} avertissement dans ce fichier",
+        "errorsPlural=one warningsPlural=*": "{errors} erreur, {warnings} avertissements dans ce fichier",
+        "errorsPlural=* warningsPlural=one": "{errors} erreurs, {warnings} avertissement dans ce fichier",
+        "errorsPlural=* warningsPlural=*": "{errors} erreurs, {warnings} avertissements dans ce fichier"
+      }
+    }
+  ],
+  "editor_problems_errors": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} erreur dans ce fichier",
+        "countPlural=*": "{count} erreurs dans ce fichier"
+      }
+    }
+  ],
+  "editor_problems_none": "Aucun problème dans ce fichier",
+  "editor_problems_warnings": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} avertissement dans ce fichier",
+        "countPlural=*": "{count} avertissements dans ce fichier"
+      }
+    }
+  ],
+  "editor_type_font_custom": "Autre police",
+  "editor_type_font_default": "Par défaut",
+  "editor_type_font_system_sans": "Sans-serif du système",
+  "editor_type_font_system_serif": "Serif du système",
+  "editor_zotero_changed": "Le document a changé pendant la réponse de Zotero. Réessayez.",
+  "editor_zotero_needs_file": "Ouvrez un fichier modifiable avant d’importer depuis Zotero.",
+  "editorsettings_brackets": "Fermer les crochets",
+  "editorsettings_brackets_description": "Saisir un crochet ouvrant ajoute le crochet fermant.",
+  "editorsettings_check": "Vérification du code",
+  "editorsettings_check_description": "Souligne les erreurs et les avertissements de la dernière compilation dans l’éditeur. La liste des messages reste disponible.",
+  "editorsettings_completion": "Complétion automatique",
+  "editorsettings_completion_description": "Suggère des commandes, des étiquettes et des citations pendant la saisie.",
+  "editorsettings_dialect": "Dialecte de l’anglais",
+  "editorsettings_dialect_american": "Américain",
+  "editorsettings_dialect_australian": "Australien",
+  "editorsettings_dialect_british": "Britannique",
+  "editorsettings_dialect_canadian": "Canadien",
+  "editorsettings_dialect_indian": "Indien",
+  "editorsettings_font": "Police",
+  "editorsettings_font_description": "Six polices sont incluses et se téléchargent lorsque vous en choisissez une. Une autre police doit être installée sur cet ordinateur.",
+  "editorsettings_font_missing": "Introuvable sur cet ordinateur.",
+  "editorsettings_font_name": "Nom de la police",
+  "editorsettings_font_size": "Taille de la police",
+  "editorsettings_font_size_description": "Pincez ou faites défiler avec Ctrl sur l’éditeur pour la modifier aussi là.",
+  "editorsettings_font_size_pixels": "Taille de la police en pixels",
+  "editorsettings_keys": "Raccourcis clavier",
+  "editorsettings_keys_label": "Raccourcis de l’éditeur",
+  "editorsettings_keys_standard": "Standard",
+  "editorsettings_line_height": "Interligne",
+  "editorsettings_line_height_compact": "Compact",
+  "editorsettings_line_height_normal": "Normal",
+  "editorsettings_line_height_wide": "Large",
+  "editorsettings_proofing": "Grammaire et orthographe",
+  "editorsettings_proofing_browser": "Navigateur",
+  "editorsettings_proofing_description_browser": "Votre navigateur souligne les mots mal orthographiés dans le texte, en ignorant les commandes, le code, les formules et les clés de citation. Sa langue et son dictionnaire déterminent ce qui compte comme un mot.",
+  "editorsettings_proofing_description_harper": "Harper vérifie l’orthographe et la grammaire anglaises dans le texte. Il télécharge 7 MB la première fois et utilise environ 300 MB de mémoire pendant qu’un document est ouvert. Les documents qui déclarent une autre langue utilisent plutôt le correcteur orthographique du navigateur.",
+  "editorsettings_proofing_description_off": "Rien n’est souligné.",
+  "editorsettings_proofing_off": "Désactivé",
+  "editorsettings_shortcuts": "Raccourcis clavier",
+  "editorsettings_shortcuts_description": "Appuyez sur ? partout hors de l’éditeur pour revenir ici.",
+  "editorsettings_visual": "Mode visuel",
+  "editorsettings_visual_description": "Ouvre les sources avec les titres, les figures et les formules mathématiques affichés sur place. L’interrupteur de la barre supérieure le modifie pour une seule session.",
+  "exports_docx_not_made": "Le fichier Word n’a pas pu être créé.",
+  "exports_docx_not_made_reason": "Le fichier Word n’a pas pu être créé : {message}",
+  "exports_formats_only": "Seuls les documents LaTeX, Typst, Markdown, Quarto et HTML peuvent être exportés.",
+  "exports_html_not_made": "La page HTML n’a pas pu être créée.",
+  "exports_html_not_made_reason": "La page HTML n’a pas pu être créée : {message}",
+  "exports_html_unreadable": "La page HTML n’a pas pu être lue.",
+  "exports_kind_not_exportable": "Ce type de fichier ne peut pas être exporté.",
+  "exports_no_pandoc": "Ce déploiement n’offre pas Pandoc.",
+  "exports_no_renderer": "Ce déploiement ne peut pas compiler les documents {name}.",
+  "exports_pdf_not_made": "Le PDF n’a pas pu être créé.",
+  "exports_pdf_not_made_reason": "Le PDF n’a pas pu être créé : {message}",
+  "extension_add_to_dictionary": "Ajouter au dictionnaire",
+  "extension_insert": "Insérer {text}",
+  "extension_remove": "Supprimer",
+  "files_actions_label": "Actions sur les fichiers",
+  "files_cancel": "Annuler",
+  "files_cancel_rename": "Annuler le renommage",
+  "files_choose_upload": "Choisir les fichiers à téléverser",
+  "files_collapse_all": "Replier tous les dossiers",
+  "files_create_file": "Créer le fichier",
+  "files_create_folder": "Créer le dossier",
+  "files_delete": "Supprimer",
+  "files_delete_menu": "Supprimer…",
+  "files_destination_folder": "Dossier de destination",
+  "files_dialog_delete_title": "Supprimer les éléments sélectionnés?",
+  "files_dialog_move_title": "Déplacer les éléments sélectionnés",
+  "files_download": "Télécharger",
+  "files_download_project": "Télécharger le projet",
+  "files_duplicate": "Dupliquer",
+  "files_enter_name": "Saisissez un nom.",
+  "files_expand_all": "Déplier tous les dossiers",
+  "files_keep_both": "Conserver les deux",
+  "files_keep_both_note": "Conservez les deux fichiers sous un nouveau nom, ou ignorez ce téléversement.",
+  "files_lock_preview_here": "Verrouiller l’aperçu sur ce fichier",
+  "files_lock_preview_on": "Verrouiller l’aperçu sur {name}",
+  "files_manager_label": "Gestionnaire de fichiers",
+  "files_move": "Déplacer",
+  "files_move_to": "Déplacer vers…",
+  "files_move_within_explorer": "Déplacez les fichiers dans l’explorateur de ce projet.",
+  "files_name_in_use": "Ce nom est déjà utilisé",
+  "files_new_file": "Nouveau fichier",
+  "files_new_file_in": "Nouveau fichier dans /{parent}",
+  "files_new_file_name": "Nom du nouveau fichier",
+  "files_new_folder": "Nouveau dossier",
+  "files_new_folder_in": "Nouveau dossier dans /{parent}",
+  "files_new_folder_name": "Nom du nouveau dossier",
+  "files_no_extensions": "aucune",
+  "files_project_files_label": "Fichiers du projet",
+  "files_references_unchanged": "Les références dans les fichiers source ne sont pas modifiées automatiquement.",
+  "files_rename": "Renommer",
+  "files_rename_path": "Renommer {path}",
+  "files_save_name": "Enregistrer le nom",
+  "files_selected_count": "{count} sélectionnés",
+  "files_skip": "Ignorer",
+  "files_skipped": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Fichier non pris en charge ignoré : {names}. Extensions permises : {extensions}.",
+        "countPlural=*": "Fichiers non pris en charge ignorés : {names}. Extensions permises : {extensions}."
+      }
+    }
+  ],
+  "files_title": "Fichiers",
+  "files_top_level": "Racine",
+  "files_unlock_preview": "Déverrouiller l’aperçu",
+  "files_upload": "Téléverser des fichiers",
+  "files_upload_demo": "Téléverser des fichiers (non disponible dans la démo)",
+  "files_uploading": "Téléversement des fichiers…",
+  "files_will_be_deleted": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} fichier sera supprimé. Cette action est irréversible.",
+        "countPlural=*": "{count} fichiers seront supprimés. Cette action est irréversible."
+      }
+    }
+  ],
+  "formatting_bold": "Gras",
+  "formatting_bulleted_list": "Liste à puces",
+  "formatting_citation": "Citation",
+  "formatting_cross_reference": "Renvoi croisé",
+  "formatting_heading_1": "Titre 1",
+  "formatting_heading_2": "Titre 2",
+  "formatting_heading_3": "Titre 3",
+  "formatting_image_or_figure": "Image ou figure",
+  "formatting_inline_code": "Code en ligne",
+  "formatting_inline_math": "Formule en ligne",
+  "formatting_italic": "Italique",
+  "formatting_link": "Lien",
+  "formatting_numbered_list": "Liste numérotée",
+  "formatting_table": "Tableau",
+  "formatting_underline": "Souligné",
+  "formattoolbar_label": "Mise en forme",
+  "history_all": "Tout l’historique",
+  "history_all_short": "Tout",
+  "history_bookmark_current": "Ajouter un signet à la version actuelle",
+  "history_bookmark_version": "Ajouter un signet à cette version",
+  "history_by": "par {who}",
+  "history_collaborative_session": "Session collaborative",
+  "history_commented": "Commenté",
+  "history_comparison_base": "base de comparaison",
+  "history_contributors": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} contributeur",
+        "countPlural=*": "{count} contributeurs"
+      }
+    }
+  ],
+  "history_created": "Créé",
+  "history_current_version": "Version actuelle",
+  "history_draft_name": "Brouillon du {date}",
+  "history_editing_session": "Session de modification",
+  "history_event_versions": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} version",
+        "countPlural=*": "{count} versions"
+      }
+    }
+  ],
+  "history_filter_group": "Filtrer l’historique",
+  "history_go": "Aller",
+  "history_go_to_date": "Aller à une date",
+  "history_go_to_month": "Aller à un mois",
+  "history_group_label": "{what}, {range}, {count} versions. Afficher la dernière version",
+  "history_group_tip": "{what}, {detail}. Afficher la dernière version de ce groupe",
+  "history_invalid_cursor": "Le serveur d’historique a renvoyé un curseur de page non valide.",
+  "history_label_not_named": "ce signet n’a pas pu être nommé",
+  "history_label_unreadable": "ce signet n’est pas lisible",
+  "history_load_older": "Charger l’historique plus ancien",
+  "history_loading": "Chargement de l’historique…",
+  "history_loading_older": "Chargement de l’historique plus ancien…",
+  "history_loading_saved": "Chargement des versions enregistrées…",
+  "history_month": "Mois",
+  "history_more_versions": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Afficher {count} version de plus",
+        "countPlural=*": "Afficher {count} versions de plus"
+      }
+    }
+  ],
+  "history_name_bookmark": "Nommer ce signet",
+  "history_no_saved": "Aucune version enregistrée pour l’instant. Ajoutez un signet à une version pour l’enregistrer sous un nom.",
+  "history_no_versions_in_month": "Aucune version en {month}. Affichage de la période la plus proche.",
+  "history_no_versions_shown": "Aucune version à afficher.",
+  "history_none": "Aucune version précédente",
+  "history_not_readable": "L’historique de ce document n’est pas lisible",
+  "history_push": "Push effectué",
+  "history_pushed_by": "Push effectué par {author}",
+  "history_recovered": "Récupéré",
+  "history_remove_saved": "Retirer des versions enregistrées",
+  "history_rename": "Renommer",
+  "history_rename_bookmark": "Renommer ce signet",
+  "history_replaced_by_restore": "Remplacé par une restauration",
+  "history_restored": "Restauré",
+  "history_restored_version": "Version restaurée",
+  "history_retry": "Réessayer",
+  "history_row_tip": "{what}, {detail}",
+  "history_row_tip_base": "{what}, {detail}, base de comparaison",
+  "history_saved": "Enregistré",
+  "history_saved_short": "Enreg.",
+  "history_saved_versions": "Versions enregistrées",
+  "history_show_versions": "Afficher les {count} versions",
+  "history_shown_to_readers": "Affiché aux lecteurs",
+  "history_source_current_version": "Version actuelle",
+  "history_source_earlier_moment": "Un moment antérieur",
+  "history_source_label_load_failed": "Impossible de charger les sources de la version.",
+  "history_source_label_no_source": "Cette version n’a pas renvoyé ses fichiers source.",
+  "history_synced": "Synchronisé",
+  "history_title": "Historique",
+  "history_version_at": "Version de {time}",
+  "history_versions": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} version",
+        "countPlural=*": "{count} versions"
+      }
+    }
+  ],
+  "history_versions_partial": "{count}+ versions",
+  "historyworkspace_binary_added": "Ce fichier a été ajouté.",
+  "historyworkspace_binary_changed": "Ce fichier a été modifié. Les images et les autres fichiers binaires ne sont pas comparés ici.",
+  "historyworkspace_binary_removed": "Ce fichier a été supprimé.",
+  "historyworkspace_binary_same": "Ce fichier est inchangé.",
+  "historyworkspace_compare_current": "Comparer avec la version actuelle",
+  "historyworkspace_comparison_failed": "La comparaison n’a pas pu être chargée. Vérifiez votre connexion, puis rouvrez cette version.",
+  "historyworkspace_download": "Télécharger",
+  "historyworkspace_downloading": "Téléchargement…",
+  "historyworkspace_empty_file": "Fichier vide.",
+  "historyworkspace_file": "Fichier",
+  "historyworkspace_file_added": "Fichier ajouté.",
+  "historyworkspace_file_marked": "{name} · {status}",
+  "historyworkspace_file_removed": "Fichier supprimé.",
+  "historyworkspace_file_select": "Fichier de l’historique",
+  "historyworkspace_files_differ": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} fichier diffère",
+        "countPlural=*": "{count} fichiers diffèrent"
+      }
+    }
+  ],
+  "historyworkspace_historical": "Version historique",
+  "historyworkspace_loading_comparison": "Chargement de la comparaison…",
+  "historyworkspace_loading_source": "Chargement de la source de la version…",
+  "historyworkspace_mark_added": "ajouté",
+  "historyworkspace_mark_changed": "modifié",
+  "historyworkspace_mark_removed": "supprimé",
+  "historyworkspace_no_differences": "Aucune différence",
+  "historyworkspace_no_source_files": "Cette version ne contient aucun fichier source.",
+  "historyworkspace_no_text_source": "Ce fichier n’a pas de source textuelle à afficher.",
+  "historyworkspace_refresh": "Actualiser",
+  "historyworkspace_restore": "Restaurer",
+  "historyworkspace_retry": "Réessayer",
+  "historyworkspace_select_prompt": "Sélectionnez une version pour voir en quoi elle diffère de la source actuelle. Shift-clic sur une autre version pour comparer les deux.",
+  "historyworkspace_source_label": "Source de l’historique",
+  "historyworkspace_swap": "Inverser",
+  "html_bundle_index_failed": "Impossible de charger l’index des paquets TeX",
+  "html_conversion_failed": "La conversion HTML de LaTeX a échoué.",
+  "html_hint_external_programs": "Le convertisseur HTML ne peut pas exécuter de programmes externes, donc les paquets qui en lancent (minted, certaines listes tcolorbox) échouent ici. La vue PDF peut encore fonctionner.",
+  "html_hint_support_files": "La copie de LaTeX du convertisseur HTML est plus ancienne que les paquets chargés par ce document. Il s’agit d’une limite de l’aperçu HTML de LibrePaper, et non d’une erreur dans votre document. La vue PDF peut encore fonctionner.",
+  "html_release_unavailable": "Version de LaTeX indisponible ({status})",
+  "html_renderer_missing": "Cette version de LaTeX ne comprend pas le moteur d’aperçu HTML.",
+  "html_timeout": "L’aperçu HTML de LaTeX a dépassé le délai.",
+  "index_category_accents": "Accents",
+  "index_category_arrows": "Flèches",
+  "index_category_delimiters": "Délimiteurs",
+  "index_category_emoji": "Émojis",
+  "index_category_greek": "Grec",
+  "index_category_logic": "Logique et ensembles",
+  "index_category_operators": "Opérateurs",
+  "index_category_relations": "Relations",
+  "index_category_text": "Texte",
+  "index_edit_in_source": "Modifier dans la source",
+  "index_emoji_lualatex": "Le paquet emoji nécessite LuaLaTeX.",
+  "index_gloss_unknown": "Aucun acronyme nommé {key}",
+  "index_include_open": "Ouvrir",
+  "index_show_source": "Afficher la source",
+  "index_title_untitled": "Sans titre",
+  "insert_abstract": "Résumé",
+  "insert_add_heading_before_toc": "Ajoutez un titre avant d’insérer une table des matières.",
+  "insert_add_target_first": "Ajoutez d’abord un titre ou un élément étiqueté.",
+  "insert_alignment_choice": "Choisissez un alignement à gauche, au centre ou à droite.",
+  "insert_appendix": "Annexe",
+  "insert_argument_label": "Argument {index}",
+  "insert_bib_already_named": "Ce document désigne déjà une autre bibliographie. Modifiez ses métadonnées pour combiner ou remplacer les sources.",
+  "insert_bib_exists": "Ce document contient déjà une bibliographie. Modifiez-la ou déplacez-la.",
+  "insert_bib_first_citation": "Insérez d’abord une bibliographie pour que les citations aient une source.",
+  "insert_bib_first_for_citation": "Insérez d’abord une bibliographie pour choisir la source des références.",
+  "insert_bibliography": "Bibliographie",
+  "insert_bulleted_list": "Liste à puces",
+  "insert_choose_bib_file": "Choisissez un fichier de bibliographie.",
+  "insert_choose_image": "Choisissez d’abord une image.",
+  "insert_choose_latex_figure": "Choisissez une figure PNG, JPEG ou PDF pour LaTeX.",
+  "insert_choose_target": "Choisissez une cible de renvoi.",
+  "insert_choose_typst_image": "Choisissez une image PNG, JPEG, SVG, GIF ou WebP pour Typst.",
+  "insert_citation": "Citation",
+  "insert_citation_key_unsupported": "Cette clé de citation contient des caractères non pris en charge.",
+  "insert_code_block": "Bloc de code",
+  "insert_columns": "Colonnes",
+  "insert_cross_reference": "Renvoi croisé",
+  "insert_custom_environment": "Environnement",
+  "insert_custom_needs_format": "Les environnements personnalisés nécessitent LaTeX, Typst ou Quarto.",
+  "insert_define_typst_function": "Définissez d’abord une fonction de contenu dans ce projet Typst.",
+  "insert_definition": "Définition",
+  "insert_description_list": "Liste de descriptions",
+  "insert_display_math": "Équation affichée",
+  "insert_env_name_invalid": "Saisissez un nom d’environnement composé de lettres, de chiffres ou de traits d’union.",
+  "insert_example": "Exemple",
+  "insert_field_columns": "Le nombre de colonnes",
+  "insert_field_level": "Le niveau",
+  "insert_field_rows": "Le nombre de lignes",
+  "insert_figure": "Image / figure",
+  "insert_footnote": "Note de bas de page",
+  "insert_gap_format": "Utilisez un espacement tel que 1 em ou 12 pt.",
+  "insert_heading": "Titre / section",
+  "insert_horizontal_rule": "Ligne horizontale",
+  "insert_inline_math": "Mathématiques en ligne",
+  "insert_label": "Étiquette / ancre",
+  "insert_language_format": "Utilisez un nom de langage tel que python, r ou javascript.",
+  "insert_latex_add_package": "Ajoutez {package} au préambule.",
+  "insert_latex_add_preamble": "Ajoutez {code} au préambule.",
+  "insert_latex_choose_image": "Choisissez d’abord une image.",
+  "insert_latex_choose_reference": "Choisissez au moins une référence.",
+  "insert_latex_citation_key": "Clé de citation non prise en charge.",
+  "insert_latex_enter_argument": "Saisissez l’argument {index} pour {env}.",
+  "insert_latex_env_undefined": "L’environnement LaTeX « {env} » n’est pas défini dans le document.",
+  "insert_latex_levels": "Les niveaux de section LaTeX vont de 1 à 5.",
+  "insert_latex_listings_language": "Langage de listings non pris en charge : {language}",
+  "insert_latex_unknown": "Insertion LaTeX inconnue : {id}",
+  "insert_lemma": "Lemme",
+  "insert_link": "Lien",
+  "insert_metadata_structured": "La métadonnée {name} a une valeur structurée. Modifiez ce réglage dans la source.",
+  "insert_move_out_code": "Déplacez le curseur hors du bloc de code pour insérer du contenu dans le document.",
+  "insert_move_out_comment": "Déplacez le curseur hors du bloc de commentaire pour insérer du contenu dans le document.",
+  "insert_move_out_equation": "Sortez de l’équation en cours pour insérer cet élément.",
+  "insert_move_out_metadata": "Déplacez le curseur hors des métadonnées du document pour insérer du contenu dans le document.",
+  "insert_note_appendix_numbering": "Ceci lance la numérotation des annexes pour les sections suivantes.",
+  "insert_note_div_styling": "Ce bloc div utilise le style défini par votre document ou votre extension.",
+  "insert_note_enable_toc": "Activez la table des matières dans les métadonnées du document.",
+  "insert_note_quarto_spacing": "L’espacement des panneaux Quarto suit le thème du document.",
+  "insert_note_table_html": "Un tableau sans en-tête utilise HTML et est destiné à une sortie HTML.",
+  "insert_note_toc_links": "Cette table des matières contient des liens vers les titres actuels.",
+  "insert_number_range": "{field} doit être compris entre 1 et {max}.",
+  "insert_numbered_list": "Liste numérotée",
+  "insert_open_source_file": "Ouvrez un fichier source LaTeX, Typst, Markdown ou Quarto.",
+  "insert_page_break": "Saut de page",
+  "insert_proof": "Preuve",
+  "insert_proposition": "Proposition",
+  "insert_quotation": "Citation en retrait",
+  "insert_quote": "Citation en bloc",
+  "insert_remark": "Remarque",
+  "insert_select_reference": "Sélectionnez au moins une référence.",
+  "insert_table": "Tableau",
+  "insert_theorem": "Théorème",
+  "insert_toc": "Table des matières",
+  "insert_typst_choose_bib": "Choisissez un fichier de bibliographie.",
+  "insert_typst_choose_entry": "Choisissez au moins une entrée de bibliographie.",
+  "insert_typst_choose_function": "Choisissez une fonction de contenu définie.",
+  "insert_typst_choose_image": "Choisissez d’abord une image.",
+  "insert_typst_citation_key": "Clé de citation non prise en charge.",
+  "insert_typst_define_function": "Définissez cette fonction de contenu avant de l’insérer.",
+  "insert_typst_enter_argument": "Saisissez l’argument {part} pour {name}.",
+  "insert_typst_unsupported": "Insertion Typst non prise en charge.",
+  "insert_unknown_insertion": "Insertion inconnue.",
+  "insert_url_scheme_unsafe": "Utilisez un chemin du projet ou un lien http, https ou mailto.",
+  "insert_width_format": "Utilisez une largeur telle que 80 %, 8 cm ou 200 pt.",
+  "insertmenu_align_center": "Centré",
+  "insertmenu_align_left": "Gauche",
+  "insertmenu_align_right": "Droite",
+  "insertmenu_alignment": "Alignement",
+  "insertmenu_alignment_default": "Par défaut",
+  "insertmenu_arguments": "Arguments (un par ligne)",
+  "insertmenu_arguments_hint": "Saisissez les expressions source dans cet ordre : {fields}.",
+  "insertmenu_bibliography_choose_file": "Choisir un fichier…",
+  "insertmenu_bibliography_file": "Fichier de bibliographie",
+  "insertmenu_bibliography_group": "Entrées de la bibliographie",
+  "insertmenu_bibliography_no_match": "Aucune entrée de la bibliographie ne correspond.",
+  "insertmenu_bibtex_no_bibliography": "BibTeX (aucune bibliographie)",
+  "insertmenu_caption": "Légende",
+  "insertmenu_citation_style": "Style de citation",
+  "insertmenu_columns": "Colonnes",
+  "insertmenu_document_changed": "Le document a changé. Fermez cette boîte de dialogue et choisissez de nouveau le point d’insertion.",
+  "insertmenu_environment": "Environnement",
+  "insertmenu_environment_choose": "Choisir un environnement défini…",
+  "insertmenu_environments_label": "Environnements définis",
+  "insertmenu_figure_alt": "Ressource du projet sélectionnée",
+  "insertmenu_figure_choose": "Choisir une image…",
+  "insertmenu_figure_image": "Image du projet",
+  "insertmenu_gap_optional": "Espacement (facultatif)",
+  "insertmenu_generate_failed": "Impossible de générer cette insertion.",
+  "insertmenu_generated_for": "Généré pour {format}",
+  "insertmenu_group_blocks": "Blocs",
+  "insertmenu_group_document": "Document",
+  "insertmenu_group_layout": "Mise en page",
+  "insertmenu_group_lists": "Listes",
+  "insertmenu_group_theorems": "Théorèmes",
+  "insertmenu_header_row": "Ligne d’en-tête",
+  "insertmenu_insert": "Insérer",
+  "insertmenu_insertion_invalid": "Cette insertion n’est pas encore valide.",
+  "insertmenu_label": "Étiquette",
+  "insertmenu_language": "Langage",
+  "insertmenu_level": "Niveau",
+  "insertmenu_locator": "Page ou repère (facultatif)",
+  "insertmenu_math": "Mathématiques…",
+  "insertmenu_numbered": "Avec numérotation",
+  "insertmenu_preview_delete": "(supprimer)",
+  "insertmenu_preview_edits": "Modifications supplémentaires de la source :",
+  "insertmenu_preview_empty": "Aucune source ne sera insérée.",
+  "insertmenu_preview_heading": "Aperçu de la source",
+  "insertmenu_reference": "Référence",
+  "insertmenu_reference_choose": "Choisir un titre, une figure, un tableau ou une équation…",
+  "insertmenu_rows": "Lignes",
+  "insertmenu_search_label": "Rechercher dans la bibliographie",
+  "insertmenu_search_placeholder": "Rechercher un auteur, un titre, une année ou une clé",
+  "insertmenu_source": "Source",
+  "insertmenu_style_default": "Par défaut",
+  "insertmenu_style_narrative": "Narratif / textuel",
+  "insertmenu_style_parenthetical": "Entre parenthèses",
+  "insertmenu_symbols": "Symboles…",
+  "insertmenu_target_changed": "Le point d’insertion a changé.",
+  "insertmenu_text": "Texte",
+  "insertmenu_title_optional": "Titre (facultatif)",
+  "insertmenu_upload_failed": "Impossible de téléverser l’image.",
+  "insertmenu_upload_image": "Téléverser une image",
+  "insertmenu_upload_image_demo": "Téléverser une image (non disponible dans la démo)",
+  "insertmenu_url": "URL",
+  "insertmenu_width": "Largeur",
+  "insertmenu_zotero_checking": "vérification en cours",
+  "insertmenu_zotero_desktop_only": "application de bureau seulement",
+  "insertmenu_zotero_import_failed": "Impossible d’importer les éléments Zotero.",
+  "insertmenu_zotero_items_group": "Éléments Zotero",
+  "insertmenu_zotero_no_match": "Aucun élément Zotero ne correspond.",
+  "insertmenu_zotero_not_running": "non lancé",
+  "insertmenu_zotero_not_running_error": "Zotero n’est pas lancé.",
+  "insertmenu_zotero_unavailable": "Zotero ({reason})",
+  "landing_actions_for_aria": "Actions pour {title}",
+  "landing_clear_selection": "Désélectionner tout",
+  "landing_close_search": "Fermer la recherche",
+  "landing_colour_failed": "La couleur n’a pas pu être enregistrée.",
+  "landing_colour_label": "Couleur",
+  "landing_column_deleted": "Supprimé",
+  "landing_column_files": "Fichiers",
+  "landing_column_opened": "Ouvert",
+  "landing_column_owner": "Propriétaire",
+  "landing_column_project": "Projet",
+  "landing_column_updated": "Modifié",
+  "landing_copy_description": "La copie est un projet à part entière : son propre lien, son propre historique, et rien ne renvoie vers l’original.",
+  "landing_copy_failed": "Le projet n’a pas pu être copié.",
+  "landing_copy_name": "{title} (copie {n})",
+  "landing_copy_name_required": "Donnez un nom à la copie.",
+  "landing_copying": "Copie en cours...",
+  "landing_delete": "Supprimer",
+  "landing_delete_failed": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} projet n’a pas pu être supprimé et reste ici.",
+        "countPlural=*": "{count} projets n’ont pas pu être supprimés et restent ici."
+      }
+    }
+  ],
+  "landing_delete_for_good": "Supprimer définitivement",
+  "landing_delete_for_good_aria": "Supprimer définitivement {title}",
+  "landing_delete_for_good_question": "Supprimer définitivement?",
+  "landing_delete_forever": "Supprimer définitivement",
+  "landing_delete_tag": "Supprimer l’étiquette",
+  "landing_delete_tag_aria": "Supprimer {name}",
+  "landing_delete_tag_question": "Supprimer cette étiquette?",
+  "landing_deleted_for_good": "Supprimé définitivement {when}",
+  "landing_done": "Terminé",
+  "landing_favorite_add": "Ajouter aux favoris",
+  "landing_favorite_remove": "Retirer des favoris",
+  "landing_fork": "Faire une copie",
+  "landing_fork_aria": "Faire une copie de {title}",
+  "landing_forked": "{title} est dans vos projets.",
+  "landing_kept_here": "Projets conservés dans ce navigateur",
+  "landing_list_refresh_failed": "La liste des projets n’a pas pu être actualisée. Ce qui est affiché ici peut être périmé.",
+  "landing_make_copy": "Faire une copie",
+  "landing_make_tag": "Créer l’étiquette",
+  "landing_manage_tags": "Gérer les étiquettes",
+  "landing_manage_tags_description": "Une modification d’une étiquette apparaît sur chaque projet qui la porte. Supprimer une étiquette ne supprime aucun projet.",
+  "landing_may_not_publish": "{handle} ne peut pas publier ici; ce déploiement autorise {publishers}.",
+  "landing_move_to_trash": "Mettre à la corbeille",
+  "landing_move_to_trash_aria": "Mettre {title} à la corbeille",
+  "landing_name_label": "Nom",
+  "landing_name_required": "Donnez un nom au projet.",
+  "landing_new_from_template": "Nouveau projet à partir d’un modèle",
+  "landing_new_project": "Nouveau projet",
+  "landing_new_project_from_aria": "Nouveau projet à partir de {title}",
+  "landing_new_tag": "Nouvelle étiquette",
+  "landing_new_tag_ellipsis": "Nouvelle étiquette...",
+  "landing_no_favorites": "Aucun favori pour l’instant. Ajoutez un projet aux favoris pour le retrouver ici.",
+  "landing_no_match": "Aucun projet ne correspond à cette recherche.",
+  "landing_no_projects": "Aucun projet pour l’instant.",
+  "landing_no_projects_publish": "Aucun projet pour l’instant. Créez-en un, puis déposez-y vos fichiers.",
+  "landing_no_sign_in": "Ce serveur n’offre pas de connexion, il n’a donc aucun projet à afficher. Un projet partagé avec vous s’ouvre depuis son lien.",
+  "landing_no_tags": "Aucune étiquette pour l’instant. Utilisez Nouvelle étiquette dans la barre latérale pour en créer une.",
+  "landing_no_templates": "Aucun modèle pour l’instant. Ouvrez un projet et choisissez Fichier > Enregistrer comme modèle.",
+  "landing_nothing_opened": "Rien n’a encore été ouvert. Un projet que vous ouvrez apparaît ici.",
+  "landing_nothing_shared": "Rien n’est encore partagé avec vous. Un projet ouvert depuis le lien de quelqu’un apparaît ici.",
+  "landing_nothing_tagged": "Aucun projet n’est encore étiqueté {name}. Ajoutez cette étiquette depuis le menu d’un projet.",
+  "landing_offline": "Hors ligne",
+  "landing_offline_projects": "Cette page n’a pas pu joindre le serveur. Ces projets sont conservés dans ce navigateur et s’ouvrent sans connexion.",
+  "landing_project_count": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} projet",
+        "countPlural=*": "{count} projets"
+      }
+    }
+  ],
+  "landing_projects": "Projets",
+  "landing_purge_failed": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} projet n’a pas pu être supprimé.",
+        "countPlural=*": "{count} projets n’ont pas pu être supprimés."
+      }
+    }
+  ],
+  "landing_purge_many": "{count} projets seront supprimés définitivement. Cette action est irréversible.",
+  "landing_purge_one": "{title} sera supprimé définitivement. Cette action est irréversible.",
+  "landing_purged": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} projet supprimé définitivement.",
+        "countPlural=*": "{count} projets supprimés définitivement."
+      }
+    }
+  ],
+  "landing_put_back": "Restaurer",
+  "landing_put_back_aria": "Restaurer {title} dans vos projets",
+  "landing_refresh_failed": "échec de l’actualisation ({status})",
+  "landing_refresh_invalid": "l’actualisation a renvoyé une liste invalide",
+  "landing_remove_from_shared": "Retirer de Partagés",
+  "landing_remove_from_shared_aria": "Retirer {title} de Partagés",
+  "landing_rename": "Renommer",
+  "landing_rename_aria": "Renommer {title}",
+  "landing_rename_description": "Le nom change, mais pas le lien : ce qui est déjà partagé continue de fonctionner.",
+  "landing_rename_failed": "Le nom n’a pas pu être enregistré.",
+  "landing_rename_title": "Renommer le projet",
+  "landing_restore_failed": "Le projet n’a pas pu être restauré.",
+  "landing_restore_many_failed": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} projet n’a pas pu être restauré.",
+        "countPlural=*": "{count} projets n’ont pas pu être restaurés."
+      }
+    }
+  ],
+  "landing_restored": "{title} est de retour dans vos projets.",
+  "landing_restored_many": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} projet de retour dans vos projets.",
+        "countPlural=*": "{count} projets de retour dans vos projets."
+      }
+    }
+  ],
+  "landing_search_aria": "Rechercher des projets par titre ou par fichier",
+  "landing_search_projects": "Rechercher des projets",
+  "landing_select_all_aria": "Sélectionner tous les projets affichés",
+  "landing_select_aria": "Sélectionner {title}",
+  "landing_selected_count": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} sélectionné",
+        "countPlural=*": "{count} sélectionnés"
+      }
+    }
+  ],
+  "landing_selection_group_aria": "Que faire des projets sélectionnés",
+  "landing_settings": "Paramètres",
+  "landing_shared_remove_failed": "Le projet n’a pas pu être retiré de Partagés.",
+  "landing_shared_removed": "{title} a été retiré de votre liste Partagés. Vous pouvez de nouveau l’afficher depuis Tous les projets.",
+  "landing_shared_restored": "{title} apparaîtra de nouveau dans votre liste Partagés.",
+  "landing_shared_show_failed": "Le projet n’a pas pu être affiché dans Partagés.",
+  "landing_show_in_shared": "Afficher dans Partagés",
+  "landing_show_in_shared_aria": "Afficher {title} dans Partagés",
+  "landing_show_tagged_aria": "Afficher les projets étiquetés {name}",
+  "landing_sort": "Trier",
+  "landing_sort_files_asc": "Fichiers : le moins d’abord",
+  "landing_sort_files_desc": "Fichiers : le plus d’abord",
+  "landing_sort_owner_asc": "Propriétaire : de A à Z",
+  "landing_sort_owner_desc": "Propriétaire : de Z à A",
+  "landing_sort_title_asc": "Titre : de A à Z",
+  "landing_sort_title_desc": "Titre : de Z à A",
+  "landing_sort_updated_asc": "Modifié : le plus ancien d’abord",
+  "landing_sort_updated_desc": "Modifié : le plus récent d’abord",
+  "landing_star_failed": "Le favori n’a pas pu être enregistré.",
+  "landing_start_something": "Commencer quelque chose de nouveau",
+  "landing_tag": "Étiqueter",
+  "landing_tag_colour_aria": "Couleur de {name}",
+  "landing_tag_create_failed": "L’étiquette n’a pas pu être créée.",
+  "landing_tag_delete_description": "{name} est retirée de chaque projet qui la porte. Les projets restent où ils sont.",
+  "landing_tag_delete_failed": "L’étiquette n’a pas pu être supprimée.",
+  "landing_tag_deleted": "{name} a été supprimée. Ses projets sont toujours là.",
+  "landing_tag_many_failed": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} projet n’a pas pu être étiqueté.",
+        "countPlural=*": "{count} projets n’ont pas pu être étiquetés."
+      }
+    }
+  ],
+  "landing_tag_name_aria": "Nom de {name}",
+  "landing_tag_name_required": "Donnez un nom à l’étiquette.",
+  "landing_tag_new_description": "Les étiquettes vous appartiennent. Personne d’autre ne voit les étiquettes que vous mettez sur un projet.",
+  "landing_tag_rename_failed": "L’étiquette n’a pas pu être renommée.",
+  "landing_tag_save_failed": "L’étiquette n’a pas pu être enregistrée.",
+  "landing_tags": "Étiquettes",
+  "landing_tags_for_aria": "Étiquettes de {title}",
+  "landing_template_count": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} modèle",
+        "countPlural=*": "{count} modèles"
+      }
+    }
+  ],
+  "landing_trash_empty": "La corbeille est vide.",
+  "landing_trash_note": "Les projets de la corbeille sont supprimés définitivement sept jours après y avoir été placés.",
+  "landing_trash_one": "{title} sera mis à la corbeille, où il restera sept jours. D’ici là, vous pouvez le restaurer.",
+  "landing_trash_question": "Mettre à la corbeille?",
+  "landing_trash_read_failed": "La corbeille n’a pas pu être lue.",
+  "landing_trash_read_failed_status": "la corbeille n’a pas pu être lue ({status})",
+  "landing_trash_selected": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} projet sera mis à la corbeille, où il restera sept jours. D’ici là, vous pouvez le restaurer.",
+        "countPlural=*": "{count} projets seront mis à la corbeille, où ils resteront sept jours. D’ici là, vous pouvez les restaurer."
+      }
+    }
+  ],
+  "landing_trashed": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} projet mis à la corbeille.",
+        "countPlural=*": "{count} projets mis à la corbeille."
+      }
+    }
+  ],
+  "landing_undo": "Annuler",
+  "landing_unreachable": "Cette page n’a pas pu joindre le serveur, elle ne peut donc pas savoir si vous êtes connecté. Vos projets apparaîtront dès que le serveur répondra.",
+  "landing_you": "Vous",
+  "latex_biber_failed": "Échec de Biber",
+  "latex_compile_failed": "Le document n’a pas pu être compilé.",
+  "latex_compile_timeout": "La compilation a dépassé son budget de temps.",
+  "latex_compiling": "Compilation dans le navigateur",
+  "latex_failed_keeps_previous": "Échec de la compilation; l’aperçu précédent reste affiché",
+  "latex_loading_compiler": "Chargement du compilateur du navigateur",
+  "latex_lualatex_unavailable": "Le compilateur du navigateur de LibrePaper n’inclut pas LuaTeX. Choisissez pdfLaTeX ou XeLaTeX, ou supprimez la directive LuaLaTeX.",
+  "latex_mirror_absent_more": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{name} et un autre ne sont pas inclus dans TeX Live. Si ces fichiers proviennent d’un éditeur ou d’un collègue, téléversez-les dans le projet.",
+        "countPlural=*": "{name} et {count} autres ne sont pas inclus dans TeX Live. Si ces fichiers proviennent d’un éditeur ou d’un collègue, téléversez-les dans le projet."
+      }
+    }
+  ],
+  "latex_mirror_absent_more_near": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{name} et un autre ne sont pas inclus dans TeX Live. Vouliez-vous dire {near}? Si ces fichiers proviennent d’un éditeur ou d’un collègue, téléversez-les dans le projet.",
+        "countPlural=*": "{name} et {count} autres ne sont pas inclus dans TeX Live. Vouliez-vous dire {near}? Si ces fichiers proviennent d’un éditeur ou d’un collègue, téléversez-les dans le projet."
+      }
+    }
+  ],
+  "latex_mirror_absent_one": "{name} n’est pas inclus dans TeX Live. Si ce fichier provient d’un éditeur ou d’un collègue, téléversez-le dans le projet.",
+  "latex_mirror_absent_one_near": "{name} n’est pas inclus dans TeX Live. Vouliez-vous dire {near}? Si ce fichier provient d’un éditeur ou d’un collègue, téléversez-le dans le projet.",
+  "latex_preview_ready": "Aperçu actuel prêt",
+  "latex_unsupported_luatex": "Ce document a besoin de LuaTeX, que le compilateur du navigateur de LibrePaper n’inclut pas. Les paquets réservés à LuaTeX et \\directlua ne peuvent pas être compilés ici.",
+  "latex_unsupported_shell_escape": "Ce document demande à LaTeX d’exécuter un autre programme (shell-escape), ce qu’un navigateur ne peut pas faire. Des paquets comme minted, svg et les backends gnuplot en ont besoin; une figure déjà générée n’en a pas besoin.",
+  "latex_updating_bibliography": "Mise à jour de la bibliographie dans le navigateur",
+  "latex_worker_failed": "Le processus de compilation a échoué",
+  "links_go_to_page": "Aller à la page {page}",
+  "live_chat_history_read_failed": "L’historique du clavardage n’a pas pu être lu. Nouvelle tentative.",
+  "live_chat_older_failed": "Les messages plus anciens n’ont pas pu être lus.",
+  "live_chat_older_failed_status": "Les messages plus anciens n’ont pas pu être lus ({status}).",
+  "machine_load_failed": "Impossible de charger les paramètres de cet ordinateur.",
+  "machine_request_failed": "La requête n’a pas pu être effectuée.",
+  "mathpalette_back": "Retour",
+  "mathpalette_brackets": "Délimiteurs",
+  "mathpalette_brackets_angle": "Chevrons",
+  "mathpalette_brackets_ceil": "Plafond",
+  "mathpalette_brackets_curly": "Accolades",
+  "mathpalette_brackets_double_bars": "Doubles barres verticales",
+  "mathpalette_brackets_floor": "Plancher",
+  "mathpalette_brackets_none": "Aucun",
+  "mathpalette_brackets_norm": "Norme",
+  "mathpalette_brackets_parentheses": "Parenthèses",
+  "mathpalette_brackets_square": "Crochets",
+  "mathpalette_brackets_vertical_bars": "Barres verticales",
+  "mathpalette_cancel": "Annuler",
+  "mathpalette_cell_label": "Rangée {row}, colonne {column}",
+  "mathpalette_column_count": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} colonne",
+        "countPlural=*": "{count} colonnes"
+      }
+    }
+  ],
+  "mathpalette_columns": "Colonnes",
+  "mathpalette_condition": "Condition",
+  "mathpalette_display": "Affichage",
+  "mathpalette_equation": "Équation",
+  "mathpalette_fewer_columns": "Moins de colonnes",
+  "mathpalette_fewer_rows": "Moins de rangées",
+  "mathpalette_inline": "En ligne",
+  "mathpalette_insert": "Insérer",
+  "mathpalette_invalid_math": "Cette formule n’est pas encore valide.",
+  "mathpalette_label": "Étiquette",
+  "mathpalette_label_placeholder": "nom",
+  "mathpalette_left": "Gauche",
+  "mathpalette_loading_preview": "Chargement de l’aperçu…",
+  "mathpalette_more_columns": "Plus de colonnes",
+  "mathpalette_more_rows": "Plus de rangées",
+  "mathpalette_needs_format": "Les modèles de formules nécessitent LaTeX, Typst, Markdown ou Quarto.",
+  "mathpalette_nothing_to_preview": "Rien à afficher pour l’instant.",
+  "mathpalette_numbered": "Numérotée",
+  "mathpalette_optional_slot": "{label} (facultatif)",
+  "mathpalette_right": "Droite",
+  "mathpalette_row_count": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} rangée",
+        "countPlural=*": "{count} rangées"
+      }
+    }
+  ],
+  "mathpalette_rows": "Rangées",
+  "mathpalette_search_placeholder": "Rechercher des symboles",
+  "mathpalette_style": "Style",
+  "mathpalette_symbols_heading": "Symboles",
+  "mathpalette_target_changed": "L’emplacement d’insertion a changé.",
+  "mathpalette_typst_preview_note": "L’aperçu utilise la forme LaTeX.",
+  "mathpalette_value": "Valeur",
+  "mergeeditor_baseline_default": "étiquette",
+  "mergeeditor_close": "Fermer la comparaison",
+  "mergeeditor_compare": "Comparer {baseline} avec {target}",
+  "mergeeditor_document": "document",
+  "mergeeditor_label_source": "Source de l’étiquette",
+  "mergeeditor_restore": "Comparer avec le direct pour restaurer des passages",
+  "mergeeditor_sides": " · {baseline} à gauche, {target} à droite",
+  "mergeeditor_source": "Source",
+  "mergeeditor_source_only": " · source : {baseline}",
+  "mergeeditor_target_default": "Document en direct",
+  "modal_back": "Retour",
+  "modal_cancel": "Annuler",
+  "modal_close": "Fermer",
+  "modal_expand": "Agrandir",
+  "modal_shrink": "Réduire",
+  "nav_account_menu_label": "Menu du compte, connecté en tant que {shown}",
+  "nav_sign_in": "Se connecter",
+  "nav_sign_out": "Se déconnecter",
+  "nav_skip_to_content": "Aller au contenu",
+  "new_project_size_b": "{size} o",
+  "new_project_size_gb": "{size} Go",
+  "new_project_size_kb": "{size} Ko",
+  "new_project_size_mb": "{size} Mo",
+  "new_project_untitled": "Projet sans titre",
+  "newproject_add_more": "Ajouter d’autres fichiers",
+  "newproject_all_formats": "Tous les formats",
+  "newproject_archive_problem": "{source} : {message}",
+  "newproject_archive_root_removed": "Le dossier de premier niveau de l’archive {root} a été supprimé.",
+  "newproject_archive_unreadable": "l’archive n’a pas pu être lue.",
+  "newproject_browse_files": "Parcourir les fichiers",
+  "newproject_browse_folder": "Parcourir le dossier",
+  "newproject_cancel": "Annuler",
+  "newproject_choose": "Choisir",
+  "newproject_choose_template": "Choisir {name}",
+  "newproject_clear_all": "Tout effacer",
+  "newproject_clear_filters": "Effacer la recherche et les filtres",
+  "newproject_col_description": "Description",
+  "newproject_col_details": "Détails",
+  "newproject_col_formats": "Formats",
+  "newproject_col_name": "Nom",
+  "newproject_conflict_keep_both": "Garder les deux",
+  "newproject_conflict_replace": "Remplacer",
+  "newproject_conflict_skip": "Ignorer",
+  "newproject_conflicts": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} fichier est déjà ajouté avec le même chemin : {paths}",
+        "countPlural=*": "{count} fichiers sont déjà ajoutés avec le même chemin : {paths}"
+      }
+    }
+  ],
+  "newproject_conflicts_group": "Fichiers au même chemin",
+  "newproject_create": "Créer le projet",
+  "newproject_create_failed": "Le projet n’a pas pu être créé.",
+  "newproject_creating": "Création…",
+  "newproject_custom_template": "Un de vos modèles",
+  "newproject_detail_files": "Fichiers dans {format} :",
+  "newproject_detail_formats": "Formats : {formats}",
+  "newproject_details_for": "Détails pour {name}",
+  "newproject_document_required": "Ajoutez au moins un document (.tex, .typ, .qmd, .md ou .html).",
+  "newproject_drop_failed": "Les fichiers déposés n’ont pas pu être lus.",
+  "newproject_drop_here": "Déposez ici des fichiers, des dossiers ou une archive ZIP",
+  "newproject_drop_overlay": "Déposez pour ajouter à un nouveau projet",
+  "newproject_files_label": "Fichiers",
+  "newproject_files_not_added": "Ces fichiers n’ont pas pu être ajoutés.",
+  "newproject_folder_files": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "({count} fichier)",
+        "countPlural=*": "({count} fichiers)"
+      }
+    }
+  ],
+  "newproject_format_label": "Format",
+  "newproject_link_intro": "Ouvrez un projet que quelqu’un a partagé avec vous. Collez son lien provenant de ce serveur.",
+  "newproject_link_label": "Lien LibrePaper",
+  "newproject_link_not_link": "Ce n’est pas un lien.",
+  "newproject_link_paste_from": "Collez un lien provenant de {host}.",
+  "newproject_link_placeholder": "Collez un lien LibrePaper, comme un lien de partage",
+  "newproject_move_to_trash": "Déplacer dans la corbeille",
+  "newproject_name_label": "Nom du projet",
+  "newproject_name_required": "Donnez un nom au projet.",
+  "newproject_no_match": "Aucun modèle ne correspond.",
+  "newproject_open": "Ouvrir",
+  "newproject_open_template": "Ouvrir le modèle",
+  "newproject_reading": "Lecture des fichiers…",
+  "newproject_remove_file": "Retirer {path}",
+  "newproject_remove_folder": "Retirer le dossier {path}",
+  "newproject_search_label": "Rechercher des modèles",
+  "newproject_search_placeholder": "Rechercher des modèles…",
+  "newproject_selected": "Sélectionné : {name}",
+  "newproject_skipped_files": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} fichier exclu de {source} : les rendus et les fichiers que LibrePaper ne conserve pas.",
+        "countPlural=*": "{count} fichiers exclus de {source} : les rendus et les fichiers que LibrePaper ne conserve pas."
+      }
+    }
+  ],
+  "newproject_sort_label": "Trier",
+  "newproject_sort_name_asc": "Nom de A à Z",
+  "newproject_sort_name_desc": "Nom de Z à A",
+  "newproject_staged_from": "depuis {archives}",
+  "newproject_staged_summary": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} fichier, {size}",
+        "countPlural=*": "{count} fichiers, {size}"
+      }
+    }
+  ],
+  "newproject_strip_label": "Placer les fichiers au premier niveau au lieu de les mettre dans « {wrapper} »",
+  "newproject_tab_blank": "Vierge",
+  "newproject_tab_link": "À partir d’un lien",
+  "newproject_tab_template": "À partir d’un modèle",
+  "newproject_tab_upload": "Téléverser des fichiers",
+  "newproject_tabs_label": "Comment commencer le projet",
+  "newproject_template_count": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} modèle",
+        "countPlural=*": "{count} modèles"
+      }
+    }
+  ],
+  "newproject_template_fallback_title": "Modèle",
+  "newproject_template_required": "Choisissez un modèle.",
+  "newproject_title": "Nouveau projet",
+  "newproject_unsupported": "Non pris en charge, donc exclus : {names}",
+  "newproject_uploading": "Téléversement de {loaded} sur {total}",
+  "notfound_back": "Aller à la liste des documents",
+  "notfound_body": "Ce lien ne renvoie à aucun document sur ce déploiement. Il a peut-être été supprimé, il a peut-être expiré, ou l’adresse a peut-être été mal saisie.",
+  "notfound_title": "Rien ici",
+  "offline_projects_blocked": "Le stockage hors ligne est bloqué par un autre onglet.",
+  "offline_projects_forgotten": "Les copies de ce navigateur ont été effacées à la déconnexion.",
+  "offline_projects_unsupported": "Ce navigateur ne fournit pas de stockage hors ligne.",
+  "offline_projects_wait_saving": "Attendez que le projet finisse d’être enregistré sur cet appareil.",
+  "outline_document": "Plan du document",
+  "outline_no_headings": "Aucun titre dans ce fichier.",
+  "panelrail_demo_unavailable": "{says} (non disponible dans la démo)",
+  "panels_agent": "Agent",
+  "panels_changes": "Modifications",
+  "panels_collaboration": "Collaboration",
+  "panels_diagnostics": "Diagnostics",
+  "panels_favorites": "Favoris",
+  "panels_files": "Fichiers",
+  "panels_git": "Git",
+  "panels_history": "Historique",
+  "panels_outline": "Plan",
+  "panels_projects": "Projets",
+  "panels_recent": "Récents",
+  "panels_share": "Partager",
+  "panels_shared": "Partagés avec moi",
+  "panels_templates": "Modèles",
+  "panels_trash": "Corbeille",
+  "panes_ratio_even": "Largeurs égales",
+  "panes_ratio_wide_editor": "Éditeur plus large",
+  "panes_ratio_wide_preview": "Aperçu plus large",
+  "pendingannotations_comment_not_sent": "Commentaire non envoyé",
+  "pendingannotations_discard": "Supprimer le brouillon",
+  "pendingannotations_draft_saved": "Brouillon enregistré sur cet appareil.",
+  "pendingannotations_figure": "Annotation de figure",
+  "pendingannotations_reply_not_sent": "Réponse non envoyée",
+  "pendingannotations_retry": "Réessayer",
+  "pendingannotations_section": "Commentaires non confirmés",
+  "pendingannotations_text": "Texte non confirmé",
+  "pendingannotations_waiting": "En attente de confirmation…",
+  "preamble_more": "Suite du préambule",
+  "preamble_show": "Afficher le préambule",
+  "preamble_summary_class": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Préambule : {documentClass}, {count} paquetage",
+        "countPlural=*": "Préambule : {documentClass}, {count} paquetages"
+      }
+    }
+  ],
+  "preamble_summary_packages": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Préambule : {count} paquetage",
+        "countPlural=*": "Préambule : {count} paquetages"
+      }
+    }
+  ],
+  "preview_document_title": "Document",
+  "preview_notes_no_preview": "{name} n’a pas d’aperçu propre.",
+  "preview_notes_shown_inside": "{name} est affiché dans {path}.",
+  "preview_render_could_not_render": "impossible de compiler",
+  "preview_render_missing_figures": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "impossible de récupérer la figure : {names}",
+        "countPlural=*": "impossible de récupérer les figures : {names}"
+      }
+    }
+  ],
+  "preview_render_no_output": "le compilateur n’a produit ni aperçu ni journal",
+  "preview_rendering_label": "Compilation de l’aperçu",
+  "previewcontrols_close_search": "Fermer la recherche",
+  "previewcontrols_compiling": "Compilation en cours",
+  "previewcontrols_download_pdf": "Télécharger le PDF",
+  "previewcontrols_find_count": "{current} sur {total}",
+  "previewcontrols_find_none": "Aucun résultat",
+  "previewcontrols_invert": "Inverser les pages",
+  "previewcontrols_more": "Plus",
+  "previewcontrols_move_page": "Déplacer la page",
+  "previewcontrols_next_match": "Résultat suivant",
+  "previewcontrols_page": "Page",
+  "previewcontrols_page_view": "Affichage des pages",
+  "previewcontrols_pages": "Pages",
+  "previewcontrols_present": "Présenter",
+  "previewcontrols_previous_match": "Résultat précédent",
+  "previewcontrols_search": "Rechercher",
+  "previewcontrols_search_document": "Rechercher dans le document",
+  "previewcontrols_select_text": "Sélectionner le texte",
+  "previewcontrols_spread": "Deux pages côte à côte",
+  "previewcontrols_zoom": "Zoom",
+  "previewcontrols_zoom_actual": "Taille réelle",
+  "previewcontrols_zoom_automatic": "Automatique",
+  "previewcontrols_zoom_fit_page": "Ajuster à la page",
+  "previewcontrols_zoom_fit_width": "Ajuster à la largeur",
+  "previewcontrols_zoom_in": "Zoom avant",
+  "previewcontrols_zoom_out": "Zoom arrière",
+  "previewwaiting_counted": "{stage} ({done} sur {total})",
+  "project_session_cannot_fetch_reference": "ce client ne peut pas récupérer l’état du document référencé",
+  "project_session_cannot_verify": "ce navigateur ne peut pas vérifier l’état du document référencé",
+  "project_session_file_changed": "Ce fichier a changé ou a été supprimé. Sélectionnez-le de nouveau.",
+  "project_session_integrity": "l’état du document référencé n’a pas réussi la vérification d’intégrité",
+  "project_session_item_changed": "{path} : cet élément a changé ou a été supprimé. Sélectionnez-le de nouveau.",
+  "project_session_local_persistence_failed": "l’enregistrement local a échoué",
+  "project_session_newer_version": "Ce document exige une version plus récente de LibrePaper.",
+  "project_session_read_only": "Ce projet est en lecture seule.",
+  "project_upload_duplicate_name": "{path} : deux fichiers ne peuvent pas porter le même nom.",
+  "project_upload_max_files": "Un document peut contenir {max} fichiers.",
+  "project_upload_no_documents": "L’archive ne contient aucun fichier de document pris en charge.",
+  "project_upload_no_opening": "L’archive ne contient aucun document à ouvrir.",
+  "project_upload_not_utf8": "{path} : la source du document doit être du texte UTF-8.",
+  "project_upload_policy_invalid": "Fichier .librepaper-share.json non valide.",
+  "project_upload_policy_shape": ".librepaper-share.json doit contenir une liste include de chemins de fichiers.",
+  "project_upload_policy_size": ".librepaper-share.json dépasse 64 Kio.",
+  "project_upload_shared_missing": "Le fichier partagé {path} est absent de l’archive ou exclu de celle-ci.",
+  "quarto_cell_label_duplicate": "étiquette de cellule en double : {label}",
+  "quarto_cell_unfinished": "cellule de code inachevée",
+  "quarto_div_unfinished": "bloc div inachevé",
+  "quarto_include_cycle": "Cycle d’inclusion ou limite de profondeur atteinte : {normalized}",
+  "quarto_include_unauthorized": "Inclusion indisponible ou non autorisée : {name}",
+  "quarto_include_unavailable": "Inclusion indisponible : {name}",
+  "quarto_yaml_nesting": "imbrication YAML non prise en charge",
+  "quarto_yaml_parse_failed": "impossible d’analyser l’en-tête YAML",
+  "quarto_yaml_unfinished": "en-tête YAML inachevé",
+  "quotasettings_account_storage": "Stockage du compte",
+  "quotasettings_by_document": "Stockage par document",
+  "quotasettings_delete": "Supprimer",
+  "quotasettings_delete_template": "Supprimer le modèle",
+  "quotasettings_delete_template_for": "Supprimer le modèle {name}",
+  "quotasettings_delete_template_lead": "« ",
+  "quotasettings_delete_template_rest": " » ira à la corbeille, où il reste pendant sept jours. D’ici là, vous pouvez le restaurer.",
+  "quotasettings_delete_template_title": "Supprimer le modèle?",
+  "quotasettings_deleting": "Suppression...",
+  "quotasettings_empty": "Vide",
+  "quotasettings_filter_label": "Filtrer les documents par titre",
+  "quotasettings_filter_placeholder": "Filtrer les documents",
+  "quotasettings_load_failed": "L’état du stockage n’a pas pu être chargé.",
+  "quotasettings_measuring": "Mesure en cours…",
+  "quotasettings_no_match": "Aucun document ne correspond.",
+  "quotasettings_part_figures": "Figures",
+  "quotasettings_part_history": "Historique",
+  "quotasettings_part_label": "{name} {size}",
+  "quotasettings_part_tooltip": "{name}\n{size}",
+  "quotasettings_part_versions": "Versions",
+  "quotasettings_refresh": "Actualiser",
+  "quotasettings_sort_history": "Le plus d’historique",
+  "quotasettings_sort_label": "Trier les documents",
+  "quotasettings_sort_largest": "Le plus volumineux d’abord",
+  "quotasettings_sort_name": "Nom",
+  "quotasettings_template": "Modèle",
+  "quotasettings_template_failed": "Le modèle n’a pas pu être supprimé.",
+  "quotasettings_total_label": "{parts}, sur {quota}",
+  "quotasettings_trim_chat_item": "Son historique de clavardage",
+  "quotasettings_trim_confirm": "Réduire l’historique",
+  "quotasettings_trim_description": "La réduction conserve un document tel qu’il est maintenant et supprime tout ce qui le précède : son historique des modifications, ses versions nommées, son historique de clavardage et les figures qu’il n’utilise plus. Les commentaires restent.",
+  "quotasettings_trim_failed": "L’historique n’a pas pu être réduit.",
+  "quotasettings_trim_figures_item": "Les figures que ses fichiers actuels n’utilisent plus, sauf celles téléversées au cours de la dernière heure",
+  "quotasettings_trim_footer": "Les commentaires restent. Cette action est irréversible.",
+  "quotasettings_trim_history": "Réduire l’historique",
+  "quotasettings_trim_history_for": "Réduire l’historique de {name}",
+  "quotasettings_trim_history_item": "Son historique des modifications ({size})",
+  "quotasettings_trim_keeps_after": " » tel qu’il est maintenant et supprime définitivement tout ce qui le précède :",
+  "quotasettings_trim_keeps_before": "Ceci garde « ",
+  "quotasettings_trim_title": "Réduire l’historique?",
+  "quotasettings_trim_versions_item": "Toutes ses versions nommées ({size})",
+  "quotasettings_trimming": "Réduction en cours…",
+  "quotasettings_used": "{used} sur {quota} utilisés.",
+  "quotasettings_used_percent": "{used} sur {quota} ({percent} %) utilisés.",
+  "reader_agent_needs_desktop": "L’agent a besoin de l’application de bureau LibrePaper.",
+  "reader_attach_failed": "Ce passage n’a pas pu être rattaché à ce commentaire.",
+  "reader_change_file": "Le fichier de cette modification ne peut pas être ouvert dans le document actuel.",
+  "reader_change_refused": "Le serveur a refusé cette modification. Rien à l’écran n’a changé.",
+  "reader_chat_refused": "Le serveur a refusé ce message de clavardage.",
+  "reader_demo_hint": "(non disponible dans la démo)",
+  "reader_get_desktop_app": "Obtenir l’application de bureau",
+  "reader_no_docs_origin": "Ce serveur n’a pas d’origine distincte pour les documents, donc l’aperçu ne peut pas être affiché.",
+  "reader_offline_kept_locally": "Hors ligne; les modifications sont conservées dans ce navigateur pendant la reconnexion…",
+  "reader_offline_local_copy": "Hors ligne. Il s’agit de la copie enregistrée dans ce navigateur, qui n’inclut peut-être pas les modifications faites ailleurs.",
+  "reader_offline_reconnecting": "Hors ligne; reconnexion…",
+  "reader_open_failed": "Ce document n’a pas pu être ouvert.",
+  "reader_passage_changed": "Ce passage a changé avant que le commentaire puisse être rattaché.",
+  "reader_reconnecting": "Reconnexion…",
+  "reader_save_delayed": "Ce serveur est occupé à enregistrer; votre travail est conservé ici et sera enregistré sous peu.",
+  "reader_select_passage_first": "Sélectionnez d’abord le passage dans l’éditeur.",
+  "reader_source_moved": "La source a changé depuis la sélection de ce passage. Attendez que la page actuelle finisse de se compiler, puis sélectionnez à nouveau le passage; le brouillon est conservé.",
+  "reader_source_rendering": "La source a changé et la page actuelle est encore en cours de compilation. Votre sélection est conservée; réessayez après la mise à jour de la page.",
+  "reader_stale_selection": "La page a changé pendant l’ajout de ce commentaire. Elle a été actualisée avec le texte actuel; resélectionnez le passage et réessayez.",
+  "reader_still_connecting": "Le document actuel est encore en cours de connexion. Réessayez une fois qu’il est chargé.",
+  "reader_tracking_failed": "Le suivi des modifications n’a pas pu être activé : ce document n’est pas connecté pour la modification.",
+  "reader_untitled": "Sans titre",
+  "readerb_arrangement_editor": "Éditeur",
+  "readerb_arrangement_preview": "Aperçu",
+  "readerb_arrangement_split": "Divisé",
+  "readerb_backup_failing": "Les sauvegardes sont activées, mais échouent : {error}. Ouvrez Paramètres, puis Sauvegardes.",
+  "readerb_backup_lost_access": "Les sauvegardes sont activées, mais l’application de bureau a perdu l’accès à ce compte. Ouvrez Paramètres, puis Sauvegardes, pour vous reconnecter.",
+  "readerb_backup_no_destination": "Les sauvegardes sont activées, mais aucune destination n’est définie. Ouvrez Paramètres, puis Sauvegardes.",
+  "readerb_build_failed": "La compilation a échoué sans indiquer la raison.",
+  "readerb_build_failed_latex": "La compilation LaTeX a échoué sans indiquer la raison.",
+  "readerb_clipboard_refused": "Le navigateur a refusé l’accès au presse-papiers. Utilisez plutôt le raccourci clavier.",
+  "readerb_collaboration_unread": "Collaboration : messages non lus",
+  "readerb_comparing_says": "Comparaison de {path} avec {version}",
+  "readerb_count_both": "{errors}, {warnings}",
+  "readerb_count_errors": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} erreur",
+        "countPlural=*": "{count} erreurs"
+      }
+    }
+  ],
+  "readerb_count_warnings": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} avertissement",
+        "countPlural=*": "{count} avertissements"
+      }
+    }
+  ],
+  "readerb_current_version": "la version actuelle",
+  "readerb_diagnostics_says": "Diagnostics : {badge}",
+  "readerb_edit_bold": "Gras",
+  "readerb_edit_copy": "Copier",
+  "readerb_edit_cut": "Couper",
+  "readerb_edit_find": "Rechercher…",
+  "readerb_edit_italic": "Italique",
+  "readerb_edit_paste": "Coller",
+  "readerb_edit_redo": "Rétablir",
+  "readerb_edit_replace": "Remplacer…",
+  "readerb_edit_select_all": "Tout sélectionner",
+  "readerb_edit_undo": "Annuler",
+  "readerb_edit_word_count": "Nombre de mots…",
+  "readerb_edits_unsaved": "Vos dernières modifications n’ont pas encore atteint le serveur. Réessayez une fois qu’elles sont enregistrées.",
+  "readerb_preparing_export": "Préparation du {format}.",
+  "readerb_quit_failed": "L’application de bureau n’a pas pu quitter.",
+  "readerb_run_code_for_render": "Activez « Exécuter le code » pour compiler sur cet ordinateur.",
+  "readerb_version_download_failed": "Cette version n’a pas pu être téléchargée.",
+  "readerc_cells_not_run": "Les cellules de code n’ont pas été exécutées. Activez Exécuter le code dans l’application de bureau LibrePaper pour inclure leurs résultats.",
+  "readerc_comments_export_failed": "Impossible d’exporter les commentaires.",
+  "readerc_comments_preparing": "Préparation des commentaires.",
+  "readerc_comments_read_failed": "Impossible de lire les commentaires ({status}).",
+  "readerc_demo_no_uploads": "Les images et autres téléversements ne sont pas disponibles dans la démo.",
+  "readerc_doc_missing": "Aucun document à cette adresse. Le lien est peut-être erroné, ou le document a peut-être été supprimé.",
+  "readerc_doc_missing_sign_in": "Aucun document à cette adresse. S’il a été partagé avec vous, connectez-vous : un document partagé avec un compte ne s’ouvre que pour ce compte.",
+  "readerc_download_entry_failed": "Impossible de télécharger ce fichier.",
+  "readerc_download_no_files": "Ce projet ne contient aucun fichier à télécharger.",
+  "readerc_download_project_failed": "Impossible de télécharger le projet.",
+  "readerc_export_failed": "Impossible de créer le {target}.",
+  "readerc_figures_missing": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Impossible de récupérer la figure : {missing}.",
+        "countPlural=*": "Impossible de récupérer les figures : {missing}."
+      }
+    }
+  ],
+  "readerc_insertion_changed": "Le document ou le texte sélectionné a changé. Fermez cette boîte de dialogue et choisissez de nouveau le point d’insertion.",
+  "readerc_local_storage_failed": "{error} : ce navigateur ne peut plus garder sa propre copie du projet, donc un rechargement pendant une coupure de connexion ferait perdre ce qui n’est pas encore sur le serveur. Téléchargez le projet pour en avoir une copie indépendante de l’un et de l’autre.",
+  "readerc_menu_edit": "Édition",
+  "readerc_menu_file": "Fichier",
+  "readerc_menu_insert": "Insertion",
+  "readerc_menu_view": "Affichage",
+  "readerc_no_renderer": "Un document {format} se lit là où son moteur de rendu est intégré, et ce navigateur n’en possède aucun pour lui.",
+  "readerc_offline_pending": "Hors ligne : vos dernières modifications ne sont que dans ce navigateur et seront envoyées dès que la connexion reviendra.",
+  "readerc_offline_saved": "Hors ligne : tout ce qui a été saisi jusqu’ici est déjà parvenu au serveur.",
+  "readerc_preview_no_own": "{name} n’a pas d’aperçu propre.",
+  "readerc_preview_part": "{name} fait partie d’un document plus grand.",
+  "readerc_preview_part_latex": "{name} n’a pas de {cmd}, il fait donc partie d’un document plus grand.",
+  "readerc_project_load_failed": "Impossible de charger le projet actuel.",
+  "readerc_saved_on_server": "Enregistré sur le serveur.",
+  "readerc_server_open_failed": "Le serveur n’a pas pu ouvrir ce document (erreur {status}). Rechargez la page pour réessayer.",
+  "readerc_server_unreachable": "Impossible de joindre le serveur. Vérifiez votre connexion, puis rechargez la page.",
+  "readerc_template_name_required": "Donnez un nom au modèle.",
+  "readerc_template_save_failed": "Impossible d’enregistrer le modèle.",
+  "readerc_template_saved": "« {title} » enregistré comme modèle.",
+  "readerc_title_not_found": "Document introuvable",
+  "readerc_title_sign_in": "Connexion requise",
+  "readerc_title_unavailable": "Document indisponible",
+  "readerc_too_large": "Ce document est trop volumineux pour être compilé pour l’instant. Il reste illisible ici jusqu’à ce que ses éditeurs le ramènent sous la limite ; ils peuvent entre-temps continuer à écrire et à exporter localement.",
+  "readerd_add_one_from_files": "Ajoutez-en un depuis Fichiers.",
+  "readerd_all_projects": "Tous les projets",
+  "readerd_anonymous": "Anonyme",
+  "readerd_back_to_preview": "Retour à l’aperçu",
+  "readerd_bigger_text": "Texte plus grand",
+  "readerd_browser_cannot_render_paged": "Ce navigateur ne peut pas compiler ce document {kind} à partir de sa source.",
+  "readerd_browser_cannot_render_source": "Ce navigateur ne peut pas compiler cette source {format}.",
+  "readerd_cannot_show": "Ce document ne peut pas être affiché pour le moment",
+  "readerd_choose_highlight_colour": "Choisir la couleur de surlignage",
+  "readerd_choose_identity": "Choisissez comment vous identifier dans ce commentaire.",
+  "readerd_close": "Fermer",
+  "readerd_compile_now": "Compiler maintenant",
+  "readerd_compiler_no_output": "Le compilateur n’a produit aucun {kind}, et Diagnostics n’a rien à montrer à ce sujet. Voici ce qu’il a indiqué :",
+  "readerd_configure_latex": "Configurez le moteur LaTeX du navigateur pour l’afficher.",
+  "readerd_continue_as": "Continuer en tant que {name}",
+  "readerd_could_not_render": "Impossible de compiler",
+  "readerd_custom_highlight_colour": "Couleur de surlignage personnalisée",
+  "readerd_delete": "Supprimer",
+  "readerd_delete_chat_body": "Ceci supprime définitivement l’historique du clavardage partagé de ce projet pour toutes les personnes qui y ont accès.",
+  "readerd_delete_chat_title": "Supprimer l’historique du clavardage?",
+  "readerd_delete_comment_body": "Ceci supprime le commentaire et ses réponses pour tout le monde. Cette action est irréversible.",
+  "readerd_delete_comment_title": "Supprimer le commentaire?",
+  "readerd_delete_history": "Supprimer l’historique",
+  "readerd_delete_many_comments_body": "Ceci supprime ces commentaires et leurs réponses pour tout le monde. Cette action est irréversible.",
+  "readerd_delete_many_comments_title": "Supprimer {count} commentaires?",
+  "readerd_demo_banner": "Bac à sable de démonstration. Rien n’est enregistré, et certaines fonctions sont désactivées. Connectez-vous pour conserver votre travail.",
+  "readerd_desktop_can_render": "L’application de bureau LibrePaper peut la compiler sur cet ordinateur.",
+  "readerd_diagnostics_converter": "Les diagnostics dans la barre latérale énumèrent ce que le convertisseur a signalé.",
+  "readerd_document_label": "Document",
+  "readerd_download_comments": "Commentaires",
+  "readerd_download_menu": "Télécharger",
+  "readerd_download_project": "Projet",
+  "readerd_download_source": "Source",
+  "readerd_download_source_reason": "Ouvrez un fichier pour télécharger sa source.",
+  "readerd_edit_menu": "Édition",
+  "readerd_editor": "Éditeur",
+  "readerd_editor_on_left": "Éditeur à gauche",
+  "readerd_editor_on_right": "Éditeur à droite",
+  "readerd_figure_fetching": "Récupération de {path}…",
+  "readerd_figure_not_displayable": "{name} ne peut pas être affiché ici.",
+  "readerd_file_menu": "Fichier",
+  "readerd_fix_errors": "Corrigez les erreurs dans Diagnostics pour produire un aperçu PDF.",
+  "readerd_git_item": "Git…",
+  "readerd_highlight_colour_group": "Couleur de surlignage",
+  "readerd_highlight_in": "Surligner en {color}",
+  "readerd_history_item": "Historique",
+  "readerd_html_convert_failed": "Le convertisseur HTML n’a pas pu convertir ce document. Il prend en charge moins d’extensions LaTeX que le compilateur PDF, donc l’affichage PDF (Affichage > PDF) peut tout de même fonctionner.",
+  "readerd_html_preview_kind": "aperçu HTML",
+  "readerd_insert_symbol": "Insérer un symbole",
+  "readerd_keep_in_step": "Garder en phase",
+  "readerd_layout_switch": "Disposition : {current}. Passer à {next}",
+  "readerd_lock_preview_file": "Verrouiller l’aperçu sur ce fichier",
+  "readerd_lock_preview_hint": "Verrouillez l’aperçu sur un fichier avec l’œil dans Fichiers pour garder une page ici pendant que vous modifiez celui-ci.",
+  "readerd_lock_preview_on": "Verrouiller l’aperçu sur {name}",
+  "readerd_locked_path": "Verrouillé : {path}",
+  "readerd_math": "Mathématiques",
+  "readerd_new_file": "Nouveau fichier…",
+  "readerd_new_folder": "Nouveau dossier…",
+  "readerd_nothing_to_preview": "Rien à afficher dans l’aperçu",
+  "readerd_offline": "Hors ligne",
+  "readerd_open_diagnostics": "Ouvrir Diagnostics",
+  "readerd_open_files": "Ouvrir Fichiers",
+  "readerd_paged": "paginé",
+  "readerd_people_connected": "{count} personnes connectées",
+  "readerd_preview": "Aperçu",
+  "readerd_preview_inside": "Il peut être affiché dans :",
+  "readerd_project_no_files": "Ce projet ne contient pas encore de fichiers.",
+  "readerd_quit": "Quitter",
+  "readerd_reset_text_size": "Rétablir la taille du texte",
+  "readerd_restore_anyway": "Restaurer quand même",
+  "readerd_restore_description": "Restaurer {name}. Chaque fichier du projet est remplacé, et la version actuelle est conservée dans l’historique.",
+  "readerd_restore_moved": "Le projet a changé pendant que cette version était ouverte. Restaurer {name} par-dessus le projet tel qu’il est maintenant? La version actuelle sera conservée dans l’historique.",
+  "readerd_restore_version": "Restaurer la version",
+  "readerd_restore_version_title": "Restaurer cette version?",
+  "readerd_restoring": "Restauration…",
+  "readerd_run_code": "Exécuter le code",
+  "readerd_run_code_hint": "Exécute le code de ce document sur cet ordinateur. Désactivé à chaque ouverture d’un document.",
+  "readerd_save": "Enregistrer",
+  "readerd_save_as_template": "Enregistrer comme modèle",
+  "readerd_save_as_template_item": "Enregistrer comme modèle…",
+  "readerd_saving": "Enregistrement...",
+  "readerd_settings": "Paramètres",
+  "readerd_settings_item": "Paramètres…",
+  "readerd_share_item": "Partager…",
+  "readerd_show_pdf": "Afficher le PDF",
+  "readerd_shown_inside": "{name}, affiché dans {path}",
+  "readerd_sign_in": "Se connecter",
+  "readerd_sign_in_to_open": "Connectez-vous pour ouvrir ce document",
+  "readerd_sign_in_to_open_body": "Les lecteurs, les commentateurs et les éditeurs doivent se connecter avant d’ouvrir un document partagé.",
+  "readerd_smaller_text": "Texte plus petit",
+  "readerd_source_heading": "Source · {path}",
+  "readerd_source_of": "Source de {path}",
+  "readerd_split": "Côte à côte",
+  "readerd_start_over": "Recommencer",
+  "readerd_template_name": "Nom du modèle",
+  "readerd_this_preview": "Cet aperçu",
+  "readerd_try_again": "Réessayer",
+  "readerd_unlock_preview": "Déverrouiller l’aperçu",
+  "readerd_untitled_document": "Document sans titre",
+  "readerd_upload_files": "Téléverser des fichiers…",
+  "readerd_view_menu": "Affichage",
+  "readerd_visual_markup": "Balisage visuel",
+  "readerd_visual_mode": "Mode visuel",
+  "readerd_visual_mode_hint": "Affiche la source comme texte mis en forme pendant que vous la modifiez.",
+  "readerd_what_is_librepaper": "Qu’est-ce que LibrePaper?",
+  "readerd_who_are_you": "Qui êtes-vous?",
+  "readerd_word_count": "Nombre de mots",
+  "readerd_workspace_view": "Affichage de l’espace de travail",
+  "readerd_you": "Vous",
+  "registry_account": "Compte",
+  "registry_account_erase": "Effacer ce compte",
+  "registry_account_erase_terms": "supprimer effacer compte retirer fermer droit à l’oubli oublier erase delete account remove close gdpr right erasure forget",
+  "registry_agents": "Agents IA",
+  "registry_agents_add": "Ajouter un agent",
+  "registry_agents_add_terms": "agent ajouter personnalisé commande exécutable arguments agent add custom command executable arguments",
+  "registry_agents_list": "Agents sur cet ordinateur",
+  "registry_agents_list_terms": "agent agents détecté configuré personnalisé supprimer adaptateur configuration agent agents claude codex opencode pi detected configured custom remove adapter setup",
+  "registry_appearance_colours": "Couleurs",
+  "registry_appearance_colours_terms": "couleurs palette thème schéma coloration syntaxe surlignage éditeur colours colors palette theme scheme flexoki solarized gruvbox catppuccin nord syntax highlighting editor",
+  "registry_appearance_font": "Police",
+  "registry_appearance_font_size": "Taille de la police",
+  "registry_appearance_font_size_terms": "taille police texte zoom plus grand plus petit pincement échelle pixels font size text size zoom bigger smaller pinch scale pixels",
+  "registry_appearance_font_terms": "police famille typographie chasse fixe empattement sans-empattement dyslexie font family typeface monospace serif sans dyslexia opendyslexic fira jetbrains source code pro cascadia plex",
+  "registry_appearance_line_height": "Interligne",
+  "registry_appearance_line_height_terms": "interligne hauteur espacement compact large dense line height spacing leading compact wide dense",
+  "registry_appearance_theme": "Thème",
+  "registry_appearance_theme_terms": "thème sombre clair mode nuit couleur schéma système apparence dark light theme mode night colour color scheme system appearance",
+  "registry_backup_destination": "Dossier de sauvegarde",
+  "registry_backup_destination_terms": "destination choisir répertoire dossier local application de bureau destination choose directory folder local desktop app",
+  "registry_backup_enable": "Sauvegardes automatiques",
+  "registry_backup_enable_terms": "archive zip calendrier fréquence intervalle compte tous les projets zip archive schedule frequency interval account all projects",
+  "registry_backup_frequency": "Fréquence",
+  "registry_backup_frequency_terms": "minutes calendrier intervalle fréquence minutes schedule interval",
+  "registry_backups": "Sauvegardes",
+  "registry_diagnostics_report": "Diagnostics",
+  "registry_diagnostics_report_terms": "diagnostics rapport bogue problème soutien copier journaux dépannage erreurs diagnostics report bug issue support copy logs troubleshoot errors",
+  "registry_editor": "Éditeur",
+  "registry_editor_brackets": "Fermer les crochets",
+  "registry_editor_brackets_terms": "fermer crochets parenthèses accolades guillemets paire automatique close brackets auto pair braces parentheses quotes dollar autoclose",
+  "registry_editor_check": "Vérification du code",
+  "registry_editor_check_terms": "vérification du code analyse erreurs avertissements soulignement marge diagnostics code check lint errors warnings underline gutter diagnostics squiggle",
+  "registry_editor_completion": "Complétion automatique",
+  "registry_editor_completion_terms": "complétion automatique suggestions suggérer fenêtre contextuelle commandes citations autocomplete completion suggestions suggest popup intellisense commands citations",
+  "registry_editor_dialect": "Dialecte de l’anglais",
+  "registry_editor_dialect_terms": "dialecte variante britannique américain canadien australien indien anglais dialect british american canadian australian indian english harper",
+  "registry_editor_keys": "Raccourcis clavier",
+  "registry_editor_keys_terms": "raccourcis clavier touches liaisons clavier standard vim emacs keymap keyboard bindings modal source standard",
+  "registry_editor_proofing": "Grammaire et orthographe",
+  "registry_editor_proofing_terms": "orthographe grammaire correcteur faute coquille dictionnaire mal orthographié relecture spellcheck spelling spell check typo dictionary misspelled grammar harper proofreading",
+  "registry_editor_shortcuts": "Raccourcis clavier",
+  "registry_editor_shortcuts_terms": "raccourci raccourcis touches clavier combinaison liaison palette commande annuler rétablir rechercher shortcut shortcuts keys keyboard chord binding hotkey accelerator palette command undo redo find",
+  "registry_general": "Général",
+  "registry_general_close": "Quand la fenêtre se ferme",
+  "registry_general_close_terms": "fermer fenêtre quitter zone de notification réduire sortir arrière-plan continuer close window quit tray minimize exit background keep running",
+  "registry_general_language": "Langue",
+  "registry_general_language_terms": "langue interface traduction français anglais language langue interface translation french english français",
+  "registry_note_this_app": "Cette application",
+  "registry_note_this_browser": "Ce navigateur",
+  "registry_note_this_computer": "Cet ordinateur",
+  "registry_note_your_account": "Votre compte",
+  "registry_remote_status": "Connexion au serveur",
+  "registry_remote_status_terms": "connecté déconnecté hors ligne en ligne serveur adresse url synchronisation état collaboration connected disconnected offline online server address url sync status collaboration",
+  "registry_render_latex_engine": "Moteur LaTeX",
+  "registry_render_latex_engine_terms": "moteur compilateur automatique engine pdflatex xelatex automatic compiler",
+  "registry_render_latex_files": "Fichiers LaTeX téléchargés",
+  "registry_render_latex_files_terms": "fichiers téléchargés cache vider libérer espace paquets stockage latex compiler cache clear free space packages storage",
+  "registry_render_latex_pdf": "Commande LaTeX",
+  "registry_render_latex_pdf_terms": "commande compiler cet ordinateur fichier résultat latex command latexmk pdf render this computer result file synctex",
+  "registry_render_latex_preview": "Aperçu par défaut de LaTeX",
+  "registry_render_latex_preview_terms": "aperçu par défaut sortie latex default preview pdf html output",
+  "registry_render_latex_where": "LaTeX se compile dans",
+  "registry_render_latex_where_terms": "compile rendu navigateur cet ordinateur local exécuter le code latex renders in browser this computer local latexmk run code",
+  "registry_render_markdown_html": "Commande Markdown",
+  "registry_render_markdown_html_terms": "commande compiler cet ordinateur fichier résultat markdown command quarto html pdf docx word render this computer result file",
+  "registry_render_markdown_preview": "Aperçu par défaut de Markdown",
+  "registry_render_markdown_preview_terms": "aperçu par défaut sortie markdown default preview pdf html output",
+  "registry_render_markdown_where": "Markdown se compile dans",
+  "registry_render_markdown_where_terms": "compile rendu navigateur cet ordinateur local exécuter le code markdown renders in browser this computer local quarto run code",
+  "registry_render_quarto_html": "Commande Quarto",
+  "registry_render_quarto_html_terms": "commande compiler cet ordinateur fichier résultat profil paramètres quarto command html pdf docx word render this computer result file profile parameters",
+  "registry_render_quarto_preview": "Aperçu par défaut de Quarto",
+  "registry_render_quarto_preview_terms": "aperçu par défaut sortie quarto default preview pdf html output",
+  "registry_render_typst_pdf": "Commande Typst",
+  "registry_render_typst_pdf_terms": "commande compiler cet ordinateur fichier résultat typst command pdf render this computer result file",
+  "registry_render_typst_preview": "Aperçu par défaut de Typst",
+  "registry_render_typst_preview_terms": "aperçu par défaut sortie typst default preview pdf html output",
+  "registry_render_typst_where": "Typst se compile dans",
+  "registry_render_typst_where_terms": "compile rendu navigateur cet ordinateur local exécuter le code typst renders in browser this computer local run code",
+  "registry_rendering": "Rendu",
+  "registry_storage_account": "Stockage du compte",
+  "registry_storage_account_terms": "quota utilisation espace utilisé limite octets stockage quota usage space used limit bytes",
+  "registry_tools": "Outils",
+  "registry_tools_activity": "Activité",
+  "registry_tools_activity_terms": "tâches sessions annuler arrêter en cours jobs sessions cancel stop running",
+  "registry_tools_programs": "Programmes",
+  "registry_tools_programs_terms": "outils outil état version disponible manquant réanalyser analyser local tools tool status version available missing rescan scan local latexmk quarto typst zotero",
+  "registry_tools_zotero_terms": "citations bibliographie bibliothèque références local api zotero citations bibliography library references local api",
+  "settingsdialog_categories_label": "Catégories des paramètres",
+  "settingsdialog_latex_note": "Les documents LaTeX se compilent dans le navigateur, ou sur cet ordinateur lorsque Exécuter le code est activé.",
+  "settingsdialog_markdown_note": "Les documents Markdown se compilent dans le navigateur, ou sur cet ordinateur lorsque Exécuter le code est activé.",
+  "settingsdialog_nothing_matches": "Aucun résultat.",
+  "settingsdialog_quarto_note": "Les documents Quarto se compilent en brouillon dans le navigateur. Lorsque Exécuter le code est activé, Quarto les compile sur cet ordinateur.",
+  "settingsdialog_search": "Rechercher dans les paramètres",
+  "settingsdialog_title": "Paramètres",
+  "settingsdialog_typst_note": "Les documents Typst se compilent dans le navigateur, ou sur cet ordinateur lorsque Exécuter le code est activé.",
+  "settingsdialog_version": "Version {version} · Cet ordinateur",
+  "share_copy_manual_label": "Texte à copier manuellement",
+  "share_done": "Terminé",
+  "share_error_copy_blocked": "La copie a été bloquée. Sélectionnez ce texte et copiez-le manuellement.",
+  "share_error_load": "Impossible de charger les paramètres de partage.",
+  "share_error_update": "Impossible de modifier l’accès.",
+  "share_links_list_label": "Liens de partage",
+  "share_links_scope_note": "Chaque lien ouvre le projet entier. L’autorisation détermine ce que les personnes peuvent faire.",
+  "share_loading": "Chargement des paramètres de partage…",
+  "share_new": "Nouveau",
+  "share_no_links": "Aucun lien de partage pour l’instant.",
+  "share_no_tokens": "Aucun jeton d’agent IA pour l’instant.",
+  "share_revoke_link_action": "Révoquer le lien",
+  "share_revoke_link_body": "Ce lien cessera de fonctionner. Les personnes qui n’ont accès au projet que par ce lien perdront cet accès.",
+  "share_revoke_link_title": "Révoquer le lien?",
+  "share_revoke_token_action": "Révoquer le jeton",
+  "share_revoke_token_body": "Ce jeton cessera de fonctionner. L’agent perd immédiatement l’accès.",
+  "share_revoke_token_title": "Révoquer le jeton?",
+  "share_tab_links": "Liens",
+  "share_tab_tokens": "Jetons d’agent IA",
+  "share_title": "Partager",
+  "share_tokens_scope_note": "Un jeton avec le rôle Éditeur sert aussi à la ligne de commande librepaper et à l’action GitHub pour synchroniser ce projet.",
+  "share_try_again": "Réessayer",
+  "shared_expiry_180d": "6 mois",
+  "shared_expiry_1d": "1 jour",
+  "shared_expiry_30d": "30 jours",
+  "shared_expiry_365d": "1 an",
+  "shared_expiry_7d": "7 jours",
+  "shared_expiry_never": "Jamais",
+  "shared_link_commenter": "Lien de commentaire",
+  "shared_link_editor": "Lien de modification",
+  "shared_link_other": "Lien {role}",
+  "shared_link_reader": "Lien de lecture",
+  "shared_no_expiry": "Sans expiration",
+  "shared_role_commenter": "Commenter",
+  "shared_role_editor": "Modifier",
+  "shared_role_reader": "Lire",
+  "shared_token_name": "Jeton d’agent IA",
+  "shareform_agent_name": "Nom de l’agent IA",
+  "shareform_agent_name_help": "Ses commentaires et suggestions apparaissent sous ce nom.",
+  "shareform_budget_hint": "Laissez vide pour utiliser la valeur par défaut de l’installation.",
+  "shareform_budget_label": "Commentaires/heure",
+  "shareform_cancel": "Annuler",
+  "shareform_create_link": "Créer le lien",
+  "shareform_create_token": "Créer le jeton",
+  "shareform_edit_note": "Modifier permet à l’agent IA de changer le projet directement, sans examen.",
+  "shareform_expires": "Expiration",
+  "shareform_link_name_help": "Un nom privé pour vous rappeler avec qui vous avez partagé ce lien.",
+  "shareform_name_optional": "Nom (facultatif)",
+  "shareform_permission": "Autorisation",
+  "shareform_reach_commenter": "Ils peuvent ouvrir chaque fichier, commenter et répondre.",
+  "shareform_reach_editor": "Ils peuvent modifier n’importe quel fichier.",
+  "shareform_reach_reader": "Ils peuvent ouvrir chaque fichier et lire les commentaires.",
+  "shareform_role_not_allowed": "{role} (non autorisé ici)",
+  "sharerow_copy_label": "Copier {name}",
+  "sharerow_copy_link": "Copier le lien",
+  "sharerow_revoke_label": "Révoquer {name}",
+  "sharerow_revoke_link": "Révoquer le lien",
+  "sharerow_revoke_token": "Révoquer le jeton",
+  "shortcuttable_col_command": "Commande",
+  "shortcuttable_col_shortcut": "Raccourci",
+  "shortcuttable_col_where": "Où cela fonctionne",
+  "shortcuttable_not_available": "(non disponible ici)",
+  "shortcuttable_or": "ou",
+  "shortcuttable_palette_only": "Palette de commandes",
+  "sidebar_default_label": "Barre latérale",
+  "sidebar_outline_tab": "Plan",
+  "sidebar_page_label": "Page {number}",
+  "sidebar_pages_tab": "Pages",
+  "sidebar_resize_column": "Redimensionner la colonne de gauche",
+  "sidebar_sections": "{label} : sections",
+  "sidebar_toggle_section": "Afficher ou masquer la section",
+  "sidebar_untitled": "Sans titre",
+  "sidebar_workspace_controls": "Commandes de l’espace de travail",
+  "signin_app_link": "l’application de bureau",
+  "signin_backups_link": "sauvegardes locales automatiques",
+  "signin_cancel": "Annuler",
+  "signin_change_server": "Changer de serveur",
+  "signin_continue": "Continuer avec {label}",
+  "signin_experimental": "LibrePaper est expérimental.",
+  "signin_may_change": "Le site et le service peuvent changer à tout moment.",
+  "signin_recommend_after": "de vos projets pendant que vous les modifiez.",
+  "signin_recommend_before_app": "Nous vous recommandons d’utiliser",
+  "signin_recommend_before_backups": "pour effectuer des",
+  "signin_server_prompt": "Vous vous connectez à {host}. Saisissez l’adresse d’un autre serveur.",
+  "signin_server_unchanged": "Le serveur n’a pas été modifié.",
+  "signin_signed_out": "Vous êtes déconnecté.",
+  "signin_title": "Se connecter ou créer un compte",
+  "signin_use_server": "Utiliser ce serveur",
+  "signin_waiting": "Patientez...",
+  "status_text_bibliography_browser_biber": "Biber du navigateur",
+  "status_text_browser": "Compilé dans le navigateur.",
+  "status_text_browser_bibliography": "Compilé dans le navigateur; bibliographie traitée par {bibliography}.",
+  "status_text_browser_engine": "Compilé dans le navigateur avec {engine}.",
+  "status_text_browser_engine_bibliography": "Compilé dans le navigateur avec {engine}; bibliographie traitée par {bibliography}.",
+  "status_text_browser_engine_release": "Compilé dans le navigateur avec {engine} (version {release}).",
+  "status_text_browser_engine_release_bibliography": "Compilé dans le navigateur avec {engine} (version {release}); bibliographie traitée par {bibliography}.",
+  "status_text_browser_release": "Compilé dans le navigateur (version {release}).",
+  "status_text_browser_release_bibliography": "Compilé dans le navigateur (version {release}); bibliographie traitée par {bibliography}.",
+  "status_text_rendered_local": "Compilé sur cet ordinateur.",
+  "symboldetails_empty": "Survolez un symbole ou sélectionnez-le au clavier pour voir son nom et sa notation.",
+  "symboldetails_favorite_label": "Favori",
+  "symboldetails_needs_package": "Nécessite {pkg}",
+  "symboldetails_not_in_html": "Non disponible en HTML",
+  "symbolpalette_categories_label": "Catégories de symboles",
+  "symbolpalette_emoji_groups_label": "Groupes d’emoji",
+  "symbolpalette_emoji_latex_notice": "Les emoji en LaTeX nécessitent LuaLaTeX et le paquetage emoji, qui est ajouté à l’insertion.",
+  "symbolpalette_empty_favorites": "Ajoutez un symbole aux favoris à partir de la ligne de détails pour le garder ici.",
+  "symbolpalette_empty_recent": "Les symboles que vous insérez apparaissent ici.",
+  "symbolpalette_loading_emoji": "Chargement des emoji...",
+  "symbolpalette_no_match": "Aucun symbole ne correspond à « {query} ». Essayez un nom comme alpha, une commande comme \\alpha ou le caractère lui-même.",
+  "symbolpalette_not_in_html": "Non disponible en HTML.",
+  "symbolpalette_open_file_first": "Ouvrez un fichier que vous pouvez modifier pour insérer des symboles.",
+  "symbolpalette_pairs": "Paires",
+  "symbolpalette_results": "Résultats",
+  "symbolpalette_search_placeholder": "Rechercher des symboles",
+  "symbolpalette_single": "Simples",
+  "symbolsearch_no_match": "Aucun symbole ne correspond à « {query} ».",
+  "symbolsearch_placeholder": "Rechercher des symboles",
+  "symboltile_title": "{name} : {spelling}",
+  "symboltile_title_needs": "{name} : {spelling}, nécessite {pkg}",
+  "tag_colours_blue": "Bleu",
+  "tag_colours_bluish_green": "Vert bleuté",
+  "tag_colours_gray": "Gris",
+  "tag_colours_orange": "Orange",
+  "tag_colours_reddish_purple": "Pourpre rougeâtre",
+  "tag_colours_sky_blue": "Bleu ciel",
+  "tag_colours_vermillion": "Vermillon",
+  "tag_colours_yellow": "Jaune",
+  "tagswatches_label": "Couleur",
+  "task_widgets_assignee": "Assigné {value}",
+  "task_widgets_assignees": "Assignés {names}",
+  "task_widgets_cancelled_label": "Date d’annulation",
+  "task_widgets_created_label": "Date de création",
+  "task_widgets_date_chip": "{prefix} {date}",
+  "task_widgets_date_name": "{label} {date}",
+  "task_widgets_date_name_overdue": "{label} {date}, en retard",
+  "task_widgets_done_label": "Date d’achèvement",
+  "task_widgets_due_label": "Échéance",
+  "task_widgets_estimate": "Estimation {value}",
+  "task_widgets_field_warning_name": "{key}:{value}. {warning}",
+  "task_widgets_prefix_cancelled": "annulé",
+  "task_widgets_prefix_created": "créé",
+  "task_widgets_prefix_done": "fait",
+  "task_widgets_prefix_scheduled": "prév.",
+  "task_widgets_prefix_start": "début",
+  "task_widgets_priority_name": "Priorité {value}, {label}",
+  "task_widgets_priority_plain": "Priorité {value}",
+  "task_widgets_progress": "{done} sur {total}",
+  "task_widgets_scheduled_label": "Date prévue",
+  "task_widgets_start_label": "Date de début",
+  "task_widgets_tag_name": "Étiquette {tag}",
+  "task_widgets_task_box_name": "Tâche, {state}. Cliquer pour {next}.",
+  "tasks_date_next_monday": "lundi prochain",
+  "tasks_date_today": "aujourd’hui",
+  "tasks_date_tomorrow": "demain",
+  "tasks_detail_date": "date",
+  "tasks_detail_estimate": "2h, 30m, 1j",
+  "tasks_detail_handles": "identifiants",
+  "tasks_detail_priority": "1 à 5",
+  "templates_label_aligned": "Équations alignées",
+  "templates_label_binomial": "Coefficient binomial",
+  "templates_label_brackets": "Délimiteurs",
+  "templates_label_cases": "Cas",
+  "templates_label_fraction": "Fraction",
+  "templates_label_gathered": "Équations groupées",
+  "templates_label_integral": "Intégrale",
+  "templates_label_limit": "Limite",
+  "templates_label_matrix": "Matrice",
+  "templates_label_overbrace": "Accolade supérieure",
+  "templates_label_product": "Produit",
+  "templates_label_root": "Racine",
+  "templates_label_subscript": "Indice",
+  "templates_label_subsup": "Indice et exposant",
+  "templates_label_sum": "Somme",
+  "templates_label_superscript": "Exposant",
+  "templates_label_underbrace": "Accolade inférieure",
+  "templates_note_math_format": "Les modèles mathématiques nécessitent un format compatible avec les mathématiques.",
+  "templates_slot_approaches": "Tend vers",
+  "templates_slot_base": "Base",
+  "templates_slot_body": "Expression",
+  "templates_slot_bottom": "Bas",
+  "templates_slot_cases": "Cas",
+  "templates_slot_cells": "Cellules",
+  "templates_slot_denominator": "Dénominateur",
+  "templates_slot_equations": "Équations",
+  "templates_slot_from": "Borne inférieure",
+  "templates_slot_index": "Indice",
+  "templates_slot_integrand": "Intégrande",
+  "templates_slot_label": "Étiquette",
+  "templates_slot_lower_limit": "Borne inférieure",
+  "templates_slot_numerator": "Numérateur",
+  "templates_slot_radicand": "Radicande",
+  "templates_slot_subscript": "Indice inférieur",
+  "templates_slot_superscript": "Exposant",
+  "templates_slot_to": "Borne supérieure",
+  "templates_slot_top": "Haut",
+  "templates_slot_upper_limit": "Borne supérieure",
+  "templates_slot_variable": "Variable",
+  "timeline_current_label_retry": "Ce navigateur ne peut pas réessayer sans risque un libellé actuel.",
+  "timeline_history_read_failed": "L’historique des versions n’a pas pu être lu.",
+  "timeline_name_failed": "Cette version n’a pas pu être nommée.",
+  "timeline_older_read_failed": "Les versions plus anciennes n’ont pas pu être lues.",
+  "timeline_restore_failed": "Cette version n’a pas pu être restaurée. Le projet est inchangé.",
+  "timeline_saved_read_failed": "Les versions enregistrées n’ont pas pu être lues.",
+  "timeline_this_version": "cette version",
+  "toasts_dismiss": "Fermer",
+  "tokenreveal_agent_setup": "Configuration de l’agent IA",
+  "tokenreveal_api_hint": "Les agents IA sans MCP peuvent appeler {endpoint} avec le jeton en en-tête Bearer.",
+  "tokenreveal_commands_aria": "Commandes Claude Code",
+  "tokenreveal_commands_help": "Exécutez la première ligne une seule fois. La seconde demande le jeton : collez-le, appuyez sur Enter, et Claude démarre.",
+  "tokenreveal_config_aria": "Configuration MCP",
+  "tokenreveal_copy_commands": "Copier les commandes",
+  "tokenreveal_copy_config": "Copier la configuration",
+  "tokenreveal_copy_token": "Copier le jeton",
+  "tokenreveal_done": "Terminé",
+  "tokenreveal_other_clients": "Autres clients MCP",
+  "tokenreveal_token": "Jeton",
+  "tokenreveal_token_aria": "Jeton de l’agent IA",
+  "tokenreveal_warning": "Copiez ce jeton maintenant. Vous ne pourrez plus le voir.",
+  "typst_log_command_failed": "La commande Typst a échoué.",
+  "wait_stage_bibliography": "Mise à jour de la bibliographie",
+  "wait_stage_compiling": "Compilation",
+  "wait_stage_drawing_pages": "Dessin des pages",
+  "wait_stage_latex_engine": "Chargement du moteur LaTeX",
+  "wait_stage_loading_engine": "Chargement du moteur {engine}",
+  "wait_stage_packages": "Récupération des paquets LaTeX",
+  "wait_stage_preparing": "Préparation de l’aperçu",
+  "web_connection_behind": "Le dépôt contient des modifications que ce projet n’a pas. Obtenez d’abord les modifications du dépôt, puis envoyez de nouveau les modifications du projet.",
+  "web_connection_code_not_approved": "Le code n’a pas été approuvé à temps. Connectez-vous de nouveau pour en obtenir un nouveau.",
+  "web_connection_desktop_failed": "L’application de bureau n’a pas pu le faire.",
+  "web_connection_desktop_read_failed": "L’application de bureau n’a pas pu lire la connexion.",
+  "web_connection_imported_files": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Importé du dépôt : {count} fichier dans le projet.",
+        "countPlural=*": "Importé du dépôt : {count} fichiers dans le projet."
+      }
+    }
+  ],
+  "web_connection_imported_files_branch": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Importé du dépôt, branche {branch} : {count} fichier dans le projet.",
+        "countPlural=*": "Importé du dépôt, branche {branch} : {count} fichiers dans le projet."
+      }
+    }
+  ],
+  "web_connection_imported_nothing": "Importé du dépôt : rien de nouveau.",
+  "web_connection_imported_nothing_branch": "Importé du dépôt, branche {branch} : rien de nouveau.",
+  "web_connection_interrupted_default": "Un envoi précédent au projet a été interrompu avant que son résultat soit connu.",
+  "web_connection_merged": "La fusion est terminée. Obtenez les modifications du dépôt ou envoyez de nouveau les modifications du projet.",
+  "web_connection_nothing_to_send": "Rien de nouveau à envoyer au dépôt.",
+  "web_connection_nothing_to_send_branch": "Rien de nouveau à envoyer au dépôt, branche {branch}.",
+  "web_connection_retry_files": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "L’envoi interrompu est terminé : {count} fichier a atteint le projet. Obtenez les modifications du dépôt ou envoyez de nouveau les modifications du projet pour continuer.",
+        "countPlural=*": "L’envoi interrompu est terminé : {count} fichiers ont atteint le projet. Obtenez les modifications du dépôt ou envoyez de nouveau les modifications du projet pour continuer."
+      }
+    }
+  ],
+  "web_connection_retry_nothing": "L’envoi interrompu est terminé : il ne restait rien à envoyer au projet. Obtenez les modifications du dépôt ou envoyez de nouveau les modifications du projet pour continuer.",
+  "web_connection_sent": "Envoyé au dépôt.",
+  "web_connection_sent_branch": "Envoyé au dépôt, branche {branch}.",
+  "web_connection_sign_in_again": "Connectez-vous pour continuer.",
+  "web_git_history_unreadable": "L’historique n’a pas pu être lu.",
+  "widgets_click_edit_caption_source": "Cliquez pour modifier la source de la légende",
+  "widgets_edit_caption": "Modifier la légende",
+  "widgets_edit_subcaption": "Modifier la sous-légende",
+  "widgets_show_source": "Afficher la source",
+  "widgets_show_table_source": "Afficher la source du tableau",
+  "wordcount_scope": "dans {name}",
+  "wordcount_scope_included": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "dans {name} et {count} fichier inclus",
+        "countPlural=*": "dans {name} et {count} fichiers inclus"
+      }
+    }
+  ],
+  "wordcount_words": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "mot",
+        "countPlural=*": "mots"
+      }
+    }
+  ],
+  "wordcount_words_selected": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "mot sélectionné",
+        "countPlural=*": "mots sélectionnés"
+      }
+    }
+  ],
+  "words_nothing": "rien",
+  "workspace_files_moved": "Fichiers déplacés. Les chemins vers ces fichiers dans les fichiers source n’ont pas été réécrits, donc une inclusion ou une image qui nommait l’ancien emplacement le nomme toujours.",
+  "workspace_project_read_only": "Ce projet est en lecture seule.",
+  "workspace_session_changed": "La session de modification a changé pendant le téléversement.",
+  "zip_corrupt": "L’archive ZIP est corrompue.",
+  "zip_corrupt_near": "L’archive ZIP est corrompue près de {path}.",
+  "zip_decompress_failed": "Impossible de décompresser {path} : compression non prise en charge, données corrompues ou limite de taille dépassée.",
+  "zip_duplicate_name": "{name} : deux entrées de l’archive ne peuvent pas porter le même nom.",
+  "zip_encrypted": "L’archive contient un fichier chiffré : {name}",
+  "zip_invalid_path": "L’archive contient un chemin non valide.",
+  "zip_no_deflate": "Ce navigateur ne peut pas décompresser les archives ZIP compressées. Mettez votre navigateur à jour ou publiez le dossier avec la CLI.",
+  "zip_not_readable": "Ce n’est pas une archive ZIP lisible.",
+  "zip_special_file": "L’archive contient un lien symbolique ou un fichier spécial : {name}",
+  "zip_split_unsupported": "Les archives ZIP fractionnées ne sont pas prises en charge.",
+  "zip_too_large": "L’archive est trop volumineuse.",
+  "zip_too_many_entries": "L’archive contient trop d’entrées.",
+  "zip_too_many_files": "L’archive contient plus de {max} fichiers.",
+  "zip_unsupported_compression": "Cette archive utilise une compression non prise en charge pour {name}.",
+  "zip_utf8_names": "Les noms de fichiers ZIP doivent utiliser UTF-8. Exportez de nouveau l’archive avec des noms UTF-8.",
+  "zip_zip64_unsupported": "Les archives ZIP64 ne sont pas prises en charge."
 }

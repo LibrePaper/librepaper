@@ -1,8 +1,0 @@
-{
-  "citation_keys_extension_no_entry": "No bibliography entry for \"{key}\"",
-  "bibliography_engine_unavailable": "Bibliography support is unavailable in this build.",
-  "history_not_readable": "this document's history is not readable",
-  "history_invalid_cursor": "The history server returned an invalid page cursor.",
-  "history_label_unreadable": "that label is not readable",
-  "history_label_not_named": "that label could not be named"
-}
