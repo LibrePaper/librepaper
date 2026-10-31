@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { m } from "../../src/lib/paraglide/messages.js";
 import { diagnosticContext } from "../../src/lib/assistant-review.js";
 import { createReaderBoot } from "../../src/lib/reader/boot.js";
 import { createPendingChat } from "../../src/lib/reader/chat.js";
@@ -14,11 +15,12 @@ import { createRenderCoordinator } from "../../src/lib/reader/render-coordinator
 import { loadRunes } from "../helpers/runes.mjs";
 import { needsSourceRefresh } from "../../src/lib/reader/source-events.js";
 import { openingFile, previewTarget, rendersAlone, includersOf } from "../../src/lib/opening.js";
+import { englishSource } from "../helpers/english-source.mjs";
 
 const { createBuildSettings } = await loadRunes(new URL("../../src/lib/reader/build-settings.svelte.js", import.meta.url));
 const { createTimeline } = await loadRunes(new URL("../../src/lib/reader/timeline.svelte.js", import.meta.url));
 
-const reader = readFileSync(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8");
+const reader = englishSource(readFileSync(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8"));
 const body = (start, end) => {
   const from = reader.indexOf(start);
   assert.notEqual(from, -1, `Reader function not found: ${start}`);
@@ -176,7 +178,7 @@ const deferred = () => {
 }
 
 const context = (values) => {
-  const ctx = vm.createContext({
+  const ctx = vm.createContext({ m,
     clearTimeout,
     setTimeout,
     queueMicrotask,

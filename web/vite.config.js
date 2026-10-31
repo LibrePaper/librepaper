@@ -63,7 +63,7 @@ export default defineConfig({
   // it, which reads like something is missing.
   // The messages compile into src/lib/paraglide (generated, not committed); the
   // plugin recompiles them when a message file changes under --watch.
-  plugins: [clearOwnOutput, vendorWatchAssets, paraglideVitePlugin({ project: "./project.inlang", outdir: "./src/lib/paraglide" }), tailwindcss(), svelte({ configFile: false })],
+  plugins: [clearOwnOutput, vendorWatchAssets, paraglideVitePlugin({ project: resolve(import.meta.dirname, "project.inlang"), outdir: resolve(import.meta.dirname, "src/lib/paraglide") }), tailwindcss(), svelte({ configFile: false })],
   // The pages are served from the site root by the Go-free Rust server, which
   // knows nothing about this build beyond where the files are.
   base: "/",

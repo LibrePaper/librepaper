@@ -4,8 +4,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { m } from "../../src/lib/paraglide/messages.js";
+import { englishSource } from "../helpers/english-source.mjs";
 
-const landing = readFileSync(new URL("../../src/components/Landing.svelte", import.meta.url), "utf8");
+const landing = englishSource(readFileSync(new URL("../../src/components/Landing.svelte", import.meta.url), "utf8"));
 const body = (start, end) => {
   const from = landing.indexOf(start);
   assert.notEqual(from, -1, `Landing function not found: ${start}`);
@@ -20,7 +22,7 @@ const requestPaths = body("  const pathRequests = new Map();", "  async function
 const tagging = body("  const tagQueues = new Map();", "  // The two things the rail's tag list offers beneath the tags.");
 const tagEditing = body("  const tagEdits = new Map();", "  function renameTag(");
 
-const context = (values) => vm.createContext({
+const context = (values) => vm.createContext({ m,
   Promise,
   Set,
   Map,

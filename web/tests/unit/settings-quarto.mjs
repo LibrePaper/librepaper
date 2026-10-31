@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { englishSource } from "../helpers/english-source.mjs";
 
-const read = (name) => readFile(new URL(`../../src/components/settings/${name}`, import.meta.url), "utf8");
+const read = async (name) => englishSource(await readFile(new URL(`../../src/components/settings/${name}`, import.meta.url), "utf8"));
 const registryText = await read("registry.js");
 const { offered, search, CATEGORIES } = await import("../../src/components/settings/registry.js");
 const build = await read("BuildSettings.svelte");
@@ -9,7 +10,7 @@ const dialog = await read("SettingsDialog.svelte");
 const latexFiles = await read("LatexFilesSettings.svelte");
 const command = await read("ToolCommand.svelte");
 const toolsSettings = await read("ToolsSettings.svelte");
-const toolList = await readFile(new URL("../../src/lib/desktop/tools.js", import.meta.url), "utf8");
+const toolList = englishSource(await readFile(new URL("../../src/lib/desktop/tools.js", import.meta.url), "utf8"));
 const renderer = await read("RendererSettings.svelte");
 const remote = await read("RemoteSettings.svelte");
 const statusPill = await read("StatusPill.svelte");

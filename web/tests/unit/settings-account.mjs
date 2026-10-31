@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { englishSource } from "../helpers/english-source.mjs";
 
-const read = (name) => readFile(new URL(`../../src/components/settings/${name}`, import.meta.url), "utf8");
+const read = async (name) => englishSource(await readFile(new URL(`../../src/components/settings/${name}`, import.meta.url), "utf8"));
 const registry = await read("registry.js");
 const account = await read("AccountSettings.svelte");
 const dialog = await read("SettingsDialog.svelte");
-const api = await readFile(new URL("../../src/lib/api.js", import.meta.url), "utf8");
+const api = englishSource(await readFile(new URL("../../src/lib/api.js", import.meta.url), "utf8"));
 const { offered, CATEGORIES } = await import("../../src/components/settings/registry.js");
 
 // The account is the deployment's rather than the document's: it is offered

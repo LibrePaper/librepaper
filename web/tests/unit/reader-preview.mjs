@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createFramePreview } from "../../src/lib/reader/frame-preview.js";
+import { englishSource } from "../helpers/english-source.mjs";
 
 const sources = [];
 const preview = createFramePreview({slug:"paper",getDocsOrigin:()=>"https://docs.example",framePath:()=>"raw",setSource:source=>sources.push(source),send:()=>{}});
@@ -27,12 +28,12 @@ assert.equal(quartoPdf.publish({ kind: "pdf", bytes: new Uint8Array([1, 2, 3]) }
 assert.equal(messages.at(-1).type, "preview");
 quartoPdf.dispose();
 
-const readerSource = await readFile(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8");
-const previewSource = await readFile(new URL("../../src/lib/reader/preview-render.js", import.meta.url), "utf8");
+const readerSource = englishSource(await readFile(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8"));
+const previewSource = englishSource(await readFile(new URL("../../src/lib/reader/preview-render.js", import.meta.url), "utf8"));
 const viteSource = await readFile(new URL("../../vite.config.js", import.meta.url), "utf8");
-const offlineSource = await readFile(new URL("../../src/lib/offline-projects.js", import.meta.url), "utf8");
-const persistenceSource = await readFile(new URL("../../src/lib/offline-persistence.js", import.meta.url), "utf8");
-const editorSource = await readFile(new URL("../../src/components/Editor.svelte", import.meta.url), "utf8");
+const offlineSource = englishSource(await readFile(new URL("../../src/lib/offline-projects.js", import.meta.url), "utf8"));
+const persistenceSource = englishSource(await readFile(new URL("../../src/lib/offline-persistence.js", import.meta.url), "utf8"));
+const editorSource = englishSource(await readFile(new URL("../../src/components/Editor.svelte", import.meta.url), "utf8"));
 // Reader links receive renderer capability before their early prepare return,
 // and bind LaTeX to a stable owner across source refreshes.
 assert.match(readerSource, /renderers\.offerLatex\([\s\S]*?if \(!mayEdit\) \{/);
@@ -97,14 +98,14 @@ assert.match(readerSource, /tell\(\{ type: "viewer-tool", tool: next \}\)/);
 // No PDF in the frame, no paged controls in the header: that is what keeps
 // the row honest for a flowing document, which has none of them.
 assert.match(readerSource, /\{#snippet previewControls\(\)\}\s*\{#if viewerView\}/);
-const viewerSource = await readFile(new URL("../../src/entries/viewer.js", import.meta.url), "utf8");
+const viewerSource = englishSource(await readFile(new URL("../../src/entries/viewer.js", import.meta.url), "utf8"));
 // Nothing of the frame's own is drawn over the page any more.
 assert.doesNotMatch(viewerSource, /createToolbar/);
 assert.match(viewerSource, /type: "viewer-state"[\s\S]*?readerOrigin/);
 // The frame answers the window that spoke to it, never "*".
 assert.doesNotMatch(viewerSource, /parent\.postMessage\([\s\S]*?"\*"\)/);
 
-const frameSource = await readFile(new URL("../../src/agent/frame.js", import.meta.url), "utf8");
+const frameSource = englishSource(await readFile(new URL("../../src/agent/frame.js", import.meta.url), "utf8"));
 assert.match(frameSource, /librepaper-flow img \{[\s\S]*?max-width: 100%;[\s\S]*?height: auto;/);
 
 // A known empty main file is distinct from the pre-hydration placeholder: it

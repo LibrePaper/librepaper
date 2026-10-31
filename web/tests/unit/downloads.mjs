@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { englishSource } from "../helpers/english-source.mjs";
 import {
   docxFile,
   entryDownload,
@@ -11,7 +12,7 @@ import {
   projectFiles,
 } from "../../src/lib/reader/downloads.js";
 
-const reader = readFileSync(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8");
+const reader = englishSource(readFileSync(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8"));
 const body = (start, end) => {
   const from = reader.indexOf(start);
   assert.notEqual(from, -1, `Reader function not found: ${start}`);
