@@ -11,6 +11,7 @@ import { WidgetType } from "@codemirror/view";
 import "./markdown.css";
 import { imageResolver, isExternal, registerWidget, resolveImagePath, revealOnMousedown, textOf } from "./markup.ts";
 import { chipWidget, ElementWidget, factsOf, includeOpener, joinParts, nameList } from "./index.js";
+import { m } from "../paraglide/messages.js";
 
 const own = (object, key) => Object.hasOwn(object, key);
 
@@ -235,7 +236,7 @@ function drawFrontmatter(data) {
   if (data.subtitle) block.append(el("div", "cm-lp-title-affil", data.subtitle));
   if (data.authors.length) block.append(el("div", "cm-lp-title-author", data.authors.join(", ")));
   if (data.date) block.append(el("div", "cm-lp-title-date", data.date));
-  block.append(el("div", "cm-lp-md-keys", `Front matter: ${data.count} ${data.count === 1 ? "key" : "keys"}`));
+  block.append(el("div", "cm-lp-md-keys", m.markdown_widgets_frontmatter_keys({ count: data.count })));
   return block;
 }
 
@@ -505,18 +506,18 @@ registerWidget("mdnote", ({ token, source }) => {
 // ---- Shortcodes ------------------------------------------------------------
 
 const SHORTCODE_CHIPS = {
-  embed: "Embed",
-  video: "Video",
-  meta: "Meta",
-  var: "Var",
-  env: "Env",
+  embed: m.markdown_widgets_shortcode_embed(),
+  video: m.markdown_widgets_shortcode_video(),
+  meta: m.markdown_widgets_shortcode_meta(),
+  var: m.markdown_widgets_shortcode_var(),
+  env: m.markdown_widgets_shortcode_env(),
 };
 
 // An include is a chip with the file's name and an Open button, as LaTeX's are.
 function drawInclude(data, { opener }) {
-  const element = el("span", "cm-lp-include", `Include: ${data.file}`);
+  const element = el("span", "cm-lp-include", m.markdown_widgets_include_chip({ file: data.file }));
   if (opener) {
-    const button = el("button", "cm-lp-include-open", "Open");
+    const button = el("button", "cm-lp-include-open", m.markdown_widgets_include_open());
     button.type = "button";
     // The button stops its own mousedown, so the reveal does not see it.
     button.addEventListener("mousedown", (event) => {
@@ -539,10 +540,10 @@ registerWidget("shortcode", ({ token, state }) => {
   // The language draws a shortcode alone on its line as a block.
   const block = token.meta?.alone === "true";
   if (own(SHORTCODE_CHIPS, name)) {
-    return chipWidget(first ? `${SHORTCODE_CHIPS[name]}: ${first}` : SHORTCODE_CHIPS[name], block);
+    return chipWidget(first ? m.markdown_widgets_shortcode_with_value({ label: SHORTCODE_CHIPS[name], value: first }) : SHORTCODE_CHIPS[name], block);
   }
-  if (name === "pagebreak") return chipWidget("Page break", block);
-  return chipWidget(`Shortcode: ${name}`, block);
+  if (name === "pagebreak") return chipWidget(m.markdown_widgets_shortcode_page_break(), block);
+  return chipWidget(m.markdown_widgets_shortcode_unknown({ name }), block);
 });
 
 // The draw functions by widget name, for MarkdownWidget.
