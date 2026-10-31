@@ -1,0 +1,87 @@
+% A handout in the style of Edward Tufte, using the tufte-handout class.
+% Sidenotes and margin figures sit beside the text they support.
+\documentclass{tufte-handout}
+
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{microtype}
+
+\title{{{title}}}
+\author{{{author}}}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\newthought{Good graphics} tell the truth about data. They show the most
+information with the least ink, and they leave the reader room to
+think~\cite{tufte1983}.\sidenote{A sidenote is numbered and set in the margin
+beside the line where it is called.}
+
+\section{Data ink}
+
+Every mark on a page should earn its place. The share of ink that carries
+data is a simple measure of how much of a graphic does real work:
+\begin{equation}
+  r = \frac{\text{data ink}}{\text{total ink}}
+\end{equation}
+A high ratio means the reader sees the data first. Redundant gridlines,
+heavy frames and decorative fills push the ratio down.
+\begin{margintable}
+  \centering
+  \small
+  \begin{tabular}{lr}
+    \toprule
+    Measure & Value \\
+    \midrule
+    Data ink & High \\
+    Redundant ink & Low \\
+    \bottomrule
+  \end{tabular}
+  \caption{A summary table set in the margin. Replace these rows with your own figures.}
+\end{margintable}
+
+\section{Tables}
+
+Tables work best when the numbers are easy to compare down a column. Rules
+are kept to the top, below the header, and at the bottom, and the rest of
+the table stays open.\marginnote{This note has no number. Use one for an
+aside that does not need a marker.}
+
+\begin{table}[h]
+  \centering
+  \caption{Three books on information design, in order of publication.}
+  \small
+  \begin{tabular}{p{5.2cm}rp{3.4cm}}
+    \toprule
+    Book & Year & Theme \\
+    \midrule
+    The Visual Display of Quantitative Information & 1983 & Graphical excellence \\
+    Envisioning Information & 1990 & Visual reasoning \\
+    Beautiful Evidence & 2006 & Evidence and presentation \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Small multiples}
+
+Repeating one small graphic with a shared scale lets the reader compare
+groups at a glance~\cite{tufte2006}. A margin figure keeps such a graphic close to the text
+that discusses it, without breaking the reading line.
+
+\begin{marginfigure}
+  \fbox{\parbox[c][3.2cm][c]{\linewidth}{\centering Placeholder for a margin figure}}
+  \caption{A margin figure keeps its caption beside the text it supports.}
+\end{marginfigure}
+
+\begin{fullwidth}
+  Wide material, such as a long table or a sequence of panels, can run across
+  the text column and into the margin. Use the full width when the content
+  needs room to be read in one glance.
+\end{fullwidth}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
