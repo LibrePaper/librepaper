@@ -1,0 +1,133 @@
+{
+  "changes_kind_replacement": "Remplacement",
+  "changes_kind_addition": "Ajout",
+  "changes_kind_deletion": "Suppression",
+  "changes_reject_replacement": "Refuser ce remplacement",
+  "changes_reject_addition": "Refuser cet ajout",
+  "changes_reject_deletion": "Refuser cette suppression",
+  "changes_accept_replacement": "Accepter ce remplacement",
+  "changes_accept_addition": "Accepter cet ajout",
+  "changes_accept_deletion": "Accepter cette suppression",
+  "changes_select_replacement": "Sélectionner le remplacement de {who}",
+  "changes_select_addition": "Sélectionner l’ajout de {who}",
+  "changes_select_deletion": "Sélectionner la suppression de {who}",
+  "changes_reject_change": "Refuser cette modification",
+  "changes_accept_change": "Accepter cette modification",
+  "changes_rejecting": "Refus en cours…",
+  "changes_accepting": "Acceptation en cours…",
+  "changes_reject": "Refuser",
+  "changes_accept": "Accepter",
+  "changes_reject_all": "Tout refuser",
+  "changes_accept_all": "Tout accepter",
+  "changes_unknown_author": "Auteur inconnu",
+  "changes_author_you": "{author} (vous)",
+  "changes_you": "Vous",
+  "changes_untitled": "Sans titre",
+  "changes_run": "Exécution {id}",
+  "changes_empty_task": "Aucune modification en attente dans cette tâche",
+  "changes_empty_author": "Aucune modification en attente de {name}",
+  "changes_empty_file": "Aucune modification en attente dans {name}",
+  "changes_empty_run": "Aucune modification en attente dans cette exécution",
+  "changes_empty_none": "Aucune modification en attente",
+  "changes_empty_hint": "Les modifications à réviser apparaîtront ici.",
+  "changes_empty_note_count": "{count} en attente dans toutes les modifications.",
+  "changes_pending_count": "{count} en attente",
+  "changes_selected_count": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "{count} sélectionnée",
+      "countPlural=*": "{count} sélectionnées"
+    }
+  }],
+  "changes_selected_label": "Modifications sélectionnées",
+  "changes_select": "Sélectionner",
+  "changes_select_all": "Tout sélectionner",
+  "changes_cancel": "Annuler",
+  "changes_title": "Modifications",
+  "changes_track_title": "Suivre les modifications ultérieures dans ce document",
+  "changes_editing_unavailable": "La modification n’est pas disponible",
+  "changes_track": "Suivi des modifications",
+  "changes_which_show": "Modifications à afficher : {name}",
+  "changes_all_changes": "Toutes les modifications",
+  "changes_this_task": "Cette tâche",
+  "changes_group_author": "Auteur",
+  "changes_group_file": "Fichier",
+  "changes_group_run": "Exécution",
+  "changes_review_label": "Révision des modifications",
+  "changes_queue_label": "File de révision",
+  "changes_show_less": "Afficher moins",
+  "changes_show_more": "Afficher plus",
+  "changes_hint": "J/K suivant · A accepter · R refuser",
+  "changes_unavailable": "L’action de révision n’est pas disponible.",
+  "changes_could_not_accept": "Impossible d’accepter cette modification.",
+  "changes_could_not_reject": "Impossible de refuser cette modification.",
+  "changes_could_not_accept_selected": "Impossible d’accepter les modifications sélectionnées.",
+  "changes_could_not_reject_selected": "Impossible de refuser les modifications sélectionnées.",
+  "changes_rejected_count": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "{count} modification refusée.",
+      "countPlural=*": "{count} modifications refusées."
+    }
+  }],
+  "changes_accepted_count": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "{count} modification acceptée.",
+      "countPlural=*": "{count} modifications acceptées."
+    }
+  }],
+  "changes_accepted_some": [{
+    "declarations": ["input succeeded", "local succeededPlural = succeeded: plural"],
+    "selectors": ["succeededPlural"],
+    "match": {
+      "succeededPlural=one": "{succeeded} modification acceptée; {failed} en échec.",
+      "succeededPlural=*": "{succeeded} modifications acceptées; {failed} en échec."
+    }
+  }],
+  "changes_rejected_some": [{
+    "declarations": ["input succeeded", "local succeededPlural = succeeded: plural"],
+    "selectors": ["succeededPlural"],
+    "match": {
+      "succeededPlural=one": "{succeeded} modification refusée; {failed} en échec.",
+      "succeededPlural=*": "{succeeded} modifications refusées; {failed} en échec."
+    }
+  }],
+  "changes_accept_count": "Accepter {count}",
+  "changes_reject_count": "Refuser {count}",
+  "changes_confirm_accept_all": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "Accepter {count} modification en attente dans ce projet?",
+      "countPlural=*": "Accepter toutes les {count} modifications en attente dans ce projet?"
+    }
+  }],
+  "changes_confirm_reject_all": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "Refuser {count} modification en attente dans ce projet?",
+      "countPlural=*": "Refuser toutes les {count} modifications en attente dans ce projet?"
+    }
+  }],
+  "changes_confirm_accept_selected": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "Accepter {count} modification sélectionnée?",
+      "countPlural=*": "Accepter {count} modifications sélectionnées?"
+    }
+  }],
+  "changes_confirm_reject_selected": [{
+    "declarations": ["input count", "local countPlural = count: plural"],
+    "selectors": ["countPlural"],
+    "match": {
+      "countPlural=one": "Refuser {count} modification sélectionnée?",
+      "countPlural=*": "Refuser {count} modifications sélectionnées?"
+    }
+  }]
+}

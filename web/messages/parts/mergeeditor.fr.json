@@ -1,0 +1,12 @@
+{
+  "mergeeditor_target_default": "Document en direct",
+  "mergeeditor_baseline_default": "étiquette",
+  "mergeeditor_source": "Source",
+  "mergeeditor_document": "document",
+  "mergeeditor_sides": " · {baseline} à gauche, {target} à droite",
+  "mergeeditor_source_only": " · source : {baseline}",
+  "mergeeditor_compare": "Comparer {baseline} avec {target}",
+  "mergeeditor_label_source": "Source de l’étiquette",
+  "mergeeditor_restore": "Comparer avec le direct pour restaurer des passages",
+  "mergeeditor_close": "Fermer la comparaison"
+}

@@ -2,6 +2,7 @@
   // A compact two pane merge editor. The old label is deliberately
   // read-only; the live side is editable and is written back through the
   // caller after every accepted hunk or manual edit.
+  import { m } from "../lib/paraglide/messages.js";
   import { EditorState, Prec } from "@codemirror/state";
   import { EditorView, lineNumbers, keymap } from "@codemirror/view";
   import { defaultKeymap, indentWithTab } from "@codemirror/commands";
@@ -23,8 +24,8 @@
     loroDoc = null,
     editable = false,
     diff = true,
-    baselineLabel = "label",
-    targetLabel = "Live document",
+    baselineLabel = m.mergeeditor_baseline_default(),
+    targetLabel = m.mergeeditor_target_default(),
     // A short remark for the header, such as which file the comparison is
     // about.
     note = "",
@@ -52,7 +53,7 @@
       ? [LoroExtensions(loroDoc, undefined, undoManager, () => loroText)]
       : [];
     return [
-      EditorView.contentAttributes.of({ "aria-label": side || "Source" }),
+      EditorView.contentAttributes.of({ "aria-label": side || m.mergeeditor_source() }),
       lineNumbers(),
       keymap.of([indentWithTab, ...defaultKeymap]),
       ...keyboardExtensions,
@@ -103,14 +104,14 @@
   });
 </script>
 
-<section class="merge-editor flex h-full flex-col" aria-label={diff ? `Compare ${baselineLabel} with ${targetLabel}` : "Label source"}>
+<section class="merge-editor flex h-full flex-col" aria-label={diff ? m.mergeeditor_compare({ baseline: baselineLabel, target: targetLabel }) : m.mergeeditor_label_source()}>
   <header class="merge-toolbar flex items-center justify-between gap-2 border-[var(--color-divider)] border-b p-2">
     <div class="truncate text-sm">
-      <strong>{path || "document"}</strong><span class="panel-muted">{diff ? ` · ${baselineLabel} on the left, ${targetLabel} on the right` : ` · ${baselineLabel} source`}</span>
+      <strong>{path || m.mergeeditor_document()}</strong><span class="panel-muted">{diff ? m.mergeeditor_sides({ baseline: baselineLabel, target: targetLabel }) : m.mergeeditor_source_only({ baseline: baselineLabel })}</span>
       {#if note}<span class="panel-muted"> — {note}</span>{/if}
     </div>
-    {#if onlive}<button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => onlive()}>Compare with live to restore passages</button>{/if}
-    {#if onclose}<IconButton icon="x" label="Close diff" tone="plain" onclick={() => onclose()} />{/if}
+    {#if onlive}<button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => onlive()}>{m.mergeeditor_restore()}</button>{/if}
+    {#if onclose}<IconButton icon="x" label={m.mergeeditor_close()} tone="plain" onclick={() => onclose()} />{/if}
   </header>
   <div class="merge-host min-h-0 flex-1" bind:this={host}></div>
 </section>
