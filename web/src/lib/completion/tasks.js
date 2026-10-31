@@ -3,19 +3,20 @@
 // inside inline code, since a tag or field there is not read as metadata.
 import { readTasks } from "../tasks/model.js";
 import { DATE_FIELDS, FIELDS, PRIORITIES, TASK_LINE, todayISO } from "../tasks/syntax.js";
+import { m } from "../paraglide/messages.js";
 
 const MARKDOWN = /\.(?:md|markdown|qmd)$/i;
 // What each field takes, shown beside its name.
 const FIELD_DETAIL = {
-  priority: "1 to 5",
-  due: "date",
-  start: "date",
-  scheduled: "date",
-  created: "date",
-  done: "date",
-  cancelled: "date",
-  assignee: "handles",
-  estimate: "2h, 30m, 1d",
+  priority: m.tasks_detail_priority(),
+  due: m.tasks_detail_date(),
+  start: m.tasks_detail_date(),
+  scheduled: m.tasks_detail_date(),
+  created: m.tasks_detail_date(),
+  done: m.tasks_detail_date(),
+  cancelled: m.tasks_detail_date(),
+  assignee: m.tasks_detail_handles(),
+  estimate: m.tasks_detail_estimate(),
 };
 // The word before the caret: a space or tab, then the text up to the caret.
 const WORD = /[ \t]([^ \t]*)$/;
@@ -47,9 +48,9 @@ function dateOptions(today) {
   const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
   const toMonday = ((1 - weekday + 7) % 7) || 7;
   return [
-    { label: today, type: "constant", detail: "today" },
-    { label: addDays(today, 1), type: "constant", detail: "tomorrow" },
-    { label: addDays(today, toMonday), type: "constant", detail: "next Monday" },
+    { label: today, type: "constant", detail: m.tasks_date_today() },
+    { label: addDays(today, 1), type: "constant", detail: m.tasks_date_tomorrow() },
+    { label: addDays(today, toMonday), type: "constant", detail: m.tasks_date_next_monday() },
   ];
 }
 
