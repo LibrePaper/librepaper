@@ -17,7 +17,7 @@ export const trimHistory = (slug) =>
     });
 
 export function storageBytes(value) {
-  if (!Number.isFinite(value) || value < 0) return m.quota_preferences_unavailable();
+  if (!Number.isFinite(value) || value < 0) return m.common_unavailable();
   const units = [m.quota_preferences_unit_b(), m.quota_preferences_unit_kib(), m.quota_preferences_unit_mib(), m.quota_preferences_unit_gib(), m.quota_preferences_unit_tib()];
   let size = value;
   let unit = 0;

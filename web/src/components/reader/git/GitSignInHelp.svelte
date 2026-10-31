@@ -51,7 +51,7 @@
     {/each}
   </ol>
   <div class="git-alert-actions">
-    <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => onretry?.()}>{m.gitsigninhelp_retry()}</button>
+    <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => onretry?.()}>{m.common_try_again()}</button>
     <button type="button" class="git-link-button" onclick={() => ondismiss?.()}>{m.gitsigninhelp_dismiss()}</button>
     <a class="git-more" href="{GIT_DOCS_URL}#credentials" target="_blank" rel="noopener noreferrer">{m.gitsigninhelp_read_more()}</a>
   </div>

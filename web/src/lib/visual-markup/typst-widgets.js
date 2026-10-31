@@ -194,7 +194,7 @@ registerWidget("typref", ({ token, source, state }) => {
 
 // A <label> in the text, shown as the tag a LaTeX label gets.
 registerWidget("typlabel", ({ token, source }) => {
-  return new ElementWidget({ className: "cm-lp-label", content: [keyOf(token, source)], title: m.typst_widgets_label() });
+  return new ElementWidget({ className: "cm-lp-label", content: [keyOf(token, source)], title: m.common_label() });
 });
 
 // ---- Includes --------------------------------------------------------------
@@ -222,7 +222,7 @@ class TypIncludeWidget extends WidgetType {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "cm-lp-include-open";
-      button.textContent = m.typst_widgets_include_open();
+      button.textContent = m.common_open();
       // The button stops its own mousedown, so the reveal below does not see it.
       button.addEventListener("mousedown", (event) => {
         event.preventDefault();
@@ -269,7 +269,7 @@ class TypTitleWidget extends WidgetType {
     if (this.title) {
       main.textContent = this.title;
     } else {
-      main.textContent = m.typst_widgets_untitled();
+      main.textContent = m.common_untitled();
       main.classList.add("cm-lp-title-muted");
     }
     block.appendChild(main);

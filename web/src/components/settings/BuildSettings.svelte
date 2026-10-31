@@ -10,10 +10,10 @@
   // The browser compiler ships pdfTeX and XeTeX only, so those are the
   // engines; the first choice is what an untouched preference means.
   const ROW = {
-    id: "render-latex-engine", title: m.buildsettings_title(), label: m.buildsettings_label(),
+    id: "render-latex-engine", title: m.buildsettings_title(), label: m.common_latex_engine(),
     description: m.buildsettings_description(),
     choices: [
-      { value: "automatic", says: m.buildsettings_automatic(), patch: { selection: "automatic" } },
+      { value: "automatic", says: m.common_automatic(), patch: { selection: "automatic" } },
       { value: "pdflatex", says: "pdfLaTeX", patch: { selection: "tool", engine: "pdflatex" } },
       { value: "xelatex", says: "XeLaTeX", patch: { selection: "tool", engine: "xelatex" } },
     ],

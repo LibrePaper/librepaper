@@ -39,11 +39,11 @@
   let confirming = $state(null);
 
   const authorOf = (item) => item.author || m.changes_unknown_author();
-  const pathOf = (item) => item.path || m.changes_untitled();
+  const pathOf = (item) => item.path || m.common_untitled();
   const authorLabel = (item) => (identity && item.author === identity ? m.changes_author_you({ author: item.author }) : authorOf(item));
   // A row names its own author as "You" so the reviewer sees at once whose
   // changes they are answering for.
-  const whoLabel = (item) => (identity && item.author === identity ? m.changes_you() : authorOf(item));
+  const whoLabel = (item) => (identity && item.author === identity ? m.common_you() : authorOf(item));
   const runLabel = (id) => m.changes_run({ id: String(id).slice(0, 8) });
   const kindOf = (item) => (item.before && item.after ? "Replacement" : item.after ? "Addition" : "Deletion");
   const kindName = (item) => ({ Replacement: m.changes_kind_replacement(), Addition: m.changes_kind_addition(), Deletion: m.changes_kind_deletion() })[kindOf(item)];
@@ -118,7 +118,7 @@
     file: m.changes_empty_file({ name: scopeName }),
     run: m.changes_empty_run(),
   }[scopeOf(scope).key] ?? m.changes_empty_none());
-  const groupLabels = { Author: m.changes_group_author(), File: m.changes_group_file(), Run: m.changes_group_run() };
+  const groupLabels = { Author: m.changes_group_author(), File: m.common_file(), Run: m.changes_group_run() };
   /// The place a change sits, when the reviewer cannot tell it from the diff:
   /// the filename once several files are under review, and the line once the
   /// change has one.
@@ -257,7 +257,7 @@
        sits above the queue, so the first reviewable change is near the top. -->
   <header class="changes-header">
     <div class="changes-title-row">
-      <h2 class="panel-section-title">{m.changes_title()}</h2>
+      <h2 class="panel-section-title">{m.common_changes()}</h2>
       <!-- A real switch rather than a checkbox with a switch painted over it:
            the state is the control's own, so the name no longer has to carry
            "On" or "Off" for a screen reader to read it out. -->
@@ -274,7 +274,7 @@
     {#if confirming}<div class="confirm-bar" role="alertdialog" aria-labelledby="changes-confirm-text">
       <p class="confirm-text" id="changes-confirm-text">{confirmText(confirming)}</p>
       <div class="bar-buttons">
-        <button type="button" class="bar-action cancel" onclick={() => confirming = null}>{m.changes_cancel()}</button>
+        <button type="button" class="bar-action cancel" onclick={() => confirming = null}>{m.common_cancel()}</button>
         <button type="button" class="bar-action confirm {confirming.action}" disabled={busy} onclick={() => bulk(confirming.action, confirming.rows)}>{confirmLabel(confirming)}</button>
       </div>
     </div>
@@ -282,12 +282,12 @@
       <div class="bar-row">
         <span class="select-count" aria-live="polite">{m.changes_selected_count({ count: checked.size })}</span>
         <div class="bar-end">
-          <button type="button" class="text-action select-all" disabled={filteredRows.every((item) => checked.has(item.id))} onclick={() => checked = new Set(filteredRows.map((item) => item.id))}>{m.changes_select_all()}</button>
-          <button type="button" class="text-action cancel" onclick={stopSelecting}>{m.changes_cancel()}</button>
+          <button type="button" class="text-action select-all" disabled={filteredRows.every((item) => checked.has(item.id))} onclick={() => checked = new Set(filteredRows.map((item) => item.id))}>{m.common_select_all()}</button>
+          <button type="button" class="text-action cancel" onclick={stopSelecting}>{m.common_cancel()}</button>
         </div>
       </div>
       <div class="bar-buttons">
-        <button type="button" class="bar-action reject" disabled={!selectedRows.length || busy} onclick={() => answerSelected("reject")}>{allChosen ? m.changes_reject_all() : m.changes_reject()}</button>
+        <button type="button" class="bar-action reject" disabled={!selectedRows.length || busy} onclick={() => answerSelected("reject")}>{allChosen ? m.changes_reject_all() : m.common_reject()}</button>
         <button type="button" class="bar-action accept" disabled={!selectedRows.length || busy} onclick={() => answerSelected("accept")}>{allChosen ? m.changes_accept_all() : m.changes_accept()}</button>
       </div>
     </div>
@@ -339,7 +339,7 @@
         <!-- Every change offers its answer, so a reviewer can act on any row
              without first selecting it. -->
         {#if canReview && !selecting}<div class="row-actions">
-          <button type="button" class="row-action reject" aria-label={rejectKind(item)} title={m.changes_reject_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "reject")}><Icon name="x" size="14px" />{deciding.has(item.id) ? m.changes_rejecting() : m.changes_reject()}</button>
+          <button type="button" class="row-action reject" aria-label={rejectKind(item)} title={m.changes_reject_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "reject")}><Icon name="x" size="14px" />{deciding.has(item.id) ? m.changes_rejecting() : m.common_reject()}</button>
           <button type="button" class="row-action accept" aria-label={acceptKind(item)} title={m.changes_accept_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "accept")}><Icon name="check" size="14px" />{deciding.has(item.id) ? m.changes_accepting() : m.changes_accept()}</button>
         </div>{/if}
       </article>

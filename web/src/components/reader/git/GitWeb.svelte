@@ -101,7 +101,7 @@
   <p class="git-lead">{m.gitweb_signin_lead()}</p>
   <div class="git-row">
     <button type="button" class="btn btn-sm lp-control-brand" disabled={busy} onclick={() => connection.login()}>
-      {link.busy === "login" ? m.gitweb_sign_in_busy() : m.gitweb_sign_in()}
+      {link.busy === "login" ? m.gitweb_sign_in_busy() : m.common_sign_in()}
     </button>
   </div>
 {/snippet}
@@ -114,13 +114,13 @@
     </label>
     <div class="git-row">
       <button type="submit" class="btn btn-sm lp-control-tonal-brand" disabled={busy}>
-        {link.busy === "connect" ? m.gitweb_connecting() : m.gitweb_connect()}
+        {link.busy === "connect" ? m.common_connecting() : m.gitweb_connect()}
       </button>
     </div>
   </form>
   <div class="git-row">
     <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={connectLocal}>
-      {link.busy === "connect-local" ? m.gitweb_choosing() : m.gitweb_use_local()}
+      {link.busy === "connect-local" ? m.common_choosing() : m.gitweb_use_local()}
     </button>
   </div>
   <p class="panel-meta git-note">{m.gitweb_local_note()}</p>
@@ -225,7 +225,7 @@
     <section class="git-block" aria-labelledby="git-web-connect">
       <h3 id="git-web-connect" class="panel-section-title">{status?.connected ? m.gitweb_connected_heading() : m.gitweb_connect_heading()}</h3>
       {#if !link.loaded}
-        <p class="panel-muted" role="status">{m.gitweb_loading()}</p>
+        <p class="panel-muted" role="status">{m.common_loading()}</p>
       {:else if status?.connected}
         {@render connected()}
       {:else if status}

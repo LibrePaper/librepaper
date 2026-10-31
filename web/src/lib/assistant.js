@@ -102,7 +102,7 @@ export const TASK_CATALOG = [
     keywords: m.assistant_task_suggest_improvements_terms().split(" "),
     prompt: "Suggest concrete improvements to {target} as anchored edits." },
 
-  { id: "outline", kind: "outline", categories: ["Document"], label: m.assistant_task_outline_label(),
+  { id: "outline", kind: "outline", categories: ["Document"], label: m.common_outline(),
     description: m.assistant_task_outline_description(),
     keywords: m.assistant_task_outline_terms().split(" "),
     scopes: ["file", "document"], prompt: "Outline {target}: list the headings and say what each section does." },
@@ -130,7 +130,7 @@ export const TASK_CATEGORIES = [...new Set(TASK_CATALOG.flatMap((entry) => entry
 const CATEGORY_LABELS = {
   Writing: m.assistant_category_writing(),
   Review: m.assistant_category_review(),
-  Document: m.assistant_category_document(),
+  Document: m.common_document(),
 };
 
 export function taskCategoryLabel(category) {
@@ -241,9 +241,9 @@ export function taskSections(catalog = TASK_CATALOG) {
 }
 
 export function scopeLabel(scope, { path = "", attached = null } = {}) {
-  if (scope === "selection") return attached?.path ? m.assistant_scope_selection_path({ path: attached.path }) : m.assistant_scope_selection();
-  if (scope === "file") return path ? m.assistant_scope_file_path({ path }) : m.assistant_scope_file();
-  return m.assistant_scope_document();
+  if (scope === "selection") return attached?.path ? m.assistant_scope_selection_path({ path: attached.path }) : m.common_selected_passage();
+  if (scope === "file") return path ? m.common_current_file_path({ path }) : m.common_current_file();
+  return m.common_whole_document();
 }
 
 // How a diagnostic is named in the launcher. The compiler's own message is
@@ -254,7 +254,7 @@ export function diagnosticLabel(item, fallbackPath = "") {
   const warning = item?.severity === "warning";
   const path = text(item?.file || item?.path || fallbackPath);
   const line = Number(item?.line) > 0 ? `:${item.line}` : "";
-  if (!path) return warning ? m.assistant_diagnostic_warning() : m.assistant_diagnostic_error();
+  if (!path) return warning ? m.common_warning() : m.common_error();
   const location = `${path}${line}`;
   return warning ? m.assistant_diagnostic_warning_at({ location }) : m.assistant_diagnostic_error_at({ location });
 }
@@ -317,7 +317,7 @@ export function taskHint(entry, { attached = null, path = "" } = {}) {
   if (!reason) return null;
   const short = scope === "selection" ? m.assistant_hint_selection()
     : scope === "file" ? m.assistant_hint_file()
-      : m.assistant_hint_unavailable();
+      : m.common_unavailable();
   return { short, reason };
 }
 

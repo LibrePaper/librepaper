@@ -53,7 +53,7 @@
       ? [LoroExtensions(loroDoc, undefined, undoManager, () => loroText)]
       : [];
     return [
-      EditorView.contentAttributes.of({ "aria-label": side || m.mergeeditor_source() }),
+      EditorView.contentAttributes.of({ "aria-label": side || m.common_source() }),
       lineNumbers(),
       keymap.of([indentWithTab, ...defaultKeymap]),
       ...keyboardExtensions,

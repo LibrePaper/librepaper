@@ -351,7 +351,7 @@ class IncludeWidget extends WidgetType {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "cm-lp-include-open";
-      button.textContent = m.index_include_open();
+      button.textContent = m.common_open();
       // The button stops its own mousedown, so the reveal below does not see it.
       button.addEventListener("mousedown", (event) => {
         event.preventDefault();
@@ -418,7 +418,7 @@ class TitleWidget extends WidgetType {
     if (title.text) {
       main.textContent = title.text;
     } else {
-      main.textContent = m.index_title_untitled();
+      main.textContent = m.common_untitled();
       main.classList.add("cm-lp-title-muted");
     }
     linkPart(view, block, main, title);
@@ -530,7 +530,7 @@ export class ElementWidget extends WidgetType {
 
 // A catalog chip: a pill on a block of its own, or a chip inside the line.
 export function chipWidget(text, block) {
-  if (block) return new PillWidget(text, m.index_show_source(), "cm-lp-chip");
+  if (block) return new PillWidget(text, m.common_show_source(), "cm-lp-chip");
   return new ElementWidget({ className: "cm-lp-chip", content: [text] });
 }
 

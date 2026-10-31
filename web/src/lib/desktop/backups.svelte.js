@@ -48,7 +48,7 @@ export function createBackupStatus(bridge = client, { runningPollMs = 1000 } = {
         }
       } catch (error) {
         if (requestScope === scope && accountId === current.accountId && current.active) {
-          current = { ...current, loading: false, data: null, error: error?.message || m.backups_status_unavailable() };
+          current = { ...current, loading: false, data: null, error: error?.message || m.common_backup_status_unavailable() };
         }
       }
       return current;

@@ -19,11 +19,11 @@ export function waitStageOf({ pageDelivered = false, latexPhase = "", latexScope
     if (latexPhase === "browser-biber" || latexScope === "biber") return m.wait_stage_bibliography();
     if (latexScope === "resources") return m.wait_stage_packages();
     if (latexPhase === "loading") return m.wait_stage_latex_engine();
-    return m.wait_stage_compiling();
+    return m.common_compiling();
   }
   // The renderer for Typst or Markdown is downloaded on first use, and the
   // first render waits for it.
   if (engineLoading) return m.wait_stage_loading_engine({ engine: ENGINE_NAMES[engineLoading] || engineLoading });
-  if (compiling) return m.wait_stage_compiling();
+  if (compiling) return m.common_compiling();
   return m.wait_stage_preparing();
 }

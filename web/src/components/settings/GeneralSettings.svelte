@@ -46,8 +46,8 @@
   }
 </script>
 
-<SettingRow id="general-language" title={m.generalsettings_language()}>
-  <select class="select setting-select" aria-label={m.generalsettings_language()} value={language}
+<SettingRow id="general-language" title={m.common_language()}>
+  <select class="select setting-select" aria-label={m.common_language()} value={language}
           onchange={(event) => chooseLanguage(event.currentTarget.value)}>
     <option value="system">{m.generalsettings_language_system()}</option>
     {#each Object.entries(LANGUAGES) as [code, name] (code)}
@@ -57,8 +57,8 @@
   {#snippet note()}<a class="translation-report" href={translationIssue} target="_blank" rel="noreferrer">{m.generalsettings_report_translation()}</a>{/snippet}
 </SettingRow>
 
-<SettingRow id="appearance-theme" title={m.generalsettings_theme()}>
-  <select class="select setting-select" aria-label={m.generalsettings_theme()} value={current}
+<SettingRow id="appearance-theme" title={m.common_theme()}>
+  <select class="select setting-select" aria-label={m.common_theme()} value={current}
           onchange={(event) => setChoice(event.currentTarget.value)}>
     <option value="system">{m.generalsettings_theme_system()}</option>
     <option value="light">{m.generalsettings_theme_light()}</option>
@@ -66,8 +66,8 @@
   </select>
 </SettingRow>
 
-<SettingRow id="appearance-colours" title={m.generalsettings_colours()}>
-  <select class="select setting-select" aria-label={m.generalsettings_colours()} value={currentPalette}
+<SettingRow id="appearance-colours" title={m.common_colours()}>
+  <select class="select setting-select" aria-label={m.common_colours()} value={currentPalette}
           onchange={(event) => setPalette(event.currentTarget.value)}>
     {#each PALETTES as name (name)}
       <option value={name}>{PALETTE_NAMES[name]}</option>
@@ -86,9 +86,9 @@
 </SettingRow>
 
 {#if desktop()}
-  <SettingRow id="general-close" title={m.generalsettings_close_title()}
+  <SettingRow id="general-close" title={m.common_when_the_window_closes()}
               description={m.generalsettings_close_description()}>
-    <select class="select setting-select" aria-label={m.generalsettings_close_title()} value={closing}
+    <select class="select setting-select" aria-label={m.common_when_the_window_closes()} value={closing}
             onchange={(event) => chooseClose(event.currentTarget.value)}>
       <option value="tray">{m.generalsettings_close_tray()}</option>
       <option value="quit">{m.generalsettings_close_quit()}</option>

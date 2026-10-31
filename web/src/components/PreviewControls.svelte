@@ -128,7 +128,7 @@
 
 <div class="preview-band">
   <div class="preview-controls" role="group" aria-label={m.previewcontrols_page_view()}>
-    <IconButton icon="panel-left" label={m.previewcontrols_pages()} tone="plain" size="btn-icon-sm"
+    <IconButton icon="panel-left" label={m.common_pages()} tone="plain" size="btn-icon-sm"
                 pressed={view.sidebar} onclick={() => send({ type: "viewer-sidebar", open: !view.sidebar })} />
     <IconButton icon="search" label={m.previewcontrols_search()} tone="plain" size="btn-icon-sm"
                 pressed={searching} onclick={() => (searching ? closeSearch() : void reveal())} />
@@ -143,7 +143,7 @@
                 disabled={at <= MIN} onclick={() => step(1 / 1.1)} />
     <select class="preview-zoom" aria-label={m.previewcontrols_zoom()} value={view.mode}
             onchange={(event) => onmode(event.currentTarget.value)}>
-      <option value="auto">{m.previewcontrols_zoom_automatic()}</option>
+      <option value="auto">{m.common_automatic()}</option>
       <option value="page-actual">{m.previewcontrols_zoom_actual()}</option>
       <option value="page-fit">{m.previewcontrols_zoom_fit_page()}</option>
       <option value="page-width">{m.previewcontrols_zoom_fit_width()}</option>
@@ -165,7 +165,7 @@
                   pressed={tool === "hand"} onclick={() => ontool("hand")} />
     </div>
     <span class="preview-spacer"></span>
-    {#if busy}<span class="preview-busy" role="status" aria-label={m.previewcontrols_compiling()}><span class="spinner"></span></span>{/if}
+    {#if busy}<span class="preview-busy" role="status" aria-label={m.common_compiling()}><span class="spinner"></span></span>{/if}
     <Menu onSelect={chosen} positioning={{ placement: "bottom-end" }}>
       <MenuIconButton icon="more-horizontal" label={m.previewcontrols_more()} size="1rem" />
       <ExplorerMenu>
@@ -187,7 +187,7 @@
           <hr class="hr my-1" />
           <Menu.Item value="download" class="menuitem">
             <span class="menuitem-check" aria-hidden="true"></span>
-            <span class="menuitem-label">{m.previewcontrols_download_pdf()}</span>
+            <span class="menuitem-label">{m.common_download_pdf()}</span>
           </Menu.Item>
         {/if}
       </ExplorerMenu>
@@ -203,7 +203,7 @@
                   disabled={!query} onclick={() => stepFind(-1)} />
       <IconButton icon="chevron-down" label={m.previewcontrols_next_match()} tone="plain" size="btn-icon-sm"
                   disabled={!query} onclick={() => stepFind(1)} />
-      <IconButton icon="x" label={m.previewcontrols_close_search()} tone="plain" size="btn-icon-sm" onclick={closeSearch} />
+      <IconButton icon="x" label={m.common_close_search()} tone="plain" size="btn-icon-sm" onclick={closeSearch} />
     </div>
   {/if}
 </div>

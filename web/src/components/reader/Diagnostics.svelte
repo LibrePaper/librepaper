@@ -70,7 +70,7 @@
 </script>
 
 <section class="panel" aria-label={m.diagnostics_section_label()}>
-  <PanelHeader title={m.diagnostics_title()} />
+  <PanelHeader title={m.common_diagnostics()} />
   {#if provenance}
     <details class="mb-4">
       <summary class="panel-section-title">{m.diagnostics_compiled_with()}</summary>
@@ -86,7 +86,7 @@
         <button type="button" class="btn btn-sm lp-control-tonal-brand"
                 onclick={() => download(logName, transcript)}>{m.diagnostics_download_log({ name: logName })}</button>
         <button type="button" class="btn btn-sm lp-control-tonal"
-                onclick={() => navigator.clipboard?.writeText(transcript)}>{m.diagnostics_copy()}</button>
+                onclick={() => navigator.clipboard?.writeText(transcript)}>{m.common_copy()}</button>
       </div>
       <pre class="lp-text-secondary text-xs whitespace-pre-wrap break-words mt-2 max-h-96 overflow-auto"
            aria-label={m.diagnostics_compile_log()}>{transcript}</pre>
@@ -103,7 +103,7 @@
           <li class="rounded-container border border-[var(--color-divider)] p-3">
             <div class="flex items-center justify-between gap-2 mb-2 diagnostic-head">
               <span class="badge lp-tone-{group.tone}">
-                {group.tone === "error" ? m.diagnostics_badge_error() : group.tone === "warning" ? m.diagnostics_badge_warning() : m.diagnostics_badge_note()}
+                {group.tone === "error" ? m.common_error() : group.tone === "warning" ? m.common_warning() : m.diagnostics_badge_note()}
               </span>
               {#if onagent}
                 <IconButton icon="bot" label={m.diagnostics_fix_with_agent()} onclick={() => onagent(item)} />

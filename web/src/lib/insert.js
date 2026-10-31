@@ -28,16 +28,16 @@ const item = (id, label, group, dialog, keywords = '') => ({ id, label, group, d
 export const INSERT_ACTIONS = [
   item('heading', m.insert_heading(), 'Structure', 'heading', 'subsection subsubsection'),
   item('abstract', m.insert_abstract(), 'Structure'), item('appendix', m.insert_appendix(), 'Structure'), item('toc', m.insert_toc(), 'Structure'),
-  item('figure', m.insert_figure(), 'Figures and tables', 'figure', 'includegraphics'), item('table', m.insert_table(), 'Figures and tables', 'table', 'tabular'),
-  item('citation', m.insert_citation(), 'References', 'citation'), item('bibliography', m.insert_bibliography(), 'References', 'bibliography'),
-  item('cross-reference', m.insert_cross_reference(), 'References', 'cross-reference'), item('label', m.insert_label(), 'References', 'label'),
-  item('inline-math', m.insert_inline_math(), 'Math'), item('display-math', m.insert_display_math(), 'Math', 'math', 'equation'),
-  item('bulleted-list', m.insert_bulleted_list(), 'Lists', null, 'itemize'), item('numbered-list', m.insert_numbered_list(), 'Lists', null, 'enumerate'), item('description-list', m.insert_description_list(), 'Lists', null, 'description terms'),
+  item('figure', m.insert_figure(), 'Figures and tables', 'figure', 'includegraphics'), item('table', m.common_table(), 'Figures and tables', 'table', 'tabular'),
+  item('citation', m.common_citation(), 'References', 'citation'), item('bibliography', m.insert_bibliography(), 'References', 'bibliography'),
+  item('cross-reference', m.common_cross_reference(), 'References', 'cross-reference'), item('label', m.insert_label(), 'References', 'label'),
+  item('inline-math', m.common_inline_math(), 'Math'), item('display-math', m.insert_display_math(), 'Math', 'math', 'equation'),
+  item('bulleted-list', m.common_bulleted_list(), 'Lists', null, 'itemize'), item('numbered-list', m.common_numbered_list(), 'Lists', null, 'enumerate'), item('description-list', m.insert_description_list(), 'Lists', null, 'description terms'),
   item('quote', m.insert_quote(), 'Text blocks', null, 'quote'), item('quotation', m.insert_quotation(), 'Text blocks', null, 'quotation'),
-  item('code-block', m.insert_code_block(), 'Text blocks', 'code', 'verbatim listings'), item('footnote', m.insert_footnote(), 'Text blocks'), item('link', m.insert_link(), 'Text blocks', 'link'),
+  item('code-block', m.insert_code_block(), 'Text blocks', 'code', 'verbatim listings'), item('footnote', m.insert_footnote(), 'Text blocks'), item('link', m.common_link(), 'Text blocks', 'link'),
   ...[['theorem', m.insert_theorem()], ['lemma', m.insert_lemma()], ['proposition', m.insert_proposition()], ['definition', m.insert_definition()], ['proof', m.insert_proof()], ['example', m.insert_example()], ['remark', m.insert_remark()]].map(([id, label]) => item(id, label, 'Scholarly blocks', 'environment')),
-  item('page-break', m.insert_page_break(), 'Layout'), item('horizontal-rule', m.insert_horizontal_rule(), 'Layout'), item('columns', m.insert_columns(), 'Layout', 'columns', 'multicols'),
-  item('custom-environment', m.insert_custom_environment(), 'Advanced', 'environment', 'custom newenvironment newtheorem'),
+  item('page-break', m.common_page_break(), 'Layout'), item('horizontal-rule', m.insert_horizontal_rule(), 'Layout'), item('columns', m.common_columns(), 'Layout', 'columns', 'multicols'),
+  item('custom-environment', m.common_environment(), 'Advanced', 'environment', 'custom newenvironment newtheorem'),
 ];
 const formats = new Set(['latex', 'typst', 'markdown', 'quarto']);
 const scholarly = new Set(['theorem','lemma','proposition','definition','proof','example','remark']);
@@ -443,7 +443,7 @@ export function buildInsertion(id, options = {}, input = {}) {
   for(const [key,max] of numericValidations) {
     if(o[key]!=null) {
       const n=Number(o[key]);
-      if(!Number.isInteger(n)||n<1||n>max) throw Error(m.insert_number_range({ field: key === 'rows' ? m.insert_field_rows() : key === 'columns' ? m.insert_field_columns() : m.insert_field_level(), max }));
+      if(!Number.isInteger(n)||n<1||n>max) throw Error(m.insert_number_range({ field: key === 'rows' ? m.insert_field_rows() : key === 'columns' ? m.insert_field_columns() : m.common_level(), max }));
       o[key]=n;
     }
   }

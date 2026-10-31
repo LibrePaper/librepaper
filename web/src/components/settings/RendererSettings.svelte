@@ -32,8 +32,8 @@
                 description={m.renderersettings_description({ name: NAMES[format] })}>
       <select class="select setting-select" aria-label={m.renderersettings_aria({ name: NAMES[format] })} value={local ? "local" : "browser"}
               onchange={(event) => choose(event.currentTarget.value)}>
-        <option value="browser">{m.renderersettings_browser()}</option>
-        <option value="local">{m.renderersettings_this_computer()}</option>
+        <option value="browser">{m.common_browser()}</option>
+        <option value="local">{m.common_this_computer()}</option>
       </select>
     </SettingRow>
   {/if}

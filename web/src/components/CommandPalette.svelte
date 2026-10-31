@@ -67,7 +67,7 @@
       autocomplete="off"
       spellcheck="false"
       placeholder={m.commandpalette_placeholder()}
-      aria-label={m.commandpalette_input_label()}
+      aria-label={m.common_command()}
       aria-expanded="true"
       aria-controls="palette-list"
       aria-activedescendant={entries.length ? `palette-option-${entries[current].id}` : undefined}

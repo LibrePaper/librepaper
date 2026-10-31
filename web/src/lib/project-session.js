@@ -705,7 +705,7 @@ export function createProjectSession({
     },
 
     addFolder(path, rules) {
-      if (!mayEdit) throw new Error(m.project_session_read_only());
+      if (!mayEdit) throw new Error(m.common_project_read_only());
       path = checkPlacement(rules, { kind: "folder", path }, this.list(), this.folders());
       meta.set(`folder:${path}`, true);
       doc.commit({ origin: DIRECTORY_ORIGIN });
@@ -713,7 +713,7 @@ export function createProjectSession({
     },
 
     relocate(entries, destination, rules, rename = false) {
-      if (!mayEdit) throw new Error(m.project_session_read_only());
+      if (!mayEdit) throw new Error(m.common_project_read_only());
       const plan = relocation(this.list(), this.folders(), entries, destination, rules, rename);
       // Remove asset keys first, so a batch move never overwrites a source.
       for (const file of plan.files) if (file.kind === "asset") assets.delete(file.id);
@@ -729,13 +729,13 @@ export function createProjectSession({
 
     /** @param {ProjectEntry[]} entries */
     removeEntries(entries) {
-      if (!mayEdit) throw new Error(m.project_session_read_only());
+      if (!mayEdit) throw new Error(m.common_project_read_only());
       const roots = topEntries(entries);
       const current = this.list();
       const folders = folderPaths(current, this.folders());
       for (const entry of roots) {
         const exists = entry.kind === "folder" ? folders.includes(entry.path) : current.some((file) => file.id === entry.id && file.kind === entry.kind && file.path === entry.path);
-        if (!exists) throw new Error(m.project_session_item_changed({ path: entry.path }));
+        if (!exists) throw new Error(m.common_item_changed({ path: entry.path }));
       }
       const selected = (path) => roots.some((entry) => path === entry.path || (entry.kind === "folder" && inside(path, entry.path)));
       const removed = current.filter((file) => selected(file.path));
@@ -753,7 +753,7 @@ export function createProjectSession({
 
     /** @param {ProjectFile} entry @param {string} path @param {ProjectRules} rules */
     duplicateEntry(entry, path, rules) {
-      if (!mayEdit) throw new Error(m.project_session_read_only());
+      if (!mayEdit) throw new Error(m.common_project_read_only());
       const file = this.list().find((file) => file.kind === entry.kind && file.id === entry.id && file.path === entry.path);
       if (!file) throw new Error(m.project_session_file_changed());
       path = checkPlacement(rules, { ...file, path }, this.list(), this.folders());
@@ -814,7 +814,7 @@ export function createProjectSession({
     /// lib/line-endings.js.
     /** @param {string} path @param {string} [body] */
     addText(path, body = "") {
-      if (!mayEdit) throw new Error(m.project_session_read_only());
+      if (!mayEdit) throw new Error(m.common_project_read_only());
       body = toLf(body);
       const id = mintId();
       const text = new LoroText();
@@ -832,7 +832,7 @@ export function createProjectSession({
     /// this file at this moment keeps what they typed.
     /** @param {string} id @param {string} path @param {"text" | "asset"} [kind] */
     renameFile(id, path, kind) {
-      if (!mayEdit) throw new Error(m.project_session_read_only());
+      if (!mayEdit) throw new Error(m.common_project_read_only());
       const asset = assets.get(id);
       if (kind === "asset" || (kind === undefined && asset !== undefined)) {
         if (asset === undefined) return;
@@ -852,7 +852,7 @@ export function createProjectSession({
     /// Removes a file, its name with it. Empty projects are valid.
     /** @param {string} id */
     removeFile(id) {
-      if (!mayEdit) throw new Error(m.project_session_read_only());
+      if (!mayEdit) throw new Error(m.common_project_read_only());
       files.delete(id);
       paths.delete(id);
       doc.commit({ origin: DIRECTORY_ORIGIN });

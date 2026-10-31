@@ -140,7 +140,7 @@
   {#key src}
     <iframe
       bind:this={frame}
-      title={m.preview_document_title()}
+      title={m.common_document()}
       {src}
       onload={() => {
         receiver?.frameLoaded();

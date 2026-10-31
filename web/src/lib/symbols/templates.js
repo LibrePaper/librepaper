@@ -54,19 +54,19 @@ export const MATH_TEMPLATES = [
   },
   {
     id: "subscript", label: m.templates_label_subscript(), preview: "x_{i}",
-    slots: [slot("base", m.templates_slot_base(), "x"), slot("sub", m.templates_slot_subscript(), "i")],
+    slots: [slot("base", m.templates_slot_base(), "x"), slot("sub", m.templates_label_subscript(), "i")],
     latex: v => `${grouped(v.base, false)}_{${v.sub}}`,
     typst: v => `${grouped(v.base, true)}_(${v.sub})`,
   },
   {
     id: "superscript", label: m.templates_label_superscript(), preview: "x^{2}",
-    slots: [slot("base", m.templates_slot_base(), "x"), slot("sup", m.templates_slot_superscript(), "2")],
+    slots: [slot("base", m.templates_slot_base(), "x"), slot("sup", m.templates_label_superscript(), "2")],
     latex: v => `${grouped(v.base, false)}^{${v.sup}}`,
     typst: v => `${grouped(v.base, true)}^(${v.sup})`,
   },
   {
     id: "subsup", label: m.templates_label_subsup(), preview: "x_{i}^{2}",
-    slots: [slot("base", m.templates_slot_base(), "x"), slot("sub", m.templates_slot_subscript(), "i"), slot("sup", m.templates_slot_superscript(), "2")],
+    slots: [slot("base", m.templates_slot_base(), "x"), slot("sub", m.templates_label_subscript(), "i"), slot("sup", m.templates_label_superscript(), "2")],
     latex: v => `${grouped(v.base, false)}_{${v.sub}}^{${v.sup}}`,
     typst: v => `${grouped(v.base, true)}_(${v.sub})^(${v.sup})`,
   },
@@ -105,18 +105,18 @@ export const MATH_TEMPLATES = [
   },
   {
     id: "overbrace", label: m.templates_label_overbrace(), preview: "\\overbrace{x}^{n}",
-    slots: [slot("body", m.templates_slot_body(), "x"), slot("note", m.templates_slot_label(), "label")],
+    slots: [slot("body", m.templates_slot_body(), "x"), slot("note", m.common_label(), "label")],
     latex: v => `\\overbrace{${v.body}}^{${v.note}}`,
     typst: v => `overbrace(${v.body}, ${v.note})`,
   },
   {
     id: "underbrace", label: m.templates_label_underbrace(), preview: "\\underbrace{x}_{n}",
-    slots: [slot("body", m.templates_slot_body(), "x"), slot("note", m.templates_slot_label(), "label")],
+    slots: [slot("body", m.templates_slot_body(), "x"), slot("note", m.common_label(), "label")],
     latex: v => `\\underbrace{${v.body}}_{${v.note}}`,
     typst: v => `underbrace(${v.body}, ${v.note})`,
   },
   {
-    id: "brackets", label: m.templates_label_brackets(), preview: "\\left( x \\right)",
+    id: "brackets", label: m.common_brackets(), preview: "\\left( x \\right)",
     // The bar and norm delimiters are amsmath commands.
     package: v => (v.kind === "bars" || v.kind === "norm" ? "amsmath" : null),
     slots: [slot("body", m.templates_slot_body(), "x")],

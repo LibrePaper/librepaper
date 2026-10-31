@@ -151,8 +151,8 @@
   }
 
   const CONFIRM = {
-    link: [m.share_revoke_link_title(), m.share_revoke_link_body(), m.share_revoke_link_action()],
-    token: [m.share_revoke_token_title(), m.share_revoke_token_body(), m.share_revoke_token_action()],
+    link: [m.share_revoke_link_title(), m.share_revoke_link_body(), m.common_revoke_link()],
+    token: [m.share_revoke_token_title(), m.share_revoke_token_body(), m.common_revoke_token()],
   };
   const ask = $derived(confirming ? CONFIRM[confirming.kind] : null);
 </script>
@@ -207,27 +207,27 @@
   {:else if loading}
     <p class="panel-muted share-pad" role="status">{m.share_loading()}</p>
   {:else if sharing && canShare}
-    <PanelTabs id="share" label={m.share_title()} tabs={TABS} value={tab} onchange={(value) => { tab = value; creating = null; }}>
+    <PanelTabs id="share" label={m.common_share()} tabs={TABS} value={tab} onchange={(value) => { tab = value; creating = null; }}>
       <Tabs.Content value="links">{#if tab === "links"}{@render list("link")}{/if}</Tabs.Content>
       <Tabs.Content value="tokens">{#if tab === "tokens"}{@render list("token")}{/if}</Tabs.Content>
     </PanelTabs>
   {:else}
     <div class="share-pad">
       {@render messages()}
-      {#if error && !sharing}<button class="btn btn-sm lp-control-tonal-brand" onclick={() => load(slug)}>{m.share_try_again()}</button>{/if}
+      {#if error && !sharing}<button class="btn btn-sm lp-control-tonal-brand" onclick={() => load(slug)}>{m.common_try_again()}</button>{/if}
     </div>
   {/if}
 {/snippet}
 
 <div bind:this={root} class="share-root">
   {#if inline}
-    <section class="panel panel-tabbed share-sidebar" aria-label={m.share_title()}>
-      <PanelHeader title={m.share_title()} />
+    <section class="panel panel-tabbed share-sidebar" aria-label={m.common_share()}>
+      <PanelHeader title={m.common_share()} />
       {@render content()}
     </section>
   {:else}
-    <Modal bind:open title={m.share_title()} onclose={onclose}
-           confirm={{ label: m.share_done(), cancel: false, onclick: () => (open = false) }}>
+    <Modal bind:open title={m.common_share()} onclose={onclose}
+           confirm={{ label: m.common_done(), cancel: false, onclick: () => (open = false) }}>
       <div class="panel-tabbed share-modal-body">
         {@render content()}
       </div>

@@ -105,7 +105,7 @@ export function relocation(files, explicit, entries, destination, rules, rename 
   const folders = folderPaths(files, explicit);
   for (const entry of roots) {
     const exists = entry.kind === "folder" ? folders.includes(entry.path) : files.some((file) => file.id === entry.id && file.kind === entry.kind && file.path === entry.path);
-    if (!exists) throw new Error(m.file_manager_item_changed({ path: entry.path }));
+    if (!exists) throw new Error(m.common_item_changed({ path: entry.path }));
   }
   const moves = roots.map((entry) => ({ entry, path: normalisePath(rename ? destination : [destination, basename(entry.path)].filter(Boolean).join("/")) }));
   for (const { entry, path } of moves) {

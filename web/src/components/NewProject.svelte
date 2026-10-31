@@ -43,7 +43,7 @@
   const TABS = [
     { id: "blank", label: m.newproject_tab_blank() },
     { id: "template", label: m.newproject_tab_template() },
-    { id: "upload", label: m.newproject_tab_upload() },
+    { id: "upload", label: m.common_upload_files() },
     ...(localBridge.desktop() ? [{ id: "link", label: m.newproject_tab_link() }] : []),
   ];
 
@@ -120,7 +120,7 @@
     formatFilter = "";
   }
 
-  const countText = $derived(m.newproject_template_count({ count: shown.length }));
+  const countText = $derived(m.common_template_count({ count: shown.length }));
 
   /* ------------------------------------------------------------ details */
 
@@ -283,7 +283,7 @@
     event.preventDefault();
     if (busy) return;
     const title = name.trim();
-    if (!title) return refuse(m.newproject_name_required(), "new-project-name");
+    if (!title) return refuse(m.common_give_project_name(), "new-project-name");
     if (tab === "template" && !selected) return refuse(m.newproject_template_required());
     if (tab === "upload" && !hasDocument) return refuse(m.newproject_document_required());
     busy = true;
@@ -377,8 +377,8 @@
 
 <section id="new-project" class="new-project">
   <header class="np-head">
-    <h1>{m.newproject_title()}</h1>
-    <button type="button" class="btn btn-sm new-project-cancel lp-control-tonal-brand" onclick={() => oncancel?.()}>{m.newproject_cancel()}</button>
+    <h1>{m.common_new_project()}</h1>
+    <button type="button" class="btn btn-sm new-project-cancel lp-control-tonal-brand" onclick={() => oncancel?.()}>{m.common_cancel()}</button>
   </header>
 
   <Tabs value={tab} onValueChange={(event) => changeTab(event.value)}
@@ -419,7 +419,7 @@
           <p class="np-muted">{m.newproject_link_intro()}</p>
           <input class="input input-sm" type="url" placeholder={m.newproject_link_placeholder()} aria-label={m.newproject_link_label()} bind:value={linkInput} />
           <div class="np-actions">
-            <button type="submit" class="btn btn-sm lp-control-brand">{m.newproject_open()}</button>
+            <button type="submit" class="btn btn-sm lp-control-brand">{m.common_open()}</button>
           </div>
           {#if linkError}<p class="open-link-error" role="alert">{linkError}</p>{/if}
         </form>
@@ -432,7 +432,7 @@
   <div class="drop-overlay" aria-hidden="true"><p>{m.newproject_drop_overlay()}</p></div>
 {/if}
 
-<Modal bind:open={detailOpen} title={detail?.name ?? m.newproject_template_fallback_title()} wide>
+<Modal bind:open={detailOpen} title={detail?.name ?? m.common_template()} wide>
   {#snippet children()}
     {#if detail}
       <div class="np-detail">
@@ -441,7 +441,7 @@
         {#if detail.custom}
           <div class="np-detail-actions">
             <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => (location.href = detail.url)}>{m.newproject_open_template()}</button>
-            <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => { const gone = detail; detailOpen = false; ondeletetemplate?.(gone); }}>{m.newproject_move_to_trash()}</button>
+            <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => { const gone = detail; detailOpen = false; ondeletetemplate?.(gone); }}>{m.common_move_to_trash()}</button>
           </div>
         {:else if detailPaths.length}
           <p class="np-muted">{m.newproject_detail_files({ format: formatNamed(detailFormat).name })}</p>
@@ -480,7 +480,7 @@
       </select>
     </label>
     <label class="np-field" for="template-sort">
-      <span class="np-label">{m.newproject_sort_label()}</span>
+      <span class="np-label">{m.common_sort()}</span>
       <select id="template-sort" class="select" bind:value={sort}>
         <option value="name-asc">{m.newproject_sort_name_asc()}</option>
         <option value="name-desc">{m.newproject_sort_name_desc()}</option>
@@ -494,10 +494,10 @@
       <thead>
         <tr>
           <th class="col-pick"><span class="sr-only">{m.newproject_choose()}</span></th>
-          <th class="col-name">{m.newproject_col_name()}</th>
+          <th class="col-name">{m.common_name()}</th>
           <th class="col-say">{m.newproject_col_description()}</th>
           <th class="col-formats">{m.newproject_col_formats()}</th>
-          <th class="col-info"><span class="sr-only">{m.newproject_col_details()}</span></th>
+          <th class="col-info"><span class="sr-only">{m.common_details()}</span></th>
         </tr>
       </thead>
       <tbody>
@@ -600,9 +600,9 @@
     <div class="np-conflicts" role="group" aria-label={m.newproject_conflicts_group()}>
       <p>{m.newproject_conflicts({ count: conflicts.length, paths: conflicts.map((one) => one.path).join(", ") })}</p>
       <div class="np-row">
-        <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => settleConflicts("replace")}>{m.newproject_conflict_replace()}</button>
-        <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => settleConflicts("keep-both")}>{m.newproject_conflict_keep_both()}</button>
-        <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => settleConflicts("skip")}>{m.newproject_conflict_skip()}</button>
+        <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => settleConflicts("replace")}>{m.common_replace()}</button>
+        <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => settleConflicts("keep-both")}>{m.common_keep_both()}</button>
+        <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => settleConflicts("skip")}>{m.common_skip()}</button>
       </div>
     </div>
   {/if}
@@ -631,7 +631,7 @@
       {/if}
 
       <div class="np-treehead">
-        <span class="np-label">{m.newproject_files_label()}</span>
+        <span class="np-label">{m.common_files()}</span>
         <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={resetStaging}>{m.newproject_clear_all()}</button>
       </div>
       <ul class="upload-tree">

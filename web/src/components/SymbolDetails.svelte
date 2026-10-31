@@ -28,7 +28,7 @@
           <span class="spelling"><span class="label">{spelling.label}</span> <code>{spelling.code}</code></span>
         {/each}
         {#if entry.package}<span class="hint">{m.symboldetails_needs_package({ pkg: entry.package })}</span>{/if}
-        {#if !available}<span class="hint">{m.symboldetails_not_in_html()}</span>{/if}
+        {#if !available}<span class="hint">{m.common_not_available_in_html()}</span>{/if}
       </span>
     </div>
     <button type="button" class="star" class:on={favorite} aria-pressed={favorite} aria-label={m.symboldetails_favorite_label()} onclick={() => ontogglefavorite?.(entry)}>

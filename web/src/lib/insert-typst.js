@@ -67,7 +67,7 @@ export function buildTypst(id, options = {}, context = {}) {
 = Appendix`, "Appendix");
     case "toc": return finish("#outline()", "#outline()");
     case "figure": {
-      if (!options.src) throw Error(m.insert_typst_choose_image());
+      if (!options.src) throw Error(m.insert_choose_image());
       const source = string(options.src);
       const width = options.width ? `, width: ${string(options.width)}` : "";
       const caption = markup(options.caption, "Figure");
@@ -78,12 +78,12 @@ export function buildTypst(id, options = {}, context = {}) {
       const keys = Array.isArray(options.keys) ? options.keys.filter(Boolean) : [];
       if (!keys.length) throw Error(m.insert_typst_choose_entry());
       const locator = textOf(options.locator).trim();
-      for (const key of keys) if (!/^[\p{L}\p{N}_.:+-]+$/u.test(key)) throw Error(m.insert_typst_citation_key());
+      for (const key of keys) if (!/^[\p{L}\p{N}_.:+-]+$/u.test(key)) throw Error(m.insert_unsupported_citation_key());
       const form = options.style === "narrative" ? ', form: "prose"' : options.style === "parenthetical" ? ', form: "normal"' : '';
       return finish(keys.map(key => '#cite(<' + key + '>' + form + (locator ? ', supplement: [' + markup(locator) + ']' : '') + ')').join(' '));
     }
     case "bibliography": {
-      if (!options.file) throw Error(m.insert_typst_choose_bib());
+      if (!options.file) throw Error(m.insert_choose_bib_file());
       return finish('#bibliography("' + string(options.file) + '")');
     }
     case "cross-reference": {

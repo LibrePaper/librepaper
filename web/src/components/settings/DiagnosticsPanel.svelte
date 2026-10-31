@@ -85,7 +85,7 @@
 
   async function openLogs() {
     try { await shellAction("open-logs"); say(""); }
-    catch (error) { say(error?.message || m.diagnosticspanel_desktop_failed(), true); }
+    catch (error) { say(error?.message || m.common_desktop_app_failed(), true); }
   }
 
   function toggled(event) {
@@ -96,7 +96,7 @@
 <div class="diagnostics" class:compact>
   <div class="diagnostics-buttons">
     <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void copyReport()}>{m.diagnosticspanel_copy()}</button>
-    <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void download()}>{m.diagnosticspanel_download()}</button>
+    <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void download()}>{m.common_download()}</button>
     <a href={ISSUES_URL} target="_blank" rel="noreferrer" class="btn btn-sm lp-control-tonal-brand" onclick={() => void reportIssue()}>{m.diagnosticspanel_report_issue()}</a>
     {#if inDesktop}<button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void openLogs()}>{m.diagnosticspanel_open_logs()}</button>{/if}
   </div>

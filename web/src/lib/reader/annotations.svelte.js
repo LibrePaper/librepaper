@@ -83,7 +83,7 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
       headers: authHeaders(key),
     });
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.error || m.annotations_comments_read_failed({ status: response.status }));
+    if (!response.ok) throw new Error(body.error || m.common_comments_could_not_be_read({ status: response.status }));
     return body;
   }
 

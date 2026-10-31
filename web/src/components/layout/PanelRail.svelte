@@ -26,7 +26,7 @@
 {#each tabs as tab (tab.id)}
   {@const badge = badges[tab.id] ?? {}}
   <div class="rail-item">
-    <IconButton icon={tab.icon} label={tab.disabled ? m.panelrail_demo_unavailable({ says: tab.says }) : badge.says || tab.says}
+    <IconButton icon={tab.icon} label={tab.disabled ? m.common_demo_unavailable({ says: tab.says }) : badge.says || tab.says}
       disabled={tab.disabled}
       pressed={panel === tab.id && (open || marksWhenClosed)}
       controls={slotId(tab.id)} expanded={panel === tab.id && open}

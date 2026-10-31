@@ -87,7 +87,7 @@
   const invalid = $derived(!splitArgs(editingCommand).length || !editingResult.trim());
   const status = $derived(record === null ? null
     : record.found ? { label: record.version ? m.toolcommand_found_version({ version: record.version }) : m.toolcommand_found(), tone: "good" }
-    : { label: m.toolcommand_not_found(), tone: "warn" });
+    : { label: m.common_not_found(), tone: "warn" });
 </script>
 
 <SettingRow id={`render-${format}-${output}`} title={TITLES[output] || `${output} command`} description={HELP} stacked>
@@ -102,9 +102,9 @@
     </label>
     {#if settingsError}<p class="setting-description tool-command-error" role="alert">{settingsError}</p>{/if}
     <div class="setting-actions tool-command-actions">
-      <button type="button" class="btn btn-sm lp-control-brand" disabled={!canEdit || unchanged || invalid} onclick={() => void save()}>{pendingDialogAction ? m.toolcommand_saving() : m.toolcommand_save()}</button>
+      <button type="button" class="btn btn-sm lp-control-brand" disabled={!canEdit || unchanged || invalid} onclick={() => void save()}>{pendingDialogAction ? m.common_saving() : m.common_save()}</button>
       <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={!canEdit || !record?.edited} onclick={() => void reset()}>{m.toolcommand_reset()}</button>
-      {#if savedFeedback}<span class="setting-feedback" role="status">{m.toolcommand_saved()}</span>{/if}
+      {#if savedFeedback}<span class="setting-feedback" role="status">{m.common_saved()}</span>{/if}
     </div>
     {#if pendingDialogAction}
       <p class="setting-description">{m.toolcommand_confirm_dialog()}</p>

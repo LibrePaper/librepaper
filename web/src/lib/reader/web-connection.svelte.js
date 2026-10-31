@@ -91,7 +91,7 @@ export function createWebConnection({ api = routes, project, flush = async () =>
       } else if (error?.body?.reason === "auth") {
         set({ signInHelp: { remote: current.status?.url || address, detail: String(error.body.detail ?? "") } });
       } else {
-        set({ problem: error?.message || m.web_connection_desktop_failed() });
+        set({ problem: error?.message || m.common_desktop_app_failed() });
       }
     } finally {
       set({ busy: "" });

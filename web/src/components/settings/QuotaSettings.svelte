@@ -50,7 +50,7 @@
   const partsOf = (doc) => [
     { key: "figure", name: m.quotasettings_part_figures(), bytes: doc.figureBytes },
     { key: "versions", name: m.quotasettings_part_versions(), bytes: doc.archiveBytes },
-    { key: "history", name: m.quotasettings_part_history(), bytes: doc.historyBytes },
+    { key: "history", name: m.common_history(), bytes: doc.historyBytes },
   ];
   const labelOf = (parts) =>
     parts.filter((p) => p.bytes > 0).map((p) => m.quotasettings_part_label({ name: p.name, size: storageBytes(p.bytes) })).join(", ") || m.quotasettings_empty();
@@ -167,10 +167,10 @@
   </div>
 {/snippet}
 
-<SettingRow id="storage-account" stacked title={m.quotasettings_account_storage()} description={used}>
+<SettingRow id="storage-account" stacked title={m.common_account_storage()} description={used}>
   <div class="account-line">
     {@render bar(totalParts, quotaBase, totalLabel, "account-bar")}
-    <button class="btn btn-sm lp-control-tonal-brand" type="button" onclick={reload}>{m.quotasettings_refresh()}</button>
+    <button class="btn btn-sm lp-control-tonal-brand" type="button" onclick={reload}>{m.common_refresh()}</button>
   </div>
 </SettingRow>
 
@@ -181,7 +181,7 @@
       <div class="legend" aria-hidden="true">
         <span><i class="swatch figure"></i>{m.quotasettings_part_figures()}</span>
         <span><i class="swatch versions"></i>{m.quotasettings_part_versions()}</span>
-        <span><i class="swatch history"></i>{m.quotasettings_part_history()}</span>
+        <span><i class="swatch history"></i>{m.common_history()}</span>
       </div>
       <div class="toolbar-controls">
         <input type="search" class="input input-sm" placeholder={m.quotasettings_filter_placeholder()}
@@ -189,7 +189,7 @@
         <select class="select select-sm" bind:value={sortBy} aria-label={m.quotasettings_sort_label()}>
           <option value="largest">{m.quotasettings_sort_largest()}</option>
           <option value="history">{m.quotasettings_sort_history()}</option>
-          <option value="name">{m.quotasettings_sort_name()}</option>
+          <option value="name">{m.common_name()}</option>
         </select>
       </div>
     </div>
@@ -201,7 +201,7 @@
             <div role="cell" class="doc-title">
               <div class="title-with-badge">
                 <a class="title-text" href="/docs/{doc.slug}" title={nameOf(doc)}>{nameOf(doc)}</a>
-                {#if doc.template}<span class="badge lp-tone-neutral">{m.quotasettings_template()}</span>{/if}
+                {#if doc.template}<span class="badge lp-tone-neutral">{m.common_template()}</span>{/if}
               </div>
               {#if trimErrors[doc.slug]}<div class="trim-error">{trimErrors[doc.slug]}</div>{/if}
               {#if deleteTemplateErrors[doc.slug]}<div class="trim-error">{deleteTemplateErrors[doc.slug]}</div>{/if}
@@ -230,7 +230,7 @@
 {/if}
 
 <Modal bind:open={trimOpen} title={m.quotasettings_trim_title()}
-       confirm={{ label: trimPending ? m.quotasettings_trimming() : m.quotasettings_trim_confirm(), tone: "error", disabled: trimPending, onclick: confirmTrim }}>
+       confirm={{ label: trimPending ? m.quotasettings_trimming() : m.quotasettings_trim_history(), tone: "error", disabled: trimPending, onclick: confirmTrim }}>
   {#if trimTarget}
     <p>{m.quotasettings_trim_keeps_before()}<strong>{trimTarget.title}</strong>{m.quotasettings_trim_keeps_after()}</p>
     <ul class="trim-list">
@@ -244,7 +244,7 @@
 </Modal>
 
 <Modal bind:open={deleteTemplateOpen} title={m.quotasettings_delete_template_title()}
-       confirm={{ label: deleteTemplatePending ? m.quotasettings_deleting() : m.quotasettings_delete(), tone: "error", disabled: deleteTemplatePending, onclick: confirmDeleteTemplate }}>
+       confirm={{ label: deleteTemplatePending ? m.quotasettings_deleting() : m.common_delete(), tone: "error", disabled: deleteTemplatePending, onclick: confirmDeleteTemplate }}>
   {#if deleteTemplateTarget}
     <p>{m.quotasettings_delete_template_lead()}<strong>{deleteTemplateTarget.title}</strong>{m.quotasettings_delete_template_rest()}</p>
   {/if}

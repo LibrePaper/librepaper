@@ -11,9 +11,9 @@ export const HIGHLIGHT_COLORS = ["#f6ee8e", "#80cfb9", "#9ad2f2", "#e0afca"];
 // And what each of them is called, since a swatch has nothing but its colour
 // to go on and a label of "#f6ee8e" is read out one character at a time.
 const NAMES = {
-  "#f6ee8e": m.annotation_colors_yellow(),
+  "#f6ee8e": m.common_yellow(),
   "#80cfb9": m.annotation_colors_green(),
-  "#9ad2f2": m.annotation_colors_blue(),
+  "#9ad2f2": m.common_blue(),
   "#e0afca": m.annotation_colors_pink(),
 };
 

@@ -43,7 +43,7 @@ const KIND_ORDER = ["allow_once", "allow_always", "reject_once", "reject_always"
 const KIND_LABELS = {
   allow_once: m.agent_permission_allow_once(),
   allow_always: m.agent_permission_allow_always(),
-  reject_once: m.agent_permission_reject_once(),
+  reject_once: m.common_reject(),
   reject_always: m.agent_permission_reject_always(),
 };
 

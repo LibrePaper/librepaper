@@ -26,7 +26,7 @@ import { m } from "./paraglide/messages.js";
 /// two icons over the words, so the label is what the button is called rather
 /// than what it says.
 export const VERBS = [
-  { id: "comment", label: m.annotating_comment_label(), icon: "comment", title: m.annotating_comment_title() },
+  { id: "comment", label: m.common_comment(), icon: "comment", title: m.annotating_comment_title() },
   { id: "highlight", label: m.annotating_highlight_label(), icon: "highlight", title: m.annotating_highlight_title() },
 ];
 

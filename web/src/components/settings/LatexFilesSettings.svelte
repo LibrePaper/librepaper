@@ -24,7 +24,7 @@
   }
 </script>
 
-<SettingRow id="render-latex-files" title={m.latexfilessettings_title()}
+<SettingRow id="render-latex-files" title={m.common_downloaded_latex_files()}
             description={cacheSize === null ? m.latexfilessettings_measuring() : cacheSize < 100_000 ? m.latexfilessettings_empty() : m.latexfilessettings_used({ size: megabytes(cacheSize) })}>
-  <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={clearCache}>{m.latexfilessettings_remove()}</button>
+  <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={clearCache}>{m.common_remove()}</button>
 </SettingRow>

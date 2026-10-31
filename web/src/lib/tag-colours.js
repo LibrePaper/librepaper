@@ -12,8 +12,8 @@ export const TAG_COLOURS = [
   { key: "orange", name: m.tag_colours_orange() },
   { key: "sky-blue", name: m.tag_colours_sky_blue() },
   { key: "bluish-green", name: m.tag_colours_bluish_green() },
-  { key: "yellow", name: m.tag_colours_yellow() },
-  { key: "blue", name: m.tag_colours_blue() },
+  { key: "yellow", name: m.common_yellow() },
+  { key: "blue", name: m.common_blue() },
   { key: "vermillion", name: m.tag_colours_vermillion() },
   { key: "reddish-purple", name: m.tag_colours_reddish_purple() },
 ];

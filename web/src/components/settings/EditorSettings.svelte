@@ -42,10 +42,10 @@
   const proofingDescription = $derived(PROOFING_DESCRIPTIONS[proofing] ?? PROOFING_DESCRIPTIONS.browser);
 </script>
 
-<SettingRow id="appearance-font" title={m.editorsettings_font()}
+<SettingRow id="appearance-font" title={m.common_font()}
             description={m.editorsettings_font_description()}>
   <span class="setting-inline">
-    <select class="select setting-select" aria-label={m.editorsettings_font()} value={currentFont.id}
+    <select class="select setting-select" aria-label={m.common_font()} value={currentFont.id}
             onchange={(event) => setFont(event.currentTarget.value, currentFont.custom)}>
       {#each FONTS as entry (entry.id)}
         <option value={entry.id}>{entry.name}</option>
@@ -62,7 +62,7 @@
   </span>
 </SettingRow>
 
-<SettingRow id="appearance-font-size" title={m.editorsettings_font_size()}
+<SettingRow id="appearance-font-size" title={m.common_font_size()}
             description={m.editorsettings_font_size_description()}>
   <span class="setting-inline">
     <input type="number" class="input input-sm setting-input setting-number" min={MIN_SIZE} max={MAX_SIZE} step="1"
@@ -77,8 +77,8 @@
   </span>
 </SettingRow>
 
-<SettingRow id="appearance-line-height" title={m.editorsettings_line_height()}>
-  <select class="select setting-select" aria-label={m.editorsettings_line_height()} value={currentLineHeight}
+<SettingRow id="appearance-line-height" title={m.common_line_height()}>
+  <select class="select setting-select" aria-label={m.common_line_height()} value={currentLineHeight}
           onchange={(event) => setLineHeight(event.currentTarget.value)}>
     <option value="compact">{m.editorsettings_line_height_compact()}</option>
     <option value="normal">{m.editorsettings_line_height_normal()}</option>
@@ -86,7 +86,7 @@
   </select>
 </SettingRow>
 
-<SettingRow id="editor-keys" title={m.editorsettings_keys()}>
+<SettingRow id="editor-keys" title={m.common_key_bindings()}>
   <select class="select setting-select" aria-label={m.editorsettings_keys_label()} value={keys}
           onchange={(event) => onkeys?.(event.currentTarget.value)}>
     <option value="default">{m.editorsettings_keys_standard()}</option>
@@ -95,34 +95,34 @@
   </select>
 </SettingRow>
 
-<SettingRow id="editor-completion" title={m.editorsettings_completion()}
+<SettingRow id="editor-completion" title={m.common_autocomplete()}
             description={m.editorsettings_completion_description()}>
-  <button type="button" role="switch" class="switch" aria-checked={completion} aria-label={m.editorsettings_completion()}
+  <button type="button" role="switch" class="switch" aria-checked={completion} aria-label={m.common_autocomplete()}
           data-state={completion ? "checked" : "unchecked"} onclick={() => oncompletion?.(!completion)}>
     <span class="switch-thumb" data-state={completion ? "checked" : "unchecked"}></span>
   </button>
 </SettingRow>
 
-<SettingRow id="editor-brackets" title={m.editorsettings_brackets()}
+<SettingRow id="editor-brackets" title={m.common_close_brackets()}
             description={m.editorsettings_brackets_description()}>
-  <button type="button" role="switch" class="switch" aria-checked={brackets} aria-label={m.editorsettings_brackets()}
+  <button type="button" role="switch" class="switch" aria-checked={brackets} aria-label={m.common_close_brackets()}
           data-state={brackets ? "checked" : "unchecked"} onclick={() => onbrackets?.(!brackets)}>
     <span class="switch-thumb" data-state={brackets ? "checked" : "unchecked"}></span>
   </button>
 </SettingRow>
 
-<SettingRow id="editor-proofing" title={m.editorsettings_proofing()} description={proofingDescription}>
-  <select class="select setting-select" aria-label={m.editorsettings_proofing()} value={proofing}
+<SettingRow id="editor-proofing" title={m.common_grammar_and_spelling()} description={proofingDescription}>
+  <select class="select setting-select" aria-label={m.common_grammar_and_spelling()} value={proofing}
           onchange={(event) => onproofing?.(event.currentTarget.value)}>
     <option value="off">{m.editorsettings_proofing_off()}</option>
-    <option value="browser">{m.editorsettings_proofing_browser()}</option>
+    <option value="browser">{m.common_browser()}</option>
     <option value="harper">Harper</option>
   </select>
 </SettingRow>
 
 {#if proofing === "harper"}
-  <SettingRow id="editor-dialect" title={m.editorsettings_dialect()}>
-    <select class="select setting-select" aria-label={m.editorsettings_dialect()} value={dialect}
+  <SettingRow id="editor-dialect" title={m.common_english_dialect()}>
+    <select class="select setting-select" aria-label={m.common_english_dialect()} value={dialect}
             onchange={(event) => ondialect?.(event.currentTarget.value)}>
       <option value="american">{m.editorsettings_dialect_american()}</option>
       <option value="british">{m.editorsettings_dialect_british()}</option>
@@ -133,17 +133,17 @@
   </SettingRow>
 {/if}
 
-<SettingRow id="editor-check" title={m.editorsettings_check()}
+<SettingRow id="editor-check" title={m.common_code_check()}
             description={m.editorsettings_check_description()}>
-  <button type="button" role="switch" class="switch" aria-checked={check} aria-label={m.editorsettings_check()}
+  <button type="button" role="switch" class="switch" aria-checked={check} aria-label={m.common_code_check()}
           data-state={check ? "checked" : "unchecked"} onclick={() => oncheck?.(!check)}>
     <span class="switch-thumb" data-state={check ? "checked" : "unchecked"}></span>
   </button>
 </SettingRow>
 
-<SettingRow id="editor-visual" title={m.editorsettings_visual()}
+<SettingRow id="editor-visual" title={m.common_visual_mode()}
             description={m.editorsettings_visual_description()}>
-  <button type="button" role="switch" class="switch" aria-checked={visual} aria-label={m.editorsettings_visual()}
+  <button type="button" role="switch" class="switch" aria-checked={visual} aria-label={m.common_visual_mode()}
           data-state={visual ? "checked" : "unchecked"} onclick={() => onvisual?.(!visual)}>
     <span class="switch-thumb" data-state={visual ? "checked" : "unchecked"}></span>
   </button>
@@ -153,7 +153,7 @@
      lead to this page. It comes last so it never pushes the switches above
      out of view. Stacked, because a table is not a control that fits beside
      a sentence. -->
-<SettingRow id="editor-shortcuts" stacked title={m.editorsettings_shortcuts()}
+<SettingRow id="editor-shortcuts" stacked title={m.common_keyboard_shortcuts()}
             description={m.editorsettings_shortcuts_description()}>
   <ShortcutTable context={commands} />
 </SettingRow>

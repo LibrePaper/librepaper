@@ -17,7 +17,7 @@ export const MAX_SIZE = 28;
 export const DEFAULT_STACK = '"JetBrains Mono", "IBM Plex Mono", "Geist Mono", ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace';
 
 export const FONTS = [
-  { id: "default", name: m.editor_type_font_default() },
+  { id: "default", name: m.common_default() },
   { id: "jetbrains-mono", name: "JetBrains Mono", family: "JetBrains Mono", files: [
     { file: "jetbrains-mono.woff2", weight: "400", style: "normal" },
     { file: "jetbrains-mono-italic.woff2", weight: "400", style: "italic" },

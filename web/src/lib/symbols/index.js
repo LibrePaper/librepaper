@@ -8,7 +8,7 @@ import { m } from "../paraglide/messages.js";
 export const CATEGORIES = [
   { id: "greek", label: m.index_category_greek() }, { id: "operators", label: m.index_category_operators() }, { id: "relations", label: m.index_category_relations() },
   { id: "arrows", label: m.index_category_arrows() }, { id: "logic", label: m.index_category_logic() }, { id: "accents", label: m.index_category_accents() },
-  { id: "delimiters", label: m.index_category_delimiters() }, { id: "text", label: m.index_category_text() }, { id: "emoji", label: m.index_category_emoji() },
+  { id: "delimiters", label: m.index_category_delimiters() }, { id: "text", label: m.common_text() }, { id: "emoji", label: m.index_category_emoji() },
 ];
 
 const sym = (category, id, glyph, latex, typst, extra = {}) => ({

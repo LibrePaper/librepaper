@@ -19,7 +19,7 @@
 </script>
 
 <form class="share-form" onsubmit={(event) => { event.preventDefault(); if (valid && !busy) onsubmit(); }}>
-  <label class="share-field panel-meta">{kind === "link" ? m.shareform_name_optional() : m.shareform_agent_name()}
+  <label class="share-field panel-meta">{kind === "link" ? m.shareform_name_optional() : m.common_agent_name()}
     <input class="input share-input" type="text" maxlength="80" required={needsName} bind:this={first} bind:value={draft.name} disabled={busy} />
     <span>{kind === "link" ? m.shareform_link_name_help() : m.shareform_agent_name_help()}</span>
   </label>
@@ -46,7 +46,7 @@
     </label>
   {/if}
   <div class="share-form-actions">
-    <button type="button" class="share-action" disabled={busy} onclick={oncancel}>{m.shareform_cancel()}</button>
+    <button type="button" class="share-action" disabled={busy} onclick={oncancel}>{m.common_cancel()}</button>
     <button type="submit" class="btn btn-sm lp-control-brand" disabled={busy || !valid}>{kind === "link" ? m.shareform_create_link() : m.shareform_create_token()}</button>
   </div>
 </form>

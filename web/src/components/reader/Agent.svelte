@@ -25,7 +25,7 @@
     slug, link, canShare = false, path = "", selection = null, revision = "", request = null,
     diagnostics = [],
     comments = [], changes = [], onreview, onpreview, onsettings,
-    userName = m.agent_you(),
+    userName = m.common_you(),
   } = $props();
   let client = $state.raw(null);
   const EMPTY_CONNECTION = { id: "", token: "", messages: [], tasks: {}, connected: false,
@@ -77,8 +77,8 @@
   // the narrowest level that works, and it writes only comments. Edit is needed
   // for tracked changes.
   const roles = [
-    { id: "commenter", label: m.agent_role_comment(), help: m.agent_role_comment_help() },
-    { id: "editor", label: m.agent_role_edit(), help: m.agent_role_edit_help(), warn: true },
+    { id: "commenter", label: m.common_comment(), help: m.agent_role_comment_help() },
+    { id: "editor", label: m.common_edit(), help: m.agent_role_edit_help(), warn: true },
   ];
   const currentRole = $derived.by(() => !caps.verified ? "" : caps.can_edit ? "editor" : caps.can_comment ? "commenter" : caps.can_read ? "reader" : "");
   // Without sharing rights the panel can only hand out the access the reader
@@ -129,7 +129,7 @@
   const runningLabel = $derived(installed.find((entry) => entry.id === assistant.agent)?.label || chosenInstalled?.label || m.agent_the_agent());
   let tab = $state("chat");
   const TABS = [
-    { id: "chat", label: m.agent_tab_chat() },
+    { id: "chat", label: m.common_chat() },
     { id: "tasks", label: m.agent_tab_tasks() },
   ];
   let pendingRequest = $state(null);
@@ -149,7 +149,7 @@
   const chatScope = $derived(attachment ? "selection" : scope === "document" || !contextPath ? "document" : "file");
   const contextLabel = $derived(chatScope === "selection"
     ? (attachment?.path ? m.agent_context_selection_path({ path: attachment.path }) : m.agent_context_selection())
-    : chatScope === "file" ? contextPath : m.agent_context_document());
+    : chatScope === "file" ? contextPath : m.common_whole_document());
   const runnerReady = $derived(connection.connected && connection.runnerConnected);
   // No agent attached yet, but sending can start the chosen one first.
   const canStart = $derived(!runnerReady && !assistant.running && Boolean(connection.id) && Boolean(chosenInstalled?.assistant));
@@ -731,12 +731,12 @@
 </script>
 
 <section class="panel panel-tabbed agent-panel" aria-label={m.agent_panel_label()} bind:this={panelEl}>
-  <PanelHeader title={m.agent_title()} />
+  <PanelHeader title={m.common_agent()} />
   <!-- This stays in the local template scope instead of becoming an unknown
        snippet prop on PanelTabs. -->
   {#snippet connectPrompt()}
     <div class="connect-required">
-      <DesktopOnly feature={m.agent_the_agent()} description={m.agent_feature_description()} />
+      <DesktopOnly feature={m.agent_the_agent()} description={m.common_chat_with_coding_agent()} />
     </div>
   {/snippet}
   <!-- Which agent, with what access: one quiet line, since both nearly always
@@ -746,7 +746,7 @@
   {#snippet agentSettings()}
   <div class="agent-settings">
     {#if installed.length}
-      <select class="agent-setting" aria-label={m.agent_select_label()} disabled={busy} value={chosenAgent}
+      <select class="agent-setting" aria-label={m.common_agent()} disabled={busy} value={chosenAgent}
               onchange={(event) => void choose(() => chosenAgent = event.currentTarget.value)}>
         {#each installed as entry (entry.id)}<option value={entry.id}>{entry.label}</option>{/each}
       </select>
@@ -796,11 +796,11 @@
         {#if inputTask.input.details}
           {@const details = inputTask.input.details}
           <details class="permission-info">
-            <summary>{m.agent_details()}</summary>
+            <summary>{m.common_details()}</summary>
             <div class="permission-details">
-              {#if details.command}<p><strong>{m.agent_command()}</strong><code>{details.command.slice(0, 2048)}{#if details.command.length > 2048}…{/if}</code></p>{/if}
-              {#if details.files?.length}<p><strong>{m.agent_files()}</strong><span>{details.files.slice(0, 8).map((path) => String(path).slice(0, 512)).join(", ")}{#if details.files.length > 8} {m.agent_files_more({ count: details.files.length - 8 })}{/if}</span></p>{/if}
-              {#if details.diff}<details><summary>{m.agent_review_changes()}</summary><pre>{details.diff.slice(0, 2048)}{#if details.diff.length > 2048}…{/if}</pre></details>{/if}
+              {#if details.command}<p><strong>{m.common_command()}</strong><code>{details.command.slice(0, 2048)}{#if details.command.length > 2048}…{/if}</code></p>{/if}
+              {#if details.files?.length}<p><strong>{m.common_files()}</strong><span>{details.files.slice(0, 8).map((path) => String(path).slice(0, 512)).join(", ")}{#if details.files.length > 8} {m.agent_files_more({ count: details.files.length - 8 })}{/if}</span></p>{/if}
+              {#if details.diff}<details><summary>{m.common_review_changes()}</summary><pre>{details.diff.slice(0, 2048)}{#if details.diff.length > 2048}…{/if}</pre></details>{/if}
             </div>
           </details>
         {/if}
@@ -817,7 +817,7 @@
   {#snippet queuedNote(message)}
     {#if message.role === "user" && connection.tasks?.[message.id]?.status === "queued"}
       {@const item = connection.tasks[message.id]}
-      <p class="queued-note" data-task-id={message.id}>{m.agent_queued()}{#if item.cancelRequested} · {m.agent_cancelling()}{:else} · <button type="button" class="agent-text-action" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(message.id))}>{m.agent_cancel()}</button>{/if}</p>
+      <p class="queued-note" data-task-id={message.id}>{m.agent_queued()}{#if item.cancelRequested} · {m.agent_cancelling()}{:else} · <button type="button" class="agent-text-action" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(message.id))}>{m.common_cancel()}</button>{/if}</p>
     {/if}
   {/snippet}
 
@@ -830,15 +830,15 @@
       <ExplorerMenu>
         <Menu.Item value="selection" class="menuitem" disabled={!attachment && !selection?.exact}>
           <span class="menuitem-check" aria-hidden="true">{chatScope === "selection" ? "✓" : ""}</span>
-          <span class="menuitem-label">{m.agent_context_passage()}</span>
+          <span class="menuitem-label">{m.common_selected_passage()}</span>
         </Menu.Item>
         <Menu.Item value="file" class="menuitem" disabled={!contextPath}>
           <span class="menuitem-check" aria-hidden="true">{chatScope === "file" ? "✓" : ""}</span>
-          <span class="menuitem-label">{contextPath ? m.agent_context_file_path({ path: contextPath }) : m.agent_context_file()}</span>
+          <span class="menuitem-label">{contextPath ? m.common_current_file_path({ path: contextPath }) : m.common_current_file()}</span>
         </Menu.Item>
         <Menu.Item value="document" class="menuitem">
           <span class="menuitem-check" aria-hidden="true">{chatScope === "document" ? "✓" : ""}</span>
-          <span class="menuitem-label">{m.agent_context_document()}</span>
+          <span class="menuitem-label">{m.common_whole_document()}</span>
         </Menu.Item>
       </ExplorerMenu>
     </Menu>
@@ -846,7 +846,7 @@
 
   <!-- The strip, its ids and the layout of a pane are PanelTabs', shared with
        the collaboration panel. What is left here is what the tabs contain. -->
-  <PanelTabs id="agent" label={m.agent_title()} listClass="agent-tabs" tabs={TABS}
+  <PanelTabs id="agent" label={m.common_agent()} listClass="agent-tabs" tabs={TABS}
              value={tab} onchange={(value) => tab = value}>
 
   <Tabs.Content value="chat" class="agent-tab-content">
@@ -855,16 +855,16 @@
     {@render connectPrompt()}
   {:else}
     <div class="chat-history">
-    {#if !connection.id}<button class="btn lp-control-brand" disabled={busy || connecting} onclick={() => void act(() => client.create())}>{connecting ? m.agent_connecting() : m.agent_retry_connection()}</button>{/if}
+    {#if !connection.id}<button class="btn lp-control-brand" disabled={busy || connecting} onclick={() => void act(() => client.create())}>{connecting ? m.common_connecting() : m.agent_retry_connection()}</button>{/if}
     {#if connection.id && !connection.connected}
-      <div role="status"><span class="panel-muted">{m.agent_reconnecting()}</span> <button class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => void reconnect()}>{m.agent_reconnect_now()}</button></div>
+      <div role="status"><span class="panel-muted">{m.common_reconnecting()}</span> <button class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => void reconnect()}>{m.agent_reconnect_now()}</button></div>
     {/if}
 
   {#each uncertainTasks() as item (item.id)}
     <p class="panel-meta" role="alert">{m.agent_delivery_unconfirmed()} <button class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => void retryTask(item.id)}>{m.agent_retry_delivery()}</button></p>
   {/each}
   <ChatTranscript messages={connection.messages}
-                  emptyTitle={m.agent_empty_title()}
+                  emptyTitle={m.common_no_messages_yet()}
                   emptyText={connection.runnerConnected ? m.agent_empty_connected() : m.agent_empty_send()}
                   onresult={chooseResult} after={transcriptEnd} messageEnd={queuedNote}
                   roleLabel={(message) => message.role === "user" ? userName : (message.creator || message.role)} />
@@ -879,7 +879,7 @@
   <!-- Why sending cannot start this agent, or what its route cannot do. -->
   {#if chosenInstalled?.assistant_blocked || chosenInstalled?.assistant_note}
     <!-- An older desktop app sends no assistant_docs, so the link falls back to the agents page. -->
-    <p class="panel-meta" data-agent-note={chosenInstalled.id}>{chosenInstalled.assistant_blocked}{chosenInstalled.assistant_note}{#if chosenInstalled.assistant_blocked} <a href={chosenInstalled.assistant_docs || "https://librepaper.org/agents.html"} target="_blank" rel="noreferrer">{m.agent_setup_docs()}</a>{/if}</p>
+    <p class="panel-meta" data-agent-note={chosenInstalled.id}>{chosenInstalled.assistant_blocked}{chosenInstalled.assistant_note}{#if chosenInstalled.assistant_blocked} <a href={chosenInstalled.assistant_docs || "https://librepaper.org/agents.html"} target="_blank" rel="noreferrer">{m.common_setup_instructions()}</a>{/if}</p>
   {/if}
   {#if assistant.agent !== chosenAgent && chosenInstalled?.assistant_fetches}
     <p class="panel-meta" data-adapter-fetch>{m.agent_adapter_download()}{#if chosenInstalled.assistant_install}{" "}{m.agent_adapter_install()} <code>{chosenInstalled.assistant_install}</code>.{/if}</p>
@@ -896,7 +896,7 @@
               {#if activeTask.cancelRequested}
                 <span class="agent-status-note">{m.agent_stopping()}</span>
               {:else}
-                <button type="button" class="agent-text-action" disabled={busy} onclick={() => void act(() => client.cancel(activeTask.id))}>{m.agent_stop()}</button>
+                <button type="button" class="agent-text-action" disabled={busy} onclick={() => void act(() => client.cancel(activeTask.id))}>{m.common_stop()}</button>
               {/if}
             {/if}
           </span>
@@ -913,7 +913,7 @@
               {#if queuedTasks[0].cancelRequested}
                 <span class="agent-status-note">{m.agent_cancelling()}</span>
               {:else}
-                <button type="button" class="agent-text-action" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(queuedTasks[0].id))}>{m.agent_cancel()}</button>
+                <button type="button" class="agent-text-action" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(queuedTasks[0].id))}>{m.common_cancel()}</button>
               {/if}
             {/if}
           </span>
@@ -933,7 +933,7 @@
   {#if pendingRequest}
     <div class="request-warning" role="alert">
       <span>{m.agent_request_arrived()}</span>
-      <div class="setup-actions"><button class="btn btn-sm lp-control-brand" onclick={() => applyRequest(pendingRequest)}>{m.agent_replace()}</button><button class="btn btn-sm" onclick={() => pendingRequest = null}>{m.agent_keep_current()}</button></div>
+      <div class="setup-actions"><button class="btn btn-sm lp-control-brand" onclick={() => applyRequest(pendingRequest)}>{m.common_replace()}</button><button class="btn btn-sm" onclick={() => pendingRequest = null}>{m.agent_keep_current()}</button></div>
     </div>
   {/if}
   {#if taskView === "prepare" && chosen}
@@ -963,7 +963,7 @@
         <div class="attachment">
           <strong>{m.agent_attachment_summary({ kind: attachment.anchored ? m.agent_selected_text() : m.agent_quoted_text(), count: selectedWords, path: attachment.path || path || m.agent_document_word() })}</strong>
           <blockquote title={selectedText}>{selectedText}</blockquote>
-          <div class="attachment-actions"><button class="btn btn-sm" onclick={removeSelection}>{m.agent_remove()}</button><button class="btn btn-sm" disabled={!selection?.exact} onclick={replaceSelection}>{m.agent_replace_selection()}</button></div>
+          <div class="attachment-actions"><button class="btn btn-sm" onclick={removeSelection}>{m.common_remove()}</button><button class="btn btn-sm" disabled={!selection?.exact} onclick={replaceSelection}>{m.agent_replace_selection()}</button></div>
           {#if !attachment.anchored}<p class="panel-muted" role="alert">{m.agent_preview_passage_note()}</p>{/if}
         </div>
       {/if}

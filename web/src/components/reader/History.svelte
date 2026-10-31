@@ -131,7 +131,7 @@
   const WHY = {
     comment: m.history_commented(),
     created: m.history_created(),
-    cli: m.history_saved(),
+    cli: m.common_saved(),
     publish: m.history_shown_to_readers(),
     restore: m.history_restored(),
     superseded: m.history_replaced_by_restore(),
@@ -205,7 +205,7 @@
       range(event),
       event.type === "editing" && event.authors.length === 1 ? event.authors[0] : "",
       event.type === "collaborative" && event.authors.length ? m.history_contributors({ count: event.authors.length }) : "",
-      m.history_event_versions({ count: event.points.length }),
+      m.history_versions({ count: event.points.length }),
     ].filter(Boolean).join(" · ");
   const soloLine = (event) =>
     [clock(event.points[0].at), event.type === "push" ? event.points[0].label : event.authors.length === 1 ? event.authors[0] : ""]
@@ -351,7 +351,7 @@
 </script>
 
 <div class="panel timeline">
-  <PanelHeader title={m.history_title()} />
+  <PanelHeader title={m.common_history()} />
 
   <!-- The filter and the date control share one row: the panel's title is
        for screen readers only, so a header row would hold a lone icon. -->
@@ -425,7 +425,7 @@
       {#if problem}
         <li class="hx-status">
           <p class="lp-text-error" role="status">{problem}</p>
-          {#if !labels.length}<button type="button" class="btn btn-sm" onclick={() => onretry?.()}>{m.history_retry()}</button>{/if}
+          {#if !labels.length}<button type="button" class="btn btn-sm" onclick={() => onretry?.()}>{m.common_retry()}</button>{/if}
         </li>
       {/if}
 
@@ -450,7 +450,7 @@
             <span class="panel-muted">{m.history_loading_older()}</span>
           {:else if moreProblem}
             <span class="lp-text-error" role="status">{moreProblem}</span>
-            <button type="button" class="btn btn-sm" onclick={() => onloadmore?.()}>{m.history_retry()}</button>
+            <button type="button" class="btn btn-sm" onclick={() => onloadmore?.()}>{m.common_retry()}</button>
           {:else}
             <button type="button" class="btn btn-sm" onclick={() => onloadmore?.()}>{m.history_load_older()}</button>
           {/if}
@@ -460,7 +460,7 @@
       {#if savedProblem}
         <li class="hx-status">
           <p class="lp-text-error" role="status">{savedProblem}</p>
-          <button type="button" class="btn btn-sm" onclick={() => onloadsaved?.()}>{m.history_retry()}</button>
+          <button type="button" class="btn btn-sm" onclick={() => onloadsaved?.()}>{m.common_retry()}</button>
         </li>
       {:else if savedLoading && !savedLoaded}
         <li class="hx-status panel-muted">{m.history_loading_saved()}</li>
@@ -656,7 +656,7 @@
         </button>
         <span class="hx-tools">
           {#if canEdit}
-            <IconButton icon="pencil" tone="plain" size="btn-icon-sm" label={m.history_rename()}
+            <IconButton icon="pencil" tone="plain" size="btn-icon-sm" label={m.common_rename()}
                         onclick={() => startNaming(point)} />
             <IconButton icon="trash" tone="plain" size="btn-icon-sm" label={m.history_remove_saved()}
                         onclick={() => unbookmark(point)} />

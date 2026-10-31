@@ -55,11 +55,11 @@
           </Menu.Trigger>
           <ExplorerMenu>
             <div class="account-who" aria-hidden="true">{shown}</div>
-            <Menu.Item value="signout" class="menuitem">{m.nav_sign_out()}</Menu.Item>
+            <Menu.Item value="signout" class="menuitem">{m.common_sign_out()}</Menu.Item>
           </ExplorerMenu>
         </Menu>
       {:else if signIn && me.providers?.length}
-        <a class="btn btn-sm lp-control-brand" href={signInHref()}>{m.nav_sign_in()}</a>
+        <a class="btn btn-sm lp-control-brand" href={signInHref()}>{m.common_sign_in()}</a>
       {/if}
     </span>
   </div>

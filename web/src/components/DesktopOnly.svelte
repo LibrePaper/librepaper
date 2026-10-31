@@ -20,7 +20,7 @@
   <div {id} class="desktop-only">
     {#if description}<p class="desktop-only-description">{description}</p>{/if}
     <p class="desktop-only-message">{message}</p>
-    <a class="btn btn-sm lp-control-tonal-brand" href={INSTALL_URL} target="_blank" rel="noreferrer">{m.desktoponly_get_app()}</a>
+    <a class="btn btn-sm lp-control-tonal-brand" href={INSTALL_URL} target="_blank" rel="noreferrer">{m.common_get_desktop_app()}</a>
     <a class="btn btn-sm lp-control-brand" href={openLink}>{m.desktoponly_open_app()}</a>
   </div>
 {/if}

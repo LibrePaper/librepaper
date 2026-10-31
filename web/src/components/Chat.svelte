@@ -4,13 +4,13 @@
   import { m } from "../lib/paraglide/messages.js";
   let { messages = [], connected = false, canPost = false, onsend, more = false, loadingOlder = false, loadError = "", onloadolder = undefined } = $props();
 </script>
-<section class="live-chat" aria-label={m.chat_title()}>
-  <h2 class="sr-only">{m.chat_title()}</h2>
+<section class="live-chat" aria-label={m.common_chat()}>
+  <h2 class="sr-only">{m.common_chat()}</h2>
   {#if !connected}<p class="chat-status panel-meta" role="status">{m.chat_offline()}</p>{/if}
   <div class="chat-body">
     <ChatTranscript {messages} {more} {loadingOlder} {loadError} {onloadolder}
-      emptyTitle={m.chat_empty_title()} emptyText={m.chat_empty_text()}
-      roleLabel={(message) => message.creator || m.chat_anonymous()} />
+      emptyTitle={m.common_no_messages_yet()} emptyText={m.chat_empty_text()}
+      roleLabel={(message) => message.creator || m.common_anonymous()} />
   </div>
   {#if !canPost}<p class="panel-muted">{m.chat_comment_required()}</p>{/if}
   <ChatComposer placeholder={m.chat_placeholder()} disabled={!connected || !canPost} {onsend} />

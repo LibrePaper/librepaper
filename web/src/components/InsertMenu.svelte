@@ -75,7 +75,7 @@
     { label: m.insertmenu_group_lists(), ids: ["bulleted-list", "numbered-list", "description-list"] },
     { label: m.insertmenu_group_theorems(), ids: ["theorem", "lemma", "proposition", "definition", "proof", "example", "remark"] },
     { label: m.insertmenu_group_blocks(), ids: ["quote", "quotation", "code-block"] },
-    { label: m.insertmenu_group_document(), ids: ["abstract", "appendix", "toc", "bibliography", "label"] },
+    { label: m.common_document(), ids: ["abstract", "appendix", "toc", "bibliography", "label"] },
     { label: m.insertmenu_group_layout(), ids: ["page-break", "horizontal-rule", "columns", "custom-environment"] }
   ];
 
@@ -183,7 +183,7 @@
     try { result = buildInsertion(id, options, context); }
     catch (cause) { error = errorMessage(cause, m.insertmenu_insertion_invalid()); return; }
     try { oninsert?.(result, context); }
-    catch (cause) { error = errorMessage(cause, m.insertmenu_target_changed()); dialog = id; dialogOpen = true; return; }
+    catch (cause) { error = errorMessage(cause, m.common_insertion_target_changed()); dialog = id; dialogOpen = true; return; }
     dialogGeneration += 1;
     dialogOpen = false;
     dialog = null;
@@ -340,7 +340,7 @@
   </Menu>
 {/snippet}
 
-<MenubarMenu id="insert" label={m.insertmenu_insert()} {disabled}
+<MenubarMenu id="insert" label={m.common_insert()} {disabled}
              onopen={() => {
                // The context from the last opening is released, unless a dialog took it.
                if (menuContext && !(dialogOpen && captured === menuContext)) oncancel?.(menuContext);
@@ -361,10 +361,10 @@
   </div>
 </MenubarMenu>
 
-<Modal bind:open={dialogOpen} title={dialog ? actionLabel(dialog) : m.insertmenu_insert()} description={captured?.format ? m.insertmenu_generated_for({ format: captured.format }) : null} onclose={closeDialog} wide
+<Modal bind:open={dialogOpen} title={dialog ? actionLabel(dialog) : m.common_insert()} description={captured?.format ? m.insertmenu_generated_for({ format: captured.format }) : null} onclose={closeDialog} wide
   confirm={{
     form: "insert-dialog",
-    label: m.insertmenu_insert(),
+    label: m.common_insert(),
     // A failed Zotero import is retried with Insert, so its error does not disable it.
     disabled: busy || (Boolean(error) && !zoteroMode) || !insertReady,
     oncancel: closeDialog,
@@ -392,7 +392,7 @@
         {:else}<p class="panel-muted">{m.insertmenu_bibliography_no_match()}</p>{/each}
       {/if}
     </div>
-    <label class="label">{m.insertmenu_citation_style()} <select class="select" bind:value={draft.style}><option value="default">{m.insertmenu_style_default()}</option><option value="narrative">{m.insertmenu_style_narrative()}</option><option value="parenthetical">{m.insertmenu_style_parenthetical()}</option></select></label>
+    <label class="label">{m.insertmenu_citation_style()} <select class="select" bind:value={draft.style}><option value="default">{m.common_default()}</option><option value="narrative">{m.insertmenu_style_narrative()}</option><option value="parenthetical">{m.insertmenu_style_parenthetical()}</option></select></label>
     <label class="label">{m.insertmenu_locator()} <input class="input" bind:value={draft.locator} /></label>
   {:else if dialog === "figure"}
     <label class="label">{m.insertmenu_figure_image()} <select class="select" bind:value={draft.path}><option value="">{m.insertmenu_figure_choose()}</option>{#if draft.path && !selectedImage}<option value={draft.path}>{draft.path}</option>{/if}{#each (captured?.files || []) as file}{@const path = typeof file === "string" ? file : file.path}{#if /\.(png|jpe?g|gif|svg|pdf|webp)$/i.test(path || "")}<option value={path}>{path}</option>{/if}{/each}</select></label>
@@ -402,34 +402,34 @@
       {#await onpreview(draft.path) then url}{#if url}<img class="insert-image-preview" src={url} alt={m.insertmenu_figure_alt()} />{/if}{/await}
     {:else if selectedImagePreview}<img class="insert-image-preview" src={selectedImagePreview} alt={m.insertmenu_figure_alt()} />{/if}
     <label class="label">{m.insertmenu_caption()} <input class="input" bind:value={draft.caption} /></label>
-    <label class="label">{m.insertmenu_label()} <input class="input" bind:value={draft.label} /></label>
+    <label class="label">{m.common_label()} <input class="input" bind:value={draft.label} /></label>
     <label class="label">{m.insertmenu_width()} <input class="input" bind:value={draft.width} /></label>
   {:else if dialog === "table"}
-    <div class="grid grid-cols-2 gap-3"><label class="label">{m.insertmenu_rows()} <input class="input" type="number" min="1" max="100" bind:value={draft.rows} /></label><label class="label">{m.insertmenu_columns()} <input class="input" type="number" min="1" max="30" bind:value={draft.columns} /></label></div>
+    <div class="grid grid-cols-2 gap-3"><label class="label">{m.common_rows()} <input class="input" type="number" min="1" max="100" bind:value={draft.rows} /></label><label class="label">{m.common_columns()} <input class="input" type="number" min="1" max="30" bind:value={draft.columns} /></label></div>
     <label class="flex items-center gap-2"><input type="checkbox" bind:checked={draft.header} /> {m.insertmenu_header_row()}</label>
-    <label class="label">{m.insertmenu_caption()} <input class="input" bind:value={draft.caption} /></label><label class="label">{m.insertmenu_label()} <input class="input" bind:value={draft.label} /></label>
-    <label class="label">{m.insertmenu_alignment()} <select class="select" bind:value={draft.alignment}><option value="default">{m.insertmenu_alignment_default()}</option><option value="left">{m.insertmenu_align_left()}</option><option value="center">{m.insertmenu_align_center()}</option><option value="right">{m.insertmenu_align_right()}</option></select></label>
+    <label class="label">{m.insertmenu_caption()} <input class="input" bind:value={draft.caption} /></label><label class="label">{m.common_label()} <input class="input" bind:value={draft.label} /></label>
+    <label class="label">{m.insertmenu_alignment()} <select class="select" bind:value={draft.alignment}><option value="default">{m.common_default()}</option><option value="left">{m.insertmenu_align_left()}</option><option value="center">{m.insertmenu_align_center()}</option><option value="right">{m.insertmenu_align_right()}</option></select></label>
   {:else if dialog === "bibliography"}
     <label class="label">{m.insertmenu_bibliography_file()} <select class="select" bind:value={draft.file}><option value="">{m.insertmenu_bibliography_choose_file()}</option>{#each files as file}<option value={file}>{file}</option>{/each}</select></label>
   {:else if dialog === "cross-reference"}
     <label class="label">{m.insertmenu_reference()} <select class="select" bind:value={draft.target}><option value="">{m.insertmenu_reference_choose()}</option>{#each references as ref}{@const value = ref.id || ref.label}<option value={value}>{value}</option>{/each}</select></label>
   {:else if dialog === "display-math"}
     <label class="flex items-center gap-2"><input type="checkbox" bind:checked={draft.numbered} disabled={captured?.format === "markdown"} /> {m.insertmenu_numbered()}</label>
-    <label class="label">{m.insertmenu_label()} <input class="input" bind:value={draft.label} /></label>
+    <label class="label">{m.common_label()} <input class="input" bind:value={draft.label} /></label>
   {:else if dialog === "code-block"}
     <label class="label">{m.insertmenu_language()} <input class="input" bind:value={draft.language} /></label>
   {:else if dialog === "link"}
-    <label class="label">{m.insertmenu_text()} <input class="input" bind:value={draft.text} /></label><label class="label">{m.insertmenu_url()} <input class="input" type="url" bind:value={draft.url} /></label>
+    <label class="label">{m.common_text()} <input class="input" bind:value={draft.text} /></label><label class="label">{m.insertmenu_url()} <input class="input" type="url" bind:value={draft.url} /></label>
   {:else if ["theorem", "lemma", "proposition", "definition", "proof", "example", "remark"].includes(dialog)}
-    <label class="label">{m.insertmenu_title_optional()} <input class="input" bind:value={draft.title} /></label><label class="label">{m.insertmenu_label()} <input class="input" bind:value={draft.label} /></label>
+    <label class="label">{m.insertmenu_title_optional()} <input class="input" bind:value={draft.title} /></label><label class="label">{m.common_label()} <input class="input" bind:value={draft.label} /></label>
   {:else if dialog === "columns"}
-    <div class="grid grid-cols-2 gap-3"><label class="label">{m.insertmenu_columns()} <input class="input" type="number" min="2" max="6" bind:value={draft.columns} /></label>{#if captured?.format !== "quarto"}<label class="label">{m.insertmenu_gap_optional()} <input class="input" bind:value={draft.gap} /></label>{/if}</div>
+    <div class="grid grid-cols-2 gap-3"><label class="label">{m.common_columns()} <input class="input" type="number" min="2" max="6" bind:value={draft.columns} /></label>{#if captured?.format !== "quarto"}<label class="label">{m.insertmenu_gap_optional()} <input class="input" bind:value={draft.gap} /></label>{/if}</div>
   {:else}
-    {#if dialog === "custom-environment"}<label class="label">{m.insertmenu_environment()} <input class="input" bind:value={draft.environment} />{#if environments.length}<select class="select mt-2" aria-label={m.insertmenu_environments_label()} onchange={(event) => draft.environment = event.currentTarget.value}><option value="">{m.insertmenu_environment_choose()}</option>{#each environments as name}<option value={name}>{name}</option>{/each}</select>{/if}</label>{/if}
+    {#if dialog === "custom-environment"}<label class="label">{m.common_environment()} <input class="input" bind:value={draft.environment} />{#if environments.length}<select class="select mt-2" aria-label={m.insertmenu_environments_label()} onchange={(event) => draft.environment = event.currentTarget.value}><option value="">{m.insertmenu_environment_choose()}</option>{#each environments as name}<option value={name}>{name}</option>{/each}</select>{/if}</label>{/if}
     {#if dialog === "custom-environment" && environmentFields.length}<label class="label">{m.insertmenu_arguments()}<textarea class="textarea" rows={environmentFields.length} bind:value={draft.argumentsText}></textarea><span class="panel-muted">{m.insertmenu_arguments_hint({ fields: environmentFields.map(field => field.label).join(", ") })}</span></label>{/if}
-    {#if needsText(dialog)}<label class="label">{m.insertmenu_text()} <input class="input" bind:value={draft.text} /></label>{/if}
-    {#if dialog === "heading"}<div class="grid grid-cols-2 gap-3"><label class="label">{m.insertmenu_level()} <input class="input" type="number" min="1" max={captured?.format === "latex" ? 5 : 6} bind:value={draft.level} /></label><label class="flex items-center gap-2 mt-6"><input type="checkbox" bind:checked={draft.numbered} /> {m.insertmenu_numbered()}</label></div><label class="label">{m.insertmenu_label()} <input class="input" bind:value={draft.label} /></label>{/if}
-    {#if dialog === "label"}<label class="label">{m.insertmenu_label()} <input class="input" bind:value={draft.label} /></label>{/if}
+    {#if needsText(dialog)}<label class="label">{m.common_text()} <input class="input" bind:value={draft.text} /></label>{/if}
+    {#if dialog === "heading"}<div class="grid grid-cols-2 gap-3"><label class="label">{m.common_level()} <input class="input" type="number" min="1" max={captured?.format === "latex" ? 5 : 6} bind:value={draft.level} /></label><label class="flex items-center gap-2 mt-6"><input type="checkbox" bind:checked={draft.numbered} /> {m.insertmenu_numbered()}</label></div><label class="label">{m.common_label()} <input class="input" bind:value={draft.label} /></label>{/if}
+    {#if dialog === "label"}<label class="label">{m.common_label()} <input class="input" bind:value={draft.label} /></label>{/if}
   {/if}
   {#if preview}
     <section class="insert-preview" aria-labelledby="insert-preview-heading"><h3 class="insert-preview-heading" id="insert-preview-heading">{m.insertmenu_preview_heading()}</h3>{#if preview.text}<pre>{preview.text}</pre>{:else}<p class="panel-muted">{m.insertmenu_preview_empty()}</p>{/if}{#if preview.notes?.length}<ul>{#each preview.notes as note}<li>{note}</li>{/each}</ul>{/if}{#if preview.additionalEdits?.length}<p class="panel-muted">{m.insertmenu_preview_edits()}</p>{#each preview.additionalEdits as edit}<pre>{edit.path ? `${edit.path}: ` : ""}{edit.insert || m.insertmenu_preview_delete()}</pre>{/each}{/if}</section>

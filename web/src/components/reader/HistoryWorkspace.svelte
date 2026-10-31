@@ -52,7 +52,7 @@
   {:else if source.problem}
     <div role="alert">
       <p>{source.problem}</p>
-      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => source.select()}>{m.historyworkspace_retry()}</button>
+      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => source.select()}>{m.common_retry()}</button>
     </div>
   {:else if result}
     <div class="history-source-bar">
@@ -69,7 +69,7 @@
         <button type="button" class="btn btn-sm" onclick={() => source.compareWith("")}>{m.historyworkspace_compare_current()}</button>
       {/if}
       <label class="history-source-file">
-        {m.historyworkspace_file()}
+        {m.common_file()}
         <select class="select" aria-label={m.historyworkspace_file_select()} value={path} onchange={event => source.selectFile(event.currentTarget.value)}>
           {#each result.paths as name (name)}<option value={name}>{nameOf(name)}</option>{/each}
         </select>
@@ -80,7 +80,7 @@
           : m.historyworkspace_no_differences()}
       </span>
       <span class="history-source-actions">
-        <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => source.select()}>{m.historyworkspace_refresh()}</button>
+        <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => source.select()}>{m.common_refresh()}</button>
         <!-- A moment is a position in the editing history, not a label: it has
              no archive to download and nothing to restore to by name. -->
         {#if canEdit && source.selected && !isMoment(source.selected)}
@@ -91,7 +91,7 @@
                commenter link cannot reach the history routes this asks. -->
           <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={downloading === source.selected}
                   onclick={() => ondownload?.(source.selected)}>
-            {downloading === source.selected ? m.historyworkspace_downloading() : m.historyworkspace_download()}
+            {downloading === source.selected ? m.historyworkspace_downloading() : m.common_download()}
           </button>
         {/if}
         {#if canEdit && source.selected && !isMoment(source.selected)}

@@ -319,8 +319,8 @@
                     <p class="panel-meta" role="alert">{editError}</p>
                   {/if}
                   <div class="edit-actions">
-                    <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={stopEdit}>{m.commentcard_cancel()}</button>
-                    <button type="submit" class="btn btn-sm lp-control-tonal-brand">{m.commentcard_save()}</button>
+                    <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={stopEdit}>{m.common_cancel()}</button>
+                    <button type="submit" class="btn btn-sm lp-control-tonal-brand">{m.common_save()}</button>
                   </div>
                 </form>
               {:else if post.body}
@@ -356,7 +356,7 @@
           <button type="button" class="more-replies btn btn-sm lp-control-tonal-brand"
             disabled={comment.repliesBusy}
             onclick={() => onloadreplies?.(comment)}>
-            {#if comment.repliesBusy}{m.commentcard_loading()}{:else if comment.repliesError}{m.commentcard_try_again()}{:else}{m.commentcard_show_more_replies({ count: unshownReplies })}{/if}
+            {#if comment.repliesBusy}{m.common_loading()}{:else if comment.repliesError}{m.common_try_again()}{:else}{m.commentcard_show_more_replies({ count: unshownReplies })}{/if}
           </button>
         {/if}
       </div>

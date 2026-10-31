@@ -9,10 +9,10 @@
 
   const NAMES = { latex: "LaTeX", typst: "Typst", markdown: "Markdown", quarto: "Quarto" };
   const DESCRIPTIONS = {
-    latex: m.defaultpreview_description_latex(),
-    typst: m.defaultpreview_description_typst(),
-    markdown: m.defaultpreview_description_markdown(),
-    quarto: m.defaultpreview_description_quarto(),
+    latex: m.defaultpreview_description({ format: "LaTeX" }),
+    typst: m.defaultpreview_description({ format: "Typst" }),
+    markdown: m.defaultpreview_description({ format: "Markdown" }),
+    quarto: m.defaultpreview_description({ format: "Quarto" }),
   };
 
   const name = $derived(NAMES[format]);

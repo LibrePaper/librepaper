@@ -190,10 +190,10 @@
     // literal inferred from its first two entries refuses every later one.
     const list = /** @type {Record<string, any>[]} */ ([
       { key: "mark", label: "", width: 44, resizable: false },
-      { key: "title", label: m.landing_column_project(), sortable: true, min: 160, resizable: !narrow },
+      { key: "title", label: m.common_project(), sortable: true, min: 160, resizable: !narrow },
     ]);
     if (!narrow && !cramped) list.push({ key: "owner", label: m.landing_column_owner(), sortable: true, width: 210, min: 120 });
-    if (!trash && !narrow && !cramped) list.push({ key: "files", label: m.landing_column_files(), sortable: true, width: 90, min: 60 });
+    if (!trash && !narrow && !cramped) list.push({ key: "files", label: m.common_files(), sortable: true, width: 90, min: 60 });
     if (!narrow) {
       list.push({
         key: "updated",
@@ -363,7 +363,7 @@
   // listed as groupings in the rail and the menus.
   const userTags = $derived(tags.filter((tag) => !tag.builtin));
   const activeTag = $derived(tags.find((tag) => tag.id === tagId));
-  const placeName = $derived(place === "tag" ? (activeTag?.name || m.landing_projects()) : PLACE_NAMES[place]);
+  const placeName = $derived(place === "tag" ? (activeTag?.name || m.common_projects()) : PLACE_NAMES[place]);
 
   function nothingHere() {
     if (needle) return m.landing_no_match();
@@ -650,7 +650,7 @@
         ? m.landing_shared_removed({ title: doc.title })
         : m.landing_shared_restored({ title: doc.title }), {
           id: `landing:shared:${doc.slug}`,
-          ...(!hidden ? {} : { action: { label: m.landing_undo(), onClick: () => void setSharedVisibility(doc, false) } }),
+          ...(!hidden ? {} : { action: { label: m.common_undo(), onClick: () => void setSharedVisibility(doc, false) } }),
         });
     } catch (error) {
       say(error?.message || (hidden ? m.landing_shared_remove_failed() : m.landing_shared_show_failed()), {
@@ -928,7 +928,7 @@
     const title = renameTo.trim();
     if (!doc) return;
     if (!title) {
-      renameError = m.landing_name_required();
+      renameError = m.common_give_project_name();
       renameInput?.focus();
       return;
     }
@@ -1204,7 +1204,7 @@
        replaces the last segment and nothing else in the bar. -->
   <Nav {me} phoneMenu={narrow} hidden={barHidden && !newTab}>
     {#snippet children()}
-      <span class="nav-place">{newTab ? m.landing_new_project() : placeName}</span>
+      <span class="nav-place">{newTab ? m.common_new_project() : placeName}</span>
     {/snippet}
     {#snippet tools()}
       {#if narrow}
@@ -1215,19 +1215,19 @@
           <input class="input project-search" type="search" placeholder={m.landing_search_projects()}
                  aria-label={m.landing_search_aria()} bind:value={search} use:focusOnMount
                  onkeydown={(event) => { if (event.key === "Escape") { search = ""; searching = false; } }} />
-          <IconButton icon="x" label={m.landing_close_search()} onclick={() => { search = ""; searching = false; }} />
+          <IconButton icon="x" label={m.common_close_search()} onclick={() => { search = ""; searching = false; }} />
         {:else}
           <IconButton icon="search" label={m.landing_search_projects()} onclick={() => (searching = true)} />
         {/if}
       {:else}
         <input class="input project-search" type="search" placeholder={m.landing_search_projects()}
                aria-label={m.landing_search_aria()} bind:value={search} />
-        <button type="button" class="btn btn-sm nav-action lp-control-tonal-brand" onclick={() => openSettings()}>{m.landing_settings()}</button>
+        <button type="button" class="btn btn-sm nav-action lp-control-tonal-brand" onclick={() => openSettings()}>{m.common_settings()}</button>
       {/if}
       {#if me.can_publish}
-        <button type="button" class="btn btn-sm nav-new nav-action lp-control-tonal-brand" aria-label={m.landing_new_project()} onclick={() => openNew()}>
+        <button type="button" class="btn btn-sm nav-new nav-action lp-control-tonal-brand" aria-label={m.common_new_project()} onclick={() => openNew()}>
           <Icon name="file-plus" size={16} />
-          <span class="nav-new-label">{m.landing_new_project()}</span>
+          <span class="nav-new-label">{m.common_new_project()}</span>
         </button>
       {/if}
     {/snippet}
@@ -1248,7 +1248,7 @@
          width there are the same width. A phone has its places in the Menu. -->
     {#if !narrow}
       <Sidebar tabs={PROJECT_TABS} panel={place} shown={{ comments: false }}
-               resizable={false} label={m.landing_projects()} onselectpanel={goTo}
+               resizable={false} label={m.common_projects()} onselectpanel={goTo}
                badges={trashed.length ? { trash: { counts: [{ tone: "warnings", of: trashed.length }] } } : {}}>
         <!-- The tags of this account are one control under the places. A rail
              three rem wide has no room for a list of names, so the names are in
@@ -1270,18 +1270,18 @@
               </div>
               <div class="tags-menu-divider" role="separator"></div>
               <Menu.Item value="new-tag" class="menuitem project-action-item" data-rail-action="new-tag">
-                <Icon name="plus" size="1rem" /><span class="menuitem-label">{m.landing_new_tag()}</span>
+                <Icon name="plus" size="1rem" /><span class="menuitem-label">{m.common_new_tag()}</span>
               </Menu.Item>
               {#if userTags.length}
                 <Menu.Item value="manage-tags" class="menuitem project-action-item" data-rail-action="manage-tags">
-                  <Icon name="pencil" size="1rem" /><span class="menuitem-label">{m.landing_manage_tags()}</span>
+                  <Icon name="pencil" size="1rem" /><span class="menuitem-label">{m.common_manage_tags()}</span>
                 </Menu.Item>
               {/if}
             </ExplorerMenu>
           </Menu>
         {/snippet}
         {#snippet controls()}
-          <IconButton icon="settings" label={m.landing_settings()} tone="plain" onclick={() => openSettings()} />
+          <IconButton icon="settings" label={m.common_settings()} tone="plain" onclick={() => openSettings()} />
         {/snippet}
       </Sidebar>
     {/if}
@@ -1293,7 +1293,7 @@
         {#if narrow && ["projects", "shared", "favorites", "templates", "tag"].includes(place)}
           <span class="compact-sort">
             <Icon name="arrow-up-down" />
-            <select id="project-sort" class="select" value={compactSort} aria-label={m.landing_sort()} title={m.landing_sort()}
+            <select id="project-sort" class="select" value={compactSort} aria-label={m.common_sort()} title={m.common_sort()}
                     onchange={(event) => chooseCompactSort(event.currentTarget.value)}>
               <option value="updated:desc">{m.landing_sort_updated_desc()}</option>
               <option value="updated:asc">{m.landing_sort_updated_asc()}</option>
@@ -1359,7 +1359,7 @@
               </Menu>
             {/if}
             <button type="button" class="btn btn-sm lp-tone-error" onclick={deleteSelected}>
-              <Icon name="trash" size={16} /> {m.landing_delete()}
+              <Icon name="trash" size={16} /> {m.common_delete()}
             </button>
           {/if}
           <IconButton icon="x" label={m.landing_clear_selection()} onclick={() => (selected = new Set())} />
@@ -1367,7 +1367,7 @@
       {:else if place !== "trash"}
         {#if !narrow}
           <div class="toolbar">
-            <span class="row-count">{place === "templates" ? m.landing_template_count({ count: shown.length }) : m.landing_project_count({ count: shown.length })}</span>
+            <span class="row-count">{place === "templates" ? m.common_template_count({ count: shown.length }) : m.landing_project_count({ count: shown.length })}</span>
           </div>
         {/if}
       {:else}
@@ -1447,7 +1447,7 @@
               {/if}
             </span>
             <span class="title-note">
-              {#if doc.local_copy}<span>{m.landing_offline()}</span>{/if}
+              {#if doc.local_copy}<span>{m.common_offline()}</span>{/if}
               <!-- The file the search found, when it was not the title.
                    Opening it opens the project on that file. -->
               {#if found(doc, needle).path}
@@ -1464,7 +1464,7 @@
                  a column that is blank on most rows reads as a column that
                  failed to load. -->
             {#if doc.owner}
-              <span class="owner-name">{mine(doc) ? m.landing_you() : doc.owner}</span>
+              <span class="owner-name">{mine(doc) ? m.common_you() : doc.owner}</span>
             {/if}
           {:else if column.key === "files"}
             {doc.files ?? "-"}
@@ -1496,15 +1496,15 @@
                       <Icon name="file-plus" size="1rem" /><span class="menuitem-label">{m.landing_new_from_template()}</span>
                     </Menu.Item>
                     <Menu.Item value="rename" class="menuitem project-action-item" data-project-action="rename">
-                      <Icon name="pencil" size="1rem" /><span class="menuitem-label">{m.landing_rename()}</span>
+                      <Icon name="pencil" size="1rem" /><span class="menuitem-label">{m.common_rename()}</span>
                     </Menu.Item>
                     <Menu.Item value="trash" class="menuitem project-action-item" data-project-action="trash">
-                      <Icon name="trash" size="1rem" /><span class="menuitem-label">{m.landing_move_to_trash()}</span>
+                      <Icon name="trash" size="1rem" /><span class="menuitem-label">{m.common_move_to_trash()}</span>
                     </Menu.Item>
                   {:else}
                     {#if mine(doc)}
                       <Menu.Item value="rename" class="menuitem project-action-item" data-project-action="rename">
-                        <Icon name="pencil" size="1rem" /><span class="menuitem-label">{m.landing_rename()}</span>
+                        <Icon name="pencil" size="1rem" /><span class="menuitem-label">{m.common_rename()}</span>
                       </Menu.Item>
                     {/if}
                     {#if !mine(doc) && place === "shared"}
@@ -1526,7 +1526,7 @@
                     {@render tagItems((tag) => hasTag(doc, tag.id))}
                     {#if mine(doc)}
                       <Menu.Item value="trash" class="menuitem project-action-item" data-project-action="trash">
-                        <Icon name="trash" size="1rem" /><span class="menuitem-label">{m.landing_move_to_trash()}</span>
+                        <Icon name="trash" size="1rem" /><span class="menuitem-label">{m.common_move_to_trash()}</span>
                       </Menu.Item>
                     {/if}
                   {/if}
@@ -1535,9 +1535,9 @@
             {:else if place === "templates"}
               <span class="project-actions">
                 <IconButton icon="file-plus" title={m.landing_new_from_template()} label={m.landing_new_project_from_aria({ title: doc.title })} onclick={() => askNameFrom(doc)} />
-                <IconButton icon="pencil" title={m.landing_rename()} label={m.landing_rename_aria({ title: doc.title })} onclick={() => askRename(doc)} />
+                <IconButton icon="pencil" title={m.common_rename()} label={m.landing_rename_aria({ title: doc.title })} onclick={() => askRename(doc)} />
                 <IconButton icon="trash" colour="lp-text-muted lp-hover-error"
-                            title={m.landing_move_to_trash()} label={m.landing_move_to_trash_aria({ title: doc.title })} onclick={() => askDelete(doc)} />
+                            title={m.common_move_to_trash()} label={m.landing_move_to_trash_aria({ title: doc.title })} onclick={() => askDelete(doc)} />
               </span>
             {:else if place === "trash"}
               <span class="trash-actions">
@@ -1556,7 +1556,7 @@
                    throwing one project away should not need a mode. -->
               <span class="project-actions">
                 {#if mine(doc)}
-                  <IconButton icon="pencil" title={m.landing_rename()} label={m.landing_rename_aria({ title: doc.title })} onclick={() => askRename(doc)} />
+                  <IconButton icon="pencil" title={m.common_rename()} label={m.landing_rename_aria({ title: doc.title })} onclick={() => askRename(doc)} />
                 {/if}
                 {#if !mine(doc) && place === "shared"}
                   <IconButton icon="eye-off" title={m.landing_remove_from_shared()} label={m.landing_remove_from_shared_aria({ title: doc.title })} disabled={sharedVisibilityPending.has(doc.slug)} onclick={() => setSharedVisibility(doc, true)} />
@@ -1567,7 +1567,7 @@
                             disabled={forking === doc.slug} onclick={() => askFork(doc)} />
                 {#if mine(doc)}
                   <IconButton icon="trash" colour="lp-text-muted lp-hover-error"
-                              title={m.landing_move_to_trash()} label={m.landing_move_to_trash_aria({ title: doc.title })} onclick={() => askDelete(doc)} />
+                              title={m.common_move_to_trash()} label={m.landing_move_to_trash_aria({ title: doc.title })} onclick={() => askDelete(doc)} />
                 {/if}
                 <Menu onSelect={(chosen) => tagChosen(chosen.value, [doc])}
                       positioning={{ placement: "bottom-end", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}>
@@ -1602,7 +1602,7 @@
        projects. -->
   <Nav {me}>
     {#snippet tools()}
-      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => openSettings()}>{m.landing_settings()}</button>
+      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => openSettings()}>{m.common_settings()}</button>
     {/snippet}
   </Nav>
   <Page width="measure">
@@ -1653,11 +1653,11 @@
 <Modal open={Boolean(renaming)} title={m.landing_rename_title()}
        description={m.landing_rename_description()}
        onclose={() => { renaming = null; renameError = ""; }}
-       confirm={{ form: "rename-project", label: m.landing_rename(), oncancel: () => (renaming = null) }}>
+       confirm={{ form: "rename-project", label: m.common_rename(), oncancel: () => (renaming = null) }}>
   {#snippet children()}
     <form id="rename-project" onsubmit={reallyRename}>
       <label class="label">
-        <span class="label-text">{m.landing_name_label()}</span>
+        <span class="label-text">{m.common_name()}</span>
         <!-- svelte-ignore a11y_autofocus -- the dialog exists to ask this one thing -->
         <input class="input" autofocus bind:this={renameInput} bind:value={renameTo} />
       </label>
@@ -1676,7 +1676,7 @@
   {#snippet children()}
     <form id="copy-project" onsubmit={fork}>
       <label class="label">
-        <span class="label-text">{m.landing_name_label()}</span>
+        <span class="label-text">{m.common_name()}</span>
         <!-- svelte-ignore a11y_autofocus -- the dialog exists to ask this one thing -->
         <input class="input" autofocus bind:this={copyInput} bind:value={copyTo} />
       </label>
@@ -1685,30 +1685,30 @@
   {/snippet}
 </Modal>
 
-<Modal open={Boolean(tagFor)} title={m.landing_new_tag()}
+<Modal open={Boolean(tagFor)} title={m.common_new_tag()}
        description={m.landing_tag_new_description()}
        onclose={() => { tagFor = null; tagError = ""; }}
        confirm={{ form: "new-tag", label: m.landing_make_tag(), oncancel: () => (tagFor = null) }}>
   {#snippet children()}
     <form id="new-tag" onsubmit={createTag}>
       <label class="label">
-        <span class="label-text">{m.landing_name_label()}</span>
+        <span class="label-text">{m.common_name()}</span>
         <!-- svelte-ignore a11y_autofocus -- the dialog exists to ask this one thing -->
         <input class="input" autofocus maxlength="40" bind:value={tagName} />
       </label>
       <div class="label">
-        <span class="label-text">{m.landing_colour_label()}</span>
-        <TagSwatches value={tagShade} label={m.landing_colour_label()} onchange={(key) => (tagShade = key)} />
+        <span class="label-text">{m.common_colour()}</span>
+        <TagSwatches value={tagShade} label={m.common_colour()} onchange={(key) => (tagShade = key)} />
       </div>
       {#if tagError}<p class="lp-text-error text-sm">{tagError}</p>{/if}
     </form>
   {/snippet}
 </Modal>
 
-<Modal open={managing} title={m.landing_manage_tags()} wider
+<Modal open={managing} title={m.common_manage_tags()} wider
        description={m.landing_manage_tags_description()}
        onclose={() => (managing = false)}
-       confirm={{ label: m.landing_done(), onclick: () => (managing = false), cancel: false }}>
+       confirm={{ label: m.common_done(), onclick: () => (managing = false), cancel: false }}>
   {#snippet children()}
     {#if userTags.length}
       <ul class="tag-manage">
@@ -1737,7 +1737,7 @@
        title={confirmKind === "purge" ? m.landing_delete_for_good_question() : m.landing_trash_question()}
        description={confirmText}
        confirm={{
-         label: confirmKind === "purge" ? m.landing_delete_for_good() : m.landing_move_to_trash(),
+         label: confirmKind === "purge" ? m.landing_delete_for_good() : m.common_move_to_trash(),
          tone: "error",
          onclick: confirmKind === "purge" ? reallyPurge : reallyDelete,
        }}></Modal>

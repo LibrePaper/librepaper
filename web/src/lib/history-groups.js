@@ -285,8 +285,8 @@ export function periodTitle(period, today) {
   const { kind, value } = period;
   if (kind === "year") return value;
   if (kind === "day") {
-    if (value === today) return m.history_groups_today();
-    if (value === shiftDay(today, -1)) return m.history_groups_yesterday();
+    if (value === today) return m.common_today();
+    if (value === shiftDay(today, -1)) return m.common_yesterday();
     /** @type {Intl.DateTimeFormatOptions} */
     const options = { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" };
     if (value.slice(0, 4) !== today.slice(0, 4)) options.year = "numeric";

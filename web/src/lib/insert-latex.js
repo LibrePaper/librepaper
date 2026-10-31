@@ -60,7 +60,7 @@ export function buildLatex(id, options = {}, context = {}) {
   if (id === "toc") return result("\\tableofcontents", [], notes);
   if (id === "figure") {
     add("graphicx");
-    if (!options.src) throw Error(m.insert_latex_choose_image());
+    if (!options.src) throw Error(m.insert_choose_image());
     const src=s(options.src).replace(/[{}%#]/g,c=>'\\'+c),rawWidth=options.width;
     const width=/%$/.test(rawWidth||'')?(parseFloat(rawWidth)/100)+'\\linewidth':rawWidth||'\\linewidth';
     const caption=options.caption||options.label?'\\caption{'+tex(options.caption||'Figure')+'}\n':'';
@@ -68,7 +68,7 @@ export function buildLatex(id, options = {}, context = {}) {
     return result('\\begin{figure}[htbp]\n\\centering\n\\includegraphics[width='+width+']{'+src+'}\n'+caption+anchor+'\\end{figure}',additionalEdits,notes);
   }
   if (id === "table") { const header = options.header !== false, alignment = { left: "l", center: "c", right: "r" }[options.alignment] || (options.alignment === "default" ? "c" : s(options.alignment, "c").slice(0, 1)), align = alignment.repeat(colCount); const cells = []; for (let r = 0; r < rowCount; r++) cells.push(Array.from({ length: colCount }, (_, j) => r === 0 && header ? tex(options.headers?.[j] || `Header ${j + 1}`) : tex(options.cells?.[r]?.[j] || `Cell ${r + 1},${j + 1}`)).join(" & ")); const tabular = `\\begin{tabular}{${align}}\n${header ? "\\toprule\n" : ""}${cells.join(" \\\\\n")}${header ? " \\\\\n\\bottomrule" : ""}\n\\end{tabular}`; if (header) add("booktabs"); const caption = options.caption || options.label ? `\\caption{${tex(options.caption || "Table")}}\n` : ""; const lab = options.label ? `\\label{${key(options.label)}}\n` : ""; return result(`\\begin{table}[${options.placement || "htbp"}]\n\\centering\n${caption}${lab}${tabular}\n\\end{table}`, additionalEdits, notes, header ? "Header 1" : "Cell 1,1"); }
-  if (id === "citation") { const keys = options.keys || []; if (!keys.length) throw Error(m.insert_latex_choose_reference()); if (keys.some(k => !/^[\p{L}\p{N}_.:+-]+$/u.test(k))) throw Error(m.insert_latex_citation_key()); const loc = options.locator ? `[${tex(options.locator)}]` : ""; const biblatex = /usepackage(?:\[[^\]]*\])?\{biblatex\}/.test(text) || c.biblatex; const natbib = /usepackage(?:\[[^\]]*\])?\{natbib\}/.test(text); const style = options.style || "parenthetical"; if (!biblatex && !natbib && style === "narrative") {
+  if (id === "citation") { const keys = options.keys || []; if (!keys.length) throw Error(m.insert_latex_choose_reference()); if (keys.some(k => !/^[\p{L}\p{N}_.:+-]+$/u.test(k))) throw Error(m.insert_unsupported_citation_key()); const loc = options.locator ? `[${tex(options.locator)}]` : ""; const biblatex = /usepackage(?:\[[^\]]*\])?\{biblatex\}/.test(text) || c.biblatex; const natbib = /usepackage(?:\[[^\]]*\])?\{natbib\}/.test(text); const style = options.style || "parenthetical"; if (!biblatex && !natbib && style === "narrative") {
       additionalEdits.push(...packageEdit("natbib", c, notes));
       const existing = text.match(/\\bibliographystyle\{plain\}/);
       if (existing) additionalEdits.push({path:c.entryPath || c.path,from:existing.index,to:existing.index+existing[0].length,insert:'\\bibliographystyle{plainnat}'});

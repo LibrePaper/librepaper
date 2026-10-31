@@ -19,7 +19,7 @@ export function previewNotes({ openPath, openIsText, target }) {
   if (!openPath || !openIsText) return [];
   const name = openPath.split("/").pop();
   if (target.reason === "none") {
-    return [{ severity: "info", message: m.preview_notes_no_preview({ name }), file: openPath, line: 0, source: "preview" }];
+    return [{ severity: "info", message: m.common_no_own_preview({ name }), file: openPath, line: 0, source: "preview" }];
   }
   if (target.reason === "inside" && target.path) {
     return [{ severity: "info", message: m.preview_notes_shown_inside({ name, path: target.path }), file: openPath, line: 0, source: "preview" }];

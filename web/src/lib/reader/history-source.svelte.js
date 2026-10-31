@@ -97,8 +97,8 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
       state.result = {
         oldTree,
         newTree,
-        oldLabel: oldPoint ? label(oldPoint) : m.history_source_current_version(),
-        newLabel: newPoint ? label(newPoint) : m.history_source_current_version(),
+        oldLabel: oldPoint ? label(oldPoint) : m.history_current_version(),
+        newLabel: newPoint ? label(newPoint) : m.history_current_version(),
         against: base,
         paths,
         status,

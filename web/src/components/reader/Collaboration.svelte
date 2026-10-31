@@ -9,7 +9,7 @@
   let {
     messages = [], connected = false, canPost = false, onsend = undefined,
     more = false, loadingOlder = false, loadError = "", canClear = false, onloadolder = undefined, onclear = undefined,
-    comments = [], identity = "", commentingAs = m.collaboration_anonymous(),
+    comments = [], identity = "", commentingAs = m.common_anonymous(),
     canModerate = false, canComment = true,
     onreveal = undefined, onresolve = undefined, ondelete = undefined,
     ondeletemany = undefined, onreply = undefined, onedit = undefined, onagent = undefined, pending = undefined,
@@ -27,8 +27,8 @@
   } = $props();
   // View-only links never see the chat, so there is no tab for it.
   const VIEWS = $derived([
-    ...(canComment ? [{ id: "chat", label: m.collaboration_chat() }] : []),
-    { id: "comments", label: m.collaboration_comments() },
+    ...(canComment ? [{ id: "chat", label: m.common_chat() }] : []),
+    { id: "comments", label: m.common_comments() },
     { id: "highlights", label: m.collaboration_highlights() },
   ]);
   $effect(() => { if (!canComment && tab === "chat") tab = "comments"; });
@@ -40,7 +40,7 @@
 
 <!-- The strip, its ids and the layout of a pane are PanelTabs', shared with
      the agent panel. What is left here is what the tabs contain. -->
-<section class="collaboration panel panel-tabbed" aria-label={m.collaboration_section_label()}>
+<section class="collaboration panel panel-tabbed" aria-label={m.common_collaboration()}>
   {#snippet clearChat()}
     <IconButton icon="trash" label={m.collaboration_clear_chat()} tone="plain" size="btn-icon-sm" onclick={() => onclear?.()} />
   {/snippet}

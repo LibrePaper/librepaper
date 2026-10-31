@@ -27,7 +27,7 @@
   function status(tool) {
     if (!connected) return { label: m.toolssettings_not_checked(), tone: "neutral" };
     if (tool?.available) return { label: tool.version ? m.toolssettings_available_version({ version: tool.version }) : m.toolssettings_available(), tone: "good" };
-    return { label: m.toolssettings_not_found(), tone: "warn" };
+    return { label: m.common_not_found(), tone: "warn" };
   }
 
   function description(key, title, tool) {
@@ -66,7 +66,7 @@
 {#if view.available}
   <section id="tools-programs" class="settings-subsection" aria-labelledby="tools-programs-heading">
     <div class="settings-section-title">
-      <h4 class="settings-subhead" id="tools-programs-heading">{m.toolssettings_programs()}</h4>
+      <h4 class="settings-subhead" id="tools-programs-heading">{m.common_programs()}</h4>
       <button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void rescan()}>{view.pending === "rescan" ? m.toolssettings_scanning() : m.toolssettings_rescan()}</button>
     </div>
     {#each tools as { key, title, tool } (key)}
@@ -77,17 +77,17 @@
   {#if running}
     <section id="tools-activity" class="settings-subsection">
       <div class="settings-section-title">
-        <h4 class="settings-subhead">{m.toolssettings_activity()}</h4>
+        <h4 class="settings-subhead">{m.common_activity()}</h4>
       </div>
       <table class="desktop-table">
-        <thead><tr><th scope="col">{m.toolssettings_col_name()}</th><th scope="col">{m.toolssettings_col_elapsed()}</th><th scope="col">{m.toolssettings_col_status()}</th><th scope="col"><span class="sr-only">{m.toolssettings_col_action()}</span></th></tr></thead>
+        <thead><tr><th scope="col">{m.common_name()}</th><th scope="col">{m.toolssettings_col_elapsed()}</th><th scope="col">{m.toolssettings_col_status()}</th><th scope="col"><span class="sr-only">{m.toolssettings_col_action()}</span></th></tr></thead>
         <tbody>
           {#each jobs as job (job.id)}
             <tr>
               <th scope="row">{[job.kind, job.stage].filter(Boolean).join(" · ") || m.toolssettings_local_job()}</th>
               <td>{elapsed(job)}</td>
               <td>{job.status || m.toolssettings_running()}{job.error ? ` · ${job.error}` : ""}</td>
-              <td class="desktop-action">{#if active(job.status)}<button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`job-${job.id}`, m.toolssettings_cancel_requested(), `/jobs/${view.id(job.id)}/cancel`, { method: "POST" })}>{m.toolssettings_cancel()}</button>{/if}</td>
+              <td class="desktop-action">{#if active(job.status)}<button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`job-${job.id}`, m.toolssettings_cancel_requested(), `/jobs/${view.id(job.id)}/cancel`, { method: "POST" })}>{m.common_cancel()}</button>{/if}</td>
             </tr>
           {/each}
           {#each sessions as session (session.id)}
@@ -96,7 +96,7 @@
               <th scope="row">{session.name || session.agent || session.id || m.toolssettings_agent_session()}</th>
               <td>{elapsed(session)}</td>
               <td>{sessionStatus}</td>
-              <td class="desktop-action">{#if active(sessionStatus)}<button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`session-${session.id}`, m.toolssettings_stop_requested(), `/agents/sessions/${view.id(session.id)}/cancel`, { method: "POST" })}>{m.toolssettings_stop()}</button>{/if}</td>
+              <td class="desktop-action">{#if active(sessionStatus)}<button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`session-${session.id}`, m.toolssettings_stop_requested(), `/agents/sessions/${view.id(session.id)}/cancel`, { method: "POST" })}>{m.common_stop()}</button>{/if}</td>
             </tr>
           {/each}
         </tbody>

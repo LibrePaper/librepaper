@@ -8,9 +8,9 @@ import { m } from "../paraglide/messages.js";
 export { symbolSpellings as entrySpellings } from "./index.js";
 
 export const PICKER_CATEGORIES = [
-  { id: "recent", label: m.catalog_recent() },
-  { id: "favorites", label: m.catalog_favorites() },
-  ...CATEGORIES.flatMap(category => (category.id === "delimiters" ? [category, { id: "templates", label: m.catalog_templates() }] : [category])),
+  { id: "recent", label: m.common_recent() },
+  { id: "favorites", label: m.common_favorites() },
+  ...CATEGORIES.flatMap(category => (category.id === "delimiters" ? [category, { id: "templates", label: m.common_templates() }] : [category])),
 ];
 
 // Each template tile names the template it writes, and its spellings are the

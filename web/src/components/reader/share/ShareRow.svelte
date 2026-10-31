@@ -22,7 +22,7 @@
                   disabled={busy} onclick={() => oncopy(full)} />
     {/if}
     <span class="share-revoke">
-      <IconButton icon="trash" label={m.sharerow_revoke_label({ name })} title={kind === "link" ? m.sharerow_revoke_link() : m.sharerow_revoke_token()} tone="plain" size="btn-icon-sm"
+      <IconButton icon="trash" label={m.sharerow_revoke_label({ name })} title={kind === "link" ? m.common_revoke_link() : m.common_revoke_token()} tone="plain" size="btn-icon-sm"
                   disabled={busy} onclick={onrevoke} />
     </span>
   </div>

@@ -11,10 +11,10 @@ function sameDay(a, b) {
 
 // "Today", "Yesterday", or a month and day; the year is added when it is not this one.
 export function dayLabel(at, now = new Date()) {
-  if (sameDay(at, now)) return m.chat_rows_today();
+  if (sameDay(at, now)) return m.common_today();
   const yesterday = new Date(now);
   yesterday.setDate(now.getDate() - 1);
-  if (sameDay(at, yesterday)) return m.chat_rows_yesterday();
+  if (sameDay(at, yesterday)) return m.common_yesterday();
   const options = { month: "long", day: "numeric" };
   if (at.getFullYear() !== now.getFullYear()) options.year = "numeric";
   return at.toLocaleDateString(locale(), options);

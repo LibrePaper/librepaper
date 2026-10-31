@@ -52,7 +52,7 @@
 </script>
 
 <div class="flex flex-col gap-6">
-  <SettingRow id="account-erase" stacked title={m.accountsettings_erase_title()}
+  <SettingRow id="account-erase" stacked title={m.common_erase_this_account()}
               description={m.accountsettings_erase_description()}>
     {#if started}
       <div class="flex flex-col gap-2" role="status">
@@ -76,7 +76,7 @@
                    aria-label={m.accountsettings_handle_aria()} bind:value={typed} />
           </label>
           <div class="flex gap-2">
-            <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => (asking = false)} disabled={erasing}>{m.accountsettings_cancel()}</button>
+            <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => (asking = false)} disabled={erasing}>{m.common_cancel()}</button>
             <button type="button" class="btn btn-sm lp-control-danger" onclick={erase} disabled={!confirmed || erasing}>
               {erasing ? m.accountsettings_erasing() : m.accountsettings_erase_button()}
             </button>

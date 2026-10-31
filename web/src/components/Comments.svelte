@@ -35,7 +35,7 @@
     // Optional view filter used by the collaboration tabs. Highlight notes
     // remain in both views when they carry a discussion.
     filter = "all",
-    title = m.comments_title(),
+    title = m.common_comments(),
     // The standing line at the top of the panel: how a comment gets made at
     // all. It is not an empty state -- someone who has read one comment still
     // has to be told where the next one comes from -- so it stays put.
@@ -88,7 +88,7 @@
   const partial = $derived(Boolean(page) && !page.complete);
   const meta = $derived.by(() => {
     if (!page) return filtered.length ? m.comments_meta_total({ open, total: filtered.length }) : undefined;
-    if (page.loading) return m.comments_loading();
+    if (page.loading) return m.common_loading();
     if (filter === "all") {
       return partial
         ? m.comments_meta_loaded({ open: page.open, total: page.total, loaded: comments.length })
@@ -223,7 +223,7 @@
           <span>{page.error}</span>
           <button type="button" class="btn btn-sm lp-control-tonal-brand"
             disabled={page.busy}
-            onclick={() => onloadmore?.()}>{m.comments_try_again()}</button>
+            onclick={() => onloadmore?.()}>{m.common_try_again()}</button>
         </p>
       {/if}
       {#if page.loading}
@@ -234,7 +234,7 @@
         <button type="button" class="load-more btn btn-sm lp-control-tonal-brand"
           disabled={page.busy}
           onclick={() => onloadmore?.()}>
-          {page.busy ? m.comments_loading() : m.comments_load_more({ count: remaining })}
+          {page.busy ? m.common_loading() : m.comments_load_more({ count: remaining })}
         </button>
       {/if}
     {/if}

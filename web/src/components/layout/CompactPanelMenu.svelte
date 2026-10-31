@@ -118,12 +118,12 @@
           class="menuitem compact-panel-item"
           data-panel-id={tab.id}
           disabled={tab.disabled}
-          aria-label={tab.disabled ? m.compactpanelmenu_demo_unavailable({ says: tab.says }) : badges[tab.id]?.says || tab.says}
+          aria-label={tab.disabled ? m.common_demo_unavailable({ says: tab.says }) : badges[tab.id]?.says || tab.says}
           aria-current={selected ? "true" : undefined}
         >
           <span class="menuitem-check" aria-hidden="true">{selected ? "✓" : ""}</span>
           <Icon name={tab.icon} size="1rem" />
-          <span class="menuitem-label">{tab.disabled ? m.compactpanelmenu_demo_unavailable({ says: tab.says }) : tab.says}</span>
+          <span class="menuitem-label">{tab.disabled ? m.common_demo_unavailable({ says: tab.says }) : tab.says}</span>
           {#if counts[tab.id]}<span class="menuitem-count">{counts[tab.id]}</span>{/if}
           {#if badges[tab.id]?.dot}<span class="menuitem-dot" aria-hidden="true"></span>{/if}
         </Menu.Item>
@@ -141,13 +141,13 @@
         <Menu.Item value="tags:new" class="menuitem workspace-action" data-workspace-action="new-tag">
           <span class="menuitem-check" aria-hidden="true"></span>
           <Icon name="plus" size="1rem" />
-          <span class="menuitem-label">{m.compactpanelmenu_new_tag()}</span>
+          <span class="menuitem-label">{m.common_new_tag()}</span>
         </Menu.Item>
         {#if tags.length}
           <Menu.Item value="tags:manage" class="menuitem workspace-action" data-workspace-action="manage-tags">
             <span class="menuitem-check" aria-hidden="true"></span>
             <Icon name="pencil" size="1rem" />
-            <span class="menuitem-label">{m.compactpanelmenu_manage_tags()}</span>
+            <span class="menuitem-label">{m.common_manage_tags()}</span>
           </Menu.Item>
         {/if}
       {/if}
@@ -155,7 +155,7 @@
       <Menu.Item value="settings" class="menuitem workspace-action" data-workspace-action="settings">
         <span class="menuitem-check" aria-hidden="true"></span>
         <Icon name="settings" size="1rem" />
-        <span class="menuitem-label">{m.compactpanelmenu_settings()}</span>
+        <span class="menuitem-label">{m.common_settings()}</span>
       </Menu.Item>
       <Menu.Item value="home" class="menuitem workspace-action" data-workspace-action="home">
         {#snippet element(attributes)}
@@ -182,7 +182,7 @@
         <Menu.Item value="signout" class="menuitem workspace-action" data-workspace-action="signout">
           <span class="menuitem-check" aria-hidden="true"></span>
           <Icon name="log-out" size="1rem" />
-          <span class="menuitem-label">{m.compactpanelmenu_sign_out()}</span>
+          <span class="menuitem-label">{m.common_sign_out()}</span>
         </Menu.Item>
       {:else if me.providers?.length}
         <div class="compact-panels-divider" role="separator"></div>
@@ -191,7 +191,7 @@
             <a {...retargetElementAttributes(attributes)} href={signInHref()} class="menuitem workspace-action" data-workspace-action="signin">
               <span class="menuitem-check" aria-hidden="true"></span>
               <Icon name="log-in" size="1rem" />
-              <span class="menuitem-label">{m.compactpanelmenu_sign_in()}</span>
+              <span class="menuitem-label">{m.common_sign_in()}</span>
             </a>
           {/snippet}
         </Menu.Item>

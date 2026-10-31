@@ -7,7 +7,7 @@
 
 <div class="comparison-bar" role="status">
   <p class="comparison-says">{says}</p>
-  <button type="button" class="btn btn-sm" onclick={onclose}>{m.comparisonbar_close()}</button>
+  <button type="button" class="btn btn-sm" onclick={onclose}>{m.common_close()}</button>
 </div>
 
 <style>

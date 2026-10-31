@@ -29,7 +29,7 @@
       <h3 class="group-name" id="shortcuts-{uid}-{group.name}">{group.name}</h3>
       <table class="keytable">
         <thead class="sr-only">
-          <tr><th scope="col">{m.shortcuttable_col_command()}</th><th scope="col">{m.shortcuttable_col_shortcut()}</th><th scope="col">{m.shortcuttable_col_where()}</th></tr>
+          <tr><th scope="col">{m.common_command()}</th><th scope="col">{m.shortcuttable_col_shortcut()}</th><th scope="col">{m.shortcuttable_col_where()}</th></tr>
         </thead>
         <tbody>
           {#each group.rows as row (row.id)}
@@ -44,7 +44,7 @@
                     </span>
                   {/each}
                 {:else}
-                  <span class="nokeys">{m.shortcuttable_palette_only()}</span>
+                  <span class="nokeys">{m.common_command_palette()}</span>
                 {/if}
               </td>
               <td class="note">{row.note}</td>

@@ -77,7 +77,7 @@
   }
 </script>
 
-<Modal bind:open title={m.settingsdialog_title()} page>
+<Modal bind:open title={m.common_settings()} page>
   <div class="settings">
     <nav class="settings-nav" aria-label={m.settingsdialog_categories_label()}>
       <input class="input input-sm settings-search" type="search" placeholder={m.settingsdialog_search()} aria-label={m.settingsdialog_search()} bind:value={query} />
@@ -108,7 +108,7 @@
         {:else if shown.id === "rendering"}
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">LaTeX</h4></div>
-            <p class="settings-section-note">{m.settingsdialog_latex_note()}</p>
+            <p class="settings-section-note">{m.renderersettings_description({ name: "LaTeX" })}</p>
             <DefaultPreviewSetting format="latex" {userId} onpreferences={onbuildpreferences} />
             <BuildSettings format="latex" {userId} onpreferences={onbuildpreferences} />
             <RendererSettings format="latex" {userId} onpreferences={onbuildpreferences} />
@@ -117,14 +117,14 @@
 
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">Typst</h4></div>
-            <p class="settings-section-note">{m.settingsdialog_typst_note()}</p>
+            <p class="settings-section-note">{m.renderersettings_description({ name: "Typst" })}</p>
             <DefaultPreviewSetting format="typst" {userId} onpreferences={onbuildpreferences} />
             <RendererSettings format="typst" {userId} onpreferences={onbuildpreferences} />
           </section>
 
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">Markdown</h4></div>
-            <p class="settings-section-note">{m.settingsdialog_markdown_note()}</p>
+            <p class="settings-section-note">{m.renderersettings_description({ name: "Markdown" })}</p>
             <DefaultPreviewSetting format="markdown" {userId} onpreferences={onbuildpreferences} />
             <RendererSettings format="markdown" {userId} onpreferences={onbuildpreferences} />
           </section>

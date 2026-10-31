@@ -32,7 +32,7 @@
     description = null,
     children = undefined,
     confirm = null,
-    cancelLabel = m.modal_cancel(),
+    cancelLabel = m.common_cancel(),
     onclose = undefined,
     wide = false,
     wider = false,
@@ -194,7 +194,7 @@
             <div class="modal-page-bar-inner">
               <button type="button" class="modal-back" onclick={close}>
                 <Icon name="arrow-left" size={18} />
-                {m.modal_back()}
+                {m.common_back()}
               </button>
               <Dialog.Title class="modal-page-title">{title}</Dialog.Title>
             </div>
@@ -217,7 +217,7 @@
                   <Dialog.Description class="lp-text-secondary text-sm">{description}</Dialog.Description>
                 {/if}
               </div>
-              <IconButton icon="x" label={m.modal_close()} tone="plain" size="btn-icon-sm" onclick={close} />
+              <IconButton icon="x" label={m.common_close()} tone="plain" size="btn-icon-sm" onclick={close} />
             </header>
           </div>
           <div class={compact ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "flex min-h-0 flex-col gap-3 overflow-y-auto"}>

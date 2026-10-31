@@ -3,10 +3,10 @@
   import StatusPill from "./StatusPill.svelte";
   import { m } from "../../lib/paraglide/messages.js";
   let { remoteConnected = false, remoteNote = "" } = $props();
-  const address = globalThis.location?.origin || m.remotesettings_unavailable();
+  const address = globalThis.location?.origin || m.common_unavailable();
 </script>
 
-<SettingRow id="remote-status" title={m.remotesettings_title()} description={remoteNote || (remoteConnected
+<SettingRow id="remote-status" title={m.common_remote_connection()} description={remoteNote || (remoteConnected
   ? m.remotesettings_connected()
   : m.remotesettings_retrying())}>
   <div class="remote-control setting-actions">

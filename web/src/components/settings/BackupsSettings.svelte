@@ -159,27 +159,27 @@
 {:else if backupStatus.error}
   <div class="setting-status" data-tone="warn" role="alert">
     <span class="setting-status-dot" aria-hidden="true"></span>
-    <div class="setting-status-words"><div class="setting-title">{m.backupssettings_status_unavailable()}</div><div class="setting-description">{backupStatus.error}</div></div>
-    <div class="setting-control"><button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy !== ""} onclick={() => void backups.refresh()}>{m.backupssettings_retry()}</button></div>
+    <div class="setting-status-words"><div class="setting-title">{m.common_backup_status_unavailable()}</div><div class="setting-description">{backupStatus.error}</div></div>
+    <div class="setting-control"><button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy !== ""} onclick={() => void backups.refresh()}>{m.common_retry()}</button></div>
   </div>
 {:else if backupStatus.loading && !backupStatus.data}
   <p class="setting-description" role="status">{m.backupssettings_loading()}</p>
 {/if}
 
-  <SettingRow id="backup-enable" title={m.backupssettings_enable()} description={!destinationSet ? m.backupssettings_choose_folder_first() : ""}>
+  <SettingRow id="backup-enable" title={m.common_automatic_backups()} description={!destinationSet ? m.backupssettings_choose_folder_first() : ""}>
     {#if !hasStatus}<StatusPill label={m.backupssettings_unknown()} />{/if}
-    <button type="button" role="switch" class="switch backup-enable-switch" aria-label={m.backupssettings_enable()} aria-checked={Boolean(data.enabled)} aria-describedby={!hasStatus ? "backup-enable-state" : undefined} data-state={!hasStatus ? "unknown" : data.enabled ? "checked" : "unchecked"} disabled={busy !== "" || !canUseDesktop || (!data.enabled && !destinationSet)} onclick={() => void (data.enabled ? changeSettings(false) : enable())}>
+    <button type="button" role="switch" class="switch backup-enable-switch" aria-label={m.common_automatic_backups()} aria-checked={Boolean(data.enabled)} aria-describedby={!hasStatus ? "backup-enable-state" : undefined} data-state={!hasStatus ? "unknown" : data.enabled ? "checked" : "unchecked"} disabled={busy !== "" || !canUseDesktop || (!data.enabled && !destinationSet)} onclick={() => void (data.enabled ? changeSettings(false) : enable())}>
       <span class="switch-thumb" data-state={!hasStatus ? "unknown" : data.enabled ? "checked" : "unchecked"}></span>
     </button>
     {#if !hasStatus}<span id="backup-enable-state" class="sr-only">{m.backupssettings_unknown()}</span>{/if}
   </SettingRow>
-  <SettingRow id="backup-destination" title={m.backupssettings_folder()}>
+  <SettingRow id="backup-destination" title={m.common_backup_folder()}>
     <div class="backup-folder-control setting-actions">
       <input class="input input-sm setting-input backup-path" aria-label={m.backupssettings_folder_selected()} value={destinationLabel} readonly disabled={!canUseDesktop || busy !== ""} />
-      <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={!canUseDesktop || busy !== ""} onclick={() => void chooseFolder()}>{busy === "folder" ? m.backupssettings_choosing() : destinationSet ? m.backupssettings_change_folder() : m.backupssettings_choose_folder()}</button>
+      <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={!canUseDesktop || busy !== ""} onclick={() => void chooseFolder()}>{busy === "folder" ? m.common_choosing() : destinationSet ? m.backupssettings_change_folder() : m.backupssettings_choose_folder()}</button>
     </div>
   </SettingRow>
-  <SettingRow id="backup-frequency" title={m.backupssettings_frequency()}>
+  <SettingRow id="backup-frequency" title={m.common_frequency()}>
     <select class="input input-sm setting-select backup-frequency" aria-label={m.backupssettings_frequency_label()} value={hasStatus ? Number(data.frequency_minutes) || 5 : ""} disabled={busy !== "" || !destinationSet || !canUseDesktop || needsLogin} onchange={(event) => void changeSettings(Boolean(data.enabled), Number(event.currentTarget.value))}>
       {#if !hasStatus}<option value="" disabled>{m.backupssettings_unknown()}</option>{/if}
       {#each intervals as minutes}<option value={minutes}>{minutes} min</option>{/each}
@@ -187,7 +187,7 @@
   </SettingRow>
   <div class="backup-status" role="status" aria-live="polite">
     {#if !hasStatus}
-      <span class="backup-state">{signedIn && paired && backupStatus.loading ? m.backupssettings_loading_short() : signedIn && paired && backupStatus.error ? m.backupssettings_status_unavailable_short() : ""}</span>
+      <span class="backup-state">{signedIn && paired && backupStatus.loading ? m.common_loading() : signedIn && paired && backupStatus.error ? m.backupssettings_status_unavailable_short() : ""}</span>
     {:else if data.error}
       <span class="backup-state error">{m.backupssettings_error({ error: data.error })}</span>
     {:else if data.running}
@@ -199,7 +199,7 @@
     {/if}
     <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy !== "" || !destinationSet || !canUseDesktop || needsLogin || !data.enabled || data.running} onclick={() => void runNow()}>{busy === "run" ? m.backupssettings_starting() : m.backupssettings_back_up_now()}</button>
   </div>
-  {#if saved && !busy && !error && !backupStatus.error}<p class="setting-feedback" role="status">{m.backupssettings_saved()}</p>{/if}
+  {#if saved && !busy && !error && !backupStatus.error}<p class="setting-feedback" role="status">{m.common_saved()}</p>{/if}
 
 {#if error}<p class="setting-description backup-error" role="alert">{error}</p>{/if}
 </DesktopOnly>

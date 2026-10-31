@@ -5,7 +5,7 @@
   // The fixed palette as a row of swatches. Each one is a toggle button that
   // says which colour is chosen, so a keyboard user tabs through the row and
   // hears the colour names rather than nine unlabelled squares.
-  let { value = "gray", label = m.tagswatches_label(), onchange = undefined } = $props();
+  let { value = "gray", label = m.common_colour(), onchange = undefined } = $props();
 </script>
 
 <div class="tag-swatches" role="group" aria-label={label}>

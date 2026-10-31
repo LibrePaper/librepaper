@@ -29,21 +29,21 @@ const KEYS = menuKeys();
 // is the tooltip and accessible name. `shortcut` is the printed key from
 // lib/commands.js, when one exists.
 export const FORMAT_TOOLS = [
-  { id: "bold", label: m.formatting_bold(), group: "emphasis", mark: "bold", icon: "bold", shortcut: KEYS.bold },
-  { id: "italic", label: m.formatting_italic(), group: "emphasis", mark: "italic", icon: "italic", shortcut: KEYS.italic },
+  { id: "bold", label: m.common_bold(), group: "emphasis", mark: "bold", icon: "bold", shortcut: KEYS.bold },
+  { id: "italic", label: m.common_italic(), group: "emphasis", mark: "italic", icon: "italic", shortcut: KEYS.italic },
   { id: "underline", label: m.formatting_underline(), group: "emphasis", mark: "underline", icon: "underline" },
   { id: "h1", label: m.formatting_heading_1(), group: "heading", heading: 1, icon: "heading-1" },
   { id: "h2", label: m.formatting_heading_2(), group: "heading", heading: 2, icon: "heading-2" },
   { id: "h3", label: m.formatting_heading_3(), group: "heading", heading: 3, icon: "heading-3" },
-  { id: "bullets", label: m.formatting_bulleted_list(), group: "list", list: "bullet", icon: "list" },
-  { id: "numbers", label: m.formatting_numbered_list(), group: "list", list: "number", icon: "list-ordered" },
+  { id: "bullets", label: m.common_bulleted_list(), group: "list", list: "bullet", icon: "list" },
+  { id: "numbers", label: m.common_numbered_list(), group: "list", list: "number", icon: "list-ordered" },
   { id: "mono", label: m.formatting_inline_code(), group: "code", mark: "mono", icon: "code" },
-  { id: "inlineMath", label: m.formatting_inline_math(), group: "code", mark: "inlineMath", icon: "sigma" },
-  { id: "link", label: m.formatting_link(), group: "insert", insert: "link", icon: "link" },
-  { id: "citation", label: m.formatting_citation(), group: "insert", insert: "citation", icon: "quote" },
-  { id: "cross-reference", label: m.formatting_cross_reference(), group: "insert", insert: "cross-reference", icon: "hash" },
+  { id: "inlineMath", label: m.common_inline_math(), group: "code", mark: "inlineMath", icon: "sigma" },
+  { id: "link", label: m.common_link(), group: "insert", insert: "link", icon: "link" },
+  { id: "citation", label: m.common_citation(), group: "insert", insert: "citation", icon: "quote" },
+  { id: "cross-reference", label: m.common_cross_reference(), group: "insert", insert: "cross-reference", icon: "hash" },
   { id: "figure", label: m.formatting_image_or_figure(), group: "insert", insert: "figure", icon: "image" },
-  { id: "table", label: m.formatting_table(), group: "insert", insert: "table", icon: "table" },
+  { id: "table", label: m.common_table(), group: "insert", insert: "table", icon: "table" },
 ];
 
 // Markdown's markup, used where no language definition supplies it. Its bold

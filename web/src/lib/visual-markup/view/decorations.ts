@@ -383,7 +383,7 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
     const summary = options.language.hiddenSummary?.(state.doc.sliceString(run.from, run.to)) ?? null;
     const decoration = summary === null
       ? Decoration.replace({ block: true })
-      : Decoration.replace({ widget: new PillWidget(summary, m.decorations_show_source(), 'cm-lp-hidden'), block: true });
+      : Decoration.replace({ widget: new PillWidget(summary, m.common_show_source(), 'cm-lp-hidden'), block: true });
     decorations.push(decoration.range(run.from, run.to));
   }
 

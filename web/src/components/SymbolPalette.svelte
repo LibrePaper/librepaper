@@ -164,7 +164,7 @@
       return;
     }
     if (!entryAvailable(entry, context.format)) {
-      note = m.symbolpalette_not_in_html();
+      note = m.common_not_available_in_html();
       oncancel?.(context);
       return;
     }
@@ -331,7 +331,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="symbol-palette" bind:this={root} onkeydown={onrootkeydown}>
-  <input bind:this={input} class="input" type="search" placeholder={m.symbolpalette_search_placeholder()} aria-label={m.symbolpalette_search_placeholder()}
+  <input bind:this={input} class="input" type="search" placeholder={m.common_search_symbols()} aria-label={m.common_search_symbols()}
     bind:value={query} oninput={onsearchinput} onkeydown={onsearchkeydown} />
 
   <div class="body">

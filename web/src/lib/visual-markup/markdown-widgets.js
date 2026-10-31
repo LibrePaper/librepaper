@@ -517,7 +517,7 @@ const SHORTCODE_CHIPS = {
 function drawInclude(data, { opener }) {
   const element = el("span", "cm-lp-include", m.markdown_widgets_include_chip({ file: data.file }));
   if (opener) {
-    const button = el("button", "cm-lp-include-open", m.markdown_widgets_include_open());
+    const button = el("button", "cm-lp-include-open", m.common_open());
     button.type = "button";
     // The button stops its own mousedown, so the reveal does not see it.
     button.addEventListener("mousedown", (event) => {
@@ -542,7 +542,7 @@ registerWidget("shortcode", ({ token, state }) => {
   if (own(SHORTCODE_CHIPS, name)) {
     return chipWidget(first ? m.markdown_widgets_shortcode_with_value({ label: SHORTCODE_CHIPS[name], value: first }) : SHORTCODE_CHIPS[name], block);
   }
-  if (name === "pagebreak") return chipWidget(m.markdown_widgets_shortcode_page_break(), block);
+  if (name === "pagebreak") return chipWidget(m.common_page_break(), block);
   return chipWidget(m.markdown_widgets_shortcode_unknown({ name }), block);
 });
 

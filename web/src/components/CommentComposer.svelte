@@ -56,7 +56,7 @@
 
     {#if needsLogin}
       <p class="text-sm">
-        <a class="anchor" href={signInHref}>{m.commentcomposer_sign_in()}</a>
+        <a class="anchor" href={signInHref}>{m.common_sign_in()}</a>
         {m.commentcomposer_sign_in_rest()}
       </p>
     {:else}
@@ -78,10 +78,10 @@
     ></textarea>
 
     <div class="flex items-center justify-end gap-2">
-      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncancel?.()}>{m.commentcomposer_cancel()}</button>
+      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncancel?.()}>{m.common_cancel()}</button>
       <button type="button" class="btn btn-sm lp-control-brand" data-send
               disabled={needsLogin || !body.trim()}
-              onclick={send}>{m.commentcomposer_send()}</button>
+              onclick={send}>{m.common_comment()}</button>
     </div>
   </div>
 </article>

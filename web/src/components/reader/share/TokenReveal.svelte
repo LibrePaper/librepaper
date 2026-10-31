@@ -18,7 +18,7 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
 <div class="share-reveal">
   <p class="share-warning" role="alert">{m.tokenreveal_warning()}</p>
   <label class="share-field panel-meta">{m.tokenreveal_token()}
-    <input class="input share-input" type="text" readonly aria-label={m.tokenreveal_token_aria()} value={token} onclick={select} />
+    <input class="input share-input" type="text" readonly aria-label={m.common_agent_token()} value={token} onclick={select} />
   </label>
   <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncopy(token)}>{m.tokenreveal_copy_token()}</button>
   <label class="share-field panel-meta">Claude Code
@@ -33,7 +33,7 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
   <p class="panel-meta">{m.tokenreveal_api_hint({ endpoint: "POST /api/documents/{slug}/tools/{name}" })}</p>
   <p class="panel-meta"><a href="https://librepaper.org/agents.html#agent-tokens" target="_blank" rel="noreferrer">{m.tokenreveal_agent_setup()}</a></p>
   <div class="share-form-actions">
-    <button type="button" class="btn btn-sm lp-control-brand" onclick={ondone}>{m.tokenreveal_done()}</button>
+    <button type="button" class="btn btn-sm lp-control-brand" onclick={ondone}>{m.common_done()}</button>
   </div>
 </div>
 

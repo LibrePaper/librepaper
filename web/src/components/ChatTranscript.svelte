@@ -12,7 +12,7 @@
   // in the gutter when hovered.
   let {
     messages = [],
-    emptyTitle = m.chattranscript_empty_title(),
+    emptyTitle = m.common_no_messages_yet(),
     emptyText = "",
     label = m.chattranscript_label(),
     roleLabel = (message) => message.creator || message.role,
@@ -76,7 +76,7 @@
   <div class="chat-transcript" bind:this={transcript} onscroll={scrolled} role="log" aria-label={label} aria-live="polite" aria-relevant="additions text">
     {#if more && onloadolder}
       <button type="button" class="btn btn-sm lp-control-tonal-brand older" disabled={loadingOlder} onclick={older}>
-        {loadingOlder ? m.chattranscript_loading_older() : m.chattranscript_load_older()}
+        {loadingOlder ? m.common_loading() : m.chattranscript_load_older()}
       </button>
     {/if}
     {#if loadError}<p class="panel-muted" role="alert">{loadError}</p>{/if}
@@ -118,7 +118,7 @@
             </p>
           {/if}
           {#if message.context?.results?.changes?.length}
-            <button class="btn btn-sm lp-control-tonal-brand" onclick={() => onresult?.(message.context.results)}>{m.chattranscript_review_changes()}</button>
+            <button class="btn btn-sm lp-control-tonal-brand" onclick={() => onresult?.(message.context.results)}>{m.common_review_changes()}</button>
           {/if}
           {@render messageEnd?.(message)}
         </div>

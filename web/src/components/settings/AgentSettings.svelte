@@ -41,10 +41,10 @@
   }
 </script>
 
-<DesktopOnly description={m.agentsettings_desktop_description()}>
+<DesktopOnly description={m.common_chat_with_coding_agent()}>
 {#if view.available}
   <section class="settings-subsection" id="agents-list" aria-labelledby="agents-list-heading">
-    <div class="settings-section-title"><h4 class="settings-subhead" id="agents-list-heading">{m.agentsettings_heading()}</h4></div>
+    <div class="settings-section-title"><h4 class="settings-subhead" id="agents-list-heading">{m.common_agents_on_this_computer()}</h4></div>
     <p class="setting-description">{m.agentsettings_list_description()}</p>
     {#if view.loadError}<p class="setting-description management-error" role="alert">{view.loadError}</p>{/if}
     {#each detectedAgents as agent (agent.id)}
@@ -52,7 +52,7 @@
         <!-- An older desktop app sends no assistant_docs, so the link falls back to the agents page. -->
         <ToolRow title={agent.label || agent.id} description={agentDescription(agent)} status={agentStatus(agent)}>
           {#snippet actions()}
-            <a class="btn btn-sm lp-control-tonal-brand" href={agent.assistant_docs || "https://librepaper.org/agents.html"} target="_blank" rel="noreferrer">{m.agentsettings_setup_docs()}</a>
+            <a class="btn btn-sm lp-control-tonal-brand" href={agent.assistant_docs || "https://librepaper.org/agents.html"} target="_blank" rel="noreferrer">{m.common_setup_instructions()}</a>
           {/snippet}
         </ToolRow>
       {:else}
@@ -62,7 +62,7 @@
     {#each view.list(view.state?.custom_agents) as agent (agent.id)}
       <ToolRow title={agent.label || agent.id || m.agentsettings_configured_fallback()} description={view.list(agent.command).join(" ")} status={{ label: m.agentsettings_status_added(), tone: "neutral" }}>
         {#snippet actions()}
-          <button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => { if (confirm(m.agentsettings_remove_confirm({ name: agent.label || m.agentsettings_this_agent() }))) void view.act(`agent-${agent.id}`, m.agentsettings_removed(), `/agents/${view.id(agent.id)}`, { method: "DELETE" }); }}>{m.agentsettings_remove()}</button>
+          <button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => { if (confirm(m.agentsettings_remove_confirm({ name: agent.label || m.agentsettings_this_agent() }))) void view.act(`agent-${agent.id}`, m.agentsettings_removed(), `/agents/${view.id(agent.id)}`, { method: "DELETE" }); }}>{m.common_remove()}</button>
         {/snippet}
       </ToolRow>
     {/each}
@@ -71,10 +71,10 @@
     <div id="agents-add" class="agent-add">
       {#if adding}
         <form class="agent-form" onsubmit={addAgent}>
-          <label class="label agent-name-field"><span class="label-text">{m.agentsettings_name()}</span><input class="input input-sm setting-input agent-name" name="label" aria-label={m.agentsettings_name_aria()} bind:value={label} disabled={Boolean(view.pending)} /></label>
-          <label class="label agent-command-field"><span class="label-text">{m.agentsettings_command()}</span><input class="input input-sm setting-input agent-command" name="command" aria-label={m.agentsettings_command()} bind:value={command} disabled={Boolean(view.pending)} /></label>
+          <label class="label agent-name-field"><span class="label-text">{m.common_name()}</span><input class="input input-sm setting-input agent-name" name="label" aria-label={m.common_agent_name()} bind:value={label} disabled={Boolean(view.pending)} /></label>
+          <label class="label agent-command-field"><span class="label-text">{m.common_command()}</span><input class="input input-sm setting-input agent-command" name="command" aria-label={m.common_command()} bind:value={command} disabled={Boolean(view.pending)} /></label>
           <button class="btn btn-sm lp-control-brand" type="submit" disabled={Boolean(view.pending)}>{view.pending === "agent-add" ? m.agentsettings_adding() : m.agentsettings_add()}</button>
-          <button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={close}>{m.agentsettings_cancel()}</button>
+          <button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={close}>{m.common_cancel()}</button>
         </form>
         <p class="setting-description">{m.agentsettings_form_hint()}</p>
       {:else}

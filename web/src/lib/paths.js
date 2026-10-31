@@ -83,7 +83,7 @@ export function kindOf(rules, path) {
     ...(rules?.text_extensions || []),
     ...(rules?.asset_extensions || []),
   ])];
-  const error = m.paths_extensions({ path, allowed: allowed.join(", ") || m.paths_none() });
+  const error = m.paths_extensions({ path, allowed: allowed.join(", ") || m.common_none_inline() });
   // Derived extensions are refused even when their names look plausible.
   if (ends(rules?.derived_extensions)) {
     return { error };

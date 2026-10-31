@@ -13,7 +13,7 @@
     symbols = [],
     format = "latex",
     onpick = undefined,
-    placeholder = m.symbolsearch_placeholder(),
+    placeholder = m.common_search_symbols(),
     autofocus = false,
     grouped = false,
     query = $bindable(""),

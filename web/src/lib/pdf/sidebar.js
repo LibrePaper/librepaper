@@ -76,9 +76,9 @@ export function createSidebar({ ongo }) {
   const panel = el("div", "panel");
   const tabs = el("div", "tabs", { role: "tablist" });
   const pagesTab = el("button", "", { type: "button", role: "tab", "aria-selected": "true" });
-  pagesTab.textContent = m.sidebar_pages_tab();
+  pagesTab.textContent = m.common_pages();
   const outlineTab = el("button", "", { type: "button", role: "tab", "aria-selected": "false" });
-  outlineTab.textContent = m.sidebar_outline_tab();
+  outlineTab.textContent = m.common_outline();
   outlineTab.hidden = true;
   tabs.append(pagesTab, outlineTab);
   const pagesBody = el("div", "body pages", { role: "tabpanel" });
@@ -259,7 +259,7 @@ export function createSidebar({ ongo }) {
         row.append(el("span", "spacer"));
       }
       const link = el("button", "link", { type: "button" });
-      link.textContent = entry.title || m.sidebar_untitled();
+      link.textContent = entry.title || m.common_untitled();
       link.addEventListener("click", () => go(entry, mine));
       row.append(link);
       li.append(row);

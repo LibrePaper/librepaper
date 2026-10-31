@@ -36,9 +36,9 @@
         <!-- Trying again costs nothing and sometimes works: a chunk that
              failed to load is fetched again, and a bad bit of state is built
              from scratch. Reloading is the way out when it does not. -->
-        <button type="button" onclick={reset}>{m.boundary_try_again()}</button>
+        <button type="button" onclick={reset}>{m.common_try_again()}</button>
         <button type="button" onclick={() => location.reload()}>{m.boundary_reload()}</button>
-        <button type="button" aria-expanded={showDiagnostics} onclick={() => (showDiagnostics = !showDiagnostics)}>{m.boundary_diagnostics()}</button>
+        <button type="button" aria-expanded={showDiagnostics} onclick={() => (showDiagnostics = !showDiagnostics)}>{m.common_diagnostics()}</button>
       </div>
       {#if showDiagnostics}<DiagnosticsPanel compact />{/if}
     </div>

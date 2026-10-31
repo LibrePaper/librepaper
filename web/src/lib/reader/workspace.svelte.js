@@ -171,7 +171,7 @@ export function createWorkspace({
   }
 
   function editable() {
-    if (!state.canEdit) throw new Error(m.workspace_project_read_only());
+    if (!state.canEdit) throw new Error(m.common_project_read_only());
   }
 
   /** @param {string} path */

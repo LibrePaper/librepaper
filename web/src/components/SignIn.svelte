@@ -83,7 +83,7 @@
             <input id="signin-server-url" class="input input-sm" type="url" required placeholder="https://paper.example.org" bind:value={serverUrl} disabled={choosing} />
             <button class="btn btn-sm lp-control-brand" type="submit" disabled={choosing}>{choosing ? m.signin_waiting() : m.signin_use_server()}</button>
           </div>
-          <button class="signin-server-link" type="button" onclick={() => { changing = false; serverError = ""; }}>{m.signin_cancel()}</button>
+          <button class="signin-server-link" type="button" onclick={() => { changing = false; serverError = ""; }}>{m.common_cancel()}</button>
           {#if serverError}<p class="signin-server-error" role="alert">{serverError}</p>{/if}
         </form>
       {:else}

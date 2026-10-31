@@ -379,7 +379,7 @@ function tableCaption({ token, source, language }: WidgetContext): string {
 export class PillWidget extends WidgetType {
   constructor(
     readonly text: string,
-    readonly title = m.widgets_show_source(),
+    readonly title = m.common_show_source(),
     private kind = ''
   ) {
     super();

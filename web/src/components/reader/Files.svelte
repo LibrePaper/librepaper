@@ -204,7 +204,7 @@
       busy = false;
       refusal = errors.join("; ");
       if (skipped.length) {
-        uploadWarning = m.files_skipped({ count: skipped.length, names: skipped.join(", "), extensions: allowedExtensions.join(", ") || m.files_no_extensions() });
+        uploadWarning = m.files_skipped({ count: skipped.length, names: skipped.join(", "), extensions: allowedExtensions.join(", ") || m.common_none_inline() });
       }
     }
   }
@@ -262,7 +262,7 @@
 <div class="panel filelist explorer" class:explorer-drop={hover === ""} role="region" aria-label={m.files_manager_label()}
   onpointerdown={(event) => { if (!(event.target instanceof Element) || !event.target.closest('[role="treeitem"], button, input, select, header')) selected = []; }}
   ondragover={(event) => dragOver(event, "")} ondrop={(event) => drop(event, "")} ondragleave={(event) => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) dragEnd(); }}>
-  <PanelHeader title={m.files_title()}>
+  <PanelHeader title={m.common_files()}>
     {#snippet actions()}
       <!-- One run of controls, left to right: what makes something in the
            tree, what folds it, then what moves files across its edge. They
@@ -270,15 +270,15 @@
            rather than a pair pushed off to the far end of the header. -->
       <div class="explorer-actions" aria-label={m.files_actions_label()}>
         {#if mayEdit}
-          <IconButton icon="file-plus" label={m.files_new_file()} tone="plain" size="btn-icon-sm" onclick={() => start("file")} />
-          <IconButton icon="folder-plus" label={m.files_new_folder()} tone="plain" size="btn-icon-sm" onclick={() => start("folder")} />
+          <IconButton icon="file-plus" label={m.common_new_file()} tone="plain" size="btn-icon-sm" onclick={() => start("file")} />
+          <IconButton icon="folder-plus" label={m.common_new_folder()} tone="plain" size="btn-icon-sm" onclick={() => start("folder")} />
         {/if}
         <IconButton icon="chevrons-down" label={m.files_expand_all()} tone="plain" size="btn-icon-sm" disabled={allFolders.every((value) => expanded.includes(value))} onclick={() => expanded = allFolders} />
         <IconButton icon="chevrons-up" label={m.files_collapse_all()} tone="plain" size="btn-icon-sm" disabled={!expanded.length} onclick={() => expanded = []} />
         {#if mayEdit}
-          <IconButton icon="upload" label={demo ? m.files_upload_demo() : m.files_upload()} tone="plain" size="btn-icon-sm" disabled={busy || demo} onclick={() => choose()} />
+          <IconButton icon="upload" label={demo ? m.files_upload_demo() : m.common_upload_files()} tone="plain" size="btn-icon-sm" disabled={busy || demo} onclick={() => choose()} />
         {/if}
-        {#if mayEdit}<IconButton icon="download" label={m.files_download_project()} tone="plain" size="btn-icon-sm" onclick={() => ondownload?.()} />{/if}
+        {#if mayEdit}<IconButton icon="download" label={m.common_download_project()} tone="plain" size="btn-icon-sm" onclick={() => ondownload?.()} />{/if}
       </div>
       {#if mayEdit}<input class="chooser" type="file" multiple bind:this={chooser} aria-label={m.files_choose_upload()}
         accept={allowedExtensions.join(",")}
@@ -296,7 +296,7 @@
         <div class="flex items-center gap-1">
           <input id="new-project-entry" class="name" aria-label={editing.type === "folder" ? m.files_new_folder_name() : m.files_new_file_name()} bind:value={draft} use:focusName onkeydown={namingKey} />
           <IconButton icon="check" label={editing.type === "folder" ? m.files_create_folder() : m.files_create_file()} onclick={commit} />
-          <IconButton icon="x" label={m.files_cancel()} onclick={reset} />
+          <IconButton icon="x" label={m.common_cancel()} onclick={reset} />
         </div>
       </div>
     {/if}
@@ -347,12 +347,12 @@
        being previewed without a lock is the open file, which its row already
        marks. -->
   {#if node.kind !== "folder" && locked && node.path === locked}
-    <button type="button" class="explorer-preview shown" aria-label={m.files_unlock_preview()} title={m.files_unlock_preview()}
+    <button type="button" class="explorer-preview shown" aria-label={m.common_unlock_the_preview()} title={m.common_unlock_the_preview()}
       onclick={(event) => { event.stopPropagation(); onunlock?.(); }}
       ondblclick={(event) => event.stopPropagation()}
       onkeydown={(event) => event.stopPropagation()}><Icon name="eye" /></button>
   {:else if node.kind === "text" && previewable(node.path)}
-    <button type="button" class="explorer-preview" aria-label={m.files_lock_preview_on({ name: node.name })} title={m.files_lock_preview_here()}
+    <button type="button" class="explorer-preview" aria-label={m.common_lock_preview_on({ name: node.name })} title={m.common_lock_preview_on_file()}
       onclick={(event) => { event.stopPropagation(); const entry = entryOf(node); if (entry) onlock?.(entry); }}
       ondblclick={(event) => event.stopPropagation()}
       onkeydown={(event) => event.stopPropagation()}><Icon name="eye" /></button>
@@ -363,15 +363,15 @@
   <ExplorerMenu>
     {#if mayEdit}
       {#if node.kind === "folder"}
-        <Menu.Item value="file" class="menuitem">{m.files_new_file()}</Menu.Item>
-        <Menu.Item value="folder" class="menuitem">{m.files_new_folder()}</Menu.Item>
-        <Menu.Item value="upload" class="menuitem" disabled={busy || demo}>{demo ? m.files_upload_demo() : m.files_upload()}</Menu.Item>
+        <Menu.Item value="file" class="menuitem">{m.common_new_file()}</Menu.Item>
+        <Menu.Item value="folder" class="menuitem">{m.common_new_folder()}</Menu.Item>
+        <Menu.Item value="upload" class="menuitem" disabled={busy || demo}>{demo ? m.files_upload_demo() : m.common_upload_files()}</Menu.Item>
       {/if}
-      <Menu.Item value="rename" class="menuitem">{m.files_rename()} <span class="ml-auto text-xs">F2</span></Menu.Item>
+      <Menu.Item value="rename" class="menuitem">{m.common_rename()} <span class="ml-auto text-xs">F2</span></Menu.Item>
       <Menu.Item value="move" class="menuitem">{m.files_move_to()}</Menu.Item>
       {#if node.kind !== "folder"}<Menu.Item value="duplicate" class="menuitem">{m.files_duplicate()}</Menu.Item>{/if}
     {/if}
-    <Menu.Item value="download" class="menuitem">{m.files_download()}</Menu.Item>
+    <Menu.Item value="download" class="menuitem">{m.common_download()}</Menu.Item>
     {#if mayEdit}<Menu.Item value="delete" class="menuitem">{m.files_delete_menu()}</Menu.Item>{/if}
   </ExplorerMenu>
 {/snippet}
@@ -422,7 +422,7 @@
 
 <Modal open={dialog !== null} onclose={() => { dialog = null; refusal = ""; }} title={dialog?.type === "delete" ? m.files_dialog_delete_title() : m.files_dialog_move_title()}
   confirm={{
-    label: dialog?.type === "delete" ? m.files_delete() : m.files_move(),
+    label: dialog?.type === "delete" ? m.common_delete() : m.files_move(),
     tone: dialog?.type === "delete" ? "error" : "primary",
     onclick: confirm,
     oncancel: () => { dialog = null; refusal = ""; },
@@ -443,8 +443,8 @@
   {#if refusal}<p class="refusal" role="alert">{refusal}</p>{/if}
 </Modal>
 <Modal open={conflict !== null} onclose={() => resolveConflict(false)} title={m.files_name_in_use()}
-  cancelLabel={m.files_skip()}
-  confirm={{ label: m.files_keep_both(), onclick: () => resolveConflict(true), oncancel: () => resolveConflict(false) }}>
+  cancelLabel={m.common_skip()}
+  confirm={{ label: m.common_keep_both(), onclick: () => resolveConflict(true), oncancel: () => resolveConflict(false) }}>
   <p>{conflict}</p><p>{m.files_keep_both_note()}</p>
 </Modal>
 

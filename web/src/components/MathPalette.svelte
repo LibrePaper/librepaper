@@ -252,7 +252,7 @@
     try { oninsert?.(result, captured); }
     // The target can move while the form is open. The author keeps their
     // entries and sees why nothing landed.
-    catch (cause) { error = messageOf(cause, m.mathpalette_target_changed()); return; }
+    catch (cause) { error = messageOf(cause, m.common_insertion_target_changed()); return; }
     error = "";
     activeId = null;
     captured = null;
@@ -375,7 +375,7 @@
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div class="math-form" role="group" aria-label={active.label} onkeydown={onFormKey}>
       <div class="math-form-head">
-        <button type="button" class="btn btn-sm" onclick={back}>{m.mathpalette_back()}</button>
+        <button type="button" class="btn btn-sm" onclick={back}>{m.common_back()}</button>
         <h3 class="math-form-title">{active.label}</h3>
       </div>
 
@@ -395,12 +395,12 @@
       <!-- Outside the form: Enter in the search field must not submit it. -->
       <section class="math-symbols" aria-labelledby="math-symbols-heading">
         <h3 class="math-symbols-heading" id="math-symbols-heading">{m.mathpalette_symbols_heading()}</h3>
-        <SymbolSearch symbols={SYMBOLS} format={capturedFormat} onpick={pickSymbol} placeholder={m.mathpalette_search_placeholder()} autofocus={false} />
+        <SymbolSearch symbols={SYMBOLS} format={capturedFormat} onpick={pickSymbol} placeholder={m.common_search_symbols()} autofocus={false} />
       </section>
 
       <form class="math-fields" bind:this={formEl} onsubmit={(event) => { event.preventDefault(); insert(); }}>
         {#if active.id === "brackets"}
-          <label class="label">{m.mathpalette_brackets()}
+          <label class="label">{m.common_brackets()}
             <select class="select" bind:value={values.kind}>
               {#each bracketKinds as [value, label]}<option {value}>{label}</option>{/each}
             </select>
@@ -408,7 +408,7 @@
         {/if}
 
         {#if isRowTemplate(active)}
-          {@render stepper(m.mathpalette_rows(), rowCount, m.mathpalette_row_count({ count: rowCount }), changeRows, m.mathpalette_fewer_rows(), m.mathpalette_more_rows())}
+          {@render stepper(m.common_rows(), rowCount, m.mathpalette_row_count({ count: rowCount }), changeRows, m.mathpalette_fewer_rows(), m.mathpalette_more_rows())}
           {#each values.rows as row, index}
             <div class="math-pair" style:grid-template-columns={`repeat(${rowFields[active.id].length}, minmax(0, 1fr))`}>
               {#each rowFields[active.id] as [key, label]}
@@ -420,10 +420,10 @@
           {/each}
         {:else if active.id === "matrix"}
           <div class="math-steppers">
-            {@render stepper(m.mathpalette_rows(), rowCount, m.mathpalette_row_count({ count: rowCount }), changeRows, m.mathpalette_fewer_rows(), m.mathpalette_more_rows())}
-            {@render stepper(m.mathpalette_columns(), values.columns, m.mathpalette_column_count({ count: values.columns }), changeColumns, m.mathpalette_fewer_columns(), m.mathpalette_more_columns())}
+            {@render stepper(m.common_rows(), rowCount, m.mathpalette_row_count({ count: rowCount }), changeRows, m.mathpalette_fewer_rows(), m.mathpalette_more_rows())}
+            {@render stepper(m.common_columns(), values.columns, m.mathpalette_column_count({ count: values.columns }), changeColumns, m.mathpalette_fewer_columns(), m.mathpalette_more_columns())}
           </div>
-          <label class="label">{m.mathpalette_brackets()}
+          <label class="label">{m.common_brackets()}
             <select class="select" bind:value={values.brackets}>
               {#each matrixBrackets as [value, label]}<option {value}>{label}</option>{/each}
             </select>
@@ -453,7 +453,7 @@
             {/if}
           </fieldset>
           {#if numberable && values.style === "display" && values.numbered}
-            <label class="label">{m.mathpalette_label()}
+            <label class="label">{m.common_label()}
               <input class="input" name="math-label" placeholder={m.mathpalette_label_placeholder()} bind:value={values.label} />
             </label>
           {/if}
@@ -462,8 +462,8 @@
         {#if error}<p class="math-error" role="alert">{error}</p>{/if}
 
         <div class="math-actions">
-          <button type="button" class="btn" onclick={back}>{m.mathpalette_cancel()}</button>
-          <button type="submit" class="btn lp-control-tonal-brand">{m.mathpalette_insert()}</button>
+          <button type="button" class="btn" onclick={back}>{m.common_cancel()}</button>
+          <button type="submit" class="btn lp-control-tonal-brand">{m.common_insert()}</button>
         </div>
       </form>
     </div>

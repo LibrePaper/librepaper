@@ -20,7 +20,7 @@
           <p class="lp-text-secondary" role="status">{item.error || m.pendingannotations_waiting()} {m.pendingannotations_draft_saved()}</p>
           <div class="flex gap-2">
             <button type="button" class="btn btn-sm lp-control-tonal-brand"
-                    onclick={() => onretry(item.message.temp_id)}>{m.pendingannotations_retry()}</button>
+                    onclick={() => onretry(item.message.temp_id)}>{m.common_retry()}</button>
             <button type="button" class="btn btn-sm lp-control-tonal-brand"
                     onclick={() => ondiscard(item.message.temp_id)}>{m.pendingannotations_discard()}</button>
           </div>

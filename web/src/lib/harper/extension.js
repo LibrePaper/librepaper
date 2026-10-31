@@ -245,7 +245,7 @@ function card(view, instance, lint) {
 
   for (const suggestion of (lint.suggestions ?? []).slice(0, MAX_SUGGESTIONS)) {
     if (suggestion.kind === "remove") {
-      button(m.extension_remove(), (at) => apply(at.from, at.to, ""));
+      button(m.common_remove(), (at) => apply(at.from, at.to, ""));
     } else if (suggestion.kind === "insert") {
       button(m.extension_insert({ text: suggestion.text }), (at) => apply(at.to, at.to, suggestion.text));
     } else {
