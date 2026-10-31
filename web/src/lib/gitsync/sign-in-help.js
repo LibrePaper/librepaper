@@ -1,3 +1,4 @@
+import { m } from "../paraglide/messages.js";
 import { GIT_DOCS_URL } from "../site-links.js";
 
 /// The steps to take when Git could not sign in to a remote. `remote` is the
@@ -11,8 +12,8 @@ export function signInHelp(remote, platform, name = "origin") {
   const target = parseRemote(text);
   if (!target) {
     return {
-      title: "Git could not sign in to the remote.",
-      steps: [{ text: "Set up a credential helper or an SSH key for this remote, then try again.", href: `${GIT_DOCS_URL}#credentials` }],
+      title: m.sign_in_help_title_remote(),
+      steps: [{ text: m.sign_in_help_setup_remote(), href: `${GIT_DOCS_URL}#credentials` }],
     };
   }
   if (target.transport === "ssh") return sshHelp(target.host, platform);
@@ -52,29 +53,29 @@ function sshHelp(host, platform) {
     ? "ssh-add --apple-use-keychain ~/.ssh/id_ed25519"
     : "ssh-add ~/.ssh/id_ed25519";
   return {
-    title: `Git could not sign in to ${host} over SSH.`,
+    title: m.sign_in_help_ssh_title({ host }),
     steps: [
-      { text: "Add your SSH key to the agent.", command: add },
-      { text: `Check that ${host} accepts the key. Answer yes if SSH asks to trust the host.`, command: `ssh -T git@${host}` },
-      { text: "Then try again." },
+      { text: m.sign_in_help_ssh_add(), command: add },
+      { text: m.sign_in_help_ssh_check({ host }), command: `ssh -T git@${host}` },
+      { text: m.sign_in_help_retry() },
     ],
   };
 }
 
 function githubHelp() {
   return {
-    title: "Git could not sign in to github.com.",
+    title: m.sign_in_help_github_title(),
     steps: [
-      { text: "Install the GitHub CLI.", href: "https://cli.github.com" },
-      { text: "Sign in once in a terminal.", command: "gh auth login" },
-      { text: "Let Git use that sign-in.", command: "gh auth setup-git" },
-      { text: "Then try again." },
+      { text: m.sign_in_help_github_install(), href: "https://cli.github.com" },
+      { text: m.sign_in_help_github_login(), command: "gh auth login" },
+      { text: m.sign_in_help_github_setup(), command: "gh auth setup-git" },
+      { text: m.sign_in_help_retry() },
     ],
   };
 }
 
 function httpsHelp(host, name, platform) {
-  const title = `Git could not sign in to ${host}.`;
+  const title = m.sign_in_help_https_title({ host });
   // The probe names the remote and never its address. A name is plain letters,
   // digits, dots, dashes and underscores; anything else falls back to origin, so
   // no shell syntax reaches the command.
@@ -83,8 +84,8 @@ function httpsHelp(host, name, platform) {
     return {
       title,
       steps: [
-        { text: "Git for Windows includes Git Credential Manager. Sign in once from a terminal.", command: probe },
-        { text: "Then try again." },
+        { text: m.sign_in_help_windows_signin(), command: probe },
+        { text: m.sign_in_help_retry() },
       ],
     };
   }
@@ -92,18 +93,18 @@ function httpsHelp(host, name, platform) {
     return {
       title,
       steps: [
-        { text: "Save credentials in the macOS keychain.", command: "git config --global credential.helper osxkeychain" },
-        { text: `Sign in once from a terminal. Use an access token from ${host} as the password.`, command: probe },
-        { text: "Then try again." },
+        { text: m.sign_in_help_mac_keychain(), command: "git config --global credential.helper osxkeychain" },
+        { text: m.sign_in_help_token_signin({ host }), command: probe },
+        { text: m.sign_in_help_retry() },
       ],
     };
   }
   return {
     title,
     steps: [
-      { text: "Install Git Credential Manager, which stores sign-ins in the system keyring.", href: "https://github.com/git-ecosystem/git-credential-manager" },
-      { text: `Sign in once from a terminal. Use an access token from ${host} as the password.`, command: probe },
-      { text: "Then try again." },
+      { text: m.sign_in_help_linux_install(), href: "https://github.com/git-ecosystem/git-credential-manager" },
+      { text: m.sign_in_help_token_signin({ host }), command: probe },
+      { text: m.sign_in_help_retry() },
     ],
   };
 }
