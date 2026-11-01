@@ -167,15 +167,23 @@ What a token can and cannot do:
 
 ## Agent skill
 
-The repository ships one agent skill, `skills/librepaper`, for Claude Code, Codex, Pi and other agents that read `SKILL.md` folders. It teaches an agent to use a project through a token, to run a self-hosted server, and to work on the LibrePaper code. It loads only the part a task needs.
+LibrePaper publishes an agent skill. It teaches an agent to work on a project through a token, to sync a folder or a Git repository, to set up and run a server, and to work on the LibrePaper code. It reads only the part a task needs. It works with Claude Code, Codex, Pi, opencode and any agent that reads `SKILL.md` folders.
+
+Install it with the `skills` command, which needs Node.js:
 
 ```sh
-# Download the repository and install the skill for Claude Code
-git clone --depth 1 https://github.com/LibrePaper/librepaper ~/.local/share/librepaper-src
-ln -s ~/.local/share/librepaper-src/skills/librepaper ~/.claude/skills/librepaper
+# Install the librepaper skill for every agent on this computer
+npx skills add LibrePaper/librepaper --skill librepaper --global
 # Update it later
-git -C ~/.local/share/librepaper-src pull
+npx skills update librepaper
 ```
 
-- Other agents use their own skills folder, for example `~/.codex/skills` or `~/.agents/skills`.
-- Inside a clone of the repository, Claude Code and Codex find the skill without this step.
+Or ask your agent to install it. Paste this into the chat:
+
+```text
+Install the LibrePaper agent skill from https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper into your skills folder.
+```
+
+- The skill lives in the repository at [`skills/librepaper`](https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper). An agent that cannot install skills can read `SKILL.md` there and follow it.
+- Inside a clone of the repository, Claude Code and Codex find the skill without installing it.
+- Restart the agent after installing, so it loads the skill.
