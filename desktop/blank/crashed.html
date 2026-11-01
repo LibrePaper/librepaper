@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LibrePaper</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f6f4;
+    --card: #ffffff;
+    --text: #1d1d1b;
+    --muted: #5c5c57;
+    --line: #d9d9d4;
+    --accent: #2f5d8a;
+    --accent-text: #ffffff;
+    --error: #a33a2a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161716;
+      --card: #20221f;
+      --text: #ecebe6;
+      --muted: #a9aaa3;
+      --line: #3a3c37;
+      --accent: #7fb0e0;
+      --accent-text: #10161e;
+      --error: #f08a78;
+    }
+  }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    box-sizing: border-box;
+  }
+  main {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 0.75rem;
+    padding: 2rem;
+    max-width: 30rem;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  h1 { font-size: 1.4rem; margin: 0 0 0.75rem; }
+  p { line-height: 1.5; margin: 0 0 1rem; }
+  .muted { color: var(--muted); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.95em; }
+  button {
+    font: inherit;
+    border-radius: 0.4rem;
+    border: 1px solid var(--line);
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    background: var(--card);
+    color: var(--text);
+  }
+  button:disabled { opacity: 0.6; cursor: default; }
+  #retry {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-text);
+    font-weight: 600;
+  }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>LibrePaper stopped drawing this page</h1>
+  <p>The part of the app that draws pages <span id="reason">ended</span> twice in a row, so the window would have stayed blank.</p>
+  <button type="button" id="retry">Try again</button>
+  <p class="muted">The desktop log is at <code id="log">desktop.log</code>.</p>
+  <p class="muted">To find out why, quit LibrePaper, start it from a terminal with <code>librepaper-desktop --debug</code>, and open <code>http://127.0.0.1:9222/</code> in a browser while the page loads.</p>
+</main>
+<script>
+  // The shell passes these in the query string.
+  const params = new URLSearchParams(location.search);
+  const reason = params.get("reason");
+  const log = params.get("log");
+  const raw = params.get("url");
+
+  if (reason) document.getElementById("reason").textContent = reason;
+  if (log) document.getElementById("log").textContent = log;
+
+  const retryButton = document.getElementById("retry");
+  let target = null;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol === "https:" || parsed.protocol === "http:") target = parsed;
+  } catch {
+    target = null;
+  }
+
+  if (target) {
+    retryButton.addEventListener("click", () => location.replace(target.href));
+  } else {
+    retryButton.hidden = true;
+  }
+</script>
+</body>
+</html>
