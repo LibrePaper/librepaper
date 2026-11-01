@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Call a LibrePaper project's agent tool routes with an lpt_ agent token.
+
+Usage:
+  lp whoami                    origin and slug from the token, key redacted
+  lp tools                     list the tools this token may call
+  lp call <tool> [json|-]      call a tool with the given arguments
+  lp write <tool> [json|-]     same, adding a fresh operation {epoch, id}
+  lp result <operation-json>   ask whether an uncertain write landed
+
+The token comes from LIBREPAPER_AGENT_TOKEN, else from the file named by
+LIBREPAPER_AGENT_TOKEN_FILE (default ~/.cache/librepaper-agent-token).
+The latest operation_epoch from a document_read is kept next to that file.
+Standard library only.
+"""
+
+import base64
+import json
+import os
+import secrets
+import sys
+import time
+import urllib.error
+import urllib.request
+
+TOKEN_FILE = os.path.expanduser(
+    os.environ.get("LIBREPAPER_AGENT_TOKEN_FILE", "~/.cache/librepaper-agent-token")
+)
+EPOCH_FILE = TOKEN_FILE + ".epoch"
+
+
+def die(message):
+    print(f"lp: {message}", file=sys.stderr)
+    sys.exit(2)
+
+
+def token():
+    value = os.environ.get("LIBREPAPER_AGENT_TOKEN", "").strip()
+    if not value:
+        try:
+            with open(TOKEN_FILE) as handle:
+                value = handle.read().strip()
+        except FileNotFoundError:
+            die(f"no token: set LIBREPAPER_AGENT_TOKEN or write it to {TOKEN_FILE}")
+    if not value.startswith("lpt_") or value.count(".") < 2:
+        die("not an agent token (expected lpt_<origin>.<slug>.<key>)")
+    return value
+
+
+def parts(value):
+    head, rest = value[4:].split(".", 1)
+    slug, key = rest.rsplit(".", 1)
+    origin = base64.urlsafe_b64decode(head + "=" * (-len(head) % 4)).decode()
+    return origin.rstrip("/"), slug, key
+
+
+def request(method, path, body=None):
+    value = token()
+    origin, slug, _ = parts(value)
+    url = f"{origin}/api/documents/{slug}/tools{path}"
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {value}")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            status, text = response.status, response.read().decode()
+    except urllib.error.HTTPError as error:
+        status, text = error.code, error.read().decode()
+    except (urllib.error.URLError, TimeoutError) as error:
+        die(f"{method} {url}: {error} (outcome unknown; do not resend a write)")
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        parsed = text
+    return status, parsed
+
+
+def arguments(raw):
+    if raw is None:
+        return {}
+    if raw == "-":
+        raw = sys.stdin.read()
+    try:
+        return json.loads(raw)
+    except ValueError as error:
+        die(f"arguments are not JSON: {error}")
+
+
+def remember_epoch(result):
+    epoch = result.get("operation_epoch") if isinstance(result, dict) else None
+    if epoch:
+        old = os.umask(0o077)
+        try:
+            with open(EPOCH_FILE, "w") as handle:
+                handle.write(epoch)
+        finally:
+            os.umask(old)
+
+
+def operation():
+    try:
+        with open(EPOCH_FILE) as handle:
+            epoch = handle.read().strip()
+    except FileNotFoundError:
+        die("no operation_epoch yet: run a document_read first")
+    return {"epoch": epoch, "id": f"v2.{int(time.time() * 1000)}.{secrets.token_hex(16)}"}
+
+
+def show(status, result):
+    print(json.dumps(result, indent=2) if not isinstance(result, str) else result)
+    if status >= 400:
+        print(f"lp: HTTP {status}", file=sys.stderr)
+        sys.exit(1)
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return
+    command, rest = argv[0], argv[1:]
+    if command == "whoami":
+        origin, slug, key = parts(token())
+        print(json.dumps({"origin": origin, "slug": slug, "key": "…" + key[-4:]}))
+    elif command == "tools":
+        show(*request("GET", ""))
+    elif command in ("call", "write"):
+        if not rest:
+            die(f"usage: lp {command} <tool> [json|-]")
+        tool, body = rest[0], arguments(rest[1] if len(rest) > 1 else None)
+        if command == "write":
+            body.setdefault("operation", operation())
+            print(f"lp: operation {json.dumps(body['operation'])}", file=sys.stderr)
+        status, result = request("POST", f"/{tool}", body)
+        if tool == "document_read":
+            remember_epoch(result)
+        show(status, result)
+    elif command == "result":
+        if not rest:
+            die("usage: lp result '<operation json>'")
+        body = {"kind": "operation", "target_operation": arguments(rest[0])}
+        show(*request("POST", "/document_result", body))
+    else:
+        die(f"unknown command {command!r}; see lp --help")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

@@ -21,7 +21,8 @@ web/dist
 web/dist/
 web/wasm
 web/fonts
-.claude
+.claude/*
+!.claude/skills
 
 # The docs site: docs/.build is the markdown rendered by
 # web/tools/build-site.mjs, and docs/_site is what vite.site.config.js builds

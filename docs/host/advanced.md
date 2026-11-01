@@ -4,6 +4,8 @@ title: "Advanced features"
 
 Everything here is optional. Start with the [simple deployment](simple.html).
 
+An agent can help you run the server. The [agent skill](../agents.html#agent-skill) covers upgrades, logs, moderation and restore drills.
+
 ## DNS
 
 | Name | Required | Example |

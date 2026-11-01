@@ -164,3 +164,18 @@ What a token can and cannot do:
 - Each token has an hourly comment limit, set under Advanced when you create it.
 - A token stops working at its expiry, when you revoke it with the trash button in the Sharing panel, when the project changes owner, and when your account is blocked or erased.
 - Signing out does not stop a token. The agent keeps working while you are signed out or LibrePaper is closed.
+
+## Agent skill
+
+The repository ships one agent skill, `skills/librepaper`, for Claude Code, Codex, Pi and other agents that read `SKILL.md` folders. It teaches an agent to use a project through a token, to run a self-hosted server, and to work on the LibrePaper code. It loads only the part a task needs.
+
+```sh
+# Download the repository and install the skill for Claude Code
+git clone --depth 1 https://github.com/LibrePaper/librepaper ~/.local/share/librepaper-src
+ln -s ~/.local/share/librepaper-src/skills/librepaper ~/.claude/skills/librepaper
+# Update it later
+git -C ~/.local/share/librepaper-src pull
+```
+
+- Other agents use their own skills folder, for example `~/.codex/skills` or `~/.agents/skills`.
+- Inside a clone of the repository, Claude Code and Codex find the skill without this step.
