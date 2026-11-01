@@ -1,5 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(target_os = "linux")]
+mod crash;
+mod debug;
 mod download;
 #[cfg(target_os = "linux")]
 mod drop;
@@ -47,6 +50,9 @@ enum Target {
 static NEXT: AtomicUsize = AtomicUsize::new(2);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // First of all: WebKit reads its environment when the first window is built.
+    let args: Vec<String> = std::env::args().collect();
+    debug::init(&args);
     // A panic in a windowed app has nowhere to print, so it goes to desktop.log too.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -108,6 +114,14 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(dir) = app.path().app_log_dir() {
         shell_log::init(dir);
     }
+    // One line per launch, so a report says which WebKit and display it ran on.
+    #[cfg(target_os = "linux")]
+    shell_log::write(&format!(
+        "librepaper-desktop {} on {}",
+        env!("CARGO_PKG_VERSION"),
+        crash::startup_line()
+    ));
+    debug::announce();
     let servers = Servers::load(app.handle())?;
     let first = servers
         .first()
@@ -302,6 +316,8 @@ fn open_window(app: &AppHandle, url: Url) -> tauri::Result<tauri::WebviewWindow>
         .theme(theme.tauri_theme(choice))
         .background_color(theme::background(choice, theme.system_dark(app)))
         .inner_size(1280.0, 860.0)
+        // With the devtools feature on, Tauri would otherwise enable the inspector in every build.
+        .devtools(debug::enabled())
         .initialization_script(desktop_script(
             app.state::<zoom::Zoom>().get(),
             app.state::<tray::CloseChoice>().get(),
@@ -334,11 +350,13 @@ fn open_window(app: &AppHandle, url: Url) -> tauri::Result<tauri::WebviewWindow>
     {
         let target = window.clone();
         window.on_window_event(move |event| drop::handle(&target, event));
+        crash::watch(&window);
     }
     #[cfg(target_os = "macos")]
     mark_scheme_secure(&window);
     // New windows open at the saved zoom.
     let _ = window.set_zoom(app.state::<zoom::Zoom>().get());
+    debug::open_inspector(&window);
     check_server(app, window.label().to_string(), checked);
     Ok(window)
 }
@@ -403,8 +421,10 @@ fn show(app: &AppHandle, target: Target, url: Url) {
 // startup and on a second launch alike.
 fn has_action(args: &[String]) -> bool {
     args.iter().any(|arg| {
-        matches!(arg.as_str(), "--open" | "--settings" | "--server")
-            || arg.starts_with("librepaper://")
+        matches!(
+            arg.as_str(),
+            "--open" | "--settings" | "--server" | "--debug"
+        ) || arg.starts_with("librepaper://")
     })
 }
 
@@ -435,6 +455,19 @@ fn handle_args(app: &AppHandle, target: Target, args: &[String]) {
             "--server" => {
                 if let Some(url) = args.next().and_then(|raw| servers::accepted(raw)) {
                     add_server(app, target, url);
+                }
+            }
+            // The inspector only turns on at launch, so a second launch can only say so.
+            "--debug" => {
+                if matches!(target, Target::NewWindow) {
+                    shell_log::write(
+                        "--debug needs a fresh start: quit LibrePaper and run it again",
+                    );
+                    notice::show(
+                        app,
+                        "To use --debug, quit LibrePaper and start it again from the terminal.",
+                        8000,
+                    );
                 }
             }
             _ => {}
