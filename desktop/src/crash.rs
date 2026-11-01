@@ -84,8 +84,8 @@ pub fn watch(window: &WebviewWindow) {
 
 // crashed.html with the reason, the page that was open and where desktop.log is.
 fn crash_page(what: &str, uri: &str) -> Url {
-    let mut page = Url::parse(&format!("{}/crashed.html", crate::app_origin()))
-        .expect("a fixed URL parses");
+    let mut page =
+        Url::parse(&format!("{}/crashed.html", crate::app_origin())).expect("a fixed URL parses");
     page.query_pairs_mut()
         .append_pair("reason", what)
         .append_pair("url", uri)

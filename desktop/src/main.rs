@@ -421,8 +421,10 @@ fn show(app: &AppHandle, target: Target, url: Url) {
 // startup and on a second launch alike.
 fn has_action(args: &[String]) -> bool {
     args.iter().any(|arg| {
-        matches!(arg.as_str(), "--open" | "--settings" | "--server" | "--debug")
-            || arg.starts_with("librepaper://")
+        matches!(
+            arg.as_str(),
+            "--open" | "--settings" | "--server" | "--debug"
+        ) || arg.starts_with("librepaper://")
     })
 }
 
@@ -458,7 +460,9 @@ fn handle_args(app: &AppHandle, target: Target, args: &[String]) {
             // The inspector only turns on at launch, so a second launch can only say so.
             "--debug" => {
                 if matches!(target, Target::NewWindow) {
-                    shell_log::write("--debug needs a fresh start: quit LibrePaper and run it again");
+                    shell_log::write(
+                        "--debug needs a fresh start: quit LibrePaper and run it again",
+                    );
                     notice::show(
                         app,
                         "To use --debug, quit LibrePaper and start it again from the terminal.",
