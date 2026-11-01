@@ -175,7 +175,7 @@ try {
   await until("template tile", () => has(ids.template), 5000);
   await evaluate(`clickGridTile(${JSON.stringify(ids.template)})`);
   assert.equal(await evaluate("insertedCount()"), 0, "a template does not insert in HTML");
-  await until("html note", () => evaluate("noteText() === 'Not available in HTML.'"), 5000);
+  await until("html note", () => evaluate("noteText() === 'Not available in HTML'"), 5000);
 
   console.log("symbols-browser: picker categories, search, insertion, favorites, keyboard and format-aware titles passed");
 } catch (error) {

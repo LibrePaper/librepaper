@@ -156,7 +156,7 @@ try {
   await click(".nav-new");
   await until("the new project page", () => exists("#new-project"));
   assert.equal(await q("location.search"), "?new=blank");
-  assert.deepEqual(await q("[...document.querySelectorAll('#new-project [role=tab]')].map(node => node.textContent.trim())"), ["Blank", "From Template", "Upload Files"]);
+  assert.deepEqual(await q("[...document.querySelectorAll('#new-project [role=tab]')].map(node => node.textContent.trim())"), ["Blank", "From Template", "Upload files"]);
   await until("the suggested name", async () => (await valueOf("#new-project-name")) === "Untitled project 2");
 
   // b. A name alone makes the project: nothing is sent but the title, and the
