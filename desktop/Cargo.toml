@@ -13,7 +13,8 @@ name = "librepaper-desktop"
 path = "src/main.rs"
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+# devtools: the inspector in release builds, opened by --debug.
+tauri = { version = "2", features = ["tray-icon", "devtools"] }
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-deep-link = "2"
 tauri-plugin-dialog = "2"
@@ -64,6 +65,8 @@ objc2-foundation = "0.3"
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
 libloading = "0.7"
+# The shell listens to WebKit's own signals (crash.rs).
+webkit2gtk = "2.0"
 
 # Windows keeps the light or dark choice in the registry.
 [target.'cfg(windows)'.dependencies]

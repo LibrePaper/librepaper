@@ -116,4 +116,6 @@ On macOS and with the Windows installer, the app checks for a new version when i
 
 On macOS, the Help menu copies diagnostics, opens the issue tracker and checks for updates. On every system, Settings, General, Diagnostics copies the same report.
 
+If a window stays blank, quit the app and start it from a terminal with `librepaper-desktop --debug` (on macOS the binary is inside the app bundle, under Contents/MacOS). The web inspector opens with the window, and on Linux it is also served at `http://127.0.0.1:9222/` for any browser. The desktop log, whose path is in the diagnostics report, records when the part of the app that draws the page crashes. Send both with your report.
+
 To build from a checkout, see [building from source](architecture/building.html).

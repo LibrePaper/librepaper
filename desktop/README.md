@@ -19,4 +19,5 @@ LIBREPAPER_SERVER=http://localhost:8080/ LIBREPAPER_BIN=target/debug/librepaper 
 - `LIBREPAPER_BIN` replaces the bundled CLI for one run.
 - `--server <URL>` adds a server after a confirmation dialog.
 - `--open <URL>` and `--settings` open a page in the running window.
+- `--debug` opens the web inspector with each window, on Linux also at `http://127.0.0.1:9222/` for any browser, and logs the environment to desktop.log.
 - `librepaper://open?url=<URL>` opens a page the same way as `--open`.
