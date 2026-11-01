@@ -38,7 +38,9 @@ fn lists_command(help: &str, command: &str) -> bool {
 #[test]
 fn top_level_help_lists_exactly_the_public_commands() {
     let help = help_of(&["--help"]);
-    for command in ["login", "logout", "list", "export", "pull", "push", "admin"] {
+    for command in [
+        "login", "logout", "list", "export", "pull", "push", "admin", "mcp",
+    ] {
         assert!(
             lists_command(&help, command),
             "public command {command:?} is absent from top-level help:\n{help}"
@@ -47,7 +49,7 @@ fn top_level_help_lists_exactly_the_public_commands() {
     for hidden in [
         "agent",
         "local",
-        "mcp",
+        "help-markdown",
         "start",
         "stop",
         "status",
@@ -108,13 +110,13 @@ fn moderate_help_lists_the_moderation_commands() {
     }
 }
 
-/// `local` is the desktop app's interface to the background service, and the
-/// sidebar assistant's own chosen agent spawns `mcp`. Both parse, neither is
-/// advertised in root help.
+/// `local` is the desktop app's interface to the background service, and
+/// `help-markdown` is run by the build that writes the agent skill's CLI
+/// reference. Both parse, neither is advertised in root help.
 #[test]
 fn machine_invoked_commands_parse_but_are_not_listed() {
     let root = help_of(&["--help"]);
-    for command in ["local", "mcp"] {
+    for command in ["local", "help-markdown"] {
         assert!(
             !lists_command(&root, command),
             "{command:?} should not be listed in top-level help"
@@ -578,5 +580,23 @@ fn hidden_admin_commands_parse_but_are_not_listed() {
     assert!(
         cli(&["admin", "sweep", "--help"]).status.success(),
         "admin sweep --help should parse"
+    );
+}
+
+/// The agent skill ships the command reference. A change to a command, a
+/// flag or its help text must regenerate it in the same commit.
+#[test]
+fn skill_cli_reference_is_current() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../skills/librepaper/references/cli-reference.md"
+    );
+    let committed = std::fs::read_to_string(path).unwrap_or_default();
+    let output = cli(&["help-markdown"]);
+    assert!(output.status.success(), "{output:?}");
+    let generated = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        committed == generated,
+        "skills/librepaper/references/cli-reference.md is stale: run `make cli-reference`"
     );
 }

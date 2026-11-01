@@ -49,7 +49,7 @@ WEB_BUILD := web/bun.lock web/tools/vendor-katex.mjs web/tools/compress-shell.mj
 WEB     := $(shell find web/src web/public web/messages web/project.inlang -type f -not -path 'web/src/site/*' -not -path 'web/src/lib/paraglide/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js) $(WEB_BUILD)
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find docs/examples -type f) Cargo.toml Cargo.lock .cargo/config.toml assets.lock
 
-.PHONY: help build install desktop test test-web test-web-unit test-web-types test-tools test-rust test-nextest sync-test check fmt serve demo demo-run demo-checkout demo-stop demo-wipe demo-desktop demo-desktop-checkout wipe kill clean snapshot web pins site site-serve
+.PHONY: help build install desktop test test-web test-web-unit test-web-types test-tools test-rust test-nextest sync-test check fmt cli-reference serve demo demo-run demo-checkout demo-stop demo-wipe demo-desktop demo-desktop-checkout wipe kill clean snapshot web pins site site-serve
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
@@ -154,6 +154,9 @@ sync-test:  ## Run the librepaper push and pull end-to-end test against a throwa
 
 fmt:  ## Format every crate
 	@cargo fmt
+
+cli-reference: pins $(SHELL_OUT)  ## Regenerate the agent skill's CLI reference from the clap definitions
+	env -u LIBREPAPER_SERVER -u LIBREPAPER_TOKEN -u LIBREPAPER_AGENT_TOKEN cargo run -q -p librepaper -- help-markdown > skills/librepaper/references/cli-reference.md
 
 # Release builds are described in .github/workflows/release.yml and run when a
 # v* tag is pushed. This does the same thing locally, without tagging.

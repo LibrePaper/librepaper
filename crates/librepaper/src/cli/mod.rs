@@ -110,9 +110,12 @@ pub(crate) enum Command {
     ///
     /// With --title, publish the directory as a new project instead.
     Push(sync::PushArgs),
-    // The one command the sidebar assistant's own agent spawns. Not listed,
-    // because nobody types it.
-    #[command(hide = true)]
+    /// Serve a project's document tools to an MCP client over stdio
+    ///
+    /// Give it an agent token in LIBREPAPER_AGENT_TOKEN. The token names its
+    /// server and its project, so no other flag is needed. Register it with
+    /// Claude Code once with `claude mcp add librepaper --scope user --
+    /// librepaper mcp`.
     Mcp(agent::McpArgs),
     // The desktop app's interface to the background service. Not listed,
     // because nobody types it.
@@ -121,6 +124,26 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: LocalCommand,
     },
+    // Prints the Markdown reference that `make cli-reference` writes into the
+    // agent skill. Not listed, because only the build runs it.
+    #[command(hide = true)]
+    HelpMarkdown,
+}
+
+/// The command reference in Markdown, as the agent skill ships it.
+pub(crate) fn cli_reference() -> String {
+    let options = clap_markdown::MarkdownOptions::new()
+        .title("librepaper command reference".to_string())
+        .show_footer(false)
+        .show_table_of_contents(true);
+    // clap-markdown separates an item from its description with an em dash
+    // and marks overview links with an arrow. The skill's prose uses neither.
+    let markdown = clap_markdown::help_markdown_custom::<Cli>(&options)
+        .replace(" \u{2014} ", ": ")
+        .replace('\u{21b4}', "");
+    format!(
+        "<!-- Generated from the CLI's clap definitions by `make cli-reference`. Do not edit. -->\n\n{markdown}"
+    )
 }
 
 /// Commands used to operate a deployment rather than work with documents.
@@ -370,6 +393,7 @@ async fn run(command: Command, postgres_env: Option<&server_config::PostgresEnvS
         Command::Local { command } => {
             librepaper_companion::local::cli::run(LocalArgs { command }).await
         }
+        Command::HelpMarkdown => print!("{}", cli_reference()),
     }
 }
 

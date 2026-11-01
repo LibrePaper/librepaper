@@ -16,6 +16,7 @@ Load only the file the current task needs. Do not read the others.
 - **The user pasted an `lpt_` token, or asks you to read, review, comment on, proofread or edit a LibrePaper document.** Load [references/agent.md](references/agent.md).
 - **The user wants to connect Claude Code, Codex or another MCP client to a project.** Load [references/agent-setup.md](references/agent-setup.md).
 - **You need the fields of a tool such as `document_read` or `document_propose`.** Load [references/agent-tools.md](references/agent-tools.md).
+- **The `librepaper` command: signing in, listing or exporting projects, or which command or flag does what.** Load [references/cli.md](references/cli.md). The full command and flag list is [references/cli-reference.md](references/cli-reference.md).
 - **Syncing a folder or a Git repository with a project: `librepaper pull`, `librepaper push`, the GitHub Action, or a sync error.** Load [references/sync.md](references/sync.md).
 
 **Running a server**

@@ -4,7 +4,8 @@
 //! child process, following the command the local service's session handed it
 //! at `session/new`. An agent on another machine runs it with an agent token
 //! in `LIBREPAPER_AGENT_TOKEN`, which names both the server and the project.
-//! It speaks nothing but MCP frames over stdio, and it is not listed in help.
+//! It speaks nothing but MCP frames over stdio. It is listed in help so people
+//! can register it with their MCP client.
 //! LibrePaper's own local service is neither caller: it drives ACP directly
 //! in-process instead of spawning a runner (see
 //! `librepaper_companion::assistant::registry`).
@@ -21,21 +22,20 @@ use librepaper_base::ids::AgentToken;
 use librepaper_companion::automation::peer::{AutomationPeer, DocumentLink};
 use librepaper_companion::local::connections::{AGENT_TOKEN_VARIABLE, GRANT_FILE_VARIABLE};
 
-/// Serve the document MCP tools over stdio.
-///
-/// The sidebar assistant's agent names a runner record this computer holds, so
-/// its command carries a name rather than a document key. It comes from
-/// `--connection NAME` or, when that is absent, from
-/// `LIBREPAPER_MCP_CONNECTION`, which the local service's session
-/// (`assistant::acp::Agent::start`) sets for the agent and its bridge.
-///
-/// A remote agent sets neither and passes an agent token in
-/// `LIBREPAPER_AGENT_TOKEN`. The token carries its server and its project, so
-/// no flag is needed.
+// The sidebar assistant's agent names a runner record this computer holds, so
+// its command carries a name rather than a document key. It comes from
+// `--connection NAME` or, when that is absent, from
+// `LIBREPAPER_MCP_CONNECTION`, which the local service's session
+// (`assistant::acp::Agent::start`) sets for the agent and its bridge.
+//
+// A remote agent sets neither and passes an agent token in
+// `LIBREPAPER_AGENT_TOKEN`. The token carries its server and its project, so
+// no flag is needed. The help text people read is on `Command::Mcp`.
 #[derive(Args, Clone, Debug)]
 pub(crate) struct McpArgs {
-    /// A runner record on this computer.
-    #[arg(long, value_name = "NAME")]
+    // The desktop app's sidebar passes this when it starts the agent. People do
+    // not type it.
+    #[arg(long, value_name = "NAME", hide = true)]
     connection: Option<String>,
     #[command(flatten)]
     deployment: Deployment,
