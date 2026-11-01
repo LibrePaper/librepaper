@@ -1,6 +1,6 @@
 # Operating a server
 
-This file is for a server run with the Docker Compose kit from a release (`librepaper-deploy.tar.gz`). The kit unpacks into a `librepaper/` directory on the server, and every command below runs there. The full procedures are `docs/host/simple.md` and `docs/host/advanced.md`. Read them before inventing a step.
+This file is for a server run with the Docker Compose kit from a release (`librepaper-deploy.tar.gz`). The kit unpacks into a `librepaper/` directory on the server, and every command below runs there. The full procedures are `docs/host/simple.md` and `docs/host/advanced.md`. Read them before inventing a step. A new server or a change to `librepaper.toml` is [host-setup.md](host-setup.md).
 
 The operator runs anything that changes the server. Give the exact command, filled in, and let them run it.
 
@@ -73,6 +73,10 @@ docker exec librepaper-librepaper-1 wget -qO- http://127.0.0.1:8080/api/status |
 
 - Counters in `/api/status` reset at each restart, so they cover the time since the last upgrade or apply.
 - Prometheus `/metrics` exists only when `librepaper.toml` has a `[metrics]` section. Without it, the admin graphs are the only metrics.
+
+## The operating system
+
+Unattended upgrades, Docker live restore (so a Docker update does not stop the containers) and pending reboots are in `docs/dev/vps-maintenance.md`. It was written for librepaper.org, and its steps apply to any Ubuntu VPS running the kit.
 
 ## Other apps on the same server
 

@@ -2,6 +2,8 @@
 
 A review of how someone could read or write another user's files. Read-only. The main agent maps the surface, fans out one reviewer per surface, then verifies every claim itself before reporting. Reviewers must not run cargo, bun, tests or servers, and must give file:line, preconditions, a request sequence and CONFIRMED or SUSPECTED for each finding.
 
+Start from the trust model in `docs/architecture/index.md` (Trust model): where code runs, which origin holds what, and what each side may trust.
+
 ## Where authority is decided
 
 - `crates/librepaper-server/src/server/mod.rs`: `Viewer`, `viewer_as`, `resolved_role`, `automation_role`, `ceiling_for`, `link_hash`, `check_readable`, `entry_at_least_in`. Every gate goes through `viewer_as`.
