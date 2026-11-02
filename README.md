@@ -9,6 +9,8 @@ browser, share a link to it, and collect comments and highlights in real time.
 - Trivial to deploy: one static binary, on your laptop or on a small server
 - Export a complete, independent project copy from the CLI
 
+![LibrePaper — edit the source, and the typeset paper updates beside it](./librepaper-demo.gif)
+
 ![The LibrePaper editor: LaTeX source on the left, the compiled paper with its figure, equation and table on the right.](docs/images/editor-latex.png)
 
 ## Try it
