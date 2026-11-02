@@ -1,26 +1,20 @@
 ---
-title: "Web and desktop app"
+title: "Install desktop app"
 ---
 
-LibrePaper works in a web browser and in the LibrePaper desktop app. The desktop app is not an offline editor. It connects to the same LibrePaper server as the website, with the same account and the same projects. Several people can edit a project at once, whether each of them uses a browser or the desktop app, and you can switch between the two at any time.
+LibrePaper works in any web browser. The desktop app connects to the same server, with the same account and the same projects, and adds what a browser sandbox cannot do: run your R and Python code, work with [AI agents](agents.html), pull citations from [Zotero](https://www.zotero.org), sync with [Git](git.html), keep [local backups](backups.html) and render with your own latexmk, Typst or Quarto. The [feature table](index.html#features) lists what works where.
 
-Web browsers run every page in a sandbox, so a website cannot run code or use files on your computer. The desktop app does these things for you, on your computer, under your account.
-
-## What works where
-
-Writing, previews, collaboration and review work in any web browser. The desktop app adds running code, [AI agents](agents.html), citations from [Zotero](https://www.zotero.org), [Git](git.html) with two CLI commands and a GitHub Action, [local backups](backups.html) and a project folder on your disk. The [feature table](index.html#features) lists each feature.
-
-- In a browser, the desktop-only features say they need the desktop app and offer to open it.
-- Nothing runs unasked. Folders are granted one at a time through your system's own chooser. Running a document's code is off whenever a document opens, and you turn it on with the Run code switch.
-- On a shared project, editors can change the code that runs, so it is their code too.
-- The desktop app uses the tools installed on your computer, such as R, Python, Quarto and your coding agent.
-- **Settings, then Rendering** chooses, per format, whether a render runs in the browser or on this computer with your own latexmk, Typst or Quarto. Renders on this computer run only while Run code is on.
-
-The server you connect to decides what the desktop app runs. A document's code runs only when you turn on Run code, and the app still trusts its server. A compromised server could run code on your computer through the same tools. Connect the app only to a server you trust.
+The desktop app is not an offline editor. You can switch between the browser and the app at any time, and collaborators can use either one.
 
 ## Install the desktop app
 
-Every package except the plain macOS `.dmg` puts two commands on your PATH: `librepaper` (the [command line](cli.html)) and `librepaper-desktop` (the app). You do not need the command line to write.
+Download the installer from the [latest release on GitHub](https://github.com/LibrePaper/librepaper/releases/latest):
+
+- **macOS:** `LibrePaper_<version>_universal.dmg`, for Apple Silicon and Intel Macs.
+- **Windows:** `LibrePaper_<version>_x64-setup.exe`, signed.
+- **Linux:** `librepaper_<version>_amd64.deb` for Debian and Ubuntu, or `librepaper-<version>-1.x86_64.rpm` for Fedora and openSUSE.
+
+Package managers are covered below. Every package except the plain macOS `.dmg` puts two commands on your PATH: `librepaper` (the [command line](cli.html)) and `librepaper-desktop` (the app). You do not need the command line to write.
 
 **macOS**
 
@@ -30,7 +24,7 @@ Every package except the plain macOS `.dmg` puts two commands on your PATH: `lib
 brew install vincentarelbundock/tap/librepaper
 ```
 
-- Or download `LibrePaper_<version>_universal.dmg` from the release, open it and drag LibrePaper to Applications. It runs on Apple Silicon and Intel Macs. This install does not put the commands on your PATH.
+- Or download `LibrePaper_<version>_universal.dmg` from the [latest release](https://github.com/LibrePaper/librepaper/releases/latest), open it and drag LibrePaper to Applications. It runs on Apple Silicon and Intel Macs. This install does not put the commands on your PATH.
 
 **Windows**
 
@@ -41,18 +35,18 @@ scoop bucket add vincentarelbundock https://github.com/vincentarelbundock/scoop-
 scoop install librepaper
 ```
 
-- Or download `LibrePaper_<version>_x64-setup.exe` from the release. It is signed. It adds its folder to your user PATH, so open a new terminal to use both commands. Uninstalling removes the PATH entry.
+- Or download `LibrePaper_<version>_x64-setup.exe` from the [latest release](https://github.com/LibrePaper/librepaper/releases/latest). It is signed. It adds its folder to your user PATH, so open a new terminal to use both commands. Uninstalling removes the PATH entry.
 
 **Linux**
 
-- Debian and Ubuntu: download `librepaper_<version>_amd64.deb` from the release, then run:
+- Debian and Ubuntu: download `librepaper_<version>_amd64.deb` from the [latest release](https://github.com/LibrePaper/librepaper/releases/latest), then run:
 
 ```sh
 sudo apt install ./librepaper_<version>_amd64.deb
 sudo apt remove librepaper                        # remove it
 ```
 
-- Fedora: download `librepaper-<version>-1.x86_64.rpm` from the release, then run:
+- Fedora: download `librepaper-<version>-1.x86_64.rpm` from the [latest release](https://github.com/LibrePaper/librepaper/releases/latest), then run:
 
 ```sh
 sudo dnf install ./librepaper-<version>-1.x86_64.rpm
@@ -95,6 +89,10 @@ LIBREPAPER_SERVER=https://paper.example.org/ desktop/target/release/librepaper-d
 ### Nothing else to start
 
 The desktop app starts its own background local service when it opens. You do not start, stop or pair the local service.
+
+### Trust
+
+Nothing runs unasked. Folders are granted one at a time through your system's own chooser, and a document's code runs only after you turn on the Run code switch. On a shared project, editors can change that code, so it is their code too. The app still trusts the server it connects to: a compromised server could run code on your computer through the same tools. Connect the app only to a server you trust.
 
 ### Updates
 
