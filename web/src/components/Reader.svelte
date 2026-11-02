@@ -117,7 +117,7 @@
   import Files from "./reader/Files.svelte";
   import Outline from "./reader/Outline.svelte";
   import WordCount from "./reader/WordCount.svelte";
-  import Agent from "./reader/Agent.svelte";
+  import AgentSessions from "./reader/AgentSessions.svelte";
   import Collaboration from "./reader/Collaboration.svelte";
   import Changes from "./reader/Changes.svelte";
   import Share from "./reader/Share.svelte";
@@ -4198,7 +4198,7 @@
   {/snippet}
 
   {#snippet agentPanel()}
-    <Agent slug={SLUG} link={linkFor(SLUG)} canShare={doc.role === "owner"}
+    <AgentSessions slug={SLUG} link={linkFor(SLUG)} canShare={doc.role === "owner"}
       path={session?.paths?.get(openFile) || ""} selection={agentSelection}
       revision={agentSelection?.revision || ""} request={assistantRequest}
       {comments} changes={changeRows} {diagnostics} onreview={reviewAssistantResults} onpreview={previewAssistant}
