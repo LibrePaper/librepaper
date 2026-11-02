@@ -16,70 +16,47 @@ Download the installer from the [latest release on GitHub](https://github.com/Li
 
 Package managers are covered below. Every package except the plain macOS `.dmg` puts two commands on your PATH: `librepaper` (the [command line](cli.html)) and `librepaper-desktop` (the app). You do not need the command line to write.
 
-**macOS**
+### macOS
 
-- With Homebrew:
+Install with Homebrew:
 
 ```sh
 brew install vincentarelbundock/tap/librepaper
 ```
 
-- Or download `LibrePaper_<version>_universal.dmg` from the [latest release](https://github.com/LibrePaper/librepaper/releases/latest), open it and drag LibrePaper to Applications. It runs on Apple Silicon and Intel Macs. This install does not put the commands on your PATH.
+Or open the `.dmg` and drag LibrePaper to Applications. This install does not put the commands on your PATH.
 
-**Windows**
+### Windows
 
-- With Scoop:
+Install with Scoop:
 
 ```sh
 scoop bucket add vincentarelbundock https://github.com/vincentarelbundock/scoop-bucket
 scoop install librepaper
 ```
 
-- Or download `LibrePaper_<version>_x64-setup.exe` from the [latest release](https://github.com/LibrePaper/librepaper/releases/latest). It is signed. It adds its folder to your user PATH, so open a new terminal to use both commands. Uninstalling removes the PATH entry.
+Or run the `.exe` installer. It adds its folder to your user PATH, so open a new terminal to use both commands. Uninstalling removes the PATH entry.
 
-**Linux**
+### Linux
 
-- Debian and Ubuntu: download `librepaper_<version>_amd64.deb` from the [latest release](https://github.com/LibrePaper/librepaper/releases/latest), then run:
+Download the `.deb` or `.rpm` package from the [latest release](https://github.com/LibrePaper/librepaper/releases/latest) and install it with your package manager. On Nix (x86_64 Linux only), install from the repository.
 
 ```sh
-sudo apt install ./librepaper_<version>_amd64.deb
-sudo apt remove librepaper                        # remove it
+sudo apt install ./librepaper_<version>_amd64.deb            # Debian and Ubuntu
+sudo dnf install ./librepaper-<version>-1.x86_64.rpm         # Fedora
+sudo zypper install ./librepaper-<version>-1.x86_64.rpm      # openSUSE
+nix profile install github:LibrePaper/librepaper             # Nix
+nix run github:LibrePaper/librepaper                         # Nix, without installing
 ```
 
-- Fedora: download `librepaper-<version>-1.x86_64.rpm` from the [latest release](https://github.com/LibrePaper/librepaper/releases/latest), then run:
+Remove it with `sudo apt remove librepaper` or `sudo dnf remove librepaper`. Open LibrePaper from your applications menu, or run `librepaper-desktop` in a terminal.
+
+### Build from source
+
+From a checkout of the repository, `make desktop` builds the app and the `librepaper` binary it bundles. On NixOS, it runs inside `nix-shell`. `LIBREPAPER_SERVER` points the app at another server instead of the default one.
 
 ```sh
-sudo dnf install ./librepaper-<version>-1.x86_64.rpm
-sudo dnf remove librepaper                        # remove it
-```
-
-- openSUSE: use the same `.rpm` file, then run:
-
-```sh
-sudo zypper install ./librepaper-<version>-1.x86_64.rpm
-```
-
-- Nix (x86_64 Linux only):
-
-```sh
-nix profile install github:LibrePaper/librepaper    # install
-nix run github:LibrePaper/librepaper                # or try it without installing
-```
-
-- Open LibrePaper from your applications menu, or run `librepaper-desktop` in a terminal.
-
-- To build from source:
-
-```sh
-# From a checkout of the repository
-make desktop                                   # build the app and the librepaper binary it bundles
+make desktop                                   # build
 desktop/target/release/librepaper-desktop      # start the app
-```
-
-- On NixOS, `make desktop` runs inside `nix-shell`.
-- `LIBREPAPER_SERVER` points the app at another server. It replaces the default server.
-
-```sh
-# Start the app with another server
 LIBREPAPER_SERVER=https://paper.example.org/ desktop/target/release/librepaper-desktop
 ```
