@@ -1144,7 +1144,7 @@
   "history_by": "by {who}",
   "history_collaborative_session": "Collaborative session",
   "history_commented": "Commented",
-  "history_comparison_base": "comparison base",
+  "history_compare_with": "Compare with…",
   "history_contributors": [
     {
       "declarations": [
@@ -1195,11 +1195,14 @@
     }
   ],
   "history_name_bookmark": "Name this bookmark",
+  "history_newer_tag": "Newer",
   "history_no_saved": "No saved versions yet. Bookmark a version to save it by name.",
   "history_no_versions_in_month": "No versions in {month}. Showing the nearest period.",
   "history_no_versions_shown": "No versions to show.",
   "history_none": "No previous versions",
   "history_not_readable": "this document's history is not readable",
+  "history_older_tag": "Older",
+  "history_pick_prompt": "Choose a version to compare with.",
   "history_push": "Pushed",
   "history_pushed_by": "Pushed by {author}",
   "history_recovered": "Recovered",
@@ -1209,7 +1212,7 @@
   "history_restored": "Restored",
   "history_restored_version": "Restored version",
   "history_row_tip": "{what}, {detail}",
-  "history_row_tip_base": "{what}, {detail}, comparison base",
+  "history_row_tip_endpoint": "{what}, {detail}, {endpoint}",
   "history_saved_short": "Saved",
   "history_saved_versions": "Saved versions",
   "history_show_versions": "Show the {count} versions",

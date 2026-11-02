@@ -223,10 +223,11 @@ async function runChecks() {
         `showing more brings the list to 55 versions, shows ${versionsOf(run()).length}`);
     });
 
-    await step("3: a click views the newest version, shift-click compares it", async () => {
+    await step("3: a click views the newest version, shift-click compares the viewed one with it", async () => {
       mount({ labels: fixtures.autosaves });
       await flush();
       const newest = fixtures.autosaves[fixtures.autosaves.length - 1].sha;
+      const oldest = fixtures.autosaves[0].sha;
       const main = () => eventsOf("editing")[0].querySelector("button.hx-main");
 
       click(main());
@@ -234,10 +235,18 @@ async function runChecks() {
       check(JSON.stringify(calls) === JSON.stringify([["view", newest]]),
         `a click should ask for the newest version to be viewed, calls: ${JSON.stringify(calls)}`);
 
+      // Nothing is viewed yet, so shift-click compares from the Current row.
       click(main(), { shiftKey: true });
       await flush();
-      check(JSON.stringify(calls) === JSON.stringify([["view", newest], ["compare", newest]]),
-        `a shift-click should ask for the newest version to be compared, calls: ${JSON.stringify(calls)}`);
+      check(JSON.stringify(calls) === JSON.stringify([["view", newest], ["compare", "", newest]]),
+        `a shift-click with nothing viewed should compare from the current version, calls: ${JSON.stringify(calls)}`);
+
+      update({ viewing: oldest });
+      await flush();
+      click(main(), { shiftKey: true });
+      await flush();
+      check(JSON.stringify(calls.slice(2)) === JSON.stringify([["compare", oldest, newest]]),
+        `a shift-click should compare the viewed version with the clicked one, calls: ${JSON.stringify(calls)}`);
     });
 
     await step("4: a named version is its own event and splits the session", async () => {
@@ -403,7 +412,7 @@ async function runChecks() {
         "ArrowRight on a closed period opens it");
     });
 
-    await step("12: no restore, overflow or per-row compare controls", async () => {
+    await step("12: no restore or overflow controls, and Compare with… only on the selected row", async () => {
       mount({ labels: fixtures.autosaves, canEdit: true });
       await flush();
       click(eventsOf("editing")[0].querySelector("button[aria-expanded]"));
@@ -415,8 +424,47 @@ async function runChecks() {
       const moreIcon = all("svg", panel).some((svg) =>
         all("circle", svg).filter((circle) => Number(circle.getAttribute("r")) === 1).length === 3);
       check(!moreIcon, "no more-horizontal icon is in the panel");
-      check(!all("button", panel).some((node) => /compare/i.test(`${node.getAttribute("aria-label") ?? ""} ${node.title}`)),
-        "no row has a compare button");
+      const compareButtons = () => all("button[data-compare]", panel);
+      check(compareButtons().length === 0, "no row offers Compare with… when nothing is selected");
+
+      const second = fixtures.autosaves[fixtures.autosaves.length - 2].sha;
+      update({ viewing: second });
+      await flush();
+      check(compareButtons().length === 1 && text(compareButtons()[0]) === "Compare with…",
+        `only the selected row offers Compare with…, found ${compareButtons().length}`);
+      check(compareButtons()[0].closest("[data-sha]")?.dataset.sha === second,
+        "the Compare with… button sits in the selected row");
+    });
+
+    await step("13: Compare with… picks the second version, Escape cancels", async () => {
+      mount({ labels: fixtures.timeline, viewing: keys.olderSha });
+      await flush();
+      const compare = () => q("button[data-compare]");
+      const status = () => q(".hx-pick");
+      check(compare() && text(compare()) === "Compare with…", "the selected row offers Compare with…");
+
+      click(compare());
+      await flush();
+      check(status() && text(status()).includes("Choose a version to compare with."),
+        `choosing Compare with… asks for a version, shows: ${status() ? text(status()) : "nothing"}`);
+      check(!compare(), "the Compare with… button is hidden while picking");
+
+      // Today's editing event is the newest row, and its newest version is the second end.
+      const todayNewest = fixtures.timeline[1].sha;
+      click(eventsOf("editing")[0].querySelector("button.hx-main"));
+      await flush();
+      check(JSON.stringify(calls) === JSON.stringify([["compare", keys.olderSha, todayNewest]]),
+        `a row while picking should compare the two versions, calls: ${JSON.stringify(calls)}`);
+      check(!status(), "pick mode ends after a row is chosen");
+      check(compare(), "the Compare with… button is back once pick mode ends");
+
+      click(compare());
+      await flush();
+      q(".timeline").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      await flush();
+      check(!status(), "Escape ends pick mode");
+      check(calls.length === 1, `Escape should not compare, calls: ${JSON.stringify(calls)}`);
+      check(document.activeElement === compare(), "focus returns to Compare with… after Escape");
     });
 
     return "passed";
@@ -441,7 +489,7 @@ const fixtures = ${JSON.stringify(fixtures)};
 const calls = [];
 const callbacks = {
   onview: (sha) => calls.push(["view", sha]),
-  oncompare: (sha) => calls.push(["compare", sha]),
+  oncompare: (from, to) => calls.push(["compare", from, to]),
   onname: (sha, label) => calls.push(["name", sha, label]),
   onretry: () => calls.push(["retry"]),
   onloadmore: () => calls.push(["loadmore"]),
@@ -449,7 +497,7 @@ const callbacks = {
   onloadsaved: () => calls.push(["loadsaved"]),
 };
 const base = {
-  labels: [], viewing: null, against: "", canEdit: false, problem: "", loaded: true,
+  labels: [], viewing: null, older: "", newer: "", canEdit: false, problem: "", loaded: true,
   complete: true, loadingMore: false, moreProblem: "", saved: [], savedLoaded: false,
   savedLoading: false, savedProblem: "",
 };

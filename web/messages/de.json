@@ -1144,7 +1144,7 @@
   "history_by": "von {who}",
   "history_collaborative_session": "Gemeinsame Sitzung",
   "history_commented": "Kommentiert",
-  "history_comparison_base": "Vergleichsbasis",
+  "history_compare_with": "Vergleichen mit…",
   "history_contributors": [
     {
       "declarations": [
@@ -1195,11 +1195,14 @@
     }
   ],
   "history_name_bookmark": "Dieses Lesezeichen benennen",
+  "history_newer_tag": "Neuere",
   "history_no_saved": "Noch keine gespeicherten Versionen. Setzen Sie ein Lesezeichen für eine Version, um sie mit Namen zu speichern.",
   "history_no_versions_in_month": "Keine Versionen für {month}. Der nächstliegende Zeitraum wird angezeigt.",
   "history_no_versions_shown": "Keine Versionen zum Anzeigen.",
   "history_none": "Keine früheren Versionen",
   "history_not_readable": "der Verlauf dieses Dokuments ist nicht lesbar",
+  "history_older_tag": "Ältere",
+  "history_pick_prompt": "Wählen Sie eine Version für den Vergleich aus.",
   "history_push": "Gepusht",
   "history_pushed_by": "Gepusht von {author}",
   "history_recovered": "Wiederhergestellt",
@@ -1209,7 +1212,7 @@
   "history_restored": "Wiederhergestellt",
   "history_restored_version": "Wiederhergestellte Version",
   "history_row_tip": "{what}, {detail}",
-  "history_row_tip_base": "{what}, {detail}, Vergleichsbasis",
+  "history_row_tip_endpoint": "{what}, {detail}, {endpoint}",
   "history_saved_short": "Gespeichert",
   "history_saved_versions": "Gespeicherte Versionen",
   "history_show_versions": "Die {count} Versionen anzeigen",

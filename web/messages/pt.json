@@ -1144,7 +1144,7 @@
   "history_by": "por {who}",
   "history_collaborative_session": "Sessão colaborativa",
   "history_commented": "Comentado",
-  "history_comparison_base": "base de comparação",
+  "history_compare_with": "Comparar com…",
   "history_contributors": [
     {
       "declarations": [
@@ -1195,11 +1195,14 @@
     }
   ],
   "history_name_bookmark": "Nomear este marcador",
+  "history_newer_tag": "Mais recente",
   "history_no_saved": "Ainda não há versões salvas. Marque uma versão para salvá-la com um nome.",
   "history_no_versions_in_month": "Nenhuma versão em {month}. Mostrando o período mais próximo.",
   "history_no_versions_shown": "Nenhuma versão para mostrar.",
   "history_none": "Nenhuma versão anterior",
   "history_not_readable": "o histórico deste documento não pode ser lido",
+  "history_older_tag": "Mais antiga",
+  "history_pick_prompt": "Escolha uma versão para comparar.",
   "history_push": "Push feito",
   "history_pushed_by": "Push feito por {author}",
   "history_recovered": "Recuperado",
@@ -1209,7 +1212,7 @@
   "history_restored": "Restaurado",
   "history_restored_version": "Versão restaurada",
   "history_row_tip": "{what}, {detail}",
-  "history_row_tip_base": "{what}, {detail}, base de comparação",
+  "history_row_tip_endpoint": "{what}, {detail}, {endpoint}",
   "history_saved_short": "Salvo",
   "history_saved_versions": "Versões salvas",
   "history_show_versions": "Mostrar as {count} versões",
