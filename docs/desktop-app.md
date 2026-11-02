@@ -51,6 +51,20 @@ nix run github:LibrePaper/librepaper                         # Nix, without inst
 
 Remove it with `sudo apt remove librepaper` or `sudo dnf remove librepaper`. Open LibrePaper from your applications menu, or run `librepaper-desktop` in a terminal.
 
+### Command line only
+
+The release also has install scripts. They install the `librepaper` command without the desktop app, for a server or a machine where you only script documents. See the [command line](cli.html) page.
+
+```sh
+# Linux and macOS
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
+```
+
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.ps1 | iex"
+```
+
 ### Build from source
 
 From a checkout of the repository, `make desktop` builds the app and the `librepaper` binary it bundles. On NixOS, it runs inside `nix-shell`. `LIBREPAPER_SERVER` points the app at another server instead of the default one.

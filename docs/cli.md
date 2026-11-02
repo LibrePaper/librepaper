@@ -13,6 +13,11 @@ The desktop packages already include the `librepaper` command: Homebrew, Scoop, 
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
 ```
 
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.ps1 | iex"
+```
+
 Check a download with `gh attestation verify <file> -R LibrePaper/librepaper`.
 
 ## Host a server
