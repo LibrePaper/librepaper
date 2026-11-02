@@ -835,10 +835,14 @@ impl Server {
                                     .await;
                                     break 'reader;
                                 }
-                                // Read before `ingest` takes the update: the
-                                // peers are the ones whose operations this
-                                // batch carries, which is who wrote it.
-                                let peers = librepaper_engine::log::peers_in_update(&update);
+                                // Read before `ingest` takes the update. Only a
+                                // batch that starts a peer (counter 0) may name
+                                // its owner: a modified client can send one edit
+                                // under an old PeerID, and that peer continues past
+                                // 0, so it must not claim the older text it wrote.
+                                // A peer not recorded here stays "Unknown author".
+                                let peers =
+                                    librepaper_engine::log::peers_started_in_update(&update);
                                 match room
                                     .ingest(
                                         socket_id,

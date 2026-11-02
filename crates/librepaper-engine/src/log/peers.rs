@@ -12,6 +12,24 @@ use loro::LoroDoc;
 /// greater than in its start version vector, so a peer that only appears
 /// as a dependency of the blob's operations is left out.
 pub fn peers_in_update(bytes: &[u8]) -> Vec<u64> {
+    peers_where(bytes, |start, end| end > start)
+}
+
+/// The peers this update starts: they write operations here and none before it.
+///
+/// A new browser session always starts its PeerID at counter 0. A modified
+/// client can instead reuse a PeerID from before authorship was recorded and
+/// send one small edit under it; that peer continues past 0 in this update,
+/// so it is left out and its older text is not claimed for the sender. Only
+/// the browser path uses this. Nothing is refused: an unrecorded peer stays
+/// "Unknown author".
+pub fn peers_started_in_update(bytes: &[u8]) -> Vec<u64> {
+    peers_where(bytes, |start, end| start == 0 && end > start)
+}
+
+/// The peers in one update blob whose start and end counters satisfy `keep`.
+/// Empty if the blob does not decode. Sorted and deduplicated.
+fn peers_where(bytes: &[u8], keep: impl Fn(i32, i32) -> bool) -> Vec<u64> {
     let Ok(meta) = LoroDoc::decode_import_blob_meta(bytes, true) else {
         return Vec::new();
     };
@@ -20,7 +38,7 @@ pub fn peers_in_update(bytes: &[u8]) -> Vec<u64> {
         .iter()
         .filter(|(peer, end)| {
             let start = meta.partial_start_vv.get(*peer).copied().unwrap_or(0);
-            **end > start
+            keep(start, **end)
         })
         .map(|(peer, _)| *peer)
         .collect();
@@ -33,7 +51,7 @@ pub fn peers_in_update(bytes: &[u8]) -> Vec<u64> {
 mod tests {
     use loro::{ExportMode, LoroDoc};
 
-    use super::peers_in_update;
+    use super::{peers_in_update, peers_started_in_update};
 
     #[test]
     fn reports_each_peer_that_wrote_in_the_update() {
@@ -54,6 +72,58 @@ mod tests {
         second.import(&from_first).unwrap();
         let combined = second.export(ExportMode::all_updates()).unwrap();
         assert_eq!(peers_in_update(&combined), vec![1, 2]);
+    }
+
+    #[test]
+    fn started_peers_include_a_fresh_session() {
+        let doc = LoroDoc::new();
+        doc.set_peer_id(1).unwrap();
+        doc.get_text("text").insert(0, "hello").unwrap();
+        doc.commit();
+
+        let update = doc.export(ExportMode::all_updates()).unwrap();
+        assert_eq!(peers_started_in_update(&update), vec![1]);
+    }
+
+    #[test]
+    fn continuing_a_peer_does_not_start_it() {
+        let doc = LoroDoc::new();
+        doc.set_peer_id(1).unwrap();
+        doc.get_text("text").insert(0, "hello").unwrap();
+        doc.commit();
+        let before = doc.oplog_vv();
+        doc.get_text("text").insert(5, " world").unwrap();
+        doc.commit();
+
+        let update = doc.export(ExportMode::updates(&before)).unwrap();
+        assert!(peers_started_in_update(&update).is_empty());
+        assert_eq!(peers_in_update(&update), vec![1]);
+    }
+
+    #[test]
+    fn a_new_peer_is_started_while_a_continuing_peer_is_not() {
+        // Peer 1 writes "hello" and then "!". Peer 2 imports both and writes "world".
+        let first = LoroDoc::new();
+        first.set_peer_id(1).unwrap();
+        first.get_text("text").insert(0, "hello").unwrap();
+        first.commit();
+        let base = first.oplog_vv();
+        first.get_text("text").insert(5, "!").unwrap();
+        first.commit();
+
+        let second = LoroDoc::new();
+        second.set_peer_id(2).unwrap();
+        second
+            .import(&first.export(ExportMode::all_updates()).unwrap())
+            .unwrap();
+        second.get_text("text").insert(0, "world").unwrap();
+        second.commit();
+
+        // Peer 1 continues past its end at `base`, so the blob has peer 1 as
+        // a continuing writer and peer 2 as a new one.
+        let combined = second.export(ExportMode::updates(&base)).unwrap();
+        assert_eq!(peers_in_update(&combined), vec![1, 2]);
+        assert_eq!(peers_started_in_update(&combined), vec![2]);
     }
 
     #[test]
