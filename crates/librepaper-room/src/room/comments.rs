@@ -52,7 +52,7 @@ use librepaper_engine::storage::postgres::{
 
 use super::locate::{self, Quote};
 use super::source_change::client_seq_of;
-use super::{Room, WriteError};
+use super::{Room, SourceSelection, WriteError};
 use librepaper_engine::storage::annotation::{
     CommentTarget, DerivedAttachment, OriginalAnchor, PresentationContext, SourceTextTarget,
 };
@@ -514,6 +514,46 @@ fn locate_anchor(
     locate::locate(&candidates, quote)
         .map(CommentTarget::SourceText)
         .map_err(|failure| failure.message().to_string())
+}
+
+/// Works out what an editor's selection in the source is about.
+///
+/// The range comes from the editor, so nothing is searched for. It is still
+/// checked against the source the server holds: it must be a range of the
+/// file, and the text there must be what the editor saw, or the comment would
+/// be about a passage the editor never selected.
+fn selected_source_target(
+    doc: &LoroDoc,
+    selection: &SourceSelection,
+    exact: &str,
+    cap_exact: usize,
+) -> Result<CommentTarget, String> {
+    let Some(text) = text_for_file_id(doc, &selection.file_id) else {
+        return Err("that file is not in this document".into());
+    };
+    let path = session::paths_of(doc)
+        .get(&selection.file_id)
+        .cloned()
+        .unwrap_or_default();
+    let candidate = locate::Candidate {
+        file_id: &selection.file_id,
+        path: &path,
+        text: &text,
+    };
+    let target = locate::at_range(
+        &candidate,
+        selection.start as usize,
+        selection.end as usize,
+    )
+    .filter(|target| !target.exact.trim().is_empty())
+    .ok_or("that selection is not a range of the file")?;
+    if target.exact.chars().count() > cap_exact {
+        return Err("that selection is too long to comment on".into());
+    }
+    if clean(&target.exact, cap_exact) != exact {
+        return Err("the source changed under that selection; select it again".into());
+    }
+    Ok(CommentTarget::SourceText(target))
 }
 
 // -- reading -------------------------------------------------------------
@@ -1116,6 +1156,9 @@ pub struct AddComment {
     /// digest (§7.1) rather than anchoring against text the reader never saw.
     expected_render_digest: Option<[u8; 32]>,
     cap_exact: usize,
+    /// Set only for an editor's selection in the source. The range is taken
+    /// from here, not searched for in the rendered words.
+    source: Option<SourceSelection>,
     // filled in by evaluate, consumed by transact.
     resolved_target: Option<CommentTarget>,
 }
@@ -1137,6 +1180,7 @@ impl AddComment {
         whole_document: bool,
         color: Option<&str>,
         expected_render_digest: Option<[u8; 32]>,
+        source: Option<SourceSelection>,
     ) -> Result<Self, String> {
         let body = clean(body, config.caps.body).trim().to_string();
         let motivation = config.allowed_motivation(motivation);
@@ -1177,6 +1221,7 @@ impl AddComment {
             whole_document,
             expected_render_digest,
             cap_exact: config.caps.exact,
+            source,
             resolved_target: None,
         })
     }
@@ -1235,7 +1280,19 @@ impl SequencerCommand for AddComment {
                 && row.rendered_exact == self.exact
                 && row.rendered_prefix == self.prefix
                 && row.rendered_suffix == self.suffix
-                && row.rendered_position_utf16 == self.position.map(|at| at as i32);
+                && row.rendered_position_utf16 == self.position.map(|at| at as i32)
+                // The rendered fields above do not say where in the source a
+                // comment is, so a source comment must also name the range it
+                // was written with. A passage comment has no range of its own
+                // to name; the words above are its whole request.
+                && match &self.source {
+                    Some(source) => {
+                        row.file_id.as_deref() == Some(source.file_id.as_str())
+                            && row.start_utf16 == Some(source.start as i32)
+                            && row.end_utf16 == Some(source.end as i32)
+                    }
+                    None => true,
+                };
             if !same {
                 return Err(CommandError::Conflict(
                     "annotation id was reused with different content".into(),
@@ -1254,13 +1311,22 @@ impl SequencerCommand for AddComment {
                 return Err(CommandError::StaleSelection { digest: current });
             }
         }
-        let quote = Quote {
-            exact: &self.exact,
-            prefix: &self.prefix,
-            suffix: &self.suffix,
+        let resolved = if let Some(selection) = &self.source {
+            if self.whole_document {
+                return Err(CommandError::Conflict(
+                    "a source comment needs a passage".into(),
+                ));
+            }
+            selected_source_target(head.doc(), selection, &self.exact, self.cap_exact)
+        } else {
+            let quote = Quote {
+                exact: &self.exact,
+                prefix: &self.prefix,
+                suffix: &self.suffix,
+            };
+            locate_anchor(head.doc(), &quote, self.whole_document, self.cap_exact)
         };
-        let target = locate_anchor(head.doc(), &quote, self.whole_document, self.cap_exact)
-            .map_err(CommandError::Conflict)?;
+        let target = resolved.map_err(CommandError::Conflict)?;
         let source = target.source().cloned();
         if source.is_none() && self.motivation == "highlighting" {
             return Err(CommandError::Conflict(

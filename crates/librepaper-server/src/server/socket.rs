@@ -1001,6 +1001,15 @@ impl Server {
                         continue 'reader;
                     }
 
+                    // A range in the source is an editor's to name; a commenter
+                    // who sends one is refused rather than given it anchored.
+                    if access::source_comment_forbidden(&who, &incoming) {
+                        let _ = send_outgoing(&tx, Outgoing::Text(
+                            refused_frame(Kind::Forbidden, "only editors can comment on the source", &incoming),
+                        )).await;
+                        continue 'reader;
+                    }
+
                     let (result, ok) = self.apply_from(&room, incoming, &address, &who, &author).await;
                     if !ok {
                         if send_outgoing(&tx, Outgoing::Text(result.to_string())).await.is_err() {

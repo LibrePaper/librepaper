@@ -179,6 +179,14 @@ pub(super) fn needs_render_digest(who: &Viewer, incoming: &RoomMessage) -> bool 
         && incoming.render_digest().is_empty()
 }
 
+/// Whether a comment names a range of the source. Only an editor can read the
+/// source, so a commenter may not anchor to one.
+pub(super) fn source_comment_forbidden(who: &Viewer, incoming: &RoomMessage) -> bool {
+    incoming.kind() == "comment"
+        && incoming.source().is_some()
+        && !who.at_least(Role::Editor)
+}
+
 fn not_found() -> Refusal {
     Refusal::not_written(Kind::NotFound, "not found")
 }

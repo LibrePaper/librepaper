@@ -1828,6 +1828,7 @@ impl Server {
                 position,
                 document,
                 color,
+                source,
                 request_id,
                 ..
             } => {
@@ -1852,6 +1853,7 @@ impl Server {
                     document,
                     color.as_deref(),
                     expected_render_digest,
+                    source,
                 )
                 .map_err(|error| {
                     comment_frame(

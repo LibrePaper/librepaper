@@ -43,6 +43,15 @@ pub struct UnknownMessage {
     request_id: String,
 }
 
+/// An exact range of one source file, as an editor selected it in the code
+/// pane. Offsets are UTF-16 code units, which is what the browser counts in.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct SourceSelection {
+    pub file_id: String,
+    pub start: u32,
+    pub end: u32,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum KnownMessage {
@@ -142,6 +151,10 @@ pub enum KnownMessage {
         document: bool,
         #[serde(default)]
         color: Option<String>,
+        /// Set only by an editor who selected a range in the source itself.
+        /// Absent for a selection made on the rendered page.
+        #[serde(default)]
+        source: Option<SourceSelection>,
         #[serde(default)]
         temp_id: String,
         #[serde(default)]
@@ -282,6 +295,13 @@ impl KnownMessage {
     option_field!(color, color, Comment);
     value_field!(position, position, Option<i64>, Comment);
     value_field!(document, document, bool, Comment);
+
+    fn source(&self) -> Option<&SourceSelection> {
+        match self {
+            Self::Comment { source, .. } => source.as_ref(),
+            _ => None,
+        }
+    }
     value_field!(resolved, resolved, bool, Resolve);
     value_field!(
         seq,
@@ -384,6 +404,12 @@ impl Message {
     }
     pub fn document(&self) -> bool {
         self.value(KnownMessage::document)
+    }
+    pub fn source(&self) -> Option<&SourceSelection> {
+        match self {
+            Self::Known(v) => v.source(),
+            Self::Unknown(_) => None,
+        }
     }
     pub fn resolved(&self) -> bool {
         self.value(KnownMessage::resolved)
