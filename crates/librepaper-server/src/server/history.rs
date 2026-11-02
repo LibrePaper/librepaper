@@ -25,6 +25,29 @@ fn is_label_id(value: &str) -> bool {
     uuid::Uuid::parse_str(value).is_ok()
 }
 
+/// The digest that names a document's head, computed in one canonical order.
+///
+/// `VersionVector::encode` serializes an internal hash map, so two equal
+/// vectors can encode to different bytes depending on how they were built or
+/// unloaded. Hashing the entries sorted by peer, with the zero counters that
+/// equality already ignores left out, gives the same head for the same vector
+/// however it was reached.
+fn head_digest(encoded: &[u8]) -> Result<String, loro::LoroError> {
+    let vector = loro::VersionVector::decode(encoded)?;
+    let mut entries: Vec<(u64, i32)> = vector
+        .iter()
+        .filter(|(_, counter)| **counter > 0)
+        .map(|(peer, counter)| (*peer, *counter))
+        .collect();
+    entries.sort_unstable_by_key(|(peer, _)| *peer);
+    let mut hash = Sha256::new();
+    for (peer, counter) in entries {
+        hash.update(peer.to_be_bytes());
+        hash.update(counter.to_be_bytes());
+    }
+    Ok(hex::encode(hash.finalize()))
+}
+
 /// The prefix that spells a comment's own frontier rather than a named
 /// label, shared with `web/src/lib/moment.js`'s `MOMENT`. A comment made
 /// against the live draft has no label to fetch by (nothing writes a source
@@ -531,7 +554,15 @@ impl Server {
             .flatten();
         let labels: Vec<_> = rows.iter().map(label_wire).collect();
         let state = room.log().log_state().await;
-        let head = hex::encode(Sha256::digest(&state.head_vector));
+        let head = match head_digest(&state.head_vector) {
+            Ok(head) => head,
+            Err(error) => {
+                return refused(
+                    "read the head",
+                    &librepaper_room::room::WriteError::Storage(error.to_string()),
+                )
+            }
+        };
         let mut body = json!({
             "slug": entry.slug,
             "head": head,
@@ -650,12 +681,21 @@ impl Server {
             Ok(vector) => vector,
             Err(error) => return refused("read the head", &error.into()),
         };
+        let head = match head_digest(&head_vector) {
+            Ok(head) => head,
+            Err(error) => {
+                return refused(
+                    "read the head",
+                    &librepaper_room::room::WriteError::Storage(error.to_string()),
+                )
+            }
+        };
         let (newer, base) = match self.store.catalog.label_marks(document_id, pulled).await {
             Ok(marks) => marks,
             Err(error) => return refused("read the catalogue", &error.into()),
         };
         let body = json!({
-            "head": hex::encode(Sha256::digest(&head_vector)),
+            "head": head,
             "newer": newer,
             "base": base,
         });
@@ -1294,4 +1334,65 @@ impl Server {
     }
 
     /* -------------------------------------------------------------- assets */
+}
+
+#[cfg(test)]
+mod head_digest_tests {
+    use super::head_digest;
+    use loro::VersionVector;
+
+    /// Twenty peers with distinct, non-sequential ids and counters 1..=20.
+    fn entries() -> Vec<(u64, i32)> {
+        (1..=20_u64)
+            .map(|index| (index.wrapping_mul(0x9e37_79b9_7f4a_7c15), index as i32))
+            .collect()
+    }
+
+    #[test]
+    fn insertion_order_does_not_change_the_head() {
+        let items = entries();
+        let mut forward = VersionVector::default();
+        for (peer, counter) in &items {
+            forward.insert(*peer, *counter);
+        }
+        let mut backward = VersionVector::default();
+        for (peer, counter) in items.iter().rev() {
+            backward.insert(*peer, *counter);
+        }
+        assert_eq!(forward, backward);
+        assert_eq!(
+            head_digest(&forward.encode()).unwrap(),
+            head_digest(&backward.encode()).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_decoded_vector_keeps_its_head() {
+        let mut vector = VersionVector::default();
+        for (peer, counter) in entries() {
+            vector.insert(peer, counter);
+        }
+        let encoded = vector.encode();
+        let decoded = VersionVector::decode(&encoded).unwrap();
+        assert_eq!(
+            head_digest(&encoded).unwrap(),
+            head_digest(&decoded.encode()).unwrap()
+        );
+    }
+
+    #[test]
+    fn an_explicit_zero_entry_does_not_change_the_head() {
+        let mut plain = VersionVector::default();
+        let mut with_zero = VersionVector::default();
+        for (peer, counter) in entries() {
+            plain.insert(peer, counter);
+            with_zero.insert(peer, counter);
+        }
+        with_zero.insert(7, 0);
+        assert_eq!(plain, with_zero);
+        assert_eq!(
+            head_digest(&plain.encode()).unwrap(),
+            head_digest(&with_zero.encode()).unwrap()
+        );
+    }
 }
