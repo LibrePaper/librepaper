@@ -50,7 +50,7 @@
   const classes = $derived(`btn-icon icon-control ${visibleLabel ? "has-compact-label" : ""} ${size ? "" : "icon-standard"} ${tone === "plain" || (tone === null && pressed !== true) ? "icon-plain" : ""} ${size ?? ""} ${preset} ${colour ?? ""}`);
 </script>
 
-<Tooltip openDelay={400} closeDelay={100} positioning={{ placement: "bottom" }}>
+<Tooltip openDelay={150} closeDelay={100} positioning={{ placement: "bottom" }}>
   <!-- The trigger is the control itself rather than a wrapper around it: an
        element in between would break the row the controls sit in. -->
   <Tooltip.Trigger>
