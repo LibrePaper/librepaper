@@ -801,6 +801,26 @@
     openDraft();
   }
 
+  // A verb chosen on the bar over a selection in the code pane. The passage is
+  // the source range the editor holds, so the annotation is anchored by file
+  // and offset rather than by words found in the preview. `annotate` hides the
+  // preview's bar and does the rest, as it does for a preview selection.
+  function annotateSource(which) {
+    if (!mayEdit || !mayChat || !editor || !session) return;
+    const sel = editor.selection();
+    if (!sel) return;
+    const text = editor.text(sel.file) ?? editor.text();
+    pending = {
+      exact: text.slice(sel.from, sel.to),
+      prefix: text.slice(Math.max(0, sel.from - 32), sel.from),
+      suffix: text.slice(sel.to, sel.to + 32),
+      position: null,
+      render_digest: "",
+      source: { file_id: sel.file, start: sel.from, end: sel.to },
+    };
+    annotate(which);
+  }
+
   // Picking a colour highlights with it, rather than arming a colour for a
   // second click: the swatches only ever open from Highlight, so the verb is
   // already chosen by the time one is pressed.
@@ -4326,6 +4346,7 @@
         {@render figureBody()}
       {:else if Editor && sourceBound}
         <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
+                  annotating={mayEdit && mayChat} onannotate={annotateSource}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   onformatstate={(state) => { formatActive = state; }}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />

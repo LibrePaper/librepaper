@@ -230,6 +230,8 @@
   import { completionExtension, formatOfPath } from "../lib/completion/index.js";
   import { searchZotero, zoteroItem } from "../lib/desktop/client.js";
   import { changeMarks, setChangeMarks } from "../lib/change-marks.js";
+  import { sourceCommentBar } from "../lib/source-comment-bar.js";
+  import { VERBS } from "../lib/annotating.js";
   import { CHANGES, planEdits, writePlanned, resolveFile, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
@@ -268,6 +270,9 @@
     onchange, oncaret, onfilechange, onbibliography, onsave, onquit,
     // Called with the caret's formatting (formatState) while visual mode is on.
     onformatstate,
+    // Whether the bar over a selection offers the annotating verbs, and what
+    // a verb does with the selection (`onannotate(which, selection)`).
+    annotating = false, onannotate,
     rules = null,
     // The path the preview renders, which Reader passes. It stands in for the
     // open file wherever the project as a whole is read.
@@ -279,6 +284,14 @@
   // field is identified by the object, so building a fresh one per file would
   // make each file's state carry a field the view's other states do not have.
   const pendingChanges = changeMarks();
+
+  // The bar over a selection, with the verbs to annotate it. Like the pending
+  // changes it is one instance for the component, put in each file's state.
+  const commentBar = sourceCommentBar({
+    enabled: () => untrack(() => annotating) && untrack(() => editable),
+    verbs: () => VERBS,
+    onverb: (which) => onannotate?.(which, selection()),
+  });
 
   /// Redraw the pending changes over whichever file is on screen.
   ///
@@ -1191,6 +1204,8 @@
         EditorView.lineWrapping,
         // Pending changes, drawn in the text they changed.
         pendingChanges,
+        // The bar over a selection, offering the annotating verbs.
+        commentBar,
         keymap.of([
           // Everyone tries Ctrl/Cmd-S in an editor.
           { key: "Mod-s", preventDefault: true, run: () => (onsave?.(), true) },
