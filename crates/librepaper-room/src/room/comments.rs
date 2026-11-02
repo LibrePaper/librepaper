@@ -540,13 +540,9 @@ fn selected_source_target(
         path: &path,
         text: &text,
     };
-    let target = locate::at_range(
-        &candidate,
-        selection.start as usize,
-        selection.end as usize,
-    )
-    .filter(|target| !target.exact.trim().is_empty())
-    .ok_or("that selection is not a range of the file")?;
+    let target = locate::at_range(&candidate, selection.start as usize, selection.end as usize)
+        .filter(|target| !target.exact.trim().is_empty())
+        .ok_or("that selection is not a range of the file")?;
     if target.exact.chars().count() > cap_exact {
         return Err("that selection is too long to comment on".into());
     }
