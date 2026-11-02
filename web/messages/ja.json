@@ -1828,6 +1828,8 @@
   "modal_expand": "拡大",
   "modal_shrink": "縮小",
   "nav_account_menu_label": "アカウントメニュー（{shown}としてサインイン中）",
+  "nav_account_menu_label_provider": "アカウントメニュー（{provider}で{shown}としてサインイン中）",
+  "nav_signed_in_with": "{provider}でサインイン中",
   "nav_skip_to_content": "コンテンツへスキップ",
   "new_project_size_b": "{size} B",
   "new_project_size_gb": "{size} GB",

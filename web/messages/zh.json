@@ -1828,6 +1828,8 @@
   "modal_expand": "展开",
   "modal_shrink": "收起",
   "nav_account_menu_label": "账户菜单，已登录为 {shown}",
+  "nav_account_menu_label_provider": "账户菜单，已通过 {provider} 登录为 {shown}",
+  "nav_signed_in_with": "已通过 {provider} 登录",
   "nav_skip_to_content": "跳到内容",
   "new_project_size_b": "{size} B",
   "new_project_size_gb": "{size} GB",
