@@ -83,37 +83,3 @@ desktop/target/release/librepaper-desktop      # start the app
 # Start the app with another server
 LIBREPAPER_SERVER=https://paper.example.org/ desktop/target/release/librepaper-desktop
 ```
-
-## How the desktop app works
-
-### Nothing else to start
-
-The desktop app starts its own background local service when it opens. You do not start, stop or pair the local service.
-
-### Trust
-
-Nothing runs unasked. Folders are granted one at a time through your system's own chooser, and a document's code runs only after you turn on the Run code switch. On a shared project, editors can change that code, so it is their code too. The app still trusts the server it connects to: a compromised server could run code on your computer through the same tools. Connect the app only to a server you trust.
-
-### Updates
-
-On macOS and with the Windows installer, the app checks for a new version when it starts and asks before it installs it. This includes an app installed with Homebrew. Scoop, the Linux packages and Nix update the app through their own commands.
-
-### Windows
-
-- Ctrl+N (Cmd+N on macOS) opens another window.
-- Ctrl+W (Cmd+W on macOS) closes the window.
-- Ctrl+, (Cmd+, on macOS) opens Settings.
-- Starting the app again shows the windows hidden in the tray, or opens another window when one is already showing.
-- A link to your server that opens in a new tab opens in a new window. Other links open in your browser.
-- Closing the last window keeps the app running in the system tray (the menu bar on macOS). To quit instead, set Settings, General, When the window closes to Quit LibrePaper.
-- The tray menu shows the window again, opens a new window or quits the app.
-- Quit in the tray (or the File menu) stops the local service.
-- On Linux, the tray needs AppIndicator support (on GNOME, the AppIndicator extension). Without it, closing the last window always quits the app.
-
-### Help
-
-On macOS, the Help menu copies diagnostics, opens the issue tracker and checks for updates. On every system, Settings, General, Diagnostics copies the same report.
-
-If a window stays blank, quit the app and start it from a terminal with `librepaper-desktop --debug` (on macOS the binary is inside the app bundle, under Contents/MacOS). The web inspector opens with the window, and on Linux it is also served at `http://127.0.0.1:9222/` for any browser. The desktop log, whose path is in the diagnostics report, records when the part of the app that draws the page crashes. Send both with your report.
-
-To build from a checkout, see [building from source](architecture/building.html).
