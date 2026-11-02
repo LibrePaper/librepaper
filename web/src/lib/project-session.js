@@ -167,6 +167,8 @@ export function createProjectSession({
   clearTimer = globalThis.clearTimeout,
 }) {
   const doc = new LoroDoc();
+  // The Authors view dates each run of text from the change timestamps.
+  doc.setRecordTimestamp(true);
   // A document is a directory: `files` holds one LoroText per file under an id
   // of its own, and `paths` says what each of them is called. Keying the texts
   // by id rather than by path is what makes a rename free -- the name moves and
