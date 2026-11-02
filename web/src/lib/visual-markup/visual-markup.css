@@ -266,7 +266,8 @@
   cursor: pointer;
 }
 
-/* Verbatim code: monospace on a subtle background, which keeps its spaces and wraps long lines inside the pane. */
+/* Verbatim code: monospace on a subtle background, which keeps its spaces and
+   wraps long lines inside the pane. */
 .cm-lp-verb,
 .cm-lp-code {
   font-family: var(--font-mono);
