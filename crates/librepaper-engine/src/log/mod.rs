@@ -26,6 +26,7 @@ pub mod budget;
 pub mod frame;
 pub mod ledger;
 pub mod pending;
+pub mod peers;
 pub mod pool;
 pub mod recorded;
 pub mod sequencer;
@@ -39,6 +40,7 @@ use uuid::Uuid;
 
 pub use budget::{Budget, Busy};
 pub use frame::Batch;
+pub use peers::peers_in_update;
 pub use pending::{PendingBudget, Pressure};
 pub use sequencer::{
     Command, CommandError, Evidence, FlushReason, Head, Ingested, Joined, LogState, PreparedSource,

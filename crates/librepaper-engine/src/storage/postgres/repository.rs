@@ -290,6 +290,13 @@ impl PostgresCatalog {
         )
         .execute(&mut **tx)
         .await?;
+        sqlx::query(
+            "UPDATE document_peers SET author_account_id=NULL,author_label='Deleted user'
+             WHERE author_account_id=$1",
+        )
+        .bind(account_id)
+        .execute(&mut **tx)
+        .await?;
         let deleted = sqlx::query!(
             "DELETE FROM accounts WHERE id=$1 AND status='erasing'",
             account_id,

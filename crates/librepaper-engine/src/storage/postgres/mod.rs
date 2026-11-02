@@ -25,6 +25,8 @@ mod ownership;
 pub use operation_outcomes::OperationReceipt;
 mod persistence;
 pub use persistence::PersistenceConnection;
+mod peers;
+pub use peers::PeerAuthor;
 mod repository;
 mod tags;
 mod usage;
