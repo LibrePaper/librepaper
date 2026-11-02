@@ -1828,6 +1828,8 @@
   "modal_expand": "Vergrößern",
   "modal_shrink": "Verkleinern",
   "nav_account_menu_label": "Kontomenü, angemeldet als {shown}",
+  "nav_account_menu_label_provider": "Kontomenü, angemeldet als {shown} mit {provider}",
+  "nav_signed_in_with": "Angemeldet mit {provider}",
   "nav_skip_to_content": "Zum Inhalt springen",
   "new_project_size_b": "{size} B",
   "new_project_size_gb": "{size} GB",

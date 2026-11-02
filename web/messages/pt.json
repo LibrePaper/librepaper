@@ -1828,6 +1828,8 @@
   "modal_expand": "Expandir",
   "modal_shrink": "Reduzir",
   "nav_account_menu_label": "Menu da conta, sessão iniciada como {shown}",
+  "nav_account_menu_label_provider": "Menu da conta, sessão iniciada como {shown} com {provider}",
+  "nav_signed_in_with": "Sessão iniciada com {provider}",
   "nav_skip_to_content": "Ir para o conteúdo",
   "new_project_size_b": "{size} B",
   "new_project_size_gb": "{size} GB",

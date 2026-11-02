@@ -1828,6 +1828,8 @@
   "modal_expand": "Expand",
   "modal_shrink": "Shrink",
   "nav_account_menu_label": "Account menu, signed in as {shown}",
+  "nav_account_menu_label_provider": "Account menu, signed in as {shown} with {provider}",
+  "nav_signed_in_with": "Signed in with {provider}",
   "nav_skip_to_content": "Skip to content",
   "new_project_size_b": "{size} B",
   "new_project_size_gb": "{size} GB",

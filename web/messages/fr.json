@@ -1828,6 +1828,8 @@
   "modal_expand": "Agrandir",
   "modal_shrink": "Réduire",
   "nav_account_menu_label": "Menu du compte, connecté en tant que {shown}",
+  "nav_account_menu_label_provider": "Menu du compte, connecté en tant que {shown} avec {provider}",
+  "nav_signed_in_with": "Connecté avec {provider}",
   "nav_skip_to_content": "Aller au contenu",
   "new_project_size_b": "{size} o",
   "new_project_size_gb": "{size} Go",
