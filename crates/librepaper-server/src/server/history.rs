@@ -33,7 +33,12 @@ fn is_label_id(value: &str) -> bool {
 /// equality already ignores left out, gives the same head for the same vector
 /// however it was reached.
 fn head_digest(encoded: &[u8]) -> Result<String, loro::LoroError> {
-    let vector = loro::VersionVector::decode(encoded)?;
+    // Empty bytes are the empty vector, as `sequencer::decode_vector` reads them.
+    let vector = if encoded.is_empty() {
+        loro::VersionVector::default()
+    } else {
+        loro::VersionVector::decode(encoded)?
+    };
     let mut entries: Vec<(u64, i32)> = vector
         .iter()
         .filter(|(_, counter)| **counter > 0)
