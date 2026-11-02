@@ -29,6 +29,8 @@
     // A short remark for the header, such as which file the comparison is
     // about.
     note = "",
+    // Off when the caller shows the sides itself, as the history workspace does.
+    header = true,
     onlive,
     onclose,
   } = $props();
@@ -105,14 +107,16 @@
 </script>
 
 <section class="merge-editor flex h-full flex-col" aria-label={diff ? m.mergeeditor_compare({ baseline: baselineLabel, target: targetLabel }) : m.mergeeditor_label_source()}>
-  <header class="merge-toolbar flex items-center justify-between gap-2 border-[var(--color-divider)] border-b p-2">
-    <div class="truncate text-sm">
-      <strong>{path || m.mergeeditor_document()}</strong><span class="panel-muted">{diff ? m.mergeeditor_sides({ baseline: baselineLabel, target: targetLabel }) : m.mergeeditor_source_only({ baseline: baselineLabel })}</span>
-      {#if note}<span class="panel-muted"> — {note}</span>{/if}
-    </div>
-    {#if onlive}<button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => onlive()}>{m.mergeeditor_restore()}</button>{/if}
-    {#if onclose}<IconButton icon="x" label={m.mergeeditor_close()} tone="plain" onclick={() => onclose()} />{/if}
-  </header>
+  {#if header}
+    <header class="merge-toolbar flex items-center justify-between gap-2 border-[var(--color-divider)] border-b p-2">
+      <div class="truncate text-sm">
+        <strong>{path || m.mergeeditor_document()}</strong><span class="panel-muted">{diff ? m.mergeeditor_sides({ baseline: baselineLabel, target: targetLabel }) : m.mergeeditor_source_only({ baseline: baselineLabel })}</span>
+        {#if note}<span class="panel-muted"> — {note}</span>{/if}
+      </div>
+      {#if onlive}<button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => onlive()}>{m.mergeeditor_restore()}</button>{/if}
+      {#if onclose}<IconButton icon="x" label={m.mergeeditor_close()} tone="plain" onclick={() => onclose()} />{/if}
+    </header>
+  {/if}
   <div class="merge-host min-h-0 flex-1" bind:this={host}></div>
 </section>
 

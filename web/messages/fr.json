@@ -1239,15 +1239,16 @@
   "historyworkspace_binary_changed": "Ce fichier a été modifié. Les images et les autres fichiers binaires ne sont pas comparés ici.",
   "historyworkspace_binary_removed": "Ce fichier a été supprimé.",
   "historyworkspace_binary_same": "Ce fichier est inchangé.",
-  "historyworkspace_compare_current": "Comparer avec la version actuelle",
   "historyworkspace_comparison_failed": "La comparaison n’a pas pu être chargée. Vérifiez votre connexion, puis rouvrez cette version.",
+  "historyworkspace_download_title": "Télécharger {version} en archive",
+  "historyworkspace_download_version": "Télécharger la version",
   "historyworkspace_downloading": "Téléchargement…",
   "historyworkspace_empty_file": "Fichier vide.",
   "historyworkspace_file_added": "Fichier ajouté.",
   "historyworkspace_file_marked": "{name} · {status}",
   "historyworkspace_file_removed": "Fichier supprimé.",
   "historyworkspace_file_select": "Fichier de l’historique",
-  "historyworkspace_files_differ": [
+  "historyworkspace_files_changed": [
     {
       "declarations": [
         "input count",
@@ -1257,24 +1258,28 @@
         "countPlural"
       ],
       "match": {
-        "countPlural=one": "{count} fichier diffère",
-        "countPlural=*": "{count} fichiers diffèrent"
+        "countPlural=one": "{count} fichier modifié",
+        "countPlural=*": "{count} fichiers modifiés"
       }
     }
   ],
-  "historyworkspace_historical": "Version historique",
   "historyworkspace_loading_comparison": "Chargement de la comparaison…",
   "historyworkspace_loading_source": "Chargement de la source de la version…",
   "historyworkspace_mark_added": "ajouté",
   "historyworkspace_mark_changed": "modifié",
   "historyworkspace_mark_removed": "supprimé",
+  "historyworkspace_newer": "Plus récente",
+  "historyworkspace_newer_version": "Version plus récente",
   "historyworkspace_no_differences": "Aucune différence",
   "historyworkspace_no_source_files": "Cette version ne contient aucun fichier source.",
   "historyworkspace_no_text_source": "Ce fichier n’a pas de source textuelle à afficher.",
-  "historyworkspace_restore": "Restaurer",
-  "historyworkspace_select_prompt": "Sélectionnez une version pour voir en quoi elle diffère de la source actuelle. Cliquez sur une autre version en maintenant Maj enfoncée pour comparer les deux.",
+  "historyworkspace_older": "Plus ancienne",
+  "historyworkspace_older_version": "Version plus ancienne",
+  "historyworkspace_reload_current": "Recharger la version actuelle",
+  "historyworkspace_restore_title": "Restaurer {version}",
+  "historyworkspace_restore_version": "Restaurer la version",
+  "historyworkspace_select_prompt": "Sélectionnez une version pour voir ce qu’elle a modifié.",
   "historyworkspace_source_label": "Source de l’historique",
-  "historyworkspace_swap": "Inverser",
   "html_bundle_index_failed": "Impossible de charger l’index des paquets TeX",
   "html_conversion_failed": "La conversion HTML de LaTeX a échoué.",
   "html_hint_external_programs": "Le convertisseur HTML ne peut pas exécuter de programmes externes, donc les paquets qui en lancent (minted, certaines listes tcolorbox) échouent ici. La vue PDF peut encore fonctionner.",
@@ -2146,7 +2151,6 @@
   "readerb_build_failed": "La compilation a échoué sans indiquer la raison.",
   "readerb_clipboard_refused": "Le navigateur a refusé l’accès au presse-papiers. Utilisez plutôt le raccourci clavier.",
   "readerb_collaboration_unread": "Collaboration : messages non lus",
-  "readerb_comparing_says": "Comparaison de {path} avec {version}",
   "readerb_count_both": "{errors}, {warnings}",
   "readerb_count_errors": [
     {
@@ -2178,7 +2182,6 @@
       }
     }
   ],
-  "readerb_current_version": "la version actuelle",
   "readerb_diagnostics_says": "Diagnostics : {badge}",
   "readerb_edit_find": "Rechercher…",
   "readerb_edit_replace": "Remplacer…",
@@ -2188,6 +2191,7 @@
   "readerb_quit_failed": "L’application de bureau n’a pas pu se fermer.",
   "readerb_run_code_for_render": "Activez « Exécuter le code » pour compiler sur cet ordinateur.",
   "readerb_version_download_failed": "Cette version n’a pas pu être téléchargée.",
+  "readerb_version_history": "Historique des versions",
   "readerc_cells_not_run": "Les cellules de code n’ont pas été exécutées. Activez « Exécuter le code » dans l’application de bureau LibrePaper pour inclure leurs résultats.",
   "readerc_comments_export_failed": "Les commentaires n’ont pas pu être exportés.",
   "readerc_comments_preparing": "Préparation des commentaires.",

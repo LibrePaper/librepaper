@@ -1239,15 +1239,16 @@
   "historyworkspace_binary_changed": "Este archivo cambió. Las imágenes y otros archivos binarios no se comparan aquí.",
   "historyworkspace_binary_removed": "Se eliminó este archivo.",
   "historyworkspace_binary_same": "Este archivo no ha cambiado.",
-  "historyworkspace_compare_current": "Comparar con la versión actual",
   "historyworkspace_comparison_failed": "No se pudo cargar la comparación. Compruebe su conexión y vuelva a abrir esta versión.",
+  "historyworkspace_download_title": "Descargar {version} como archivo",
+  "historyworkspace_download_version": "Descargar versión",
   "historyworkspace_downloading": "Descargando…",
   "historyworkspace_empty_file": "Archivo vacío.",
   "historyworkspace_file_added": "Archivo agregado.",
   "historyworkspace_file_marked": "{name} · {status}",
   "historyworkspace_file_removed": "Archivo eliminado.",
   "historyworkspace_file_select": "Archivo del historial",
-  "historyworkspace_files_differ": [
+  "historyworkspace_files_changed": [
     {
       "declarations": [
         "input count",
@@ -1257,24 +1258,28 @@
         "countPlural"
       ],
       "match": {
-        "countPlural=one": "{count} archivo difiere",
-        "countPlural=*": "{count} archivos difieren"
+        "countPlural=one": "{count} archivo modificado",
+        "countPlural=*": "{count} archivos modificados"
       }
     }
   ],
-  "historyworkspace_historical": "Versión anterior",
   "historyworkspace_loading_comparison": "Cargando la comparación…",
   "historyworkspace_loading_source": "Cargando el código fuente de la versión…",
   "historyworkspace_mark_added": "agregado",
   "historyworkspace_mark_changed": "modificado",
   "historyworkspace_mark_removed": "eliminado",
+  "historyworkspace_newer": "Posterior",
+  "historyworkspace_newer_version": "Versión posterior",
   "historyworkspace_no_differences": "Sin diferencias",
   "historyworkspace_no_source_files": "Esta versión no tiene archivos de código fuente.",
   "historyworkspace_no_text_source": "Este archivo no tiene código fuente de texto que mostrar.",
-  "historyworkspace_restore": "Restaurar",
-  "historyworkspace_select_prompt": "Seleccione una versión para ver en qué se diferencia del código fuente actual. Haga clic en otra versión mientras mantiene pulsada la tecla Shift para comparar las dos.",
+  "historyworkspace_older": "Anterior",
+  "historyworkspace_older_version": "Versión anterior",
+  "historyworkspace_reload_current": "Recargar la versión actual",
+  "historyworkspace_restore_title": "Restaurar {version}",
+  "historyworkspace_restore_version": "Restaurar versión",
+  "historyworkspace_select_prompt": "Seleccione una versión para ver qué cambió.",
   "historyworkspace_source_label": "Código fuente del historial",
-  "historyworkspace_swap": "Intercambiar",
   "html_bundle_index_failed": "No se pudo cargar el índice del paquete de TeX",
   "html_conversion_failed": "Falló la conversión de LaTeX a HTML",
   "html_hint_external_programs": "El convertidor a HTML no puede ejecutar programas externos, así que los paquetes que los invocan (minted, algunos listados de tcolorbox) fallan aquí. Es posible que la vista PDF aún funcione.",
@@ -2146,7 +2151,6 @@
   "readerb_build_failed": "La compilación falló sin indicar el motivo.",
   "readerb_clipboard_refused": "El navegador rechazó el acceso al portapapeles. Use el atajo de teclado en su lugar.",
   "readerb_collaboration_unread": "Colaboración: mensajes sin leer",
-  "readerb_comparing_says": "Comparando {path} con {version}",
   "readerb_count_both": "{errors}, {warnings}",
   "readerb_count_errors": [
     {
@@ -2178,7 +2182,6 @@
       }
     }
   ],
-  "readerb_current_version": "la versión actual",
   "readerb_diagnostics_says": "Diagnósticos: {badge}",
   "readerb_edit_find": "Buscar…",
   "readerb_edit_replace": "Reemplazar…",
@@ -2188,6 +2191,7 @@
   "readerb_quit_failed": "La aplicación de escritorio no pudo cerrarse.",
   "readerb_run_code_for_render": "Active «Ejecutar código» para compilar en este equipo.",
   "readerb_version_download_failed": "No se pudo descargar esa versión.",
+  "readerb_version_history": "Historial de versiones",
   "readerc_cells_not_run": "Las celdas de código no se ejecutaron. Active «Ejecutar código» en la aplicación de escritorio de LibrePaper para incluir sus resultados.",
   "readerc_comments_export_failed": "No se pudieron exportar los comentarios.",
   "readerc_comments_preparing": "Preparando los comentarios.",
