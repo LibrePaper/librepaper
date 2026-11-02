@@ -545,6 +545,68 @@ impl Server {
         response
     }
 
+    /// Who has written into this document, one row per Loro peer.
+    ///
+    /// A peer is a writer's identity inside the CRDT, and browser sessions
+    /// get a fresh random one each time, so several rows can belong to the
+    /// same person. Each row carries the name its writes were filed under
+    /// when the server first saw that peer. Editors and owners only, the same
+    /// as the history: who wrote what is information about the people writing
+    /// the document, and a reader has no business with it.
+    pub(super) async fn handle_authors(
+        &self,
+        headers: &HeaderMap,
+        context: &RequestContext,
+        slug: &str,
+    ) -> Reply {
+        let arrival = &context.arrival;
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        if let Err(refusal) = self
+            .authorize::<access::rung::Edit>(context, headers, slug, None)
+            .await
+        {
+            return access::deny(&refusal);
+        }
+        let room = match self.rooms.get(slug).await {
+            Ok(room) => room,
+            Err(error) => return refused("open the room", &error),
+        };
+        let authors = match self
+            .store
+            .catalog
+            .document_peer_authors(room.document_id)
+            .await
+        {
+            Ok(authors) => authors,
+            Err(error) => return refused("read the catalogue", &error.into()),
+        };
+        // A peer is sent as a decimal string because a JavaScript number cannot
+        // hold all of a u64 without losing the low bits.
+        let rows: Vec<Value> = authors
+            .iter()
+            .map(|author| {
+                json!({
+                    "peer": author.peer.to_string(),
+                    "name": author.name,
+                    "account_id": author.account_id.map(|id| id.to_string()),
+                    "agent": author.agent,
+                    "first_seen": author
+                        .first_seen
+                        .format(&time::format_description::well_known::Rfc3339)
+                        .unwrap_or_default(),
+                })
+            })
+            .collect();
+        let mut response = write_json(200, &json!({"authors": rows}));
+        set(&mut response, "cache-control", "private, no-store");
+        response
+    }
+
     /// Whether anything is new since a pull, without opening the room.
     ///
     /// The hourly sync poll lands here: the room's admission and anchor
