@@ -671,7 +671,9 @@
     if (made) await revealChange(made);
   }
 
-  async function focusAnnotation(id) {
+  // A click on a mark in the source shows the card without taking the
+  // keyboard: the editor clicked into the passage to type in it.
+  async function focusAnnotation(id, { focus = true } = {}) {
     const comment = comments.find((item) => item.id === id);
     if (!comment) return;
     selectedAnnotation = String(comment.id);
@@ -683,7 +685,7 @@
     if (panel !== targetPanel) return;
     const prefix = plainHighlight ? "collaboration-highlight" : "collaboration-comment";
     const card = document.getElementById(`${prefix}-${id}`);
-    card?.focus({ preventScroll: true });
+    if (focus) card?.focus({ preventScroll: true });
     await tick();
     card?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
@@ -4380,7 +4382,7 @@
         <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
-                  oncomment={(id) => focusAnnotation(comments.find((item) => String(item.id) === String(id))?.id)}
+                  oncomment={(id) => focusAnnotation(comments.find((item) => String(item.id) === String(id))?.id, { focus: false })}
                   onformatstate={(state) => { formatActive = state; }}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />
       {/if}

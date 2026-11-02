@@ -290,6 +290,7 @@
 
   // Every file's comment marks, as the reader sent them. Only the file on
   // screen is drawn; `show` draws it again when the file changes.
+  /** @type {Array<import("../lib/source-comment-marks.js").CommentMark & { file: string }>} */
   let commentList = [];
   function drawCommentMarks() {
     if (!view || !showing) return;

@@ -12,6 +12,8 @@ import { StateEffect, StateField } from "@codemirror/state";
 
 /// The marks to draw in the file on screen. Each entry is
 /// `{id, from, to, highlight, color, selected}`, with offsets into that file.
+/** @typedef {{ id: string, from: number, to: number, highlight: boolean, color: string | null, selected: boolean }} CommentMark */
+/** @type {import("@codemirror/state").StateEffectType<CommentMark[]>} */
 export const setCommentMarks = StateEffect.define();
 
 const COLOR = /^#[0-9a-f]{6}$/i;
@@ -51,6 +53,7 @@ function marksFor(state, list) {
 /// is identified by its object, so every file's state must share it.
 ///
 /// `onselect(id)` is called with the comment id when a mark is clicked.
+/** @param {{ onselect?: (id: string) => void }} [options] */
 export function commentMarks({ onselect } = {}) {
   const field = StateField.define({
     create: () => Decoration.none,
@@ -66,7 +69,7 @@ export function commentMarks({ onselect } = {}) {
   });
   const clicks = EditorView.domEventHandlers({
     click(event) {
-      const node = event.target?.closest?.("[data-comment-id]");
+      const node = /** @type {HTMLElement | null} */ (/** @type {Element | null} */ (event.target)?.closest?.("[data-comment-id]"));
       if (!node) return false;
       onselect?.(node.dataset.commentId);
       // Not handled here: the click still places the caret.

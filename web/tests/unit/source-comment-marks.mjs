@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { EditorState } from "@codemirror/state";
 import { commentMarks, setCommentMarks } from "../../src/lib/source-comment-marks.js";
 
-const [field] = commentMarks({ onselect() {} });
+const marks = commentMarks({ onselect() {} });
+const [field] = marks;
 
 function found(state) {
   const marks = [];
@@ -21,7 +22,7 @@ function found(state) {
 }
 
 function draw(text, list) {
-  const start = EditorState.create({ doc: text, extensions: commentMarks({ onselect() {} }) });
+  const start = EditorState.create({ doc: text, extensions: marks });
   return start.update({ effects: setCommentMarks.of(list) }).state;
 }
 
