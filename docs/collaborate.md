@@ -27,3 +27,9 @@ The preview shows the file you are editing. A chapter that cannot render on its 
 ## Comments
 
 A comment follows its passage when the passage is moved by cut and paste or drag and drop, within a file or into another file, and when a rejected tracked deletion brings the passage back. If a passage is gone, its comment shows the passage in words, and an editor can select the passage and choose "Attach to selection".
+
+## Authors
+
+The Authors tab in History tints the open file by who wrote each passage, and lists each person's share. Hover a passage for the name and date. Click a person to show only their text. Text written before authorship was recorded shows as Unknown author.
+
+Authorship is informative, not proof. An editor with a modified client can still make new text appear under a co-author's name, so do not use it to settle disputes.

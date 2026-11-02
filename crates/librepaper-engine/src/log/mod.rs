@@ -40,7 +40,7 @@ use uuid::Uuid;
 
 pub use budget::{Budget, Busy};
 pub use frame::Batch;
-pub use peers::peers_in_update;
+pub use peers::{peers_in_update, peers_started_in_update};
 pub use pending::{PendingBudget, Pressure};
 pub use sequencer::{
     Command, CommandError, Evidence, FlushReason, Head, Ingested, Joined, LogState, PreparedSource,
