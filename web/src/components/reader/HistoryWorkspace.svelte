@@ -68,14 +68,9 @@
 </script>
 
 <section class="history-workspace" aria-label={m.historyworkspace_source_label()} aria-busy={source.loading}>
-  {#if source.loading}
-    <p role="status">{m.historyworkspace_loading_source()}</p>
-  {:else if source.problem}
-    <div role="alert">
-      <p>{source.problem}</p>
-      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => source.reload()}>{m.common_retry()}</button>
-    </div>
-  {:else if result}
+  <!-- The two ends stay on screen while a comparison loads, so changing one
+       does not take the control away from under the reader. -->
+  {#if source.newer}
     <div class="history-source-bar">
       <div class="history-versions">
         <label class="history-field">
@@ -95,6 +90,17 @@
           </select>
         </label>
       </div>
+    </div>
+  {/if}
+  {#if source.loading}
+    <p role="status">{m.historyworkspace_loading_source()}</p>
+  {:else if source.problem}
+    <div role="alert">
+      <p>{source.problem}</p>
+      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => source.reload()}>{m.common_retry()}</button>
+    </div>
+  {:else if result}
+    <div class="history-source-bar">
       <div class="history-source-row">
         {#if result.changed.length > 1}
           <label class="history-source-file">

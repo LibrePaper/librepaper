@@ -173,7 +173,8 @@ try {
   await selectChange(0);
   console.log("history reader: repeated label selection updates both source endpoints");
   await tab.evaluate(`document.querySelector('.hx-current button').click()`);
-  await until('current source alone', () => tab.evaluate(`document.querySelectorAll('.cm-content').length === 1 && document.querySelector('.cm-content').textContent === ${JSON.stringify(current)}`), 4000);
+  // The Current row shows what has changed since the newest version.
+  await expectDiff(sources.at(-1), current);
   await selectChange(1);
   console.log('history reader: the current row, and a version against it');
   // Older and Newer are the two ends of the comparison, chosen in the header.

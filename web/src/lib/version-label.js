@@ -23,6 +23,7 @@ function render(point, { today, yesterday, timeZone, seconds }) {
   const when = new Date(point.at);
   let text = "";
   if (!Number.isNaN(when.getTime())) {
+    /** @type {Intl.DateTimeFormatOptions} */
     const clock = { hour: "numeric", minute: "2-digit", ...(seconds ? { second: "2-digit" } : {}), timeZone };
     const dayOf = day(when, timeZone);
     if (dayOf === today) {
@@ -31,12 +32,12 @@ function render(point, { today, yesterday, timeZone, seconds }) {
       text = m.common_yesterday_at({ time: when.toLocaleTimeString(locale(), clock) });
     } else {
       const sameYear = dayOf.slice(0, 4) === today.slice(0, 4);
-      text = when.toLocaleString(locale(), {
+      text = when.toLocaleString(locale(), /** @type {Intl.DateTimeFormatOptions} */ ({
         month: "short",
         day: "numeric",
         ...(sameYear ? {} : { year: "numeric" }),
         ...clock,
-      });
+      }));
     }
   }
   if (!point.label) return text;

@@ -443,15 +443,21 @@ async function runChecks() {
       const status = () => q(".hx-pick");
       check(compare() && text(compare()) === "Compare with…", "the selected row offers Compare with…");
 
+      // The version a plain click on today's editing event opens is the one a
+      // pick on it compares with.
+      const todayRow = () => eventsOf("editing")[0].querySelector("button.hx-main");
+      click(todayRow());
+      await flush();
+      const todayNewest = calls.splice(0)[0]?.[1];
+      check(todayNewest, "a plain click on today's event views a version");
+
       click(compare());
       await flush();
       check(status() && text(status()).includes("Choose a version to compare with."),
         `choosing Compare with… asks for a version, shows: ${status() ? text(status()) : "nothing"}`);
       check(!compare(), "the Compare with… button is hidden while picking");
 
-      // Today's editing event is the newest row, and its newest version is the second end.
-      const todayNewest = fixtures.timeline[1].sha;
-      click(eventsOf("editing")[0].querySelector("button.hx-main"));
+      click(todayRow());
       await flush();
       check(JSON.stringify(calls) === JSON.stringify([["compare", keys.olderSha, todayNewest]]),
         `a row while picking should compare the two versions, calls: ${JSON.stringify(calls)}`);
