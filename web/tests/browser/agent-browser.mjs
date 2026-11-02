@@ -683,7 +683,7 @@ try {
   // fresh conversation takes its place. The agent settings remain visible.
   // A socket reconnect keeps the existing conversation and transcript instead.
   await page.evaluate('document.querySelector("#agent-tab-chat").click(); document.querySelector(\'.agent-session:not(.inactive) button[aria-label="Delete conversation"]\').click()');
-  await until("new conversation cleared", () => page.evaluate('document.querySelector(".agent-session:not(.inactive) [id^=agent-tab-chat]").getAttribute("aria-selected")==="true"'), 2000);
+  await until("new conversation cleared", () => page.evaluate('document.querySelector(".agent-session:not(.inactive) [id^=agent][id$=-tab-chat]").getAttribute("aria-selected")==="true"'), 2000);
   assert.equal(await page.evaluate('document.querySelector(".agent-session:not(.inactive) [role=log]")?.textContent.includes("Explain this")'), false);
   assert.equal(await page.evaluate('window.localCalls.some(call => call.route === "assistant/stop")'), true);
   await until("new channel created",()=>page.evaluate(`window.sockets.length === ${beforeNewConversation.sockets + 1}`),10000);
@@ -694,7 +694,7 @@ try {
 
   // A second conversation runs beside the first. Creating it stops nothing,
   // its channel is new, and the select switches between the two panels.
-  const visibleTab = () => page.evaluate('document.querySelector(".agent-session:not(.inactive) [id^=agent-tab-chat]").id');
+  const visibleTab = () => page.evaluate('document.querySelector(".agent-session:not(.inactive) [id^=agent][id$=-tab-chat]").id');
   const switchTo = (index) => page.evaluate(`(()=>{const s=document.querySelector('.agent-session:not(.inactive) select[aria-label="Conversation"]');s.value=s.options[${index}].value;s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
   const beforeSecond = await page.evaluate("({stops:window.localCalls.filter(call=>call.route==='assistant/stop').length,sockets:window.sockets.length,creates:window.calls.filter(call=>call.suffix==='').length})");
   const firstTab = await visibleTab();
@@ -727,9 +727,9 @@ try {
   assert.equal(await page.evaluate(`document.querySelector('.connect-required a[href*="desktop-app"]')?.textContent.trim()`), "Get the desktop app");
   assert.equal(await page.evaluate(`document.querySelector('.connect-required a[href^="librepaper://open?url="]')?.textContent.trim()`), "Open in the desktop app");
   assert.deepEqual(await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).map(b=>b.textContent.trim())`), [], "there is no Connect button");
-  assert.ok(await page.evaluate(`Boolean(document.querySelector('.agent-session:not(.inactive) [id^=agent-pane-chat] button[aria-label="Agent settings"]'))`),
+  assert.ok(await page.evaluate(`Boolean(document.querySelector('.agent-session:not(.inactive) [id^=agent][id$=-pane-chat] button[aria-label="Agent settings"]'))`),
     "the pane header still offers a way to the agent settings page outside the desktop app");
-  await page.evaluate(`document.querySelector('.agent-session:not(.inactive) [id^=agent-pane-chat] button[aria-label="Agent settings"]').click()`);
+  await page.evaluate(`document.querySelector('.agent-session:not(.inactive) [id^=agent][id$=-pane-chat] button[aria-label="Agent settings"]').click()`);
   assert.equal(await page.evaluate("window.settingsCalls"), 1, "the notice pane offers a way to the agent settings page");
 
   await page.navigate(appUrl);
@@ -763,7 +763,7 @@ try {
   await page.evaluate(`(()=>{const input=document.querySelector('textarea[placeholder]');input.value='test';input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   await page.evaluate(`document.querySelector('.chat-form button[type=submit]').click()`);
   await until("restoration test assistant started", () => page.evaluate("window.activeRunner !== null"), 2000);
-  await until("assistant choice saved before reload", () => page.evaluate(`JSON.parse(localStorage.getItem('librepaper.agent.session.'+location.origin+':paper')||'{}').assistantAccess==='commenter'`), 2000);
+  await until("assistant choice saved before reload", () => page.evaluate(`(()=>{const list=JSON.parse(localStorage.getItem('librepaper.agent.session.list:'+location.origin+':paper')||'{}');const suffix=list.active?':'+list.active:'';return JSON.parse(localStorage.getItem('librepaper.agent.session.'+location.origin+':paper'+suffix)||'{}').assistantAccess==='commenter';})()`), 2000);
   await page.evaluate("localStorage.setItem('librepaper-test-fail-next-status','1')");
   await page.navigate(appUrl);
   await until("reloaded panel reconnects to the desktop app", () => page.evaluate(
@@ -789,7 +789,7 @@ try {
   await page.evaluate("window.delayAssistantStatus=true; window.remount()");
   await until("delayed assistant status is pending", () => page.evaluate("window.delayedAssistantStatuses.length===1"), 2000);
   await page.evaluate("window.conversationCreatesBeforePending=window.calls.filter(call=>call.suffix==='').length");
-  await page.evaluate('document.querySelector(".agent-session:not(.inactive) [id^=agent-tab-chat]").click(); document.querySelector(\'.agent-session:not(.inactive) button[aria-label="Delete conversation"]\').click()');
+  await page.evaluate('document.querySelector(".agent-session:not(.inactive) [id^=agent][id$=-tab-chat]").click(); document.querySelector(\'.agent-session:not(.inactive) button[aria-label="Delete conversation"]\').click()');
   await until("conversation changed while status was pending", () => page.evaluate("window.calls.filter(call=>call.suffix==='').length === window.conversationCreatesBeforePending+1"), 3000);
   await page.evaluate("window.delayedAssistantStatuses[0].resolve(Response.json({running:true,state:'ready'}))");
   await new Promise(resolve=>setTimeout(resolve,50));
