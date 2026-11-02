@@ -5,6 +5,9 @@ import { m } from "./paraglide/messages.js";
 export const TASK_KINDS = ["proofread", "tighten", "rewrite", "explain", "fix", "outline", "respond"];
 export const TASK_SCOPES = ["selection", "file", "document"];
 export const CONTEXT_LIMIT = 16 * 1024;
+// The relay's cap on message and answer text, matching MAX_EVENT_TEXT_BYTES in
+// crates/librepaper-base/src/assistant_protocol.rs.
+export const TEXT_LIMIT = 2 * 1024 * 1024;
 
 const text = (value) => (value == null ? "" : String(value));
 
