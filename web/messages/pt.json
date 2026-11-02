@@ -744,6 +744,7 @@
   "common_math": "Matemática",
   "common_move_to_trash": "Mover para a lixeira",
   "common_name": "Nome",
+  "common_named_version": "{name} · {when}",
   "common_new_file": "Novo arquivo",
   "common_new_folder": "Nova pasta",
   "common_new_project": "Novo projeto",
@@ -817,6 +818,7 @@
   "common_theme": "Tema",
   "common_this_computer": "Este computador",
   "common_today": "Hoje",
+  "common_today_at": "Hoje, {time}",
   "common_try_again": "Tentar novamente",
   "common_unavailable": "Indisponível",
   "common_undo": "Desfazer",
@@ -830,6 +832,7 @@
   "common_word_count": "Contagem de palavras",
   "common_yellow": "Amarelo",
   "common_yesterday": "Ontem",
+  "common_yesterday_at": "Ontem, {time}",
   "common_you": "Você",
   "compactpanelmenu_docs": "Documentação",
   "compactpanelmenu_home": "Início",
@@ -1146,12 +1149,13 @@
   "gitweb_use_local": "Usar um repositório local…",
   "history_all": "Todo o histórico",
   "history_all_short": "Tudo",
+  "history_before_first": "Antes da primeira versão",
   "history_bookmark_current": "Marcar a versão atual",
   "history_bookmark_version": "Marcar esta versão",
   "history_by": "por {who}",
   "history_collaborative_session": "Sessão colaborativa",
   "history_commented": "Comentado",
-  "history_comparison_base": "base de comparação",
+  "history_compare_with": "Comparar com…",
   "history_contributors": [
     {
       "declarations": [
@@ -1202,11 +1206,14 @@
     }
   ],
   "history_name_bookmark": "Nomear este marcador",
+  "history_newer_tag": "Mais recente",
   "history_no_saved": "Ainda não há versões salvas. Marque uma versão para salvá-la com um nome.",
   "history_no_versions_in_month": "Nenhuma versão em {month}. Mostrando o período mais próximo.",
   "history_no_versions_shown": "Nenhuma versão para mostrar.",
   "history_none": "Nenhuma versão anterior",
   "history_not_readable": "o histórico deste documento não pode ser lido",
+  "history_older_tag": "Mais antiga",
+  "history_pick_prompt": "Escolha uma versão para comparar.",
   "history_push": "Push feito",
   "history_pushed_by": "Push feito por {author}",
   "history_recovered": "Recuperado",
@@ -1216,7 +1223,7 @@
   "history_restored": "Restaurado",
   "history_restored_version": "Versão restaurada",
   "history_row_tip": "{what}, {detail}",
-  "history_row_tip_base": "{what}, {detail}, base de comparação",
+  "history_row_tip_endpoint": "{what}, {detail}, {endpoint}",
   "history_saved_short": "Salvo",
   "history_saved_versions": "Versões salvas",
   "history_show_versions": "Mostrar as {count} versões",
@@ -1246,15 +1253,16 @@
   "historyworkspace_binary_changed": "Este arquivo foi alterado. Imagens e outros arquivos binários não são comparados aqui.",
   "historyworkspace_binary_removed": "Este arquivo foi removido.",
   "historyworkspace_binary_same": "Este arquivo não foi alterado.",
-  "historyworkspace_compare_current": "Comparar com a versão atual",
   "historyworkspace_comparison_failed": "Não foi possível carregar a comparação. Verifique sua conexão e reabra esta versão.",
+  "historyworkspace_download_title": "Baixar {version} como arquivo",
+  "historyworkspace_download_version": "Baixar versão",
   "historyworkspace_downloading": "Baixando…",
   "historyworkspace_empty_file": "Arquivo vazio.",
   "historyworkspace_file_added": "Arquivo adicionado.",
   "historyworkspace_file_marked": "{name} · {status}",
   "historyworkspace_file_removed": "Arquivo removido.",
   "historyworkspace_file_select": "Arquivo do histórico",
-  "historyworkspace_files_differ": [
+  "historyworkspace_files_changed": [
     {
       "declarations": [
         "input count",
@@ -1264,24 +1272,28 @@
         "countPlural"
       ],
       "match": {
-        "countPlural=one": "{count} arquivo diferente",
-        "countPlural=*": "{count} arquivos diferentes"
+        "countPlural=one": "{count} arquivo alterado",
+        "countPlural=*": "{count} arquivos alterados"
       }
     }
   ],
-  "historyworkspace_historical": "Versão anterior",
   "historyworkspace_loading_comparison": "Carregando a comparação…",
   "historyworkspace_loading_source": "Carregando o código-fonte da versão…",
   "historyworkspace_mark_added": "adicionado",
   "historyworkspace_mark_changed": "alterado",
   "historyworkspace_mark_removed": "removido",
+  "historyworkspace_newer": "Posterior",
+  "historyworkspace_newer_version": "Versão posterior",
   "historyworkspace_no_differences": "Nenhuma diferença",
   "historyworkspace_no_source_files": "Esta versão não tem arquivos de código-fonte.",
   "historyworkspace_no_text_source": "Este arquivo não tem código-fonte em texto para exibir.",
-  "historyworkspace_restore": "Restaurar",
-  "historyworkspace_select_prompt": "Selecione uma versão para ver como ela difere do código-fonte atual. Clique com Shift em outra versão para comparar as duas.",
+  "historyworkspace_older": "Anterior",
+  "historyworkspace_older_version": "Versão anterior",
+  "historyworkspace_reload_current": "Recarregar a versão atual",
+  "historyworkspace_restore_title": "Restaurar {version}",
+  "historyworkspace_restore_version": "Restaurar versão",
+  "historyworkspace_select_prompt": "Selecione uma versão para ver o que ela alterou.",
   "historyworkspace_source_label": "Código-fonte do histórico",
-  "historyworkspace_swap": "Inverter",
   "html_bundle_index_failed": "Não foi possível carregar o índice do pacote TeX",
   "html_conversion_failed": "Falha na conversão de LaTeX para HTML",
   "html_hint_external_programs": "O conversor de HTML não pode executar programas externos, então pacotes que chamam o shell (minted, algumas listagens do tcolorbox) falham aqui. A exibição em PDF ainda pode funcionar.",
@@ -2153,7 +2165,6 @@
   "readerb_build_failed": "A compilação falhou sem informar o motivo.",
   "readerb_clipboard_refused": "O navegador recusou o acesso à área de transferência. Use o atalho de teclado.",
   "readerb_collaboration_unread": "Colaboração: mensagens não lidas",
-  "readerb_comparing_says": "Comparando {path} com {version}",
   "readerb_count_both": "{errors}, {warnings}",
   "readerb_count_errors": [
     {
@@ -2185,7 +2196,6 @@
       }
     }
   ],
-  "readerb_current_version": "a versão atual",
   "readerb_diagnostics_says": "Diagnósticos: {badge}",
   "readerb_edit_find": "Localizar…",
   "readerb_edit_replace": "Substituir…",
@@ -2195,6 +2205,7 @@
   "readerb_quit_failed": "Não foi possível encerrar o aplicativo de desktop.",
   "readerb_run_code_for_render": "Ative “Executar código” para renderizar neste computador.",
   "readerb_version_download_failed": "Não foi possível baixar essa versão.",
+  "readerb_version_history": "Histórico de versões",
   "readerc_cells_not_run": "As células de código não foram executadas. Ative “Executar código” no aplicativo de desktop do LibrePaper para incluir os resultados delas.",
   "readerc_comments_export_failed": "Não foi possível exportar os comentários.",
   "readerc_comments_preparing": "Preparando os comentários.",
