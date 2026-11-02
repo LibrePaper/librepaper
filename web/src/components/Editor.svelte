@@ -230,6 +230,8 @@
   import { completionExtension, formatOfPath } from "../lib/completion/index.js";
   import { searchZotero, zoteroItem } from "../lib/desktop/client.js";
   import { changeMarks, setChangeMarks } from "../lib/change-marks.js";
+  import { authorshipRuns, summarize, markSpans } from "../lib/authorship.js";
+  import { authorshipMarks, setAuthorshipMarks } from "../lib/authorship-marks.js";
   import { CHANGES, planEdits, writePlanned, resolveFile, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
@@ -268,6 +270,13 @@
     onchange, oncaret, onfilechange, onbibliography, onsave, onquit,
     // Called with the caret's formatting (formatState) while visual mode is on.
     onformatstate,
+    // The Authors tab's view of who wrote what: `{authors, only}`, where
+    // `authors` maps each peer to its name, and `only` is the one author to
+    // isolate, or null. Null turns the authorship marks off.
+    authorship = null,
+    // Called with the open file's `{rows, since, missing}` after each redraw,
+    // or with null when there is no file to summarise or the marks are off.
+    onauthorship = undefined,
     rules = null,
     // The path the preview renders, which Reader passes. It stands in for the
     // open file wherever the project as a whole is read.
@@ -279,6 +288,9 @@
   // field is identified by the object, so building a fresh one per file would
   // make each file's state carry a field the view's other states do not have.
   const pendingChanges = changeMarks();
+  // The same reasoning as `pendingChanges`: one field per editor, shared by
+  // every file's state.
+  const authorMarks = authorshipMarks();
 
   /// Redraw the pending changes over whichever file is on screen.
   ///
@@ -305,6 +317,44 @@
       drawQueued = false;
       drawChanges();
     });
+  }
+
+  /// Redraw the authorship marks over the file on screen, and tell the reader
+  /// who wrote how much of it.
+  ///
+  /// Every run of text is found by walking the whole file, so this is not run
+  /// on each keystroke: see `scheduleAuthorship`, which waits for a pause.
+  function drawAuthorship() {
+    if (!view || !showing || !session) return;
+    if (!authorship) {
+      view.dispatch({ effects: setAuthorshipMarks.of(null) });
+      untrack(() => onauthorship?.(null));
+      return;
+    }
+    const text = getTextFromDoc(showing);
+    if (!text) {
+      untrack(() => onauthorship?.(null));
+      return;
+    }
+    const runs = authorshipRuns(session.doc, text);
+    const { rows, since, missing } = summarize(runs, authorship.authors);
+    view.dispatch({
+      effects: setAuthorshipMarks.of({ spans: markSpans(runs, authorship.authors, rows), only: authorship.only }),
+    });
+    untrack(() => onauthorship?.({ rows, since, missing }));
+  }
+
+  // A document change re-walks the file only after 400 ms without another
+  // change, and only while the Authors view is on. Remote edits come through
+  // the document subscription, so they wait the same way.
+  let authorshipTimer = 0;
+  function scheduleAuthorship() {
+    if (!authorship) return;
+    clearTimeout(authorshipTimer);
+    authorshipTimer = setTimeout(() => {
+      authorshipTimer = 0;
+      drawAuthorship();
+    }, 400);
   }
 
   /// Takes each local, user transaction as a tracked change while tracking is
@@ -1191,6 +1241,7 @@
         EditorView.lineWrapping,
         // Pending changes, drawn in the text they changed.
         pendingChanges,
+        authorMarks,
         keymap.of([
           // Everyone tries Ctrl/Cmd-S in an editor.
           { key: "Mod-s", preventDefault: true, run: () => (onsave?.(), true) },
@@ -1245,6 +1296,7 @@
             // has to happen after the transaction rather than inside it. The
             // draw is queued, so the commits of one tick share one redraw.
             scheduleDraw();
+            scheduleAuthorship();
             onchange?.();
           }
           // Only a deliberate move counts: typing moves the caret constantly,
@@ -1508,6 +1560,9 @@
     setDiagnostics(all);
     // A state carries no decorations until something puts them there.
     drawChanges();
+    // The authorship marks belong to the file too, and the summary the reader
+    // shows is for the file now on screen.
+    drawAuthorship();
     view.focus();
   }
 
@@ -1554,6 +1609,7 @@
       });
       const unsubscribeLineHeight = onLineHeight(() => view?.requestMeasure());
       drawChanges();
+      drawAuthorship();
       if (initial.first) session.inFile?.(initial.first);
       const bibliographyWatcher = scheduleBibliography;
       const unsubscribeBibliography = session.onFiles?.(bibliographyWatcher);
@@ -1563,6 +1619,7 @@
       const unsubscribeChanges = session.doc.subscribe((batch) => queueMicrotask(() => {
         if (batch.by === "local") reconcileShown();
         scheduleDraw();
+        scheduleAuthorship();
       }));
       refreshBibliography();
       refreshFacts(view, showing, true);
@@ -1571,6 +1628,7 @@
         bibliographyGeneration += 1;
         clearTimeout(bibliographyTimer);
         clearTimeout(factsTimer);
+        clearTimeout(authorshipTimer);
         if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
         unsubscribeChanges();
         unsubscribeMode();
@@ -1613,6 +1671,18 @@
     void selectedChange;
     void me;
     if (view) drawChanges();
+  });
+
+  // Turning the Authors view on or off, or isolating one author, redraws the
+  // marks at once: the reader is waiting on the answer, so the pause that
+  // document changes take does not apply. A pending timer belongs to the old
+  // `authorship`, so it is dropped first.
+  $effect(() => {
+    void authorship;
+    if (view) {
+      clearTimeout(authorshipTimer);
+      untrack(() => drawAuthorship());
+    }
   });
 
   // `:w` and `:q` run through the WeakMap rather than closing over this
