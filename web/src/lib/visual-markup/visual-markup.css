@@ -266,7 +266,7 @@
   cursor: pointer;
 }
 
-/* Verbatim code: monospace on a subtle background, which keeps its spaces. */
+/* Verbatim code: monospace on a subtle background, which keeps its spaces and wraps long lines inside the pane. */
 .cm-lp-verb,
 .cm-lp-code {
   font-family: var(--font-mono);
@@ -282,8 +282,6 @@
 .cm-lp-code {
   display: block;
   padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3);
-  overflow-x: auto;
-  white-space: pre;
 }
 
 /* An inline chip: a pill's frame inside the line. */
