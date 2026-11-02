@@ -152,6 +152,7 @@ impl Deployment {
             false,
             None,
             None,
+            None,
         )
         .expect("a well-formed comment")
     }
@@ -239,6 +240,7 @@ async fn a_remark_about_the_whole_document_needs_no_passage() {
         "",
         None,
         true,
+        None,
         None,
         None,
     )
@@ -1029,6 +1031,7 @@ async fn a_whole_document_comment_has_no_record() {
         true,
         None,
         None,
+        None,
     )
     .unwrap();
     let comment = room
@@ -1076,6 +1079,7 @@ async fn a_retried_passage_comment_answers_from_its_row_and_writes_no_second_rec
             " of the posterior.",
             Some(0),
             whole_document,
+            None,
             None,
             None,
         )
@@ -1141,5 +1145,206 @@ async fn a_retried_passage_comment_answers_from_its_row_and_writes_no_second_rec
     let comments = room.all_comments().await.unwrap();
     assert_eq!(comments.len(), 1, "the retry added no second comment");
     assert_eq!(comments[0].id, comment.id);
+    deployment.catalog.close().await;
+}
+
+/// The stable file id of `paper.md` in the room's head.
+async fn paper_id(room: &Room) -> String {
+    room.log()
+        .with_head(|doc| {
+            session::paths_of(doc)
+                .into_iter()
+                .find(|(_, path)| path == "paper.md")
+                .map(|(id, _)| id)
+        })
+        .await
+        .unwrap()
+        .expect("paper.md is in the document")
+}
+
+impl Deployment {
+    /// A comment made in the source pane: the range is the editor's own, and
+    /// the words it was made against are what the editor saw there.
+    fn add_source_comment(
+        &self,
+        document_id: Uuid,
+        whole_document: bool,
+        source: SourceSelection,
+        exact: &str,
+    ) -> AddComment {
+        let config = Configuration::default();
+        AddComment::new(
+            self.catalog.clone(),
+            document_id,
+            Uuid::new_v4(),
+            &config,
+            "commenting",
+            "A remark.",
+            &self.writer(),
+            exact,
+            "",
+            "",
+            None,
+            whole_document,
+            None,
+            None,
+            Some(source),
+        )
+        .expect("a well-formed comment")
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_source_selection_is_anchored_exactly_as_selected() {
+    let Some(deployment) = deployment("anchor-source").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let file_id = paper_id(&room).await;
+    // PAPER is ASCII, so byte offsets are UTF-16 offsets.
+    let start = PAPER.find("*interval*").unwrap() as u32;
+    let end = start + "*interval* covers the mean".len() as u32;
+    let mut cmd = deployment.add_source_comment(
+        room.document_id,
+        false,
+        SourceSelection {
+            file_id: file_id.clone(),
+            start,
+            end,
+        },
+        "*interval* covers the mean",
+    );
+    let comment = room
+        .command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap();
+    let target = comment.source().expect("a source-text anchor");
+    assert_eq!(target.file_id.0, file_id);
+    assert_eq!((target.start_utf16, target.end_utf16), (start, end));
+    assert_eq!(target.exact, "*interval* covers the mean");
+    // A source comment has no rendered position, and keeps the words it was
+    // made against as the quote the card shows.
+    assert_eq!(comment.presentation.rendered_position_utf16, None);
+    assert_eq!(
+        comment.presentation.rendered_exact,
+        "*interval* covers the mean"
+    );
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_source_selection_refuses_text_that_is_not_what_the_editor_saw() {
+    let Some(deployment) = deployment("anchor-source-changed").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let file_id = paper_id(&room).await;
+    let start = PAPER.find("*interval*").unwrap() as u32;
+    let end = start + "*interval* covers the mean".len() as u32;
+    // The range is right, but the editor's words are not what is there.
+    let mut cmd = deployment.add_source_comment(
+        room.document_id,
+        false,
+        SourceSelection {
+            file_id: file_id.clone(),
+            start,
+            end,
+        },
+        "interval covers the mean",
+    );
+    match room
+        .command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap_err()
+    {
+        CommandError::Conflict(message) => {
+            assert!(message.contains("select it again"), "{message}");
+        }
+        other => panic!("expected a conflict, got {other:?}"),
+    }
+    // A range past the end of the file is not a range of it.
+    let mut cmd = deployment.add_source_comment(
+        room.document_id,
+        false,
+        SourceSelection {
+            file_id,
+            start: 0,
+            end: PAPER.len() as u32 + 1,
+        },
+        PAPER,
+    );
+    match room
+        .command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap_err()
+    {
+        CommandError::Conflict(message) => {
+            assert!(message.contains("not a range of the file"), "{message}");
+        }
+        other => panic!("expected a conflict, got {other:?}"),
+    }
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_source_selection_in_an_unknown_file_is_refused() {
+    let Some(deployment) = deployment("anchor-source-unknown").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let mut cmd = deployment.add_source_comment(
+        room.document_id,
+        false,
+        SourceSelection {
+            file_id: "no-such-file".into(),
+            start: 0,
+            end: 5,
+        },
+        "# Int",
+    );
+    match room
+        .command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap_err()
+    {
+        CommandError::Conflict(message) => {
+            assert!(message.contains("not in this document"), "{message}");
+        }
+        other => panic!("expected a conflict, got {other:?}"),
+    }
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_whole_document_remark_cannot_name_a_source_range() {
+    let Some(deployment) = deployment("anchor-source-whole").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let file_id = paper_id(&room).await;
+    let mut cmd = deployment.add_source_comment(
+        room.document_id,
+        true,
+        SourceSelection {
+            file_id,
+            start: 0,
+            end: 5,
+        },
+        "# Int",
+    );
+    match room
+        .command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap_err()
+    {
+        CommandError::Conflict(message) => {
+            assert!(message.contains("needs a passage"), "{message}");
+        }
+        other => panic!("expected a conflict, got {other:?}"),
+    }
     deployment.catalog.close().await;
 }

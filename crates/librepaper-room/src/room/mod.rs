@@ -76,7 +76,7 @@ pub use comments::*;
 pub use error::WriteError;
 pub use label::Attribution;
 pub use librepaper_base::util::{decode_update, encode_update};
-pub use message::Message;
+pub use message::{Message, SourceSelection};
 pub use outgoing::{Outgoing, Sender};
 pub use refusal::Refusal;
 

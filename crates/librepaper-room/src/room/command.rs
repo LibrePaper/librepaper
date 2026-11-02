@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::Message;
+use super::{Message, SourceSelection};
 
 /// Validated comment protocol commands. The serde-facing [`Message`] remains
 /// compatible with existing clients; these variants carry only fields used by
@@ -22,6 +22,9 @@ pub enum Command {
         position: Option<i64>,
         document: bool,
         color: Option<String>,
+        /// An editor's exact range in the source. When set, `exact` is the
+        /// text at that range, and the server anchors to it directly.
+        source: Option<SourceSelection>,
         temp_id: String,
         request_id: String,
     },
@@ -179,6 +182,7 @@ impl Message {
                 position: self.position(),
                 document: self.document(),
                 color: self.color().map(str::to_owned),
+                source: self.source().cloned(),
                 temp_id,
                 request_id,
             }),
@@ -258,6 +262,7 @@ mod tests {
             position: Some(3),
             document: true,
             color: Some("amber".into()),
+            source: None,
             temp_id: "t".into(),
             request_id: "r".into(),
         }
@@ -278,6 +283,7 @@ mod tests {
             position,
             document,
             color,
+            source,
             temp_id,
             request_id,
         } = comment().with_creator("server".into())
@@ -294,6 +300,7 @@ mod tests {
         assert_eq!(position, Some(3));
         assert!(document);
         assert_eq!(color.as_deref(), Some("amber"));
+        assert_eq!(source, None);
         assert_eq!(temp_id, "t");
         assert_eq!(request_id, "r");
 
@@ -320,6 +327,39 @@ mod tests {
         serde_json::from_str::<Message>(frame)
             .expect("a frame")
             .into_command()
+    }
+
+    #[test]
+    fn a_comment_with_a_source_selection_carries_its_range() {
+        let frame = r#"{"type":"comment","body":"b","exact":"interval","prefix":"","suffix":"","document":false,"source":{"file_id":"f1","start":4,"end":12},"temp_id":"t","request_id":"r"}"#;
+        let Ok(Command::Comment {
+            source,
+            exact,
+            position,
+            ..
+        }) = parsed(frame)
+        else {
+            panic!("a comment parses");
+        };
+        assert_eq!(
+            source,
+            Some(SourceSelection {
+                file_id: "f1".into(),
+                start: 4,
+                end: 12,
+            })
+        );
+        assert_eq!(exact, "interval");
+        assert_eq!(position, None);
+    }
+
+    #[test]
+    fn a_comment_without_a_source_selection_has_none() {
+        let frame = r#"{"type":"comment","body":"b","exact":"x"}"#;
+        assert!(matches!(
+            parsed(frame),
+            Ok(Command::Comment { source: None, .. })
+        ));
     }
 
     #[test]

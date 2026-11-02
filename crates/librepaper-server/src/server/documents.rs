@@ -427,6 +427,15 @@ impl Server {
                         if access::needs_render_digest(&current_who, &incoming) {
                             return None;
                         }
+                        // Only an editor can see the source, so only an editor
+                        // can name a range in it. Checked against the fresh
+                        // viewer, as the rest of the write is.
+                        if access::source_comment_forbidden(&current_who, &incoming) {
+                            return Some((
+                                json!({"status": 403, "error": "only editors can comment on the source"}),
+                                false,
+                            ));
+                        }
                         Some(
                             self.apply_from(
                                 room_ref,

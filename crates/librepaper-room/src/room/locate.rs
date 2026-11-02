@@ -552,6 +552,35 @@ fn place(
     }
 }
 
+/// The source range an editor selected in the code pane, taken as it was
+/// selected.
+///
+/// This is the one path that does not look for words: the selection is made
+/// against the source itself, so there is no markup to walk and no whitespace
+/// to trim. What is checked is only that the range is a range of this file --
+/// not empty, not past the end, and not splitting a character. None of it is
+/// identity; the caller compares the text it was given with `exact`.
+pub fn at_range(file: &Candidate<'_>, start: usize, end: usize) -> Option<SourceTextTarget> {
+    let index = TextIndex::new(file.text);
+    if start >= end || end > index.len_utf16().0 {
+        return None;
+    }
+    index.slice16(Span {
+        start: Utf16(start),
+        end: Utf16(end),
+    })?;
+    Some(SourceTextTarget {
+        file_id: FileId(file.file_id.to_string()),
+        start_utf16: u32::try_from(start).ok()?,
+        end_utf16: u32::try_from(end).ok()?,
+        start_side: AnchorSide::Left,
+        end_side: AnchorSide::Right,
+        exact: lossy(&index, start, end),
+        prefix: lossy(&index, start.saturating_sub(CONTEXT), start),
+        suffix: lossy(&index, end, (end + CONTEXT).min(index.len_utf16().0)),
+    })
+}
+
 /// The text of a UTF-16 range for the evidence that goes with a target. A
 /// bound inside a surrogate pair keeps the lone half as U+FFFD.
 fn lossy(index: &TextIndex<'_>, start: usize, end: usize) -> String {
@@ -810,6 +839,72 @@ mod tests {
         let found = locate(&one(text), &quote("The interval covers the mean.", "", "")).unwrap();
         assert!(found.prefix.ends_with("Before it. "));
         assert!(found.suffix.starts_with(" After it."));
+    }
+
+    fn file(text: &str) -> Candidate<'_> {
+        Candidate {
+            file_id: "f1",
+            path: "paper.md",
+            text,
+        }
+    }
+
+    #[test]
+    fn a_selected_range_is_taken_exactly_as_selected() {
+        let text = "The interval covers the mean.\n";
+        let found = at_range(&file(text), 4, 12).unwrap();
+        assert_eq!(found.file_id.0, "f1");
+        assert_eq!((found.start_utf16, found.end_utf16), (4, 12));
+        assert_eq!(found.exact, "interval");
+        assert_eq!(found.start_side, AnchorSide::Left);
+        assert_eq!(found.end_side, AnchorSide::Right);
+        assert_eq!(found.prefix, "The ");
+        assert!(found.suffix.starts_with(" covers the mean."));
+        // Whitespace the editor selected stays in the range.
+        let found = at_range(&file(text), 3, 12).unwrap();
+        assert_eq!(found.exact, " interval");
+    }
+
+    #[test]
+    fn an_empty_or_inverted_range_is_not_a_range() {
+        let text = "The interval covers the mean.\n";
+        assert!(at_range(&file(text), 3, 3).is_none());
+        assert!(at_range(&file(text), 5, 4).is_none());
+    }
+
+    #[test]
+    fn a_range_past_the_end_of_the_file_is_refused() {
+        let text = "naive done";
+        assert_eq!(TextIndex::new(text).len_utf16().0, 10);
+        assert!(at_range(&file(text), 0, 11).is_none());
+        assert!(at_range(&file(text), 0, 10).is_some());
+    }
+
+    /// `𝔸` is two UTF-16 units, so a range that starts or ends inside it
+    /// splits a character and is refused.
+    #[test]
+    fn a_range_that_splits_a_surrogate_pair_is_refused() {
+        let text = "na\u{ef}ve \u{1d538}x done";
+        // n a ï v e space 𝔸(2 units) x space d o n e: 14 units.
+        assert_eq!(TextIndex::new(text).len_utf16().0, 14);
+        assert!(at_range(&file(text), 7, 9).is_none());
+        assert!(at_range(&file(text), 6, 7).is_none());
+        // The space before the pair is a boundary, so this one is a range.
+        assert!(at_range(&file(text), 5, 6).is_some());
+    }
+
+    /// Offsets are UTF-16, so the characters before a range count as the
+    /// browser counts them: `ï` is one unit, `𝔸` is two.
+    #[test]
+    fn a_range_after_non_ascii_text_uses_utf16_offsets() {
+        let text = "na\u{ef}ve \u{1d538}x done";
+        let found = at_range(&file(text), 2, 5).unwrap();
+        assert_eq!(found.exact, "\u{ef}ve");
+        let found = at_range(&file(text), 6, 9).unwrap();
+        assert_eq!(found.exact, "\u{1d538}x");
+        assert_eq!((found.start_utf16, found.end_utf16), (6, 9));
+        assert_eq!(found.prefix, "na\u{ef}ve ");
+        assert_eq!(found.suffix, " done");
     }
 }
 
