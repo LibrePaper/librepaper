@@ -207,6 +207,21 @@ files.selectFile("missing.md");
 assert.equal(files.path, "main.md");
 files.dispose();
 
+// The reader's file did not change, so the comparison opens on one that did:
+// an unchanged file on screen would read as "this version changed nothing".
+const steady = createHistorySource({
+  currentTree: () => live,
+  labels: () => [{ sha: "P", seq: 1 }, { sha: "Q", seq: 2 }],
+  read,
+  preferredPath: () => "steady.md",
+});
+await steady.view("Q");
+assert.equal(steady.path, "main.md");
+// With nothing changed at all, the reader's file stays.
+await steady.compare("Q", "Q");
+assert.deepEqual(steady.result.changed, []);
+steady.dispose();
+
 // A figure is reported as changed when its digest differs, and never compared as text.
 stored.E = tree("E", { "main.md": "current" }, { "fig.png": { kind: "asset", sha: "a".repeat(64) } });
 live = tree("live", { "main.md": "current" }, { "fig.png": { kind: "asset", sha: "b".repeat(64) } });

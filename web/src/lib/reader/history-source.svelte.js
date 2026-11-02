@@ -119,12 +119,15 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
       const came = pair.selected && pair.selected === pair.newer ? newTree
         : pair.selected && pair.selected === pair.older ? oldTree
           : null;
-      // Land on a file the reader came for, then on one that actually
-      // differs, and only then on the file the project opens on.
+      // Land on the file the reader came for when it changed, then on any
+      // file that changed: opening on an unchanged file would read as "nothing
+      // changed" when the version changed another one. With no change at all,
+      // keep the reader's file, then the file the project opens on.
       const landing = openingFile((came || newTree).texts);
-      state.path = paths.includes(pair.path) ? pair.path
+      state.path = changed.includes(pair.path) ? pair.path
         : changed[0]
-          || (paths.includes(landing) ? landing : paths[0] || "");
+          || (paths.includes(pair.path) ? pair.path
+            : paths.includes(landing) ? landing : paths[0] || "");
       state.result = {
         oldTree,
         newTree,
