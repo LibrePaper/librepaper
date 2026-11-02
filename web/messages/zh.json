@@ -1148,7 +1148,7 @@
   "history_by": "由 {who}",
   "history_collaborative_session": "协作会话",
   "history_commented": "已批注",
-  "history_comparison_base": "比较基准",
+  "history_compare_with": "与…比较",
   "history_contributors": [
     {
       "declarations": [
@@ -1199,11 +1199,14 @@
     }
   ],
   "history_name_bookmark": "为此书签命名",
+  "history_newer_tag": "较新",
   "history_no_saved": "还没有已保存的版本。为某个版本添加书签，即可按名称保存。",
   "history_no_versions_in_month": "{month} 没有版本。显示最接近的时间段。",
   "history_no_versions_shown": "没有可显示的版本。",
   "history_none": "没有以前的版本",
   "history_not_readable": "此文档的历史记录无法读取",
+  "history_older_tag": "较旧",
+  "history_pick_prompt": "请选择要比较的版本。",
   "history_push": "已 push",
   "history_pushed_by": "由 {author} push",
   "history_recovered": "已找回",
@@ -1213,7 +1216,7 @@
   "history_restored": "已恢复",
   "history_restored_version": "已恢复的版本",
   "history_row_tip": "{what}，{detail}",
-  "history_row_tip_base": "{what}，{detail}，比较基准",
+  "history_row_tip_endpoint": "{what}，{detail}，{endpoint}",
   "history_saved_short": "已保存",
   "history_saved_versions": "已保存的版本",
   "history_show_versions": "显示全部 {count} 个版本",

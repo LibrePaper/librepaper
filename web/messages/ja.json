@@ -1148,7 +1148,7 @@
   "history_by": "{who}による",
   "history_collaborative_session": "共同編集セッション",
   "history_commented": "コメント",
-  "history_comparison_base": "比較の基準",
+  "history_compare_with": "他のバージョンと比較…",
   "history_contributors": [
     {
       "declarations": [
@@ -1199,11 +1199,14 @@
     }
   ],
   "history_name_bookmark": "このブックマークに名前を付ける",
+  "history_newer_tag": "新しい",
   "history_no_saved": "保存したバージョンはまだありません。バージョンをブックマークすると、名前を付けて保存できます。",
   "history_no_versions_in_month": "{month}にバージョンはありません。最も近い期間を表示しています。",
   "history_no_versions_shown": "表示するバージョンがありません。",
   "history_none": "以前のバージョンはありません",
   "history_not_readable": "このドキュメントの履歴は読み取れません",
+  "history_older_tag": "古い",
+  "history_pick_prompt": "比較する版を選んでください。",
   "history_push": "プッシュ済み",
   "history_pushed_by": "{author}がプッシュ",
   "history_recovered": "復旧",
@@ -1213,7 +1216,7 @@
   "history_restored": "復元済み",
   "history_restored_version": "復元したバージョン",
   "history_row_tip": "{what}、{detail}",
-  "history_row_tip_base": "{what}、{detail}、比較の基準",
+  "history_row_tip_endpoint": "{what}、{detail}、{endpoint}",
   "history_saved_short": "保存済み",
   "history_saved_versions": "保存したバージョン",
   "history_show_versions": "{count}件のバージョンを表示",

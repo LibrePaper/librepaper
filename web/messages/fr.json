@@ -1148,7 +1148,7 @@
   "history_by": "par {who}",
   "history_collaborative_session": "Session collaborative",
   "history_commented": "Commenté",
-  "history_comparison_base": "base de comparaison",
+  "history_compare_with": "Comparer avec…",
   "history_contributors": [
     {
       "declarations": [
@@ -1199,11 +1199,14 @@
     }
   ],
   "history_name_bookmark": "Nommer ce signet",
+  "history_newer_tag": "Plus récente",
   "history_no_saved": "Aucune version enregistrée pour l’instant. Ajoutez un signet à une version pour l’enregistrer sous un nom.",
   "history_no_versions_in_month": "Aucune version en {month}. Affichage de la période la plus proche.",
   "history_no_versions_shown": "Aucune version à afficher.",
   "history_none": "Aucune version précédente",
   "history_not_readable": "l’historique de ce document n’est pas lisible",
+  "history_older_tag": "Plus ancienne",
+  "history_pick_prompt": "Choisissez une version à comparer.",
   "history_push": "Envoyé",
   "history_pushed_by": "Envoyé par {author}",
   "history_recovered": "Récupéré",
@@ -1213,7 +1216,7 @@
   "history_restored": "Restauré",
   "history_restored_version": "Version restaurée",
   "history_row_tip": "{what}, {detail}",
-  "history_row_tip_base": "{what}, {detail}, base de comparaison",
+  "history_row_tip_endpoint": "{what}, {detail}, {endpoint}",
   "history_saved_short": "Enreg.",
   "history_saved_versions": "Versions enregistrées",
   "history_show_versions": "Afficher les {count} versions",
