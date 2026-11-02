@@ -35,8 +35,8 @@ task execution, durable task state, and reconnect recovery.
 
 ## Relay contract
 
-- Every event has an `id` of at most 128 bytes. Frames are limited to 64 KiB;
-  message and answer text to 32 KiB; context to 16 KiB. A channel accepts at
+- Every event has an `id` of at most 128 bytes. Frames are limited to 4 MiB;
+  message and answer text to 2 MiB; context to 16 KiB. A channel accepts at
   most 600 new events per rolling minute.
 - Successful delivery returns `{ "type": "ack", "id": ID }`. Within the
   current connection pair, retrying the same ID and content is acknowledged

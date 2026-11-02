@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const MAX_CONTEXT_BYTES: usize = 16 * 1024;
-pub const MAX_EVENT_TEXT_BYTES: usize = 32 * 1024;
+pub const MAX_EVENT_TEXT_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_ANSWER_BYTES: usize = MAX_EVENT_TEXT_BYTES;
+/// Frames get twice the text cap so JSON escaping of backslash-heavy LaTeX source still fits.
+pub const MAX_FRAME_BYTES: usize = 2 * MAX_EVENT_TEXT_BYTES;
 pub const MAX_ID_BYTES: usize = 128;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

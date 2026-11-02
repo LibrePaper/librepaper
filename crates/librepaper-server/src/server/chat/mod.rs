@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 const CHANNEL_SECONDS: i64 = 60 * 60;
 use librepaper_base::assistant_protocol::{
     TaskKind, TaskScope, MAX_CONTEXT_BYTES as MAX_CONTEXT, MAX_EVENT_TEXT_BYTES as MAX_EVENT_TEXT,
-    MAX_ID_BYTES as MAX_ID,
+    MAX_FRAME_BYTES as MAX_FRAME, MAX_ID_BYTES as MAX_ID,
 };
 pub type Error = (u16, &'static str);
 
@@ -78,7 +78,7 @@ impl Server {
             Err(_) => return plain(400, "expected a websocket upgrade"),
         };
         upgrade
-            .max_message_size(64 * 1024)
+            .max_message_size(MAX_FRAME)
             .on_upgrade(move |socket| async move {
                 self.run_chat_socket(socket, connection, link_expires).await
             })
