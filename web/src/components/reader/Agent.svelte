@@ -640,14 +640,20 @@
         if (refused) throw new Error(refused);
         await client.untilRunner(RUNNER_JOIN_MS);
       }
-      await client.send(text, {
-        task: task || undefined, attachment,
-        thread: task?.kind === "respond" ? commentContext : null,
-        path: (task ? task.scope === "file" : chatScope !== "document") ? contextPath : "",
-        revision: diagnosticRevision || attachment?.revision || (task?.scope === "selection" ? revision : ""),
-        diagnostic, diagnostics,
-      });
-      sent = true;
+      try {
+        await client.send(text, {
+          task: task || undefined, attachment,
+          thread: task?.kind === "respond" ? commentContext : null,
+          path: (task ? task.scope === "file" : chatScope !== "document") ? contextPath : "",
+          revision: diagnosticRevision || attachment?.revision || (task?.scope === "selection" ? revision : ""),
+          diagnostic, diagnostics,
+        });
+        sent = true;
+      } catch (error) {
+        // The message is already in the transcript, so the composer must not keep it.
+        if (error?.recorded) sent = true;
+        throw error;
+      }
     });
     return sent;
   }

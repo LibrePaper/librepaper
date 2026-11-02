@@ -629,7 +629,12 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     updateTask(taskId, { status: "queued", task: message.task, request: message.text });
     addMessage({ id: message.id, role: "user", text: message.text, task_id: taskId, context: message.context,
       ...(message.task ? { task: message.task } : {}) });
-    await transmit(message);
+    try {
+      await transmit(message);
+    } catch (error) {
+      // The message is already in the transcript and queued for retry, so callers should treat it as sent.
+      throw Object.assign(error instanceof Error ? error : new Error(String(error)), { recorded: true });
+    }
     return message;
   }
   async function retry(messageId) {
