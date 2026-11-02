@@ -13,6 +13,7 @@
   // reports outwards. A bookmark is a version with a name, and naming it uses
   // the same field everywhere in the panel.
   import { tick, untrack } from "svelte";
+  import { Tabs } from "@skeletonlabs/skeleton-svelte";
   import { m } from "../../lib/paraglide/messages.js";
   import { locale } from "../../lib/locale.js";
   import { day as dayOf } from "../../lib/dates.js";
@@ -20,7 +21,7 @@
   import { buildPeriods, nearestPeriod, pathTo, periodTitle } from "../../lib/history-groups.js";
   import Icon from "../Icon.svelte";
   import IconButton from "../IconButton.svelte";
-  import PanelHeader from "../PanelHeader.svelte";
+  import PanelTabs from "../PanelTabs.svelte";
 
   let {
     labels = [],
@@ -43,6 +44,13 @@
     onloadmore,
     onloaduntil,
     onloadsaved,
+    // Authorship: `{rows, since, loading, error, noFile}` or null, the row
+    // key whose text is isolated, and the two callbacks that report to the
+    // editor. `onauthorsview` says whether the authors tab is on screen.
+    authors = null,
+    authorsOnly = null,
+    onauthorsview = undefined,
+    onisolate = undefined,
   } = $props();
 
   const SHOW_FIRST = 5;
@@ -52,7 +60,8 @@
   const today = $derived(dayOf(new Date(), timezone));
   const periods = $derived(buildPeriods(labels, { timeZone: timezone, today, partial: !complete }));
 
-  // Which view is showing, and whether the date popover is open.
+  // Which tab is showing (all, saved or authors), and whether the date popover
+  // is open.
   let mode = $state("all");
   let dateOpen = $state(false);
   let month = $state("");
@@ -226,6 +235,15 @@
     return `${date} · ${clock(value)}`;
   }
 
+  // Authorship: a share as a percentage, a date in the reader's timezone, and
+  // the line under an author's name.
+  const pct = (value) => new Intl.NumberFormat(locale(), { style: "percent", maximumFractionDigits: 0 }).format(value);
+  const shortDate = (value) => new Intl.DateTimeFormat(locale(), { dateStyle: "medium", timeZone: timezone }).format(new Date(value));
+  const authorLine = (row) => [
+    m.history_authors_share({ share: pct(row.share) }),
+    row.last ? m.history_authors_last_edit({ date: shortDate(row.last) }) : "",
+  ].filter(Boolean).join(" · ");
+
   function monthName(value) {
     return new Date(`${value}-01T12:00:00Z`).toLocaleDateString(locale(), {
       month: "long", year: "numeric", timeZone: "UTC",
@@ -281,6 +299,25 @@
     note = "";
     onloadsaved?.();
   }
+
+  // The strip's one handler. The all and saved tabs keep their own logic.
+  function choose(value) {
+    if (value === "all") showAll();
+    else if (value === "saved") showSaved();
+    else {
+      mode = "authors";
+      dateOpen = false;
+      note = "";
+    }
+  }
+
+  // The editor is told while the authors tab is on screen, and told again
+  // when the tab is left or the panel goes away.
+  $effect(() => {
+    if (mode !== "authors") return;
+    untrack(() => onauthorsview?.(true));
+    return () => untrack(() => onauthorsview?.(false));
+  });
 
   async function toggleDate() {
     dateOpen = !dateOpen;
@@ -350,129 +387,169 @@
 
 </script>
 
-<div class="panel timeline">
-  <PanelHeader title={m.common_history()} />
-
-  <!-- The filter and the date control share one row: the panel's title is
-       for screen readers only, so a header row would hold a lone icon. -->
-  <div class="hx-bar">
-    <div class="hx-segment" role="group" aria-label={m.history_filter_group()}>
-      <!-- A narrow panel shows the short words. The long ones stay the
-           buttons' names, so a screen reader hears the same thing at any width. -->
-      <button type="button" aria-pressed={mode === "all"} aria-label={m.history_all()} onclick={showAll}>
-        <span class="hx-long">{m.history_all()}</span><span class="hx-short" aria-hidden="true">{m.history_all_short()}</span>
-      </button>
-      <button type="button" aria-pressed={mode === "saved"} aria-label={m.history_saved_versions()} onclick={showSaved}>
-        <span class="hx-long">{m.history_saved_versions()}</span><span class="hx-short" aria-hidden="true">{m.history_saved_short()}</span>
-      </button>
-    </div>
-    {#if mode === "all"}
-      <span class="hx-date-wrap" bind:this={dateWrap}>
-        <IconButton icon="calendar" tone="plain" size="btn-icon-sm" label={m.history_go_to_date()}
-                    expanded={dateOpen} controls="hx-date" onclick={toggleDate} />
-      </span>
-    {/if}
-    {#if dateOpen && mode === "all"}
-      <div class="hx-popover" id="hx-date" role="group" aria-label={m.history_go_to_month()}>
-        <input
-          type="month"
-          class="input"
-          aria-label={m.history_month()}
-          bind:value={month}
-          bind:this={monthField}
-          onkeydown={(event) => {
-            if (event.key === "Enter") goTo();
-            if (event.key === "Escape") closeDate();
-          }}
-        />
-        <button type="button" class="btn btn-sm" disabled={!month} onclick={goTo}>{m.history_go()}</button>
-      </div>
-    {/if}
-  </div>
-
-  {#if note}<p class="panel-meta hx-note" role="status">{note}</p>{/if}
-
-  <!-- The handler only moves focus between the buttons inside the list. -->
-  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-  <ol class="hx-list" bind:this={listEl} onkeydown={navigate}>
-    {#if mode === "all"}
-      <!-- The live document. It is what every bookmark is compared against,
-           so it heads the list, and it is not an event. -->
-      <li class="hx-current hx-row" class:hx-here={!viewing}>
-        {#if naming === "current"}
-          {@render nameField(m.history_name_bookmark())}
-        {:else}
-          <button
-            type="button"
-            class="hx-main"
-            data-nav
-            class:timeline-here={!viewing}
-            aria-current={!viewing ? "true" : undefined}
-            onclick={() => onview?.("")}
-          >
-            <span class="hx-text"><span class="hx-line1">{m.history_current_version()}</span></span>
-          </button>
-          {#if canEdit && !viewing}
-            <span class="hx-tools">
-              <IconButton icon="bookmark" tone="plain" size="btn-icon-sm"
-                          label={m.history_bookmark_current()}
-                          onclick={() => startNaming({ sha: "current", label: "" })} />
-            </span>
-          {/if}
-        {/if}
-      </li>
-
-      {#if problem}
-        <li class="hx-status">
-          <p class="lp-text-error" role="status">{problem}</p>
-          {#if !labels.length}<button type="button" class="btn btn-sm" onclick={() => onretry?.()}>{m.common_retry()}</button>{/if}
-        </li>
+<!-- The strip is PanelTabs', the one the other panels wear. The calendar
+     control rides on its row and belongs to the all view. -->
+<section class="panel timeline panel-tabbed" aria-label={m.common_history()}>
+  {#snippet dateControl()}
+    <span class="hx-date-wrap" bind:this={dateWrap}>
+      <IconButton icon="calendar" tone="plain" size="btn-icon-sm" label={m.history_go_to_date()}
+                  expanded={dateOpen} controls="hx-date" onclick={toggleDate} />
+      {#if dateOpen}
+        <div class="hx-popover" id="hx-date" role="group" aria-label={m.history_go_to_month()}>
+          <input
+            type="month"
+            class="input"
+            aria-label={m.history_month()}
+            bind:value={month}
+            bind:this={monthField}
+            onkeydown={(event) => {
+              if (event.key === "Enter") goTo();
+              if (event.key === "Escape") closeDate();
+            }}
+          />
+          <button type="button" class="btn btn-sm" disabled={!month} onclick={goTo}>{m.history_go()}</button>
+        </div>
       {/if}
+    </span>
+  {/snippet}
 
-      {#if !labels.length}
-        {#if !loaded && !problem}
-          <li class="hx-status panel-muted">{m.history_loading()}</li>
-        {:else if loaded && !problem}
-          <li class="hx-status panel-muted">{m.history_none()}</li>
+  <!-- The list is drawn once, by whichever of the all and saved panes is showing. -->
+  {#snippet timelineList()}
+    {#if note}<p class="panel-meta hx-note" role="status">{note}</p>{/if}
+
+    <!-- The handler only moves focus between the buttons inside the list. -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <ol class="hx-list" bind:this={listEl} onkeydown={navigate}>
+      {#if mode === "all"}
+        <!-- The live document. It is what every bookmark is compared against,
+             so it heads the list, and it is not an event. -->
+        <li class="hx-current hx-row" class:hx-here={!viewing}>
+          {#if naming === "current"}
+            {@render nameField(m.history_name_bookmark())}
+          {:else}
+            <button
+              type="button"
+              class="hx-main"
+              data-nav
+              class:timeline-here={!viewing}
+              aria-current={!viewing ? "true" : undefined}
+              onclick={() => onview?.("")}
+            >
+              <span class="hx-text"><span class="hx-line1">{m.history_current_version()}</span></span>
+            </button>
+            {#if canEdit && !viewing}
+              <span class="hx-tools">
+                <IconButton icon="bookmark" tone="plain" size="btn-icon-sm"
+                            label={m.history_bookmark_current()}
+                            onclick={() => startNaming({ sha: "current", label: "" })} />
+              </span>
+            {/if}
+          {/if}
+        </li>
+
+        {#if problem}
+          <li class="hx-status">
+            <p class="lp-text-error" role="status">{problem}</p>
+            {#if !labels.length}<button type="button" class="btn btn-sm" onclick={() => onretry?.()}>{m.common_retry()}</button>{/if}
+          </li>
+        {/if}
+
+        {#if !labels.length}
+          {#if !loaded && !problem}
+            <li class="hx-status panel-muted">{m.history_loading()}</li>
+          {:else if loaded && !problem}
+            <li class="hx-status panel-muted">{m.history_none()}</li>
+          {/if}
+        {:else}
+          {#each periods as period (period.key)}
+            {@render periodNode(period, false)}
+          {/each}
+        {/if}
+
+        <!-- Older pages load when asked for, here or by the date control. An
+             observer at the end of the list would page through everything,
+             because with the months folded the end is nearly always in view. -->
+        {#if loaded && (!complete || loadingMore || moreProblem)}
+          <li class="hx-older">
+            {#if loadingMore}
+              <span class="panel-muted">{m.history_loading_older()}</span>
+            {:else if moreProblem}
+              <span class="lp-text-error" role="status">{moreProblem}</span>
+              <button type="button" class="btn btn-sm" onclick={() => onloadmore?.()}>{m.common_retry()}</button>
+            {:else}
+              <button type="button" class="btn btn-sm" onclick={() => onloadmore?.()}>{m.history_load_older()}</button>
+            {/if}
+          </li>
         {/if}
       {:else}
-        {#each periods as period (period.key)}
-          {@render periodNode(period, false)}
+        {#if savedProblem}
+          <li class="hx-status">
+            <p class="lp-text-error" role="status">{savedProblem}</p>
+            <button type="button" class="btn btn-sm" onclick={() => onloadsaved?.()}>{m.common_retry()}</button>
+          </li>
+        {:else if savedLoading && !savedLoaded}
+          <li class="hx-status panel-muted">{m.history_loading_saved()}</li>
+        {:else if savedLoaded && !saved.length}
+          <li class="hx-status panel-muted">{m.history_no_saved()}</li>
+        {/if}
+        {#each saved as point (point.sha)}
+          {@render savedRow(point)}
         {/each}
       {/if}
+    </ol>
+  {/snippet}
 
-      <!-- Older pages load when asked for, here or by the date control. An
-           observer at the end of the list would page through everything,
-           because with the months folded the end is nearly always in view. -->
-      {#if loaded && (!complete || loadingMore || moreProblem)}
-        <li class="hx-older">
-          {#if loadingMore}
-            <span class="panel-muted">{m.history_loading_older()}</span>
-          {:else if moreProblem}
-            <span class="lp-text-error" role="status">{moreProblem}</span>
-            <button type="button" class="btn btn-sm" onclick={() => onloadmore?.()}>{m.common_retry()}</button>
-          {:else}
-            <button type="button" class="btn btn-sm" onclick={() => onloadmore?.()}>{m.history_load_older()}</button>
-          {/if}
-        </li>
-      {/if}
-    {:else}
-      {#if savedProblem}
-        <li class="hx-status">
-          <p class="lp-text-error" role="status">{savedProblem}</p>
-          <button type="button" class="btn btn-sm" onclick={() => onloadsaved?.()}>{m.common_retry()}</button>
-        </li>
-      {:else if savedLoading && !savedLoaded}
-        <li class="hx-status panel-muted">{m.history_loading_saved()}</li>
-      {:else if savedLoaded && !saved.length}
-        <li class="hx-status panel-muted">{m.history_no_saved()}</li>
-      {/if}
-      {#each saved as point (point.sha)}
-        {@render savedRow(point)}
-      {/each}
-    {/if}
-  </ol>
-</div>
+  <PanelTabs id="history" label={m.history_views_label()}
+             tabs={[
+               { id: "all", label: m.history_all_short() },
+               { id: "saved", label: m.history_saved_short() },
+               { id: "authors", label: m.history_authors() },
+             ]}
+             value={mode} onchange={choose}
+             actions={mode === "all" ? dateControl : undefined}>
+    <Tabs.Content value="all">{#if mode === "all"}{@render timelineList()}{/if}</Tabs.Content>
+    <Tabs.Content value="saved">{#if mode === "saved"}{@render timelineList()}{/if}</Tabs.Content>
+    <Tabs.Content value="authors">
+      <div class="hx-authors">
+        {#if authors?.loading}
+          <p class="panel-muted" role="status">{m.history_authors_loading()}</p>
+        {:else if authors?.error}
+          <p class="lp-text-error" role="status">{authors.error}</p>
+        {:else if authors?.noFile}
+          <p class="panel-muted">{m.history_authors_no_file()}</p>
+        {:else if authors}
+          <ul class="hx-author-list">
+            {#each authors.rows as row (row.key)}
+              {@const pressed = authorsOnly === row.key}
+              {@const named = pressed ? m.history_authors_show_all() : m.history_authors_isolate({ name: row.name })}
+              <li>
+                <button
+                  type="button"
+                  class="hx-main hx-author"
+                  class:timeline-here={pressed}
+                  aria-pressed={pressed}
+                  title={named}
+                  aria-label={named}
+                  onclick={() => onisolate?.(pressed ? null : row.key)}
+                >
+                  <span class="hx-swatch" class:hx-swatch-unknown={row.unknown}
+                        style:background={row.unknown ? undefined : row.colour} aria-hidden="true"></span>
+                  <span class="hx-text">
+                    <span class="hx-line1">{row.name}</span>
+                    <span class="hx-line2 panel-meta">{authorLine(row)}</span>
+                  </span>
+                </button>
+              </li>
+            {/each}
+          </ul>
+          <p class="panel-meta hx-foot">
+            {authors.since ? m.history_authors_since({ date: shortDate(authors.since) }) : m.history_authors_since_none()}
+          </p>
+        {/if}
+      </div>
+    </Tabs.Content>
+  </PanelTabs>
+</section>
 
 <!-- A period: a day, the rest of a month, a month or a year. Its children are
      periods, or its events when it lists them directly. -->
@@ -701,18 +778,9 @@
      row is being read. */
 
   .timeline { position: relative; display: flex; flex-direction: column; overflow: hidden; container-type: inline-size; }
-  .timeline :global(.panel-actions) { justify-content: flex-end; }
   .timeline :is(button):focus-visible { outline: 2px solid var(--color-brand); outline-offset: -2px; }
 
   /* The date popover is a small box under the header, not a calendar. */
-  .hx-bar {
-    position: relative;
-    display: flex;
-    flex: none;
-    align-items: center;
-    gap: var(--spacing);
-    margin: 0 var(--panel-padding) calc(var(--spacing) * 2);
-  }
   .hx-popover {
     position: absolute;
     top: calc(100% + var(--spacing));
@@ -728,35 +796,25 @@
   }
   .hx-popover .input { width: auto; font-size: var(--panel-meta-size); }
 
-  /* The filter: two halves of one control, the pressed half tinted. */
-  .hx-segment {
-    display: flex;
-    flex: 1 1 auto;
-    min-width: 0;
-    border: 1px solid var(--color-divider);
-    border-radius: 4px;
-    overflow: hidden;
+  /* The calendar control sits on the strip's row, and its popover hangs from it. */
+  .hx-date-wrap { position: relative; display: inline-flex; }
+  .hx-note { margin: 0 0 calc(var(--spacing) * 2); }
+  .hx-foot { margin: calc(var(--spacing) * 3) 0 0; }
+
+  /* Authors: the rows of the history, each with its author's colour. */
+  .hx-authors { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+  .hx-author { width: 100%; }
+  .hx-author-list { list-style: none; margin: 0; padding: 0; }
+  .hx-swatch {
+    flex: none;
+    width: 0.875rem;
+    height: 0.875rem;
+    border-radius: 3px;
+    background: var(--color-divider);
   }
-  .hx-segment button {
-    flex: 1 1 0;
-    min-width: 0;
-    padding: var(--spacing);
-    font-size: var(--panel-meta-size);
-    color: var(--panel-muted);
-    text-align: center;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .hx-swatch-unknown {
+    background: repeating-linear-gradient(45deg, var(--color-divider) 0 2px, transparent 2px 5px);
   }
-  .hx-short { display: none; }
-  @container (max-width: 280px) {
-    .hx-long { display: none; }
-    .hx-short { display: inline; }
-  }
-  .hx-segment button + button { border-left: 1px solid var(--color-divider); }
-  .hx-segment button[aria-pressed="true"] { background: var(--color-row-selected); color: inherit; font-weight: 500; }
-  .hx-segment button:hover:not([aria-pressed="true"]) { background: var(--color-row-hover); }
-  .hx-note { margin: 0 var(--panel-padding) calc(var(--spacing) * 2); }
 
   /* The list takes what is left and scrolls on its own. */
   .hx-list {
@@ -766,7 +824,7 @@
     overflow-x: hidden;
     list-style: none;
     margin: 0;
-    padding: 0 var(--panel-padding) var(--panel-padding);
+    padding: 0;
   }
   .hx-list ol { list-style: none; margin: 0; padding: 0; }
   .hx-list li { min-width: 0; }
