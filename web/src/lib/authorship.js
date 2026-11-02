@@ -121,7 +121,7 @@ export function summarize(runs, authors) {
     if (!row) {
       row = {
         key,
-        name: key === "unknown" ? m.history_authors_unknown() : author.name,
+        name: key === "unknown" ? m.changes_unknown_author() : author.name,
         agent: key === "unknown" ? false : author.agent,
         unknown: key === "unknown",
         colour: "",

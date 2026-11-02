@@ -2478,43 +2478,6 @@
     return () => clearInterval(timer);
   });
 
-  // The Authors view needs the history panel open and a source editor on
-  // screen to colour. Without one, the tab says there is no file to show.
-  const authorsShown = $derived(sourceOpen && !comparing && !shownFigure && sourceBound && Boolean(openFile));
-  const authorsActive = $derived(authorsView && panel === "history" && authorsShown);
-
-  // The tab can only be on while its panel is open. The panel is unmounted
-  // when it closes, and without this the tab would still be on when it opens
-  // again, with the tab bar showing another tab.
-  $effect(() => {
-    if (panel !== "history" && authorsView) authorsView = false;
-  });
-
-  // Turning the view on fetches the map the first time. Turning it off drops
-  // any isolated author, so the next time the tab is on, everyone is shown.
-  // Read untracked: the fetch sets state the effect would otherwise follow,
-  // and a failed fetch would then be retried in a loop.
-  $effect(() => {
-    const active = authorsActive;
-    untrack(() => {
-      if (!active) {
-        authorsOnly = null;
-        return;
-      }
-      if (!authorsMap && !authorsLoading) void loadAuthorsMap();
-    });
-  });
-
-  // When the editor finds text from a peer the map does not name, the map is
-  // fetched again, once the last fetch is ten seconds old. The timer belongs
-  // to the summary it was started for, so a newer summary replaces it.
-  $effect(() => {
-    if (!authorsActive || !authorsSummary?.missing) return;
-    const wait = Math.max(0, authorsFetchedAt + AUTHORS_REFETCH_MS - Date.now());
-    const timer = setTimeout(() => untrack(() => void loadAuthorsMap()), wait);
-    return () => clearTimeout(timer);
-  });
-
   // Showing a panel; "" closes the column. Opening the timeline is what
   // fetches the manifest; leaving it drops the comparison, which is all the
   // panel ever held -- the document pane shows the current document
@@ -2957,6 +2920,43 @@
   const openFile = $derived(ws.openFile);
   const rules = $derived(ws.rules);
   const shownFigure = $derived(ws.figure);
+
+  // The Authors view needs the history panel open and a source editor on
+  // screen to colour. Without one, the tab says there is no file to show.
+  const authorsShown = $derived(sourceOpen && !comparing && !shownFigure && sourceBound && Boolean(openFile));
+  const authorsActive = $derived(authorsView && panel === "history" && authorsShown);
+
+  // The tab can only be on while its panel is open. The panel is unmounted
+  // when it closes, and without this the tab would still be on when it opens
+  // again, with the tab bar showing another tab.
+  $effect(() => {
+    if (panel !== "history" && authorsView) authorsView = false;
+  });
+
+  // Turning the view on fetches the map the first time. Turning it off drops
+  // any isolated author, so the next time the tab is on, everyone is shown.
+  // Read untracked: the fetch sets state the effect would otherwise follow,
+  // and a failed fetch would then be retried in a loop.
+  $effect(() => {
+    const active = authorsActive;
+    untrack(() => {
+      if (!active) {
+        authorsOnly = null;
+        return;
+      }
+      if (!authorsMap && !authorsLoading) void loadAuthorsMap();
+    });
+  });
+
+  // When the editor finds text from a peer the map does not name, the map is
+  // fetched again, once the last fetch is ten seconds old. The timer belongs
+  // to the summary it was started for, so a newer summary replaces it.
+  $effect(() => {
+    if (!authorsActive || !authorsSummary?.missing) return;
+    const wait = Math.max(0, authorsFetchedAt + AUTHORS_REFETCH_MS - Date.now());
+    const timer = setTimeout(() => untrack(() => void loadAuthorsMap()), wait);
+    return () => clearTimeout(timer);
+  });
   const figureUrl = $derived(ws.figureUrl);
   // Test whether a file path can be displayed as an image in the figure view.
   const isDisplayableImage = (path) => /\.(?:png|jpg|jpeg|gif|svg|webp)$/i.test(path);

@@ -15,8 +15,10 @@ use super::{PostgresCatalog, Result};
 pub struct PeerAuthor {
     pub peer: u64,
     pub account_id: Option<Uuid>,
-    /// The agent token's label, the account's display name, the stored
-    /// fallback label, or empty, in that order.
+    /// The agent token's label, a registered account's current display name,
+    /// the label stored when the peer was first seen, or empty, in that order.
+    /// An anonymous visitor's stored label is their pseudonym in this
+    /// document, which is what the rest of the document calls them.
     pub name: String,
     /// True when the peer was written through an agent token.
     pub agent: bool,
@@ -95,7 +97,9 @@ impl PostgresCatalog {
     pub async fn document_peer_authors(&self, document_id: Uuid) -> Result<Vec<PeerAuthor>> {
         let rows: Vec<PeerRow> = sqlx::query_as(
             "SELECT p.peer, p.author_account_id, p.first_seen,
-                    COALESCE(NULLIF(sl.label,''), a.display_name, NULLIF(p.author_label,''), '') AS name,
+                    COALESCE(NULLIF(sl.label,''),
+                             CASE WHEN a.kind = 'registered' THEN a.display_name END,
+                             NULLIF(p.author_label,''), a.display_name, '') AS name,
                     (sl.id IS NOT NULL) AS agent
              FROM document_peers p
              LEFT JOIN accounts a ON a.id = p.author_account_id

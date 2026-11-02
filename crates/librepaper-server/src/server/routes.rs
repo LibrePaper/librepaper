@@ -324,9 +324,7 @@ async fn document_authors(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server
-        .handle_authors(request.headers(), &ctx, &slug)
-        .await
+    server.handle_authors(request.headers(), &ctx, &slug).await
 }
 
 async fn rename(

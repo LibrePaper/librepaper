@@ -472,8 +472,7 @@ impl Server {
         // a peer is here it costs nothing further for the rest of the
         // session, which is what keeps this to one write per peer rather
         // than one per keystroke.
-        let mut recorded_peers: std::collections::HashSet<u64> =
-            std::collections::HashSet::new();
+        let mut recorded_peers: std::collections::HashSet<u64> = std::collections::HashSet::new();
         // Link expiry is still its own precise per-connection deadline; the
         // moderation refresh above is separate and only handles state that
         // can change out of process. Armed once, outside the loop, so

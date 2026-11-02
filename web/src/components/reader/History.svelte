@@ -529,7 +529,6 @@
                   class:timeline-here={pressed}
                   aria-pressed={pressed}
                   title={named}
-                  aria-label={named}
                   onclick={() => onisolate?.(pressed ? null : row.key)}
                 >
                   <span class="hx-swatch" class:hx-swatch-unknown={row.unknown}
