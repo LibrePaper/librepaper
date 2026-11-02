@@ -172,7 +172,7 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
     repaint();
   }
 
-  /** @param {{ exact: string, prefix?: string, suffix?: string, position?: number | null, render_digest?: string }} selection @param {{ motivation: string, body: string, color?: string }} input @param {string} creator */
+  /** @param {{ exact: string, prefix?: string, suffix?: string, position?: number | null, render_digest?: string, source?: { file_id: string, start: number, end: number } | null }} selection @param {{ motivation: string, body: string, color?: string }} input @param {string} creator */
   function comment(selection, { motivation, body, color }, creator) {
     const temp_id = crypto.randomUUID();
     const colorFields = /^#[0-9a-f]{6}$/i.test(color || "")
