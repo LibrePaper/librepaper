@@ -218,12 +218,12 @@ try {
   reconnected.emit({ type: "task", task_id: "streamed", seq: 6, status: "interrupted", text: "Task interrupted", context: { results } });
   answer(5, "Stale answer");
   assert.equal(streamed().text, "A longer answer");
-  answer(6, "Partial answer… [answer truncated at 32 KiB]", true);
+  answer(6, "Partial answer… [answer truncated at 2 MiB]", true);
   assert.equal(streamed().context.truncated, true);
   assert.deepEqual(streamed().context.results, results);
   assert.equal(client.current.tasks.streamed.status, "interrupted");
   answer(6, "Duplicate with changed text");
-  answer(7, "x".repeat(32769));
+  answer(7, "x".repeat(2 * 1024 * 1024 + 1));
   assert.match(streamed().text, /Partial answer/);
   // A completion arriving after an answer still attaches receipt effects.
   reconnected.emit({ type: "answer", id: "complete-answer", task_id: "stream-complete", seq: 2, text: "Done", truncated: false });

@@ -1594,7 +1594,10 @@ mod tests {
 
     #[test]
     fn answer_bounds_are_bytes_and_preserve_utf8() {
-        let truncated = bounded_answer(&"a".repeat(crate::assistant::protocol::MAX_ANSWER_BYTES + 1), true);
+        let truncated = bounded_answer(
+            &"a".repeat(crate::assistant::protocol::MAX_ANSWER_BYTES + 1),
+            true,
+        );
         assert!(truncated.ends_with("… [answer truncated at 2 MiB]"));
         assert!(truncated.len() <= crate::assistant::protocol::MAX_ANSWER_BYTES);
     }
