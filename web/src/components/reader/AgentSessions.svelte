@@ -10,7 +10,10 @@
   // Several chat sessions on one document. Each session is its own Agent, and
   // the inactive ones stay mounted: their agents keep working, their sockets
   // stay open and their access grants keep renewing.
-  let { slug, request = null, ...rest } = $props();
+  let {
+    slug, link, canShare = false, path = "", selection = null, revision = "", request = null,
+    diagnostics = [], comments = [], changes = [], onreview, onpreview, onsettings, userName,
+  } = $props();
 
   // localStorage can be absent or throw (private windows, blocked site data).
   // Without it the sessions still work, they just do not survive a reload.
@@ -22,10 +25,11 @@
     }
   }
 
-  let state = $state(loadSessions(storage(), location.origin, slug));
+  // The panel is mounted per document, so the slug never changes under it.
+  let list = $state(loadSessions(storage(), location.origin, untrack(() => slug)));
 
   function commit(next) {
-    state = next;
+    list = next;
     try {
       saveSessions(storage(), location.origin, slug, next);
     } catch {
@@ -45,7 +49,7 @@
   let routed = $state({ key: "", value: null });
   $effect(() => {
     const value = request;
-    routed = { key: untrack(() => state.active), value };
+    routed = { key: untrack(() => list.active), value };
   });
 
   function label(s) {
@@ -71,29 +75,30 @@
     }
     delete instances[key];
     delete statuses[key];
-    commit(removeSession(state, key));
+    commit(removeSession(list, key));
   }
 </script>
 
 {#snippet switcher()}
   <span class="session-switcher">
-    <select class="session-select" aria-label={m.agent_session_choose()} value={state.active}
-            onchange={(event) => commit(selectSession(state, event.currentTarget.value))}>
-      {#each state.sessions as s (s.key)}<option value={s.key}>{label(s)}</option>{/each}
+    <select class="session-select" aria-label={m.agent_session_choose()} value={list.active}
+            onchange={(event) => commit(selectSession(list, event.currentTarget.value))}>
+      {#each list.sessions as s (s.key)}<option value={s.key}>{label(s)}</option>{/each}
     </select>
-    <IconButton icon="plus" label={state.sessions.length >= MAX_AGENT_SESSIONS
+    <IconButton icon="plus" label={list.sessions.length >= MAX_AGENT_SESSIONS
                 ? m.agent_session_limit({ count: MAX_AGENT_SESSIONS })
                 : m.agent_new_conversation()}
-                tone="plain" size="btn-icon-sm" disabled={state.sessions.length >= MAX_AGENT_SESSIONS}
-                onclick={() => commit(addSession(state))} />
+                tone="plain" size="btn-icon-sm" disabled={list.sessions.length >= MAX_AGENT_SESSIONS}
+                onclick={() => commit(addSession(list))} />
     <IconButton icon="trash" label={m.agent_session_delete()} tone="plain" size="btn-icon-sm"
-                disabled={closing} onclick={() => void remove(state.active)} />
+                disabled={closing} onclick={() => void remove(list.active)} />
   </span>
 {/snippet}
 
-{#each state.sessions as s (s.key)}
-  <div class="agent-session" class:inactive={s.key !== state.active}>
-    <Agent {...rest} {slug} session={s.key} active={s.key === state.active} switcher={switcher}
+{#each list.sessions as s (s.key)}
+  <div class="agent-session" class:inactive={s.key !== list.active}>
+    <Agent {slug} {link} {canShare} {path} {selection} {revision} {diagnostics} {comments} {changes}
+           {onreview} {onpreview} {onsettings} {userName} session={s.key} active={s.key === list.active} switcher={switcher}
            request={routed.key === s.key ? routed.value : null}
            onstate={(v) => statuses[s.key] = v} bind:this={instances[s.key]} />
   </div>

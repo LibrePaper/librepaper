@@ -30,6 +30,9 @@
     // and renders the session switcher in this pane's header.
     session = "", active = true, switcher = undefined, onstate = undefined,
   } = $props();
+  // Several panels can be mounted at once, one per session, so element ids
+  // carry the session. The first session keeps the bare ids.
+  const idSuffix = $derived(session ? `-${session}` : "");
   let client = $state.raw(null);
   const EMPTY_CONNECTION = { id: "", token: "", messages: [], tasks: {}, connected: false,
     runnerConnected: false, status: "idle", error: "", capabilities: null,
@@ -848,10 +851,10 @@
 
   <!-- The strip, its ids and the layout of a pane are PanelTabs', shared with
        the collaboration panel. What is left here is what the tabs contain. -->
-  <PanelTabs id="agent" label={m.common_agent()} listClass="agent-tabs" tabs={TABS}
+  <PanelTabs id={`agent${idSuffix}`} label={m.common_agent()} listClass="agent-tabs" tabs={TABS}
              value={tab} onchange={(value) => tab = value}>
 
-  <Tabs.Content value="chat" class="agent-tab-content">
+  <Tabs.Content value="chat" class="agent-tab-content agent-chat-pane">
   {@render paneHeader()}
   {#if !paired}
     {@render connectPrompt()}
@@ -1004,30 +1007,30 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="agent-context task-launcher" onkeydown={launcherKeydown}>
       <div class="task-browser-head">
-        <input bind:this={searchEl} class="input task-search" type="search" placeholder={m.agent_search_placeholder()} aria-label={m.agent_search_label()} aria-controls="agent-task-results"
+        <input bind:this={searchEl} class="input task-search" type="search" placeholder={m.agent_search_placeholder()} aria-label={m.agent_search_label()} aria-controls={`agent-task-results${idSuffix}`}
                value={taskQuery} oninput={(event) => taskQuery = event.currentTarget.value}
                onkeydown={searchKeydown} />
       </div>
       <!-- The search box and the rows own the keyboard; this only routes it. -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div id="agent-task-results" class="task-results" bind:this={listEl} onkeydown={resultsKeydown}>
+      <div id={`agent-task-results${idSuffix}`} class="task-results" bind:this={listEl} onkeydown={resultsKeydown}>
         {#if searching}
           {#if results.length}<ul class="task-list" aria-label={m.agent_matching_tasks()}>{#each results as entry (entry.id)}{@render taskRow(entry, "search")}{/each}</ul>
           {:else}<p class="panel-muted" role="status">{m.agent_no_match({ query: taskQuery.trim() })}</p>{/if}
         {:else}
           {#if frequent.length}
-            <h4 class="task-group-label" id="task-frequent-label">{m.agent_frequent()}</h4>
-            <ul class="task-list" aria-labelledby="task-frequent-label">
+            <h4 class="task-group-label" id={`task-frequent-label${idSuffix}`}>{m.agent_frequent()}</h4>
+            <ul class="task-list" aria-labelledby={`task-frequent-label${idSuffix}`}>
               {#each frequent as entry (entry.id)}{@render taskRow(entry, "frequent")}{/each}
             </ul>
           {/if}
           {#each sections as section, index (section.category)}
             {@const open = expanded.includes(section.category)}
             <button class="task-section" data-category={section.category} aria-expanded={open}
-                    aria-controls={`task-section-${index}`} onclick={() => toggleSection(section.category)}>
+                    aria-controls={`task-section-${index}${idSuffix}`} onclick={() => toggleSection(section.category)}>
               <span class="task-chevron" aria-hidden="true">▸</span><span class="task-section-name">{taskCategoryLabel(section.category)}</span><span class="task-count">{section.entries.length}</span>
             </button>
-            <ul class="task-list" id={`task-section-${index}`} data-category={section.category}>
+            <ul class="task-list" id={`task-section-${index}${idSuffix}`} data-category={section.category}>
               {#if open}{#each section.entries as entry (entry.id)}{@render taskRow(entry, section.category)}{/each}{/if}
             </ul>
           {/each}
@@ -1050,12 +1053,11 @@
   .agent-panel { gap:calc(var(--spacing) * 2); }
   .agent-panel > :global(*) { flex-shrink:0; }
   .agent-panel :global([role="tabpanel"]) { overflow-y:auto; gap:calc(var(--spacing) * 2); }
-  .agent-panel :global(#agent-pane-chat) { overflow:hidden; }
+  .agent-panel :global(.agent-chat-pane) { overflow:hidden; }
   .agent-panel > :global(p[role="alert"]) { padding-inline:var(--panel-padding); }
-  /* The agent and access line sits at the top left of both panes, and the
-     gear (and, in Chat, New conversation) at the top right. */
-  /* The switcher leads the line; when the panel is too narrow for it, the agent
-     and access line wraps below, and the actions stay at the end. */
+  /* The session switcher and the agent and access line sit at the top left of
+     both panes, the gear at the top right. When the panel is too narrow, the
+     line wraps and the actions stay at the end. */
   .pane-header { display:flex; align-items:center; flex-wrap:wrap; justify-content:space-between; gap:calc(var(--spacing) * .5); }
   .pane-actions { display:flex; gap:calc(var(--spacing) * .5); margin-left:auto; }
   .chat-history { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:calc(var(--spacing) * 2); overflow-y:auto; }
