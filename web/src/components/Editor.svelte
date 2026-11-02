@@ -230,6 +230,7 @@
   import { completionExtension, formatOfPath } from "../lib/completion/index.js";
   import { searchZotero, zoteroItem } from "../lib/desktop/client.js";
   import { changeMarks, setChangeMarks } from "../lib/change-marks.js";
+  import { commentMarks, setCommentMarks as setCommentMarksEffect } from "../lib/source-comment-marks.js";
   import { CHANGES, planEdits, writePlanned, resolveFile, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
@@ -265,7 +266,7 @@
     tracking = false, me = { who: "", author: "" }, selectedChange = null,
     visual = false, imageUrl = null,
     analyze = analyzeBibliography,
-    onchange, oncaret, onfilechange, onbibliography, onsave, onquit,
+    onchange, oncaret, onfilechange, onbibliography, onsave, onquit, oncomment,
     // Called with the caret's formatting (formatState) while visual mode is on.
     onformatstate,
     rules = null,
@@ -279,6 +280,27 @@
   // field is identified by the object, so building a fresh one per file would
   // make each file's state carry a field the view's other states do not have.
   const pendingChanges = changeMarks();
+  // The same reasoning as `pendingChanges`: one instance, shared by every file.
+  const commentMarkExtension = commentMarks({ onselect: (id) => oncomment?.(id) });
+
+  // Every file's comment marks, as the reader sent them. Only the file on
+  // screen is drawn; `show` draws it again when the file changes.
+  let commentList = [];
+  function drawCommentMarks() {
+    if (!view || !showing) return;
+    view.dispatch({
+      effects: setCommentMarksEffect.of(
+        commentList.filter((entry) => entry.file === showing).map(({ file, ...mark }) => mark),
+      ),
+    });
+  }
+
+  /// Sets the comment marks for every file, and draws the one on screen.
+  /// Entries are `{id, file, from, to, highlight, color, selected}`.
+  export function setCommentMarks(list) {
+    commentList = list;
+    drawCommentMarks();
+  }
 
   /// Redraw the pending changes over whichever file is on screen.
   ///
@@ -1238,6 +1260,7 @@
         tracking.after,
         // After the change plugin, so the anchors follow records already written.
         anchorsPlugin(id, tracking.created),
+        commentMarkExtension,
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             // The marks were mapped through the edit. Drawing them again from
@@ -1508,6 +1531,7 @@
     setDiagnostics(all);
     // A state carries no decorations until something puts them there.
     drawChanges();
+    drawCommentMarks();
     view.focus();
   }
 
