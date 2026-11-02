@@ -1,5 +1,5 @@
 import { SHELL_HEADERS, keyHeaders } from "./api.js";
-import { composeTaskMessage, checkContextSize, CONTEXT_LIMIT } from "./assistant.js";
+import { composeTaskMessage, checkContextSize, CONTEXT_LIMIT, TEXT_LIMIT } from "./assistant.js";
 import { validPath } from "./assistant-preview.js";
 import { AGENT_SESSION_PREFIX } from "./storage.js";
 import { localDataForgotten } from "./signed-out.js";
@@ -469,7 +469,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       const taskId = frame.task_id;
       const previous = view.tasks[taskId];
       if (typeof taskId !== "string" || !taskId || !Number.isSafeInteger(frame.seq) || frame.seq <= 0 ||
-          typeof frame.text !== "string" || new TextEncoder().encode(frame.text).byteLength > 32 * 1024 ||
+          typeof frame.text !== "string" || new TextEncoder().encode(frame.text).byteLength > TEXT_LIMIT ||
           typeof frame.truncated !== "boolean" || frame.seq <= (previous?.answer_seq || 0) ||
           frame.seq < (previous?.seq || 0)) return;
       updateTask(taskId, { answer_seq: frame.seq });
