@@ -20,6 +20,7 @@
   import DataTable from "./DataTable.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
+  import { DOCUMENTATION_URL } from "../lib/site-links.js";
   import MenuIconButton from "./MenuIconButton.svelte";
   import Modal from "./Modal.svelte";
   import TagSwatches from "./TagSwatches.svelte";
@@ -1281,6 +1282,7 @@
           </Menu>
         {/snippet}
         {#snippet controls()}
+          <IconButton icon="help" label={m.common_what_is_librepaper()} href={DOCUMENTATION_URL} external />
           <IconButton icon="settings" label={m.common_settings()} tone="plain" onclick={() => openSettings()} />
         {/snippet}
       </Sidebar>

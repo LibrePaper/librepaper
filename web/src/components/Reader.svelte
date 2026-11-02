@@ -74,6 +74,7 @@
   import Icon from "./Icon.svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import IconButton from "./IconButton.svelte";
+  import { DOCUMENTATION_URL } from "../lib/site-links.js";
   import { VISUAL_FORMATS } from "../lib/visual-markup/formats.js";
   import Modal from "./Modal.svelte";
   import CommandPalette from "./CommandPalette.svelte";
@@ -4295,7 +4296,7 @@
            the same place, which is why this is a plain link and not a
            gesture: the page changes, the furniture does not. -->
       <IconButton icon="home" label={m.readerd_all_projects()} href="/" />
-      <IconButton icon="help" label={m.readerd_what_is_librepaper()} href="https://librepaper.org/what.html" external />
+      <IconButton icon="help" label={m.common_what_is_librepaper()} href={DOCUMENTATION_URL} external />
       {#if editing}
         <IconButton icon={ARRANGEMENTS[layout].icon}
           label={m.readerd_layout_switch({ current: ARRANGEMENTS[layout].says, next: ARRANGEMENTS[ARRANGEMENTS[layout].next].says })}
