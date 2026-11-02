@@ -20,6 +20,7 @@
   import DataTable from "./DataTable.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
+  import { DOCUMENTATION_URL } from "../lib/site-links.js";
   import MenuIconButton from "./MenuIconButton.svelte";
   import Modal from "./Modal.svelte";
   import TagSwatches from "./TagSwatches.svelte";
@@ -1178,6 +1179,34 @@
         }
       });
   });
+
+  // The list is read once when the page opens, but a project can be made
+  // elsewhere (another tab, a share link) while this page stays open. In the
+  // desktop app that is all day, so coming back to the page reads it again.
+  let refreshing = false;
+  async function refreshOnReturn() {
+    if (refreshing || !me.can_publish || !reachedServer || document.visibilityState !== "visible") return;
+    refreshing = true;
+    try {
+      await showList();
+      if (place === "trash") await showTrash();
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  $effect(() => {
+    const onVisible = () => void refreshOnReturn();
+    const onPageShow = (/** @type {PageTransitionEvent} */ event) => { if (event.persisted) void refreshOnReturn(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    window.addEventListener("pageshow", onPageShow);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+      window.removeEventListener("pageshow", onPageShow);
+    };
+  });
 </script>
 
 {#snippet tagItems(isOn)}
@@ -1281,6 +1310,7 @@
           </Menu>
         {/snippet}
         {#snippet controls()}
+          <IconButton icon="help" label={m.common_what_is_librepaper()} href={DOCUMENTATION_URL} external />
           <IconButton icon="settings" label={m.common_settings()} tone="plain" onclick={() => openSettings()} />
         {/snippet}
       </Sidebar>

@@ -13,7 +13,7 @@ mod recovery_tests;
 mod render;
 mod schema;
 
-const MCP_MESSAGE_MAX_BYTES: usize = 64 * 1024;
+const MCP_MESSAGE_MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_AGENT_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 /// How many comments or replies one `thread` query is handed. The same 24
 /// an agent query page has always been capped at, read from the catalogue
@@ -363,7 +363,7 @@ impl Server {
         headers.insert(AUTOMATION_HEADER, HeaderValue::from_static("1"));
         let raw = match to_bytes(request.into_body(), MCP_MESSAGE_MAX_BYTES).await {
             Ok(raw) => raw,
-            Err(_) => return plain(413, "request exceeds 64 KiB"),
+            Err(_) => return plain(413, "request exceeds 16 MiB"),
         };
         let mut args: Value = if raw.is_empty() {
             json!({})

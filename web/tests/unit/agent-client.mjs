@@ -107,7 +107,7 @@ try {
   assert.equal(client.current.runnerConnected, true);
 
   socket.emit({ type: "presence", agent: false, browser: true });
-  await assert.rejects(() => client.send("too soon"), /Start the LibrePaper runner/);
+  await assert.rejects(() => client.send("too soon"), (error) => /Start the LibrePaper runner/.test(error.message) && error.recorded !== true);
   socket.emit({ type: "presence", agent: true, browser: true });
   const queued = client.send("Explain this", { path: "paper.md", selection: { exact: "A passage" } });
   const sent = socket.sent.at(-1);
@@ -195,7 +195,7 @@ try {
   // An unconfirmed request survives a browser socket reconnect and is sent
   // again with the exact event ID, allowing the relay to deduplicate it.
   failNextMessage = true;
-  await assert.rejects(() => client.send("Retry after reconnect"), /temporary delivery failure/);
+  await assert.rejects(() => client.send("Retry after reconnect"), (error) => /temporary delivery failure/.test(error.message) && error.recorded === true);
   const uncertain = socket.sent.at(-1);
   socket.close();
   await new Promise((resolve) => setTimeout(resolve, 650));
@@ -218,12 +218,12 @@ try {
   reconnected.emit({ type: "task", task_id: "streamed", seq: 6, status: "interrupted", text: "Task interrupted", context: { results } });
   answer(5, "Stale answer");
   assert.equal(streamed().text, "A longer answer");
-  answer(6, "Partial answer… [answer truncated at 32 KiB]", true);
+  answer(6, "Partial answer… [answer truncated at 2 MiB]", true);
   assert.equal(streamed().context.truncated, true);
   assert.deepEqual(streamed().context.results, results);
   assert.equal(client.current.tasks.streamed.status, "interrupted");
   answer(6, "Duplicate with changed text");
-  answer(7, "x".repeat(32769));
+  answer(7, "x".repeat(2 * 1024 * 1024 + 1));
   assert.match(streamed().text, /Partial answer/);
   // A completion arriving after an answer still attaches receipt effects.
   reconnected.emit({ type: "answer", id: "complete-answer", task_id: "stream-complete", seq: 2, text: "Done", truncated: false });

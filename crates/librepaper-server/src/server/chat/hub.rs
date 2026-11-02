@@ -558,7 +558,7 @@ impl Hub {
         if !valid_id(event_id) {
             return Err((400, "event id is required"));
         }
-        if frame.to_string().len() > 64 * 1024 {
+        if frame.to_string().len() > MAX_FRAME {
             return Err((413, "event is too large"));
         }
         let mut channels = self.channels.lock().await;

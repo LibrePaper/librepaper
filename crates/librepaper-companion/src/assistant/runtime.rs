@@ -565,7 +565,7 @@ fn context_queries(task: &Task) -> Result<Vec<Value>, String> {
 
 fn bounded_answer(value: &str, truncated: bool) -> String {
     const MAX: usize = super::protocol::MAX_ANSWER_BYTES;
-    const MARKER: &str = "… [answer truncated at 32 KiB]";
+    const MARKER: &str = "… [answer truncated at 2 MiB]";
     if !truncated {
         return truncate_utf8(value, MAX);
     }
@@ -1594,8 +1594,11 @@ mod tests {
 
     #[test]
     fn answer_bounds_are_bytes_and_preserve_utf8() {
-        let truncated = bounded_answer(&"a".repeat(32 * 1024 + 1), true);
-        assert!(truncated.ends_with("… [answer truncated at 32 KiB]"));
+        let truncated = bounded_answer(
+            &"a".repeat(crate::assistant::protocol::MAX_ANSWER_BYTES + 1),
+            true,
+        );
+        assert!(truncated.ends_with("… [answer truncated at 2 MiB]"));
         assert!(truncated.len() <= crate::assistant::protocol::MAX_ANSWER_BYTES);
     }
 

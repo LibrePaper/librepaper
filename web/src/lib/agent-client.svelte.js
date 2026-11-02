@@ -1,5 +1,5 @@
 import { SHELL_HEADERS, keyHeaders } from "./api.js";
-import { composeTaskMessage, checkContextSize, CONTEXT_LIMIT } from "./assistant.js";
+import { composeTaskMessage, checkContextSize, CONTEXT_LIMIT, TEXT_LIMIT } from "./assistant.js";
 import { validPath } from "./assistant-preview.js";
 import { AGENT_SESSION_PREFIX } from "./storage.js";
 import { localDataForgotten } from "./signed-out.js";
@@ -31,7 +31,12 @@ export function documentKey(link) {
   } catch { return ""; }
 }
 
-function storageKey(origin, slug) { return `${AGENT_SESSION_PREFIX}${origin}:${slug}`; }
+// The empty session keeps the key a single-chat build stored under, so an
+// existing transcript needs no migration. Other sessions get their own key.
+function storageKey(origin, slug, session) {
+  const base = `${AGENT_SESSION_PREFIX}${origin}:${slug}`;
+  return session ? `${base}:${session}` : base;
+}
 
 function socketUrl(origin, slug, id, key) {
   const url = new URL(`/api/documents/${encodeURIComponent(slug)}/chat/${encodeURIComponent(id)}/socket`, origin);
@@ -93,9 +98,9 @@ function boundedDiagnostics(value) {
 /** Browser side of the persistent runner channel. The runner owns the model
  * session; this client owns socket lifetime, bounded local history, task
  * state, and dispatching the runner's preview requests to `onpreview`. */
-/** @param {{origin?: string, project?: string, slug?: string, link?: string, fetcher?: typeof fetch, WebSocketImpl?: typeof WebSocket, storage?: Storage|null, onpreview?: ((request: object) => void)|null}} options */
+/** @param {{origin?: string, project?: string, slug?: string, session?: string, link?: string, fetcher?: typeof fetch, WebSocketImpl?: typeof WebSocket, storage?: Storage|null, onpreview?: ((request: object) => void)|null}} options */
 export function createAgentClient({ origin = globalThis.location?.origin || "", project,
-  slug = project, link: initialLink = "", fetcher = globalThis.fetch,
+  slug = project, session = "", link: initialLink = "", fetcher = globalThis.fetch,
   WebSocketImpl = globalThis.WebSocket, storage = globalThis.localStorage,
   onpreview = null }) {
   if (!slug) throw new Error("A document slug is required.");
@@ -108,7 +113,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
   let reconnectAttempt = 0;
   let manuallyClosed = false;
   let generation = 0;
-  const sessionStorageKey = storageKey(origin, slug);
+  const sessionStorageKey = storageKey(origin, slug, session);
   const persisted = readSession(storage, sessionStorageKey);
   const requests = new Set();
   const sends = new Map();
@@ -469,7 +474,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       const taskId = frame.task_id;
       const previous = view.tasks[taskId];
       if (typeof taskId !== "string" || !taskId || !Number.isSafeInteger(frame.seq) || frame.seq <= 0 ||
-          typeof frame.text !== "string" || new TextEncoder().encode(frame.text).byteLength > 32 * 1024 ||
+          typeof frame.text !== "string" || new TextEncoder().encode(frame.text).byteLength > TEXT_LIMIT ||
           typeof frame.truncated !== "boolean" || frame.seq <= (previous?.answer_seq || 0) ||
           frame.seq < (previous?.seq || 0)) return;
       updateTask(taskId, { answer_seq: frame.seq });
@@ -629,7 +634,12 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     updateTask(taskId, { status: "queued", task: message.task, request: message.text });
     addMessage({ id: message.id, role: "user", text: message.text, task_id: taskId, context: message.context,
       ...(message.task ? { task: message.task } : {}) });
-    await transmit(message);
+    try {
+      await transmit(message);
+    } catch (error) {
+      // The message is already in the transcript and queued for retry, so callers should treat it as sent.
+      throw Object.assign(error instanceof Error ? error : new Error(String(error)), { recorded: true });
+    }
     return message;
   }
   async function retry(messageId) {

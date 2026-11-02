@@ -3,6 +3,7 @@
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import Menubar from "./Menubar.svelte";
   import Avatar from "./Avatar.svelte";
+  import Icon from "./Icon.svelte";
   import { signInHref, signOut } from "../lib/api.js";
   import { m } from "../lib/paraglide/messages.js";
 
@@ -45,16 +46,36 @@
          account is its login, and the @ is what says so. A Google account is a
          profile name, which is not a handle and does not wear one; its email
          is its handle and is shown to nobody, here least of all. A page with
-         its own phone Menu moves the account into it, so this hides there. -->
+         its own phone Menu moves the account into it, so this hides there.
+         The provider it signed in with is a small logo badge on the corner of
+         the circle, and the menu and the label say it in words. -->
     <span class="nav-account flex items-center">
       {#if me.name}
         {@const shown = me.provider === "github" ? `@${me.name}` : me.name}
+        {@const provider = me.providers?.find((p) => p.id === me.provider)}
+        {@const label = provider?.label || me.provider || ""}
         <Menu onSelect={(chosen) => { if (chosen.value === "signout") void signOut(); }}>
-          <Menu.Trigger class="account icon-control" aria-label={m.nav_account_menu_label({ shown })} title={shown}>
-            <Avatar name={me.name} key={me.handle || me.name} size={7} title="" />
+          <Menu.Trigger class="account icon-control" aria-label={label ? m.nav_account_menu_label_provider({ shown, provider: label }) : m.nav_account_menu_label({ shown })} title={label ? `${shown} · ${label}` : shown}>
+            <span class="account-avatar">
+              <Avatar name={me.name} key={me.handle || me.name} size={7} title="" />
+              {#if provider}
+                <span class="account-provider-badge" aria-hidden="true">
+                  {#if provider.kind === "github"}
+                    <Icon name="github" size={9} />
+                  {:else if provider.kind === "google"}
+                    <img src="/assets/google-g.svg" width="9" height="9" alt="" />
+                  {:else if provider.kind === "orcid"}
+                    <img src="/assets/orcid-id.svg" width="9" height="9" alt="" />
+                  {:else}
+                    <Icon name="key" size={9} />
+                  {/if}
+                </span>
+              {/if}
+            </span>
           </Menu.Trigger>
           <ExplorerMenu>
             <div class="account-who" aria-hidden="true">{shown}</div>
+            {#if label}<div class="account-provider" aria-hidden="true">{m.nav_signed_in_with({ provider: label })}</div>{/if}
             <Menu.Item value="signout" class="menuitem">{m.common_sign_out()}</Menu.Item>
           </ExplorerMenu>
         </Menu>
@@ -77,6 +98,12 @@
   :global(.account:hover), :global(.account[data-state="open"]) { box-shadow: 0 0 0 2px var(--color-border); }
   /* Who the menu belongs to: a label above the one action, not an action. */
   .account-who { padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2) calc(var(--spacing) * 0.5); font-size: var(--text-xs); color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .account-provider { padding: 0 calc(var(--spacing) * 2) calc(var(--spacing) * 1.5); font-size: var(--text-xs); color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The provider badge: a 12px disc on the bottom-right of the circle, with
+     the mark inside it at 9px. */
+  .account-avatar { position: relative; display: inline-grid; line-height: 0; }
+  .account-provider-badge { position: absolute; right: -3px; bottom: -3px; display: grid; place-items: center; width: calc(var(--spacing) * 3); height: calc(var(--spacing) * 3); border-radius: 50%; border: 1px solid var(--color-border); background: var(--color-raised); line-height: 0; }
+  .account-provider-badge img, .account-provider-badge :global(svg) { width: 9px; height: 9px; }
   /* The identity group is clipped so that a menubar or page name too wide
      for the row cannot paint over the tools beside it. The rules below keep
      it from being reached. */
