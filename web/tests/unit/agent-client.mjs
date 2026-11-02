@@ -107,7 +107,7 @@ try {
   assert.equal(client.current.runnerConnected, true);
 
   socket.emit({ type: "presence", agent: false, browser: true });
-  await assert.rejects(() => client.send("too soon"), /Start the LibrePaper runner/);
+  await assert.rejects(() => client.send("too soon"), (error) => /Start the LibrePaper runner/.test(error.message) && error.recorded !== true);
   socket.emit({ type: "presence", agent: true, browser: true });
   const queued = client.send("Explain this", { path: "paper.md", selection: { exact: "A passage" } });
   const sent = socket.sent.at(-1);
@@ -195,7 +195,7 @@ try {
   // An unconfirmed request survives a browser socket reconnect and is sent
   // again with the exact event ID, allowing the relay to deduplicate it.
   failNextMessage = true;
-  await assert.rejects(() => client.send("Retry after reconnect"), /temporary delivery failure/);
+  await assert.rejects(() => client.send("Retry after reconnect"), (error) => /temporary delivery failure/.test(error.message) && error.recorded === true);
   const uncertain = socket.sent.at(-1);
   socket.close();
   await new Promise((resolve) => setTimeout(resolve, 650));
