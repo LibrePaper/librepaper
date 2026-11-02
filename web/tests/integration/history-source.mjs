@@ -1,169 +1,221 @@
 import assert from "node:assert/strict";
 import { loadRunes } from "../helpers/runes.mjs";
+import { CURRENT, NOTHING } from "../../src/lib/history-endpoints.js";
 
 const { createHistorySource } = await loadRunes(
   new URL("../../src/lib/reader/history-source.svelte.js", import.meta.url),
 );
 
-const tree = (sha, text, extra = {}) => ({ sha, main: "main.md", texts: { "main.md": text }, files: {}, ...extra });
-const points = [tree("A", "original"), tree("B", "revision", { parent: "A" })];
-let live = tree("live", "current");
-const controller = createHistorySource({
-  currentTree: () => live,
-  labels: () => points,
-  read: async sha => {
-    const found = points.find(point => point.sha === sha);
-    if (!found) throw new Error("missing");
-    const { parent, ...endpoint } = found; // The real endpoint omits the list's parent.
-    return endpoint;
-  },
-});
+const tree = (sha, texts, files = {}) => ({ sha, main: "main.md", texts, files });
+// Saved versions in time order, and what each one stored. A moment is a
+// position in the editing history, stored but never listed as a version.
+const stored = {
+  A: tree("A", { "main.md": "original" }),
+  B: tree("B", { "main.md": "revision" }),
+  "frontier:x": tree("frontier:x", { "main.md": "draft" }),
+};
+const labelList = [{ sha: "A", seq: 1 }, { sha: "B", seq: 2 }];
+const read = async sha => {
+  const found = stored[sha];
+  if (!found) throw new Error("missing");
+  return { ...found }; // The real endpoint omits the list's parent and seq.
+};
+// Lets queued promises run before a test looks at what they started.
+const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
-// One comparison: whichever version is selected, against the source as it
-// stands. Selecting another version never carries the last one's result.
-for (const sha of ["A", "B", "A", "B"]) {
-  await controller.select(sha);
-  assert.equal(controller.selected, sha);
-  assert.equal(controller.problem, "");
-  const selected = points.find(point => point.sha === sha);
-  assert.equal(controller.result.oldTree.texts["main.md"], selected.texts["main.md"]);
-  assert.equal(controller.result.newTree.texts["main.md"], "current");
-  assert.equal(controller.result.newLabel, "Current version");
-  assert.equal(controller.result.diff, true);
-}
+let live = tree("live", { "main.md": "current" });
+const controller = createHistorySource({ currentTree: () => live, labels: () => labelList, read });
 
-// The current source on its own: nothing selected is not a comparison.
-await controller.select("");
-assert.equal(controller.result.diff, false);
-assert.equal(controller.result.oldTree.texts["main.md"], "current");
-assert.equal(controller.result.status["main.md"], "same");
+// Clicking a version shows what it changed: the previous version against it.
+await controller.view("B");
+assert.equal(controller.selected, "B");
+assert.equal(controller.older, "A");
+assert.equal(controller.newer, "B");
+assert.equal(controller.problem, "");
+assert.equal(controller.result.oldTree.texts["main.md"], "original");
+assert.equal(controller.result.newTree.texts["main.md"], "revision");
+assert.equal(controller.result.status["main.md"], "changed");
+assert.equal(controller.result.diff, true);
+assert.equal(controller.target, "B");
 
-// Capture current before a delayed read, and never share its mutable maps.
+// The first version is compared with an empty project, so all of it is new.
+await controller.view("A");
+assert.equal(controller.older, NOTHING);
+assert.equal(controller.newer, "A");
+assert.deepEqual(controller.result.oldTree.texts, {});
+assert.equal(controller.result.status["main.md"], "added");
+assert.equal(controller.target, "A");
+
+// The Current row: the newest version against the project as it stands.
+await controller.view("");
+assert.equal(controller.selected, "");
+assert.equal(controller.older, "B");
+assert.equal(controller.newer, CURRENT);
+assert.equal(controller.result.oldTree.texts["main.md"], "revision");
+assert.equal(controller.result.newTree.texts["main.md"], "current");
+assert.equal(controller.result.diff, true);
+assert.equal(controller.target, "B");
+
+// A moment is compared with the live project, and it is not a version to restore.
+await controller.view("frontier:x");
+assert.equal(controller.selected, "frontier:x");
+assert.equal(controller.older, "frontier:x");
+assert.equal(controller.newer, CURRENT);
+assert.equal(controller.result.oldTree.texts["main.md"], "draft");
+assert.equal(controller.target, "");
+
+// Nothing saved and nothing edited: the project alone is not a comparison.
+const empty = createHistorySource({ currentTree: () => live, labels: () => [], read });
+await empty.view("");
+assert.equal(empty.older, CURRENT);
+assert.equal(empty.newer, CURRENT);
+assert.equal(empty.result.diff, false);
+assert.equal(empty.result.status["main.md"], "same");
+assert.equal(empty.target, "");
+empty.dispose();
+
+// compare() puts the pair in time order whichever way it was asked. Without
+// a third argument the clicked version stays as the first argument.
+await controller.view("");
+await controller.compare("B", "A");
+assert.equal(controller.older, "A");
+assert.equal(controller.newer, "B");
+assert.equal(controller.selected, "B");
+await controller.compare(CURRENT, "A", "A");
+assert.equal(controller.older, "A");
+assert.equal(controller.newer, CURRENT);
+assert.equal(controller.selected, "A");
+assert.equal(controller.target, "A");
+
+// setNewer and setOlder change one side. The clicked version follows the side
+// that was just chosen when it is no longer an endpoint.
+await controller.compare("A", "B", "B");
+await controller.setNewer(CURRENT);
+assert.equal(controller.older, "A");
+assert.equal(controller.newer, CURRENT);
+assert.equal(controller.selected, CURRENT);
+assert.equal(controller.target, "A");
+await controller.setOlder("B");
+assert.equal(controller.older, "B");
+assert.equal(controller.newer, CURRENT);
+assert.equal(controller.selected, CURRENT, "still an endpoint, so it stays");
+assert.equal(controller.target, "B");
+assert.equal(controller.result.oldTree.texts["main.md"], "revision");
+
+// Target: the clicked version when it is a real endpoint, else the newer
+// saved version, else the older one, else none.
+await controller.compare("A", "B", "A");
+assert.equal(controller.target, "A");
+await controller.compare("A", "B", "B");
+assert.equal(controller.target, "B");
+await controller.compare("A", CURRENT, "");
+assert.equal(controller.target, "A");
+
+// reload() captures the live project again.
+await controller.view("");
+live = tree("live", { "main.md": "edited" });
+await controller.reload();
+assert.equal(controller.result.newTree.texts["main.md"], "edited");
+live = tree("live", { "main.md": "current" });
+
+// Capture the live project before a delayed read, and never share its mutable maps.
 const pending = [];
-const raced = createHistorySource({ currentTree: () => live, read: sha => new Promise((resolve, reject) => pending.push({sha, resolve, reject})) });
-const first = raced.select("A");
+const raced = createHistorySource({
+  currentTree: () => live,
+  labels: () => labelList,
+  read: sha => new Promise(resolve => pending.push({ sha, resolve })),
+});
+const first = raced.view("");
+await settle();
 live.texts["main.md"] = "new live edit";
-pending.shift().resolve(points[0]); await first;
+pending.shift().resolve({ ...stored.B }); await first;
 assert.equal(raced.result.newTree.texts["main.md"], "current");
+live = tree("live", { "main.md": "current" });
 
-// Two requests for the same version. Identity alone cannot arbitrate their
+// Two requests for the same comparison. Identity alone cannot arbitrate their
 // replies: only the latest request owns the screen.
-const older = raced.select("A");
-const newer = raced.select("A");
-assert.equal(raced.result, null, "no stale source while loading");
-pending[1].resolve(points[0]); await newer;
-pending[0].resolve(points[0]); await older;
+const older = raced.view("");
+const newer = raced.view("");
+await settle();
+assert.equal(raced.result, null, "no stale result while loading");
+pending[1].resolve({ ...stored.B }); await newer;
+pending[0].resolve({ ...stored.B }); await older;
 pending.length = 0;
 assert.equal(raced.problem, "");
 assert.ok(raced.result);
-const leaving = raced.select("B"); raced.close(); pending.shift().resolve(points[1]); await leaving;
+
+// Closing while a version is still loading drops its answer.
+const leaving = raced.view("A");
+await settle();
+raced.close();
+pending.shift().resolve({ ...stored.A }); await leaving;
 assert.equal(raced.selected, ""); assert.equal(raced.result, null);
+
+// A view overtaken while its previous version is still being looked up does nothing.
+let release;
+const slow = createHistorySource({
+  currentTree: () => live,
+  labels: () => labelList,
+  read,
+  previous: () => new Promise(resolve => { release = resolve; }),
+});
+const late = slow.view("B");
+await slow.view("");
+release("A"); await late;
+assert.equal(slow.selected, "");
+assert.equal(slow.newer, CURRENT);
+assert.equal(slow.result.oldTree.texts["main.md"], "revision");
+slow.dispose();
 
 // A version whose source the server will not give back says so, and shows
 // nothing rather than the last comparison.
-points.push({ sha: "C", main: "main.md", files: {} });
-await controller.select("C");
+stored.C = { sha: "C", main: "main.md", files: {} };
+labelList.push({ sha: "C", seq: 3 });
+await controller.view("C");
 assert.match(controller.problem, /did not return its source files/i);
 assert.equal(controller.result, null);
-points.pop();
+labelList.pop(); delete stored.C;
 
-// What changed, per file: added, removed, changed, and unchanged, with an
-// empty file distinguishable from a missing one.
-points[1].texts = { "new.md": "", "main.md": "revision" };
-points[0].texts["removed.md"] = "removed text";
-live = { sha: "live", main: "main.md", texts: { "main.md": "current", "steady.md": "same" }, files: {} };
-points[0].texts["steady.md"] = "same";
-await controller.select("A", "removed.md");
-assert.equal(controller.path, "removed.md");
-assert.equal(controller.result.status["removed.md"], "removed");
-assert.equal(controller.result.status["main.md"], "changed");
-assert.equal(controller.result.status["steady.md"], "same");
-assert.deepEqual(controller.result.changed, ["main.md", "removed.md"]);
-assert.equal(controller.result.oldTree.texts[controller.path], "removed text");
-assert.equal(controller.result.newTree.texts[controller.path], undefined);
-controller.selectFile("main.md");
-assert.equal(controller.path, "main.md");
-
-// A figure is reported as added, removed or changed, and never compared.
-const withAsset = { sha: "D", main: "main.md", texts: { "main.md": "current" },
-  files: { "fig.png": { kind: "asset", sha: "a".repeat(64) } } };
-points.push(withAsset);
-live = { sha: "live", main: "main.md", texts: { "main.md": "current" },
-  files: { "fig.png": { kind: "asset", sha: "b".repeat(64) } } };
-await controller.select("D");
-assert.equal(controller.result.status["fig.png"], "changed");
-assert.equal(controller.result.binary["fig.png"], true);
-assert.equal(controller.result.binary["main.md"], false);
-
-// The file the reader chose stays chosen while the new version still has it.
-assert.equal(controller.path, "main.md");
-// A comparison that does not have it lands on a file that differs instead.
-controller.selectFile("fig.png");
-live = { sha: "live", main: "main.md", texts: { "main.md": "current", "steady.md": "same" }, files: {} };
-await controller.select("A");
-assert.equal(controller.path, "main.md");
-
-// A base version: the base is the left side, the selected version the right.
-await controller.select("B");
-await controller.compareWith("A");
-assert.equal(controller.against, "A");
-assert.equal(controller.selected, "B");
-assert.equal(controller.result.oldTree.texts["main.md"], "original");
-assert.equal(controller.result.newTree.texts["main.md"], "revision");
-assert.equal(controller.result.oldLabel, "A");
-assert.equal(controller.result.newLabel, "B");
-assert.equal(controller.result.against, "A");
-assert.equal(controller.result.diff, true);
-assert.equal(controller.result.status["main.md"], "changed");
-
-// Swapping puts the base on the right.
-await controller.swap();
-assert.equal(controller.selected, "A");
-assert.equal(controller.against, "B");
-assert.equal(controller.result.oldTree.texts["main.md"], "revision");
-assert.equal(controller.result.newTree.texts["main.md"], "original");
-
-// A base against the current source: the project is the newer side.
-await controller.select("");
-assert.equal(controller.selected, "");
-assert.equal(controller.against, "B");
-assert.equal(controller.result.oldTree.texts["main.md"], "revision");
-assert.equal(controller.result.newTree.texts["main.md"], live.texts["main.md"]);
-assert.equal(controller.result.newLabel, "Current version");
-assert.equal(controller.result.diff, true);
-
-// Selecting the base itself drops it and compares that version with current.
-await controller.select("B");
-assert.equal(controller.against, "");
-assert.equal(controller.result.oldTree.texts["main.md"], "revision");
-assert.equal(controller.result.newTree.texts["main.md"], live.texts["main.md"]);
-
-// Clearing the base returns to the plain comparison.
-await controller.compareWith("A");
-await controller.compareWith("");
-assert.equal(controller.against, "");
-assert.equal(controller.result.against, "");
-assert.equal(controller.result.oldTree.texts["main.md"], "revision");
-assert.equal(controller.result.newTree.texts["main.md"], live.texts["main.md"]);
-
-// Comparing a version with itself clears the base.
-await controller.compareWith("A");
-assert.equal(controller.against, "A");
-await controller.compareWith("B");
-assert.equal(controller.against, "");
-assert.equal(controller.selected, "B");
-
-// Closing drops the base too.
-await controller.compareWith("A");
-controller.close();
-assert.equal(controller.against, "");
-
-// A base the server cannot read says so and shows nothing.
-await controller.select("A");
-await controller.compareWith("missing");
+// A version the server cannot read is reported too.
+await controller.compare("missing", "A");
 assert.notEqual(controller.problem, "");
 assert.equal(controller.result, null);
 controller.close();
 
+// What changed, per file: added, removed, changed and unchanged, with an empty
+// file distinguishable from a missing one. The preferred file is chosen while
+// the comparison has it.
+stored.P = tree("P", { "main.md": "original", "removed.md": "removed text", "steady.md": "same" });
+stored.Q = tree("Q", { "main.md": "revision", "new.md": "", "steady.md": "same" });
+const files = createHistorySource({
+  currentTree: () => live,
+  labels: () => [{ sha: "P", seq: 1 }, { sha: "Q", seq: 2 }],
+  read,
+  preferredPath: () => "removed.md",
+});
+await files.view("Q");
+assert.equal(files.path, "removed.md");
+assert.equal(files.result.status["removed.md"], "removed");
+assert.equal(files.result.status["new.md"], "added");
+assert.equal(files.result.status["main.md"], "changed");
+assert.equal(files.result.status["steady.md"], "same");
+assert.deepEqual(files.result.changed, ["main.md", "new.md", "removed.md"]);
+assert.equal(files.result.binary["new.md"], false);
+files.selectFile("main.md");
+assert.equal(files.path, "main.md");
+files.selectFile("missing.md");
+assert.equal(files.path, "main.md");
+files.dispose();
+
+// A figure is reported as changed when its digest differs, and never compared as text.
+stored.E = tree("E", { "main.md": "current" }, { "fig.png": { kind: "asset", sha: "a".repeat(64) } });
+live = tree("live", { "main.md": "current" }, { "fig.png": { kind: "asset", sha: "b".repeat(64) } });
+const figures = createHistorySource({ currentTree: () => live, labels: () => [{ sha: "E", seq: 1 }], read });
+await figures.view("");
+assert.equal(figures.result.status["fig.png"], "changed");
+assert.equal(figures.result.binary["fig.png"], true);
+assert.equal(figures.result.binary["main.md"], false);
+figures.dispose();
+
 controller.dispose(); raced.dispose();
-console.log("history source: one comparison against current, selection races, snapshots, and per-file status passed");
+console.log("history source: endpoint pairs, normalisation, targets, selection races, snapshots, and per-file status passed");
