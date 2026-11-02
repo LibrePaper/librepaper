@@ -36,6 +36,7 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         )
         .route("/api/documents/{slug}/restore", post(restore))
         .route("/api/documents/{slug}/history/trim", post(history_trim))
+        .route("/api/documents/{slug}/authors", get(document_authors))
         .route("/api/documents/{slug}/rename", post(rename))
         .route("/api/documents/{slug}/fork", post(fork))
         .route("/api/documents/{slug}/template", post(template))
@@ -315,6 +316,17 @@ async fn history_trim(
     request: Request<Body>,
 ) -> Reply {
     server.handle_history_trim(request, &ctx, &slug).await
+}
+
+async fn document_authors(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_authors(request.headers(), &ctx, &slug)
+        .await
 }
 
 async fn rename(
