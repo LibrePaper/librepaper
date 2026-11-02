@@ -26,7 +26,13 @@
     diagnostics = [],
     comments = [], changes = [], onreview, onpreview, onsettings,
     userName = m.common_you(),
+    // One instance per session: the wrapper mounts each, shows only the active one,
+    // and renders the session switcher in this pane's header.
+    session = "", active = true, switcher = undefined, onstate = undefined,
   } = $props();
+  // Several panels can be mounted at once, one per session, so element ids
+  // carry the session. The first session keeps the bare ids.
+  const idSuffix = $derived(session ? `-${session}` : "");
   let client = $state.raw(null);
   const EMPTY_CONNECTION = { id: "", token: "", messages: [], tasks: {}, connected: false,
     runnerConnected: false, status: "idle", error: "", capabilities: null,
@@ -652,16 +658,11 @@
     return sent;
   }
 
-  async function newConversation() {
-    await act(async () => {
-      if (assistant.running) await local.stopAssistant({ link: withoutKey(agentLink || link), conversation: connection.id });
-      assistant = { running: false, agent: "", access: "" };
-      await client.end(); await client.create();
-      draft = ""; task = null; attachment = null; commentContext = null;
-      pendingRequest = null; diagnostic = null; diagnosticRevision = "";
-      suppressedSelection = selectionKey(selection || lastSelection);
-      tab = "chat";
-    });
+  /// Stop this conversation's agent and end its channel, before the session is deleted.
+  export async function close() {
+    if (assistant.running) await local.stopAssistant({ link: withoutKey(agentLink || link), conversation: connection.id }).catch(() => {});
+    assistant = { running: false, agent: "", access: "" };
+    await client?.end();
   }
 
   async function reconnect() { await act(() => client.reconnect()); }
@@ -687,8 +688,10 @@
     else problem = m.agent_changes_gone();
   }
 
+  // Only the active session takes the editor selection. Reading `active` first
+  // makes this effect run again when the session is switched to.
   $effect(() => {
-    if (!selection?.exact) return;
+    if (!active || !selection?.exact) return;
     const same = selectionKey(lastSelection) === selectionKey(selection);
     if (selectionKey(selection) === suppressedSelection) return;
     if (!attachment || (same && !attachment.revision && (selection.revision || revision)) || (!same && continuesSelection(lastSelection, selection))) {
@@ -696,6 +699,11 @@
     }
   });
   $effect(() => requestArrived(request));
+  $effect(() => onstate?.({
+    agent: assistant.running || connection.assistantAgent ? runningLabel : "",
+    working: activeTask?.status === "working",
+    needsInput: Boolean(inputTask),
+  }));
   async function checkCapabilities(nextLink = agentLink, { strict = false } = {}) {
     const generation = ++capabilityGeneration;
     verifiedCapabilities = null;
@@ -715,7 +723,7 @@
 
   onMount(() => {
     agentLink = link || "";
-    client = createAgentClient({ origin: location.origin, slug, link: agentLink || link, onpreview });
+    client = createAgentClient({ origin: location.origin, slug, link: agentLink || link, onpreview, session });
     void (async () => {
       await client.resume();
       await checkCapabilities(agentLink || link);
@@ -760,16 +768,13 @@
     {/if}
   </div>
   {/snippet}
-  <!-- The gear at the top of each pane is the one way to the desktop app
-       settings now; the Chat pane also gets New conversation beside it. -->
-  {#snippet paneHeader(withNewConversation)}
+  <!-- The session switcher comes first, supplied by the wrapper. The gear at the
+       top of each pane is the one way to the desktop app settings. -->
+  {#snippet paneHeader()}
     <div class="pane-header">
+      {#if switcher}{@render switcher()}{/if}
       {#if paired}{@render agentSettings()}{/if}
       <span class="pane-actions">
-      {#if withNewConversation && connection.id}
-        <IconButton icon="eraser" label={m.agent_new_conversation()} tone="plain" size="btn-icon-sm"
-                    disabled={busy} onclick={() => void newConversation()} />
-      {/if}
       <IconButton icon="sliders" label={m.agent_settings_label()} tone="plain" size="btn-icon-sm"
                   onclick={() => onsettings?.()} />
       </span>
@@ -846,11 +851,11 @@
 
   <!-- The strip, its ids and the layout of a pane are PanelTabs', shared with
        the collaboration panel. What is left here is what the tabs contain. -->
-  <PanelTabs id="agent" label={m.common_agent()} listClass="agent-tabs" tabs={TABS}
+  <PanelTabs id={`agent${idSuffix}`} label={m.common_agent()} listClass="agent-tabs" tabs={TABS}
              value={tab} onchange={(value) => tab = value}>
 
-  <Tabs.Content value="chat" class="agent-tab-content">
-  {@render paneHeader(true)}
+  <Tabs.Content value="chat" class="agent-tab-content agent-chat-pane">
+  {@render paneHeader()}
   {#if !paired}
     {@render connectPrompt()}
   {:else}
@@ -926,7 +931,7 @@
   {/if}
   </Tabs.Content>
   <Tabs.Content value="tasks" class="agent-tab-content">
-  {@render paneHeader(false)}
+  {@render paneHeader()}
   {#if !paired}
     {@render connectPrompt()}
   {:else}
@@ -1002,30 +1007,30 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="agent-context task-launcher" onkeydown={launcherKeydown}>
       <div class="task-browser-head">
-        <input bind:this={searchEl} class="input task-search" type="search" placeholder={m.agent_search_placeholder()} aria-label={m.agent_search_label()} aria-controls="agent-task-results"
+        <input bind:this={searchEl} class="input task-search" type="search" placeholder={m.agent_search_placeholder()} aria-label={m.agent_search_label()} aria-controls={`agent-task-results${idSuffix}`}
                value={taskQuery} oninput={(event) => taskQuery = event.currentTarget.value}
                onkeydown={searchKeydown} />
       </div>
       <!-- The search box and the rows own the keyboard; this only routes it. -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div id="agent-task-results" class="task-results" bind:this={listEl} onkeydown={resultsKeydown}>
+      <div id={`agent-task-results${idSuffix}`} class="task-results" bind:this={listEl} onkeydown={resultsKeydown}>
         {#if searching}
           {#if results.length}<ul class="task-list" aria-label={m.agent_matching_tasks()}>{#each results as entry (entry.id)}{@render taskRow(entry, "search")}{/each}</ul>
           {:else}<p class="panel-muted" role="status">{m.agent_no_match({ query: taskQuery.trim() })}</p>{/if}
         {:else}
           {#if frequent.length}
-            <h4 class="task-group-label" id="task-frequent-label">{m.agent_frequent()}</h4>
-            <ul class="task-list" aria-labelledby="task-frequent-label">
+            <h4 class="task-group-label" id={`task-frequent-label${idSuffix}`}>{m.agent_frequent()}</h4>
+            <ul class="task-list" aria-labelledby={`task-frequent-label${idSuffix}`}>
               {#each frequent as entry (entry.id)}{@render taskRow(entry, "frequent")}{/each}
             </ul>
           {/if}
           {#each sections as section, index (section.category)}
             {@const open = expanded.includes(section.category)}
             <button class="task-section" data-category={section.category} aria-expanded={open}
-                    aria-controls={`task-section-${index}`} onclick={() => toggleSection(section.category)}>
+                    aria-controls={`task-section-${index}${idSuffix}`} onclick={() => toggleSection(section.category)}>
               <span class="task-chevron" aria-hidden="true">▸</span><span class="task-section-name">{taskCategoryLabel(section.category)}</span><span class="task-count">{section.entries.length}</span>
             </button>
-            <ul class="task-list" id={`task-section-${index}`} data-category={section.category}>
+            <ul class="task-list" id={`task-section-${index}${idSuffix}`} data-category={section.category}>
               {#if open}{#each section.entries as entry (entry.id)}{@render taskRow(entry, section.category)}{/each}{/if}
             </ul>
           {/each}
@@ -1048,11 +1053,12 @@
   .agent-panel { gap:calc(var(--spacing) * 2); }
   .agent-panel > :global(*) { flex-shrink:0; }
   .agent-panel :global([role="tabpanel"]) { overflow-y:auto; gap:calc(var(--spacing) * 2); }
-  .agent-panel :global(#agent-pane-chat) { overflow:hidden; }
+  .agent-panel :global(.agent-chat-pane) { overflow:hidden; }
   .agent-panel > :global(p[role="alert"]) { padding-inline:var(--panel-padding); }
-  /* The agent and access line sits at the top left of both panes, and the
-     gear (and, in Chat, New conversation) at the top right. */
-  .pane-header { display:flex; align-items:center; justify-content:space-between; gap:calc(var(--spacing) * .5); }
+  /* The session switcher and the agent and access line sit at the top left of
+     both panes, the gear at the top right. When the panel is too narrow, the
+     line wraps and the actions stay at the end. */
+  .pane-header { display:flex; align-items:center; flex-wrap:wrap; justify-content:space-between; gap:calc(var(--spacing) * .5); }
   .pane-actions { display:flex; gap:calc(var(--spacing) * .5); margin-left:auto; }
   .chat-history { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:calc(var(--spacing) * 2); overflow-y:auto; }
   .chat-history > :global(*) { flex-shrink:0; }

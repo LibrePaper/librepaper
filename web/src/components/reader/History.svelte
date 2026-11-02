@@ -19,14 +19,18 @@
   import { day as dayOf } from "../../lib/dates.js";
   import { shortSha } from "../../lib/history.js";
   import { buildPeriods, nearestPeriod, pathTo, periodTitle } from "../../lib/history-groups.js";
+  import { CURRENT } from "../../lib/history-endpoints.js";
   import Icon from "../Icon.svelte";
   import IconButton from "../IconButton.svelte";
   import PanelTabs from "../PanelTabs.svelte";
 
+  // The two ends of a comparison, each a version's sha or CURRENT for the live
+  // document. They are marked in the list so the reader does not need the colour.
   let {
     labels = [],
     viewing = null,
-    against = "",
+    older = "",
+    newer = "",
     canEdit = false,
     problem = "",
     loaded = false,
@@ -76,6 +80,10 @@
   let naming = $state("");
   let draft = $state("");
   let field = $state(null);
+
+  // The row the reader is comparing from, while the list waits for the other
+  // one. "" is the Current row; null is not picking.
+  let picking = $state(null);
 
   // Open state is the default from the groups, flipped by a click. Each set
   // holds the keys whose state the reader has changed. Sets are replaced, not
@@ -179,6 +187,18 @@
     if (!point?.by || point.by === "system" || uuid.test(point.by)) return "";
     return point.by;
   };
+
+  // The endpoint tag a row carries. The Current row has no sha, so it is
+  // tagged on its own, and an empty `older` must not tag it.
+  const endpointWord = (sha) => {
+    if (!sha) return "";
+    if (sha === older) return m.history_older_tag();
+    if (sha === newer) return m.history_newer_tag();
+    return "";
+  };
+  const currentTag = $derived(newer === CURRENT ? m.history_newer_tag() : "");
+  const tipWith = (what, detail, endpoint) =>
+    endpoint ? m.history_row_tip_endpoint({ what, detail, endpoint }) : m.history_row_tip({ what, detail });
 
   const versionsText = (n, partial = false) =>
     partial ? m.history_versions_partial({ count: n }) : m.history_versions({ count: n });
@@ -284,19 +304,40 @@
     onname?.(point.sha, "");
   }
 
+  // A click on a row. While picking, the row is the second end of the
+  // comparison, or cancels the pick when it is the first end. Shift-click
+  // compares with the viewed version: a shortcut, not advertised.
   function pick(event, sha) {
-    if (event.shiftKey) oncompare?.(sha);
+    if (picking !== null) {
+      if (sha === picking) cancelPick();
+      else {
+        const from = picking;
+        picking = null;
+        oncompare?.(from, sha);
+      }
+      return;
+    }
+    if (event.shiftKey) oncompare?.(viewing || "", sha);
     else onview?.(sha);
+  }
+
+  // Leaving pick mode puts focus back on the Compare button it started from.
+  async function cancelPick() {
+    picking = null;
+    await tick();
+    listEl?.querySelector("[data-compare]")?.focus();
   }
 
   function showAll() {
     mode = "all";
     note = "";
+    picking = null;
   }
   function showSaved() {
     mode = "saved";
     dateOpen = false;
     note = "";
+    picking = null;
     onloadsaved?.();
   }
 
@@ -308,6 +349,7 @@
       mode = "authors";
       dateOpen = false;
       note = "";
+      picking = null;
     }
   }
 
@@ -389,7 +431,11 @@
 
 <!-- The strip is PanelTabs', the one the other panels wear. The calendar
      control rides on its row and belongs to the all view. -->
-<section class="panel timeline panel-tabbed" aria-label={m.common_history()}>
+<!-- Escape leaves pick mode from anywhere in the panel. -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<section class="panel timeline panel-tabbed" aria-label={m.common_history()} onkeydown={(event) => {
+  if (event.key === "Escape" && picking !== null) cancelPick();
+}}>
   {#snippet dateControl()}
     <span class="hx-date-wrap" bind:this={dateWrap}>
       <IconButton icon="calendar" tone="plain" size="btn-icon-sm" label={m.history_go_to_date()}
@@ -417,9 +463,16 @@
   {#snippet timelineList()}
     {#if note}<p class="panel-meta hx-note" role="status">{note}</p>{/if}
 
+    {#if picking !== null}
+      <div class="hx-pick" role="status">
+        <span>{m.history_pick_prompt()}</span>
+        <button type="button" class="btn btn-sm" onclick={cancelPick}>{m.common_cancel()}</button>
+      </div>
+    {/if}
+
     <!-- The handler only moves focus between the buttons inside the list. -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <ol class="hx-list" bind:this={listEl} onkeydown={navigate}>
+    <ol class="hx-list" class:hx-picking={picking !== null} bind:this={listEl} onkeydown={navigate}>
       {#if mode === "all"}
         <!-- The live document. It is what every bookmark is compared against,
              so it heads the list, and it is not an event. -->
@@ -433,10 +486,13 @@
               data-nav
               class:timeline-here={!viewing}
               aria-current={!viewing ? "true" : undefined}
-              onclick={() => onview?.("")}
+              aria-label={[m.history_current_version(), currentTag].filter(Boolean).join(", ")}
+              onclick={(click) => pick(click, "")}
             >
               <span class="hx-text"><span class="hx-line1">{m.history_current_version()}</span></span>
+              {#if currentTag}<span class="hx-tag">{currentTag}</span>{/if}
             </button>
+            {@render compareTool("", !viewing && newer === CURRENT)}
             {#if canEdit && !viewing}
               <span class="hx-tools">
                 <IconButton icon="bookmark" tone="plain" size="btn-icon-sm"
@@ -608,16 +664,14 @@
             class="hx-main"
             data-nav
             class:timeline-here={viewing === first.sha}
-            class:hx-base={against === first.sha}
             aria-current={viewing === first.sha ? "true" : undefined}
             title={m.history_row_tip({ what: titleOf(event), detail: soloLine(event) })}
-            aria-label={against === first.sha
-            ? m.history_row_tip_base({ what: titleOf(event), detail: soloLine(event) })
-            : m.history_row_tip({ what: titleOf(event), detail: soloLine(event) })}
+            aria-label={tipWith(titleOf(event), soloLine(event), endpointWord(first.sha))}
             onclick={(click) => pick(click, first.sha)}
           >
-            {@render eventBody(event, soloLine(event))}
+            {@render eventBody(event, soloLine(event), endpointWord(first.sha))}
           </button>
+          {@render compareTool(first.sha, viewing === first.sha)}
           {@render markTool(first)}
         </div>
       {/if}
@@ -667,12 +721,13 @@
 {/snippet}
 
 <!-- The icon, the title and the line below it. -->
-{#snippet eventBody(event, detail)}
+{#snippet eventBody(event, detail, tag = "")}
   <span class="hx-icon" aria-hidden="true"><Icon name={ICON[event.type]} filled={event.type === "saved"} /></span>
   <span class="hx-text">
     <span class="hx-line1">{titleOf(event)}</span>
     <span class="hx-line2 panel-meta">{detail}</span>
   </span>
+  {#if tag}<span class="hx-tag">{tag}</span>{/if}
 {/snippet}
 
 <!-- One version inside an expanded event. The whole row is the button. -->
@@ -681,7 +736,7 @@
   {@const who = editorOf(point)}
   {@const showWho = Boolean(who) && (event.type === "collaborative" || who !== event.authors[0])}
   {@const why = said(point)}
-  {@const base = against === point.sha}
+  {@const end = endpointWord(point.sha)}
   <li class="hx-version" data-sha={point.sha}>
     {#if naming === point.sha}
       {@render nameField(m.history_name_bookmark())}
@@ -691,16 +746,17 @@
           type="button"
           class="hx-version-main"
           class:timeline-here={here}
-          class:hx-base={base}
           data-nav
           aria-current={here ? "true" : undefined}
           title={m.history_row_tip({ what: told(point), detail: stamp(point.at) || shortSha(point.sha) })}
-          aria-label={[m.history_version_at({ time: clock(point.at) }), who ? m.history_by({ who }) : "", why, base ? m.history_comparison_base() : ""].filter(Boolean).join(", ")}
+          aria-label={[m.history_version_at({ time: clock(point.at) }), who ? m.history_by({ who }) : "", why, end].filter(Boolean).join(", ")}
           onclick={(click) => pick(click, point.sha)}
         >
           <span class="hx-when">{clock(point.at)}</span>
           {#if showWho}<span class="hx-who panel-meta">{who}</span>{/if}
+          {#if end}<span class="hx-tag">{end}</span>{/if}
         </button>
+        {@render compareTool(point.sha, here)}
         {@render markTool(point)}
       </div>
     {/if}
@@ -710,6 +766,7 @@
 <!-- A saved version, in the saved view. Renaming it and removing its name
      need the right to change the document. -->
 {#snippet savedRow(point)}
+  {@const end = endpointWord(point.sha)}
   <li class="hx-saved" data-sha={point.sha}>
     {#if naming === point.sha}
       {@render nameField(m.history_rename_bookmark())}
@@ -722,14 +779,16 @@
           class:timeline-here={viewing === point.sha}
           aria-current={viewing === point.sha ? "true" : undefined}
           title={m.history_row_tip({ what: point.label, detail: savedWhen(point.at) })}
-          aria-label={m.history_row_tip({ what: point.label, detail: savedWhen(point.at) })}
+          aria-label={tipWith(point.label, savedWhen(point.at), end)}
           onclick={(click) => pick(click, point.sha)}
         >
           <span class="hx-text">
             <span class="hx-line1">{point.label}</span>
             <span class="hx-line2 panel-meta">{savedWhen(point.at)}</span>
           </span>
+          {#if end}<span class="hx-tag">{end}</span>{/if}
         </button>
+        {@render compareTool(point.sha, viewing === point.sha)}
         <span class="hx-tools">
           {#if canEdit}
             <IconButton icon="pencil" tone="plain" size="btn-icon-sm" label={m.common_rename()}
@@ -741,6 +800,17 @@
       </div>
     {/if}
   </li>
+{/snippet}
+
+<!-- The start of a comparison, on the row being read. It is text rather than an
+     icon, so it is labelled without a hover, and it is hidden while picking,
+     since the status line above offers Cancel. -->
+{#snippet compareTool(sha, selected)}
+  {#if selected && picking === null}
+    <span class="hx-tools">
+      <button type="button" class="btn btn-sm" data-compare onclick={() => (picking = sha)}>{m.history_compare_with()}</button>
+    </span>
+  {/if}
 {/snippet}
 
 <!-- The bookmark control on a version or a single event. It shows on hover,
@@ -942,11 +1012,36 @@
     font-weight: 500;
     box-shadow: inset 2px 0 var(--color-brand);
   }
-  /* The base of a comparison: a thin dashed edge, not the selected ground. */
-  .hx-base {
-    box-shadow: inset 1px 0 var(--color-brand);
-    outline: 1px dashed var(--color-brand);
+  /* The endpoint of a comparison, as a small pill beside the row's words. */
+  .hx-tag {
+    flex: none;
+    align-self: center;
+    padding: 0 calc(var(--spacing) * 1.5);
+    border: 1px solid var(--color-divider);
+    border-radius: 999px;
+    font-size: var(--panel-meta-size);
+    line-height: 1.6;
+    color: var(--panel-muted);
+    white-space: nowrap;
+  }
+
+  /* While picking, every row says it can be the second end. */
+  .hx-picking .hx-main:hover,
+  .hx-picking .hx-version-main:hover {
+    cursor: pointer;
+    outline: 1px solid var(--color-brand);
     outline-offset: -1px;
+  }
+  .hx-pick {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--spacing);
+    margin: 0 var(--panel-padding) calc(var(--spacing) * 2);
+    padding: var(--spacing) calc(var(--spacing) * 2);
+    border: 1px solid var(--color-brand);
+    border-radius: 4px;
+    font-size: var(--panel-meta-size);
   }
 
   /* Bookmark controls: on hover, on keyboard focus, or on the row being read. */
