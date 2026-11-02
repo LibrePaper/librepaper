@@ -26,6 +26,9 @@
     diagnostics = [],
     comments = [], changes = [], onreview, onpreview, onsettings,
     userName = m.common_you(),
+    // One instance per session: the wrapper mounts each, shows only the active one,
+    // and renders the session switcher in this pane's header.
+    session = "", active = true, switcher = undefined, onstate = undefined,
   } = $props();
   let client = $state.raw(null);
   const EMPTY_CONNECTION = { id: "", token: "", messages: [], tasks: {}, connected: false,
@@ -652,16 +655,11 @@
     return sent;
   }
 
-  async function newConversation() {
-    await act(async () => {
-      if (assistant.running) await local.stopAssistant({ link: withoutKey(agentLink || link), conversation: connection.id });
-      assistant = { running: false, agent: "", access: "" };
-      await client.end(); await client.create();
-      draft = ""; task = null; attachment = null; commentContext = null;
-      pendingRequest = null; diagnostic = null; diagnosticRevision = "";
-      suppressedSelection = selectionKey(selection || lastSelection);
-      tab = "chat";
-    });
+  /// Stop this conversation's agent and end its channel, before the session is deleted.
+  export async function close() {
+    if (assistant.running) await local.stopAssistant({ link: withoutKey(agentLink || link), conversation: connection.id }).catch(() => {});
+    assistant = { running: false, agent: "", access: "" };
+    await client?.end();
   }
 
   async function reconnect() { await act(() => client.reconnect()); }
@@ -687,8 +685,10 @@
     else problem = m.agent_changes_gone();
   }
 
+  // Only the active session takes the editor selection. Reading `active` first
+  // makes this effect run again when the session is switched to.
   $effect(() => {
-    if (!selection?.exact) return;
+    if (!active || !selection?.exact) return;
     const same = selectionKey(lastSelection) === selectionKey(selection);
     if (selectionKey(selection) === suppressedSelection) return;
     if (!attachment || (same && !attachment.revision && (selection.revision || revision)) || (!same && continuesSelection(lastSelection, selection))) {
@@ -696,6 +696,11 @@
     }
   });
   $effect(() => requestArrived(request));
+  $effect(() => onstate?.({
+    agent: assistant.running || connection.assistantAgent ? runningLabel : "",
+    working: activeTask?.status === "working",
+    needsInput: Boolean(inputTask),
+  }));
   async function checkCapabilities(nextLink = agentLink, { strict = false } = {}) {
     const generation = ++capabilityGeneration;
     verifiedCapabilities = null;
@@ -715,7 +720,7 @@
 
   onMount(() => {
     agentLink = link || "";
-    client = createAgentClient({ origin: location.origin, slug, link: agentLink || link, onpreview });
+    client = createAgentClient({ origin: location.origin, slug, link: agentLink || link, onpreview, session });
     void (async () => {
       await client.resume();
       await checkCapabilities(agentLink || link);
@@ -760,16 +765,13 @@
     {/if}
   </div>
   {/snippet}
-  <!-- The gear at the top of each pane is the one way to the desktop app
-       settings now; the Chat pane also gets New conversation beside it. -->
-  {#snippet paneHeader(withNewConversation)}
+  <!-- The session switcher comes first, supplied by the wrapper. The gear at the
+       top of each pane is the one way to the desktop app settings. -->
+  {#snippet paneHeader()}
     <div class="pane-header">
+      {#if switcher}{@render switcher()}{/if}
       {#if paired}{@render agentSettings()}{/if}
       <span class="pane-actions">
-      {#if withNewConversation && connection.id}
-        <IconButton icon="eraser" label={m.agent_new_conversation()} tone="plain" size="btn-icon-sm"
-                    disabled={busy} onclick={() => void newConversation()} />
-      {/if}
       <IconButton icon="sliders" label={m.agent_settings_label()} tone="plain" size="btn-icon-sm"
                   onclick={() => onsettings?.()} />
       </span>
@@ -850,7 +852,7 @@
              value={tab} onchange={(value) => tab = value}>
 
   <Tabs.Content value="chat" class="agent-tab-content">
-  {@render paneHeader(true)}
+  {@render paneHeader()}
   {#if !paired}
     {@render connectPrompt()}
   {:else}
@@ -926,7 +928,7 @@
   {/if}
   </Tabs.Content>
   <Tabs.Content value="tasks" class="agent-tab-content">
-  {@render paneHeader(false)}
+  {@render paneHeader()}
   {#if !paired}
     {@render connectPrompt()}
   {:else}
@@ -1052,7 +1054,9 @@
   .agent-panel > :global(p[role="alert"]) { padding-inline:var(--panel-padding); }
   /* The agent and access line sits at the top left of both panes, and the
      gear (and, in Chat, New conversation) at the top right. */
-  .pane-header { display:flex; align-items:center; justify-content:space-between; gap:calc(var(--spacing) * .5); }
+  /* The switcher leads the line; when the panel is too narrow for it, the agent
+     and access line wraps below, and the actions stay at the end. */
+  .pane-header { display:flex; align-items:center; flex-wrap:wrap; justify-content:space-between; gap:calc(var(--spacing) * .5); }
   .pane-actions { display:flex; gap:calc(var(--spacing) * .5); margin-left:auto; }
   .chat-history { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:calc(var(--spacing) * 2); overflow-y:auto; }
   .chat-history > :global(*) { flex-shrink:0; }
