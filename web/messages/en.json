@@ -1246,15 +1246,16 @@
   "historyworkspace_binary_changed": "This file changed. Images and other binary files are not compared here.",
   "historyworkspace_binary_removed": "This file was removed.",
   "historyworkspace_binary_same": "This file is unchanged.",
-  "historyworkspace_compare_current": "Compare with current",
   "historyworkspace_comparison_failed": "The comparison could not be loaded. Check your connection and reopen this version.",
+  "historyworkspace_download_title": "Download {version} as an archive",
+  "historyworkspace_download_version": "Download version",
   "historyworkspace_downloading": "Downloading…",
   "historyworkspace_empty_file": "Empty file.",
   "historyworkspace_file_added": "File added.",
   "historyworkspace_file_marked": "{name} · {status}",
   "historyworkspace_file_removed": "File removed.",
   "historyworkspace_file_select": "History file",
-  "historyworkspace_files_differ": [
+  "historyworkspace_files_changed": [
     {
       "declarations": [
         "input count",
@@ -1264,24 +1265,28 @@
         "countPlural"
       ],
       "match": {
-        "countPlural=one": "{count} file differ",
-        "countPlural=*": "{count} files differ"
+        "countPlural=one": "{count} file changed",
+        "countPlural=*": "{count} files changed"
       }
     }
   ],
-  "historyworkspace_historical": "Historical version",
   "historyworkspace_loading_comparison": "Loading the comparison…",
   "historyworkspace_loading_source": "Loading version source…",
   "historyworkspace_mark_added": "added",
   "historyworkspace_mark_changed": "changed",
   "historyworkspace_mark_removed": "removed",
+  "historyworkspace_newer": "Newer",
+  "historyworkspace_newer_version": "Newer version",
   "historyworkspace_no_differences": "No differences",
   "historyworkspace_no_source_files": "This version has no source files.",
   "historyworkspace_no_text_source": "This file has no text source to display.",
-  "historyworkspace_restore": "Restore",
-  "historyworkspace_select_prompt": "Select a version to see how it differs from the current source. Shift-click another version to compare the two.",
+  "historyworkspace_older": "Older",
+  "historyworkspace_older_version": "Older version",
+  "historyworkspace_reload_current": "Reload the current version",
+  "historyworkspace_restore_title": "Restore {version}",
+  "historyworkspace_restore_version": "Restore version",
+  "historyworkspace_select_prompt": "Select a version to see what it changed.",
   "historyworkspace_source_label": "History source",
-  "historyworkspace_swap": "Swap",
   "html_bundle_index_failed": "Could not load the TeX bundle index",
   "html_conversion_failed": "LaTeX HTML conversion failed",
   "html_hint_external_programs": "The HTML converter cannot run external programs, so packages that shell out (minted, some tcolorbox listings) fail here. The PDF view may still work.",
@@ -2153,7 +2158,6 @@
   "readerb_build_failed": "The build failed without reporting why.",
   "readerb_clipboard_refused": "The browser refused clipboard access. Use the keyboard shortcut instead.",
   "readerb_collaboration_unread": "Collaboration: unread messages",
-  "readerb_comparing_says": "Comparing {path} with {version}",
   "readerb_count_both": "{errors}, {warnings}",
   "readerb_count_errors": [
     {
@@ -2185,7 +2189,6 @@
       }
     }
   ],
-  "readerb_current_version": "the current version",
   "readerb_diagnostics_says": "Diagnostics: {badge}",
   "readerb_edit_find": "Find…",
   "readerb_edit_replace": "Replace…",
@@ -2195,6 +2198,7 @@
   "readerb_quit_failed": "The desktop app could not quit.",
   "readerb_run_code_for_render": "Turn on Run code to render on this computer.",
   "readerb_version_download_failed": "That version could not be downloaded.",
+  "readerb_version_history": "Version history",
   "readerc_cells_not_run": "Code cells were not run. Turn on Run code in the LibrePaper desktop app to include their results.",
   "readerc_comments_export_failed": "The comments could not be exported.",
   "readerc_comments_preparing": "Preparing the comments.",

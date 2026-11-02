@@ -11,6 +11,7 @@
   import * as figures from "../lib/figures.js";
   import * as history from "../lib/history.js";
   import { createHistorySource } from "../lib/reader/history-source.svelte.js";
+  import { CURRENT, NOTHING } from "../lib/history-endpoints.js";
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
   import ComparisonBar from "./reader/ComparisonBar.svelte";
   import { createComparison } from "../lib/reader/comparison.svelte.js";
@@ -1338,8 +1339,10 @@
     // restore made, and its Restore button is the undo.
     onrestored: () => {
       const newest = [...timeline.state.labels].sort((a, b) => b.seq - a.seq);
-      historySource.clearBase();
-      return historySource.select(newest[0]?.why === "restore" ? newest[1]?.sha || "" : "");
+      const beforeSha = newest[0]?.why === "restore" ? newest[1]?.sha || "" : "";
+      return beforeSha
+        ? historySource.compare(beforeSha, CURRENT, beforeSha)
+        : historySource.view("");
     },
     disposed: () => readerDisposed,
   });
@@ -1351,6 +1354,20 @@
   const historySource = createHistorySource({
     read: sha => history.read(SLUG, sha, keyHeaders(KEY)),
     labels: () => labels,
+    // The version before `sha` in the timeline, or NOTHING when there is none.
+    // The first loaded row may not be the oldest: older pages are read on
+    // demand, and a comparison with the version before it needs them.
+    previous: async (sha) => {
+      for (;;) {
+        const before = timeline.state.labels.length;
+        const index = timeline.state.labels.findIndex((point) => point.sha === sha);
+        if (index > 0) return timeline.state.labels[index - 1].sha;
+        if (index !== 0 || timeline.state.complete) return NOTHING;
+        await timeline.loadMore();
+        // Nothing new arrived, so asking again would only ask the same question.
+        if (timeline.state.labels.length === before) return NOTHING;
+      }
+    },
     preferredPath: () => session?.paths?.get(openFile) || "",
     currentTree: () => {
       if (session && session.joined !== false) return session.tree();
@@ -1367,7 +1384,6 @@
     },
   });
   const historySelectedSha = $derived(historySource.selected);
-  const historyHeading = $derived(historySelectedSha ? timeline.describe(historySelectedSha) : "");
   $effect(() => () => historySource.dispose());
   let navigationGeneration = 0;
   // Which file the reader arrived asking for, when the landing page's search
@@ -1382,7 +1398,7 @@
   // document pane always shows the document as it stands.
   function viewPoint(sha) {
     beginComparison("history");
-    const pending = historySource.select(sha);
+    const pending = historySource.view(sha);
     if (compact) showMobileView("source");
     return pending;
   }
@@ -1579,9 +1595,7 @@
     }
   }
   // What the comparison bar says is compared.
-  const comparisonSays = $derived(comparing === "history"
-    ? m.readerb_comparing_says({ path: historySource.path, version: historyHeading || m.readerb_current_version() })
-    : "");
+  const comparisonSays = $derived(comparing === "history" ? m.readerb_version_history() : "");
   // A web project's Git panel: the last push.
   const webGit = createWebGit();
   $effect(() => () => webGit?.dispose());
@@ -4255,13 +4269,13 @@
   {/snippet}
 
   {#snippet historyPanel()}
-    <History {labels} viewing={historySelectedSha} against={historySource.against} canEdit={mayEdit}
+    <History {labels} viewing={historySelectedSha} older={historySource.older} newer={historySource.newer} canEdit={mayEdit}
       problem={historyProblem} loaded={timeline.state.loaded} complete={timeline.state.complete}
       loadingMore={timeline.state.loadingMore} moreProblem={timeline.state.moreProblem}
       saved={timeline.state.saved} savedLoaded={timeline.state.savedLoaded}
       savedLoading={timeline.state.savedLoading} savedProblem={timeline.state.savedProblem}
       onview={viewPoint}
-      oncompare={(sha) => { beginComparison("history"); return historySource.compareWith(sha); }}
+      oncompare={(a, b) => { beginComparison("history"); return historySource.compare(a || CURRENT, b || CURRENT); }}
       onname={nameLabel} onretry={loadHistory}
       onloadmore={() => timeline.loadMore()}
       onloaduntil={(iso) => timeline.loadUntil(iso)}
@@ -4318,10 +4332,10 @@
         <ComparisonBar says={comparisonSays} onclose={endComparison} />
       {/if}
       {#if comparing === "history"}
-        <HistoryWorkspace source={historySource} heading={historyHeading} canEdit={mayEdit} onrestore={restoreLabel}
+        <HistoryWorkspace source={historySource} versions={labels} canEdit={mayEdit} onrestore={restoreLabel}
           ondownload={downloadArchive}
-          downloading={downloadingSha === historySource.selected ? downloadingSha : ""}
-          downloadProblem={downloadingSha === historySource.selected ? downloadProblem : ""} />
+          downloading={downloadingSha === historySource.target ? downloadingSha : ""}
+          downloadProblem={downloadingSha === historySource.target ? downloadProblem : ""} />
       {:else if shownFigure}
         {@render figureBody()}
       {:else if Editor && sourceBound}

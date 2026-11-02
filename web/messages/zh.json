@@ -1246,42 +1246,33 @@
   "historyworkspace_binary_changed": "此文件已修改。图片和其他二进制文件在此不做比较。",
   "historyworkspace_binary_removed": "此文件已被删除。",
   "historyworkspace_binary_same": "此文件未更改。",
-  "historyworkspace_compare_current": "与当前版本比较",
   "historyworkspace_comparison_failed": "无法加载比较结果。请检查网络连接，然后重新打开此版本。",
+  "historyworkspace_download_title": "将{version}下载为压缩包",
+  "historyworkspace_download_version": "下载此版本",
   "historyworkspace_downloading": "正在下载…",
   "historyworkspace_empty_file": "空文件。",
   "historyworkspace_file_added": "文件已新增。",
   "historyworkspace_file_marked": "{name} · {status}",
   "historyworkspace_file_removed": "文件已删除。",
   "historyworkspace_file_select": "历史记录中的文件",
-  "historyworkspace_files_differ": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "{count} 个文件有差异",
-        "countPlural=*": "{count} 个文件有差异"
-      }
-    }
-  ],
-  "historyworkspace_historical": "历史版本",
+  "historyworkspace_files_changed": "已更改 {count} 个文件",
   "historyworkspace_loading_comparison": "正在加载比较结果…",
   "historyworkspace_loading_source": "正在加载版本源码…",
   "historyworkspace_mark_added": "新增",
   "historyworkspace_mark_changed": "已修改",
   "historyworkspace_mark_removed": "已删除",
+  "historyworkspace_newer": "较新",
+  "historyworkspace_newer_version": "较新的版本",
   "historyworkspace_no_differences": "无差异",
   "historyworkspace_no_source_files": "此版本没有源文件。",
   "historyworkspace_no_text_source": "此文件没有可显示的文本源码。",
-  "historyworkspace_restore": "恢复",
-  "historyworkspace_select_prompt": "选择一个版本，查看它与当前源码的差异。按住 Shift 并点击另一个版本，可比较这两个版本。",
+  "historyworkspace_older": "较早",
+  "historyworkspace_older_version": "较早的版本",
+  "historyworkspace_reload_current": "重新加载当前版本",
+  "historyworkspace_restore_title": "恢复{version}",
+  "historyworkspace_restore_version": "恢复此版本",
+  "historyworkspace_select_prompt": "选择一个版本，查看它改动了什么。",
   "historyworkspace_source_label": "历史记录源码",
-  "historyworkspace_swap": "交换",
   "html_bundle_index_failed": "无法加载 TeX 宏包索引",
   "html_conversion_failed": "LaTeX 转换为 HTML 失败",
   "html_hint_external_programs": "HTML 转换器无法运行外部程序，因此调用外部程序的宏包（minted、部分 tcolorbox 代码清单）在此会失败。PDF 视图可能仍然可用。",
@@ -2153,7 +2144,6 @@
   "readerb_build_failed": "构建失败，且未说明原因。",
   "readerb_clipboard_refused": "浏览器拒绝了剪贴板访问。请改用快捷键。",
   "readerb_collaboration_unread": "协作：有未读消息",
-  "readerb_comparing_says": "正在比较 {path} 与 {version}",
   "readerb_count_both": "{errors}，{warnings}",
   "readerb_count_errors": [
     {
@@ -2185,7 +2175,6 @@
       }
     }
   ],
-  "readerb_current_version": "当前版本",
   "readerb_diagnostics_says": "诊断：{badge}",
   "readerb_edit_find": "查找…",
   "readerb_edit_replace": "替换…",
@@ -2195,6 +2184,7 @@
   "readerb_quit_failed": "桌面应用无法退出。",
   "readerb_run_code_for_render": "开启“运行代码”以在这台电脑上渲染。",
   "readerb_version_download_failed": "无法下载该版本。",
+  "readerb_version_history": "版本历史",
   "readerc_cells_not_run": "代码单元格未运行。请在 LibrePaper 桌面应用中开启“运行代码”，以包含其结果。",
   "readerc_comments_export_failed": "无法导出批注。",
   "readerc_comments_preparing": "正在准备批注。",

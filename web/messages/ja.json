@@ -1246,42 +1246,33 @@
   "historyworkspace_binary_changed": "このファイルは変更されました。画像などのバイナリファイルはここでは比較されません。",
   "historyworkspace_binary_removed": "このファイルは削除されました。",
   "historyworkspace_binary_same": "このファイルは変更されていません。",
-  "historyworkspace_compare_current": "現在と比較",
   "historyworkspace_comparison_failed": "比較を読み込めませんでした。接続を確認して、このバージョンを開き直してください。",
+  "historyworkspace_download_title": "{version}をアーカイブとしてダウンロード",
+  "historyworkspace_download_version": "バージョンをダウンロード",
   "historyworkspace_downloading": "ダウンロード中…",
   "historyworkspace_empty_file": "空のファイルです。",
   "historyworkspace_file_added": "ファイルが追加されました。",
   "historyworkspace_file_marked": "{name} · {status}",
   "historyworkspace_file_removed": "ファイルが削除されました。",
   "historyworkspace_file_select": "履歴のファイル",
-  "historyworkspace_files_differ": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "{count}件のファイルに差分があります",
-        "countPlural=*": "{count}件のファイルに差分があります"
-      }
-    }
-  ],
-  "historyworkspace_historical": "過去のバージョン",
+  "historyworkspace_files_changed": "{count}件のファイルが変更されました",
   "historyworkspace_loading_comparison": "比較を読み込み中…",
   "historyworkspace_loading_source": "バージョンのソースを読み込み中…",
   "historyworkspace_mark_added": "追加",
   "historyworkspace_mark_changed": "変更",
   "historyworkspace_mark_removed": "削除",
+  "historyworkspace_newer": "新しい",
+  "historyworkspace_newer_version": "新しいバージョン",
   "historyworkspace_no_differences": "差分はありません",
   "historyworkspace_no_source_files": "このバージョンにはソースファイルがありません。",
   "historyworkspace_no_text_source": "このファイルには表示できるテキストソースがありません。",
-  "historyworkspace_restore": "復元",
-  "historyworkspace_select_prompt": "バージョンを選択すると、現在のソースとの違いが表示されます。Shiftを押しながら別のバージョンをクリックすると、2つを比較できます。",
+  "historyworkspace_older": "古い",
+  "historyworkspace_older_version": "古いバージョン",
+  "historyworkspace_reload_current": "現在のバージョンを再読み込み",
+  "historyworkspace_restore_title": "{version}を復元",
+  "historyworkspace_restore_version": "バージョンを復元",
+  "historyworkspace_select_prompt": "バージョンを選択すると、何が変更されたかが表示されます。",
   "historyworkspace_source_label": "履歴のソース",
-  "historyworkspace_swap": "入れ替え",
   "html_bundle_index_failed": "TeXバンドルのインデックスを読み込めませんでした",
   "html_conversion_failed": "LaTeXをHTMLに変換できませんでした",
   "html_hint_external_programs": "HTMLコンバーターは外部プログラムを実行できないため、シェルを呼び出すパッケージ（minted、一部のtcolorboxリストなど）はここでは失敗します。PDF表示は動作する場合があります。",
@@ -2153,7 +2144,6 @@
   "readerb_build_failed": "ビルドが失敗しましたが、理由は報告されませんでした。",
   "readerb_clipboard_refused": "ブラウザーがクリップボードへのアクセスを拒否しました。代わりにキーボードショートカットを使ってください。",
   "readerb_collaboration_unread": "共同編集：未読のメッセージ",
-  "readerb_comparing_says": "{path}を{version}と比較中",
   "readerb_count_both": "{errors}、{warnings}",
   "readerb_count_errors": [
     {
@@ -2185,7 +2175,6 @@
       }
     }
   ],
-  "readerb_current_version": "現在のバージョン",
   "readerb_diagnostics_says": "診断：{badge}",
   "readerb_edit_find": "検索…",
   "readerb_edit_replace": "置換…",
@@ -2195,6 +2184,7 @@
   "readerb_quit_failed": "デスクトップアプリを終了できませんでした。",
   "readerb_run_code_for_render": "このコンピューターでレンダリングするには、「コードを実行」をオンにしてください。",
   "readerb_version_download_failed": "そのバージョンをダウンロードできませんでした。",
+  "readerb_version_history": "バージョン履歴",
   "readerc_cells_not_run": "コードセルは実行されませんでした。結果を含めるには、LibrePaperデスクトップアプリで「コードを実行」をオンにしてください。",
   "readerc_comments_export_failed": "コメントをエクスポートできませんでした。",
   "readerc_comments_preparing": "コメントを準備中です。",
