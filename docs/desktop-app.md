@@ -6,11 +6,9 @@ LibrePaper works in any web browser. The desktop app connects to the same server
 
 The desktop app is not an offline editor. You can switch between the browser and the app at any time, and collaborators can use either one.
 
-## Install the desktop app
-
 Every install except the plain macOS `.dmg` puts two commands on your PATH: `librepaper` (the [command line](cli.html)) and `librepaper-desktop` (the app). You do not need the command line to write. Once installed, open LibrePaper from your applications menu, or run `librepaper-desktop` in a terminal.
 
-### Binaries
+## Binaries
 
 Download the installer from the [latest release on GitHub](https://github.com/LibrePaper/librepaper/releases/latest):
 
@@ -24,7 +22,7 @@ sudo dnf install ./librepaper-<version>-1.x86_64.rpm         # Fedora
 sudo zypper install ./librepaper-<version>-1.x86_64.rpm      # openSUSE
 ```
 
-### Package managers
+## Package managers
 
 Homebrew on macOS, Scoop on Windows and Nix on x86_64 Linux install the app and keep it up to date with their own commands.
 
@@ -41,7 +39,7 @@ nix profile install github:LibrePaper/librepaper
 nix run github:LibrePaper/librepaper              # or try it without installing
 ```
 
-### Shell script
+## Shell script
 
 The release also has install scripts. They install the `librepaper` command without the desktop app, for a server or a machine where you only script documents. See the [command line](cli.html) page.
 
@@ -55,7 +53,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/LibrePaper/librepaper/r
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.ps1 | iex"
 ```
 
-### Source
+## Source
 
 From a checkout of the repository, `make desktop` builds the app and the `librepaper` binary it bundles. On NixOS, it runs inside `nix-shell`. `LIBREPAPER_SERVER` points the app at another server instead of the default one.
 
