@@ -145,6 +145,10 @@ const fixtures = {
   timeline,
   saved,
   longSaved,
+  authorRows: [
+    { key: "account:a", name: "Ada", agent: false, unknown: false, colour: "#0072b2", chars: 75, share: 0.75, last: "2026-11-02T09:00:00Z" },
+    { key: "unknown", name: "Unknown author", agent: false, unknown: true, colour: "", chars: 25, share: 0.25, last: null },
+  ],
   longName,
   keys: {
     today: `day:${TODAY}`,
@@ -169,7 +173,9 @@ async function runChecks() {
   const eventsOf = (type) => all(`li.hx-event[data-type="${type}"]`);
   const versionsOf = (node) => all("li.hx-version", node);
   const statusText = () => all("li.hx-status").map(text).join(" | ");
-  const choose = (label) => all(".hx-segment button").find((node) => node.getAttribute("aria-label") === label);
+  // The views are the shared tab strip's tabs, named by their visible label.
+  const choose = (label) => all('[role="tab"]').find((node) => text(node) === label);
+  const selected = (label) => choose(label)?.getAttribute("aria-selected") === "true";
   const click = (node, init = {}) =>
     node.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...init }));
   const press = (node, name) => {
@@ -341,11 +347,10 @@ async function runChecks() {
     await step("9: saved versions view", async () => {
       mount({ labels: fixtures.timeline, saved: [], savedLoaded: true });
       await flush();
-      click(choose("Saved versions"));
+      click(choose("Saved"));
       await flush();
-      check(choose("Saved versions").getAttribute("aria-pressed") === "true"
-        && choose("All history").getAttribute("aria-pressed") === "false",
-        "the saved view is pressed and the all view is not");
+      check(selected("Saved") && !selected("All"),
+        "the saved tab is selected and the all tab is not");
       check(calls.some((call) => call[0] === "loadsaved"),
         `choosing saved versions asks for them, calls: ${JSON.stringify(calls)}`);
       check(statusText().includes("No saved versions yet."),
@@ -360,11 +365,10 @@ async function runChecks() {
 
       update({ viewing: keys.olderSha });
       await flush();
-      click(choose("All history"));
+      click(choose("All"));
       await flush();
-      check(choose("All history").getAttribute("aria-pressed") === "true"
-        && choose("Saved versions").getAttribute("aria-pressed") === "false",
-        "switching back presses the all view");
+      check(selected("All") && !selected("Saved"),
+        "switching back selects the all tab");
       check(q("li.hx-current") && q(`[data-sha="${keys.olderSha}"] [aria-current="true"]`),
         "switching back restores the timeline and the selection in it");
     });
@@ -379,7 +383,7 @@ async function runChecks() {
 
       mount({ labels: fixtures.timeline, saved: fixtures.longSaved, savedLoaded: true });
       await flush();
-      click(choose("Saved versions"));
+      click(choose("Saved"));
       await flush();
       check(list().scrollWidth <= list().clientWidth + 1,
         `the saved list overflows sideways at 240px: ${list().scrollWidth} wide in ${list().clientWidth}`);
@@ -473,6 +477,38 @@ async function runChecks() {
       check(document.activeElement === compare(), "focus returns to Compare with… after Escape");
     });
 
+    await step("13: the authors tab lists who wrote the file and isolates one", async () => {
+      mount({ labels: fixtures.timeline });
+      await flush();
+      check(!calls.some((call) => call[0] === "authorsview"), "the authors view is off until its tab is chosen");
+      click(choose("Authors"));
+      await flush();
+      check(selected("Authors"), "the authors tab is selected");
+      check(JSON.stringify(calls.filter((call) => call[0] === "authorsview")) === JSON.stringify([["authorsview", true]]),
+        `choosing the tab turns the view on, calls: ${JSON.stringify(calls)}`);
+      update({ authors: { rows: fixtures.authorRows, since: "2026-11-01T10:00:00Z", loading: false, error: "", noFile: false } });
+      await flush();
+      const rows = all("button.hx-author");
+      check(rows.map((row) => text(q(".hx-line1", row))).join("|") === "Ada|Unknown author",
+        `the rows name each author, shows: ${rows.map((row) => text(row)).join("|")}`);
+      check(text(rows[0]).includes("75%"), `a row gives its share, shows: ${text(rows[0])}`);
+      click(rows[0]);
+      await flush();
+      check(JSON.stringify(calls.at(-1)) === JSON.stringify(["isolate", "account:a"]),
+        `clicking a row isolates it, calls: ${JSON.stringify(calls)}`);
+      update({ authorsOnly: "account:a" });
+      await flush();
+      check(all("button.hx-author")[0].getAttribute("aria-pressed") === "true", "the isolated row is pressed");
+      click(all("button.hx-author")[0]);
+      await flush();
+      check(JSON.stringify(calls.at(-1)) === JSON.stringify(["isolate", null]),
+        `clicking it again shows everyone, calls: ${JSON.stringify(calls)}`);
+      click(choose("All"));
+      await flush();
+      check(JSON.stringify(calls.at(-1)) === JSON.stringify(["authorsview", false]),
+        `leaving the tab turns the view off, calls: ${JSON.stringify(calls)}`);
+    });
+
     return "passed";
   } catch (error) {
     return `failed at ${current}: ${error.message}`;
@@ -501,6 +537,8 @@ const callbacks = {
   onloadmore: () => calls.push(["loadmore"]),
   onloaduntil: (iso) => { calls.push(["loaduntil", iso]); return Promise.resolve(); },
   onloadsaved: () => calls.push(["loadsaved"]),
+  onauthorsview: (on) => calls.push(["authorsview", on]),
+  onisolate: (key) => calls.push(["isolate", key]),
 };
 const base = {
   labels: [], viewing: null, older: "", newer: "", canEdit: false, problem: "", loaded: true,

@@ -25,6 +25,34 @@ fn is_label_id(value: &str) -> bool {
     uuid::Uuid::parse_str(value).is_ok()
 }
 
+/// The digest that names a document's head, computed in one canonical order.
+///
+/// `VersionVector::encode` serializes an internal hash map, so two equal
+/// vectors can encode to different bytes depending on how they were built or
+/// unloaded. Hashing the entries sorted by peer, with the zero counters that
+/// equality already ignores left out, gives the same head for the same vector
+/// however it was reached.
+fn head_digest(encoded: &[u8]) -> Result<String, loro::LoroError> {
+    // Empty bytes are the empty vector, as `sequencer::decode_vector` reads them.
+    let vector = if encoded.is_empty() {
+        loro::VersionVector::default()
+    } else {
+        loro::VersionVector::decode(encoded)?
+    };
+    let mut entries: Vec<(u64, i32)> = vector
+        .iter()
+        .filter(|(_, counter)| **counter > 0)
+        .map(|(peer, counter)| (*peer, *counter))
+        .collect();
+    entries.sort_unstable_by_key(|(peer, _)| *peer);
+    let mut hash = Sha256::new();
+    for (peer, counter) in entries {
+        hash.update(peer.to_be_bytes());
+        hash.update(counter.to_be_bytes());
+    }
+    Ok(hex::encode(hash.finalize()))
+}
+
 /// The prefix that spells a comment's own frontier rather than a named
 /// label, shared with `web/src/lib/moment.js`'s `MOMENT`. A comment made
 /// against the live draft has no label to fetch by (nothing writes a source
@@ -531,7 +559,15 @@ impl Server {
             .flatten();
         let labels: Vec<_> = rows.iter().map(label_wire).collect();
         let state = room.log().log_state().await;
-        let head = hex::encode(Sha256::digest(&state.head_vector));
+        let head = match head_digest(&state.head_vector) {
+            Ok(head) => head,
+            Err(error) => {
+                return refused(
+                    "read the head",
+                    &librepaper_room::room::WriteError::Storage(error.to_string()),
+                )
+            }
+        };
         let mut body = json!({
             "slug": entry.slug,
             "head": head,
@@ -541,6 +577,68 @@ impl Server {
             body["next_cursor"] = json!(next);
         }
         let mut response = write_json(200, &body);
+        set(&mut response, "cache-control", "private, no-store");
+        response
+    }
+
+    /// Who has written into this document, one row per Loro peer.
+    ///
+    /// A peer is a writer's identity inside the CRDT, and browser sessions
+    /// get a fresh random one each time, so several rows can belong to the
+    /// same person. Each row carries the name its writes were filed under
+    /// when the server first saw that peer. Editors and owners only, the same
+    /// as the history: who wrote what is information about the people writing
+    /// the document, and a reader has no business with it.
+    pub(super) async fn handle_authors(
+        &self,
+        headers: &HeaderMap,
+        context: &RequestContext,
+        slug: &str,
+    ) -> Reply {
+        let arrival = &context.arrival;
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        if let Err(refusal) = self
+            .authorize::<access::rung::Edit>(context, headers, slug, None)
+            .await
+        {
+            return access::deny(&refusal);
+        }
+        let room = match self.rooms.get(slug).await {
+            Ok(room) => room,
+            Err(error) => return refused("open the room", &error),
+        };
+        let authors = match self
+            .store
+            .catalog
+            .document_peer_authors(room.document_id)
+            .await
+        {
+            Ok(authors) => authors,
+            Err(error) => return refused("read the catalogue", &error.into()),
+        };
+        // A peer is sent as a decimal string because a JavaScript number cannot
+        // hold all of a u64 without losing the low bits.
+        let rows: Vec<Value> = authors
+            .iter()
+            .map(|author| {
+                json!({
+                    "peer": author.peer.to_string(),
+                    "name": author.name,
+                    "account_id": author.account_id.map(|id| id.to_string()),
+                    "agent": author.agent,
+                    "first_seen": author
+                        .first_seen
+                        .format(&time::format_description::well_known::Rfc3339)
+                        .unwrap_or_default(),
+                })
+            })
+            .collect();
+        let mut response = write_json(200, &json!({"authors": rows}));
         set(&mut response, "cache-control", "private, no-store");
         response
     }
@@ -588,12 +686,21 @@ impl Server {
             Ok(vector) => vector,
             Err(error) => return refused("read the head", &error.into()),
         };
+        let head = match head_digest(&head_vector) {
+            Ok(head) => head,
+            Err(error) => {
+                return refused(
+                    "read the head",
+                    &librepaper_room::room::WriteError::Storage(error.to_string()),
+                )
+            }
+        };
         let (newer, base) = match self.store.catalog.label_marks(document_id, pulled).await {
             Ok(marks) => marks,
             Err(error) => return refused("read the catalogue", &error.into()),
         };
         let body = json!({
-            "head": hex::encode(Sha256::digest(&head_vector)),
+            "head": head,
             "newer": newer,
             "base": base,
         });
@@ -1232,4 +1339,65 @@ impl Server {
     }
 
     /* -------------------------------------------------------------- assets */
+}
+
+#[cfg(test)]
+mod head_digest_tests {
+    use super::head_digest;
+    use loro::VersionVector;
+
+    /// Twenty peers with distinct, non-sequential ids and counters 1..=20.
+    fn entries() -> Vec<(u64, i32)> {
+        (1..=20_u64)
+            .map(|index| (index.wrapping_mul(0x9e37_79b9_7f4a_7c15), index as i32))
+            .collect()
+    }
+
+    #[test]
+    fn insertion_order_does_not_change_the_head() {
+        let items = entries();
+        let mut forward = VersionVector::default();
+        for (peer, counter) in &items {
+            forward.insert(*peer, *counter);
+        }
+        let mut backward = VersionVector::default();
+        for (peer, counter) in items.iter().rev() {
+            backward.insert(*peer, *counter);
+        }
+        assert_eq!(forward, backward);
+        assert_eq!(
+            head_digest(&forward.encode()).unwrap(),
+            head_digest(&backward.encode()).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_decoded_vector_keeps_its_head() {
+        let mut vector = VersionVector::default();
+        for (peer, counter) in entries() {
+            vector.insert(peer, counter);
+        }
+        let encoded = vector.encode();
+        let decoded = VersionVector::decode(&encoded).unwrap();
+        assert_eq!(
+            head_digest(&encoded).unwrap(),
+            head_digest(&decoded.encode()).unwrap()
+        );
+    }
+
+    #[test]
+    fn an_explicit_zero_entry_does_not_change_the_head() {
+        let mut plain = VersionVector::default();
+        let mut with_zero = VersionVector::default();
+        for (peer, counter) in entries() {
+            plain.insert(peer, counter);
+            with_zero.insert(peer, counter);
+        }
+        with_zero.insert(7, 0);
+        assert_eq!(plain, with_zero);
+        assert_eq!(
+            head_digest(&plain.encode()).unwrap(),
+            head_digest(&with_zero.encode()).unwrap()
+        );
+    }
 }

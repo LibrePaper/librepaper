@@ -724,6 +724,10 @@ main.reader.source-right .editorpane {
 .cm-editor .cm-searchMatch {
   background: color-mix(in srgb, var(--color-editor-tint) 14%, transparent);
 }
+/* Who wrote a run of text in the Authors view, tinted with that person's colour. */
+.cm-authorship {
+  background-color: color-mix(in srgb, var(--author) 20%, transparent);
+}
 /* The brand is dim on a dark document, so the tints use a brighter green. */
 [data-mode="dark"] .cm-editor .cm-activeLineGutter,
 [data-mode="dark"] .cm-editor .cm-activeLine {

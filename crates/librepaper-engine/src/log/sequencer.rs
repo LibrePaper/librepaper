@@ -293,6 +293,9 @@ impl Head<'_> {
             "this deployment has no memory to prepare that edit right now; retry".to_string()
         })?;
         let draft = self.doc.fork();
+        // Server edits carry timestamps like browser edits do, so history
+        // shows when an agent or a restore made a change.
+        draft.set_record_timestamp(true);
         edit(&draft)?;
         draft.commit();
         let batch = draft
@@ -2052,6 +2055,28 @@ impl Sequencer {
                 .await?;
             written
         };
+        // Attribute the peers this command wrote, in the same transaction as
+        // the row that carries them, so an attribution exists exactly when the
+        // source it describes does. Browser batches are attributed on the
+        // websocket path instead.
+        if let Some(command_source) = &prepared {
+            // The link digest is recorded only for automation writes, which
+            // is where an agent token presents itself. A browser link names a
+            // share, not a person, so its digest is left out.
+            let link_hash = match (&authority.link_hash, authority.automation) {
+                (Some(hash), true) => Some(hash.as_slice()),
+                _ => None,
+            };
+            PostgresCatalog::record_document_peers_tx(
+                &mut tx,
+                self.document_id,
+                &super::peers::peers_in_update(&command_source.batch),
+                authority.account_id,
+                link_hash,
+                "",
+            )
+            .await?;
+        }
         let evidence = Evidence {
             source_sequence,
             vector: vector.encode(),

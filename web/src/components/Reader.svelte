@@ -125,6 +125,7 @@
   import Git from "./reader/Git.svelte";
   import Diagnostics from "./reader/Diagnostics.svelte";
   import History from "./reader/History.svelte";
+  import { loadAuthors } from "../lib/authorship.js";
   import PendingAnnotations from "./reader/PendingAnnotations.svelte";
   import { m } from "../lib/paraglide/messages.js";
 
@@ -1446,6 +1447,39 @@
   const ARRIVED_FILE = new URLSearchParams(location.search).get("file") || "";
 
   const loadHistory = () => timeline.load();
+
+  // The Authors tab of the history panel. The panel says when the tab is on
+  // or off; while it is on, the editor colours the text by who wrote it. The
+  // map from peer to name is fetched once and then kept, so turning the tab
+  // on again is instant. A collaborator who joined after the fetch is not in
+  // the map, and the editor says so, which is what the refetch below is for.
+  let authorsView = $state(false);
+  let authorsOnly = $state(null);
+  let authorsMap = $state(null);
+  let authorsLoading = $state(false);
+  let authorsError = $state("");
+  let authorsSummary = $state(null);
+  let authorsRequests = 0;
+  // When the map was last asked for, whether or not it arrived. A refetch
+  // waits this long after the last one, so a failing server is not asked on
+  // every redraw.
+  let authorsFetchedAt = 0;
+  const AUTHORS_REFETCH_MS = 10000;
+
+  async function loadAuthorsMap() {
+    const request = ++authorsRequests;
+    authorsFetchedAt = Date.now();
+    authorsLoading = true;
+    authorsError = "";
+    try {
+      const map = await loadAuthors(SLUG, authHeaders(KEY));
+      if (request === authorsRequests) authorsMap = map;
+    } catch (error) {
+      if (request === authorsRequests) authorsError = error.message;
+    } finally {
+      if (request === authorsRequests) authorsLoading = false;
+    }
+  }
 
   // The timeline and the source workspace share one selection. Selecting a
   // version compares it with the current source and nothing else: the
@@ -2954,6 +2988,43 @@
   const openFile = $derived(ws.openFile);
   const rules = $derived(ws.rules);
   const shownFigure = $derived(ws.figure);
+
+  // The Authors view needs the history panel open and a source editor on
+  // screen to colour. Without one, the tab says there is no file to show.
+  const authorsShown = $derived(sourceOpen && !comparing && !shownFigure && sourceBound && Boolean(openFile));
+  const authorsActive = $derived(authorsView && panel === "history" && authorsShown);
+
+  // The tab can only be on while its panel is open. The panel is unmounted
+  // when it closes, and without this the tab would still be on when it opens
+  // again, with the tab bar showing another tab.
+  $effect(() => {
+    if (panel !== "history" && authorsView) authorsView = false;
+  });
+
+  // Turning the view on fetches the map the first time. Turning it off drops
+  // any isolated author, so the next time the tab is on, everyone is shown.
+  // Read untracked: the fetch sets state the effect would otherwise follow,
+  // and a failed fetch would then be retried in a loop.
+  $effect(() => {
+    const active = authorsActive;
+    untrack(() => {
+      if (!active) {
+        authorsOnly = null;
+        return;
+      }
+      if (!authorsMap && !authorsLoading) void loadAuthorsMap();
+    });
+  });
+
+  // When the editor finds text from a peer the map does not name, the map is
+  // fetched again, once the last fetch is ten seconds old. The timer belongs
+  // to the summary it was started for, so a newer summary replaces it.
+  $effect(() => {
+    if (!authorsActive || !authorsSummary?.missing) return;
+    const wait = Math.max(0, authorsFetchedAt + AUTHORS_REFETCH_MS - Date.now());
+    const timer = setTimeout(() => untrack(() => void loadAuthorsMap()), wait);
+    return () => clearTimeout(timer);
+  });
   const figureUrl = $derived(ws.figureUrl);
   // Test whether a file path can be displayed as an image in the figure view.
   const isDisplayableImage = (path) => /\.(?:png|jpg|jpeg|gif|svg|webp)$/i.test(path);
@@ -4333,7 +4404,17 @@
       onname={nameLabel} onretry={loadHistory}
       onloadmore={() => timeline.loadMore()}
       onloaduntil={(iso) => timeline.loadUntil(iso)}
-      onloadsaved={() => timeline.loadSaved()} />
+      onloadsaved={() => timeline.loadSaved()}
+      authors={authorsView ? {
+        rows: authorsSummary?.rows ?? [],
+        since: authorsSummary?.since ?? null,
+        loading: authorsLoading && !authorsMap,
+        error: authorsError,
+        noFile: !authorsShown,
+      } : null}
+      authorsOnly={authorsOnly}
+      onauthorsview={(on) => (authorsView = on)}
+      onisolate={(key) => (authorsOnly = key)} />
   {/snippet}
 
   <!-- Annotations the server has not acknowledged, offered back wherever
@@ -4398,6 +4479,8 @@
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   oncomment={(id) => focusAnnotation(comments.find((item) => String(item.id) === String(id))?.id, { focus: false })}
                   onformatstate={(state) => { formatActive = state; }}
+                  authorship={authorsActive && authorsMap ? { authors: authorsMap, only: authorsOnly } : null}
+                  onauthorship={(summary) => (authorsSummary = summary)}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />
       {/if}
     </section>

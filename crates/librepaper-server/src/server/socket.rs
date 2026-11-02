@@ -153,6 +153,21 @@ pub(super) struct Connection {
     pub(super) tx: Sender,
 }
 
+/// The name a socket's chat messages and recorded authors are filed under: the
+/// signed-in name, else "Anonymous" when the caller has no visitor key to
+/// make a pseudonym from, else the document's pseudonym for that key. It is
+/// the same rule a comment's creator follows, so every surface agrees on who
+/// a person is in a given document.
+fn author_label(id: &Identity, author: &str, slug: &str) -> String {
+    if id.is_signed_in() {
+        id.name.clone()
+    } else if author.is_empty() {
+        "Anonymous".to_string()
+    } else {
+        pseudonym_for(author, slug)
+    }
+}
+
 impl Server {
     pub(super) async fn handle_socket(
         self: Arc<Server>,
@@ -451,6 +466,13 @@ impl Server {
         let mut editor_joined = false;
         // Consecutive ingest refusals on this socket (§5 step 2).
         let mut refusals: u32 = 0;
+        // Loro peers this socket has already had recorded against the
+        // document. Only a successful write enters the set, so a failed
+        // write is retried on the next update that carries that peer. Once
+        // a peer is here it costs nothing further for the rest of the
+        // session, which is what keeps this to one write per peer rather
+        // than one per keystroke.
+        let mut recorded_peers: std::collections::HashSet<u64> = std::collections::HashSet::new();
         // Link expiry is still its own precise per-connection deadline; the
         // moderation refresh above is separate and only handles state that
         // can change out of process. Armed once, outside the loop, so
@@ -582,13 +604,7 @@ impl Server {
                             let _ = send_outgoing(&tx, Outgoing::Text(refused_frame(Kind::RateLimited, "too many chat messages; try again shortly", &incoming))).await;
                             continue 'reader;
                         }
-                        let creator = if who.id.is_signed_in() {
-                            who.id.name.clone()
-                        } else if author.is_empty() {
-                            "Anonymous".to_string()
-                        } else {
-                            pseudonym_for(&author, &room.slug)
-                        };
+                        let creator = author_label(&who.id, &author, &room.slug);
                         let record = ChatRecord {
                             id: uuid::Uuid::now_v7(),
                             author_account_id: who.account_id(),
@@ -819,6 +835,10 @@ impl Server {
                                     .await;
                                     break 'reader;
                                 }
+                                // Read before `ingest` takes the update: the
+                                // peers are the ones whose operations this
+                                // batch carries, which is who wrote it.
+                                let peers = librepaper_engine::log::peers_in_update(&update);
                                 match room
                                     .ingest(
                                         socket_id,
@@ -834,6 +854,35 @@ impl Server {
                                     // it again here would double it.
                                     Ingested::Accepted => {
                                         refusals = 0;
+                                        // Attribution is best effort. A failed
+                                        // write is logged and the edit stands:
+                                        // it must never refuse the update or
+                                        // close the socket, because the text is
+                                        // what the editor came to save.
+                                        let fresh: Vec<u64> = peers
+                                            .into_iter()
+                                            .filter(|peer| !recorded_peers.contains(peer))
+                                            .collect();
+                                        if !fresh.is_empty() {
+                                            let label = author_label(&who.id, &author, &room.slug);
+                                            match self
+                                                .store
+                                                .catalog
+                                                .record_document_peers(
+                                                    room.document_id,
+                                                    &fresh,
+                                                    who.account_id(),
+                                                    &label,
+                                                )
+                                                .await
+                                            {
+                                                Ok(()) => recorded_peers.extend(fresh),
+                                                Err(error) => tracing::warn!(
+                                                    "could not record authors for {}: {error}",
+                                                    room.slug
+                                                ),
+                                            }
+                                        }
                                     }
                                     Ingested::Gap { vector } => {
                                         let _ = send_outgoing(&tx, Outgoing::Text(json!({
