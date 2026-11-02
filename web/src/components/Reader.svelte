@@ -359,6 +359,37 @@
     frameOverlays.annotations(comments);
   }
 
+  // The comment marks in the source, from the same placement the preview uses:
+  // `sourceStart` and `sourceEnd` are set by `anchorComments`, so this is sent
+  // again after every re-anchor as well as when the comments or the selection
+  // change. Resolved comments are drawn too, as the preview draws them.
+  function pushCommentMarks() {
+    if (!editor || !session) return;
+    const list = [];
+    for (const comment of comments) {
+      if (comment.sourceStart == null || comment.sourceEnd == null || !comment.sourcePath) continue;
+      const file = session.idOf(comment.sourcePath);
+      if (!file) continue;
+      list.push({
+        id: String(comment.id),
+        file,
+        from: comment.sourceStart,
+        to: comment.sourceEnd,
+        highlight: comment.motivation === "highlighting",
+        color: comment.color || null,
+        selected: String(comment.id) === String(selectedAnnotation),
+      });
+    }
+    untrack(() => editor.setCommentMarks(list));
+  }
+  $effect(() => {
+    void comments;
+    void selectedAnnotation;
+    void editor;
+    void session;
+    pushCommentMarks();
+  });
+
   // Source resolution determines whether the passage survived. Rendered
   // matching only locates its display mark; for readers, whose source state
   // is private, the published page is the only available display answer.
@@ -426,6 +457,7 @@
     anchorComments(comments);
     annotations.publish();
     applyHighlights();
+    pushCommentMarks();
   }
 
   // Scroll tracking for mobile bar hide/show: called by scroll listeners and
@@ -4348,6 +4380,7 @@
         <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
+                  oncomment={(id) => focusAnnotation(comments.find((item) => String(item.id) === String(id))?.id)}
                   onformatstate={(state) => { formatActive = state; }}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />
       {/if}
