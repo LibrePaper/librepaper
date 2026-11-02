@@ -8,50 +8,40 @@ The desktop app is not an offline editor. You can switch between the browser and
 
 ## Install the desktop app
 
+Every install except the plain macOS `.dmg` puts two commands on your PATH: `librepaper` (the [command line](cli.html)) and `librepaper-desktop` (the app). You do not need the command line to write. Once installed, open LibrePaper from your applications menu, or run `librepaper-desktop` in a terminal.
+
+### Binaries
+
 Download the installer from the [latest release on GitHub](https://github.com/LibrePaper/librepaper/releases/latest):
 
-- **macOS:** `LibrePaper_<version>_universal.dmg`, for Apple Silicon and Intel Macs.
-- **Windows:** `LibrePaper_<version>_x64-setup.exe`, signed.
-- **Linux:** `librepaper_<version>_amd64.deb` for Debian and Ubuntu, or `librepaper-<version>-1.x86_64.rpm` for Fedora and openSUSE.
-
-Package managers are covered below. Every package except the plain macOS `.dmg` puts two commands on your PATH: `librepaper` (the [command line](cli.html)) and `librepaper-desktop` (the app). You do not need the command line to write.
-
-### macOS
-
-Install with Homebrew:
-
-```sh
-brew install vincentarelbundock/tap/librepaper
-```
-
-Or open the `.dmg` and drag LibrePaper to Applications. This install does not put the commands on your PATH.
-
-### Windows
-
-Install with Scoop:
-
-```sh
-scoop bucket add vincentarelbundock https://github.com/vincentarelbundock/scoop-bucket
-scoop install librepaper
-```
-
-Or run the `.exe` installer. It adds its folder to your user PATH, so open a new terminal to use both commands. Uninstalling removes the PATH entry.
-
-### Linux
-
-Download the `.deb` or `.rpm` package from the [latest release](https://github.com/LibrePaper/librepaper/releases/latest) and install it with your package manager. On Nix (x86_64 Linux only), install from the repository.
+- **macOS:** `LibrePaper_<version>_universal.dmg`, for Apple Silicon and Intel Macs. Open it and drag LibrePaper to Applications. This install does not put the commands on your PATH.
+- **Windows:** `LibrePaper_<version>_x64-setup.exe`, signed. It adds its folder to your user PATH, so open a new terminal to use both commands. Uninstalling removes the PATH entry.
+- **Linux:** `librepaper_<version>_amd64.deb` for Debian and Ubuntu, or `librepaper-<version>-1.x86_64.rpm` for Fedora and openSUSE. Install it with your package manager.
 
 ```sh
 sudo apt install ./librepaper_<version>_amd64.deb            # Debian and Ubuntu
 sudo dnf install ./librepaper-<version>-1.x86_64.rpm         # Fedora
 sudo zypper install ./librepaper-<version>-1.x86_64.rpm      # openSUSE
-nix profile install github:LibrePaper/librepaper             # Nix
-nix run github:LibrePaper/librepaper                         # Nix, without installing
 ```
 
-Remove it with `sudo apt remove librepaper` or `sudo dnf remove librepaper`. Open LibrePaper from your applications menu, or run `librepaper-desktop` in a terminal.
+### Package managers
 
-### Command line only
+Homebrew on macOS, Scoop on Windows and Nix on x86_64 Linux install the app and keep it up to date with their own commands.
+
+```sh
+# macOS
+brew install vincentarelbundock/tap/librepaper
+
+# Windows
+scoop bucket add vincentarelbundock https://github.com/vincentarelbundock/scoop-bucket
+scoop install librepaper
+
+# Nix
+nix profile install github:LibrePaper/librepaper
+nix run github:LibrePaper/librepaper              # or try it without installing
+```
+
+### Shell script
 
 The release also has install scripts. They install the `librepaper` command without the desktop app, for a server or a machine where you only script documents. See the [command line](cli.html) page.
 
@@ -65,7 +55,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/LibrePaper/librepaper/r
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.ps1 | iex"
 ```
 
-### Build from source
+### Source
 
 From a checkout of the repository, `make desktop` builds the app and the `librepaper` binary it bundles. On NixOS, it runs inside `nix-shell`. `LIBREPAPER_SERVER` points the app at another server instead of the default one.
 
