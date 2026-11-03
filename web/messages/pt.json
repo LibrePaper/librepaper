@@ -1260,18 +1260,24 @@
   "historyworkspace_binary_changed": "Este arquivo foi alterado. Imagens e outros arquivos binários não são comparados aqui.",
   "historyworkspace_binary_removed": "Este arquivo foi removido.",
   "historyworkspace_binary_same": "Este arquivo não foi alterado.",
+  "historyworkspace_change_newer": "Alterar a versão posterior",
+  "historyworkspace_change_newer_aria": "Alterar a versão posterior, atualmente {version}",
+  "historyworkspace_change_older": "Alterar a versão anterior",
+  "historyworkspace_change_older_aria": "Alterar a versão anterior, atualmente {version}",
+  "historyworkspace_change_position": "Alteração {index} de {count}",
+  "historyworkspace_comparing": "Comparando {older} com {newer}",
   "historyworkspace_comparison_failed": "Não foi possível carregar a comparação. Verifique sua conexão e reabra esta versão.",
+  "historyworkspace_download_newer": "Baixar a posterior",
+  "historyworkspace_download_older": "Baixar a anterior",
   "historyworkspace_download_title": "Baixar {version} como arquivo",
-  "historyworkspace_download_version": "Baixar versão",
   "historyworkspace_downloading": "Baixando…",
   "historyworkspace_empty_file": "Arquivo vazio.",
   "historyworkspace_file_added": "Arquivo adicionado.",
   "historyworkspace_file_marked": "{name} · {status}",
-  "historyworkspace_file_removed": "Arquivo removido.",
-  "historyworkspace_file_select": "Arquivo do histórico",
-  "historyworkspace_files_changed": [
+  "historyworkspace_file_position": [
     {
       "declarations": [
+        "input index",
         "input count",
         "local countPlural = count: plural"
       ],
@@ -1279,26 +1285,29 @@
         "countPlural"
       ],
       "match": {
-        "countPlural=one": "{count} arquivo alterado",
-        "countPlural=*": "{count} arquivos alterados"
+        "countPlural=one": "{index} de {count} arquivo",
+        "countPlural=*": "{index} de {count} arquivos"
       }
     }
   ],
+  "historyworkspace_file_removed": "Arquivo removido.",
+  "historyworkspace_file_select": "Arquivo do histórico",
   "historyworkspace_loading_comparison": "Carregando a comparação…",
   "historyworkspace_loading_source": "Carregando o código-fonte da versão…",
   "historyworkspace_mark_added": "adicionado",
   "historyworkspace_mark_changed": "alterado",
   "historyworkspace_mark_removed": "removido",
   "historyworkspace_newer": "Posterior",
-  "historyworkspace_newer_version": "Versão posterior",
+  "historyworkspace_next_change": "Próxima alteração",
+  "historyworkspace_no_changes": "Sem alterações",
   "historyworkspace_no_differences": "Nenhuma diferença",
   "historyworkspace_no_source_files": "Esta versão não tem arquivos de código-fonte.",
   "historyworkspace_no_text_source": "Este arquivo não tem código-fonte em texto para exibir.",
   "historyworkspace_older": "Anterior",
-  "historyworkspace_older_version": "Versão anterior",
+  "historyworkspace_previous_change": "Alteração anterior",
   "historyworkspace_reload_current": "Recarregar a versão atual",
+  "historyworkspace_restore_older": "Restaurar a versão anterior",
   "historyworkspace_restore_title": "Restaurar {version}",
-  "historyworkspace_restore_version": "Restaurar versão",
   "historyworkspace_select_prompt": "Selecione uma versão para ver o que ela alterou.",
   "historyworkspace_source_label": "Código-fonte do histórico",
   "html_bundle_index_failed": "Não foi possível carregar o índice do pacote TeX",
