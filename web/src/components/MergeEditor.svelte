@@ -46,6 +46,7 @@
   let merge = null;
   // The editor(s) of the current build and their chunks, for goToChange.
   let views = [];
+  /** @type {readonly import("@codemirror/merge").Chunk[]} */
   let chunkList = [];
   let active = -1;
 
@@ -55,6 +56,7 @@
   const collapse = { margin: 3, minSize: 4 };
 
   // The active change is marked by a line class on its lines.
+  /** @type {import("@codemirror/state").StateEffectType<{ from: number, to: number } | null>} */
   const setActive = StateEffect.define();
   const activeLine = Decoration.line({ class: "cm-activeChange" });
   const activeField = StateField.define({
@@ -167,10 +169,10 @@
         parent: host,
       });
     active = -1;
-    if (diff && !single) {
+    if (merge instanceof MergeView) {
       views = [merge.a, merge.b];
       chunkList = merge.chunks;
-    } else if (diff) {
+    } else if (diff && merge instanceof EditorView) {
       views = [merge];
       chunkList = getChunks(merge.state)?.chunks ?? [];
     } else {

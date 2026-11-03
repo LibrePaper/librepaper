@@ -4404,7 +4404,6 @@
       onview={(sha) => historySource.mode !== "normal" ? historySource.choose(sha) : viewPoint(sha)}
       selecting={historySource.mode}
       oncancelselect={() => historySource.cancelSelect()}
-      oncompare={(a, b) => { beginComparison("history"); return historySource.compare(a || CURRENT, b || CURRENT); }}
       onname={nameLabel} onretry={loadHistory}
       onloadmore={() => timeline.loadMore()}
       onloaduntil={(iso) => timeline.loadUntil(iso)}

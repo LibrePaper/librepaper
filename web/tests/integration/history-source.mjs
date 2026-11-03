@@ -214,10 +214,18 @@ picker.dispose();
 
 // Rapid choices: a slower read for an earlier choice does not overwrite a later one.
 const gated = {};
+let gatedC = false;
 const rapid = createHistorySource({
   currentTree: () => live,
   labels: () => [{ sha: "A", seq: 1 }, { sha: "B", seq: 2 }, { sha: "C", seq: 3 }],
-  read: sha => (sha === "C" ? new Promise(resolve => { gated.C = resolve; }) : read(sha)),
+  // Only the first read of "C" is held back; later reads answer at once.
+  read: sha => {
+    if (sha === "C" && !gatedC) {
+      gatedC = true;
+      return new Promise(resolve => { gated.C = resolve; });
+    }
+    return read(sha);
+  },
 });
 await rapid.compare("A", "B", "B");
 rapid.beginSelect("newer");
