@@ -229,29 +229,46 @@ async function runChecks() {
         `showing more brings the list to 55 versions, shows ${versionsOf(run()).length}`);
     });
 
-    await step("3: a click views the newest version, shift-click compares the viewed one with it", async () => {
+    await step("3: a session row only opens, the newest version is the live document, shift-click compares", async () => {
       mount({ labels: fixtures.autosaves });
       await flush();
-      const newest = fixtures.autosaves[fixtures.autosaves.length - 1].sha;
       const oldest = fixtures.autosaves[0].sha;
-      const main = () => eventsOf("editing")[0].querySelector("button.hx-main");
+      const second = fixtures.autosaves[fixtures.autosaves.length - 2].sha;
+      const session = () => eventsOf("editing")[0].querySelector("button.hx-session");
+      const rowOf = (sha) => q(`li.hx-version[data-sha="${sha}"] button`);
 
-      click(main());
+      click(session());
       await flush();
-      check(JSON.stringify(calls) === JSON.stringify([["view", newest]]),
-        `a click should ask for the newest version to be viewed, calls: ${JSON.stringify(calls)}`);
+      check(calls.length === 0, `opening a session selects nothing, calls: ${JSON.stringify(calls)}`);
+      check(session().getAttribute("aria-expanded") === "true", "a click on the session row opens it");
+      click(session());
+      await flush();
+      check(session().getAttribute("aria-expanded") === "false" && calls.length === 0,
+        "a second click closes it, still selecting nothing");
+      press(session(), "ArrowRight");
+      await flush();
+      check(session().getAttribute("aria-expanded") === "true", "ArrowRight opens a session");
 
-      // Nothing is viewed yet, so shift-click compares from the Current row.
-      click(main(), { shiftKey: true });
+      const first = versionsOf(eventsOf("editing")[0])[0];
+      check(first.querySelector(".hx-now") && text(first.querySelector(".hx-now")) === "Current",
+        "the newest version row says Current");
+      check(all(".hx-now").length === 1, "only the newest version says Current");
+      click(first.querySelector("button"));
       await flush();
-      check(JSON.stringify(calls) === JSON.stringify([["view", newest], ["compare", "", newest]]),
+      check(JSON.stringify(calls) === JSON.stringify([["view", ""]]),
+        `the newest row views the live document, calls: ${JSON.stringify(calls)}`);
+
+      // Nothing is viewed yet, so shift-click compares from the live document.
+      click(rowOf(second), { shiftKey: true });
+      await flush();
+      check(JSON.stringify(calls.slice(1)) === JSON.stringify([["compare", "", second]]),
         `a shift-click with nothing viewed should compare from the current version, calls: ${JSON.stringify(calls)}`);
 
       update({ viewing: oldest });
       await flush();
-      click(main(), { shiftKey: true });
+      click(rowOf(second), { shiftKey: true });
       await flush();
-      check(JSON.stringify(calls.slice(2)) === JSON.stringify([["compare", oldest, newest]]),
+      check(JSON.stringify(calls.slice(2)) === JSON.stringify([["compare", oldest, second]]),
         `a shift-click should compare the viewed version with the clicked one, calls: ${JSON.stringify(calls)}`);
     });
 
@@ -282,6 +299,8 @@ async function runChecks() {
       const shared = eventsOf("collaborative");
       check(shared.length === 1 && text(shared[0]).includes("2 contributors"),
         `two authors in one session are a collaborative event with 2 contributors, found ${shared.map(text).join(" | ")}`);
+      check(!text(shared[0]).includes("Collaborative session") && /\d:\d\d/.test(text(shared[0])),
+        `a session is titled by its time range, found: ${text(shared[0])}`);
     });
 
     await step("7: period headings, counts and loading older history", async () => {
@@ -369,7 +388,7 @@ async function runChecks() {
       await flush();
       check(selected("All") && !selected("Saved"),
         "switching back selects the all tab");
-      check(q("li.hx-current") && q(`[data-sha="${keys.olderSha}"] [aria-current="true"]`),
+      check(q(".hx-now") && q(`[data-sha="${keys.olderSha}"] [aria-current="true"]`),
         "switching back restores the timeline and the selection in it");
     });
 
@@ -430,6 +449,7 @@ async function runChecks() {
       check(!moreIcon, "no more-horizontal icon is in the panel");
       const compareButtons = () => all("button[data-compare]", panel);
       check(compareButtons().length === 0, "no row offers Compare with… when nothing is selected");
+      check(!q("li.hx-current"), "no separate Current row is listed once there are versions");
 
       const second = fixtures.autosaves[fixtures.autosaves.length - 2].sha;
       update({ viewing: second });
@@ -447,13 +467,17 @@ async function runChecks() {
       const status = () => q(".hx-pick");
       check(compare() && text(compare()) === "Compare with…", "the selected row offers Compare with…");
 
-      // The version a plain click on today's editing event opens is the one a
-      // pick on it compares with.
-      const todayRow = () => eventsOf("editing")[0].querySelector("button.hx-main");
+      // A plain click on a version of today's session views it, and a pick on
+      // it compares with it. The session row only opens.
+      click(eventsOf("editing")[0].querySelector("button.hx-session"));
+      await flush();
+      check(calls.length === 0, "opening today's session selects nothing");
+      const todayRow = () => versionsOf(eventsOf("editing")[0])[1].querySelector("button");
+      const todayNewest = versionsOf(eventsOf("editing")[0])[1].dataset.sha;
       click(todayRow());
       await flush();
-      const todayNewest = calls.splice(0)[0]?.[1];
-      check(todayNewest, "a plain click on today's event views a version");
+      check(JSON.stringify(calls.splice(0)) === JSON.stringify([["view", todayNewest]]),
+        "a plain click on a version of today's session views it");
 
       click(compare());
       await flush();
@@ -475,6 +499,25 @@ async function runChecks() {
       check(!status(), "Escape ends pick mode");
       check(calls.length === 1, `Escape should not compare, calls: ${JSON.stringify(calls)}`);
       check(document.activeElement === compare(), "focus returns to Compare with… after Escape");
+    });
+
+    await step("14: the newest row stands for the live document, endpoints are words", async () => {
+      const newest = fixtures.autosaves[fixtures.autosaves.length - 1].sha;
+      const second = fixtures.autosaves[fixtures.autosaves.length - 2].sha;
+      mount({ labels: fixtures.autosaves, older: second, newer: "current", viewing: second });
+      await flush();
+      click(eventsOf("editing")[0].querySelector("button.hx-session"));
+      await flush();
+      const live = q(`li.hx-version[data-sha="${newest}"] button`);
+      check(live.getAttribute("aria-label").includes("Current") && live.getAttribute("aria-label").includes("Newer"),
+        `the live row names Current and the Newer end, says: ${live.getAttribute("aria-label")}`);
+      check(!text(live).includes("Newer"), "Current alone is enough on the newer end, the row shows no Newer");
+      const old = q(`li.hx-version[data-sha="${second}"] button`);
+      check(old.getAttribute("aria-label").includes("Older") && text(old).includes("Older"),
+        `the older end says Older, says: ${old.getAttribute("aria-label")}`);
+      check(old.getAttribute("aria-current") === "true" && live.getAttribute("aria-current") !== "true",
+        "only the viewed version is selected");
+      check(q("li.hx-current") === null && !all(".hx-tag").length, "no Current row and no pills");
     });
 
     await step("13: the authors tab lists who wrote the file and isolates one", async () => {
