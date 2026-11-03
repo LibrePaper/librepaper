@@ -1166,7 +1166,6 @@
   "history_bookmark_version": "Ajouter un signet à cette version",
   "history_by": "par {who}",
   "history_commented": "Commenté",
-  "history_compare_with": "Comparer avec…",
   "history_contributors": [
     {
       "declarations": [
@@ -1221,7 +1220,6 @@
   "history_none": "Aucune version précédente",
   "history_not_readable": "l’historique de ce document n’est pas lisible",
   "history_older_tag": "Plus ancienne",
-  "history_pick_prompt": "Choisissez une version à comparer.",
   "history_push": "Envoyé",
   "history_pushed_by": "Envoyé par {author}",
   "history_recovered": "Récupéré",
@@ -1233,6 +1231,8 @@
   "history_row_tip": "{what}, {detail}",
   "history_row_tip_endpoint": "{what}, {detail}, {endpoint}",
   "history_saved_short": "Enreg.",
+  "history_select_newer_prompt": "Sélectionner une version plus récente",
+  "history_select_older_prompt": "Sélectionner une version plus ancienne",
   "history_shown_to_readers": "Affiché aux lecteurs",
   "history_source_earlier_moment": "Un moment antérieur",
   "history_source_label_load_failed": "Impossible de charger les sources de la version.",
@@ -1260,18 +1260,24 @@
   "historyworkspace_binary_changed": "Ce fichier a été modifié. Les images et les autres fichiers binaires ne sont pas comparés ici.",
   "historyworkspace_binary_removed": "Ce fichier a été supprimé.",
   "historyworkspace_binary_same": "Ce fichier est inchangé.",
+  "historyworkspace_change_newer": "Changer la version plus récente",
+  "historyworkspace_change_newer_aria": "Changer la version plus récente, actuellement {version}",
+  "historyworkspace_change_older": "Changer la version plus ancienne",
+  "historyworkspace_change_older_aria": "Changer la version plus ancienne, actuellement {version}",
+  "historyworkspace_change_position": "Modification {index} sur {count}",
+  "historyworkspace_comparing": "Comparaison de {older} avec {newer}",
   "historyworkspace_comparison_failed": "La comparaison n’a pas pu être chargée. Vérifiez votre connexion, puis rouvrez cette version.",
+  "historyworkspace_download_newer": "Télécharger la plus récente",
+  "historyworkspace_download_older": "Télécharger la plus ancienne",
   "historyworkspace_download_title": "Télécharger {version} en archive",
-  "historyworkspace_download_version": "Télécharger la version",
   "historyworkspace_downloading": "Téléchargement…",
   "historyworkspace_empty_file": "Fichier vide.",
   "historyworkspace_file_added": "Fichier ajouté.",
   "historyworkspace_file_marked": "{name} · {status}",
-  "historyworkspace_file_removed": "Fichier supprimé.",
-  "historyworkspace_file_select": "Fichier de l’historique",
-  "historyworkspace_files_changed": [
+  "historyworkspace_file_position": [
     {
       "declarations": [
+        "input index",
         "input count",
         "local countPlural = count: plural"
       ],
@@ -1279,26 +1285,29 @@
         "countPlural"
       ],
       "match": {
-        "countPlural=one": "{count} fichier modifié",
-        "countPlural=*": "{count} fichiers modifiés"
+        "countPlural=one": "{index} sur {count} fichier",
+        "countPlural=*": "{index} sur {count} fichiers"
       }
     }
   ],
+  "historyworkspace_file_removed": "Fichier supprimé.",
+  "historyworkspace_file_select": "Fichier de l’historique",
   "historyworkspace_loading_comparison": "Chargement de la comparaison…",
   "historyworkspace_loading_source": "Chargement de la source de la version…",
   "historyworkspace_mark_added": "ajouté",
   "historyworkspace_mark_changed": "modifié",
   "historyworkspace_mark_removed": "supprimé",
   "historyworkspace_newer": "Plus récente",
-  "historyworkspace_newer_version": "Version plus récente",
+  "historyworkspace_next_change": "Modification suivante",
+  "historyworkspace_no_changes": "Aucune modification",
   "historyworkspace_no_differences": "Aucune différence",
   "historyworkspace_no_source_files": "Cette version ne contient aucun fichier source.",
   "historyworkspace_no_text_source": "Ce fichier n’a pas de source textuelle à afficher.",
   "historyworkspace_older": "Plus ancienne",
-  "historyworkspace_older_version": "Version plus ancienne",
+  "historyworkspace_previous_change": "Modification précédente",
   "historyworkspace_reload_current": "Recharger la version actuelle",
+  "historyworkspace_restore_older": "Restaurer la version plus ancienne",
   "historyworkspace_restore_title": "Restaurer {version}",
-  "historyworkspace_restore_version": "Restaurer la version",
   "historyworkspace_select_prompt": "Sélectionnez une version pour voir ce qu’elle a modifié.",
   "historyworkspace_source_label": "Source de l’historique",
   "html_bundle_index_failed": "Impossible de charger l’index des paquets TeX",

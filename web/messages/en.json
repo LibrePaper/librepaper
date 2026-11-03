@@ -1166,7 +1166,6 @@
   "history_bookmark_version": "Bookmark this version",
   "history_by": "by {who}",
   "history_commented": "Commented",
-  "history_compare_with": "Compare with…",
   "history_contributors": [
     {
       "declarations": [
@@ -1221,7 +1220,6 @@
   "history_none": "No previous versions",
   "history_not_readable": "this document's history is not readable",
   "history_older_tag": "Older",
-  "history_pick_prompt": "Choose a version to compare with.",
   "history_push": "Pushed",
   "history_pushed_by": "Pushed by {author}",
   "history_recovered": "Recovered",
@@ -1233,6 +1231,8 @@
   "history_row_tip": "{what}, {detail}",
   "history_row_tip_endpoint": "{what}, {detail}, {endpoint}",
   "history_saved_short": "Saved",
+  "history_select_newer_prompt": "Select a newer version",
+  "history_select_older_prompt": "Select an older version",
   "history_shown_to_readers": "Shown to readers",
   "history_source_earlier_moment": "An earlier moment",
   "history_source_label_load_failed": "Could not load label source.",
@@ -1260,18 +1260,24 @@
   "historyworkspace_binary_changed": "This file changed. Images and other binary files are not compared here.",
   "historyworkspace_binary_removed": "This file was removed.",
   "historyworkspace_binary_same": "This file is unchanged.",
+  "historyworkspace_change_newer": "Change newer version",
+  "historyworkspace_change_newer_aria": "Change newer version, currently {version}",
+  "historyworkspace_change_older": "Change older version",
+  "historyworkspace_change_older_aria": "Change older version, currently {version}",
+  "historyworkspace_change_position": "Change {index} of {count}",
+  "historyworkspace_comparing": "Comparing {older} with {newer}",
   "historyworkspace_comparison_failed": "The comparison could not be loaded. Check your connection and reopen this version.",
+  "historyworkspace_download_newer": "Download newer",
+  "historyworkspace_download_older": "Download older",
   "historyworkspace_download_title": "Download {version} as an archive",
-  "historyworkspace_download_version": "Download version",
   "historyworkspace_downloading": "Downloading…",
   "historyworkspace_empty_file": "Empty file.",
   "historyworkspace_file_added": "File added.",
   "historyworkspace_file_marked": "{name} · {status}",
-  "historyworkspace_file_removed": "File removed.",
-  "historyworkspace_file_select": "History file",
-  "historyworkspace_files_changed": [
+  "historyworkspace_file_position": [
     {
       "declarations": [
+        "input index",
         "input count",
         "local countPlural = count: plural"
       ],
@@ -1279,26 +1285,29 @@
         "countPlural"
       ],
       "match": {
-        "countPlural=one": "{count} file changed",
-        "countPlural=*": "{count} files changed"
+        "countPlural=one": "{index} of {count} file",
+        "countPlural=*": "{index} of {count} files"
       }
     }
   ],
+  "historyworkspace_file_removed": "File removed.",
+  "historyworkspace_file_select": "History file",
   "historyworkspace_loading_comparison": "Loading the comparison…",
   "historyworkspace_loading_source": "Loading version source…",
   "historyworkspace_mark_added": "added",
   "historyworkspace_mark_changed": "changed",
   "historyworkspace_mark_removed": "removed",
   "historyworkspace_newer": "Newer",
-  "historyworkspace_newer_version": "Newer version",
+  "historyworkspace_next_change": "Next change",
+  "historyworkspace_no_changes": "No changes",
   "historyworkspace_no_differences": "No differences",
   "historyworkspace_no_source_files": "This version has no source files.",
   "historyworkspace_no_text_source": "This file has no text source to display.",
   "historyworkspace_older": "Older",
-  "historyworkspace_older_version": "Older version",
+  "historyworkspace_previous_change": "Previous change",
   "historyworkspace_reload_current": "Reload the current version",
+  "historyworkspace_restore_older": "Restore older version",
   "historyworkspace_restore_title": "Restore {version}",
-  "historyworkspace_restore_version": "Restore version",
   "historyworkspace_select_prompt": "Select a version to see what it changed.",
   "historyworkspace_source_label": "History source",
   "html_bundle_index_failed": "Could not load the TeX bundle index",
