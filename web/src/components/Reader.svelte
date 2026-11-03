@@ -1442,6 +1442,18 @@
   });
   const historySelectedSha = $derived(historySource.selected);
   $effect(() => () => historySource.dispose());
+  // On a phone only one pane shows. Picking a version needs the timeline, so
+  // show it while a selection is open, and the comparison again once the
+  // choice is made or cancelled.
+  let previousHistoryMode = "normal";
+  $effect(() => {
+    const mode = historySource.mode;
+    const before = previousHistoryMode;
+    previousHistoryMode = mode;
+    if (!compact || mode === before) return;
+    if (before === "normal") untrack(() => showMobileView("sidebar"));
+    else if (mode === "normal") untrack(() => showMobileView("source"));
+  });
   let navigationGeneration = 0;
   // Which file the reader arrived asking for, when the landing page's search
   // found the project by one of its files. Honoured once the directory has
@@ -4472,8 +4484,7 @@
       {#if comparing === "history"}
         <HistoryWorkspace source={historySource} versions={labels} canEdit={mayEdit} onrestore={restoreLabel}
           ondownload={downloadArchive}
-          downloading={downloadingSha === historySource.target ? downloadingSha : ""}
-          downloadProblem={downloadingSha === historySource.target ? downloadProblem : ""} />
+          downloading={downloadingSha} downloadProblem={downloadProblem} />
       {:else if shownFigure}
         {@render figureBody()}
       {:else if Editor && sourceBound}

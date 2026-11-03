@@ -1,4 +1,5 @@
 <script>
+  import { tick } from "svelte";
   import { loadMergeEditor } from "../../lib/merge-editor.js";
   import { CURRENT, NOTHING } from "../../lib/history-endpoints.js";
   import { endpointLabel, versionLabels } from "../../lib/version-label.js";
@@ -167,7 +168,11 @@
       {#if MergeEditor}
         <MergeEditor bind:this={mergeEditor} {path} oldText={oldText ?? ""} newText={newText ?? ""}
           diff={result.diff} editable={false} header={false} unifiedBelow={720}
-          onchanges={(count) => { changeCount = count; activeChange = 0; }}
+          onchanges={(count) => {
+            changeCount = count;
+            activeChange = 0;
+            if (count > 0) tick().then(() => mergeEditor?.goToChange(0));
+          }}
           baselineLabel={endpointLabel(result.older, labels)} targetLabel={endpointLabel(result.newer, labels)} />
       {:else if mergeFailed}
         <p role="alert">{m.historyworkspace_comparison_failed()}</p>
