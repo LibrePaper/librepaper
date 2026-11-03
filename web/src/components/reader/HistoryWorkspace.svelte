@@ -1,8 +1,11 @@
 <script>
+  import { tick } from "svelte";
   import { loadMergeEditor } from "../../lib/merge-editor.js";
-  import { CURRENT, rankOf } from "../../lib/history-endpoints.js";
+  import { CURRENT, NOTHING } from "../../lib/history-endpoints.js";
   import { endpointLabel, versionLabels } from "../../lib/version-label.js";
   import { m } from "../../lib/paraglide/messages.js";
+  import { isMoment } from "../../lib/moment.js";
+  import Icon from "../Icon.svelte";
   import IconButton from "../IconButton.svelte";
 
   // The comparison editor is fetched when there is something to compare, not
@@ -12,8 +15,7 @@
   // opens a version.
   let MergeEditor = $state(null);
   let mergeFailed = $state(false);
-  // `versions` is the timeline's labels, oldest first. The selects list them
-  // newest first.
+  // `versions` is the timeline's labels, oldest first.
   let { source, versions = [], canEdit = false, onrestore, ondownload, downloading = "", downloadProblem = "" } = $props();
   const result = $derived(source.result);
   const path = $derived(source.path);
@@ -52,44 +54,70 @@
   // The labels are read in this browser's time zone, as the history list reads them.
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const labels = $derived(versionLabels(versions, { timeZone }));
-  const shas = $derived(versions.map((point) => point.sha).reverse());
-  // A value that is neither a version nor the current one, such as the
-  // beginning of history or a moment, still needs an option, or its select
-  // would show nothing.
-  const extra = (value) => (value && value !== CURRENT && !shas.includes(value) ? [value] : []);
-  const olderChoices = $derived([...shas, ...extra(source.older)]);
-  const newerChoices = $derived([CURRENT, ...shas, ...extra(source.newer)]);
-  // Older has to come before Newer. An endpoint that is not in the timeline
-  // cannot be ranked, and is left selectable rather than guessed at.
-  const before = (older, newer) => {
-    const low = rankOf(older, versions), high = rankOf(newer, versions);
-    return low === null || high === null || low < high;
+
+  // A version's archive and restore read a stored version: the live project,
+  // the empty start and a moment are not one.
+  const stored = (id) => Boolean(id) && id !== CURRENT && id !== NOTHING && !isMoment(id);
+  const olderLabel = $derived(endpointLabel(source.older, labels));
+  const newerLabel = $derived(endpointLabel(source.newer, labels));
+  const filePosition = $derived((result?.changed ?? []).indexOf(path) + 1);
+
+  // Focus returns to the endpoint button whose selection was cancelled.
+  let olderButton = $state(null);
+  let newerButton = $state(null);
+  $effect(() => {
+    if (source.cancelled === "older") olderButton?.focus();
+    else if (source.cancelled === "newer") newerButton?.focus();
+  });
+
+  // The change being looked at, counted from 0, in the diff below.
+  let mergeEditor = $state(null);
+  let changeCount = $state(0);
+  let activeChange = $state(0);
+  const go = (index) => {
+    if (index < 0 || index >= changeCount) return;
+    activeChange = index;
+    mergeEditor?.goToChange(index);
+  };
+  const keydown = (event) => {
+    if (event.key === "Escape" && source.mode !== "normal") {
+      event.preventDefault();
+      source.cancelSelect();
+    } else if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+      event.preventDefault();
+      go(activeChange + (event.key === "ArrowUp" ? -1 : 1));
+    }
   };
 </script>
 
-<section class="history-workspace" aria-label={m.historyworkspace_source_label()} aria-busy={source.loading}>
+<!-- Escape and Alt+Arrow work from anywhere inside, the editor included. -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<section class="history-workspace" aria-label={m.historyworkspace_source_label()} aria-busy={source.loading} onkeydown={keydown}>
   <!-- The two ends stay on screen while a comparison loads, so changing one
-       does not take the control away from under the reader. -->
+       does not take the control away from under the reader. Each is a button
+       that asks the timeline for a new version to put there. -->
   {#if source.newer}
-    <div class="history-source-bar">
-      <div class="history-versions">
-        <label class="history-field">
-          <span>{m.historyworkspace_older_version()}</span>
-          <select class="select" value={source.older} onchange={event => source.setOlder(event.currentTarget.value)}>
-            {#each olderChoices as sha (sha)}
-              <option value={sha} disabled={!before(sha, source.newer)}>{endpointLabel(sha, labels)}</option>
-            {/each}
-          </select>
-        </label>
-        <label class="history-field">
-          <span>{m.historyworkspace_newer_version()}</span>
-          <select class="select" value={source.newer} onchange={event => source.setNewer(event.currentTarget.value)}>
-            {#each newerChoices as sha (sha)}
-              <option value={sha} disabled={!before(source.older, sha)}>{endpointLabel(sha, labels)}</option>
-            {/each}
-          </select>
-        </label>
-      </div>
+    <div class="history-source-bar history-endpoints">
+      <button type="button" class="history-endpoint" bind:this={olderButton}
+              aria-pressed={source.mode === "select-older"}
+              title={m.historyworkspace_change_older()}
+              aria-label={m.historyworkspace_change_older_aria({ version: olderLabel })}
+              onclick={() => source.beginSelect("older")}>
+        <span class="history-endpoint-side panel-muted">{m.historyworkspace_older()}</span>
+        <span class="history-endpoint-label">{olderLabel}</span>
+        <Icon name="pencil" size={14} />
+      </button>
+      <span class="history-arrow panel-muted"><Icon name="arrow-right" size={16} /></span>
+      <button type="button" class="history-endpoint" bind:this={newerButton}
+              aria-pressed={source.mode === "select-newer"}
+              title={m.historyworkspace_change_newer()}
+              aria-label={m.historyworkspace_change_newer_aria({ version: newerLabel })}
+              onclick={() => source.beginSelect("newer")}>
+        <span class="history-endpoint-side panel-muted">{m.historyworkspace_newer()}</span>
+        <span class="history-endpoint-label">{newerLabel}</span>
+        <Icon name="pencil" size={14} />
+      </button>
+      <span class="history-sr" aria-live="polite">{m.historyworkspace_comparing({ older: olderLabel, newer: newerLabel })}</span>
     </div>
   {/if}
   {#if source.loading}
@@ -103,65 +131,85 @@
     <div class="history-source-bar">
       <div class="history-source-row">
         {#if result.changed.length > 1}
-          <label class="history-source-file">
-            {m.common_file()}
-            <select class="select" aria-label={m.historyworkspace_file_select()} value={path} onchange={event => source.selectFile(event.currentTarget.value)}>
-              {#each result.paths as name (name)}<option value={name}>{nameOf(name)}</option>{/each}
-            </select>
-          </label>
+          <select class="select history-file-select" aria-label={m.historyworkspace_file_select()} value={path} onchange={event => source.selectFile(event.currentTarget.value)}>
+            {#each result.changed as name (name)}<option value={name}>{nameOf(name)}</option>{/each}
+          </select>
+          {#if filePosition}
+            <span class="panel-meta panel-muted">{m.historyworkspace_file_position({ index: filePosition, count: result.changed.length })}</span>
+          {/if}
         {:else}
           <span class="history-source-name">{path}</span>
+          {#if !result.changed.length}
+            <span class="panel-meta panel-muted">{m.historyworkspace_no_differences()}</span>
+          {/if}
         {/if}
-        <span class="history-source-summary panel-meta">
-          {result.changed.length
-            ? m.historyworkspace_files_changed({ count: result.changed.length })
-            : m.historyworkspace_no_differences()}
-        </span>
-        <span class="history-source-actions">
-          {#if source.newer === CURRENT}
-            <IconButton icon="refresh-cw" label={m.historyworkspace_reload_current()} size="btn-icon-sm" onclick={() => source.reload()} />
-          {/if}
-          <!-- A version's archive is produced on request rather than kept
-               ready (§8.5), so the button says what it is waiting on rather
-               than sitting quiet or, worse, looking done before the file
-               exists. Editor-only, like the rest of this panel: a reader or
-               commenter link cannot reach the history routes this asks. -->
-          {#if canEdit && source.target}
-            <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={downloading === source.target}
-                    title={m.historyworkspace_download_title({ version: endpointLabel(source.target, labels) })}
-                    onclick={() => ondownload?.(source.target)}>
-              {downloading === source.target ? m.historyworkspace_downloading() : m.historyworkspace_download_version()}
-            </button>
-            <button type="button" class="btn btn-sm lp-control-tonal-brand"
-                    title={m.historyworkspace_restore_title({ version: endpointLabel(source.target, labels) })}
-                    onclick={() => onrestore?.(source.target)}>{m.historyworkspace_restore_version()}</button>
-          {/if}
-        </span>
+        {#if source.newer === CURRENT}
+          <IconButton icon="refresh-cw" label={m.historyworkspace_reload_current()} size="btn-icon-sm" onclick={() => source.reload()} />
+        {/if}
+        {#if result.changed.length && !binary}
+          <span class="history-changes">
+            <span class="panel-meta panel-muted">
+              {changeCount ? m.historyworkspace_change_position({ index: activeChange + 1, count: changeCount }) : m.historyworkspace_no_changes()}
+            </span>
+            <IconButton icon="chevron-up" label={m.historyworkspace_previous_change()} size="btn-icon-sm"
+                        disabled={activeChange <= 0 || !changeCount} onclick={() => go(activeChange - 1)} />
+            <IconButton icon="chevron-down" label={m.historyworkspace_next_change()} size="btn-icon-sm"
+                        disabled={activeChange >= changeCount - 1} onclick={() => go(activeChange + 1)} />
+          </span>
+        {/if}
       </div>
     </div>
-    {#if downloadProblem}
-      <p class="lp-text-error text-sm" role="alert">{downloadProblem}</p>
-    {/if}
     {#if binary}
       <p role="status">{BINARY_NOTE[status]}</p>
     {:else if oldText === undefined && newText === undefined}
       <p role="status">{path ? m.historyworkspace_no_text_source() : m.historyworkspace_no_source_files()}</p>
     {:else}
       {#if fileNote}<p class="history-note panel-meta">{fileNote}</p>{/if}
-      {#if result.diff}
-        <div class="history-sides panel-meta" aria-hidden="true">
-          <span>{m.historyworkspace_older()}</span><span>{m.historyworkspace_newer()}</span>
-        </div>
-      {/if}
       {#if MergeEditor}
-        <MergeEditor {path} oldText={oldText ?? ""} newText={newText ?? ""}
-          diff={result.diff} editable={false} header={false}
+        <MergeEditor bind:this={mergeEditor} {path} oldText={oldText ?? ""} newText={newText ?? ""}
+          diff={result.diff} editable={false} header={false} unifiedBelow={720}
+          onchanges={(count) => {
+            changeCount = count;
+            activeChange = 0;
+            if (count > 0) tick().then(() => mergeEditor?.goToChange(0));
+          }}
           baselineLabel={endpointLabel(result.older, labels)} targetLabel={endpointLabel(result.newer, labels)} />
       {:else if mergeFailed}
         <p role="alert">{m.historyworkspace_comparison_failed()}</p>
       {:else}
         <p role="status">{m.historyworkspace_loading_comparison()}</p>
       {/if}
+    {/if}
+    {#if downloadProblem}
+      <p class="lp-text-error text-sm" role="alert">{downloadProblem}</p>
+    {/if}
+    <!-- A version's archive is produced on request rather than kept ready
+         (§8.5), so the button says what it is waiting on rather than sitting
+         quiet or, worse, looking done before the file exists. Editor-only,
+         like the rest of this panel: a reader or commenter link cannot reach
+         the history routes this asks. -->
+    {#if canEdit && (stored(source.older) || stored(source.newer))}
+      <div class="history-footer">
+        {#if stored(source.older)}
+          <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={downloading === source.older}
+                  title={m.historyworkspace_download_title({ version: olderLabel })}
+                  onclick={() => ondownload?.(source.older)}>
+            {downloading === source.older ? m.historyworkspace_downloading() : m.historyworkspace_download_older()}
+          </button>
+        {/if}
+        {#if stored(source.newer)}
+          <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={downloading === source.newer}
+                  title={m.historyworkspace_download_title({ version: newerLabel })}
+                  onclick={() => ondownload?.(source.newer)}>
+            {downloading === source.newer ? m.historyworkspace_downloading() : m.historyworkspace_download_newer()}
+          </button>
+        {/if}
+        {#if stored(source.older)}
+          <button type="button" class="btn btn-sm lp-control-tonal-brand history-restore"
+                  title={m.historyworkspace_restore_title({ version: olderLabel })}
+                  onclick={() => onrestore?.(source.older)}>{m.historyworkspace_restore_older()}</button>
+        {/if}
+      </div>
     {/if}
   {:else}
     <p role="status">{m.historyworkspace_select_prompt()}</p>
@@ -172,17 +220,25 @@
   .history-workspace { height: 100%; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
   .history-workspace > p, .history-workspace > div[role="alert"] { padding: 1rem; }
   .history-source-bar { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.5rem; }
-  /* Two fields side by side while they fit, one above the other when not. */
-  .history-versions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-  .history-field { display: flex; flex: 1 1 12rem; flex-direction: column; gap: 0.25rem; min-width: 0; }
-  .history-field select { width: 100%; }
+  .history-endpoints { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding-bottom: 0; }
+  .history-endpoint {
+    display: flex; align-items: center; gap: 0.5rem; min-width: 0; min-height: 2.25rem; padding: 0 0.625rem;
+    font-size: var(--panel-font-size); text-align: left; cursor: pointer;
+    color: inherit; background: var(--color-raised); border: 1px solid var(--color-divider); border-radius: 6px;
+  }
+  .history-endpoint:hover { border-color: var(--color-brand); }
+  .history-endpoint[aria-pressed="true"] { border-color: var(--color-brand); box-shadow: 0 0 0 1px var(--color-brand); }
+  .history-endpoint:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
+  .history-endpoint-side { font-size: var(--panel-meta-size); flex: none; }
+  .history-endpoint-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .history-arrow { display: flex; align-items: center; }
+  .history-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .history-source-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; min-width: 0; }
   .history-source-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-  .history-source-file { display: flex; align-items: center; gap: 0.5rem; }
-  .history-source-file select { width: auto; min-width: 12rem; }
-  .history-source-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-left: auto; }
-  /* Half and half, as the two panes of the merge view below. */
-  .history-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; padding: 0 0.5rem; }
+  .history-file-select { width: auto; min-width: 12rem; max-width: 100%; }
+  .history-changes { display: flex; align-items: center; gap: 0.25rem; margin-left: auto; }
+  .history-footer { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; padding: 0.5rem; border-top: 1px solid var(--color-divider); }
+  .history-restore { margin-left: auto; }
   .history-note { padding: 0 0.5rem; }
   .history-workspace :global(.merge-editor) { flex: 1; min-height: 0; }
 </style>

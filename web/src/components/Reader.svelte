@@ -11,7 +11,7 @@
   import * as figures from "../lib/figures.js";
   import * as history from "../lib/history.js";
   import { createHistorySource } from "../lib/reader/history-source.svelte.js";
-  import { CURRENT, NOTHING } from "../lib/history-endpoints.js";
+  import { CURRENT } from "../lib/history-endpoints.js";
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
   import ComparisonBar from "./reader/ComparisonBar.svelte";
   import { createComparison } from "../lib/reader/comparison.svelte.js";
@@ -1420,31 +1420,10 @@
     read: sha => history.read(SLUG, sha, keyHeaders(KEY)),
     labels: () => labels,
     // The newest version, or CURRENT when the timeline is known to hold none.
-    // Throws when the timeline cannot be read, as `previous` does.
+    // Throws when the timeline cannot be read.
     newest: async () => {
       await loadTimelineOrThrow();
       return timeline.state.labels.at(-1)?.sha ?? CURRENT;
-    },
-    // The version before `sha` in the timeline. NOTHING only when the timeline
-    // is known to hold no earlier version. Throws when it cannot tell: the
-    // first read has failed, or an older page could not be read. The view
-    // shows that as a retryable problem instead of a false "added" comparison.
-    // The first loaded row may not be the oldest: older pages are read on
-    // demand, and a comparison with the version before it needs them.
-    previous: async (sha) => {
-      await loadTimelineOrThrow();
-      for (;;) {
-        const before = timeline.state.labels.length;
-        const index = timeline.state.labels.findIndex((point) => point.sha === sha);
-        if (index > 0) return timeline.state.labels[index - 1].sha;
-        // The first row, or a sha not loaded at all, has no earlier version
-        // only once every page has been read.
-        if (timeline.state.complete && index <= 0) return NOTHING;
-        await timeline.loadMore();
-        if (timeline.state.labels.length === before && !timeline.state.complete) {
-          throw new Error(timeline.state.moreProblem || m.timeline_older_read_failed());
-        }
-      }
     },
     preferredPath: () => session?.paths?.get(openFile) || "",
     currentTree: () => {
@@ -1463,6 +1442,18 @@
   });
   const historySelectedSha = $derived(historySource.selected);
   $effect(() => () => historySource.dispose());
+  // On a phone only one pane shows. Picking a version needs the timeline, so
+  // show it while a selection is open, and the comparison again once the
+  // choice is made or cancelled.
+  let previousHistoryMode = "normal";
+  $effect(() => {
+    const mode = historySource.mode;
+    const before = previousHistoryMode;
+    previousHistoryMode = mode;
+    if (!compact || mode === before) return;
+    if (before === "normal") untrack(() => showMobileView("sidebar"));
+    else if (mode === "normal") untrack(() => showMobileView("source"));
+  });
   let navigationGeneration = 0;
   // Which file the reader arrived asking for, when the landing page's search
   // found the project by one of its files. Honoured once the directory has
@@ -4422,8 +4413,9 @@
       loadingMore={timeline.state.loadingMore} moreProblem={timeline.state.moreProblem}
       saved={timeline.state.saved} savedLoaded={timeline.state.savedLoaded}
       savedLoading={timeline.state.savedLoading} savedProblem={timeline.state.savedProblem}
-      onview={viewPoint}
-      oncompare={(a, b) => { beginComparison("history"); return historySource.compare(a || CURRENT, b || CURRENT); }}
+      onview={(sha) => historySource.mode !== "normal" ? historySource.choose(sha) : viewPoint(sha)}
+      selecting={historySource.mode}
+      oncancelselect={() => historySource.cancelSelect()}
       onname={nameLabel} onretry={loadHistory}
       onloadmore={() => timeline.loadMore()}
       onloaduntil={(iso) => timeline.loadUntil(iso)}
@@ -4468,7 +4460,7 @@
            the same place, which is why this is a plain link and not a
            gesture: the page changes, the furniture does not. -->
       <IconButton icon="home" label={m.readerd_all_projects()} href="/" />
-      <IconButton icon="help" label={m.common_what_is_librepaper()} href={DOCUMENTATION_URL} external />
+      <IconButton icon="help" label={m.common_documentation()} href={DOCUMENTATION_URL} external />
       {#if editing}
         <IconButton icon={ARRANGEMENTS[layout].icon}
           label={m.readerd_layout_switch({ current: ARRANGEMENTS[layout].says, next: ARRANGEMENTS[ARRANGEMENTS[layout].next].says })}
@@ -4492,8 +4484,7 @@
       {#if comparing === "history"}
         <HistoryWorkspace source={historySource} versions={labels} canEdit={mayEdit} onrestore={restoreLabel}
           ondownload={downloadArchive}
-          downloading={downloadingSha === historySource.target ? downloadingSha : ""}
-          downloadProblem={downloadingSha === historySource.target ? downloadProblem : ""} />
+          downloading={downloadingSha} downloadProblem={downloadProblem} />
       {:else if shownFigure}
         {@render figureBody()}
       {:else if Editor && sourceBound}

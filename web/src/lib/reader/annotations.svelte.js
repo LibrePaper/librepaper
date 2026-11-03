@@ -251,8 +251,11 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
       const local = event.temp_id && list().find((item) => item.temp_id === event.temp_id);
       if (local) {
         Object.assign(local, event.comment, { temp_id: undefined, pending: false, deletable: true });
-        // The record may have been written before this acknowledgement arrived,
-        // so it is derived with the tick's pass, once.
+        // The comment is anchored now from the server's row. The record may
+        // still arrive later through the document, so it is derived again
+        // with the tick's pass.
+        derive([local]);
+        anchor([local]);
         deriveSoon();
         // The optimistic row was never counted -- the counts are the
         // catalogue's -- so this is where it joins them.

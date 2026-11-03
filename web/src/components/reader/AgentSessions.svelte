@@ -85,6 +85,11 @@
             onchange={(event) => commit(selectSession(list, event.currentTarget.value))}>
       {#each list.sessions as s (s.key)}<option value={s.key}>{label(s)}</option>{/each}
     </select>
+  </span>
+{/snippet}
+
+{#snippet sessionActions()}
+  <span class="session-actions">
     <IconButton icon="plus" label={list.sessions.length >= MAX_AGENT_SESSIONS
                 ? m.agent_session_limit({ count: MAX_AGENT_SESSIONS })
                 : m.agent_new_conversation()}
@@ -98,7 +103,7 @@
 {#each list.sessions as s (s.key)}
   <div class="agent-session" class:inactive={s.key !== list.active}>
     <Agent {slug} {link} {canShare} {path} {selection} {revision} {diagnostics} {comments} {changes}
-           {onreview} {onpreview} {onsettings} {userName} session={s.key} active={s.key === list.active} switcher={switcher}
+           {onreview} {onpreview} {onsettings} {userName} session={s.key} active={s.key === list.active} switcher={switcher} sessionActions={sessionActions}
            request={routed.key === s.key ? routed.value : null}
            onstate={(v) => statuses[s.key] = v} bind:this={instances[s.key]} />
   </div>
@@ -107,7 +112,8 @@
 <style>
   .agent-session { display: contents; }
   .agent-session.inactive { display: none; }
-  .session-switcher { display:inline-flex; align-items:center; gap:calc(var(--spacing) * .5); min-width:0; }
-  .session-select { border:0; background:transparent; color:inherit; font:inherit; padding:0; cursor:pointer;
-    min-width:0; max-width:12rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .session-switcher { display:flex; align-items:center; width:100%; min-width:0; }
+  .session-select { width:100%; border:0; background:transparent; color:inherit; font:inherit; padding:0; cursor:pointer;
+    min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .session-actions { display:inline-flex; align-items:center; gap:calc(var(--spacing) * .5); }
 </style>

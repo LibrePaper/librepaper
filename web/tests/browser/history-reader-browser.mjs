@@ -159,11 +159,11 @@ try {
       return a === ${JSON.stringify(left)} && b === ${JSON.stringify(right)};
     })()`), 4000);
   };
-  // Choosing a version compares it with the one before it: the change it made.
-  // The first version has nothing before it, so its older side is empty.
+  // Choosing a version compares it with the live source: what has changed
+  // since that version.
   const selectChange = async index => {
     await select(index);
-    await expectDiff(index === 0 ? "" : sources[index - 1], sources[index]);
+    await expectDiff(sources[index], current);
   };
   await selectChange(1);
   // The host scrolls; an editor scroller would take the wheel and scroll nothing.
@@ -172,24 +172,56 @@ try {
   await selectChange(2);
   await selectChange(0);
   console.log("history reader: repeated label selection updates both source endpoints");
-  await tab.evaluate(`document.querySelector('.hx-current button').click()`);
-  // The Current row shows what has changed since the newest version.
+  // The last three of these are autosaves in a row, which the panel gathers
+  // into one editing session. Opening it reaches the rest of them.
+  // That grouping is the panel's own and is checked in history-panel-browser.mjs.
+  await tab.evaluate(`document.querySelector('[data-type="editing"] button[aria-expanded="false"]')?.click()`);
+  // The newest version's row says Current and stands for the live document: it
+  // shows what has changed since the newest stored version.
+  assert.equal(await tab.evaluate(`document.querySelector('[data-sha="${points[5].sha}"] .hx-now')?.textContent.trim()`), 'Current');
+  await tab.evaluate(`${row(points[5].sha)}.click()`);
   await expectDiff(sources.at(-1), current);
   await selectChange(1);
-  console.log('history reader: the current row, and a version against it');
-  // Older and Newer are the two ends of the comparison, chosen in the header.
-  // Selecting a version set them to the version before it and itself.
-  const field = name => `[...document.querySelectorAll('.history-workspace select')].find(select => select.labels?.[0]?.textContent.startsWith(${JSON.stringify(name)}))`;
-  const choose = (name, value) => tab.evaluate(`(() => { const select = ${field(name)}; select.value = ${JSON.stringify(value)}; select.dispatchEvent(new Event('change', {bubbles: true})); })()`);
-  assert.deepEqual(await tab.evaluate(`({older: ${field("Older version")}.value, newer: ${field("Newer version")}.value})`), {older: points[0].sha, newer: points[1].sha});
+  console.log('history reader: the newest row is the live document, and a version against it');
+  // Older and Newer are the two ends of the comparison. A button for each end
+  // in the header starts choosing it, and the next version clicked in the
+  // timeline replaces it.
+  const endpoint = which => `document.querySelector('.history-endpoint[title="Change ${which} version"]')`;
+  const pressed = which => tab.evaluate(`${endpoint(which)}.getAttribute('aria-pressed')`);
+  const bar = () => tab.evaluate(`document.querySelector('.hx-select')?.textContent.replace(/\\s+/g, ' ').trim() || ''`);
+  // Escape from a timeline row, where the focus is while choosing a version.
+  const escapeFrom = async index => tab.evaluate(`(() => { const row = ${row(points[index].sha)}; row.focus(); row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); })()`);
+  assert.equal(await tab.evaluate(`document.querySelectorAll('.history-workspace select[aria-label^="Older version"], .history-workspace select[aria-label^="Newer version"]').length`), 0, 'the endpoints are buttons, not selects');
   await selectChange(2);
-  await choose("Older version", points[0].sha);
-  await expectDiff(sources[0], sources[2]);
-  assert.equal(await tab.evaluate(`${field("Older version")}.querySelector('option[value="${points[2].sha}"]').disabled`), true, 'an older version cannot be chosen after the newer one');
-  await choose("Newer version", points[1].sha);
-  await expectDiff(sources[0], sources[1]);
-  await choose("Newer version", "current");
+  assert.equal(await pressed("older"), "false");
+  assert.equal(await bar(), "", "no selection bar before choosing");
+  // Escape cancels the choice and leaves the comparison alone.
+  await tab.evaluate(`${endpoint("older")}.click()`);
+  await until('older endpoint is being chosen', async () => (await pressed("older")) === "true", 3000);
+  assert.equal(await pressed("newer"), "false");
+  assert.ok((await bar()).includes("Select an older version"), `bar prompts for an older version, says: ${await bar()}`);
+  await escapeFrom(2);
+  await until('Escape ends the selection', async () => (await pressed("older")) === "false" && (await bar()) === "", 3000);
+  assert.equal(await tab.evaluate(`Boolean(document.querySelector('.history-workspace')) && Boolean(document.querySelector('.comparison-bar'))`), true, 'Escape while choosing does not close the comparison');
+  await expectDiff(sources[2], current);
+  // Choosing an older version replaces the older end and ends the selection.
+  await tab.evaluate(`${endpoint("older")}.click()`);
+  await until('older endpoint is being chosen again', async () => (await pressed("older")) === "true", 3000);
+  await select(0);
   await expectDiff(sources[0], current);
+  await until('choosing ends the selection', async () => (await pressed("older")) === "false" && (await bar()) === "", 3000);
+  // Choosing the newer end puts the version there.
+  await tab.evaluate(`${endpoint("newer")}.click()`);
+  await until('newer endpoint is being chosen', async () => (await pressed("newer")) === "true", 3000);
+  assert.ok((await bar()).includes("Select a newer version"), `bar prompts for a newer version, says: ${await bar()}`);
+  await select(1);
+  await expectDiff(sources[0], sources[1]);
+  assert.equal(await pressed("newer"), "false");
+  // A version later than the newer end swaps the two into time order.
+  await tab.evaluate(`${endpoint("older")}.click()`);
+  await until('older endpoint is being chosen for a later version', async () => (await pressed("older")) === "true", 3000);
+  await select(2);
+  await expectDiff(sources[1], sources[2]);
   assert.equal(await tab.evaluate(`[...document.querySelectorAll('.history-workspace button')].some(button => button.textContent.trim() === 'Swap')`), false, 'there is no Swap');
   console.log("history reader: older and newer are chosen in the header");
   // The bar names the comparison. Close, and then Escape, end it and give the
@@ -198,6 +230,12 @@ try {
   await tab.evaluate(`[...document.querySelectorAll('.comparison-bar button')].find(b => b.textContent.trim() === 'Close').click()`);
   await until('closing a comparison restores the live source', () => tab.evaluate(`!document.querySelector('.history-workspace') && !document.querySelector('.comparison-bar') && document.querySelectorAll('.cm-content').length === 1 && document.querySelector('.cm-content').textContent === ${JSON.stringify(current)}`), 4000);
   await selectChange(1);
+  // The first Escape only leaves a selection; a second one closes the comparison.
+  await tab.evaluate(`${endpoint("older")}.click()`);
+  await until('selecting before Escape', async () => (await pressed("older")) === "true", 3000);
+  await escapeFrom(1);
+  await until('first Escape cancels the selection', async () => (await pressed("older")) === "false", 3000);
+  assert.equal(await tab.evaluate(`Boolean(document.querySelector('.comparison-bar'))`), true, 'the comparison survives the first Escape');
   await tab.evaluate(`document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
   await until('Escape closes a comparison', () => tab.evaluate(`!document.querySelector('.comparison-bar') && !document.querySelector('.history-workspace')`), 4000);
   console.log("history reader: close and Escape restore the editor area");
@@ -206,11 +244,10 @@ try {
   // Opening history shows its list and leaves the editor area alone: the live
   // source stays, and no comparison is started until a version is chosen.
   await until('reopening history leaves the live source alone', () => tab.evaluate(`!document.querySelector('.history-workspace') && !document.querySelector('.comparison-bar') && document.querySelectorAll('.cm-content').length === 1 && document.querySelector('.cm-content').textContent === ${JSON.stringify(current)}`), 4000);
-  // The last three of these are autosaves in a row, which the panel gathers
-  // into one editing session. Opening it is how the rest of them are reached.
-  // That grouping is the panel's own and is checked in history-panel-browser.mjs.
+  // Opening history again closes the session, and a version in it is reached
+  // by opening it.
   await tab.evaluate(`document.querySelector('[data-type="editing"] button[aria-expanded="false"]')?.click()`);
-  await selectChange(5);
+  await selectChange(4);
   console.log('history reader: every version is reachable, gathered or not');
 
   failed.add(points[0].sha);
@@ -219,7 +256,7 @@ try {
   assert.equal(await tab.evaluate(`document.querySelectorAll('.history-workspace .cm-content').length`), 0, 'a failed selection does not leave the previous label displayed');
   failed.delete(points[0].sha);
   await tab.evaluate(`document.querySelector('.history-workspace [role="alert"] button').click()`);
-  await until('retry restores selected source', () => tab.evaluate(`document.querySelector('.cm-merge-b .cm-content')?.textContent === ${JSON.stringify(sources[0])}`), 3000);
+  await until('retry restores selected source', () => tab.evaluate(`document.querySelector('.cm-merge-a .cm-content')?.textContent === ${JSON.stringify(sources[0])}`), 3000);
 
   delayedSha = points[1].sha;
   await select(1);
@@ -228,7 +265,7 @@ try {
   assert.equal(await tab.evaluate(`document.querySelectorAll('.history-workspace .cm-content').length`), 0, 'loading a label clears the old source');
   await select(2);
   delayedSha = ''; delayed.splice(0).forEach(release => release());
-  await until('latest click wins', () => tab.evaluate(`document.querySelector('.cm-merge-b .cm-content')?.textContent === ${JSON.stringify(sources[2])}`), 3000);
+  await until('latest click wins', () => tab.evaluate(`document.querySelector('.cm-merge-a .cm-content')?.textContent === ${JSON.stringify(sources[2])}`), 3000);
 
   delayedSha = points[1].sha;
   await select(1);
@@ -248,14 +285,12 @@ try {
   // One file changed, so it is named rather than chosen from a list.
   assert.equal(await tab.evaluate(`document.querySelector('.history-source-name')?.textContent`), 'main.html', 'a single changed file is named');
   assert.equal(await tab.evaluate(`document.querySelector('[aria-label="History file"]')`), null, 'no file list for a single changed file');
-  await tab.evaluate(`[...document.querySelectorAll('.history-workspace select')].find(select => select.labels?.[0]?.textContent.startsWith('Newer version')).value = 'current'`);
-  await tab.evaluate(`[...document.querySelectorAll('.history-workspace select')].find(select => select.labels?.[0]?.textContent.startsWith('Newer version')).dispatchEvent(new Event('change', {bubbles: true}))`);
-  await expectDiff(sources[0], current);
+  await expectDiff(sources[1], current);
   const addition = '<p>live update</p>';
   await tab.evaluate(`window.historyLive.append(${JSON.stringify(addition)})`);
   assert.equal(await tab.evaluate(`document.querySelector('.cm-merge-b .cm-content')?.textContent`), current, 'the comparison is a stable snapshot of the current source');
   await tab.evaluate(`document.querySelector('.history-workspace [aria-label="Reload the current version"]').click()`);
-  await expectDiff(sources[0], current + addition);
+  await expectDiff(sources[1], current + addition);
   await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="Files"]').click()`);
   await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="History"]').click()`);
   await tab.navigate(`${origin}/docs/paper?slowjoin=1`);

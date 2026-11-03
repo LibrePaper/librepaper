@@ -7,6 +7,7 @@
 // act on and the caller says the reader may annotate.
 import { StateField } from "@codemirror/state";
 import { EditorView, showTooltip } from "@codemirror/view";
+import { iconElement } from "./icons.js";
 
 /**
  * A tooltip offering `verbs` over a non-empty selection.
@@ -17,7 +18,7 @@ import { EditorView, showTooltip } from "@codemirror/view";
  *
  * @param {{
  *   enabled: () => boolean,
- *   verbs: () => Array<{ id: string, label: string, title: string }>,
+ *   verbs: () => Array<{ id: string, label: string, title: string, icon: string }>,
  *   onverb: (id: string) => void,
  * }} options
  * @returns {import("@codemirror/state").Extension}
@@ -35,9 +36,13 @@ export function sourceCommentBar({ enabled, verbs, onverb }) {
     for (const verb of verbs()) {
       const button = document.createElement("button");
       button.type = "button";
-      button.textContent = verb.label;
       button.title = verb.title;
+      button.setAttribute("aria-label", verb.label);
       button.dataset.verb = verb.id;
+      const svg = iconElement(verb.icon);
+      svg.setAttribute("width", "18");
+      svg.setAttribute("height", "18");
+      button.append(svg);
       button.addEventListener("click", () => onverb(verb.id));
       dom.append(button);
     }
@@ -69,15 +74,21 @@ export function sourceCommentBar({ enabled, verbs, onverb }) {
       boxShadow: "var(--shadow-lg)",
     },
     ".cm-source-comment-bar button": {
-      font: "inherit",
-      fontSize: "var(--text-sm)",
-      whiteSpace: "nowrap",
-      padding: "0.25rem 0.5rem",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      width: "2rem",
+      height: "2rem",
+      padding: "0",
       border: "0",
       borderRadius: "calc(var(--radius-base) - 2px)",
       background: "none",
       color: "var(--color-text-secondary)",
       cursor: "pointer",
+    },
+    ".cm-source-comment-bar svg": {
+      display: "block",
+      flex: "none",
     },
     ".cm-source-comment-bar button:hover": {
       background: "var(--color-row-hover)",
