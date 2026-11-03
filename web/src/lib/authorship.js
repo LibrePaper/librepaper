@@ -87,11 +87,14 @@ export async function loadAuthors(slug, headers = {}) {
   return authors;
 }
 
-/// The key a run is grouped under: the account when there is one, else the
-/// name, else "unknown". Peers absent from the map are unknown.
+/// The key a run is grouped under. An agent gets its own row, keyed by its
+/// owner's account and its label, so it never merges with the owner's own
+/// writing. A person is keyed by the account when there is one, else the name.
+/// Peers absent from the map are unknown.
 function keyOf(peer, authors) {
   const author = peer ? authors.get(peer) : undefined;
   if (!author) return "unknown";
+  if (author.agent) return `agent:${author.accountId || ""}:${author.name}`;
   if (author.accountId) return `account:${author.accountId}`;
   if (author.name) return `name:${author.name}`;
   return "unknown";
@@ -101,7 +104,8 @@ function keyOf(peer, authors) {
 /// `{rows, since, missing}`:
 ///  - `rows`: `[{key, name, agent, unknown, colour, chars, share, last}]`,
 ///    sorted by characters descending with the unknown row last. Several
-///    peers of one person share one row. `chars` counts UTF-16 units, `share`
+///    peers of one person share one row, but each agent gets its own row, so
+///    an agent never merges with its owner. `chars` counts UTF-16 units, `share`
 ///    is `chars / total`, and `last` is the Date of the latest change in the
 ///    row, or null when none was recorded.
 ///  - `since`: the earliest first-seen Date in the map, or null.
