@@ -792,17 +792,19 @@
   </span>
 {/snippet}
 
-<!-- The right edge of a row: Current on the newest version, which is enough
-     when it is also the newer end, and the endpoint word. -->
+<!-- The right edge of a row is one slot. It holds the endpoint word when the row
+     is an endpoint, otherwise Current on the newest version, otherwise nothing.
+     The newest version as the newer end shows Current alone. -->
 {#snippet trail(sha)}
-  {#if isLive(sha)}<span class="hx-now panel-meta">{m.history_current_label()}</span>{/if}
-  {@render endMark(isLive(sha) ? (endpointKind(sha) === "older" ? "older" : "") : endpointKind(sha))}
+  {@const end = endpointKind(sha)}
+  {@render endMark(end === "older" ? "older" : isLive(sha) ? "current" : end)}
 {/snippet}
 
-<!-- A comparison endpoint, as a quiet word in a slot of fixed width. The slot
-     is always there, so a row never shifts or grows when it is marked. -->
+<!-- The one right-hand slot of a row: Current, or a comparison endpoint word.
+     The slot is always there, pushed to the right edge at a fixed minimum width,
+     so a row never shifts or wraps when it is marked. -->
 {#snippet endMark(kind)}
-  <span class="hx-end panel-meta" aria-hidden="true">{kind === "newer" ? m.history_newer_tag() : kind === "older" ? m.history_older_tag() : ""}</span>
+  <span class="hx-end panel-meta" class:hx-now={kind === "current"} aria-hidden="true">{kind === "current" ? m.history_current_label() : kind === "newer" ? m.history_newer_tag() : kind === "older" ? m.history_older_tag() : ""}</span>
 {/snippet}
 
 <!-- One version inside an expanded session. The whole row is the button. -->
@@ -986,6 +988,10 @@
     list-style: none;
     margin: 0;
     padding: 0 4px;
+    /* The session chevron and the gap after it. A single-version row steps in
+       by the same amount, so its text lines up with a session's label. */
+    --hx-chev: 1rem;
+    --hx-gap: 8px;
   }
   .hx-list ol { list-style: none; margin: 0; padding: 0; }
   .hx-list li { min-width: 0; }
@@ -1020,8 +1026,8 @@
   .hx-chev {
     flex: none;
     display: inline-flex;
-    width: 1rem;
-    height: 1rem;
+    width: var(--hx-chev);
+    height: var(--hx-chev);
     color: var(--panel-muted);
   }
   .hx-chev :global(svg) { width: 100%; height: 100%; }
@@ -1066,7 +1072,7 @@
     flex: 1 1 auto;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--hx-gap);
     min-width: 0;
     padding-block: 6px;
     padding-right: 10px;
@@ -1075,7 +1081,11 @@
     text-align: left;
   }
   .hx-session { padding-left: calc(var(--hx-shift, 0px) + 20px); font-weight: 500; }
-  .hx-single { min-height: 2.125rem; padding-left: calc(var(--hx-shift, 0px) + 20px); }
+  /* No chevron, but the same step as a session's label: indent, chevron, gap. */
+  .hx-single {
+    min-height: 2.125rem;
+    padding-left: calc(var(--hx-shift, 0px) + 20px + var(--hx-chev) + var(--hx-gap));
+  }
   .hx-version-main { min-height: 2.125rem; padding-left: calc(var(--hx-shift, 0px) + 44px); }
   .hx-session:hover,
   .hx-single:hover:not(.timeline-here),
@@ -1085,7 +1095,9 @@
   .hx-single.timeline-here,
   .hx-version-main.timeline-here { border-radius: 5px; box-shadow: inset 2px 0 var(--color-brand); }
   .timeline-here .hx-when { font-weight: 600; }
-  /* A closed session holding the version being read hints at it, nothing more. */
+  /* A closed session holding the version being read: the selected row's edge
+     accent, without its background, and a heavier label. */
+  .hx-holds { box-shadow: inset 2px 0 var(--color-brand); }
   .hx-holds .hx-ev1 { font-weight: 600; }
   .hx-ev1, .hx-ev2 { display: flex; align-items: center; gap: 4px; }
   .hx-ev1 { font-size: 0.8125rem; }
@@ -1102,20 +1114,19 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* Current, and the comparison endpoint after it. The endpoint slot keeps its
-     width whether or not a word is in it. */
-  .hx-now { flex: none; margin-left: auto; white-space: nowrap; }
+  /* The row's one right-hand slot: Current or an endpoint word, pushed to the
+     right edge. It keeps its minimum width whether or not a word is in it, and
+     the word never wraps. */
   .hx-end {
     flex: none;
     box-sizing: border-box;
-    width: 3.5rem;
+    min-width: 3.5rem;
     margin-left: auto;
     overflow: hidden;
     text-align: right;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .hx-now + .hx-end { margin-left: 0; }
 
   /* While picking, every row says it can be the second end. */
   .hx-picking .hx-main:hover,
