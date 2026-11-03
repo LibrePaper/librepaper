@@ -172,11 +172,17 @@ try {
   await selectChange(2);
   await selectChange(0);
   console.log("history reader: repeated label selection updates both source endpoints");
-  await tab.evaluate(`document.querySelector('.hx-current button').click()`);
-  // The Current row shows what has changed since the newest version.
+  // The last three of these are autosaves in a row, which the panel gathers
+  // into one editing session. Opening it reaches the rest of them.
+  // That grouping is the panel's own and is checked in history-panel-browser.mjs.
+  await tab.evaluate(`document.querySelector('[data-type="editing"] button[aria-expanded="false"]')?.click()`);
+  // The newest version's row says Current and stands for the live document: it
+  // shows what has changed since the newest stored version.
+  assert.equal(await tab.evaluate(`document.querySelector('[data-sha="${points[5].sha}"] .hx-now')?.textContent.trim()`), 'Current');
+  await tab.evaluate(`${row(points[5].sha)}.click()`);
   await expectDiff(sources.at(-1), current);
   await selectChange(1);
-  console.log('history reader: the current row, and a version against it');
+  console.log('history reader: the newest row is the live document, and a version against it');
   // Older and Newer are the two ends of the comparison, chosen in the header.
   // Selecting a version set them to the version before it and itself.
   const field = name => `[...document.querySelectorAll('.history-workspace select')].find(select => select.labels?.[0]?.textContent.startsWith(${JSON.stringify(name)}))`;
@@ -206,11 +212,10 @@ try {
   // Opening history shows its list and leaves the editor area alone: the live
   // source stays, and no comparison is started until a version is chosen.
   await until('reopening history leaves the live source alone', () => tab.evaluate(`!document.querySelector('.history-workspace') && !document.querySelector('.comparison-bar') && document.querySelectorAll('.cm-content').length === 1 && document.querySelector('.cm-content').textContent === ${JSON.stringify(current)}`), 4000);
-  // The last three of these are autosaves in a row, which the panel gathers
-  // into one editing session. Opening it is how the rest of them are reached.
-  // That grouping is the panel's own and is checked in history-panel-browser.mjs.
+  // Opening history again closes the session, and a version in it is reached
+  // by opening it.
   await tab.evaluate(`document.querySelector('[data-type="editing"] button[aria-expanded="false"]')?.click()`);
-  await selectChange(5);
+  await selectChange(4);
   console.log('history reader: every version is reachable, gathered or not');
 
   failed.add(points[0].sha);
