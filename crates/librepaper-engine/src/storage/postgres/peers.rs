@@ -15,12 +15,14 @@ use super::{PostgresCatalog, Result};
 pub struct PeerAuthor {
     pub peer: u64,
     pub account_id: Option<Uuid>,
-    /// The agent token's label, a registered account's current display name,
-    /// the label stored when the peer was first seen, or empty, in that order.
-    /// An anonymous visitor's stored label is their pseudonym in this
-    /// document, which is what the rest of the document calls them.
+    /// The label of the agent token or share link that wrote the peer, a
+    /// registered account's current display name, the label stored when the
+    /// peer was first seen, or empty, in that order. An anonymous visitor's
+    /// stored label is their pseudonym in this document, which is what the
+    /// rest of the document calls them.
     pub name: String,
-    /// True when the peer was written through an agent token.
+    /// True when the peer was written by an agent: an agent token, or a share
+    /// link an automation client used.
     pub agent: bool,
     pub first_seen: OffsetDateTime,
 }
@@ -100,10 +102,10 @@ impl PostgresCatalog {
                     COALESCE(NULLIF(sl.label,''),
                              CASE WHEN a.kind = 'registered' THEN a.display_name END,
                              NULLIF(p.author_label,''), a.display_name, '') AS name,
-                    (sl.id IS NOT NULL) AS agent
+                    (p.link_hash IS NOT NULL) AS agent
              FROM document_peers p
              LEFT JOIN accounts a ON a.id = p.author_account_id
-             LEFT JOIN share_links sl ON sl.token_hash = p.link_hash AND sl.kind = 'agent'
+             LEFT JOIN share_links sl ON sl.token_hash = p.link_hash
              WHERE p.document_id = $1 ORDER BY p.first_seen",
         )
         .bind(document_id)
