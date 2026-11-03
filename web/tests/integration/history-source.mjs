@@ -189,6 +189,27 @@ assert.equal(flaky.result.oldTree.texts["main.md"], "original");
 assert.equal(flaky.result.newTree.texts["main.md"], "revision");
 flaky.dispose();
 
+// The Current row waits for the newest version too: a failed lookup is retried by reload().
+let newestLookups = 0;
+const unknownNewest = createHistorySource({
+  currentTree: () => live,
+  labels: () => labelList,
+  read,
+  newest: async () => {
+    newestLookups += 1;
+    if (newestLookups === 1) throw new Error("lookup failed");
+    return "B";
+  },
+});
+await unknownNewest.view("");
+assert.notEqual(unknownNewest.problem, "");
+assert.equal(unknownNewest.older, "");
+await unknownNewest.reload();
+assert.equal(unknownNewest.problem, "");
+assert.equal(unknownNewest.older, "B");
+assert.ok(unknownNewest.result);
+unknownNewest.dispose();
+
 // A version whose source the server will not give back says so, and shows
 // nothing rather than the last comparison.
 stored.C = { sha: "C", main: "main.md", files: {} };

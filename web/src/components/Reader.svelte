@@ -1406,9 +1406,24 @@
   // Selection is a user-interface fact, not proof that the source could be
   // read: a failed comparison reports itself in the workspace and cannot make
   // a clicked version appear unselected.
+  // Reads the timeline when it has not been read yet, and throws when it still
+  // cannot be read.
+  async function loadTimelineOrThrow() {
+    if (timeline.state.loaded) return;
+    await timeline.load();
+    if (!timeline.state.loaded) {
+      throw new Error(timeline.state.problem || m.history_source_label_load_failed());
+    }
+  }
   const historySource = createHistorySource({
     read: sha => history.read(SLUG, sha, keyHeaders(KEY)),
     labels: () => labels,
+    // The newest version, or CURRENT when the timeline is known to hold none.
+    // Throws when the timeline cannot be read, as `previous` does.
+    newest: async () => {
+      await loadTimelineOrThrow();
+      return timeline.state.labels.at(-1)?.sha ?? CURRENT;
+    },
     // The version before `sha` in the timeline. NOTHING only when the timeline
     // is known to hold no earlier version. Throws when it cannot tell: the
     // first read has failed, or an older page could not be read. The view
@@ -1416,12 +1431,7 @@
     // The first loaded row may not be the oldest: older pages are read on
     // demand, and a comparison with the version before it needs them.
     previous: async (sha) => {
-      if (!timeline.state.loaded) {
-        await timeline.load();
-        if (!timeline.state.loaded) {
-          throw new Error(timeline.state.problem || m.history_source_label_load_failed());
-        }
-      }
+      await loadTimelineOrThrow();
       for (;;) {
         const before = timeline.state.labels.length;
         const index = timeline.state.labels.findIndex((point) => point.sha === sha);
