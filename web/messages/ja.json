@@ -1166,7 +1166,6 @@
   "history_bookmark_version": "このバージョンをブックマーク",
   "history_by": "{who}による",
   "history_commented": "コメント",
-  "history_compare_with": "他のバージョンと比較…",
   "history_contributors": [
     {
       "declarations": [
@@ -1221,7 +1220,6 @@
   "history_none": "以前のバージョンはありません",
   "history_not_readable": "このドキュメントの履歴は読み取れません",
   "history_older_tag": "古い",
-  "history_pick_prompt": "比較する版を選んでください。",
   "history_push": "プッシュ済み",
   "history_pushed_by": "{author}がプッシュ",
   "history_recovered": "復旧",
@@ -1233,6 +1231,8 @@
   "history_row_tip": "{what}、{detail}",
   "history_row_tip_endpoint": "{what}、{detail}、{endpoint}",
   "history_saved_short": "保存済み",
+  "history_select_newer_prompt": "より新しい版を選択",
+  "history_select_older_prompt": "より古い版を選択",
   "history_shown_to_readers": "閲覧者に表示",
   "history_source_earlier_moment": "以前の時点",
   "history_source_label_load_failed": "ラベルのソースを読み込めませんでした。",

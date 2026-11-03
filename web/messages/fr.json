@@ -1166,7 +1166,6 @@
   "history_bookmark_version": "Ajouter un signet à cette version",
   "history_by": "par {who}",
   "history_commented": "Commenté",
-  "history_compare_with": "Comparer avec…",
   "history_contributors": [
     {
       "declarations": [
@@ -1221,7 +1220,6 @@
   "history_none": "Aucune version précédente",
   "history_not_readable": "l’historique de ce document n’est pas lisible",
   "history_older_tag": "Plus ancienne",
-  "history_pick_prompt": "Choisissez une version à comparer.",
   "history_push": "Envoyé",
   "history_pushed_by": "Envoyé par {author}",
   "history_recovered": "Récupéré",
@@ -1233,6 +1231,8 @@
   "history_row_tip": "{what}, {detail}",
   "history_row_tip_endpoint": "{what}, {detail}, {endpoint}",
   "history_saved_short": "Enreg.",
+  "history_select_newer_prompt": "Sélectionner une version plus récente",
+  "history_select_older_prompt": "Sélectionner une version plus ancienne",
   "history_shown_to_readers": "Affiché aux lecteurs",
   "history_source_earlier_moment": "Un moment antérieur",
   "history_source_label_load_failed": "Impossible de charger les sources de la version.",

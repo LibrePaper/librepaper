@@ -1166,7 +1166,6 @@
   "history_bookmark_version": "Bookmark this version",
   "history_by": "by {who}",
   "history_commented": "Commented",
-  "history_compare_with": "Compare with…",
   "history_contributors": [
     {
       "declarations": [
@@ -1221,7 +1220,6 @@
   "history_none": "No previous versions",
   "history_not_readable": "this document's history is not readable",
   "history_older_tag": "Older",
-  "history_pick_prompt": "Choose a version to compare with.",
   "history_push": "Pushed",
   "history_pushed_by": "Pushed by {author}",
   "history_recovered": "Recovered",
@@ -1233,6 +1231,8 @@
   "history_row_tip": "{what}, {detail}",
   "history_row_tip_endpoint": "{what}, {detail}, {endpoint}",
   "history_saved_short": "Saved",
+  "history_select_newer_prompt": "Select a newer version",
+  "history_select_older_prompt": "Select an older version",
   "history_shown_to_readers": "Shown to readers",
   "history_source_earlier_moment": "An earlier moment",
   "history_source_label_load_failed": "Could not load label source.",

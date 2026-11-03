@@ -1166,7 +1166,6 @@
   "history_bookmark_version": "Marcar esta versão",
   "history_by": "por {who}",
   "history_commented": "Comentado",
-  "history_compare_with": "Comparar com…",
   "history_contributors": [
     {
       "declarations": [
@@ -1221,7 +1220,6 @@
   "history_none": "Nenhuma versão anterior",
   "history_not_readable": "o histórico deste documento não pode ser lido",
   "history_older_tag": "Mais antiga",
-  "history_pick_prompt": "Escolha uma versão para comparar.",
   "history_push": "Push feito",
   "history_pushed_by": "Push feito por {author}",
   "history_recovered": "Recuperado",
@@ -1233,6 +1231,8 @@
   "history_row_tip": "{what}, {detail}",
   "history_row_tip_endpoint": "{what}, {detail}, {endpoint}",
   "history_saved_short": "Salvo",
+  "history_select_newer_prompt": "Escolher uma versão mais recente",
+  "history_select_older_prompt": "Escolher uma versão mais antiga",
   "history_shown_to_readers": "Exibido aos leitores",
   "history_source_earlier_moment": "Um momento anterior",
   "history_source_label_load_failed": "Não foi possível carregar o código-fonte do rótulo.",

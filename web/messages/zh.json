@@ -1166,7 +1166,6 @@
   "history_bookmark_version": "为此版本添加书签",
   "history_by": "由 {who}",
   "history_commented": "已批注",
-  "history_compare_with": "与…比较",
   "history_contributors": [
     {
       "declarations": [
@@ -1221,7 +1220,6 @@
   "history_none": "没有以前的版本",
   "history_not_readable": "此文档的历史记录无法读取",
   "history_older_tag": "较旧",
-  "history_pick_prompt": "请选择要比较的版本。",
   "history_push": "已 push",
   "history_pushed_by": "由 {author} push",
   "history_recovered": "已找回",
@@ -1233,6 +1231,8 @@
   "history_row_tip": "{what}，{detail}",
   "history_row_tip_endpoint": "{what}，{detail}，{endpoint}",
   "history_saved_short": "已保存",
+  "history_select_newer_prompt": "选择较新的版本",
+  "history_select_older_prompt": "选择较旧的版本",
   "history_shown_to_readers": "对阅读者可见",
   "history_source_earlier_moment": "较早的时间点",
   "history_source_label_load_failed": "无法加载书签的源码。",
