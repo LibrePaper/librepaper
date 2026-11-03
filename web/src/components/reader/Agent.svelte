@@ -27,8 +27,10 @@
     comments = [], changes = [], onreview, onpreview, onsettings,
     userName = m.common_you(),
     // One instance per session: the wrapper mounts each, shows only the active one,
-    // and renders the session switcher in this pane's header.
-    session = "", active = true, switcher = undefined, onstate = undefined,
+    // and renders the session switcher and its new and delete buttons in this
+    // pane's header.
+    session = "", active = true, switcher = undefined, sessionActions = undefined,
+    onstate = undefined,
   } = $props();
   // Several panels can be mounted at once, one per session, so element ids
   // carry the session. The first session keeps the bare ids.
@@ -774,13 +776,17 @@
     {/if}
   </div>
   {/snippet}
-  <!-- The session switcher comes first, supplied by the wrapper. The gear at the
-       top of each pane is the one way to the desktop app settings. -->
+  <!-- The header has two lines. The first is the session switcher, supplied by
+       the wrapper, which takes the full width so its label is never cut short.
+       The second holds the agent and access settings on the left, and on the
+       right the session actions (new, delete) followed by the gear, the one way
+       to the desktop app settings. Narrow panels wrap within the same order. -->
   {#snippet paneHeader()}
     <div class="pane-header">
-      {#if switcher}{@render switcher()}{/if}
+      {#if switcher}<div class="pane-switcher">{@render switcher()}</div>{/if}
       {#if paired}{@render agentSettings()}{/if}
       <span class="pane-actions">
+      {#if sessionActions}{@render sessionActions()}{/if}
       <IconButton icon="sliders" label={m.agent_settings_label()} tone="plain" size="btn-icon-sm"
                   onclick={() => onsettings?.()} />
       </span>
@@ -1061,10 +1067,12 @@
   .agent-panel :global([role="tabpanel"]) { overflow-y:auto; gap:calc(var(--spacing) * 2); }
   .agent-panel :global(.agent-chat-pane) { overflow:hidden; }
   .agent-panel > :global(p[role="alert"]) { padding-inline:var(--panel-padding); }
-  /* The session switcher and the agent and access line sit at the top left of
-     both panes, the gear at the top right. When the panel is too narrow, the
-     line wraps and the actions stay at the end. */
+  /* The session switcher takes the first line of both panes. The agent and
+     access line sits at the left of the second, and the actions (new, delete,
+     gear) at the right. When the panel is too narrow, the line wraps and the
+     actions stay at the end. */
   .pane-header { display:flex; align-items:center; flex-wrap:wrap; justify-content:space-between; gap:calc(var(--spacing) * .5); }
+  .pane-switcher { flex:1 0 100%; min-width:0; }
   .pane-actions { display:flex; gap:calc(var(--spacing) * .5); margin-left:auto; }
   .chat-history { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:calc(var(--spacing) * 2); overflow-y:auto; }
   .chat-history > :global(*) { flex-shrink:0; }
