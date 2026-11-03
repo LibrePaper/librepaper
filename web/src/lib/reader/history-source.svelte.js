@@ -4,10 +4,11 @@
 // A comparison is always a pair of endpoints, older and newer, in time order.
 // An endpoint is a saved version, a moment in the editing history, the live
 // project (CURRENT, always newest) or an empty project (NOTHING, before the
-// first version). Clicking a version shows what that version changed: the
-// previous version against it. Clicking the Current row shows the newest
-// version against the project as it stands. Either side can be changed on its
-// own, and `target` names the version Restore and Download act on.
+// first version). Clicking a version shows that version against the project as
+// it stands. Clicking the Current row shows the newest version against the
+// project as it stands. Either side can be changed on its own, from a selection
+// mode that picks the replacement, and `target` names the version Restore and
+// Download act on.
 //
 // The live project is captured when a comparison begins, before any network
 // await, and again on `reload()`. It deliberately has no dependency on preview
@@ -22,18 +23,17 @@ import { labelOrder } from "../history.js";
 /// A label is a saved version: an id that is neither a sentinel nor a moment.
 const isLabel = id => Boolean(id) && id !== CURRENT && id !== NOTHING && !isMoment(id);
 
-export function createHistorySource({ read, currentTree, labels = () => [], preferredPath = () => "", previous, newest }) {
-  const state = $state({ selected: "", older: "", newer: "", path: "", loading: false, problem: "", result: null });
+export function createHistorySource({ read, currentTree, labels = () => [], preferredPath = () => "", newest }) {
+  // `mode` is the endpoint being picked: "normal", "select-older" or "select-newer".
+  // `cancelled` is the endpoint whose picking was last cancelled, to return focus to.
+  const state = $state({
+    selected: "", older: "", newer: "", path: "", loading: false, problem: "", result: null,
+    mode: "normal", cancelled: "",
+  });
   const loads = createGeneration();
   let disposed = false;
 
   const sorted = () => [...labels()].sort(labelOrder);
-  // The version just before `sha` in time, or NOTHING for the first one.
-  const previousOf = async sha => {
-    const list = sorted();
-    const index = list.findIndex(point => point.sha === sha);
-    return index > 0 ? list[index - 1].sha : NOTHING;
-  };
 
   const snapshot = tree => ({ ...tree, texts: { ...tree.texts }, files: { ...tree.files } });
   // The live project, captured now. An async function runs its body up to its
@@ -45,7 +45,7 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
       return snapshot(available?.then ? await available : available);
     };
     const live = capture();
-    live.catch(() => {}); // Not unhandled while a slow `previous()` is awaited.
+    live.catch(() => {}); // Not unhandled when the comparison fails before awaiting it.
     return live;
   }
 
@@ -159,7 +159,8 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
     return load(stale, live, { selected, older, newer, path: state.path });
   }
 
-  // The default comparison for a version the reader clicked.
+  // The default comparison for a version the reader clicked: that version
+  // against the project as it stands.
   async function view(sha) {
     if (disposed) return;
     if (sha === "") {
@@ -183,23 +184,8 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
       return load(stale, live, { selected: "", older, newer: CURRENT, path: state.path });
     }
     if (isMoment(sha)) return show(sha, sha, CURRENT);
-    // A label: the version before it. The lookup is awaited, so the run begins
-    // first and the live project is captured before it.
-    const live = captureLive();
-    const stale = begin(sha, "", sha);
-    let older;
-    try {
-      older = await (previous ?? previousOf)(sha);
-    } catch (error) {
-      if (!disposed && !stale()) {
-        state.loading = false;
-        state.problem = error.message || m.history_source_label_load_failed();
-      }
-      return;
-    }
-    if (disposed || stale()) return;
-    state.older = older;
-    return load(stale, live, { selected: sha, older, newer: sha, path: state.path });
+    // A saved version: it is the older side, and the project as it stands the newer.
+    return compare(sha, CURRENT, sha);
   }
 
   // Compares two endpoints, normalised into time order. `selected` is the
@@ -220,12 +206,37 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
     return compare(sha, state.older);
   }
 
+  // Starts picking the older or newer endpoint. Asking again for the endpoint
+  // already being picked cancels it. The comparison itself is not touched.
+  function beginSelect(which) {
+    if (state.mode === `select-${which}`) return cancelSelect();
+    Object.assign(state, { mode: `select-${which}`, cancelled: "" });
+  }
+  // Stops picking, keeping the comparison, and remembers which endpoint it was for.
+  function cancelSelect() {
+    if (state.mode === "normal") return;
+    const which = state.mode === "select-older" ? "older" : "newer";
+    Object.assign(state, { mode: "normal", cancelled: which });
+  }
+  // Answers a version (a sha, "" for the live project, or CURRENT) for the
+  // endpoint being picked. Outside selection, it is a plain view.
+  function choose(id) {
+    const target = id || CURRENT;
+    if (state.mode === "normal") return view(target === CURRENT ? "" : target);
+    const which = state.mode === "select-older" ? "older" : "newer";
+    const replaced = state[which];
+    const other = which === "older" ? state.newer : state.older;
+    Object.assign(state, { mode: "normal", cancelled: "" });
+    // The endpoint already in place, on either side, changes nothing.
+    if (target === replaced || target === other) return;
+    const [a, b] = which === "older" ? [target, other] : [other, target];
+    // The Current row is selected as "", as view("") selects it.
+    return compare(a, b, target === CURRENT ? "" : target);
+  }
+
   // Runs the current pair again: a retry, and a fresh capture of the live project.
   function reload() {
     if (disposed) return;
-    // A label whose previous version failed to load has no older side yet:
-    // look that up again rather than doing nothing.
-    if (isLabel(state.selected) && state.newer === state.selected && !state.older) return view(state.selected);
     // The Current row whose newest version is still unknown: look that up again.
     if (state.selected === "" && state.newer === CURRENT && !state.older) return view("");
     if (!state.older || !state.newer) return;
@@ -237,12 +248,17 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
   }
   function close() {
     loads.cancel();
-    Object.assign(state, { selected: "", older: "", newer: "", result: null, loading: false, problem: "" });
+    Object.assign(state, {
+      selected: "", older: "", newer: "", result: null, loading: false, problem: "",
+      mode: "normal", cancelled: "",
+    });
   }
   return {
     get selected() { return state.selected; },
     get older() { return state.older; },
     get newer() { return state.newer; },
+    get mode() { return state.mode; },
+    get cancelled() { return state.cancelled; },
     // The version Restore and Download act on: the clicked one when it is an
     // endpoint, else the newer saved version, else the older one, else none.
     get target() {
@@ -255,7 +271,7 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
     get loading() { return state.loading; },
     get problem() { return state.problem; },
     get result() { return state.result; },
-    view, compare, setOlder, setNewer, reload, selectFile, close,
+    view, compare, setOlder, setNewer, beginSelect, cancelSelect, choose, reload, selectFile, close,
     dispose() { close(); disposed = true; },
   };
 }

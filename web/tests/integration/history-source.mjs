@@ -26,20 +26,28 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 let live = tree("live", { "main.md": "current" });
 const controller = createHistorySource({ currentTree: () => live, labels: () => labelList, read });
 
-// Clicking a version shows what it changed: the previous version against it.
+// Clicking a version shows it (older) against the project as it stands (newer).
 await controller.view("B");
 assert.equal(controller.selected, "B");
-assert.equal(controller.older, "A");
-assert.equal(controller.newer, "B");
+assert.equal(controller.older, "B");
+assert.equal(controller.newer, CURRENT);
 assert.equal(controller.problem, "");
-assert.equal(controller.result.oldTree.texts["main.md"], "original");
-assert.equal(controller.result.newTree.texts["main.md"], "revision");
+assert.equal(controller.result.oldTree.texts["main.md"], "revision");
+assert.equal(controller.result.newTree.texts["main.md"], "current");
 assert.equal(controller.result.status["main.md"], "changed");
 assert.equal(controller.result.diff, true);
 assert.equal(controller.target, "B");
 
-// The first version is compared with an empty project, so all of it is new.
 await controller.view("A");
+assert.equal(controller.selected, "A");
+assert.equal(controller.older, "A");
+assert.equal(controller.newer, CURRENT);
+assert.equal(controller.result.oldTree.texts["main.md"], "original");
+assert.equal(controller.target, "A");
+
+// The first version is compared with an empty project, so all of it is new,
+// when a comparison asks for that.
+await controller.compare(NOTHING, "A", "A");
 assert.equal(controller.older, NOTHING);
 assert.equal(controller.newer, "A");
 assert.deepEqual(controller.result.oldTree.texts, {});
@@ -111,6 +119,121 @@ assert.equal(controller.target, "B");
 await controller.compare("A", CURRENT, "");
 assert.equal(controller.target, "A");
 
+// Selection mode. beginSelect names the endpoint to replace, and choose answers
+// it: only that endpoint changes, and a choice outside the pair is put back in
+// time order. Every read is recorded, so a choice that changes nothing is visible.
+const reads = [];
+const picker = createHistorySource({
+  currentTree: () => live,
+  labels: () => [{ sha: "A", seq: 1 }, { sha: "B", seq: 2 }, { sha: "C", seq: 3 }],
+  read: sha => { reads.push(sha); return read(sha); },
+});
+stored.C = tree("C", { "main.md": "third" });
+
+await picker.compare("A", "B", "B");
+const readsBefore = reads.length;
+picker.beginSelect("older");
+assert.equal(picker.mode, "select-older");
+assert.equal(picker.cancelled, "");
+assert.deepEqual([picker.older, picker.newer, picker.selected], ["A", "B", "B"]);
+assert.deepEqual([picker.result.older, picker.result.newer], ["A", "B"]);
+assert.equal(picker.result.oldTree.texts["main.md"], "original");
+assert.equal(reads.length, readsBefore, "beginning a selection reads nothing");
+picker.beginSelect("newer");
+assert.equal(picker.mode, "select-newer");
+assert.deepEqual([picker.older, picker.newer], ["A", "B"]);
+picker.beginSelect("newer");
+assert.equal(picker.mode, "normal");
+assert.equal(picker.cancelled, "newer");
+assert.deepEqual([picker.older, picker.newer, picker.selected], ["A", "B", "B"]);
+
+// Cancelling keeps the comparison, remembers the endpoint, and does nothing when nothing is picked.
+picker.beginSelect("older");
+picker.cancelSelect();
+assert.equal(picker.mode, "normal");
+assert.equal(picker.cancelled, "older");
+assert.deepEqual([picker.older, picker.newer], ["A", "B"]);
+picker.cancelSelect();
+assert.equal(picker.cancelled, "older");
+assert.equal(reads.length, readsBefore);
+
+// Choosing for the newer endpoint replaces only that endpoint.
+picker.beginSelect("newer");
+assert.equal(picker.cancelled, "");
+await picker.choose("C");
+assert.equal(picker.mode, "normal");
+assert.equal(picker.cancelled, "");
+assert.deepEqual([picker.older, picker.newer, picker.selected], ["A", "C", "C"]);
+assert.equal(picker.result.newTree.texts["main.md"], "third");
+assert.equal(picker.result.oldTree.texts["main.md"], "original");
+
+// Choosing for the older endpoint replaces only that endpoint.
+picker.beginSelect("older");
+await picker.choose("B");
+assert.deepEqual([picker.older, picker.newer, picker.selected], ["B", "C", "B"]);
+assert.equal(picker.result.oldTree.texts["main.md"], "revision");
+assert.equal(picker.result.newTree.texts["main.md"], "third");
+
+// The other endpoint's id, or the id being replaced, changes nothing and leaves the mode.
+const readsAtChoice = reads.length;
+picker.beginSelect("older");
+await picker.choose("C");
+assert.equal(picker.mode, "normal");
+assert.deepEqual([picker.older, picker.newer, picker.selected], ["B", "C", "B"]);
+picker.beginSelect("older");
+await picker.choose("B");
+assert.equal(picker.mode, "normal");
+assert.deepEqual([picker.older, picker.newer, picker.selected], ["B", "C", "B"]);
+assert.equal(reads.length, readsAtChoice, "no reload for a choice that changes nothing");
+
+// A choice later than the newer endpoint, while selecting the older one, is normalised.
+await picker.compare("A", "B", "B");
+picker.beginSelect("older");
+await picker.choose("C");
+assert.deepEqual([picker.older, picker.newer, picker.selected], ["B", "C", "C"]);
+assert.equal(picker.result.oldTree.texts["main.md"], "revision");
+// And an earlier one while selecting the newer endpoint.
+picker.beginSelect("newer");
+await picker.choose("A");
+assert.deepEqual([picker.older, picker.newer, picker.selected], ["A", "B", "A"]);
+assert.equal(picker.result.oldTree.texts["main.md"], "original");
+assert.equal(picker.result.newTree.texts["main.md"], "revision");
+
+// Choosing the Current row for the newer endpoint sets it to the project as it stands.
+await picker.compare("A", "B", "B");
+picker.beginSelect("newer");
+await picker.choose("");
+assert.equal(picker.mode, "normal");
+assert.deepEqual([picker.older, picker.newer, picker.selected], ["A", CURRENT, ""]);
+assert.equal(picker.result.newTree.texts["main.md"], "current");
+
+// Outside selection, choose is a plain view of the version.
+await picker.choose("A");
+assert.deepEqual([picker.older, picker.newer, picker.selected], ["A", CURRENT, "A"]);
+picker.dispose();
+
+// Rapid choices: a slower read for an earlier choice does not overwrite a later one.
+const gated = {};
+const rapid = createHistorySource({
+  currentTree: () => live,
+  labels: () => [{ sha: "A", seq: 1 }, { sha: "B", seq: 2 }, { sha: "C", seq: 3 }],
+  read: sha => (sha === "C" ? new Promise(resolve => { gated.C = resolve; }) : read(sha)),
+});
+await rapid.compare("A", "B", "B");
+rapid.beginSelect("newer");
+const slowChoice = rapid.choose("C");
+await settle();
+assert.equal(typeof gated.C, "function");
+rapid.beginSelect("older");
+await rapid.choose("");
+gated.C({ ...stored.C });
+await slowChoice;
+assert.deepEqual([rapid.older, rapid.newer, rapid.selected], ["C", CURRENT, ""]);
+assert.equal(rapid.result.oldTree.texts["main.md"], "third");
+assert.equal(rapid.result.newTree.texts["main.md"], "current");
+assert.equal(rapid.problem, "");
+rapid.dispose();
+
 // reload() captures the live project again.
 await controller.view("");
 live = tree("live", { "main.md": "edited" });
@@ -150,44 +273,6 @@ await settle();
 raced.close();
 pending.shift().resolve({ ...stored.A }); await leaving;
 assert.equal(raced.selected, ""); assert.equal(raced.result, null);
-
-// A view overtaken while its previous version is still being looked up does nothing.
-let release;
-const slow = createHistorySource({
-  currentTree: () => live,
-  labels: () => labelList,
-  read,
-  previous: () => new Promise(resolve => { release = resolve; }),
-});
-const late = slow.view("B");
-await slow.view("");
-release("A"); await late;
-assert.equal(slow.selected, "");
-assert.equal(slow.newer, CURRENT);
-assert.equal(slow.result.oldTree.texts["main.md"], "revision");
-slow.dispose();
-
-// A label whose previous version failed to load is retried by reload().
-let lookups = 0;
-const flaky = createHistorySource({
-  currentTree: () => live,
-  labels: () => labelList,
-  read,
-  previous: async () => {
-    lookups += 1;
-    if (lookups === 1) throw new Error("lookup failed");
-    return "A";
-  },
-});
-await flaky.view("B");
-assert.notEqual(flaky.problem, "");
-assert.equal(flaky.older, "");
-await flaky.reload();
-assert.equal(flaky.problem, "");
-assert.equal(flaky.older, "A");
-assert.equal(flaky.result.oldTree.texts["main.md"], "original");
-assert.equal(flaky.result.newTree.texts["main.md"], "revision");
-flaky.dispose();
 
 // The Current row waits for the newest version too: a failed lookup is retried by reload().
 let newestLookups = 0;
@@ -230,13 +315,15 @@ controller.close();
 // the comparison has it.
 stored.P = tree("P", { "main.md": "original", "removed.md": "removed text", "steady.md": "same" });
 stored.Q = tree("Q", { "main.md": "revision", "new.md": "", "steady.md": "same" });
+stored.T = tree("T", { "main.md": "other", "removed.md": "edited removal", "steady.md": "same" });
+stored.V = tree("V", { "main.md": "original", "removed.md": "edited removal", "steady.md": "same" });
 const files = createHistorySource({
   currentTree: () => live,
-  labels: () => [{ sha: "P", seq: 1 }, { sha: "Q", seq: 2 }],
+  labels: () => [{ sha: "P", seq: 1 }, { sha: "Q", seq: 2 }, { sha: "T", seq: 3 }, { sha: "V", seq: 4 }],
   read,
   preferredPath: () => "removed.md",
 });
-await files.view("Q");
+await files.compare("P", "Q", "Q");
 assert.equal(files.path, "removed.md");
 assert.equal(files.result.status["removed.md"], "removed");
 assert.equal(files.result.status["new.md"], "added");
@@ -248,6 +335,16 @@ files.selectFile("main.md");
 assert.equal(files.path, "main.md");
 files.selectFile("missing.md");
 assert.equal(files.path, "main.md");
+// A changed pair keeps the file while it still changed: main.md changed from P to T.
+files.beginSelect("newer");
+await files.choose("T");
+assert.deepEqual(files.result.changed, ["main.md", "removed.md"]);
+assert.equal(files.path, "main.md");
+// From P to V only removed.md changed, so the file falls back to the first changed one.
+files.beginSelect("newer");
+await files.choose("V");
+assert.deepEqual(files.result.changed, ["removed.md"]);
+assert.equal(files.path, "removed.md");
 files.dispose();
 
 // The reader's file did not change, so the comparison opens on one that did:
@@ -258,7 +355,7 @@ const steady = createHistorySource({
   read,
   preferredPath: () => "steady.md",
 });
-await steady.view("Q");
+await steady.compare("P", "Q", "Q");
 assert.equal(steady.path, "main.md");
 // With nothing changed at all, the reader's file stays.
 await steady.compare("Q", "Q");
