@@ -989,7 +989,7 @@
   {:else}
     {#snippet taskRow(entry, group)}
       {@const hint = taskHint(entry, { attached: attachment, path: contextPath })}
-      {@const describedBy = `task-desc-${group.replace(/\W+/g, "-")}-${entry.id}`}
+      {@const describedBy = `task-desc-${group.replace(/\W+/g, "-")}-${entry.id}${session ? `-${session.replace(/\W+/g, "-")}` : ""}`}
       <li>
         <button class="task-row" class:active={searching && entry.id === results[0]?.id} class:unavailable={Boolean(hint)}
                 data-task-id={entry.id} data-row={`${group}:${entry.id}`}
