@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {
-  captureAttachment, capabilityAllows, composeTaskMessage, taskDiagnosticContext, diagnosticLabel, sourcePassage,
+  captureAttachment, capabilityAllows, composeTaskMessage, taskDiagnosticContext, diagnosticLabel, passageContext, sourcePassage,
   normalizeCapabilities, resultIds, visibleResults, checkContextSize,
   TASK_CATALOG, TASK_CATEGORIES, TASK_KINDS, TASK_SCOPES, findTask, inferScope, searchTasks, taskPrompt, taskScopes,
   taskSections, CONTEXT_TASKS, taskForKind, taskBlocker,
@@ -53,6 +53,16 @@ assert.equal(edged.prefix.length, 31);
 assert.equal(edged.suffix.length, 31);
 assert.equal(edged.prefix.charCodeAt(0) >= 0xdc00 && edged.prefix.charCodeAt(0) <= 0xdfff, false);
 assert.equal(edged.suffix.charCodeAt(edged.suffix.length - 1) >= 0xd800 && edged.suffix.charCodeAt(edged.suffix.length - 1) <= 0xdbff, false);
+// passageContext holds the same edge rules on its own, for the editor's selections.
+// (a) The prefix window starts on the low half of a leading emoji, so the window moves past it.
+const leading = passageContext(emoji + "a".repeat(31) + "word", 33, 37);
+assert.equal(leading.prefix, "a".repeat(31));
+assert.equal(leading.prefix.charCodeAt(0) >= 0xdc00 && leading.prefix.charCodeAt(0) <= 0xdfff, false);
+// (b) The suffix window ends on the high half of an emoji, so the window stops before it.
+const trailing = passageContext("word" + "c".repeat(31) + emoji + "d".repeat(5), 0, 4);
+assert.equal(trailing.prefix, "");
+assert.equal(trailing.suffix, "c".repeat(31));
+assert.equal(trailing.suffix.charCodeAt(trailing.suffix.length - 1) >= 0xd800 && trailing.suffix.charCodeAt(trailing.suffix.length - 1) <= 0xdbff, false);
 // A source selection is anchored without a revision, and its task carries none.
 const sourced = captureAttachment({ source: plain, exact: "beta" }, "main.md", "");
 assert.equal(sourced.anchored, true);

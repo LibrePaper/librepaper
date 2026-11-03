@@ -18,7 +18,7 @@
   import { createWebGit } from "../lib/reader/web-git.svelte.js";
   import { createWebConnection } from "../lib/reader/web-connection.svelte.js";
   import { diagnosticContext } from "../lib/assistant-review.js";
-  import { sourcePassage } from "../lib/assistant.js";
+  import { passageContext, sourcePassage } from "../lib/assistant.js";
   import { candidateTree, capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
   import { orphanState } from "../lib/orphan.js";
   import * as latex from "../lib/latex.js";
@@ -846,10 +846,11 @@
     const sel = editor.selection();
     if (!sel) return;
     const text = editor.text(sel.file) ?? editor.text();
+    const { prefix, suffix } = passageContext(text, sel.from, sel.to);
     pending = {
       exact: text.slice(sel.from, sel.to),
-      prefix: text.slice(Math.max(0, sel.from - 32), sel.from),
-      suffix: text.slice(sel.to, sel.to + 32),
+      prefix,
+      suffix,
       position: null,
       render_digest: "",
       source: { file_id: sel.file, start: sel.from, end: sel.to },
