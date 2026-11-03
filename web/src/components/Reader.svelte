@@ -1409,18 +1409,30 @@
   const historySource = createHistorySource({
     read: sha => history.read(SLUG, sha, keyHeaders(KEY)),
     labels: () => labels,
-    // The version before `sha` in the timeline, or NOTHING when there is none.
+    // The version before `sha` in the timeline. NOTHING only when the timeline
+    // is known to hold no earlier version. Throws when it cannot tell: the
+    // first read has failed, or an older page could not be read. The view
+    // shows that as a retryable problem instead of a false "added" comparison.
     // The first loaded row may not be the oldest: older pages are read on
     // demand, and a comparison with the version before it needs them.
     previous: async (sha) => {
+      if (!timeline.state.loaded) {
+        await timeline.load();
+        if (!timeline.state.loaded) {
+          throw new Error(timeline.state.problem || m.history_source_label_load_failed());
+        }
+      }
       for (;;) {
         const before = timeline.state.labels.length;
         const index = timeline.state.labels.findIndex((point) => point.sha === sha);
         if (index > 0) return timeline.state.labels[index - 1].sha;
-        if (index !== 0 || timeline.state.complete) return NOTHING;
+        // The first row, or a sha not loaded at all, has no earlier version
+        // only once every page has been read.
+        if (timeline.state.complete && index <= 0) return NOTHING;
         await timeline.loadMore();
-        // Nothing new arrived, so asking again would only ask the same question.
-        if (timeline.state.labels.length === before) return NOTHING;
+        if (timeline.state.labels.length === before && !timeline.state.complete) {
+          throw new Error(timeline.state.moreProblem || m.timeline_older_read_failed());
+        }
       }
     },
     preferredPath: () => session?.paths?.get(openFile) || "",
