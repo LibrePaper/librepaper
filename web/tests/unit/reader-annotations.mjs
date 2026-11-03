@@ -51,7 +51,9 @@ const remote = { type: "comment", comment: { id: "remote", body: "Other comment"
 annotations.receive(remote);
 annotations.receive(remote);
 assert.deepEqual(view.comments.map((item) => item.id), ["confirmed", "remote"]);
-assert.equal(anchored.length, 2);
+// The draft, the draft again once acknowledged (but not on the repeat), and
+// the remote comment once.
+assert.equal(anchored.length, 3);
 
 annotations.reply(draft, "A reply", "Local reply name");
 const reply = draft.replies[0];
@@ -108,6 +110,17 @@ annotations.receive({ type: "comment", temp_id: placed.temp_id,
   comment: { id: "placed", position: 7, exact: "a passage", replies: [] } });
 assert.equal(view.comments.at(-1), placed);
 assert.equal(placed.id, "placed");
+
+// The acknowledgement anchors the confirmed row itself, not only the draft.
+annotations.comment({ exact: "acknowledged passage" },
+  { motivation: "commenting", body: "Anchor me again" }, "Name");
+const acked = view.comments.at(-1);
+const before = anchored.length;
+annotations.receive({ type: "comment", temp_id: acked.temp_id,
+  comment: { id: "acked", exact: "acknowledged passage", attachment: { status: "exact", resolved_range_utf16: [3, 10], resolved_file_id: "f1" }, replies: [] } });
+assert.equal(view.comments.at(-1), acked);
+assert.equal(acked.id, "acked");
+assert.ok(anchored.slice(before).includes(acked), "the acknowledged comment is anchored again from the server's row");
 
 annotations.comment({ exact: "colored passage" },
   { motivation: "highlighting", body: "", color: "#AAbbCC" }, "Name");
