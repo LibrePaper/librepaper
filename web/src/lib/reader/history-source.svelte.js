@@ -22,7 +22,7 @@ import { labelOrder } from "../history.js";
 /// A label is a saved version: an id that is neither a sentinel nor a moment.
 const isLabel = id => Boolean(id) && id !== CURRENT && id !== NOTHING && !isMoment(id);
 
-export function createHistorySource({ read, currentTree, labels = () => [], preferredPath = () => "", previous }) {
+export function createHistorySource({ read, currentTree, labels = () => [], preferredPath = () => "", previous, newest }) {
   const state = $state({ selected: "", older: "", newer: "", path: "", loading: false, problem: "", result: null });
   const loads = createGeneration();
   let disposed = false;
@@ -164,7 +164,23 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
     if (disposed) return;
     if (sha === "") {
       // The Current row: the newest version against the project as it stands.
-      return show("", sorted().at(-1)?.sha ?? CURRENT, CURRENT);
+      if (!newest) return show("", sorted().at(-1)?.sha ?? CURRENT, CURRENT);
+      // The newest version is looked up like an older one: it may not be known yet.
+      const live = captureLive();
+      const stale = begin("", "", CURRENT);
+      let older;
+      try {
+        older = await newest();
+      } catch (error) {
+        if (!disposed && !stale()) {
+          state.loading = false;
+          state.problem = error.message || m.history_source_label_load_failed();
+        }
+        return;
+      }
+      if (disposed || stale()) return;
+      state.older = older;
+      return load(stale, live, { selected: "", older, newer: CURRENT, path: state.path });
     }
     if (isMoment(sha)) return show(sha, sha, CURRENT);
     // A label: the version before it. The lookup is awaited, so the run begins
@@ -210,6 +226,8 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
     // A label whose previous version failed to load has no older side yet:
     // look that up again rather than doing nothing.
     if (isLabel(state.selected) && state.newer === state.selected && !state.older) return view(state.selected);
+    // The Current row whose newest version is still unknown: look that up again.
+    if (state.selected === "" && state.newer === CURRENT && !state.older) return view("");
     if (!state.older || !state.newer) return;
     return show(state.selected, state.older, state.newer);
   }

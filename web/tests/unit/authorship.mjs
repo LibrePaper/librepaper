@@ -103,6 +103,38 @@ test("summarize groups two peers of one account into one row, unknown last", () 
   assert.equal(missing, true);
 });
 
+test("an agent sharing its owner's account gets its own row, in either order", () => {
+  const firstSeen = new Date("2026-01-01T00:00:00Z");
+  const human = { name: "Ada", accountId: "acc-1", agent: false, firstSeen };
+  const agent = { name: "Build bot", accountId: "acc-1", agent: true, firstSeen };
+  const authors = new Map([
+    ["1", human],
+    ["2", agent],
+  ]);
+  const humanRun = { from: 0, to: 3, peer: "1", at: 1000 };
+  const agentRun = { from: 3, to: 5, peer: "2", at: 2000 };
+
+  for (const runs of [
+    [agentRun, humanRun],
+    [humanRun, agentRun],
+  ]) {
+    const { rows, missing } = summarize(runs, authors);
+    assert.equal(rows.length, 2);
+    assert.equal(missing, false);
+    const [first, second] = rows;
+    // The larger row comes first: Ada with 3 characters, then the agent with 2.
+    assert.equal(first.key, "account:acc-1");
+    assert.equal(first.name, "Ada");
+    assert.equal(first.agent, false);
+    assert.equal(first.chars, 3);
+    assert.equal(second.key, "agent:acc-1:Build bot");
+    assert.match(second.name, /Build bot/);
+    assert.equal(second.agent, true);
+    assert.equal(second.chars, 2);
+    assert.notEqual(first.colour, second.colour);
+  }
+});
+
 test("markSpans draws every run but the unknown ones", () => {
   const authors = new Map([["1", { name: "Ada", accountId: "acc-1", agent: false, firstSeen: new Date(0) }]]);
   const runs = [
