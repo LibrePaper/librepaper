@@ -84,6 +84,7 @@
   // The row the reader is comparing from, while the list waits for the other
   // one. "" is the Current row; null is not picking.
   let picking = $state(null);
+  let pickCancel = $state(null);
 
   // Open state is the default from the groups, flipped by a click. Each set
   // holds the keys whose state the reader has changed. Sets are replaced, not
@@ -328,6 +329,13 @@
     listEl?.querySelector("[data-compare]")?.focus();
   }
 
+  // Pick mode removes the Compare button, so focus moves to Cancel.
+  async function startPick(sha) {
+    picking = sha;
+    await tick();
+    pickCancel?.focus();
+  }
+
   function showAll() {
     mode = "all";
     note = "";
@@ -434,7 +442,10 @@
 <!-- Escape leaves pick mode from anywhere in the panel. -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <section class="panel timeline panel-tabbed" aria-label={m.common_history()} onkeydown={(event) => {
-  if (event.key === "Escape" && picking !== null) cancelPick();
+  if (event.key === "Escape" && picking !== null) {
+    event.preventDefault();
+    cancelPick();
+  }
 }}>
   {#snippet dateControl()}
     <span class="hx-date-wrap" bind:this={dateWrap}>
@@ -466,7 +477,7 @@
     {#if picking !== null}
       <div class="hx-pick" role="status">
         <span>{m.history_pick_prompt()}</span>
-        <button type="button" class="btn btn-sm" onclick={cancelPick}>{m.common_cancel()}</button>
+        <button type="button" class="btn btn-sm" bind:this={pickCancel} onclick={cancelPick}>{m.common_cancel()}</button>
       </div>
     {/if}
 
@@ -808,7 +819,7 @@
 {#snippet compareTool(sha, selected)}
   {#if selected && picking === null}
     <span class="hx-tools">
-      <button type="button" class="btn btn-sm" data-compare onclick={() => (picking = sha)}>{m.history_compare_with()}</button>
+      <button type="button" class="btn btn-sm" data-compare onclick={() => startPick(sha)}>{m.history_compare_with()}</button>
     </span>
   {/if}
 {/snippet}
