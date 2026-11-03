@@ -13,6 +13,7 @@
   import { UndoManager } from "loro-crdt";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { sourceLanguage } from "../lib/source-language.js";
+  import { wordDiff } from "../lib/word-diff.js";
   import { sourceHighlighting } from "../lib/source-highlight.js";
   import IconButton from "./IconButton.svelte";
 
@@ -52,7 +53,11 @@
 
   // Long one-line paragraphs need a deep scan to be diffed by word, so the
   // limits are well above the merge package's default of 500.
-  const diffConfig = { scanLimit: 20000, timeout: 1000 };
+  const diffConfig = {
+    scanLimit: 20000,
+    timeout: 1000,
+    override: (/** @type {string} */ a, /** @type {string} */ b) => wordDiff(a, b, { scanLimit: 20000, timeout: 1000 }),
+  };
   const collapse = { margin: 3, minSize: 4 };
 
   // The active change is marked by a line class on its lines.
