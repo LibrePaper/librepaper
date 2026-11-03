@@ -26,6 +26,8 @@
 
   // The two ends of a comparison, each a version's sha or CURRENT for the live
   // document. They are marked in the list so the reader does not need the colour.
+  // `selecting` is the endpoint being chosen, "normal" when none is. While it is
+  // not, the list says which end to pick and every eligible row says so too.
   let {
     labels = [],
     viewing = null,
@@ -41,8 +43,9 @@
     savedLoaded = false,
     savedLoading = false,
     savedProblem = "",
+    selecting = "normal",
     onview,
-    oncompare,
+    oncancelselect,
     onname,
     onretry,
     onloadmore,
@@ -80,11 +83,6 @@
   let naming = $state("");
   let draft = $state("");
   let field = $state(null);
-
-  // The row the reader is comparing from, while the list waits for the other
-  // one. "" is the live document; null is not picking.
-  let picking = $state(null);
-  let pickCancel = $state(null);
 
   // Open state is the default from the groups, flipped by a click. Each set
   // holds the keys whose state the reader has changed. Sets are replaced, not
@@ -187,8 +185,8 @@
   };
 
   // The newest version overall stands for the live document: its row says
-  // Current, and choosing it views and compares the live document, not that
-  // stored version. Periods and events are newest first.
+  // Current, and choosing it views the live document, not that stored version.
+  // Periods and events are newest first.
   const newestOf = (list) => {
     const first = list[0];
     if (!first) return null;
@@ -338,47 +336,14 @@
     onname?.(point.sha, "");
   }
 
-  // A click on a row. While picking, the row is the second end of the
-  // comparison, or cancels the pick when it is the first end. Shift-click
-  // compares with the viewed version: a shortcut, not advertised.
-  function pick(event, sha) {
-    if (picking !== null) {
-      if (sha === picking) cancelPick();
-      else {
-        const from = picking;
-        picking = null;
-        oncompare?.(from, sha);
-      }
-      return;
-    }
-    if (event.shiftKey) oncompare?.(viewing || "", sha);
-    else onview?.(sha);
-  }
-
-  // Leaving pick mode puts focus back on the Compare button it started from.
-  async function cancelPick() {
-    picking = null;
-    await tick();
-    listEl?.querySelector("[data-compare]")?.focus();
-  }
-
-  // Pick mode removes the Compare button, so focus moves to Cancel.
-  async function startPick(sha) {
-    picking = sha;
-    await tick();
-    pickCancel?.focus();
-  }
-
   function showAll() {
     mode = "all";
     note = "";
-    picking = null;
   }
   function showSaved() {
     mode = "saved";
     dateOpen = false;
     note = "";
-    picking = null;
     onloadsaved?.();
   }
 
@@ -390,7 +355,6 @@
       mode = "authors";
       dateOpen = false;
       note = "";
-      picking = null;
     }
   }
 
@@ -481,12 +445,12 @@
 
 <!-- The strip is PanelTabs', the one the other panels wear. The calendar
      control rides on its row and belongs to the all view. -->
-<!-- Escape leaves pick mode from anywhere in the panel. -->
+<!-- Escape leaves selection mode from anywhere in the panel. -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <section class="panel timeline panel-tabbed" aria-label={m.common_history()} onkeydown={(event) => {
-  if (event.key === "Escape" && picking !== null) {
+  if (event.key === "Escape" && selecting !== "normal") {
     event.preventDefault();
-    cancelPick();
+    oncancelselect?.();
   }
 }}>
   {#snippet dateControl()}
@@ -516,16 +480,16 @@
   {#snippet timelineList()}
     {#if note}<p class="panel-meta hx-note" role="status">{note}</p>{/if}
 
-    {#if picking !== null}
-      <div class="hx-pick" role="status">
-        <span>{m.history_pick_prompt()}</span>
-        <button type="button" class="btn btn-sm" bind:this={pickCancel} onclick={cancelPick}>{m.common_cancel()}</button>
+    {#if selecting !== "normal"}
+      <div class="hx-select" role="status">
+        <span>{selecting === "select-older" ? m.history_select_older_prompt() : m.history_select_newer_prompt()}</span>
+        <button type="button" class="btn btn-sm" onclick={() => oncancelselect?.()}>{m.common_cancel()}</button>
       </div>
     {/if}
 
     <!-- The handler only moves focus between the buttons inside the list. -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <ol class="hx-list" class:hx-picking={picking !== null} bind:this={listEl} onkeydown={navigate}>
+    <ol class="hx-list" class:hx-selecting={selecting !== "normal"} bind:this={listEl} onkeydown={navigate}>
       {#if mode === "all"}
         <!-- The live document is the newest version's row. Until there is one,
              a compact row keeps it reachable. -->
@@ -541,12 +505,11 @@
                 class:timeline-here={!viewing}
                 aria-current={!viewing ? "true" : undefined}
                 aria-label={[m.history_current_version(), currentTag].filter(Boolean).join(", ")}
-                onclick={(click) => pick(click, "")}
+                onclick={() => onview?.("")}
               >
                 <span class="hx-ell">{m.history_current_version()}</span>
                 {@render endMark(currentEnd)}
               </button>
-              {@render compareTool("", !viewing && newer === CURRENT)}
               {#if canEdit && !viewing}{@render liveTool()}{/if}
             {/if}
           </li>
@@ -761,7 +724,7 @@
           aria-current={here ? "true" : undefined}
           title={describe(what, detail, first.sha)}
           aria-label={describe(what, detail, first.sha)}
-          onclick={(click) => pick(click, pickOf(first.sha))}
+          onclick={() => onview?.(pickOf(first.sha))}
         >
           {#if plain}
             <span class="hx-when">{clock(first.at)}</span>
@@ -826,7 +789,7 @@
           aria-current={here ? "true" : undefined}
           title={m.history_row_tip({ what: told(point), detail: stamp(point.at) || shortSha(point.sha) })}
           aria-label={[m.history_version_at({ time: clock(point.at) }), who ? m.history_by({ who }) : "", why, isLive(point.sha) ? m.history_current_label() : "", endpointWord(point.sha)].filter(Boolean).join(", ")}
-          onclick={(click) => pick(click, pickOf(point.sha))}
+          onclick={() => onview?.(pickOf(point.sha))}
           onkeydown={toSession}
         >
           <span class="hx-when">{clock(point.at)}</span>
@@ -840,11 +803,8 @@
 {/snippet}
 
 <!-- The tools of a version's row. On the newest one the bookmark is the live
-     document's, while the live document is the one being read, and Compare
-     with... shows there once the live document is the newer end, as the old
-     Current row did. -->
+     document's, while the live document is the one being read. -->
 {#snippet rowTools(point)}
-  {@render compareTool(pickOf(point.sha), isLive(point.sha) ? viewing === point.sha || (!viewing && newer === CURRENT) : viewing === point.sha)}
   {#if isLive(point.sha) && canEdit && !viewing}{@render liveTool()}{:else}{@render markTool(point)}{/if}
 {/snippet}
 
@@ -873,7 +833,7 @@
           aria-current={viewing === point.sha ? "true" : undefined}
           title={m.history_row_tip({ what: point.label, detail: savedWhen(point.at) })}
           aria-label={tipWith(point.label, savedWhen(point.at), end)}
-          onclick={(click) => pick(click, point.sha)}
+          onclick={() => onview?.(point.sha)}
         >
           <span class="hx-text">
             <span class="hx-line1">{point.label}</span>
@@ -881,7 +841,6 @@
           </span>
           {@render endMark(endpointKind(point.sha))}
         </button>
-        {@render compareTool(point.sha, viewing === point.sha)}
         <span class="hx-tools">
           {#if canEdit}
             <IconButton icon="pencil" tone="plain" size="btn-icon-sm" label={m.common_rename()}
@@ -893,17 +852,6 @@
       </div>
     {/if}
   </li>
-{/snippet}
-
-<!-- The start of a comparison, on the row being read. It is text rather than an
-     icon, so it is labelled without a hover, and it is hidden while picking,
-     since the status line above offers Cancel. -->
-{#snippet compareTool(sha, selected)}
-  {#if selected && picking === null}
-    <span class="hx-tools">
-      <button type="button" class="btn btn-sm" data-compare onclick={() => startPick(sha)}>{m.history_compare_with()}</button>
-    </span>
-  {/if}
 {/snippet}
 
 <!-- The bookmark control on a version or a single event. It shows on hover,
@@ -1128,15 +1076,17 @@
     white-space: nowrap;
   }
 
-  /* While picking, every row says it can be the second end. */
-  .hx-picking .hx-main:hover,
-  .hx-picking .hx-single:hover,
-  .hx-picking .hx-version-main:hover {
+  /* While selecting an endpoint, every version row says it can be chosen. Layout
+     does not move; the outline is drawn inside the row. */
+  .hx-selecting .hx-main:hover,
+  .hx-selecting .hx-single:hover,
+  .hx-selecting .hx-version-main:hover {
     cursor: pointer;
     outline: 1px solid var(--color-brand);
     outline-offset: -1px;
   }
-  .hx-pick {
+  /* The prompt above the list, on one line when it fits. */
+  .hx-select {
     display: flex;
     flex-wrap: wrap;
     align-items: center;

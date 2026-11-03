@@ -1166,7 +1166,6 @@
   "history_bookmark_version": "Marcar esta versión",
   "history_by": "por {who}",
   "history_commented": "Comentado",
-  "history_compare_with": "Comparar con…",
   "history_contributors": [
     {
       "declarations": [
@@ -1221,7 +1220,6 @@
   "history_none": "No hay versiones anteriores",
   "history_not_readable": "el historial de este documento no se puede leer",
   "history_older_tag": "Más antigua",
-  "history_pick_prompt": "Elija una versión con la que comparar.",
   "history_push": "Push realizado",
   "history_pushed_by": "Push realizado por {author}",
   "history_recovered": "Recuperado",
@@ -1233,6 +1231,8 @@
   "history_row_tip": "{what}, {detail}",
   "history_row_tip_endpoint": "{what}, {detail}, {endpoint}",
   "history_saved_short": "Guardado",
+  "history_select_newer_prompt": "Elegir una versión más reciente",
+  "history_select_older_prompt": "Elegir una versión más antigua",
   "history_shown_to_readers": "Visible para los lectores",
   "history_source_earlier_moment": "Un momento anterior",
   "history_source_label_load_failed": "No se pudo cargar el código fuente de la etiqueta.",

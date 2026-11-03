@@ -1166,7 +1166,6 @@
   "history_bookmark_version": "Lesezeichen für diese Version setzen",
   "history_by": "von {who}",
   "history_commented": "Kommentiert",
-  "history_compare_with": "Vergleichen mit…",
   "history_contributors": [
     {
       "declarations": [
@@ -1221,7 +1220,6 @@
   "history_none": "Keine früheren Versionen",
   "history_not_readable": "der Verlauf dieses Dokuments ist nicht lesbar",
   "history_older_tag": "Ältere",
-  "history_pick_prompt": "Wählen Sie eine Version für den Vergleich aus.",
   "history_push": "Gepusht",
   "history_pushed_by": "Gepusht von {author}",
   "history_recovered": "Wiederhergestellt",
@@ -1233,6 +1231,8 @@
   "history_row_tip": "{what}, {detail}",
   "history_row_tip_endpoint": "{what}, {detail}, {endpoint}",
   "history_saved_short": "Gespeichert",
+  "history_select_newer_prompt": "Neuere Version auswählen",
+  "history_select_older_prompt": "Ältere Version auswählen",
   "history_shown_to_readers": "Für Leser sichtbar",
   "history_source_earlier_moment": "Ein früherer Zeitpunkt",
   "history_source_label_load_failed": "Der Quelltext des Labels konnte nicht geladen werden.",
