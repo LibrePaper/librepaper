@@ -206,7 +206,11 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
 
   // Runs the current pair again: a retry, and a fresh capture of the live project.
   function reload() {
-    if (disposed || !state.older || !state.newer) return;
+    if (disposed) return;
+    // A label whose previous version failed to load has no older side yet:
+    // look that up again rather than doing nothing.
+    if (isLabel(state.selected) && state.newer === state.selected && !state.older) return view(state.selected);
+    if (!state.older || !state.newer) return;
     return show(state.selected, state.older, state.newer);
   }
 
