@@ -51,7 +51,9 @@ const remote = { type: "comment", comment: { id: "remote", body: "Other comment"
 annotations.receive(remote);
 annotations.receive(remote);
 assert.deepEqual(view.comments.map((item) => item.id), ["confirmed", "remote"]);
-assert.equal(anchored.length, 2);
+// The draft, the draft again once acknowledged (but not on the repeat), and
+// the remote comment once.
+assert.equal(anchored.length, 3);
 
 annotations.reply(draft, "A reply", "Local reply name");
 const reply = draft.replies[0];
