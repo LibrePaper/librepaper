@@ -1403,6 +1403,19 @@
     disposed: () => readerDisposed,
   });
   const labels = $derived(timeline.state.labels);
+  // The loaded timeline pages plus the saved versions they have not reached yet
+  // (saved versions can be older than any loaded page), so that a comparison can
+  // order any endpoint the Saved tab offers. Deduplicated by sha, the loaded
+  // page's own entry winning.
+  const comparisonLabels = $derived.by(() => {
+    const seen = new Set(labels.map(point => point.sha));
+    const extra = timeline.state.saved.filter(point => {
+      if (seen.has(point.sha)) return false;
+      seen.add(point.sha);
+      return true;
+    });
+    return [...labels, ...extra];
+  });
   const historyProblem = $derived(timeline.state.problem);
   // Selection is a user-interface fact, not proof that the source could be
   // read: a failed comparison reports itself in the workspace and cannot make
@@ -1418,7 +1431,7 @@
   }
   const historySource = createHistorySource({
     read: sha => history.read(SLUG, sha, keyHeaders(KEY)),
-    labels: () => labels,
+    labels: () => comparisonLabels,
     // The newest version, or CURRENT when the timeline is known to hold none.
     // Throws when the timeline cannot be read.
     newest: async () => {
@@ -1443,8 +1456,11 @@
   const historySelectedSha = $derived(historySource.selected);
   $effect(() => () => historySource.dispose());
   // On a phone only one pane shows. Picking a version needs the timeline, so
-  // show it while a selection is open, and the comparison again once the
-  // choice is made or cancelled.
+  // show it while a selection is open. When the choice is made or cancelled,
+  // show the source again, but only while the comparison is still open: close()
+  // also resets the mode, and by then the reader may have left History for
+  // somewhere else, which must not be overridden. close() clears `newer`, so an
+  // empty `newer` means the comparison is gone.
   let previousHistoryMode = "normal";
   $effect(() => {
     const mode = historySource.mode;
@@ -1452,7 +1468,7 @@
     previousHistoryMode = mode;
     if (!compact || mode === before) return;
     if (before === "normal") untrack(() => showMobileView("sidebar"));
-    else if (mode === "normal") untrack(() => showMobileView("source"));
+    else if (mode === "normal" && historySource.newer) untrack(() => showMobileView("source"));
   });
   let navigationGeneration = 0;
   // Which file the reader arrived asking for, when the landing page's search
