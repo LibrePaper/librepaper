@@ -87,8 +87,11 @@ const server = createServer(async (req, res) => {
   try {
     const pathname = new URL(req.url, "http://localhost").pathname;
     if (pathname === "/") {
+      // The adapter's modules arrive one request each, about two thousand with
+      // the message catalogue, so the default 250-entry resource timing buffer
+      // fills before the mirror is read and the cold-fetch check sees nothing.
       res.setHeader("content-type", "text/html");
-      res.end('<!doctype html><meta charset="utf-8"><script type="module">import {compile,cancel} from "/src/lib/latex/html.js";window.compile=compile;window.cancel=cancel;</script>');
+      res.end('<!doctype html><meta charset="utf-8"><script>performance.setResourceTimingBufferSize(100000)</script><script type="module">import {compile,cancel} from "/src/lib/latex/html.js";window.compile=compile;window.cancel=cancel;</script>');
       return;
     }
     let directory, relative;
