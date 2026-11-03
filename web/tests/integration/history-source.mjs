@@ -167,6 +167,28 @@ assert.equal(slow.newer, CURRENT);
 assert.equal(slow.result.oldTree.texts["main.md"], "revision");
 slow.dispose();
 
+// A label whose previous version failed to load is retried by reload().
+let lookups = 0;
+const flaky = createHistorySource({
+  currentTree: () => live,
+  labels: () => labelList,
+  read,
+  previous: async () => {
+    lookups += 1;
+    if (lookups === 1) throw new Error("lookup failed");
+    return "A";
+  },
+});
+await flaky.view("B");
+assert.notEqual(flaky.problem, "");
+assert.equal(flaky.older, "");
+await flaky.reload();
+assert.equal(flaky.problem, "");
+assert.equal(flaky.older, "A");
+assert.equal(flaky.result.oldTree.texts["main.md"], "original");
+assert.equal(flaky.result.newTree.texts["main.md"], "revision");
+flaky.dispose();
+
 // A version whose source the server will not give back says so, and shows
 // nothing rather than the last comparison.
 stored.C = { sha: "C", main: "main.md", files: {} };
