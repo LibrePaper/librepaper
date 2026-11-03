@@ -4468,7 +4468,7 @@
            the same place, which is why this is a plain link and not a
            gesture: the page changes, the furniture does not. -->
       <IconButton icon="home" label={m.readerd_all_projects()} href="/" />
-      <IconButton icon="help" label={m.common_what_is_librepaper()} href={DOCUMENTATION_URL} external />
+      <IconButton icon="help" label={m.common_documentation()} href={DOCUMENTATION_URL} external />
       {#if editing}
         <IconButton icon={ARRANGEMENTS[layout].icon}
           label={m.readerd_layout_switch({ current: ARRANGEMENTS[layout].says, next: ARRANGEMENTS[ARRANGEMENTS[layout].next].says })}

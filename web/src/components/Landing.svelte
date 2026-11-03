@@ -1310,7 +1310,7 @@
           </Menu>
         {/snippet}
         {#snippet controls()}
-          <IconButton icon="help" label={m.common_what_is_librepaper()} href={DOCUMENTATION_URL} external />
+          <IconButton icon="help" label={m.common_documentation()} href={DOCUMENTATION_URL} external />
           <IconButton icon="settings" label={m.common_settings()} tone="plain" onclick={() => openSettings()} />
         {/snippet}
       </Sidebar>
