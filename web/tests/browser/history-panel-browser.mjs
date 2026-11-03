@@ -211,9 +211,13 @@ async function runChecks() {
       const runs = () => eventsOf("editing");
       check(runs().length === 1, `a hundred autosaves are one editing event, found ${runs().length}`);
       const run = () => runs()[0];
-      check(versionsOf(run()).length === 0, "no version rows show until the caret is opened");
+      // The session holding the live document starts open, so its Current
+      // row is in view; closing it hides the versions and opening shows five.
       const caret = () => run().querySelector("button[aria-expanded]");
-      check(caret() && caret().getAttribute("aria-expanded") === "false", "the caret starts closed");
+      check(caret() && caret().getAttribute("aria-expanded") === "true", "the newest session starts open");
+      click(caret());
+      await flush();
+      check(versionsOf(run()).length === 0, "closing the session hides its version rows");
 
       click(caret());
       await flush();
@@ -229,7 +233,7 @@ async function runChecks() {
         `showing more brings the list to 55 versions, shows ${versionsOf(run()).length}`);
     });
 
-    await step("3: a session row only opens, the newest version is the live document, shift-click compares", async () => {
+    await step("3: a session row only opens and closes, the newest version is the live document, shift-click compares", async () => {
       mount({ labels: fixtures.autosaves });
       await flush();
       const oldest = fixtures.autosaves[0].sha;
@@ -237,14 +241,18 @@ async function runChecks() {
       const session = () => eventsOf("editing")[0].querySelector("button.hx-session");
       const rowOf = (sha) => q(`li.hx-version[data-sha="${sha}"] button`);
 
+      // The newest session starts open, since it holds the live document.
       click(session());
       await flush();
-      check(calls.length === 0, `opening a session selects nothing, calls: ${JSON.stringify(calls)}`);
-      check(session().getAttribute("aria-expanded") === "true", "a click on the session row opens it");
+      check(calls.length === 0, `closing a session selects nothing, calls: ${JSON.stringify(calls)}`);
+      check(session().getAttribute("aria-expanded") === "false", "a click on the open session row closes it");
       click(session());
       await flush();
-      check(session().getAttribute("aria-expanded") === "false" && calls.length === 0,
-        "a second click closes it, still selecting nothing");
+      check(session().getAttribute("aria-expanded") === "true" && calls.length === 0,
+        "a second click opens it, still selecting nothing");
+      press(session(), "ArrowLeft");
+      await flush();
+      check(session().getAttribute("aria-expanded") === "false", "ArrowLeft closes a session");
       press(session(), "ArrowRight");
       await flush();
       check(session().getAttribute("aria-expanded") === "true", "ArrowRight opens a session");
@@ -438,7 +446,7 @@ async function runChecks() {
     await step("12: no restore or overflow controls, and Compare with… only on the selected row", async () => {
       mount({ labels: fixtures.autosaves, canEdit: true });
       await flush();
-      click(eventsOf("editing")[0].querySelector("button[aria-expanded]"));
+      { const opener = eventsOf("editing")[0].querySelector("button[aria-expanded]"); if (opener.getAttribute("aria-expanded") !== "true") click(opener); }
       await flush();
       const panel = q(".timeline");
       check(versionsOf(panel).length === 5, "versions are on the screen to check");
@@ -469,9 +477,9 @@ async function runChecks() {
 
       // A plain click on a version of today's session views it, and a pick on
       // it compares with it. The session row only opens.
-      click(eventsOf("editing")[0].querySelector("button.hx-session"));
+      { const opener = eventsOf("editing")[0].querySelector("button.hx-session"); if (opener.getAttribute("aria-expanded") !== "true") click(opener); }
       await flush();
-      check(calls.length === 0, "opening today's session selects nothing");
+      check(calls.length === 0, "an open session has selected nothing");
       const todayRow = () => versionsOf(eventsOf("editing")[0])[1].querySelector("button");
       const todayNewest = versionsOf(eventsOf("editing")[0])[1].dataset.sha;
       click(todayRow());
@@ -506,7 +514,7 @@ async function runChecks() {
       const second = fixtures.autosaves[fixtures.autosaves.length - 2].sha;
       mount({ labels: fixtures.autosaves, older: second, newer: "current", viewing: second });
       await flush();
-      click(eventsOf("editing")[0].querySelector("button.hx-session"));
+      { const opener = eventsOf("editing")[0].querySelector("button.hx-session"); if (opener.getAttribute("aria-expanded") !== "true") click(opener); }
       await flush();
       const live = q(`li.hx-version[data-sha="${newest}"] button`);
       check(live.getAttribute("aria-label").includes("Current") && live.getAttribute("aria-label").includes("Newer"),
