@@ -1260,18 +1260,24 @@
   "historyworkspace_binary_changed": "Diese Datei wurde geändert. Bilder und andere Binärdateien werden hier nicht verglichen.",
   "historyworkspace_binary_removed": "Diese Datei wurde entfernt.",
   "historyworkspace_binary_same": "Diese Datei ist unverändert.",
+  "historyworkspace_change_newer": "Neuere Version ändern",
+  "historyworkspace_change_newer_aria": "Neuere Version ändern, derzeit {version}",
+  "historyworkspace_change_older": "Ältere Version ändern",
+  "historyworkspace_change_older_aria": "Ältere Version ändern, derzeit {version}",
+  "historyworkspace_change_position": "Änderung {index} von {count}",
+  "historyworkspace_comparing": "{older} wird mit {newer} verglichen",
   "historyworkspace_comparison_failed": "Der Vergleich konnte nicht geladen werden. Prüfen Sie Ihre Verbindung und öffnen Sie diese Version erneut.",
+  "historyworkspace_download_newer": "Neuere herunterladen",
+  "historyworkspace_download_older": "Ältere herunterladen",
   "historyworkspace_download_title": "{version} als Archiv herunterladen",
-  "historyworkspace_download_version": "Version herunterladen",
   "historyworkspace_downloading": "Wird heruntergeladen…",
   "historyworkspace_empty_file": "Leere Datei.",
   "historyworkspace_file_added": "Datei hinzugefügt.",
   "historyworkspace_file_marked": "{name} · {status}",
-  "historyworkspace_file_removed": "Datei entfernt.",
-  "historyworkspace_file_select": "Verlaufsdatei",
-  "historyworkspace_files_changed": [
+  "historyworkspace_file_position": [
     {
       "declarations": [
+        "input index",
         "input count",
         "local countPlural = count: plural"
       ],
@@ -1279,26 +1285,29 @@
         "countPlural"
       ],
       "match": {
-        "countPlural=one": "{count} Datei geändert",
-        "countPlural=*": "{count} Dateien geändert"
+        "countPlural=one": "Datei {index} von {count}",
+        "countPlural=*": "Datei {index} von {count}"
       }
     }
   ],
+  "historyworkspace_file_removed": "Datei entfernt.",
+  "historyworkspace_file_select": "Verlaufsdatei",
   "historyworkspace_loading_comparison": "Vergleich wird geladen…",
   "historyworkspace_loading_source": "Quelltext der Version wird geladen…",
   "historyworkspace_mark_added": "hinzugefügt",
   "historyworkspace_mark_changed": "geändert",
   "historyworkspace_mark_removed": "entfernt",
   "historyworkspace_newer": "Neuer",
-  "historyworkspace_newer_version": "Neuere Version",
+  "historyworkspace_next_change": "Nächste Änderung",
+  "historyworkspace_no_changes": "Keine Änderungen",
   "historyworkspace_no_differences": "Keine Unterschiede",
   "historyworkspace_no_source_files": "Diese Version enthält keine Quelldateien.",
   "historyworkspace_no_text_source": "Diese Datei hat keinen Quelltext zum Anzeigen.",
   "historyworkspace_older": "Älter",
-  "historyworkspace_older_version": "Ältere Version",
+  "historyworkspace_previous_change": "Vorherige Änderung",
   "historyworkspace_reload_current": "Aktuelle Version neu laden",
+  "historyworkspace_restore_older": "Ältere Version wiederherstellen",
   "historyworkspace_restore_title": "{version} wiederherstellen",
-  "historyworkspace_restore_version": "Version wiederherstellen",
   "historyworkspace_select_prompt": "Wählen Sie eine Version aus, um zu sehen, was sie geändert hat.",
   "historyworkspace_source_label": "Quelltext im Verlauf",
   "html_bundle_index_failed": "Der TeX-Bundle-Index konnte nicht geladen werden",
