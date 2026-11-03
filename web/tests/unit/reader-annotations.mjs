@@ -109,6 +109,17 @@ annotations.receive({ type: "comment", temp_id: placed.temp_id,
 assert.equal(view.comments.at(-1), placed);
 assert.equal(placed.id, "placed");
 
+// The acknowledgement anchors the confirmed row itself, not only the draft.
+annotations.comment({ exact: "acknowledged passage" },
+  { motivation: "commenting", body: "Anchor me again" }, "Name");
+const acked = view.comments.at(-1);
+const before = anchored.length;
+annotations.receive({ type: "comment", temp_id: acked.temp_id,
+  comment: { id: "acked", exact: "acknowledged passage", attachment: { status: "exact", resolved_range_utf16: [3, 10], resolved_file_id: "f1" }, replies: [] } });
+assert.equal(view.comments.at(-1), acked);
+assert.equal(acked.id, "acked");
+assert.ok(anchored.slice(before).includes(acked), "the acknowledged comment is anchored again from the server's row");
+
 annotations.comment({ exact: "colored passage" },
   { motivation: "highlighting", body: "", color: "#AAbbCC" }, "Name");
 const highlight = view.comments.at(-1);
