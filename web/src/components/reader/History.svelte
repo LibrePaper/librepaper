@@ -88,9 +88,10 @@
 
   // Open state is the default from the groups, flipped by a click. Each set
   // holds the keys whose state the reader has changed. Sets are replaced, not
-  // mutated, so the template sees the change.
+  // mutated, so the template sees the change. Multi-version sessions start
+  // closed, except the one holding the live document, which starts open.
   let toggled = $state(new Set());
-  let expandedEvents = $state(new Set());
+  let toggledEvents = $state(new Set());
   let reveal = $state(new Map());
 
   const openDefaults = (list, map = new Map()) => {
@@ -112,8 +113,10 @@
     note = "";
     if (openNow(key) !== want) toggled = flipped(toggled, key);
   }
+  // The session holding the live document starts open; the others start closed.
+  const eventOpen = (key) => toggledEvents.has(key) !== (key === newestEventKey);
   function setEvent(key, want) {
-    if (expandedEvents.has(key) !== want) expandedEvents = flipped(expandedEvents, key);
+    if (eventOpen(key) !== want) toggledEvents = flipped(toggledEvents, key);
   }
 
   // The viewed version opens its period and its ancestors, once, when it
@@ -192,6 +195,13 @@
     return first.events ? first.events[0]?.points[0] ?? null : newestOf(first.children ?? []);
   };
   const latestSha = $derived(newestOf(periods)?.sha ?? "");
+  // The same walk, stopping at the event that holds the newest version.
+  const newestEventOf = (list) => {
+    const first = list[0];
+    if (!first) return null;
+    return first.events ? first.events[0] ?? null : newestEventOf(first.children ?? []);
+  };
+  const newestEventKey = $derived(newestEventOf(periods)?.key ?? "");
   const isLive = (sha) => latestSha !== "" && sha === latestSha;
   // What a click on the row of this version asks for, and whether it is the
   // one being read.
@@ -687,7 +697,7 @@
      row that only opens and closes its versions. -->
 {#snippet eventNode(event)}
   {@const multi = event.points.length > 1}
-  {@const expanded = expandedEvents.has(event.key)}
+  {@const expanded = eventOpen(event.key)}
   {@const holds = event.points.some((point) => hereAt(point.sha))}
   {@const shown = countFor(event)}
   {@const left = Math.max(0, event.points.length - shown)}
