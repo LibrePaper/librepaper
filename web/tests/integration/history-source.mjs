@@ -380,5 +380,24 @@ assert.equal(figures.result.binary["fig.png"], true);
 assert.equal(figures.result.binary["main.md"], false);
 figures.dispose();
 
+// A saved version the loaded timeline does not list (older than any loaded page) still
+// orders as older. Z is listed by labels() with an earlier time and no sequence, so
+// labelOrder reads its time: choosing it for the newer side puts it first.
+const olderPoint = createHistorySource({
+  currentTree: () => live,
+  labels: () => [
+    { sha: "B", seq: 2, at: "2024-02-01T00:00:00Z" },
+    { sha: "Z", seq: 0, at: "2024-01-01T00:00:00Z" },
+  ],
+  read: sha => (sha === "Z" ? tree("Z", { "main.md": "older draft" }) : read(sha)),
+});
+await olderPoint.compare("B", CURRENT, "B");
+olderPoint.beginSelect("newer");
+await olderPoint.choose("Z");
+assert.deepEqual([olderPoint.older, olderPoint.newer, olderPoint.selected], ["Z", "B", "Z"]);
+assert.equal(olderPoint.result.oldTree.texts["main.md"], "older draft");
+assert.equal(olderPoint.result.newTree.texts["main.md"], "revision");
+olderPoint.dispose();
+
 controller.dispose(); raced.dispose();
 console.log("history source: endpoint pairs, normalisation, targets, selection races, snapshots, and per-file status passed");
