@@ -247,7 +247,10 @@
 
   /* Soft highlighting: a very pale wash on changed lines and a stronger one
      on the changed words only. Built from the status tokens, which are
-     colour-blind safe, so it follows the theme in both modes. */
+     colour-blind safe, so it follows the theme in both modes. CodeMirror's
+     own merge theme styles the same classes with selectors as specific as a
+     plain override and is injected later, so the rules below name the host
+     as well to win. */
   :global(.merge-editor) {
     --diff-del: var(--color-error-solid);
     --diff-add: var(--color-success-solid);
@@ -255,41 +258,41 @@
     --diff-word: 30%;
   }
   :global([data-theme="librepaper"][data-mode="dark"] .merge-editor) {
-    --diff-line: 14%;
-    --diff-word: 38%;
+    --diff-line: 10%;
+    --diff-word: 40%;
   }
-  :global(.merge-editor .cm-editor.cm-merge-a .cm-changedLine),
-  :global(.merge-editor .cm-editor .cm-deletedChunk) {
+  :global(.merge-editor .merge-host .cm-editor.cm-merge-a .cm-changedLine),
+  :global(.merge-editor .merge-host .cm-editor .cm-deletedChunk) {
     background: color-mix(in srgb, var(--diff-del) var(--diff-line), transparent);
   }
-  :global(.merge-editor .cm-editor.cm-merge-b .cm-changedLine),
-  :global(.merge-editor .cm-editor .cm-inlineChangedLine),
-  :global(.merge-editor .cm-editor:not(.cm-merge-a):not(.cm-merge-b) .cm-changedLine) {
+  :global(.merge-editor .merge-host .cm-editor.cm-merge-b .cm-changedLine),
+  :global(.merge-editor .merge-host .cm-editor .cm-inlineChangedLine),
+  :global(.merge-editor .merge-host .cm-editor:not(.cm-merge-a):not(.cm-merge-b) .cm-changedLine) {
     background: color-mix(in srgb, var(--diff-add) var(--diff-line), transparent);
   }
-  :global(.merge-editor .cm-editor.cm-merge-a .cm-changedText),
-  :global(.merge-editor .cm-editor .cm-deletedChunk .cm-deletedText),
-  :global(.merge-editor .cm-editor.cm-merge-b .cm-deletedText) {
+  :global(.merge-editor .merge-host .cm-editor.cm-merge-a .cm-changedText),
+  :global(.merge-editor .merge-host .cm-editor .cm-deletedChunk .cm-deletedText),
+  :global(.merge-editor .merge-host .cm-editor.cm-merge-b .cm-deletedText) {
     background: color-mix(in srgb, var(--diff-del) var(--diff-word), transparent);
   }
-  :global(.merge-editor .cm-editor.cm-merge-b .cm-changedText),
-  :global(.merge-editor .cm-editor:not(.cm-merge-a):not(.cm-merge-b) .cm-changedText) {
+  :global(.merge-editor .merge-host .cm-editor.cm-merge-b .cm-changedText),
+  :global(.merge-editor .merge-host .cm-editor:not(.cm-merge-a):not(.cm-merge-b) .cm-changedText) {
     background: color-mix(in srgb, var(--diff-add) var(--diff-word), transparent);
   }
-  :global(.merge-editor .cm-editor.cm-merge-a .cm-changedLineGutter),
-  :global(.merge-editor .cm-editor .cm-deletedLineGutter) {
+  :global(.merge-editor .merge-host .cm-editor.cm-merge-a .cm-changedLineGutter),
+  :global(.merge-editor .merge-host .cm-editor .cm-deletedLineGutter) {
     background: var(--diff-del);
   }
-  :global(.merge-editor .cm-editor.cm-merge-b .cm-changedLineGutter),
-  :global(.merge-editor .cm-editor:not(.cm-merge-a):not(.cm-merge-b) .cm-changedLineGutter) {
+  :global(.merge-editor .merge-host .cm-editor.cm-merge-b .cm-changedLineGutter),
+  :global(.merge-editor .merge-host .cm-editor:not(.cm-merge-a):not(.cm-merge-b) .cm-changedLineGutter) {
     background: var(--diff-add);
   }
-  :global(.merge-editor .cm-editor .cm-collapsedLines) {
+  :global(.merge-editor .merge-host .cm-editor .cm-collapsedLines) {
     color: var(--color-text-muted, inherit);
     background: color-mix(in srgb, currentColor 8%, transparent);
   }
   /* The change the toolbar last went to. */
-  :global(.merge-editor .cm-editor .cm-activeChange) {
+  :global(.merge-editor .merge-host .cm-editor .cm-activeChange) {
     box-shadow: inset 3px 0 0 var(--color-brand);
   }
 </style>
