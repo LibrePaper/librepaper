@@ -16,7 +16,8 @@ on:
 jobs:
   build:
     name: Signed and notarized macOS app
-    runs-on: macos-15
+    # Intel: arm64 macos-15 runners went unacquired for a day (v0.0.65). The universal build cross-compiles both architectures.
+    runs-on: macos-15-intel
     environment: release
     permissions:
       contents: read
