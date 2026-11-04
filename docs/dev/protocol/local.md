@@ -21,4 +21,4 @@ For the full rules, see [SPEC-wire.md](../../../SPEC-wire.md).
 | Version | Release | Date | Changes |
 | --- | --- | --- | --- |
 | `3.0.0` | `0.0.52 or later` | 2026-10-25 | Render pipeline replaces typed builders; shapes changed after this without a bump |
-| `3.1.0` | `next` | | Version published in the page global; lenient decoding of non-confirmed request bodies |
+| `3.1.0` | `0.0.66` | 2026-11-04 | Version published in the page global; lenient decoding of non-confirmed request bodies |
