@@ -13,8 +13,8 @@ mod service;
 mod shell_log;
 mod theme;
 mod tray;
-#[cfg(any(target_os = "macos", windows))]
 mod updater;
+mod wire;
 mod zoom;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -89,10 +89,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let label = ctx.webview_label().to_string();
             serve(ctx.app_handle(), label, request, responder)
         })
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                tray::close_requested(window, api);
-            }
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => tray::close_requested(window, api),
+            tauri::WindowEvent::Focused(true) => updater::on_focus(window.app_handle().clone()),
+            _ => {}
         })
         .setup(setup)
         .build(tauri::generate_context!())?;
@@ -180,7 +180,7 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 // The page reads its base URL before any script of its own runs. The
 // new-window shortcut is added after that line. `zoom` is the level the
 // window opens at; later changes arrive as a `librepaper:zoom` event. `close`
-// is the current close choice.
+// is the current close choice. `protocol` is the helper wire this shell speaks.
 fn desktop_script(zoom: f64, close: tray::Close) -> String {
     let base = if cfg!(windows) {
         "http://lp-local.localhost/"
@@ -193,9 +193,11 @@ fn desktop_script(zoom: f64, close: tray::Close) -> String {
         shortcut.push_str(&DROP_SCRIPT.replace("{base}", base));
     }
     format!(
-        "window.__LIBREPAPER_DESKTOP__ = Object.freeze({{ base: \"{base}\", version: \"{}\", zoom: {zoom}, close: \"{}\" }});\n{shortcut}",
+        "window.__LIBREPAPER_DESKTOP__ = Object.freeze({{ base: \"{base}\", version: \"{}\", zoom: {zoom}, close: \"{}\", protocol: {{ oldest: {}, current: \"{}\" }} }});\n{shortcut}",
         env!("CARGO_PKG_VERSION"),
-        close.as_str()
+        close.as_str(),
+        wire::OLDEST_MAJOR,
+        wire::VERSION
     )
 }
 
@@ -780,6 +782,23 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
         };
         app.state::<tray::CloseChoice>().set(app, choice);
         return responder.respond(with_origin(no_content(), &origin));
+    }
+    // The page's Update now button. A self-updating install runs the check
+    // here. Other installs get the way to update, which the page shows.
+    if request.method() == Method::POST && request.uri().path() == "/shell/check-update" {
+        let via = updater::via();
+        if via == updater::Via::Updater {
+            updater::check_now(app.clone());
+        }
+        let body = serde_json::json!({ "via": via.as_str() })
+            .to_string()
+            .into_bytes();
+        let res = Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .expect("the update response is valid");
+        return responder.respond(with_origin(res, &origin));
     }
     // A system notification from the page, such as automatic Git sync pausing.
     if request.method() == Method::POST && request.uri().path() == "/shell/notify" {
@@ -1406,5 +1425,16 @@ mod tests {
     #[test]
     fn an_agent_body_that_is_not_json_is_refused() {
         assert!(prompt_for(ORIGIN, &Method::POST, "/companion/api/agents", b"not json").is_err());
+    }
+
+    #[test]
+    fn the_page_global_reports_the_wire_protocol() {
+        let script = super::desktop_script(1.0, crate::tray::Close::Quit);
+        let expected = format!(
+            "protocol: {{ oldest: {}, current: \"{}\" }}",
+            crate::wire::OLDEST_MAJOR,
+            crate::wire::VERSION
+        );
+        assert!(script.contains(&expected), "{script}");
     }
 }
