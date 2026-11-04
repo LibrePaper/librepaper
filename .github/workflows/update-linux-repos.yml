@@ -1,0 +1,56 @@
+# Runs after the Release workflow. The apt and rpm repositories serve the .deb
+# and .rpm that the release already published, byte for byte. This workflow only
+# tells them to rebuild now instead of on their nightly cron. Both tokens are
+# optional: without them the repositories pick up the release on their own.
+
+name: Update Linux package repositories
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  nudge:
+    if: >
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == 'LibrePaper/librepaper'))
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Nudge the apt repository
+        continue-on-error: true
+        env:
+          APT_REPO_TOKEN: ${{ secrets.APT_REPO_TOKEN }}
+        run: |
+          set -eu
+          if [ -z "${APT_REPO_TOKEN}" ]; then
+            echo "APT_REPO_TOKEN not set; the apt repository picks up the release on its nightly run."
+            exit 0
+          fi
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer ${APT_REPO_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/vincentarelbundock/apt/dispatches \
+            -d '{"event_type":"upstream-release"}'
+
+      - name: Nudge the rpm repository
+        continue-on-error: true
+        env:
+          RPM_REPO_TOKEN: ${{ secrets.RPM_REPO_TOKEN }}
+        run: |
+          set -eu
+          if [ -z "${RPM_REPO_TOKEN}" ]; then
+            echo "RPM_REPO_TOKEN not set; the rpm repository picks up the release on its nightly run."
+            exit 0
+          fi
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer ${RPM_REPO_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/vincentarelbundock/rpm/dispatches \
+            -d '{"event_type":"upstream-release"}'

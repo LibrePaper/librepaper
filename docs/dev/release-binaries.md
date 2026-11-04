@@ -133,10 +133,11 @@ Keep the key and the `.p12` out of the repository. Delete the local copies you n
 - The package name is `librepaper`, because `desktop/tauri.linux.conf.json` sets the Linux product name to lowercase. The menu entry still reads LibrePaper.
 - Pull requests build both packages in the "Linux desktop build" workflow (`linux-desktop-build.yml`, artifact `desktop-linux-packages`). They build unsigned Windows installers in the "Windows build" workflow (artifact `desktop-windows-unsigned`).
 - No pull request builds the macOS app. The first macOS test of a change is a release tag.
+- The APT and RPM repositories at vincentarelbundock.github.io/apt and /rpm serve these two files unchanged.
 
 ## Test a release without publishing a stable version
 
-Use a prerelease tag such as `v0.0.43-rc.1` from a test branch. Prerelease tags do not trigger the Homebrew, Scoop, Nix or Docker updates.
+Use a prerelease tag such as `v0.0.43-rc.1` from a test branch. Prerelease tags do not trigger the Homebrew, Scoop, Nix or Docker updates, and the APT and RPM repositories skip them.
 
 `tools/release/version` accepts only stable versions. Edit the version by hand in `Cargo.toml` and in the workspace entries of `Cargo.lock`.
 
