@@ -7,6 +7,7 @@ import { markdownCompletion, markdownLabels } from "./markdown.js";
 import { quartoCompletion, quartoLabels } from "./quarto.js";
 import { taskCompletion } from "./tasks.js";
 import { typstCompletion } from "./typst.js";
+import { sourceFormatOf } from "../formats.js";
 
 /**
  * Format of a project file from its extension. Names match the
@@ -15,13 +16,7 @@ import { typstCompletion } from "./typst.js";
  * @returns {"latex"|"typst"|"markdown"|"quarto"|"html"|""}
  */
 export function formatOfPath(path) {
-  const lower = String(path || "").toLowerCase();
-  if (/\.(?:tex|ltx|sty|cls|def)$/.test(lower)) return "latex";
-  if (lower.endsWith(".typ")) return "typst";
-  if (lower.endsWith(".qmd")) return "quarto";
-  if (/\.(?:md|markdown)$/.test(lower)) return "markdown";
-  if (/\.(?:html|htm)$/.test(lower)) return "html";
-  return "";
+  return sourceFormatOf(path);
 }
 
 /**

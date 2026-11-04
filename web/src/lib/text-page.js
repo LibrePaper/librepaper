@@ -1,6 +1,8 @@
 // The page a text file previews as. It is painted on the documents origin,
 // where the application's theme does not reach, so its colours travel with it.
 
+import { sourceFormatOf } from "./formats.js";
+
 /// The page a text file previews as: a CSV or TSV file as a table of its rows,
 /// and anything else as its source in a preformatted block, with no script.
 /// The source is highlighted where a language is known and shown plain
@@ -125,7 +127,7 @@ async function highlightedSource(source, path) {
     import("@codemirror/language-data"),
   ]);
   let language = null;
-  if (/\.(?:sty|cls|def)$/.test(lower)) {
+  if (sourceFormatOf(lower) === "latex") {
     const { stex } = await import("@codemirror/legacy-modes/mode/stex");
     language = StreamLanguage.define(stex);
   } else {

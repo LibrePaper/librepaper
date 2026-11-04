@@ -7,6 +7,7 @@ import { languages } from "@codemirror/language-data";
 import { LanguageDescription } from "@codemirror/language";
 import { stex } from "@codemirror/legacy-modes/mode/stex";
 import { typstLanguage } from "./typst-mode.js";
+import { sourceFormatOf } from "./formats.js";
 
 const typst = StreamLanguage.define(typstLanguage);
 const latex = StreamLanguage.define(stex);
@@ -56,10 +57,8 @@ function byFormat(format) {
 export function sourceLanguage(path, fallback = "") {
   const lower = typeof path === "string" ? path.toLowerCase() : "";
   const extension = lower.slice(lower.lastIndexOf("/") + 1);
-  if (/\.(?:tex|ltx|sty|cls|def)$/.test(extension)) return latex;
-  if (/\.typ$/.test(extension)) return typst;
-  if (/\.(?:md|markdown|qmd)$/.test(extension)) return markdownLanguage();
-  if (/\.(?:html|htm)$/.test(extension)) return html();
+  const format = sourceFormatOf(extension);
+  if (format) return byFormat(format);
   if (/\.json$/.test(extension)) return json();
 
   // Named files of an unsupported type are plain text. Empty paths and .txt

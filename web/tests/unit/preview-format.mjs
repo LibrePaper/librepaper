@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { formatOf, previewFormatOf } from "../../src/lib/formats.js";
+import { formatOf, previewFormatOf, sourceFormatOf } from "../../src/lib/formats.js";
 import { render } from "../../src/lib/renderers.js";
 
 // --- data files and scripts preview as their plain text -------------------------
@@ -8,6 +8,7 @@ for (const path of [
   "a.json", "b.yaml", "c.yml", "d.toml", "E.JSON", "notes.txt", "refs.bib",
   "bundle.csl", "script.r", "script.py", "script.jl", "script.lua", "mystyle.sty",
   "mystyle.cls", "mystyle.bst", "site.css", "x.csv", "X.CSV", "x.tsv", "X.TSV",
+  "fig.pgf", "fig.tikz", "size10.clo", "t1x.fd", "index.ist",
 ]) {
   assert.equal(previewFormatOf(path), "text", `${path} previews as text`);
 }
@@ -18,15 +19,27 @@ assert.equal(previewFormatOf("x.md"), "markdown", "Markdown previews as Markdown
 assert.equal(previewFormatOf("x.tex"), "latex", "LaTeX previews as LaTeX");
 assert.equal(previewFormatOf("x.typ"), "typst", "Typst previews as Typst");
 
-// --- everything else has no preview ---------------------------------------------
+// --- only the empty path has no preview -----------------------------------------
+// The server's allowlist, not this function, decides which files exist, so any
+// other path that reaches the preview is a text file.
 
-for (const path of ["x.dat", ""]) {
-  assert.equal(previewFormatOf(path), "", `${path} has no preview`);
-}
+assert.equal(previewFormatOf(""), "", "the empty path has no preview");
+assert.equal(previewFormatOf("x.dat"), "text", "an unlisted text file previews as text");
 
-// --- the document format is unchanged for data files ----------------------------
+// --- the document format is unchanged for data files and packages ---------------
 
 assert.equal(formatOf("a.json"), "", "a data file is still not a document format");
+assert.equal(formatOf("mystyle.sty"), "", "a package is LaTeX but never a document");
+assert.equal(formatOf("fig.pgf"), "", "a PGF figure is LaTeX but never a document");
+
+// --- the source language covers every LaTeX source extension --------------------
+
+for (const path of ["main.tex", "MyStyle.STY", "fig.pgf", "fig.tikz", "size10.clo", "x.xmpdata"]) {
+  assert.equal(sourceFormatOf(path), "latex", `${path} is LaTeX source`);
+}
+assert.equal(sourceFormatOf("index.ist"), "", "makeindex styles are not TeX syntax");
+assert.equal(sourceFormatOf("x.json"), "", "a data file has no source language");
+assert.equal(sourceFormatOf("a.qmd"), "quarto", "Quarto is a source language");
 
 // --- a text file renders as a highlighted page with no script ------------------
 
