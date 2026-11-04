@@ -6,6 +6,7 @@
 //! a page sends, so changing one is a decision, not a regeneration.
 
 use super::settings_tests::{body_json, job_body, job_request, test_inner};
+use super::test_support::bearer;
 use super::*;
 
 use std::path::PathBuf;
@@ -151,10 +152,7 @@ async fn current_bodies(inner: &Arc<Inner>) -> Vec<(String, Value)> {
     let mut bodies: Vec<(String, Value)> = Vec::new();
 
     let health = handle_health(inner, &Uri::from_static("/librepaper/local/health"));
-    bodies.push((
-        "health.get.response.json".into(),
-        body_json(health).await,
-    ));
+    bodies.push(("health.get.response.json".into(), body_json(health).await));
 
     let capabilities = handle_capabilities(inner, &bearer(inner), Some(ORIGIN), false).await;
     bodies.push((
@@ -344,7 +342,7 @@ async fn the_current_major_has_not_broken() {
         } else if let Err(error) = compatible(current, &fixture, name) {
             additive.get_or_insert(error);
         }
-        if equal(&fixture, current, name).is_err() {
+        if equal(&fixture, current).is_err() {
             stale.push((name.clone(), current.clone()));
         }
     }
@@ -363,7 +361,11 @@ async fn the_current_major_has_not_broken() {
         for (name, current) in &bodies {
             if let Some(variant) = job_status_variant(name) {
                 assert_eq!(current["status"], variant, "{name}: the body's status");
-                assert_eq!(fixture(name)["status"], variant, "{name}: the fixture's status");
+                assert_eq!(
+                    fixture(name)["status"],
+                    variant,
+                    "{name}: the fixture's status"
+                );
             }
         }
         return;
@@ -372,9 +374,8 @@ async fn the_current_major_has_not_broken() {
     // Blessing. A new major is the only case where the previous major's
     // directory and migration file are looked for.
     let previous = wire::MAJOR.checked_sub(1);
-    let previous_major_dir = previous.is_some_and(|major| {
-        wire_root().join(format!("v{major}")).is_dir()
-    });
+    let previous_major_dir =
+        previous.is_some_and(|major| wire_root().join(format!("v{major}")).is_dir());
     let migration_file = previous.is_some_and(|major| {
         std::path::Path::new(&format!(
             "{}/src/local/wire/v{major}.rs",
@@ -496,7 +497,8 @@ fn every_fixture_is_read_by_a_test() {
         .collect();
     checked.sort();
     assert_eq!(
-        on_disk, checked,
+        on_disk,
+        checked,
         "every fixture in wire/v{} needs a name in wire_tests.rs",
         wire::MAJOR
     );

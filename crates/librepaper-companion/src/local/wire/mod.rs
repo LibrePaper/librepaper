@@ -27,18 +27,12 @@ mod tests {
 
     #[test]
     fn the_version_files_agree_with_the_constants() {
-        let oldest = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/wire/OLDEST_MAJOR"
-        ))
-        .expect("wire/OLDEST_MAJOR");
+        let oldest =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/wire/OLDEST_MAJOR"))
+                .expect("wire/OLDEST_MAJOR");
         assert_eq!(oldest.trim(), OLDEST_MAJOR.to_string());
 
-        let path = format!(
-            "{}/wire/v{}/VERSION",
-            env!("CARGO_MANIFEST_DIR"),
-            MAJOR
-        );
+        let path = format!("{}/wire/v{}/VERSION", env!("CARGO_MANIFEST_DIR"), MAJOR);
         let current = std::fs::read_to_string(&path).expect("wire/v{MAJOR}/VERSION");
         assert_eq!(current.trim(), version());
     }

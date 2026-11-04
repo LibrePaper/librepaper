@@ -8,9 +8,9 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use tauri::AppHandle;
 #[cfg(any(target_os = "macos", windows))]
 use tauri::Manager;
-use tauri::AppHandle;
 #[cfg(any(target_os = "macos", windows))]
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 #[cfg(any(target_os = "macos", windows))]
@@ -174,7 +174,10 @@ async fn check(app: &AppHandle, trigger: Trigger) -> Result<(), String> {
         }
         return Ok(());
     };
-    let declined = DECLINED.lock().unwrap_or_else(|err| err.into_inner()).clone();
+    let declined = DECLINED
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clone();
     if !offer(trigger, &update.version, declined.as_deref()) {
         return Ok(());
     }
