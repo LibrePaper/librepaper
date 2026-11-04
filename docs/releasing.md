@@ -63,7 +63,10 @@ librepaper.org; that is an operator command described in the private runbook
 - "Update Linux package repositories" asks `vincentarelbundock/apt` and
   `vincentarelbundock/rpm` to rebuild. They serve the release's own `.deb` and
   `.rpm` unchanged, skip prereleases, and rebuild nightly anyway, so a missing
-  token or a failed nudge only delays the update by up to a day.
+  token or a failed nudge only delays the update by up to a day. The run first
+  checks that both repositories' `projects.json` list librepaper and fails when
+  either does not. Neither does yet (see #85), so the run is red until they do,
+  and the user install commands stay out of the desktop app page until then.
 - User install commands live on the [desktop app page](desktop-app.md). Update it when
   a distribution channel changes.
 
