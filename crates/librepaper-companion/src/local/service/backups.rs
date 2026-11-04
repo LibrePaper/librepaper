@@ -1936,11 +1936,14 @@ mod tests {
 
     #[test]
     fn browser_requests_cannot_supply_a_destination_path() {
+        // The body has nowhere to hold a destination, so a sent one is dropped.
+        // The destination comes only from the native folder picker.
         let account = uuid::Uuid::now_v7().to_string();
-        assert!(serde_json::from_value::<AccountBody>(
-            json!({"account_id": account, "destination": "/tmp"})
+        let body = serde_json::from_value::<AccountBody>(
+            json!({"account_id": account, "destination": "/tmp"}),
         )
-        .is_err());
+        .expect("an unknown field is ignored");
+        assert_eq!(body.account_id, account);
     }
 
     #[tokio::test]

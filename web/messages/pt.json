@@ -869,7 +869,7 @@
   "desktopmismatch_server_outdated": "{host} executa uma versão antiga do LibrePaper, então os recursos que precisam do aplicativo de desktop estão desativados aqui. Peça ao administrador dele para atualizar.",
   "desktopmismatch_update_now": "Atualizar agora",
   "desktopmismatch_use_package_manager": "Atualize o LibrePaper com seu gerenciador de pacotes.",
-  "desktoponly_feature_message":"{feature} exige o aplicativo de desktop do LibrePaper.",
+  "desktoponly_feature_message": "{feature} exige o aplicativo de desktop do LibrePaper.",
   "desktoponly_open_app": "Abrir no aplicativo de desktop",
   "device_approve": "Aprovar",
   "device_approved_body": "O terminal está conectado como {name}. Você pode fechar esta página.",

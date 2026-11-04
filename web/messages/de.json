@@ -869,7 +869,7 @@
   "desktopmismatch_server_outdated": "{host} läuft mit einer alten Version von LibrePaper, daher sind Funktionen, die die Desktop-App benötigen, hier deaktiviert. Bitten Sie den Administrator, ihn zu aktualisieren.",
   "desktopmismatch_update_now": "Jetzt aktualisieren",
   "desktopmismatch_use_package_manager": "Aktualisieren Sie LibrePaper über Ihren Paketmanager.",
-  "desktoponly_feature_message":"{feature} erfordert die LibrePaper-Desktop-App.",
+  "desktoponly_feature_message": "{feature} erfordert die LibrePaper-Desktop-App.",
   "desktoponly_open_app": "In der Desktop-App öffnen",
   "device_approve": "Genehmigen",
   "device_approved_body": "Das Terminal ist als {name} angemeldet. Sie können diese Seite schließen.",

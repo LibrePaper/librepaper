@@ -146,7 +146,7 @@ export async function checkForUpdate() {
     const response = await fetch(`${shell.base}shell/check-update`, { method: "POST" });
     if (!response.ok) return "download";
     const via = (await response.json())?.via;
-    return typeof via === "string" ? via : "download";
+    return via === "updater" || via === "package_manager" ? via : "download";
   } catch {
     return "download";
   }

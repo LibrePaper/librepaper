@@ -384,12 +384,18 @@ mod tests {
 
     #[test]
     fn a_job_cannot_carry_a_command_or_an_unsafe_entrypoint() {
+        // A job has nowhere to hold a command: the field is dropped on decoding,
+        // and the sidecar picks the tool record from the format and output.
         let mut raw = job_json(3);
         raw["command"] = serde_json::json!(["rm", "-rf", "/"]);
-        assert!(JobRequest::decode(raw).is_err());
+        let request = JobRequest::decode(raw).expect("an unknown field is ignored");
+        let encoded = serde_json::to_value(&request).unwrap();
+        assert!(encoded.get("command").is_none());
         let mut raw = job_json(3);
         raw["options"] = serde_json::json!({"deadline_seconds": 10, "args": []});
-        assert!(JobRequest::decode(raw).is_err());
+        let request = JobRequest::decode(raw).expect("an unknown field is ignored");
+        let encoded = serde_json::to_value(&request).unwrap();
+        assert!(encoded["options"].get("args").is_none());
         let mut raw = job_json(3);
         raw["entrypoint"] = "../main.tex".into();
         assert!(JobRequest::decode(raw).is_err());

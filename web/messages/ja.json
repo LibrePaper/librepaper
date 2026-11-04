@@ -869,7 +869,7 @@
   "desktopmismatch_server_outdated": "{host}は古いバージョンのLibrePaperで動作しているため、デスクトップアプリが必要な機能はここでは使えません。そのサーバーの管理者にアップグレードを依頼してください。",
   "desktopmismatch_update_now": "今すぐ更新",
   "desktopmismatch_use_package_manager": "パッケージマネージャーでLibrePaperを更新してください。",
-  "desktoponly_feature_message":"{feature}にはLibrePaperデスクトップアプリが必要です。",
+  "desktoponly_feature_message": "{feature}にはLibrePaperデスクトップアプリが必要です。",
   "desktoponly_open_app": "デスクトップアプリで開く",
   "device_approve": "承認",
   "device_approved_body": "ターミナルが{name}としてサインインしました。このページは閉じて構いません。",

@@ -869,7 +869,7 @@
   "desktopmismatch_server_outdated": "{host} runs an old version of LibrePaper, so features that need the desktop app are off here. Ask its administrator to upgrade.",
   "desktopmismatch_update_now": "Update now",
   "desktopmismatch_use_package_manager": "Update LibrePaper with your package manager.",
-  "desktoponly_feature_message":"{feature} needs the LibrePaper desktop app.",
+  "desktoponly_feature_message": "{feature} needs the LibrePaper desktop app.",
   "desktoponly_open_app": "Open in the desktop app",
   "device_approve": "Approve",
   "device_approved_body": "The terminal is signed in as {name}. You can close this page.",

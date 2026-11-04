@@ -6,8 +6,8 @@
   import { m } from "../lib/paraglide/messages.js";
 
   // The desktop global is fixed for the whole page load, so the answer is too.
-  const state = desktop() ? negotiation() : "ok";
-  const text = mismatchText(state);
+  const mismatch = desktop() ? negotiation() : "ok";
+  const text = mismatchText(mismatch);
 
   let busy = $state(false);
   let usePackageManager = $state(false);
@@ -25,10 +25,10 @@
   }
 </script>
 
-{#if state !== "ok"}
+{#if mismatch !== "ok"}
   <div class="desktop-mismatch" role="status">
     <span class="desktop-mismatch-message">{text}</span>
-    {#if state === "app_outdated"}
+    {#if mismatch === "app_outdated"}
       {#if usePackageManager}
         <span class="desktop-mismatch-action">{m.desktopmismatch_use_package_manager()}</span>
       {:else}
