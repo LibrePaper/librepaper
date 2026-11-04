@@ -172,7 +172,6 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     handle_args(app.handle(), Target::Current, &args);
-    #[cfg(any(target_os = "macos", windows))]
     updater::spawn(app.handle().clone());
     Ok(())
 }

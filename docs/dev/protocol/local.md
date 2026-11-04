@@ -1,8 +1,7 @@
 # Local helper protocol
 
 The local helper (`librepaper local start`) and the desktop app agree on a
-wire version. It is separate from the release version, so a release can
-change the wire without changing the number people install.
+wire version. It is separate from the release version people install.
 
 The wire version uses [semantic versioning](https://semver.org/),
 `MAJOR.MINOR.PATCH`.

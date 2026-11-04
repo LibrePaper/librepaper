@@ -1,6 +1,9 @@
-//! Checks once at startup for a newer desktop app and offers to install it.
-//! Releases publish a signed latest.json, and the plugin checks the signature
-//! against the public key in tauri.conf.json before it installs anything.
+//! Checks for a newer desktop app at startup, and on window focus at most every
+//! six hours, and offers to install it. Releases publish a signed latest.json,
+//! and the plugin checks the signature against the public key in
+//! tauri.conf.json before it installs anything. Linux copies and Windows copies
+//! not installed by the NSIS installer get their updates elsewhere (the package
+//! manager or the download page), so no check runs there. `via` says which.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -8,6 +11,7 @@ use std::time::{Duration, Instant};
 #[cfg(any(target_os = "macos", windows))]
 use tauri::Manager;
 use tauri::AppHandle;
+#[cfg(any(target_os = "macos", windows))]
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 #[cfg(any(target_os = "macos", windows))]
 use tauri_plugin_updater::{Update, UpdaterExt};
@@ -69,16 +73,6 @@ pub fn spawn(app: AppHandle) {
 /// The Help menu's Check for Updates. It says so when there is nothing new.
 pub fn check_now(app: AppHandle) {
     if !self_updating() {
-        // The package manager updates Linux installs, so say that instead of nothing.
-        if cfg!(target_os = "linux") {
-            tauri::async_runtime::spawn(async move {
-                info(
-                    &app,
-                    "Your package manager updates this copy of LibrePaper.".to_string(),
-                )
-                .await;
-            });
-        }
         return;
     }
     run(app, Trigger::Menu);
@@ -263,6 +257,7 @@ async fn find(app: &AppHandle) -> Result<Option<Update>, String> {
 }
 
 // Shows a message in the same dialog kind as the update question.
+#[cfg(any(target_os = "macos", windows))]
 async fn info(app: &AppHandle, message: String) {
     let asked = app.clone();
     let _ = tauri::async_runtime::spawn_blocking(move || {
