@@ -46,6 +46,8 @@ writeFileSync(clientMock, `
 export const INSTALL_URL = "https://librepaper.org/desktop-app.html";
 export const DESKTOP_ONLY_MESSAGE = "This needs the LibrePaper desktop app.";
 export const desktop = () => window.__LIBREPAPER_DESKTOP__ ?? null;
+export const negotiation = () => "ok";
+export const mismatchText = () => "";
 window.backupCalls = [];
 window.backupRequests = [];
 window.backupStatusRequest = (accountId) => new Promise((resolve, reject) => {

@@ -43,6 +43,8 @@ writeFileSync(clientMock, `
 export const INSTALL_URL = "https://librepaper.org/desktop-app.html";
 export const DESKTOP_ONLY_MESSAGE = "This needs the LibrePaper desktop app.";
 export const desktop = () => window.__LIBREPAPER_DESKTOP__ ?? null;
+export const negotiation = () => "ok";
+export const mismatchText = () => "";
 export async function manage(path, { method = "GET", body } = {}) {
   window.manageCalls = [...(window.manageCalls || []), { path, method, body }];
   if (path === "/state") return { version: "1.0.0", jobs: [], sessions: [], settings: { renderers: { "quarto.html": { command: ["quarto", "render", "{input}", "--to", "html"], result: "{stem}.html", edited: false, found: true, version: "1.6.0" } } } };
