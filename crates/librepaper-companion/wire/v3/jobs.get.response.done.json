@@ -1,0 +1,28 @@
+{
+  "id": "job-id",
+  "status": "done",
+  "stage": "finished",
+  "exit": 0,
+  "snapshot": "snapshot-1",
+  "generation": 1,
+  "log_tail": "compiled main.typ",
+  "outputs": {
+    "artifact": {
+      "size": 9,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "synctex": {
+      "size": 12,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "log": {
+      "size": 16,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "provenance": {
+    "backend": "local",
+    "format": "typst",
+    "output": "pdf"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "command": [
+    "latexmk",
+    "-xelatex",
+    "{input}"
+  ],
+  "result": "{stem}.pdf",
+  "edited": true
+}

@@ -62,6 +62,8 @@ mod connection;
 mod git;
 mod jobs;
 mod sync;
+#[cfg(test)]
+mod wire_tests;
 
 pub(super) type Reply = Response<Body>;
 
@@ -866,6 +868,7 @@ async fn handle_capabilities(
 /// This stays strict on purpose. The shell shows this command to the person,
 /// so a dropped field could mean approving one command and running another.
 #[derive(serde::Deserialize)]
+#[cfg_attr(test, derive(serde::Serialize))]
 #[serde(deny_unknown_fields)]
 struct RendererRequest {
     command: Option<Vec<String>>,
@@ -1252,7 +1255,7 @@ mod settings_tests {
     };
     use super::*;
 
-    async fn test_inner() -> (Arc<Inner>, tempfile::TempDir, tempfile::TempDir) {
+    pub(super) async fn test_inner() -> (Arc<Inner>, tempfile::TempDir, tempfile::TempDir) {
         let state_home = tempfile::tempdir().unwrap();
         let cache_home = tempfile::tempdir().unwrap();
         let inner = build_inner(state_home.path(), cache_home.path()).await;
@@ -1465,11 +1468,11 @@ mod settings_tests {
 
     /// A multipart `POST jobs` body: the job description and one file part
     /// per project file, named by its path.
-    fn job_body(job: &Value, files: &[(&str, &[u8])]) -> Body {
+    pub(super) fn job_body(job: &Value, files: &[(&str, &[u8])]) -> Body {
         Body::from(multipart_bytes("job", job, files))
     }
 
-    fn job_request(body: Body) -> Request<Body> {
+    pub(super) fn job_request(body: Body) -> Request<Body> {
         Request::post("/jobs")
             .header("content-type", "multipart/form-data; boundary=control-test")
             .body(body)
@@ -1489,7 +1492,7 @@ mod settings_tests {
         })
     }
 
-    async fn body_json(response: Reply) -> Value {
+    pub(super) async fn body_json(response: Reply) -> Value {
         let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
             .await
             .unwrap();

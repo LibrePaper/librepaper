@@ -1,0 +1,22 @@
+{
+  "platform": "linux",
+  "zotero": {
+    "available": true,
+    "version": "7.0.4",
+    "note": "Zotero desktop is running"
+  },
+  "renderers": {
+    "latex.pdf": {
+      "command": [
+        "latexmk",
+        "-xelatex",
+        "{input}"
+      ],
+      "result": "{stem}.pdf",
+      "edited": false,
+      "found": true,
+      "version": "Latexmk 4.87"
+    }
+  },
+  "manage": false
+}
