@@ -39,7 +39,7 @@ use tokio::sync::{mpsc, Mutex, Notify};
 use crate::local::bindings::BindingStore;
 use crate::local::protocol::{
     self, Capabilities, JobOutcome, JobRequest, JobState, JobStatus, ManifestEntry, BASE_PATH,
-    MAX_FILES, MAX_JSON_BYTES, MAX_UPLOAD_BYTES, PROTOCOL_VERSIONS,
+    MAX_FILES, MAX_JSON_BYTES, MAX_UPLOAD_BYTES,
 };
 use crate::local::store;
 
@@ -816,7 +816,7 @@ async fn handle_zotero_item(
 fn handle_health(inner: &Inner, uri: &axum::http::Uri) -> Reply {
     let body = protocol::Health {
         service: "librepaper-local".to_string(),
-        protocol: PROTOCOL_VERSIONS.to_vec(),
+        protocol: crate::local::wire::protocol_versions(),
         version: crate::VERSION.to_string(),
         instance: inner.instance.clone(),
     };
@@ -862,6 +862,9 @@ async fn handle_capabilities(
 
 /// The body of `PUT renderers/<format>.<output>`: a whole command and the
 /// file it leaves behind, or a reset to the built-in default.
+///
+/// This stays strict on purpose. The shell shows this command to the person,
+/// so a dropped field could mean approving one command and running another.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RendererRequest {

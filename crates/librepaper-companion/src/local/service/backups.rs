@@ -1012,13 +1012,11 @@ impl BackupManager {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct AccountBody {
     account_id: String,
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ConfigureBody {
     account_id: String,
     enabled: bool,
@@ -1026,7 +1024,6 @@ struct ConfigureBody {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct CompleteAuthorizationBody {
     account_id: String,
     authorization_id: String,

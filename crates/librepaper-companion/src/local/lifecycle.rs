@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use super::protocol::{Health, BASE_PATH, PROTOCOL_VERSIONS};
+use super::protocol::{Health, BASE_PATH};
 use super::service::{control_server_for_instance, normalized_server};
 use super::store::{ServiceFile, ServiceState};
 
@@ -73,8 +73,9 @@ pub async fn running(state_home: &Path) -> Option<(ServiceState, Health)> {
 /// Whether a running service may be reused: the same build and protocol set
 /// as this binary, and the server the caller asks for when it asks for one.
 fn reusable(health: &Health, saved_server: Option<&str>, wanted_server: Option<&str>) -> bool {
-    let same_protocol = health.protocol.len() == PROTOCOL_VERSIONS.len()
-        && PROTOCOL_VERSIONS
+    let versions = crate::local::wire::protocol_versions();
+    let same_protocol = health.protocol.len() == versions.len()
+        && versions
             .iter()
             .all(|version| health.protocol.contains(version));
     health.version == crate::VERSION
@@ -259,7 +260,7 @@ mod tests {
     fn a_running_service_is_reused_only_when_it_matches() {
         let health = Health {
             service: "librepaper-local".into(),
-            protocol: PROTOCOL_VERSIONS.to_vec(),
+            protocol: crate::local::wire::protocol_versions(),
             version: crate::VERSION.into(),
             instance: "abc123".into(),
         };
@@ -276,7 +277,7 @@ mod tests {
         assert!(!reusable(&other_version, server, server));
 
         let other_protocol = Health {
-            protocol: vec![PROTOCOL_VERSIONS[0] + 1],
+            protocol: vec![crate::local::wire::protocol_versions()[0] + 1],
             ..health.clone()
         };
         assert!(!reusable(&other_protocol, server, server));

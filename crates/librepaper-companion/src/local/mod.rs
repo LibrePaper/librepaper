@@ -25,4 +25,6 @@ pub mod service;
 pub mod store;
 pub(crate) mod tools;
 
+pub mod wire;
+
 pub mod zotero;

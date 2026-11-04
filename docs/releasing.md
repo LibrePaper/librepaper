@@ -11,12 +11,13 @@ librepaper.org; that is an operator command described in the private runbook
    `Cargo.toml`, the workspace entries in `Cargo.lock` and the image pins in
    `deploy/compose.yaml`; a test fails when the pins and the version differ.
    The release tag must be `vX.Y.Z`.
-2. Run the checks described in [Building and testing](architecture/building.md),
+2. If a major left the six-month support window (see `docs/dev/protocol/local.md`), raise `OLDEST_MAJOR` in `crates/librepaper-companion/src/local/wire/mod.rs`, `desktop/src/wire.rs` and `crates/librepaper-companion/wire/OLDEST_MAJOR`, and delete its migration.
+3. Run the checks described in [Building and testing](architecture/building.md),
    including `make check` and `tools/dev/db test`. If the release changes
    browser assets, publish them first; see [asset mirrors](dev/asset-mirrors.md).
    Commit and push the release commit, then confirm CI is green for it. The
    Release workflow builds on tag pushes but does not wait for CI.
-3. From a clean checkout of that release commit, push the matching tag:
+4. From a clean checkout of that release commit, push the matching tag:
 
    ```sh
    VERSION="v$(sed -n 's/^version = \"\(.*\)\"/\1/p' Cargo.toml | head -n 1)"
@@ -28,7 +29,7 @@ librepaper.org; that is an operator command described in the private runbook
 
    Select the Release run whose tag is `$VERSION`.
 
-4. The Release workflow uses cargo-dist to build platform archives, installers,
+5. The Release workflow uses cargo-dist to build platform archives, installers,
    and SHA-256 files, then creates the GitHub Release. Confirm the Linux
    x86_64 asset exists:
 
@@ -36,7 +37,7 @@ librepaper.org; that is an operator command described in the private runbook
    gh release view "$VERSION" --json assets -q '.assets[].name'
    ```
 
-5. After a successful stable release, the Homebrew, Scoop, Nix, Docker
+6. After a successful stable release, the Homebrew, Scoop, Nix, Docker
    image, APT and RPM workflows run automatically; see below.
 
 ## Automated updates

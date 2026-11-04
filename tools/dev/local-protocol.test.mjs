@@ -12,12 +12,14 @@ import { fileURLToPath } from 'node:url';
 const repo = fileURLToPath(new URL('../..', import.meta.url));
 
 test('the desktop shell speaks a protocol the local service offers', async () => {
-  const service = await readFile(new URL('crates/librepaper-companion/src/local/protocol.rs', `file://${repo}`), 'utf8');
+  const wire = await readFile(new URL('crates/librepaper-companion/src/local/wire/mod.rs', `file://${repo}`), 'utf8');
   const shell = await readFile(new URL('desktop/src/service.rs', `file://${repo}`), 'utf8');
-  const offered = service.match(/pub const PROTOCOL_VERSIONS: &\[u32\] = &\[([0-9, ]+)\];/);
+  const major = wire.match(/pub const MAJOR: u32 = ([0-9]+);/);
+  const oldest = wire.match(/pub const OLDEST_MAJOR: u32 = ([0-9]+);/);
   const spoken = shell.match(/^const PROTOCOL: u32 = ([0-9]+);/m);
-  assert.ok(offered, 'the companion declares PROTOCOL_VERSIONS');
+  assert.ok(major && oldest, 'the companion declares MAJOR and OLDEST_MAJOR');
   assert.ok(spoken, 'the desktop shell declares PROTOCOL');
-  const versions = offered[1].split(',').map((part) => Number(part.trim())).filter(Number.isFinite);
+  const versions = [];
+  for (let version = Number(oldest[1]); version <= Number(major[1]); version += 1) versions.push(version);
   assert.ok(versions.includes(Number(spoken[1])), `the shell speaks protocol ${spoken[1]}, the service offers ${versions.join(', ')}`);
 });

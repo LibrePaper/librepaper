@@ -10,10 +10,6 @@ use std::collections::BTreeMap;
 use librepaper_base::paths::RelPath;
 use serde::{Deserialize, Serialize};
 
-/// The protocol versions this binary speaks. Version 2 carried typed
-/// builders and Quarto options and is no longer spoken.
-pub const PROTOCOL_VERSIONS: &[u32] = &[3];
-
 /// The base path every route hangs under.
 pub const BASE_PATH: &str = "/librepaper/local";
 
@@ -86,7 +82,6 @@ pub struct ManifestEntry {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
 pub struct JobOptions {
     #[serde(default = "default_deadline")]
     pub deadline_seconds: u64,
@@ -108,7 +103,6 @@ impl Default for JobOptions {
 /// pipeline consume it. The page names a format and an output, never a
 /// command: the sidecar picks the tool record from that pair.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
 pub struct JobRequest {
     pub protocol: u32,
     pub project: String,
@@ -351,6 +345,14 @@ mod tests {
             "entrypoint": "chapters/main.tex", "binding_id": "hosted",
             "manifest": [],
         })
+    }
+
+    #[test]
+    fn a_job_with_an_unknown_field_is_still_accepted() {
+        let mut body = job_json(3);
+        body["added_later"] = serde_json::json!({"anything": true});
+        let request = JobRequest::decode(body).expect("unknown fields are ignored");
+        assert_eq!(request.format, "latex");
     }
 
     #[test]
