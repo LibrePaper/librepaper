@@ -330,6 +330,22 @@ impl Default for Configuration {
                 ".cls",
                 ".def",
                 ".bst",
+                // LaTeX support files a project ships beside its .tex: class options, font
+                // definitions, configs, biblatex styles, KOMA letter options, PGF/TikZ figures
+                // as matplotlib writes them, makeindex styles, pdfx metadata. The compiler
+                // reads them by name from the project, so they are text a person may edit.
+                // .dbx is left out because only biber reads it and the browser has no biber.
+                ".clo",
+                ".fd",
+                ".cfg",
+                ".bbx",
+                ".cbx",
+                ".lbx",
+                ".lco",
+                ".pgf",
+                ".tikz",
+                ".ist",
+                ".xmpdata",
                 ".txt",
                 ".csv",
                 ".tsv",
