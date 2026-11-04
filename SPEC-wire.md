@@ -15,7 +15,7 @@ Each pairing of page and app ends in one outcome, and each one points forward:
 | The page needs an addition the app lacks | A deploy; the app has not updated | That feature says "Update the app". Everything else works |
 | The page's major is newer than the app's | A deploy with a breaking change; the app has not updated (7.5) | A banner says "Update the app". Local features are off |
 | The page's major is older than the app's, inside the support window (6) | A self-hosted server behind | Nothing. The helper answers in the older shapes |
-| The page's major is older than anything the app still speaks | A self-hosted server far behind | "This server runs an old LibrePaper. Ask its administrator to upgrade." Local features stay off for that server only |
+| The page's major is older than anything the app still speaks | A self-hosted server far behind | "{host} runs an old version of LibrePaper, so features that need the desktop app are off here. Ask its administrator to upgrade." This applies to that server only |
 
 A mismatch never blocks the editor or the shell's own functions, such as switching servers.
 
@@ -196,12 +196,13 @@ if major(PAGE) == major(range.current)  -> "ok", and each `since` is compared wi
 if major(PAGE) < major(range.current)   -> "ok", and every `since` is met
 ```
 
-**Per-call minimum version.** Each call in `client.js` declares the version it first appeared in, or the version of the newest field or fix it depends on:
+**Per-call minimum version.** `send` and `manage` in `client.js`, which every feature and management call goes through, take a `since` option. It defaults to `3.0.0`, which every app meets. A call that needs something newer names the version of the newest route, field or fix it depends on:
 
 ```js
-export const zoteroSearch = call({ route: "zotero/search", since: "3.0.0" });
-export const someNewRoute = call({ route: "…", since: "3.2.0" });
+await send("GET", "some/new/route", { since: "3.2.0" });
 ```
+
+When the outcome is not "ok", both functions throw `DesktopMismatch`, carrying the outcome, before anything goes out.
 
 When the outcome is "ok" but `range.current` is below `since`, compared by semantic version precedence, the call does not go out. It throws `DesktopFeatureOutdated`, and the feature shows "Update the app to use this", with the banner's update action (5.4). An addition that the page uses only when present, with a fallback, keeps its older `since` and checks the response itself. It may not send a new request field to an app below `3.1.0`, which would refuse it.
 
@@ -216,7 +217,7 @@ A component, `web/src/components/DesktopMismatch.svelte`, is mounted once at the
 | Outcome | Text (keys in `web/messages/en.json`) | Action |
 |---|---|---|
 | `app_outdated` | `desktopmismatch_app_outdated` with `{have}`, the app's release version | "Update now" (5.4), or a link to `INSTALL_URL` |
-| `server_outdated` | `desktopmismatch_server_outdated` with `{host}` | none |
+| `server_outdated` | `desktopmismatch_server_outdated` with `{host}`: "{host} runs an old version of LibrePaper, so features that need the desktop app are off here. Ask its administrator to upgrade." | none |
 
 Every key goes into all seven catalogues under `web/messages/`, translated with the glossaries, as `AGENTS.md` requires. `DesktopOnly.svelte` reads the same outcome, so each feature's notice says why it is off.
 
@@ -228,7 +229,7 @@ The shell gains `POST shell/check-update`, under the rule in 4.5:
 - On Linux it returns `{"via": "package_manager"}`, and the page says to update through the package manager.
 - On Scoop and MSI installs it returns `{"via": "download"}`, and the page opens `INSTALL_URL`.
 
-`self_updating()` returns false on Linux from now on, with no package detection (3.3).
+`self_updating()` returns false on Linux from now on, with no package detection (3.3). On Linux, Help > Check for Updates says that the package manager updates the app, so the menu item is not silent.
 
 The page offers "Update now" only when the global carries `protocol`, which means the app has this route. An older app gets the link.
 
@@ -242,7 +243,7 @@ The app answers every major whose successor came out less than **six months** ag
 
 A new file, `docs/dev/protocol/local.md`, holds a table with one row per version: number, the release that introduced it, its date, and the changes it made. The paragraph on the protocol in `docs/architecture/local-service.md` links to it. `docs/releasing.md` gains one step: "If a major left the window, raise `OLDEST_MAJOR` in both crates and in `wire/OLDEST_MAJOR`, and delete its migration."
 
-The window length is a product choice and can change. The mechanism does not depend on it.
+The mechanism does not depend on the window's length, which can change.
 
 ## 7. Evolving the wire
 
@@ -346,7 +347,7 @@ Neither check compares values, apart from enum strings, which must match the fix
 
 ### 9.3 Rust checks
 
-These live in `crates/librepaper-companion/src/local/wire/tests.rs`, inside the crate, because many of the types are private (3.6). A reply with a named type is encoded from a sample value. A reply built with `json!` is produced by driving the router, the way the tests in `service/mod.rs` already do.
+These live in `crates/librepaper-companion/src/local/service/wire_tests.rs`, a test module of `service`, because many of the types are private (3.6) and the router test helpers are there. A reply with a named type is encoded from a sample value. A reply built with `json!` is produced by driving the router, the way the tests in `service/mod.rs` already do.
 
 1. **Every supported major still works.** For each major from `OLDEST_MAJOR` to `MAJOR`, each request fixture goes through `wire::upgrade`, must decode into the current type, and is encoded again. A key the fixture has and the new encoding lacks fails: with strict decoding gone, this is what catches a field removed from a type. Defaults filled in by decoding are allowed, so the comparison is structural compatibility, not equality. Each current reply, passed through `wire::downgrade` to that major, must be structurally compatible with the fixture.
 2. **The current major has not broken.** Each current body is compared with the `v{MAJOR}` fixtures:
@@ -426,5 +427,4 @@ Manual checks before Phase 1 ships, on Windows and on one other platform, becaus
 
 ## 12. Open questions
 
-1. **Window length.** Six months is a starting point. A shorter window is less code to carry. A longer one is kinder to self-hosters.
-2. **Wording for an old self-hosted server.** Should the message also say which features are off, or only that the server is behind?
+None.
