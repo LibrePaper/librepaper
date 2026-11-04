@@ -76,8 +76,8 @@ These are implementation facts, not proposed behavior.
 - The page sends `protocol: 3` in the job body (`client.js:429`). It never compares versions.
 - The page's job poller loops until it sees `done`, `failed` or `canceled` (`client.js:361`).
 - A helper refusal names its cause in a `reason` field, which `client.js:164` reads. `client.js:165` shows a refusal's `error` text as it is. `SPEC-unification.md` 4.3 proposes `{error, reason, retryable, scope}` for HTTP refusals.
-- The desktop updater checks once at startup and from Help > Check for Updates (`desktop/src/updater.rs`). It is off for Scoop and MSI installs on Windows. "Later" in its dialog is not remembered.
-- Linux ships only `.deb` and `.rpm` (`desktop/tauri.linux.conf.json`), and the updater manifest covers only Windows and macOS. `self_updating()` still returns true on Linux, so the check can never find an update there.
+- The desktop updater checks once at startup (`desktop/src/updater.rs`). macOS also has Help > Check for Updates, because only macOS has that menu. It is off for Scoop and MSI installs on Windows. "Later" in its dialog is not remembered.
+- Linux ships only `.deb` and `.rpm` (`desktop/tauri.linux.conf.json`), and the updater module and plugin are not compiled on Linux.
 
 ### 3.4 History
 
@@ -229,7 +229,7 @@ The shell gains `POST shell/check-update`, under the rule in 4.5:
 - On Linux it returns `{"via": "package_manager"}`, and the page says to update through the package manager.
 - On Scoop and MSI installs it returns `{"via": "download"}`, and the page opens `INSTALL_URL`.
 
-`self_updating()` returns false on Linux from now on, with no package detection (3.3). On Linux, Help > Check for Updates says that the package manager updates the app, so the menu item is not silent.
+The updater module now compiles on Linux, so that this route can answer there, but it has no plugin and never runs a check.
 
 The page offers "Update now" only when the global carries `protocol`, which means the app has this route. An older app gets the link.
 
@@ -388,7 +388,7 @@ Ships in one release, as version `3.1.0`.
 1. The `wire` modules in both crates, the version files with their agreement tests, and `PROTOCOL_VERSIONS` and `PROTOCOL` derived from them.
 2. `protocol` in the page global.
 3. `negotiate.js`, per-call `since` in `client.js`, `DesktopMismatch.svelte`, the `DesktopOnly.svelte` change and the message keys.
-4. `shell/check-update`, `self_updating()` false on Linux, and the focus update check with its memory of "Later".
+4. `shell/check-update`, and the focus update check with its memory of "Later".
 5. `deny_unknown_fields` removed as in 7.3.
 6. `docs/dev/protocol/local.md`, and the step in `docs/releasing.md`.
 
