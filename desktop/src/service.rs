@@ -16,7 +16,7 @@ use tokio::sync::{mpsc, Mutex};
 pub static QUITTING: AtomicBool = AtomicBool::new(false);
 
 // The local service protocol this shell speaks.
-const PROTOCOL: u32 = 3;
+const PROTOCOL: u32 = crate::wire::MAJOR;
 
 // The shell needs these fields. serde ignores the rest of the line.
 #[derive(Clone, Deserialize)]
