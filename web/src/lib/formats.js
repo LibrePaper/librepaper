@@ -19,10 +19,12 @@ const SOURCE_EXTENSIONS = {
 /// the question highlighting and completion need: a `.sty` is LaTeX source.
 /// `formatOf` is the narrower question, which files are documents that render
 /// on their own; a `.sty` is LaTeX but never a document.
+/** @typedef {"latex"|"typst"|"quarto"|"markdown"|"html"} SourceFormat */
+/** @param {string} path @returns {SourceFormat | ""} */
 export function sourceFormatOf(path) {
   const lower = (path || "").toLowerCase();
   for (const [format, extensions] of Object.entries(SOURCE_EXTENSIONS)) {
-    if (extensions.some((extension) => lower.endsWith(extension))) return format;
+    if (extensions.some((extension) => lower.endsWith(extension))) return /** @type {SourceFormat} */ (format);
   }
   return "";
 }
