@@ -1,9 +1,10 @@
 // Underlines the findings of Harper, the English grammar and spelling checker,
-// and offers its fixes on hover. It replaces the browser's spellcheck, so the
+// and offers its fixes on hover, or on touch with a second tap on a word that
+// already holds the cursor. It replaces the browser's spellcheck, so the
 // content attribute turns that off. The lints come from client.js, one
 // paragraph at a time, and the prose and markup split comes from prose.js.
-import { EditorView, Decoration, ViewPlugin, closeHoverTooltips, hoverTooltip } from "@codemirror/view";
-import { StateEffect } from "@codemirror/state";
+import { EditorView, Decoration, ViewPlugin, closeHoverTooltips, hoverTooltip, showTooltip } from "@codemirror/view";
+import { StateEffect, StateField } from "@codemirror/state";
 import { addWord, lintProse } from "./client.js";
 import { keepLint, paragraphs, proseText } from "./prose.js";
 import { m } from "../paraglide/messages.js";
@@ -26,14 +27,18 @@ const MAX_SUGGESTIONS = 5;
 // that update() rebuilds the decorations from the cache.
 const checked = StateEffect.define();
 
+// Opens the card for a touch tap with { from, to, lint }, or closes it with null.
+const openCard = StateEffect.define();
+
 // One extension per format and dialect. The editor reconfigures its switches
 // whenever one changes or a file is shown, and handing CodeMirror the same
 // plugin keeps it rather than checking the text again.
 const extensions = new Map();
 
 /**
- * Harper's grammar and spelling underlines for a prose file, with a card of
- * fixes on hover.
+ * Harper's grammar and spelling underlines for a prose file. The card of fixes
+ * opens on hover, or on touch with a second tap on a word that already holds
+ * the cursor.
  * @param {string} format
  * @param {string} dialect
  * @returns {import("@codemirror/state").Extension}
@@ -48,6 +53,14 @@ function isSpelling(lint) {
   return lint.kind === "Spelling" || lint.kind === "Typo";
 }
 
+// A press on a card button must not move the focus out of the editor, or the
+// virtual keyboard closes on touch.
+function keepFocus(element) {
+  for (const type of ["pointerdown", "mousedown"]) {
+    element.addEventListener(type, (event) => event.preventDefault());
+  }
+}
+
 function build(format, dialect) {
   const plugin = ViewPlugin.fromClass(class {
     constructor(view) {
@@ -57,6 +70,10 @@ function build(format, dialect) {
       this.again = false;
       this.destroyed = false;
       this.failed = false;
+      // Set by the last pointerdown. A touch also sends emulated mouse events,
+      // which must not open the hover card.
+      this.touch = false;
+      this.tapStart = null;
       // Paragraph text to its lints, with offsets from the paragraph start.
       this.cache = new Map();
       this.decorations = Decoration.none;
@@ -188,15 +205,82 @@ function build(format, dialect) {
     decorations: (instance) => instance.decorations,
   });
 
-  const hover = hoverTooltip((view, pos) => {
-    const instance = view.plugin(plugin);
-    if (!instance) return null;
+  // The lint at a position, if any. A position is inside a lint when from <= pos < to.
+  function lintAt(instance, pos) {
     let hit = null;
     instance.decorations.between(pos, pos, (from, to, value) => {
       if (from > pos || pos >= to) return undefined;
       hit = { from, to, lint: value.spec.lint };
       return false;
     });
+    return hit;
+  }
+
+  // The touch card. It stays open until an edit, or a cursor move out of the
+  // word it was opened on.
+  const touchCard = StateField.define({
+    create: () => null,
+    update(value, tr) {
+      for (const effect of tr.effects) {
+        if (effect.is(openCard)) return effect.value;
+      }
+      if (tr.docChanged) return null;
+      if (value && tr.selection) {
+        const head = tr.state.selection.main.head;
+        if (head < value.from || head > value.to) return null;
+      }
+      return value;
+    },
+    provide: (field) => showTooltip.from(field, (value) => value ? {
+      pos: value.from,
+      end: value.to,
+      above: true,
+      create: (view) => ({ dom: card(view, view.plugin(plugin), value.lint) }),
+    } : null),
+  });
+
+  // A tap is seen on pointerdown. The click that ends it opens the touch card
+  // only when the editor had focus and the cursor was already in the word.
+  const touch = EditorView.domEventHandlers({
+    pointerdown(event, view) {
+      const instance = view.plugin(plugin);
+      if (!instance) return false;
+      instance.touch = event.pointerType === "touch";
+      instance.tapStart = instance.touch
+        ? { focused: view.hasFocus, head: view.state.selection.main.head }
+        : null;
+      return false;
+    },
+    // A mouse moving again, on a device with both, brings the hover card back.
+    pointermove(event, view) {
+      const instance = view.plugin(plugin);
+      if (instance && event.pointerType === "mouse") instance.touch = false;
+      return false;
+    },
+    click(event, view) {
+      const instance = view.plugin(plugin);
+      if (!instance || !instance.touch || !instance.tapStart) return false;
+      const start = instance.tapStart;
+      instance.tapStart = null;
+      // The mousedown that places the cursor comes before the click, and the
+      // timeout lets the new selection land before it is read.
+      setTimeout(() => {
+        if (instance.destroyed || !view.dom.isConnected) return;
+        const hit = lintAt(instance, view.state.selection.main.head);
+        if (hit && start.focused && hit.from <= start.head && start.head <= hit.to) {
+          view.dispatch({ effects: openCard.of(hit) });
+        } else if (view.state.field(touchCard)) {
+          view.dispatch({ effects: openCard.of(null) });
+        }
+      }, 0);
+      return false;
+    },
+  });
+
+  const hover = hoverTooltip((view, pos) => {
+    const instance = view.plugin(plugin);
+    if (!instance || instance.touch) return null;
+    const hit = lintAt(instance, pos);
     if (!hit) return null;
     const { from, to, lint } = hit;
     return { pos: from, end: to, above: true, create: () => ({ dom: card(view, instance, lint) }) };
@@ -210,7 +294,7 @@ function build(format, dialect) {
     ".cm-harper-card-actions": { display: "flex", flexWrap: "wrap", gap: "0.3rem" },
   });
 
-  return [EditorView.contentAttributes.of({ spellcheck: "false" }), plugin, hover, theme];
+  return [EditorView.contentAttributes.of({ spellcheck: "false" }), plugin, hover, touchCard, touch, theme];
 }
 
 function card(view, instance, lint) {
@@ -230,10 +314,11 @@ function card(view, instance, lint) {
     element.type = "button";
     element.className = "btn btn-sm";
     element.textContent = label;
+    keepFocus(element);
     element.addEventListener("click", () => {
       const at = instance.locate(lint);
       if (at) onClick(at);
-      view.dispatch({ effects: closeHoverTooltips });
+      view.dispatch({ effects: [closeHoverTooltips, openCard.of(null)] });
       view.focus();
     });
     actions.append(element);
@@ -258,10 +343,11 @@ function card(view, instance, lint) {
     element.type = "button";
     element.className = "btn btn-sm";
     element.textContent = m.extension_add_to_dictionary();
+    keepFocus(element);
     element.addEventListener("click", () => {
       addWord(lint.problem);
       instance.forget(lint.problem);
-      view.dispatch({ effects: [checked.of(null), closeHoverTooltips] });
+      view.dispatch({ effects: [checked.of(null), closeHoverTooltips, openCard.of(null)] });
       instance.schedule(0);
       view.focus();
     });
