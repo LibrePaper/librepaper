@@ -1,0 +1,18 @@
+{
+  "protocol": 3,
+  "project": "paper",
+  "origin": "https://paper.example",
+  "snapshot": "snapshot-1",
+  "generation": 1,
+  "format": "typst",
+  "output": "pdf",
+  "entrypoint": "main.typ",
+  "binding_id": "hosted",
+  "manifest": [
+    {
+      "path": "main.typ",
+      "sha256": "8b424b91aca98b02a5d1b2c9100a33e2df8ea231fbd1e6fe5c73cd3d04a6566a",
+      "size": 7
+    }
+  ]
+}

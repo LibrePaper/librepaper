@@ -1,0 +1,16 @@
+{
+  "id": "job-id",
+  "status": "failed",
+  "stage": "finished",
+  "exit": 1,
+  "error": "the render command exited with status 1",
+  "snapshot": "snapshot-1",
+  "generation": 1,
+  "log_tail": "error: unknown function",
+  "outputs": {},
+  "provenance": {
+    "backend": "local",
+    "format": "typst",
+    "output": "pdf"
+  }
+}

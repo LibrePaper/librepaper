@@ -1,0 +1,15 @@
+{
+  "id": "job-id",
+  "status": "running",
+  "stage": "build",
+  "exit": 0,
+  "snapshot": "snapshot-1",
+  "generation": 1,
+  "log_tail": "compiling main.typ",
+  "outputs": {},
+  "provenance": {
+    "backend": "local",
+    "format": "typst",
+    "output": "pdf"
+  }
+}

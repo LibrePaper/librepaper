@@ -1,0 +1,15 @@
+{
+  "id": "job-id",
+  "status": "canceled",
+  "stage": "finished",
+  "exit": 0,
+  "snapshot": "snapshot-1",
+  "generation": 1,
+  "log_tail": "",
+  "outputs": {},
+  "provenance": {
+    "backend": "local",
+    "format": "typst",
+    "output": "pdf"
+  }
+}
