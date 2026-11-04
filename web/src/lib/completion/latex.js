@@ -7,6 +7,7 @@ import { snippet, snippetCompletion } from "@codemirror/autocomplete";
 import workshop from "./latex-workshop.json" with { type: "json" };
 import { CORE, PACKAGES } from "./latex-packages.js";
 import { pathOptions } from "./paths.js";
+import { formatOf } from "../formats.js";
 import { m } from "../paraglide/messages.js";
 
 const REFERENCE = /\\(?:ref|eqref|pageref|autoref|cref|Cref|nameref)\*?\{([^{}]*)$/;
@@ -57,7 +58,7 @@ function codeOf(text) {
 export function latexLabels(texts) {
   const labels = [];
   for (const path of Object.keys(texts).sort()) {
-    if (!/\.(tex|ltx)$/.test(path)) continue;
+    if (formatOf(path) !== "latex") continue;
     String(texts[path]).split("\n").forEach((raw, index) => {
       for (const match of stripComment(raw).matchAll(LABEL)) {
         const id = match[1];
