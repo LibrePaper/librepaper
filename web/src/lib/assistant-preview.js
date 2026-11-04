@@ -1,5 +1,6 @@
 import { snapshotDigest } from "./projection-digest.js";
 import { diagnosticContext } from "./assistant-review.js";
+import { formatOf } from "./formats.js";
 
 const owns = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 // Shared with agent-client.js, which validates the same candidate paths
@@ -117,10 +118,7 @@ export async function previewCandidate({ request, tree: sourceTree, render, titl
   const rendered = await render(tree, await title(tree));
   const diagnostics = (rendered.diagnostics || []).map((item) => diagnosticContext(item, tree, candidateRevision));
   const hasOutput = typeof rendered.html === "string" || Boolean(rendered.pdf?.byteLength);
-  const main = tree.main.toLowerCase();
-  const format = main.endsWith(".qmd") ? "quarto" : main.endsWith(".typ") ? "typst"
-    : main.endsWith(".tex") || main.endsWith(".ltx") ? "latex"
-      : main.endsWith(".html") || main.endsWith(".htm") ? "html" : "markdown";
+  const format = formatOf(tree.main) || "markdown";
   const engine = rendered.provenance?.engine || format;
   return {
     revision: candidateRevision,

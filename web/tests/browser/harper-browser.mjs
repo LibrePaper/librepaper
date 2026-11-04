@@ -1,7 +1,8 @@
 // Harper in a real browser: the pinned wasm loads in its worker, a grammar
 // slip is underlined, a fix from the hover card is applied, a word added to
-// the dictionary stops being underlined, and a document that declares another
-// language gets the browser's spellcheck instead.
+// the dictionary stops being underlined, a touch tap places the cursor and a
+// second tap opens the card without taking focus from the editor, and a
+// document that declares another language gets the browser's spellcheck instead.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -48,6 +49,7 @@ writeFileSync(entry, [
   "window.spellcheckOf = (name) => document.querySelector('#' + name + ' .cm-content').getAttribute('spellcheck');",
   "window.point = (name, word) => { const v = view(document.getElementById(name)); const box = v.coordsAtPos(v.state.doc.toString().indexOf(word) + 1); return { x: box.left + 1, y: (box.top + box.bottom) / 2 }; };",
   "window.cardButtons = () => [...document.querySelectorAll('.cm-harper-card button')].map((node) => node.textContent);",
+  "window.buttonPoint = (label) => { const button = [...document.querySelectorAll('.cm-harper-card button')].find((node) => node.textContent === label); if (!button) return null; const box = button.getBoundingClientRect(); return { x: box.left + box.width / 2, y: box.top + box.height / 2 }; };",
   "window.press = (label) => { const button = [...document.querySelectorAll('.cm-harper-card button')].find((node) => node.textContent === label); if (!button) return false; button.click(); return true; };",
   "window.stored = () => localStorage.getItem('librepaper-harper-words');",
 ].join("\n"));
@@ -109,6 +111,32 @@ try {
   assert.ok(!marks.includes("spelling:estimand"), "an added word is no longer underlined");
   assert.deepEqual(JSON.parse(await evaluate("stored()")), ["estimand"]);
   console.log("harper-browser: an added word stops being underlined and is remembered");
+
+  // A touch tap places the cursor. A second tap on the same word opens the card,
+  // and a tap on a card button applies the fix and keeps the editor focused.
+  await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 });
+  await wait(300);
+  assert.equal(await evaluate("mount('touch', 'Its a known issue and we could of done better.')"), true);
+  await until("marks('touch')", (list) => list.includes("grammar:could of"));
+  await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+  const tap = async (x, y) => {
+    await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await wait(300);
+  };
+  const inEditor = "Boolean(document.activeElement?.closest('#touch .cm-content'))";
+  point = await evaluate("point('touch', 'could of')");
+  await tap(point.x, point.y);
+  assert.deepEqual(await evaluate("cardButtons()"), [], "a first tap on an underlined word opens no card");
+  assert.equal(await evaluate(inEditor), true, "the first tap places the cursor in the editor");
+  await tap(point.x, point.y);
+  const touchButtons = await until("cardButtons()", (list) => list.length > 0, 100);
+  assert.ok(touchButtons.includes("could have"), "a second tap opens the card: " + JSON.stringify(touchButtons));
+  const button = await evaluate("buttonPoint('could have')");
+  await tap(button.x, button.y);
+  assert.match(await evaluate("textOf('touch')"), /we could have done better/);
+  assert.equal(await evaluate(inEditor), true, "a card button keeps the focus in the editor");
+  console.log("harper-browser: a touch tap places the cursor, a second tap opens the card, and a button keeps the focus");
 
   assert.equal(await evaluate("mount('french', '---\\nlang: fr\\n---\\n\\nNous avons un probleme ici.')"), true);
   await wait(1500);

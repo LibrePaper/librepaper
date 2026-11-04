@@ -24,7 +24,7 @@ sudo zypper install ./librepaper-<version>-1.x86_64.rpm      # openSUSE
 
 ## Package managers
 
-Homebrew on macOS, Scoop on Windows and Nix on x86_64 Linux install the app and keep it up to date with their own commands.
+Homebrew on macOS, Scoop on Windows, and Nix, APT or DNF on x86_64 Linux install the app and keep it up to date with their own commands.
 
 ```sh
 # macOS
@@ -37,6 +37,13 @@ scoop install librepaper
 # Nix
 nix profile install github:LibrePaper/librepaper
 nix run github:LibrePaper/librepaper              # or try it without installing
+```
+
+Debian and Ubuntu users can add the APT repository, and Fedora users can add the DNF repository, so that `apt upgrade` or `dnf upgrade` keeps LibrePaper current. The setup commands, which add the signing key and the source, are on [the APT page](https://vincentarelbundock.github.io/apt) and [the DNF page](https://vincentarelbundock.github.io/rpm). After that, install the app:
+
+```sh
+sudo apt install librepaper                       # Debian and Ubuntu
+sudo dnf install librepaper                       # Fedora
 ```
 
 ## Shell script

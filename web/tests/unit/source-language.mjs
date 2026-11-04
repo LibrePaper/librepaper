@@ -54,6 +54,8 @@ hasToken(latex, "comment", "comment");
 hasToken(latex, "\\documentclass", "tag");
 hasToken(highlighted("theme.sty", "% package note\n\\ProvidesPackage{theme}"), "package note", "comment");
 hasToken(highlighted("class.cls", "\\newcommand{\\name}{text}"), "\\newcommand", "tag");
+hasToken(highlighted("fig.pgf", "% pgf note\n\\draw"), "pgf note", "comment");
+hasToken(highlighted("size10.clo", "\\newcommand{\\name}{text}"), "\\newcommand", "tag");
 const typst = highlighted("paper.typ", "/* block note */\n#let title = $x$");
 hasToken(typst, "block note", "comment");
 hasToken(typst, "#let", "keyword");
