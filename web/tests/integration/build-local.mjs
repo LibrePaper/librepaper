@@ -149,5 +149,55 @@ assert.deepEqual(sentRecords, [
   ["PUT", "renderers/quarto.html", { reset: true }],
 ]);
 
+// Version negotiation. The global starts as an app from before `protocol`.
+// Each case sets its own global and restores the legacy one at the end.
+const legacyShell = globalThis.window.__LIBREPAPER_DESKTOP__;
+const newerShell = { base: "lp-local://localhost/", version: "4.0.0", protocol: { oldest: 4, current: "4.0.0" } };
+
+// A call that needs a newer route is refused before anything is sent.
+let refusedFetches = 0;
+client._testing.inject({ fetch: async () => { refusedFetches += 1; return response(200, {}); } });
+await assert.rejects(client.send("GET", "backups", { since: "9.0.0" }), (error) => error?.name === "DesktopFeatureOutdated");
+assert.equal(refusedFetches, 0);
+
+// A legacy app that refuses a newer job in its own words is an app_outdated mismatch.
+client._testing.inject({ fetch: async () => response(400, { error: "bad protocol 3 job description: x" }) });
+await assert.rejects(client.send("POST", "jobs", { jsonBody: {} }), (error) => error?.name === "DesktopMismatch" && error.outcome === "app_outdated" && error.status === 400);
+
+// Any other refusal from a legacy app keeps its own message.
+client._testing.inject({ fetch: async () => response(400, { error: "some render failure" }) });
+await assert.rejects(client.send("POST", "jobs", { jsonBody: {} }), (error) => error?.name === "Refused" && error.message === "some render failure");
+
+// An app whose range starts above this page is refused before any request.
+globalThis.window.__LIBREPAPER_DESKTOP__ = newerShell;
+let newerFetches = 0;
+client._testing.inject({ fetch: async () => { newerFetches += 1; return response(200, {}); } });
+await assert.rejects(client.send("GET", "backups"), (error) => error?.name === "DesktopMismatch" && error.outcome === "server_outdated");
+assert.equal(newerFetches, 0);
+globalThis.window.__LIBREPAPER_DESKTOP__ = legacyShell;
+
+// No request carries a version header, feature or management.
+const seenHeaders = [];
+client._testing.inject({ fetch: async (url, init = {}) => { seenHeaders.push(init.headers ?? {}); return response(200, { ok: true }); } });
+await client.send("GET", "backups");
+await client.manage("/status");
+assert.equal(seenHeaders.length, 2);
+assert.ok(seenHeaders.every((headers) => !Object.keys(headers).some((key) => key.toLowerCase() === "x-librepaper-protocol")));
+
+// A job status this page does not know is not terminal: polling continues until done.
+let polls = 0;
+client._testing.inject({ fetch: async (url, init = {}) => {
+  if (url.endsWith("/jobs") && init.method === "POST") return response(202, { id: "job-4" });
+  if (url.endsWith("/jobs/job-4")) {
+    polls += 1;
+    return response(200, { id: "job-4", status: polls < 3 ? "scheduled" : "done", exit: 0, outputs: {} });
+  }
+  throw new Error(`unexpected poll request ${url}`);
+} });
+const polled = await client.runRender({ job: {}, tree, format: "latex", output: "pdf" });
+assert.equal(polls, 3);
+assert.equal(polled.ok, false, "a done job with no artifact is not ok");
+
 client._testing.reset();
-console.log("build-local: protocol 3 render jobs, outputs, cancellation, folder fallback and renderer records passed");
+globalThis.window.__LIBREPAPER_DESKTOP__ = legacyShell;
+console.log("build-local: protocol 3 render jobs, outputs, cancellation, folder fallback, renderer records and version negotiation passed");
