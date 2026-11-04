@@ -41,8 +41,9 @@ github-custom-job-permissions = { "desktop-windows" = { contents = "read", id-to
 install-success-msg = "The LibrePaper command line is installed. In a new terminal, run: librepaper --help"
 # dist 0.33 builds aarch64-apple-darwin on macos-14 by default. GitHub retires that
 # image on 2026-11-02 and fails its jobs in brownouts before then (v0.0.59).
+# Built on Intel since v0.0.66: arm64 macos-15 runners went unacquired for a day (v0.0.65).
 [workspace.metadata.dist.github-custom-runners]
-aarch64-apple-darwin = "macos-15"
+aarch64-apple-darwin = "macos-15-intel"
 
 [profile.release]
 opt-level = 3
@@ -88,7 +89,7 @@ debug = "line-tables-only"
 debug = "line-tables-only"
 
 [workspace.package]
-version = "0.0.65"
+version = "0.0.66"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/LibrePaper/librepaper"
