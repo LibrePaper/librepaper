@@ -328,6 +328,7 @@ impl Default for Configuration {
                 ".bib",
                 ".sty",
                 ".cls",
+                ".def",
                 ".bst",
                 ".txt",
                 ".csv",

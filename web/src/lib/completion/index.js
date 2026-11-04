@@ -16,7 +16,7 @@ import { typstCompletion } from "./typst.js";
  */
 export function formatOfPath(path) {
   const lower = String(path || "").toLowerCase();
-  if (/\.(?:tex|ltx|sty|cls)$/.test(lower)) return "latex";
+  if (/\.(?:tex|ltx|sty|cls|def)$/.test(lower)) return "latex";
   if (lower.endsWith(".typ")) return "typst";
   if (lower.endsWith(".qmd")) return "quarto";
   if (/\.(?:md|markdown)$/.test(lower)) return "markdown";
