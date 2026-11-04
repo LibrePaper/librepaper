@@ -2,6 +2,9 @@
 # and .rpm that the release already published, byte for byte. This workflow only
 # tells them to rebuild now instead of on their nightly cron. Both tokens are
 # optional: without them the repositories pick up the release on their own.
+# The job first checks that both repositories list librepaper in projects.json
+# and fails loudly when one does not, so a release whose packages cannot be
+# installed with apt or dnf shows up red.
 
 name: Update Linux package repositories
 
@@ -23,6 +26,21 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
+      - name: Check that the repositories carry librepaper
+        run: |
+          set -eu
+          missing=0
+          for repo in apt rpm; do
+            if ! curl -fsSL "https://raw.githubusercontent.com/vincentarelbundock/${repo}/main/projects.json" \
+                | jq -e '.projects[] | select(.name == "librepaper")' > /dev/null; then
+              echo "::error title=librepaper missing from ${repo}::vincentarelbundock/${repo}/projects.json has no librepaper entry, so apt/dnf users cannot install LibrePaper. Add it there (see LibrePaper/librepaper#85)."
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            exit 1
+          fi
+
       - name: Nudge the apt repository
         continue-on-error: true
         env:
