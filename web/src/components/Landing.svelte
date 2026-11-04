@@ -26,6 +26,7 @@
   import TagSwatches from "./TagSwatches.svelte";
   import NewProject from "./NewProject.svelte";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
+  import DesktopMismatch from "./DesktopMismatch.svelte";
   import Toasts from "./Toasts.svelte";
   import Sidebar from "./layout/Sidebar.svelte";
   import CompactPanelMenu from "./layout/CompactPanelMenu.svelte";
@@ -1226,6 +1227,10 @@
     <Icon name="plus" size="1rem" /><span class="menuitem-label">{m.landing_new_tag_ellipsis()}</span>
   </Menu.Item>
 {/snippet}
+
+<!-- Above the top bar, so the banner sits at the page's top edge. It renders
+     nothing unless the desktop app and this page disagree. -->
+<DesktopMismatch />
 
 {#if me.name}
   <!-- The workspace half. The trail says where in the account this is, which

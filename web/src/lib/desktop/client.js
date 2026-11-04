@@ -17,6 +17,7 @@
 import { bytesOf, toArrayBuffer } from "../bytes.js";
 import { named } from "../latex/errors.js";
 import { m } from "../paraglide/messages.js";
+import { isLegacy, outcome, rangeOf, sinceMet } from "./negotiate.js";
 
 /** @typedef {{ fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, now: () => number, wait: (ms: number, signal?: AbortSignal) => Promise<void>, location: () => Location | null, replaceHash: (hash: string) => void }} DesktopDeps */
 /** @typedef {{ generation?: number, deadlineSeconds?: number, snapshot?: string }} DesktopJob */
@@ -82,9 +83,23 @@ export const _testing = {
 };
 
 /** The desktop app's page global, or null in an ordinary browser.
- * @returns {{ base: string, version: string, zoom?: number, close?: "quit" | "tray" } | null} */
+ * @returns {{ base: string, version: string, zoom?: number, close?: "quit" | "tray", protocol?: { oldest: number, current: string } } | null} */
 export function desktop() {
   return globalThis.window?.__LIBREPAPER_DESKTOP__ ?? null;
+}
+
+/** Whether this page and the desktop app can work together at all.
+ * @returns {"ok" | "app_outdated" | "server_outdated"} */
+export function negotiation() {
+  return outcome(rangeOf(desktop()));
+}
+
+/** The sentence that says why the page and app cannot work together, or ""
+ * when they can. @param {"ok" | "app_outdated" | "server_outdated"} state */
+export function mismatchText(state) {
+  if (state === "app_outdated") return m.desktopmismatch_app_outdated({ have: desktop()?.version ?? "" });
+  if (state === "server_outdated") return m.desktopmismatch_server_outdated({ host: deps.location()?.host || "" });
+  return "";
 }
 
 // Asks the desktop shell itself, not the local service, to do something only
@@ -119,6 +134,24 @@ export async function desktopReport() {
   throw new Error(message || m.client_action_failed({ status: response.status }));
 }
 
+// Asks the shell how the person can update it. "updater" means the shell's own
+// dialog takes over, "package_manager" means the system's package manager does
+// it, and "download" means the page opens INSTALL_URL. Any failure is "download".
+/** @returns {Promise<"updater" | "package_manager" | "download">} */
+export async function checkForUpdate() {
+  const shell = desktop();
+  if (!shell) throw named("DesktopOnly", DESKTOP_ONLY_MESSAGE);
+  if (!shell.protocol) return "download";
+  try {
+    const response = await fetch(`${shell.base}shell/check-update`, { method: "POST" });
+    if (!response.ok) return "download";
+    const via = (await response.json())?.via;
+    return typeof via === "string" ? via : "download";
+  } catch {
+    return "download";
+  }
+}
+
 // The binding of a web project: the desktop app renders it in a workspace of
 // its own, written from the files the browser sends with each job.
 const HOSTED_BINDING = "hosted";
@@ -142,6 +175,20 @@ function requireDesktop() {
   return shell;
 }
 
+// Refuses a feature or management call before anything is sent when the page
+// and the app cannot work together, or when the app predates the call's route.
+// SPEC-wire.md 5.2.
+function gate(shell, since = "3.0.0") {
+  const range = rangeOf(shell);
+  const state = outcome(range);
+  if (state !== "ok") {
+    throw named("DesktopMismatch", mismatchText(state), { outcome: state });
+  }
+  if (!sinceMet(range, since)) {
+    throw named("DesktopFeatureOutdated", m.desktopmismatch_feature_outdated());
+  }
+}
+
 const unavailable = () => named("Unreachable", UNREACHABLE_MESSAGE);
 
 async function sha256hex(bytes) {
@@ -162,6 +209,11 @@ async function throwOnFailure(response) {
     data = await response.clone().json();
   } catch { /* not a JSON body; keep the generic message */ }
   if (response.status === 502 && typeof data?.reason !== "string") throw unavailable();
+  // An app from before the version check refuses a newer job in these words.
+  if (isLegacy(desktop()) && typeof data?.error === "string" &&
+      (data.error.startsWith("bad protocol 3 job description") || data.error.startsWith("unsupported protocol version"))) {
+    throw named("DesktopMismatch", m.desktopmismatch_app_outdated({ have: desktop()?.version ?? "" }), { outcome: "app_outdated", status: response.status, body: data });
+  }
   const message = typeof data?.error === "string"
     ? data.error
     : m.client_refused({ status: response.status });
@@ -170,10 +222,12 @@ async function throwOnFailure(response) {
 
 /// The one place a feature request is sent to the desktop app. A network
 /// failure or a 502 without a `reason` is `Unreachable`, any other non-2xx is
-/// `Refused` with the service's own message when it gave one.
-/** @param {string} method @param {string} path @param {{ jsonBody?: unknown, formBody?: FormData, signal?: AbortSignal }} [options] */
-export async function send(method, path, { jsonBody, formBody, signal } = {}) {
+/// `Refused` with the service's own message when it gave one. Before sending,
+/// `since` is the oldest app version the call needs; see `gate`.
+/** @param {string} method @param {string} path @param {{ jsonBody?: unknown, formBody?: FormData, signal?: AbortSignal, since?: string }} [options] */
+export async function send(method, path, { jsonBody, formBody, signal, since } = {}) {
   const shell = requireDesktop();
+  gate(shell, since);
   const headers = { Accept: "application/json" };
   let body;
   if (formBody !== undefined) {
@@ -203,12 +257,13 @@ async function bytesOfResponse(response) {
 }
 
 /** Call a machine management route.
- * @param {string} path @param {{ method?: string, body?: unknown }} [options] */
-export async function manage(path, { method = "GET", body } = {}) {
+ * @param {string} path @param {{ method?: string, body?: unknown, since?: string }} [options] */
+export async function manage(path, { method = "GET", body, since } = {}) {
   if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || path.includes("\\")) {
     throw new TypeError("Invalid management path");
   }
   const shell = requireDesktop();
+  gate(shell, since);
   /** @type {Record<string, string>} */
   const headers = { Accept: "application/json" };
   let payload;

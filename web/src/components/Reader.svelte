@@ -91,6 +91,7 @@
   import Grip from "./Grip.svelte";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
   import DesktopOnly from "./DesktopOnly.svelte";
+  import DesktopMismatch from "./DesktopMismatch.svelte";
   import { anonymousIdentity, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import Avatar from "./Avatar.svelte";
   import { extractOutline } from "../lib/outline.js";
@@ -4249,6 +4250,10 @@
     </span>
   </div>
 {/if}
+
+<!-- The top of the page, above the top bar. Renders nothing unless the
+     desktop app and this page disagree. -->
+<DesktopMismatch />
 
 <Nav {me} phoneMenu hidden={barHidden}>
   {#snippet tools()}

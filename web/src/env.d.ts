@@ -9,5 +9,11 @@ declare module "*.css";
 
 // Published by the desktop app before the page's own scripts run.
 interface Window {
-  __LIBREPAPER_DESKTOP__?: { readonly base: string; readonly version: string; readonly zoom?: number };
+  __LIBREPAPER_DESKTOP__?: {
+    readonly base: string;
+    readonly version: string;
+    readonly zoom?: number;
+    readonly close?: "quit" | "tray";
+    readonly protocol?: { readonly oldest: number; readonly current: string };
+  };
 }
