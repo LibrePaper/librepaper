@@ -125,7 +125,7 @@ async function highlightedSource(source, path) {
     import("@codemirror/language-data"),
   ]);
   let language = null;
-  if (/\.(?:sty|cls)$/.test(lower)) {
+  if (/\.(?:sty|cls|def)$/.test(lower)) {
     const { stex } = await import("@codemirror/legacy-modes/mode/stex");
     language = StreamLanguage.define(stex);
   } else {

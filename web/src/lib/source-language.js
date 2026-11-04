@@ -56,7 +56,7 @@ function byFormat(format) {
 export function sourceLanguage(path, fallback = "") {
   const lower = typeof path === "string" ? path.toLowerCase() : "";
   const extension = lower.slice(lower.lastIndexOf("/") + 1);
-  if (/\.(?:tex|ltx|sty|cls)$/.test(extension)) return latex;
+  if (/\.(?:tex|ltx|sty|cls|def)$/.test(extension)) return latex;
   if (/\.typ$/.test(extension)) return typst;
   if (/\.(?:md|markdown|qmd)$/.test(extension)) return markdownLanguage();
   if (/\.(?:html|htm)$/.test(extension)) return html();
