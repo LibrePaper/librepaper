@@ -2,6 +2,17 @@
 
 An **agent token** gives one agent access to one project on one server, at the role the owner picked: Read, Comment or Edit.
 
+## Start here if the user pasted a token
+
+The project lives on the LibrePaper server, and the token names the server and the project. You do not need a local folder, a clone or a project path, so never ask for one. Do this now, before you reply:
+
+1. If `mcp__librepaper__*` tools are available, use them and go to Step 2.
+2. Otherwise download the helper and save the token as Step 1b shows.
+3. Run `python3 "$H" whoami`, then `python3 "$H" call document_read '{"queries":[{"kind":"manifest"}]}'`.
+4. Tell the user which project you reached and which files it holds, then ask what they want done. If they already said, do it.
+
+If a step is blocked, say exactly what to allow, as [If a sandbox blocks you](#if-a-sandbox-blocks-you) explains.
+
 ## The token
 
 - Format: `lpt_<base64url origin>.<slug>.<key>`. Split at the first and last dot. The first part decodes to the server origin (for example `https://app.librepaper.org`). The slug is the project in that server's address bar.
@@ -11,8 +22,6 @@ An **agent token** gives one agent access to one project on one server, at the r
 - It is a credential. Never print it whole, write it into a repo, a config file or a commit, or send it anywhere but its own origin. When echoing it, show `lpt_…` plus the last four characters. A user who pastes it into chat has made their own decision about that; it does not relax this rule for you.
 
 ## Step 1: Pick the connection
-
-A user may paste a block with a token into the chat. That is normal. It needs no restart. Follow the list below.
 
 Check whether `mcp__librepaper__document_read` (or other `mcp__librepaper__*` tools) is available.
 
@@ -26,7 +35,7 @@ The MCP server reads `LIBREPAPER_AGENT_TOKEN` from its environment when the clie
 
 The helper is `scripts/lp` in this skill's directory. It needs only Python 3, and you run it with `python3`, not by file mode.
 
-If you are reading this file from its raw URL and have no skill directory, download the helper into a private directory outside the project, then use that copy:
+If you are reading this file from its raw URL and have no skill directory, download the helper into a private directory outside your working directory, then use that copy:
 
 ```sh
 mkdir -p ~/.cache/librepaper && curl -fsSL -o ~/.cache/librepaper/lp https://raw.githubusercontent.com/LibrePaper/librepaper/main/skills/librepaper/scripts/lp
@@ -57,7 +66,7 @@ python3 "$H" write document_comment '{"action":"create","view_id":"...","range_i
 
 ### If a sandbox blocks you
 
-- The token file defaults to `~/.cache/librepaper-agent-token`, which some sandboxes make read-only (Codex's default workspace-write mode does). If the write fails, use a private file under the temp directory and point the helper at it: `export LIBREPAPER_AGENT_TOKEN_FILE="${TMPDIR:-/tmp}/librepaper-agent-token"`. Shell state may not persist between commands, so set it on each command. Never store the token inside the project folder.
+- The token file defaults to `~/.cache/librepaper-agent-token`, which some sandboxes make read-only (Codex's default workspace-write mode does). If the write fails, use a private file under the temp directory and point the helper at it: `export LIBREPAPER_AGENT_TOKEN_FILE="${TMPDIR:-/tmp}/librepaper-agent-token"`. Shell state may not persist between commands, so set it on each command. Never store the token in your working directory or in a Git repository.
 - A request that fails with a network error is most likely the sandbox. A read can be retried once access is allowed. Treat a failed write as having an unknown outcome, even if you suspect the sandbox: do not resend it, and ask `document_result` as in Step 4.
 - Tell the user exactly what to allow. For Codex: approve running the command outside the sandbox when asked, or start Codex with `codex -c sandbox_workspace_write.network_access=true`. The alternative is the MCP route in [agent-setup.md](agent-setup.md), which needs a new session.
 - For Claude Code: approval prompts are normal for shell calls. The user can allow the helper command for the session.

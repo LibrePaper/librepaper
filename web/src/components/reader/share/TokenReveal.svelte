@@ -15,9 +15,9 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
   // The block is addressed to an agent, not to the user, so it stays English
   // rather than going through the message catalogues.
   const block = $derived([
-    "Work on my LibrePaper project with the agent token below. It is a credential: do not repeat it to me or write it into the project.",
+    "Work on my LibrePaper project with the agent token below. The project is on a LibrePaper server and the token names it, so you need no local folder. The token is a credential: do not repeat it to me or write it into any file in your working directory.",
     "",
-    "Read https://raw.githubusercontent.com/LibrePaper/librepaper/main/skills/librepaper/references/agent.md and follow it now, without waiting for a restart. If your sandbox blocks network or file access, tell me exactly what to allow. Then ask me what I want done.",
+    "Read https://raw.githubusercontent.com/LibrePaper/librepaper/main/skills/librepaper/references/agent.md and follow it now, without waiting for a restart: connect first, then tell me what you reached and ask what I want done. If your sandbox blocks network or file access, tell me exactly what to allow.",
     "",
     "When we finish, offer to install the skill from https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper",
     "",
