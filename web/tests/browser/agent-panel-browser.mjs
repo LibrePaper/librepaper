@@ -195,7 +195,7 @@ window.agentPanelCheck = async () => {
   check(copiedLabel(), "a copy button shows Copied afterwards");
   check(panel.contains(button("Copy connection instructions")), "copying does not end the reveal");
   await press(button("Copy connection instructions"));
-  check(window.copied.includes("Use the LibrePaper skill") && window.copied.includes("no local folder")
+  check(window.copied.includes("Use the LibrePaper skill") && window.copied.includes("no local folder") && window.copied.includes("Do not open or control a browser unless I explicitly ask you to.")
     && window.copied.includes("Token: " + issued), "the connection instructions copy with the token: " + window.copied);
 
   await press(panel.querySelector("summary"));
