@@ -1,14 +1,17 @@
 # Connecting an agent to a LibrePaper project
 
-## The quickest way
+## The usual way
 
-Paste the block from the Agents tab into a running Claude Code, Codex or other agent chat. The agent reads its instructions and uses the HTTP helper. This needs no install and no restart. The cost is that the token sits in the chat, where the model provider and the chat history can see it.
+1. Install the skill. Paste the first block from the Agents tab into Claude Code, Codex or another agent. It runs `npx skills add LibrePaper/librepaper --skill librepaper --global`, or copies the skill folder into the agent's skills folder. Do this once per computer, then start a new agent session, because agents load skills when a session starts.
+2. Connect to this project. Paste the second block into the new session. It contains the token and tells the agent to use the skill. If the agent has no skill, it asks you to install it.
 
-The steps below (1 to 4) are the MCP route. It keeps the token out of the chat, because `read -rs` takes it without echoing. It needs the `librepaper` command and a new session.
+The token sits in the chat, where the model provider and the chat history can see it.
+
+The steps below (1 to 4) are the MCP route that keeps the token out of the chat, with `read -rs`. They need the `librepaper` command and a new session.
 
 ## 1. Get a token
 
-In LibrePaper, open the project, then Share, then the Agents tab, and click New. Pick a permission (Read, Comment or Edit) and an expiry. Under Advanced you can change the name (it defaults to "Agent"; comments appear under it) and the hourly comment limit. Click Create token. Copy the block, or open "Other ways to connect" for the bare `lpt_...` string. It is shown once.
+In LibrePaper, open the project, then Share, then the Agents tab, and click New. Pick a permission (Read, Comment or Edit) and an expiry. Under Advanced you can change the name (it defaults to "Agent"; comments appear under it) and the hourly comment limit. Click Create token. Open "Other ways to connect" for the bare `lpt_...` string. It is shown once.
 
 ## 2. Install the `librepaper` command
 

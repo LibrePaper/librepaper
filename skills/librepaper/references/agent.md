@@ -7,7 +7,7 @@ An **agent token** gives one agent access to one project on one server, at the r
 The project lives on the LibrePaper server, and the token names the server and the project. You do not need a local folder, a clone or a project path, so never ask for one. Do this now, before you reply:
 
 1. If `mcp__librepaper__*` tools are available, use them and go to Step 2.
-2. Otherwise download the helper and save the token as Step 1b shows.
+2. Otherwise save the token and set `H` to the helper as Step 1b shows.
 3. Run `python3 "$H" whoami`, then `python3 "$H" call document_read '{"queries":[{"kind":"manifest"}]}'`.
 4. Tell the user which project you reached and which files it holds, then ask what they want done. If they already said, do it.
 
@@ -35,17 +35,6 @@ The MCP server reads `LIBREPAPER_AGENT_TOKEN` from its environment when the clie
 
 The helper is `scripts/lp` in this skill's directory. It needs only Python 3, and you run it with `python3`, not by file mode.
 
-If you are reading this file from its raw URL and have no skill directory, download the helper into a private directory outside your working directory, then use that copy:
-
-```sh
-mkdir -p ~/.cache/librepaper && curl -fsSL -o ~/.cache/librepaper/lp https://raw.githubusercontent.com/LibrePaper/librepaper/main/skills/librepaper/scripts/lp
-H=~/.cache/librepaper/lp
-```
-
-If `~/.cache/librepaper` cannot be written, as in some read-only sandboxes, put the helper in a private directory under the temp directory instead: `D="${TMPDIR:-/tmp}/librepaper-helper" && mkdir -m 700 "$D"`, then download it to `"$D/lp"` and set `H` to that path.
-
-The other references are in the same place: `https://raw.githubusercontent.com/LibrePaper/librepaper/main/skills/librepaper/references/`. Fetch them as needed, for example [agent-tools.md](agent-tools.md).
-
 When the user pastes the token in chat, write it once to a private file and from then on refer only to the file, never to the literal token:
 
 ```sh
@@ -54,7 +43,7 @@ mkdir -p ~/.cache && (umask 077 && printf %s 'lpt_...' > ~/.cache/librepaper-age
 ```
 
 ```sh
-H=<this skill's directory>/scripts/lp    # or the downloaded copy above
+H=<this skill's directory>/scripts/lp
 python3 "$H" whoami      # origin and slug, token redacted
 python3 "$H" tools       # tools this token may call, with full schemas including operation
 python3 "$H" call document_read '{"queries":[{"kind":"context","path":"main.tex"},{"kind":"manifest"}]}'
@@ -111,7 +100,6 @@ End with a short plain-prose answer: what was read, what changed (only effects t
 Then offer, when they apply:
 
 - Delete the token file (the path from Step 1b, or the one set in `LIBREPAPER_AGENT_TOKEN_FILE`).
-- If the LibrePaper skill is not installed, install it from https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper. An installed skill takes effect in the next session.
 
 ## Source of truth
 

@@ -209,12 +209,17 @@ window.sharePanelCheck = async () => {
   const secret = document.querySelector('input[aria-label="Agent token"]');
   check(secret && secret.readOnly && secret.value.startsWith("lpt_" + originPart + ".paper.minted"), "the token is shown: " + text());
   check(text().includes("Copy this token now. You won't be able to view it again."), "with the warning");
-  const block = document.querySelector('textarea[aria-label="Text for your agent"]').value;
-  check(block.includes("Token: " + secret.value) && block.includes("Work on my LibrePaper project")
-    && block.includes("https://raw.githubusercontent.com/LibrePaper/librepaper/main/skills/librepaper/references/agent.md")
-    && block.includes("https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper"), "the block for the agent names the token and both URLs: " + block);
-  await press(button("Copy for your agent"));
-  check(window.copied === block, "copies exactly the block");
+  const installBlock = document.querySelector('textarea[aria-label="Instructions to install the skill"]').value;
+  check(installBlock.includes("npx skills add LibrePaper/librepaper --skill librepaper --global")
+    && installBlock.includes("https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper")
+    && !installBlock.includes(secret.value), "the install step names the skill and never the token: " + installBlock);
+  const connectBlock = document.querySelector('textarea[aria-label="Instructions to connect to this project"]').value;
+  check(connectBlock.includes("Token: " + secret.value) && connectBlock.includes("Use the LibrePaper skill")
+    && connectBlock.includes("no local folder") && !connectBlock.includes("raw.githubusercontent.com"), "the connect step names the token: " + connectBlock);
+  await press(button("Copy install instructions"));
+  check(window.copied === installBlock, "copies exactly the install instructions");
+  await press(button("Copy connection instructions"));
+  check(window.copied === connectBlock, "copies exactly the connection instructions");
   document.querySelector(".share-other").open = true;
   check(text().includes("Pasting sends the token through your agent's chat"), "the chat note: " + text());
   const commands = document.querySelector('textarea[aria-label="Claude Code commands"]').value;
@@ -236,7 +241,7 @@ window.sharePanelCheck = async () => {
   const stored = JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage });
   check(!stored.includes(shownToken), "the token is stored nowhere");
   await press(button("Done"));
-  check(!document.querySelector('input[aria-label="Agent token"]') && !document.querySelector('textarea[aria-label="Text for your agent"]') && !text().includes(shownToken), "Done clears it");
+  check(!document.querySelector('input[aria-label="Agent token"]') && !document.querySelector('textarea[aria-label="Instructions to connect to this project"]') && !text().includes(shownToken), "Done clears it");
   check(rows().some((row) => row.textContent.includes("Codex")) && rows().length === 2, "and the token is in the list: " + text());
 
   await press(labelled("Revoke Codex"));

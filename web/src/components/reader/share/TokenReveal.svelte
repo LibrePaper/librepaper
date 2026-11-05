@@ -12,14 +12,21 @@
 command = "librepaper"
 args = ["mcp"]
 env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
-  // The block is addressed to an agent, not to the user, so it stays English
-  // rather than going through the message catalogues.
-  const block = $derived([
-    "Work on my LibrePaper project with the agent token below. The project is on a LibrePaper server and the token names it, so you need no local folder. The token is a credential: do not repeat it to me or write it into any file in your working directory.",
+  // The two blocks are addressed to an agent, not to the user, so they stay
+  // English rather than going through the message catalogues.
+  const installBlock = [
+    "Install the LibrePaper agent skill for every project on this computer by running:",
     "",
-    "Read https://raw.githubusercontent.com/LibrePaper/librepaper/main/skills/librepaper/references/agent.md and follow it now, without waiting for a restart: connect first, then tell me what you reached and ask what I want done. If your sandbox blocks network or file access, tell me exactly what to allow.",
+    "npx skills add LibrePaper/librepaper --skill librepaper --global",
     "",
-    "When we finish, offer to install the skill from https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper",
+    "If that does not work, copy https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper, including its references and scripts folders, into your skills folder. If your sandbox blocks this or the command needs my input, give me the exact command to run in my terminal. When the skill is installed, tell me to start a new session.",
+  ].join("\n");
+  const connectBlock = $derived([
+    "Use the LibrePaper skill to connect to my project with the agent token below. If you do not have that skill, stop and ask me to install it.",
+    "",
+    "The project is on a LibrePaper server and the token names it, so you need no local folder. The token is a credential: do not repeat it to me or write it into any file in your working directory.",
+    "",
+    "Connect first, then tell me what you reached and ask what I want done. If your sandbox blocks network or file access, tell me exactly what to allow.",
     "",
     `Token: ${token}`,
   ].join("\n"));
@@ -28,11 +35,16 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
 
 <div class="share-reveal">
   <p class="share-warning" role="alert">{m.tokenreveal_warning()}</p>
-  <label class="share-field panel-meta">{m.tokenreveal_block_aria()}
-    <textarea class="input share-input share-config share-block" readonly rows="9" aria-label={m.tokenreveal_block_aria()} value={block} onclick={select}></textarea>
-    <span>{m.tokenreveal_block_help()}</span>
+  <label class="share-field panel-meta">{m.tokenreveal_step_install()}
+    <textarea class="input share-input share-config share-block" readonly rows="6" aria-label={m.tokenreveal_install_aria()} value={installBlock} onclick={select}></textarea>
+    <span>{m.tokenreveal_step_install_help()}</span>
   </label>
-  <button type="button" class="btn btn-sm lp-control-brand" onclick={() => oncopy(block)}>{m.tokenreveal_copy_block()}</button>
+  <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncopy(installBlock)}>{m.tokenreveal_copy_install()}</button>
+  <label class="share-field panel-meta">{m.tokenreveal_step_connect()}
+    <textarea class="input share-input share-config share-block" readonly rows="7" aria-label={m.tokenreveal_connect_aria()} value={connectBlock} onclick={select}></textarea>
+    <span>{m.tokenreveal_step_connect_help()}</span>
+  </label>
+  <button type="button" class="btn btn-sm lp-control-brand" onclick={() => oncopy(connectBlock)}>{m.tokenreveal_copy_connect()}</button>
   <p class="panel-meta">{m.tokenreveal_chat_note()}</p>
   <details class="share-other">
     <summary>{m.tokenreveal_other_ways()}</summary>
