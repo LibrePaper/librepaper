@@ -124,7 +124,7 @@ def main(argv):
         origin, slug, key = parts(token())
         print(json.dumps({"origin": origin, "slug": slug, "key": "…" + key[-4:]}))
     elif command == "tools":
-        show(*request("GET", ""))
+        show(*request("GET", "?schema=full"))
     elif command in ("call", "write"):
         if not rest:
             die(f"usage: lp {command} <tool> [json|-]")
