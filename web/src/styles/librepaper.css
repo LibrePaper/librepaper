@@ -1068,6 +1068,12 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   }
   /* On a phone the gutter and the margins are narrower, so the text keeps the width. */
   .cm-editor .cm-content { padding: --spacing(3) --spacing(2) --spacing(3) --spacing(1); }
+  /* The keyboard covers the lower half of the screen, and the last lines of a
+     file have nothing below them to scroll up with. Blank room under the text
+     lets them rise above it. Only the source editor gets it: a read-only view
+     raises no keyboard, and the merge view does not scroll on its own. It is
+     svh so that the browser's bars coming and going do not resize the document. */
+  .editorhost .cm-content[contenteditable="true"] { padding-bottom: 75svh; }
   .cm-editor .cm-gutters { padding-left: --spacing(1); }
   .cm-editor .cm-lineNumbers .cm-gutterElement { padding-inline: --spacing(1) 2px; }
   .cm-editor .cm-gutter-lint { width: 0.9em; }

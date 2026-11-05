@@ -702,6 +702,28 @@ try {
     return Boolean(line) && line.textContent === ${JSON.stringify(tapped)}
       && Math.abs(line.getBoundingClientRect().top - scroller.top) <= 24;
   })()`), 3000);
+  // The last line has nothing under it but the blank room, and that room is what
+  // lets it rise above the keyboard. Scroll to the bottom of the text, out of
+  // the room, then tap the last line.
+  await b.evaluate(`(() => {
+    const s = document.querySelector('.cm-scroller');
+    s.scrollTop = s.scrollHeight - s.clientHeight - parseFloat(getComputedStyle(document.querySelector('.cm-content')).paddingBottom);
+  })()`);
+  await flush();
+  await until('top bar at rest before the last-line tap', () => b.evaluate(barAtRest), 3000);
+  await until('the last line is rendered', () => b.evaluate(`[...document.querySelectorAll('.cm-line')].some(node => node.textContent === 'line 179 source content')`), 3000);
+  const last = await b.evaluate(`(() => {
+    const line = [...document.querySelectorAll('.cm-line')].find(node => node.textContent === 'line 179 source content');
+    const rect = line.getBoundingClientRect(), x = rect.left + 40, y = rect.top + rect.height / 2;
+    return { x, y, hit: Boolean(document.elementFromPoint(x, y)?.closest('.cm-line') === line) };
+  })()`);
+  assert.equal(last.hit, true, 'the last line is under the pointer: ' + JSON.stringify(last));
+  for (const type of ['mousePressed', 'mouseReleased']) await b.command('Input.dispatchMouseEvent', { type, x: last.x, y: last.y, button: 'left', clickCount: 1 });
+  await until('the last line rises above the keyboard', () => b.evaluate(`(() => {
+    const line = document.querySelector('.cm-activeLine');
+    return Boolean(line) && line.textContent === 'line 179 source content'
+      && line.getBoundingClientRect().bottom < innerHeight * 0.4;
+  })()`), 3000);
   await b.resize(1280, 900); await flush();
   assert.equal(await visible('.viewport'), true);
   const tappedWide = await tapLowLine();
