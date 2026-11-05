@@ -708,12 +708,16 @@ try {
 
   // A user who cannot share has no tab row: the panel is the tasks alone, with no chat.
   await nav('Agent');
+  // The categories start closed.
+  const openTaskGroups = () => b.evaluate('document.querySelectorAll(".agent-task-toggle[aria-expanded=\\"false\\"]").forEach((node) => node.click())');
+  await openTaskGroups(); await flush();
   await until('agent tasks', () => visible('.agent-task'), 3000);
   assert.equal(await visible('.agent-panel'), true);
   assert.equal(await b.evaluate('document.querySelector(".agent-panel .chat-form") === null && document.querySelector(".agent-panel .chat-message") === null'), true, 'the agent panel has no chat');
   assert.equal(await b.evaluate('(() => { const p = document.querySelector(".agent-panel"); return p.scrollWidth <= p.clientWidth + 1; })()'), true, 'the agent tasks fit the phone width');
   await click(face('Editor'));
   await nav('Agent');
+  await openTaskGroups(); await flush();
   assert.equal(await visible('.agent-task'), true, 'the agent panel comes back with its tasks');
   await bounded();
 
