@@ -6,7 +6,7 @@ LibrePaper works with the coding agent you already use: Claude Code, Codex, Pi o
 
 You can connect an agent in two ways:
 
-- **With an agent token.** You copy one block from the project into the agent you already use. It works from the browser or the desktop app, and the agent can run anywhere.
+- **With an agent token.** You install the LibrePaper skill in the agent you already use, then give it a token for one project. It works from the browser or the desktop app, and the agent can run anywhere.
 - **In the desktop app.** You pick an agent in the sidebar and chat with it next to your document.
 
 > **Warning:** A shared document holds text from everyone with edit access. An agent that reads it may follow instructions hidden in that text.
@@ -20,19 +20,26 @@ A token lets an agent you start yourself work on one project. The agent can run 
 1. Open the project, then Share, then the Agents tab.
 2. Click New. Pick a permission and an expiry.
 3. Under Advanced you can name the token (its comments and suggestions appear under that name) and set an hourly comment limit. The name defaults to "Agent".
-4. Click Create token. Copy the block and paste it into Claude Code, Codex or another agent. LibrePaper shows it only once.
-
-The agent fetches its instructions and asks you what to do.
-
-The block contains the token, so it sits in your agent's chat, where your model provider and the chat history can see it. To keep it out of the chat, open **Other ways to connect** and use MCP, described below.
-
-Codex's default sandbox blocks network access for shell commands. Allow it if Codex asks, or start Codex with `codex -c sandbox_workspace_write.network_access=true`.
+4. Click Create token.
 
 | Permission | What the agent can do |
 |---|---|
 | Read | Read the project. |
 | Comment | Read and comment. |
 | Edit | Everything Comment allows, plus tracked suggestions, direct edits, and creating or deleting text files. Tracked suggestions need Edit; Comment cannot change text. Edit tokens expire after one day by default. |
+
+### Connect your agent
+
+After you create the token, LibrePaper shows two blocks of text to copy.
+
+1. Copy the first block and paste it into Claude Code, Codex or another agent. It installs the skill: the agent copies a folder of instructions and a small script into its skills folder. You do this once on each computer. Then start a new agent session, because agents load skills when a session starts.
+2. Copy the second block and paste it into the new session. It holds the token and asks the agent to connect. You do this for each project. LibrePaper shows the token only once, so keep the screen open until you have copied it.
+
+The agent connects, tells you what it reached and asks what to do.
+
+The second block contains the token, so it sits in your agent's chat, where your model provider and the chat history can see it. To keep it out of the chat, open **Other ways to connect** and use MCP, described below.
+
+Codex's default sandbox blocks network access for shell commands. Allow it if Codex asks, or start Codex with `codex -c sandbox_workspace_write.network_access=true`. If the install is blocked, the agent gives you a command to run in your terminal.
 
 ### Keep the token out of the chat: Claude Code
 
@@ -177,4 +184,4 @@ You can also ask your agent to install it. Paste this into the chat:
 Install the LibrePaper agent skill from https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper into your skills folder.
 ```
 
-Restart the agent afterwards so it loads the skill. Inside a clone of the LibrePaper repository, Claude Code and Codex find the skill without installing it.
+Start a new agent session afterwards so it loads the skill. Inside a clone of the LibrePaper repository, Claude Code and Codex find the skill without installing it.
