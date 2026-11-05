@@ -52,3 +52,11 @@
   </div>
   {@render children?.()}
 </Tabs>
+
+<style>
+  /* Phones: each tab and the controls beside the strip are finger-sized. */
+  @media (max-width: 767px) {
+    .panel-tabs-row :global([role="tab"]) { min-height: 2.75rem; display: flex; align-items: center; justify-content: center; }
+    .panel-tabs-actions :global(.icon-control) { min-width: 2.75rem; min-height: 2.75rem; }
+  }
+</style>

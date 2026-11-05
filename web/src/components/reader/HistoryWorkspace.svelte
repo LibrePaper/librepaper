@@ -265,4 +265,12 @@
   .history-restore { margin-left: auto; }
   .history-note { padding: 0 0.5rem; }
   .history-workspace :global(.merge-editor) { flex: 1; min-height: 0; }
+  /* Phones: the endpoint pickers, the change stepper and the footer buttons
+     are finger-sized, and the file select keeps 16px so iOS does not zoom. */
+  @media (max-width: 767px) {
+    .history-endpoint { min-height: 2.75rem; }
+    .history-source-bar :global(.icon-control) { min-width: 2.75rem; min-height: 2.75rem; }
+    .history-workspace .btn { min-height: 2.75rem; }
+    .history-file-select { font-size: 1rem; }
+  }
 </style>

@@ -120,7 +120,7 @@
   .sidebar-content { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; }
   .panel-slot { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; }
   .panel-slot[hidden] { display: none; }
-  @media (max-width: 760px) {
+  @media (max-width: 767px) {
     .sidebar, .sidebar.collapsed { flex-direction: column; }
     .sidebar-activity { display: flex; order: 1; width: 100%; padding-block: var(--spacing); border-right: 0; border-top: 1px solid var(--color-pane-edge); }
     .sidebar-activity .activity-sections { display: none; }

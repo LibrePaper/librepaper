@@ -203,9 +203,12 @@ try {
   const click = async (selector) => { await tab.evaluate(`(() => { const node=document.querySelector(${JSON.stringify(selector)}); node?.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'mouse'})); node?.click(); })()`); await flush(); };
   const mobileNav = async (label) => {
     const id = ({Files:'files',Outline:'outline',Agent:'agent',Collaboration:'collaboration',Changes:'changes',Share:'share',Diagnostics:'diagnostics',History:'history'})[label];
-    await click('.compact-panels-trigger[aria-label="Menu"]');
-    await until('Panels menu', () => tab.evaluate('Boolean(document.querySelector(\'.explorer-menu[data-state="open"]\'))'), 3000);
-    await click(`.explorer-menu[data-state="open"] [data-panel-id="${id}"]`);
+    // A panel is left through the header's Back before another is chosen.
+    if (await visible('nav.phone-shell button[aria-label="Back"]')) await click('nav.phone-shell button[aria-label="Back"]');
+    await click('.mobile-more-trigger');
+    await until('More sheet', () => tab.evaluate('Boolean(document.querySelector(".mobile-sheet")?.getClientRects().length)'), 3000);
+    await click(`.mobile-sheet [data-row="${id}"]`);
+    await until('More sheet closed', () => tab.evaluate('!document.querySelector(".mobile-sheet")?.getClientRects().length'), 3000);
   };
   const waitOutline = async () => until("document outline", () => tab.evaluate("Boolean(document.querySelector('.outline'))"), 10000);
   const waitHeading = async (title) => until(`outline heading ${title}`, () => tab.evaluate(`Boolean([...document.querySelectorAll('.outline .outline-heading')].find(node => node.textContent.trim().includes(${JSON.stringify(title)})))`), 5000);

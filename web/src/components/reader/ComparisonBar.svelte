@@ -28,4 +28,8 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  /* Phones: Close is a finger's height and keeps its place at the end. */
+  @media (max-width: 767px) {
+    .comparison-bar > .btn { flex: none; min-height: 2.75rem; }
+  }
 </style>

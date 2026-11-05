@@ -324,6 +324,44 @@ export const ICONS = {
   // Lucide's arrow-down, for jumping to the newest message.
   "arrow-down": [["path", "M12 5v14"], ["path", "m19 12-7 7-7-7"]],
   "arrow-up": [["path", "M12 19V5"], ["path", "m5 12 7-7 7 7"]],
+  // Lucide's list-tree, for the document outline.
+  "list-tree": [
+    ["path", "M21 12h-8"],
+    ["path", "M21 6H8"],
+    ["path", "M21 18h-8"],
+    ["path", "M3 6v4c0 1.1.9 2 2 2h3"],
+    ["path", "M3 10v6c0 1.1.9 2 2 2h3"],
+  ],
+  // Lucide's file-pen-line, for a document that can be edited.
+  "file-pen-line": [
+    ["path", "m18 5-2.414-2.414A2 2 0 0 0 14.172 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2"],
+    ["path", "M21.378 12.626a1 1 0 0 0-3.004-3.004l-4.01 4.012a2 2 0 0 0-.506.854l-.837 2.87a.5.5 0 0 0 .62.62l2.87-.837a2 2 0 0 0 .854-.506z"],
+    ["path", "M8 18h1"],
+  ],
+  // Lucide's house, for going back to the projects.
+  house: [
+    ["path", "M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"],
+    ["path", "M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"],
+  ],
+  // Lucide's circle-help, for the help menu.
+  "circle-help": [
+    ["circle", { cx: 12, cy: 12, r: 10 }],
+    ["path", "M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"],
+    ["path", "M12 17h.01"],
+  ],
+  // Lucide's file, for a plain file with no type of its own.
+  file: [
+    ["path", "M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"],
+    ["path", "M14 2v5a1 1 0 0 0 1 1h5"],
+  ],
+  // Lucide's ellipsis: the same three dots as more-horizontal, for a button
+  // that opens more options.
+  ellipsis: [["circle", { cx: 5, cy: 12, r: 1 }], ["circle", { cx: 12, cy: 12, r: 1 }], ["circle", { cx: 19, cy: 12, r: 1 }]],
+  // Lucide's redo-2, the mirror of undo-2.
+  "redo-2": [
+    ["path", "m15 14 5-5-5-5"],
+    ["path", "M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13"],
+  ],
   // Stops a running agent.
 };
 
