@@ -5186,7 +5186,6 @@
      end, each a thumb-sized square with no fill of its own. */
   .mobile-header-button { position: relative; display: inline-grid; grid-auto-flow: column; flex: none; place-items: center; gap: .125rem; min-width: 2.75rem; height: 2.75rem; padding: 0; border: 0; border-radius: var(--radius-base); background: none; color: var(--color-text); font-size: var(--text-xs); line-height: 1; cursor: pointer; }
   .mobile-header-button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
-  .mobile-count { color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
   .mobile-more-trigger[aria-expanded="true"] { background: var(--color-row-selected); }
   .mobile-offline-dot { position: absolute; top: .5rem; right: .5rem; box-shadow: 0 0 0 2px var(--color-shell); }
   /* The title takes the room the buttons leave. Over a panel or a list it is
