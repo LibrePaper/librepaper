@@ -196,13 +196,13 @@ async function runChecks() {
       await flush();
       check(statusText().includes("No previous versions"),
         `a loaded, empty history should say so, shows: ${statusText()}`);
-      check(all("li.hx-current").length === 1, "the current version row is listed");
+      check(all("li.hx-current").length === 1, "the Latest row is listed");
 
       mount({ labels: [], loaded: false });
       await flush();
       check(statusText().includes("Loading history…"),
         `a history not loaded yet should say so, shows: ${statusText()}`);
-      check(all("li.hx-current").length === 1, "the current version row is listed while loading");
+      check(all("li.hx-current").length === 1, "the Latest row is listed while loading");
     });
 
     await step("2: autosaves fold into one event", async () => {

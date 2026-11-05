@@ -195,13 +195,13 @@ try {
   // into one editing session. Opening it reaches the rest of them.
   // That grouping is the panel's own and is checked in history-panel-browser.mjs.
   await tab.evaluate(`document.querySelector('[data-type="editing"] button[aria-expanded="false"]')?.click()`);
-  // The newest version's row is the Latest row. Clicking it shows the newest
+  // The live project has its own Latest row. Clicking it shows the newest
   // stored version against the live document.
   assert.equal(await tab.evaluate(`document.querySelector('.hx-current .hx-ell')?.textContent.trim()`), 'Latest');
   await tab.evaluate(`document.querySelector('li.hx-current button').click()`);
   await expectDiff(sources.at(-1), current);
   await selectChange(1);
-  console.log('history reader: the newest row is Latest, and a version against the live document');
+  console.log('history reader: the Latest row, and a version against the live document');
   // Older and Newer are the two ends of the comparison. A button for each end
   // in the header starts choosing it, and the next version clicked in the
   // timeline replaces it.

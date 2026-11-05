@@ -185,8 +185,7 @@
     return point.by;
   };
 
-  // Periods and events are newest first. The newest session starts open.
-  // The same walk, stopping at the event that holds the newest version.
+  // The event holding the newest version. Periods and events are newest first.
   const newestEventOf = (list) => {
     const first = list[0];
     if (!first) return null;

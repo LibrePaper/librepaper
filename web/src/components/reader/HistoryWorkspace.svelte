@@ -110,7 +110,7 @@
        that asks the timeline for a new version to put there. -->
   {#if source.newer}
     <div class="history-compare-with">
-      <span id="history-compare-with-label" class="panel-muted">{m.historyworkspace_compare_with()}</span>
+      <span id="history-compare-with-label" class="panel-meta panel-muted">{m.historyworkspace_compare_with()}</span>
       <div class="history-compare-group" role="group" aria-labelledby="history-compare-with-label">
         {#each COMPARE_WITH as option (option.basis)}
           <button type="button" class="btn btn-sm" class:lp-control-tonal-brand={source.compareWith === option.basis}
