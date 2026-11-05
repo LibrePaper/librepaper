@@ -19,6 +19,8 @@
   "agent_tab_tasks": "任务",
   "agent_tab_tokens": "令牌",
   "agent_tasks_intro": "复制一项任务，然后粘贴到你的智能体中。",
+  "agent_tasks_no_match": "没有任务匹配“{query}”。",
+  "agent_tasks_search_placeholder": "搜索任务",
   "agent_task_copy_label": "复制{task}",
   "agent_task_address_comments_label": "处理批注",
   "agent_task_fix_diagnostics_label": "修复诊断",

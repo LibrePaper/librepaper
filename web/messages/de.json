@@ -19,6 +19,8 @@
   "agent_tab_tasks": "Aufgaben",
   "agent_tab_tokens": "Token",
   "agent_tasks_intro": "Kopieren Sie eine Aufgabe und fügen Sie sie in Ihren Agenten ein.",
+  "agent_tasks_no_match": "Keine Aufgabe passt zu „{query}“.",
+  "agent_tasks_search_placeholder": "Aufgaben suchen",
   "agent_task_copy_label": "{task} kopieren",
   "agent_task_address_comments_label": "Auf Kommentare eingehen",
   "agent_task_fix_diagnostics_label": "Diagnosen beheben",

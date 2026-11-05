@@ -19,6 +19,8 @@
   "agent_tab_tasks": "Tâches",
   "agent_tab_tokens": "Jetons",
   "agent_tasks_intro": "Copiez une tâche et collez-la dans votre agent.",
+  "agent_tasks_no_match": "Aucune tâche ne correspond à « {query} ».",
+  "agent_tasks_search_placeholder": "Rechercher des tâches",
   "agent_task_copy_label": "Copier {task}",
   "agent_task_address_comments_label": "Traiter les commentaires",
   "agent_task_fix_diagnostics_label": "Corriger les diagnostics",

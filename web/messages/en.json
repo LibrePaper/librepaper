@@ -19,6 +19,8 @@
   "agent_tab_tasks": "Tasks",
   "agent_tab_tokens": "Tokens",
   "agent_tasks_intro": "Copy a task and paste it into your agent.",
+  "agent_tasks_no_match": "No tasks match \"{query}\".",
+  "agent_tasks_search_placeholder": "Search tasks",
   "agent_task_copy_label": "Copy {task}",
   "agent_task_address_comments_label": "Address comments",
   "agent_task_fix_diagnostics_label": "Fix diagnostics",

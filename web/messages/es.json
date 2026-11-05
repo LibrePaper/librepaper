@@ -19,6 +19,8 @@
   "agent_tab_tasks": "Tareas",
   "agent_tab_tokens": "Tokens",
   "agent_tasks_intro": "Copie una tarea y péguela en su agente.",
+  "agent_tasks_no_match": "Ninguna tarea coincide con «{query}».",
+  "agent_tasks_search_placeholder": "Buscar tareas",
   "agent_task_copy_label": "Copiar {task}",
   "agent_task_address_comments_label": "Atender comentarios",
   "agent_task_fix_diagnostics_label": "Corregir diagnósticos",
