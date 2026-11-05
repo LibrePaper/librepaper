@@ -35,3 +35,21 @@ export const TASK_GROUPS = [
     ],
   },
 ];
+
+// Lowercased, with accents removed, so that "resume" finds "résumé".
+const fold = (text) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+
+// The groups that have a task matching every word of the query, each with only
+// its matching tasks, in the original order. A word matches in the label, the
+// instruction text or the group label. The input is not changed.
+export function filterTaskGroups(groups, query) {
+  const words = fold(query).split(/\s+/).filter(Boolean);
+  if (words.length === 0) return groups;
+  return groups.flatMap((group) => {
+    const tasks = group.tasks.filter((task) => {
+      const haystack = fold(`${task.label} ${task.text} ${group.label}`);
+      return words.every((word) => haystack.includes(word));
+    });
+    return tasks.length > 0 ? [{ ...group, tasks }] : [];
+  });
+}
