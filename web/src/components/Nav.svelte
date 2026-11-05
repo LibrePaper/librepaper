@@ -19,7 +19,12 @@
   // with the pane it describes.
   //
   // `signIn` drops the Sign in link for the page that link leads to.
-  let { me = {}, children = undefined, menus = undefined, tools = undefined, phoneMenu = false, hidden = false, signIn = true } = $props();
+  //
+  // `phoneShell` is the Reader's phone header: a back control and the title
+  // take the room, the tools sit at the end, and the account and the menubar
+  // give way (the account is in the More sheet, the menubar stays mounted for
+  // its dialogs and shortcuts).
+  let { me = {}, children = undefined, menus = undefined, tools = undefined, phoneMenu = false, phoneShell = false, hidden = false, signIn = true } = $props();
 </script>
 
 <!-- The way past the bar. Every page puts twenty-odd controls between the
@@ -29,7 +34,7 @@
      invisible otherwise, which is the only time anyone needs it. -->
 <a class="skip-link" href="#main">{m.nav_skip_to_content()}</a>
 
-<nav class="flex items-center justify-between gap-4" class:phone-menu={phoneMenu} class:bar-hidden={hidden}>
+<nav class="flex items-center justify-between gap-4" class:phone-menu={phoneMenu} class:phone-shell={phoneShell} class:bar-hidden={hidden}>
   <div class="nav-identity flex min-w-0 items-center gap-3">
     {#if children}
       <span class="nav-trail flex min-w-0 items-center gap-3">
@@ -109,7 +114,7 @@
      it from being reached. */
   .nav-identity { overflow: hidden; }
   .nav-trail { flex: 0 1 auto; }
-  @media (max-width: 760px) {
+  @media (max-width: 767px) {
     .nav-identity { flex: 0 1 auto; }
     .nav-actions { gap: var(--spacing); }
     .phone-menu .nav-account { display: none; }
@@ -127,7 +132,7 @@
     .nav-identity { gap: var(--spacing); flex-shrink: 1; min-width: 0; }
     .nav-trail { display: none; }
   }
-  @media (max-width: 760px) {
+  @media (max-width: 767px) {
     .nav-trail { display: none; }
     /* The same 8px between the hamburger and the two faces as between the
        two faces themselves: one row of thumb-sized controls. */
@@ -145,5 +150,18 @@
       visibility: hidden;
       pointer-events: none;
     }
+    /* The Reader's phone header: the trail (back, then the title) takes
+       everything the tools leave and truncates, and the tools keep their
+       width at the end. */
+    nav.phone-shell {
+      gap: 0;
+      padding-top: env(safe-area-inset-top);
+      padding-left: max(calc(var(--spacing) * 1), env(safe-area-inset-left));
+      padding-right: max(calc(var(--spacing) * 1), env(safe-area-inset-right));
+    }
+    .phone-shell .nav-identity { flex: 1 1 auto; min-width: 0; gap: 0; }
+    .phone-shell .nav-trail { display: flex; flex: 1 1 auto; min-width: 0; gap: 0; }
+    .phone-shell .nav-actions { flex: none; gap: 0; }
+    .phone-shell .nav-account { display: none; }
   }
 </style>
