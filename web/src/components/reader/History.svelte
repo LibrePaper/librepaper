@@ -1025,6 +1025,16 @@
     padding-left: calc(var(--hx-shift, 0px) + 20px + var(--hx-chev) + var(--hx-gap));
   }
   .hx-version-main { min-height: 2.125rem; padding-left: calc(var(--hx-shift, 0px) + 44px); }
+  /* The Latest row sits above the periods and reads as one of their headings:
+     its text lines up with theirs, where the chevron would end. */
+  .hx-current { margin-top: 8px; }
+  .hx-current ~ .hx-top { margin-top: 18px; }
+  .hx-current .hx-single {
+    min-height: 2rem;
+    padding-left: calc(var(--hx-chev) + 4px);
+    font-size: var(--panel-font-size);
+    font-weight: 600;
+  }
   .hx-session:hover,
   .hx-single:hover:not(.timeline-here),
   .hx-version-main:hover:not(.timeline-here) { background: var(--color-row-hover); }
