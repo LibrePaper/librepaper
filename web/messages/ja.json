@@ -19,6 +19,8 @@
   "agent_tab_tasks": "タスク",
   "agent_tab_tokens": "トークン",
   "agent_tasks_intro": "タスクをコピーして、エージェントに貼り付けてください。",
+  "agent_tasks_no_match": "「{query}」に一致するタスクはありません。",
+  "agent_tasks_search_placeholder": "タスクを検索",
   "agent_task_copy_label": "{task}をコピー",
   "agent_task_address_comments_label": "コメントに対応",
   "agent_task_fix_diagnostics_label": "診断を修正",

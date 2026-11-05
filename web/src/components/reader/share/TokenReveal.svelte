@@ -33,7 +33,7 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
     "",
     "The project is on a LibrePaper server and the token names it, so you need no local folder. The token is a credential: do not repeat it to me or write it into any file in your working directory.",
     "",
-    "Connect first, then tell me what you reached and ask what I want done. If your sandbox blocks network or file access, tell me exactly what to allow.",
+    "Connect first, then tell me what you reached and ask what I want done. If your sandbox blocks network or file access, tell me exactly what to allow. Do not open or control a browser unless I explicitly ask you to.",
     "",
     `Token: ${token}`,
   ].join("\n"));

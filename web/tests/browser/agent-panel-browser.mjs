@@ -116,6 +116,7 @@ const viewerChecks = async () => {
   check(window.calls.length === before, "a viewer loads no sharing state");
   check(document.querySelectorAll(".agent-task").length === 12, "a viewer sees the tasks: " + document.querySelectorAll(".agent-task").length);
   check(text().includes("Copy a task and paste it into your agent."), "the tasks intro is the same for a viewer");
+  check(document.querySelector(".agent-task-search")?.placeholder === "Search tasks", "a viewer sees the search box");
   check(panel.scrollWidth <= panel.clientWidth + 1, "a viewer's panel has no horizontal scroll");
   await press(labelled("Copy Outline"));
   check(window.copied === "Outline this LibrePaper project: list the headings and say what each section does. Do not change the project.",
@@ -195,7 +196,7 @@ window.agentPanelCheck = async () => {
   check(copiedLabel(), "a copy button shows Copied afterwards");
   check(panel.contains(button("Copy connection instructions")), "copying does not end the reveal");
   await press(button("Copy connection instructions"));
-  check(window.copied.includes("Use the LibrePaper skill") && window.copied.includes("no local folder")
+  check(window.copied.includes("Use the LibrePaper skill") && window.copied.includes("no local folder") && window.copied.includes("Do not open or control a browser unless I explicitly ask you to.")
     && window.copied.includes("Token: " + issued), "the connection instructions copy with the token: " + window.copied);
 
   await press(panel.querySelector("summary"));
@@ -277,13 +278,12 @@ window.agentPanelCheck = async () => {
   /* ------------------------------------------------------------------ tasks */
 
   await press(tabButton("Tasks"));
-  check([...document.querySelectorAll(".agent-task-group")].map((node) => node.textContent.trim()).join("|") === "Writing|Review|Document",
+  check([...document.querySelectorAll(".agent-task-group-label")].map((node) => node.textContent.trim()).join("|") === "Writing|Review|Document",
     "every group heading appears: " + text());
   const taskRows = [...document.querySelectorAll(".agent-task")];
   check(taskRows.length === 12, "twelve tasks: " + taskRows.length);
   check(taskRows.every((row) => row.querySelector(".agent-task-name").textContent.trim() && row.querySelector(".agent-task-body").textContent.trim()
     && row.querySelectorAll("a, input, button, select, textarea").length === 1), "each task has a name, its text and one copy button");
-  check(!document.querySelector(".agent-panel input, .agent-panel [type=search]"), "no search box");
   const proofread = "Proofread this LibrePaper project and suggest the corrections as tracked changes.";
   check(taskRows[0].textContent.includes(proofread), "the proofread task shows its text");
   const iconBefore = labelled("Copy Proofread").innerHTML;
@@ -291,6 +291,60 @@ window.agentPanelCheck = async () => {
   check(window.copied === proofread, "copies exactly the shown text: " + window.copied);
   check(labelled("Copy Proofread").innerHTML !== iconBefore, "the icon changes once copied");
   check(panel.scrollWidth <= panel.clientWidth + 1, "the tasks have no horizontal scroll");
+
+  /* ----------------------------------------------------- the task search */
+
+  const searchBox = () => document.querySelector(".agent-panel .agent-task-search");
+  const heading = (label) => [...document.querySelectorAll(".agent-task-toggle")]
+    .find((node) => node.querySelector(".agent-task-group-label").textContent.trim() === label);
+  const shownTasks = () => [...document.querySelectorAll(".agent-task")];
+  const statusLine = () => document.querySelector('.agent-panel [role="status"]');
+  const pressKey = async (node, name) => {
+    node.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true }));
+    await flush();
+  };
+
+  check(searchBox() && searchBox().type === "search" && searchBox().placeholder === "Search tasks", "the tasks have a search box");
+  check(document.activeElement !== searchBox(), "the search box is not focused when the panel opens");
+  check(["Writing", "Review", "Document"].every((label) => heading(label).getAttribute("aria-expanded") === "true"),
+    "every group starts expanded");
+  check(heading("Review").getAttribute("aria-controls") === "agent-tasks-review" && document.getElementById("agent-tasks-review"),
+    "a heading controls its list");
+
+  await press(heading("Review"));
+  check(heading("Review").getAttribute("aria-expanded") === "false" && !document.getElementById("agent-tasks-review"),
+    "clicking a heading folds its rows");
+  check(shownTasks().length === 6, "the other groups stay open: " + shownTasks().length);
+  await press(heading("Review"));
+  check(heading("Review").getAttribute("aria-expanded") === "true" && shownTasks().length === 12, "clicking again restores the rows");
+
+  await press(heading("Review"));
+  await type(searchBox(), "bibliography");
+  check(shownTasks().length === 1 && shownTasks()[0].textContent.includes("Check citations"),
+    "a folded group's task shows while searching: " + text());
+  check(document.querySelectorAll(".agent-task-toggle").length === 1, "only the matching group is shown");
+  check(heading("Review").getAttribute("aria-expanded") === "true" && heading("Review").disabled,
+    "the matching group opens and its heading cannot be folded");
+
+  await type(searchBox(), "");
+  check(shownTasks().length === 6 && heading("Review").getAttribute("aria-expanded") === "false",
+    "clearing the search restores the fold: " + shownTasks().length);
+  await press(heading("Review"));
+  check(shownTasks().length === 12, "the group is open again after the fold is undone");
+
+  await type(searchBox(), "  zqxw ");
+  check(statusLine() && statusLine().textContent.trim() === 'No tasks match "zqxw".',
+    "a search with no match says so: " + (statusLine() && statusLine().textContent));
+  check(shownTasks().length === 0, "no task matches zqxw");
+
+  await type(searchBox(), "outline");
+  check(shownTasks().length === 1, "only the matching row is shown: " + shownTasks().length);
+  await press(labelled("Copy Outline"));
+  check(window.copied === "Outline this LibrePaper project: list the headings and say what each section does. Do not change the project.",
+    "copying a search result copies exactly its text: " + window.copied);
+
+  await pressKey(searchBox(), "Escape");
+  check(searchBox().value === "" && shownTasks().length === 12, "Escape in the search box clears it");
 
   return viewerChecks();
 };

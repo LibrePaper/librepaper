@@ -14,7 +14,7 @@
   import TokenReveal from "./share/TokenReveal.svelte";
   import { allows, budgetOf } from "./share/shared.js";
   import { createSharing } from "../../lib/sharing.svelte.js";
-  import { TASK_GROUPS } from "../../lib/agent-tasks.js";
+  import { TASK_GROUPS, filterTaskGroups } from "../../lib/agent-tasks.js";
   import { m } from "../../lib/paraglide/messages.js";
 
   let { open = false, slug, canShare = false } = $props();
@@ -24,6 +24,27 @@
   const TABS = [{ id: "tokens", label: m.agent_tab_tokens() }, { id: "tasks", label: m.agent_tab_tasks() }];
   let tab = $state("tokens");
   const current = $derived(canShare ? tab : "tasks");
+
+  // The search box filters the tasks. Folds are the ids of closed groups; every
+  // group starts open, and the folds are kept only while the panel is mounted.
+  let taskQuery = $state("");
+  let folded = $state([]);
+  const shownGroups = $derived(filterTaskGroups(TASK_GROUPS, taskQuery));
+  const searching = $derived(taskQuery.trim() !== "");
+  const isOpen = (group) => searching || !folded.includes(group.id);
+
+  function toggleGroup(id) {
+    folded = folded.includes(id) ? folded.filter((item) => item !== id) : [...folded, id];
+  }
+
+  // Escape clears a non-empty search and stops there, so it does not also close
+  // the panel.
+  function onsearchkeydown(event) {
+    if (event.key === "Escape" && taskQuery !== "") {
+      taskQuery = "";
+      event.stopPropagation();
+    }
+  }
 
   let root = $state(null);
   // Whether the create form is open. It stands in for the toolbar.
@@ -144,22 +165,38 @@
 
 {#snippet tasksPane()}
   <p class="panel-muted">{m.agent_tasks_intro()}</p>
-  {#each TASK_GROUPS as group (group.id)}
-    <h3 class="agent-task-group">{group.label}</h3>
-    <ul class="agent-task-list" aria-label={group.label}>
-      {#each group.tasks as task (task.id)}
-        {@const copyLabel = m.agent_task_copy_label({ task: task.label })}
-        <li class="agent-task">
-          <div class="agent-task-text">
-            <span class="agent-task-name">{task.label}</span>
-            <span class="agent-task-body">{task.text}</span>
-          </div>
-          <IconButton icon={sharing.copied === task.text ? "check" : "copy"} label={copyLabel} title={copyLabel} tone="plain" size="btn-icon-sm"
-                      onclick={() => sharing.copy(task.text)} />
-        </li>
-      {/each}
-    </ul>
+  <input class="input agent-task-search" type="search" placeholder={m.agent_tasks_search_placeholder()}
+         aria-label={m.agent_tasks_search_placeholder()} bind:value={taskQuery} onkeydown={onsearchkeydown} />
+  {#each shownGroups as group (group.id)}
+    {@const expanded = isOpen(group)}
+    {@const listId = `agent-tasks-${group.id}`}
+    <h3 class="agent-task-group">
+      <button type="button" class="agent-task-toggle" aria-expanded={expanded ? "true" : "false"} aria-controls={listId}
+              disabled={searching} onclick={() => toggleGroup(group.id)}>
+        <Icon name={expanded ? "chevron-down" : "chevron-right"} size={14} />
+        <span class="agent-task-group-label">{group.label}</span>
+        <span class="agent-task-count">{group.tasks.length}</span>
+      </button>
+    </h3>
+    {#if expanded}
+      <ul class="agent-task-list" id={listId} aria-label={group.label}>
+        {#each group.tasks as task (task.id)}
+          {@const copyLabel = m.agent_task_copy_label({ task: task.label })}
+          <li class="agent-task">
+            <div class="agent-task-text">
+              <span class="agent-task-name">{task.label}</span>
+              <span class="agent-task-body">{task.text}</span>
+            </div>
+            <IconButton icon={sharing.copied === task.text ? "check" : "copy"} label={copyLabel} title={copyLabel} tone="plain" size="btn-icon-sm"
+                        onclick={() => sharing.copy(task.text)} />
+          </li>
+        {/each}
+      </ul>
+    {/if}
   {/each}
+  {#if searching && shownGroups.length === 0}
+    <p class="panel-muted" role="status">{m.agent_tasks_no_match({ query: taskQuery.trim() })}</p>
+  {/if}
   {@render messages()}
 {/snippet}
 
@@ -197,7 +234,13 @@
   .share-copy-fallback { border: 0; background: transparent; resize: none; color: var(--color-text-muted); font-size: var(--panel-meta-size); }
   /* The tasks are a list of two-line rows: the name, then the instruction in
      muted type, with one copy button at the right. Only the button is live. */
+  .agent-task-search { width: 100%; }
   .agent-task-group { margin: calc(var(--spacing) * 1) 0 0; font-size: var(--panel-meta-size); font-weight: 600; color: var(--panel-muted); }
+  .agent-task-toggle { display: flex; align-items: center; gap: calc(var(--spacing) * 1); width: 100%; padding: .2rem .25rem; margin: 0; border: 0; border-radius: .25rem; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+  .agent-task-toggle:hover:not(:disabled) { background: var(--color-row-hover); }
+  .agent-task-toggle:disabled { cursor: default; }
+  .agent-task-toggle:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
+  .agent-task-count { margin-left: auto; font-weight: 400; }
   .agent-task-list { margin: 0; padding: 0; list-style: none; }
   .agent-task { display: flex; align-items: center; gap: calc(var(--spacing) * 2); padding-block: calc(var(--spacing) * 1.5); border-top: 1px solid var(--color-divider); }
   .agent-task:first-child { border-top: 0; }

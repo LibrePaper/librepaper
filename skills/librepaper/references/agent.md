@@ -4,7 +4,7 @@ An **agent token** gives one agent access to one project on one server, at the r
 
 ## Start here if the user pasted a token
 
-The project lives on the LibrePaper server, and the token names the server and the project. You do not need a local folder, a clone or a project path, so never ask for one. Do this now, before you reply:
+The project lives on the LibrePaper server, and the token names the server and the project. You do not need a local folder, a clone or a project path, so never ask for one. Work through the helper or the MCP tools. Do not open or control a browser unless the user explicitly asks you to. Do this now, before you reply:
 
 1. If `mcp__librepaper__*` tools are available, use them and go to Step 2.
 2. Otherwise save the token and set `H` to the helper as Step 1b shows.
