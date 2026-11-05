@@ -161,6 +161,7 @@ window.agentPanelCheck = async () => {
   check(window.copied.includes("npx skills add LibrePaper/librepaper --skill librepaper --global")
     && window.copied.includes("https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper")
     && !window.copied.includes("lpt_"), "its copy button copies the install instructions, with the npx line and the tree URL, and no token: " + window.copied);
+  check(window.copied.includes("temporary directory") && window.copied.includes("not installed"), "the install instructions fall back to a temporary copy for the session: " + window.copied);
   check(copiedLabel(), "the install button shows Copied afterwards");
   const newButton = document.querySelector("[data-share-new]");
   check(newButton && newButton.textContent.trim() === "New token" && newButton.classList.contains("lp-control-tonal-brand"),

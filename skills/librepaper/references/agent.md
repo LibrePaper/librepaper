@@ -52,6 +52,7 @@ python3 "$H" write document_comment '{"action":"create","view_id":"...","range_i
 
 - `write` adds the `operation` object: a fresh id, and the epoch from the last `document_read` this helper saw.
 - The token file defaults to `~/.cache/librepaper-agent-token`. `LIBREPAPER_AGENT_TOKEN` in the environment wins over it.
+- If the helper prints that this skill is older than the server needs, pass that message and its update command on to the user. A skill running from a temporary folder is not installed, so the user needs `npx skills add LibrePaper/librepaper --skill librepaper --global` instead.
 
 ### If a sandbox blocks you
 

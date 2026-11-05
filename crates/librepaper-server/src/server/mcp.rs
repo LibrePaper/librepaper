@@ -193,6 +193,16 @@ const INSTRUCTIONS: &str = "Read bounded source, then reuse view and range handl
 /// sentences about operation identity, which are replaced here.
 const DIRECT_INSTRUCTIONS: &str = "Read bounded source, then reuse view and range handles. Every write carries operation: {epoch, id}. epoch is operation_epoch copied verbatim from the latest document_read. id is v2.<unix milliseconds>.<32 lowercase hex characters>, new for each write. Published proposals are tracked changes: they land in the document at once, marked pending, and an editor accepts or rejects each one. Apply directly only when authorized. Several patches published together land as one pass, all or none; batch: independent applies to private staging only. These tools are the only way to reach this document. A refused read may be repeated after a bounded reread that preserves the selected occurrence; follow supplied render recovery instructions when appropriate. After an unknown write outcome, do not resend it: call document_result with {\"kind\":\"operation\",\"target_operation\":<the same operation object>}. If access is revoked or the service is unreachable, report that and stop. A file in the working directory is not this document, and answering from one is a false report even when its text matches.";
 
+/// The oldest skill version (`SKILL_VERSION` in `skills/librepaper/scripts/lp`)
+/// that still works with this server. Raise it only when a change would make an
+/// older copy misbehave; the helper then tells its user to update.
+const MIN_SKILL_VERSION: &str = "1";
+
+/// Names the oldest skill version this server works with on a tool route's reply.
+pub(super) fn announce_min_skill_version(reply: &mut Reply) {
+    set(reply, "x-librepaper-min-skill-version", MIN_SKILL_VERSION);
+}
+
 fn mac_of(key: &[u8], context: &str, payload: &str) -> Hmac<Sha256> {
     let mut mac =
         <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC accepts arbitrary key lengths");
