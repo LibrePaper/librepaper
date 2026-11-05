@@ -171,7 +171,7 @@
               {/each}
             </ul>
           {/if}
-          <button type="button" class="btn btn-sm agent-step-button {tokens.length === 0 ? 'lp-control-brand' : 'lp-control-tonal-brand'}" data-share-new disabled={sharing.busy} onclick={startCreate}>
+          <button type="button" class="btn btn-sm lp-control-tonal-brand agent-step-button" data-share-new disabled={sharing.busy} onclick={startCreate}>
             <Icon name="plus" size={14} />{m.agent_new_token()}
           </button>
           {#if tokens.length > 0}<p class="panel-meta">{m.agent_token_warning()}</p>{/if}
