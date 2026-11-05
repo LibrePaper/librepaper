@@ -719,7 +719,9 @@ try {
 
   // The bar slides away while a pane scrolls down and returns on the way up,
   // at the top, and at desktop widths. The tasks pane is the one that really
-  // scrolls here; the open source file is one line long.
+  // scrolls here; the open source file is one line long. Spare height keeps
+  // these positions clear of the bottom, where the bar always shows.
+  await b.evaluate('document.querySelector(".agent-solo").style.paddingBottom = "800px"');
   const hidden = 'document.querySelector("body > nav").classList.contains("bar-hidden")';
   const scrollTo = async (top) => { await b.evaluate(`document.querySelector(".agent-solo").scrollTop = ${top}`); await flush(); };
   await scrollTo(0); await scrollTo(200); await scrollTo(400);
