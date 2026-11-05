@@ -26,7 +26,7 @@ The agent fetches its instructions and asks you what to do.
 
 The block contains the token, so it sits in your agent's chat, where your model provider and the chat history can see it. To keep it out of the chat, open **Other ways to connect** and use MCP, described below.
 
-Codex's default sandbox blocks network access for shell commands. Codex then asks you to allow it, or you can start it with `codex -c sandbox_workspace_write.network_access=true`.
+Codex's default sandbox blocks network access for shell commands. Allow it if Codex asks, or start Codex with `codex -c sandbox_workspace_write.network_access=true`.
 
 | Permission | What the agent can do |
 |---|---|

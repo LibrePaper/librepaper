@@ -12,7 +12,7 @@ An **agent token** gives one agent access to one project on one server, at the r
 
 ## Step 1: Pick the connection
 
-A user may paste a block with a token into the chat. That is normal. It means use the HTTP helper now, with no restart.
+A user may paste a block with a token into the chat. That is normal. It needs no restart. Follow the list below.
 
 Check whether `mcp__librepaper__document_read` (or other `mcp__librepaper__*` tools) is available.
 
@@ -32,6 +32,8 @@ If you are reading this file from its raw URL and have no skill directory, downl
 mkdir -p ~/.cache/librepaper && curl -fsSL -o ~/.cache/librepaper/lp https://raw.githubusercontent.com/LibrePaper/librepaper/main/skills/librepaper/scripts/lp
 H=~/.cache/librepaper/lp
 ```
+
+If `~/.cache/librepaper` cannot be written, as in some read-only sandboxes, put the helper in a private directory under the temp directory instead: `D="${TMPDIR:-/tmp}/librepaper-helper" && mkdir -m 700 "$D"`, then download it to `"$D/lp"` and set `H` to that path.
 
 The other references are in the same place: `https://raw.githubusercontent.com/LibrePaper/librepaper/main/skills/librepaper/references/`. Fetch them as needed, for example [agent-tools.md](agent-tools.md).
 
@@ -56,7 +58,7 @@ python3 "$H" write document_comment '{"action":"create","view_id":"...","range_i
 ### If a sandbox blocks you
 
 - The token file defaults to `~/.cache/librepaper-agent-token`, which some sandboxes make read-only (Codex's default workspace-write mode does). If the write fails, use a private file under the temp directory and point the helper at it: `export LIBREPAPER_AGENT_TOKEN_FILE="${TMPDIR:-/tmp}/librepaper-agent-token"`. Shell state may not persist between commands, so set it on each command. Never store the token inside the project folder.
-- A request that fails with a network error before it reaches the server is most likely the sandbox. A read can be retried, and so can a write that never left the machine. A write with an unknown outcome is still not resent; follow Step 4.
+- A request that fails with a network error is most likely the sandbox. A read can be retried once access is allowed. Treat a failed write as having an unknown outcome, even if you suspect the sandbox: do not resend it, and ask `document_result` as in Step 4.
 - Tell the user exactly what to allow. For Codex: approve running the command outside the sandbox when asked, or start Codex with `codex -c sandbox_workspace_write.network_access=true`. The alternative is the MCP route in [agent-setup.md](agent-setup.md), which needs a new session.
 - For Claude Code: approval prompts are normal for shell calls. The user can allow the helper command for the session.
 
