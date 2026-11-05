@@ -46,4 +46,10 @@
   .share-actions { grid-area: actions; display: flex; flex-wrap: nowrap; align-items: center; gap: calc(var(--spacing) * .5); }
   .share-revoke { display: contents; }
   .share-revoke :global(button:hover:not(:disabled)), .share-revoke :global(button:focus-visible) { color: var(--color-error-text); }
+  /* Phones: each row is a finger's height, and the copy and revoke buttons are
+     finger-sized without making the icons larger. */
+  @media (max-width: 767px) {
+    .share-row { min-height: 2.75rem; }
+    .share-actions :global(.icon-control) { min-width: 2.75rem; min-height: 2.75rem; }
+  }
 </style>

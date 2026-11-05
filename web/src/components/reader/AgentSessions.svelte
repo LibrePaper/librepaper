@@ -116,4 +116,10 @@
   .session-select { width:100%; border:0; background:transparent; color:inherit; font:inherit; padding:0; cursor:pointer;
     min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .session-actions { display:inline-flex; align-items:center; gap:calc(var(--spacing) * .5); }
+  /* Phones: the session picker and its new and delete buttons are finger-sized,
+     and the picker keeps 16px so iOS does not zoom. */
+  @media (max-width: 767px) {
+    .session-select { min-height: 2.75rem; font-size: 1rem; }
+    .session-actions :global(.icon-control) { min-width: 2.75rem; min-height: 2.75rem; }
+  }
 </style>

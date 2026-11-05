@@ -426,4 +426,17 @@
   .changes-empty-title { margin: 0; font-weight: 500; font-size: var(--panel-font-size); }
   .changes-empty-note { margin: .2rem 0 0; color: var(--panel-muted); font-size: var(--panel-meta-size); }
   .changes-hint { flex: 0 0 auto; padding: .5rem var(--panel-padding); border-top: 1px solid var(--color-divider); color: var(--panel-muted); font-size: var(--panel-meta-size); text-align: center; }
+  /* Phones: every control in a change is a finger's height, and an insertion
+     is underlined as well as signed and tinted, so it does not rely on colour. */
+  @media (max-width: 767px) {
+    .changes-panel :global(.tracking-toggle),
+    .scope-trigger,
+    .text-action,
+    .bar-action,
+    .row-action,
+    .row-more { min-height: 2.75rem; }
+    .row-more { display: flex; align-items: center; }
+    .row-main { min-height: 2.75rem; }
+    ins.change-text { text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 55%, transparent); }
+  }
 </style>

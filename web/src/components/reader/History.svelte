@@ -1137,4 +1137,18 @@
     gap: var(--spacing);
     padding: var(--spacing) calc(var(--spacing) * 2);
   }
+  /* Phones have no hover, so the bookmark, rename and remove controls stay on
+     their rows, and every row and disclosure is a finger's height. */
+  @media (max-width: 767px) {
+    .hx-tools { display: flex; }
+    .hx-tools :global(.icon-control) { min-width: 2.75rem; min-height: 2.75rem; }
+    .hx-heading,
+    .hx-session,
+    .hx-single,
+    .hx-version-main,
+    .hx-main { min-height: 2.75rem; }
+    .hx-more { display: flex; align-items: center; min-height: 2.75rem; }
+    .hx-list .input,
+    .hx-popover .input { font-size: 1rem; }
+  }
 </style>
