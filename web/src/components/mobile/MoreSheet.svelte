@@ -162,7 +162,7 @@
 
 <Dialog {open} {onOpenChange}>
   <Portal>
-    <Dialog.Backdrop class="mobile-sheet-backdrop" />
+    <Dialog.Backdrop class="mobile-sheet-backdrop bg-black/35" />
     <Dialog.Positioner class="mobile-sheet-positioner">
       <Dialog.Content class="mobile-sheet">
         <div class="mobile-sheet-body" use:swipe>
@@ -222,7 +222,6 @@
     position: fixed;
     inset: 0;
     z-index: 50;
-    background: rgb(0 0 0 / 0.35);
   }
 
   :global(.mobile-sheet-positioner) {
@@ -237,13 +236,12 @@
     display: flex;
     flex-direction: column;
     width: 100%;
-    max-height: min(85dvh, var(--librepaper-visible-height, 85dvh));
+    max-height: 85dvh;
     padding: 0;
     padding-bottom: env(safe-area-inset-bottom);
-    border: 0;
+    border-top: 1px solid var(--color-pane-edge);
     border-radius: 16px 16px 0 0;
     background: var(--color-raised);
-    box-shadow: 0 -2px 12px rgb(0 0 0 / 0.12);
   }
 
   @media (prefers-reduced-motion: no-preference) {

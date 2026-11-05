@@ -1020,7 +1020,7 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   :root:has(main.reader.adapted) .toast-group { bottom: calc(4rem + env(safe-area-inset-bottom)); }
   /* Rows are thumb targets here, and nothing a row offers waits for a hover. */
   main.reader.adapted .explorer-row { min-height: 2.75rem; }
-  /* The project list does the same: it rises into the space the bar leaves. */
+  /* The project list's bar steps aside on scroll, and the list rises into the space it leaves. */
   main.workspace { transition: margin-top 200ms ease, height 200ms ease; }
   main.workspace.bar-hidden { margin-top: calc(-1 * var(--librepaper-bar)); height: 100dvh; }
   body > nav {

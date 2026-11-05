@@ -45,7 +45,6 @@
     type="button"
     data-destination="more"
     class:on={moreOpen}
-    aria-current={active === "more" ? "page" : undefined}
     aria-haspopup="dialog"
     aria-expanded={moreOpen}
     onclick={onmore}

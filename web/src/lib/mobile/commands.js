@@ -74,7 +74,6 @@ export function viewCommands(c) {
     { id: "linked", label: m.readerd_keep_in_step(), checked: c.linked },
     { id: "visual-markup", label: m.readerd_visual_markup(), checked: c.visual },
   ];
-  if (c.visualAvailable) markup.push({ id: "visual-mode", label: m.common_visual_mode(), checked: c.visual });
   if (c.runCodeOffered) markup.push({ id: "run-code", label: m.readerd_run_code(), checked: c.localExecution });
 
   const size = [

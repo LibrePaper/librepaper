@@ -2674,18 +2674,19 @@
   /* --------------------------------------------------------- the phone shell */
 
   // How many layers are open over the document, for the browser's Back
-  // button: a panel, a command list, the settings or the More sheet is one;
-  // the document being compared inside a version is a second.
+  // button: a panel, a command list or the settings is one; the document being
+  // compared inside a version is a second; the More sheet is one more on top
+  // of whichever of those is open. Back closes only the top layer.
   const overlayView = $derived(compact && (Boolean(mobileCommand) || settingsOpen || activeMobileView === "sidebar"
     || (comparing !== "" && activeMobileView === "source")));
   const overlayDepth = $derived(!compact ? 0
-    : comparing !== "" && activeMobileView === "source" ? 2
-    : moreOpen || overlayView ? 1 : 0);
+    : (comparing !== "" && activeMobileView === "source" ? 2 : overlayView ? 1 : 0) + (moreOpen ? 1 : 0));
   let overlays = null;
   $effect(() => {
     overlays = createOverlayHistory({
       onpop: (depth) => {
-        if (depth >= 1 && comparing) showMobileView("sidebar");
+        if (moreOpen) moreOpen = false;
+        else if (depth >= 1 && comparing) showMobileView("sidebar");
         else closeOverlays();
       },
     });
@@ -2773,22 +2774,19 @@
   const mobileCommandGroups = $derived(
     mobileCommand === "file" ? fileCommands({
       mayEdit, demo: DEMO, demoHint: DEMO_HINT, signedIn: Boolean(me?.id),
-      offersGit: tabs.some((tab) => tab.id === "git"),
-      offersHistory: tabs.some((tab) => tab.id === "history"),
-      offersShare: DEMO || canSeeSharing || canPublish,
       sourceFormatLatex: sourceFormat === "latex", compilesHere, desktop: hasDesktop,
       exportable, canExportComments: canExportComments && !DEMO, hasOpenFile: Boolean(toolbarPath),
     })
     : mobileCommand === "edit" ? editCommands(editGroups, can)
     : mobileCommand === "view" ? viewCommands({
-      can, selectedFormat: outputFormat, selectableFormat: outputSelectable, linked, visual, visualAvailable,
+      can, selectedFormat: outputFormat, selectableFormat: outputSelectable, linked, visual,
       runCodeOffered, localExecution,
     })
     : mobileCommand === "insert" ? insertGroups
     : [],
   );
   // The toggles stay on screen after a press, so the reader sees the tick move.
-  const STAYS_OPEN = ["linked", "visual-markup", "visual-mode", "run-code", "format-html", "format-pdf", "text-bigger", "text-smaller", "text-reset"];
+  const STAYS_OPEN = ["linked", "visual-markup", "run-code", "format-html", "format-pdf", "text-bigger", "text-smaller", "text-reset"];
   function chooseMobileCommand(id) {
     const kind = mobileCommand;
     if (kind === "insert") insertChosen = true;
@@ -2801,8 +2799,7 @@
       return;
     }
     if (kind === "view") {
-      if (id === "visual-mode") setVisual(!visual);
-      else if (id === "run-code") toggleLocalExecution();
+      if (id === "run-code") toggleLocalExecution();
       else chooseViewCommand(id);
       if (STAYS_OPEN.includes(id)) mobileCommand = "view";
     }
@@ -3327,6 +3324,8 @@
   const visualAvailable = $derived(VISUAL_FORMATS.has(editorFormat === "quarto" ? "markdown" : editorFormat));
   // The formatting row under the top bar: only while the source is open and editable in visual mode.
   const formatBarShown = $derived(visual && sourceOpen && mayEdit && visualAvailable);
+  // At compact the bar is drawn only while the keyboard is open, so its height is taken off the workspace only then.
+  const formatBarVisible = $derived(formatBarShown && (!compact || keyboardOpen));
   // Why the pane shows what it shows, when it is not simply the open file.
   const previewChip = $derived(Boolean(previewPath) && (previewReason === "locked" || (previewReason === "inside" && toolbarPath)));
   // What the card says when the open file has nothing the preview could draw.
@@ -4496,6 +4495,9 @@
           {#if !connected && !DEMO}<span class="presence-offline-dot mobile-offline-dot" aria-hidden="true"></span>{/if}
         </button>
       {/if}
+      {#if !overlayView && !tabs.some((tab) => tab.id === "collaboration") && !connected && !DEMO}
+        <span class="presence-offline" title={connectionNote} aria-label={connectionNote}><span class="presence-offline-dot" aria-hidden="true"></span>{m.common_offline()}</span>
+      {/if}
       {#if !overlayView}
         <button type="button" class="mobile-header-button mobile-more-trigger" aria-label={m.mobilenav_more()}
                 aria-haspopup="dialog" aria-expanded={moreOpen} onclick={() => (moreOpen = true)}>
@@ -4577,7 +4579,7 @@
   <div class="sr-only" role="status" aria-live="polite">{mobileTitle}</div>
 {/if}
 
-{#if formatBarShown && (!compact || keyboardOpen)}
+{#if formatBarVisible}
   <FormatToolbar active={formatActive} hidden={barHidden && !compact} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} />
 {/if}
 
@@ -4589,7 +4591,7 @@
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact} class:bar-hidden={barHidden && !compact}
-      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - var(--librepaper-format-used, 0px) - {demoBannerHeight}px - var(--librepaper-phone-chrome, 0px));{compact ? ` --librepaper-phone-chrome: calc(${phoneChrome});` : ''} --librepaper-format-used: {formatBarShown ? 'var(--librepaper-format-bar)' : '0px'}; --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
+      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - var(--librepaper-format-used, 0px) - {demoBannerHeight}px - var(--librepaper-phone-chrome, 0px));{compact ? ` --librepaper-phone-chrome: calc(${phoneChrome});` : ''} --librepaper-format-used: {formatBarVisible ? 'var(--librepaper-format-bar)' : '0px'}; --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- What this page is. The title is in the bar, where it is a span beside
        the menus rather than a heading, so the one heading a screen reader
        looks for first is here instead: said once, seen by nobody. -->
