@@ -18,7 +18,6 @@
   import AccountSettings from "./AccountSettings.svelte";
   import RemoteSettings from "./RemoteSettings.svelte";
   import BackupsSettings from "./BackupsSettings.svelte";
-  import AgentSettings from "./AgentSettings.svelte";
   import ToolsSettings from "./ToolsSettings.svelte";
 
   let {
@@ -135,8 +134,6 @@
             <DefaultPreviewSetting format="quarto" {userId} onpreferences={onbuildpreferences} />
             <RendererSettings format="quarto" {userId} onpreferences={onbuildpreferences} />
           </section>
-        {:else if shown.id === "agents"}
-          <AgentSettings {view} />
         {:else if shown.id === "backups"}
           <BackupsSettings {account} />
         {:else if shown.id === "account"}

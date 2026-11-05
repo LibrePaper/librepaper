@@ -18,8 +18,8 @@
   import { createWebGit } from "../lib/reader/web-git.svelte.js";
   import { createWebConnection } from "../lib/reader/web-connection.svelte.js";
   import { diagnosticContext } from "../lib/assistant-review.js";
-  import { passageContext, sourcePassage } from "../lib/assistant.js";
-  import { candidateTree, capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
+  import { passageContext } from "../lib/source-passage.js";
+  import { capturePreviewTree } from "../lib/preview-tree.js";
   import { orphanState } from "../lib/orphan.js";
   import * as latex from "../lib/latex.js";
   import { parse as parseSynctex, lineAt as synctexLineAt } from "../lib/synctex.js";
@@ -52,7 +52,6 @@
   import {
     LINKED,
     PDF_INVERT,
-    linkFor,
     markViewed,
     read,
     takeLinkKey,
@@ -119,7 +118,7 @@
   import Files from "./reader/Files.svelte";
   import Outline from "./reader/Outline.svelte";
   import WordCount from "./reader/WordCount.svelte";
-  import AgentSessions from "./reader/AgentSessions.svelte";
+  import Agent from "./reader/Agent.svelte";
   import Collaboration from "./reader/Collaboration.svelte";
   import Changes from "./reader/Changes.svelte";
   import Share from "./reader/Share.svelte";
@@ -566,8 +565,6 @@
   let highlightColor = $state(HIGHLIGHT_COLORS[0]);
   let palette = $state(false);
   let pending = $state(null);
-  let assistantRequest = $state(null);
-  let selectionRevision = Promise.resolve("");
   let bar = $state({ shown: false, left: 0, top: 0, center: 0 });
 
   // Mobile top bar slide behaviour: on phones (compact ≤760px), hide the bar
@@ -594,84 +591,6 @@
     };
     pending.render_digest = mayEdit ? "" : renderedProjectDigest;
     placeBar(rect);
-  }
-
-  // The agent runs only in the desktop app. A browser says so, with a way to get it.
-  function agentNeedsDesktop() {
-    if (hasDesktop) return false;
-    say(m.reader_agent_needs_desktop(), {
-      kind: "note",
-      id: "reader:agent-desktop-only",
-      action: { label: m.common_get_desktop_app(), onClick: () => window.open(localQuarto.INSTALL_URL, "_blank", "noopener") },
-    });
-    return true;
-  }
-
-  function askDiagnostic(item) {
-    if (agentNeedsDesktop()) return;
-    assistantRequest = { id: crypto.randomUUID(), diagnostic: { ...item }, revision: item.revision || "",
-      task: { kind: "fix", scope: item.file || item.path ? "file" : "document" } };
-    showPanel("agent");
-    if (width <= 760) showMobileView("sidebar");
-  }
-
-  function askCommentAssistant(comment) {
-    if (agentNeedsDesktop()) return;
-    if (!comment?.id) return;
-    const target = comment.original_anchor?.kind === "source_text"
-      ? comment.original_anchor.target : null;
-    const source = target ? {
-      path: comment.sourcePath || session?.paths?.get(target.file_id) || "",
-      exact: target.exact,
-      prefix: target.prefix || "",
-      suffix: target.suffix || "",
-      position: comment.sourceStart ?? target.start_utf16,
-    } : null;
-    // Keep the server-owned comment token separate from source and render
-    // identities. In particular, source_sequence is not a tree digest.
-    const revision = "";
-    const renderDigest = comment.render_digest || "";
-    assistantRequest = {
-      id: crypto.randomUUID(),
-      comment: {
-        id: String(comment.id), body: comment.body || "", exact: shownSelector(comment).exact,
-        revision,
-        render_digest: renderDigest,
-        source, replies: (comment.replies || []).map((reply) => ({ body: reply.body, creator: reply.creator })),
-      },
-      selection: source,
-      revision,
-      comment_id: String(comment.id),
-      render_digest: renderDigest,
-    };
-    showPanel("agent");
-    if (width <= 760) showMobileView("sidebar");
-  }
-
-  // Candidate previews are rendered from the runner's immutable file snapshot
-  // in this browser. Nothing is written to the shared document; only the
-  // diagnostics and output kind go back over the private assistant channel.
-  async function previewAssistant(request) {
-    // Capture before the first await. Asset fetching and compilation may take
-    // seconds, and a candidate must be checked against the exact base tree
-    // that the runner used when it proposed its revision.
-    const tree = capturePreviewTree(request?.candidate ? candidateTree(request.candidate) : treeNow());
-    if (Object.keys(tree.digests || {}).length) {
-      const held = await figures.gather(SLUG, tree.digests, authHeaders(KEY));
-      tree.assets = held.assets;
-      tree.urls = held.urls;
-    }
-    return previewCandidate({ request, tree, render: renderers.render,
-      title: headingOf, digest: renderers.snapshotDigest });
-  }
-
-  // A task's tracked changes are reviewed in the Changes panel, narrowed to
-  // the ids the task returned. Separate runs of one task all stay on show.
-  async function reviewAssistantResults({ changes: ids = [] }) {
-    const made = changeRows.find((row) => ids.includes(row.id));
-    changesIds = ids.filter((id) => changeRows.some((row) => row.id === id));
-    await showPanel("changes");
-    if (made) await revealChange(made);
   }
 
   // A click on a mark in the source shows the card without taking the
@@ -977,9 +896,6 @@
   // arrives here the same way.
   let changeRows = $state([]);
   let selectedChange = $state(null);
-  // The change ids the Changes panel opens filtered to, when a task sent the
-  // reader there.
-  let changesIds = $state([]);
 
   // The 1-based line a character offset falls on. Counting newlines with
   // indexOf avoids building an array of lines for every change.
@@ -2325,19 +2241,9 @@
   // Read wherever the editor reports a caret, a text change or a file change:
   // those are the ways a selection moves.
   let sourceSelected = $state(false);
-  let sourcePassageNow = $state(null);
   function noteSourceSelection() {
-    const range = editor?.selection?.();
-    sourceSelected = Boolean(range);
-    sourcePassageNow = range ? sourcePassage(editor.text(), range.from, range.to, session?.paths?.get(range.file) || "") : null;
+    sourceSelected = Boolean(editor?.selection?.());
   }
-  // Tasks on a passage take it from the source, where selecting is precise and
-  // the text is what the server finds. The rendered selection serves only
-  // readers without the source.
-  const agentSelection = $derived.by(() => {
-    if (sourcePassageNow) return { source: sourcePassageNow, exact: sourcePassageNow.exact };
-    return !mayEdit && pending ? pending : null;
-  });
   function outlineCaretChanged() {
     outlineTextChanged();
     followCaret();
@@ -2532,9 +2438,6 @@
     tabsFor({ role: doc.role, mayEdit, editing, canSeeSharing: DEMO || canSeeSharing, canPublish, desktop: hasDesktop })
       .map((tab) => (DEMO && DEMO_OFF.includes(tab.id) ? { ...tab, disabled: true } : tab)),
   );
-  // The robot buttons hand work to the agent. The agent runs only in the
-  // desktop app, so in a browser they say so rather than disappear.
-  const agentOffered = $derived(!DEMO && tabs.some((tab) => tab.id === "agent"));
   // Where the column goes back to when what it showed is taken away: the
   // files, for every role that is offered them, which is every role that has
   // opened a project. Before the document has answered nobody is offered
@@ -4372,11 +4275,7 @@
   {/snippet}
 
   {#snippet agentPanel()}
-    <AgentSessions slug={SLUG} link={linkFor(SLUG)} canShare={doc.role === "owner"}
-      path={session?.paths?.get(openFile) || ""} selection={agentSelection}
-      revision={agentSelection?.revision || ""} request={assistantRequest}
-      {comments} changes={changeRows} {diagnostics} onreview={reviewAssistantResults} onpreview={previewAssistant}
-      onsettings={() => openSettings("agents")} userName={identity || doc.commenting_as || m.common_you()} />
+    <Agent open={panel === "agent" && shown.comments} slug={SLUG} canShare={doc.role === "owner"} />
   {/snippet}
 
   {#snippet collaborationPanel()}
@@ -4388,7 +4287,6 @@
       canComment={mayChat}
       onreveal={revealAnnotation} selected={selectedAnnotation} onresolve={resolve}
       ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply} onedit={edit}
-      onagent={agentOffered ? askCommentAssistant : undefined}
       onattach={mayEdit ? attachComment : undefined} attachable={sourceSelected}
       {composing} {needsLogin} signInHref={signInHref()}
       page={annotations.state.page}
@@ -4400,7 +4298,7 @@
 
   {#snippet changesPanel()}
     <Changes changes={changeRows} {files} {identity} {tracking} canTrack={mayEdit && editing}
-      canReview={mayEdit} selected={selectedChange} ids={changesIds}
+      canReview={mayEdit} selected={selectedChange}
       ontracking={setTracking} onaccept={acceptChange} onreject={rejectChange} onrejectmany={rejectChanges} onreveal={revealChange} />
     {@render pendingRecovery("changes")}
   {/snippet}
@@ -4423,7 +4321,6 @@
       canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
       provenance={renderState.lastLatexResult?.provenance || null}
       attempts={renderState.lastLatexResult?.attempts || []}
-      onagent={agentOffered ? askDiagnostic : undefined}
       log={renderState.lastLatexResult?.log || renderState.lastLog || ""}
       logOpen={renderState.lastLatexResult ? undefined : false} />
   {/snippet}

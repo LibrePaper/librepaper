@@ -36,7 +36,8 @@ try {
   await page.navigate(`http://127.0.0.1:${server.address().port}/`);
   await page.evaluate("window.diagnostics()");
   await until("diagnostic content", () => page.evaluate('document.body.innerText.includes("An error")'), 1000);
-  assert.equal(await page.evaluate('document.body.innerText.includes("Fix with assistant")'), false);
+  // The diagnostic has no robot button: nothing hands it to an agent.
+  assert.equal(await page.evaluate('document.body.innerHTML.includes("Fix diagnostic with agent")'), false);
   console.log("assistant-review-browser: diagnostics without AI shortcuts passed");
 } finally {
   await page?.close();

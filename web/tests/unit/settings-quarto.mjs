@@ -15,12 +15,12 @@ const renderer = await read("RendererSettings.svelte");
 const remote = await read("RemoteSettings.svelte");
 const statusPill = await read("StatusPill.svelte");
 
-// Rendering, Tools, Agents, Backups and Account are offered the
+// Rendering, Tools, Backups and Account are offered the
 // same way on the landing page and the project page, to a visitor and to a
 // signed-in browser alike.
 for (const signedIn of [true, false]) {
   const ids = offered({ signedIn }).map((item) => item.id);
-  for (const id of ["rendering", "tools", "agents", "backups", "account"]) {
+  for (const id of ["rendering", "tools", "backups", "account"]) {
     assert.ok(ids.includes(id), `signedIn=${signedIn} offers ${id}`);
   }
 }

@@ -41,8 +41,7 @@
   }
 
   const jobs = $derived(view.list(view.state?.jobs));
-  const sessions = $derived(view.list(view.state?.sessions));
-  const running = $derived(jobs.length + sessions.length > 0);
+  const running = $derived(jobs.length > 0);
 
   // Elapsed time when the desktop app says when the work started.
   function elapsed(item) {
@@ -88,15 +87,6 @@
               <td>{elapsed(job)}</td>
               <td>{job.status || m.toolssettings_running()}{job.error ? ` · ${job.error}` : ""}</td>
               <td class="desktop-action">{#if active(job.status)}<button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`job-${job.id}`, m.toolssettings_cancel_requested(), `/jobs/${view.id(job.id)}/cancel`, { method: "POST" })}>{m.common_cancel()}</button>{/if}</td>
-            </tr>
-          {/each}
-          {#each sessions as session (session.id)}
-            {@const sessionStatus = session.status || session.state || "active"}
-            <tr>
-              <th scope="row">{session.name || session.agent || session.id || m.toolssettings_agent_session()}</th>
-              <td>{elapsed(session)}</td>
-              <td>{sessionStatus}</td>
-              <td class="desktop-action">{#if active(sessionStatus)}<button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`session-${session.id}`, m.toolssettings_stop_requested(), `/agents/sessions/${view.id(session.id)}/cancel`, { method: "POST" })}>{m.common_stop()}</button>{/if}</td>
             </tr>
           {/each}
         </tbody>
