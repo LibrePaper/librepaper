@@ -57,6 +57,8 @@
   function pick(value) {
     tab = value;
     creating = false;
+    // The manual-copy text may hold the token, and each tab shows it.
+    sharing.clearCopy();
   }
 
   function startCreate() {
@@ -107,12 +109,12 @@
 {/snippet}
 
 {#snippet tokensPane()}
-  <p class="panel-meta">{m.share_tokens_intro()}</p>
   {#if reveal}
     <TokenReveal token={reveal.token} copied={sharing.copied} copyFallback={sharing.copyFallback} error={sharing.error} oncopy={sharing.copy} ondone={done} />
   {:else if sharing.loading}
     <p class="panel-muted" role="status">{m.share_loading()}</p>
   {:else if sharing.sharing}
+    <p class="panel-meta">{m.share_tokens_intro()}</p>
     {#if !creating}
       <div class="share-toolbar">
         <button type="button" class="share-new" data-share-new disabled={sharing.busy} onclick={startCreate}>
