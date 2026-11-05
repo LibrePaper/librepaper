@@ -11,7 +11,7 @@
   import * as figures from "../lib/figures.js";
   import * as history from "../lib/history.js";
   import { createHistorySource } from "../lib/reader/history-source.svelte.js";
-  import { CURRENT } from "../lib/history-endpoints.js";
+  import { CURRENT, NOTHING } from "../lib/history-endpoints.js";
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
   import ComparisonBar from "./reader/ComparisonBar.svelte";
   import { createComparison } from "../lib/reader/comparison.svelte.js";
@@ -1392,14 +1392,14 @@
     slug: SLUG,
     key: KEY,
     // Open on what the restore replaced: the version just before the
-    // restore's own row. Compared against now, that is the change the
-    // restore made, and its Restore button is the undo.
+    // restore's own row. The compare-with setting moves to Latest, since that
+    // is what is shown: against now, that is the change the restore made, and
+    // its Restore button is the undo. With no such version, it is the Latest
+    // row alone.
     onrestored: () => {
       const newest = [...timeline.state.labels].sort((a, b) => b.seq - a.seq);
       const beforeSha = newest[0]?.why === "restore" ? newest[1]?.sha || "" : "";
-      return beforeSha
-        ? historySource.compare(beforeSha, CURRENT, beforeSha)
-        : historySource.view("");
+      return historySource.setCompareWith("latest", beforeSha);
     },
     disposed: () => readerDisposed,
   });
@@ -1438,6 +1438,18 @@
     newest: async () => {
       await loadTimelineOrThrow();
       return timeline.state.labels.at(-1)?.sha ?? CURRENT;
+    },
+    // The version before this one in the whole history, reading older pages when
+    // it is not loaded yet. The saved list is not used: it skips unsaved versions.
+    previous: async (sha) => {
+      await loadTimelineOrThrow();
+      const at = () => timeline.state.labels.findIndex(point => point.sha === sha);
+      while (at() <= 0 && !timeline.state.complete && !readerDisposed) {
+        await timeline.loadMore();
+        if (timeline.state.moreProblem) throw new Error(timeline.state.moreProblem);
+      }
+      const index = at();
+      return index > 0 ? timeline.state.labels[index - 1].sha : index === 0 ? NOTHING : CURRENT;
     },
     preferredPath: () => session?.paths?.get(openFile) || "",
     currentTree: () => {
@@ -1513,8 +1525,8 @@
   }
 
   // The timeline and the source workspace share one selection. Selecting a
-  // version compares it with the current source and nothing else: the
-  // document pane always shows the document as it stands.
+  // version shows it beside the other end the compare-with setting picks. The
+  // document pane still shows the document as it stands.
   function viewPoint(sha) {
     beginComparison("history");
     const pending = historySource.view(sha);
