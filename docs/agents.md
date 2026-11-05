@@ -30,14 +30,14 @@ A token lets an agent you start yourself work on one project. The agent can run 
 
 ### Connect your agent
 
-After you create the token, LibrePaper shows two blocks of text to copy.
+After you create the token, LibrePaper opens a dialog with two steps.
 
-1. Copy the first block and paste it into Claude Code, Codex or another agent. It installs the skill: the agent copies a folder of instructions and a small script into its skills folder. You do this once on each computer. Then start a new agent session, because agents load skills when a session starts.
-2. Copy the second block and paste it into the new session. It holds the token and asks the agent to connect. You do this for each project. LibrePaper shows the token only once, so keep the screen open until you have copied it.
+1. Click **Copy install command** and paste the text into Claude Code, Codex or another agent. It installs the skill: the agent copies a folder of instructions and a small script into its skills folder. You do this once on each computer. Then start a new agent session, because agents load skills when a session starts.
+2. Click **Copy connection instructions** and paste the text into the new session. It holds the token and asks the agent to connect. You do this for each project. LibrePaper shows the token only once, so keep the dialog open until you have copied it.
 
 The agent connects, tells you what it reached and asks what to do.
 
-The second block contains the token, so it sits in your agent's chat, where your model provider and the chat history can see it. To keep it out of the chat, open **Other ways to connect** and use MCP, described below.
+The connection instructions contain the token, so they sit in your agent's chat, where your model provider and the chat history can see it. To keep it out of the chat, open **Other connection methods** and use MCP, described below.
 
 Codex's default sandbox blocks network access for shell commands. Allow it if Codex asks, or start Codex with `codex -c sandbox_workspace_write.network_access=true`. If the install is blocked, the agent gives you a command to run in your terminal.
 

@@ -2,8 +2,8 @@
 
 ## The usual way
 
-1. Install the skill. Paste the first block from the Agents tab into Claude Code, Codex or another agent. It runs `npx skills add LibrePaper/librepaper --skill librepaper --global`, or copies the skill folder into the agent's skills folder. Do this once per computer, then start a new agent session, because agents load skills when a session starts.
-2. Connect to this project. Paste the second block into the new session. It contains the token and tells the agent to use the skill. If the agent has no skill, it asks you to install it.
+1. Install the skill. In the Agents tab's dialog, click Copy install command and paste the text into Claude Code, Codex or another agent. It runs `npx skills add LibrePaper/librepaper --skill librepaper --global`, or copies the skill folder into the agent's skills folder. Do this once per computer, then start a new agent session, because agents load skills when a session starts.
+2. Connect to this project. Click Copy connection instructions and paste the text into the new session. It contains the token and tells the agent to use the skill. If the agent has no skill, it asks you to install it.
 
 The token sits in the chat, where the model provider and the chat history can see it.
 
@@ -11,7 +11,7 @@ The steps below (1 to 4) are the MCP route that keeps the token out of the chat,
 
 ## 1. Get a token
 
-In LibrePaper, open the project, then Share, then the Agents tab, and click New. Pick a permission (Read, Comment or Edit) and an expiry. Under Advanced you can change the name (it defaults to "Agent"; comments appear under it) and the hourly comment limit. Click Create token. Open "Other ways to connect" for the bare `lpt_...` string. It is shown once.
+In LibrePaper, open the project, then Share, then the Agents tab, and click New. Pick a permission (Read, Comment or Edit) and an expiry. Under Advanced you can change the name (it defaults to "Agent"; comments appear under it) and the hourly comment limit. Click Create token. Open "Other connection methods" and click Copy token for the bare `lpt_...` string. It is shown once.
 
 ## 2. Install the `librepaper` command
 

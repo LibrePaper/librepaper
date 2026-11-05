@@ -44,7 +44,7 @@ gh auth login
 - The `librepaper` command. Install it with a desktop app package: Homebrew, Scoop, the Windows installer, the `.deb` or `.rpm` package, or Nix. See [Install the desktop app](desktop-app.html). The plain macOS `.dmg` does not put it on your PATH. On a server, [install the command alone](cli.html#install).
 - Git, if the folder is a repository. A plain folder needs no Git.
 - A token, or a login on this computer.
-  - A project token: open the project, then Share, then the Agents tab, then New; choose the Edit permission and an expiry of up to 1 year; click Create token; then open "Other ways to connect" and copy the token. [Agent tokens](agents.html#agent-tokens) has the details. A project token works for a project that exists; publishing a new one needs `librepaper login`.
+  - A project token: open the project, then Share, then the Agents tab, then New; choose the Edit permission and an expiry of up to 1 year; click Create token; then open "Other connection methods" and click "Copy token". [Agent tokens](agents.html#agent-tokens) has the details. A project token works for a project that exists; publishing a new one needs `librepaper login`.
   - `librepaper login` signs you in on this computer. The login lasts 90 days.
 
 Give the token to the CLI with `--token`, or with the `LIBREPAPER_TOKEN` variable. After `librepaper login`, you need neither.
