@@ -316,7 +316,8 @@ mod tests {
         assert!(error.contains("schema=full"), "{error}");
         let error = validate_tool("document_read", &json!({})).unwrap_err();
         assert!(!error.contains("schema=full"), "{error}");
-        let operation = json!({"epoch":"e","id":"v2.1700000000000.0123456789abcdef0123456789abcdef"});
+        let operation =
+            json!({"epoch":"e","id":"v2.1700000000000.0123456789abcdef0123456789abcdef"});
         let typo = json!({"operation": operation, "typo": 1});
         let error = validate_tool("document_files", &typo).unwrap_err();
         assert!(!error.contains("schema=full"), "{error}");

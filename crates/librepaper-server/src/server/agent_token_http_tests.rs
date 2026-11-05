@@ -632,7 +632,11 @@ async fn the_tool_routes_name_the_oldest_skill_version_they_work_with() {
         .send()
         .await
         .unwrap();
-    assert!(min_skill_version(&refused).is_some(), "{:?}", refused.headers());
+    assert!(
+        min_skill_version(&refused).is_some(),
+        "{:?}",
+        refused.headers()
+    );
 }
 
 #[tokio::test]
