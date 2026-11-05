@@ -62,9 +62,11 @@
     min-width: 0;
   }
 
+  /* Each takes the room its word needs and they share what is left: "Commentaires"
+     does not fit a third of a 320px bar, and "Fichiers" does not need one. */
   button {
     display: flex;
-    flex: 1 1 0;
+    flex: 1 1 auto;
     flex-direction: column;
     align-items: center;
     justify-content: center;

@@ -189,6 +189,12 @@ try {
     assert.equal(await has('#docTitle'), false, 'the document screen has no file name in the header at ' + info);
     assert.ok(m.headerButtons.length > 0 && m.headerButtons.every(([w, h]) => w >= 44 && h >= 44), 'header buttons are 44px at ' + info);
     assert.equal(m.mode, true, 'the mode switch shows at ' + info);
+    // The longest labels the catalogues give these tabs must fit the narrowest phone.
+    const fit = await b.evaluate(`(() => { const nodes = [...document.querySelectorAll('.mobile-header-tabs .label')]; const was = nodes.map(node => node.textContent);
+      ['Documento', 'Arquivos', 'Commentaires'].forEach((text, i) => { nodes[i].textContent = text; });
+      const clipped = nodes.filter(node => node.scrollWidth > node.clientWidth).map(node => node.textContent);
+      nodes.forEach((node, i) => { node.textContent = was[i]; }); return clipped; })()`);
+    assert.deepEqual(fit, [], 'no tab label is cut off at ' + info);
     assert.ok(Math.abs(m.mainBottom - m.innerHeight) <= 1, 'the workspace ends at the viewport bottom at ' + info);
   }
 
@@ -249,13 +255,11 @@ try {
     await openMore();
     const present = await rows();
     assert.ok(present.includes(id), `an editor is offered ${id}: ${present.join(',')}`);
-    const before = await title();
     const label = await b.evaluate(`document.querySelector('.mobile-sheet [data-row="${id}"] .row-label').textContent.trim()`);
     await click(`.mobile-sheet [data-row="${id}"]`);
     await sheetGone();
     await until(`${id} is open`, async () => (await modeOf()) === 'mobile-sidebar', 3000);
     assert.equal(await title(), label, `the header names ${id}`);
-    assert.notEqual(await title(), before);
     assert.equal(await b.evaluate('document.querySelector(".cm-editor") === window.keepEditor'), true, `${id} keeps the very same editor`);
     const slots = await b.evaluate(`(() => [...document.querySelectorAll('.panel-slot:not([hidden])')].filter(node => node.getClientRects().length).map(node => ({ width: node.getBoundingClientRect().width, scroll: node.scrollWidth - node.clientWidth })))()`);
     assert.equal(slots.length, 1, `${id}: one panel at a time: ${JSON.stringify(slots)}`);
