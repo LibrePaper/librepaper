@@ -16,7 +16,7 @@ A token lets an agent you start yourself work on one project. The agent can run 
 
 1. Open the project, then the Agent panel (the robot icon in the sidebar), then the Tokens tab.
 2. Click New. Pick a permission and an expiry.
-3. Under Advanced you can name the token (its comments and suggestions appear under that name) and set an hourly comment limit. The name defaults to "Agent".
+3. You can also name the token (its comments and suggestions appear under that name), and set an hourly comment limit. The name defaults to "Agent".
 4. Click Create token.
 
 | Permission | What the agent can do |
@@ -87,7 +87,7 @@ Every write needs an `operation` object, which `librepaper mcp` otherwise adds f
 
 ### What a token cannot do
 
-A token reaches only its own project. It cannot upload images, publish, share or run code. Each token has an hourly comment limit, which you set under Advanced when you create it. A single replacement is at most 60,000 characters and a single new file at most 262,144 characters, so agents split larger changes.
+A token reaches only its own project. It cannot upload images, publish, share or run code. Each token has an hourly comment limit, which you set when you create it. A single replacement is at most 60,000 characters and a single new file at most 262,144 characters, so agents split larger changes.
 
 A token stops working when it expires, when you revoke it with the trash button in the Tokens tab of the Agent panel, when the project changes owner, or when your account is blocked or erased. Signing out does not stop it, so the agent keeps working while you are signed out or LibrePaper is closed.
 

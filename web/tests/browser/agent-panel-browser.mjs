@@ -155,7 +155,12 @@ window.agentPanelCheck = async () => {
   check(!button("Create token").disabled, "a token needs no name");
   check(![...document.querySelectorAll(".share-form option")].some((node) => node.textContent === "Never"), "and cannot be made to last forever");
   const form = document.querySelector(".share-form");
-  form.querySelector(".share-advanced").open = true;
+  check(!form.querySelector("details"), "the token form has no folded section");
+  const nameInput = form.querySelector("input[type=text]");
+  check(nameInput.getClientRects().length > 0 && nameInput.value === "" && nameInput.placeholder === "(optional)",
+    "the name is visible, empty, and shows (optional): " + nameInput.value + " / " + nameInput.placeholder);
+  const budgetInput = form.querySelector("input[type=number]");
+  check(budgetInput && budgetInput.getClientRects().length > 0, "the Comments/hour field shows for the default Comment role");
   check(text().includes("Its comments and suggestions appear under this name."), "the helper line");
   check(document.querySelector(".share-toolbar") === null, "the form stands in for the toolbar");
   check(document.activeElement === form.querySelectorAll("select")[0], "a token's first control is its permission");
@@ -246,7 +251,6 @@ window.agentPanelCheck = async () => {
   /* ----------------------------------------------- a manual-copy fallback */
 
   await press(document.querySelector("[data-share-new]"));
-  document.querySelector(".share-form .share-advanced").open = true;
   await type(document.querySelector(".share-form input[type=text]"), "Second");
   await press(button("Create token"));
   const rotated = window.issuedToken;
