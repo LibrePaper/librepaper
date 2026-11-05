@@ -193,7 +193,7 @@ window.agentPanelCheck = async () => {
     && window.copied.includes("https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper")
     && !window.copied.includes(issued), "the install command copies without the token: " + window.copied);
   check(copiedLabel(), "a copy button shows Copied afterwards");
-  check(panel.contains(button("Copy install command")), "copying does not end the reveal");
+  check(panel.contains(button("Copy connection instructions")), "copying does not end the reveal");
   await press(button("Copy connection instructions"));
   check(window.copied.includes("Use the LibrePaper skill") && window.copied.includes("no local folder")
     && window.copied.includes("Token: " + issued), "the connection instructions copy with the token: " + window.copied);
