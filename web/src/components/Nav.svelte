@@ -160,7 +160,7 @@
       padding-right: max(calc(var(--spacing) * 1), env(safe-area-inset-right));
     }
     .phone-shell .nav-identity { flex: 1 1 auto; min-width: 0; gap: 0; }
-    .phone-shell .nav-trail { display: flex; flex: 1 1 auto; min-width: 0; gap: 0; }
+    .phone-shell .nav-trail { display: flex; flex: 1 1 0; min-width: 0; gap: 0; }
     .phone-shell .nav-actions { flex: none; gap: 0; }
     .phone-shell .nav-account { display: none; }
   }
