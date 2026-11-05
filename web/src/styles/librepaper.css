@@ -1000,23 +1000,26 @@ main.reader .sidebar, main.reader .editorpane, main.reader .viewport, main.reade
 }
 main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 
-@media (max-width: 760px) {
+@media (max-width: 767px) {
   /* Keep the workspace inside the viewport. The bottom navigation chooses
      which full-height pane is active; the page itself never becomes a stack
      of independently scrolling documents. */
   main.reader {
     position: relative;
-    height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - var(--librepaper-format-used, 0px));
+    height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - var(--librepaper-format-used, 0px) - var(--librepaper-phone-chrome, 0px));
     overflow: hidden;
     transition: margin-top 200ms ease, height 200ms ease;
   }
-  /* The bar steps aside while a pane scrolls down and comes back on the way
-     up, as phone apps do. The workspace rises into the space it leaves and
-     grows by its height, so no pane is ever drawn under it. */
-  main.reader.bar-hidden {
-    --librepaper-bar-visible: 0px;
-    margin-top: calc(-1 * var(--librepaper-bar));
-  }
+  /* The reader's phone header is a slimmer bar than the landing page's, and
+     it stays put: only the mode switch below it steps aside on scroll. The
+     bottom navigation, the mode switch and the keyboard bar are taken off the
+     workspace's height inline (--librepaper-phone-chrome, set by the Reader),
+     which is why `main.reader` subtracts it above. */
+  :root:has(main.reader.adapted) { --librepaper-bar: calc(3.25rem + env(safe-area-inset-top)); }
+  /* Toasts clear the bottom navigation instead of sitting on it. */
+  :root:has(main.reader.adapted) .toast-group { bottom: calc(4rem + env(safe-area-inset-bottom)); }
+  /* Rows are thumb targets here, and nothing a row offers waits for a hover. */
+  main.reader.adapted .explorer-row { min-height: 2.75rem; }
   /* The project list does the same: it rises into the space the bar leaves. */
   main.workspace { transition: margin-top 200ms ease, height 200ms ease; }
   main.workspace.bar-hidden { margin-top: calc(-1 * var(--librepaper-bar)); height: 100dvh; }
@@ -1198,7 +1201,7 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .icon-standard { --btn-size: 1.0625rem; }
 /* A finger needs more than a pointer: on a phone the icons are 22px in 42px
    buttons, near the 24px icon and 44-48px target both platforms ask for. */
-@media (max-width: 760px) {
+@media (max-width: 767px) {
   .icon-standard { --btn-size: 1.375rem; }
 }
 .icon-plain:hover:not(:disabled) { background: var(--color-row-hover); }

@@ -956,6 +956,14 @@
     view?.focus();
   }
 
+  /// Scrolls the caret into sight when the keyboard has covered the lower part
+  /// of the screen. Only while the editor has the focus: otherwise nothing is
+  /// being typed and the reader's place is not moved.
+  export function revealCaret() {
+    if (!view || !view.hasFocus) return;
+    view.dispatch({ effects: EditorView.scrollIntoView(view.state.selection.main.head, { y: "nearest", yMargin: 24 }) });
+  }
+
   // Applies a formatting tool from lib/visual-markup/formatting.js to the open
   // file, in its own format, then puts the caret back in the editor. Named
   // formatSelection because `format` is the document's format prop.
@@ -1354,7 +1362,7 @@
           // inside its own update.
           if (update.selectionSet && update.state.selection.main.empty
               && update.transactions.some((tr) => tr.isUserEvent("select.pointer"))
-              && window.matchMedia("(max-width: 760px)").matches) {
+              && window.matchMedia("(max-width: 767px)").matches) {
             const head = update.state.selection.main.head;
             requestAnimationFrame(() => {
               if (!view || view.state.selection.main.head !== head) return;
