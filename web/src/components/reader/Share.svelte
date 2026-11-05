@@ -1,224 +1,111 @@
 <script>
-  import { onDestroy, tick } from "svelte";
-  import { Tabs } from "@skeletonlabs/skeleton-svelte";
+  import { tick } from "svelte";
   import PanelHeader from "../PanelHeader.svelte";
-  import PanelTabs from "../PanelTabs.svelte";
   import Modal from "../Modal.svelte";
   import Icon from "../Icon.svelte";
   import ShareRow from "./share/ShareRow.svelte";
   import ShareForm from "./share/ShareForm.svelte";
-  import TokenReveal from "./share/TokenReveal.svelte";
-  import { getPrivate, post } from "../../lib/api.js";
+  import { allows, budgetOf } from "./share/shared.js";
+  import { createSharing } from "../../lib/sharing.svelte.js";
   import { m } from "../../lib/paraglide/messages.js";
 
   let { open = $bindable(false), slug, onclose, inline = false, canShare = false } = $props();
-  let sharing = $state(null);
-  let busy = $state(false);
-  let loading = $state(false);
-  let error = $state("");
-  let generation = 0;
-  let copied = $state("");
-  let copyFallback = $state("");
-  let copyTimer;
-  // Bumped whenever the reveal ends or the panel closes, so a copy that
-  // settles afterwards cannot put a dismissed token back on screen.
-  let copyGeneration = 0;
-  onDestroy(() => clearTimeout(copyTimer));
-  let tab = $state("links");
+  const sharing = createSharing({ slug: () => slug, canShare: () => canShare });
   let root = $state(null);
-  // The kind of the create form that is open, or null. Only one is ever open,
-  // and it stands in for the toolbar.
-  let creating = $state(null);
+  // Whether the create form is open. It stands in for the toolbar.
+  let creating = $state(false);
   let draft = $state({ name: "", role: "reader", until: "7d", budget: "" });
-  // `{ item, kind }` while a revocation waits to be confirmed. It stops a
-  // credential somebody may already be holding.
+  // The link waiting to be revoked, or null. It stops a link somebody may
+  // already be holding.
   let confirming = $state(null);
-  // The token just made. It is shown once, kept only here, and
-  // never written to any storage.
-  let reveal = $state(null);
 
-  const TABS = [{ id: "links", label: m.share_tab_links() }, { id: "tokens", label: m.share_tab_tokens() }];
-  const kindOf = (id) => (id === "links" ? "link" : "token");
-  const itemsOf = (kind) => (kind === "link" ? sharing?.links : sharing?.tokens) ?? [];
-  // `publishers` and `commenters_policy` describe who the deployment lets
-  // through; "nobody" is the one description that rules a permission out.
-  const allowed = (role) => role === "reader" || (role === "commenter"
-    ? sharing?.commenters_policy !== "nobody" : sharing?.publishers !== "nobody");
-
-  async function load(documentSlug) {
-    const request = ++generation;
-    loading = true;
-    copyFallback = "";
-    error = "";
-    try {
-      const answer = canShare ? await getPrivate(`/api/documents/${documentSlug}/share`) : { links: [], tokens: [] };
-      if (request !== generation) return;
-      sharing = answer;
-    } catch (failure) {
-      if (request === generation) error = failure.message || m.share_error_load();
-    } finally {
-      if (request === generation) loading = false;
-    }
-  }
+  const allowed = (role) => allows(sharing.sharing, role);
+  const links = $derived(sharing.sharing?.links ?? []);
 
   $effect(() => {
-    const documentSlug = slug;
     if (open) {
-      load(documentSlug);
-      return () => { generation += 1; creating = null; confirming = null; reveal = null; copyFallback = ""; copyGeneration += 1; };
+      sharing.load();
+      return () => { sharing.reset(); creating = false; confirming = null; };
     }
   });
-
-  // Runs one share action and answers the server's reply, or null.
-  async function change(body) {
-    if (busy || !canShare) return null;
-    const documentSlug = slug;
-    const request = generation;
-    busy = true;
-    error = "";
-    try {
-      const answer = await post(`/api/documents/${documentSlug}/share`, body);
-      if (documentSlug !== slug || request !== generation) return null;
-      copyFallback = "";
-      sharing = answer;
-      return answer;
-    } catch (failure) {
-      if (request === generation) error = failure.message || m.share_error_update();
-      return null;
-    } finally { busy = false; }
-  }
 
   async function focusBack() {
     await tick();
     root?.querySelector("[data-share-new]")?.focus();
   }
 
-  function startCreate(kind) {
-    draft = { name: "", role: kind === "link" ? "reader" : "commenter", until: "7d", budget: "" };
-    creating = kind;
+  function startCreate() {
+    draft = { name: "", role: "reader", until: "7d", budget: "" };
+    creating = true;
   }
 
   function cancelForm() {
-    creating = null;
+    creating = false;
     focusBack();
   }
 
-  const budgetOf = (value) => (value == null || value === "" ? null : Number(value));
-
   async function commit() {
     if (!creating) return;
-    const kind = creating;
-    // A token needs no name, so an unnamed one is called after its kind.
-    const name = kind === "token" ? draft.name.trim() || m.common_agent() : draft.name.trim();
-    const answer = await change({ create: { kind, role: draft.role, name, until: draft.until, budget: budgetOf(draft.budget) } });
+    const answer = await sharing.change({ create: { kind: "link", role: draft.role, name: draft.name.trim(), until: draft.until, budget: budgetOf(draft.budget) } });
     if (!answer) return;
-    creating = null;
-    if (answer.created?.token) reveal = { token: answer.created.token };
-    else focusBack();
+    creating = false;
+    focusBack();
   }
 
   async function confirmRevoke() {
     if (!confirming) return;
     const { item } = confirming;
     confirming = null;
-    await change({ revoke: { id: item.id } });
+    await sharing.change({ revoke: { id: item.id } });
     focusBack();
   }
 
-  // The manual-copy fallback may hold the token or its configuration, so it
-  // goes with the reveal. It can run twice (Done, then the dialog's close
-  // handler), so a second call finds nothing left to clear and does nothing.
-  function done() {
-    if (!reveal) return;
-    reveal = null;
-    copyFallback = "";
-    error = "";
-    copyGeneration += 1;
-    focusBack();
-  }
-
-  async function copy(value) {
-    const attempt = copyGeneration;
-    try {
-      await navigator.clipboard.writeText(value);
-      if (attempt !== copyGeneration) return;
-      copied = value;
-      clearTimeout(copyTimer);
-      copyTimer = setTimeout(() => (copied = ""), 1800);
-      copyFallback = "";
-      error = "";
-    } catch {
-      if (attempt !== copyGeneration) return;
-      copyFallback = value;
-      error = m.share_error_copy_blocked();
-    }
-  }
-
-  const CONFIRM = {
-    link: [m.share_revoke_link_title(), m.share_revoke_link_body(), m.common_revoke_link()],
-    token: [m.share_revoke_token_title(), m.share_revoke_token_body(), m.common_revoke_token()],
-  };
-  const ask = $derived(confirming ? CONFIRM[confirming.kind] : null);
+  const ask = [m.share_revoke_link_title(), m.share_revoke_link_body(), m.common_revoke_link()];
 </script>
 
 {#snippet messages()}
-  {#if error}
-    <p class="lp-text-error" role="alert">{error}</p>
+  {#if sharing.error}
+    <p class="lp-text-error" role="alert">{sharing.error}</p>
   {/if}
-  {#if copyFallback}
-    <textarea class="share-copy-fallback w-full" readonly rows="3" aria-label={m.share_copy_manual_label()} value={copyFallback} onclick={(event) => event.currentTarget.select()}></textarea>
+  {#if sharing.copyFallback}
+    <textarea class="share-copy-fallback w-full" readonly rows="3" aria-label={m.share_copy_manual_label()} value={sharing.copyFallback} onclick={(event) => event.currentTarget.select()}></textarea>
   {/if}
-{/snippet}
-
-{#snippet list(kind)}
-  {@const active = itemsOf(kind)}
-  {#if creating !== kind}
-    <div class="share-toolbar">
-      <button type="button" class="share-new" data-share-new disabled={busy || creating !== null} onclick={() => startCreate(kind)}>
-        <Icon name="plus" size={14} />{m.share_new()}
-      </button>
-    </div>
-  {/if}
-  <div class="share-scroll">
-    <!-- Inside the scroller, so a short panel still reaches the form's buttons. -->
-    {#if creating === kind}
-      <ShareForm {kind} bind:draft {busy} {allowed} onsubmit={commit} oncancel={cancelForm} />
-    {/if}
-    {#if kind === "link"}
-      <p class="panel-meta">{m.share_links_scope_note()}</p>
-    {:else}
-      <p class="panel-meta">{m.share_tokens_intro()}</p>
-    {/if}
-    {#if active.length === 0}
-      <p class="panel-meta">{kind === "link" ? m.share_no_links() : m.share_no_tokens()}</p>
-    {:else}
-      <ul class="share-list" aria-label={kind === "link" ? m.share_links_list_label() : m.share_tab_tokens()}>
-        {#each active as item (item.id)}
-          <ShareRow {kind} {item} {busy} {copied} oncopy={copy} onrevoke={() => (confirming = { item, kind })} />
-        {/each}
-      </ul>
-    {/if}
-    {#if kind === "token"}
-      <p class="panel-meta">{m.share_tokens_scope_note()}</p>
-    {/if}
-    {#if !reveal}
-      {@render messages()}
-    {/if}
-  </div>
 {/snippet}
 
 {#snippet content()}
-  {#if loading}
+  {#if sharing.loading}
     <p class="panel-muted share-pad" role="status">{m.share_loading()}</p>
-  {:else if sharing && canShare}
-    <PanelTabs id="share" label={m.common_share()} tabs={TABS} value={tab} onchange={(value) => { tab = value; creating = null; }}>
-      <Tabs.Content value="links">{#if tab === "links"}{@render list("link")}{/if}</Tabs.Content>
-      <Tabs.Content value="tokens">{#if tab === "tokens"}{@render list("token")}{/if}</Tabs.Content>
-    </PanelTabs>
+  {:else if sharing.sharing && canShare}
+    <div class="share-pane">
+      {#if !creating}
+        <div class="share-toolbar">
+          <button type="button" class="share-new" data-share-new disabled={sharing.busy} onclick={startCreate}>
+            <Icon name="plus" size={14} />{m.share_new()}
+          </button>
+        </div>
+      {/if}
+      <div class="share-scroll">
+        <!-- Inside the scroller, so a short panel still reaches the form's buttons. -->
+        {#if creating}
+          <ShareForm kind="link" bind:draft busy={sharing.busy} {allowed} onsubmit={commit} oncancel={cancelForm} />
+        {/if}
+        <p class="panel-meta">{m.share_links_scope_note()}</p>
+        {#if links.length === 0}
+          <p class="panel-meta">{m.share_no_links()}</p>
+        {:else}
+          <ul class="share-list" aria-label={m.share_links_list_label()}>
+            {#each links as item (item.id)}
+              <ShareRow kind="link" {item} busy={sharing.busy} copied={sharing.copied} oncopy={sharing.copy} onrevoke={() => (confirming = { item })} />
+            {/each}
+          </ul>
+        {/if}
+        {@render messages()}
+      </div>
+    </div>
   {:else}
     <div class="share-pad">
       {@render messages()}
-      {#if error && !sharing}<button class="btn btn-sm lp-control-tonal-brand" onclick={() => load(slug)}>{m.common_try_again()}</button>{/if}
+      {#if sharing.error && !sharing.sharing}<button class="btn btn-sm lp-control-tonal-brand" onclick={() => sharing.load()}>{m.common_try_again()}</button>{/if}
     </div>
   {/if}
 {/snippet}
@@ -239,11 +126,7 @@
   {/if}
 </div>
 
-{#if reveal}
-  <TokenReveal token={reveal.token} {copied} {copyFallback} {error} oncopy={copy} ondone={done} />
-{/if}
-
-{#if confirming && ask}
+{#if confirming}
   <Modal open title={ask[0]} onclose={() => (confirming = null)}
          confirm={{ label: ask[2], tone: "error", oncancel: () => (confirming = null), onclick: confirmRevoke }}>
     <p>{ask[1]}</p>
@@ -254,6 +137,7 @@
   .share-root { display: contents; }
   .share-sidebar :global(select) { max-width: 100%; }
   .share-modal-body { height: min(30rem, 60vh); min-width: 0; }
+  .share-pane { display: flex; flex: 1 1 0; min-height: 0; flex-direction: column; padding: var(--panel-padding); }
   .share-pad { padding: var(--panel-padding); overflow-y: auto; }
   .share-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: calc(var(--spacing) * 2); padding-block: calc(var(--spacing) * 1.5); }
   .share-new { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1); padding: .2rem .5rem; border: 0; border-radius: .25rem; background: none; color: var(--color-link); font: inherit; font-size: 13px; cursor: pointer; }

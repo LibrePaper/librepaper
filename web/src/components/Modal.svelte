@@ -38,7 +38,6 @@
     wider = false,
     page = false,
     compact = false,
-    narrow = false,
     sheet = false,
     initialFocus = undefined,
     onEscapeKeyDown = undefined,
@@ -49,12 +48,11 @@
   // is the other shape: the whole viewport, with a bar at the top holding a
   // Back link. It has no footer and no backdrop. Escape and Back both close it.
   // `compact` is a tighter card for a picker. Its body scrolls inside itself,
-  // so the picker decides what scrolls. `narrow` is a smaller card for a short
-  // step-by-step dialog. `sheet` turns the card into a bottom
+  // so the picker decides what scrolls. `sheet` turns the card into a bottom
   // sheet below 480px wide, with a handle that expands it. A drag down on the
   // handle or the header closes it, or shrinks it when it is expanded.
   let expanded = $state(false);
-  const width = $derived(compact ? "max-w-2xl" : narrow ? "max-w-md" : wider ? "max-w-3xl" : wide ? "max-w-xl" : "max-w-lg");
+  const width = $derived(compact ? "max-w-2xl" : wider ? "max-w-3xl" : wide ? "max-w-xl" : "max-w-lg");
   const cardClass = $derived(compact
     ? `card bg-[var(--color-raised)] modal-compact flex max-h-full w-full flex-col gap-3 p-4 shadow-xl ${width}`
     : `card bg-[var(--color-raised)] flex max-h-full w-full flex-col gap-4 p-6 shadow-xl ${width}`);
