@@ -36,6 +36,7 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
   <p class="panel-meta">{m.tokenreveal_chat_note()}</p>
   <details class="share-other">
     <summary>{m.tokenreveal_other_ways()}</summary>
+    <div class="share-other-body">
     <label class="share-field panel-meta">{m.tokenreveal_token()}
       <input class="input share-input" type="text" readonly aria-label={m.common_agent_token()} value={token} onclick={select} />
     </label>
@@ -51,6 +52,7 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
     <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncopy(config)}>{m.tokenreveal_copy_config()}</button>
     <p class="panel-meta">{m.tokenreveal_api_hint({ endpoint: "POST /api/documents/{slug}/tools/{name}" })}</p>
     <p class="panel-meta"><a href="https://librepaper.org/agents.html#agent-tokens" target="_blank" rel="noreferrer">{m.tokenreveal_agent_setup()}</a></p>
+    </div>
   </details>
   <div class="share-form-actions">
     <button type="button" class="btn btn-sm lp-control-brand" onclick={ondone}>{m.common_done()}</button>
@@ -65,9 +67,9 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
   .share-input { width: 100%; min-width: 0; max-width: 100%; font-family: var(--font-mono, monospace); font-size: 12px; }
   .share-config { resize: none; white-space: pre; overflow-x: auto; }
   .share-block { white-space: pre-wrap; }
-  .share-reveal > button, .share-other > button { justify-self: start; }
-  .share-other { display: grid; gap: calc(var(--spacing) * 2); }
+  .share-reveal > button, .share-other-body > button { justify-self: start; }
   .share-other > summary { cursor: pointer; font-size: 12px; color: var(--panel-muted); }
+  .share-other-body { display: grid; gap: calc(var(--spacing) * 2); padding-top: calc(var(--spacing) * 2); }
   .share-form-actions { display: flex; justify-content: flex-end; }
   .share-reveal a { color: var(--color-link); text-decoration: underline; }
 </style>

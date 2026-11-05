@@ -57,8 +57,10 @@
   {#if kind === "token"}
     <details class="share-advanced">
       <summary>{m.shareform_advanced()}</summary>
-      {@render nameField()}
-      {@render budgetField()}
+      <div class="share-advanced-body">
+        {@render nameField()}
+        {@render budgetField()}
+      </div>
     </details>
   {:else}
     {@render budgetField()}
@@ -76,8 +78,8 @@
   .share-note { margin: 0; }
   .share-input, .share-select { width: 100%; min-width: 0; max-width: 100%; }
   .share-select { border: 0; background-color: var(--color-row-hover); font: inherit; border-radius: var(--radius-base); }
-  .share-advanced { display: grid; gap: calc(var(--spacing) * 2); }
   .share-advanced > summary { cursor: pointer; font-size: 12px; color: var(--panel-muted); }
+  .share-advanced-body { display: grid; gap: calc(var(--spacing) * 2); padding-top: calc(var(--spacing) * 2); }
   .share-form-actions { display: flex; align-items: center; justify-content: flex-end; gap: calc(var(--spacing) * 2); }
   .share-action { padding: .15rem .35rem; border: 0; border-radius: .25rem; background: none; color: var(--color-link); font: inherit; cursor: pointer; }
   .share-action:hover:not(:disabled) { background: var(--color-row-hover); }
