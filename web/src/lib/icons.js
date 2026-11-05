@@ -143,6 +143,10 @@ export const ICONS = {
     ["path", "M12 18v-6"],
   ],
   lock: [["rect", { width: 18, height: 11, x: 3, y: 11, rx: 2, ry: 2 }], ["path", "M7 11V7a5 5 0 0 1 10 0v4"]],
+  "shield-check": [
+    ["path", "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"],
+    ["path", "m9 12 2 2 4-4"],
+  ],
   unlock: [["rect", { width: 18, height: 11, x: 3, y: 11, rx: 2, ry: 2 }], ["path", "M7 11V7a5 5 0 0 1 9.9-1"]],
   // Lucide's key, for a sign-in provider with no logo of its own here.
   key: [["path", "m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"], ["path", "m21 2-9.6 9.6"], ["circle", { cx: 7.5, cy: 15.5, r: 5.5 }]],

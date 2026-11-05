@@ -126,8 +126,10 @@
   }
 
   // The manual-copy fallback may hold the token or its configuration, so it
-  // goes with the reveal.
+  // goes with the reveal. It can run twice (Done, then the dialog's close
+  // handler), so a second call finds nothing left to clear and does nothing.
   function done() {
+    if (!reveal) return;
     reveal = null;
     copyFallback = "";
     error = "";
@@ -199,17 +201,14 @@
     {#if kind === "token"}
       <p class="panel-meta">{m.share_tokens_scope_note()}</p>
     {/if}
-    {@render messages()}
+    {#if !reveal}
+      {@render messages()}
+    {/if}
   </div>
 {/snippet}
 
 {#snippet content()}
-  {#if reveal}
-    <div class="share-pad">
-      <TokenReveal token={reveal.token} oncopy={copy} ondone={done} />
-      {@render messages()}
-    </div>
-  {:else if loading}
+  {#if loading}
     <p class="panel-muted share-pad" role="status">{m.share_loading()}</p>
   {:else if sharing && canShare}
     <PanelTabs id="share" label={m.common_share()} tabs={TABS} value={tab} onchange={(value) => { tab = value; creating = null; }}>
@@ -239,6 +238,10 @@
     </Modal>
   {/if}
 </div>
+
+{#if reveal}
+  <TokenReveal token={reveal.token} {copied} {copyFallback} {error} oncopy={copy} ondone={done} />
+{/if}
 
 {#if confirming && ask}
   <Modal open title={ask[0]} onclose={() => (confirming = null)}

@@ -67,6 +67,7 @@ window.fetch = async (path, options) => {
     } else {
       state.tokens.push(row);
       created = { id, kind, token: "lpt_" + originPart + ".paper.minted" + id };
+      window.issuedToken = created.token;
     }
   }
   if (body?.revoke) {
@@ -206,42 +207,67 @@ window.sharePanelCheck = async () => {
 
   /* ---------------------------------------------------------- token reveal */
 
-  const secret = document.querySelector('input[aria-label="Agent token"]');
-  check(secret && secret.readOnly && secret.value.startsWith("lpt_" + originPart + ".paper.minted"), "the token is shown: " + text());
-  check(text().includes("Copy this token now. You won't be able to view it again."), "with the warning");
-  const installBlock = document.querySelector('textarea[aria-label="Instructions to install the skill"]').value;
-  check(installBlock.includes("npx skills add LibrePaper/librepaper --skill librepaper --global")
-    && installBlock.includes("https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper")
-    && !installBlock.includes(secret.value), "the install step names the skill and never the token: " + installBlock);
-  const connectBlock = document.querySelector('textarea[aria-label="Instructions to connect to this project"]').value;
-  check(connectBlock.includes("Token: " + secret.value) && connectBlock.includes("Use the LibrePaper skill")
-    && connectBlock.includes("no local folder") && !connectBlock.includes("raw.githubusercontent.com"), "the connect step names the token: " + connectBlock);
-  await press(button("Copy install instructions"));
-  check(window.copied === installBlock, "copies exactly the install instructions");
+  // The token is read from the mock, which issued it, or from the text that
+  // was copied. It is never read back from the page to check the page.
+  const dialog = () => document.querySelector('[role="dialog"]');
+  const dialogText = () => squash(dialog());
+  const closed = async () => {
+    for (let attempt = 0; attempt < 100 && dialog(); attempt++) await new Promise((resolve) => setTimeout(resolve, 20));
+    check(!dialog(), "the one-time dialog closes");
+  };
+  const copiedLabel = () => [...dialog().querySelectorAll("button")].some((node) => node.textContent.trim() === "Copied");
+
+  const issued = window.issuedToken;
+  check(issued && issued.startsWith("lpt_" + originPart + ".paper.minted"), "the mock issued a token");
+  check(dialog() && dialogText().includes("Connect your AI agent"), "the token opens a dialog: " + (dialog() ? dialogText() : text()));
+  check(dialogText().includes("Your token is shown only once."), "with the warning");
+  check(!dialogText().includes(issued) && [...dialog().querySelectorAll("textarea, input")].every((node) => !node.value.includes(issued)),
+    "by default no field and no text in the dialog holds the token");
+  check(document.activeElement === button("Copy install command"), "focus opens on the install copy button, not Done: " + (document.activeElement && document.activeElement.textContent));
+  await press(button("Copy install command"));
+  check(window.copied.includes("npx skills add LibrePaper/librepaper --skill librepaper --global")
+    && window.copied.includes("https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper")
+    && !window.copied.includes(issued), "the install command copies without the token: " + window.copied);
+  check(copiedLabel(), "a copy button shows Copied afterwards");
+  check(dialog() !== null, "copying does not close the dialog");
   await press(button("Copy connection instructions"));
-  check(window.copied === connectBlock, "copies exactly the connection instructions");
-  document.querySelector(".share-other").open = true;
-  check(text().includes("Pasting sends the token through your agent's chat"), "the chat note: " + text());
-  const commands = document.querySelector('textarea[aria-label="Claude Code commands"]').value;
-  check(commands === "claude mcp add librepaper --scope user -- librepaper mcp\\nread -rs LIBREPAPER_AGENT_TOKEN && export LIBREPAPER_AGENT_TOKEN && claude",
+  check(window.copied.includes("Use the LibrePaper skill") && window.copied.includes("no local folder")
+    && window.copied.includes("Token: " + issued), "the connection instructions copy with the token: " + window.copied);
+
+  await press(dialog().querySelector("summary"));
+  check(dialog().querySelector("details").open, "Other connection methods opens");
+  check(dialogText().includes("With MCP, you can avoid pasting the token into your agent's chat."), "the MCP advantage line");
+  const commands = labelled("Claude Code commands").value;
+  check(commands === "claude mcp add librepaper --scope user -- librepaper mcp\nread -rs LIBREPAPER_AGENT_TOKEN && export LIBREPAPER_AGENT_TOKEN && claude",
     "the Claude Code commands register once and read the token silently: " + commands);
-  check(!commands.includes(secret.value), "the commands never contain the token");
-  const config = document.querySelector('textarea[aria-label="MCP configuration"]').value;
-  check(config.includes('args = ["mcp"]') && config.includes('LIBREPAPER_AGENT_TOKEN = "' + secret.value + '"'),
-    "the configuration is filled in: " + config);
-  check(text().includes("POST /api/documents/{slug}/tools/{name}"), "the plain HTTP route is mentioned");
-  check([...document.querySelectorAll("a")].some((node) => node.textContent === "Agent setup" && node.href.includes("agents.html")), "and the setup page is linked");
-  const shownToken = secret.value;
-  await press(button("Copy token"));
-  check(window.copied === shownToken, "copies the token");
+  check(!commands.includes(issued), "the commands never contain the token");
   await press(button("Copy commands"));
   check(window.copied === commands, "copies the commands");
+  const config = labelled("MCP configuration").value;
+  check(config.includes('args = ["mcp"]') && config.includes('LIBREPAPER_AGENT_TOKEN = "lpt_..."') && !config.includes(issued),
+    "the configuration shows lpt_... until the token is revealed: " + config);
   await press(button("Copy configuration"));
-  check(window.copied === config, "copies the configuration");
+  check(window.copied.includes('args = ["mcp"]') && window.copied.includes('LIBREPAPER_AGENT_TOKEN = "' + issued + '"'),
+    "Copy configuration still copies the real token: " + window.copied);
+  check(!labelled("Agent token"), "the token field is not drawn until it is revealed");
+  check(dialogText().includes("POST /api/documents/{slug}/tools/{name}"), "the plain HTTP route is mentioned");
+  check([...dialog().querySelectorAll("a")].some((node) => node.textContent === "Agent setup" && node.href.includes("agents.html")), "and the setup page is linked");
+
+  await press(button("Reveal token"));
+  check(labelled("Agent token") && labelled("Agent token").value === issued, "after Reveal the input shows the token");
+  check(button("Hide token") && button("Hide token").getAttribute("aria-expanded") === "true", "the toggle says it is expanded");
+  await press(button("Copy token"));
+  check(window.copied === issued, "copies the token");
+  await press(button("Hide token"));
+  check(!labelled("Agent token") && !dialogText().includes(issued), "Hide takes the token off the screen again");
+  await press(button("Reveal token"));
+  check(labelled("Agent token").value === issued, "and Reveal shows it once more");
+
   const stored = JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage });
-  check(!stored.includes(shownToken), "the token is stored nowhere");
+  check(!stored.includes(issued), "the token is stored nowhere");
   await press(button("Done"));
-  check(!document.querySelector('input[aria-label="Agent token"]') && !document.querySelector('textarea[aria-label="Instructions to connect to this project"]') && !text().includes(shownToken), "Done clears it");
+  await closed();
+  check(!labelled("Agent token") && !text().includes(issued), "Done clears it");
   check(rows().some((row) => row.textContent.includes("Codex")) && rows().length === 2, "and the token is in the list: " + text());
 
   await press(labelled("Revoke Codex"));
@@ -253,19 +279,21 @@ window.sharePanelCheck = async () => {
   document.querySelector(".share-form .share-advanced").open = true;
   await type(document.querySelector(".share-form input[type=text]"), "Second");
   await press(button("Create token"));
-  const rotated = document.querySelector('input[aria-label="Agent token"]')?.value || "";
+  const rotated = window.issuedToken;
   const clipboard = navigator.clipboard.writeText;
   navigator.clipboard.writeText = async () => { throw new Error("blocked"); };
   await press(button("Copy token"));
   check(document.querySelector('textarea[aria-label="Text to copy manually"]')?.value === rotated, "a blocked copy offers the token to copy by hand");
+  check(button("Could not copy"), "and the button says the copy failed");
   navigator.clipboard.writeText = clipboard;
   await press(button("Done"));
+  await closed();
   check(!document.querySelector('textarea[aria-label="Text to copy manually"]') && !text().includes(rotated), "Done also clears the manual copy");
   await press(document.querySelector("[data-share-new]"));
   check(!button("Create token").disabled, "a token with no name can still be created");
   await press(button("Create token"));
   check(window.calls.at(-1)[1].create.name === "Agent", "an unnamed token is called Agent: " + JSON.stringify(window.calls.at(-1)[1]));
-  const late = document.querySelector('input[aria-label="Agent token"]')?.value || "";
+  const late = window.issuedToken;
   let refuse;
   navigator.clipboard.writeText = () => new Promise((resolve, reject) => { refuse = reject; });
   await press(button("Copy token"));
