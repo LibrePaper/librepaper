@@ -12,7 +12,7 @@
   import ShareRow from "./share/ShareRow.svelte";
   import ShareForm from "./share/ShareForm.svelte";
   import TokenReveal from "./share/TokenReveal.svelte";
-  import { allows, budgetOf, INSTALL_COMMAND } from "./share/shared.js";
+  import { allows, budgetOf, INSTALL_INSTRUCTIONS } from "./share/shared.js";
   import { createSharing } from "../../lib/sharing.svelte.js";
   import { TASK_GROUPS, filterTaskGroups } from "../../lib/agent-tasks.js";
   import { m } from "../../lib/paraglide/messages.js";
@@ -25,16 +25,18 @@
   let tab = $state("tokens");
   const current = $derived(canShare ? tab : "tasks");
 
-  // The search box filters the tasks. Folds are the ids of closed groups; every
-  // group starts open, and the folds are kept only while the panel is mounted.
+  // The search box filters the tasks. Opened is the ids of the groups the user
+  // has opened; every group starts closed, and the choice is kept only while the
+  // panel is mounted. A search opens every match and leaves this list alone, so
+  // clearing the search restores it.
   let taskQuery = $state("");
-  let folded = $state([]);
+  let opened = $state([]);
   const shownGroups = $derived(filterTaskGroups(TASK_GROUPS, taskQuery));
   const searching = $derived(taskQuery.trim() !== "");
-  const isOpen = (group) => searching || !folded.includes(group.id);
+  const isOpen = (group) => searching || opened.includes(group.id);
 
   function toggleGroup(id) {
-    folded = folded.includes(id) ? folded.filter((item) => item !== id) : [...folded, id];
+    opened = opened.includes(id) ? opened.filter((item) => item !== id) : [...opened, id];
   }
 
   // Escape clears a non-empty search and stops there, so it does not also close
@@ -47,7 +49,7 @@
   }
 
   let root = $state(null);
-  // Whether the create form is open. It stands in for the toolbar.
+  // Whether the create form is open. While it is, the tab shows only the form.
   let creating = $state(false);
   let draft = $state({ name: "", role: "commenter", until: "7d", budget: "" });
   // The token waiting to be revoked, or null. It stops a credential somebody
@@ -130,51 +132,55 @@
 {/snippet}
 
 {#snippet tokensPane()}
-  <section class="agent-install">
-    <div class="agent-install-head">
-      <span class="token-number" aria-hidden="true">1</span>
-      <div class="agent-install-text">
-        <h3 class="agent-install-title">{m.tokenreveal_step_install()}</h3>
-        <p class="agent-install-help">{m.agent_install_help()}</p>
-      </div>
-    </div>
-    <div class="agent-install-command">
-      <code>{INSTALL_COMMAND}</code>
-      <IconButton icon={sharing.copied === INSTALL_COMMAND ? "check" : "copy"} label={m.agent_copy_install_command()} title={m.agent_copy_install_command()} tone="plain" size="btn-icon-sm"
-                  onclick={() => sharing.copy(INSTALL_COMMAND)} />
-    </div>
-  </section>
-  {#if reveal}
-    <TokenReveal token={reveal.token} copied={sharing.copied} copyFallback={sharing.copyFallback} error={sharing.error} oncopy={sharing.copy} ondone={done} />
-  {:else if sharing.loading}
-    <p class="panel-muted" role="status">{m.share_loading()}</p>
-  {:else if sharing.sharing}
-    <p class="panel-meta">{m.share_tokens_intro()}</p>
-    {#if !creating}
-      <div class="share-toolbar">
-        <button type="button" class="share-new" data-share-new disabled={sharing.busy} onclick={startCreate}>
-          <Icon name="plus" size={14} />{m.share_new()}
-        </button>
-      </div>
-    {/if}
-    {#if creating}
-      <ShareForm kind="token" bind:draft busy={sharing.busy} {allowed} onsubmit={commit} oncancel={cancelForm} />
-    {/if}
-    {#if tokens.length === 0}
-      <p class="panel-meta">{m.share_no_tokens()}</p>
-    {:else}
-      <ul class="share-list" aria-label={m.agent_tab_tokens()}>
-        {#each tokens as item (item.id)}
-          <ShareRow kind="token" {item} busy={sharing.busy} copied={sharing.copied} oncopy={sharing.copy} onrevoke={() => (confirming = { item })} />
-        {/each}
-      </ul>
-      <p class="panel-meta">{m.tokenreveal_warning()}</p>
-    {/if}
-    <p class="panel-meta">{m.share_tokens_scope_note()}</p>
+  {#if creating}
+    <h3 class="agent-title">{m.agent_new_token()}</h3>
+    <ShareForm kind="token" bind:draft busy={sharing.busy} {allowed} onsubmit={commit} oncancel={cancelForm} />
     {@render messages()}
   {:else}
-    {@render messages()}
-    {#if sharing.error}<button class="btn btn-sm lp-control-tonal-brand" onclick={() => sharing.load()}>{m.common_try_again()}</button>{/if}
+    <section class="agent-step">
+      <div class="agent-step-head">
+        <span class="token-number" aria-hidden="true">1</span>
+        <h3 class="agent-title">{m.agent_step_install()}</h3>
+      </div>
+      <div class="agent-step-body">
+        <p class="agent-help">{m.agent_step_install_help()}</p>
+        <button type="button" class="btn btn-sm lp-control-tonal-brand agent-step-button" class:agent-step-failed={sharing.copyFallback === INSTALL_INSTRUCTIONS}
+                onclick={() => sharing.copy(INSTALL_INSTRUCTIONS)}>
+          <Icon name={sharing.copied === INSTALL_INSTRUCTIONS ? "check" : "copy"} size={14} />
+          {#if sharing.copyFallback === INSTALL_INSTRUCTIONS}{m.tokenreveal_copy_failed()}{:else if sharing.copied === INSTALL_INSTRUCTIONS}{m.tokenreveal_copied()}{:else}{m.agent_copy_install()}{/if}
+        </button>
+      </div>
+    </section>
+    <div class="agent-divider"></div>
+    <section class="agent-step">
+      <div class="agent-step-head">
+        <span class="token-number" aria-hidden="true">2</span>
+        <h3 class="agent-title">{m.agent_step_connect()}</h3>
+      </div>
+      <div class="agent-step-body">
+        {#if !reveal}<p class="agent-help">{m.agent_step_connect_help()}</p>{/if}
+        {#if reveal}
+          <TokenReveal token={reveal.token} copied={sharing.copied} copyFallback={sharing.copyFallback} error={sharing.error} oncopy={sharing.copy} ondone={done} />
+        {:else if sharing.loading}
+          <p class="panel-muted" role="status">{m.share_loading()}</p>
+        {:else if sharing.sharing}
+          {#if tokens.length > 0}
+            <ul class="share-list" aria-label={m.agent_tab_tokens()}>
+              {#each tokens as item (item.id)}
+                <ShareRow kind="token" {item} busy={sharing.busy} copied={sharing.copied} oncopy={sharing.copy} onrevoke={() => (confirming = { item })} />
+              {/each}
+            </ul>
+          {/if}
+          <button type="button" class="btn btn-sm agent-step-button {tokens.length === 0 ? 'lp-control-brand' : 'lp-control-tonal-brand'}" data-share-new disabled={sharing.busy} onclick={startCreate}>
+            <Icon name="plus" size={14} />{m.agent_new_token()}
+          </button>
+          {#if tokens.length > 0}<p class="panel-meta">{m.agent_token_warning()}</p>{/if}
+        {:else if sharing.error}
+          <button class="btn btn-sm lp-control-tonal-brand" onclick={() => sharing.load()}>{m.common_try_again()}</button>
+        {/if}
+      </div>
+    </section>
+    {#if !reveal}{@render messages()}{/if}
   {/if}
 {/snippet}
 
@@ -241,20 +247,17 @@
   .agent-panel :global([role="tabpanel"]) > :global(*) { flex-shrink: 0; }
   .agent-solo { display: flex; flex: 1 1 0; min-height: 0; flex-direction: column; gap: calc(var(--spacing) * 2); overflow-y: auto; padding: var(--panel-padding); }
   .agent-solo > :global(*) { flex-shrink: 0; }
-  /* The install step at the top of the Tokens tab. The step circle is shared
-     with the reveal's connection step, so its rule lives here for both. */
+  /* The step circle is the one the reveal's steps share, so its rule lives here. */
   .agent-panel :global(.token-number) { display: grid; flex: none; place-items: center; width: 28px; height: 28px; border-radius: 9999px; background: var(--color-row-hover); font-size: 13px; font-weight: 500; }
-  .agent-install { padding-bottom: calc(var(--spacing) * 3); border-bottom: 1px solid var(--color-divider); font-size: 13px; }
-  .agent-install-head { display: flex; align-items: flex-start; gap: calc(var(--spacing) * 3); }
-  .agent-install-text { min-width: 0; }
-  .agent-install-title { margin: 0; font-size: 14px; font-weight: 500; }
-  .agent-install-help { margin: calc(var(--spacing) * 1) 0 0; font-size: 13px; color: var(--panel-muted); }
-  .agent-install-command { display: flex; align-items: center; gap: calc(var(--spacing) * 2); margin-top: calc(var(--spacing) * 3); }
-  .agent-install-command code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; flex: 1 1 auto; min-width: 0; padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3); border-radius: var(--radius-base); background: var(--color-row-hover); font-family: var(--font-mono, monospace); font-size: 12px; overflow-wrap: anywhere; }
-  .share-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: calc(var(--spacing) * 2); padding-block: calc(var(--spacing) * 1.5); }
-  .share-new { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1); padding: .2rem .5rem; border: 0; border-radius: .25rem; background: none; color: var(--color-link); font: inherit; font-size: 13px; cursor: pointer; }
-  .share-new:hover:not(:disabled) { background: var(--color-row-hover); }
-  .share-new:disabled { opacity: .5; cursor: default; }
+  /* Each step is a circle and heading, with its content indented under the heading text. */
+  .agent-step { display: grid; gap: calc(var(--spacing) * 2); }
+  .agent-step-head { display: flex; align-items: center; gap: calc(var(--spacing) * 3); }
+  .agent-step-body { display: grid; gap: calc(var(--spacing) * 2); min-width: 0; padding-left: calc(28px + var(--spacing) * 3); }
+  .agent-title { margin: 0; font-size: 16px; font-weight: 600; }
+  .agent-help { margin: 0; font-size: 13px; color: var(--panel-muted); }
+  .agent-divider { border-top: 1px solid var(--color-divider); }
+  .agent-step-button { display: flex; align-items: center; justify-content: center; gap: calc(var(--spacing) * 2); width: 100%; }
+  .agent-step-failed { color: var(--color-error-text); }
   .share-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--color-divider); }
   .share-copy-fallback { border: 0; background: transparent; resize: none; color: var(--color-text-muted); font-size: var(--panel-meta-size); }
   /* The tasks are a list of two-line rows: the name, then the instruction in

@@ -21,15 +21,15 @@
 {#snippet nameField()}
   <label class="share-field panel-meta">{kind === "link" ? m.shareform_name_optional() : m.common_agent_name()}
     <input class="input share-input" type="text" maxlength="80" placeholder={kind === "token" ? m.shareform_optional() : undefined} bind:this={nameInput} bind:value={draft.name} disabled={busy} />
-    <span>{kind === "link" ? m.shareform_link_name_help() : m.shareform_agent_name_help()}</span>
+    {#if kind === "link"}<span>{m.shareform_link_name_help()}</span>{/if}
   </label>
 {/snippet}
 
 {#snippet budgetField()}
   {#if spends}
     <label class="share-field panel-meta">{m.shareform_budget_label()}
-      <input class="input share-input" type="number" min="0" step="1" bind:value={draft.budget} disabled={busy} />
-      <span>{m.shareform_budget_hint()}</span>
+      <input class="input share-input" type="number" min="0" step="1" placeholder={kind === "token" ? m.shareform_optional() : undefined} bind:value={draft.budget} disabled={busy} />
+      {#if kind === "link"}<span>{m.shareform_budget_hint()}</span>{/if}
     </label>
   {/if}
 {/snippet}

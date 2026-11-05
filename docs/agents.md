@@ -15,7 +15,7 @@ A token lets an agent you start yourself work on one project. The agent can run 
 ### Create a token
 
 1. Open the project, then the Agent panel (the robot icon in the sidebar), then the Tokens tab.
-2. Click New. Pick a permission and an expiry.
+2. Click **New token**. Pick a permission and an expiry.
 3. You can also name the token (its comments and suggestions appear under that name), and set an hourly comment limit. The name defaults to "Agent".
 4. Click Create token.
 
@@ -27,12 +27,12 @@ A token lets an agent you start yourself work on one project. The agent can run 
 
 ### Connect your agent
 
-1. The Tokens tab of the Agent panel starts with the install command. Click its copy button and paste the command into a terminal, or into Claude Code, Codex or another agent, and run it once on each computer. It installs the skill: the agent copies a folder of instructions and a small script into its skills folder. Then start a new agent session, because agents load skills when a session starts.
-2. After you create the token, click **Copy connection instructions** and paste the text into the new session. It holds the token and asks the agent to connect. You do this for each project. You can copy it again later with the copy icon on the token's row. Tokens created before this release have no copy icon; create a new token and revoke the old one to get one.
+1. In the Agent panel's Tokens tab, click **Copy install instructions** and paste them into your agent, once per computer, then start a new agent session. The instructions install the skill: the agent copies a folder of instructions and a small script into its skills folder. Agents load skills when a session starts, which is why the new session matters.
+2. Click **New token**, choose a permission and expiry, then **Copy connection instructions**, and paste into the new session. It holds the token and asks the agent to connect. Do this for each project. Later you can copy them again from the token's row. Tokens created before this release have no copy icon; create a new token and revoke the old one to get one.
 
 The agent connects, tells you what it reached and asks what to do.
 
-The connection instructions contain the token, so they sit in your agent's chat, where your model provider and the chat history can see it. To keep it out of the chat, use **Copy token** under **Other connection methods** in the panel, and the MCP setup below.
+The connection instructions contain the token, so they sit in your agent's chat, where your model provider and the chat history can see it. To keep it out of the chat, use the copy icon next to **Token** under **Other connection methods** in the panel, and the MCP setup below.
 
 Codex's default sandbox blocks network access for shell commands. Allow it if Codex asks, or start Codex with `codex -c sandbox_workspace_write.network_access=true`. If the install is blocked, the agent gives you a command to run in your terminal.
 
