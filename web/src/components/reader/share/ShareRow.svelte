@@ -2,14 +2,17 @@
   import Icon from "../../Icon.svelte";
   import IconButton from "../../IconButton.svelte";
   import { m } from "../../../lib/paraglide/messages.js";
-  import { displayName, metaOf } from "./shared.js";
+  import { connectionInstructions, displayName, metaOf } from "./shared.js";
 
   // One link or one agent token. Both are a name over a line of facts with the
-  // actions at the right. A token's secret is shown once and never kept, so
-  // only a link with a URL offers a copy button. Trash revokes.
+  // actions at the right. A link with a URL offers a copy of the URL. A token
+  // offers a copy of its connection instructions only when the server sent its
+  // full text, which it does for tokens it still holds; older tokens have no
+  // copy icon. Trash revokes.
   let { kind, item, busy = false, copied = "", oncopy, onrevoke } = $props();
   const name = $derived(displayName(kind, item));
   const full = $derived(item.url ? new URL(item.url, location.origin).href : "");
+  const value = $derived(kind === "token" && item.token ? connectionInstructions(item.token) : "");
 </script>
 
 <li class="share-row">
@@ -20,6 +23,10 @@
     {#if full}
       <IconButton icon={copied === full ? "check" : "copy"} label={m.sharerow_copy_label({ name })} title={m.sharerow_copy_link()} tone="plain" size="btn-icon-sm"
                   disabled={busy} onclick={() => oncopy(full)} />
+    {/if}
+    {#if value}
+      <IconButton icon={copied === value ? "check" : "copy"} label={m.sharerow_copy_connection_label({ name })} title={m.sharerow_copy_connection()} tone="plain" size="btn-icon-sm"
+                  disabled={busy} onclick={() => oncopy(value)} />
     {/if}
     <span class="share-revoke">
       <IconButton icon="trash" label={m.sharerow_revoke_label({ name })} title={kind === "link" ? m.common_revoke_link() : m.common_revoke_token()} tone="plain" size="btn-icon-sm"

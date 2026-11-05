@@ -27,10 +27,8 @@ A token lets an agent you start yourself work on one project. The agent can run 
 
 ### Connect your agent
 
-After you create the token, the Agent panel shows two steps, each with a copy button.
-
-1. Click **Copy install command** and paste the text into Claude Code, Codex or another agent. It installs the skill: the agent copies a folder of instructions and a small script into its skills folder. You do this once on each computer. Then start a new agent session, because agents load skills when a session starts.
-2. Click **Copy connection instructions** and paste the text into the new session. It holds the token and asks the agent to connect. You do this for each project. LibrePaper shows the token only once, so keep the panel open until you have copied it.
+1. The Tokens tab of the Agent panel starts with the install command. Click its copy button and paste the command into a terminal, or into Claude Code, Codex or another agent, and run it once on each computer. It installs the skill: the agent copies a folder of instructions and a small script into its skills folder. Then start a new agent session, because agents load skills when a session starts.
+2. After you create the token, click **Copy connection instructions** and paste the text into the new session. It holds the token and asks the agent to connect. You do this for each project. You can copy it again later with the copy icon on the token's row. Tokens created before this release have no copy icon; create a new token and revoke the old one to get one.
 
 The agent connects, tells you what it reached and asks what to do.
 
