@@ -1,8 +1,14 @@
 # Connecting an agent to a LibrePaper project
 
+## The quickest way
+
+Paste the block from the Agents tab into a running Claude Code, Codex or other agent chat. The agent reads its instructions and uses the HTTP helper. This needs no install and no restart. The cost is that the token sits in the chat, where the model provider and the chat history can see it.
+
+The steps below (1 to 4) are the MCP route. It keeps the token out of the chat, because `read -rs` takes it without echoing. It needs the `librepaper` command and a new session.
+
 ## 1. Get a token
 
-In LibrePaper, open the project, then Sharing, the Agent tokens tab, New. Name it (comments appear under that name), pick Read, Comment or Edit, and copy the `lpt_...` string. It is shown once.
+In LibrePaper, open the project, then Share, then the Agents tab, and click New. Pick a permission (Read, Comment or Edit) and an expiry. Under Advanced you can change the name (it defaults to "Agent"; comments appear under it) and the hourly comment limit. Click Create token. Copy the block, or open "Other ways to connect" for the bare `lpt_...` string. It is shown once.
 
 ## 2. Install the `librepaper` command
 
@@ -42,7 +48,7 @@ Use the HTTP helper ([agent.md](agent.md), Step 1b). It reads the token from a 0
 
 - Codex keeps the token in its config: `codex mcp add librepaper --env LIBREPAPER_AGENT_TOKEN="$LIBREPAPER_AGENT_TOKEN" -- librepaper mcp`.
 - Any MCP client: run `librepaper mcp` with `LIBREPAPER_AGENT_TOKEN` in its environment.
-- No MCP at all: `GET` or `POST https://<origin>/api/documents/<slug>/tools[/<name>]` with `Authorization: Bearer lpt_...`. The POST body is the tool's arguments.
+- No MCP at all: `GET https://<origin>/api/documents/<slug>/tools?schema=full` lists the tools with their full schemas, and `POST https://<origin>/api/documents/<slug>/tools/<name>` calls one. Both take `Authorization: Bearer lpt_...`. The POST body is the tool's arguments.
 
 ## Desktop app instead of a token
 
@@ -50,4 +56,4 @@ The LibrePaper desktop app can start Claude Code itself (through the `@agentclie
 
 ## When it stops working
 
-A token stops at its expiry, when revoked (trash button in Sharing), when the project changes owner, or when the owner's account is blocked or erased. Signing out does not stop it. A 401 means one of these, so ask the owner for a new token.
+A token stops at its expiry, when revoked (trash button in the Share panel's Agents tab), when the project changes owner, or when the owner's account is blocked or erased. Signing out does not stop it. A 401 means one of these, so ask the owner for a new token.
