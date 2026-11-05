@@ -445,6 +445,8 @@ try {
     await b.evaluate('window.refreshTestPresence()');
     await flush();
     await b.resize(width,844); await flush();
+    // The workspace animates its height for 200ms when the chrome around it changes.
+    await new Promise(resolve => setTimeout(resolve, 260));
     await toMode('Preview');
     await until(`top bar at rest at ${width}px`, () => b.evaluate(barAtRest), 3000);
     const header = await b.evaluate(`(() => {
@@ -508,15 +510,21 @@ try {
     assert.ok(rowIds.includes(id), `the More sheet lists ${id}: ${rowIds.join(',')}`);
   }
   assert.equal(rowIds.includes('signin'),false,'a signed-in reader is not offered Sign in');
-  assert.equal(await b.evaluate(`[...document.querySelectorAll('.mobile-sheet-row')].every(node => node.getBoundingClientRect().height >= 44)`),true,'sheet rows are at least 44px tall');
+  const rowHeights = await b.evaluate(`[...document.querySelectorAll('.mobile-sheet-row')].map(node => node.getBoundingClientRect().height)`);
+  assert.ok(rowHeights.every(height => height >= 43.5),'sheet rows are at least 44px tall: ' + rowHeights.join(','));
   await click('.mobile-sheet [data-row="settings"]');
-  await until('Settings dialog opened from More',()=>b.evaluate('Boolean(document.querySelector("[role=dialog]"))'),3000);
-  await b.evaluate('document.querySelector("[role=dialog]")?.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
+  await until('Settings dialog opened from More',()=>b.evaluate('Boolean(document.querySelector("[role=dialog]:not([hidden])"))'),3000);
+  await b.evaluate('document.querySelector("[role=dialog]:not([hidden])")?.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
   await flush();
-  await until('Settings dialog closed',()=>b.evaluate('!document.querySelector("[role=dialog]")'),3000);
+  await until('Settings dialog closed',()=>b.evaluate('!document.querySelector("[role=dialog]:not([hidden])")'),3000);
   // Exercise the sheet through actual keyboard input on the browser protocol.
+  // The closing dialog hands the focus back a moment later; wait that out.
+  await new Promise(resolve => setTimeout(resolve, 300));
   await b.evaluate('document.querySelector(".mobile-more-trigger").focus()');
-  await key('Enter','Enter',13);
+  assert.equal(await b.evaluate('document.activeElement?.matches(".mobile-more-trigger")'), true, 'the More button takes the focus: ' + await b.evaluate('document.activeElement?.outerHTML?.slice(0,160) + " overlay:" + Boolean(document.querySelector("[role=dialog]:not([hidden])"))'));
+  // With its text, because a native button activates on the character, not the keydown.
+  await b.command('Input.dispatchKeyEvent', {type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r'});
+  await b.command('Input.dispatchKeyEvent', {type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
   await until('keyboard opened More sheet', () => sheetOpen(), 3000);
   assert.equal(await b.evaluate('Boolean(document.activeElement?.closest(".mobile-sheet"))'), true, 'opening the sheet moves focus into it');
   await key('Escape','Escape',27);

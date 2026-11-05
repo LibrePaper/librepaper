@@ -206,9 +206,9 @@ try {
     // A panel is left through the header's Back before another is chosen.
     if (await visible('nav.phone-shell button[aria-label="Back"]')) await click('nav.phone-shell button[aria-label="Back"]');
     await click('.mobile-more-trigger');
-    await until('More sheet', () => tab.evaluate('Boolean(document.querySelector(".mobile-sheet"))'), 3000);
+    await until('More sheet', () => tab.evaluate('Boolean(document.querySelector(".mobile-sheet")?.getClientRects().length)'), 3000);
     await click(`.mobile-sheet [data-row="${id}"]`);
-    await until('More sheet closed', () => tab.evaluate('!document.querySelector(".mobile-sheet")'), 3000);
+    await until('More sheet closed', () => tab.evaluate('!document.querySelector(".mobile-sheet")?.getClientRects().length'), 3000);
   };
   const waitOutline = async () => until("document outline", () => tab.evaluate("Boolean(document.querySelector('.outline'))"), 10000);
   const waitHeading = async (title) => until(`outline heading ${title}`, () => tab.evaluate(`Boolean([...document.querySelectorAll('.outline .outline-heading')].find(node => node.textContent.trim().includes(${JSON.stringify(title)})))`), 5000);
