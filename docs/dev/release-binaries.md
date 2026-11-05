@@ -133,7 +133,8 @@ Keep the key and the `.p12` out of the repository. Delete the local copies you n
 - The package name is `librepaper`, because `desktop/tauri.linux.conf.json` sets the Linux product name to lowercase. The menu entry still reads LibrePaper.
 - Pull requests build both packages in the "Linux desktop build" workflow (`linux-desktop-build.yml`, artifact `desktop-linux-packages`). They build unsigned Windows installers in the "Windows build" workflow (artifact `desktop-windows-unsigned`).
 - No pull request builds the macOS app. The first macOS test of a change is a release tag.
-- The APT and RPM repositories at vincentarelbundock.github.io/apt and /rpm are meant to serve these two files unchanged once their `projects.json` lists librepaper, which it does not yet. The "Update Linux package repositories" workflow fails until it does.
+- The APT and RPM repositories at vincentarelbundock.github.io/apt and /rpm serve these two files unchanged. The "Update Linux package repositories" workflow fails if either `projects.json` stops listing librepaper.
+- The package description, homepage and publisher are in `desktop/tauri.linux.conf.json`, not `desktop/tauri.conf.json`, because `bundle.publisher` also keys the Windows installer's registry entries.
 
 ## Test a release without publishing a stable version
 
