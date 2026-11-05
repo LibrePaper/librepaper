@@ -49,7 +49,7 @@
   /* Phones: each row is a finger's height, and the copy and revoke buttons are
      finger-sized without making the icons larger. */
   @media (max-width: 767px) {
-    .share-row { min-height: 2.75rem; }
+    .share-row { min-height: 2.75rem; padding-block: 0; }
     .share-actions :global(.icon-control) { min-width: 2.75rem; min-height: 2.75rem; }
   }
 </style>

@@ -38,6 +38,9 @@
     return node.closest('[data-part="content"]') ?? node;
   }
 
+  // Focus starts on the sheet itself, not on the handle: Tab reaches the first
+  // row, and opening does not draw a ring around a control nobody chose.
+
   // Finger swipe. A drag counts if it starts on the handle, or in the list
   // while the list is at its top. Once it moves down it moves the sheet; if
   // the finger moves up first, the touch is left to scroll the list. The
@@ -163,7 +166,7 @@
   {#if row.dot}<span class="row-dot" aria-hidden="true"></span>{/if}
 {/snippet}
 
-<Dialog {open} {onOpenChange} {finalFocusEl}>
+<Dialog {open} {onOpenChange} {finalFocusEl} initialFocusEl={() => document.querySelector(".mobile-sheet")}>
   <Portal>
     <Dialog.Backdrop class="mobile-sheet-backdrop bg-black/35" />
     <Dialog.Positioner class="mobile-sheet-positioner">
@@ -236,6 +239,7 @@
   }
 
   :global(.mobile-sheet) {
+    outline: none;
     display: flex;
     flex-direction: column;
     width: 100%;

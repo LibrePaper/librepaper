@@ -144,11 +144,11 @@ try {
   assert.deepEqual(await b.evaluate('window.testErrors'), [], 'the editor case reports no page errors');
 
   // A tapped file on a phone opens on the preview. The Files column is opened
-  // from the Menu, as a person does it, and chapter-1.html is tapped there.
+  // from the More sheet, as a person does it, and chapter-1.html is tapped there.
   const press = async (selector) => { await b.evaluate(`(() => { const node=document.querySelector(${JSON.stringify(selector)}); node.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'mouse'})); node.click(); })()`); await flush(); };
-  await press('.compact-panels-trigger[aria-label="Menu"]');
-  await until('menu lists the files panel', () => b.evaluate(`Boolean(document.querySelector('.explorer-menu[data-state="open"] [data-panel-id="files"]'))`), 5000);
-  await press('.explorer-menu[data-state="open"] [data-panel-id="files"]');
+  await press('.mobile-more-trigger');
+  await until('the More sheet lists the files panel', () => visible('.mobile-sheet [data-row="files"]'), 5000);
+  await press('.mobile-sheet [data-row="files"]');
   await until('files column shows the files', () => visible('.sidebar .explorer'), 5000);
   await until('chapter-1.html is listed', () => b.evaluate(`Boolean(document.querySelector('.explorer-row[title="chapter-1.html"]'))`), 5000);
   await b.evaluate(`document.querySelector('.explorer-row[title="chapter-1.html"]').click()`);
