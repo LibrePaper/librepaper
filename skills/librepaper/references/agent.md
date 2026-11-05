@@ -16,7 +16,7 @@ If a step is blocked, say exactly what to allow, as [If a sandbox blocks you](#i
 ## The token
 
 - Format: `lpt_<base64url origin>.<slug>.<key>`. Split at the first and last dot. The first part decodes to the server origin (for example `https://app.librepaper.org`). The slug is the project in that server's address bar.
-- The owner makes one in the project: Share, Agents tab, New. It is shown once.
+- The owner makes one in the project's Agent panel (robot icon in the sidebar), Tokens tab, New. It is shown once.
 - It works only on two routes for its own project: `GET` and `POST /api/documents/<slug>/tools[/<name>]`. Nothing else accepts it.
 - It cannot upload images, publish, share or run code. Comments carry the token's name. Each token has an hourly comment budget (`budget_exceeded` when spent). Edit tokens expire after one day by default.
 - It is a credential. Never print it whole, write it into a repo, a config file or a commit, or send it anywhere but its own origin. When echoing it, show `lpt_…` plus the last four characters. A user who pastes it into chat has made their own decision about that; it does not relax this rule for you.
@@ -103,4 +103,4 @@ Then offer, when they apply:
 
 ## Source of truth
 
-The live tool list (`python3 "$H" tools` or MCP `tools/list`) wins over this file. In the repository, the schemas are `crates/librepaper-server/src/server/mcp/tools.json`, the rules the desktop app hands its agents are `crates/librepaper-companion/src/assistant/writing.md`, and the user documentation is `docs/agents.md`.
+The live tool list (`python3 "$H" tools` or MCP `tools/list`) wins over this file. In the repository, the schemas are `crates/librepaper-server/src/server/mcp/tools.json`, and the user documentation is `docs/agents.md`.

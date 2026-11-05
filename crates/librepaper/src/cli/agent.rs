@@ -55,7 +55,7 @@ pub(crate) async fn run_mcp(args: McpArgs) -> Result<(), String> {
         if agent_token.is_empty() {
             return Err(format!(
                 "librepaper mcp needs a connection or an agent token: pass --connection NAME, \
-                 or set {CONNECTION_VARIABLE}, or set {AGENT_TOKEN_VARIABLE} to a token from the project's Sharing panel"
+                 or set {CONNECTION_VARIABLE}, or set {AGENT_TOKEN_VARIABLE} to a token from the project's Agent panel"
             ));
         }
         // The account token may come from LIBREPAPER_TOKEN exported for other
@@ -105,7 +105,7 @@ pub(crate) async fn run_mcp(args: McpArgs) -> Result<(), String> {
 fn parse_agent_token(token: &str) -> Result<(String, String), String> {
     let parsed = token.parse::<AgentToken>().map_err(|_| {
         format!(
-            "{AGENT_TOKEN_VARIABLE} does not hold an agent token; agent tokens look like {AGENT_TOKEN_PREFIX}<server>.<project>.<key>, so create a new one in the project's Sharing panel"
+            "{AGENT_TOKEN_VARIABLE} does not hold an agent token; agent tokens look like {AGENT_TOKEN_PREFIX}<server>.<project>.<key>, so create a new one in the project's Agent panel"
         )
     })?;
     Ok((parsed.origin, parsed.slug.to_string()))
