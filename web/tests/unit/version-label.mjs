@@ -70,7 +70,7 @@ test("a point without a usable time keeps its name, or has no entry", () => {
 
 test("endpoints: the sentinels and moments by their words, a version by its name", () => {
   const names = new Map([["abc1234def", "Named version"]]);
-  assert.equal(endpointLabel(CURRENT, names), m.history_current_version());
+  assert.equal(endpointLabel(CURRENT, names), m.history_latest_version());
   assert.equal(endpointLabel(NOTHING, names), m.history_before_first());
   assert.equal(endpointLabel("frontier:xyz", names), m.history_source_earlier_moment());
   assert.equal(endpointLabel("abc1234def", names), "Named version");

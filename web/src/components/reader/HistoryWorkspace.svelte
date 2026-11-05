@@ -3,6 +3,7 @@
   import { loadMergeEditor } from "../../lib/merge-editor.js";
   import { CURRENT, NOTHING } from "../../lib/history-endpoints.js";
   import { endpointLabel, versionLabels } from "../../lib/version-label.js";
+  import { locale } from "../../lib/locale.js";
   import { m } from "../../lib/paraglide/messages.js";
   import { isMoment } from "../../lib/moment.js";
   import Icon from "../Icon.svelte";
@@ -54,12 +55,23 @@
   // The labels are read in this browser's time zone, as the history list reads them.
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const labels = $derived(versionLabels(versions, { timeZone }));
+  // The Latest end is named by when it was captured, when the result says so.
+  const nameOfEnd = (id) => id === CURRENT && result?.capturedAt ? m.historyworkspace_latest_as_of({ time: new Intl.DateTimeFormat(locale(), { hour: "numeric", minute: "2-digit" }).format(new Date(result.capturedAt)) }) : endpointLabel(id, labels);
+  // What the other end is compared with. The row of buttons below is drawn from it.
+  const COMPARE_WITH = [
+    { basis: "previous", label: () => m.historyworkspace_compare_previous() },
+    { basis: "latest", label: () => m.history_latest_version() },
+    { basis: "pair", label: () => m.historyworkspace_compare_pair() },
+  ];
 
   // A version's archive and restore read a stored version: the live project,
   // the empty start and a moment are not one.
   const stored = (id) => Boolean(id) && id !== CURRENT && id !== NOTHING && !isMoment(id);
-  const olderLabel = $derived(endpointLabel(source.older, labels));
-  const newerLabel = $derived(endpointLabel(source.newer, labels));
+  const olderLabel = $derived(nameOfEnd(source.older));
+  const newerLabel = $derived(nameOfEnd(source.newer));
+  // Restore acts on the version the reader chose, which is the target, not
+  // necessarily the older end.
+  const targetLabel = $derived(nameOfEnd(source.target));
   const filePosition = $derived((result?.changed ?? []).indexOf(path) + 1);
 
   // Focus returns to the endpoint button whose selection was cancelled.
@@ -97,6 +109,16 @@
        does not take the control away from under the reader. Each is a button
        that asks the timeline for a new version to put there. -->
   {#if source.newer}
+    <div class="history-compare-with">
+      <span id="history-compare-with-label" class="panel-muted">{m.historyworkspace_compare_with()}</span>
+      <div class="history-compare-group" role="group" aria-labelledby="history-compare-with-label">
+        {#each COMPARE_WITH as option (option.basis)}
+          <button type="button" class="btn btn-sm" class:lp-control-tonal-brand={source.compareWith === option.basis}
+                  aria-pressed={source.compareWith === option.basis}
+                  onclick={() => source.setCompareWith(option.basis)}>{option.label()}</button>
+        {/each}
+      </div>
+    </div>
     <div class="history-source-bar history-endpoints">
       <button type="button" class="history-endpoint" bind:this={olderButton}
               aria-pressed={source.mode === "select-older"}
@@ -144,7 +166,7 @@
           {/if}
         {/if}
         {#if source.newer === CURRENT}
-          <IconButton icon="refresh-cw" label={m.historyworkspace_reload_current()} size="btn-icon-sm" onclick={() => source.reload()} />
+          <IconButton icon="refresh-cw" label={m.historyworkspace_reload_latest()} size="btn-icon-sm" onclick={() => source.reload()} />
         {/if}
         {#if result.changed.length && !binary}
           <span class="history-changes">
@@ -204,10 +226,10 @@
             {downloading === source.newer ? m.historyworkspace_downloading() : m.historyworkspace_download_newer()}
           </button>
         {/if}
-        {#if stored(source.older)}
+        {#if stored(source.target)}
           <button type="button" class="btn btn-sm lp-control-tonal-brand history-restore"
-                  title={m.historyworkspace_restore_title({ version: olderLabel })}
-                  onclick={() => onrestore?.(source.older)}>{m.historyworkspace_restore_older()}</button>
+                  title={m.historyworkspace_restore_title({ version: targetLabel })}
+                  onclick={() => onrestore?.(source.target)}>{m.historyworkspace_restore_title({ version: targetLabel })}</button>
         {/if}
       </div>
     {/if}
@@ -220,6 +242,8 @@
   .history-workspace { height: 100%; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
   .history-workspace > p, .history-workspace > div[role="alert"] { padding: 1rem; }
   .history-source-bar { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.5rem; }
+  .history-compare-with { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.5rem 0.5rem 0; }
+  .history-compare-group { display: flex; flex-wrap: wrap; gap: 0.25rem; }
   .history-endpoints { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding-bottom: 0; }
   .history-endpoint {
     display: flex; align-items: center; gap: 0.5rem; min-width: 0; min-height: 2.25rem; padding: 0 0.625rem;
