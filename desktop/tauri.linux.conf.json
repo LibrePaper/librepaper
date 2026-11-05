@@ -2,6 +2,10 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "librepaper",
   "bundle": {
+    "publisher": "LibrePaper",
+    "homepage": "https://librepaper.org",
+    "shortDescription": "Collaborative editor for LaTeX, Typst, Quarto, Markdown and HTML projects",
+    "longDescription": "LibrePaper is a desktop app for writing and reviewing documents with\ncollaborators. It connects to a LibrePaper server and adds what a browser\ncannot do: run R and Python code, work with AI agents, pull citations from\nZotero, sync with Git, keep local backups and render with your own latexmk,\nTypst or Quarto.",
     "linux": {
       "deb": {
         "recommends": ["libayatana-appindicator3-1"]
