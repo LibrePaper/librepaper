@@ -9,6 +9,14 @@ export const ROLES = [
 ];
 export const EXPIRIES = [["1d", m.shared_expiry_1d()], ["7d", m.shared_expiry_7d()], ["30d", m.shared_expiry_30d()], ["180d", m.shared_expiry_180d()], ["365d", m.shared_expiry_365d()], ["never", m.shared_expiry_never()]];
 
+// `publishers` and `commenters_policy` describe who the deployment lets
+// through; "nobody" is the one description that rules a permission out.
+export const allows = (sharing, role) => role === "reader" || (role === "commenter"
+  ? sharing?.commenters_policy !== "nobody" : sharing?.publishers !== "nobody");
+
+// An empty budget field means no budget.
+export const budgetOf = (value) => (value == null || value === "" ? null : Number(value));
+
 export const roleLabel = (role) => ROLES.find((entry) => entry.id === role)?.label || role;
 export const dateOf = (iso) => new Date(iso).toLocaleDateString(locale(), { month: "short", day: "numeric" });
 export const fullDateOf = (iso) => new Date(iso).toLocaleDateString(locale(), { month: "short", day: "numeric", year: "numeric" });

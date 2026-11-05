@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { m } from "../../src/lib/paraglide/messages.js";
-import { diagnosticContext } from "../../src/lib/assistant-review.js";
+import { diagnosticContext } from "../../src/lib/diagnostic-context.js";
 import { createReaderBoot } from "../../src/lib/reader/boot.js";
 import { createPendingChat } from "../../src/lib/reader/chat.js";
 import { createReaderCollaboration } from "../../src/lib/reader/collaboration.js";

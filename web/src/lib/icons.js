@@ -328,7 +328,6 @@ export const ICONS = {
   // Lucide's arrow-down, for jumping to the newest message.
   "arrow-down": [["path", "M12 5v14"], ["path", "m19 12-7 7-7-7"]],
   "arrow-up": [["path", "M12 19V5"], ["path", "m5 12 7-7 7 7"]],
-  // Stops a running agent.
 };
 
 const SVG = "http://www.w3.org/2000/svg";

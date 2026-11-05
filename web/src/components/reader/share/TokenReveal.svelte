@@ -1,9 +1,10 @@
 <script>
   // The one time a token is shown. It lives in the parent's component state
-  // and nowhere else; nothing here writes it to storage. The dialog is the
-  // only place it is drawn, and Share.svelte clears it on Done.
+  // and nowhere else; nothing here writes it to storage. The Agent panel draws
+  // this in place of its toolbar and list, and clears it on Done or when the
+  // panel closes.
+  import { onMount } from "svelte";
   import { m } from "../../../lib/paraglide/messages.js";
-  import Modal from "../../Modal.svelte";
   import Icon from "../../Icon.svelte";
   let { token, copied = "", copyFallback = "", error = "", oncopy, ondone } = $props();
   // Claude Code passes its environment to the servers it starts, so the
@@ -41,6 +42,9 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
   let root = $state(null);
   let otherOpen = $state(false);
   let revealed = $state(false);
+  // Focus starts on the first button, the step 1 copy, so Enter copies
+  // rather than dismissing a token that is shown only once.
+  onMount(() => root?.querySelector("button")?.focus());
 </script>
 
 {#snippet copyButton(label, value, tone, wide)}
@@ -51,91 +55,91 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
   </button>
 {/snippet}
 
-<!-- The dialog is a card with a heading, a body and one footer action. Done is
-     the footer action, and the first copy button has focus on open, so Enter
-     does not dismiss a token that is shown only once. -->
-<Modal open narrow title={m.tokenreveal_title()} description={m.tokenreveal_intro()} onclose={ondone}
-       initialFocus={() => root?.querySelector("button")}
-       confirm={{ label: m.common_done(), cancel: false, onclick: ondone }}>
-  <div class="token-reveal" bind:this={root}>
-    <span class="sr-only" role="status" aria-live="polite">{copied ? m.tokenreveal_copied() : ""}</span>
+<div class="token-reveal" bind:this={root}>
+  <h3 class="token-title">{m.tokenreveal_title()}</h3>
+  <p class="token-help">{m.tokenreveal_intro()}</p>
+  <span class="sr-only" role="status" aria-live="polite">{copied ? m.tokenreveal_copied() : ""}</span>
 
-    <section class="token-section">
-      <div class="token-step-head">
-        <span class="token-number" aria-hidden="true">1</span>
-        <div class="token-step-text">
-          <h3 class="token-step-title">{m.tokenreveal_step_install()}</h3>
-          <p class="token-help">{m.tokenreveal_step_install_help()}</p>
-        </div>
+  <section class="token-section">
+    <div class="token-step-head">
+      <span class="token-number" aria-hidden="true">1</span>
+      <div class="token-step-text">
+        <h3 class="token-step-title">{m.tokenreveal_step_install()}</h3>
+        <p class="token-help">{m.tokenreveal_step_install_help()}</p>
       </div>
-      {@render copyButton(m.tokenreveal_copy_install(), installBlock, "tonal", true)}
-    </section>
+    </div>
+    {@render copyButton(m.tokenreveal_copy_install(), installBlock, "tonal", true)}
+  </section>
 
-    <section class="token-section">
-      <div class="token-step-head">
-        <span class="token-number" aria-hidden="true">2</span>
-        <div class="token-step-text">
-          <h3 class="token-step-title">{m.tokenreveal_step_connect()}</h3>
-          <p class="token-help">{m.tokenreveal_step_connect_help()}</p>
-        </div>
+  <section class="token-section">
+    <div class="token-step-head">
+      <span class="token-number" aria-hidden="true">2</span>
+      <div class="token-step-text">
+        <h3 class="token-step-title">{m.tokenreveal_step_connect()}</h3>
+        <p class="token-help">{m.tokenreveal_step_connect_help()}</p>
       </div>
-      {@render copyButton(m.tokenreveal_copy_connect(), connectBlock, "brand", true)}
-      <p class="token-note">{m.tokenreveal_connect_note()}</p>
-    </section>
+    </div>
+    {@render copyButton(m.tokenreveal_copy_connect(), connectBlock, "brand", true)}
+    <p class="token-note">{m.tokenreveal_connect_note()}</p>
+  </section>
 
-    <p class="token-warning">
-      <Icon name="shield-check" size={16} />
-      <span>{m.tokenreveal_warning()}</span>
-    </p>
+  <p class="token-warning">
+    <Icon name="shield-check" size={16} />
+    <span>{m.tokenreveal_warning()}</span>
+  </p>
 
-    {#if error}
-      <p class="lp-text-error token-problem" role="alert">{error}</p>
-    {/if}
-    {#if copyFallback}
-      <textarea class="input token-code token-fallback" readonly rows="3" aria-label={m.share_copy_manual_label()} value={copyFallback} onclick={select}></textarea>
-    {/if}
+  {#if error}
+    <p class="lp-text-error token-problem" role="alert">{error}</p>
+  {/if}
+  {#if copyFallback}
+    <textarea class="input token-code token-fallback" readonly rows="3" aria-label={m.share_copy_manual_label()} value={copyFallback} onclick={select}></textarea>
+  {/if}
 
-    <details class="token-other" bind:open={otherOpen}>
-      <summary>
-        <Icon name={otherOpen ? "chevron-down" : "chevron-right"} size={16} />
-        {m.tokenreveal_other_ways()}
-      </summary>
-      <div class="token-other-body">
-        <p class="token-help">{m.tokenreveal_mcp_advantage()}</p>
+  <details class="token-other" bind:open={otherOpen}>
+    <summary>
+      <Icon name={otherOpen ? "chevron-down" : "chevron-right"} size={16} />
+      {m.tokenreveal_other_ways()}
+    </summary>
+    <div class="token-other-body">
+      <p class="token-help">{m.tokenreveal_mcp_advantage()}</p>
 
-        <label class="token-field">Claude Code
-          <textarea class="input token-code" readonly rows="4" aria-label={m.tokenreveal_commands_aria()} value={commands} onclick={select}></textarea>
-          <span class="token-help">{m.tokenreveal_commands_help()}</span>
-        </label>
-        {@render copyButton(m.tokenreveal_copy_commands(), commands, "tonal", false)}
+      <label class="token-field">Claude Code
+        <textarea class="input token-code" readonly rows="4" aria-label={m.tokenreveal_commands_aria()} value={commands} onclick={select}></textarea>
+        <span class="token-help">{m.tokenreveal_commands_help()}</span>
+      </label>
+      {@render copyButton(m.tokenreveal_copy_commands(), commands, "tonal", false)}
 
-        <label class="token-field">{m.tokenreveal_other_clients()}
-          <textarea class="input token-code" readonly rows="5" aria-label={m.tokenreveal_config_aria()} value={revealed ? config : maskedConfig} onclick={select}></textarea>
-        </label>
-        {@render copyButton(m.tokenreveal_copy_config(), config, "tonal", false)}
+      <label class="token-field">{m.tokenreveal_other_clients()}
+        <textarea class="input token-code" readonly rows="5" aria-label={m.tokenreveal_config_aria()} value={revealed ? config : maskedConfig} onclick={select}></textarea>
+      </label>
+      {@render copyButton(m.tokenreveal_copy_config(), config, "tonal", false)}
 
-        <div class="token-field">
-          <h4 class="token-label">{m.tokenreveal_token()}</h4>
-          <div class="token-row">
-            <button type="button" class="btn btn-sm lp-control-tonal-brand" aria-expanded={revealed} onclick={() => (revealed = !revealed)}>
-              {revealed ? m.tokenreveal_hide_token() : m.tokenreveal_reveal_token()}
-            </button>
-            {@render copyButton(m.tokenreveal_copy_token(), token, "tonal", false)}
-          </div>
-          {#if revealed}
-            <input class="input token-code" type="text" readonly aria-label={m.common_agent_token()} value={token} onclick={select} />
-          {/if}
+      <div class="token-field">
+        <h4 class="token-label">{m.tokenreveal_token()}</h4>
+        <div class="token-row">
+          <button type="button" class="btn btn-sm lp-control-tonal-brand" aria-expanded={revealed} onclick={() => (revealed = !revealed)}>
+            {revealed ? m.tokenreveal_hide_token() : m.tokenreveal_reveal_token()}
+          </button>
+          {@render copyButton(m.tokenreveal_copy_token(), token, "tonal", false)}
         </div>
-
-        <p class="token-help">{m.tokenreveal_api_hint({ endpoint: "POST /api/documents/{slug}/tools/{name}" })}</p>
-        <p class="token-help"><a href="https://librepaper.org/agents.html#agent-tokens" target="_blank" rel="noreferrer">{m.tokenreveal_agent_setup()}</a></p>
+        {#if revealed}
+          <input class="input token-code" type="text" readonly aria-label={m.common_agent_token()} value={token} onclick={select} />
+        {/if}
       </div>
-    </details>
+
+      <p class="token-help">{m.tokenreveal_api_hint({ endpoint: "POST /api/documents/{slug}/tools/{name}" })}</p>
+      <p class="token-help"><a href="https://librepaper.org/agents.html#agent-tokens" target="_blank" rel="noreferrer">{m.tokenreveal_agent_setup()}</a></p>
+    </div>
+  </details>
+
+  <div class="token-done">
+    <button type="button" class="btn btn-sm lp-control-brand" onclick={ondone}>{m.common_done()}</button>
   </div>
-</Modal>
+</div>
 
 <style>
-  .token-reveal { min-width: 0; overflow-wrap: anywhere; }
+  .token-reveal { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+  .token-title { margin: 0; font-size: 15px; font-weight: 600; }
   .token-section { padding-block: calc(var(--spacing) * 3); border-top: 1px solid var(--color-divider); }
   .token-step-head { display: flex; align-items: flex-start; gap: calc(var(--spacing) * 3); margin-bottom: calc(var(--spacing) * 3); }
   .token-number { display: grid; flex: none; place-items: center; width: 28px; height: 28px; border-radius: 9999px; background: var(--color-row-hover); font-size: 13px; font-weight: 500; }
@@ -145,7 +149,7 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
   .token-note { margin: calc(var(--spacing) * 2) 0 0; font-size: 12px; color: var(--panel-muted); }
   .token-copy { display: flex; align-items: center; justify-content: center; gap: calc(var(--spacing) * 2); width: fit-content; max-width: 100%; }
   .token-copy-wide { width: 100%; }
-  /* The dialog body scrolls and clips, so the ring sits inside the button. */
+  /* The panel scrolls and clips, so the ring sits inside the button. */
   .token-copy:focus-visible { outline-offset: -3px; }
   .token-copy-failed { color: var(--color-error-text); }
   .token-warning { display: flex; align-items: flex-start; gap: calc(var(--spacing) * 2); margin: 0; padding: calc(var(--spacing) * 3); border-radius: var(--radius-base); background: var(--color-row-hover); font-size: 12px; }
@@ -161,5 +165,6 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
   .token-label { margin: 0; font-size: 12px; font-weight: 500; color: var(--color-text); }
   .token-row { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 2); }
   .token-code { width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; font-family: var(--font-mono, monospace); font-size: 12px; resize: none; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .token-done { display: flex; justify-content: flex-end; padding-top: calc(var(--spacing) * 3); }
   .token-reveal a { color: var(--color-link); text-decoration: underline; }
 </style>

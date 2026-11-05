@@ -1,1170 +1,207 @@
 <script>
-  import { onMount, tick } from "svelte";
-  import { Menu, Tabs } from "@skeletonlabs/skeleton-svelte";
-  import { getPrivate, post, SHELL_HEADERS, keyHeaders, withoutKey } from "../../lib/api.js";
+  // The agent panel: the tokens that let an agent you run yourself reach this
+  // project, and the tasks you copy into that agent. A user who cannot share
+  // has no tokens, so they see the tasks alone and no tab row.
+  import { tick } from "svelte";
+  import { Tabs } from "@skeletonlabs/skeleton-svelte";
   import PanelHeader from "../PanelHeader.svelte";
   import PanelTabs from "../PanelTabs.svelte";
   import IconButton from "../IconButton.svelte";
   import Icon from "../Icon.svelte";
-  import ExplorerMenu from "../ExplorerMenu.svelte";
-  import ChatTranscript from "../ChatTranscript.svelte";
-  import ChatComposer from "../ChatComposer.svelte";
-  import DesktopOnly from "../DesktopOnly.svelte";
-  import { createAgentClient, documentKey } from "../../lib/agent-client.svelte.js";
-  import * as local from "../../lib/desktop/client.js";
-  import {
-    captureAttachment, capabilityAllows, diagnosticLabel,
-    normalizeCapabilities, scopeLabel, visibleResults,
-    TASK_CATEGORIES, findTask, frequentTasks, inferScope, recordTaskUse, searchTasks, taskBlocker, taskForKind,
-    taskCategoryLabel, taskHint, taskPrompt, taskScopes, taskSections,
-  } from "../../lib/assistant.js";
-  import { humanizeTool, permissionAction, permissionButtons } from "../../lib/agent-permission.js";
+  import Modal from "../Modal.svelte";
+  import ShareRow from "./share/ShareRow.svelte";
+  import ShareForm from "./share/ShareForm.svelte";
+  import TokenReveal from "./share/TokenReveal.svelte";
+  import { allows, budgetOf } from "./share/shared.js";
+  import { createSharing } from "../../lib/sharing.svelte.js";
+  import { TASK_GROUPS } from "../../lib/agent-tasks.js";
   import { m } from "../../lib/paraglide/messages.js";
 
-  let {
-    slug, link, canShare = false, path = "", selection = null, revision = "", request = null,
-    diagnostics = [],
-    comments = [], changes = [], onreview, onpreview, onsettings,
-    userName = m.common_you(),
-    // One instance per session: the wrapper mounts each, shows only the active one,
-    // and renders the session switcher and its new and delete buttons in this
-    // pane's header.
-    session = "", active = true, switcher = undefined, sessionActions = undefined,
-    onstate = undefined,
-  } = $props();
-  // Several panels can be mounted at once, one per session, so element ids
-  // carry the session. The first session keeps the bare ids.
-  const idSuffix = $derived(session ? `-${session}` : "");
-  let client = $state.raw(null);
-  const EMPTY_CONNECTION = { id: "", token: "", messages: [], tasks: {}, connected: false,
-    runnerConnected: false, status: "idle", error: "", capabilities: null,
-    assistantAgent: "", assistantAccess: "" };
-  const connection = $derived(client?.current ?? EMPTY_CONNECTION);
-  const connectionId = $derived(connection.id);
-  const savedAssistantAgent = $derived(connection.assistantAgent || "");
-  const savedAssistantAccess = $derived(connection.assistantAccess || "");
-  let busy = $state(false);
-  let starting = $state(true);
-  const connecting = $derived(starting || connection.status === "connecting");
-  let problem = $state("");
-  let restoreProblem = $state("");
-  let attachment = $state(null);
-  let task = $state(null);
-  let scope = $state("selection");
-  let diagnostic = $state(null);
-  let diagnosticRevision = $state("");
-  let draft = $state("");
-  // The Tasks pane is one compact browser of the whole catalog: frequently used
-  // tasks first, then sections that expand and collapse, with search above them.
-  // A task opens a preparation view. The query, expanded sections and scroll
-  // position survive a visit to that view.
-  let taskView = $state("launcher");
-  let taskQuery = $state("");
-  let chosenTaskId = $state("");
-  let extra = $state("");
-  let listEl = $state(null);
-  let searchEl = $state(null);
-  let backEl = $state(null);
-  let savedScroll = 0;
-  let returnFocus = "";
-  let agentLink = $state("");
-  // What this computer has, as the local app reports it. The browser cannot
-  // read a PATH, so without the desktop app there is nothing to offer and the
-  // panel says so rather than guessing.
-  let installed = $state([]);
-  let restoredConversation = "";
-  let chosenAgent = $state("");
-  let assistant = $state({ running: false, agent: "", access: "" });
-  const paired = Boolean(local.desktop());
-  const chosenInstalled = $derived(installed.find((entry) => entry.id === chosenAgent) || null);
-  // The access levels, as a choice rather than commands: each row carries its
-  // own explanation, so the panel never defines them twice. There is no
-  // read-only level. The document's MCP surface admits a commenter at minimum
-  // and answers a reader link with a flat 404 (server/mcp.rs), so an assistant
-  // on a read link would start with no tools and could not say why. Comment is
-  // the narrowest level that works, and it writes only comments. Edit is needed
-  // for tracked changes.
-  const roles = [
-    { id: "commenter", label: m.common_comment(), help: m.agent_role_comment_help() },
-    { id: "editor", label: m.common_edit(), help: m.agent_role_edit_help(), warn: true },
-  ];
-  const currentRole = $derived.by(() => !caps.verified ? "" : caps.can_edit ? "editor" : caps.can_comment ? "commenter" : caps.can_read ? "reader" : "");
-  // Without sharing rights the panel can only hand out the access the reader
-  // already holds, so the other rows are visible but not selectable.
-  const roleOffered = (entry) => canShare || currentRole === entry.id;
-  // The last agent and access used in this browser, whatever the document:
-  // both nearly always stay put, so neither should be asked for again.
-  // Comment is the default because it writes nothing unreviewed.
-  const LAST_AGENT = "librepaper.agent.agent";
-  const LAST_ACCESS = "librepaper.agent.access";
-  // How long a just-started agent may take to join before the send gives up.
-  const RUNNER_JOIN_MS = 60_000;
-  const AGENT_GRANT_RENEW_MS = 2 * 60_000;
-  const EXPANDED_TASKS = "librepaper.agent.expandedTasks";
-  const TASK_USAGE = "librepaper.agent.taskUsage";
-  function lastUsed(key) { try { return localStorage.getItem(key) || ""; } catch { return ""; } }
-  function rememberLastUsed(key, value) { try { localStorage.setItem(key, value); } catch { /* private window */ } }
-  /// The sections open in the last browser session. With nothing valid saved,
-  /// the first section is open. An empty saved list means every section is closed.
-  function storedExpanded() {
-    try {
-      const names = JSON.parse(lastUsed(EXPANDED_TASKS) || "null");
-      return Array.isArray(names) ? names.filter((name) => TASK_CATEGORIES.includes(name)) : [TASK_CATEGORIES[0]];
-    } catch { return [TASK_CATEGORIES[0]]; }
-  }
-  let expanded = $state(storedExpanded());
-  function storedUsage() {
-    try {
-      const saved = JSON.parse(lastUsed(TASK_USAGE) || "{}");
-      return saved && typeof saved === "object" ? saved : {};
-    } catch { return {}; }
-  }
-  let usage = $state(storedUsage());
+  let { open = false, slug, canShare = false } = $props();
+  const sharing = createSharing({ slug: () => slug, canShare: () => canShare });
 
-  async function mintAgentGrant(documentLink) {
-    const response = await fetch(`/api/documents/${encodeURIComponent(slug)}/agent-token`, {
-      method: "POST",
-      headers: { ...SHELL_HEADERS, ...keyHeaders(documentKey(documentLink)) },
-      credentials: "same-origin", cache: "no-store",
-    });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok || typeof body.token !== "string" || !body.token.startsWith("lpa_")) {
-      throw new Error(body.error || m.agent_sign_in_again());
-    }
-    return body.token;
-  }
-  let access = $state(roles.some((entry) => entry.id === lastUsed(LAST_ACCESS)) ? lastUsed(LAST_ACCESS) : "commenter");
-  const runningLabel = $derived(installed.find((entry) => entry.id === assistant.agent)?.label || chosenInstalled?.label || m.agent_the_agent());
-  let tab = $state("chat");
-  const TABS = [
-    { id: "chat", label: m.common_chat() },
-    { id: "tasks", label: m.agent_tab_tasks() },
-  ];
-  let pendingRequest = $state(null);
-  let commentContext = $state(null);
-  let lastRequestId = "";
-  let lastSelection = $state(null);
-  let suppressedSelection = $state("");
-  let capabilityGeneration = 0;
-  let verifiedCapabilities = $state(null);
-  let elapsedTime = $state(0);
-  let panelEl = $state(null);
-  const selectedText = $derived(attachment?.selection?.exact || "");
-  const caps = $derived(normalizeCapabilities(verifiedCapabilities));
-  const contextPath = $derived(diagnostic?.file || diagnostic?.path || path);
-  // What the composer's context selector shows. A passage wins over the file,
-  // and the file wins over the whole document.
-  const chatScope = $derived(attachment ? "selection" : scope === "document" || !contextPath ? "document" : "file");
-  const contextLabel = $derived(chatScope === "selection"
-    ? (attachment?.path ? m.agent_context_selection_path({ path: attachment.path }) : m.agent_context_selection())
-    : chatScope === "file" ? contextPath : m.common_whole_document());
-  const runnerReady = $derived(connection.connected && connection.runnerConnected);
-  // No agent attached yet, but sending can start the chosen one first.
-  const canStart = $derived(!runnerReady && !assistant.running && Boolean(connection.id) && Boolean(chosenInstalled?.assistant));
-  const preparedTaskValid = $derived(!task || capabilityAllows(caps, task, {
-    attached: attachment || null, path: contextPath, deferAccess: canStart,
-  }));
-  const uncertainDelivery = $derived(Object.values(connection.tasks || {}).some((item) =>
-    item?.delivery === "uncertain" && item.request === draft.trim()));
-  const sendable = $derived(runnerReady && preparedTaskValid && !uncertainDelivery);
-  const startable = $derived(canStart && preparedTaskValid && !uncertainDelivery);
-  const searching = $derived(taskQuery.trim() !== "");
-  const results = $derived(searching ? searchTasks(taskQuery.trim()) : []);
-  const sections = $derived(searching ? [] : taskSections());
-  const frequent = $derived(searching ? [] : frequentTasks(usage));
-  const chosen = $derived(findTask(chosenTaskId));
-  const COMMENT_TASKS = ["address-comment"];
-  const contextTask = $derived(COMMENT_TASKS.includes(chosenTaskId) || chosenTaskId === "fix-diagnostic");
-  const scopeAvailable = (id) => id === "selection" ? Boolean(attachment) : id === "file" ? Boolean(contextPath) : true;
-  // Rows are never disabled. A row names what it is missing, and the preparation view gives the full reason.
-  const staleReason = $derived.by(() => {
-    if (!chosen) return "";
-    if (COMMENT_TASKS.includes(chosenTaskId) && commentContext) {
-      const live = comments.find((item) => String(item.id) === String(commentContext.id));
-      if (!live || live.resolved) return m.agent_comment_gone();
-    }
-    if (diagnostic) {
-      const file = diagnostic.file || diagnostic.path || "";
-      const present = diagnostics.some((item) => (item.file || item.path || "") === file
-        && (item.line || 0) === (diagnostic.line || 0) && item.message === diagnostic.message);
-      if (!present) return m.agent_diagnostic_gone();
-    }
-    return "";
-  });
-  const blocker = $derived(chosen ? taskBlocker(caps, { kind: chosen.kind, scope }, {
-    attached: attachment || null, path: contextPath, deferAccess: canStart,
-  }) : "");
-  // Tracked-change tasks need the agent to hold Edit, whatever the reader holds.
-  const accessGap = $derived(Boolean(chosen) && ["tighten", "rewrite", "proofread", "fix"].includes(chosen.kind) && offeredAccess() !== "editor");
-  const canGrantEdit = $derived(roleOffered({ id: "editor" }));
-  const agentReady = $derived(runnerReady || canStart);
-  const commentTarget = $derived(COMMENT_TASKS.includes(chosenTaskId) && commentContext
-    ? m.agent_comment_target({ text: clip(commentContext.body || commentContext.exact || "", 80) }) : "");
-  const diagnosticTarget = $derived(diagnostic
-    ? (diagnostic.message
-      ? `${contextPath}${diagnostic.line ? `:${diagnostic.line}` : ""} ${diagnostic.message}`.trim()
-      : diagnosticLabel(diagnostic, path))
-    : "");
-  const selectedWords = $derived(selectedText.trim().split(/\s+/).filter(Boolean).length);
-  function clip(text, max) { return text.length > max ? `${text.slice(0, max)}...` : text; }
-  const inputTask = $derived(Object.values(connection.tasks || {}).find((item) => item?.status === "needs_input" && item.input) || null);
-  // Everything that is currently in flight. "Active" (as opposed to queued) is
-  // what Stop can actually interrupt.
-  const activeTasks = $derived(Object.values(connection.tasks || {}).filter((item) =>
-    ["queued", "working", "needs_input"].includes(item.status)));
-  const activeTask = $derived(activeTasks.find((item) => ["working", "needs_input"].includes(item.status)) || null);
-  const queuedTasks = $derived(Object.values(connection.tasks || {}).filter((item) => item?.status === "queued"));
-  // The first queued request the conversation shows, so View has a message to scroll to.
-  const viewableQueued = $derived(queuedTasks.find((item) =>
-    connection.messages.some((message) => message.role === "user" && message.id === item.id)) || null);
-  const queueCount = $derived(queuedTasks.length);
+  // Tokens is the first and default tab for an owner.
+  const TABS = [{ id: "tokens", label: m.agent_tab_tokens() }, { id: "tasks", label: m.agent_tab_tasks() }];
+  let tab = $state("tokens");
+  const current = $derived(canShare ? tab : "tasks");
 
-  // The task carries no start time, so the clock starts when this client
-  // first sees it working, and restarts for each new working task.
-  const workingId = $derived(activeTask?.status === "working" ? activeTask.id : null);
+  let root = $state(null);
+  // Whether the create form is open. It stands in for the toolbar.
+  let creating = $state(false);
+  let draft = $state({ name: "", role: "commenter", until: "7d", budget: "" });
+  // The token waiting to be revoked, or null. It stops a credential somebody
+  // may already be holding.
+  let confirming = $state(null);
+  // The token just made. It is shown once, kept only here, and never written
+  // to any storage.
+  let reveal = $state(null);
+
+  const allowed = (role) => allows(sharing.sharing, role);
+  const tokens = $derived(sharing.sharing?.tokens ?? []);
+  const REVOKE = [m.share_revoke_token_title(), m.share_revoke_token_body(), m.common_revoke_token()];
+
+  // Sharing is only read for an owner, and only while the panel is open. The
+  // tasks need neither, so they never wait for it.
   $effect(() => {
-    if (!workingId) return;
-    const started = Date.now();
-    elapsedTime = 0;
-    const timer = setInterval(() => { elapsedTime = Math.floor((Date.now() - started) / 1000); }, 1000);
-    return () => clearInterval(timer);
-  });
-
-  function formatElapsed(seconds) {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  }
-
-  const activityText = $derived.by(() => {
-    if (activeTask?.status === "working") return `${humanizeTool(activeTask.message) || m.agent_is_working({ agent: runningLabel })}… · ${formatElapsed(elapsedTime)}`;
-    if (activeTask?.status === "needs_input") return m.agent_waiting_permission();
-    return "";
-  });
-  const queueText = $derived(queueCount ? m.agent_queue({ count: queueCount }) : "");
-
-  function viewQueued() {
-    const id = viewableQueued?.id;
-    if (!id) return;
-    const message = panelEl?.querySelector(`.chat-message[data-id="${CSS.escape(id)}"]`);
-    message?.scrollIntoView({ block: "nearest" });
-    message?.querySelector(".queued-note button")?.focus({ preventScroll: true });
-  }
-
-  /// The composer's context choice. Picking a passage attaches the current
-  /// selection when none is attached; picking a file or the whole document
-  /// drops the passage.
-  function chooseContext(value) {
-    if (value === "selection") {
-      if (!attachment) replaceSelection();
-      scope = "selection";
-    } else {
-      if (attachment) removeSelection();
-      scope = value;
-    }
-    if (task) task = { ...task, scope };
-  }
-
-  function validDocumentLink() {
-    try {
-      const chosen = new URL(withoutKey(agentLink || link), location.href);
-      const page = new URL(withoutKey(link), location.href);
-      return ["http:", "https:"].includes(chosen.protocol)
-        && !chosen.username && !chosen.password
-        && chosen.origin === page.origin && chosen.pathname === page.pathname;
-    } catch { return false; }
-  }
-
-  function selectionKey(value) {
-    const source = value?.source || value;
-    return value?.exact ? JSON.stringify([value.exact, source.path, source.prefix, source.suffix, source.position]) : "";
-  }
-
-  /// A drag reports its selection as it grows, so a range that overlaps or
-  /// touches the last one is the same gesture and replaces the attachment.
-  function continuesSelection(previous, next) {
-    const range = (value) => {
-      const source = value?.source || value;
-      const start = source?.position;
-      if (!Number.isInteger(start) || start < 0) return null;
-      return { path: source.path || "", start, end: start + (source.exact || value.exact || "").length };
-    };
-    const before = range(previous);
-    const after = range(next);
-    if (!before || !after || before.path !== after.path) return false;
-    return after.start <= before.end && before.start <= after.end;
-  }
-
-  /// Mint the access link for `mode` and confirm it really grants that
-  /// access. The local app is then told this link directly when the
-  /// assistant starts, so no connection name or key sits in a config file,
-  /// a command line or a chat transcript.
-  async function prepareAccessLink(mode) {
-    if (canShare) {
-      const endpoint = `/api/documents/${encodeURIComponent(slug)}/share`;
-      const sharing = await getPrivate(endpoint);
-      let accessLink = sharing.links?.find((one) => one.role === mode && one.name === "Agent" && one.key);
-      if (!accessLink) {
-        const answer = await post(endpoint, { create: { kind: "link", role: mode, until: "7d", name: "Agent" } });
-        accessLink = answer.created;
-      }
-      if (!accessLink?.url) throw new Error(m.agent_link_create_failed());
-      agentLink = new URL(accessLink.url, location.origin).href;
-    }
-    if (!validDocumentLink()) throw new Error(m.agent_link_wrong_document());
-    await checkCapabilities(agentLink, { strict: true });
-    if (currentRole !== mode) {
-      const role = mode === "editor" ? m.agent_role_word_edit() : mode === "commenter" ? m.agent_role_word_comment() : m.agent_role_word_read();
-      throw new Error(m.agent_link_no_grant({ role }));
-    }
-  }
-
-  async function refreshAgents() {
-    if (!paired) { installed = []; return; }
-    const answer = await local.agents();
-    installed = Array.isArray(answer?.agents) ? answer.agents : [];
-    if (!chosenAgent) chosenAgent = installed.find((entry) => entry.assistant && entry.id === lastUsed(LAST_AGENT))?.id
-      || installed.find((entry) => entry.assistant)?.id || installed[0]?.id || "";
-  }
-  $effect(() => { if (paired) void act(refreshAgents); });
-  $effect(() => {
-    if (!paired || !connectionId) {
-      restoreProblem = "";
-      return;
-    }
-    restoreProblem = "";
-    const conversationId = connectionId;
-    const agent = savedAssistantAgent;
-    const savedAccess = savedAssistantAccess;
-    let stopped = false;
-    let timer;
-    let retryDelay = 5_000;
-    const restore = async () => {
-      const restored = await restoreAssistant(conversationId, agent, savedAccess, () =>
-        !stopped && paired && connectionId === conversationId);
-      if (restored || stopped || connectionId !== conversationId || !paired) return;
-      timer = setTimeout(() => void restore(), retryDelay);
-      retryDelay = Math.min(retryDelay * 2, 30_000);
-    };
-    void restore();
-    return () => { stopped = true; clearTimeout(timer); };
-  });
-  $effect(() => {
-    if (!paired || !assistant.running || !connectionId) return;
-    const conversationId = connectionId;
-    const target = agentLink || link;
-    let stopped = false;
-    const renew = async () => {
-      try {
-        const agentToken = await mintAgentGrant(target);
-        if (!stopped) await local.renewAssistant({ link: withoutKey(target), conversation: conversationId, agentToken });
-      } catch (error) {
-        if (!stopped) problem = error?.message || String(error);
-      }
-    };
-    const timer = setInterval(() => void renew(), AGENT_GRANT_RENEW_MS);
-    return () => { stopped = true; clearInterval(timer); };
-  });
-
-  /// Start the assistant: mint the access link and have the local app drive
-  /// the chosen agent directly against it. Sending the first message is what
-  /// calls this, so it throws for the caller to report.
-  async function startAssistant(mode) {
-    // One assistant per conversation. Starting a second against the same
-    // one would leave the first holding the link it was started with, so a
-    // change of agent or access replaces it rather than racing it.
-    if (assistant.running) {
-      await local.stopAssistant({ link: withoutKey(agentLink || link), conversation: connection.id });
-      assistant = { running: false, agent: "", access: "" };
-    }
-    await prepareAccessLink(mode);
-    const agentToken = await mintAgentGrant(agentLink || link);
-    const answer = await local.startAssistant({
-      link: withoutKey(agentLink || link), conversation: connection.id,
-      chatToken: connection.token, agentToken, agent: chosenAgent, access: mode,
-    });
-    if (!answer?.running) throw new Error(answer?.error || m.agent_not_started());
-    assistant = { running: true, agent: chosenAgent, access: mode };
-    client.rememberAssistant({ agent: chosenAgent, access: mode });
-    rememberLastUsed(LAST_AGENT, chosenAgent);
-    rememberLastUsed(LAST_ACCESS, mode);
-  }
-
-  /// A reader who cannot share can only hand the agent the access they hold,
-  /// whatever was last used elsewhere.
-  function offeredAccess() {
-    return roleOffered({ id: access }) || !currentRole ? access : currentRole;
-  }
-
-  /// Change the agent or the access level. A running assistant holds the link
-  /// it was started with, so a change restarts it rather than leaving the
-  /// selection claiming something that is not in force. That includes a runner
-  /// attached before a reload, whose access this panel cannot know.
-  async function choose(change) {
-    const before = `${chosenAgent} ${access}`;
-    change();
-    if (`${chosenAgent} ${access}` === before) return;
-    if (assistant.running || runnerReady) await act(() => startAssistant(offeredAccess()));
-  }
-
-  /// The local app's status call reports only whether an assistant is
-  /// running; which agent and access level that is comes back from the
-  /// per-conversation record this browser already remembered.
-  async function restoreAssistant(conversationId, agent, savedAccess, isCurrent) {
-    if (restoredConversation === conversationId) return true;
-    if (!agent && !savedAccess) {
-      restoredConversation = conversationId;
-      restoreProblem = "";
-      return true;
-    }
-    try {
-      // Re-fetch the same named link the runner was started with. This keeps
-      // the browser able to renew that runner's grant after a reload, without
-      // persisting the link key in its agent-session record.
-      if (savedAccess) await prepareAccessLink(savedAccess);
-      if (!isCurrent()) return true;
-      const answer = await local.assistantStatus({ link: withoutKey(agentLink || link), conversation: conversationId });
-      if (!isCurrent()) return true;
-      // A successful status response saying the runner is stopped is terminal
-      // for this restore. Network or server errors below remain retryable.
-      if (!answer?.running) {
-        restoredConversation = conversationId;
-        restoreProblem = "";
-        return true;
-      }
-      assistant = { running: true, agent, access: savedAccess };
-      if (savedAccess) access = savedAccess;
-      if (agent) chosenAgent = agent;
-      restoredConversation = conversationId;
-      restoreProblem = "";
-      return true;
-    } catch (error) {
-      // A one-off desktop app or server failure must not disable renewal for a
-      // runner that is still active. The effect retries with bounded backoff.
-      if (!isCurrent()) return true;
-      restoreProblem = error?.message || String(error);
-      return false;
-    }
-  }
-
-  async function act(operation) {
-    busy = true; problem = "";
-    try { await operation(); }
-    catch (error) { problem = error?.message || String(error); }
-    finally { busy = false; }
-  }
-
-  function attach(value, capturedRevision = revision) {
-    if (!value?.exact && !value?.source?.exact) return;
-    const captured = captureAttachment(value, path, value.revision || capturedRevision);
-    if (!captured) return;
-    attachment = captured;
-    lastSelection = value;
-    suppressedSelection = "";
-    if (!task || task.scope === "selection") scope = "selection";
-  }
-
-  function replaceSelection() {
-    const current = selection?.exact ? selection : null;
-    if (current) attach(current, current.revision || revision);
-  }
-
-  function removeSelection() {
-    suppressedSelection = selectionKey(selection || lastSelection);
-    attachment = null;
-    if (scope === "selection") scope = path ? "file" : "document";
-    if (task?.scope === "selection") task = null;
-  }
-
-  function applyRequest(next) {
-    if (!next) return;
-    pendingRequest = null;
-    tab = "tasks";
-    extra = "";
-    task = next.task || null;
-    commentContext = next.comment || null;
-    diagnostic = next.diagnostic || null;
-    diagnosticRevision = next.diagnostic ? next.revision || next.diagnostic.revision || "" : "";
-    if (next.diagnostic) {
-      suppressedSelection = selectionKey(selection || lastSelection);
-      attachment = null;
-    }
-    if (next.selection) {
-      attach(next.selection, next.revision || revision);
-      scope = "selection";
-    } else if (next.diagnostic) {
-      commentContext = null;
-      scope = next.diagnostic.file || next.diagnostic.path ? "file" : "document";
-    }
-    if (next.task) {
-      task = { ...next.task };
-      scope = next.task.scope || scope;
-    }
-    if (next.comment) {
-      const quoted = next.comment.source || next.comment;
-      if (quoted?.exact) attach({ ...quoted, revision: next.revision || next.comment.revision || revision }, next.revision || next.comment.revision || revision);
-      else { suppressedSelection = selectionKey(selection || lastSelection); attachment = null; }
-      scope = attachment ? "selection" : (contextPath ? "file" : "document");
-      task = { kind: "respond", scope };
-    }
-    if (next.diagnostic) task = next.task || { kind: "fix", scope };
-    chosenTaskId = next.comment ? "address-comment"
-      : next.diagnostic ? (next.task?.kind === "explain" ? taskForKind("explain")?.id || "" : "fix-diagnostic")
-      : next.task ? taskForKind(next.task.kind)?.id || "" : "";
-    lastRequestId = next.id || lastRequestId;
-    if (chosenTaskId) enterPrepare();
-    else taskView = "launcher";
-  }
-
-  function requestArrived(next) {
-    if (!next?.id || next.id === lastRequestId) return;
-    lastRequestId = next.id;
-    tab = "tasks";
-    if (taskView === "prepare" && extra.trim()) pendingRequest = next;
-    else applyRequest(next);
-  }
-
-  function enterPrepare() {
-    if (taskView !== "prepare") savedScroll = listEl?.closest('[role="tabpanel"]')?.scrollTop || 0;
-    taskView = "prepare";
-    void tick().then(() => backEl?.focus());
-  }
-
-  function leavePrepare({ focus = true } = {}) {
-    taskView = "launcher";
-    const row = returnFocus;
-    returnFocus = "";
-    void tick().then(() => {
-      const pane = listEl?.closest('[role="tabpanel"]');
-      if (pane) pane.scrollTop = savedScroll;
-      if (focus) (row && listEl?.querySelector(`[data-row="${CSS.escape(row)}"]`) || searchEl)?.focus({ preventScroll: true });
-    });
-  }
-
-  function openTask(entry, { row = "" } = {}) {
-    if (!entry) return;
-    chosenTaskId = entry.id;
-    returnFocus = row;
-    extra = "";
-    scope = inferScope(entry, { attached: attachment, path: contextPath });
-    enterPrepare();
-  }
-
-  function toggleSection(name) {
-    expanded = expanded.includes(name) ? expanded.filter((item) => item !== name) : [...expanded, name];
-    rememberLastUsed(EXPANDED_TASKS, JSON.stringify(expanded));
-  }
-
-  const taskItems = () => [...(listEl?.querySelectorAll(".task-section, .task-row") || [])];
-
-  function searchKeydown(event) {
-    if (event.isComposing) return;
-    if (event.key === "ArrowDown") {
-      const item = taskItems()[0];
-      if (item) { event.preventDefault(); item.focus(); }
-    } else if (event.key === "Enter") {
-      if (!searching || !results[0]) return;
-      event.preventDefault();
-      openTask(results[0]);
-    } else if (event.key === "Escape" && taskQuery) {
-      taskQuery = "";
-      event.preventDefault();
-    }
-  }
-
-  /// A slash anywhere in the launcher, outside a text field, starts a search.
-  function launcherKeydown(event) {
-    if (event.key !== "/" || event.target.matches?.("input, textarea, select, [contenteditable]")) return;
-    event.preventDefault();
-    searchEl?.focus();
-  }
-
-  function resultsKeydown(event) {
-    if (event.isComposing) return;
-    if (event.key === "Escape") { event.preventDefault(); searchEl?.focus(); return; }
-    const items = taskItems();
-    const at = items.indexOf(event.target);
-    if (at < 0) return;
-    const onSection = event.target.classList.contains("task-section");
-    const category = event.target.dataset.category || event.target.closest("ul")?.dataset.category;
-    if (event.key === "ArrowRight" && onSection && event.target.getAttribute("aria-expanded") === "false") {
-      event.preventDefault();
-      toggleSection(category);
-      return;
-    }
-    if (event.key === "ArrowLeft") {
-      if (onSection) {
-        if (event.target.getAttribute("aria-expanded") !== "true") return;
-        event.preventDefault();
-        toggleSection(category);
-        return;
-      }
-      if (!category) return;
-      event.preventDefault();
-      listEl.querySelector(`.task-section[data-category="${CSS.escape(category)}"]`)?.focus();
-      return;
-    }
-    const to = event.key === "ArrowDown" ? at + 1 : event.key === "ArrowUp" ? at - 1
-      : event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : null;
-    if (to === null) return;
-    event.preventDefault();
-    if (to < 0) searchEl?.focus(); else items[Math.min(to, items.length - 1)].focus();
-  }
-
-  function prepareKeydown(event) {
-    if (event.key !== "Escape" || event.target.tagName === "SELECT" || extra) return;
-    event.preventDefault();
-    leavePrepare();
-  }
-
-  /// Picking a task and confirming it is the one decision. A send that fails
-  /// leaves the preparation view as it was so the user can retry.
-  async function sendTask() {
-    if (busy || !chosen || staleReason || blocker || accessGap || !agentReady) return;
-    const entry = chosen;
-    const fromContext = contextTask;
-    task = { kind: entry.kind, scope };
-    const note = extra.trim();
-    const prompt = taskPrompt(entry, scope);
-    if (!fromContext && entry.kind !== "explain") { diagnostic = null; diagnosticRevision = ""; }
-    if (!await send(note ? `${prompt}\n\n${note}` : prompt)) return;
-    if (!fromContext) {
-      usage = recordTaskUse(usage, entry.id);
-      rememberLastUsed(TASK_USAGE, JSON.stringify(usage));
-    }
-    extra = "";
-    tab = "chat";
-    leavePrepare({ focus: false });
-  }
-
-  async function send(text) {
-    if (busy || !(sendable || startable)) return false;
-    let sent = false;
-    await act(async () => {
-      if (!runnerReady) {
-        await startAssistant(offeredAccess());
-        // Starting the agent verified access, so a deferred task is checked again here.
-        const refused = task ? taskBlocker(caps, task, { attached: attachment || null, path: contextPath }) : "";
-        if (refused) throw new Error(refused);
-        await client.untilRunner(RUNNER_JOIN_MS);
-      }
-      try {
-        await client.send(text, {
-          task: task || undefined, attachment,
-          thread: task?.kind === "respond" ? commentContext : null,
-          path: (task ? task.scope === "file" : chatScope !== "document") ? contextPath : "",
-          revision: diagnosticRevision || attachment?.revision || (task?.scope === "selection" ? revision : ""),
-          diagnostic, diagnostics,
-        });
-        sent = true;
-      } catch (error) {
-        // The message is already in the transcript, so the composer must not keep it.
-        if (error?.recorded) sent = true;
-        throw error;
-      }
-    });
-    return sent;
-  }
-
-  /// Stop this conversation's agent and end its channel, before the session is deleted.
-  export async function close() {
-    if (assistant.running) await local.stopAssistant({ link: withoutKey(agentLink || link), conversation: connection.id }).catch(() => {});
-    assistant = { running: false, agent: "", access: "" };
-    await client?.end();
-  }
-
-  async function reconnect() { await act(() => client.reconnect()); }
-
-  function uncertainTasks() { return Object.values(connection.tasks || {}).filter((item) => item?.delivery === "uncertain"); }
-  async function retryTask(id) {
-    await act(async () => {
-      if (!await client.retry(id)) throw new Error(m.agent_retry_gone());
-    });
-  }
-  /// Answer a permission request with one of the options the agent offered.
-  /// The runner rejects anything else, so the two sides cannot drift into
-  /// answering a different question.
-  async function answerInput(option) {
-    const item = inputTask;
-    if (!item?.input?.request_id) return;
-    await act(() => client.respond(item.id, item.input.request_id, { option }));
-  }
-
-  function chooseResult(results) {
-    const reviewable = visibleResults({ context: { results } }, changes);
-    if (reviewable.changes.length) onreview?.(reviewable);
-    else problem = m.agent_changes_gone();
-  }
-
-  // Only the active session takes the editor selection. Reading `active` first
-  // makes this effect run again when the session is switched to.
-  $effect(() => {
-    if (!active || !selection?.exact) return;
-    const same = selectionKey(lastSelection) === selectionKey(selection);
-    if (selectionKey(selection) === suppressedSelection) return;
-    if (!attachment || (same && !attachment.revision && (selection.revision || revision)) || (!same && continuesSelection(lastSelection, selection))) {
-      attach(selection, selection.revision || revision);
+    if (open && canShare) {
+      sharing.load();
+      return () => { sharing.reset(); creating = false; confirming = null; reveal = null; };
     }
   });
-  $effect(() => requestArrived(request));
-  $effect(() => onstate?.({
-    agent: assistant.running || connection.assistantAgent ? runningLabel : "",
-    working: activeTask?.status === "working",
-    needsInput: Boolean(inputTask),
-  }));
-  async function checkCapabilities(nextLink = agentLink, { strict = false } = {}) {
-    const generation = ++capabilityGeneration;
-    verifiedCapabilities = null;
-    // The browser keeps its own access link; the setup prompt grants the agent a separate role.
-    try {
-      const result = await client?.capabilities(nextLink);
-      if (generation !== capabilityGeneration) return null;
-      verifiedCapabilities = result;
-      return result;
-    } catch (error) {
-      if (generation !== capabilityGeneration) return null;
-      verifiedCapabilities = null;
-      if (strict) throw error;
-    }
-    return null;
+
+  async function focusBack() {
+    await tick();
+    root?.querySelector("[data-share-new]")?.focus();
   }
 
-  onMount(() => {
-    agentLink = link || "";
-    client = createAgentClient({ origin: location.origin, slug, link: agentLink || link, onpreview, session });
-    void (async () => {
-      await client.resume();
-      await checkCapabilities(agentLink || link);
-      if (!client.current.id) {
-        try { await client.create(); }
-        catch (error) { problem = error.message; }
-      }
-      starting = false;
-    })();
-    return () => client.dispose();
-  });
+  function pick(value) {
+    tab = value;
+    creating = false;
+    // The manual-copy text may hold the token, and each tab shows it.
+    sharing.clearCopy();
+  }
 
+  function startCreate() {
+    draft = { name: "", role: "commenter", until: "7d", budget: "" };
+    creating = true;
+  }
+
+  function cancelForm() {
+    creating = false;
+    focusBack();
+  }
+
+  async function commit() {
+    if (!creating) return;
+    // A token needs no name, so an unnamed one is called after its kind.
+    const name = draft.name.trim() || m.common_agent();
+    const answer = await sharing.change({ create: { kind: "token", role: draft.role, name, until: draft.until, budget: budgetOf(draft.budget) } });
+    if (!answer) return;
+    creating = false;
+    if (answer.created?.token) reveal = { token: answer.created.token };
+    else focusBack();
+  }
+
+  async function confirmRevoke() {
+    if (!confirming) return;
+    const { item } = confirming;
+    confirming = null;
+    await sharing.change({ revoke: { id: item.id } });
+    focusBack();
+  }
+
+  // The manual-copy fallback may hold the token, so it goes with the reveal.
+  function done() {
+    if (!reveal) return;
+    reveal = null;
+    sharing.clearCopy();
+    focusBack();
+  }
 </script>
 
-<section class="panel panel-tabbed agent-panel" aria-label={m.agent_panel_label()} bind:this={panelEl}>
-  <PanelHeader title={m.common_agent()} />
-  <!-- This stays in the local template scope instead of becoming an unknown
-       snippet prop on PanelTabs. -->
-  {#snippet connectPrompt()}
-    <div class="connect-required">
-      <DesktopOnly feature={m.agent_the_agent()} description={m.common_chat_with_coding_agent()} />
-    </div>
-  {/snippet}
-  <!-- Which agent, with what access: one quiet line, since both nearly always
-       stay as they were last time. Sending starts the agent; changing either
-       while it runs restarts it. It sits in the header of both tabs, since the
-       session belongs to the whole pane. -->
-  {#snippet agentSettings()}
-  <div class="agent-settings">
-    {#if installed.length}
-      <select class="agent-setting" aria-label={m.common_agent()} disabled={busy} value={chosenAgent}
-              onchange={(event) => void choose(() => chosenAgent = event.currentTarget.value)}>
-        {#each installed as entry (entry.id)}<option value={entry.id}>{entry.label}</option>{/each}
-      </select>
-      <span aria-hidden="true">·</span>
-      <select class="agent-setting" aria-label={m.agent_access_label()} disabled={busy || !connection.id} value={access}
-              onchange={(event) => void choose(() => access = event.currentTarget.value)}>
-        {#each roles as entry}<option value={entry.id} disabled={!roleOffered(entry)} title={entry.help}>{entry.label}</option>{/each}
-      </select>
-    {:else}
-      <span>{m.agent_none_found()}</span>
-    {/if}
-  </div>
-  {/snippet}
-  <!-- The header has two lines. The first is the session switcher, supplied by
-       the wrapper, which takes the full width so its label is never cut short.
-       The second holds the agent and access settings on the left, and on the
-       right the session actions (new, delete) followed by the gear, the one way
-       to the desktop app settings. Narrow panels wrap within the same order. -->
-  {#snippet paneHeader()}
-    <div class="pane-header">
-      {#if switcher}<div class="pane-switcher">{@render switcher()}</div>{/if}
-      {#if paired}{@render agentSettings()}{/if}
-      <span class="pane-actions">
-      {#if sessionActions}{@render sessionActions()}{/if}
-      <IconButton icon="sliders" label={m.agent_settings_label()} tone="plain" size="btn-icon-sm"
-                  onclick={() => onsettings?.()} />
-      </span>
-    </div>
-  {/snippet}
-
-  <!-- The permission card sits inside the transcript, through ChatTranscript's
-       `after` snippet, so it reads as part of the conversation rather than a
-       dashboard bolted underneath it. -->
-  {#snippet permissionCard()}
-    {#if inputTask}
-      <div class="permission-card" role="group" aria-label={m.agent_input_request_label()}>
-        <span class="permission-label">{m.agent_permission_required()}</span>
-        <p>{permissionAction(inputTask.input)}</p>
-        <!-- The agent names its own options, so the card renders exactly
-             those, ordered and labelled by kind. Inventing an option it
-             never offered would be answering a question it did not ask. -->
-        <div class="setup-actions">
-          {#each permissionButtons(inputTask.input.options) as option (option.id)}
-            <button class="btn btn-sm {option.primary ? 'lp-control-brand' : ''}" disabled={busy}
-                    onclick={() => void answerInput(option.id)}>{option.label}</button>
-          {/each}
-        </div>
-        {#if inputTask.input.details}
-          {@const details = inputTask.input.details}
-          <details class="permission-info">
-            <summary>{m.common_details()}</summary>
-            <div class="permission-details">
-              {#if details.command}<p><strong>{m.common_command()}</strong><code>{details.command.slice(0, 2048)}{#if details.command.length > 2048}…{/if}</code></p>{/if}
-              {#if details.files?.length}<p><strong>{m.common_files()}</strong><span>{details.files.slice(0, 8).map((path) => String(path).slice(0, 512)).join(", ")}{#if details.files.length > 8} {m.agent_files_more({ count: details.files.length - 8 })}{/if}</span></p>{/if}
-              {#if details.diff}<details><summary>{m.common_review_changes()}</summary><pre>{details.diff.slice(0, 2048)}{#if details.diff.length > 2048}…{/if}</pre></details>{/if}
-            </div>
-          </details>
-        {/if}
-      </div>
-    {/if}
-  {/snippet}
-
-  <!-- The permission card is the last thing in the conversation. -->
-  {#snippet transcriptEnd()}
-    {@render permissionCard()}
-  {/snippet}
-
-  <!-- A queued request says so under its own message, with Cancel while it waits. -->
-  {#snippet queuedNote(message)}
-    {#if message.role === "user" && connection.tasks?.[message.id]?.status === "queued"}
-      {@const item = connection.tasks[message.id]}
-      <p class="queued-note" data-task-id={message.id}>{m.agent_queued()}{#if item.cancelRequested} · {m.agent_cancelling()}{:else} · <button type="button" class="agent-text-action" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(message.id))}>{m.common_cancel()}</button>{/if}</p>
-    {/if}
-  {/snippet}
-
-  <!-- The context choice sits inside the composer, as a quiet trigger. -->
-  {#snippet chatContext()}
-    <Menu onSelect={({ value }) => chooseContext(value)}>
-      <Menu.Trigger class="context-trigger" aria-label={m.agent_context_label({ label: contextLabel })} title={contextLabel}>
-        <span class="context-label">{contextLabel}</span><Icon name="chevron-down" size="0.875rem" />
-      </Menu.Trigger>
-      <ExplorerMenu>
-        <Menu.Item value="selection" class="menuitem" disabled={!attachment && !selection?.exact}>
-          <span class="menuitem-check" aria-hidden="true">{chatScope === "selection" ? "✓" : ""}</span>
-          <span class="menuitem-label">{m.common_selected_passage()}</span>
-        </Menu.Item>
-        <Menu.Item value="file" class="menuitem" disabled={!contextPath}>
-          <span class="menuitem-check" aria-hidden="true">{chatScope === "file" ? "✓" : ""}</span>
-          <span class="menuitem-label">{contextPath ? m.common_current_file_path({ path: contextPath }) : m.common_current_file()}</span>
-        </Menu.Item>
-        <Menu.Item value="document" class="menuitem">
-          <span class="menuitem-check" aria-hidden="true">{chatScope === "document" ? "✓" : ""}</span>
-          <span class="menuitem-label">{m.common_whole_document()}</span>
-        </Menu.Item>
-      </ExplorerMenu>
-    </Menu>
-  {/snippet}
-
-  <!-- The strip, its ids and the layout of a pane are PanelTabs', shared with
-       the collaboration panel. What is left here is what the tabs contain. -->
-  <PanelTabs id={`agent${idSuffix}`} label={m.common_agent()} listClass="agent-tabs" tabs={TABS}
-             value={tab} onchange={(value) => tab = value}>
-
-  <Tabs.Content value="chat" class="agent-tab-content agent-chat-pane">
-  {@render paneHeader()}
-  {#if !paired}
-    {@render connectPrompt()}
-  {:else}
-    <div class="chat-history">
-    {#if !connection.id}<button class="btn lp-control-brand" disabled={busy || connecting} onclick={() => void act(() => client.create())}>{connecting ? m.common_connecting() : m.agent_retry_connection()}</button>{/if}
-    {#if connection.id && !connection.connected}
-      <div role="status"><span class="panel-muted">{m.common_reconnecting()}</span> <button class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => void reconnect()}>{m.agent_reconnect_now()}</button></div>
-    {/if}
-
-  {#each uncertainTasks() as item (item.id)}
-    <p class="panel-meta" role="alert">{m.agent_delivery_unconfirmed()} <button class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => void retryTask(item.id)}>{m.agent_retry_delivery()}</button></p>
-  {/each}
-  <ChatTranscript messages={connection.messages}
-                  emptyTitle={m.common_no_messages_yet()}
-                  emptyText={connection.runnerConnected ? m.agent_empty_connected() : m.agent_empty_send()}
-                  onresult={chooseResult} after={transcriptEnd} messageEnd={queuedNote}
-                  roleLabel={(message) => message.role === "user" ? userName : (message.creator || message.role)} />
-
-  <!-- Missing access or context is worth explaining; a runner that simply
-       is not there yet starts when the message is sent, so that case gets no
-       line here. -->
-  {#if !sendable && (uncertainDelivery || connection.runnerConnected)}
-    <p class="panel-meta">{uncertainDelivery ? m.agent_not_confirmed() : m.agent_task_needs_context()}</p>
+{#snippet messages()}
+  {#if sharing.error}
+    <p class="lp-text-error" role="alert">{sharing.error}</p>
   {/if}
-    </div>
-  <!-- Why sending cannot start this agent, or what its route cannot do. -->
-  {#if chosenInstalled?.assistant_blocked || chosenInstalled?.assistant_note}
-    <!-- An older desktop app sends no assistant_docs, so the link falls back to the agents page. -->
-    <p class="panel-meta" data-agent-note={chosenInstalled.id}>{chosenInstalled.assistant_blocked}{chosenInstalled.assistant_note}{#if chosenInstalled.assistant_blocked} <a href={chosenInstalled.assistant_docs || "https://librepaper.org/agents.html"} target="_blank" rel="noreferrer">{m.common_setup_instructions()}</a>{/if}</p>
+  {#if sharing.copyFallback}
+    <textarea class="share-copy-fallback w-full" readonly rows="3" aria-label={m.share_copy_manual_label()} value={sharing.copyFallback} onclick={(event) => event.currentTarget.select()}></textarea>
   {/if}
-  {#if assistant.agent !== chosenAgent && chosenInstalled?.assistant_fetches}
-    <p class="panel-meta" data-adapter-fetch>{m.agent_adapter_download()}{#if chosenInstalled.assistant_install}{" "}{m.agent_adapter_install()} <code>{chosenInstalled.assistant_install}</code>.{/if}</p>
-  {/if}
-  <!-- The first row says what the running task is doing, with Stop.
-       The second appears only while requests wait, with View and Cancel. -->
-  {#if activeTask || queueCount > 0}
-    <div class="agent-status-rows">
-      {#if activeTask}
-        <div class="agent-status">
-          <p class="agent-progress" role="status">{activityText}</p>
-          <span class="agent-status-actions">
-            {#if assistant.running}
-              {#if activeTask.cancelRequested}
-                <span class="agent-status-note">{m.agent_stopping()}</span>
-              {:else}
-                <button type="button" class="agent-text-action" disabled={busy} onclick={() => void act(() => client.cancel(activeTask.id))}>{m.common_stop()}</button>
-              {/if}
-            {/if}
-          </span>
-        </div>
-      {/if}
-      {#if queueCount > 0}
-        <div class="agent-status agent-queue">
-          <p class="agent-progress agent-queue-text" role={activeTask ? undefined : "status"}>{queueText}</p>
-          <span class="agent-status-actions">
-            {#if viewableQueued}
-              <button type="button" class="agent-text-action" onclick={viewQueued}>{m.agent_view()}</button>
-            {/if}
-            {#if queueCount === 1}
-              {#if queuedTasks[0].cancelRequested}
-                <span class="agent-status-note">{m.agent_cancelling()}</span>
-              {:else}
-                <button type="button" class="agent-text-action" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(queuedTasks[0].id))}>{m.common_cancel()}</button>
-              {/if}
-            {/if}
-          </span>
-        </div>
-      {/if}
-    </div>
-  {/if}
-  <ChatComposer placeholder={m.agent_ask({ agent: chosenInstalled?.label || m.agent_your_agent() })} canSend={!busy && (sendable || startable)} draft={draft} ondraft={(value) => draft = value} onsend={send}
-                context={chatContext} />
-  {/if}
-  </Tabs.Content>
-  <Tabs.Content value="tasks" class="agent-tab-content">
-  {@render paneHeader()}
-  {#if !paired}
-    {@render connectPrompt()}
-  {:else}
-  {#if pendingRequest}
-    <div class="request-warning" role="alert">
-      <span>{m.agent_request_arrived()}</span>
-      <div class="setup-actions"><button class="btn btn-sm lp-control-brand" onclick={() => applyRequest(pendingRequest)}>{m.common_replace()}</button><button class="btn btn-sm" onclick={() => pendingRequest = null}>{m.agent_keep_current()}</button></div>
-    </div>
-  {/if}
-  {#if taskView === "prepare" && chosen}
-    <!-- Escape is a convenience on top of the Back button. -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="agent-context task-prepare" onkeydown={prepareKeydown}>
-      <div class="task-head">
-        <button class="task-back" aria-label={m.agent_back_tasks()} bind:this={backEl} onclick={() => leavePrepare()}><Icon name="arrow-left" size={18} /></button>
-        <h3 class="task-title">{chosen.label}</h3>
-      </div>
-      <p class="panel-muted task-description">{chosen.description}</p>
-      {#if commentTarget}<p class="panel-meta task-target" title={commentContext.body || commentContext.exact || ""}>{commentTarget}</p>{/if}
-      {#if diagnostic}
-        <p class="panel-meta task-target" title={diagnosticTarget}>{diagnosticTarget}</p>
-        {#if !contextTask}<div class="attachment-actions"><button class="btn btn-sm" onclick={() => { diagnostic = null; diagnosticRevision = ""; }}>{m.agent_remove_diagnostic()}</button></div>{/if}
-      {/if}
-      {#if !contextTask && taskScopes(chosen).length > 1}
-        <label class="label task-scope">{m.agent_scope()}
-          <select class="select" value={scope} onchange={(event) => scope = event.currentTarget.value}>
-            {#each taskScopes(chosen) as id}
-              <option value={id} disabled={!scopeAvailable(id)}>{scopeLabel(id, { path: contextPath, attached: id === "selection" ? attachment : null })}</option>
-            {/each}
-          </select>
-        </label>
-      {/if}
-      {#if scope === "selection" && attachment && !commentTarget}
-        <div class="attachment">
-          <strong>{m.agent_attachment_summary({ kind: attachment.anchored ? m.agent_selected_text() : m.agent_quoted_text(), count: selectedWords, path: attachment.path || path || m.agent_document_word() })}</strong>
-          <blockquote title={selectedText}>{selectedText}</blockquote>
-          <div class="attachment-actions"><button class="btn btn-sm" onclick={removeSelection}>{m.common_remove()}</button><button class="btn btn-sm" disabled={!selection?.exact} onclick={replaceSelection}>{m.agent_replace_selection()}</button></div>
-          {#if !attachment.anchored}<p class="panel-muted" role="alert">{m.agent_preview_passage_note()}</p>{/if}
-        </div>
-      {/if}
-      <textarea class="input task-extra" rows="1" placeholder={m.agent_extra_placeholder()} aria-label={m.agent_extra_label()}
-                value={extra} oninput={(event) => extra = event.currentTarget.value}
-                onkeydown={(event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void sendTask(); } }}></textarea>
-      {#if staleReason || accessGap || blocker || !agentReady}
-        <p class="panel-meta" role="status">{staleReason || (accessGap ? (canGrantEdit ? m.agent_task_tracked_grant() : m.agent_task_tracked_no_access()) : blocker || m.agent_start_first())}</p>
-      {/if}
-      <div class="prepare-actions"><button class="btn btn-sm lp-control-brand" disabled={busy || Boolean(staleReason) || Boolean(blocker) || accessGap || !agentReady} onclick={() => void sendTask()}>{m.agent_send_to_agent()}</button></div>
-    </div>
-  {:else}
-    {#snippet taskRow(entry, group)}
-      {@const hint = taskHint(entry, { attached: attachment, path: contextPath })}
-      {@const describedBy = `task-desc-${group.replace(/\W+/g, "-")}-${entry.id}${session ? `-${session.replace(/\W+/g, "-")}` : ""}`}
-      <li>
-        <button class="task-row" class:active={searching && entry.id === results[0]?.id} class:unavailable={Boolean(hint)}
-                data-task-id={entry.id} data-row={`${group}:${entry.id}`}
-                title={hint ? `${entry.description} ${hint.reason}` : entry.description}
-                aria-describedby={describedBy}
-                onclick={(event) => openTask(entry, { row: event.currentTarget.dataset.row })}>
-          <span class="task-line">
-            <span class="task-name">{entry.label}</span>
-            {#if hint}<span class="task-hint">{hint.short}</span>{/if}
-          </span>
-          {#if searching}
-            <span class="task-summary">{entry.description}</span>
-            <span class="task-meta">{entry.categories.join(" / ")}</span>
-          {:else}
-            <span class="task-summary task-summary-focus">{entry.description}</span>
-          {/if}
+{/snippet}
+
+{#snippet tokensPane()}
+  {#if reveal}
+    <TokenReveal token={reveal.token} copied={sharing.copied} copyFallback={sharing.copyFallback} error={sharing.error} oncopy={sharing.copy} ondone={done} />
+  {:else if sharing.loading}
+    <p class="panel-muted" role="status">{m.share_loading()}</p>
+  {:else if sharing.sharing}
+    <p class="panel-meta">{m.share_tokens_intro()}</p>
+    {#if !creating}
+      <div class="share-toolbar">
+        <button type="button" class="share-new" data-share-new disabled={sharing.busy} onclick={startCreate}>
+          <Icon name="plus" size={14} />{m.share_new()}
         </button>
-        <span class="visually-hidden" id={describedBy}>{hint ? `${entry.description} ${hint.reason}` : entry.description}</span>
-      </li>
-    {/snippet}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="agent-context task-launcher" onkeydown={launcherKeydown}>
-      <div class="task-browser-head">
-        <input bind:this={searchEl} class="input task-search" type="search" placeholder={m.agent_search_placeholder()} aria-label={m.agent_search_label()} aria-controls={`agent-task-results${idSuffix}`}
-               value={taskQuery} oninput={(event) => taskQuery = event.currentTarget.value}
-               onkeydown={searchKeydown} />
       </div>
-      <!-- The search box and the rows own the keyboard; this only routes it. -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div id={`agent-task-results${idSuffix}`} class="task-results" bind:this={listEl} onkeydown={resultsKeydown}>
-        {#if searching}
-          {#if results.length}<ul class="task-list" aria-label={m.agent_matching_tasks()}>{#each results as entry (entry.id)}{@render taskRow(entry, "search")}{/each}</ul>
-          {:else}<p class="panel-muted" role="status">{m.agent_no_match({ query: taskQuery.trim() })}</p>{/if}
-        {:else}
-          {#if frequent.length}
-            <h4 class="task-group-label" id={`task-frequent-label${idSuffix}`}>{m.agent_frequent()}</h4>
-            <ul class="task-list" aria-labelledby={`task-frequent-label${idSuffix}`}>
-              {#each frequent as entry (entry.id)}{@render taskRow(entry, "frequent")}{/each}
-            </ul>
-          {/if}
-          {#each sections as section, index (section.category)}
-            {@const open = expanded.includes(section.category)}
-            <button class="task-section" data-category={section.category} aria-expanded={open}
-                    aria-controls={`task-section-${index}${idSuffix}`} onclick={() => toggleSection(section.category)}>
-              <span class="task-chevron" aria-hidden="true">▸</span><span class="task-section-name">{taskCategoryLabel(section.category)}</span><span class="task-count">{section.entries.length}</span>
-            </button>
-            <ul class="task-list" id={`task-section-${index}${idSuffix}`} data-category={section.category}>
-              {#if open}{#each section.entries as entry (entry.id)}{@render taskRow(entry, section.category)}{/each}{/if}
-            </ul>
-          {/each}
-        {/if}
-      </div>
+    {/if}
+    {#if creating}
+      <ShareForm kind="token" bind:draft busy={sharing.busy} {allowed} onsubmit={commit} oncancel={cancelForm} />
+    {/if}
+    {#if tokens.length === 0}
+      <p class="panel-meta">{m.share_no_tokens()}</p>
+    {:else}
+      <ul class="share-list" aria-label={m.agent_tab_tokens()}>
+        {#each tokens as item (item.id)}
+          <ShareRow kind="token" {item} busy={sharing.busy} copied={sharing.copied} oncopy={sharing.copy} onrevoke={() => (confirming = { item })} />
+        {/each}
+      </ul>
+    {/if}
+    <p class="panel-meta">{m.share_tokens_scope_note()}</p>
+    {@render messages()}
+  {:else}
+    {@render messages()}
+    {#if sharing.error}<button class="btn btn-sm lp-control-tonal-brand" onclick={() => sharing.load()}>{m.common_try_again()}</button>{/if}
+  {/if}
+{/snippet}
+
+{#snippet tasksPane()}
+  <p class="panel-muted">{m.agent_tasks_intro()}</p>
+  {#each TASK_GROUPS as group (group.id)}
+    <h3 class="agent-task-group">{group.label}</h3>
+    <ul class="agent-task-list" aria-label={group.label}>
+      {#each group.tasks as task (task.id)}
+        {@const copyLabel = m.agent_task_copy_label({ task: task.label })}
+        <li class="agent-task">
+          <div class="agent-task-text">
+            <span class="agent-task-name">{task.label}</span>
+            <span class="agent-task-body">{task.text}</span>
+          </div>
+          <IconButton icon={sharing.copied === task.text ? "check" : "copy"} label={copyLabel} title={copyLabel} tone="plain" size="btn-icon-sm"
+                      onclick={() => sharing.copy(task.text)} />
+        </li>
+      {/each}
+    </ul>
+  {/each}
+  {@render messages()}
+{/snippet}
+
+<section class="panel panel-tabbed agent-panel" aria-label={m.agent_panel_label()} bind:this={root}>
+  <PanelHeader title={m.common_agent()} />
+  {#if canShare}
+    <PanelTabs id="agent" label={m.common_agent()} tabs={TABS} value={current} onchange={pick}>
+      <Tabs.Content value="tokens">{#if current === "tokens"}{@render tokensPane()}{/if}</Tabs.Content>
+      <Tabs.Content value="tasks">{#if current === "tasks"}{@render tasksPane()}{/if}</Tabs.Content>
+    </PanelTabs>
+  {:else}
+    <div class="agent-solo">
+      {@render tasksPane()}
     </div>
   {/if}
-  {/if}
-  </Tabs.Content>
-  </PanelTabs>
-  {#if problem || restoreProblem || connection.error}<p class="panel-muted" role="alert">{problem || restoreProblem || connection.error}</p>{/if}
 </section>
 
+{#if confirming}
+  <Modal open title={REVOKE[0]} onclose={() => (confirming = null)}
+         confirm={{ label: REVOKE[2], tone: "error", oncancel: () => (confirming = null), onclick: confirmRevoke }}>
+    <p>{REVOKE[1]}</p>
+  </Modal>
+{/if}
+
 <style>
-  /* The panel's arrangement -- padding off the panel and onto each pane, the
-     strip flush at the top -- is `.panel-tabbed`, shared with the
-     collaboration panel. What is left here is this panel's own: its panes
-     scroll as a whole, except the chat, whose transcript scrolls under a
-     composer that stays put. */
-  .agent-panel { gap:calc(var(--spacing) * 2); }
-  .agent-panel > :global(*) { flex-shrink:0; }
-  .agent-panel :global([role="tabpanel"]) { overflow-y:auto; gap:calc(var(--spacing) * 2); }
-  .agent-panel :global(.agent-chat-pane) { overflow:hidden; }
-  .agent-panel > :global(p[role="alert"]) { padding-inline:var(--panel-padding); }
-  /* The session switcher takes the first line of both panes. The agent and
-     access line sits at the left of the second, and the actions (new, delete,
-     gear) at the right. When the panel is too narrow, the line wraps and the
-     actions stay at the end. */
-  .pane-header { display:flex; align-items:center; flex-wrap:wrap; justify-content:space-between; gap:calc(var(--spacing) * .5); }
-  .pane-switcher { flex:1 0 100%; min-width:0; }
-  .pane-actions { display:flex; gap:calc(var(--spacing) * .5); margin-left:auto; }
-  .chat-history { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:calc(var(--spacing) * 2); overflow-y:auto; }
-  .chat-history > :global(*) { flex-shrink:0; }
-  .agent-panel :global(.agent-tab-content .chat-form) { flex-shrink:0; }
-  .agent-context { display:flex; flex-direction:column; gap:calc(var(--spacing) * 2); }
-  .agent-settings { display:flex; align-items:center; gap:calc(var(--spacing) * .5); min-width:0; font-size:.8em; color:var(--color-text-secondary); }
-  .agent-setting { border:0; background:transparent; color:inherit; font:inherit; padding:0; cursor:pointer; max-width:12rem; }
-  /* The whole not-ready warning: one line, the desktop app notice, and the
-     refusal message if there is one. */
-  .connect-required { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5);
-                       padding:calc(var(--spacing) * 2); background:var(--color-subtle);
-                       border-left:3px solid var(--color-brand); }
-  /* Agent and access are two settings, each with one value in force, so each
-     is a select. A row of buttons had to signal the chosen one and the signal
-     was easy to miss; a select shows its value as its content. */
-  .setup-actions, .attachment-actions { display:flex; align-items:center; flex-wrap:wrap; gap:var(--spacing); }
-  /* Each status row is one line with its text actions at the right: the running
-     task, then the queue. A row never wraps, so the composer does not move as it changes. */
-  .agent-status-rows { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5); flex-shrink:0; }
-  .agent-status { display:flex; align-items:center; gap:var(--spacing); min-width:0; flex-shrink:0; }
-  .agent-progress { flex:1 1 auto; min-width:0; margin:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:var(--panel-muted); font-size:var(--panel-meta-size); line-height:var(--panel-line-height); }
-  .agent-status-actions { display:flex; flex:none; align-items:center; gap:calc(var(--spacing) * .5); }
-  .agent-status-note { color:var(--panel-muted); font-size:var(--panel-meta-size); white-space:nowrap; }
-  .agent-panel :global(.agent-text-action) { border:0; background:transparent; padding:0 var(--spacing); border-radius:var(--radius-base); font:inherit; font-size:var(--panel-meta-size); line-height:var(--panel-line-height); color:var(--color-text-secondary); cursor:pointer; white-space:nowrap; }
-  .agent-panel :global(.agent-text-action:hover:not(:disabled)) { color:var(--color-text); text-decoration:underline; }
-  .agent-panel :global(.agent-text-action:focus-visible) { outline:2px solid var(--color-focus); outline-offset:1px; }
-  .agent-panel :global(.agent-text-action:disabled) { opacity:.5; cursor:default; }
-  .agent-panel :global(.queued-note) { margin:0; color:var(--panel-muted); font-size:var(--panel-meta-size); line-height:var(--panel-line-height); }
-  .agent-panel :global(.context-trigger) { display:inline-flex; align-items:center; gap:calc(var(--spacing) * .5); min-width:0; max-width:100%; padding:0; border:0; background:transparent; border-radius:var(--radius-base); font:inherit; font-size:var(--panel-meta-size); line-height:var(--panel-line-height); color:var(--panel-muted); cursor:pointer; }
-  .agent-panel :global(.context-trigger:hover) { color:var(--color-text); }
-  .agent-panel :global(.context-trigger:focus-visible) { outline:2px solid var(--color-focus); outline-offset:1px; }
-  .agent-panel :global(.context-label) { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-  @media (pointer: coarse) { .agent-panel :global(.agent-text-action), .agent-panel :global(.context-trigger) { min-height:2.75rem; } }
-  /* The task browser is typography, spacing and a hover background, not a
-     stack of controls. The head stays put while the pane scrolls under it. */
-  .task-launcher, .task-prepare { gap:var(--spacing); }
-  .task-browser-head { position:sticky; z-index:1; display:flex; flex-direction:column; gap:var(--spacing);
-                       top:calc(var(--panel-padding) * -1); margin-top:calc(var(--spacing) * -2); padding-top:var(--panel-padding);
-                       padding-bottom:var(--spacing); background:var(--color-sidebar); }
-  .task-search { width:100%; min-width:0; }
-  .task-results { display:flex; flex-direction:column; }
-  .task-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; }
-  /* Headings sit at the rows' size and stand out by weight, so a heading is
-     never smaller than the tasks under it. */
-  .task-group-label { margin:0; padding:.25rem .5rem; font-size:1em; font-weight:600; }
-  .task-section { display:flex; align-items:center; gap:var(--spacing); width:100%; margin-top:var(--spacing); padding:.25rem .5rem;
-                  border:0; background:transparent; cursor:pointer; text-align:left; font:inherit; font-weight:600;
-                  color:inherit; }
-  .task-section:first-child { margin-top:0; }
-  /* The chevron turns with the state and does not animate. */
-  .task-chevron { flex:none; display:inline-block; width:.75em; }
-  .task-section[aria-expanded="true"] .task-chevron { transform:rotate(90deg); }
-  .task-count { margin-left:auto; font-size:.8em; font-weight:400; color:var(--color-text-secondary); }
-  .task-row { display:flex; flex-direction:column; justify-content:center; gap:.125rem; width:100%; min-height:2.25rem;
-              padding:.25rem .5rem; border:0; background:transparent; border-radius:var(--radius-base, .25rem);
-              cursor:pointer; text-align:left; font:inherit; color:inherit; }
-  .task-row:hover, .task-row.active { background:var(--color-subtle); }
-  @media (pointer: coarse) { .task-row, .task-section { min-height:2.75rem; } }
-  .task-section:focus-visible, .task-row:focus-visible { outline:2px solid var(--color-focus); outline-offset:-2px; }
-  .task-line { display:flex; gap:var(--spacing); min-width:0; }
-  .task-name { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-weight:400; }
-  .task-row.unavailable .task-name { color:var(--color-text-secondary); }
-  .task-hint { flex:none; margin-left:auto; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
-               font-size:.75em; color:var(--color-text-secondary); }
-  .task-meta { font-size:.75em; color:var(--color-text-secondary); }
-  .task-summary { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; overflow:hidden;
-                  font-size:.8em; color:var(--color-text-secondary); }
-  /* Keyboard users see the description of the focused row; pointer users get it as a tooltip. */
-  .task-summary-focus { display:none; }
-  .task-row:focus-visible .task-summary-focus { display:-webkit-box; }
-  .visually-hidden { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
-  .task-head { display:flex; align-items:center; gap:var(--spacing); }
-  .task-back { display:inline-flex; align-items:center; justify-content:center; padding:calc(var(--spacing) * 1.5); margin-left:calc(var(--spacing) * -1.5); border:0; border-radius:var(--radius-base); background:none; color:inherit; cursor:pointer; }
-  .task-back:hover { background-color:var(--color-row-hover); }
-  .task-title { margin:0; font-weight:600; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-  .task-description { margin:0; font-size:.85em; }
-  .task-target { margin:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-  .task-scope .select, .task-prepare .input { width:100%; min-width:0; }
-  .task-extra { field-sizing:content; min-height:2rem; max-height:8rem; overflow:auto; resize:none; }
-  .prepare-actions { display:flex; justify-content:flex-end; }
-  .attachment { display:flex; flex-direction:column; gap:var(--spacing); padding:calc(var(--spacing) * 1.5); border-left:3px solid var(--color-brand); background:var(--color-subtle); }
-  .attachment blockquote { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; line-clamp:3; overflow:hidden; margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
-  .request-warning { display:flex; flex-direction:column; gap:var(--spacing); padding:calc(var(--spacing) * 2); background:var(--color-warning-bg); overflow-wrap:anywhere; }
-  /* A compact card inside the transcript rather than a dashboard block below
-     it: a thin accent border says "this needs you" without a heavy frame. */
-  .permission-card { display:flex; flex-direction:column; gap:calc(var(--spacing) * .75); padding:calc(var(--spacing) * 1.5); border-left:3px solid var(--color-warning-solid); background:var(--color-subtle); }
-  .permission-card p { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
-  .permission-label { font-size:.7rem; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--color-text-secondary); }
-  .permission-info summary { cursor:pointer; font-size:.8em; color:var(--color-text-secondary); }
-  .permission-details { display:flex; flex-direction:column; gap:var(--spacing); overflow:hidden; margin-top:var(--spacing); }
-  .permission-details p { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5); }
-  .permission-details code, .permission-details pre { max-height:14rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
-  .permission-details pre { margin:0; padding:var(--spacing); background:var(--color-divider); }
-  .agent-panel :global(.chat-transcript-wrap) { flex:1 0 8rem; min-height:8rem; }
+  .agent-panel :global([role="tabpanel"]) { overflow-y: auto; gap: calc(var(--spacing) * 2); }
+  .agent-panel :global([role="tabpanel"]) > :global(*) { flex-shrink: 0; }
+  .agent-solo { display: flex; flex: 1 1 0; min-height: 0; flex-direction: column; gap: calc(var(--spacing) * 2); overflow-y: auto; padding: var(--panel-padding); }
+  .agent-solo > :global(*) { flex-shrink: 0; }
+  .share-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: calc(var(--spacing) * 2); padding-block: calc(var(--spacing) * 1.5); }
+  .share-new { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1); padding: .2rem .5rem; border: 0; border-radius: .25rem; background: none; color: var(--color-link); font: inherit; font-size: 13px; cursor: pointer; }
+  .share-new:hover:not(:disabled) { background: var(--color-row-hover); }
+  .share-new:disabled { opacity: .5; cursor: default; }
+  .share-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--color-divider); }
+  .share-copy-fallback { border: 0; background: transparent; resize: none; color: var(--color-text-muted); font-size: var(--panel-meta-size); }
+  /* The tasks are a list of two-line rows: the name, then the instruction in
+     muted type, with one copy button at the right. Only the button is live. */
+  .agent-task-group { margin: calc(var(--spacing) * 1) 0 0; font-size: var(--panel-meta-size); font-weight: 600; color: var(--panel-muted); }
+  .agent-task-list { margin: 0; padding: 0; list-style: none; }
+  .agent-task { display: flex; align-items: center; gap: calc(var(--spacing) * 2); padding-block: calc(var(--spacing) * 1.5); border-top: 1px solid var(--color-divider); }
+  .agent-task:first-child { border-top: 0; }
+  .agent-task-text { display: flex; flex: 1 1 auto; flex-direction: column; gap: calc(var(--spacing) * .5); min-width: 0; }
+  .agent-task-name { font-size: 13px; font-weight: 500; line-height: 1.3; }
+  .agent-task-body { font-size: 12.5px; line-height: 1.4; color: var(--panel-muted); overflow-wrap: anywhere; }
 </style>
