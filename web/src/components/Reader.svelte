@@ -116,7 +116,7 @@
   import SymbolPalette from "./SymbolPalette.svelte";
   import MathPalette from "./MathPalette.svelte";
   import Sidebar from "./layout/Sidebar.svelte";
-  import BottomNav from "./mobile/BottomNav.svelte";
+  import HeaderTabs from "./mobile/HeaderTabs.svelte";
   import ModeSwitch from "./mobile/ModeSwitch.svelte";
   import MoreSheet from "./mobile/MoreSheet.svelte";
   import CommandView from "./mobile/CommandView.svelte";
@@ -752,9 +752,7 @@
   function placeBar(rect) {
     if (rect) {
       const frame = document.querySelector(".viewport").getBoundingClientRect();
-      // The bottom navigation covers the lowest 3.5rem of the screen when it
-      // shows, and the selection bar must not land under it.
-      const visibleHeight = (window.visualViewport?.height ?? innerHeight) - (compact && bottomNavShown ? 3.5 * unit : 0);
+      const visibleHeight = window.visualViewport?.height ?? innerHeight;
       bar = {
         shown: true,
         ...placeSelectionBar({
@@ -2717,7 +2715,7 @@
     mobileCommand = "";
     keyboardOpen = false;
   });
-  // The keyboard hides the bottom bar and narrows the workspace. When it
+  // The keyboard hides the mode switch and narrows the workspace. When it
   // comes up the caret is brought back into sight above it.
   $effect(() => compact
     ? watchKeyboard((open) => {
@@ -2755,14 +2753,12 @@
 
   // The Source / Document switch is for a project with a source to switch to,
   // and is not offered over a panel or a command list.
-  const modeSwitchShown = $derived(sourceOpen && !comparing && !mobileCommand && activeMobileView !== "sidebar");
-  const bottomNavShown = $derived(!keyboardOpen && !mobileCommand && !comparing
-    && (activeMobileView !== "sidebar" || panel === "collaboration"));
+  const modeSwitchShown = $derived(sourceOpen && !comparing && !mobileCommand && !keyboardOpen && activeMobileView !== "sidebar");
   const keyboardBarShown = $derived(keyboardOpen && shown.source && mayEdit && !comparing && !mobileCommand);
   // Everything the phone adds around the workspace, summed for its height.
   const phoneChrome = $derived(compact ? [
     modeSwitchShown && !barHidden ? "2.75rem" : "",
-    bottomNavShown ? "3.5rem + env(safe-area-inset-bottom)" : "",
+    !keyboardOpen ? "env(safe-area-inset-bottom)" : "",
     keyboardBarShown ? "2.75rem" : "",
     keyboardOpen ? "var(--librepaper-keyboard, 0px)" : "",
   ].filter(Boolean).join(" + ") || "0px" : "0px");
@@ -2822,12 +2818,12 @@
     }
   }
 
-  // The More sheet: everything the phone's bottom bar has no room for. A panel
+  // The More sheet: everything the header tabs have no room for. A panel
   // is listed only where the reader is offered it, so a link holder's sheet is
   // as short as their rail was.
   const PANEL_ICONS = { files: "folder", outline: "list-tree", history: "history", changes: "file-pen-line",
     agent: "bot", git: "git-branch", diagnostics: "triangle-alert", share: "users" };
-  const MORE_GROUPS = { navigate: ["files", "outline", "history"], review: ["changes"], tools: ["agent", "git", "diagnostics"] };
+  const MORE_GROUPS = { navigate: ["outline", "history"], review: ["changes"], tools: ["agent", "git", "diagnostics"] };
   function panelRow(id) {
     const tab = tabs.find((item) => item.id === id);
     if (!tab) return null;
@@ -2841,8 +2837,8 @@
   const moreSections = $derived.by(() => {
     const rows = (ids) => ids.map(panelRow).filter(Boolean);
     // A panel added to lib/panels.js and not named here is listed under Tools
-    // rather than lost. Comments have the bottom bar and Share is under Document.
-    const named = new Set([...MORE_GROUPS.navigate, ...MORE_GROUPS.review, ...MORE_GROUPS.tools, "share", "collaboration"]);
+    // rather than lost. Files and Comments are header tabs and Share is under Document.
+    const named = new Set([...MORE_GROUPS.navigate, ...MORE_GROUPS.review, ...MORE_GROUPS.tools, "share", "collaboration", "files"]);
     const others = tabs.filter((tab) => !named.has(tab.id)).map((tab) => tab.id);
     const documentRows = [
       { id: "command:file", icon: "file", label: m.mobilenav_file_actions() },
@@ -2853,6 +2849,9 @@
       ...(editing && mayEdit ? [
         { id: "command:insert", icon: "plus", label: m.common_insert(), disabled: !editor || undefined },
       ] : []),
+      ...(tabs.some((tab) => tab.id === "collaboration") ? [
+        { id: "collaborators", icon: "users", label: m.mobilenav_collaborators(), count: participants.length > 1 ? participants.length : undefined },
+      ] : []),
       panelRow("share"),
     ].filter(Boolean);
     return [
@@ -2862,7 +2861,7 @@
       { label: m.common_document(), rows: documentRows },
       { label: m.mobilenav_group_application(), rows: [
         { id: "settings", icon: "settings", label: m.common_settings() },
-        { id: "home", icon: "house", label: m.mobilenav_home(), href: "/" },
+        { id: "home", icon: "house", label: m.common_projects(), href: "/" },
         { id: "help", icon: "circle-help", label: m.mobilenav_help(), href: DOCUMENTATION_URL, external: true },
         ...(me.name ? [{ id: "signout", icon: "log-out", label: m.common_sign_out() }]
           : me.providers?.length ? [{ id: "signin", icon: "log-in", label: m.common_sign_in(), href: signInHref() }] : []),
@@ -2875,14 +2874,16 @@
     if (id === "settings") setTimeout(() => openSettings(), 0);
     else if (id === "signout") void signOut();
     else if (id === "home" || id === "help" || id === "signin") return;
+    else if (id === "collaborators") showCollaborators();
     else if (id.startsWith("command:")) openCommand(id.slice("command:".length));
     else void openPanel(id);
   }
 
-  // The bottom bar's Document, Comments and More.
-  const bottomActive = $derived(moreOpen ? "more"
-    : activeMobileView === "sidebar" && panel === "collaboration" ? "comments"
-    : activeMobileView === "document" || activeMobileView === "source" ? "document" : "");
+  // The header tabs: Document, Files and Comments.
+  const tabsShown = $derived(compact && !mobileCommand && !comparing
+    && (activeMobileView !== "sidebar" || panel === "files" || panel === "collaboration"));
+  const tabActive = $derived(activeMobileView === "sidebar" && panel === "files" ? "files"
+    : activeMobileView === "sidebar" && panel === "collaboration" ? "comments" : "document");
   function showPhoneDocument() {
     mobileCommand = "";
     showMobileView(preferredPane === "source" && sourceOpen ? "source" : "document");
@@ -4500,20 +4501,16 @@
 <Nav {me} phoneMenu phoneShell={compact} hidden={barHidden && !compact}>
   {#snippet tools()}
     {#if compact}
-      <!-- The phone's header holds only what is about this place: who is here.
-           More is in the bottom bar, in reach of the thumb. Over a panel or a
-           command list the header is that view's title and nothing else. -->
-      {#if !overlayView && tabs.some((tab) => tab.id === "collaboration")}
-        {@const people = connected ? m.readerd_people_connected({ count: peers }) : connectionNote}
-        <button type="button" class="mobile-header-button" aria-label="{m.mobilenav_collaborators()}, {people}" title={people}
-                onclick={showCollaborators}>
-          <Icon name="users" size={20} />
-          {#if participants.length > 1}<span class="mobile-count" aria-hidden="true">{participants.length}</span>{/if}
+      <!-- The phone's header ends with More, wherever there are tabs. Over a
+           panel or a command list the header is that view's title alone. -->
+      {#if tabsShown}
+        <button type="button" class="mobile-header-button mobile-more-trigger"
+                aria-label={!connected && !DEMO ? `${m.mobilenav_more()}, ${connectionNote}` : m.mobilenav_more()}
+                title={!connected && !DEMO ? `${m.mobilenav_more()}, ${connectionNote}` : undefined}
+                aria-haspopup="dialog" aria-expanded={moreOpen} onclick={openMore}>
+          <Icon name="ellipsis" size={20} />
           {#if !connected && !DEMO}<span class="presence-offline-dot mobile-offline-dot" aria-hidden="true"></span>{/if}
         </button>
-      {/if}
-      {#if !overlayView && !tabs.some((tab) => tab.id === "collaboration") && !connected && !DEMO}
-        <span class="presence-offline" title={connectionNote} aria-label={connectionNote}><span class="presence-offline-dot" aria-hidden="true"></span>{m.common_offline()}</span>
       {/if}
     {:else}
       <!-- Between the phone and the split's narrow point, the face choice stays
@@ -4578,10 +4575,17 @@
         </a>
       {/if}
     {/if}
-    <span id="docTitle" class="nav-document truncate" class:mobile-title={compact} class:mobile-title-open={overlayView}
-          title={toolbarPath || doc.title || ""}>
-      {compact ? mobileTitle : toolbarPath ? basename(toolbarPath) : doc.title || "LibrePaper"}
-    </span>
+    {#if compact && tabsShown}
+      <HeaderTabs active={tabActive}
+                  filesShown={tabs.some((tab) => tab.id === "files")} filesDisabled={Boolean(tabs.find((tab) => tab.id === "files")?.disabled)}
+                  commentsShown={tabs.some((tab) => tab.id === "collaboration")} commentsDot={Boolean(badges.collaboration?.dot)}
+                  ondocument={showPhoneDocument} onfiles={() => void openPanel("files")} oncomments={showComments} />
+    {:else}
+      <span id="docTitle" class="nav-document truncate" class:mobile-title={compact} class:mobile-title-open={overlayView}
+            title={toolbarPath || doc.title || ""}>
+        {compact ? mobileTitle : toolbarPath ? basename(toolbarPath) : doc.title || "LibrePaper"}
+      </span>
+    {/if}
   {/snippet}
 </Nav>
 
@@ -4997,11 +5001,6 @@
   {/if}
 </main>
 
-{#if compact && bottomNavShown}
-  <BottomNav active={bottomActive} commentsDisabled={!tabs.some((tab) => tab.id === "collaboration")}
-             commentsDot={Boolean(badges.collaboration?.dot)} {moreOpen}
-             ondocument={showPhoneDocument} oncomments={showComments} onmore={openMore} />
-{/if}
 {#if compact && keyboardBarShown}
   <KeyboardBar onundo={() => void chooseEditCommand("undo")} onredo={() => void chooseEditCommand("redo")}
                oninsert={() => openCommand("insert")} onmore={() => openMore()} />
@@ -5188,6 +5187,7 @@
   .mobile-header-button { position: relative; display: inline-grid; grid-auto-flow: column; flex: none; place-items: center; gap: .125rem; min-width: 2.75rem; height: 2.75rem; padding: 0; border: 0; border-radius: var(--radius-base); background: none; color: var(--color-text); font-size: var(--text-xs); line-height: 1; cursor: pointer; }
   .mobile-header-button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
   .mobile-count { color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
+  .mobile-more-trigger[aria-expanded="true"] { background: var(--color-row-selected); }
   .mobile-offline-dot { position: absolute; top: .5rem; right: .5rem; box-shadow: 0 0 0 2px var(--color-shell); }
   /* The title takes the room the buttons leave. Over a panel or a list it is
      that view's name; over the document it is the quiet file name. */

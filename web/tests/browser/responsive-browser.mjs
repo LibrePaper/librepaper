@@ -142,12 +142,13 @@ try {
   };
   const sheetOpen = () => visible('.mobile-sheet');
   const openMore = async () => {
-    await click('.mobile-bottom-nav [data-destination=more]');
+    await click('.mobile-more-trigger');
     await until('More sheet', () => sheetOpen(), 3000);
   };
-  // The More sheet, then the row; Collaboration is a destination of its own.
+  // Files and Collaboration are header tabs; the rest are rows of the More sheet.
   const nav = async (name) => {
-    if (name === 'Collaboration') return click('.mobile-bottom-nav [data-destination="comments"]');
+    if (name === 'Collaboration') return click('.mobile-header-tabs [data-destination="comments"]');
+    if (name === 'Files') return click('.mobile-header-tabs [data-destination="files"]');
     await openMore();
     await click(`.mobile-sheet [data-row="${panelId(name)}"]`);
     await until('More sheet closed', async () => !(await sheetOpen()), 3000);
@@ -455,16 +456,17 @@ try {
       const presence=toolbar?.querySelector('.presence');
       const rect=node=>{const r=node.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height}};
       const buttons=[...(toolbar?.querySelectorAll('.mobile-header-button')||[])].map(rect);
-      const items=[...buttons,...[toolbar?.querySelector('#docTitle')].filter(Boolean).map(rect)];
+      const tabs=[...(toolbar?.querySelectorAll('.mobile-header-tabs button')||[])].map(rect);
+      const items=[...buttons,...tabs];
       const overlaps=items.some((a,i)=>items.slice(i+1).some(b=>a.left < b.right-1 && b.left < a.right-1 && a.top < b.bottom-1 && b.top < a.bottom-1));
-      const bottom=document.querySelector('.mobile-bottom-nav');
+      const tabBar=toolbar?.querySelector('.mobile-header-tabs');
       const mode=document.querySelector('.mobile-mode-switch');
       const main=document.querySelector('main.reader');
       return {width:innerWidth,items,buttons,overlaps,height:toolbar?.getBoundingClientRect().height||0,presenceAvatars:presence?.querySelectorAll('.avatar').length||0,
         menus:menuItems.map(n=>{const r=n.getBoundingClientRect();return {text:n.textContent.trim(),visible:!!n.getClientRects().length && getComputedStyle(n).display!=='none' && getComputedStyle(n).visibility!=='hidden' && r.width>0 && r.height>0 && r.left>=0 && r.right<=innerWidth};}),
-        shell:Boolean(toolbar), bottomButtons:bottom?.querySelectorAll('button').length||0, modeShown:Boolean(mode?.getClientRects().length),
+        shell:Boolean(toolbar), tabButtons:tabBar?.querySelectorAll('button').length||0, tabHeights:tabs.map(t=>t.height), modeShown:Boolean(mode?.getClientRects().length),
         faceShown:Boolean(document.querySelector('.face-switch')?.getClientRects().length), trigger:Boolean(document.querySelector('.compact-panels-trigger')),
-        mainBottom:main.getBoundingClientRect().bottom, bottomTop:bottom?.getBoundingClientRect().top};
+        mainBottom:main.getBoundingClientRect().bottom, innerHeight};
     })()`);
     const info = JSON.stringify(header);
     assert.equal(header.shell,true,`the phone header is there at ${width}px: ${info}`);
@@ -474,15 +476,16 @@ try {
     assert.ok(header.height <= 52,`the header is at most 52px tall at ${width}px: ${info}`);
     assert.equal(header.presenceAvatars,0,`collaborator avatars stay out of the phone header at ${width}px: ${info}`);
     for (const label of ['File','View']) assert.equal(header.menus.some(item=>item.visible&&item.text===label),false,`${label} menu text is hidden at ${width}px: ${info}`);
-    assert.equal(header.bottomButtons,3,`the bottom bar has three destinations at ${width}px: ${info}`);
+    assert.equal(header.tabButtons,3,`the header has three tabs at ${width}px: ${info}`);
+    assert.ok(header.tabHeights.every(height=>height>=44),`header tabs are at least 44px tall at ${width}px: ${info}`);
     assert.equal(header.modeShown,true,`the Preview/Source switch shows at ${width}px: ${info}`);
     assert.equal(header.faceShown,false,`the old face switch is gone at ${width}px: ${info}`);
     assert.equal(header.trigger,false,`the old Menu trigger is gone at ${width}px: ${info}`);
-    assert.ok(header.mainBottom <= header.bottomTop + 1,`the workspace ends above the bottom bar at ${width}px: ${info}`);
+    assert.ok(Math.abs(header.mainBottom - header.innerHeight) <= 1,`the workspace ends at the viewport bottom at ${width}px: ${info}`);
   }
   await b.resize(900,900); await flush();
   assert.equal(await b.evaluate('Boolean(document.querySelector(".face-switch")?.closest("nav"))'),true,'the source/document switch stays in the top toolbar above 768px');
-  assert.equal(await b.evaluate('Boolean(document.querySelector(".mobile-bottom-nav, .mobile-mode-switch"))'),false,'the phone shell is not drawn above 768px');
+  assert.equal(await b.evaluate('Boolean(document.querySelector(".mobile-header-tabs, .mobile-mode-switch"))'),false,'the phone shell is not drawn above 768px');
   assert.equal(await visible('nav.phone-menu .account'),true,'the account avatar stays in the top bar above 768px');
   await b.resize(390,844); await flush();
   await toMode('Preview');
@@ -490,23 +493,24 @@ try {
     const sizes = selector => [...document.querySelectorAll(selector)].map(node => { const r = node.getBoundingClientRect(); return [r.width, r.height]; });
     const ids = (selector, key) => [...document.querySelectorAll(selector)].map(node => node.dataset[key]);
     return { modes: ids('.mobile-mode-switch [data-mode]', 'mode'), pressed: [...document.querySelectorAll('.mobile-mode-switch [aria-pressed=true]')].map(node => node.dataset.mode),
-      destinations: ids('.mobile-bottom-nav [data-destination]', 'destination'),
-      current: [...document.querySelectorAll('.mobile-bottom-nav [aria-current=page]')].map(node => node.dataset.destination),
-      bottom: sizes('.mobile-bottom-nav button'), modeButtons: sizes('.mobile-mode-switch button'),
-      title: document.querySelector('nav.phone-shell #docTitle')?.textContent.trim() };
+      destinations: ids('.mobile-header-tabs [data-destination]', 'destination'),
+      current: [...document.querySelectorAll('.mobile-header-tabs [aria-current=page]')].map(node => node.dataset.destination),
+      tabs: sizes('.mobile-header-tabs button'), modeButtons: sizes('.mobile-mode-switch button'),
+      title: document.querySelector('nav.phone-shell #docTitle')?.textContent.trim(), more: document.querySelectorAll('.mobile-more-trigger').length };
   })()`);
   assert.deepEqual(shell.modes,['document','source'],'both mobile workspace faces remain available');
   assert.deepEqual(shell.pressed,['document'],'exactly one face is pressed');
-  assert.deepEqual(shell.destinations,['document','comments','more'],'the bottom bar names Document, Comments and More');
-  assert.deepEqual(shell.current,['document'],'the bottom bar marks the current destination');
-  assert.ok(shell.bottom.every(([width,height]) => width >= 44 && height >= 44),'bottom bar buttons are at least 44px: ' + JSON.stringify(shell));
+  assert.deepEqual(shell.destinations,['document','files','comments'],'the header tabs name Document, Files and Comments');
+  assert.deepEqual(shell.current,['document'],'the header tabs mark the current destination');
+  assert.equal(shell.more,1,'exactly one More trigger');
+  assert.ok(shell.tabs.every(([width,height]) => height >= 44),'header tabs are at least 44px tall: ' + JSON.stringify(shell));
   assert.ok(shell.modeButtons.every(([width,height]) => width >= 44 && height >= 44),'mode switch buttons are at least 44px: ' + JSON.stringify(shell));
-  assert.ok(shell.title,'the header names the place the reader is in');
+  assert.equal(shell.title,undefined,'the document screen has no file name in the header');
   assert.equal(await visible('nav.phone-shell .account'),false,'the account avatar leaves the phone header');
-  // Everything the bottom bar has no room for lives in the More sheet.
+  // Everything the header tabs have no room for lives in the More sheet.
   await openMore();
   const rowIds = await b.evaluate(`[...document.querySelectorAll('.mobile-sheet [data-row]')].map(node => node.dataset.row)`);
-  for (const id of ['files','outline','history','changes','agent','git','diagnostics','command:file','command:edit','command:view','command:insert','share','settings','home','help','signout']) {
+  for (const id of ['outline','history','changes','agent','git','diagnostics','command:file','command:edit','command:view','command:insert','collaborators','share','settings','home','help','signout']) {
     assert.ok(rowIds.includes(id), `the More sheet lists ${id}: ${rowIds.join(',')}`);
   }
   assert.equal(rowIds.includes('signin'),false,'a signed-in reader is not offered Sign in');
@@ -520,8 +524,8 @@ try {
   // Exercise the sheet through actual keyboard input on the browser protocol.
   // The closing dialog hands the focus back a moment later; wait that out.
   await new Promise(resolve => setTimeout(resolve, 300));
-  await b.evaluate('document.querySelector(".mobile-bottom-nav [data-destination=more]").focus()');
-  assert.equal(await b.evaluate('document.activeElement?.matches(".mobile-bottom-nav [data-destination=more]")'), true, 'the More button takes the focus: ' + await b.evaluate('document.activeElement?.outerHTML?.slice(0,160) + " overlay:" + Boolean(document.querySelector("[role=dialog]:not([hidden])"))'));
+  await b.evaluate('document.querySelector(".mobile-more-trigger").focus()');
+  assert.equal(await b.evaluate('document.activeElement?.matches(".mobile-more-trigger")'), true, 'the More button takes the focus: ' + await b.evaluate('document.activeElement?.outerHTML?.slice(0,160) + " overlay:" + Boolean(document.querySelector("[role=dialog]:not([hidden])"))'));
   // With its text, because a native button activates on the character, not the keydown.
   await b.command('Input.dispatchKeyEvent', {type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r'});
   await b.command('Input.dispatchKeyEvent', {type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
@@ -529,7 +533,7 @@ try {
   assert.equal(await b.evaluate('Boolean(document.activeElement?.closest(".mobile-sheet"))'), true, 'opening the sheet moves focus into it');
   await key('Escape','Escape',27);
   await until('keyboard closed More sheet', async () => !(await sheetOpen()), 3000);
-  assert.equal(await b.evaluate('document.activeElement?.matches(".mobile-bottom-nav [data-destination=more]")'), true, 'Escape restores focus to More');
+  assert.equal(await b.evaluate('document.activeElement?.matches(".mobile-more-trigger")'), true, 'Escape restores focus to More');
   await nav('Files');
   assert.equal(await visible('.filelist'), true, 'choosing Files opens it over the document');
   assert.equal(await sheetOpen(), false, 'choosing a row closes the sheet');

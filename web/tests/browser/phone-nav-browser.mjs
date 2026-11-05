@@ -1,4 +1,4 @@
-// The Reader's phone shell: header, mode switch, bottom bar, More sheet, panels as full-screen
+// The Reader's phone shell: header with its tabs, mode switch, More sheet, panels as full-screen
 // views, command lists, browser Back and the keyboard (simulated). The room is the only module
 // replaced, as in responsive-browser.mjs.
 import assert from "node:assert/strict";
@@ -142,7 +142,7 @@ try {
   const backBtn = 'nav.phone-shell button.mobile-header-button[aria-label="Back"]';
   const modeOf = () => b.evaluate(`['mobile-document','mobile-source','mobile-sidebar'].find(name => document.querySelector('main.reader').classList.contains(name))`);
   const title = () => b.evaluate(`document.querySelector('nav.phone-shell #docTitle').textContent.trim()`);
-  const openMore = async () => { await click('.mobile-bottom-nav [data-destination=more]'); await until('More sheet', () => visible('.mobile-sheet'), 3000); };
+  const openMore = async () => { await click('.mobile-more-trigger'); await until('More sheet', () => visible('.mobile-sheet'), 3000); };
   const sheetGone = () => until('More sheet closed', async () => !(await visible('.mobile-sheet')), 3000);
   const rows = () => b.evaluate(`[...document.querySelectorAll('.mobile-sheet [data-row]')].map(node => node.dataset.row)`);
   // The workspace animates its height for 200ms when the chrome around it changes.
@@ -157,7 +157,7 @@ try {
   const reload = async (suffix = '') => { await b.resize(1280, 900); await b.navigate(url + suffix); await until('reader mounted', () => b.evaluate(suffix ? "Boolean(document.querySelector('main.reader .sidebar-activity'))" : "Boolean(document.querySelector('.cm-editor')) && document.querySelectorAll('.explorer-row').length > 60"), 10000); await flush(); };
 
   await resize(390);
-  await until('phone shell', () => has('.mobile-bottom-nav'), 10000);
+  await until('phone shell', () => has('.mobile-header-tabs'), 10000);
   await b.evaluate('window.keepEditor = document.querySelector(".cm-editor")');
 
   // a. Every phone width: nothing spills, and the controls are touch targets.
@@ -167,9 +167,10 @@ try {
     const m = await b.evaluate(`(() => {
       const rect = node => { const r = node.getBoundingClientRect(); return [r.width, r.height]; };
       const main = document.querySelector('main.reader').getBoundingClientRect();
-      const bottom = document.querySelector('.mobile-bottom-nav');
-      return { scrollWidth: document.documentElement.scrollWidth, innerWidth, mainLeft: main.left, mainWidth: main.width, mainBottom: main.bottom,
-        bottomTop: bottom.getBoundingClientRect().top, bottomButtons: [...bottom.querySelectorAll('button')].map(rect),
+      const tabs = document.querySelector('.mobile-header-tabs');
+      return { scrollWidth: document.documentElement.scrollWidth, innerWidth, mainLeft: main.left, mainWidth: main.width, mainBottom: main.bottom, innerHeight,
+        tabButtons: [...tabs.querySelectorAll('button')].map(node => { const r = node.getBoundingClientRect(); return [r.width, r.height, r.left, r.right, r.top, r.bottom]; }),
+        more: [...document.querySelectorAll('.mobile-more-trigger')].map(rect), moreInHeader: Boolean(document.querySelector('nav.phone-shell .mobile-more-trigger')),
         header: document.querySelector('nav.phone-shell').getBoundingClientRect().height,
         headerButtons: [...document.querySelectorAll('nav.phone-shell .mobile-header-button')].map(rect),
         mode: Boolean(document.querySelector('.mobile-mode-switch')?.getClientRects().length) };
@@ -177,18 +178,23 @@ try {
     const info = `${width}px: ${JSON.stringify(m)}`;
     assert.ok(m.scrollWidth <= m.innerWidth + 1, 'no horizontal overflow at ' + info);
     assert.ok(Math.abs(m.mainLeft) <= 1 && Math.abs(m.mainWidth - m.innerWidth) <= 1, 'main spans the width at ' + info);
-    assert.equal(m.bottomButtons.length, 3, 'the bottom bar has three buttons at ' + info);
-    assert.ok(m.bottomButtons.every(([w, h]) => w >= 44 && h >= 44), 'bottom bar targets are 44px at ' + info);
+    assert.equal(m.tabButtons.length, 3, 'the header has three tabs at ' + info);
+    assert.ok(m.tabButtons.every(([w, h]) => h >= 44 && w > 0), 'header tabs are at least 44px tall at ' + info);
+    assert.ok(m.tabButtons.every(([w, h, left, right, top, bottom]) => left >= 0 && right <= m.innerWidth && top >= 0 && bottom <= m.innerHeight), 'header tabs are inside the viewport at ' + info);
+    assert.equal(m.more.length, 1, 'exactly one More trigger at ' + info);
+    assert.ok(m.more[0][0] >= 44 && m.more[0][0] <= 45 && m.more[0][1] >= 44 && m.more[0][1] <= 45, 'the More trigger is 44x44 at ' + info);
+    assert.equal(m.moreInHeader, true, 'More is in the header at ' + info);
     assert.ok(m.header <= 52, 'the header is at most 52px at ' + info);
-    assert.equal(await b.evaluate(`document.querySelectorAll('nav.phone-shell [aria-haspopup="dialog"]').length`), 0, 'More is only in the bottom bar at ' + info);
+    assert.equal(await b.evaluate(`document.querySelectorAll('.mobile-more-trigger').length`), 1, 'exactly one More trigger at ' + info);
+    assert.equal(await has('#docTitle'), false, 'the document screen has no file name in the header at ' + info);
     assert.ok(m.headerButtons.length > 0 && m.headerButtons.every(([w, h]) => w >= 44 && h >= 44), 'header buttons are 44px at ' + info);
     assert.equal(m.mode, true, 'the mode switch shows at ' + info);
-    assert.ok(m.mainBottom <= m.bottomTop + 1, 'the workspace ends above the bottom bar at ' + info);
+    assert.ok(Math.abs(m.mainBottom - m.innerHeight) <= 1, 'the workspace ends at the viewport bottom at ' + info);
   }
 
   // b. The phone shell is gone at the breakpoint.
   await resize(768);
-  await until('desktop shell at 768', async () => !(await has('.mobile-bottom-nav')), 3000);
+  await until('desktop shell at 768', async () => !(await has('.mobile-header-tabs')), 3000);
   assert.equal(await has('.mobile-mode-switch'), false, 'no mode switch at 768');
   assert.equal(await visible('.sidebar-activity'), true, 'the rail shows at 768');
   assert.equal(await visible('.menubar'), true, 'the menubar shows at 768');
@@ -205,7 +211,7 @@ try {
   assert.equal(await b.evaluate('[...document.querySelectorAll(".mobile-sheet-row")].every(node => node.getBoundingClientRect().height >= 44)'), true, 'sheet rows are 44px');
   await key('Escape', 'Escape', 27);
   await sheetGone();
-  assert.equal(await b.evaluate('document.activeElement?.matches(".mobile-bottom-nav [data-destination=more]")'), true, 'Escape returns focus to More');
+  assert.equal(await b.evaluate('document.activeElement?.matches(".mobile-more-trigger")'), true, 'Escape returns focus to More');
   await openMore();
   // A real press above the sheet: the dialog listens for it on the document.
   for (const type of ['mousePressed', 'mouseReleased']) await b.command('Input.dispatchMouseEvent', {type, x: 195, y: 40, button: 'left', clickCount: 1});
@@ -224,7 +230,20 @@ try {
   // d. Every row an editor has opens its panel full-screen and Back undoes it.
   await resize(320);
   await toMode('document');
-  const panelRows = ['files', 'outline', 'history', 'changes', 'agent', 'git', 'diagnostics', 'share'];
+  const panelRows = ['outline', 'history', 'changes', 'agent', 'git', 'diagnostics', 'share'];
+  const visitFiles = async (mode) => {
+    await toMode(mode);
+    await openMore();
+    assert.equal((await rows()).includes('files'), false, 'Files is a tab, not a sheet row');
+    await key('Escape', 'Escape', 27); await sheetGone();
+    await click('.mobile-header-tabs [data-destination="files"]');
+    await until('files is open', async () => (await modeOf()) === 'mobile-sidebar', 3000);
+    assert.equal(await b.evaluate('document.querySelector(\'.mobile-header-tabs [data-destination="files"]\').getAttribute("aria-current")'), 'page', 'the Files tab is current');
+    assert.equal(await visible('.filelist'), true, 'the file list shows');
+    assert.equal(await has('#docTitle'), false, 'the tabs replace the title over Files');
+    await click(backBtn);
+    await until('back from files', async () => (await modeOf()) === `mobile-${mode}`, 3000);
+  };
   const visit = async (id, mode) => {
     await toMode(mode);
     await openMore();
@@ -247,34 +266,50 @@ try {
   };
   await b.evaluate('window.keepEditor = document.querySelector(".cm-editor")');
   for (const id of panelRows) await visit(id, 'document');
-  for (const id of ['files', 'outline']) await visit(id, 'source');
-
-  // e. The bottom bar.
+  await visitFiles('document');
+  await visit('outline', 'source');
+  await visitFiles('source');
+  // Collaborators is a row of the Document group, and opens the collaboration panel.
   await toMode('document');
-  await click('.mobile-bottom-nav [data-destination="comments"]');
+  await openMore();
+  assert.ok((await rows()).includes('collaborators'), 'an editor is offered collaborators');
+  await click('.mobile-sheet [data-row="collaborators"]');
+  await sheetGone();
+  await until('collaborators open', () => visible('.collaboration'), 3000);
+  await click(backBtn);
+  await until('back from collaborators', async () => (await modeOf()) === 'mobile-document', 3000);
+
+  // e. The header tabs.
+  await toMode('document');
+  const tab = (name) => `.mobile-header-tabs [data-destination="${name}"]`;
+  const current = (name) => b.evaluate(`document.querySelector(${JSON.stringify(tab(name))}).getAttribute("aria-current")`);
+  await click(tab('comments'));
   await until('comments open', () => visible('.collaboration'), 3000);
-  assert.equal(await b.evaluate('document.querySelector(\'.mobile-bottom-nav [data-destination="comments"]\').getAttribute("aria-current")'), 'page');
-  assert.equal(await b.evaluate('document.querySelector(\'.mobile-bottom-nav [data-destination="document"]\').hasAttribute("aria-current")'), false);
-  await click('.mobile-bottom-nav [data-destination="document"]');
+  assert.equal(await current('comments'), 'page');
+  assert.equal(await current('document'), null);
+  await click(tab('files'));
+  await until('files open', () => visible('.filelist'), 3000);
+  assert.equal(await current('files'), 'page');
+  assert.equal(await current('comments'), null);
+  await click(tab('document'));
   await until('document again', async () => (await modeOf()) === 'mobile-document', 3000);
-  assert.equal(await b.evaluate('document.querySelector(\'.mobile-bottom-nav [data-destination="document"]\').getAttribute("aria-current")'), 'page');
+  assert.equal(await current('document'), 'page');
   assert.equal(await visible('.collaboration'), false);
   await openMore();
-  assert.equal(await b.evaluate('document.querySelector(\'.mobile-bottom-nav [data-destination="more"]\').getAttribute("aria-expanded")'), 'true', 'More is expanded while its sheet is open');
+  assert.equal(await b.evaluate('document.querySelector(".mobile-more-trigger").getAttribute("aria-expanded")'), 'true', 'More is expanded while its sheet is open');
   await key('Escape', 'Escape', 27); await sheetGone();
 
   // f. The browser's Back button. History entries settle for 50ms before they are pushed.
   await reload();
   await resize(390);
-  await openMore();
-  await click('.mobile-sheet [data-row="files"]');
-  await sheetGone();
+  await click('.mobile-header-tabs [data-destination="files"]');
+  await until('files open', async () => (await modeOf()) === 'mobile-sidebar', 3000);
   await wait(150);
   await b.evaluate('history.back()');
   await until('Back leaves Files', async () => (await modeOf()) === 'mobile-document', 3000);
-  await click('.mobile-bottom-nav [data-destination="comments"]');
+  await click('.mobile-header-tabs [data-destination="comments"]');
   await wait(150);
-  await click('.mobile-bottom-nav [data-destination="more"]');
+  await click('.mobile-more-trigger');
   await until('sheet over Comments', () => visible('.mobile-sheet'), 3000);
   await wait(150);
   await b.evaluate('history.back()');
@@ -316,15 +351,16 @@ try {
     document.querySelector('.cm-content').focus();
     window.visualViewport.dispatchEvent(new Event('resize'));
   })()`);
-  await until('bottom bar steps aside', async () => !(await has('.mobile-bottom-nav')), 3000);
+  await until('mode switch steps aside', async () => !(await visible('.mobile-mode-switch')), 3000);
+  assert.equal(await has('.mobile-header-tabs'), true, 'the header tabs stay while the keyboard is open');
   await until('keyboard bar', () => visible('.mobile-keyboard-bar'), 3000);
   await until('the workspace ends above the keyboard bar', () => b.evaluate(`document.querySelector('main.reader').getBoundingClientRect().bottom <= innerHeight - ${keyboard} - 44 + 1`), 3000);
   await b.evaluate(`(() => { delete window.visualViewport.height; document.activeElement.blur(); window.visualViewport.dispatchEvent(new Event('resize')); })()`);
-  await until('bottom bar returns', () => has('.mobile-bottom-nav'), 3000);
+  await until('mode switch returns', () => visible('.mobile-mode-switch'), 3000);
 
   // j. Widening drops every phone layer.
   const layers = {
-    panel: async () => { await toMode('document'); await openMore(); await click('.mobile-sheet [data-row="files"]'); await sheetGone(); },
+    panel: async () => { await toMode('document'); await click('.mobile-header-tabs [data-destination="files"]'); await until('files', () => visible('.filelist'), 3000); },
     sheet: async () => { await toMode('document'); await openMore(); },
     command: async () => { await toMode('document'); await openMore(); await click('.mobile-sheet [data-row="command:file"]'); await until('list', () => visible('.mobile-command-view'), 3000); },
   };
@@ -332,38 +368,38 @@ try {
     await resize(390);
     await open();
     await resize(1024);
-    await until(`${name}: desktop`, async () => !(await has('.mobile-bottom-nav')) && !(await visible('.mobile-sheet')) && !(await has('.mobile-command-view')), 3000);
+    await until(`${name}: desktop`, async () => !(await has('.mobile-header-tabs')) && !(await visible('.mobile-sheet')) && !(await has('.mobile-command-view')), 3000);
     assert.equal(await visible('.sidebar-activity'), true, `${name}: the rail is back`);
     await resize(390);
     await until(`${name}: phone again`, () => has('nav.phone-shell'), 3000);
     assert.equal(await visible('.mobile-sheet'), false);
   }
 
-  // k. The bottom bar is painted in both themes.
+  // k. The header tabs are painted in both themes.
   await resize(390);
   await toMode('document');
   const paint = async (mode) => {
     await b.evaluate(`document.documentElement.dataset.mode = ${JSON.stringify(mode)}`);
     await flush();
-    return b.evaluate(`(() => { const nav = getComputedStyle(document.querySelector('.mobile-bottom-nav')); const button = getComputedStyle(document.querySelector('.mobile-bottom-nav button'));
+    return b.evaluate(`(() => { const nav = getComputedStyle(document.querySelector('nav.phone-shell')); const button = getComputedStyle(document.querySelector('nav.phone-shell .mobile-header-tabs [aria-current="page"]'));
       return { background: nav.backgroundColor, color: button.color }; })()`);
   };
   const dark = await paint('dark');
   const light = await paint('light');
-  assert.notEqual(dark.background, light.background, 'the bar background follows the theme');
-  assert.notEqual(dark.color, light.color, 'the bar text follows the theme');
-  for (const paintOf of [dark, light]) assert.notEqual(paintOf.background, 'rgba(0, 0, 0, 0)', 'the bar is opaque');
+  assert.notEqual(dark.background, light.background, 'the header background follows the theme');
+  assert.notEqual(dark.color, light.color, 'the active tab colour follows the theme');
+  for (const paintOf of [dark, light]) assert.notEqual(paintOf.background, 'rgba(0, 0, 0, 0)', 'the header is opaque');
 
   // l. A reader sees less.
   await reload('?role=reader');
   await resize(390);
-  await until('reader shell', () => has('.mobile-bottom-nav'), 10000);
-  assert.equal(await b.evaluate('document.querySelector(\'.mobile-bottom-nav [data-destination="comments"]\').disabled'), true, 'a reader has no Comments');
+  await until('reader shell', () => has('.mobile-header-tabs'), 10000);
+  assert.equal(await has('.mobile-header-tabs [data-destination="comments"]'), false, 'a reader has no Comments');
+  assert.equal(await has('.mobile-header-tabs [data-destination="files"]'), true, 'a reader has Files');
   await openMore();
   const readerRows = await rows();
   assert.equal(readerRows.includes('git'), false, 'a reader has no Git');
-  assert.equal(readerRows.includes('files'), true, 'a reader has Files');
 
   assert.deepEqual(await b.evaluate('window.testErrors'), []);
-  console.log('phone-nav-browser: widths, the breakpoint, the More sheet, panels, the bottom bar, browser Back, the mode switch, commands, the simulated keyboard, resizing, themes and the reader role passed');
+  console.log('phone-nav-browser: widths, the breakpoint, the More sheet, panels, the header tabs, browser Back, the mode switch, commands, the simulated keyboard, resizing, themes and the reader role passed');
 } finally { await b?.close(); serverHttp?.close(); removeTemporary(temp); }

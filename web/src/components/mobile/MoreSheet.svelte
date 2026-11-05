@@ -4,7 +4,7 @@
   import { locale } from "../../lib/locale.js";
   import { m } from "../../lib/paraglide/messages.js";
 
-  // The phone's More menu: everything the bottom bar does not hold, as a
+  // The phone's More menu: everything the header tabs do not hold, as a
   // sheet that rises from the bottom. Sections are { label, rows }; a row is
   // a button that reports its id, or a link that navigates and also reports.
   //

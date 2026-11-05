@@ -205,7 +205,8 @@ try {
     const id = ({Files:'files',Outline:'outline',Agent:'agent',Collaboration:'collaboration',Changes:'changes',Share:'share',Diagnostics:'diagnostics',History:'history'})[label];
     // A panel is left through the header's Back before another is chosen.
     if (await visible('nav.phone-shell button[aria-label="Back"]')) await click('nav.phone-shell button[aria-label="Back"]');
-    await click('.mobile-bottom-nav [data-destination=more]');
+    if (id === 'files') return click('.mobile-header-tabs [data-destination="files"]');
+    await click('.mobile-more-trigger');
     await until('More sheet', () => tab.evaluate('Boolean(document.querySelector(".mobile-sheet")?.getClientRects().length)'), 3000);
     await click(`.mobile-sheet [data-row="${id}"]`);
     await until('More sheet closed', () => tab.evaluate('!document.querySelector(".mobile-sheet")?.getClientRects().length'), 3000);

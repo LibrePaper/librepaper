@@ -7,7 +7,7 @@
   // the bottom, out of the way of both the document and the comment column.
 </script>
 
-<Toast.Group {toaster} class="toast-group fixed right-4 bottom-4 z-100 flex flex-col gap-2">
+<Toast.Group {toaster} class="fixed right-4 bottom-4 z-100 flex flex-col gap-2">
   {#snippet children(toast)}
     <Toast
       {toast}
