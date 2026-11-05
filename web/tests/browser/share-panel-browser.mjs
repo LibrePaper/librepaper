@@ -109,7 +109,7 @@ window.sharePanelCheck = async () => {
 
   /* ------------------------------------------------ the links tab at rest */
 
-  check([...document.querySelectorAll('[role="tab"]')].map((node) => node.textContent.trim()).join("|") === "Links|Agent tokens",
+  check([...document.querySelectorAll('[role="tab"]')].map((node) => node.textContent.trim()).join("|") === "Links|Agents",
     "two tabs: " + text());
   check(!/\\d+ (links?|tokens?)/.test(squash(document.querySelector(".share-toolbar"))), "the toolbar has no count");
   check(squash(document.querySelector(".share-toolbar")) === "New", "only the New button: " + squash(document.querySelector(".share-toolbar")));
@@ -175,7 +175,7 @@ window.sharePanelCheck = async () => {
 
   /* ------------------------------------------------------------ agent tokens */
 
-  await press(tabButton("Agent tokens"));
+  await press(tabButton("Agents"));
   check(rows().length === 1 && squash(document.querySelector(".share-toolbar")) === "New", "one token and no count: " + text());
   check(rowText(0).includes("Paul's assistant") && rowText(0).includes("Comment \\u00b7 Mar 17"), "token row: " + rowText(0));
   check(!document.querySelector('[aria-label^="Copy"]'), "a token has no copy button");
@@ -183,20 +183,22 @@ window.sharePanelCheck = async () => {
   check(rows()[0].querySelector("svg"), "and an icon");
   check(text().includes("A token with the Edit role is also what the librepaper command line and the GitHub Action use"), "the tokens tab says what an Edit token is for: " + text());
   await press(document.querySelector("[data-share-new]"));
-  check(button("Create token").disabled, "a token needs a name");
+  check(!button("Create token").disabled, "a token needs no name");
   check(![...document.querySelectorAll(".share-form option")].some((node) => node.textContent === "Never"), "and cannot be made to last forever");
-  check(text().includes("Its comments and suggestions appear under this name."), "the helper line");
   const tokenForm = document.querySelector(".share-form");
+  tokenForm.querySelector(".share-advanced").open = true;
+  check(text().includes("Its comments and suggestions appear under this name."), "the helper line");
   check(tokenForm.closest(".share-scroll"), "the new form scrolls with the list, so a short panel reaches its buttons");
+  check(document.activeElement === tokenForm.querySelectorAll("select")[0], "a token's first control is its permission");
   await type(tokenForm.querySelector("input[type=text]"), "Codex");
   const roleSelect = tokenForm.querySelectorAll("select")[0];
   const expiries = [...tokenForm.querySelectorAll("select")[1].options].map((node) => node.textContent).join("|");
   check(expiries === "1 day|7 days|30 days|6 months|1 year", "a token can last up to a year: " + expiries);
   const permissions = [...roleSelect.options].map((node) => node.textContent).join("|");
   check(permissions === "Read|Comment|Edit", "the token permissions: " + permissions);
-  check(!text().includes("Edit lets the agent change the project directly, without review."), "no warning until Edit is chosen");
+  check(!text().includes("Edit lets the agent suggest tracked changes, and also change the project directly."), "no warning until Edit is chosen");
   await type(roleSelect, "editor");
-  check(text().includes("Edit lets the agent change the project directly, without review."), "choosing Edit shows the warning: " + text());
+  check(text().includes("Edit lets the agent suggest tracked changes, and also change the project directly."), "choosing Edit shows the warning: " + text());
   check(tokenForm.querySelectorAll("select")[1].value === "1d", "choosing Edit moves the expiry to one day");
   await press(button("Create token"));
   const token = window.calls.at(-1)[1].create;
@@ -207,6 +209,14 @@ window.sharePanelCheck = async () => {
   const secret = document.querySelector('input[aria-label="Agent token"]');
   check(secret && secret.readOnly && secret.value.startsWith("lpt_" + originPart + ".paper.minted"), "the token is shown: " + text());
   check(text().includes("Copy this token now. You won't be able to view it again."), "with the warning");
+  const block = document.querySelector('textarea[aria-label="Text for your agent"]').value;
+  check(block.includes("Token: " + secret.value) && block.includes("Work on my LibrePaper project")
+    && block.includes("https://raw.githubusercontent.com/LibrePaper/librepaper/main/skills/librepaper/references/agent.md")
+    && block.includes("https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper"), "the block for the agent names the token and both URLs: " + block);
+  await press(button("Copy for your agent"));
+  check(window.copied === block, "copies exactly the block");
+  document.querySelector(".share-other").open = true;
+  check(text().includes("Pasting sends the token through your agent's chat"), "the chat note: " + text());
   const commands = document.querySelector('textarea[aria-label="Claude Code commands"]').value;
   check(commands === "claude mcp add librepaper --scope user -- librepaper mcp\\nread -rs LIBREPAPER_AGENT_TOKEN && export LIBREPAPER_AGENT_TOKEN && claude",
     "the Claude Code commands register once and read the token silently: " + commands);
@@ -226,7 +236,7 @@ window.sharePanelCheck = async () => {
   const stored = JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage });
   check(!stored.includes(shownToken), "the token is stored nowhere");
   await press(button("Done"));
-  check(!document.querySelector('input[aria-label="Agent token"]') && !text().includes(shownToken), "Done clears it");
+  check(!document.querySelector('input[aria-label="Agent token"]') && !document.querySelector('textarea[aria-label="Text for your agent"]') && !text().includes(shownToken), "Done clears it");
   check(text().includes("Codex") && rows().length === 2, "and the token is in the list: " + text());
 
   await press(labelled("Revoke Codex"));
@@ -235,6 +245,7 @@ window.sharePanelCheck = async () => {
   check(rows().length === 1 && !text().includes("Codex"), "revoked");
   check(!text().includes("revoked") && !text().includes("copied"), "and no status line says so");
   await press(document.querySelector("[data-share-new]"));
+  document.querySelector(".share-form .share-advanced").open = true;
   await type(document.querySelector(".share-form input[type=text]"), "Second");
   await press(button("Create token"));
   const rotated = document.querySelector('input[aria-label="Agent token"]')?.value || "";
@@ -246,8 +257,9 @@ window.sharePanelCheck = async () => {
   await press(button("Done"));
   check(!document.querySelector('textarea[aria-label="Text to copy manually"]') && !text().includes(rotated), "Done also clears the manual copy");
   await press(document.querySelector("[data-share-new]"));
-  await type(document.querySelector(".share-form input[type=text]"), "Third");
+  check(!button("Create token").disabled, "a token with no name can still be created");
   await press(button("Create token"));
+  check(window.calls.at(-1)[1].create.name === "Agent", "an unnamed token is called Agent: " + JSON.stringify(window.calls.at(-1)[1]));
   const late = document.querySelector('input[aria-label="Agent token"]')?.value || "";
   let refuse;
   navigator.clipboard.writeText = () => new Promise((resolve, reject) => { refuse = reject; });
