@@ -27,7 +27,7 @@ A token lets an agent you start yourself work on one project. The agent can run 
 
 ### Connect your agent
 
-1. In the Agent panel's Tokens tab, click **Copy install instructions** and paste them into your agent, once per computer, then start a new agent session. The instructions install the skill: the agent copies a folder of instructions and a small script into its skills folder. Agents load skills when a session starts, which is why the new session matters.
+1. In the Agent panel's Tokens tab, click **Copy install instructions** and paste them into your agent, once per computer, then start a new agent session. The instructions install the skill: the agent copies a folder of instructions and a small script into its skills folder. Agents load skills when a session starts, which is why the new session matters. If the agent cannot install the skill, for example because a sandbox blocks its skills folder, it copies the skill to a temporary folder for that session and tells you the command to install it properly.
 2. Click **New token**, choose a permission and expiry, then **Copy connection instructions**, and paste into the new session. It holds the token and asks the agent to connect. Do this for each project. Later you can copy them again from the token's row. Tokens created before this release have no copy icon; create a new token and revoke the old one to get one.
 
 The agent connects, tells you what it reached and asks what to do.

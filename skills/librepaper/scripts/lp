@@ -28,6 +28,11 @@ TOKEN_FILE = os.path.expanduser(
 )
 EPOCH_FILE = TOKEN_FILE + ".epoch"
 
+# Raised only when a change would make an older copy misbehave. The server's
+# MIN_SKILL_VERSION (crates/librepaper-server/src/server/mcp.rs) names the
+# oldest value that still works with it.
+SKILL_VERSION = 1
+
 
 def die(message):
     print(f"lp: {message}", file=sys.stderr)
@@ -54,6 +59,19 @@ def parts(value):
     return origin.rstrip("/"), slug, key
 
 
+def warn_if_outdated(headers):
+    try:
+        needed = int(headers.get("X-LibrePaper-Min-Skill-Version", ""))
+    except ValueError:
+        return
+    if needed > SKILL_VERSION:
+        print(
+            f"lp: this skill is version {SKILL_VERSION}, and this server needs version {needed} or newer. "
+            "Tell the user to update it with: npx skills update librepaper",
+            file=sys.stderr,
+        )
+
+
 def request(method, path, body=None):
     value = token()
     origin, slug, _ = parts(value)
@@ -66,8 +84,10 @@ def request(method, path, body=None):
     try:
         with urllib.request.urlopen(req, timeout=60) as response:
             status, text = response.status, response.read().decode()
+            warn_if_outdated(response.headers)
     except urllib.error.HTTPError as error:
         status, text = error.code, error.read().decode()
+        warn_if_outdated(error.headers)
     except (urllib.error.URLError, TimeoutError) as error:
         die(f"{method} {url}: {error} (outcome unknown; do not resend a write)")
     try:
