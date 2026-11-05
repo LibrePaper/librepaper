@@ -195,6 +195,23 @@ impl Served {
         (status, names)
     }
 
+    /// The whole `/tools` body under a token, with `query` (such as
+    /// `?schema=full`) appended to the path.
+    async fn tools_body(&self, token: &str, query: &str) -> Value {
+        let response = reqwest::Client::new()
+            .get(format!(
+                "{}/api/documents/{}/tools{query}",
+                self.base, self.slug
+            ))
+            .header("host", "paper.example")
+            .header("authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+        response.json().await.unwrap()
+    }
+
     async fn call(&self, token: &str, tool: &str, arguments: Value) -> (u16, Value) {
         let response = reqwest::Client::new()
             .post(format!(
@@ -401,6 +418,59 @@ async fn a_token_works_only_on_its_documents_tools() {
     assert_eq!(status, 401);
     let link_key_as_token = agent_token_string(READER, &served.slug, &"0".repeat(64));
     assert_eq!(served.tools(&link_key_as_token).await.0, 401);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_tools_route_tells_a_direct_caller_what_a_write_needs() {
+    let Some(served) = serve("tools-direct").await else {
+        return;
+    };
+    let (token, _) = served.mint_token("edit", "editor").await;
+    let tool = |body: &Value, name: &str| -> Value {
+        body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+
+    // The default is the bridge's view: operation is injected by the bridge,
+    // and the instructions say so.
+    let default = served.tools_body(&token, "").await;
+    let propose = tool(&default, "document_propose");
+    assert!(propose["inputSchema"]["properties"]
+        .get("operation")
+        .is_none());
+    assert!(default["instructions"]
+        .as_str()
+        .unwrap()
+        .contains("identified automatically"));
+
+    // `?schema=full` is the direct caller's view: every write names its
+    // operation, and the instructions say how to build it.
+    let direct = served.tools_body(&token, "?schema=full").await;
+    let propose = tool(&direct, "document_propose");
+    assert!(propose["inputSchema"]["properties"]["operation"].is_object());
+    assert!(propose["inputSchema"]["required"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("operation")));
+    let result = tool(&direct, "document_result");
+    assert!(result["inputSchema"]["properties"]["kind"]["enum"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("operation")));
+    let instructions = direct["instructions"].as_str().unwrap();
+    assert!(instructions.contains("operation_epoch"));
+    assert!(!instructions.contains("identified automatically"));
+
+    // A commenter gets the full schema too, but still not the editor's tools.
+    let (comment_token, _) = served.mint_token("comment", "reviewer").await;
+    let commenter = served.tools_body(&comment_token, "?schema=full").await;
+    assert!(tool(&commenter, "document_propose").is_null());
 }
 
 #[tokio::test]
