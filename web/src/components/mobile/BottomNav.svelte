@@ -16,7 +16,9 @@
   } = $props();
 </script>
 
-<nav class="mobile-bottom-nav" aria-label={m.mobilenav_navigation()}>
+<!-- A div around the nav, because the page puts this directly under <body>,
+     where the site bar's `body > nav` rule would otherwise pin it to the top. -->
+<div class="mobile-bottom-nav"><nav aria-label={m.mobilenav_navigation()}>
   <button
     type="button"
     data-destination="document"
@@ -52,7 +54,7 @@
     <Icon name="ellipsis" size={20} />
     <span class="label">{m.mobilenav_more()}</span>
   </button>
-</nav>
+</nav></div>
 
 <style>
   .mobile-bottom-nav {
@@ -61,12 +63,16 @@
     right: 0;
     bottom: 0;
     z-index: 20;
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
     height: calc(3.5rem + env(safe-area-inset-bottom));
     padding-bottom: env(safe-area-inset-bottom);
     border-top: 1px solid var(--color-pane-edge);
     background: var(--color-shell);
+  }
+
+  nav {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    height: 100%;
   }
 
   /* Each destination fills its column, so the whole cell is the touch target
