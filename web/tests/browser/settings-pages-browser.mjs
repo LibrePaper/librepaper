@@ -259,7 +259,7 @@ try {
   // This computer is not an option in a browser, and Quarto's commands cannot be edited.
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Typst renders in"]') === null`), true);
   assert.equal(await b.evaluate(`document.querySelector("#render-quarto-html") === null`), true);
-  for (const [pageId, says] of [["tools", "Tools"], ["agents", "AI agents"], ["backups", "Backups"]]) {
+  for (const [pageId, says] of [["tools", "Tools"], ["backups", "Backups"]]) {
     await show(pageId, "quarto", says);
     await until(`the browser notice on ${says}`, () => b.evaluate(`Boolean(document.querySelector(".settings-body .desktop-only a"))`), 5000);
     assert.equal(await b.evaluate(`document.querySelector(".settings-body .desktop-only-message").textContent.trim()`), "This needs the LibrePaper desktop app.");

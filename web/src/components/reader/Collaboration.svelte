@@ -12,7 +12,7 @@
     comments = [], identity = "", commentingAs = m.common_anonymous(),
     canModerate = false, canComment = true,
     onreveal = undefined, onresolve = undefined, ondelete = undefined,
-    ondeletemany = undefined, onreply = undefined, onedit = undefined, onagent = undefined, pending = undefined,
+    ondeletemany = undefined, onreply = undefined, onedit = undefined, pending = undefined,
     unreadChat = false, selected = "", tab = $bindable("comments"),
     // The traversal, as `lib/reader/annotations.svelte.js` keeps it: the
     // catalogue's own counts, whether there is another page, and whether
@@ -34,7 +34,7 @@
   $effect(() => { if (!canComment && tab === "chat") tab = "comments"; });
   const common = () => ({ identity, commentingAs, canModerate, canComment,
     onreveal, onresolve, ondelete, ondeletemany,
-    onreply, onedit, onagent, pending, selected,
+    onreply, onedit, pending, selected,
     page, onloadmore, onloadreplies, onattach, attachable });
 </script>
 

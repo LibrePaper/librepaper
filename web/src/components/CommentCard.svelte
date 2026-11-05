@@ -24,8 +24,6 @@
     // Saves a new body for this comment, or for one of its replies (reply is
     // null for the comment itself).
     onedit,
-    // Asks the agent to act on this comment. Absent where no agent is offered.
-    onagent,
     cardIdPrefix = "comment",
     // The card the sidebar has singled out: its passage is ringed in the
     // document, and the card wears the same ring so the two read as one.
@@ -392,17 +390,6 @@
         onclick={(e) => {
           e.stopPropagation();
           onreveal?.(comment);
-        }}
-      />
-    {/if}
-    {#if onagent && !comment.resolved}
-      <IconButton
-        icon="bot"
-        label={m.commentcard_agent()}
-        disabled={!canComment}
-        onclick={(e) => {
-          e.stopPropagation();
-          onagent?.(comment);
         }}
       />
     {/if}
