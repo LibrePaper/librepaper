@@ -169,7 +169,7 @@ fn sealing_key(session_key: &[u8]) -> chacha20poly1305::Key {
 /// a caller; this is only how the URL is said again.
 ///
 /// An agent token is sealed the same way, and for the same reason: so its
-/// owner can copy the token text again from the Sharing panel. The digest of
+/// owner can copy the token text again from the Agent panel. The digest of
 /// its key still admits a caller alone, and a copy of the catalogue without the
 /// session key holds a token that is useless to present.
 pub fn seal_link_key(session_key: &[u8], key: &str) -> Vec<u8> {
