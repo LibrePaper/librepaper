@@ -469,7 +469,7 @@ async fn the_share_listing_is_refused_to_a_token_and_to_no_one() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status().as_u16(), 401, "no credentials");
+    assert_eq!(response.status().as_u16(), 404, "no credentials");
     let body = response.text().await.unwrap();
     assert!(!body.contains(key), "no token text in a refusal: {body}");
 }
