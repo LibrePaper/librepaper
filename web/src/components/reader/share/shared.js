@@ -20,12 +20,14 @@ export const INSTALL_INSTRUCTIONS = [
   "",
   "npx skills add LibrePaper/librepaper --skill librepaper --global",
   "",
-  "If that does not work, copy https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper, including its references and scripts folders, into your skills folder. If your sandbox blocks this or the command needs my input, give me the exact command to run in my terminal. When the skill is installed, tell me to start a new session.",
+  "If that does not work, copy https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper, including its references and scripts folders, into your skills folder. When the skill is installed, tell me to start a new session.",
+  "",
+  "If you cannot install it, for example because your sandbox blocks the skills folder or the command needs my input, copy that folder to a temporary directory instead, read its SKILL.md there, and use it for this session. Then tell me that the skill is not installed, what blocked it, and the exact command to run in my terminal so it is installed next time.",
 ].join("\n");
 
 // The addressed-to-agent connection text, shared by the reveal and each token row. It stays English because it addresses an agent.
 export const connectionInstructions = (token) => [
-  "Use the LibrePaper skill to connect to my project with the agent token below. If you do not have that skill, stop and ask me to install it.",
+  "Use the LibrePaper skill to connect to my project with the agent token below. If you do not have that skill, copy https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper, including its references and scripts folders, to a temporary directory, read its SKILL.md there, and use it for this session. Then tell me that the skill is not installed and that I should run this in my terminal so it is installed next time: npx skills add LibrePaper/librepaper --skill librepaper --global",
   "",
   "The project is on a LibrePaper server and the token names it, so you need no local folder. The token is a credential: do not repeat it to me or write it into any file in your working directory.",
   "",

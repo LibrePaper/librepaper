@@ -30,6 +30,10 @@ Before adding complexity for a speculative or vanishingly unlikely race or secur
 
 Subagents must not run tests, builds, linters, type checkers, formatters that rewrite other files, or any other verification command. They write code and report what they changed. Say so explicitly in every subagent brief. All verification belongs to the main agent after review.
 
+## Keep the skill version honest
+
+`SKILL_VERSION` in `skills/librepaper/scripts/lp` and `MIN_SKILL_VERSION` in `crates/librepaper-server/src/server/mcp.rs` tell people when an installed skill has gone stale. When a change to `scripts/lp` or to the tool contract would make an older copy of the skill misbehave, raise both to the same new number. Do not raise them for documentation edits or for changes older copies keep working with.
+
 ## Run only the checks your change needs
 
 The Rust code is a workspace of internal sub-crates under `crates/`.
