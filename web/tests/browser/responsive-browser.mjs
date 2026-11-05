@@ -64,21 +64,6 @@ import ${JSON.stringify(join(root,"web/src/styles/app.css"))};
 window.testErrors = [];
 window.addEventListener('error', event => window.testErrors.push(event.message));
 window.addEventListener('unhandledrejection', event => window.testErrors.push(String(event.reason)));
-// Live chat is delivered by its private socket, rather than HTTP polling.
-globalThis.WebSocket = class {
-  constructor(url) {
-    if (!String(url).includes('/chat/')) throw new Error('Unexpected socket: ' + url);
-    queueMicrotask(() => this.onopen?.());
-  }
-  send(raw) {
-    if (JSON.parse(raw).type !== 'join') return;
-    queueMicrotask(() => {
-      this.onmessage?.({data:JSON.stringify({type:'ready',agent:true})});
-      for (let i = 0; i < 40; i++) this.onmessage?.({data:JSON.stringify({type:'message',message:{id:'reply-'+i,role:'agent',text:('Reply '+i+' ').repeat(30)}})});
-    });
-  }
-  close() { this.onclose?.(); }
-};
 // The desktop-only panels read this global, so the harness defines it.
 window.__LIBREPAPER_DESKTOP__ = { base: 'http://lp-local.localhost/', version: 'test' };
 globalThis.fetch = async (url, init = {}) => {
@@ -91,7 +76,6 @@ globalThis.fetch = async (url, init = {}) => {
   if (path.endsWith('/config')) return Response.json({ extensions: ['.html', '.md'], text_extensions: ['.html', '.md'], asset_extensions: ['.png'], derived_extensions: [] });
   if (path === '/api/documents/paper') return Response.json({title:'A deliberately long responsive workspace title',created_at:'test',role:'editor',source_format:'html',docs_origin:location.origin,can_moderate:true,can_see_sharing:true});
   if (path.endsWith('/frame')) return Response.json({token:'frame-token',until:9999999999});
-  if (path.endsWith('/chat')) return Response.json({id:'chat', token:'private'});
   if (path.includes('/comments')) return { ok:true, json:async()=>({comments:[]}) };
   return { ok:false, json:async()=>({}) };
 };
@@ -722,27 +706,22 @@ try {
   // file just opened.
   await until('the preview follows the opened file', () => b.evaluate(`document.querySelector('.explorer-row[title="chapter-1.html"][data-previewed]') !== null`), 5000);
 
+  // A user who cannot share has no tab row: the panel is the tasks alone, with no chat.
   await nav('Agent');
-  await until('agent replies',()=>b.evaluate('document.querySelectorAll(".agent-panel .chat-message").length === 40'),10000);
-  await b.evaluate('Array.from(document.querySelectorAll(".agent-tabs [role=tab]")).find(node=>node.textContent.trim()==="Chat").click()');
-  await flush();
-  await b.evaluate(`(() => {
-    const input = document.querySelector('.agent-panel .chat-form textarea');
-    input.value = 'An unsent thought'; input.dispatchEvent(new Event('input',{bubbles:true}));
-    document.querySelector('.agent-panel .chat-transcript').scrollTop = 100;
-  })()`);
-  await flush();
+  await until('agent tasks', () => visible('.agent-task'), 3000);
+  assert.equal(await visible('.agent-panel'), true);
+  assert.equal(await b.evaluate('document.querySelector(".agent-panel .chat-form") === null && document.querySelector(".agent-panel .chat-message") === null'), true, 'the agent panel has no chat');
+  assert.equal(await b.evaluate('(() => { const p = document.querySelector(".agent-panel"); return p.scrollWidth <= p.clientWidth + 1; })()'), true, 'the agent tasks fit the phone width');
   await click(face('Editor'));
   await nav('Agent');
-  assert.equal(await b.evaluate('document.querySelector(".agent-panel .chat-form textarea").value'), 'An unsent thought');
-  assert.equal(await b.evaluate('document.querySelector(".agent-panel .chat-transcript").scrollTop'),100);
+  assert.equal(await visible('.agent-task'), true, 'the agent panel comes back with its tasks');
   await bounded();
 
   // The bar slides away while a pane scrolls down and returns on the way up,
-  // at the top, and at desktop widths. The chat transcript is a pane that
-  // really scrolls here; the open source file is one line long.
+  // at the top, and at desktop widths. The tasks pane is the one that really
+  // scrolls here; the open source file is one line long.
   const hidden = 'document.querySelector("body > nav").classList.contains("bar-hidden")';
-  const scrollTo = async (top) => { await b.evaluate(`document.querySelector(".agent-panel .chat-transcript").scrollTop = ${top}`); await flush(); };
+  const scrollTo = async (top) => { await b.evaluate(`document.querySelector(".agent-solo").scrollTop = ${top}`); await flush(); };
   await scrollTo(0); await scrollTo(200); await scrollTo(400);
   await until('bar hides on scroll down', () => b.evaluate(hidden), 5000);
   assert.equal(await b.evaluate('document.querySelector("main#main").classList.contains("bar-hidden")'), true);
