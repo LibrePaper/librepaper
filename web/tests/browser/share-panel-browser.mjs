@@ -237,12 +237,12 @@ window.sharePanelCheck = async () => {
   check(!stored.includes(shownToken), "the token is stored nowhere");
   await press(button("Done"));
   check(!document.querySelector('input[aria-label="Agent token"]') && !document.querySelector('textarea[aria-label="Text for your agent"]') && !text().includes(shownToken), "Done clears it");
-  check(text().includes("Codex") && rows().length === 2, "and the token is in the list: " + text());
+  check(rows().some((row) => row.textContent.includes("Codex")) && rows().length === 2, "and the token is in the list: " + text());
 
   await press(labelled("Revoke Codex"));
   check(text().includes("Revoke token?") && text().includes("The agent loses access at once."), "revoking a token asks first");
   await press(confirmButton("Revoke token"));
-  check(rows().length === 1 && !text().includes("Codex"), "revoked");
+  check(rows().length === 1 && !rows()[0].textContent.includes("Codex"), "revoked");
   check(!text().includes("revoked") && !text().includes("copied"), "and no status line says so");
   await press(document.querySelector("[data-share-new]"));
   document.querySelector(".share-form .share-advanced").open = true;
