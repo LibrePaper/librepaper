@@ -16,6 +16,9 @@
     sections = [],
     onchoose = () => {},
     onclose = undefined,
+    // The element focus goes back to. A tap does not focus a button on every
+    // phone, so the default of "what had focus before" is not the More button.
+    finalFocusEl = undefined,
   } = $props();
 
   function dismiss() {
@@ -160,7 +163,7 @@
   {#if row.dot}<span class="row-dot" aria-hidden="true"></span>{/if}
 {/snippet}
 
-<Dialog {open} {onOpenChange}>
+<Dialog {open} {onOpenChange} {finalFocusEl}>
   <Portal>
     <Dialog.Backdrop class="mobile-sheet-backdrop bg-black/35" />
     <Dialog.Positioner class="mobile-sheet-positioner">

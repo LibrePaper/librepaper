@@ -24,7 +24,7 @@
     data-destination="document"
     class:on={active === "document"}
     aria-current={active === "document" ? "page" : undefined}
-    onclick={ondocument}
+    onclick={(event) => ondocument(event)}
   >
     <Icon name="file-text" size={20} />
     <span class="label">{m.common_document()}</span>
@@ -35,7 +35,7 @@
     class:on={active === "comments"}
     aria-current={active === "comments" ? "page" : undefined}
     disabled={commentsDisabled}
-    onclick={oncomments}
+    onclick={(event) => oncomments(event)}
   >
     <span class="icon-wrap">
       <Icon name="message-square" size={20} />
@@ -49,7 +49,7 @@
     class:on={moreOpen}
     aria-haspopup="dialog"
     aria-expanded={moreOpen}
-    onclick={onmore}
+    onclick={(event) => onmore(event)}
   >
     <Icon name="ellipsis" size={20} />
     <span class="label">{m.mobilenav_more()}</span>

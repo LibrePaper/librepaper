@@ -61,8 +61,10 @@ export function editCommands(editGroups, can) {
 
 /// The View sheet. The phone has its own Preview and Source switch and no split, so the layout, editor side and ratio items of the desktop menu are left out.
 export function viewCommands(c) {
-  const lock = [{ id: "lock-preview", label: m.common_lock_preview_on_file(), disabled: !c.can["lock-preview"] }];
-  if (c.can["unlock-preview"]) lock.push({ id: "unlock-preview", label: m.common_unlock_the_preview() });
+  const lock = [
+    { id: "lock-preview", label: m.common_lock_preview_on_file(), disabled: !c.can["lock-preview"] },
+    ...(c.can["unlock-preview"] ? [{ id: "unlock-preview", label: m.common_unlock_the_preview(), disabled: false }] : []),
+  ];
 
   // The formats are named as the desktop menu names them. They are not translated.
   const format = [

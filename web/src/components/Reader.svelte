@@ -2451,6 +2451,11 @@
   // keyboard is whether the on-screen keyboard is up. A panel is an overlay
   // too, but it is `mobileView === "sidebar"` and is kept as it always was.
   let moreOpen = $state(false);
+  let moreOpener = null;
+  function openMore(event) {
+    moreOpener = event?.currentTarget ?? null;
+    moreOpen = true;
+  }
   let mobileCommand = $state("");
   let keyboardOpen = $state(false);
   // The Insert list is read when it opens, because reading it takes the
@@ -2729,12 +2734,12 @@
     file: m.mobilenav_file_actions(), edit: m.mobilenav_edit(), view: m.mobilenav_view(), insert: m.common_insert(),
   });
   // What the header calls the place the reader is in.
-  const mobileTitle = $derived(
+  const mobileTitle = $derived.by(() => (
     mobileCommand ? mobileCommandTitles[mobileCommand]
     : activeMobileView === "sidebar" ? (panel === "collaboration" ? m.common_comments() : tabs.find((tab) => tab.id === panel)?.says || "")
     : comparing ? comparisonSays
-    : toolbarPath ? basename(toolbarPath) : doc.title || "LibrePaper",
-  );
+    : toolbarPath ? basename(toolbarPath) : doc.title || "LibrePaper"
+  ));
 
   // The Source / Document switch is for a project with a source to switch to,
   // and is not offered over a panel or a command list.
@@ -2771,7 +2776,7 @@
   const outputFormat = $derived(displayedFormat === "latex" ? latexOutput : displayedFormat === "typst" ? typstOutput
     : ["markdown", "quarto"].includes(displayedFormat) ? markdownOutput : "html");
   const outputSelectable = $derived(["latex", "typst", "markdown", "quarto"].includes(displayedFormat));
-  const mobileCommandGroups = $derived(
+  const mobileCommandGroups = $derived.by(() => (
     mobileCommand === "file" ? fileCommands({
       mayEdit, demo: DEMO, demoHint: DEMO_HINT, signedIn: Boolean(me?.id),
       sourceFormatLatex: sourceFormat === "latex", compilesHere, desktop: hasDesktop,
@@ -2783,8 +2788,8 @@
       runCodeOffered, localExecution,
     })
     : mobileCommand === "insert" ? insertGroups
-    : [],
-  );
+    : []
+  ));
   // The toggles stay on screen after a press, so the reader sees the tick move.
   const STAYS_OPEN = ["linked", "visual-markup", "run-code", "format-html", "format-pdf", "text-bigger", "text-smaller", "text-reset"];
   function chooseMobileCommand(id) {
@@ -4500,7 +4505,7 @@
       {/if}
       {#if !overlayView}
         <button type="button" class="mobile-header-button mobile-more-trigger" aria-label={m.mobilenav_more()}
-                aria-haspopup="dialog" aria-expanded={moreOpen} onclick={() => (moreOpen = true)}>
+                aria-haspopup="dialog" aria-expanded={moreOpen} onclick={openMore}>
           <Icon name="ellipsis" size={20} />
         </button>
       {/if}
@@ -4989,14 +4994,14 @@
 {#if compact && bottomNavShown}
   <BottomNav active={bottomActive} commentsDisabled={!tabs.some((tab) => tab.id === "collaboration")}
              commentsDot={Boolean(badges.collaboration?.dot)} {moreOpen}
-             ondocument={showPhoneDocument} oncomments={showComments} onmore={() => (moreOpen = true)} />
+             ondocument={showPhoneDocument} oncomments={showComments} onmore={openMore} />
 {/if}
 {#if compact && keyboardBarShown}
   <KeyboardBar onundo={() => void chooseEditCommand("undo")} onredo={() => void chooseEditCommand("redo")}
-               oninsert={() => openCommand("insert")} onmore={() => (moreOpen = true)} />
+               oninsert={() => openCommand("insert")} onmore={() => openMore()} />
 {/if}
 {#if compact}
-  <MoreSheet bind:open={moreOpen} sections={moreSections} onchoose={chooseMoreRow} />
+  <MoreSheet bind:open={moreOpen} sections={moreSections} onchoose={chooseMoreRow} finalFocusEl={() => moreOpener} />
 {/if}
 
 <!-- What can be done to the passage that is selected, over the passage that

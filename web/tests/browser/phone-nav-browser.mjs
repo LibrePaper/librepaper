@@ -142,17 +142,19 @@ try {
   const backBtn = 'nav.phone-shell button.mobile-header-button[aria-label="Back"]';
   const modeOf = () => b.evaluate(`['mobile-document','mobile-source','mobile-sidebar'].find(name => document.querySelector('main.reader').classList.contains(name))`);
   const title = () => b.evaluate(`document.querySelector('nav.phone-shell #docTitle').textContent.trim()`);
-  const openMore = async () => { await click('.mobile-more-trigger'); await until('More sheet', () => has('.mobile-sheet'), 3000); };
-  const sheetGone = () => until('More sheet closed', async () => !(await has('.mobile-sheet')), 3000);
+  const openMore = async () => { await click('.mobile-more-trigger'); await until('More sheet', () => visible('.mobile-sheet'), 3000); };
+  const sheetGone = () => until('More sheet closed', async () => !(await visible('.mobile-sheet')), 3000);
   const rows = () => b.evaluate(`[...document.querySelectorAll('.mobile-sheet [data-row]')].map(node => node.dataset.row)`);
-  const resize = async (width, height = 844) => { await b.resize(width, height); await flush(); };
+  // The workspace animates its height for 200ms when the chrome around it changes.
+  const resize = async (width, height = 844) => { await b.resize(width, height); await flush(); await wait(260); };
   const toMode = async (mode) => {
     if (await visible(backBtn)) await click(backBtn);
     await click(`.mobile-mode-switch [data-mode="${mode}"]`);
     await until(`main is mobile-${mode}`, async () => (await modeOf()) === `mobile-${mode}`, 3000);
+    await wait(260);
   };
   const box = (selector) => b.evaluate(`(() => { const r = document.querySelector(${JSON.stringify(selector)})?.getBoundingClientRect(); return r && {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height}; })()`);
-  const reload = async (suffix = '') => { await b.navigate(url + suffix); await until('reader mounted', () => b.evaluate("Boolean(document.querySelector('.cm-editor')) && document.querySelectorAll('.explorer-row').length > 60"), 10000); await flush(); };
+  const reload = async (suffix = '') => { await b.resize(1280, 900); await b.navigate(url + suffix); await until('reader mounted', () => b.evaluate(suffix ? "Boolean(document.querySelector('main.reader .sidebar-activity'))" : "Boolean(document.querySelector('.cm-editor')) && document.querySelectorAll('.explorer-row').length > 60"), 10000); await flush(); };
 
   await resize(390);
   await until('phone shell', () => has('.mobile-bottom-nav'), 10000);
@@ -204,12 +206,13 @@ try {
   await sheetGone();
   assert.equal(await b.evaluate('document.activeElement?.matches(".mobile-more-trigger")'), true, 'Escape returns focus to More');
   await openMore();
-  await click('.mobile-sheet-backdrop');
+  // A real press above the sheet: the dialog listens for it on the document.
+  for (const type of ['mousePressed', 'mouseReleased']) await b.command('Input.dispatchMouseEvent', {type, x: 195, y: 40, button: 'left', clickCount: 1});
   await sheetGone();
   await openMore();
   // A finger swipe down on the handle, which only a touch event can express.
   await b.evaluate(`(() => {
-    const handle = document.querySelector('.sheet-handle');
+    const handle = document.querySelector('.mobile-sheet .sheet-handle');
     const touch = y => new Touch({ identifier: 1, target: handle, clientX: 100, clientY: y });
     const fire = (type, y) => handle.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true,
       touches: type === 'touchend' ? [] : [touch(y)], changedTouches: [touch(y)] }));
@@ -239,7 +242,7 @@ try {
     assert.ok(slots[0].width >= 319 && slots[0].scroll <= 1, `${id} fills 320px without sideways scroll: ${JSON.stringify(slots)}`);
     await click(backBtn);
     await until(`back from ${id}`, async () => (await modeOf()) === `mobile-${mode}`, 3000);
-    assert.equal(await has('.mobile-sheet'), false);
+    assert.equal(await visible('.mobile-sheet'), false);
   };
   await b.evaluate('window.keepEditor = document.querySelector(".cm-editor")');
   for (const id of panelRows) await visit(id, 'document');
@@ -260,8 +263,8 @@ try {
   await key('Escape', 'Escape', 27); await sheetGone();
 
   // f. The browser's Back button. History entries settle for 50ms before they are pushed.
-  await resize(390);
   await reload();
+  await resize(390);
   await openMore();
   await click('.mobile-sheet [data-row="files"]');
   await sheetGone();
@@ -271,7 +274,7 @@ try {
   await click('.mobile-bottom-nav [data-destination="comments"]');
   await wait(150);
   await click('.mobile-bottom-nav [data-destination="more"]');
-  await until('sheet over Comments', () => has('.mobile-sheet'), 3000);
+  await until('sheet over Comments', () => visible('.mobile-sheet'), 3000);
   await wait(150);
   await b.evaluate('history.back()');
   await sheetGone();
@@ -314,7 +317,7 @@ try {
   })()`);
   await until('bottom bar steps aside', async () => !(await has('.mobile-bottom-nav')), 3000);
   await until('keyboard bar', () => visible('.mobile-keyboard-bar'), 3000);
-  assert.equal(await b.evaluate(`document.querySelector('main.reader').getBoundingClientRect().bottom <= innerHeight - ${keyboard} - 44 + 1`), true, 'the workspace ends above the keyboard bar');
+  await until('the workspace ends above the keyboard bar', () => b.evaluate(`document.querySelector('main.reader').getBoundingClientRect().bottom <= innerHeight - ${keyboard} - 44 + 1`), 3000);
   await b.evaluate(`(() => { delete window.visualViewport.height; document.activeElement.blur(); window.visualViewport.dispatchEvent(new Event('resize')); })()`);
   await until('bottom bar returns', () => has('.mobile-bottom-nav'), 3000);
 
@@ -328,11 +331,11 @@ try {
     await resize(390);
     await open();
     await resize(1024);
-    await until(`${name}: desktop`, async () => !(await has('.mobile-bottom-nav')) && !(await has('.mobile-sheet')) && !(await has('.mobile-command-view')), 3000);
+    await until(`${name}: desktop`, async () => !(await has('.mobile-bottom-nav')) && !(await visible('.mobile-sheet')) && !(await has('.mobile-command-view')), 3000);
     assert.equal(await visible('.sidebar-activity'), true, `${name}: the rail is back`);
     await resize(390);
-    await until(`${name}: phone again`, () => has('.mobile-bottom-nav'), 3000);
-    assert.equal(await has('.mobile-sheet'), false);
+    await until(`${name}: phone again`, () => has('nav.phone-shell'), 3000);
+    assert.equal(await visible('.mobile-sheet'), false);
   }
 
   // k. The bottom bar is painted in both themes.
@@ -352,6 +355,7 @@ try {
 
   // l. A reader sees less.
   await reload('?role=reader');
+  await resize(390);
   await until('reader shell', () => has('.mobile-bottom-nav'), 10000);
   assert.equal(await b.evaluate('document.querySelector(\'.mobile-bottom-nav [data-destination="comments"]\').disabled'), true, 'a reader has no Comments');
   await openMore();

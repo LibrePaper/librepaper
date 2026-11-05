@@ -140,7 +140,7 @@ try {
     await b.command('Input.dispatchKeyEvent', {type:'keyUp',key,code,windowsVirtualKeyCode:virtual});
     await flush();
   };
-  const sheetOpen = () => b.evaluate('Boolean(document.querySelector(".mobile-sheet"))');
+  const sheetOpen = () => visible('.mobile-sheet');
   const openMore = async () => {
     await click('.mobile-more-trigger');
     await until('More sheet', () => sheetOpen(), 3000);
