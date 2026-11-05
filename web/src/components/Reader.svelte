@@ -118,7 +118,7 @@
   import { VERBS, motivationFor } from "../lib/annotating.js";
   import InsertMenu from "./InsertMenu.svelte";
   import Sidebar from "./layout/Sidebar.svelte";
-  import HeaderTabs from "./mobile/HeaderTabs.svelte";
+  import TabBar from "./mobile/TabBar.svelte";
   import ModeSwitch from "./mobile/ModeSwitch.svelte";
   import MoreSheet from "./mobile/MoreSheet.svelte";
   import CommandView from "./mobile/CommandView.svelte";
@@ -590,8 +590,8 @@
   let bar = $state({ shown: false, left: 0, top: 0, center: 0 });
 
   // Mobile bar slide behaviour: on phones (compact, under 768px), the Source
-  // / Document switch under the header collapses when scrolling down and
-  // comes back when scrolling up. The header itself stays put.
+  // / Document switch at the top collapses when scrolling down and comes back
+  // when scrolling up. The bottom tab bar stays put.
   let barHidden = $state(false);
 
   // What was selected, as the page had it. That is all this browser sends and
@@ -791,7 +791,9 @@
   function placeBar(rect) {
     if (rect) {
       const frame = document.querySelector(".viewport").getBoundingClientRect();
-      const visibleHeight = window.visualViewport?.height ?? innerHeight;
+      // The phone's tab bar covers the bottom of the visible area, so the
+      // selection bar must not land under it.
+      const visibleHeight = (window.visualViewport?.height ?? innerHeight) - (tabBarShown ? 3.5 * unit : 0);
       bar = {
         shown: true,
         ...placeSelectionBar({
@@ -2947,8 +2949,10 @@
   const keyboardBarShown = $derived(keyboardOpen && shown.source && mayEdit && !comparing && !mobileCommand);
   // Everything the phone adds around the workspace, summed for its height.
   const phoneChrome = $derived(compact ? [
+    tabsShown ? "env(safe-area-inset-top)" : "",
     modeSwitchShown && !barHidden ? "2.75rem" : "",
-    !keyboardOpen ? "env(safe-area-inset-bottom)" : "",
+    tabBarShown ? "3.5rem + env(safe-area-inset-bottom)" : "",
+    !tabBarShown && !keyboardOpen ? "env(safe-area-inset-bottom)" : "",
     keyboardBarShown ? "2.75rem" : "",
     keyboardOpen ? "var(--librepaper-keyboard, 0px)" : "",
   ].filter(Boolean).join(" + ") || "0px" : "0px");
@@ -3008,7 +3012,7 @@
     }
   }
 
-  // The More sheet: everything the header tabs have no room for. A panel
+  // The More sheet: everything the tab bar has no room for. A panel
   // is listed only where the reader is offered it, so a link holder's sheet is
   // as short as their rail was.
   const PANEL_ICONS = { files: "folder", outline: "list-tree", history: "history", changes: "file-pen-line",
@@ -3027,7 +3031,7 @@
   const moreSections = $derived.by(() => {
     const rows = (ids) => ids.map(panelRow).filter(Boolean);
     // A panel added to lib/panels.js and not named here is listed under Tools
-    // rather than lost. Files and Comments are header tabs and Share is under Document.
+    // rather than lost. Files and Comments are tabs and Share is under Document.
     const named = new Set([...MORE_GROUPS.navigate, ...MORE_GROUPS.review, ...MORE_GROUPS.tools, "share", "collaboration", "files"]);
     const others = tabs.filter((tab) => !named.has(tab.id)).map((tab) => tab.id);
     const documentRows = [
@@ -3071,11 +3075,13 @@
     else void openPanel(id);
   }
 
-  // The header tabs: Document, Files and Comments.
+  // The bottom tab bar: Document, Files and Comments (and More).
   const tabsShown = $derived(compact && !mobileCommand && !comparing
     && (activeMobileView !== "sidebar" || panel === "files" || panel === "collaboration"));
   const tabActive = $derived(activeMobileView === "sidebar" && panel === "files" ? "files"
     : activeMobileView === "sidebar" && panel === "collaboration" ? "comments" : "document");
+  // The bar hides while the keyboard is up; the keyboard bar takes its place.
+  const tabBarShown = $derived(tabsShown && !keyboardOpen);
   function showPhoneDocument() {
     mobileCommand = "";
     showMobileView(preferredPane === "source" && sourceOpen ? "source" : "document");
@@ -4721,20 +4727,10 @@
      desktop app and this page disagree. -->
 <DesktopMismatch />
 
-<Nav {me} phoneMenu phoneShell={compact} hidden={barHidden && !compact}>
+<Nav {me} phoneMenu phoneShell={compact} phoneBare={tabsShown} hidden={barHidden && !compact}>
   {#snippet tools()}
     {#if compact}
-      <!-- The phone's header ends with More, wherever there are tabs. Over a
-           panel or a command list the header is that view's title alone. -->
-      {#if tabsShown}
-        <button type="button" class="mobile-header-button mobile-more-trigger"
-                aria-label={!connected && !DEMO ? `${m.mobilenav_more()}, ${connectionNote}` : m.mobilenav_more()}
-                title={!connected && !DEMO ? `${m.mobilenav_more()}, ${connectionNote}` : undefined}
-                aria-haspopup="dialog" aria-expanded={moreOpen} onclick={openMore}>
-          <Icon name="ellipsis" size={20} />
-          {#if !connected && !DEMO}<span class="presence-offline-dot mobile-offline-dot" aria-hidden="true"></span>{/if}
-        </button>
-      {/if}
+      <!-- The phone has no tools in its header: More is in the bottom bar. -->
     {:else}
       <!-- Between the phone and the split's narrow point, the face choice stays
            in the top bar. -->
@@ -4804,30 +4800,16 @@
   {/snippet}
   {#snippet children()}
     {#if compact}
-      <!-- Back out of whatever is open, or to the projects from the document:
-           a link at the document, as the rail's home is, and a button over a
-           panel or a list, where it closes that. -->
-      {#if overlayView}
-        <button type="button" class="mobile-header-button" aria-label={m.common_back()} onclick={mobileBack}>
-          <Icon name="arrow-left" size={20} />
-        </button>
-      {:else}
-        <a class="mobile-header-button" href="/" aria-label={m.mobilenav_back_to_projects()}>
-          <Icon name="arrow-left" size={20} />
-        </a>
-      {/if}
+      <!-- The header only shows over a view that is not a tab (a panel, a
+           command list, a comparison): Back closes it, and the title names it. -->
+      <button type="button" class="mobile-header-button" aria-label={m.common_back()} onclick={mobileBack}>
+        <Icon name="arrow-left" size={20} />
+      </button>
     {/if}
-    {#if compact && tabsShown}
-      <HeaderTabs active={tabActive}
-                  filesShown={tabs.some((tab) => tab.id === "files")} filesDisabled={Boolean(tabs.find((tab) => tab.id === "files")?.disabled)}
-                  commentsShown={tabs.some((tab) => tab.id === "collaboration")} commentsDot={Boolean(badges.collaboration?.dot)}
-                  ondocument={showPhoneDocument} onfiles={() => void openPanel("files")} oncomments={showComments} />
-    {:else}
-      <span id="docTitle" class="nav-document truncate" class:mobile-title={compact} class:mobile-title-open={overlayView}
-            title={toolbarPath || doc.title || ""}>
-        {compact ? mobileTitle : toolbarPath ? basename(toolbarPath) : doc.title || "LibrePaper"}
-      </span>
-    {/if}
+    <span id="docTitle" class="nav-document truncate" class:mobile-title={compact} class:mobile-title-open={overlayView}
+          title={toolbarPath || doc.title || ""}>
+      {compact ? mobileTitle : toolbarPath ? basename(toolbarPath) : doc.title || "LibrePaper"}
+    </span>
   {/snippet}
 </Nav>
 
@@ -4838,6 +4820,11 @@
 
 {#if formatBarVisible}
   <FormatToolbar active={formatActive} hidden={barHidden && !compact} {modalEditor} available={can} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} oncommand={(id) => void runCommand(id)} />
+{/if}
+
+{#if compact && tabsShown}
+  <!-- No header on a tab screen: this keeps the top safe area painted. -->
+  <div class="phone-safe-top" aria-hidden="true"></div>
 {/if}
 
 {#if compact && modeSwitchShown}
@@ -4854,7 +4841,7 @@
 <main id="main" tabindex="-1" class="reader" class:editing={shown.source} class:no-preview={!shown.document}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
-      class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact} class:bar-hidden={barHidden && !compact}
+      class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact} class:phone-tabs={tabsShown} class:bar-hidden={barHidden && !compact}
       style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - var(--librepaper-format-used, 0px) - {demoBannerHeight + shareIntroOffset}px - var(--librepaper-phone-chrome, 0px));{compact ? ` --librepaper-phone-chrome: calc(${phoneChrome});` : ''} --librepaper-format-used: {formatBarVisible ? 'var(--librepaper-format-bar)' : '0px'}; --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- What this page is. The title is in the bar, where it is a span beside
        the menus rather than a heading, so the one heading a screen reader
@@ -5267,6 +5254,13 @@
   {/if}
 </main>
 
+{#if tabBarShown}
+  <TabBar active={tabActive}
+          filesShown={tabs.some((tab) => tab.id === "files")} filesDisabled={Boolean(tabs.find((tab) => tab.id === "files")?.disabled)}
+          commentsShown={tabs.some((tab) => tab.id === "collaboration")} commentsDot={Boolean(badges.collaboration?.dot)}
+          {moreOpen} offlineNote={!connected && !DEMO ? connectionNote : ""}
+          ondocument={showPhoneDocument} onfiles={() => void openPanel("files")} oncomments={showComments} onmore={openMore} />
+{/if}
 {#if compact && keyboardBarShown}
   <KeyboardBar onundo={() => void chooseEditCommand("undo")} onredo={() => void chooseEditCommand("redo")}
                oninsert={() => openCommand("insert")} onmore={() => openMore()} />
@@ -5456,12 +5450,11 @@
   }
   /* Adapted widths above the phone keep the two faces grouped in the bar. */
   .face-switch { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border-radius: var(--radius-container); background: var(--color-subtle); }
-  /* The phone's header: a back control, the title, and the buttons at the
-     end, each a thumb-sized square with no fill of its own. */
+  /* The phone's header over a non-tab view: a back control and the title,
+     the control a thumb-sized square with no fill of its own. */
   .mobile-header-button { position: relative; display: inline-grid; grid-auto-flow: column; flex: none; place-items: center; gap: .125rem; min-width: 2.75rem; height: 2.75rem; padding: 0; border: 0; border-radius: var(--radius-base); background: none; color: var(--color-text); font-size: var(--text-xs); line-height: 1; cursor: pointer; }
   .mobile-header-button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
-  .mobile-more-trigger[aria-expanded="true"] { background: var(--color-row-selected); }
-  .mobile-offline-dot { position: absolute; top: .5rem; right: .5rem; box-shadow: 0 0 0 2px var(--color-shell); }
+  .phone-safe-top { height: env(safe-area-inset-top); background: var(--color-shell); }
   /* The title takes the room the buttons leave. Over a panel or a list it is
      that view's name; over the document it is the quiet file name. */
   .nav-document.mobile-title { flex: 1 1 auto; min-width: 0; max-width: none; color: var(--color-text); font-size: .875rem; }
