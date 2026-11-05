@@ -25,6 +25,8 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
 let live = tree("live", { "main.md": "current" });
 const controller = createHistorySource({ currentTree: () => live, labels: () => labelList, read });
+// These assertions compare a version with the project as it stands.
+controller.setCompareWith("latest");
 
 // Clicking a version shows it (older) against the project as it stands (newer).
 await controller.view("B");
@@ -207,7 +209,9 @@ assert.equal(picker.mode, "normal");
 assert.deepEqual([picker.older, picker.newer, picker.selected], ["A", CURRENT, ""]);
 assert.equal(picker.result.newTree.texts["main.md"], "current");
 
-// Outside selection, choose is a plain view of the version.
+// Outside selection, choose is a plain view of the version. The picks above
+// made the setting "pair", so the latest setting is put back for this view.
+picker.setCompareWith("latest");
 await picker.choose("A");
 assert.deepEqual([picker.older, picker.newer, picker.selected], ["A", CURRENT, "A"]);
 picker.dispose();
@@ -256,6 +260,7 @@ const raced = createHistorySource({
   labels: () => labelList,
   read: sha => new Promise(resolve => pending.push({ sha, resolve })),
 });
+raced.setCompareWith("latest");
 const first = raced.view("");
 await settle();
 live.texts["main.md"] = "new live edit";
@@ -399,5 +404,128 @@ assert.equal(olderPoint.result.oldTree.texts["main.md"], "older draft");
 assert.equal(olderPoint.result.newTree.texts["main.md"], "revision");
 olderPoint.dispose();
 
+// The default compares a version with the one before it, and the first version
+// with an empty project.
+const prev = createHistorySource({ currentTree: () => live, labels: () => labelList, read });
+assert.equal(prev.compareWith, "previous");
+await prev.view("B");
+assert.deepEqual([prev.selected, prev.older, prev.newer, prev.target], ["B", "A", "B", "B"]);
+await prev.view("A");
+assert.deepEqual([prev.selected, prev.older, prev.newer, prev.target], ["A", NOTHING, "A", "A"]);
+prev.dispose();
+
+// The previous option answers the version before one, in place of the labels.
+// Its first answer fails, and reload() asks again.
+const asked = [];
+let previousFailures = 1;
+const withPrevious = createHistorySource({
+  currentTree: () => live,
+  labels: () => labelList,
+  read,
+  previous: async sha => {
+    asked.push(sha);
+    if (previousFailures > 0) {
+      previousFailures -= 1;
+      throw new Error("no order yet");
+    }
+    return NOTHING; // The labels would answer A, so this shows the option is used.
+  },
+});
+await withPrevious.view("B");
+assert.deepEqual(asked, ["B"]);
+assert.equal(withPrevious.problem, "no order yet");
+assert.equal(withPrevious.older, "");
+assert.equal(withPrevious.loading, false);
+await withPrevious.reload();
+assert.deepEqual(asked, ["B", "B"]);
+assert.equal(withPrevious.problem, "");
+assert.deepEqual([withPrevious.older, withPrevious.newer, withPrevious.selected], [NOTHING, "B", "B"]);
+assert.ok(withPrevious.result);
+withPrevious.dispose();
+
+// Two quick views: the earlier lookup answers last, and its comparison is dropped.
+const waiting = {};
+const staleLookup = createHistorySource({
+  currentTree: () => live,
+  labels: () => labelList,
+  read,
+  previous: sha => new Promise(resolve => { waiting[sha] = resolve; }),
+});
+const earlier = staleLookup.view("B");
+const later = staleLookup.view("A");
+await settle();
+waiting.A(NOTHING);
+await later;
+waiting.B("A");
+await earlier;
+assert.deepEqual([staleLookup.selected, staleLookup.older, staleLookup.newer], ["A", NOTHING, "A"]);
+assert.equal(staleLookup.problem, "");
+assert.ok(staleLookup.result);
+staleLookup.dispose();
+
+// setCompareWith changes the basis for the open version and shows it again.
+// The same basis again reads nothing.
+const reading = [];
+const switching = createHistorySource({
+  currentTree: () => live,
+  labels: () => labelList,
+  read: sha => { reading.push(sha); return read(sha); },
+});
+await switching.view("B");
+assert.deepEqual([switching.older, switching.newer], ["A", "B"]);
+await switching.setCompareWith("latest");
+assert.equal(switching.compareWith, "latest");
+assert.deepEqual([switching.older, switching.newer, switching.selected], ["B", CURRENT, "B"]);
+const readsLatest = reading.length;
+switching.setCompareWith("latest");
+assert.equal(reading.length, readsLatest, "the same basis again reads nothing");
+await switching.setCompareWith("previous");
+assert.deepEqual([switching.compareWith, switching.older, switching.newer, switching.selected], ["previous", "A", "B", "B"]);
+switching.dispose();
+
+// An anchor is shown on the new basis, whatever is open.
+const anchored = createHistorySource({ currentTree: () => live, labels: () => labelList, read });
+await anchored.setCompareWith("latest", "A");
+assert.deepEqual([anchored.compareWith, anchored.older, anchored.newer, anchored.selected], ["latest", "A", CURRENT, "A"]);
+anchored.dispose();
+
+// The pair setting starts a pick. The first choice is compared with the project
+// as it stands, the second completes the pair, and a view starts over.
+const pairing = createHistorySource({ currentTree: () => live, labels: () => labelList, read });
+await pairing.view("B");
+pairing.setCompareWith("pair");
+assert.deepEqual([pairing.compareWith, pairing.mode], ["pair", "select-first"]);
+assert.deepEqual([pairing.older, pairing.newer, pairing.selected], ["A", "B", "B"], "setting the pair leaves the comparison");
+await pairing.choose("A");
+assert.deepEqual([pairing.mode, pairing.older, pairing.newer, pairing.selected], ["select-second", "A", CURRENT, "A"]);
+await pairing.choose("B");
+assert.deepEqual([pairing.mode, pairing.older, pairing.newer, pairing.selected], ["normal", "A", "B", "B"]);
+assert.equal(pairing.compareWith, "pair");
+await pairing.view("A");
+assert.deepEqual([pairing.mode, pairing.older, pairing.newer, pairing.selected], ["select-second", "A", CURRENT, "A"]);
+pairing.cancelSelect();
+assert.equal(pairing.mode, "normal");
+assert.equal(pairing.compareWith, "pair");
+pairing.dispose();
+
+// A pencil that is cancelled keeps the setting; one that changes the pair sets it to "pair".
+const pencil = createHistorySource({ currentTree: () => live, labels: () => labelList, read });
+await pencil.view("B");
+pencil.beginSelect("newer");
+pencil.cancelSelect();
+assert.equal(pencil.compareWith, "previous", "a cancelled pencil keeps the setting");
+pencil.beginSelect("newer");
+await pencil.choose("");
+assert.equal(pencil.compareWith, "pair", "a pencil that changed the pair sets the setting");
+assert.deepEqual([pencil.older, pencil.newer, pencil.mode], ["A", CURRENT, "normal"]);
+pencil.dispose();
+
+// Closing keeps the setting.
+const closing = createHistorySource({ currentTree: () => live, labels: () => labelList, read });
+closing.setCompareWith("latest");
+closing.close();
+assert.equal(closing.compareWith, "latest");
+closing.dispose();
+
 controller.dispose(); raced.dispose();
-console.log("history source: endpoint pairs, normalisation, targets, selection races, snapshots, and per-file status passed");
+console.log("history source: endpoint pairs, normalisation, targets, selection races, snapshots, per-file status, and compare settings passed");
