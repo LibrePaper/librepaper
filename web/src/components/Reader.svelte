@@ -2866,7 +2866,7 @@
   const bottomActive = $derived(moreOpen ? "more"
     : activeMobileView === "sidebar" && panel === "collaboration" ? "comments"
     : activeMobileView === "document" || activeMobileView === "source" ? "document" : "");
-  function showDocument() {
+  function showPhoneDocument() {
     mobileCommand = "";
     showMobileView(preferredPane === "source" && sourceOpen ? "source" : "document");
   }
@@ -4989,7 +4989,7 @@
 {#if compact && bottomNavShown}
   <BottomNav active={bottomActive} commentsDisabled={!tabs.some((tab) => tab.id === "collaboration")}
              commentsDot={Boolean(badges.collaboration?.dot)} {moreOpen}
-             ondocument={showDocument} oncomments={showComments} onmore={() => (moreOpen = true)} />
+             ondocument={showPhoneDocument} oncomments={showComments} onmore={() => (moreOpen = true)} />
 {/if}
 {#if compact && keyboardBarShown}
   <KeyboardBar onundo={() => void chooseEditCommand("undo")} onredo={() => void chooseEditCommand("redo")}
