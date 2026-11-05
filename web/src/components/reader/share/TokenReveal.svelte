@@ -40,7 +40,7 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
 <div class="token-reveal" bind:this={root}>
   <span class="sr-only" role="status" aria-live="polite">{copied ? m.tokenreveal_copied() : ""}</span>
 
-  <button type="button" class="btn btn-sm token-copy token-copy-wide lp-control-brand" class:token-copy-failed={copyFallback === connect}
+  <button type="button" class="btn btn-sm token-copy token-copy-wide lp-control-tonal-brand" class:token-copy-failed={copyFallback === connect}
           onclick={() => oncopy(connect)}>
     <Icon name={copied === connect ? "check" : "copy"} size={14} />
     {#if copyFallback === connect}{m.tokenreveal_copy_failed()}{:else if copied === connect}{m.tokenreveal_copied()}{:else}{m.tokenreveal_copy_connect()}{/if}
