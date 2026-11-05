@@ -1,6 +1,6 @@
 # Tool reference
 
-Summarized from `crates/librepaper-server/src/server/mcp/tools.json`. The live list (`scripts/lp tools` or MCP `tools/list`) is authoritative and shows only what the token's role allows.
+Summarized from `crates/librepaper-server/src/server/mcp/tools.json`. The live list is authoritative and shows only what the token's role allows. Fetch it with `scripts/lp tools` (it uses the full schemas), or with `GET https://<origin>/api/documents/<slug>/tools?schema=full` and the bearer token. Without `?schema=full` the response is the bridge's version, which omits `operation`.
 
 `document_id` appears on every tool: omit it. The endpoint serves one project.
 
@@ -17,7 +17,7 @@ Summarized from `crates/librepaper-server/src/server/mcp/tools.json`. The live l
 
 Read bounded exact source, search, outline, bibliography, comments and context. Required: `queries`.
 
-- `queries[]`: each has `kind`, one of
+- `queries[]`: one to eight entries. Each has `kind`, one of
   - `manifest`: list the project's files.
   - `context`: permissions, limits, the `view_id`, and surroundings for a `path` or `selection`.
   - `source`: exact text of `path`, bounded by `line`/`end_line` or `start`/`end` (character offsets). Returns `range_id` handles.
@@ -47,7 +47,7 @@ Create or reply to comments, resolve threads, label versions. Required: `action`
 
 Propose replacements for captured ranges. Required: `view_id`, `operation`, `patches`.
 
-- `patches[]`: `{range_id, replacement, find?}`, 1 to 100. `find` must be a unique exact substring within the range.
+- `patches[]`: `{range_id, replacement, find?}`, 1 to 100. `replacement` is at most 60000 characters. `find` is at most 8192 characters and must be a unique exact substring within the range. A larger change should be split into several patches.
 - `publish`: `"suggestions"` lands at once as pending tracked changes for an editor to accept or reject (Edit role). `"private"` keeps a candidate without changing the document.
 - `batch`: `"atomic"` or `"independent"`. Independent only with `publish: "private"`. A published batch is all-or-nothing.
 - `validation`: `"source"` or `"compile"` (with `path` of the file to render).
@@ -61,8 +61,8 @@ Apply a private candidate as a direct, untracked edit. Only when the user explic
 
 Create or delete text files, untracked, Edit role. Required: `operation`, plus at least one of:
 
-- `create[]`: `{path, text}` (text up to 262144 characters), up to 100.
-- `delete[]`: `{path}`, up to 100.
+- `create[]`: `{path, text}`, up to 100 entries. `text` is at most 262144 characters. For a whole new file, use this tool rather than a propose patch.
+- `delete[]`: `{path}`, up to 100 entries.
 
 Optional `base_tree`, `consistency`. A created file shows up only in a later `document_read`. Binary files cannot be added.
 

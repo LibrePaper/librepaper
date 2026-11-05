@@ -6,10 +6,86 @@ LibrePaper works with the coding agent you already use: Claude Code, Codex, Pi o
 
 You can connect an agent in two ways:
 
-- **In the desktop app.** You pick an agent in the sidebar and chat with it next to your document. This is the easiest way.
-- **With an agent token.** You start the agent yourself, in a terminal, on a server or in CI, and give it a token for one project.
+- **With an agent token.** You copy one block from the project into the agent you already use. It works from the browser or the desktop app, and the agent can run anywhere.
+- **In the desktop app.** You pick an agent in the sidebar and chat with it next to your document.
 
 > **Warning:** A shared document holds text from everyone with edit access. An agent that reads it may follow instructions hidden in that text.
+
+## Agent tokens
+
+A token lets an agent you start yourself work on one project. The agent can run anywhere: on your computer, on a home server, in CI or behind a chat bot. It does not need the desktop app.
+
+### Create a token
+
+1. Open the project, then Share, then the Agents tab.
+2. Click New. Pick a permission and an expiry.
+3. Under Advanced you can name the token (its comments and suggestions appear under that name) and set an hourly comment limit. The name defaults to "Agent".
+4. Click Create token. Copy the block and paste it into Claude Code, Codex or another agent. LibrePaper shows it only once.
+
+The agent fetches its instructions and asks you what to do.
+
+The block contains the token, so it sits in your agent's chat, where your model provider and the chat history can see it. To keep it out of the chat, open **Other ways to connect** and use MCP, described below.
+
+Codex's default sandbox blocks network access for shell commands. Allow it if Codex asks, or start Codex with `codex -c sandbox_workspace_write.network_access=true`.
+
+| Permission | What the agent can do |
+|---|---|
+| Read | Read the project. |
+| Comment | Read and comment. |
+| Edit | Everything Comment allows, plus tracked suggestions, direct edits, and creating or deleting text files. Tracked suggestions need Edit; Comment cannot change text. Edit tokens expire after one day by default. |
+
+### Keep the token out of the chat: Claude Code
+
+Install the [librepaper command](cli.html#install), then register it with Claude Code once. You give the token each time you start Claude, so it is never written to a file.
+
+```sh
+# Once: register LibrePaper for every folder
+claude mcp add librepaper --scope user -- librepaper mcp
+# Each session: paste the token when asked; nothing is echoed or saved
+read -rs LIBREPAPER_AGENT_TOKEN && export LIBREPAPER_AGENT_TOKEN
+claude
+# Without a person to approve tools, allow them up front
+claude -p "Read the document and comment on the introduction" --allowedTools "mcp__librepaper"
+```
+
+To work on another project, export a different token before you start Claude.
+
+### Keep the token out of the chat: other agents
+
+Codex keeps the token in its own config, so it stays out of the chat but not out of that file:
+
+```sh
+codex mcp add librepaper --env LIBREPAPER_AGENT_TOKEN="$LIBREPAPER_AGENT_TOKEN" -- librepaper mcp
+```
+
+Any other MCP client runs `librepaper mcp` with the token in its environment. In a config file, that looks like this:
+
+```toml
+[mcp_servers.librepaper]
+command = "librepaper"
+args = ["mcp"]
+env = { LIBREPAPER_AGENT_TOKEN = "lpt_..." }
+```
+
+### Without MCP
+
+A program without MCP can call the project's tools over HTTPS. The host and the slug are the ones in the project's address bar.
+
+```sh
+# List the tools this token may use, with their full schemas
+curl -H "Authorization: Bearer lpt_..." "https://<host>/api/documents/<slug>/tools?schema=full"
+# Call one tool; the body is its arguments as JSON
+curl -X POST -H "Authorization: Bearer lpt_..." -H "Content-Type: application/json" \
+  -d '<arguments>' https://<host>/api/documents/<slug>/tools/<name>
+```
+
+Every write needs an `operation` object, which `librepaper mcp` otherwise adds for you. Its `epoch` is the `operation_epoch` from your latest `document_read`. Its `id` is new for each write and looks like `v2.<unix milliseconds>.<32 hex characters>`. When a write times out, ask `document_result` with `{"kind": "operation", "target_operation": <the same object>}` whether it landed before you send it again.
+
+### What a token cannot do
+
+A token reaches only its own project. It cannot upload images, publish, share or run code. Each token has an hourly comment limit, which you set under Advanced when you create it. A single replacement is at most 60,000 characters and a single new file at most 262,144 characters, so agents split larger changes.
+
+A token stops working when it expires, when you revoke it with the trash button in the Agents tab, when the project changes owner, or when your account is blocked or erased. Signing out does not stop it, so the agent keeps working while you are signed out or LibrePaper is closed.
 
 ## Desktop app
 
@@ -83,76 +159,6 @@ opencode auth login
 ### Another agent
 
 Any agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com) can work in the app. Open Settings, go to Agents and click Add agent. Give it a name and the command that starts it, such as `myagent --acp`. To remove it later, click Remove next to it.
-
-## Agent tokens
-
-A token lets an agent you start yourself work on one project. The agent can run anywhere: on your computer, on a home server, in CI or behind a chat bot. It does not need the desktop app.
-
-### Create a token
-
-1. Open the project, then Sharing, then the Agent tokens tab.
-2. Click New and give the token a name. The agent's comments and suggestions appear under that name.
-3. Pick a permission.
-4. Copy the token. LibrePaper shows it only once.
-
-| Permission | What the agent can do |
-|---|---|
-| Read | Read the project. |
-| Comment | Read and comment. |
-| Edit | Also suggest tracked changes, edit directly, and create or delete text files. Edit tokens expire after one day by default. |
-
-### Connect Claude Code
-
-Install the [librepaper command](cli.html#install), then register it with Claude Code once. You give the token each time you start Claude, so it is never written to a file.
-
-```sh
-# Once: register LibrePaper for every folder
-claude mcp add librepaper --scope user -- librepaper mcp
-# Each session: paste the token when asked; nothing is echoed or saved
-read -rs LIBREPAPER_AGENT_TOKEN && export LIBREPAPER_AGENT_TOKEN
-claude
-# Without a person to approve tools, allow them up front
-claude -p "Read the document and comment on the introduction" --allowedTools "mcp__librepaper"
-```
-
-To work on another project, export a different token before you start Claude.
-
-### Connect another agent
-
-Codex keeps the token in its own config:
-
-```sh
-codex mcp add librepaper --env LIBREPAPER_AGENT_TOKEN="$LIBREPAPER_AGENT_TOKEN" -- librepaper mcp
-```
-
-Any other MCP client runs `librepaper mcp` with the token in its environment. In a config file, that looks like this:
-
-```toml
-[mcp_servers.librepaper]
-command = "librepaper"
-args = ["mcp"]
-env = { LIBREPAPER_AGENT_TOKEN = "lpt_..." }
-```
-
-### Without MCP
-
-A program without MCP can call the project's tools over HTTPS. The host and the slug are the ones in the project's address bar.
-
-```sh
-# List the tools this token may use
-curl -H "Authorization: Bearer lpt_..." https://<host>/api/documents/<slug>/tools
-# Call one tool; the body is its arguments as JSON
-curl -X POST -H "Authorization: Bearer lpt_..." -H "Content-Type: application/json" \
-  -d '<arguments>' https://<host>/api/documents/<slug>/tools/<name>
-```
-
-Every write needs an `operation` object, which `librepaper mcp` otherwise adds for you. Its `epoch` is the `operation_epoch` from your latest `document_read`. Its `id` is new for each write and looks like `v2.<unix milliseconds>.<32 hex characters>`. When a write times out, ask `document_result` with `{"kind": "operation", "target_operation": <the same object>}` whether it landed before you send it again.
-
-### What a token cannot do
-
-A token reaches only its own project. It cannot upload images, publish, share or run code. Each token has an hourly comment limit, which you set under Advanced when you create it.
-
-A token stops working when it expires, when you revoke it with the trash button in Sharing, when the project changes owner, or when your account is blocked or erased. Signing out does not stop it, so the agent keeps working while you are signed out or LibrePaper is closed.
 
 ## Agent skill
 

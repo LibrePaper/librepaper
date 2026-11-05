@@ -108,7 +108,9 @@
   async function commit() {
     if (!creating) return;
     const kind = creating;
-    const answer = await change({ create: { kind, role: draft.role, name: draft.name.trim(), until: draft.until, budget: budgetOf(draft.budget) } });
+    // A token needs no name, so an unnamed one is called after its kind.
+    const name = kind === "token" ? draft.name.trim() || m.common_agent() : draft.name.trim();
+    const answer = await change({ create: { kind, role: draft.role, name, until: draft.until, budget: budgetOf(draft.budget) } });
     if (!answer) return;
     creating = null;
     if (answer.created?.token) reveal = { token: answer.created.token };
@@ -183,7 +185,7 @@
     {#if kind === "link"}
       <p class="panel-meta">{m.share_links_scope_note()}</p>
     {:else}
-      <p class="panel-meta">{m.share_tokens_scope_note()}</p>
+      <p class="panel-meta">{m.share_tokens_intro()}</p>
     {/if}
     {#if active.length === 0}
       <p class="panel-meta">{kind === "link" ? m.share_no_links() : m.share_no_tokens()}</p>
@@ -193,6 +195,9 @@
           <ShareRow {kind} {item} {busy} {copied} oncopy={copy} onrevoke={() => (confirming = { item, kind })} />
         {/each}
       </ul>
+    {/if}
+    {#if kind === "token"}
+      <p class="panel-meta">{m.share_tokens_scope_note()}</p>
     {/if}
     {@render messages()}
   </div>
