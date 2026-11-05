@@ -250,7 +250,7 @@
   .agent-install-title { margin: 0; font-size: 14px; font-weight: 500; }
   .agent-install-help { margin: calc(var(--spacing) * 1) 0 0; font-size: 13px; color: var(--panel-muted); }
   .agent-install-command { display: flex; align-items: center; gap: calc(var(--spacing) * 2); margin-top: calc(var(--spacing) * 3); }
-  .agent-install-command code { flex: 1 1 auto; min-width: 0; padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3); border-radius: var(--radius-base); background: var(--color-row-hover); font-family: var(--font-mono, monospace); font-size: 12px; overflow-wrap: anywhere; }
+  .agent-install-command code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; flex: 1 1 auto; min-width: 0; padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3); border-radius: var(--radius-base); background: var(--color-row-hover); font-family: var(--font-mono, monospace); font-size: 12px; overflow-wrap: anywhere; }
   .share-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: calc(var(--spacing) * 2); padding-block: calc(var(--spacing) * 1.5); }
   .share-new { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1); padding: .2rem .5rem; border: 0; border-radius: .25rem; background: none; color: var(--color-link); font: inherit; font-size: 13px; cursor: pointer; }
   .share-new:hover:not(:disabled) { background: var(--color-row-hover); }

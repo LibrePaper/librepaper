@@ -148,6 +148,12 @@ window.agentPanelCheck = async () => {
   check(text().includes("Create a token for an agent you run yourself, such as Claude Code or Codex. It reaches only this project."), "the tokens intro");
   const install = document.querySelector(".agent-install");
   const installCode = install && install.querySelector("code");
+  // At sidebar width the command wraps inside its box and stays clear of its copy button.
+  install.style.width = "280px";
+  const installButton = install.querySelector(".agent-install-command button");
+  check(installCode.scrollWidth <= installCode.clientWidth + 1 && installCode.getBoundingClientRect().right <= installButton.getBoundingClientRect().left + 1,
+    "the install command wraps clear of its copy button");
+  install.style.width = "";
   check(installCode && installCode.textContent.trim() === INSTALL && installCode.getClientRects().length > 0,
     "the install command is visible as code: " + (installCode && installCode.textContent));
   check(install.compareDocumentPosition(document.querySelector(".share-toolbar")) === Node.DOCUMENT_POSITION_FOLLOWING, "the install section comes first");
