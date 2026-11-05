@@ -2288,7 +2288,6 @@
   "shareform_reach_editor": "Jede Datei ändern.",
   "shareform_reach_reader": "Alle Dateien öffnen und Kommentare lesen.",
   "shareform_role_not_allowed": "{role} (hier nicht erlaubt)",
-  "sharerow_copy_connection": "Verbindungsanweisungen kopieren",
   "sharerow_copy_connection_label": "Verbindungsanweisungen für {name} kopieren",
   "sharerow_copy_label": "{name} kopieren",
   "sharerow_copy_link": "Link kopieren",

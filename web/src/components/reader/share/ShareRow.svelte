@@ -25,7 +25,7 @@
                   disabled={busy} onclick={() => oncopy(full)} />
     {/if}
     {#if value}
-      <IconButton icon={copied === value ? "check" : "copy"} label={m.sharerow_copy_connection_label({ name })} title={m.sharerow_copy_connection()} tone="plain" size="btn-icon-sm"
+      <IconButton icon={copied === value ? "check" : "copy"} label={m.sharerow_copy_connection_label({ name })} title={m.tokenreveal_copy_connect()} tone="plain" size="btn-icon-sm"
                   disabled={busy} onclick={() => oncopy(value)} />
     {/if}
     <span class="share-revoke">

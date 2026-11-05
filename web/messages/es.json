@@ -2288,7 +2288,6 @@
   "shareform_reach_editor": "Pueden modificar cualquier archivo.",
   "shareform_reach_reader": "Pueden abrir todos los archivos y leer los comentarios.",
   "shareform_role_not_allowed": "{role} (no permitido aquí)",
-  "sharerow_copy_connection": "Copiar instrucciones de conexión",
   "sharerow_copy_connection_label": "Copiar instrucciones de conexión para {name}",
   "sharerow_copy_label": "Copiar {name}",
   "sharerow_copy_link": "Copiar enlace",

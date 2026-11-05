@@ -2273,7 +2273,6 @@
   "shareform_reach_editor": "他们可以修改任何文件。",
   "shareform_reach_reader": "他们可以打开所有文件并阅读批注。",
   "shareform_role_not_allowed": "{role}（此处不允许）",
-  "sharerow_copy_connection": "复制连接说明",
   "sharerow_copy_connection_label": "复制 {name} 的连接说明",
   "sharerow_copy_label": "复制 {name}",
   "sharerow_copy_link": "复制链接",
