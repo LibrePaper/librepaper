@@ -582,6 +582,61 @@ async fn the_tools_route_tells_a_direct_caller_what_a_write_needs() {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_tool_routes_name_the_oldest_skill_version_they_work_with() {
+    let Some(served) = serve("min-skill-version").await else {
+        return;
+    };
+    let (token, _) = served.mint_token("edit", "editor").await;
+    let min_skill_version = |response: &reqwest::Response| -> Option<u64> {
+        response
+            .headers()
+            .get("x-librepaper-min-skill-version")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|version| *version > 0)
+    };
+    let client = reqwest::Client::new();
+
+    let tools = client
+        .get(format!(
+            "{}/api/documents/{}/tools",
+            served.base, served.slug
+        ))
+        .header("host", "paper.example")
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(min_skill_version(&tools).is_some(), "{:?}", tools.headers());
+
+    let call = client
+        .post(format!(
+            "{}/api/documents/{}/tools/document_read",
+            served.base, served.slug
+        ))
+        .header("host", "paper.example")
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert!(min_skill_version(&call).is_some(), "{:?}", call.headers());
+
+    let refused = client
+        .get(format!(
+            "{}/api/documents/{}/tools",
+            served.base, served.slug
+        ))
+        .header("host", "paper.example")
+        .header("authorization", "Bearer not-a-token")
+        .send()
+        .await
+        .unwrap();
+    assert!(min_skill_version(&refused).is_some(), "{:?}", refused.headers());
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn a_token_key_opens_no_browser_link() {
     let Some(served) = serve("token-not-a-link").await else {
         return;

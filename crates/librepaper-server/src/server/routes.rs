@@ -202,7 +202,9 @@ async fn tools_list(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server.handle_tools_list(request, &ctx, &slug).await
+    let mut reply = server.handle_tools_list(request, &ctx, &slug).await;
+    mcp::announce_min_skill_version(&mut reply);
+    reply
 }
 
 async fn tool_call(
@@ -211,7 +213,9 @@ async fn tool_call(
     Path((slug, name)): Path<(String, String)>,
     request: Request<Body>,
 ) -> Reply {
-    server.handle_tool_call(request, &ctx, &slug, &name).await
+    let mut reply = server.handle_tool_call(request, &ctx, &slug, &name).await;
+    mcp::announce_min_skill_version(&mut reply);
+    reply
 }
 
 async fn delete_document(

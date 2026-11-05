@@ -217,10 +217,27 @@ fn validators() -> &'static HashMap<String, jsonschema::Validator> {
     })
 }
 
+/// Whether the tool's authored schema requires `operation`.
+fn requires_operation(name: &str) -> bool {
+    tools().iter().any(|tool| {
+        tool["name"] == name
+            && tool["inputSchema"]["required"]
+                .as_array()
+                .is_some_and(|required| required.iter().any(|field| field == "operation"))
+    })
+}
+
 /// Validates a tool call's arguments against that tool's advertised schema.
+/// A direct caller that leaves out `operation` is pointed at `?schema=full`.
 pub(super) fn validate_tool(name: &str, args: &Value) -> Result<(), String> {
     match validators().get(name) {
-        Some(validator) => check(validator, args),
+        Some(validator) => check(validator, args).map_err(|error| {
+            if args.get("operation").is_none() && requires_operation(name) {
+                format!("{error}. This tool needs operation: {{epoch, id}}. GET the tools route with ?schema=full for the schema a direct caller supplies.")
+            } else {
+                error
+            }
+        }),
         None => Err(format!("unknown tool {name}")),
     }
 }
@@ -291,6 +308,18 @@ mod tests {
         assert_eq!(args["nested"][0].as_u64(), Some(1));
         assert_eq!(args["nested"][1]["n"].as_f64(), Some(2.5));
         assert_eq!(args["text"].as_str(), Some("10.0"));
+    }
+
+    #[test]
+    fn a_missing_operation_points_a_direct_caller_at_the_full_schema() {
+        let error = validate_tool("document_files", &json!({})).unwrap_err();
+        assert!(error.contains("schema=full"), "{error}");
+        let error = validate_tool("document_read", &json!({})).unwrap_err();
+        assert!(!error.contains("schema=full"), "{error}");
+        let operation = json!({"epoch":"e","id":"v2.1700000000000.0123456789abcdef0123456789abcdef"});
+        let typo = json!({"operation": operation, "typo": 1});
+        let error = validate_tool("document_files", &typo).unwrap_err();
+        assert!(!error.contains("schema=full"), "{error}");
     }
 
     #[test]
