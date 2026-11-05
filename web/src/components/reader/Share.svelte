@@ -255,4 +255,8 @@
   .share-scroll > p { margin-block: calc(var(--spacing) * 1); }
   .share-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--color-divider); }
   .share-copy-fallback { border: 0; background: transparent; resize: none; color: var(--color-text-muted); font-size: var(--panel-meta-size); }
+  /* Phones: the new link and new token control is a finger's height. */
+  @media (max-width: 767px) {
+    .share-new { min-height: 2.75rem; }
+  }
 </style>

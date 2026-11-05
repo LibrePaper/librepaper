@@ -62,4 +62,10 @@
   .share-action { padding: .15rem .35rem; border: 0; border-radius: .25rem; background: none; color: var(--color-link); font: inherit; cursor: pointer; }
   .share-action:hover:not(:disabled) { background: var(--color-row-hover); }
   .share-action:disabled { opacity: .5; cursor: default; }
+  /* Phones: fields keep 16px so iOS does not zoom, and the cancel action is a
+     finger's height. */
+  @media (max-width: 767px) {
+    .share-input, .share-select { font-size: 1rem; }
+    .share-action { min-height: 2.75rem; }
+  }
 </style>

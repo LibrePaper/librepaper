@@ -91,4 +91,9 @@
      selected one because the passage it is about is ringed in the document. */
   .composer { box-shadow: 0 0 0 1px var(--color-focus); }
   .quote { overflow-wrap: anywhere; }
+  /* Phones: the composer's field and buttons are finger-sized, with 16px text. */
+  @media (max-width: 767px) {
+    textarea { font-size: 1rem; }
+    .btn { min-height: 2.75rem; }
+  }
 </style>

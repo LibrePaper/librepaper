@@ -1167,4 +1167,17 @@
   .permission-details code, .permission-details pre { max-height:14rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
   .permission-details pre { margin:0; padding:var(--spacing); background:var(--color-divider); }
   .agent-panel :global(.chat-transcript-wrap) { flex:1 0 8rem; min-height:8rem; }
+  /* Phones: header and task controls are finger-sized, selects and fields keep
+     16px so iOS does not zoom, and a task's description shows without focus,
+     because a touch screen never focuses it. */
+  @media (max-width: 767px) {
+    .agent-panel :global(.icon-control) { min-width: 2.75rem; min-height: 2.75rem; }
+    .agent-setting { min-height: 2.75rem; font-size: 1rem; }
+    .task-back { min-width: 2.75rem; min-height: 2.75rem; padding: 0; justify-content: center; }
+    .agent-panel :global(.agent-text-action) { min-height: 2.75rem; }
+    .agent-status-note { white-space: normal; }
+    .task-row, .task-section { min-height: 2.75rem; }
+    .task-summary-focus { display: -webkit-box; }
+    .task-search, .task-extra, .task-scope .select, .task-prepare .input { font-size: 1rem; }
+  }
 </style>

@@ -47,4 +47,11 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
   .share-reveal > button { justify-self: start; }
   .share-form-actions { display: flex; justify-content: flex-end; }
   .share-reveal a { color: var(--color-link); text-decoration: underline; }
+  /* Phones: the token and commands are read as text that wraps, not scrolled
+     sideways, the fields keep 16px, and the buttons are finger-sized. */
+  @media (max-width: 767px) {
+    .share-input { font-size: 1rem; }
+    .share-config { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .btn { min-height: 2.75rem; }
+  }
 </style>
