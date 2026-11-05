@@ -14,8 +14,14 @@ export const EXPIRIES = [["1d", m.shared_expiry_1d()], ["7d", m.shared_expiry_7d
 export const allows = (sharing, role) => role === "reader" || (role === "commenter"
   ? sharing?.commenters_policy !== "nobody" : sharing?.publishers !== "nobody");
 
-// The install command the token tab shows, and the copy of it that pastes into a terminal.
-export const INSTALL_COMMAND = "npx skills add LibrePaper/librepaper --skill librepaper --global";
+// The install text the Tokens tab copies for the user to paste into their agent. It stays English because it addresses an agent.
+export const INSTALL_INSTRUCTIONS = [
+  "Install the LibrePaper agent skill for every project on this computer by running:",
+  "",
+  "npx skills add LibrePaper/librepaper --skill librepaper --global",
+  "",
+  "If that does not work, copy https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper, including its references and scripts folders, into your skills folder. If your sandbox blocks this or the command needs my input, give me the exact command to run in my terminal. When the skill is installed, tell me to start a new session.",
+].join("\n");
 
 // The addressed-to-agent connection text, shared by the reveal and each token row. It stays English because it addresses an agent.
 export const connectionInstructions = (token) => [
