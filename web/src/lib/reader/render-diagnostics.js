@@ -1,5 +1,5 @@
 import * as diagnosticsRule from "../diagnostics.js";
-import { diagnosticContext } from "../assistant-review.js";
+import { diagnosticContext } from "../diagnostic-context.js";
 
 /** @typedef {{ file?: string, line?: number, column?: number, message: string, severity: string, [key: string]: unknown }} RenderDiagnostic */
 

@@ -18,7 +18,7 @@ import { canonicalBytes, compareUtf8 } from "./projection-digest.js";
 
 // Re-exported so a caller that already has a projection does not have to
 // know that the canonical form lives one module down. It lives there because
-// the LaTeX worker and the assistant preview need the name without needing
+// the LaTeX worker and the document preview need the name without needing
 // `loro-crdt`, which this module imports.
 export { canonicalBytes, compareUtf8 };
 

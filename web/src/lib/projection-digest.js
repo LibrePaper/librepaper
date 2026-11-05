@@ -2,7 +2,7 @@
 //
 // This is a leaf on purpose. `projection.js` needs `loro-crdt` to walk a
 // document, and `renderers.js` needs the whole renderer stack; neither can be
-// imported by the LaTeX worker or by the assistant preview, which want the
+// imported by the LaTeX worker or by the document preview, which want the
 // digest and nothing around it. So the canonical serialization lives here,
 // importing only `digest.js`, and the two heavier modules re-export it.
 // One implementation of the name, reachable from every layer that has to say

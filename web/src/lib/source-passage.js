@@ -12,17 +12,3 @@ export function passageContext(text, from, to, context = 32) {
     suffix: text.slice(to, suffixEnd),
   };
 }
-
-// The passage a source selection names, in the shape the server locates by
-// quote. Context stops short of a split surrogate pair at either edge.
-export function sourcePassage(text, from, to, path = "", context = 32) {
-  if (!(to > from) || !text.slice(from, to).trim()) return null;
-  const { prefix, suffix } = passageContext(text, from, to, context);
-  return {
-    ...(path ? { path } : {}),
-    exact: text.slice(from, to),
-    prefix,
-    suffix,
-    position: from,
-  };
-}

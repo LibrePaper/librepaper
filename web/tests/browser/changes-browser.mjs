@@ -2,7 +2,7 @@
 //
 // What is pinned here is what a reviewer can actually do: see the words a
 // change takes out beside the ones it puts in, narrow the queue to one author,
-// file, run or task, walk it from the keyboard, answer the change they are
+// file or run, walk it from the keyboard, answer the change they are
 // looking at, and answer for several at once. A reader without the right to
 // review sees the rows and no verbs. At phone width the controls stay on one
 // line each and line up with the rows beneath them.
@@ -224,29 +224,7 @@ try {
   await ev("window.show({ changes: window.rowsData.map((row) => ({ ...row, run: '' })) })");
   assert.deepEqual(await ev("window.filterItems()"), ["All changes", "Ada", "Grace (you)", "paper.md", "notes.md"],
     "no run, no run scope");
-  // The ids handed in by the reader open the panel narrowed to exactly those
-  // rows, even when they belong to different runs. The scope menu widens it
-  // again.
-  await ev("window.show({ ids: ['c2', 'c3'] })");
-  await waitFor("opened on ids", "window.rows().length === 2");
-  assert.deepEqual((await ev("window.rows()")).map((row) => row.id).sort(), ["c2", "c3"], "a task scope shows exactly those rows");
-  assert.equal(await ev("window.scope()"), "This task", "the task scope is named");
-  assert.equal(await ev("window.count()"), "2 pending");
-  assert.equal(await ev("!!document.querySelector('.ids-bar')"), false, "there is no ids bar");
-  assert.equal(await ev("!!document.querySelector('.show-all')"), false, "and no show all button");
-  await ev('window.filter("All changes")');
-  await waitFor("task scope cleared", "window.rows().length === 3");
 
-  // A scope that hides every change says so. The scope menu is the way back.
-  await ev("window.show({ ids: ['zz'] })");
-  await waitFor("nothing in this task", "document.querySelector('.changes-empty-title')?.textContent?.includes('No pending changes in this task')");
-  assert.equal(await ev("document.querySelectorAll('.change-row').length"), 0, "no rows are shown");
-  assert.equal(await ev("window.empty()"), "No pending changes in this task");
-  assert.equal(await ev("window.emptyNote()"), "3 pending in all changes.");
-  assert.equal(await ev("!!document.querySelector('.clear-filters')"), false, "there is no clear button");
-  assert.equal(await ev("!!document.querySelector('.scope-trigger')"), true, "the scope menu is still there");
-  await ev('window.filter("All changes")');
-  await waitFor("filters restored", "window.rows().length === 3");
   await ev("window.show()");
 
   // Answering a change calls back with the row, and the queue moves on to the
@@ -411,8 +389,8 @@ try {
   // At phone width the panel does not scroll sideways, each header control
   // stays on one line, and the left and right edges line up with the rows.
   await ev("document.body.style.width = '240px'");
-  await ev("window.show({ ids: ['c2', 'c3'] })");
-  await waitFor("narrow rows", "window.rows().length === 2");
+  await ev("window.show()");
+  await waitFor("narrow rows", "window.rows().length === 3");
   await ev("new Promise((resolve) => setTimeout(resolve, 60))");
   const narrow = await ev(`(() => {
     const panel = document.querySelector('.changes-panel');
@@ -437,7 +415,7 @@ try {
   assert.ok(Math.abs(narrow.scopeLeft - narrow.rowLeft) <= 1, "the scope trigger and the rows share a left edge");
   assert.ok(Math.abs(narrow.toggleRight - narrow.endRight) <= 1, "the tracking switch and the count end on one right edge");
 
-  console.log("changes-browser: rows with kinds, authors and locations, the scope menu, task and empty scopes, keyboard, selection with Accept all and Reject all, Escape, long changes, read-only readers, the empty queue and the phone-width layout passed");
+  console.log("changes-browser: rows with kinds, authors and locations, the scope menu, keyboard, selection with Accept all and Reject all, Escape, long changes, read-only readers, the empty queue and the phone-width layout passed");
 } finally {
   await page?.close();
   server?.close();

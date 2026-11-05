@@ -17,7 +17,7 @@
   import { createComparison } from "../lib/reader/comparison.svelte.js";
   import { createWebGit } from "../lib/reader/web-git.svelte.js";
   import { createWebConnection } from "../lib/reader/web-connection.svelte.js";
-  import { diagnosticContext } from "../lib/assistant-review.js";
+  import { diagnosticContext } from "../lib/diagnostic-context.js";
   import { passageContext } from "../lib/source-passage.js";
   import { capturePreviewTree } from "../lib/preview-tree.js";
   import { orphanState } from "../lib/orphan.js";

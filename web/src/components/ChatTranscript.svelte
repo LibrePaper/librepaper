@@ -4,9 +4,8 @@
   import Icon from "./Icon.svelte";
   import { chatRows } from "../lib/chat-rows.js";
   import { m } from "../lib/paraglide/messages.js";
-  // One transcript for every conversation the sidebar holds: the live chat
-  // between people and the exchange with an agent render through this same
-  // widget. A compact, bubble-free layout in the style of a chat app: a day
+  // The transcript of the live chat between people in the sidebar. A compact,
+  // bubble-free layout in the style of a chat app: a day
   // divider where the date changes, and a series of posts by one author under
   // a single header with the avatar. Later posts in the series show their time
   // in the gutter when hovered.

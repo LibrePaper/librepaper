@@ -64,7 +64,7 @@ import ${JSON.stringify(join(root,"web/src/styles/app.css"))};
 window.testErrors = [];
 window.addEventListener('error', event => window.testErrors.push(event.message));
 window.addEventListener('unhandledrejection', event => window.testErrors.push(String(event.reason)));
-// Agent chat is delivered by its private socket, rather than HTTP polling.
+// Live chat is delivered by its private socket, rather than HTTP polling.
 globalThis.WebSocket = class {
   constructor(url) {
     if (!String(url).includes('/chat/')) throw new Error('Unexpected socket: ' + url);
@@ -79,8 +79,7 @@ globalThis.WebSocket = class {
   }
   close() { this.onclose?.(); }
 };
-// The agent panel shows its chat only inside the desktop app, so the
-// harness defines the desktop global.
+// The desktop-only panels read this global, so the harness defines it.
 window.__LIBREPAPER_DESKTOP__ = { base: 'http://lp-local.localhost/', version: 'test' };
 globalThis.fetch = async (url, init = {}) => {
   const path = String(url);

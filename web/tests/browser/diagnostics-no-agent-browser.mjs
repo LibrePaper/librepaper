@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const temporary = mkdtempSync(join(tmpdir(), "librepaper-assistant-review-"));
+const temporary = mkdtempSync(join(tmpdir(), "librepaper-diagnostics-"));
 const entry = join(temporary, "entry.js");
 writeFileSync(entry, `
 import ${JSON.stringify(join(root, "src/styles/app.css"))};
@@ -38,7 +38,7 @@ try {
   await until("diagnostic content", () => page.evaluate('document.body.innerText.includes("An error")'), 1000);
   // The diagnostic has no robot button: nothing hands it to an agent.
   assert.equal(await page.evaluate('document.body.innerHTML.includes("Fix diagnostic with agent")'), false);
-  console.log("assistant-review-browser: diagnostics without AI shortcuts passed");
+  console.log("diagnostics-no-agent-browser: diagnostics without AI shortcuts passed");
 } finally {
   await page?.close();
   if (server) await new Promise((resolve) => server.close(resolve));

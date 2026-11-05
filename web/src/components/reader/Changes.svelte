@@ -11,10 +11,6 @@
   let {
     changes = [], files = [], tracking = false, canTrack = true, canReview = true,
     selected = null,
-    // The ids to show first, when the reader sent the reviewer here from an
-    // agent task. A task can make changes under several runs, so the whole
-    // set of ids is the filter, not one run.
-    ids = [],
     ontracking, onaccept, onreject, onrejectmany, onreveal,
     identity = "",
   } = $props();
@@ -23,11 +19,9 @@
   let checked = $state(new Set());
   let deciding = $state(new Set());
   let expandedText = $state(new Set());
-  // The one filter the queue shows: "all", "task", or "author:", "file:" or
-  // "run:" followed by the value it picks.
+  // The one filter the queue shows: "all", or "author:", "file:" or "run:"
+  // followed by the value it picks.
   let scope = $state("all");
-  $effect(() => { scope = ids.length ? "task" : "all"; });
-  const idSet = $derived(new Set(ids));
   let feedback = $state("");
   // Ticking changes is a mode you enter, not the state the queue sits in. A
   // review is one change at a time; answering several at once is the rarer
@@ -72,7 +66,6 @@
   // Whether a row falls inside the scope the reviewer chose.
   function inScope(item) {
     if (scope === "all") return true;
-    if (scope === "task") return idSet.has(item.id);
     const { key, answer } = scopeOf(scope);
     if (key === "author") return authorOf(item) === answer;
     if (key === "file") return pathOf(item) === answer;
@@ -91,11 +84,10 @@
   // Every pending change ticked in the all scope: the verbs then read "Accept
   // all" and "Reject all", and answering them asks first.
   const allChosen = $derived(scope === "all" && changes.length > 0 && selectedRows.length === changes.length);
-  // The scopes the menu offers: all changes, this task when there are ids,
-  // then one entry per author, file and run, each under its group's heading.
+  // The scopes the menu offers: all changes, then one entry per author, file
+  // and run, each under its group's heading.
   const scopes = $derived.by(() => {
     const list = [{ value: "all", label: m.changes_all_changes(), group: "" }];
-    if (ids.length) list.push({ value: "task", label: m.changes_this_task(), group: "" });
     if (derivedAuthors.length > 1) for (const author of derivedAuthors) list.push({ value: `author:${author}`, label: authorLabel({ author }), group: "Author" });
     if (derivedFiles.length > 1) for (const file of derivedFiles) list.push({ value: `file:${file}`, label: file, group: "File" });
     for (const id of derivedRuns) list.push({ value: `run:${id}`, label: runLabel(id), group: "Run" });
@@ -108,12 +100,11 @@
     if (key === "author") return authorLabel({ author: answer });
     if (key === "file") return answer;
     if (key === "run") return runLabel(answer);
-    return value === "task" ? m.changes_this_task() : m.changes_all_changes();
+    return m.changes_all_changes();
   };
   const scopeName = $derived(scopes.find((option) => option.value === scope)?.label ?? labelOf(scope));
   // How an empty queue names the scope it is empty for.
   const emptyTitle = $derived({
-    task: m.changes_empty_task(),
     author: m.changes_empty_author({ name: scopeName }),
     file: m.changes_empty_file({ name: scopeName }),
     run: m.changes_empty_run(),
