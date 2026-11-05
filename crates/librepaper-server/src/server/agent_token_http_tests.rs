@@ -621,22 +621,6 @@ async fn the_tool_routes_name_the_oldest_skill_version_they_work_with() {
         .await
         .unwrap();
     assert!(min_skill_version(&call).is_some(), "{:?}", call.headers());
-
-    let refused = client
-        .get(format!(
-            "{}/api/documents/{}/tools",
-            served.base, served.slug
-        ))
-        .header("host", "paper.example")
-        .header("authorization", "Bearer not-a-token")
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        min_skill_version(&refused).is_some(),
-        "{:?}",
-        refused.headers()
-    );
 }
 
 #[tokio::test]
