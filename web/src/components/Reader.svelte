@@ -4500,9 +4500,9 @@
 <Nav {me} phoneMenu phoneShell={compact} hidden={barHidden && !compact}>
   {#snippet tools()}
     {#if compact}
-      <!-- The phone's header holds only what is about this place: who is here,
-           and the More sheet for everything else. Neither shows while a panel
-           or a command list is open, where the header is that view's title. -->
+      <!-- The phone's header holds only what is about this place: who is here.
+           More is in the bottom bar, in reach of the thumb. Over a panel or a
+           command list the header is that view's title and nothing else. -->
       {#if !overlayView && tabs.some((tab) => tab.id === "collaboration")}
         {@const people = connected ? m.readerd_people_connected({ count: peers }) : connectionNote}
         <button type="button" class="mobile-header-button" aria-label="{m.mobilenav_collaborators()}, {people}" title={people}
@@ -4514,12 +4514,6 @@
       {/if}
       {#if !overlayView && !tabs.some((tab) => tab.id === "collaboration") && !connected && !DEMO}
         <span class="presence-offline" title={connectionNote} aria-label={connectionNote}><span class="presence-offline-dot" aria-hidden="true"></span>{m.common_offline()}</span>
-      {/if}
-      {#if !overlayView}
-        <button type="button" class="mobile-header-button mobile-more-trigger" aria-label={m.mobilenav_more()}
-                aria-haspopup="dialog" aria-expanded={moreOpen} onclick={openMore}>
-          <Icon name="ellipsis" size={20} />
-        </button>
       {/if}
     {:else}
       <!-- Between the phone and the split's narrow point, the face choice stays
@@ -5193,7 +5187,6 @@
      end, each a thumb-sized square with no fill of its own. */
   .mobile-header-button { position: relative; display: inline-grid; grid-auto-flow: column; flex: none; place-items: center; gap: .125rem; min-width: 2.75rem; height: 2.75rem; padding: 0; border: 0; border-radius: var(--radius-base); background: none; color: var(--color-text); font-size: var(--text-xs); line-height: 1; cursor: pointer; }
   .mobile-header-button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
-  .mobile-more-trigger[aria-expanded="true"] { background: var(--color-row-selected); }
   .mobile-count { color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
   .mobile-offline-dot { position: absolute; top: .5rem; right: .5rem; box-shadow: 0 0 0 2px var(--color-shell); }
   /* The title takes the room the buttons leave. Over a panel or a list it is

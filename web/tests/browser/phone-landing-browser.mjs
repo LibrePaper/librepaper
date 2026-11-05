@@ -146,7 +146,7 @@ try {
   // A tapped file on a phone opens on the preview. The Files column is opened
   // from the More sheet, as a person does it, and chapter-1.html is tapped there.
   const press = async (selector) => { await b.evaluate(`(() => { const node=document.querySelector(${JSON.stringify(selector)}); node.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'mouse'})); node.click(); })()`); await flush(); };
-  await press('.mobile-more-trigger');
+  await press('.mobile-bottom-nav [data-destination=more]');
   await until('the More sheet lists the files panel', () => visible('.mobile-sheet [data-row="files"]'), 5000);
   await press('.mobile-sheet [data-row="files"]');
   await until('files column shows the files', () => visible('.sidebar .explorer'), 5000);

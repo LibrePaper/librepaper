@@ -142,7 +142,7 @@ try {
   };
   const sheetOpen = () => visible('.mobile-sheet');
   const openMore = async () => {
-    await click('.mobile-more-trigger');
+    await click('.mobile-bottom-nav [data-destination=more]');
     await until('More sheet', () => sheetOpen(), 3000);
   };
   // The More sheet, then the row; Collaboration is a destination of its own.
@@ -520,8 +520,8 @@ try {
   // Exercise the sheet through actual keyboard input on the browser protocol.
   // The closing dialog hands the focus back a moment later; wait that out.
   await new Promise(resolve => setTimeout(resolve, 300));
-  await b.evaluate('document.querySelector(".mobile-more-trigger").focus()');
-  assert.equal(await b.evaluate('document.activeElement?.matches(".mobile-more-trigger")'), true, 'the More button takes the focus: ' + await b.evaluate('document.activeElement?.outerHTML?.slice(0,160) + " overlay:" + Boolean(document.querySelector("[role=dialog]:not([hidden])"))'));
+  await b.evaluate('document.querySelector(".mobile-bottom-nav [data-destination=more]").focus()');
+  assert.equal(await b.evaluate('document.activeElement?.matches(".mobile-bottom-nav [data-destination=more]")'), true, 'the More button takes the focus: ' + await b.evaluate('document.activeElement?.outerHTML?.slice(0,160) + " overlay:" + Boolean(document.querySelector("[role=dialog]:not([hidden])"))'));
   // With its text, because a native button activates on the character, not the keydown.
   await b.command('Input.dispatchKeyEvent', {type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r'});
   await b.command('Input.dispatchKeyEvent', {type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
@@ -529,7 +529,7 @@ try {
   assert.equal(await b.evaluate('Boolean(document.activeElement?.closest(".mobile-sheet"))'), true, 'opening the sheet moves focus into it');
   await key('Escape','Escape',27);
   await until('keyboard closed More sheet', async () => !(await sheetOpen()), 3000);
-  assert.equal(await b.evaluate('document.activeElement?.matches(".mobile-more-trigger")'), true, 'Escape restores focus to More');
+  assert.equal(await b.evaluate('document.activeElement?.matches(".mobile-bottom-nav [data-destination=more]")'), true, 'Escape restores focus to More');
   await nav('Files');
   assert.equal(await visible('.filelist'), true, 'choosing Files opens it over the document');
   assert.equal(await sheetOpen(), false, 'choosing a row closes the sheet');

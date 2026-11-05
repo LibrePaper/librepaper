@@ -142,7 +142,7 @@ try {
   const backBtn = 'nav.phone-shell button.mobile-header-button[aria-label="Back"]';
   const modeOf = () => b.evaluate(`['mobile-document','mobile-source','mobile-sidebar'].find(name => document.querySelector('main.reader').classList.contains(name))`);
   const title = () => b.evaluate(`document.querySelector('nav.phone-shell #docTitle').textContent.trim()`);
-  const openMore = async () => { await click('.mobile-more-trigger'); await until('More sheet', () => visible('.mobile-sheet'), 3000); };
+  const openMore = async () => { await click('.mobile-bottom-nav [data-destination=more]'); await until('More sheet', () => visible('.mobile-sheet'), 3000); };
   const sheetGone = () => until('More sheet closed', async () => !(await visible('.mobile-sheet')), 3000);
   const rows = () => b.evaluate(`[...document.querySelectorAll('.mobile-sheet [data-row]')].map(node => node.dataset.row)`);
   // The workspace animates its height for 200ms when the chrome around it changes.
@@ -180,6 +180,7 @@ try {
     assert.equal(m.bottomButtons.length, 3, 'the bottom bar has three buttons at ' + info);
     assert.ok(m.bottomButtons.every(([w, h]) => w >= 44 && h >= 44), 'bottom bar targets are 44px at ' + info);
     assert.ok(m.header <= 52, 'the header is at most 52px at ' + info);
+    assert.equal(await b.evaluate(`document.querySelectorAll('nav.phone-shell [aria-haspopup="dialog"]').length`), 0, 'More is only in the bottom bar at ' + info);
     assert.ok(m.headerButtons.length > 0 && m.headerButtons.every(([w, h]) => w >= 44 && h >= 44), 'header buttons are 44px at ' + info);
     assert.equal(m.mode, true, 'the mode switch shows at ' + info);
     assert.ok(m.mainBottom <= m.bottomTop + 1, 'the workspace ends above the bottom bar at ' + info);
@@ -204,7 +205,7 @@ try {
   assert.equal(await b.evaluate('[...document.querySelectorAll(".mobile-sheet-row")].every(node => node.getBoundingClientRect().height >= 44)'), true, 'sheet rows are 44px');
   await key('Escape', 'Escape', 27);
   await sheetGone();
-  assert.equal(await b.evaluate('document.activeElement?.matches(".mobile-more-trigger")'), true, 'Escape returns focus to More');
+  assert.equal(await b.evaluate('document.activeElement?.matches(".mobile-bottom-nav [data-destination=more]")'), true, 'Escape returns focus to More');
   await openMore();
   // A real press above the sheet: the dialog listens for it on the document.
   for (const type of ['mousePressed', 'mouseReleased']) await b.command('Input.dispatchMouseEvent', {type, x: 195, y: 40, button: 'left', clickCount: 1});
