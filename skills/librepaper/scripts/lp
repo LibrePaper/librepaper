@@ -89,7 +89,9 @@ def arguments(raw):
 
 
 def remember_epoch(result):
-    epoch = result.get("operation_epoch") if isinstance(result, dict) else None
+    # A tool's answer is wrapped as {"result": {...}}.
+    inner = result.get("result") if isinstance(result, dict) else None
+    epoch = inner.get("operation_epoch") if isinstance(inner, dict) else None
     if epoch:
         old = os.umask(0o077)
         try:

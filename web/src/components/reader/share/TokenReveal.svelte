@@ -17,7 +17,7 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
   const block = $derived([
     "Work on my LibrePaper project with the agent token below. It is a credential: do not repeat it to me or write it into the project.",
     "",
-    "Read https://raw.githubusercontent.com/LibrePaper/librepaper/main/skills/librepaper/references/agent.md and follow it now, without waiting for a restart. If you already have the LibrePaper skill, use your copy instead. If your sandbox blocks network or file access, tell me exactly what to allow. Then ask me what I want done.",
+    "Read https://raw.githubusercontent.com/LibrePaper/librepaper/main/skills/librepaper/references/agent.md and follow it now, without waiting for a restart. If your sandbox blocks network or file access, tell me exactly what to allow. Then ask me what I want done.",
     "",
     "When we finish, offer to install the skill from https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper",
     "",
