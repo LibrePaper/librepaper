@@ -14,6 +14,20 @@ export const EXPIRIES = [["1d", m.shared_expiry_1d()], ["7d", m.shared_expiry_7d
 export const allows = (sharing, role) => role === "reader" || (role === "commenter"
   ? sharing?.commenters_policy !== "nobody" : sharing?.publishers !== "nobody");
 
+// The install command the token tab shows, and the copy of it that pastes into a terminal.
+export const INSTALL_COMMAND = "npx skills add LibrePaper/librepaper --skill librepaper --global";
+
+// The addressed-to-agent connection text, shared by the reveal and each token row. It stays English because it addresses an agent.
+export const connectionInstructions = (token) => [
+  "Use the LibrePaper skill to connect to my project with the agent token below. If you do not have that skill, stop and ask me to install it.",
+  "",
+  "The project is on a LibrePaper server and the token names it, so you need no local folder. The token is a credential: do not repeat it to me or write it into any file in your working directory.",
+  "",
+  "Connect first, then tell me what you reached and ask what I want done. If your sandbox blocks network or file access, tell me exactly what to allow. Do not open or control a browser unless I explicitly ask you to.",
+  "",
+  `Token: ${token}`,
+].join("\n");
+
 // An empty budget field means no budget.
 export const budgetOf = (value) => (value == null || value === "" ? null : Number(value));
 

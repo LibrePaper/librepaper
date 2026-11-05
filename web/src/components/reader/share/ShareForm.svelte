@@ -20,7 +20,7 @@
 
 {#snippet nameField()}
   <label class="share-field panel-meta">{kind === "link" ? m.shareform_name_optional() : m.common_agent_name()}
-    <input class="input share-input" type="text" maxlength="80" bind:this={nameInput} bind:value={draft.name} disabled={busy} />
+    <input class="input share-input" type="text" maxlength="80" placeholder={kind === "token" ? m.shareform_optional() : undefined} bind:this={nameInput} bind:value={draft.name} disabled={busy} />
     <span>{kind === "link" ? m.shareform_link_name_help() : m.shareform_agent_name_help()}</span>
   </label>
 {/snippet}
@@ -55,16 +55,9 @@
     </select>
   </label>
   {#if kind === "token"}
-    <details class="share-advanced">
-      <summary>{m.shareform_advanced()}</summary>
-      <div class="share-advanced-body">
-        {@render nameField()}
-        {@render budgetField()}
-      </div>
-    </details>
-  {:else}
-    {@render budgetField()}
+    {@render nameField()}
   {/if}
+  {@render budgetField()}
   <div class="share-form-actions">
     <button type="button" class="share-action" disabled={busy} onclick={oncancel}>{m.common_cancel()}</button>
     <button type="submit" class="btn btn-sm lp-control-brand" disabled={busy}>{kind === "link" ? m.shareform_create_link() : m.shareform_create_token()}</button>
@@ -78,8 +71,7 @@
   .share-note { margin: 0; }
   .share-input, .share-select { width: 100%; min-width: 0; max-width: 100%; }
   .share-select { border: 0; background-color: var(--color-row-hover); font: inherit; border-radius: var(--radius-base); }
-  .share-advanced > summary { cursor: pointer; font-size: 12px; color: var(--panel-muted); }
-  .share-advanced-body { display: grid; gap: calc(var(--spacing) * 2); padding-top: calc(var(--spacing) * 2); }
+  .share-input::placeholder { color: var(--panel-muted); }
   .share-form-actions { display: flex; align-items: center; justify-content: flex-end; gap: calc(var(--spacing) * 2); }
   .share-action { padding: .15rem .35rem; border: 0; border-radius: .25rem; background: none; color: var(--color-link); font: inherit; cursor: pointer; }
   .share-action:hover:not(:disabled) { background: var(--color-row-hover); }

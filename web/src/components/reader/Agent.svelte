@@ -12,7 +12,7 @@
   import ShareRow from "./share/ShareRow.svelte";
   import ShareForm from "./share/ShareForm.svelte";
   import TokenReveal from "./share/TokenReveal.svelte";
-  import { allows, budgetOf } from "./share/shared.js";
+  import { allows, budgetOf, INSTALL_COMMAND } from "./share/shared.js";
   import { createSharing } from "../../lib/sharing.svelte.js";
   import { TASK_GROUPS, filterTaskGroups } from "../../lib/agent-tasks.js";
   import { m } from "../../lib/paraglide/messages.js";
@@ -53,8 +53,8 @@
   // The token waiting to be revoked, or null. It stops a credential somebody
   // may already be holding.
   let confirming = $state(null);
-  // The token just made. It is shown once, kept only here, and never written
-  // to any storage.
+  // The token just made. It is kept only here and never written to any storage.
+  // The reveal shows its connection step until Done.
   let reveal = $state(null);
 
   const allowed = (role) => allows(sharing.sharing, role);
@@ -130,6 +130,20 @@
 {/snippet}
 
 {#snippet tokensPane()}
+  <section class="agent-install">
+    <div class="agent-install-head">
+      <span class="token-number" aria-hidden="true">1</span>
+      <div class="agent-install-text">
+        <h3 class="agent-install-title">{m.tokenreveal_step_install()}</h3>
+        <p class="agent-install-help">{m.agent_install_help()}</p>
+      </div>
+    </div>
+    <div class="agent-install-command">
+      <code>{INSTALL_COMMAND}</code>
+      <IconButton icon={sharing.copied === INSTALL_COMMAND ? "check" : "copy"} label={m.agent_copy_install_command()} title={m.agent_copy_install_command()} tone="plain" size="btn-icon-sm"
+                  onclick={() => sharing.copy(INSTALL_COMMAND)} />
+    </div>
+  </section>
   {#if reveal}
     <TokenReveal token={reveal.token} copied={sharing.copied} copyFallback={sharing.copyFallback} error={sharing.error} oncopy={sharing.copy} ondone={done} />
   {:else if sharing.loading}
@@ -154,6 +168,7 @@
           <ShareRow kind="token" {item} busy={sharing.busy} copied={sharing.copied} oncopy={sharing.copy} onrevoke={() => (confirming = { item })} />
         {/each}
       </ul>
+      <p class="panel-meta">{m.tokenreveal_warning()}</p>
     {/if}
     <p class="panel-meta">{m.share_tokens_scope_note()}</p>
     {@render messages()}
@@ -226,6 +241,16 @@
   .agent-panel :global([role="tabpanel"]) > :global(*) { flex-shrink: 0; }
   .agent-solo { display: flex; flex: 1 1 0; min-height: 0; flex-direction: column; gap: calc(var(--spacing) * 2); overflow-y: auto; padding: var(--panel-padding); }
   .agent-solo > :global(*) { flex-shrink: 0; }
+  /* The install step at the top of the Tokens tab. The step circle is shared
+     with the reveal's connection step, so its rule lives here for both. */
+  .agent-panel :global(.token-number) { display: grid; flex: none; place-items: center; width: 28px; height: 28px; border-radius: 9999px; background: var(--color-row-hover); font-size: 13px; font-weight: 500; }
+  .agent-install { padding-bottom: calc(var(--spacing) * 3); border-bottom: 1px solid var(--color-divider); font-size: 13px; }
+  .agent-install-head { display: flex; align-items: flex-start; gap: calc(var(--spacing) * 3); }
+  .agent-install-text { min-width: 0; }
+  .agent-install-title { margin: 0; font-size: 14px; font-weight: 500; }
+  .agent-install-help { margin: calc(var(--spacing) * 1) 0 0; font-size: 13px; color: var(--panel-muted); }
+  .agent-install-command { display: flex; align-items: center; gap: calc(var(--spacing) * 2); margin-top: calc(var(--spacing) * 3); }
+  .agent-install-command code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; flex: 1 1 auto; min-width: 0; padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3); border-radius: var(--radius-base); background: var(--color-row-hover); font-family: var(--font-mono, monospace); font-size: 12px; overflow-wrap: anywhere; }
   .share-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: calc(var(--spacing) * 2); padding-block: calc(var(--spacing) * 1.5); }
   .share-new { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1); padding: .2rem .5rem; border: 0; border-radius: .25rem; background: none; color: var(--color-link); font: inherit; font-size: 13px; cursor: pointer; }
   .share-new:hover:not(:disabled) { background: var(--color-row-hover); }

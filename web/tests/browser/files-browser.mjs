@@ -307,7 +307,7 @@ window.sharingCheck = async () => {
   const permission = document.querySelector('.share-form select');
   permission.value = 'editor'; permission.dispatchEvent(new Event('change', { bubbles: true }));
   await flush();
-  // The budget sits behind Advanced but is a field of the same form.
+  // The budget is a field of the same form, shown with the other fields.
   const editBudget = document.querySelector('.share-form input[type="number"]');
   editBudget.value = '8'; editBudget.dispatchEvent(new Event('input', { bubbles: true }));
   await flush();

@@ -16,7 +16,7 @@ A token lets an agent you start yourself work on one project. The agent can run 
 
 1. Open the project, then the Agent panel (the robot icon in the sidebar), then the Tokens tab.
 2. Click New. Pick a permission and an expiry.
-3. Under Advanced you can name the token (its comments and suggestions appear under that name) and set an hourly comment limit. The name defaults to "Agent".
+3. You can also name the token (its comments and suggestions appear under that name), and set an hourly comment limit. The name defaults to "Agent".
 4. Click Create token.
 
 | Permission | What the agent can do |
@@ -27,10 +27,8 @@ A token lets an agent you start yourself work on one project. The agent can run 
 
 ### Connect your agent
 
-After you create the token, the Agent panel shows two steps, each with a copy button.
-
-1. Click **Copy install command** and paste the text into Claude Code, Codex or another agent. It installs the skill: the agent copies a folder of instructions and a small script into its skills folder. You do this once on each computer. Then start a new agent session, because agents load skills when a session starts.
-2. Click **Copy connection instructions** and paste the text into the new session. It holds the token and asks the agent to connect. You do this for each project. LibrePaper shows the token only once, so keep the panel open until you have copied it.
+1. The Tokens tab of the Agent panel starts with the install command. Click its copy button and paste the command into a terminal, or into Claude Code, Codex or another agent, and run it once on each computer. It installs the skill: the agent copies a folder of instructions and a small script into its skills folder. Then start a new agent session, because agents load skills when a session starts.
+2. After you create the token, click **Copy connection instructions** and paste the text into the new session. It holds the token and asks the agent to connect. You do this for each project. You can copy it again later with the copy icon on the token's row. Tokens created before this release have no copy icon; create a new token and revoke the old one to get one.
 
 The agent connects, tells you what it reached and asks what to do.
 
@@ -87,7 +85,7 @@ Every write needs an `operation` object, which `librepaper mcp` otherwise adds f
 
 ### What a token cannot do
 
-A token reaches only its own project. It cannot upload images, publish, share or run code. Each token has an hourly comment limit, which you set under Advanced when you create it. A single replacement is at most 60,000 characters and a single new file at most 262,144 characters, so agents split larger changes.
+A token reaches only its own project. It cannot upload images, publish, share or run code. Each token has an hourly comment limit, which you set when you create it. A single replacement is at most 60,000 characters and a single new file at most 262,144 characters, so agents split larger changes.
 
 A token stops working when it expires, when you revoke it with the trash button in the Tokens tab of the Agent panel, when the project changes owner, or when your account is blocked or erased. Signing out does not stop it, so the agent keeps working while you are signed out or LibrePaper is closed.
 

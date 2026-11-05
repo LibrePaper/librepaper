@@ -1,6 +1,8 @@
 // Browser regression check for the Agent panel. An owner gets two tabs: Tokens,
-// where a token is made, revealed once in the panel and revoked, and Tasks,
-// where each instruction is copied. A viewer who cannot share gets the tasks
+// where the install command sits at the top, a token is made and revealed in
+// the panel, a token row copies its connection instructions when the server
+// still holds the token, and a token is revoked; and Tasks, where each
+// instruction is copied. A viewer who cannot share gets the tasks
 // alone, with no tab row, and loads no sharing state.
 //
 // The route is stubbed rather than run, because what is under test is the
@@ -37,12 +39,17 @@ const idOf = () => String(++counter).padStart(16, "0");
 const week = () => new Date(Date.now() + 7 * 86400000).toISOString();
 const originPart = btoa(location.origin).split("+").join("-").split("/").join("_").split("=").join("");
 
+// Paul's assistant is an older token, so its row has no text to copy. Ana's
+// laptop is a token the server still holds, so its row carries the full token.
+const existingToken = "lpt_" + originPart + ".paper.existing";
 const state = {
   links: [],
   tokens: [
     { id: "b000000000000001", role: "commenter", name: "Paul's assistant", since: "2026-01-01T00:00:00Z", until: "2027-03-17T00:00:00Z", budget: null },
+    { id: "b000000000000002", role: "reader", name: "Ana's laptop", since: "2026-02-01T00:00:00Z", until: "2027-02-01T00:00:00Z", budget: null, token: existingToken },
   ],
 };
+const INSTALL = "npx skills add LibrePaper/librepaper --skill librepaper --global";
 window.calls = [];
 const expiryOf = (until) => (until === "never" ? "" : week());
 const answer = (created) => ({
@@ -56,10 +63,11 @@ window.fetch = async (path, options) => {
   if (body?.create) {
     const { kind, role, name, until, budget } = body.create;
     const id = idOf();
-    const row = { id, role, name, since: new Date().toISOString(), until: expiryOf(until), budget };
-    state.tokens.push(row);
-    created = { id, kind, token: "lpt_" + originPart + ".paper.minted" + id };
-    window.issuedToken = created.token;
+    const token = "lpt_" + originPart + ".paper.minted" + id;
+    // As the server will, the next listing carries the full token of a new row.
+    state.tokens.push({ id, role, name, since: new Date().toISOString(), until: expiryOf(until), budget, token });
+    created = { id, kind, token };
+    window.issuedToken = token;
   }
   if (body?.revoke) {
     state.links = state.links.filter((row) => row.id !== body.revoke.id);
@@ -138,12 +146,40 @@ window.agentPanelCheck = async () => {
   check(selectedTab() === "Tokens", "Tokens is the default tab: " + selectedTab());
   check(!dialog(), "no dialog at rest");
   check(text().includes("Create a token for an agent you run yourself, such as Claude Code or Codex. It reaches only this project."), "the tokens intro");
+  const install = document.querySelector(".agent-install");
+  const installCode = install && install.querySelector("code");
+  // At sidebar width the command wraps inside its box and stays clear of its copy button.
+  install.style.width = "280px";
+  const installButton = install.querySelector(".agent-install-command button");
+  check(installCode.scrollWidth <= installCode.clientWidth + 1 && installCode.getBoundingClientRect().right <= installButton.getBoundingClientRect().left + 1,
+    "the install command wraps clear of its copy button");
+  install.style.width = "";
+  check(installCode && installCode.textContent.trim() === INSTALL && installCode.getClientRects().length > 0,
+    "the install command is visible as code: " + (installCode && installCode.textContent));
+  check(install.compareDocumentPosition(document.querySelector(".share-toolbar")) === Node.DOCUMENT_POSITION_FOLLOWING, "the install section comes first");
+  await press(button("Copy install command"));
+  check(window.copied === INSTALL, "its copy button copies exactly the install command: " + window.copied);
   check(squash(document.querySelector(".share-toolbar")) === "New", "only the New button: " + squash(document.querySelector(".share-toolbar")));
-  check(rows().length === 1 && rowText(0).includes("Paul's assistant") && rowText(0).includes("Comment \\u00b7 Mar 17"), "one token row: " + rowText(0));
+  check(rows().length === 2 && rowText(0).includes("Paul's assistant") && rowText(0).includes("Comment \\u00b7 Mar 17"), "two token rows, the first Paul's assistant: " + rowText(0));
   check(!text().includes("lpt_"), "no token is visible by default");
   check([...rows()[0].querySelectorAll(".share-actions button")].map((node) => node.getAttribute("aria-label")).join("|") === "Revoke Paul's assistant",
-    "a token has only trash");
-  check(!rows()[0].querySelector('[aria-label^="Copy"]'), "a token has no copy button");
+    "a token without its text has only trash");
+  check(!rows()[0].querySelector('[aria-label^="Copy"]'), "a token without its text has no copy button");
+  check([...rows()[1].querySelectorAll(".share-actions button")].map((node) => node.getAttribute("aria-label")).join("|")
+    === "Copy connection instructions for Ana's laptop|Revoke Ana's laptop", "a token with its text has a copy button and trash: " + rowText(1));
+  const anaCopy = "Copy connection instructions for Ana's laptop";
+  const anaIcon = labelled(anaCopy).innerHTML;
+  await press(labelled(anaCopy));
+  check(window.copied.includes("Use the LibrePaper skill") && window.copied.includes("Token: " + existingToken),
+    "the row copies the connection instructions with its token: " + window.copied);
+  check(labelled(anaCopy).innerHTML !== anaIcon, "the row icon changes once copied");
+  check(!rowText(1).includes(existingToken) && !panel.textContent.includes(existingToken)
+    && ![...panel.querySelectorAll("[aria-label], [title]")].some((node) => (node.getAttribute("aria-label") || "").includes(existingToken)
+      || (node.getAttribute("title") || "").includes(existingToken)), "the row's text, labels and titles do not hold the token");
+  const warning = "Pasting the connection instructions into chat exposes your token to your model provider and chat history.";
+  const listed = text();
+  check(listed.indexOf(warning) > listed.indexOf("Ana's laptop") && listed.indexOf(warning) < listed.indexOf("A token with the Edit role"),
+    "the warning follows the list and comes before the scope note: " + listed);
   check(text().includes("A token with the Edit role is also what the librepaper command line and the GitHub Action use to sync this project."),
     "the scope note: " + text());
   check(!document.querySelector(".share-form"), "no form until one is asked for");
@@ -155,7 +191,12 @@ window.agentPanelCheck = async () => {
   check(!button("Create token").disabled, "a token needs no name");
   check(![...document.querySelectorAll(".share-form option")].some((node) => node.textContent === "Never"), "and cannot be made to last forever");
   const form = document.querySelector(".share-form");
-  form.querySelector(".share-advanced").open = true;
+  check(!form.querySelector("details"), "the token form has no folded section");
+  const nameInput = form.querySelector("input[type=text]");
+  check(nameInput.getClientRects().length > 0 && nameInput.value === "" && nameInput.placeholder === "(optional)",
+    "the name is visible, empty, and shows (optional): " + nameInput.value + " / " + nameInput.placeholder);
+  const budgetInput = form.querySelector("input[type=number]");
+  check(budgetInput && budgetInput.getClientRects().length > 0, "the Comments/hour field shows for the default Comment role");
   check(text().includes("Its comments and suggestions appear under this name."), "the helper line");
   check(document.querySelector(".share-toolbar") === null, "the form stands in for the toolbar");
   check(document.activeElement === form.querySelectorAll("select")[0], "a token's first control is its permission");
@@ -175,29 +216,26 @@ window.agentPanelCheck = async () => {
   const made = window.calls.at(-1)[1].create;
   check(made.kind === "token" && made.role === "editor" && made.name === "Codex" && made.until === "1d", JSON.stringify(made));
 
-  /* ------------------------------------------------------- the reveal, once */
+  /* ------------------------------------------------------------ the reveal */
 
   // The token is read from the mock, which issued it, or from the text that
   // was copied. It is never read back from the page to check the page.
   const issued = window.issuedToken;
   check(issued && issued.startsWith("lpt_" + originPart + ".paper.minted"), "the mock issued a token");
   check(!dialog(), "the reveal is not a dialog");
-  check(panel.contains(button("Copy install command")), "the reveal is drawn in the panel");
-  check(text().includes("Connect your AI agent"), "the reveal heading: " + text());
-  check(text().includes("Your token is shown only once."), "with the warning");
+  check(panel.querySelectorAll('[aria-label="Copy install command"]').length === 1, "the install section stays, and the reveal adds no install copy button of its own");
+  check(panel.querySelector(".agent-install code")?.textContent.trim() === INSTALL, "the install command still shows while the reveal shows");
+  check(text().includes("Connect to this project"), "the reveal's connection step: " + text());
+  check(text().includes("Pasting the connection instructions into chat exposes your token to your model provider and chat history."), "with the warning");
   check(rows().length === 0 && !document.querySelector("[data-share-new]"), "the reveal replaces the toolbar and list");
   check(!panel.textContent.includes(issued) && [...panel.querySelectorAll("textarea, input")].every((node) => !node.value.includes(issued)),
     "by default no field and no text holds the token");
-  check(document.activeElement === button("Copy install command"), "focus opens on the install copy button, not Done: " + (document.activeElement && document.activeElement.textContent));
-  await press(button("Copy install command"));
-  check(window.copied.includes("npx skills add LibrePaper/librepaper --skill librepaper --global")
-    && window.copied.includes("https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper")
-    && !window.copied.includes(issued), "the install command copies without the token: " + window.copied);
-  check(copiedLabel(), "a copy button shows Copied afterwards");
-  check(panel.contains(button("Copy connection instructions")), "copying does not end the reveal");
+  check(document.activeElement === button("Copy connection instructions"), "focus opens on Copy connection instructions, not Done: " + (document.activeElement && document.activeElement.textContent));
   await press(button("Copy connection instructions"));
   check(window.copied.includes("Use the LibrePaper skill") && window.copied.includes("no local folder") && window.copied.includes("Do not open or control a browser unless I explicitly ask you to.")
     && window.copied.includes("Token: " + issued), "the connection instructions copy with the token: " + window.copied);
+  check(copiedLabel(), "a copy button shows Copied afterwards");
+  check(text().includes("Connect to this project") && rows().length === 0, "copying does not end the reveal");
 
   await press(panel.querySelector("summary"));
   check(panel.querySelector("details").open, "Other connection methods opens");
@@ -232,7 +270,8 @@ window.agentPanelCheck = async () => {
   check(!stored.includes(issued), "the token is stored nowhere");
   await press(button("Done"));
   check(!labelled("Agent token") && !text().includes(issued), "Done clears it");
-  check(rows().length === 2 && rows().some((row) => row.textContent.includes("Codex")), "and the token is in the list: " + text());
+  check(rows().length === 3 && rows().some((row) => row.textContent.includes("Codex")), "and the token is in the list: " + text());
+  check(labelled("Copy connection instructions for Codex"), "the new row has a copy button, since the next listing carries its token");
   check(document.activeElement === document.querySelector("[data-share-new]"), "focus goes to New after Done");
 
   /* ---------------------------------------------------------------- revoke */
@@ -240,13 +279,12 @@ window.agentPanelCheck = async () => {
   await press(labelled("Revoke Codex"));
   check(dialog() && text().includes("Revoke token?") && text().includes("The agent loses access at once."), "revoking a token asks first in a dialog");
   await press(confirmButton("Revoke token"));
-  check(rows().length === 1 && !rows()[0].textContent.includes("Codex"), "revoked");
+  check(rows().length === 2 && !rows().some((row) => row.textContent.includes("Codex")), "revoked");
   check(!text().includes("revoked") && !text().includes("copied"), "and no status line says so");
 
   /* ----------------------------------------------- a manual-copy fallback */
 
   await press(document.querySelector("[data-share-new]"));
-  document.querySelector(".share-form .share-advanced").open = true;
   await type(document.querySelector(".share-form input[type=text]"), "Second");
   await press(button("Create token"));
   const rotated = window.issuedToken;
@@ -390,7 +428,7 @@ try {
   await tab.navigate(`http://127.0.0.1:${port}/`);
   await until("agent panel component", () => tab.evaluate("Boolean(window.agentPanelReady && window.agentPanelReady())"));
   assert.equal(await tab.evaluate("window.agentPanelCheck()"), true);
-  console.log("agent panel: tokens in the panel with one-time reveal, revoke, manual copy and late copy; tasks copy; viewers see the tasks alone");
+  console.log("agent panel: install step, token row copies, reveal, revoke, manual copy and late copy; tasks copy; viewers see the tasks alone");
 } finally {
   await tab?.close(); server?.close(); removeTemporary(temporary);
 }

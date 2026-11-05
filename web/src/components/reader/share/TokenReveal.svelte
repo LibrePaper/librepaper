@@ -1,11 +1,13 @@
 <script>
-  // The one time a token is shown. It lives in the parent's component state
-  // and nowhere else; nothing here writes it to storage. The Agent panel draws
-  // this in place of its toolbar and list, and clears it on Done or when the
-  // panel closes.
+  // The connection step for a token just made. The token is kept in the parent's
+  // component state and nowhere else; nothing here writes it to storage. The
+  // owner can copy it again from its row, so this is not the only time it is
+  // shown. The Agent panel draws this under its install section in place of its
+  // toolbar and list, and clears it on Done or when the panel closes.
   import { onMount } from "svelte";
   import { m } from "../../../lib/paraglide/messages.js";
   import Icon from "../../Icon.svelte";
+  import { connectionInstructions } from "./shared.js";
   let { token, copied = "", copyFallback = "", error = "", oncopy, ondone } = $props();
   // Claude Code passes its environment to the servers it starts, so the
   // server is registered once and the token is given at launch. The token is
@@ -19,31 +21,13 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
   // What the screen shows until the token is revealed. The copy button still
   // copies `config`, which holds the real token.
   const maskedConfig = $derived(config.split(token).join("lpt_..."));
-  // The two blocks are addressed to an agent, not to the user, so they stay
-  // English rather than going through the message catalogues.
-  const installBlock = [
-    "Install the LibrePaper agent skill for every project on this computer by running:",
-    "",
-    "npx skills add LibrePaper/librepaper --skill librepaper --global",
-    "",
-    "If that does not work, copy https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper, including its references and scripts folders, into your skills folder. If your sandbox blocks this or the command needs my input, give me the exact command to run in my terminal. When the skill is installed, tell me to start a new session.",
-  ].join("\n");
-  const connectBlock = $derived([
-    "Use the LibrePaper skill to connect to my project with the agent token below. If you do not have that skill, stop and ask me to install it.",
-    "",
-    "The project is on a LibrePaper server and the token names it, so you need no local folder. The token is a credential: do not repeat it to me or write it into any file in your working directory.",
-    "",
-    "Connect first, then tell me what you reached and ask what I want done. If your sandbox blocks network or file access, tell me exactly what to allow. Do not open or control a browser unless I explicitly ask you to.",
-    "",
-    `Token: ${token}`,
-  ].join("\n"));
   const select = (event) => event.currentTarget.select();
 
   let root = $state(null);
   let otherOpen = $state(false);
   let revealed = $state(false);
-  // Focus starts on the first button, the step 1 copy, so Enter copies
-  // rather than dismissing a token that is shown only once.
+  // Focus starts on the first button, the connection copy, so Enter copies
+  // the instructions rather than dismissing the reveal.
   onMount(() => root?.querySelector("button")?.focus());
 </script>
 
@@ -56,20 +40,7 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
 {/snippet}
 
 <div class="token-reveal" bind:this={root}>
-  <h3 class="token-title">{m.tokenreveal_title()}</h3>
-  <p class="token-help">{m.tokenreveal_intro()}</p>
   <span class="sr-only" role="status" aria-live="polite">{copied ? m.tokenreveal_copied() : ""}</span>
-
-  <section class="token-section">
-    <div class="token-step-head">
-      <span class="token-number" aria-hidden="true">1</span>
-      <div class="token-step-text">
-        <h3 class="token-step-title">{m.tokenreveal_step_install()}</h3>
-        <p class="token-help">{m.tokenreveal_step_install_help()}</p>
-      </div>
-    </div>
-    {@render copyButton(m.tokenreveal_copy_install(), installBlock, "tonal", true)}
-  </section>
 
   <section class="token-section">
     <div class="token-step-head">
@@ -79,7 +50,7 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
         <p class="token-help">{m.tokenreveal_step_connect_help()}</p>
       </div>
     </div>
-    {@render copyButton(m.tokenreveal_copy_connect(), connectBlock, "brand", true)}
+    {@render copyButton(m.tokenreveal_copy_connect(), connectionInstructions(token), "brand", true)}
     <p class="token-note">{m.tokenreveal_connect_note()}</p>
   </section>
 
@@ -139,10 +110,9 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
 
 <style>
   .token-reveal { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
-  .token-title { margin: 0; font-size: 15px; font-weight: 600; }
   .token-section { padding-block: calc(var(--spacing) * 3); border-top: 1px solid var(--color-divider); }
+  .token-section:first-of-type { padding-top: 0; border-top: 0; }
   .token-step-head { display: flex; align-items: flex-start; gap: calc(var(--spacing) * 3); margin-bottom: calc(var(--spacing) * 3); }
-  .token-number { display: grid; flex: none; place-items: center; width: 28px; height: 28px; border-radius: 9999px; background: var(--color-row-hover); font-size: 13px; font-weight: 500; }
   .token-step-text { min-width: 0; }
   .token-step-title { margin: 0; font-size: 14px; font-weight: 500; }
   .token-help { margin: calc(var(--spacing) * 1) 0 0; font-size: 13px; color: var(--panel-muted); }
