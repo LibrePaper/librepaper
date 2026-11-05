@@ -238,7 +238,7 @@ window.sharePanelCheck = async () => {
   check(dialog().querySelector("details").open, "Other connection methods opens");
   check(dialogText().includes("With MCP, you can avoid pasting the token into your agent's chat."), "the MCP advantage line");
   const commands = labelled("Claude Code commands").value;
-  check(commands === "claude mcp add librepaper --scope user -- librepaper mcp\nread -rs LIBREPAPER_AGENT_TOKEN && export LIBREPAPER_AGENT_TOKEN && claude",
+  check(commands === "claude mcp add librepaper --scope user -- librepaper mcp\\nread -rs LIBREPAPER_AGENT_TOKEN && export LIBREPAPER_AGENT_TOKEN && claude",
     "the Claude Code commands register once and read the token silently: " + commands);
   check(!commands.includes(issued), "the commands never contain the token");
   await press(button("Copy commands"));

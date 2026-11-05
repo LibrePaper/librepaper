@@ -104,7 +104,7 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
         <p class="token-help">{m.tokenreveal_mcp_advantage()}</p>
 
         <label class="token-field">Claude Code
-          <textarea class="input token-code" readonly rows="2" aria-label={m.tokenreveal_commands_aria()} value={commands} onclick={select}></textarea>
+          <textarea class="input token-code" readonly rows="4" aria-label={m.tokenreveal_commands_aria()} value={commands} onclick={select}></textarea>
           <span class="token-help">{m.tokenreveal_commands_help()}</span>
         </label>
         {@render copyButton(m.tokenreveal_copy_commands(), commands, "tonal", false)}
@@ -145,12 +145,14 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
   .token-note { margin: calc(var(--spacing) * 2) 0 0; font-size: 12px; color: var(--panel-muted); }
   .token-copy { display: flex; align-items: center; justify-content: center; gap: calc(var(--spacing) * 2); width: fit-content; max-width: 100%; }
   .token-copy-wide { width: 100%; }
+  /* The dialog body scrolls and clips, so the ring sits inside the button. */
+  .token-copy:focus-visible { outline-offset: -3px; }
   .token-copy-failed { color: var(--color-error-text); }
   .token-warning { display: flex; align-items: flex-start; gap: calc(var(--spacing) * 2); margin: 0; padding: calc(var(--spacing) * 3); border-radius: var(--radius-base); background: var(--color-row-hover); font-size: 12px; }
   .token-warning > span { min-width: 0; }
   .token-problem { margin: calc(var(--spacing) * 2) 0 0; }
   .token-fallback { width: 100%; margin-top: calc(var(--spacing) * 2); }
-  .token-other { padding-block: calc(var(--spacing) * 3); border-top: 1px solid var(--color-divider); }
+  .token-other { margin-top: calc(var(--spacing) * 3); padding-block: calc(var(--spacing) * 3); border-top: 1px solid var(--color-divider); }
   .token-other > summary { display: flex; align-items: center; gap: calc(var(--spacing) * 2); cursor: pointer; font-size: 13px; font-weight: 500; border-radius: var(--radius-base); list-style: none; }
   .token-other > summary::-webkit-details-marker { display: none; }
   .token-other > summary:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
