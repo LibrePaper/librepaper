@@ -195,6 +195,23 @@ impl Served {
         (status, names)
     }
 
+    /// The whole `/tools` body under a token, with `query` (such as
+    /// `?schema=full`) appended to the path.
+    async fn tools_body(&self, token: &str, query: &str) -> Value {
+        let response = reqwest::Client::new()
+            .get(format!(
+                "{}/api/documents/{}/tools{query}",
+                self.base, self.slug
+            ))
+            .header("host", "paper.example")
+            .header("authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+        response.json().await.unwrap()
+    }
+
     async fn call(&self, token: &str, tool: &str, arguments: Value) -> (u16, Value) {
         let response = reqwest::Client::new()
             .post(format!(
@@ -330,7 +347,7 @@ async fn the_share_route_creates_updates_replaces_and_revokes_by_id() {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn a_token_has_a_name_an_expiry_and_no_key_in_the_listing() {
+async fn a_token_lists_its_name_its_expiry_and_for_its_owner_its_text() {
     let Some(served) = serve("token-listing").await else {
         return;
     };
@@ -359,12 +376,15 @@ async fn a_token_has_a_name_an_expiry_and_no_key_in_the_listing() {
     assert_eq!(row["id"], id.as_str());
     assert_eq!(row["role"], "editor");
     assert_eq!(row["name"], "Paul's assistant");
-    assert!(row.get("key").is_none() && row.get("url").is_none());
+    assert_eq!(row["token"], token.as_str(), "the owner can copy it again");
     assert!(
-        !listing
-            .to_string()
-            .contains(token.rsplit_once('.').unwrap().1),
-        "nothing keeps the token's key"
+        row.get("hash").is_none() && row.get("sealed").is_none() && row.get("key").is_none(),
+        "the row carries the text, never the digest, the sealed copy or a bare key: {row}"
+    );
+    assert_eq!(
+        served.tools(&token).await.0,
+        200,
+        "the listed text is the working token"
     );
     let (status, refused) = served
         .share(json!({"update": {"id": id, "until": "never"}}))
@@ -374,6 +394,110 @@ async fn a_token_has_a_name_an_expiry_and_no_key_in_the_listing() {
         .share(json!({"replace": {"id": id, "until": "never"}}))
         .await;
     assert_eq!(status, 400, "{refused}");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_replaced_token_lists_its_new_text_and_the_old_one_answers_401() {
+    let Some(served) = serve("token-replaced").await else {
+        return;
+    };
+    let (old, id) = served.mint_token("comment", "rotating").await;
+    let (status, replaced) = served.share(json!({"replace": {"id": id}})).await;
+    assert_eq!(status, 200, "{replaced}");
+    let new = replaced["created"]["token"].as_str().unwrap().to_string();
+    assert_ne!(new, old, "replacing mints a new key");
+
+    let listing = served.sharing().await;
+    let row = listing["tokens"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "rotating")
+        .unwrap();
+    assert_eq!(row["token"], new.as_str(), "{listing}");
+    assert_eq!(served.tools(&new).await.0, 200);
+    assert_eq!(served.tools(&old).await.0, 401);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_revoked_token_is_not_listed_and_its_text_goes_with_it() {
+    let Some(served) = serve("token-revoked-listing").await else {
+        return;
+    };
+    let (kept, _) = served.mint_token("read", "kept").await;
+    let (gone, gone_id) = served.mint_token("read", "gone").await;
+    let (status, _) = served.share(json!({"revoke": {"id": gone_id}})).await;
+    assert_eq!(status, 200);
+
+    let listing = served.sharing().await;
+    let names: Vec<&str> = listing["tokens"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row["name"].as_str())
+        .collect();
+    assert_eq!(names, ["kept"], "{listing}");
+    assert!(
+        !listing.to_string().contains(gone.as_str()),
+        "a revoked token's text is not listed: {listing}"
+    );
+    assert_eq!(served.tools(&kept).await.0, 200);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_share_listing_is_refused_to_a_token_and_to_no_one() {
+    use reqwest::Method;
+
+    let Some(served) = serve("token-listing-refused").await else {
+        return;
+    };
+    let (token, _) = served.mint_token("edit", "bot").await;
+    let key = token.rsplit_once('.').unwrap().1;
+    let path = format!("/api/documents/{}/share", served.slug);
+
+    let response = served.send(Method::GET, &path, &token, None).await;
+    assert_eq!(response.status().as_u16(), 401, "a token is not the owner");
+    let body = response.text().await.unwrap();
+    assert!(!body.contains(key), "no token text in a refusal: {body}");
+
+    let response = reqwest::Client::new()
+        .get(format!("{}{path}", served.base))
+        .header("host", "paper.example")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 404, "no credentials");
+    let body = response.text().await.unwrap();
+    assert!(!body.contains(key), "no token text in a refusal: {body}");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_token_with_no_sealed_key_lists_without_text_and_still_works() {
+    let Some(served) = serve("token-unsealed").await else {
+        return;
+    };
+    let (token, _) = served.mint_token("comment", "older").await;
+    sqlx::query(
+        "UPDATE share_links SET sealed_token=''::bytea
+         WHERE document_id=(SELECT id FROM documents WHERE slug=$1) AND label='older'",
+    )
+    .bind(&served.slug)
+    .execute(served.catalog.pool())
+    .await
+    .unwrap();
+
+    let listing = served.sharing().await;
+    let row = &listing["tokens"][0];
+    assert_eq!(row["name"], "older", "{listing}");
+    assert!(
+        row.get("token").is_none(),
+        "no sealed copy, no text: {listing}"
+    );
+    assert_eq!(served.tools(&token).await.0, 200, "the token still works");
 }
 
 #[tokio::test]
@@ -401,6 +525,59 @@ async fn a_token_works_only_on_its_documents_tools() {
     assert_eq!(status, 401);
     let link_key_as_token = agent_token_string(READER, &served.slug, &"0".repeat(64));
     assert_eq!(served.tools(&link_key_as_token).await.0, 401);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_tools_route_tells_a_direct_caller_what_a_write_needs() {
+    let Some(served) = serve("tools-direct").await else {
+        return;
+    };
+    let (token, _) = served.mint_token("edit", "editor").await;
+    let tool = |body: &Value, name: &str| -> Value {
+        body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+
+    // The default is the bridge's view: operation is injected by the bridge,
+    // and the instructions say so.
+    let default = served.tools_body(&token, "").await;
+    let propose = tool(&default, "document_propose");
+    assert!(propose["inputSchema"]["properties"]
+        .get("operation")
+        .is_none());
+    assert!(default["instructions"]
+        .as_str()
+        .unwrap()
+        .contains("identified automatically"));
+
+    // `?schema=full` is the direct caller's view: every write names its
+    // operation, and the instructions say how to build it.
+    let direct = served.tools_body(&token, "?schema=full").await;
+    let propose = tool(&direct, "document_propose");
+    assert!(propose["inputSchema"]["properties"]["operation"].is_object());
+    assert!(propose["inputSchema"]["required"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("operation")));
+    let result = tool(&direct, "document_result");
+    assert!(result["inputSchema"]["properties"]["kind"]["enum"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("operation")));
+    let instructions = direct["instructions"].as_str().unwrap();
+    assert!(instructions.contains("operation_epoch"));
+    assert!(!instructions.contains("identified automatically"));
+
+    // A commenter gets the full schema too, but still not the editor's tools.
+    let (comment_token, _) = served.mint_token("comment", "reviewer").await;
+    let commenter = served.tools_body(&comment_token, "?schema=full").await;
+    assert!(tool(&commenter, "document_propose").is_null());
 }
 
 #[tokio::test]

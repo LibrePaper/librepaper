@@ -167,6 +167,11 @@ fn sealing_key(session_key: &[u8]) -> chacha20poly1305::Key {
 /// deployment's session key -- which is a file in the secrets directory, and
 /// never in the catalogue. The digest goes on doing the whole job of admitting
 /// a caller; this is only how the URL is said again.
+///
+/// An agent token is sealed the same way, and for the same reason: so its
+/// owner can copy the token text again from the Agent panel. The digest of
+/// its key still admits a caller alone, and a copy of the catalogue without the
+/// session key holds a token that is useless to present.
 pub fn seal_link_key(session_key: &[u8], key: &str) -> Vec<u8> {
     use chacha20poly1305::aead::{Aead, KeyInit};
     let cipher = chacha20poly1305::XChaCha20Poly1305::new(&sealing_key(session_key));
@@ -267,7 +272,10 @@ impl Server {
             );
         }
         if method == Method::GET {
-            return write_json(200, &self.sharing_json(&auth.entry));
+            return write_json(
+                200,
+                &self.sharing_json(&auth.entry, &arrival.reader_origin()),
+            );
         }
         if method != Method::POST {
             return plain(405, "method not allowed");
@@ -424,7 +432,7 @@ impl Server {
                     // any socket already open on this document may no longer be entitled
                     // to what it is holding.
                     self.reauthorize(slug).await;
-                    let mut shown = self.sharing_json(&entry);
+                    let mut shown = self.sharing_json(&entry, &arrival.reader_origin());
                     if let Some(created) = created {
                         shown["created"] = created;
                     }
@@ -439,8 +447,9 @@ impl Server {
     }
 
     /// The row a `create` asks for and the `created` object that tells the
-    /// owner its credential. The credential is shown once: a link's key is
-    /// also sealed into its row, a token's key is kept nowhere.
+    /// owner its credential. The credential is shown once in `created`, but
+    /// both a link's key and a token's key are sealed into their rows, so the
+    /// owner can copy either again from the listing.
     fn plan_create(
         &self,
         slug: &str,
@@ -483,6 +492,7 @@ impl Server {
                 grant.until = token_expiry(&wanted.until)?;
                 grant.kind = LinkKind::Agent;
                 grant.owner_generation = owner.id.session_generation.clone();
+                grant.sealed = seal_link_key(&self.key, key.expose());
                 json!({"id": grant.id(), "kind": "token", "token": agent_token_text(origin, slug, &key)?})
             }
             _ => return Err("a share is a 'link' or a 'token'".to_string()),
@@ -521,7 +531,7 @@ impl Server {
                 json!({"id": grant.id(), "kind": "link", "url": format!("/docs/{slug}/{}", key.expose())})
             }
             LinkKind::Agent => {
-                grant.sealed = Vec::new();
+                grant.sealed = seal_link_key(&self.key, key.expose());
                 grant.owner_generation = owner.id.session_generation.clone();
                 json!({"id": grant.id(), "kind": "token", "token": agent_token_text(origin, slug, &key)?})
             }
@@ -532,8 +542,10 @@ impl Server {
     /// Everything the Sharing panel draws: the owner's own URL, every live
     /// link and agent token, oldest first, and what this deployment's switches will let the owner offer.
     /// Only the owner ever asks for this, so nothing here is held back from
-    /// the caller. A token never carries its key: nothing keeps it.
-    pub(super) fn sharing_json(&self, entry: &IndexEntry) -> Value {
+    /// the caller. A link's and a token's key are each opened from their
+    /// sealed copy, so the owner can copy either again. `origin` is the
+    /// reader origin the token text is built on, the same one creation uses.
+    pub(super) fn sharing_json(&self, entry: &IndexEntry, origin: &str) -> Value {
         let now = librepaper_base::util::now_unix();
         let mut links = Vec::new();
         let mut tokens = Vec::new();
@@ -563,14 +575,27 @@ impl Server {
                         "budget": row.budget,
                     }));
                 }
-                LinkKind::Agent => tokens.push(json!({
-                    "id": row.id(),
-                    "role": row.role,
-                    "name": row.label,
-                    "since": row.since,
-                    "until": row.until,
-                    "budget": row.budget,
-                })),
+                LinkKind::Agent => {
+                    // The same sealed copy a link keeps. Where it cannot be
+                    // opened, the row has no token to offer and no `token`
+                    // field; the token still works, it just cannot be copied.
+                    let token = open_link_key(&self.key, &row.sealed)
+                        .parse::<LinkKey>()
+                        .ok()
+                        .and_then(|key| agent_token_text(origin, &entry.slug, &key).ok());
+                    let mut shown = json!({
+                        "id": row.id(),
+                        "role": row.role,
+                        "name": row.label,
+                        "since": row.since,
+                        "until": row.until,
+                        "budget": row.budget,
+                    });
+                    if let Some(token) = token {
+                        shown["token"] = json!(token);
+                    }
+                    tokens.push(shown);
+                }
             }
         }
         json!({

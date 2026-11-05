@@ -44,7 +44,7 @@ gh auth login
 - The `librepaper` command. Install it with a desktop app package: Homebrew, Scoop, the Windows installer, the `.deb` or `.rpm` package, or Nix. See [Install the desktop app](desktop-app.html). The plain macOS `.dmg` does not put it on your PATH. On a server, [install the command alone](cli.html#install).
 - Git, if the folder is a repository. A plain folder needs no Git.
 - A token, or a login on this computer.
-  - A project token: open the project, then Share, then the Agent tokens tab, then Create. Choose the Edit role and an expiry of up to 1 year. [Agent tokens](agents.html#agent-tokens) has the details. A project token works for a project that exists; publishing a new one needs `librepaper login`.
+  - A project token: open the project, then the Agent panel (the robot icon in the sidebar), then the Tokens tab, then New; choose the Edit permission and an expiry of up to 1 year; click Create token; then open "Other connection methods" and click the copy icon next to Token. [Agent tokens](agents.html#agent-tokens) has the details. A project token works for a project that exists; publishing a new one needs `librepaper login`.
   - `librepaper login` signs you in on this computer. The login lasts 90 days.
 
 Give the token to the CLI with `--token`, or with the `LIBREPAPER_TOKEN` variable. After `librepaper login`, you need neither.
@@ -230,7 +230,7 @@ What else happens:
 - **When an older push run is started again**, the Action sees that its checkout is no longer the tip of the branch and pushes nothing, so an old commit never rolls the project back.
 - **On every run that ends well**, the Action pushes the LibrePaper refs back to GitHub. The next run, on a new machine, starts from the same state.
 
-Anyone with push rights on the repository can change the project this way. Each change is a named version under the git author. You can see it and restore it in History. To stop the Action, revoke its token in Sharing.
+Anyone with push rights on the repository can change the project this way. Each change is a named version under the git author. You can see it and restore it in History. To stop the Action, open the project, then the Agent panel, then the Tokens tab, and click the trash button on its token.
 
 The Action reports the repository and the project separately. A repository push that a protected branch rejects does not undo a web change that already went through. The Action never force-pushes the branch or bypasses branch protection.
 
@@ -310,7 +310,7 @@ Run `librepaper push` again. It sends the pending request first. See [Pending pu
 
 ### The CLI or the Action cannot sign in
 
-The token has expired or was revoked. Create a new token in Sharing. Then replace the `LIBREPAPER_TOKEN` secret, or export the new value in your shell.
+The token has expired or was revoked. Create a new token in the Agent panel's Tokens tab. Then replace the `LIBREPAPER_TOKEN` secret, or export the new value in your shell.
 
 ### The Action stops with "run librepaper push"
 

@@ -35,7 +35,6 @@ function setup(fetch, { inDesktop = true } = {}) {
   setup(async () => { throw new Error("no request may be sent"); }, { inDesktop: false });
   const desktopOnly = (error) => error.name === "DesktopOnly" && error.message === local.DESKTOP_ONLY_MESSAGE;
   await assert.rejects(local.capabilities(), desktopOnly);
-  await assert.rejects(local.agents(), desktopOnly);
   await assert.rejects(local.manage("/state"), desktopOnly);
   await assert.rejects(local.runRender({ tree: { main: "paper.qmd", texts: { "paper.qmd": "# Paper" } }, format: "quarto", output: "html" }), desktopOnly);
   assert.equal(local.DESKTOP_ONLY_MESSAGE, "This needs the LibrePaper desktop app.");
@@ -73,7 +72,7 @@ function setup(fetch, { inDesktop = true } = {}) {
   await assert.rejects(local.capabilities(), unreachable);
   await assert.rejects(local.manage("/state"), unreachable);
   setup(async () => { throw new TypeError("Failed to fetch"); });
-  await assert.rejects(local.agents(), unreachable);
+  await assert.rejects(local.manage("/state"), unreachable);
 }
 
 // A 502 that names a reason is the local service answering a failed remote request: Refused, with its body.

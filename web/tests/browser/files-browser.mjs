@@ -38,6 +38,7 @@ import Files from ${JSON.stringify(join(root, "web/src/components/reader/Files.s
 import Collaboration from ${JSON.stringify(join(root, "web/src/components/reader/Collaboration.svelte"))};
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/reader/Diagnostics.svelte"))};
 import Share from ${JSON.stringify(join(root, "web/src/components/reader/Share.svelte"))};
+import Agent from ${JSON.stringify(join(root, "web/src/components/reader/Agent.svelte"))};
 import Nav from ${JSON.stringify(join(root, "web/src/components/Nav.svelte"))};
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
@@ -306,7 +307,7 @@ window.sharingCheck = async () => {
   const permission = document.querySelector('.share-form select');
   permission.value = 'editor'; permission.dispatchEvent(new Event('change', { bubbles: true }));
   await flush();
-  // The budget sits behind Advanced but is a field of the same form.
+  // The budget is a field of the same form, shown with the other fields.
   const editBudget = document.querySelector('.share-form input[type="number"]');
   editBudget.value = '8'; editBudget.dispatchEvent(new Event('input', { bubbles: true }));
   await flush();
@@ -382,7 +383,7 @@ window.panelTypographyCheck = async () => {
   // so that the strip is flush to the top of the panel and runs its full
   // width. The reader must not be able to tell the two arrangements apart:
   // what a pane holds has to sit exactly where a plain panel's contents sit.
-  for (const [component, props] of [[Collaboration, {}], [Share, { open: true, inline: true, slug: 'paper', canShare: true }]]) {
+  for (const [component, props] of [[Collaboration, {}], [Agent, { open: true, slug: 'paper', canShare: true }]]) {
     const host = document.createElement('div');
     host.style.cssText = 'display:flex;flex-direction:column;width:360px;height:500px';
     document.body.append(host);

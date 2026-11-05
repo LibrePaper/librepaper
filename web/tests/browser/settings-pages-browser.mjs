@@ -156,7 +156,7 @@ try {
   await until("harness mounted", () => b.evaluate("typeof window.show === \"function\""), 10000);
   await show("rendering", "quarto", "Rendering");
   assert.deepEqual(JSON.parse(await b.evaluate(`JSON.stringify([...document.querySelectorAll(".settings-nav-item")].map((node) => node.textContent.trim()))`)),
-    ["General", "Editor", "Rendering", "Tools", "AI agents", "Backups", "Account"]);
+    ["General", "Editor", "Rendering", "Tools", "Backups", "Account"]);
 
   // Settings is a page, not a card: it covers the window, Back closes it and
   // so does Escape.
@@ -259,7 +259,7 @@ try {
   // This computer is not an option in a browser, and Quarto's commands cannot be edited.
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Typst renders in"]') === null`), true);
   assert.equal(await b.evaluate(`document.querySelector("#render-quarto-html") === null`), true);
-  for (const [pageId, says] of [["tools", "Tools"], ["agents", "AI agents"], ["backups", "Backups"]]) {
+  for (const [pageId, says] of [["tools", "Tools"], ["backups", "Backups"]]) {
     await show(pageId, "quarto", says);
     await until(`the browser notice on ${says}`, () => b.evaluate(`Boolean(document.querySelector(".settings-body .desktop-only a"))`), 5000);
     assert.equal(await b.evaluate(`document.querySelector(".settings-body .desktop-only-message").textContent.trim()`), "This needs the LibrePaper desktop app.");

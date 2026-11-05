@@ -42,8 +42,21 @@ const READER_TOOLS: [&str; 2] = ["document_read", "document_result"];
 /// tool without the `label` action, which the server also refuses below
 /// Editor. A Reader gets `READER_TOOLS` only.
 pub(super) fn served_tools(role: Role) -> Vec<Value> {
+    for_role(role, all_served_tools())
+}
+
+/// The same tools for a direct HTTP caller: identical role filtering and
+/// `commenter_view`, with `$ref`s inlined, but `operation` and
+/// `target_operation` left in place, since a direct caller supplies them.
+pub(super) fn served_tools_full(role: Role) -> Vec<Value> {
+    for_role(role, all_full_tools())
+}
+
+/// Filters and adapts a tool list for one role. Shared by both served lists
+/// so the role rules live in one place.
+fn for_role(role: Role, tools: &[Value]) -> Vec<Value> {
     let editor = role.at_least(Role::Editor);
-    all_served_tools()
+    tools
         .iter()
         .filter(|tool| {
             let name = tool["name"].as_str().unwrap_or_default();
@@ -81,23 +94,39 @@ fn commenter_view(tool: &Value) -> Value {
     tool
 }
 
-/// The tools as served to the model: every `$ref` expanded inline, since a
-/// client reads one schema per tool and does not resolve JSON Schema
-/// references itself, and with `operation`/`target_operation` removed from
-/// every tool's properties and required list. The bridge injects a mutating
-/// call's operation identity itself now, from the epoch it remembered off
-/// the model's last document_read; a model that never sees the field cannot
-/// get its epoch or id wrong. The server's own validation schema (`tools()`)
-/// is unchanged: the wire contract the bridge and the server keep between
-/// themselves still requires it.
-fn all_served_tools() -> &'static Vec<Value> {
-    static SERVED: OnceLock<Vec<Value>> = OnceLock::new();
-    SERVED.get_or_init(|| {
+/// The tools with every `$ref` expanded inline, since a client reads one
+/// schema per tool and does not resolve JSON Schema references itself. The
+/// `operation` fields are still present: this is what a direct HTTP caller
+/// is served.
+fn all_full_tools() -> &'static Vec<Value> {
+    static FULL: OnceLock<Vec<Value>> = OnceLock::new();
+    FULL.get_or_init(|| {
         tools()
             .iter()
             .cloned()
             .map(|mut tool| {
                 inline_refs(&mut tool["inputSchema"]);
+                tool
+            })
+            .collect()
+    })
+}
+
+/// The tools as served to the bridge: `all_full_tools` with
+/// `operation`/`target_operation` removed from every tool's properties and
+/// required list. The bridge injects a mutating call's operation identity
+/// itself now, from the epoch it remembered off the model's last
+/// document_read; a model that never sees the field cannot get its epoch or
+/// id wrong. The server's own validation schema (`tools()`) is unchanged: the
+/// wire contract the bridge and the server keep between themselves still
+/// requires it.
+fn all_served_tools() -> &'static Vec<Value> {
+    static SERVED: OnceLock<Vec<Value>> = OnceLock::new();
+    SERVED.get_or_init(|| {
+        all_full_tools()
+            .iter()
+            .cloned()
+            .map(|mut tool| {
                 strip_operation_fields(&mut tool["inputSchema"]);
                 tool
             })
@@ -314,6 +343,23 @@ mod tests {
             .find(|t| t["name"] == "document_propose")
             .expect("propose")["inputSchema"];
         assert!(propose["properties"]["operation"].is_object());
+    }
+
+    /// A direct caller's list keeps `operation` on every write, has no `$ref`
+    /// left, and still requires `operation` on document_comment.
+    #[test]
+    fn full_served_tools_inline_refs_and_keep_operation() {
+        let tools = served_tools_full(Role::Editor);
+        let text = serde_json::to_string(&tools).expect("serialized tools");
+        assert!(!text.contains("$ref"));
+        let comment = tools
+            .iter()
+            .find(|t| t["name"] == "document_comment")
+            .expect("document_comment");
+        let required = comment["inputSchema"]["required"]
+            .as_array()
+            .expect("required");
+        assert!(required.contains(&json!("operation")));
     }
 
     /// A Reader is offered the read tools and nothing else.
