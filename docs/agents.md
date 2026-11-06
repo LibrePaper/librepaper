@@ -4,16 +4,26 @@ title: "Agents"
 
 LibrePaper works with the coding agent you already use: Claude Code, Codex, Pi or opencode. The agent reads your document, comments on it and suggests changes. You accept or reject each suggestion, as you would a coauthor's. Your model and your credentials stay with you, and no AI runs on the LibrePaper server.
 
+There are two ways to connect an agent:
+
+- **The built-in agent, in the desktop app.** It is an agent installed on your computer, and it chats with you next to the document. See [Built-in agent](#built-in-agent).
+- **An external agent, with a token.** You paste one block of instructions into the agent you already use, and it connects to one project. This works from the browser or the desktop app, and the agent can run anywhere. See [Connect your agent](#connect-your-agent).
+
 > **Warning:** A shared document holds text from everyone with edit access. An agent that reads it may follow instructions hidden in that text.
 
 ## Connect your agent
 
-**Connecting takes two copies and two pastes, all from the Agent panel.** You configure nothing by hand, and you need no local copy of the project: the token tells the agent which server and project to reach.
+**Connecting takes one copy and one paste, all from the Agent panel.** You configure nothing by hand, and you need no local copy of the project: the token tells the agent which server and project to reach. The same paste works for every project.
 
-Open the project, then the Agent panel (the robot icon in the sidebar), then the Tokens tab.
+Open the project, then the Agent panel (the robot icon in the sidebar), then the External agent tab.
 
-1. **Install the skill, once per computer.** Click **Copy install instructions** and paste them into your agent. The skill is a folder of instructions and a small script. When the agent says it is installed, start a new session, because agents load skills when a session starts.
-2. **Connect to the project, once per project.** Click **New token**, choose a permission and an expiry, and click **Create token**. Then click **Copy connection instructions** and paste them into the new session.
+1. Click **New token**.
+2. Choose a permission and an expiry.
+3. Click **Create token**.
+4. Click **Copy connection instructions**.
+5. Paste the text into your agent.
+
+The first paste installs the LibrePaper skill if it is missing, which happens once per computer. The skill is a folder of instructions and a small script. The agent reads it directly and connects to the project in the same session, so you do not need to start a new session.
 
 The agent connects, tells you what it reached and asks what you want done.
 
@@ -25,8 +35,6 @@ The connection instructions contain the token, so it sits in your agent's chat, 
 
 You can still work right away. Many agents run in a sandbox that blocks their skills folder, or the install command needs your input. The agent then copies the skill to a temporary folder and uses it for that session. It tells you that the skill is not installed, what blocked it, and the exact command to run in your terminal so it is installed next time.
 
-The same happens if you paste connection instructions into an agent that has no skill: it makes the temporary copy, connects, and gives you the command to install the skill.
-
 The agent still needs network access. Codex's default sandbox blocks it for shell commands, so allow it if Codex asks, or start Codex with `codex -c sandbox_workspace_write.network_access=true`.
 
 ### If the skill is out of date
@@ -36,6 +44,79 @@ When a server needs a newer skill than the one installed, the skill's script say
 ```sh
 npx skills update librepaper
 ```
+
+## Built-in agent
+
+The [desktop app](desktop-app.html) finds the agents installed on your computer. Install one of the agents below, restart LibrePaper, and pick it in the Built-in agent tab of the Agent panel. In a browser, the Built-in agent tab points you to the desktop app.
+
+Claude Code and Codex connect through small adapters from npm, which need Node.js 22 or newer. On Linux, install the current LTS from [nodejs.org](https://nodejs.org), because distribution packages are often too old.
+
+```sh
+# Install Node.js on macOS
+brew install node
+# Install Node.js on Windows
+winget install OpenJS.NodeJS.LTS
+```
+
+### Claude Code
+
+```sh
+# Install Claude Code on macOS or Linux
+curl -fsSL https://claude.ai/install.sh | bash
+# Install Claude Code on Windows, in PowerShell
+irm https://claude.ai/install.ps1 | iex
+# Log in once
+claude
+# Install the adapter
+npm install -g @agentclientprotocol/claude-agent-acp
+```
+
+If you skip the adapter, LibrePaper offers to fetch it the first time you start Claude Code. Installing it yourself keeps a version that does not change under you.
+
+### Codex
+
+```sh
+# Install Codex and log in once
+npm install -g @openai/codex
+codex login
+# Install the adapter
+npm install -g @agentclientprotocol/codex-acp
+```
+
+- Your Access setting in LibrePaper decides which document tools Codex may run without asking.
+- Do not add a `librepaper` server to your own Codex config. Codex then ignores the one LibrePaper gives it.
+- Codex on Windows is experimental. LibrePaper uses a Codex installed in Windows, not one inside WSL.
+
+### Pi
+
+Pi needs an extension to reach the document tools.
+
+```sh
+# Install the extension
+pi install npm:pi-mcp-adapter
+# Log in to a model provider: start pi, then type /login
+pi
+```
+
+Then add this entry to `~/.config/mcp/mcp.json`:
+
+```json
+{ "mcpServers": { "librepaper": { "command": "librepaper", "args": ["mcp"], "lifecycle": "keep-alive", "directTools": true } } }
+```
+
+- Use this global file. Pi ignores project files when LibrePaper starts it.
+- With the macOS `.dmg`, set `command` to `/Applications/LibrePaper.app/Contents/MacOS/librepaper`, because the `.dmg` does not put `librepaper` on your PATH.
+
+### opencode
+
+```sh
+# Log in to a model provider once
+opencode auth login
+```
+
+### Another agent
+
+Any agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com) can work in the app. Open Settings, go to Agents and click Add agent. Give it a name and the command that starts it, such as `myagent --acp`. To remove it later, click Remove next to it.
 
 ## Agent tokens
 
@@ -53,19 +134,21 @@ When you click **New token**, you pick a permission and an expiry. You can also 
 
 A token reaches only its own project. It cannot upload images, publish, share or run code. Each token has an hourly comment limit, which you set when you create it. A single replacement is at most 60,000 characters and a single new file at most 262,144 characters, so agents split larger changes.
 
-A token stops working when it expires, when you revoke it with the trash button in the Tokens tab of the Agent panel, when the project changes owner, or when your account is blocked or erased. Signing out does not stop it, so the agent keeps working while you are signed out or LibrePaper is closed.
+A token stops working when it expires, when you revoke it with the trash button in the External agent tab of the Agent panel, when the project changes owner, or when your account is blocked or erased. Signing out does not stop it, so the agent keeps working while you are signed out or LibrePaper is closed.
 
 ## Tasks
 
-The Tasks tab of the Agent panel lists tasks. Each task shows its instruction text with a copy icon. Click the icon, paste the text into your agent, and the agent works on it in the project.
+The Tasks tab of the Agent panel lists tasks. Each task shows its instruction text with a copy icon. Click the icon, paste the text into any agent, and the agent works on it in the project.
 
-The tab has two ready-made tasks, **Address comments** and **Fix diagnostics**. They replace the robot buttons that used to sit on comments and diagnostics.
+In the desktop app, most tasks also have a **Run** button. It opens the task in the built-in agent. There you choose the scope (the selection, one file or the whole document), and then send it.
+
+The tab has two ready-made tasks, **Address comments** and **Fix diagnostics**. Comments and diagnostics have a robot button too, which sends that item to the built-in agent.
 
 ## Other connections
 
 Most people do not need this section. Use it to keep the token out of your agent's chat, or to connect a program that cannot use the skill.
 
-**Other connection methods**, at the bottom of the Tokens tab, has copy icons for the Claude Code commands, an MCP configuration and the token itself. If you have several tokens, choose which one to use there.
+**Other connection methods**, at the bottom of the External agent tab, has copy icons for the Claude Code commands, an MCP configuration and the token itself. If you have several tokens, choose which one to use there.
 
 ### Claude Code
 
@@ -120,7 +203,7 @@ Every write needs an `operation` object, which `librepaper mcp` otherwise adds f
 
 The LibrePaper skill teaches your agent how to use LibrePaper. With it, the agent knows how to work through a token, sync a Git repository, run a server and work on the LibrePaper code. It works with Claude Code, Codex, Pi, opencode and any agent that reads `SKILL.md` folders.
 
-**Copy install instructions**, in [Connect your agent](#connect-your-agent), is the easiest way to install it. To install it yourself:
+The paste in [Connect your agent](#connect-your-agent) installs it the first time. To install it yourself:
 
 ```sh
 # Install the skill for every agent on this computer
