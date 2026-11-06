@@ -28,7 +28,7 @@ function runTask(id){ tab='builtin'; values={...values,request:{id:'task-run-'+(
 </script>
 <section class="agent-panel">
   <div role="tablist">
-    <button id="agent-tab-builtin" role="tab" aria-selected={tab==='builtin'} onclick={()=>tab='builtin'}>Built-in agent</button>
+    <button id="agent-tab-builtin" role="tab" aria-selected={tab==='builtin'} onclick={()=>tab='builtin'}>Chat</button>
     <button id="agent-tab-tasks" role="tab" aria-selected={tab==='tasks'} onclick={()=>tab='tasks'}>Tasks</button>
   </div>
   <div id="agent-pane-builtin" class="agent-pane" hidden={tab!=='builtin'}>

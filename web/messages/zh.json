@@ -139,8 +139,6 @@
   "agent_start_first": "发送任务之前，请先在“聊天”标签页中启动智能体。",
   "agent_stopping": "正在停止…",
   "agent_tab_tasks": "任务",
-  "agent_tab_builtin": "内置智能体",
-  "agent_tab_external": "外部智能体",
   "agent_external_intro": "创建令牌，复制其说明，然后粘贴到你的智能体中。若缺少 LibrePaper 技能，它们会先安装该技能，然后连接到此项目。",
   "agent_tasks_intro": "复制一项任务，然后粘贴到你的智能体中。",
   "agent_tasks_intro_desktop": "在内置智能体中运行任务，或复制后粘贴到外部智能体中。",

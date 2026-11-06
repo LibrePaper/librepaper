@@ -139,8 +139,6 @@
   "agent_start_first": "Démarrez un agent dans l’onglet Clavardage avant d’envoyer une tâche.",
   "agent_stopping": "Arrêt en cours…",
   "agent_tab_tasks": "Tâches",
-  "agent_tab_builtin": "Agent intégré",
-  "agent_tab_external": "Agent externe",
   "agent_external_intro": "Créez un jeton, copiez ses instructions et collez-les dans votre agent. Elles installent le skill LibrePaper s’il est absent, puis se connectent à ce projet.",
   "agent_tasks_intro": "Copiez une tâche et collez-la dans votre agent.",
   "agent_tasks_intro_desktop": "Exécutez une tâche dans l’agent intégré, ou copiez-la et collez-la dans un agent externe.",

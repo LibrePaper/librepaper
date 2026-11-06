@@ -139,8 +139,6 @@
   "agent_start_first": "Starten Sie im Tab „Chat“ einen Agenten, bevor Sie eine Aufgabe senden.",
   "agent_stopping": "Wird gestoppt…",
   "agent_tab_tasks": "Aufgaben",
-  "agent_tab_builtin": "Integrierter Agent",
-  "agent_tab_external": "Externer Agent",
   "agent_external_intro": "Erstellen Sie ein Token, kopieren Sie seine Anweisungen und fügen Sie sie in Ihren Agenten ein. Sie installieren den LibrePaper-Skill, falls er fehlt, und verbinden sich dann mit diesem Projekt.",
   "agent_tasks_intro": "Kopieren Sie eine Aufgabe und fügen Sie sie in Ihren Agenten ein.",
   "agent_tasks_intro_desktop": "Führen Sie eine Aufgabe im integrierten Agenten aus oder kopieren Sie sie und fügen Sie sie in einen externen Agenten ein.",

@@ -2,7 +2,7 @@
   // The one-block copy for a token just made. The token is kept in the parent's
   // component state and nowhere else; nothing here writes it to storage. The
   // owner can copy it again from its row, so this is not the only time it is
-  // shown. The External agent tab draws this in place of its token list, and
+  // shown. The Agent tab draws this in place of its token list, and
   // clears it on Done or when the panel closes.
   import { onMount } from "svelte";
   import { m } from "../../../lib/paraglide/messages.js";

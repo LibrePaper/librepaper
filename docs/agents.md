@@ -15,7 +15,7 @@ There are two ways to connect an agent:
 
 **Connecting takes one copy and one paste, all from the Agent panel.** You configure nothing by hand, and you need no local copy of the project: the token tells the agent which server and project to reach. Each project has its own token, so you repeat this for each project.
 
-Open the project, then the Agent panel (the robot icon in the sidebar), then the External agent tab.
+Open the project, then the Agent panel (the robot icon in the sidebar), then the Agent tab.
 
 1. Click **New token**.
 2. Choose a permission and an expiry.
@@ -47,7 +47,7 @@ npx skills update librepaper
 
 ## Built-in agent
 
-The [desktop app](desktop-app.html) finds the agents installed on your computer. Install one of the agents below, restart LibrePaper, and pick it in the Built-in agent tab of the Agent panel. In a browser, the Built-in agent tab points you to the desktop app.
+The [desktop app](desktop-app.html) finds the agents installed on your computer. Install one of the agents below, restart LibrePaper, and pick it in the Chat tab of the Agent panel. In a browser, the Chat tab points you to the desktop app.
 
 Claude Code and Codex connect through small adapters from npm, which need Node.js 22 or newer. On Linux, install the current LTS from [nodejs.org](https://nodejs.org), because distribution packages are often too old.
 
@@ -134,7 +134,7 @@ When you click **New token**, you pick a permission and an expiry. You can also 
 
 A token reaches only its own project. It cannot upload images, publish, share or run code. Each token has an hourly comment limit, which you set when you create it. A single replacement is at most 60,000 characters and a single new file at most 262,144 characters, so agents split larger changes.
 
-A token stops working when it expires, when you revoke it with the trash button in the External agent tab of the Agent panel, when the project changes owner, or when your account is blocked or erased. Signing out does not stop it, so the agent keeps working while you are signed out or LibrePaper is closed.
+A token stops working when it expires, when you revoke it with the trash button in the Agent tab of the Agent panel, when the project changes owner, or when your account is blocked or erased. Signing out does not stop it, so the agent keeps working while you are signed out or LibrePaper is closed.
 
 ## Tasks
 
@@ -148,7 +148,7 @@ The tab has two ready-made tasks, **Address comments** and **Fix diagnostics**. 
 
 Most people do not need this section. Use it to keep the token out of your agent's chat, or to connect a program that cannot use the skill.
 
-**Other connection methods**, at the bottom of the External agent tab, has copy icons for the Claude Code commands, an MCP configuration and the token itself. If you have several tokens, choose which one to use there.
+**Other connection methods**, at the bottom of the Agent tab, has copy icons for the Claude Code commands, an MCP configuration and the token itself. If you have several tokens, choose which one to use there.
 
 ### Claude Code
 

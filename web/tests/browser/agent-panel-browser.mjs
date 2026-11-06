@@ -1,11 +1,11 @@
 // Browser regression check for the Agent panel. An owner gets three tabs,
-// Built-in agent, External agent and Tasks, and opens on External agent. In a
+// Chat, Agent and Tasks, and opens on Agent. In a
 // browser the built-in agent shows the desktop-only notice and has no Run
-// buttons. The External agent tab holds the tokens: a token is made from New
+// buttons. The Agent tab holds the tokens: a token is made from New
 // token, and its connection instructions are copied from the reveal or from a
 // row, as one block with the install command and the token. A token is revoked.
 // Tasks, where each group starts closed and each instruction is copied. A viewer
-// who cannot share gets Built-in agent and Tasks, opens on Tasks, and loads no
+// who cannot share gets Chat and Tasks, opens on Tasks, and loads no
 // sharing state.
 //
 // The route is stubbed rather than run, because what is under test is the
@@ -124,8 +124,8 @@ const viewerChecks = async () => {
   const viewer = mount(false);
   await flush();
   const panel = document.querySelector(".agent-panel");
-  check(tabNames() === "Built-in agent|Tasks", "a viewer gets the built-in agent and the tasks: " + tabNames());
-  check(!document.querySelector("#agent-tab-external"), "a viewer has no External agent tab");
+  check(tabNames() === "Chat|Tasks", "a viewer gets chat and the tasks: " + tabNames());
+  check(!document.querySelector("#agent-tab-external"), "a viewer has no Agent tab");
   check(selectedTab() === "Tasks", "a viewer opens on Tasks: " + selectedTab());
   check(!document.querySelector("[data-task-run]"), "a viewer has no Run buttons in a plain browser");
   check(!document.querySelector("[data-share-new]"), "a viewer sees no New button");
@@ -152,8 +152,8 @@ window.agentPanelCheck = async () => {
 
   /* ------------------------------------------- the tabs, and the default tab */
 
-  check(tabNames() === "Built-in agent|External agent|Tasks", "three tabs for an owner, Built-in agent first: " + tabNames());
-  check(selectedTab() === "External agent", "an owner opens on External agent: " + selectedTab());
+  check(tabNames() === "Chat|Agent|Tasks", "three tabs for an owner, Chat first: " + tabNames());
+  check(selectedTab() === "Agent", "an owner opens on Agent: " + selectedTab());
   check(!dialog(), "no dialog at rest");
   check(!panel.querySelector(".agent-step") && !text().includes("npx skills"), "the steps and the install command are gone");
   check(!panel.querySelector("textarea, input"), "no field is shown at rest");
@@ -161,16 +161,16 @@ window.agentPanelCheck = async () => {
 
   /* ------------------------------------------------------ the built-in agent */
 
-  await press(tabButton("Built-in agent"));
-  check(selectedTab() === "Built-in agent", "the built-in agent can be picked: " + selectedTab());
+  await press(tabButton("Chat"));
+  check(selectedTab() === "Chat", "the built-in agent can be picked: " + selectedTab());
   const builtin = document.querySelector(".agent-builtin-pane");
   check(builtin && builtin.querySelector(".desktop-only"), "in a browser the built-in agent shows the desktop-only notice");
   check(text().includes("Chat with Claude, Codex or another coding agent that reads and edits this project."), "the notice says what the agent does");
   check(getComputedStyle(builtin).overflowY === "hidden", "the built-in pane is not scrolled as a whole");
   check(!document.querySelector(".chat-form"), "no chat form in a browser");
   check(!document.querySelector("[data-task-run]"), "a plain browser has no Run buttons");
-  await press(tabButton("External agent"));
-  check(selectedTab() === "External agent", "External agent can be picked again: " + selectedTab());
+  await press(tabButton("Agent"));
+  check(selectedTab() === "Agent", "Agent can be picked again: " + selectedTab());
 
   /* ---------------------------------------------------- the external agent */
 
