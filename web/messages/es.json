@@ -666,6 +666,8 @@
   "compactpanelmenu_home": "Inicio",
   "compactpanelmenu_menu": "Menú",
   "compactpanelmenu_menu_marked": "Menú, {name}",
+  "connectionmethods_choose_token": "Token a usar",
+  "connectionmethods_no_token": "Crea un token para copiar su configuración de MCP.",
   "datatable_resize_column": "Cambiar el tamaño de la columna {column}",
   "dates_days_ago": "hace {days} días",
   "dates_hours_ago": [

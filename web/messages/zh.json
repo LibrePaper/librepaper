@@ -666,6 +666,8 @@
   "compactpanelmenu_home": "主页",
   "compactpanelmenu_menu": "菜单",
   "compactpanelmenu_menu_marked": "菜单，{name}",
+  "connectionmethods_choose_token": "要使用的令牌",
+  "connectionmethods_no_token": "创建令牌以复制其 MCP 配置。",
   "datatable_resize_column": "调整 {column} 列的宽度",
   "dates_days_ago": "{days} 天前",
   "dates_hours_ago": [

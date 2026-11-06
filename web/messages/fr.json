@@ -666,6 +666,8 @@
   "compactpanelmenu_home": "Accueil",
   "compactpanelmenu_menu": "Menu",
   "compactpanelmenu_menu_marked": "Menu, {name}",
+  "connectionmethods_choose_token": "Jeton à utiliser",
+  "connectionmethods_no_token": "Créez un jeton pour copier sa configuration MCP.",
   "datatable_resize_column": "Redimensionner la colonne {column}",
   "dates_days_ago": "il y a {days} jours",
   "dates_hours_ago": [
