@@ -14,20 +14,20 @@ export const EXPIRIES = [["1d", m.shared_expiry_1d()], ["7d", m.shared_expiry_7d
 export const allows = (sharing, role) => role === "reader" || (role === "commenter"
   ? sharing?.commenters_policy !== "nobody" : sharing?.publishers !== "nobody");
 
-// The install text the Tokens tab copies for the user to paste into their agent. It stays English because it addresses an agent.
-export const INSTALL_INSTRUCTIONS = [
-  "Install the LibrePaper agent skill for every project on this computer by running:",
+// The one block an agent is given, shared by the reveal and each token row. It
+// holds both the install and connect instructions, so one paste installs the
+// skill if it is missing and connects with the token. It stays English because
+// it addresses an agent.
+export const connectionInstructions = (token) => [
+  "Install the LibrePaper agent skill if you do not have it yet, then use it to connect to my project with the agent token below.",
+  "",
+  "To install it for every project on this computer, run:",
   "",
   "npx skills add LibrePaper/librepaper --skill librepaper --global",
   "",
-  "If that does not work, copy https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper, including its references and scripts folders, into your skills folder. When the skill is installed, tell me to start a new session.",
+  "If that does not work, copy https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper, including its references and scripts folders, into your skills folder. If you cannot install it, for example because your sandbox blocks the skills folder or the command needs my input, copy that folder to a temporary directory instead. Then tell me that the skill is not installed, what blocked it, and the exact command to run in my terminal so it is installed next time.",
   "",
-  "If you cannot install it, for example because your sandbox blocks the skills folder or the command needs my input, copy that folder to a temporary directory instead, read its SKILL.md there, and use it for this session. Then tell me that the skill is not installed, what blocked it, and the exact command to run in my terminal so it is installed next time.",
-].join("\n");
-
-// The addressed-to-agent connection text, shared by the reveal and each token row. It stays English because it addresses an agent.
-export const connectionInstructions = (token) => [
-  "Use the LibrePaper skill to connect to my project with the agent token below. If you do not have that skill, copy https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper, including its references and scripts folders, to a temporary directory, read its SKILL.md there, and use it for this session. Then tell me that the skill is not installed and that I should run this in my terminal so it is installed next time: npx skills add LibrePaper/librepaper --skill librepaper --global",
+  "A skill you have just installed or copied may not load until a new session, so read its SKILL.md directly and use it now. Do not ask me to start a new session.",
   "",
   "The project is on a LibrePaper server and the token names it, so you need no local folder. The token is a credential: do not repeat it to me or write it into any file in your working directory.",
   "",
