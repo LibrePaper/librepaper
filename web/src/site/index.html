@@ -1194,13 +1194,20 @@
          reader who arrived on the link directly has no such entry, so that
          case clears the fragment instead. A video plays when its view opens
          and pauses when it closes, however it closed. A video marked
-         data-manual-play has sound, so it waits for the viewer to press
-         play instead. -->
+         data-manual-play has sound, and browsers only allow that from a
+         click, so it starts from the click on its thumbnail, in that
+         click's handler, and a reader who arrives on its link directly
+         presses play. -->
     <script>
       (function () {
         var opened = false;
         document.addEventListener("click", function (event) {
-          if (event.target.closest && event.target.closest("a.shot")) opened = true;
+          var shot = event.target.closest && event.target.closest("a.shot");
+          if (!shot) return;
+          opened = true;
+          var href = shot.getAttribute("href") || "";
+          var video = href.charAt(0) === "#" ? document.querySelector(href + " video") : null;
+          if (video && video.hasAttribute("data-manual-play")) video.play().catch(function () {});
         });
         document.addEventListener("keydown", function (event) {
           if (event.key !== "Escape" || !document.querySelector(".lightbox:target")) return;
