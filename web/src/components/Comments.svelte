@@ -30,6 +30,7 @@
     ondeletemany = undefined,
     onreply = undefined,
     onedit = undefined,
+    onagent = undefined,
     pending = undefined,
     // Optional view filter used by the collaboration tabs. Highlight notes
     // remain in both views when they carry a discussion.
@@ -204,6 +205,7 @@
         {ondelete}
         {onreply}
         {onedit}
+        {onagent}
         {onloadreplies}
         {onattach}
         {attachable}
