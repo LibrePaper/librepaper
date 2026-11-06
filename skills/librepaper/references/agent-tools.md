@@ -1,6 +1,8 @@
 # Tool reference
 
-Summarized from `crates/librepaper-server/src/server/mcp/tools.json`. The live list is authoritative and shows only what the token's role allows. Fetch it with `scripts/lp tools` (it uses the full schemas), or with `GET https://<origin>/api/documents/<slug>/tools?schema=full` and the bearer token. Without `?schema=full` the response is the bridge's version, which omits `operation`.
+The helper's task commands (`read`, `comment`, `suggest`, `insert`, `create`) cover ordinary edits and comments. This reference is for everything else.
+
+Summarized from `crates/librepaper-server/src/server/mcp/tools.json`. The live list is authoritative and shows only what the token's role allows. Fetch it with `scripts/lp tools` (it uses the full schemas; `scripts/lp tools <name>` prints one tool), or with `GET https://<origin>/api/documents/<slug>/tools?schema=full` and the bearer token. Without `?schema=full` the response is the bridge's version, which omits `operation`.
 
 `document_id` appears on every tool: omit it. The endpoint serves one project.
 
