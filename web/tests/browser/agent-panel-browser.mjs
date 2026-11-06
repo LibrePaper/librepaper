@@ -154,6 +154,7 @@ window.agentPanelCheck = async () => {
   check(headings() === "Install|Connect", "two steps, Install then Connect: " + headings());
   check(!panel.querySelector("code") && !text().includes("npx skills"), "the install command is not shown");
   check(!panel.querySelector("textarea, input"), "no field is shown at rest");
+  check(panel.querySelector("details.token-other") && !panel.querySelector("details.token-other").open, "Other connection methods is there at rest, closed");
   check(text().includes("Paste this into your agent. You only need to do this once on each computer."), "the install help");
   check(text().includes("Create a token, copy its instructions, and paste them into a new agent session."), "the connect help");
   check(button("Copy install instructions"), "step one has its copy button");
@@ -274,6 +275,8 @@ window.agentPanelCheck = async () => {
   check(rows().length === 3 && rows().some((row) => row.textContent.includes("Codex")), "and the token is in the list: " + text());
   check(labelled("Copy connection instructions for Codex"), "the new row has a copy button, since the next listing carries its token");
   check(document.activeElement === document.querySelector("[data-share-new]"), "focus goes to New token after Done");
+  check(panel.querySelector("details.token-other"), "Other connection methods stays after Done");
+  check(labelled("Claude Code commands"), "and it still offers the commands");
 
   /* ---------------------------------------------------------------- revoke */
 

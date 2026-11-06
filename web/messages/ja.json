@@ -666,6 +666,8 @@
   "compactpanelmenu_home": "ホーム",
   "compactpanelmenu_menu": "メニュー",
   "compactpanelmenu_menu_marked": "メニュー、{name}",
+  "connectionmethods_choose_token": "使用するトークン",
+  "connectionmethods_no_token": "MCP 設定をコピーするには、トークンを作成してください。",
   "datatable_resize_column": "{column}列の幅を変更",
   "dates_days_ago": "{days}日前",
   "dates_hours_ago": [

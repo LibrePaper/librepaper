@@ -12,6 +12,7 @@
   import ShareRow from "./share/ShareRow.svelte";
   import ShareForm from "./share/ShareForm.svelte";
   import TokenReveal from "./share/TokenReveal.svelte";
+  import ConnectionMethods from "./share/ConnectionMethods.svelte";
   import { allows, budgetOf, INSTALL_INSTRUCTIONS } from "./share/shared.js";
   import { createSharing } from "../../lib/sharing.svelte.js";
   import { TASK_GROUPS, filterTaskGroups } from "../../lib/agent-tasks.js";
@@ -61,6 +62,7 @@
 
   const allowed = (role) => allows(sharing.sharing, role);
   const tokens = $derived(sharing.sharing?.tokens ?? []);
+  const copyable = $derived(tokens.filter((item) => item.token));
   const REVOKE = [m.share_revoke_token_title(), m.share_revoke_token_body(), m.common_revoke_token()];
 
   // Sharing is only read for an owner, and only while the panel is open. The
@@ -181,6 +183,9 @@
       </div>
     </section>
     {#if !reveal}{@render messages()}{/if}
+    {#if reveal || sharing.sharing}
+      <ConnectionMethods token={reveal?.token ?? ""} tokens={copyable} copied={sharing.copied} copyFallback={sharing.copyFallback} oncopy={sharing.copy} />
+    {/if}
   {/if}
 {/snippet}
 
