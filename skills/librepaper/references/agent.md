@@ -71,7 +71,7 @@ When the user pastes the token in chat, connect once:
 
 ```sh
 H=<this skill's directory>/scripts/lp
-printf %s 'lpt_...' | python3 "$H" connect
+printf %s 'lpt_...' | python3 "$H" connect --model '<your model name>'
 ```
 
 `connect` verifies the token with the server first, stores it privately in its own per-project file, and prints the project, the access level, the files and ready-to-run commands, each with its own `--project <slug>`. Afterwards refer only to the helper's commands, never to the literal token.
@@ -80,6 +80,7 @@ printf %s 'lpt_...' | python3 "$H" connect
 - `LIBREPAPER_AGENT_TOKEN` (the token itself) and `LIBREPAPER_AGENT_TOKEN_FILE` (a file holding it) still override the stored token.
 - `lp disconnect` deletes the stored token.
 - If the helper prints that this skill is older than the server needs, pass that message and its update command on to the user. A skill running from a temporary folder is not installed, so the user needs `npx skills add LibrePaper/librepaper --skill librepaper --global` instead.
+- `--model` names the model you are running as, such as `Claude Opus 5.5`, and the project's Authors list shows it for your edits. Use your real model name. Leave it out if you do not know it. Connect again with a new name if your model changes, or set `LIBREPAPER_AGENT_LABEL` to override it.
 
 ### If a sandbox blocks you
 

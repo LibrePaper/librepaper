@@ -2,7 +2,7 @@
 """Call a LibrePaper project's agent tools with an lpt_ agent token.
 
 Usage:
-  lp connect                   read a token on stdin, check it, store it
+  lp connect [--model NAME]    read a token on stdin, check it, store it
   lp disconnect                delete the stored token of the project
   lp whoami                    origin and slug from the token, key redacted
   lp tools [name]              list the tools this token may call, or show one
@@ -23,6 +23,10 @@ A token is taken from LIBREPAPER_AGENT_TOKEN, else LIBREPAPER_AGENT_TOKEN_FILE,
 else the stored token for --project, else the only stored token. Stored tokens
 live in ~/.cache/librepaper-agent/ (or the temp directory if that fails), one
 file per project. Each has a .epoch file with the latest operation_epoch.
+
+--model NAME at connect stores the model that writes for the project, in a
+.model file beside the token, and the edits show it. LIBREPAPER_AGENT_LABEL
+sets the same label for one run and overrides it.
 Standard library only.
 """
 
@@ -214,6 +218,29 @@ def epoch_path():
     return resolve()["epoch"]
 
 
+def clean_label(text):
+    # Header values go out as latin-1, so only printable ASCII is kept.
+    kept = "".join(char for char in text if " " <= char <= "~")
+    return kept.strip()[:64]
+
+
+def agent_label(origin, slug):
+    label = clean_label(os.environ.get("LIBREPAPER_AGENT_LABEL", ""))
+    if label:
+        return label
+    # The .model file may sit in either directory, as the token does.
+    name = token_name(origin, slug) + ".model"
+    for directory in (primary_dir(), fallback_dir()):
+        try:
+            with open(os.path.join(directory, name), encoding="utf-8") as handle:
+                label = clean_label(handle.read())
+        except (OSError, ValueError):
+            continue
+        if label:
+            return label
+    return ""
+
+
 def warn_if_outdated(headers):
     try:
         needed = int(headers.get("X-LibrePaper-Min-Skill-Version", ""))
@@ -234,6 +261,9 @@ def request(method, path, body=None, value=None):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Authorization", f"Bearer {value}")
+    label = agent_label(origin, slug)
+    if label:
+        req.add_header("x-librepaper-agent-label", label)
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:
@@ -527,9 +557,25 @@ def cmd_create(rest):
     send_write("document_files", {"create": [{"path": args.path, "text": text}]}, state)
 
 
+def connect_model(rest):
+    # Takes --model NAME or --model=NAME; other arguments are left alone.
+    model, index = "", 0
+    while index < len(rest):
+        arg = rest[index]
+        if arg == "--model" and index + 1 < len(rest):
+            model = rest[index + 1]
+            index += 2
+            continue
+        if arg.startswith("--model="):
+            model = arg.split("=", 1)[1]
+        index += 1
+    return clean_label(model)
+
+
 def connect(rest):
     if any(arg.startswith("lpt_") for arg in rest):
         die(f"pipe the token on stdin, not as an argument: printf %s 'lpt_...' | {RUN} connect")
+    label = connect_model(rest)
     if sys.stdin.isatty():
         die(f"pipe the token on stdin: printf %s 'lpt_...' | {RUN} connect")
     value = sys.stdin.read().strip()
@@ -561,6 +607,10 @@ def connect(rest):
     else:
         path = store_private(token_name(origin, slug), value)
     remember_epoch(payload, path + ".epoch")
+    if label:
+        store_private(token_name(origin, slug) + ".model", label)
+    # A .model file stored earlier, or LIBREPAPER_AGENT_LABEL, may still apply.
+    shown = agent_label(origin, slug)
     lines = [
         f"Connected to {origin}, project {slug}. Access: {access}.",
         f"Files: {', '.join(files) if files else '(none)'}",
@@ -578,6 +628,10 @@ def connect(rest):
         lines.append("Long text: pass --text-file - (or --replace-file, --body-file) and pipe it on stdin.")
     if perms.get("suggest"):
         lines.append("Tracked: suggest and insert make tracked changes an editor accepts or rejects.")
+    if shown:
+        lines.append(f"Writing as: {shown}.")
+    else:
+        lines.append("Tip: add --model '<your model name>' to connect so your edits show which model wrote them.")
     print("\n".join(lines))
 
 
@@ -586,6 +640,16 @@ def disconnect():
     if found["source"] == "env":
         die("the token comes from LIBREPAPER_AGENT_TOKEN, so there is no stored file to delete")
     for path in (found["path"], found["epoch"]):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            die(f"cannot delete {path}: {error.strerror}")
+    # The .model file is always stored under the token's name in the store directories.
+    name = token_name(found["origin"], found["slug"]) + ".model"
+    for directory in (primary_dir(), fallback_dir()):
+        path = os.path.join(directory, name)
         try:
             os.remove(path)
         except FileNotFoundError:
