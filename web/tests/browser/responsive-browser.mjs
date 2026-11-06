@@ -665,7 +665,7 @@ try {
   // file just opened.
   await until('the preview follows the opened file', () => b.evaluate(`document.querySelector('.explorer-row[title="chapter-1.html"][data-previewed]') !== null`), 5000);
 
-  // A user who cannot share has no tab row: the panel is the tasks alone, with no chat.
+  // A user who cannot share has no External agent tab: the panel opens on the tasks, with no chat.
   await nav('Agent');
   // The categories start closed.
   const openTaskGroups = () => b.evaluate('document.querySelectorAll(".agent-task-toggle[aria-expanded=\\"false\\"]").forEach((node) => node.click())');
