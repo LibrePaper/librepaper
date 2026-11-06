@@ -45,7 +45,7 @@ claude
 
 ## Already in a session without MCP
 
-Use the HTTP helper ([agent.md](agent.md), Step 1b). It reads the token from a 0600 file and works without restarting the client.
+Run the helper's `connect` command with the token ([agent.md](agent.md), Step 1b). It verifies the token, stores it privately for that project, and works without restarting the client.
 
 ## Other clients
 
