@@ -349,6 +349,20 @@ try {
   const flagRead = lp(["read", "flag.md"], { home: home1 });
   assert.equal(flagRead.stdout, "--project", "the --project text reads back as written");
 
+  // 21. Connecting again with --model labels the writes that follow, and the authors list shows the name.
+  const relabeled = lp(["connect", "--model", "Test Model 1"], { input: editToken.token, home: home1 });
+  assert.equal(relabeled.status, 0, `connect with --model: ${relabeled.stderr}`);
+  assert.ok(relabeled.stdout.includes("Writing as: Test Model 1."), `connect names the model: ${relabeled.stdout}`);
+  const labelled = lp(["create", "model.md", "--text-file", "-"], { home: home1, input: "# Model\n\nWritten as a model.\n" });
+  assert.equal(labelled.status, 0, `create after --model: ${labelled.stderr}`);
+  const authorsResponse = await fetch(`${deployment.base}/api/documents/${slug}/authors`, { headers: ownerHeaders });
+  assert.equal(authorsResponse.status, 200, `the authors list is read: ${authorsResponse.status}`);
+  const { authors } = await authorsResponse.json();
+  assert.ok(
+    authors.some((author) => author.name === "Test Model 1" && author.agent === true),
+    `the authors list names the model as an agent: ${JSON.stringify(authors)}`,
+  );
+
   console.log("lp-helper: connect, read, suggest, insert, comment, create, tools, roles, several projects, disconnect, env override, long files and leading dashes verified");
 } finally {
   await deployment.stop();
