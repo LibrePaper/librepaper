@@ -752,7 +752,7 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="agent-context task-prepare" onkeydown={prepareKeydown}>
       <div class="task-head">
-        <button class="task-back" aria-label={m.agent_back_tasks()} bind:this={backEl} onclick={() => leavePrepare()}><Icon name="arrow-left" size={18} /></button>
+        <button class="task-back" aria-label={m.common_back()} bind:this={backEl} onclick={() => leavePrepare()}><Icon name="arrow-left" size={18} /></button>
         <h3 class="task-title">{chosen.label}</h3>
       </div>
       <p class="panel-muted task-description">{chosen.description}</p>

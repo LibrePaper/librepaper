@@ -13,7 +13,7 @@ There are two ways to connect an agent:
 
 ## Connect your agent
 
-**Connecting takes one copy and one paste, all from the Agent panel.** You configure nothing by hand, and you need no local copy of the project: the token tells the agent which server and project to reach. The same paste works for every project.
+**Connecting takes one copy and one paste, all from the Agent panel.** You configure nothing by hand, and you need no local copy of the project: the token tells the agent which server and project to reach. Each project has its own token, so you repeat this for each project.
 
 Open the project, then the Agent panel (the robot icon in the sidebar), then the External agent tab.
 
@@ -116,7 +116,7 @@ opencode auth login
 
 ### Another agent
 
-Any agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com) can work in the app. Open Settings, go to Agents and click Add agent. Give it a name and the command that starts it, such as `myagent --acp`. To remove it later, click Remove next to it.
+Any agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com) can work in the app. Open Settings, go to AI agents and click Add agent. Give it a name and the command that starts it, such as `myagent --acp`. To remove it later, click Remove next to it.
 
 ## Agent tokens
 

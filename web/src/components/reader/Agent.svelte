@@ -16,7 +16,10 @@
   import { TASK_GROUPS, filterTaskGroups } from "../../lib/agent-tasks.js";
   import { m } from "../../lib/paraglide/messages.js";
 
-  let { open = false, slug, canShare = false, request = null, ...chat } = $props();
+  let {
+    open = false, slug, canShare = false, request = null, link, path = "", selection = null, revision = "",
+    diagnostics = [], comments = [], changes = [], onreview, onpreview, onsettings, userName,
+  } = $props();
   // The tasks copy their text, and the external tab reads the same sharing state.
   const sharing = createSharing({ slug: () => slug, canShare: () => canShare });
   const paired = Boolean(desktop());
@@ -135,12 +138,13 @@
   {@render messages()}
 {/snippet}
 
-<section class="panel panel-tabbed agent-panel" aria-label={m.agent_panel_label()}>
+<section class="panel panel-tabbed agent-panel" aria-label={m.common_agent()}>
   <PanelHeader title={m.common_agent()} />
   <PanelTabs id="agent" label={m.common_agent()} tabs={TABS} value={current} onchange={pick}>
     <Tabs.Content value="builtin" class="agent-builtin-pane">
       <DesktopOnly feature={m.agent_the_agent()} description={m.common_chat_with_coding_agent()}>
-        <AgentSessions {slug} {canShare} {...chat} request={outgoing} />
+        <AgentSessions {slug} {canShare} {link} {path} {selection} {revision} {diagnostics} {comments} {changes}
+                       {onreview} {onpreview} {onsettings} {userName} request={outgoing} />
       </DesktopOnly>
     </Tabs.Content>
     {#if canShare}
@@ -158,7 +162,8 @@
   .agent-panel :global(.agent-builtin-pane) { display: flex; flex: 1 1 0; min-height: 0; flex-direction: column; overflow: hidden; }
   .share-copy-fallback { border: 0; background: transparent; resize: none; color: var(--color-text-muted); font-size: var(--panel-meta-size); }
   /* The tasks are a list of two-line rows: the name, then the instruction in
-     muted type, with one copy button at the right. Only the button is live. */
+     muted type, with a copy button at the right and, where the desktop app can
+     run the task, a Run button beside it. Only the buttons are live. */
   .agent-task-search { width: 100%; }
   .agent-task-group { margin: calc(var(--spacing) * 1) 0 0; font-size: var(--panel-meta-size); font-weight: 600; color: var(--panel-muted); }
   .agent-task-toggle { display: flex; align-items: center; gap: calc(var(--spacing) * 1); width: 100%; padding: .2rem .25rem; margin: 0; border: 0; border-radius: .25rem; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
