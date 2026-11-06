@@ -122,6 +122,7 @@ async fn typing_throughput_release_benchmark() {
         .await
         .expect("owner");
     let authority = Authority {
+        agent_label: String::new(),
         principal_key: owner.id.to_string(),
         account_id: Some(owner.id),
         link_hash: None,
@@ -788,6 +789,7 @@ async fn compaction_cost_release_benchmark() {
         .await
         .expect("owner");
     let authority = Authority {
+        agent_label: String::new(),
         principal_key: owner.id.to_string(),
         account_id: Some(owner.id),
         link_hash: None,
@@ -1617,6 +1619,7 @@ async fn concurrent_compaction_release_benchmark() {
         .await
         .expect("owner");
     let authority = Authority {
+        agent_label: String::new(),
         principal_key: owner.id.to_string(),
         account_id: Some(owner.id),
         link_hash: None,
@@ -3433,6 +3436,7 @@ async fn maintenance_backlog_capacity_benchmark() {
         .await
         .expect("owner");
     let authority = Authority {
+        agent_label: String::new(),
         principal_key: owner.id.to_string(),
         account_id: Some(owner.id),
         link_hash: None,

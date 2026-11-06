@@ -166,6 +166,7 @@ async fn deployment_mode_with_policy(
     tokio::spawn(worker.run());
     let store = Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone(), registry);
     let actor = Authority {
+        agent_label: String::new(),
         account_id: Some(account.id),
         principal_key: account.handle.clone(),
         session_generation: Some(account.session_generation),

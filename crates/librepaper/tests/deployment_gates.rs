@@ -1630,6 +1630,7 @@ mod comment_traversal {
         // comment for a hundred and thirty-seven of them is not what this
         // test is measuring.
         let actor = Authority {
+            agent_label: String::new(),
             principal_key: owner_id.to_string(),
             account_id: Some(owner_id),
             session_generation: Some(owner.session_generation),

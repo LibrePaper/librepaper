@@ -67,6 +67,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
 /// the retained state trim has not reached yet.
 async fn put_directory(deployment: &Deployment, slug: &str, figures: Vec<(String, Vec<u8>)>) {
     let actor = Authority {
+        agent_label: String::new(),
         account_id: Some(deployment.owner_id),
         principal_key: "owner".into(),
         session_generation: Some(deployment.owner_session_generation.parse().unwrap()),
