@@ -85,6 +85,7 @@ try {
       docs_origin:`http://${request.headers.host}`, can_see_sharing:true, can_moderate:true,
     });
     if (url.pathname === "/api/documents/paper/share") return json(response, {links:[],tokens:[]});
+    if (url.pathname === "/api/documents/paper/authors") return json(response, {authors:[]});
     if (url.pathname === "/api/documents/paper/history") {
       // The manifest wire is `document_labels` now: `label_wire` in
       // crates/librepaper-server/src/server/history.rs names each row
@@ -334,6 +335,15 @@ try {
   await tab.navigate(`${origin}/docs/paper?slowjoin=1`);
   // A reload lands on the files and the live source, never back in history.
   await until('reload opens the files and the current source', () => tab.evaluate(`!document.querySelector('.history-workspace') && document.getElementById('sidebar-panel-files')?.hidden === false && document.querySelector('.cm-content')?.textContent === ${JSON.stringify(current + addition)}`), 10000);
+  // The authors tab keeps its rows when another panel is visited and returned to.
+  const authorsRows = `!!document.querySelector('.hx-authors button.hx-author')`;
+  await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="History"]').click()`);
+  await tab.evaluate(`[...document.querySelectorAll('#sidebar-panel-history [role="tab"]')].find((node) => node.getClientRects().length > 0 && node.textContent.trim() === 'Authors')?.click()`);
+  await until('the authors tab lists a row', () => tab.evaluate(authorsRows), 10000);
+  await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="Files"]').click()`);
+  await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="History"]').click()`);
+  await until('the authors tab still lists its rows after returning to history', () => tab.evaluate(authorsRows), 10000);
+  console.log('history reader: the authors tab keeps its content after visiting another panel');
   console.log('history reader: paged history and preview isolation passed');
   assert.deepEqual(await tab.evaluate("window.testErrors"), []);
 } catch (error) {

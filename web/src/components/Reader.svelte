@@ -3287,13 +3287,6 @@
   const authorsShown = $derived(sourceOpen && !comparing && !shownFigure && sourceBound && Boolean(openFile));
   const authorsActive = $derived(authorsView && panel === "history" && authorsShown);
 
-  // The tab can only be on while its panel is open. The panel is unmounted
-  // when it closes, and without this the tab would still be on when it opens
-  // again, with the tab bar showing another tab.
-  $effect(() => {
-    if (panel !== "history" && authorsView) authorsView = false;
-  });
-
   // Turning the view on fetches the map the first time. Turning it off drops
   // any isolated author, so the next time the tab is on, everyone is shown.
   // Read untracked: the fetch sets state the effect would otherwise follow,

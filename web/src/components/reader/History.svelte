@@ -601,9 +601,11 @@
               </li>
             {/each}
           </ul>
-          <p class="panel-meta hx-foot">
-            {authors.since ? m.history_authors_since({ date: shortDate(authors.since) }) : m.history_authors_since_none()}
-          </p>
+          {#if authors.rows.some((row) => row.unknown)}
+            <p class="panel-meta hx-foot">
+              {authors.since ? m.history_authors_since({ date: shortDate(authors.since) }) : m.history_authors_since_none()}
+            </p>
+          {/if}
         {/if}
       </div>
     </Tabs.Content>
