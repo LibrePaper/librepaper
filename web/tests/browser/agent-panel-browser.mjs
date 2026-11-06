@@ -1,10 +1,12 @@
-// Browser regression check for the Agent panel. An owner gets two tabs: Tokens,
-// with two steps, Install and Connect. A token is made from New token, and its
-// connection instructions are copied from the reveal, whose other connection
-// methods are copy icons only. A token row copies its connection instructions
-// when the server still holds the token, and a token is revoked. Tasks, where
-// each group starts closed and each instruction is copied. A viewer who cannot
-// share gets the tasks alone, with no tab row, and loads no sharing state.
+// Browser regression check for the Agent panel. An owner gets three tabs,
+// Built-in agent, External agent and Tasks, and opens on External agent. In a
+// browser the built-in agent shows the desktop-only notice and has no Run
+// buttons. The External agent tab holds the tokens: a token is made from New
+// token, and its connection instructions are copied from the reveal or from a
+// row, as one block with the install command and the token. A token is revoked.
+// Tasks, where each group starts closed and each instruction is copied. A viewer
+// who cannot share gets Built-in agent and Tasks, opens on Tasks, and loads no
+// sharing state.
 //
 // The route is stubbed rather than run, because what is under test is the
 // panel, not the server's writes. The stub follows the share contract: every
@@ -86,7 +88,6 @@ const squash = (node) => node.innerText.replace(/\\s+/g, " ").trim();
 const text = () => squash(document.body);
 const rows = () => [...document.querySelectorAll(".share-row")];
 const rowText = (index) => squash(rows()[index]);
-const headings = () => [...document.querySelectorAll(".agent-panel h3.agent-title")].map((node) => node.textContent.trim()).join("|");
 const button = (label) => [...document.querySelectorAll("button")]
   .find((node) => (node.getAttribute("aria-label") || node.textContent).trim() === label);
 const labelled = (label) => document.querySelector('[aria-label="' + label + '"]');
@@ -113,6 +114,9 @@ let owner = mount(true);
 
 window.agentPanelReady = () => Boolean(document.querySelector("[data-share-new]"));
 
+const tabNames = () => [...document.querySelectorAll('[role="tab"]')].map((node) => node.textContent.trim()).join("|");
+const selectedTab = () => [...document.querySelectorAll('[role="tab"]')].find((node) => node.getAttribute("aria-selected") === "true")?.textContent.trim();
+
 const viewerChecks = async () => {
   const before = window.calls.length;
   owner.$destroy();
@@ -120,7 +124,10 @@ const viewerChecks = async () => {
   const viewer = mount(false);
   await flush();
   const panel = document.querySelector(".agent-panel");
-  check(!document.querySelector('[role="tab"]'), "a viewer sees no tab row: " + text());
+  check(tabNames() === "Built-in agent|Tasks", "a viewer gets the built-in agent and the tasks: " + tabNames());
+  check(!document.querySelector("#agent-tab-external"), "a viewer has no External agent tab");
+  check(selectedTab() === "Tasks", "a viewer opens on Tasks: " + selectedTab());
+  check(!document.querySelector("[data-task-run]"), "a viewer has no Run buttons in a plain browser");
   check(!document.querySelector("[data-share-new]"), "a viewer sees no New button");
   check(!text().includes("Paul's assistant"), "a viewer sees no tokens");
   check(window.calls.length === before, "a viewer loads no sharing state");
@@ -142,28 +149,31 @@ const viewerChecks = async () => {
 window.agentPanelCheck = async () => {
   await flush();
   const panel = document.querySelector(".agent-panel");
-  const tabs = () => [...document.querySelectorAll('[role="tab"]')];
-  const tabNames = () => tabs().map((node) => node.textContent.trim()).join("|");
-  const selectedTab = () => tabs().find((node) => node.getAttribute("aria-selected") === "true")?.textContent.trim();
 
-  /* ------------------------------------------------- the tokens tab at rest */
+  /* ------------------------------------------- the tabs, and the default tab */
 
-  check(tabNames() === "Tokens|Tasks", "two tabs, Tokens first: " + tabNames());
-  check(selectedTab() === "Tokens", "Tokens is the default tab: " + selectedTab());
+  check(tabNames() === "Built-in agent|External agent|Tasks", "three tabs for an owner, Built-in agent first: " + tabNames());
+  check(selectedTab() === "External agent", "an owner opens on External agent: " + selectedTab());
   check(!dialog(), "no dialog at rest");
-  check(headings() === "Install|Connect", "two steps, Install then Connect: " + headings());
-  check(!panel.querySelector("code") && !text().includes("npx skills"), "the install command is not shown");
+  check(!panel.querySelector(".agent-step") && !text().includes("npx skills"), "the steps and the install command are gone");
   check(!panel.querySelector("textarea, input"), "no field is shown at rest");
   check(panel.querySelector("details.token-other") && !panel.querySelector("details.token-other").open, "Other connection methods is there at rest, closed");
-  check(text().includes("Paste this into your agent. You only need to do this once on each computer."), "the install help");
-  check(text().includes("Create a token, copy its instructions, and paste them into a new agent session."), "the connect help");
-  check(button("Copy install instructions"), "step one has its copy button");
-  await press(button("Copy install instructions"));
-  check(window.copied.includes("npx skills add LibrePaper/librepaper --skill librepaper --global")
-    && window.copied.includes("https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper")
-    && !window.copied.includes("lpt_"), "its copy button copies the install instructions, with the npx line and the tree URL, and no token: " + window.copied);
-  check(window.copied.includes("temporary directory") && window.copied.includes("not installed"), "the install instructions fall back to a temporary copy for the session: " + window.copied);
-  check(copiedLabel(), "the install button shows Copied afterwards");
+
+  /* ------------------------------------------------------ the built-in agent */
+
+  await press(tabButton("Built-in agent"));
+  check(selectedTab() === "Built-in agent", "the built-in agent can be picked: " + selectedTab());
+  const builtin = document.querySelector(".agent-builtin-pane");
+  check(builtin && builtin.querySelector(".desktop-only"), "in a browser the built-in agent shows the desktop-only notice");
+  check(text().includes("Chat with Claude, Codex or another coding agent that reads and edits this project."), "the notice says what the agent does");
+  check(getComputedStyle(builtin).overflowY === "hidden", "the built-in pane is not scrolled as a whole");
+  check(!document.querySelector(".chat-form"), "no chat form in a browser");
+  check(!document.querySelector("[data-task-run]"), "a plain browser has no Run buttons");
+  await press(tabButton("External agent"));
+  check(selectedTab() === "External agent", "External agent can be picked again: " + selectedTab());
+
+  /* ---------------------------------------------------- the external agent */
+
   const newButton = document.querySelector("[data-share-new]");
   check(newButton && newButton.textContent.trim() === "New token" && newButton.classList.contains("lp-control-tonal-brand"),
     "New token is a tonal button once tokens exist: " + (newButton && newButton.textContent));
@@ -177,7 +187,7 @@ window.agentPanelCheck = async () => {
   const anaCopy = "Copy connection instructions for Ana's laptop";
   const anaIcon = labelled(anaCopy).innerHTML;
   await press(labelled(anaCopy));
-  check(window.copied.includes("Use the LibrePaper skill") && window.copied.includes("Token: " + existingToken),
+  check(window.copied.includes(INSTALL) && window.copied.includes("Install the LibrePaper agent skill") && window.copied.includes("Token: " + existingToken),
     "the row copies the connection instructions with its token: " + window.copied);
   check(labelled(anaCopy).innerHTML !== anaIcon, "the row icon changes once copied");
   check(!rowText(1).includes(existingToken) && !panel.textContent.includes(existingToken)
@@ -195,9 +205,7 @@ window.agentPanelCheck = async () => {
 
   await press(document.querySelector("[data-share-new]"));
   const form = document.querySelector(".share-form");
-  check(form && rows().length === 0 && !document.querySelector(".agent-step")
-    && ![...document.querySelectorAll("h3")].some((node) => node.textContent.trim() === "Install"),
-    "creating shows only the form: " + text());
+  check(form && rows().length === 0, "creating shows only the form: " + text());
   check([...document.querySelectorAll("h3")].some((node) => node.textContent.trim() === "New token"), "the form has a New token heading");
   check(!button("Create token").disabled, "a token needs no name");
   check(![...document.querySelectorAll(".share-form option")].some((node) => node.textContent === "Never"), "and cannot be made to last forever");
@@ -235,8 +243,6 @@ window.agentPanelCheck = async () => {
   const issued = window.issuedToken;
   check(issued && issued.startsWith("lpt_" + originPart + ".paper.minted"), "the mock issued a token");
   check(!dialog(), "the reveal is not a dialog");
-  check(headings() === "Install|Connect", "both steps stay during the reveal: " + headings());
-  check(button("Copy install instructions"), "step one keeps its copy button");
   check(!text().includes("Create a token, copy its instructions"), "the connect help is hidden during the reveal");
   check(text().includes("Pasting a token into chat lets your model provider see it."), "the token warning shows in the reveal");
   check(rows().length === 0 && !document.querySelector("[data-share-new]"), "the reveal replaces the list and the New token button");
@@ -245,7 +251,7 @@ window.agentPanelCheck = async () => {
   check(!panel.querySelector("code"), "no code is shown by default");
   check(document.activeElement === button("Copy connection instructions"), "focus opens on Copy connection instructions, not Done: " + (document.activeElement && document.activeElement.textContent));
   await press(button("Copy connection instructions"));
-  check(window.copied.includes("Use the LibrePaper skill") && window.copied.includes("no local folder") && window.copied.includes("Do not open or control a browser unless I explicitly ask you to.")
+  check(window.copied.includes(INSTALL) && window.copied.includes("Install the LibrePaper agent skill") && window.copied.includes("no local folder") && window.copied.includes("Do not open or control a browser unless I explicitly ask you to.")
     && window.copied.includes("Token: " + issued), "the connection instructions copy with the token: " + window.copied);
   check(copiedLabel(), "a copy button shows Copied afterwards");
   check(document.querySelector(".token-reveal") && rows().length === 0, "copying does not end the reveal");
@@ -340,6 +346,7 @@ window.agentPanelCheck = async () => {
   check(heading("Writing").getAttribute("aria-expanded") === "true" && shownTasks().length > 0, "opening a group shows its rows");
   const proofread = "Proofread this LibrePaper project and suggest the corrections as tracked changes.";
   check(shownTasks()[0].textContent.includes(proofread), "the proofread task shows its text");
+  check(!document.querySelector("[data-task-run]"), "no Run buttons in a plain browser");
   const iconBefore = labelled("Copy Proofread").innerHTML;
   await press(labelled("Copy Proofread"));
   check(window.copied === proofread, "copies exactly the shown text: " + window.copied);
@@ -438,7 +445,7 @@ try {
   await tab.navigate(`http://127.0.0.1:${port}/`);
   await until("agent panel component", () => tab.evaluate("Boolean(window.agentPanelReady && window.agentPanelReady())"));
   assert.equal(await tab.evaluate("window.agentPanelCheck()"), true);
-  console.log("agent panel: install and connect steps, token row copies, reveal icons, revoke, manual copy and late copy; tasks open and search; viewers see the tasks alone");
+  console.log("agent panel: three tabs, the built-in notice, token rows and reveal copy the install command with the token, revoke, manual copy and late copy; tasks open and search; viewers see the tasks alone");
 } finally {
   await tab?.close(); server?.close(); removeTemporary(temporary);
 }

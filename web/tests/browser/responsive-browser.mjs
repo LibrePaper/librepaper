@@ -64,6 +64,21 @@ import ${JSON.stringify(join(root,"web/src/styles/app.css"))};
 window.testErrors = [];
 window.addEventListener('error', event => window.testErrors.push(event.message));
 window.addEventListener('unhandledrejection', event => window.testErrors.push(String(event.reason)));
+// Agent chat is delivered by its private socket, rather than HTTP polling.
+globalThis.WebSocket = class {
+  constructor(url) {
+    if (!String(url).includes('/chat/')) throw new Error('Unexpected socket: ' + url);
+    queueMicrotask(() => this.onopen?.());
+  }
+  send(raw) {
+    if (JSON.parse(raw).type !== 'join') return;
+    queueMicrotask(() => {
+      this.onmessage?.({data:JSON.stringify({type:'ready',agent:true})});
+      for (let i = 0; i < 40; i++) this.onmessage?.({data:JSON.stringify({type:'message',message:{id:'reply-'+i,role:'agent',text:('Reply '+i+' ').repeat(30)}})});
+    });
+  }
+  close() { this.onclose?.(); }
+};
 // The desktop-only panels read this global, so the harness defines it.
 window.__LIBREPAPER_DESKTOP__ = { base: 'http://lp-local.localhost/', version: 'test' };
 globalThis.fetch = async (url, init = {}) => {
@@ -650,24 +665,34 @@ try {
   // file just opened.
   await until('the preview follows the opened file', () => b.evaluate(`document.querySelector('.explorer-row[title="chapter-1.html"][data-previewed]') !== null`), 5000);
 
-  // A user who cannot share has no tab row: the panel is the tasks alone, with no chat.
+  // In the desktop app the panel opens on the built-in agent, so the tasks are
+  // reached through their tab. The tab is chosen after each open, since a
+  // reopened panel may not keep the tab it had.
   await nav('Agent');
+  await click('#agent-tab-tasks');
   // The categories start closed.
   const openTaskGroups = () => b.evaluate('document.querySelectorAll(".agent-task-toggle[aria-expanded=\\"false\\"]").forEach((node) => node.click())');
   await openTaskGroups(); await flush();
   await until('agent tasks', () => visible('.agent-task'), 3000);
   assert.equal(await visible('.agent-panel'), true);
-  assert.equal(await b.evaluate('document.querySelector(".agent-panel .chat-form") === null && document.querySelector(".agent-panel .chat-message") === null'), true, 'the agent panel has no chat');
   assert.equal(await b.evaluate('(() => { const p = document.querySelector(".agent-panel"); return p.scrollWidth <= p.clientWidth + 1; })()'), true, 'the agent tasks fit the phone width');
+  // Run hands the task to the built-in agent, which opens its preparation view.
+  await click('[data-task-run="proofread"] button');
+  await until('proofread prepared in the built-in agent', () => b.evaluate('document.querySelector("#agent-pane-builtin").hidden === false && Boolean(document.querySelector(".task-prepare"))'), 3000);
+  assert.equal(await b.evaluate('(() => { const p = document.querySelector("#agent-pane-builtin"); return p.scrollWidth <= p.clientWidth + 1; })()'), true, 'the built-in agent fits the phone width while preparing a task');
+  // Back leaves preparation, so the rest of this test finds the conversation as it was.
+  await click('.task-back');
+  await until('back returns from preparation', () => b.evaluate('!document.querySelector(".task-prepare")'), 3000);
   await click(backBtn);
   await nav('Agent');
+  await click('#agent-tab-tasks');
   await openTaskGroups(); await flush();
   assert.equal(await visible('.agent-task'), true, 'the agent panel comes back with its tasks');
   await bounded();
 
   // The phone header stays put while a pane scrolls, and so does the desktop bar.
   const hidden = 'document.querySelector("body > nav").classList.contains("bar-hidden")';
-  const scrollTo = async (top) => { await b.evaluate(`document.querySelector(".agent-solo").scrollTop = ${top}`); await flush(); };
+  const scrollTo = async (top) => { await b.evaluate(`document.querySelector("#agent-pane-tasks").scrollTop = ${top}`); await flush(); };
   await scrollTo(0); await scrollTo(200); await scrollTo(400);
   await new Promise(resolve => setTimeout(resolve, 300));
   assert.equal(await b.evaluate(hidden), false, 'the phone header never hides while a pane scrolls');

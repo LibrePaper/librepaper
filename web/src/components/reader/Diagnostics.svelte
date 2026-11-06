@@ -1,5 +1,6 @@
 <script>
   import PanelHeader from "../PanelHeader.svelte";
+  import IconButton from "../IconButton.svelte";
   import { m } from "../../lib/paraglide/messages.js";
   import { provenanceSentence } from "../../lib/latex/status-text.js";
 
@@ -27,6 +28,8 @@
     // whose summary already says why passes false so its full output stays
     // folded.
     logOpen = undefined,
+    // Asks the agent to fix one diagnostic. Absent where no agent is offered.
+    onagent = undefined,
   } = $props();
   const errors = $derived(diagnostics.filter((item) => item.severity !== "warning" && item.severity !== "info"));
   const warnings = $derived(diagnostics.filter((item) => item.severity === "warning"));
@@ -102,6 +105,9 @@
               <span class="badge lp-tone-{group.tone}">
                 {group.tone === "error" ? m.common_error() : group.tone === "warning" ? m.common_warning() : m.diagnostics_badge_note()}
               </span>
+              {#if onagent}
+                <IconButton icon="bot" label={m.diagnostics_fix_with_agent()} onclick={() => onagent(item)} />
+              {/if}
             </div>
             <p class="whitespace-pre-wrap break-words">{item.message}</p>
             {#if item.file || item.line > 0}
@@ -152,6 +158,8 @@
 </section>
 
 <style>
+  .diagnostic-head :global(.icon-control) { box-sizing: border-box; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
+  .diagnostic-head :global(.icon-control svg) { width: 16px; height: 16px; }
   /* Phones: the location link, the actions and the disclosure summaries are
      finger-sized. */
   @media (max-width: 767px) {

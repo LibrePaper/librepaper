@@ -325,6 +325,7 @@ export const ICONS = {
   "send-horizontal": [["path", "M3.714 3.048a.498.498 0 0 0-.683.627l2.843 7.627a2 2 0 0 1 0 1.396l-2.842 7.627a.498.498 0 0 0 .682.627l18-8.5a.5.5 0 0 0 0-.904z"], ["path", "M6 12h16"]],
   // Lucide's square, for stopping a running reply.
   square: [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }]],
+  play: [["polyline", { points: "6 3 20 12 6 21 6 3" }]],
   // Lucide's arrow-down, for jumping to the newest message.
   "arrow-down": [["path", "M12 5v14"], ["path", "m19 12-7 7-7-7"]],
   "arrow-up": [["path", "M12 19V5"], ["path", "m5 12 7-7 7 7"]],
@@ -366,6 +367,7 @@ export const ICONS = {
     ["path", "m15 14 5-5-5-5"],
     ["path", "M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13"],
   ],
+  // Stops a running agent.
 };
 
 const SVG = "http://www.w3.org/2000/svg";
