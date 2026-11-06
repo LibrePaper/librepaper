@@ -273,7 +273,7 @@ try {
   assert.ok(latest.includes("Café ☕ ends here."), `the current source is read: ${latest.slice(0, 200)}`);
 
   // 14. A second project in the same home makes plain commands ambiguous.
-  const second =await deployment.publish({
+  const second = await deployment.publish({
     title: "Second", source: "# Second\n\nA different project entirely.\n", source_format: "markdown",
   });
   const slug2 = second.slug;
