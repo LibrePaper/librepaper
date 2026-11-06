@@ -488,7 +488,6 @@ try {
   await page.evaluate('document.querySelector("#agent-tab-tasks").click()');
   await page.evaluate('document.querySelector(\'[data-task-run="tighten"]\').click()');
   await until("preparation view", () => page.evaluate('!!document.querySelector(".task-prepare") && document.querySelector(".task-prepare .attachment").textContent.includes("a.md")'), 1000);
-  assert.equal(await page.evaluate('document.querySelector(".chat-form textarea").value'), "First\n\n", "opening a task leaves the chat draft alone");
   assert.equal(await page.evaluate('document.querySelector(".task-scope")'), null, "tighten has a single scope, so none is offered");
   assert.ok((await page.evaluate('document.querySelector(".task-prepare .attachment").textContent')).includes("Selected text"));
   await page.evaluate(`(()=>{const notes=document.querySelector('.task-extra');notes.value='Keep the citations.';notes.dispatchEvent(new Event('input',{bubbles:true}));})()`);
@@ -502,6 +501,9 @@ try {
   // Picking the task is the decision. It goes to the agent there and then,
   // and the panel moves to where the answer will arrive.
   await until("tighten sent", () => page.evaluate("window.sockets[1].sent.some(frame=>frame.task?.kind==='tighten')"), 2000);
+  // The composer and its draft are back only once sending has left preparation.
+  await until("composer back after sending", () => page.evaluate('!document.querySelector(".task-prepare") && !!document.querySelector(".chat-form textarea")'), 1000);
+  assert.equal(await page.evaluate('document.querySelector(".chat-form textarea").value'), "First\n\n", "opening a task leaves the chat draft alone");
   assert.equal(await page.evaluate('document.querySelector("#agent-pane-builtin").hidden'), false, "sending a task opens the chat");
   assert.equal(await page.evaluate('document.querySelector(".chat-form textarea").value'), "First\n\n", "sending a task leaves the chat draft alone");
   await page.evaluate("window.setProps({path:'b.md'})");
@@ -636,6 +638,9 @@ try {
   assert.ok((await page.evaluate('document.querySelector(".task-prepare .task-target").textContent')).includes("Compile error"));
   await page.evaluate("window.setProps({diagnostics:[]})");
   await until("diagnostic gone", () => page.evaluate('document.querySelector(".task-prepare [role=status]")?.textContent==="This diagnostic is gone after the last compile." && Array.from(document.querySelectorAll(".task-prepare button")).find(b=>b.textContent==="Send to agent").disabled'), 1000);
+  // Leave preparation before the composer is measured below; it is not on screen while preparing.
+  await page.evaluate('document.querySelector(".task-back").click()');
+  await until("back returns to the composer", () => page.evaluate('!document.querySelector(".task-prepare") && !!document.querySelector(".chat-form textarea")'), 1000);
   await page.evaluate('document.querySelector("#agent-tab-builtin").click()');
 
   // Short panels keep the composer visible while conversation content scrolls.

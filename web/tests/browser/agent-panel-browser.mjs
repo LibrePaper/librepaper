@@ -187,7 +187,7 @@ window.agentPanelCheck = async () => {
   const anaCopy = "Copy connection instructions for Ana's laptop";
   const anaIcon = labelled(anaCopy).innerHTML;
   await press(labelled(anaCopy));
-  check(window.copied.includes(INSTALL) && window.copied.includes("Use the LibrePaper skill") && window.copied.includes("Token: " + existingToken),
+  check(window.copied.includes(INSTALL) && window.copied.includes("Install the LibrePaper agent skill") && window.copied.includes("Token: " + existingToken),
     "the row copies the connection instructions with its token: " + window.copied);
   check(labelled(anaCopy).innerHTML !== anaIcon, "the row icon changes once copied");
   check(!rowText(1).includes(existingToken) && !panel.textContent.includes(existingToken)
@@ -251,7 +251,7 @@ window.agentPanelCheck = async () => {
   check(!panel.querySelector("code"), "no code is shown by default");
   check(document.activeElement === button("Copy connection instructions"), "focus opens on Copy connection instructions, not Done: " + (document.activeElement && document.activeElement.textContent));
   await press(button("Copy connection instructions"));
-  check(window.copied.includes(INSTALL) && window.copied.includes("Use the LibrePaper skill") && window.copied.includes("no local folder") && window.copied.includes("Do not open or control a browser unless I explicitly ask you to.")
+  check(window.copied.includes(INSTALL) && window.copied.includes("Install the LibrePaper agent skill") && window.copied.includes("no local folder") && window.copied.includes("Do not open or control a browser unless I explicitly ask you to.")
     && window.copied.includes("Token: " + issued), "the connection instructions copy with the token: " + window.copied);
   check(copiedLabel(), "a copy button shows Copied afterwards");
   check(document.querySelector(".token-reveal") && rows().length === 0, "copying does not end the reveal");
