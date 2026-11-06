@@ -57,7 +57,7 @@ env = { LIBREPAPER_AGENT_TOKEN = "${active}" }`);
         </li>
       {/each}
     </ul>
-    <p class="token-help"><a href="https://librepaper.org/agents.html#agent-tokens" target="_blank" rel="noreferrer">{m.tokenreveal_agent_setup()}</a></p>
+    <p class="token-help"><a href="https://librepaper.org/agents.html#other-connections" target="_blank" rel="noreferrer">{m.tokenreveal_agent_setup()}</a></p>
   </div>
 </details>
 
