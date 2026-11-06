@@ -4648,7 +4648,7 @@
   {/snippet}
 
   {#snippet agentPanel()}
-    <Agent open={panel === "agent" && shown.comments} slug={SLUG} canShare={doc.role === "owner"}
+    <Agent open={panel === "agent" && shown.comments} slug={SLUG} link={linkFor(SLUG)} canShare={doc.role === "owner"}
       path={session?.paths?.get(openFile) || ""} selection={agentSelection}
       revision={agentSelection?.revision || ""} request={assistantRequest}
       {comments} changes={changeRows} {diagnostics} onreview={reviewAssistantResults} onpreview={previewAssistant}

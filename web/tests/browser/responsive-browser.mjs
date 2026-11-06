@@ -692,7 +692,7 @@ try {
 
   // The phone header stays put while a pane scrolls, and so does the desktop bar.
   const hidden = 'document.querySelector("body > nav").classList.contains("bar-hidden")';
-  const scrollTo = async (top) => { await b.evaluate(`document.querySelector(".agent-solo").scrollTop = ${top}`); await flush(); };
+  const scrollTo = async (top) => { await b.evaluate(`document.querySelector("#agent-pane-tasks").scrollTop = ${top}`); await flush(); };
   await scrollTo(0); await scrollTo(200); await scrollTo(400);
   await new Promise(resolve => setTimeout(resolve, 300));
   assert.equal(await b.evaluate(hidden), false, 'the phone header never hides while a pane scrolls');
