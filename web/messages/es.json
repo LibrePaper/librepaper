@@ -2323,6 +2323,7 @@
   "readerd_demo_banner": "Entorno de demostración. No se guarda nada y algunas funciones están desactivadas. Inicie sesión para conservar su trabajo.",
   "readerd_desktop_can_render": "La aplicación de escritorio de LibrePaper puede compilarlo en este equipo.",
   "readerd_diagnostics_converter": "Diagnósticos, en la barra lateral, muestra lo que notificó el convertidor.",
+  "readerd_document_empty": "Este documento está vacío.",
   "readerd_download_source_reason": "Abra un archivo para descargar su código fuente.",
   "readerd_edit_menu": "Edición",
   "readerd_figure_fetching": "Obteniendo {path}…",

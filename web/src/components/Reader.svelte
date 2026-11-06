@@ -288,6 +288,7 @@
     deliveredKind = "";
     everPainted = false;
     everPaintedShown = false;
+    documentEmpty = false;
     pageDrawn = false;
     renderStatus.resetFailure();
     clearTimeout(previewTimer);
@@ -337,6 +338,7 @@
     deliveredKind = "";
     everPainted = false;
     everPaintedShown = false;
+    documentEmpty = false;
     pageDrawn = false;
     renderStatus.resetFailure();
     clearTimeout(previewTimer);
@@ -1834,6 +1836,10 @@
   // of another file. The viewer swaps new pages in only once they are drawn,
   // so such a frame can stay in sight while it draws the next one.
   let frameHasPage = $state(false);
+  // The render found nothing to draw: the file is known and has no text. This
+  // settles the preview, so nothing is left to wait for. Reset wherever
+  // `everPaintedShown` is, and by any change to the source.
+  let documentEmpty = $state(false);
   // A delivered PDF the viewer has not confirmed within this long is shown
   // anyway. The confirmation is what keeps the frame out of sight, and a
   // viewer that never sends it must not leave the pane waiting for ever.
@@ -2162,6 +2168,7 @@
       deliveredKind = payload.kind;
       everPainted = true;
       everPaintedShown = true;
+      documentEmpty = false;
       // An HTML page is on screen the moment it is handed over.
       if (payload.kind === "html") frameHasPage = true;
     },
@@ -2250,6 +2257,8 @@
       everPaintedShown = false;
       pageDrawn = false;
       activeSynctex = null;
+      renderStatus.resetFailure();
+      documentEmpty = true;
     },
     facts: () => ({
       disposed: readerDisposed,
@@ -2295,6 +2304,7 @@
   function sourceChanged() {
     if (readerDisposed) return;
     sourceGeneration += 1;
+    documentEmpty = false;
     refreshReview();
     outlineRevision += 1;
     if (sourceFormat === "quarto" && session && previewPath) {
@@ -3405,6 +3415,7 @@
     deliveredKind = "";
     everPainted = false;
     everPaintedShown = false;
+    documentEmpty = false;
     pageDrawn = false;
     activeSynctex = null;
     renderStatus.resetFailure();
@@ -3476,6 +3487,7 @@
     activeSynctex = null;
     everPainted = false;
     everPaintedShown = false;
+    documentEmpty = false;
     pageDrawn = false;
     renderStatus.resetFailure();
     // The frame is reloaded only when the kind of page changes. Moving between
@@ -3562,7 +3574,7 @@
   const waiting = $derived(Boolean(
     shown.document && previewPath && compilesHere && !pageIsUp
       && !documentNeedsSignIn && !heldFile && !projectUnreadable && !projectEmpty && !previewCard
-      && !failedBeforeRender,
+      && !failedBeforeRender && !documentEmpty,
   ));
   const waitStage = $derived(waitStageOf({
     pageDelivered: pdfOutput && everPaintedShown,
@@ -4971,6 +4983,9 @@
   {#snippet waitingCover()}
     <PreviewWaiting stage={waitStage} progress={waitProgress} />
   {/snippet}
+  {#snippet emptyCover()}
+    <p class="lp-text-secondary text-sm">{m.readerd_document_empty()}</p>
+  {/snippet}
   {#snippet previewNotice()}
     {#if previewReason === "locked"}
       <span class="notice-chip">
@@ -4984,7 +4999,7 @@
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
            controls={previewControls}
            notice={previewChip ? previewNotice : undefined}
-           cover={waitingUp ? waitingCover : undefined}
+           cover={documentEmpty ? emptyCover : waitingUp ? waitingCover : undefined}
            busy={previewBusy && !waitingUp}
            progress={!waitingUp ? waitProgress : null}
            away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || noCompiler || failedBeforeRender || Boolean(projectUnreadable) || Boolean(previewCard)} />

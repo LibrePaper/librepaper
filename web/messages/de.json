@@ -2323,6 +2323,7 @@
   "readerd_demo_banner": "Demo-Sandbox. Nichts wird gespeichert, und einige Funktionen sind deaktiviert. Melden Sie sich an, um Ihre Arbeit zu behalten.",
   "readerd_desktop_can_render": "Die LibrePaper-Desktop-App kann es auf diesem Computer rendern.",
   "readerd_diagnostics_converter": "Die Diagnose in der Seitenleiste listet auf, was der Konverter gemeldet hat.",
+  "readerd_document_empty": "Dieses Dokument ist leer.",
   "readerd_download_source_reason": "Öffnen Sie eine Datei, um ihren Quelltext herunterzuladen.",
   "readerd_edit_menu": "Bearbeiten",
   "readerd_figure_fetching": "{path} wird abgerufen…",

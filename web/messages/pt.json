@@ -2323,6 +2323,7 @@
   "readerd_demo_banner": "Área de teste da demonstração. Nada é salvo e alguns recursos estão desativados. Entre para manter seu trabalho.",
   "readerd_desktop_can_render": "O aplicativo de desktop do LibrePaper pode renderizá-lo neste computador.",
   "readerd_diagnostics_converter": "Diagnósticos, na barra lateral, lista o que o conversor informou.",
+  "readerd_document_empty": "Este documento está vazio.",
   "readerd_download_source_reason": "Abra um arquivo para baixar o código-fonte dele.",
   "readerd_edit_menu": "Editar",
   "readerd_figure_fetching": "Obtendo {path}…",

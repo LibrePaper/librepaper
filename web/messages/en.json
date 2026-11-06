@@ -2323,6 +2323,7 @@
   "readerd_demo_banner": "Demo sandbox. Nothing is saved, and some features are disabled. Sign in to keep your work.",
   "readerd_desktop_can_render": "The LibrePaper desktop app can render it on this computer.",
   "readerd_diagnostics_converter": "Diagnostics in the sidebar lists what the converter reported.",
+  "readerd_document_empty": "This document is empty.",
   "readerd_download_source_reason": "Open a file to download its source.",
   "readerd_edit_menu": "Edit",
   "readerd_figure_fetching": "Fetching {path}…",
