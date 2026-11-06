@@ -632,7 +632,7 @@ impl Server {
                     request_digest: digest,
                     ..Default::default()
                 };
-                self.mcp_commit_change(auth, slug, actor, &current, name, request)
+                self.mcp_commit_change(auth, slug, actor, &current, headers, name, request)
                     .await
             }
             "document_files" => {
@@ -678,7 +678,7 @@ impl Server {
                     request_digest: digest,
                     ..Default::default()
                 };
-                self.mcp_commit_change(auth, slug, actor, &current, name, request)
+                self.mcp_commit_change(auth, slug, actor, &current, headers, name, request)
                     .await
             }
             "document_comment" => {
@@ -710,16 +710,18 @@ impl Server {
         slug: &str,
         actor: &str,
         current: &Viewer,
+        headers: &HeaderMap,
         name: &str,
         request: SourceChange,
     ) -> Result<Value, Failure> {
-        let authority = current
+        let mut authority = current
             .agent_authority(self.ceiling_for(&current.id), actor.to_string())
             .map_err(|InvalidCredential| {
                 failure(source_change::AgentError::Conflict(
                     "document access changed".into(),
                 ))
             })?;
+        authority.authority.agent_label = super::agent_label(headers).unwrap_or_default();
         let room = self
             .rooms
             .get(slug)

@@ -888,6 +888,7 @@ async fn deployment_with_document(slug: &str) -> Option<Deployment> {
         registry.clone(),
     ));
     let actor = Authority {
+        agent_label: String::new(),
         account_id: Some(account.id),
         principal_key: "owner".into(),
         session_generation: Some(account.session_generation),
@@ -920,6 +921,7 @@ async fn deployment_with_document(slug: &str) -> Option<Deployment> {
 impl Deployment {
     fn authority(&self) -> Authority {
         Authority {
+            agent_label: String::new(),
             principal_key: self.account_id.to_string(),
             account_id: Some(self.account_id),
             link_hash: None,

@@ -2067,13 +2067,20 @@ impl Sequencer {
                 (Some(hash), true) => Some(hash.as_slice()),
                 _ => None,
             };
+            // The model label is recorded only alongside an agent link hash,
+            // so only automation writes carry one.
+            let label = if link_hash.is_some() {
+                authority.agent_label.as_str()
+            } else {
+                ""
+            };
             PostgresCatalog::record_document_peers_tx(
                 &mut tx,
                 self.document_id,
                 &super::peers::peers_in_update(&command_source.batch),
                 authority.account_id,
                 link_hash,
-                "",
+                label,
             )
             .await?;
         }

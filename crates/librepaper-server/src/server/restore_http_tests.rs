@@ -55,6 +55,7 @@ async fn a_restore_keeps_what_it_replaced() {
         .await
         .unwrap();
     let authority = Authority {
+        agent_label: String::new(),
         principal_key: deployment.owner_id.to_string(),
         account_id: Some(deployment.owner_id),
         link_hash: None,

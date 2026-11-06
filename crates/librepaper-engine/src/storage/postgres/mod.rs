@@ -545,6 +545,7 @@ mod tests {
                           policy_comment,
                           automation| {
             Authority {
+                agent_label: String::new(),
                 principal_key: account_id
                     .map_or_else(|| "visitor:test".into(), |id| id.to_string()),
                 account_id,
@@ -1015,6 +1016,7 @@ mod tests {
             .await
             .unwrap();
         let actor = |account: &AccountRecord| Authority {
+            agent_label: String::new(),
             principal_key: account.id.to_string(),
             account_id: Some(account.id),
             session_generation: Some(account.session_generation),
@@ -1556,6 +1558,7 @@ mod tests {
         // a retry with the same id returns the row a previous attempt wrote.
         let anchor = document_anchor(sequence, b"frontier-bytes".to_vec());
         let unauthorized = Authority {
+            agent_label: String::new(),
             principal_key: collaborator.id.to_string(),
             account_id: Some(collaborator.id),
             session_generation: Some(collaborator.session_generation),
@@ -1654,6 +1657,7 @@ mod tests {
             body: "Done".into(),
         };
         let owner_actor = Authority {
+            agent_label: String::new(),
             principal_key: account.id.to_string(),
             account_id: Some(account.id),
             session_generation: Some(account.session_generation),
@@ -3433,6 +3437,7 @@ mod tests {
         .unwrap();
 
         let authority = Authority {
+            agent_label: String::new(),
             principal_key: account.id.to_string(),
             account_id: Some(account.id),
             link_hash: None,

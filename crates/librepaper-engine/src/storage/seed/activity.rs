@@ -484,6 +484,7 @@ pub async fn simulate(
 
     let peer_key = format!("seed:{document_id}");
     let authority = Authority {
+        agent_label: String::new(),
         principal_key: peer_key.clone(),
         account_id: Some(author_account_id),
         link_hash: None,

@@ -249,6 +249,7 @@ async fn archive_poll_preserves_terminal_failure_until_explicit_retry() {
         .await
         .unwrap();
     let authority = librepaper_engine::storage::postgres::Authority {
+        agent_label: String::new(),
         principal_key: deployment.owner_id.to_string(),
         account_id: Some(deployment.owner_id),
         link_hash: None,

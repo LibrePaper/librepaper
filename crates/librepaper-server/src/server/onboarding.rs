@@ -147,6 +147,7 @@ impl Server {
         // has no request actor, so carry the identity that sign-in already
         // authenticated through every catalogue admission and checkpoint.
         let actor = librepaper_engine::storage::postgres::Authority {
+            agent_label: String::new(),
             principal_key: account.handle.clone(),
             account_id: Some(account.id),
             session_generation: Some(account.session_generation),

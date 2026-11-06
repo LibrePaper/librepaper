@@ -914,6 +914,7 @@ mod tests {
             None
         );
         let actor = crate::storage::postgres::Authority {
+            agent_label: String::new(),
             principal_key: format!("moderation-owner-{owner}"),
             account_id: Some(owner),
             session_generation: Some(1),

@@ -2982,6 +2982,7 @@ async fn a_command_with_no_scratch_is_refused_before_it_opens_a_transaction() {
         .expect("the whole scratch pool");
 
     let authority = Authority {
+        agent_label: String::new(),
         principal_key: "account:a".into(),
         account_id: None,
         link_hash: None,

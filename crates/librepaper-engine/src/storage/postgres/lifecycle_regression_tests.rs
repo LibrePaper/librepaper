@@ -37,6 +37,7 @@ async fn account(catalog: &PostgresCatalog) -> super::super::AccountRecord {
 
 fn mutation_authorization(account: &super::super::AccountRecord) -> Authority {
     Authority {
+        agent_label: String::new(),
         principal_key: account.handle.clone(),
         account_id: Some(account.id),
         session_generation: Some(account.session_generation),

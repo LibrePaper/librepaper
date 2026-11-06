@@ -74,6 +74,7 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
         .unwrap();
 
     let authority = Authority {
+        agent_label: String::new(),
         principal_key: deployment.owner_id.to_string(),
         account_id: Some(deployment.owner_id),
         link_hash: None,
@@ -116,6 +117,7 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
     // Step 3: replace project so figure-a becomes unreferenced, and add figure-b (named).
     // We'll also add figure-c (unreferenced, fresh).
     let actor = Authority {
+        agent_label: String::new(),
         account_id: Some(deployment.owner_id),
         principal_key: "owner".into(),
         session_generation: Some(deployment.owner_session_generation.parse().unwrap()),
@@ -814,6 +816,7 @@ async fn a_comment_moment_before_the_trim_answers_gone() {
     assert_eq!(body["error"], "history before the trim point is gone");
 
     let authority = Authority {
+        agent_label: String::new(),
         principal_key: deployment.owner_id.to_string(),
         account_id: Some(deployment.owner_id),
         link_hash: None,

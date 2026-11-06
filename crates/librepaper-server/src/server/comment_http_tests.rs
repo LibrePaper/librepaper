@@ -104,6 +104,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         registry.clone(),
     );
     let actor = Authority {
+        agent_label: String::new(),
         account_id: Some(owner.id),
         principal_key: "owner".into(),
         session_generation: Some(owner.session_generation),
@@ -440,6 +441,7 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
 
     let page = librepaper_engine::storage::postgres::annotations::ANNOTATION_PAGE_MAX as usize;
     let actor = librepaper_engine::storage::postgres::Authority {
+        agent_label: String::new(),
         principal_key: deployment.commenter_id.to_string(),
         account_id: Some(deployment.commenter_id),
         session_generation: Some(
@@ -1101,6 +1103,7 @@ async fn a_titled_upload_with_no_files_creates_an_empty_project() {
     assert!(one_empty_file.is_err());
 
     let actor = Authority {
+        agent_label: String::new(),
         account_id: Some(deployment.owner_id),
         principal_key: "owner".into(),
         session_generation: Some(deployment.owner_session_generation.parse().unwrap()),
