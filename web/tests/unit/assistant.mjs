@@ -2,9 +2,8 @@ import assert from "node:assert/strict";
 import {
   captureAttachment, capabilityAllows, composeTaskMessage, taskDiagnosticContext, diagnosticLabel, passageContext, sourcePassage,
   normalizeCapabilities, resultIds, visibleResults, checkContextSize,
-  TASK_CATALOG, TASK_CATEGORIES, TASK_KINDS, TASK_SCOPES, findTask, inferScope, searchTasks, taskPrompt, taskScopes,
-  taskSections, CONTEXT_TASKS, taskForKind, taskBlocker,
-  taskHint, recordTaskUse, frequentTasks, FREQUENT_LIMIT,
+  TASK_CATALOG, TASK_KINDS, TASK_SCOPES, findTask, inferScope, taskPrompt, taskScopes,
+  CONTEXT_TASKS, taskForKind, taskBlocker,
 } from "../../src/lib/assistant.js";
 
 const selection = {
@@ -139,50 +138,6 @@ assert.equal(inferScope(findTask("proofread"), {}), "document");
 assert.equal(inferScope(findTask("outline"), { attached: attachment, path: "main.md" }), "file");
 assert.equal(inferScope(findTask("tighten"), { path: "main.md" }), "selection");
 
-// Search narrows like a command palette: a label prefix wins over a
-// description hit, and every typed word has to match.
-assert.deepEqual(searchTasks("proof").map((entry) => entry.id), ["proofread"]);
-assert.deepEqual(searchTasks("").map((entry) => entry.id), TASK_CATALOG.map((entry) => entry.id));
-assert.deepEqual(searchTasks("check cit").map((entry) => entry.id), ["check-citations"]);
-assert.deepEqual(searchTasks("zzz"), []);
-
-// Keywords carry the synonyms a user actually types.
-assert.equal(searchTasks("grammar")[0].id, "proofread");
-assert.equal(searchTasks("shorter")[0].id, "tighten");
-assert.equal(searchTasks("citations")[0].id, "check-citations");
-assert.equal(searchTasks("argument")[0].id, "review-argument");
-assert.equal(searchTasks("summary")[0].id, "summarize");
-// A typo still finds the entry, and a label prefix outranks a description hit.
-assert.equal(searchTasks("proofraed")[0].id, "proofread");
-assert.equal(searchTasks("review")[0].id, "review-argument");
-assert.equal(searchTasks("contradictions")[0].id, "check-consistency");
-assert.equal(searchTasks("spelling")[0].id, "proofread");
-assert.equal(searchTasks("concise")[0].id, "tighten");
-for (const entry of TASK_CATALOG) {
-  assert.ok(Array.isArray(entry.keywords) && entry.keywords.length >= 3, `${entry.id} has too few keywords`);
-}
-
-// The Tasks browser shows every catalog entry, one section per category. An
-// entry in several categories appears in each of their sections.
-const sectionIds = (category) => taskSections().find((section) => section.category === category).entries.map((entry) => entry.id);
-assert.deepEqual(taskSections().map((section) => section.category), TASK_CATEGORIES);
-assert.ok(sectionIds("Writing").includes("explain"));
-assert.ok(sectionIds("Review").includes("explain"));
-assert.ok(sectionIds("Document").includes("summarize"));
-assert.ok(sectionIds("Review").includes("summarize"));
-assert.deepEqual(sectionIds("Document"), ["outline", "summarize"]);
-const browsed = taskSections().flatMap((section) => section.entries.map((entry) => entry.id));
-for (const entry of TASK_CATALOG) {
-  assert.ok(browsed.includes(entry.id), `${entry.id} is not browsed`);
-}
-for (const section of taskSections()) {
-  assert.ok(section.entries.length > 0, `${section.category} has no entries`);
-  assert.ok(section.entries.every((entry) => entry.categories.includes(section.category)), `${section.category} holds a foreign entry`);
-}
-for (const entry of CONTEXT_TASKS) {
-  assert.equal(browsed.includes(entry.id), false, `${entry.id} must not be browsed`);
-}
-
 // Context tasks sit outside the catalog and use the protocol's kinds.
 for (const entry of CONTEXT_TASKS) {
   assert.ok(TASK_KINDS.includes(entry.kind), `${entry.id} uses an unknown task kind`);
@@ -233,36 +188,5 @@ assert.equal(diagnosticLabel({ severity: "error", file: "main.tex", line: 12, me
 assert.equal(diagnosticLabel({ severity: "warning", path: "chapter.typ" }), "Warning · chapter.typ");
 assert.equal(diagnosticLabel({ message: "no place given" }, "main.md"), "Error · main.md");
 assert.equal(diagnosticLabel({ severity: "warning" }), "Warning");
-
-// taskHint names what the reader still needs, and never reports access.
-assert.equal(taskHint(findTask("tighten"), {}).short, "Needs a source selection");
-assert.equal(taskHint(findTask("tighten"), { attached: attachment, path: "main.md" }), null);
-assert.equal(taskHint(findTask("outline"), {}), null);
-assert.equal(taskHint(findTask("proofread"), {}), null);
-assert.equal(taskHint(null), null);
-
-// Usage counts uses by stable id, and a recorded use never mutates its input.
-const once = recordTaskUse({}, "proofread", 10);
-assert.deepEqual(once, { proofread: { count: 1, last: 10 } });
-assert.deepEqual(recordTaskUse(once, "proofread", 20), { proofread: { count: 2, last: 20 } });
-assert.deepEqual(once, { proofread: { count: 1, last: 10 } });
-assert.deepEqual(recordTaskUse({}, "not-a-task", 10), {});
-assert.deepEqual(recordTaskUse({ "not-a-task": { count: 1, last: 1 } }, "proofread", 10), { proofread: { count: 1, last: 10 } });
-assert.deepEqual(recordTaskUse({ proofread: { count: "x", last: 1 }, tighten: null }, "outline", 5), { outline: { count: 1, last: 5 } });
-
-assert.deepEqual(frequentTasks(recordTaskUse({}, "proofread", 1)), []);
-const twice = recordTaskUse(recordTaskUse({}, "proofread", 1), "proofread", 2);
-assert.deepEqual(frequentTasks(twice).map((entry) => entry.id), ["proofread"]);
-const ranking = {
-  tighten: { count: 3, last: 5 }, proofread: { count: 3, last: 9 },
-  outline: { count: 2, last: 100 }, summarize: { count: 2, last: 50 },
-};
-assert.deepEqual(frequentTasks(ranking).map((entry) => entry.id), ["proofread", "tighten", "outline", "summarize"]);
-const many = Object.fromEntries(["proofread", "tighten", "rewrite", "explain", "outline", "summarize"]
-  .map((id, index) => [id, { count: 2, last: index }]));
-assert.equal(FREQUENT_LIMIT, 5);
-assert.equal(frequentTasks(many).length, FREQUENT_LIMIT);
-assert.deepEqual(frequentTasks({ nope: { count: 9, last: 9 }, proofread: { count: "3", last: 1 } }), []);
-assert.deepEqual(frequentTasks(null), []);
 
 console.log("assistant: anchored tasks, capability gating, diagnostic context and review result mapping, and the task catalog passed");

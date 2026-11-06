@@ -18,10 +18,31 @@ writeFileSync(harness, `
 <script>
 import AgentSessions from ${JSON.stringify(join(root, "src/components/reader/AgentSessions.svelte"))};
 let values=$state({slug:'paper',canShare:true,link:location.origin+'/docs/paper#k=secret',path:'paper.md',selection:{exact:'A passage'}});
+let tab=$state('builtin');
+let runs=0;
 export function updateProps(next){ values={...values,...next}; }
 async function preview(request){ window.previewCalls.push(request); return {ok:true,diagnostics:[],output:'html'}; }
+// The shell owns the tabs and the Tasks rows. This stands in for them: a row
+// switches to the built-in tab and passes its task as the request.
+function runTask(id){ tab='builtin'; values={...values,request:{id:'task-run-'+(++runs),taskId:id}}; }
 </script>
-<AgentSessions {...values} onpreview={preview} onsettings={()=>window.settingsCalls=(window.settingsCalls||0)+1} />
+<section class="agent-panel">
+  <div role="tablist">
+    <button id="agent-tab-builtin" role="tab" aria-selected={tab==='builtin'} onclick={()=>tab='builtin'}>Built-in agent</button>
+    <button id="agent-tab-tasks" role="tab" aria-selected={tab==='tasks'} onclick={()=>tab='tasks'}>Tasks</button>
+  </div>
+  <div id="agent-pane-builtin" class="agent-pane" hidden={tab!=='builtin'}>
+    <AgentSessions {...values} onpreview={preview} onsettings={()=>window.settingsCalls=(window.settingsCalls||0)+1} />
+  </div>
+  <div id="agent-pane-tasks" class="agent-pane" hidden={tab!=='tasks'}>
+    {#each ['proofread','tighten','rewrite','explain','summarize'] as id}<button data-task-run={id} onclick={()=>runTask(id)}>{id}</button>{/each}
+  </div>
+</section>
+<style>
+  .agent-panel { display:flex; flex-direction:column; flex:1 1 0; min-width:0; min-height:0; }
+  .agent-pane { display:flex; flex-direction:column; flex:1 1 0; min-height:0; overflow:hidden; padding:1rem; }
+  .agent-pane[hidden] { display:none; }
+</style>
 `);
 writeFileSync(entry, `
 import ${JSON.stringify(join(root, "src/styles/app.css"))};
@@ -196,15 +217,15 @@ try {
   await until("live agent panel",()=>page.evaluate("Boolean(document.querySelector('.agent-panel'))"),10000);
   // Inside the desktop app the panel shows its settings.
   await until("desktop app ready", () => page.evaluate(
-    `!document.querySelector('.connect-required') && Boolean(document.querySelector('.agent-settings'))`), 10000);
+    `Boolean(document.querySelector('.agent-settings'))`), 10000);
   // The composer is rendered only after the desktop app is ready.
   await until("runner composer once ready", () => page.evaluate('document.querySelector(".chat-form")?.dataset.cansend === "true"'), 10000);
-  // The Chat tab is the default: the agent/access/start controls live there
-  // now, so there is no separate Connection tab to land on first.
-  assert.equal(await page.evaluate('document.querySelector("#agent-pane-chat").hidden'), false);
-  assert.deepEqual(await page.evaluate(`Array.from(document.querySelectorAll("#agent-pane-chat select[aria-label=Access] option")).map(o=>o.textContent.split(":")[0])`), ["Comment", "Edit"]);
-  // The agent and access line heads both tabs, in the same place.
-  assert.equal(await page.evaluate("['chat','tasks'].every(id=>document.querySelector(`#agent-pane-${id} .pane-header > .agent-settings select[aria-label=Access]`))"), true);
+  // The built-in tab is the default: the agent, access and start controls live
+  // in its header.
+  assert.equal(await page.evaluate('document.querySelector("#agent-pane-builtin").hidden'), false);
+  assert.deepEqual(await page.evaluate(`Array.from(document.querySelectorAll("#agent-pane-builtin select[aria-label=Access] option")).map(o=>o.textContent.split(":")[0])`), ["Comment", "Edit"]);
+  // The agent and access line heads the built-in pane.
+  assert.equal(await page.evaluate("Boolean(document.querySelector('#agent-pane-builtin .pane-header > .agent-settings select[aria-label=Access]'))"), true);
   // The agent settings are always visible when paired.
   assert.equal(await page.evaluate("Boolean(document.querySelector('.agent-settings'))"), true);
   if (process.env.AGENT_SCREENSHOT) {
@@ -212,7 +233,7 @@ try {
     const shot = await page.command("Page.captureScreenshot", { format: "png" });
     writeFileSync(process.env.AGENT_SCREENSHOT, Buffer.from(shot.data, "base64"));
   }
-  await page.evaluate('document.querySelector("#agent-tab-chat").click()');
+  await page.evaluate('document.querySelector("#agent-tab-builtin").click()');
   // The resize handle is gone; the textarea auto-grows with its content
   // instead, up to a viewport-relative cap, and shrinks back when the text
   // is removed.
@@ -228,7 +249,7 @@ try {
   assert.equal(await page.evaluate("Boolean(document.querySelector('.chat-form label'))"), false, "the input needs no visible Message label");
   // The pane carries the padding, not the panel: the tab strip is flush to
   // the top of the panel, as the collaboration panel's is.
-  await until("composer stays at the bottom of the pane", () => page.evaluate("(()=>{const pane=document.querySelector('#agent-pane-chat');const form=document.querySelector('.chat-form').getBoundingClientRect();const bottom=pane.getBoundingClientRect().bottom-parseFloat(getComputedStyle(pane).paddingBottom);return Math.abs(form.bottom-bottom)<2;})()"), 1000);
+  await until("composer stays at the bottom of the pane", () => page.evaluate("(()=>{const pane=document.querySelector('#agent-pane-builtin');const form=document.querySelector('.chat-form').getBoundingClientRect();const bottom=pane.getBoundingClientRect().bottom-parseFloat(getComputedStyle(pane).paddingBottom);return Math.abs(form.bottom-bottom)<2;})()"), 1000);
   assert.equal(await page.evaluate('window.sockets[0].url.includes("secret-token")'),false);
   assert.equal(await page.evaluate('new URL(window.sockets[0].url).searchParams.get("k")'),"secret");
   assert.deepEqual(await page.evaluate('window.sockets[0].sent[0]'),{type:"join",token:"secret-token",role:"user"});
@@ -340,12 +361,12 @@ try {
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'other-kind-task',status:'completed'})");
   await until("unknown-kind permission cleared", () => page.evaluate('!document.querySelector(".permission-card")'), 1000);
 
-  // Opening a comment prepares a response in the Tasks pane. It never submits
+  // Opening a comment prepares a response in the built-in pane. It never submits
   // until the user explicitly sends it, and the whole thread travels with that
   // response for the external agent.
   const beforeComment = await page.evaluate("window.sockets[0].sent.filter(frame=>frame.type==='message').length");
   await page.evaluate("window.setProps({comments:[{id:'comment-1',body:'Please clarify this',replies:[]}],request:{id:'comment-request',comment:{id:'comment-1',body:'Please clarify this',source:{path:'paper.md',exact:'A passage',prefix:'',suffix:'',position:0},replies:[{body:'Could you expand?'}],revision:'rev-1'}}})");
-  await until("comment response prepared", () => page.evaluate('document.querySelector("#agent-pane-tasks")?.hidden===false && document.querySelector(".task-prepare .task-title")?.textContent==="Address comment"'), 1000);
+  await until("comment response prepared", () => page.evaluate('document.querySelector("#agent-pane-builtin")?.hidden===false && document.querySelector(".task-prepare .task-title")?.textContent==="Address comment"'), 1000);
   assert.equal(await page.evaluate("window.sockets[0].sent.filter(frame=>frame.type==='message').length"), beforeComment);
   await page.evaluate('Array.from(document.querySelectorAll(".task-prepare button")).find(b=>b.textContent==="Send to agent").click()');
   await until("comment response sent", () => page.evaluate("window.sockets[0].sent.some(frame=>frame.context?.thread?.id==='comment-1')"), 1000);
@@ -354,22 +375,19 @@ try {
 
   // The connection flow is a choice of access and a click, with no prompt to
   // paste anywhere. The panel offers the agents the local app actually found.
-  await until("desktop app ready", () => page.evaluate(`!document.querySelector('.connect-required') && Boolean(document.querySelector('.agent-settings'))`), 3000);
+  await until("desktop app ready", () => page.evaluate(`Boolean(document.querySelector('.agent-settings'))`), 3000);
   await until("agents listed", () => page.evaluate(`Boolean(document.querySelector('select[aria-label=Agent] option[value=claude]'))`), 2000);
 
-  // The "Agent settings" text button is gone from the settings line; each
-  // pane now carries its own icon button to the same page in its header. Both
-  // headers also start with the conversation switcher.
-  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Agent settings"]'))`),
-    "the Chat pane header offers a way to the agent settings page");
-  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-tasks button[aria-label="Agent settings"]'))`),
-    "the Tasks pane header also offers a way to the agent settings page");
-  for (const pane of ["chat", "tasks"]) {
-    for (const control of ['select[aria-label="Conversation"]', 'button[aria-label="New conversation"]', 'button[aria-label="Delete conversation"]']) {
-      assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-${pane} .pane-header ${control}'))`),
-        `the ${pane} pane header offers ${control}`);
-    }
+  // The agent settings page is one icon button in the built-in pane's header,
+  // which also starts with the conversation switcher.
+  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-builtin button[aria-label="Agent settings"]'))`),
+    "the built-in pane header offers a way to the agent settings page");
+  for (const control of ['select[aria-label="Conversation"]', 'button[aria-label="New conversation"]', 'button[aria-label="Delete conversation"]']) {
+    assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-builtin .pane-header ${control}'))`),
+      `the built-in pane header offers ${control}`);
   }
+  await page.evaluate(`document.querySelector('#agent-pane-builtin button[aria-label="Agent settings"]').click()`);
+  assert.equal(await page.evaluate("window.settingsCalls"), 1, "the header gear opens the agent settings page");
 
   const panel = await page.evaluate("document.body.textContent");
   for (const gone of ["librepaper agent connect", "Copy connection instructions", "LIBREPAPER_CHAT_TOKEN", "--background"]) {
@@ -417,7 +435,7 @@ try {
   // The agent settings stay visible at all times when paired. Of the pane header
   // controls only Delete conversation stops the agent: sending, changing a
   // select or creating a conversation leaves it running.
-  assert.equal(await page.evaluate(`document.querySelector("#agent-pane-chat").hidden`), false);
+  assert.equal(await page.evaluate(`document.querySelector("#agent-pane-builtin").hidden`), false);
   assert.ok(await page.evaluate(`Boolean(document.querySelector(".agent-settings"))`),
     "the agent settings stay visible when an assistant is running");
   assert.equal(await page.evaluate('Boolean(document.querySelector(".pane-header [aria-label^=\\"Stop\\"]"))'), false,
@@ -461,18 +479,14 @@ try {
   assert.equal(await page.evaluate("window.sockets[1].sent.filter(frame=>frame.type==='message').length"), sentBefore,
     "relay acknowledgements are replayed until a task event confirms runner admission");
 
-  // A new request binds its source anchor and opens the Tasks pane; Remove
-  // must not immediately reattach the passage from props.
+  // A new request binds its source anchor; Remove must not immediately
+  // reattach the passage from props.
   await page.evaluate("window.setProps({selection:{exact:'same',source:{path:'a.md',exact:'same',prefix:'before ',suffix:' after',position:20},revision:'captured-a'},request:{id:'new-selection',selection:{exact:'same',source:{path:'a.md',exact:'same',prefix:'before ',suffix:' after',position:20}},revision:'captured-a'}})");
-  await until("selection request applied", () => page.evaluate('document.querySelector("#agent-pane-tasks").hidden===false && document.querySelector(".context-trigger").textContent.includes("a.md")'), 1000);
-  // The browser lists the catalog, search narrows it, a row opens an inline
-  // preparation view, and only sending it writes anything.
-  await page.evaluate(`(()=>{const search=document.querySelector('.task-search');search.value='tight';search.dispatchEvent(new Event('input',{bubbles:true}));})()`);
-  await until("search narrows", () => page.evaluate('document.querySelectorAll(".task-results .task-row").length===1'), 1000);
-  // A search result names its summary and its categories, with no sections.
-  assert.ok((await page.evaluate('document.querySelector(".task-results .task-row .task-summary").textContent')).length > 0);
-  assert.ok((await page.evaluate('document.querySelector(".task-results .task-row .task-meta").textContent')).includes("Writing"));
-  await page.evaluate('document.querySelector(".task-results .task-row").click()');
+  await until("selection request applied", () => page.evaluate('document.querySelector(".context-trigger").textContent.includes("a.md")'), 1000);
+  // A task starts from the Tasks tab: its row switches to the built-in tab and
+  // opens the preparation view, where only sending writes anything.
+  await page.evaluate('document.querySelector("#agent-tab-tasks").click()');
+  await page.evaluate('document.querySelector(\'[data-task-run="tighten"]\').click()');
   await until("preparation view", () => page.evaluate('!!document.querySelector(".task-prepare") && document.querySelector(".task-prepare .attachment").textContent.includes("a.md")'), 1000);
   assert.equal(await page.evaluate('document.querySelector(".chat-form textarea").value'), "First\n\n", "opening a task leaves the chat draft alone");
   assert.equal(await page.evaluate('document.querySelector(".task-scope")'), null, "tighten has a single scope, so none is offered");
@@ -488,7 +502,7 @@ try {
   // Picking the task is the decision. It goes to the agent there and then,
   // and the panel moves to where the answer will arrive.
   await until("tighten sent", () => page.evaluate("window.sockets[1].sent.some(frame=>frame.task?.kind==='tighten')"), 2000);
-  assert.equal(await page.evaluate('document.querySelector("#agent-pane-chat").hidden'), false, "sending a task opens the chat");
+  assert.equal(await page.evaluate('document.querySelector("#agent-pane-builtin").hidden'), false, "sending a task opens the chat");
   assert.equal(await page.evaluate('document.querySelector(".chat-form textarea").value'), "First\n\n", "sending a task leaves the chat draft alone");
   await page.evaluate("window.setProps({path:'b.md'})");
   await until("anchored request", () => page.evaluate("window.sockets[1].sent.some(frame=>frame.task?.kind==='tighten')"), 1000);
@@ -541,7 +555,7 @@ try {
   // the key the grant was minted with, which the server call carries.
   const linkFor = (role) => page.evaluate(`window.agentTokenCalls.at(-1).headers['X-LibrePaper-Key'] === '${role}'`);
   const connectAs = async (role) => {
-    await page.evaluate('document.querySelector("#agent-tab-chat").click()');
+    await page.evaluate('document.querySelector("#agent-tab-builtin").click()');
     // Changing the agent or access while one is running restarts it, so the
     // selects alone are the whole path; with nothing running, sending starts it.
     if (await page.evaluate(`document.querySelector("select[aria-label=Access]").value`) === role) {
@@ -593,60 +607,24 @@ try {
   assert.equal(await linkFor("editor"), true);
   assert.deepEqual(await page.evaluate("window.createdAccess"), {create:{kind:"link",role:"editor",until:"7d",name:"Agent"}});
   await page.evaluate('document.querySelector("#agent-tab-tasks").click()');
-  assert.equal(await page.evaluate('document.querySelector("#agent-pane-chat").hidden'), true);
-  await page.evaluate(`(()=>{const search=document.querySelector('.task-search');search.value='';search.dispatchEvent(new Event('input',{bubbles:true}));})()`);
-  await until("catalog listed", () => page.evaluate('document.querySelectorAll(".task-results ul[data-category] .task-row").length===4 && document.querySelectorAll(".task-section").length===3'), 1000);
+  assert.equal(await page.evaluate('document.querySelector("#agent-pane-builtin").hidden'), true);
+  await until("task rows listed", () => page.evaluate('!!document.querySelector("#agent-pane-tasks [data-task-run=explain]")'), 1000);
   // The runner went away earlier in this file, and a task cannot be sent to
   // an assistant that is not there. Bring it back first: the panel refusing
   // is the correct behaviour, not something to click through.
   await page.evaluate("window.sockets.at(-1).emit({type:'presence',agent:true,browser:true})");
-  const search = (text) => page.evaluate(`(()=>{const search=document.querySelector('.task-search');search.value=${JSON.stringify(text)};search.dispatchEvent(new Event('input',{bubbles:true}));})()`);
-  await search("Explain");
-  await page.evaluate('Array.from(document.querySelectorAll(".task-results .task-row")).find(row=>row.querySelector(".task-name").textContent==="Explain").click()');
+  await page.evaluate('document.querySelector(\'[data-task-run="explain"]\').click()');
   await until("runner back", () => page.evaluate(`Array.from(document.querySelectorAll(".task-prepare button")).some(b=>b.textContent==="Send to agent" && !b.disabled)`), 2000);
   await page.evaluate('Array.from(document.querySelectorAll(".task-prepare button")).find(b=>b.textContent==="Send to agent").click()');
-  await until("preset opens chat", () => page.evaluate('!document.querySelector("#agent-pane-chat").hidden'), 1000);
+  await until("preset opens chat", () => page.evaluate('!document.querySelector("#agent-pane-builtin").hidden'), 1000);
 
-  // Enter in the search box opens the first result, and Back returns with the
-  // query as it was.
+  // Back returns to the conversation, with the composer focused.
   await page.evaluate('document.querySelector("#agent-tab-tasks").click()');
-  await until("launcher back", () => page.evaluate('!!document.querySelector(".task-search")'), 1000);
-  await search("summ");
-  const key = (name) => page.evaluate(`document.querySelector('.task-search').dispatchEvent(new KeyboardEvent('keydown',{key:${JSON.stringify(name)},bubbles:true,cancelable:true}))`);
-  await key("Enter");
-  await until("keyboard opens Summarize", () => page.evaluate('document.querySelector(".task-prepare .task-title")?.textContent==="Summarize"'), 1000);
+  await page.evaluate('document.querySelector(\'[data-task-run="summarize"]\').click()');
+  await until("summarize prepared", () => page.evaluate('document.querySelector(".task-prepare .task-title")?.textContent==="Summarize"'), 1000);
   await page.evaluate('document.querySelector(".task-back").click()');
-  await until("back restores the query", () => page.evaluate('document.querySelector(".task-search")?.value==="summ" && document.activeElement===document.querySelector(".task-search")'), 1000);
-  await search("zzzqqq");
-  await until("no match", () => page.evaluate('document.body.innerText.includes("No tasks match")'), 1000);
-  await search("");
-  // Frequently used tasks sit above the sections. Tighten was sent twice in
-  // this file and Explain once, so only Tighten is listed.
-  await until("frequent tasks listed", () => page.evaluate('Array.from(document.querySelectorAll(".task-group-label")).some(h=>h.textContent==="Frequently used")'), 1000);
-  const frequentNames = await page.evaluate('Array.from(document.querySelectorAll(\'ul[aria-labelledby="task-frequent-label"] .task-name\')).map(name=>name.textContent)');
-  assert.ok(frequentNames.includes("Tighten"), "a task sent twice is listed as frequently used");
-  assert.ok(!frequentNames.includes("Explain"), "a task sent once is not listed as frequently used");
-  // With nothing saved, only the first section is open.
-  const sectionButton = (name) => `Array.from(document.querySelectorAll(".task-section")).find(b=>b.querySelector(".task-section-name").textContent===${JSON.stringify(name)})`;
-  const sectionState = (name) => page.evaluate(`${sectionButton(name)}.getAttribute("aria-expanded")`);
-  const toggleSection = (name) => page.evaluate(`${sectionButton(name)}.click()`);
-  const sectionRows = () => page.evaluate('document.querySelectorAll(".task-results ul[data-category] .task-row").length');
-  await until("only the first section open", async () => await sectionState("Writing") === "true" && await sectionState("Review") === "false" && await sectionRows() === 4, 1000);
-  await toggleSection("Writing");
-  await until("section collapsed", async () => await sectionState("Writing") === "false" && await sectionRows() === 0, 1000);
-  await toggleSection("Review");
-  await until("section expanded", async () => await sectionState("Review") === "true" && await sectionRows() === 6, 1000);
-  await page.evaluate('document.querySelector(".task-results ul[data-category] .task-row").click()');
-  await until("expanded task opens", () => page.evaluate('!!document.querySelector(".task-prepare")'), 1000);
-  await page.evaluate('document.querySelector(".task-back").click()');
-  await until("expansion survives back", async () => await sectionState("Review") === "true" && await sectionState("Writing") === "false", 1000);
-  assert.equal(await page.evaluate("localStorage.getItem('librepaper.agent.expandedTasks')"), '["Review"]');
-  // Put the default back for the steps that follow.
-  await toggleSection("Review");
-  await toggleSection("Writing");
-  await until("default restored", async () => await sectionState("Writing") === "true" && await sectionRows() === 4, 1000);
-
-  // A comment or diagnostic opens its own preparation view in the Tasks pane.
+  await until("back returns to the conversation", () => page.evaluate('!document.querySelector(".task-prepare") && document.activeElement===document.querySelector(".chat-form textarea")'), 1000);
+  // A comment or diagnostic opens its own preparation view in the built-in pane.
   await page.evaluate("window.setProps({comments:[{id:'task-comment',body:'Clarify this',replies:[]}],diagnostics:[{message:'Compile error',file:'error.typ',line:3,revision:'old-sha',source:'old source'}]})");
   await connectAs("commenter");
   assert.equal(await linkFor("commenter"), true);
@@ -658,7 +636,7 @@ try {
   assert.ok((await page.evaluate('document.querySelector(".task-prepare .task-target").textContent')).includes("Compile error"));
   await page.evaluate("window.setProps({diagnostics:[]})");
   await until("diagnostic gone", () => page.evaluate('document.querySelector(".task-prepare [role=status]")?.textContent==="This diagnostic is gone after the last compile." && Array.from(document.querySelectorAll(".task-prepare button")).find(b=>b.textContent==="Send to agent").disabled'), 1000);
-  await page.evaluate('document.querySelector("#agent-tab-chat").click()');
+  await page.evaluate('document.querySelector("#agent-tab-builtin").click()');
 
   // Short panels keep the composer visible while conversation content scrolls.
   await page.resize(240, 400);
@@ -667,23 +645,18 @@ try {
 
   // The pane carries the padding, not the panel: the tab strip is flush to
   // the top of the panel, as the collaboration panel's is.
-  await until("composer stays at the bottom of the pane", () => page.evaluate("(()=>{const pane=document.querySelector('#agent-pane-chat');const form=document.querySelector('.chat-form').getBoundingClientRect();const bottom=pane.getBoundingClientRect().bottom-parseFloat(getComputedStyle(pane).paddingBottom);return Math.abs(form.bottom-bottom)<2;})()"), 1000);
-  for (const tab of ["chat", "tasks"]) {
+  await until("composer stays at the bottom of the pane", () => page.evaluate("(()=>{const pane=document.querySelector('#agent-pane-builtin');const form=document.querySelector('.chat-form').getBoundingClientRect();const bottom=pane.getBoundingClientRect().bottom-parseFloat(getComputedStyle(pane).paddingBottom);return Math.abs(form.bottom-bottom)<2;})()"), 1000);
+  for (const tab of ["builtin", "tasks"]) {
     await page.evaluate(`document.querySelector('#agent-tab-${tab}').click()`);
     assert.equal(await page.evaluate("document.querySelector('.agent-panel').scrollWidth <= document.querySelector('.agent-panel').clientWidth"), true, tab + " fits the narrow sidebar");
   }
-  await page.evaluate('document.querySelector("#agent-tab-tasks").focus(); document.querySelector("#agent-tab-tasks").dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowRight",bubbles:true}))');
-  // Keyboard navigation follows the selected tab (Tasks wraps to Chat, the
-  // only other tab now that Connection is gone).
-  await until("keyboard tab navigation", () => page.evaluate('document.activeElement.id === "agent-tab-chat"'), 1000);
-
   const beforeNewConversation = await page.evaluate("({sockets:window.sockets.length,creates:window.calls.filter(call=>call.suffix==='').length})");
   // Deleting the only conversation is a fresh runner boundary: it stops the
   // local assistant, ends its channel and clears the transcript/context, and a
   // fresh conversation takes its place. The agent settings remain visible.
   // A socket reconnect keeps the existing conversation and transcript instead.
-  await page.evaluate('document.querySelector("#agent-tab-chat").click(); document.querySelector(\'.agent-session:not(.inactive) button[aria-label="Delete conversation"]\').click()');
-  await until("new conversation cleared", () => page.evaluate('document.querySelector(".agent-session:not(.inactive) [id^=agent][id$=-tab-chat]").getAttribute("aria-selected")==="true"'), 2000);
+  await page.evaluate('document.querySelector("#agent-tab-builtin").click(); document.querySelector(\'.agent-session:not(.inactive) button[aria-label="Delete conversation"]\').click()');
+  await until("new conversation cleared", () => page.evaluate('document.querySelector(".agent-session:not(.inactive) .chat-form")!==null'), 2000);
   assert.equal(await page.evaluate('document.querySelector(".agent-session:not(.inactive) [role=log]")?.textContent.includes("Explain this")'), false);
   assert.equal(await page.evaluate('window.localCalls.some(call => call.route === "assistant/stop")'), true);
   await until("new channel created",()=>page.evaluate(`window.sockets.length === ${beforeNewConversation.sockets + 1}`),10000);
@@ -694,47 +667,31 @@ try {
 
   // A second conversation runs beside the first. Creating it stops nothing,
   // its channel is new, and the select switches between the two panels.
-  const visibleTab = () => page.evaluate('document.querySelector(".agent-session:not(.inactive) [id^=agent][id$=-tab-chat]").id');
+  const visibleSession = () => page.evaluate('[...document.querySelectorAll(".agent-session")].findIndex(el=>!el.classList.contains("inactive"))');
   const switchTo = (index) => page.evaluate(`(()=>{const s=document.querySelector('.agent-session:not(.inactive) select[aria-label="Conversation"]');s.value=s.options[${index}].value;s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
   const beforeSecond = await page.evaluate("({stops:window.localCalls.filter(call=>call.route==='assistant/stop').length,sockets:window.sockets.length,creates:window.calls.filter(call=>call.suffix==='').length})");
-  const firstTab = await visibleTab();
+  const firstSession = await visibleSession();
   await page.evaluate('document.querySelector(\'.agent-session:not(.inactive) button[aria-label="New conversation"]\').click()');
   await until("second conversation listed", () => page.evaluate('document.querySelector(\'.agent-session:not(.inactive) select[aria-label="Conversation"]\').options.length===2'), 2000);
-  await until("second conversation shown", async () => await visibleTab() !== firstTab, 2000);
+  await until("second conversation shown", async () => await visibleSession() !== firstSession, 2000);
   assert.equal(await page.evaluate('window.localCalls.filter(call=>call.route==="assistant/stop").length'), beforeSecond.stops,
     "creating a conversation does not stop the one that is running");
   await until("second conversation channel created", () => page.evaluate(`window.sockets.length === ${beforeSecond.sockets + 1} && window.calls.filter(call=>call.suffix==='').length === ${beforeSecond.creates + 1}`), 10000);
-  const secondTab = await visibleTab();
+  const secondSession = await visibleSession();
   await switchTo(0);
-  await until("first conversation shown again", async () => await visibleTab() === firstTab, 2000);
+  await until("first conversation shown again", async () => await visibleSession() === firstSession, 2000);
   assert.equal(await page.evaluate('document.querySelector(".agent-session:not(.inactive) select[aria-label=\\"Conversation\\"]").selectedIndex'), 0);
   assert.equal(await page.evaluate('document.querySelectorAll(".agent-session.inactive").length'), 1, "the other conversation is hidden");
   assert.ok(await page.evaluate('Boolean(document.querySelector(".agent-session:not(.inactive) [role=log]"))'), "the first conversation's transcript is shown");
   // Delete the second conversation, which leaves the first as the only one.
   await switchTo(1);
-  await until("second conversation selected", async () => await visibleTab() === secondTab, 2000);
+  await until("second conversation selected", async () => await visibleSession() === secondSession, 2000);
   await page.evaluate('document.querySelector(\'.agent-session:not(.inactive) button[aria-label="Delete conversation"]\').click()');
   await until("second conversation deleted", () => page.evaluate(`document.querySelectorAll('.agent-session').length === 1 && document.querySelector('.agent-session:not(.inactive) select[aria-label="Conversation"]').options.length === 1`), 10000);
-  assert.equal(await visibleTab(), firstTab);
-  // Outside the desktop app the panel shows the one notice and reaches nothing local.
-  await page.navigate(`${appUrl}?browser=1`);
-  await until("browser agent panel", () => page.evaluate("Boolean(document.querySelector('.agent-panel'))"), 10000);
-  await until("desktop app notice and hosted conversation shown", () => page.evaluate(
-    `Boolean(document.querySelector('.connect-required')) && (window.calls.some(call=>call.suffix==='') || window.sockets.some(socket=>socket.sent.some(frame=>frame.type==='join')))`), 10000);
-  assert.equal(await page.evaluate("window.localCalls.length"), 0,
-    "outside the desktop app nothing local is requested");
-  assert.match(await page.evaluate("document.querySelector('.connect-required').textContent"), /The agent needs the LibrePaper desktop app\./);
-  assert.equal(await page.evaluate(`document.querySelector('.connect-required a[href*="desktop-app"]')?.textContent.trim()`), "Get the desktop app");
-  assert.equal(await page.evaluate(`document.querySelector('.connect-required a[href^="librepaper://open?url="]')?.textContent.trim()`), "Open in the desktop app");
-  assert.deepEqual(await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).map(b=>b.textContent.trim())`), [], "there is no Connect button");
-  assert.ok(await page.evaluate(`Boolean(document.querySelector('.agent-session:not(.inactive) [id^=agent][id$=-pane-chat] button[aria-label="Agent settings"]'))`),
-    "the pane header still offers a way to the agent settings page outside the desktop app");
-  await page.evaluate(`document.querySelector('.agent-session:not(.inactive) [id^=agent][id$=-pane-chat] button[aria-label="Agent settings"]').click()`);
-  assert.equal(await page.evaluate("window.settingsCalls"), 1, "the notice pane offers a way to the agent settings page");
-
+  assert.equal(await visibleSession(), firstSession);
   await page.navigate(appUrl);
   await until("desktop app ready again", () => page.evaluate(
-    `!document.querySelector('.connect-required') && Boolean(document.querySelector('.agent-settings'))`), 10000);
+    `Boolean(document.querySelector('.agent-settings'))`), 10000);
 
   // The agents listed right after the probe must be selectable. A background
   // refresh that shares the panel's busy flag leaves every row disabled, and
@@ -789,7 +746,7 @@ try {
   await page.evaluate("window.delayAssistantStatus=true; window.remount()");
   await until("delayed assistant status is pending", () => page.evaluate("window.delayedAssistantStatuses.length===1"), 2000);
   await page.evaluate("window.conversationCreatesBeforePending=window.calls.filter(call=>call.suffix==='').length");
-  await page.evaluate('document.querySelector(".agent-session:not(.inactive) [id^=agent][id$=-tab-chat]").click(); document.querySelector(\'.agent-session:not(.inactive) button[aria-label="Delete conversation"]\').click()');
+  await page.evaluate('document.querySelector("#agent-tab-builtin").click(); document.querySelector(\'.agent-session:not(.inactive) button[aria-label="Delete conversation"]\').click()');
   await until("conversation changed while status was pending", () => page.evaluate("window.calls.filter(call=>call.suffix==='').length === window.conversationCreatesBeforePending+1"), 3000);
   await page.evaluate("window.delayedAssistantStatuses[0].resolve(Response.json({running:true,state:'ready'}))");
   await new Promise(resolve=>setTimeout(resolve,50));
