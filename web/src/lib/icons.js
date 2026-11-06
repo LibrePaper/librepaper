@@ -366,6 +366,7 @@ export const ICONS = {
     ["path", "m15 14 5-5-5-5"],
     ["path", "M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13"],
   ],
+  // Stops a running agent.
 };
 
 const SVG = "http://www.w3.org/2000/svg";
