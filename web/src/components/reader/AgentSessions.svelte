@@ -1,6 +1,6 @@
 <script>
   import { untrack } from "svelte";
-  import Agent from "./Agent.svelte";
+  import AgentChat from "./AgentChat.svelte";
   import IconButton from "../IconButton.svelte";
   import {
     MAX_AGENT_SESSIONS, loadSessions, saveSessions, addSession, removeSession, selectSession,
@@ -102,7 +102,7 @@
 
 {#each list.sessions as s (s.key)}
   <div class="agent-session" class:inactive={s.key !== list.active}>
-    <Agent {slug} {link} {canShare} {path} {selection} {revision} {diagnostics} {comments} {changes}
+    <AgentChat {slug} {link} {canShare} {path} {selection} {revision} {diagnostics} {comments} {changes}
            {onreview} {onpreview} {onsettings} {userName} session={s.key} active={s.key === list.active} switcher={switcher} sessionActions={sessionActions}
            request={routed.key === s.key ? routed.value : null}
            onstate={(v) => statuses[s.key] = v} bind:this={instances[s.key]} />
