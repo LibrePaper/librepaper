@@ -2308,6 +2308,7 @@
   "readerd_demo_banner": "デモのサンドボックスです。何も保存されず、一部の機能は無効です。作業を残すにはサインインしてください。",
   "readerd_desktop_can_render": "LibrePaperデスクトップアプリなら、このコンピューターでレンダリングできます。",
   "readerd_diagnostics_converter": "サイドバーの診断に、コンバーターの報告内容が表示されます。",
+  "readerd_document_empty": "このドキュメントは空です。",
   "readerd_download_source_reason": "ソースをダウンロードするには、ファイルを開いてください。",
   "readerd_edit_menu": "編集",
   "readerd_figure_fetching": "{path}を取得中…",

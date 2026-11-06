@@ -2323,6 +2323,7 @@
   "readerd_demo_banner": "Bac à sable de démonstration. Rien n’est enregistré, et certaines fonctions sont désactivées. Connectez-vous pour conserver votre travail.",
   "readerd_desktop_can_render": "L’application de bureau LibrePaper peut la compiler sur cet ordinateur.",
   "readerd_diagnostics_converter": "Les diagnostics dans la barre latérale énumèrent ce que le convertisseur a signalé.",
+  "readerd_document_empty": "Ce document est vide.",
   "readerd_download_source_reason": "Ouvrez un fichier pour télécharger sa source.",
   "readerd_edit_menu": "Édition",
   "readerd_figure_fetching": "Récupération de {path}…",

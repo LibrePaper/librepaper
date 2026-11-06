@@ -2308,6 +2308,7 @@
   "readerd_demo_banner": "演示沙盒。内容不会保存，部分功能已停用。登录以保留你的工作。",
   "readerd_desktop_can_render": "LibrePaper 桌面应用可以在这台电脑上渲染它。",
   "readerd_diagnostics_converter": "侧边栏中的“诊断”列出了转换器报告的内容。",
+  "readerd_document_empty": "此文档为空。",
   "readerd_download_source_reason": "打开一个文件即可下载其源码。",
   "readerd_edit_menu": "编辑",
   "readerd_figure_fetching": "正在获取 {path}…",

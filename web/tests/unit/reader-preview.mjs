@@ -112,6 +112,13 @@ assert.match(frameSource, /librepaper-flow img \{[\s\S]*?max-width: 100%;[\s\S]*
 // clears the old payload/export and paints an explicit empty state.
 assert.match(previewSource, /if \(!String\(source\.texts\?\.\[source\.main\] \?\? ""\)\.trim\(\)\) \{/);
 assert.match(previewSource, /framePreview\.clear\?\.\(\);[\s\S]*?onEmpty\(\);/);
+// An empty document settles the preview. The waiting display gives way to a
+// cover of the Reader's, which works over the PDF viewer too, since that frame
+// ignores an html message.
+assert.match(readerSource, /!failedBeforeRender && !documentEmpty/);
+assert.match(readerSource, /cover=\{documentEmpty \? emptyCover : waitingUp \? waitingCover : undefined\}/);
+assert.match(readerSource, /onEmpty: \(\) => \{[\s\S]*?renderStatus\.resetFailure\(\);\s*documentEmpty = true;/);
+assert.doesNotMatch(previewSource, /This document is empty/);
 assert.doesNotMatch(readerSource, /project-folder|ProjectFolderSetting/);
 // HTML/PDF output format choice for markdown and quarto in View menu.
 assert.match(readerSource, /\{@const selectableFormat = \["latex", "typst", "markdown", "quarto"\]\.includes\(displayedFormat\)\}/);

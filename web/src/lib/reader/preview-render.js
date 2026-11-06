@@ -165,7 +165,7 @@ export function createPreviewRenderer({
       framePreview.clear?.();
       onRendered("", capturedProjectDigest);
       onEmpty();
-      send({ type: "preview", html: "<!doctype html><meta charset=utf-8><title>Empty document</title><main style='font:16px system-ui;padding:2rem'>This document is empty.</main>" });
+      send({ type: "preview", html: "<!doctype html><meta charset=utf-8>" });
       diagnostics.rendered({ page: false, diagnostics: [] });
       return;
     }
