@@ -579,7 +579,13 @@ async function runChecks() {
       check(rows.map((row) => text(q(".hx-line1", row))).join("|") === "Ada|Unknown author",
         `the rows name each author, shows: ${rows.map((row) => text(row)).join("|")}`);
       check(text(rows[0]).includes("75%"), `a row gives its share, shows: ${text(rows[0])}`);
-      click(rows[0]);
+      check(q(".hx-foot") !== null, "the recording note shows while a row is unknown");
+      update({ authors: { rows: fixtures.authorRows.filter((row) => !row.unknown), since: "2026-11-01T10:00:00Z", loading: false, error: "", noFile: false } });
+      await flush();
+      check(q(".hx-foot") === null, "the recording note is hidden when nothing is unknown");
+      update({ authors: { rows: fixtures.authorRows, since: "2026-11-01T10:00:00Z", loading: false, error: "", noFile: false } });
+      await flush();
+      click(all("button.hx-author")[0]);
       await flush();
       check(JSON.stringify(calls.at(-1)) === JSON.stringify(["isolate", "account:a"]),
         `clicking a row isolates it, calls: ${JSON.stringify(calls)}`);
