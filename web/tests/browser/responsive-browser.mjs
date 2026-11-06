@@ -665,17 +665,27 @@ try {
   // file just opened.
   await until('the preview follows the opened file', () => b.evaluate(`document.querySelector('.explorer-row[title="chapter-1.html"][data-previewed]') !== null`), 5000);
 
-  // A user who cannot share has no External agent tab: the panel opens on the tasks, with no chat.
+  // In the desktop app the panel opens on the built-in agent, so the tasks are
+  // reached through their tab. The tab is chosen after each open, since a
+  // reopened panel may not keep the tab it had.
   await nav('Agent');
+  await click('#agent-tab-tasks');
   // The categories start closed.
   const openTaskGroups = () => b.evaluate('document.querySelectorAll(".agent-task-toggle[aria-expanded=\\"false\\"]").forEach((node) => node.click())');
   await openTaskGroups(); await flush();
   await until('agent tasks', () => visible('.agent-task'), 3000);
   assert.equal(await visible('.agent-panel'), true);
-  assert.equal(await b.evaluate('document.querySelector(".agent-panel .chat-form") === null && document.querySelector(".agent-panel .chat-message") === null'), true, 'the agent panel has no chat');
   assert.equal(await b.evaluate('(() => { const p = document.querySelector(".agent-panel"); return p.scrollWidth <= p.clientWidth + 1; })()'), true, 'the agent tasks fit the phone width');
+  // Run hands the task to the built-in agent, which opens its preparation view.
+  await click('[data-task-run="proofread"] button');
+  await until('proofread prepared in the built-in agent', () => b.evaluate('document.querySelector("#agent-pane-builtin").hidden === false && Boolean(document.querySelector(".task-prepare"))'), 3000);
+  assert.equal(await b.evaluate('(() => { const p = document.querySelector("#agent-pane-builtin"); return p.scrollWidth <= p.clientWidth + 1; })()'), true, 'the built-in agent fits the phone width while preparing a task');
+  // Back leaves preparation, so the rest of this test finds the conversation as it was.
+  await click('.task-back');
+  await until('back returns from preparation', () => b.evaluate('!document.querySelector(".task-prepare")'), 3000);
   await click(backBtn);
   await nav('Agent');
+  await click('#agent-tab-tasks');
   await openTaskGroups(); await flush();
   assert.equal(await visible('.agent-task'), true, 'the agent panel comes back with its tasks');
   await bounded();
