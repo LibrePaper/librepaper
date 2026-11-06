@@ -139,8 +139,6 @@
   "agent_start_first": "Start an agent in the Chat tab before sending a task.",
   "agent_stopping": "Stopping…",
   "agent_tab_tasks": "Tasks",
-  "agent_tab_builtin": "Built-in agent",
-  "agent_tab_external": "External agent",
   "agent_external_intro": "Create a token, copy its instructions, and paste them into your agent. They install the LibrePaper skill if it is missing, then connect to this project.",
   "agent_tasks_intro": "Copy a task and paste it into your agent.",
   "agent_tasks_intro_desktop": "Run a task in the built-in agent, or copy it and paste it into an external agent.",

@@ -139,8 +139,6 @@
   "agent_start_first": "タスクを送信する前に、チャットタブでエージェントを起動してください。",
   "agent_stopping": "停止中…",
   "agent_tab_tasks": "タスク",
-  "agent_tab_builtin": "内蔵エージェント",
-  "agent_tab_external": "外部エージェント",
   "agent_external_intro": "トークンを作成し、その手順をコピーしてエージェントに貼り付けてください。LibrePaperスキルがない場合はインストールされ、その後このプロジェクトに接続されます。",
   "agent_tasks_intro": "タスクをコピーして、エージェントに貼り付けてください。",
   "agent_tasks_intro_desktop": "内蔵エージェントでタスクを実行するか、コピーして外部エージェントに貼り付けてください。",

@@ -139,8 +139,6 @@
   "agent_start_first": "Inicie um agente na aba “Chat” antes de enviar uma tarefa.",
   "agent_stopping": "Parando…",
   "agent_tab_tasks": "Tarefas",
-  "agent_tab_builtin": "Agente integrado",
-  "agent_tab_external": "Agente externo",
   "agent_external_intro": "Crie um token, copie as instruções dele e cole-as no seu agente. Elas instalam a skill do LibrePaper se ela estiver ausente e depois se conectam a este projeto.",
   "agent_tasks_intro": "Copie uma tarefa e cole-a no seu agente.",
   "agent_tasks_intro_desktop": "Execute uma tarefa no agente integrado ou copie-a e cole-a em um agente externo.",

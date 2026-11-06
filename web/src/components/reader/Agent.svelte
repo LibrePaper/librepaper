@@ -25,8 +25,8 @@
   const paired = Boolean(desktop());
 
   const TABS = $derived([
-    { id: "builtin", label: m.agent_tab_builtin() },
-    ...(canShare ? [{ id: "external", label: m.agent_tab_external() }] : []),
+    { id: "builtin", label: m.common_chat() },
+    ...(canShare ? [{ id: "external", label: m.common_agent() }] : []),
     { id: "tasks", label: m.agent_tab_tasks() },
   ]);
   // The picked tab is kept only while it is still offered. Without one, the

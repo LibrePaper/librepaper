@@ -1,5 +1,5 @@
 <script>
-  // The External agent tab: the tokens that let an agent you run yourself reach
+  // The Agent tab: the tokens that let an agent you run yourself reach
   // this project. Copying a token gives one block that installs the skill if it
   // is missing and connects with the token, so there are no steps to follow.
   // The shell mounts this only for an owner and owns the sharing state, which
@@ -105,7 +105,7 @@
       <p class="panel-muted" role="status">{m.share_loading()}</p>
     {:else if sharing.sharing}
       {#if tokens.length > 0}
-        <ul class="share-list" aria-label={m.agent_tab_external()}>
+        <ul class="share-list" aria-label={m.common_agent()}>
           {#each tokens as item (item.id)}
             <ShareRow kind="token" {item} busy={sharing.busy} copied={sharing.copied} oncopy={sharing.copy} onrevoke={() => (confirming = { item })} />
           {/each}
