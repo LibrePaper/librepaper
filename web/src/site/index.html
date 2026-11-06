@@ -853,11 +853,11 @@
               <p class="links"><a href="/agents.html">Set up an agent</a></p>
             </div>
             <figure class="shot-frame">
-              <a class="shot" href="#agent-video" aria-label="Play a video of an agent fixing typos">
+              <a class="shot" href="#agent-video" aria-label="Play a narrated video of chatting with an agent in LibrePaper and connecting an external agent">
                 <img
                   src="/images/agent-sidebar.webp"
-                  alt="The agent sidebar in LibrePaper: asked to fix the typos in a document, the agent has added a tracked change for each one."
-                  width="1204"
+                  alt="LibrePaper next to an external agent's window: asked to add a paragraph, the agent has proposed it as a tracked change in the document."
+                  width="1720"
                   height="720"
                   loading="lazy"
                   decoding="async"
@@ -1174,7 +1174,7 @@
           <path d="M18 6 6 18" /><path d="m6 6 12 12" />
         </svg>
       </a>
-      <video src="/images/agent-sidebar.webm" poster="/images/agent-sidebar.webp" width="1204" height="720" controls muted loop playsinline preload="none"></video>
+      <video style="--ratio: 3440 / 1440" src="/images/agent-sidebar.webm" poster="/images/agent-sidebar-poster.webp" width="3440" height="1440" controls playsinline preload="none" data-manual-play></video>
     </div>
     <div class="lightbox" id="todo-video">
       <a class="lightbox-dismiss" href="#" aria-label="Close the video"></a>
@@ -1193,7 +1193,9 @@
          thing the browser Back button does and leaves no entry behind. A
          reader who arrived on the link directly has no such entry, so that
          case clears the fragment instead. A video plays when its view opens
-         and pauses when it closes, however it closed. -->
+         and pauses when it closes, however it closed. A video marked
+         data-manual-play has sound, so it waits for the viewer to press
+         play instead. -->
     <script>
       (function () {
         var opened = false;
@@ -1211,10 +1213,10 @@
         });
         function syncVideos() {
           document.querySelectorAll(".lightbox video").forEach(function (video) {
-            if (video.closest(".lightbox:target")) {
-              video.play().catch(function () {});
-            } else {
+            if (!video.closest(".lightbox:target")) {
               video.pause();
+            } else if (!video.hasAttribute("data-manual-play")) {
+              video.play().catch(function () {});
             }
           });
         }

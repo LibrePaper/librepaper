@@ -81,7 +81,7 @@
     scrollbar-width: thin;
   }
   /* On a phone the bar steps aside with the top bar, rising into the space it leaves. */
-  @media (max-width: 760px) {
+  @media (max-width: 767px) {
     .format-bar {
       transition: margin-top 200ms ease;
     }

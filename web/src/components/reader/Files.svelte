@@ -468,4 +468,12 @@
     gap: calc(var(--spacing) * 1);
     flex-wrap: wrap;
   }
+  /* Phones: no hover to reveal the eye, so it stays on each row at a thumb's
+     width, and the rows and header controls are as tall as a finger needs. */
+  @media (max-width: 767px) {
+    .explorer :global(.explorer-row) { min-height: 2.75rem; }
+    .explorer :global(.icon-control) { min-width: 2.75rem; min-height: 2.75rem; }
+    button.explorer-preview { width: 2.75rem; height: 2.75rem; margin-inline-end: calc(var(--spacing) * -2); opacity: .8; }
+    .filelist input { font-size: 1rem; }
+  }
 </style>

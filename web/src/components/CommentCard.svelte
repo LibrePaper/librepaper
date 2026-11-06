@@ -501,4 +501,13 @@
   .actions :global(.icon-control) { box-sizing: border-box; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
   .actions :global(.icon-control svg) { width: 16px; height: 16px; }
 
+  /* Phones: the comment actions wrap rather than squeeze, each is a finger's
+     size with its icon unchanged, and the reply box keeps 16px. */
+  @media (max-width: 767px) {
+    .actions { flex-wrap: wrap; }
+    .actions :global(.icon-control),
+    .post-row :global(.icon-control) { width: 2.75rem; height: 2.75rem; min-width: 2.75rem; min-height: 2.75rem; }
+    .comment-card .btn { min-height: 2.75rem; }
+    .comment-card textarea { font-size: 1rem; }
+  }
 </style>

@@ -1,32 +1,70 @@
 #!/usr/bin/env python3
-"""Call a LibrePaper project's agent tool routes with an lpt_ agent token.
+"""Call a LibrePaper project's agent tools with an lpt_ agent token.
 
 Usage:
+  lp connect                   read a token on stdin, check it, store it
+  lp disconnect                delete the stored token of the project
   lp whoami                    origin and slug from the token, key redacted
-  lp tools                     list the tools this token may call
+  lp tools [name]              list the tools this token may call, or show one
+  lp read <path> [--lines A-B] print the source of a file
+  lp comment <path> --on TEXT --body TEXT
+  lp suggest <path> --find TEXT --replace TEXT
+  lp insert <path> (--after TEXT | --before TEXT | --end) --text TEXT
+  lp create <path> --text TEXT
   lp call <tool> [json|-]      call a tool with the given arguments
   lp write <tool> [json|-]     same, adding a fresh operation {epoch, id}
   lp result <operation-json>   ask whether an uncertain write landed
 
-The token comes from LIBREPAPER_AGENT_TOKEN, else from the file named by
-LIBREPAPER_AGENT_TOKEN_FILE (default ~/.cache/librepaper-agent-token).
-The latest operation_epoch from a document_read is kept next to that file.
+--text, --body and --replace take a literal, or a matching -file option that
+reads the text from a file (- for stdin). --project <slug> picks the stored
+token of one project and may appear anywhere in the arguments.
+
+A token is taken from LIBREPAPER_AGENT_TOKEN, else LIBREPAPER_AGENT_TOKEN_FILE,
+else the stored token for --project, else the only stored token. Stored tokens
+live in ~/.cache/librepaper-agent/ (or the temp directory if that fails), one
+file per project. Each has a .epoch file with the latest operation_epoch.
 Standard library only.
 """
 
+import argparse
 import base64
+import hashlib
+import http.client
 import json
 import os
+import re
 import secrets
+import shlex
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
 
-TOKEN_FILE = os.path.expanduser(
-    os.environ.get("LIBREPAPER_AGENT_TOKEN_FILE", "~/.cache/librepaper-agent-token")
-)
-EPOCH_FILE = TOKEN_FILE + ".epoch"
+ME = os.path.abspath(__file__)
+# The command to print, quoted so that an install path with a space still runs.
+RUN = "python3 " + shlex.quote(ME)
+
+# Raised only when a change would make an older copy misbehave. The server's
+# MIN_SKILL_VERSION (crates/librepaper-server/src/server/mcp.rs) names the
+# oldest value that still works with it.
+SKILL_VERSION = 1
+
+# Set from --project before any command runs.
+PROJECT = None
+
+# Options whose value is a literal text, passed through by take_project.
+TEXT_FLAGS = ("--on", "--body", "--find", "--replace", "--after", "--before", "--text")
+
+# The keys of a write's result that are printed.
+WRITE_KEYS = ("status", "published", "next", "comment_id", "effects", "operation")
+
+
+class NetworkError(Exception):
+    def __init__(self, where, reason):
+        super().__init__(f"{where}: {reason}")
+        self.where = where
+        self.reason = reason
 
 
 def die(message):
@@ -34,29 +72,164 @@ def die(message):
     sys.exit(2)
 
 
-def token():
-    value = os.environ.get("LIBREPAPER_AGENT_TOKEN", "").strip()
-    if not value:
-        try:
-            with open(TOKEN_FILE) as handle:
-                value = handle.read().strip()
-        except FileNotFoundError:
-            die(f"no token: set LIBREPAPER_AGENT_TOKEN or write it to {TOKEN_FILE}")
+def primary_dir():
+    return os.path.expanduser("~/.cache/librepaper-agent")
+
+
+def fallback_dir():
+    # os.getuid does not exist on Windows.
+    return os.path.join(tempfile.gettempdir(), f"librepaper-agent-{getattr(os, 'getuid', lambda: 'user')()}")
+
+
+def parse_token(value):
+    # lpt_<origin>.<slug>.<key>, with the origin base64url-encoded.
     if not value.startswith("lpt_") or value.count(".") < 2:
-        die("not an agent token (expected lpt_<origin>.<slug>.<key>)")
-    return value
-
-
-def parts(value):
-    head, rest = value[4:].split(".", 1)
-    slug, key = rest.rsplit(".", 1)
-    origin = base64.urlsafe_b64decode(head + "=" * (-len(head) % 4)).decode()
+        return None
+    try:
+        head, rest = value[4:].split(".", 1)
+        slug, key = rest.rsplit(".", 1)
+        origin = base64.urlsafe_b64decode(head + "=" * (-len(head) % 4)).decode()
+    except ValueError:
+        return None
+    if not (origin and slug and key):
+        return None
     return origin.rstrip("/"), slug, key
 
 
-def request(method, path, body=None):
-    value = token()
-    origin, slug, _ = parts(value)
+def check_token(value):
+    parsed = parse_token(value)
+    if parsed is None:
+        die("not an agent token (expected lpt_<origin>.<slug>.<key>)")
+    return parsed
+
+
+def token_name(origin, slug):
+    digest = hashlib.sha256(origin.encode()).hexdigest()[:12]
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", slug)
+    return f"{digest}-{safe}.token"
+
+
+def describe(value, path, source):
+    origin, slug, key = check_token(value)
+    # Without a file, the epoch goes next to the stored token it would have.
+    epoch = (path or os.path.join(primary_dir(), token_name(origin, slug))) + ".epoch"
+    return {
+        "value": value,
+        "origin": origin,
+        "slug": slug,
+        "key": key,
+        "path": path,
+        "epoch": epoch,
+        "source": source,
+    }
+
+
+def write_private(path, text):
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(text)
+    os.chmod(path, 0o600)
+
+
+def store_private(name, text):
+    # Falls back to the temp directory when the cache directory cannot be written.
+    for directory in (primary_dir(), fallback_dir()):
+        path = os.path.join(directory, name)
+        try:
+            write_private(path, text)
+            return path
+        except OSError:
+            continue
+    die("cannot store the token in ~/.cache/librepaper-agent or in the temp directory")
+
+
+def stored_tokens():
+    found, seen = [], set()
+    for directory in (primary_dir(), fallback_dir()):
+        try:
+            names = sorted(os.listdir(directory))
+        except OSError:
+            continue
+        for name in names:
+            if not name.endswith(".token"):
+                continue
+            path = os.path.join(directory, name)
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    value = handle.read().strip()
+            except (OSError, ValueError):
+                continue
+            parsed = parse_token(value)
+            if parsed is None:
+                continue
+            # The same project in both directories counts once, the cache copy first.
+            if (parsed[0], parsed[1]) in seen:
+                continue
+            seen.add((parsed[0], parsed[1]))
+            found.append(describe(value, path, "stored"))
+    return found
+
+
+def resolve():
+    value = os.environ.get("LIBREPAPER_AGENT_TOKEN", "").strip()
+    if value:
+        return describe(value, None, "env")
+    explicit = os.environ.get("LIBREPAPER_AGENT_TOKEN_FILE", "").strip()
+    if explicit:
+        path = os.path.expanduser(explicit)
+        try:
+            with open(path, encoding="utf-8") as handle:
+                value = handle.read().strip()
+        except (OSError, ValueError) as error:
+            die(f"cannot read token file {path}: {error}")
+        return describe(value, path, "file")
+    stored = stored_tokens()
+    if PROJECT is not None:
+        matches = [t for t in stored if t["slug"] == PROJECT]
+        if not matches:
+            die(f"no stored token for project {PROJECT}; run connect")
+        if len(matches) > 1:
+            origins = ", ".join(t["origin"] for t in matches)
+            die(
+                f"several stored tokens for project {PROJECT} (servers: {origins}); "
+                "set LIBREPAPER_AGENT_TOKEN_FILE to choose one"
+            )
+        return matches[0]
+    if not stored:
+        die(f"not connected: run: printf %s '<token>' | {RUN} connect")
+    if len(stored) > 1:
+        slugs = ", ".join(sorted({t["slug"] for t in stored}))
+        die(f"several projects are connected ({slugs}); pass --project <slug>")
+    return stored[0]
+
+
+def token():
+    return resolve()["value"]
+
+
+def epoch_path():
+    return resolve()["epoch"]
+
+
+def warn_if_outdated(headers):
+    try:
+        needed = int(headers.get("X-LibrePaper-Min-Skill-Version", ""))
+    except ValueError:
+        return
+    if needed > SKILL_VERSION:
+        print(
+            f"lp: this skill is version {SKILL_VERSION}, and this server needs version {needed} or newer. "
+            "Tell the user to update it with: npx skills update librepaper",
+            file=sys.stderr,
+        )
+
+
+def request(method, path, body=None, value=None):
+    value = token() if value is None else value
+    origin, slug, _ = check_token(value)
     url = f"{origin}/api/documents/{slug}/tools{path}"
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, method=method)
@@ -66,10 +239,13 @@ def request(method, path, body=None):
     try:
         with urllib.request.urlopen(req, timeout=60) as response:
             status, text = response.status, response.read().decode()
+            warn_if_outdated(response.headers)
     except urllib.error.HTTPError as error:
         status, text = error.code, error.read().decode()
-    except (urllib.error.URLError, TimeoutError) as error:
-        die(f"{method} {url}: {error} (outcome unknown; do not resend a write)")
+        warn_if_outdated(error.headers)
+    except (OSError, http.client.HTTPException) as error:
+        reason = getattr(error, "reason", None) or error
+        raise NetworkError(f"{method} {url}", str(reason)) from None
     try:
         parsed = json.loads(text)
     except ValueError:
@@ -88,24 +264,28 @@ def arguments(raw):
         die(f"arguments are not JSON: {error}")
 
 
-def remember_epoch(result):
-    epoch = result.get("operation_epoch") if isinstance(result, dict) else None
+def remember_epoch(result, path):
+    # A tool's answer is wrapped as {"result": {...}}.
+    inner = result.get("result") if isinstance(result, dict) else None
+    epoch = inner.get("operation_epoch") if isinstance(inner, dict) else None
     if epoch:
-        old = os.umask(0o077)
         try:
-            with open(EPOCH_FILE, "w") as handle:
-                handle.write(epoch)
-        finally:
-            os.umask(old)
+            write_private(path, epoch)
+        except OSError as error:
+            print(f"lp: could not remember operation_epoch: {error.strerror}", file=sys.stderr)
+
+
+def new_operation(epoch):
+    return {"epoch": epoch, "id": f"v2.{int(time.time() * 1000)}.{secrets.token_hex(16)}"}
 
 
 def operation():
     try:
-        with open(EPOCH_FILE) as handle:
+        with open(epoch_path()) as handle:
             epoch = handle.read().strip()
     except FileNotFoundError:
         die("no operation_epoch yet: run a document_read first")
-    return {"epoch": epoch, "id": f"v2.{int(time.time() * 1000)}.{secrets.token_hex(16)}"}
+    return new_operation(epoch)
 
 
 def show(status, result):
@@ -115,16 +295,369 @@ def show(status, result):
         sys.exit(1)
 
 
-def main(argv):
-    if not argv or argv[0] in ("-h", "--help"):
-        print(__doc__)
+def fail(status, payload, read):
+    print(payload if isinstance(payload, str) else json.dumps(payload, indent=2))
+    print(f"lp: HTTP {status}" if status >= 400 else "lp: the answer had no result", file=sys.stderr)
+    if read:
+        print("lp: nothing was changed.", file=sys.stderr)
+    sys.exit(1)
+
+
+def first_result(inner):
+    results = inner.get("results") if isinstance(inner, dict) else None
+    if not isinstance(results, list) or not results or not isinstance(results[0], dict):
+        die("unexpected answer from the server")
+    return results[0]
+
+
+def read_request(body):
+    try:
+        status, payload = request("POST", "/document_read", body)
+    except NetworkError as error:
+        die(f"{error.where}: {error.reason}; nothing was changed.")
+    if status >= 400 or not isinstance(payload, dict) or "result" not in payload:
+        fail(status, payload, read=True)
+    remember_epoch(payload, epoch_path())
+    return payload["result"]
+
+
+def fresh_state():
+    # Every write starts from a fresh read, so its view and epoch are current.
+    inner = read_request({"queries": [{"kind": "manifest"}]})
+    state = {
+        "view_id": inner.get("view_id"),
+        "epoch": inner.get("operation_epoch"),
+        "files": first_result(inner).get("files", []),
+    }
+    if not state["view_id"] or not state["epoch"]:
+        die("the server did not return a view_id and operation_epoch; nothing was changed")
+    return state
+
+
+def send_write(tool, body, state):
+    operation_json = new_operation(state["epoch"])
+    body["operation"] = operation_json
+    try:
+        status, payload = request("POST", f"/{tool}", body)
+    except NetworkError:
+        print(
+            f"lp: outcome unknown; do not resend. Check with: {RUN} result '{json.dumps(operation_json)}'",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if status >= 400 or not isinstance(payload, dict) or "result" not in payload:
+        fail(status, payload, read=False)
+    inner = payload["result"]
+    out = {key: inner[key] for key in WRITE_KEYS if key in inner}
+    out.setdefault("operation", operation_json)
+    print(json.dumps(out))
+
+
+def text_arg(value, file, flag):
+    if (value is None) == (file is None):
+        die(f"pass exactly one of {flag} or {flag}-file")
+    if value is not None:
+        return value
+    if file == "-":
+        return sys.stdin.read()
+    try:
+        with open(file, encoding="utf-8") as handle:
+            return handle.read()
+    except (OSError, ValueError) as error:
+        die(f"cannot read {file}: {error}")
+
+
+def parse_lines(value):
+    match = re.fullmatch(r"(\d+)-(\d+)", value)
+    if not match or int(match.group(1)) < 1 or int(match.group(1)) > int(match.group(2)):
+        die("--lines takes A-B with 1 <= A <= B, for example 10-40")
+    return int(match.group(1)), int(match.group(2))
+
+
+def locate(path, text, view_id):
+    if not text:
+        die("the text to find must not be empty")
+    if len(text) > 8192:
+        die("the text is longer than 8192 characters; use a shorter excerpt")
+    matches, cursor, inner = [], None, None
+    while True:
+        query = {"kind": "search", "query": text, "path": path, "limit": 24}
+        if cursor:
+            query["cursor"] = cursor
+        # Always pin the view, so a range from a newer view is not refused.
+        body = {"queries": [query], "snapshot": {"view_id": view_id}}
+        inner = read_request(body)
+        result = first_result(inner)
+        matches += [m for m in result.get("matches", []) if m.get("path") == path and m.get("exact") == text]
+        cursor = result.get("next_cursor")
+        if not cursor or len(matches) >= 5:
+            break
+    if not matches:
+        print(f"lp: text not found in {path}; nothing was changed. Run read to see the exact source.", file=sys.stderr)
+        sys.exit(1)
+    if len(matches) > 1:
+        count = f"{len(matches)} or more" if cursor else str(len(matches))
+        lines = ", ".join(str(m.get("line")) for m in matches)
+        print(
+            f"lp: text appears {count} times in {path} (lines {lines}); nothing was changed. Use a longer excerpt.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return matches[0], inner
+
+
+def cmd_read(rest):
+    parser = argparse.ArgumentParser(prog="lp read")
+    parser.add_argument("path")
+    parser.add_argument("--lines")
+    args = parser.parse_args(rest)
+    query = {"kind": "source", "path": args.path}
+    if args.lines:
+        query["line"], query["end_line"] = parse_lines(args.lines)
+    chunks, cursor, snapshot = [], None, None
+    while True:
+        current = dict(query, cursor=cursor) if cursor else dict(query)
+        body = {"queries": [current]}
+        if snapshot:
+            body["snapshot"] = {"view_id": snapshot}
+        inner = read_request(body)
+        if snapshot is None:
+            snapshot = inner.get("view_id")
+        result = first_result(inner)
+        chunks.extend(block.get("source", "") for block in result.get("blocks", []))
+        cursor = result.get("next_cursor")
+        if not cursor:
+            break
+    text = "".join(chunks)
+    sys.stdout.write(text)
+    print(f"lp: {args.path}: {len(text.encode())} bytes", file=sys.stderr)
+
+
+def cmd_comment(rest):
+    parser = argparse.ArgumentParser(prog="lp comment")
+    parser.add_argument("path")
+    parser.add_argument("--on", required=True)
+    parser.add_argument("--body")
+    parser.add_argument("--body-file")
+    args = parser.parse_args(rest)
+    body = text_arg(args.body, args.body_file, "--body")
+    if not body:
+        die("the comment body must not be empty")
+    state = fresh_state()
+    match, _ = locate(args.path, args.on, state["view_id"])
+    send_write(
+        "document_comment",
+        {"action": "create", "view_id": state["view_id"], "range_id": match["range_id"], "body": body},
+        state,
+    )
+
+
+def cmd_suggest(rest):
+    parser = argparse.ArgumentParser(prog="lp suggest")
+    parser.add_argument("path")
+    parser.add_argument("--find", required=True)
+    parser.add_argument("--replace")
+    parser.add_argument("--replace-file")
+    args = parser.parse_args(rest)
+    replacement = text_arg(args.replace, args.replace_file, "--replace")
+    state = fresh_state()
+    match, _ = locate(args.path, args.find, state["view_id"])
+    send_write(
+        "document_propose",
+        {
+            "view_id": state["view_id"],
+            "publish": "suggestions",
+            "patches": [{"range_id": match["range_id"], "replacement": replacement}],
+        },
+        state,
+    )
+
+
+def cmd_insert(rest):
+    parser = argparse.ArgumentParser(prog="lp insert")
+    parser.add_argument("path")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--after")
+    group.add_argument("--before")
+    group.add_argument("--end", action="store_true")
+    parser.add_argument("--text")
+    parser.add_argument("--text-file")
+    args = parser.parse_args(rest)
+    text = text_arg(args.text, args.text_file, "--text")
+    if not text:
+        die("the new text must not be empty")
+    state = fresh_state()
+    view_id = state["view_id"]
+    if args.end:
+        entry = next((f for f in state["files"] if f.get("path") == args.path), None)
+        if entry is None:
+            die(f"{args.path} is not in the project")
+        at = entry.get("bytes")
+        if at is None:
+            die(f"the server did not give the size of {args.path}")
+    else:
+        anchor = args.after if args.after is not None else args.before
+        match, _ = locate(args.path, anchor, view_id)
+        at = match["end"] if args.after is not None else match["start"]
+    inner = read_request(
+        {"queries": [{"kind": "source", "path": args.path, "start": at, "end": at}], "snapshot": {"view_id": view_id}}
+    )
+    blocks = first_result(inner).get("blocks") or []
+    if not blocks or not blocks[0].get("range_id"):
+        die("could not find an insertion point; nothing was changed")
+    send_write(
+        "document_propose",
+        {
+            "view_id": view_id,
+            "publish": "suggestions",
+            "patches": [{"range_id": blocks[0]["range_id"], "replacement": text}],
+        },
+        state,
+    )
+
+
+def cmd_create(rest):
+    parser = argparse.ArgumentParser(prog="lp create")
+    parser.add_argument("path")
+    parser.add_argument("--text")
+    parser.add_argument("--text-file")
+    args = parser.parse_args(rest)
+    text = text_arg(args.text, args.text_file, "--text")
+    state = fresh_state()
+    send_write("document_files", {"create": [{"path": args.path, "text": text}]}, state)
+
+
+def connect(rest):
+    if any(arg.startswith("lpt_") for arg in rest):
+        die(f"pipe the token on stdin, not as an argument: printf %s 'lpt_...' | {RUN} connect")
+    if sys.stdin.isatty():
+        die(f"pipe the token on stdin: printf %s 'lpt_...' | {RUN} connect")
+    value = sys.stdin.read().strip()
+    origin, slug, _ = check_token(value)
+    try:
+        status, payload = request("POST", "/document_read", {"queries": [{"kind": "manifest"}]}, value=value)
+    except NetworkError as error:
+        die(f"could not reach {origin}: {error.reason}. If a sandbox blocks network access, tell the user what to allow.")
+    if status in (401, 403, 404):
+        die("this token was refused (expired, revoked, or the project changed owner); ask the owner for a new one")
+    if status >= 400 or not isinstance(payload, dict) or "result" not in payload:
+        die(f"the server did not accept the token (HTTP {status}); nothing was stored")
+    inner = payload["result"]
+    files = [f["path"] for f in first_result(inner).get("files", []) if f.get("kind") == "text" and f.get("path")]
+    perms = inner.get("permissions") or {}
+    if perms.get("suggest") or perms.get("apply"):
+        access = "Edit"
+    elif perms.get("comment"):
+        access = "Comment"
+    else:
+        access = "Read"
+    explicit = os.environ.get("LIBREPAPER_AGENT_TOKEN_FILE", "").strip()
+    if explicit:
+        path = os.path.expanduser(explicit)
+        try:
+            write_private(path, value)
+        except OSError as error:
+            die(f"cannot write {path}: {error.strerror}")
+    else:
+        path = store_private(token_name(origin, slug), value)
+    remember_epoch(payload, path + ".epoch")
+    lines = [
+        f"Connected to {origin}, project {slug}. Access: {access}.",
+        f"Files: {', '.join(files) if files else '(none)'}",
+        "Commands, ready to run:",
+        f"  {RUN} --project {slug} read <path>",
+    ]
+    if perms.get("comment"):
+        lines.append(f"  {RUN} --project {slug} comment <path> --on '<exact text>' --body '<comment>'")
+    if perms.get("suggest"):
+        lines.append(f"  {RUN} --project {slug} suggest <path> --find '<exact text>' --replace '<new text>'")
+        lines.append(f"  {RUN} --project {slug} insert <path> --after '<exact text>' --text '<new text>'")
+    if perms.get("apply"):
+        lines.append(f"  {RUN} --project {slug} create <path> --text '<content>'")
+    if len(lines) > 4:
+        lines.append("Long text: pass --text-file - (or --replace-file, --body-file) and pipe it on stdin.")
+    if perms.get("suggest"):
+        lines.append("Tracked: suggest and insert make tracked changes an editor accepts or rejects.")
+    print("\n".join(lines))
+
+
+def disconnect():
+    found = resolve()
+    if found["source"] == "env":
+        die("the token comes from LIBREPAPER_AGENT_TOKEN, so there is no stored file to delete")
+    for path in (found["path"], found["epoch"]):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            die(f"cannot delete {path}: {error.strerror}")
+    print(f"Disconnected from project {found['slug']}.")
+
+
+def tools(rest):
+    status, payload = request("GET", "?schema=full")
+    if not rest or status >= 400:
+        show(status, payload)
         return
-    command, rest = argv[0], argv[1:]
+    listing = payload.get("result", payload) if isinstance(payload, dict) else payload
+    if isinstance(listing, dict):
+        listing = listing.get("tools")
+    if not isinstance(listing, list):
+        die("unexpected tool list from the server")
+    by_name = {item.get("name"): item for item in listing if isinstance(item, dict)}
+    if rest[0] not in by_name:
+        die(f"no tool named {rest[0]!r}; available: {', '.join(sorted(n for n in by_name if n))}")
+    print(json.dumps(by_name[rest[0]], indent=2))
+
+
+def take_project(argv):
+    project, rest, index = None, [], 0
+    while index < len(argv):
+        arg = argv[index]
+        # A text value is passed through whole, so a value that starts with a dash
+        # or reads "--project" is not taken as an option.
+        if arg in TEXT_FLAGS and index + 1 < len(argv):
+            rest.append(f"{arg}={argv[index + 1]}")
+            index += 2
+            continue
+        if arg == "--project" or arg.startswith("--project="):
+            if arg == "--project":
+                index += 1
+                value = argv[index] if index < len(argv) else ""
+            else:
+                value = arg.split("=", 1)[1]
+            if not value:
+                die("--project needs a project slug")
+            if project is not None:
+                die("give --project only once")
+            project = value
+        else:
+            rest.append(arg)
+        index += 1
+    return rest, project
+
+
+def dispatch(command, rest):
     if command == "whoami":
-        origin, slug, key = parts(token())
-        print(json.dumps({"origin": origin, "slug": slug, "key": "…" + key[-4:]}))
+        found = resolve()
+        print(json.dumps({"origin": found["origin"], "slug": found["slug"], "key": "…" + found["key"][-4:]}))
+    elif command == "connect":
+        connect(rest)
+    elif command == "disconnect":
+        disconnect()
     elif command == "tools":
-        show(*request("GET", ""))
+        tools(rest)
+    elif command == "read":
+        cmd_read(rest)
+    elif command == "comment":
+        cmd_comment(rest)
+    elif command == "suggest":
+        cmd_suggest(rest)
+    elif command == "insert":
+        cmd_insert(rest)
+    elif command == "create":
+        cmd_create(rest)
     elif command in ("call", "write"):
         if not rest:
             die(f"usage: lp {command} <tool> [json|-]")
@@ -132,9 +665,13 @@ def main(argv):
         if command == "write":
             body.setdefault("operation", operation())
             print(f"lp: operation {json.dumps(body['operation'])}", file=sys.stderr)
-        status, result = request("POST", f"/{tool}", body)
+        try:
+            status, result = request("POST", f"/{tool}", body)
+        except NetworkError as error:
+            suffix = " (outcome unknown; do not resend a write)" if command == "write" else ""
+            die(f"{error.where}: {error.reason}{suffix}")
         if tool == "document_read":
-            remember_epoch(result)
+            remember_epoch(result, epoch_path())
         show(status, result)
     elif command == "result":
         if not rest:
@@ -143,6 +680,20 @@ def main(argv):
         show(*request("POST", "/document_result", body))
     else:
         die(f"unknown command {command!r}; see lp --help")
+
+
+def main(argv):
+    global PROJECT
+    # Files this script creates are private to the user.
+    os.umask(0o077)
+    argv, PROJECT = take_project(argv)
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return
+    try:
+        dispatch(argv[0], argv[1:])
+    except NetworkError as error:
+        die(str(error))
 
 
 if __name__ == "__main__":

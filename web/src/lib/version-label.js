@@ -72,7 +72,7 @@ export function versionLabels(points, { timeZone, now = new Date() } = {}) {
 /// `map`, falling back to the first seven characters of its sha.
 /** @param {string} id @param {Map<string, string>} map @returns {string} */
 export function endpointLabel(id, map) {
-  if (id === CURRENT) return m.history_current_version();
+  if (id === CURRENT) return m.history_latest_version();
   if (id === NOTHING) return m.history_before_first();
   if (isMoment(id)) return m.history_source_earlier_moment();
   return map.get(id) || String(id).slice(0, 7);

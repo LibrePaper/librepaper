@@ -274,4 +274,11 @@
   .git-foot p { margin: calc(var(--spacing) * 1) 0 0; }
   .git-error { margin: calc(var(--spacing) * 2) 0 0; overflow-wrap: anywhere; }
   .git-web a { color: var(--color-link); }
+  /* Phones: the connect field keeps 16px so iOS does not zoom, and the text
+     actions and buttons are finger-sized. */
+  @media (max-width: 767px) {
+    .git-input { font-size: 1rem; }
+    .git-action { display: inline-flex; align-items: center; min-height: 2.75rem; }
+    .git-web .btn { min-height: 2.75rem; }
+  }
 </style>

@@ -135,7 +135,7 @@ try {
   await tab.evaluate(`document.querySelector('.hx-older button').click()`);
   await until("older page", () => tab.evaluate(`Boolean(document.querySelector('[data-sha="${points[0].sha}"]'))`), 10000);
   const row = (sha) => `document.querySelector('[data-sha="${sha}"] button[data-nav]')`;
-  const select = async index => {
+  const press = async index => {
     const sha = points[index].sha;
     const position = await tab.evaluate(`(() => {
       const row = ${row(sha)};
@@ -150,7 +150,10 @@ try {
     } else {
       await tab.evaluate(`document.elementFromPoint(${position.x},${position.y}).closest('button').click()`);
     }
-    await until(`selected ${points[index].label}`, () => tab.evaluate(`${row(sha)}?.getAttribute('aria-current') === 'true'`), 3000);
+  };
+  const select = async index => {
+    await press(index);
+    await until(`selected ${points[index].label}`, () => tab.evaluate(`${row(points[index].sha)}?.getAttribute('aria-current') === 'true'`), 3000);
   };
   const expectDiff = async (left, right) => {
     await until("expected source comparison", () => tab.evaluate(`(() => {
@@ -160,12 +163,28 @@ try {
     })()`), 4000);
   };
   // Choosing a version compares it with the live source: what has changed
-  // since that version.
+  // since that version. That is the Latest setting; the default is Previous.
   const selectChange = async index => {
     await select(index);
     await expectDiff(sources[index], current);
   };
-  await selectChange(1);
+  const switchButton = name => `[...document.querySelectorAll('.history-compare-with button')].find(button => button.textContent.trim() === ${JSON.stringify(name)})`;
+  const switchPressed = name => tab.evaluate(`${switchButton(name)}?.getAttribute('aria-pressed')`);
+  // Switches to Latest when the comparison is open, and does nothing otherwise.
+  const useLatest = () => tab.evaluate(`${switchButton('Latest')}?.click()`);
+  // By default a version is compared with the one before it, and the Restore
+  // button restores the version clicked, not the older end.
+  await select(1);
+  await expectDiff(sources[0], sources[1]);
+  assert.equal(await switchPressed('Previous'), 'true', 'Previous is the default');
+  const endLabel = which => tab.evaluate(`document.querySelector('.history-endpoint[title="Change ${which} version"] .history-endpoint-label')?.textContent.trim() || ''`);
+  const clickedName = await endLabel('newer'), olderName = await endLabel('older');
+  const restoreText = await tab.evaluate(`document.querySelector('.history-restore')?.textContent.trim() || ''`);
+  assert.ok(restoreText.includes(clickedName) && !restoreText.includes(olderName), `restore names the clicked version, says: ${restoreText}`);
+  await tab.evaluate(`${switchButton('Latest')}.click()`);
+  await until('Latest is chosen', async () => (await switchPressed('Latest')) === 'true', 3000);
+  await expectDiff(sources[1], current);
+  console.log('history reader: a version is compared with the one before it by default, and Latest compares it with the live source');
   // The host scrolls; an editor scroller would take the wheel and scroll nothing.
   assert.equal(await tab.evaluate(`getComputedStyle(document.querySelector(".cm-merge-b .cm-scroller")).overflowY`), "visible");
   await selectChange(0);
@@ -176,13 +195,13 @@ try {
   // into one editing session. Opening it reaches the rest of them.
   // That grouping is the panel's own and is checked in history-panel-browser.mjs.
   await tab.evaluate(`document.querySelector('[data-type="editing"] button[aria-expanded="false"]')?.click()`);
-  // The newest version's row says Current and stands for the live document: it
-  // shows what has changed since the newest stored version.
-  assert.equal(await tab.evaluate(`document.querySelector('[data-sha="${points[5].sha}"] .hx-now')?.textContent.trim()`), 'Current');
-  await tab.evaluate(`${row(points[5].sha)}.click()`);
+  // The live project has its own Latest row. Clicking it shows the newest
+  // stored version against the live document.
+  assert.equal(await tab.evaluate(`document.querySelector('.hx-current .hx-ell')?.textContent.trim()`), 'Latest');
+  await tab.evaluate(`document.querySelector('li.hx-current button').click()`);
   await expectDiff(sources.at(-1), current);
   await selectChange(1);
-  console.log('history reader: the newest row is the live document, and a version against it');
+  console.log('history reader: the Latest row, and a version against the live document');
   // Older and Newer are the two ends of the comparison. A button for each end
   // in the header starts choosing it, and the next version clicked in the
   // timeline replaces it.
@@ -224,12 +243,26 @@ try {
   await expectDiff(sources[1], sources[2]);
   assert.equal(await tab.evaluate(`[...document.querySelectorAll('.history-workspace button')].some(button => button.textContent.trim() === 'Swap')`), false, 'there is no Swap');
   console.log("history reader: older and newer are chosen in the header");
+  // Two versions: the first pick and the second pick are any two rows, and
+  // they are compared in time order.
+  await useLatest();
+  await tab.evaluate(`${switchButton('Two versions')}.click()`);
+  await until('the first version is asked for', async () => (await bar()).includes('Select the first version'), 3000);
+  await press(0);
+  await until('the second version is asked for', async () => (await bar()).includes('Select the version to compare it with'), 3000);
+  await press(2);
+  await expectDiff(sources[0], sources[2]);
+  await until('the two-version choice is done', async () => (await bar()) === '', 3000);
+  console.log("history reader: two versions are compared with each other");
   // The bar names the comparison. Close, and then Escape, end it and give the
   // editor area back as it was.
   assert.equal(await tab.evaluate(`document.querySelector('.comparison-says')?.textContent || ""`), "Version history");
   await tab.evaluate(`[...document.querySelectorAll('.comparison-bar button')].find(b => b.textContent.trim() === 'Close').click()`);
   await until('closing a comparison restores the live source', () => tab.evaluate(`!document.querySelector('.history-workspace') && !document.querySelector('.comparison-bar') && document.querySelectorAll('.cm-content').length === 1 && document.querySelector('.cm-content').textContent === ${JSON.stringify(current)}`), 4000);
-  await selectChange(1);
+  // After a pencil pick or a pair the setting is not Latest, so switch back if a comparison is open.
+  await select(1);
+  await useLatest();
+  await expectDiff(sources[1], current);
   // The first Escape only leaves a selection; a second one closes the comparison.
   await tab.evaluate(`${endpoint("older")}.click()`);
   await until('selecting before Escape', async () => (await pressed("older")) === "true", 3000);
@@ -247,7 +280,9 @@ try {
   // Opening history again closes the session, and a version in it is reached
   // by opening it.
   await tab.evaluate(`document.querySelector('[data-type="editing"] button[aria-expanded="false"]')?.click()`);
-  await selectChange(4);
+  await select(4);
+  await useLatest();
+  await expectDiff(sources[4], current);
   console.log('history reader: every version is reachable, gathered or not');
 
   failed.add(points[0].sha);
@@ -279,7 +314,10 @@ try {
   await until("initial current source after reload", () => tab.evaluate(`document.querySelector('.cm-content')?.textContent.includes('current purple')`), 10000);
   await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="History"]').click()`);
   await until("label timeline after reload", () => tab.evaluate(`Boolean(document.querySelector('[data-sha="${points[1].sha}"]'))`), 10000);
-  await selectChange(1);
+  // A reload starts on the default, Previous, so switch to Latest first.
+  await select(1);
+  await useLatest();
+  await expectDiff(sources[1], current);
   assert.equal(await tab.evaluate(`document.querySelector('.reader')?.classList.contains('no-preview')`), true, 'history hides the preview');
   assert.equal(await tab.evaluate(`window.historyLive.source()`), current, 'a comparison never modifies the live source');
   // One file changed, so it is named rather than chosen from a list.
@@ -289,7 +327,7 @@ try {
   const addition = '<p>live update</p>';
   await tab.evaluate(`window.historyLive.append(${JSON.stringify(addition)})`);
   assert.equal(await tab.evaluate(`document.querySelector('.cm-merge-b .cm-content')?.textContent`), current, 'the comparison is a stable snapshot of the current source');
-  await tab.evaluate(`document.querySelector('.history-workspace [aria-label="Reload the current version"]').click()`);
+  await tab.evaluate(`document.querySelector('.history-workspace [aria-label="Reload the latest version"]').click()`);
   await expectDiff(sources[1], current + addition);
   await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="Files"]').click()`);
   await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="History"]').click()`);

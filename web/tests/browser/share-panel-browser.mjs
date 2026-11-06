@@ -1,6 +1,6 @@
-// Browser regression check for the sharing panel: links and agent tokens as
-// two lists of two-line rows with copy and trash buttons, the revoke confirmations, the one-time
-// token screen.
+// Browser regression check for the sharing panel's links: a list of two-line
+// rows with copy and trash buttons, and the revoke confirmations. Agent tokens
+// live in the Agent panel and are checked by agent-panel-browser.mjs.
 //
 // The route is stubbed rather than run, because what is under test is the
 // panel, not the server's writes. The stub follows the share contract: every
@@ -67,6 +67,7 @@ window.fetch = async (path, options) => {
     } else {
       state.tokens.push(row);
       created = { id, kind, token: "lpt_" + originPart + ".paper.minted" + id };
+      window.issuedToken = created.token;
     }
   }
   if (body?.revoke) {
@@ -99,7 +100,6 @@ const press = async (node) => {
   await flush();
 };
 const type = async (node, value) => { node.value = value; node.dispatchEvent(new Event("input", { bubbles: true })); node.dispatchEvent(new Event("change", { bubbles: true })); await flush(); };
-const tabButton = (label) => [...document.querySelectorAll('[role="tab"]')].find((node) => node.textContent.trim() === label);
 
 window.sharePanelReady = () => rows().length > 0;
 
@@ -109,8 +109,7 @@ window.sharePanelCheck = async () => {
 
   /* ------------------------------------------------ the links tab at rest */
 
-  check([...document.querySelectorAll('[role="tab"]')].map((node) => node.textContent.trim()).join("|") === "Links|Agent tokens",
-    "two tabs: " + text());
+  check(!document.querySelector('[role="tab"]'), "the sharing panel has no tab row: " + text());
   check(!/\\d+ (links?|tokens?)/.test(squash(document.querySelector(".share-toolbar"))), "the toolbar has no count");
   check(squash(document.querySelector(".share-toolbar")) === "New", "only the New button: " + squash(document.querySelector(".share-toolbar")));
   check(rows().length === 3 && !text().includes("Expired"), "three links and no expired section");
@@ -173,91 +172,7 @@ window.sharePanelCheck = async () => {
   check(!text().includes("revoked") && !text().includes("Revoked"), "and no status line says so: " + text());
   check(document.activeElement === document.querySelector("[data-share-new]"), "focus goes to New after a revoke");
 
-  /* ------------------------------------------------------------ agent tokens */
-
-  await press(tabButton("Agent tokens"));
-  check(rows().length === 1 && squash(document.querySelector(".share-toolbar")) === "New", "one token and no count: " + text());
-  check(rowText(0).includes("Paul's assistant") && rowText(0).includes("Comment \\u00b7 Mar 17"), "token row: " + rowText(0));
-  check(!document.querySelector('[aria-label^="Copy"]'), "a token has no copy button");
-  check([...rows()[0].querySelectorAll(".share-actions button")].map((node) => node.getAttribute("aria-label")).join("|") === "Revoke Paul's assistant", "a token has only trash");
-  check(rows()[0].querySelector("svg"), "and an icon");
-  check(text().includes("A token with the Edit role is also what the librepaper command line and the GitHub Action use"), "the tokens tab says what an Edit token is for: " + text());
-  await press(document.querySelector("[data-share-new]"));
-  check(button("Create token").disabled, "a token needs a name");
-  check(![...document.querySelectorAll(".share-form option")].some((node) => node.textContent === "Never"), "and cannot be made to last forever");
-  check(text().includes("Its comments and suggestions appear under this name."), "the helper line");
-  const tokenForm = document.querySelector(".share-form");
-  check(tokenForm.closest(".share-scroll"), "the new form scrolls with the list, so a short panel reaches its buttons");
-  await type(tokenForm.querySelector("input[type=text]"), "Codex");
-  const roleSelect = tokenForm.querySelectorAll("select")[0];
-  const expiries = [...tokenForm.querySelectorAll("select")[1].options].map((node) => node.textContent).join("|");
-  check(expiries === "1 day|7 days|30 days|6 months|1 year", "a token can last up to a year: " + expiries);
-  const permissions = [...roleSelect.options].map((node) => node.textContent).join("|");
-  check(permissions === "Read|Comment|Edit", "the token permissions: " + permissions);
-  check(!text().includes("Edit lets the agent change the project directly, without review."), "no warning until Edit is chosen");
-  await type(roleSelect, "editor");
-  check(text().includes("Edit lets the agent change the project directly, without review."), "choosing Edit shows the warning: " + text());
-  check(tokenForm.querySelectorAll("select")[1].value === "1d", "choosing Edit moves the expiry to one day");
-  await press(button("Create token"));
-  const token = window.calls.at(-1)[1].create;
-  check(token.kind === "token" && token.role === "editor" && token.name === "Codex" && token.until === "1d", JSON.stringify(token));
-
-  /* ---------------------------------------------------------- token reveal */
-
-  const secret = document.querySelector('input[aria-label="Agent token"]');
-  check(secret && secret.readOnly && secret.value.startsWith("lpt_" + originPart + ".paper.minted"), "the token is shown: " + text());
-  check(text().includes("Copy this token now. You won't be able to view it again."), "with the warning");
-  const commands = document.querySelector('textarea[aria-label="Claude Code commands"]').value;
-  check(commands === "claude mcp add librepaper --scope user -- librepaper mcp\\nread -rs LIBREPAPER_AGENT_TOKEN && export LIBREPAPER_AGENT_TOKEN && claude",
-    "the Claude Code commands register once and read the token silently: " + commands);
-  check(!commands.includes(secret.value), "the commands never contain the token");
-  const config = document.querySelector('textarea[aria-label="MCP configuration"]').value;
-  check(config.includes('args = ["mcp"]') && config.includes('LIBREPAPER_AGENT_TOKEN = "' + secret.value + '"'),
-    "the configuration is filled in: " + config);
-  check(text().includes("POST /api/documents/{slug}/tools/{name}"), "the plain HTTP route is mentioned");
-  check([...document.querySelectorAll("a")].some((node) => node.textContent === "Agent setup" && node.href.includes("agents.html")), "and the setup page is linked");
-  const shownToken = secret.value;
-  await press(button("Copy token"));
-  check(window.copied === shownToken, "copies the token");
-  await press(button("Copy commands"));
-  check(window.copied === commands, "copies the commands");
-  await press(button("Copy configuration"));
-  check(window.copied === config, "copies the configuration");
-  const stored = JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage });
-  check(!stored.includes(shownToken), "the token is stored nowhere");
-  await press(button("Done"));
-  check(!document.querySelector('input[aria-label="Agent token"]') && !text().includes(shownToken), "Done clears it");
-  check(text().includes("Codex") && rows().length === 2, "and the token is in the list: " + text());
-
-  await press(labelled("Revoke Codex"));
-  check(text().includes("Revoke token?") && text().includes("The agent loses access at once."), "revoking a token asks first");
-  await press(confirmButton("Revoke token"));
-  check(rows().length === 1 && !text().includes("Codex"), "revoked");
-  check(!text().includes("revoked") && !text().includes("copied"), "and no status line says so");
-  await press(document.querySelector("[data-share-new]"));
-  await type(document.querySelector(".share-form input[type=text]"), "Second");
-  await press(button("Create token"));
-  const rotated = document.querySelector('input[aria-label="Agent token"]')?.value || "";
-  const clipboard = navigator.clipboard.writeText;
-  navigator.clipboard.writeText = async () => { throw new Error("blocked"); };
-  await press(button("Copy token"));
-  check(document.querySelector('textarea[aria-label="Text to copy manually"]')?.value === rotated, "a blocked copy offers the token to copy by hand");
-  navigator.clipboard.writeText = clipboard;
-  await press(button("Done"));
-  check(!document.querySelector('textarea[aria-label="Text to copy manually"]') && !text().includes(rotated), "Done also clears the manual copy");
-  await press(document.querySelector("[data-share-new]"));
-  await type(document.querySelector(".share-form input[type=text]"), "Third");
-  await press(button("Create token"));
-  const late = document.querySelector('input[aria-label="Agent token"]')?.value || "";
-  let refuse;
-  navigator.clipboard.writeText = () => new Promise((resolve, reject) => { refuse = reject; });
-  await press(button("Copy token"));
-  await press(button("Done"));
-  refuse(new Error("blocked"));
-  await flush();
-  navigator.clipboard.writeText = clipboard;
-  check(!document.querySelector('textarea[aria-label="Text to copy manually"]') && !text().includes(late), "a copy that fails after Done does not bring the token back");
-  await press(tabButton("Links"));
+  check(!text().includes("Paul's assistant") && !text().includes("lpt_"), "agent tokens are not listed here");
   check(!text().includes("No sharing links yet."), "links are still there");
   return true;
 };
@@ -303,7 +218,7 @@ try {
   await tab.navigate(`http://127.0.0.1:${port}/`);
   await until("share panel component", () => tab.evaluate("Boolean(window.sharePanelReady && window.sharePanelReady())"));
   assert.equal(await tab.evaluate("window.sharePanelCheck()"), true);
-  console.log("share panel: several links per role, names, copy and trash rows, revoke confirmations, tokens and the one-time reveal");
+  console.log("share panel: several links per role, names, copy and trash rows, revoke confirmations, no agent tokens");
 } finally {
   await tab?.close(); server?.close(); removeTemporary(temporary);
 }

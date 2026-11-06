@@ -737,7 +737,7 @@
   .drop-overlay { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; background: color-mix(in srgb, var(--color-shell) 85%, transparent); border: 3px dashed var(--color-brand); pointer-events: none; }
   .drop-overlay p { margin: 0; font-size: var(--text-xl); font-weight: 600; }
 
-  @media (max-width: 760px) {
+  @media (max-width: 767px) {
     .new-project { padding: calc(var(--spacing) * 4); }
     .np-search { flex-basis: 100%; max-width: none; }
     .np-toolbar .np-field:not(.np-search) { flex: 1 1 8rem; }

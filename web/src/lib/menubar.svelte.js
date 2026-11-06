@@ -8,15 +8,15 @@
 // a context set by the bar cannot be seen from the snippet the page hands it,
 // which is exactly where the menus are written.
 //
-// On a phone the words are hidden and a menu is opened from the Panels
-// trigger instead; it then opens where that trigger's panel was, not under
-// its hidden word.
+// On a phone the words are hidden and the Reader opens its commands in a
+// full-screen list instead; the bar stays mounted for its dialogs and
+// shortcuts, and a menu shown from a given anchor opens there, not under its
+// hidden word.
 let opened = $state(null);
 let anchor = $state(null);
 
-// This is the one box every menu on a phone opens in, hanging from the right
-// edge of the Panels trigger; the hamburger panel and the menus chosen from it
-// share it so choosing File does not move the panel.
+// The one box a menu opens in when it hangs from a trigger that is not its own
+// word: the right edge of the trigger, so choosing a menu does not move it.
 export const PANEL_POSITIONING = /** @type {const} */ ({
   placement: "bottom-end",
   gutter: 8,
@@ -59,7 +59,7 @@ export const menubar = {
   // Left and right walk the row and wrap, from the trigger or from inside an
   // open panel. A sub-menu keeps the two keys it needs; Menubar.svelte checks
   // for one before the row walks. Walking the row from a menu opened out of
-  // the Panels trigger keeps that box.
+  // another trigger keeps that box.
   step(delta) {
     const items = triggers();
     const here = items.findIndex((item) => item.dataset.menubar === opened);

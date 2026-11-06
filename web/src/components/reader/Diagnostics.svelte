@@ -160,4 +160,11 @@
 <style>
   .diagnostic-head :global(.icon-control) { box-sizing: border-box; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
   .diagnostic-head :global(.icon-control svg) { width: 16px; height: 16px; }
+  /* Phones: the location link, the actions and the disclosure summaries are
+     finger-sized. */
+  @media (max-width: 767px) {
+    .anchor { display: inline-flex; align-items: center; min-height: 2.75rem; }
+    summary { min-height: 2.75rem; }
+    .btn { min-height: 2.75rem; }
+  }
 </style>

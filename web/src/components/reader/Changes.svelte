@@ -334,7 +334,7 @@
     {#each filteredRows as item (item.id)}
       {@const isActive = active === item.id}
       <article class="change-row" class:active={isActive} class:picked={checked.has(item.id)} role="listitem">
-        {#if selecting}<div class="row-head"><input type="checkbox" class="row-pick" checked={checked.has(item.id)} aria-label={selectKind(item)} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} />{@render rowMain(item, isActive)}</div>{:else}{@render rowMain(item, isActive)}{/if}
+        {#if selecting}<div class="row-head"><label class="row-pick-hit"><input type="checkbox" class="row-pick" checked={checked.has(item.id)} aria-label={selectKind(item)} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} /></label>{@render rowMain(item, isActive)}</div>{:else}{@render rowMain(item, isActive)}{/if}
         {#if isLong(item)}<button type="button" class="row-more" aria-expanded={expandedText.has(item.id)} onclick={() => toggleText(item)}>{expandedText.has(item.id) ? m.changes_show_less() : m.changes_show_more()}</button>{/if}
         <!-- Every change offers its answer, so a reviewer can act on any row
              without first selecting it. -->
@@ -402,6 +402,7 @@
   .change-row.picked { background: color-mix(in srgb, var(--color-brand) 10%, transparent); }
   .row-head { display: flex; align-items: flex-start; gap: .5rem; }
   .row-pick { flex: none; margin-top: .2rem; width: 1rem; height: 1rem; }
+  .row-pick-hit { display: contents; }
   .row-main { display: block; flex: 1; min-width: 0; width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
   .row-main:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; border-radius: .2rem; }
   .row-meta { display: flex; gap: .5rem; overflow: hidden; color: var(--panel-muted); font-size: var(--panel-meta-size); white-space: nowrap; }
@@ -426,4 +427,19 @@
   .changes-empty-title { margin: 0; font-weight: 500; font-size: var(--panel-font-size); }
   .changes-empty-note { margin: .2rem 0 0; color: var(--panel-muted); font-size: var(--panel-meta-size); }
   .changes-hint { flex: 0 0 auto; padding: .5rem var(--panel-padding); border-top: 1px solid var(--color-divider); color: var(--panel-muted); font-size: var(--panel-meta-size); text-align: center; }
+  /* Phones: every control in a change is a finger's height, and an insertion
+     is underlined as well as signed and tinted, so it does not rely on colour. */
+  @media (max-width: 767px) {
+    .row-pick-hit { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 2.75rem; min-height: 2.75rem; margin-inline-start: -.75rem; }
+    .row-pick { margin-top: 0; }
+    .changes-panel :global(.tracking-toggle),
+    .scope-trigger,
+    .text-action,
+    .bar-action,
+    .row-action,
+    .row-more { min-height: 2.75rem; }
+    .row-more { display: flex; align-items: center; }
+    .row-main { min-height: 2.75rem; }
+    ins.change-text { text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 55%, transparent); }
+  }
 </style>

@@ -83,45 +83,35 @@ export function captureAttachment(selection, path = "", revision = "") {
 export const TASK_CATALOG = [
   { id: "proofread", kind: "proofread", categories: ["Writing"], label: m.assistant_task_proofread_label(),
     description: m.assistant_task_proofread_description(),
-    keywords: m.assistant_task_proofread_terms().split(" "),
     prompt: "Proofread {target}." },
   { id: "tighten", kind: "tighten", categories: ["Writing"], label: m.assistant_task_tighten_label(),
     description: m.assistant_task_tighten_description(),
-    keywords: m.assistant_task_tighten_terms().split(" "),
     scopes: ["selection"], prompt: "Tighten {target}." },
   { id: "rewrite", kind: "rewrite", categories: ["Writing"], label: m.assistant_task_rewrite_label(),
     description: m.assistant_task_rewrite_description(),
-    keywords: m.assistant_task_rewrite_terms().split(" "),
     scopes: ["selection"], prompt: "Rewrite {target}." },
   { id: "explain", kind: "explain", categories: ["Writing", "Review"], label: m.assistant_task_explain_label(),
     description: m.assistant_task_explain_description(),
-    keywords: m.assistant_task_explain_terms().split(" "),
     prompt: "Explain {target}." },
 
   { id: "review-argument", kind: "explain", categories: ["Review"], label: m.assistant_task_review_argument_label(),
     description: m.assistant_task_review_argument_description(),
-    keywords: m.assistant_task_review_argument_terms().split(" "),
     prompt: "Review the argument in {target}. Name unsupported claims, gaps in reasoning, and weak transitions." },
   { id: "check-consistency", kind: "explain", categories: ["Review"], label: m.assistant_task_check_consistency_label(),
     description: m.assistant_task_check_consistency_description(),
-    keywords: m.assistant_task_check_consistency_terms().split(" "),
     prompt: "Check {target} for inconsistent terminology, notation, and definitions." },
   { id: "check-citations", kind: "explain", categories: ["Review"], label: m.assistant_task_check_citations_label(),
     description: m.assistant_task_check_citations_description(),
-    keywords: m.assistant_task_check_citations_terms().split(" "),
     prompt: "Check the citations in {target}: each one should resolve in the bibliography and support the claim it is attached to." },
   { id: "suggest-improvements", kind: "proofread", categories: ["Review"], label: m.assistant_task_suggest_improvements_label(),
     description: m.assistant_task_suggest_improvements_description(),
-    keywords: m.assistant_task_suggest_improvements_terms().split(" "),
     prompt: "Suggest concrete improvements to {target} as anchored edits." },
 
   { id: "outline", kind: "outline", categories: ["Document"], label: m.common_outline(),
     description: m.assistant_task_outline_description(),
-    keywords: m.assistant_task_outline_terms().split(" "),
     scopes: ["file", "document"], prompt: "Outline {target}: list the headings and say what each section does." },
   { id: "summarize", kind: "explain", categories: ["Document", "Review"], label: m.assistant_task_summarize_label(),
     description: m.assistant_task_summarize_description(),
-    keywords: m.assistant_task_summarize_terms().split(" "),
     scopes: ["file", "document"], prompt: "Summarize {target}." },
 ];
 
@@ -135,20 +125,6 @@ export const CONTEXT_TASKS = [
     description: m.assistant_task_fix_diagnostic_description(),
     scopes: ["file", "document"], prompt: "Fix this diagnostic." },
 ];
-
-export const TASK_CATEGORIES = [...new Set(TASK_CATALOG.flatMap((entry) => entry.categories))];
-
-// The category names are identifiers (they are stored and compared), so the
-// label a reader sees is looked up here rather than changing the name.
-const CATEGORY_LABELS = {
-  Writing: m.assistant_category_writing(),
-  Review: m.assistant_category_review(),
-  Document: m.common_document(),
-};
-
-export function taskCategoryLabel(category) {
-  return CATEGORY_LABELS[category] || category;
-}
 
 export const TASK_TARGETS = { selection: "the selected passage", file: "this file", document: "the whole document" };
 
@@ -186,73 +162,6 @@ export function taskPrompt(entry, scope) {
   return String(entry.prompt || `${entry.label} {target}.`)
     .replaceAll("{target}", TASK_TARGETS[scope] || TASK_TARGETS.document);
 }
-
-function editDistance(a, b) {
-  let previous = Array.from({ length: b.length + 1 }, (_, j) => j);
-  for (let i = 1; i <= a.length; i += 1) {
-    const current = [i];
-    for (let j = 1; j <= b.length; j += 1) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost);
-    }
-    previous = current;
-  }
-  return previous[b.length];
-}
-
-// The best tier a single query word reaches in an entry, or null when the
-// word does not match at all. Lower tiers are stronger matches.
-function wordTier(word, entry, phrase) {
-  const label = entry.label.toLowerCase();
-  const labelWords = label.split(/\s+/);
-  const keywords = entry.keywords || [];
-  const context = `${entry.description || ""} ${(entry.categories || []).join(" ")}`.toLowerCase();
-  if (label.startsWith(phrase)) return 0;
-  if (labelWords.some((item) => item.startsWith(word))) return 1;
-  if (label.includes(word)) return 2;
-  if (keywords.some((item) => item.startsWith(word) || item.includes(word))) return 3;
-  if (context.includes(word)) return 4;
-  const limit = word.length >= 7 ? 2 : word.length >= 4 ? 1 : 0;
-  if (limit && [...labelWords, ...keywords].some((item) => (
-    editDistance(word, item) <= limit || editDistance(word, item.slice(0, word.length)) <= limit
-  ))) return 5;
-  return null;
-}
-
-// A command-palette match: every word the user typed has to match somewhere
-// in the entry. Matches are ranked by the sum of their word tiers, and typos
-// still find an entry through the fuzzy tier.
-export function searchTasks(query, catalog = TASK_CATALOG) {
-  const words = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
-  if (!words.length) return [...catalog];
-  const phrase = words.join(" ");
-  const scored = [];
-  for (const entry of catalog) {
-    const tiers = words.map((word) => wordTier(word, entry, phrase));
-    if (tiers.some((tier) => tier === null)) continue;
-    scored.push({ entry, score: tiers.reduce((sum, tier) => sum + tier, 0) });
-  }
-  return scored.sort((a, b) => a.score - b.score).map((item) => item.entry);
-}
-
-// The catalog as the Tasks browser shows it: one section per category, in
-// the order categories first appear, each keeping the catalog's own order.
-// An entry appears in every section it belongs to.
-export function taskSections(catalog = TASK_CATALOG) {
-  const sections = [];
-  for (const entry of catalog) {
-    for (const category of entry.categories) {
-      let section = sections.find((item) => item.category === category);
-      if (!section) {
-        section = { category, entries: [] };
-        sections.push(section);
-      }
-      section.entries.push(entry);
-    }
-  }
-  return sections;
-}
-
 export function scopeLabel(scope, { path = "", attached = null } = {}) {
   if (scope === "selection") return attached?.path ? m.assistant_scope_selection_path({ path: attached.path }) : m.common_selected_passage();
   if (scope === "file") return path ? m.common_current_file_path({ path }) : m.common_current_file();
@@ -319,50 +228,6 @@ export function taskBlocker(capabilities, task, { attached = null, path = "", de
 
 export function capabilityAllows(capabilities, task, context = {}) {
   return taskBlocker(capabilities, task, context) === "";
-}
-
-// Why a task cannot run with what the reader has in hand right now, or null
-// when it can. Access is left out: it is checked when the agent starts.
-export function taskHint(entry, { attached = null, path = "" } = {}) {
-  if (!entry) return null;
-  const scope = inferScope(entry, { attached, path });
-  const reason = taskBlocker({}, { kind: entry.kind, scope }, { attached, path, deferAccess: true });
-  if (!reason) return null;
-  const short = scope === "selection" ? m.assistant_hint_selection()
-    : scope === "file" ? m.assistant_hint_file()
-      : m.common_unavailable();
-  return { short, reason };
-}
-
-// Usage is keyed by stable task ids and records only counts and times, never
-// document content.
-export const FREQUENT_LIMIT = 5;
-export const FREQUENT_MINIMUM = 2;
-
-export function recordTaskUse(usage, id, now = Date.now(), catalog = TASK_CATALOG) {
-  const previous = usage && typeof usage === "object" && !Array.isArray(usage) ? usage : {};
-  const known = new Set(catalog.map((entry) => entry.id));
-  const next = {};
-  for (const [key, value] of Object.entries(previous)) {
-    if (!known.has(key)) continue;
-    if (!Number.isFinite(value?.count) || !Number.isFinite(value?.last)) continue;
-    next[key] = { count: value.count, last: value.last };
-  }
-  if (known.has(id)) next[id] = { count: (next[id]?.count || 0) + 1, last: now };
-  return next;
-}
-
-export function frequentTasks(usage, { limit = FREQUENT_LIMIT, minimum = FREQUENT_MINIMUM, catalog = TASK_CATALOG } = {}) {
-  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return [];
-  const ranked = [];
-  catalog.forEach((entry, index) => {
-    const record = usage[entry.id];
-    if (!Number.isFinite(record?.count) || !Number.isFinite(record?.last)) return;
-    if (record.count < minimum) return;
-    ranked.push({ entry, index, count: record.count, last: record.last });
-  });
-  ranked.sort((a, b) => b.count - a.count || b.last - a.last || a.index - b.index);
-  return ranked.slice(0, limit).map((item) => item.entry);
 }
 
 // The compact diagnostic entry a task's context carries, distinct from

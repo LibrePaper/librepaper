@@ -163,7 +163,7 @@
   // title takes whatever the checkbox and the menu leave.
   let narrow = $state(false);
   $effect(() => {
-    const query = window.matchMedia("(max-width: 760px)");
+    const query = window.matchMedia("(max-width: 767px)");
     const watch = () => (narrow = query.matches);
     watch();
     query.addEventListener("change", watch);
@@ -1888,7 +1888,7 @@
   /* The metadata columns a phone has no room for: the listing is read there
      to find a project, and neither how many files it has, who owns it, nor
      when it changed belongs in the compact row. */
-  @media (max-width: 760px) {
+  @media (max-width: 767px) {
     .place-heading { font-size: var(--text-lg); }
     .compact-sort { display: inline-grid; position: relative; place-items: center; width: 2rem; height: 2rem; color: var(--color-text-secondary); }
     .compact-sort :global(svg) { width: 1.125rem; height: 1.125rem; }

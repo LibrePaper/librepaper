@@ -249,4 +249,9 @@
   .load-more { align-self: center; margin: calc(var(--spacing) * 2) 0; }
   .page-error { padding: calc(var(--spacing) * 2); display: flex; flex-direction: column; gap: calc(var(--spacing) * 2); align-items: flex-start; }
   .bulk { margin-left: auto; }
+  /* Phones: the panel's buttons, including Load more, are finger-sized. */
+  @media (max-width: 767px) {
+    .comments-panel .btn,
+    .load-more { min-height: 2.75rem; }
+  }
 </style>

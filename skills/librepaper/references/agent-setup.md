@@ -1,8 +1,17 @@
 # Connecting an agent to a LibrePaper project
 
+## The usual way
+
+1. Create a token (section 1 below), then click **Copy connection instructions** in the Agent panel's Agent tab and paste the text into your agent. It is one copy and one paste. Each project has its own token, so you repeat this for each project. The text contains the token and tells the agent to use the skill. If the skill is missing, the paste installs it (`npx skills add LibrePaper/librepaper --skill librepaper --global`, or copies the skill folder into the agent's skills folder). The first paste installs it once per computer. The agent reads the skill directly, so no new session is needed. An agent that cannot install the skill copies it to a temporary folder for that session and gives the user the command to install it.
+2. You can copy the same text again later with the copy icon on the token's row. Tokens created before this release have no copy icon; create a new token and revoke the old one to get one.
+
+The token sits in the chat, where the model provider and the chat history can see it.
+
+The steps below (1 to 4) are the MCP route that keeps the token out of the chat, with `read -rs`. They need the `librepaper` command and a new session.
+
 ## 1. Get a token
 
-In LibrePaper, open the project, then Sharing, the Agent tokens tab, New. Name it (comments appear under that name), pick Read, Comment or Edit, and copy the `lpt_...` string. It is shown once.
+In LibrePaper, open the project, then the Agent panel (the robot icon in the sidebar), then the Agent tab, and click New token. Pick a permission (Read, Comment or Edit) and an expiry. You can also name the token (it defaults to "Agent"; comments appear under it), and set an hourly comment limit. Click Create token. Open "Other connection methods" and click the copy icon next to Token for the bare `lpt_...` string. The owner can copy the token again from its row: the copy icon there copies the connection instructions, which include the token.
 
 ## 2. Install the `librepaper` command
 
@@ -36,18 +45,14 @@ claude
 
 ## Already in a session without MCP
 
-Use the HTTP helper ([agent.md](agent.md), Step 1b). It reads the token from a 0600 file and works without restarting the client.
+Run the helper's `connect` command with the token ([agent.md](agent.md), Step 1b). It verifies the token, stores it privately for that project, and works without restarting the client.
 
 ## Other clients
 
 - Codex keeps the token in its config: `codex mcp add librepaper --env LIBREPAPER_AGENT_TOKEN="$LIBREPAPER_AGENT_TOKEN" -- librepaper mcp`.
 - Any MCP client: run `librepaper mcp` with `LIBREPAPER_AGENT_TOKEN` in its environment.
-- No MCP at all: `GET` or `POST https://<origin>/api/documents/<slug>/tools[/<name>]` with `Authorization: Bearer lpt_...`. The POST body is the tool's arguments.
-
-## Desktop app instead of a token
-
-The LibrePaper desktop app can start Claude Code itself (through the `@agentclientprotocol/claude-agent-acp` adapter, Node 22 or later) from the editor's agent sidebar and hand it the tools. No token is involved. That path is for chatting inside the editor. A token is for an agent you start yourself.
+- No MCP at all: `GET https://<origin>/api/documents/<slug>/tools?schema=full` lists the tools with their full schemas, and `POST https://<origin>/api/documents/<slug>/tools/<name>` calls one. Both take `Authorization: Bearer lpt_...`. The POST body is the tool's arguments.
 
 ## When it stops working
 
-A token stops at its expiry, when revoked (trash button in Sharing), when the project changes owner, or when the owner's account is blocked or erased. Signing out does not stop it. A 401 means one of these, so ask the owner for a new token.
+A token stops at its expiry, when revoked (trash button in the Agent panel's Agent tab), when the project changes owner, or when the owner's account is blocked or erased. Signing out does not stop it. A 401 means one of these, so ask the owner for a new token.

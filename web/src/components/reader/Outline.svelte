@@ -71,4 +71,13 @@
   .outline-heading:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
   .outline-heading.active { background: var(--color-row-selected); color: var(--color-link); font-weight: 600; }
   .outline-empty { margin: auto; padding: calc(var(--spacing) * 4); color: var(--color-text-secondary); font-size: var(--text-sm); text-align: center; }
+  /* Phones: a heading is a finger's height. Indentation keeps three levels of
+     hierarchy and stops there, so a deep heading keeps its words at 320px. */
+  @media (max-width: 767px) {
+    .outline-heading {
+      min-height: 2.75rem;
+      align-items: center;
+      padding-inline-start: calc(var(--spacing) * (2 + 3 * min(var(--outline-indent), 3)));
+    }
+  }
 </style>

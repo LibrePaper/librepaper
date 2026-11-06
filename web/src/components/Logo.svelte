@@ -35,7 +35,7 @@
     width: auto;
     aspect-ratio: 1;
   }
-  @media (max-width: 760px) {
+  @media (max-width: 767px) {
     .bar {
       height: 1.05rem;
     }

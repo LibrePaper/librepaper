@@ -19,7 +19,7 @@
   // rail to put them in, so they are listed here; `activeTag` marks the one
   // showing, `ontag` takes a tag's id, and `ontagaction` takes "new" or
   // "manage" for the two things a tag list offers beneath it.
-  let { tabs = [], panel = "", open = false, pressed = open, onselect, onsettings, menus = [], onmenu = undefined, me = {}, counts = {}, badges = {}, tags = [], activeTag = "", ontag = undefined, ontagaction = undefined } = $props();
+  let { tabs = [], panel = "", open = false, pressed = open, onselect, onsettings, me = {}, counts = {}, badges = {}, tags = [], activeTag = "", ontag = undefined, ontagaction = undefined } = $props();
   const marked = $derived(tabs.find((tab) => badges[tab.id]?.dot));
 
   // The menu is portalled so it cannot inherit a height; measure the room
@@ -79,14 +79,6 @@
       setTimeout(() => ontagaction?.(action), 0);
     }
     else if (chosen.value === "settings") setTimeout(() => onsettings?.(), 0);
-    else if (chosen.value.startsWith("menu:")) {
-      const id = chosen.value.slice(5);
-      // Let this menu finish closing before opening the File/Edit/Insert/View
-      // menu, which then opens in this panel's place, hanging from the same
-      // trigger.
-      const trigger = document.querySelector(".compact-panels-trigger");
-      setTimeout(() => onmenu?.(id, trigger), 0);
-    }
     else if (chosen.value === "signout") void signOut();
   }}
   positioning={PANEL_POSITIONING}
@@ -101,16 +93,6 @@
   </Menu.Trigger>
   <ExplorerMenu>
     <div class="compact-panels-items" use:sizeMenu>
-      <!-- At compact widths, the File/Edit/Insert/View menus are accessed through
-           the hamburger menu. Menu items appear at the top, above the panel tabs. -->
-      {#each menus as menu (menu.id)}
-        <Menu.Item value={"menu:" + menu.id} class="menuitem" disabled={menu.disabled} data-menu-id={menu.id}>
-          <span class="menuitem-check" aria-hidden="true"></span>
-          <span class="menuitem-label">{menu.label}</span>
-          <span class="menuitem-chevron" aria-hidden="true">›</span>
-        </Menu.Item>
-      {/each}
-      {#if menus.length}<div class="compact-panels-divider" role="separator"></div>{/if}
       {#each tabs as tab (tab.id)}
         {@const selected = open && panel === tab.id}
         <Menu.Item
@@ -269,10 +251,5 @@
   .compact-panels-items :global(.workspace-action) {
     min-height: 2.75rem;
     white-space: normal;
-  }
-
-  .menuitem-chevron {
-    margin-left: auto;
-    padding-left: calc(var(--spacing) * 2);
   }
 </style>

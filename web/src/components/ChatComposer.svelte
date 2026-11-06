@@ -150,4 +150,10 @@
   @media (pointer: coarse) {
     .composer-buttons :global(.btn-icon) { min-width: 44px; min-height: 44px; }
   }
+  /* Phones: the message field keeps 16px so iOS does not zoom, and the send
+     button is finger-sized without a larger icon. */
+  @media (max-width: 767px) {
+    .composer-box textarea { font-size: 1rem; }
+    .composer-buttons :global(.icon-control) { min-width: 2.75rem; min-height: 2.75rem; }
+  }
 </style>
