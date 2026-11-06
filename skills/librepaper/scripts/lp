@@ -15,7 +15,7 @@ Usage:
   lp write <tool> [json|-]     same, adding a fresh operation {epoch, id}
   lp result <operation-json>   ask whether an uncertain write landed
 
---text, --body, --replace and --find take a literal, or a -file option that
+--text, --body and --replace take a literal, or a matching -file option that
 reads the text from a file (- for stdin). --project <slug> picks the stored
 token of one project and may appear anywhere in the arguments.
 
@@ -34,6 +34,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import sys
 import tempfile
 import time
@@ -41,6 +42,8 @@ import urllib.error
 import urllib.request
 
 ME = os.path.abspath(__file__)
+# The command to print, quoted so that an install path with a space still runs.
+RUN = "python3 " + shlex.quote(ME)
 
 # Raised only when a change would make an older copy misbehave. The server's
 # MIN_SKILL_VERSION (crates/librepaper-server/src/server/mcp.rs) names the
@@ -49,6 +52,9 @@ SKILL_VERSION = 1
 
 # Set from --project before any command runs.
 PROJECT = None
+
+# Options whose value is a literal text, passed through by take_project.
+TEXT_FLAGS = ("--on", "--body", "--find", "--replace", "--after", "--before", "--text")
 
 # The keys of a write's result that are printed.
 WRITE_KEYS = ("status", "published", "next", "comment_id", "effects", "operation")
@@ -71,7 +77,8 @@ def primary_dir():
 
 
 def fallback_dir():
-    return os.path.join(tempfile.gettempdir(), f"librepaper-agent-{os.getuid()}")
+    # os.getuid does not exist on Windows.
+    return os.path.join(tempfile.gettempdir(), f"librepaper-agent-{getattr(os, 'getuid', lambda: 'user')()}")
 
 
 def parse_token(value):
@@ -192,7 +199,7 @@ def resolve():
             )
         return matches[0]
     if not stored:
-        die(f"not connected: run: printf %s '<token>' | python3 {ME} connect")
+        die(f"not connected: run: printf %s '<token>' | {RUN} connect")
     if len(stored) > 1:
         slugs = ", ".join(sorted({t["slug"] for t in stored}))
         die(f"several projects are connected ({slugs}); pass --project <slug>")
@@ -334,7 +341,7 @@ def send_write(tool, body, state):
         status, payload = request("POST", f"/{tool}", body)
     except NetworkError:
         print(
-            f"lp: outcome unknown; do not resend. Check with: python3 {ME} result '{json.dumps(operation_json)}'",
+            f"lp: outcome unknown; do not resend. Check with: {RUN} result '{json.dumps(operation_json)}'",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -375,10 +382,10 @@ def locate(path, text, view_id):
     matches, cursor, inner = [], None, None
     while True:
         query = {"kind": "search", "query": text, "path": path, "limit": 24}
-        body = {"queries": [query]}
         if cursor:
             query["cursor"] = cursor
-            body["snapshot"] = {"view_id": view_id}
+        # Always pin the view, so a range from a newer view is not refused.
+        body = {"queries": [query], "snapshot": {"view_id": view_id}}
         inner = read_request(body)
         result = first_result(inner)
         matches += [m for m in result.get("matches", []) if m.get("path") == path and m.get("exact") == text]
@@ -522,16 +529,16 @@ def cmd_create(rest):
 
 def connect(rest):
     if any(arg.startswith("lpt_") for arg in rest):
-        die(f"pipe the token on stdin, not as an argument: printf %s 'lpt_...' | python3 {ME} connect")
+        die(f"pipe the token on stdin, not as an argument: printf %s 'lpt_...' | {RUN} connect")
     if sys.stdin.isatty():
-        die(f"pipe the token on stdin: printf %s 'lpt_...' | python3 {ME} connect")
+        die(f"pipe the token on stdin: printf %s 'lpt_...' | {RUN} connect")
     value = sys.stdin.read().strip()
     origin, slug, _ = check_token(value)
     try:
         status, payload = request("POST", "/document_read", {"queries": [{"kind": "manifest"}]}, value=value)
     except NetworkError as error:
         die(f"could not reach {origin}: {error.reason}. If a sandbox blocks network access, tell the user what to allow.")
-    if status == 401:
+    if status in (401, 403, 404):
         die("this token was refused (expired, revoked, or the project changed owner); ask the owner for a new one")
     if status >= 400 or not isinstance(payload, dict) or "result" not in payload:
         die(f"the server did not accept the token (HTTP {status}); nothing was stored")
@@ -558,15 +565,15 @@ def connect(rest):
         f"Connected to {origin}, project {slug}. Access: {access}.",
         f"Files: {', '.join(files) if files else '(none)'}",
         "Commands, ready to run:",
-        f"  python3 {ME} --project {slug} read <path>",
+        f"  {RUN} --project {slug} read <path>",
     ]
     if perms.get("comment"):
-        lines.append(f"  python3 {ME} --project {slug} comment <path> --on '<exact text>' --body '<comment>'")
+        lines.append(f"  {RUN} --project {slug} comment <path> --on '<exact text>' --body '<comment>'")
     if perms.get("suggest"):
-        lines.append(f"  python3 {ME} --project {slug} suggest <path> --find '<exact text>' --replace '<new text>'")
-        lines.append(f"  python3 {ME} --project {slug} insert <path> --after '<exact text>' --text '<new text>'")
+        lines.append(f"  {RUN} --project {slug} suggest <path> --find '<exact text>' --replace '<new text>'")
+        lines.append(f"  {RUN} --project {slug} insert <path> --after '<exact text>' --text '<new text>'")
     if perms.get("apply"):
-        lines.append(f"  python3 {ME} --project {slug} create <path> --text '<content>'")
+        lines.append(f"  {RUN} --project {slug} create <path> --text '<content>'")
     if len(lines) > 4:
         lines.append("Long text: pass --text-file - (or --replace-file, --body-file) and pipe it on stdin.")
     if perms.get("suggest"):
@@ -608,6 +615,12 @@ def take_project(argv):
     project, rest, index = None, [], 0
     while index < len(argv):
         arg = argv[index]
+        # A text value is passed through whole, so a value that starts with a dash
+        # or reads "--project" is not taken as an option.
+        if arg in TEXT_FLAGS and index + 1 < len(argv):
+            rest.append(f"{arg}={argv[index + 1]}")
+            index += 2
+            continue
         if arg == "--project" or arg.startswith("--project="):
             if arg == "--project":
                 index += 1

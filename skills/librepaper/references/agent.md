@@ -6,8 +6,8 @@ An **agent token** gives one agent access to one project on one server, at the r
 
 The project lives on the LibrePaper server, and the token names the server and the project. You do not need a local folder, a clone or a project path, so never ask for one. Do not open or control a browser unless the user explicitly asks you to. Do this now, before you reply:
 
-1. If `mcp__librepaper__*` tools are available, use them, following [Doing the task](#doing-the-task).
-2. Otherwise set `H` to the helper and run `connect`, as [Step 1b](#step-1b-http-helper) shows.
+1. If `mcp__librepaper__*` tools are available, use them, following [The tools directly](#the-tools-directly).
+2. Otherwise set `H` to the helper and run `connect`, as [Step 1b](#step-1b-http-helper) shows. Then run the commands exactly as `connect` prints them.
 3. Tell the user which project you reached, and ask what they want done. If they already said, do it.
 
 If a step is blocked, say exactly what to allow, as [If a sandbox blocks you](#if-a-sandbox-blocks-you) explains.
@@ -16,7 +16,7 @@ If a step is blocked, say exactly what to allow, as [If a sandbox blocks you](#i
 
 For reading, reviewing, proofreading, adding text and new files, use the helper's task commands. Each one reads a fresh copy of the source, so you never handle `view_id`, `range_id` or `operation` with them. Do not read schemas or [agent-tools.md](agent-tools.md) for these. Go straight to the write after `read`.
 
-In the examples below, `lp` stands for `python3 "$H"`, with `H` set as Step 1b shows.
+In the examples below, `lp` stands for `python3 "$H"`, with `H` set as Step 1b shows. `connect` prints each command ready to run, with its `--project <slug>`; use that form.
 
 ```sh
 lp read main.tex --lines 1-80

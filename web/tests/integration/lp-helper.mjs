@@ -24,7 +24,7 @@ if (!deployment || deployment.unavailable) {
 
 const homes = [];
 const source = "# Résumé 🎉\n\nThe first paragraph.\n\nA repeated line.\n\nA repeated line.\n\nCafé ☕ ends here.\n";
-const outlineArgs = JSON.stringify({ queries: [{ kind: "outline" }] });
+const manifestArgs = JSON.stringify({ queries: [{ kind: "manifest" }] });
 
 // A fresh HOME per role, so the helper can only see the tokens connected in it.
 async function freshHome() {
@@ -72,7 +72,7 @@ function jsonOf(text, what) {
 // The published markdown file's name, read from the manifest the owner's
 // token sees through document_read.
 function sourcePathOf(result) {
-  assert.equal(result.status, 0, `document_read outline failed: ${result.stderr}`);
+  assert.equal(result.status, 0, `document_read manifest failed: ${result.stderr}`);
   const names = [];
   const walk = (value) => {
     if (typeof value === "string") {
@@ -141,7 +141,7 @@ try {
   };
 
   // The owner's copy of the project, read through the helper's own route.
-  const pathOf = (projectSlug, home) => sourcePathOf(lp(["--project", projectSlug, "call", "document_read", outlineArgs], { home }));
+  const pathOf = (projectSlug, home) => sourcePathOf(lp(["--project", projectSlug, "call", "document_read", manifestArgs], { home }));
 
   // 1. A garbage token, well formed for this origin, is refused and stored nowhere.
   const editToken = await mintFor(slug, "edit", "Agent");
@@ -188,7 +188,7 @@ try {
   assert.equal((await pendingChanges()).length, 1, "a missing find text records no change");
 
   // 6. Text that occurs twice is refused, and the lines are named.
-  const ambiguous = lp(["suggest", path, "--find", "A repeated line."], { home: home1 });
+  const ambiguous = lp(["suggest", path, "--find", "A repeated line.", "--replace", "x"], { home: home1 });
   assert.equal(ambiguous.status, 1, `an ambiguous find exits 1: ${ambiguous.stdout}`);
   assert.match(ambiguous.stderr, /2 times/, `the repeat count is reported: ${ambiguous.stderr}`);
   assert.match(ambiguous.stderr, /\b5\b/, `line 5 is named: ${ambiguous.stderr}`);
@@ -267,8 +267,13 @@ try {
   assert.notEqual(commentSuggest.status, 0, `a comment token cannot suggest: ${commentSuggest.stdout}`);
   assert.equal((await pendingChanges()).length, beforeRefused, "a refused suggestion records no change");
 
+  // Tracked suggestions and insertions already land in the document, so the
+  // first project's current source no longer equals `source`.
+  const latest = lp(["read", path], { home: home1 }).stdout;
+  assert.ok(latest.includes("Café ☕ ends here."), `the current source is read: ${latest.slice(0, 200)}`);
+
   // 14. A second project in the same home makes plain commands ambiguous.
-  const second = await deployment.publish({
+  const second =await deployment.publish({
     title: "Second", source: "# Second\n\nA different project entirely.\n", source_format: "markdown",
   });
   const slug2 = second.slug;
@@ -284,10 +289,10 @@ try {
 
   const flagBefore = lp(["--project", slug, "read", path], { home: home1 });
   assert.equal(flagBefore.status, 0, `--project before the command: ${flagBefore.stderr}`);
-  assert.equal(flagBefore.stdout, source, "--project before the command reads the first project");
+  assert.equal(flagBefore.stdout, latest, "--project before the command reads the first project");
   const flagAfter = lp(["read", path, "--project", slug], { home: home1 });
   assert.equal(flagAfter.status, 0, `--project after the command: ${flagAfter.stderr}`);
-  assert.equal(flagAfter.stdout, source, "--project after the command reads the first project");
+  assert.equal(flagAfter.stdout, latest, "--project after the command reads the first project");
   const secondBefore = lp(["--project", slug2, "read", path2], { home: home1 });
   assert.equal(secondBefore.status, 0, `--project before the command, second: ${secondBefore.stderr}`);
   assert.equal(secondBefore.stdout, source2, "--project before the command reads the second project");
@@ -307,7 +312,7 @@ try {
   assert.equal(storedTokens(home1).length, 1, "disconnect removes the second project's file");
   const plainAgain = lp(["read", path], { home: home1 });
   assert.equal(plainAgain.status, 0, `plain read with one project left: ${plainAgain.stderr}`);
-  assert.equal(plainAgain.stdout, source, "plain read returns the remaining project");
+  assert.equal(plainAgain.stdout, latest, "plain read returns the remaining project");
 
   // 17. LIBREPAPER_AGENT_TOKEN overrides the stored tokens.
   const envToken = await mintFor(slug2, "read", "Env reader");
@@ -315,7 +320,36 @@ try {
   assert.equal(overridden.status, 0, `read with LIBREPAPER_AGENT_TOKEN: ${overridden.stderr}`);
   assert.equal(overridden.stdout, source2, "the environment token reads the second project, not the stored one");
 
-  console.log("lp-helper: connect, read, suggest, insert, comment, create, tools, roles, several projects, disconnect and env override verified");
+  // 18. A long file is read back whole, through several pages.
+  const bigLines = [];
+  for (let line = 1, bytes = 0; bytes < 120_000; line += 1) {
+    const text = `${line}. Long line with é☕ and padding text.\n`;
+    bigLines.push(text);
+    bytes += Buffer.byteLength(text);
+  }
+  const big = `${bigLines.join("")}The very last line ☕.\n`;
+  const bigCreated = lp(["create", "big.md", "--text-file", "-"], { home: home1, input: big });
+  assert.equal(bigCreated.status, 0, `create big.md: ${bigCreated.stderr}`);
+  const bigRead = lp(["read", "big.md"], { home: home1 });
+  assert.equal(bigRead.status, 0, `read big.md: ${bigRead.stderr}`);
+  assert.equal(bigRead.stdout, big, "the long file reads back exactly");
+  const bigCommented = lp(["comment", "big.md", "--on", "The very last line ☕.", "--body", "End."], { home: home1 });
+  assert.equal(bigCommented.status, 0, `comment on the last line of big.md: ${bigCommented.stderr}`);
+
+  // 19. A leading-dash find text is passed as its own argument.
+  const dashCreated = lp(["create", "dash.md", "--text-file", "-"], { home: home1, input: "Before\n\n---\n\nAfter\n" });
+  assert.equal(dashCreated.status, 0, `create dash.md: ${dashCreated.stderr}`);
+  const dashed = lp(["suggest", "dash.md", "--find", "---", "--replace", "***"], { home: home1 });
+  assert.equal(dashed.status, 0, `suggest a leading-dash find text: ${dashed.stderr}`);
+  assert.equal(jsonOf(dashed.stdout, "the dash suggest output").status, "committed", `the dash suggest is committed: ${dashed.stdout}`);
+
+  // 20. A literal --project as the value of --text is text, not an option.
+  const flagText = lp(["create", "flag.md", "--text", "--project"], { home: home1 });
+  assert.equal(flagText.status, 0, `create flag.md with --project as text: ${flagText.stderr}`);
+  const flagRead = lp(["read", "flag.md"], { home: home1 });
+  assert.equal(flagRead.stdout, "--project", "the --project text reads back as written");
+
+  console.log("lp-helper: connect, read, suggest, insert, comment, create, tools, roles, several projects, disconnect, env override, long files and leading dashes verified");
 } finally {
   await deployment.stop();
   for (const dir of homes) await rm(dir, { recursive: true, force: true });
