@@ -2,8 +2,8 @@
 
 ## The usual way
 
-1. Install the skill. In the Agent panel's Tokens tab, click **Copy install instructions** and paste them into your agent, once per computer. The instructions run `npx skills add LibrePaper/librepaper --skill librepaper --global`, or copy the skill folder into the agent's skills folder. Then start a new agent session, because agents load skills when a session starts. An agent that cannot install the skill copies it to a temporary folder for that session and gives the user the command to install it.
-2. Connect to this project. Click **New token** and create one (section 1 below), then click **Copy connection instructions** and paste the text into the new session. It contains the token and tells the agent to use the skill. If the agent has no skill, it copies one to a temporary folder for that session and tells you how to install it. You can copy it again later with the copy icon on the token's row. Tokens created before this release have no copy icon; create a new token and revoke the old one to get one.
+1. Create a token (section 1 below), then click **Copy connection instructions** in the Agent panel's External agent tab and paste the text into your agent. It is one copy and one paste, and the same paste works for every project. The text contains the token and tells the agent to use the skill. If the skill is missing, the paste installs it (`npx skills add LibrePaper/librepaper --skill librepaper --global`, or copies the skill folder into the agent's skills folder). The first paste installs it once per computer. The agent reads the skill directly, so no new session is needed. An agent that cannot install the skill copies it to a temporary folder for that session and gives the user the command to install it.
+2. You can copy the same text again later with the copy icon on the token's row. Tokens created before this release have no copy icon; create a new token and revoke the old one to get one.
 
 The token sits in the chat, where the model provider and the chat history can see it.
 
@@ -11,7 +11,7 @@ The steps below (1 to 4) are the MCP route that keeps the token out of the chat,
 
 ## 1. Get a token
 
-In LibrePaper, open the project, then the Agent panel (the robot icon in the sidebar), then the Tokens tab, and click New token. Pick a permission (Read, Comment or Edit) and an expiry. You can also name the token (it defaults to "Agent"; comments appear under it), and set an hourly comment limit. Click Create token. Open "Other connection methods" and click the copy icon next to Token for the bare `lpt_...` string. The owner can copy the token again from its row: the copy icon there copies the connection instructions, which include the token.
+In LibrePaper, open the project, then the Agent panel (the robot icon in the sidebar), then the External agent tab, and click New token. Pick a permission (Read, Comment or Edit) and an expiry. You can also name the token (it defaults to "Agent"; comments appear under it), and set an hourly comment limit. Click Create token. Open "Other connection methods" and click the copy icon next to Token for the bare `lpt_...` string. The owner can copy the token again from its row: the copy icon there copies the connection instructions, which include the token.
 
 ## 2. Install the `librepaper` command
 
@@ -55,4 +55,4 @@ Use the HTTP helper ([agent.md](agent.md), Step 1b). It reads the token from a 0
 
 ## When it stops working
 
-A token stops at its expiry, when revoked (trash button in the Agent panel's Tokens tab), when the project changes owner, or when the owner's account is blocked or erased. Signing out does not stop it. A 401 means one of these, so ask the owner for a new token.
+A token stops at its expiry, when revoked (trash button in the Agent panel's External agent tab), when the project changes owner, or when the owner's account is blocked or erased. Signing out does not stop it. A 401 means one of these, so ask the owner for a new token.
