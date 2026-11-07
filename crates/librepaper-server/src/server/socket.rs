@@ -705,6 +705,9 @@ impl Server {
                                 let encoded_vector = encode_update(&joined.vector);
                                 let encoded_durable_vector = encode_update(&joined.durable_vector);
                                 let mut frames: Vec<Value> = Vec::new();
+                                // Bytes already inline in this join, which the
+                                // rows share the inline limit with.
+                                let mut inline_used = 0usize;
                                 if let Some(base) = joined.base {
                                     // §6.2 step 5: the client does not cover
                                     // the compaction base, so it is sent by
@@ -712,6 +715,9 @@ impl Server {
                                     // the inline limit) and every row plus
                                     // the buffer follows as `doc-rows`.
                                     let digest = librepaper_base::digest::Digest::of(&base).to_hex();
+                                    if base.len() <= self.config.session.inline_state_max {
+                                        inline_used = base.len();
+                                    }
                                     let state = if base.len() > self.config.session.inline_state_max {
                                         let Some((reference, digest)) =
                                             self.state_reference(&room.slug, base).await
@@ -740,23 +746,47 @@ impl Server {
                                         })
                                     };
                                     frames.push(state);
-                                    frames.push(json!({
-                                        "type": "doc-rows",
-                                        "protocol": PROTOCOL,
-                                        "vector": encoded_vector,
-                                        "durableVector": encoded_durable_vector,
-                                        "updates": joined.batches.iter().map(|batch| encode_update(batch)).collect::<Vec<_>>(),
-                                    }));
+                                    frames.push(match self
+                                        .rows_frame(
+                                            &room.slug,
+                                            &joined.batches,
+                                            &encoded_vector,
+                                            &encoded_durable_vector,
+                                            incoming.rows_ref(),
+                                            inline_used,
+                                        )
+                                        .await
+                                    {
+                                        Some(frame) => frame,
+                                        None => {
+                                            let _ = send_outgoing(&tx, Outgoing::Close(
+                                                "state_sync_capacity: reconnect for a newer baseline".into(),
+                                            )).await;
+                                            break 'reader;
+                                        }
+                                    });
                                 } else if joined.from_rows {
                                     // §6.2 step 4: the base is covered but some
                                     // rows are not.
-                                    frames.push(json!({
-                                        "type": "doc-rows",
-                                        "protocol": PROTOCOL,
-                                        "vector": encoded_vector,
-                                        "durableVector": encoded_durable_vector,
-                                        "updates": joined.batches.iter().map(|batch| encode_update(batch)).collect::<Vec<_>>(),
-                                    }));
+                                    frames.push(match self
+                                        .rows_frame(
+                                            &room.slug,
+                                            &joined.batches,
+                                            &encoded_vector,
+                                            &encoded_durable_vector,
+                                            incoming.rows_ref(),
+                                            inline_used,
+                                        )
+                                        .await
+                                    {
+                                        Some(frame) => frame,
+                                        None => {
+                                            let _ = send_outgoing(&tx, Outgoing::Close(
+                                                "state_sync_capacity: reconnect for a newer baseline".into(),
+                                            )).await;
+                                            break 'reader;
+                                        }
+                                    });
                                 } else {
                                     // §6.2 step 3: everything is covered; only
                                     // the buffer's own batches are owed.
@@ -1119,6 +1149,48 @@ impl Server {
         }
     }
 
+    /// The `doc-rows` frame for one join. The inline limit covers the whole
+    /// join payload, so rows that would push it past the limit (with `inline`
+    /// bytes already in the frames before them) travel by reference, as a
+    /// length-prefixed blob (`u32` big-endian length, then the batch, for each
+    /// batch), when the client announced it can fetch them. `None` means the
+    /// transfer store had no room.
+    pub(super) async fn rows_frame(
+        &self,
+        slug: &str,
+        batches: &[Vec<u8>],
+        vector: &str,
+        durable_vector: &str,
+        client_fetches: bool,
+        inline: usize,
+    ) -> Option<Value> {
+        if rows_go_inline(
+            batches,
+            client_fetches,
+            inline,
+            self.config.session.inline_state_max,
+        ) {
+            return Some(json!({
+                "type": "doc-rows",
+                "protocol": PROTOCOL,
+                "vector": vector,
+                "durableVector": durable_vector,
+                "updates": batches.iter().map(|batch| encode_update(batch)).collect::<Vec<_>>(),
+            }));
+        }
+        let (reference, digest) = self
+            .state_reference(slug, pack_rows(batches))
+            .await?;
+        Some(json!({
+            "type": "doc-rows",
+            "protocol": PROTOCOL,
+            "vector": vector,
+            "durableVector": durable_vector,
+            "ref": reference,
+            "digest": digest,
+        }))
+    }
+
     /// Store one exact, short-lived baseline. A fetch never consults the live
     /// room, so a commit racing a slow transfer cannot change these bytes.
     pub(super) async fn state_reference(
@@ -1450,5 +1522,76 @@ mod outgoing_tests {
         .await
         .is_err());
         assert!(matches!(rx.try_recv(), Ok(Outgoing::Text(_))));
+    }
+}
+
+/// Packs row batches into one blob: each batch behind its `u32` big-endian
+/// length. The browser splits it back into the same batches.
+pub(super) fn pack_rows(batches: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(batches.iter().map(|b| b.len() + 4).sum());
+    for batch in batches {
+        out.extend_from_slice(&(batch.len() as u32).to_be_bytes());
+        out.extend_from_slice(batch);
+    }
+    out
+}
+
+/// Whether the rows of a join stay inline: the client cannot fetch them, or
+/// they fit the inline limit together with the `inline` bytes already sent.
+pub(super) fn rows_go_inline(
+    batches: &[Vec<u8>],
+    client_fetches: bool,
+    inline: usize,
+    limit: usize,
+) -> bool {
+    let total: usize = batches.iter().map(Vec::len).sum();
+    !client_fetches || inline.saturating_add(total) <= limit
+}
+
+#[cfg(test)]
+mod join_rows_tests {
+    use super::*;
+
+    fn batches() -> Vec<Vec<u8>> {
+        vec![vec![1u8; 10], vec![], vec![2u8; 300]]
+    }
+
+    #[test]
+    fn a_small_join_stays_inline() {
+        assert!(rows_go_inline(&batches(), true, 100, 1024));
+        assert!(rows_go_inline(&batches(), true, 0, 310));
+    }
+
+    #[test]
+    fn rows_that_push_the_join_over_the_limit_go_by_reference() {
+        assert!(!rows_go_inline(&batches(), true, 0, 309));
+        // The base already inline counts against the same limit.
+        assert!(!rows_go_inline(&batches(), true, 800, 1024));
+    }
+
+    #[test]
+    fn a_client_that_cannot_fetch_rows_always_gets_them_inline() {
+        assert!(rows_go_inline(&batches(), false, 1 << 30, 1));
+    }
+
+    #[test]
+    fn the_packed_blob_splits_back_into_the_inline_batches() {
+        let rows = batches();
+        let packed = pack_rows(&rows);
+        let mut at = 0;
+        let mut unpacked: Vec<Vec<u8>> = Vec::new();
+        while at < packed.len() {
+            let length = u32::from_be_bytes(packed[at..at + 4].try_into().unwrap()) as usize;
+            at += 4;
+            unpacked.push(packed[at..at + length].to_vec());
+            at += length;
+        }
+        assert_eq!(unpacked, rows);
+        // These are the bytes the inline form base64-encodes, batch for batch.
+        let inline: Vec<String> = rows.iter().map(|b| encode_update(b)).collect();
+        assert_eq!(
+            unpacked.iter().map(|b| encode_update(b)).collect::<Vec<_>>(),
+            inline
+        );
     }
 }

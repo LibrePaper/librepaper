@@ -95,6 +95,16 @@ send or receive source CRDT updates. Source synchronization is editor-only.
   - `doc-rows {vector, durableVector, updates}` when stored rows remain;
   - `doc-state` with `base` (or `ref` and `digest` for a large baseline),
     followed by `doc-rows` when the client lacks the compacted base.
+- The inline limit (`session.inline_state_max`) covers the whole join payload,
+  base and rows together. When the rows would push it over, `doc-rows` carries
+  `ref` and `digest` instead of `updates`. A client opts in with
+  `"rowsRef": true` in `doc-open`; without it the rows stay inline whatever
+  their size, so older clients are unaffected and the protocol string does not
+  change. The referenced blob is fetched, authorised (editor rung, same slug)
+  and digest-checked exactly like a referenced base, and holds each batch behind
+  its length as a big-endian `u32`. The client imports the batches after the
+  base, in the same order as inline rows. A `410` restarts the join with a new
+  `doc-open`.
 - `updates` is an array of independently encoded Loro batches; the client
   applies it with `importBatch`. `base`, when present, is one independent blob
   imported before the array. After import, the client exports
