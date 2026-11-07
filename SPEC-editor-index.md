@@ -64,6 +64,7 @@ Kinds:
 | `code` | code or verbatim, not prose | `verbatim` | raw | fences |
 | `definition` | a user definition | `\newcommand` | `#let` | — |
 | `bibliography` | a bibliography file in use | `\addbibresource` | `#bibliography` | `bibliography:` |
+| `markup` | syntax that is not prose, with `attrs.prose = "skip"` | commands | `#` calls | attributes, front matter |
 
 **Ambiguous `@x`.** In Typst and Markdown, `@x` can be a label reference or a
 citation. The adapter emits `ref` with `namespace: "either"`; the project

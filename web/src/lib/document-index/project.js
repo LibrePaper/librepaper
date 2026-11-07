@@ -86,7 +86,8 @@ export function createProjectIndex(options = {}) {
   function resolveFileDefault(fromPath, name, kind) {
     const known = fileSet;
     if (!known) return null;
-    const base = resolvePath(dirname(fromPath), name);
+    // A name with a leading slash is relative to the project root, as in HTML.
+    const base = name.startsWith("/") ? normalizePath(name) : resolvePath(dirname(fromPath), name);
     const candidates = [base];
     const hasExtension = /\.[^./]+$/.test(name.slice(name.lastIndexOf("/") + 1));
     const extension = extensionOf(fromPath);

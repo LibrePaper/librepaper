@@ -3,10 +3,12 @@
 // Positions are UTF-16 offsets. Ranges are [from, to) pairs.
 
 /**
- * One construct in a file.
+ * One construct in a file. `markup` is syntax that is not prose (commands,
+ * delimiters, attributes); adapters mark it `attrs: { prose: "skip" }`.
  * @typedef {{
  *   kind: "heading" | "label" | "ref" | "cite" | "include" | "asset"
- *       | "block" | "math" | "code" | "definition" | "bibliography",
+ *       | "block" | "math" | "code" | "definition" | "bibliography"
+ *       | "markup",
  *   range: [number, number],
  *   name?: string,
  *   nameRange?: [number, number],
