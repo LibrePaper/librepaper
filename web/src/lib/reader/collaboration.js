@@ -91,6 +91,10 @@ export function createReaderCollaboration({
   let session = null;
   let document_ = null;
   let disposed = false;
+  // The document was fetched moments ago by the boot that started this
+  // collaboration, so the first time the socket comes up there is nothing to
+  // re-check. Any drop clears it: later opens are genuine reconnects.
+  let firstOpen = true;
   const reconnects = createGeneration();
   // Which session is the current one. A session that has been replaced or
   // left can still have work in flight -- a persistence write completing, a
@@ -178,6 +182,7 @@ export function createReaderCollaboration({
     const stale = reconnects.begin();
     clearRetry();
     if (!up) {
+      firstOpen = false;
       session?.disconnected();
       onConnected(false);
       return;
@@ -185,6 +190,12 @@ export function createReaderCollaboration({
     const active = session;
     if ((sourceSync && !active) || disposed) return;
     active?.disconnected();
+    if (firstOpen) {
+      firstOpen = false;
+      if (sourceSync) room?.send(active.open());
+      onConnected(true);
+      return;
+    }
     try {
       const response = await fetcher(`/api/documents/${slug}`, { headers: keyHeaders(key) });
       if (disposed || stale() || session !== active) return;
@@ -233,7 +244,8 @@ export function createReaderCollaboration({
       onConnected: reconnect,
       key,
     });
-    if (sourceSync) room.send(session.open());
+    // The first `doc-open` goes out from the socket's open handler
+    // (`reconnect`): the room drops `doc-*` messages while it is connecting.
     return session;
   }
 
