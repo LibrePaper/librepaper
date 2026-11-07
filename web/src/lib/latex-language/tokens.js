@@ -10,7 +10,7 @@ import {
   ControlSequence, ControlSymbol, SectionName, BeginKw, MathBeginKw, VerbBeginKw,
   ListingBeginKw, EndKw, Verb, ParenOpen, ParenClose, BracketOpen, BracketClose,
   DollarOpen, DollarClose, DisplayDollar, StrayDollar, OptOpen, OptClose, Text,
-  VerbBody, OpenBrace, CloseBrace,
+  VerbBody, OpenBrace, CloseBrace, ImplicitClose, UrlArg,
 } from "./parser.terms.js";
 
 const BACKSLASH = 92, PERCENT = 37, DOLLAR = 36, LBRACE = 123, RBRACE = 125;
@@ -23,8 +23,10 @@ const MATH_ENVS = new Set([
   "equation", "align", "gather", "multline", "flalign", "alignat", "displaymath", "math", "eqnarray",
 ]);
 // Environments whose body is opaque. The second set takes options first.
-const VERBATIM_ENVS = new Set(["verbatim", "comment"]);
-const LISTING_ENVS = new Set(["lstlisting", "minted", "Verbatim", "BVerbatim", "LVerbatim"]);
+const VERBATIM_ENVS = new Set([
+  "verbatim", "comment", "CodeInput", "CodeOutput", "Sinput", "Soutput", "Scode", "example", "filecontents",
+]);
+const LISTING_ENVS = new Set(["lstlisting", "minted", "Verbatim", "BVerbatim", "LVerbatim", "Highlighting"]);
 
 const MATH_DELIMITERS = { 40: ParenOpen, 41: ParenClose, 91: BracketOpen, 93: BracketClose };
 
@@ -91,7 +93,11 @@ function controlToken(input, stack) {
     return input.acceptToken(firstShiftable(stack, candidates, ControlSequence), len);
   }
   if (word === "end") {
-    return input.acceptToken(stack.canShift(EndKw) ? EndKw : ControlSequence, len);
+    if (stack.canShift(EndKw)) return input.acceptToken(EndKw, len);
+    // An \end that belongs to an outer environment closes whatever is open
+    // here (unclosed inline math, say) without consuming it.
+    if (stack.canShift(ImplicitClose)) return input.acceptToken(ImplicitClose, 0);
+    return input.acceptToken(ControlSequence, len);
   }
   if (word === "verb") {
     // \verb<delim>...<delim>, or \verb*<delim>...<delim>, on one line.
@@ -121,6 +127,24 @@ function dollarToken(input, stack) {
   if (term) input.acceptToken(term, 1);
 }
 
+/**
+ * The braced argument of \url or \href, where % and # are literal. It is one
+ * opaque token, so a % does not start a comment. The control word is read back
+ * from the input because the tokenizer keeps no state.
+ */
+function urlToken(input, stack) {
+  if (!stack.canShift(UrlArg)) return;
+  const before = input.read(Math.max(0, input.pos - 5), input.pos);
+  if (!before.endsWith("\\url") && !before.endsWith("\\href")) return;
+  let depth = 0;
+  for (let i = 0; ; i++) {
+    const ch = input.peek(i);
+    if (ch < 0 || ch === NEWLINE) return;
+    if (ch === LBRACE) depth++;
+    else if (ch === RBRACE && --depth === 0) return input.acceptToken(UrlArg, i + 1);
+  }
+}
+
 function textToken(input, stack) {
   if (!stack.canShift(Text)) return;
   const closeBracket = stack.canShift(OptClose);
@@ -129,12 +153,14 @@ function textToken(input, stack) {
   const inlineClose = stack.canShift(DollarClose) ? DollarClose
     : stack.canShift(ParenClose) ? ParenClose : 0;
   if (inlineClose && atParagraphBreak(input)) return input.acceptToken(inlineClose, 0);
+  // An optional argument never spans a blank line either.
+  if (closeBracket && atParagraphBreak(input)) return input.acceptToken(ImplicitClose, 0);
 
   let length = 0;
   for (let ch = input.next; ch >= 0; ch = input.next) {
     if (ch === BACKSLASH || ch === PERCENT || ch === DOLLAR || ch === LBRACE || ch === RBRACE) break;
     if (ch === RBRACKET && closeBracket) break;
-    if (inlineClose && ch === NEWLINE && atParagraphBreak(input)) break;
+    if ((inlineClose || closeBracket) && ch === NEWLINE && atParagraphBreak(input)) break;
     input.advance();
     length++;
   }
@@ -144,12 +170,19 @@ function textToken(input, stack) {
 /** Everything except verbatim bodies, comments and braces. */
 export const latexTokens = new ExternalTokenizer((input, stack) => {
   const ch = input.next;
-  if (ch < 0 || ch === PERCENT || ch === LBRACE) return; // Comment and OpenBrace are grammar tokens
+  // At the end of the input, close whatever is still open.
+  if (ch < 0) return stack.canShift(ImplicitClose) ? input.acceptToken(ImplicitClose, 0) : undefined;
+  if (ch === PERCENT) return; // Comment is a grammar token
+  if (ch === LBRACE) return urlToken(input, stack); // otherwise OpenBrace is a grammar token
   if (ch === BACKSLASH) return controlToken(input, stack);
   if (ch === DOLLAR) return dollarToken(input, stack);
   if (ch === RBRACE) {
+    if (stack.canShift(CloseBrace)) return;
+    // This } belongs to an enclosing group, so whatever is open here (an
+    // environment, math, an optional argument) was never closed: end it.
+    if (stack.canShift(ImplicitClose)) return input.acceptToken(ImplicitClose, 0);
     // An unbalanced } is plain text.
-    if (!stack.canShift(CloseBrace) && stack.canShift(Text)) {
+    if (stack.canShift(Text)) {
       input.advance();
       input.acceptToken(Text);
     }
