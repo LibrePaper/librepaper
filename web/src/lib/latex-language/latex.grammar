@@ -1,0 +1,105 @@
+// Lezer grammar for LaTeX, written for the LibrePaper editor.
+//
+// LaTeX in an editor is always half written, so the grammar is shallow and
+// forgiving. It finds structure (commands, groups, environments, math,
+// verbatim text) and leaves meaning to other tools. Matching \begin{x} with
+// \end{x} by name is not context free; the grammar only pairs them
+// structurally.
+//
+// Almost all tokens come from the external tokenizers in tokens.js, because
+// what a character means depends on where the parser is: `$` opens or closes
+// math, `]` closes an optional argument only inside one, `\)` is a math
+// delimiter only inside \( ... \), and a verbatim body ends only at the \end
+// that matches its own \begin. The tokenizers ask the parser what it can
+// shift (stack.canShift) rather than keeping a state of their own.
+//
+// Text and math are separate item sets so that the tokenizers can tell which
+// one they are in: a `$` inside a group inside \( ... \) is not math syntax.
+
+@top Document { item* }
+
+item {
+  Comment | Command | Environment | MathEnvironment | VerbatimEnvironment |
+  InlineMath | DisplayMath | Group | Verb | Text
+}
+
+mathItem {
+  Comment | ControlSequence | ControlSymbol | SectionName | InnerEnvironment |
+  MathGroup | Verb | Text | StrayDollar
+}
+
+// An optional argument belongs to the control word it directly follows.
+Command {
+  ControlSequence OptionalArgument? |
+  SectionName OptionalArgument? |
+  ControlSymbol
+}
+
+OptionalArgument { OptOpen item* OptClose }
+
+Group { OpenBrace item* CloseBrace }
+
+MathGroup { OpenBrace mathItem* CloseBrace }
+
+BeginEnv { BeginKw OpenBrace EnvName CloseBrace }
+MathBeginEnv { MathBeginKw OpenBrace EnvName CloseBrace }
+VerbBeginEnv { VerbBeginKw OpenBrace EnvName CloseBrace }
+ListingBeginEnv { ListingBeginKw OpenBrace EnvName CloseBrace }
+EndEnv { EndKw OpenBrace EnvName CloseBrace }
+
+Environment { BeginEnv OptionalArgument? item* EndEnv }
+
+// equation, align, gather and friends: the whole body is math.
+MathEnvironment { MathBeginEnv mathItem* EndEnv }
+
+// aligned, cases, matrix and other environments that sit inside math.
+InnerEnvironment { BeginEnv mathItem* EndEnv }
+
+// The body is a single opaque token that ends at the matching \end{name}.
+// Listing-like environments take their options and one group first.
+VerbatimEnvironment {
+  VerbBeginEnv VerbBody? EndEnv |
+  ListingBeginEnv OptionalArgument? Group? VerbBody? EndEnv
+}
+
+InlineMath {
+  DollarOpen mathItem* DollarClose |
+  ParenOpen mathItem* ParenClose
+}
+
+DisplayMath {
+  DisplayDollar mathItem* DisplayDollar |
+  BracketOpen mathItem* BracketClose
+}
+
+@external tokens verbatimBody from "./tokens.js" { VerbBody }
+
+@external tokens latexTokens from "./tokens.js" {
+  ControlSequence,
+  ControlSymbol,
+  SectionName,
+  BeginKw,
+  MathBeginKw,
+  VerbBeginKw,
+  ListingBeginKw,
+  EndKw,
+  Verb,
+  ParenOpen,
+  ParenClose,
+  BracketOpen,
+  BracketClose,
+  DollarOpen,
+  DollarClose,
+  DisplayDollar,
+  StrayDollar,
+  OptOpen,
+  OptClose,
+  Text
+}
+
+@tokens {
+  Comment { "%" ![\n]* }
+  OpenBrace { "{" }
+  CloseBrace { "}" }
+  EnvName { ![{}\\%\n]+ }
+}
