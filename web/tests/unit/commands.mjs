@@ -285,4 +285,44 @@ for (const template of MATH_TEMPLATES) {
   assert.deepEqual(bindings(command, false), [], "a template has no key");
 }
 
-console.log("commands: one notation, no browser collisions, typing beats a chord, and a help table that cannot drift from the keys");
+/* ------------------------------------------------ the bar's words, by key */
+
+// Alt+F, E, V and H open the words of the bar, as Google Docs has them. They
+// are bound on Windows and Linux only: on a Mac, Ctrl+Option is VoiceOver's.
+const menuCommand = (id) => COMMANDS.find((command) => command.id === id);
+for (const [letter, id] of [["f", "menu-file"], ["e", "menu-edit"], ["v", "menu-view"], ["h", "menu-help"]]) {
+  assert.deepEqual(bindings(menuCommand(id), false), [`alt+${letter}`]);
+  assert.deepEqual(bindings(menuCommand(id), true), [], `${id} has no Alt chord on a Mac`);
+  assert.equal(menuCommand(id).palette, false, `${id} is opened by its key, not named in the palette`);
+  assert.ok(!reserved(`Alt+${letter.toUpperCase()}`), `Alt+${letter.toUpperCase()} is not the browser's`);
+  assert.equal(asked({ ...press(letter, { altKey: true, code: `Key${letter.toUpperCase()}` }), target: page }), id);
+}
+
+// The Alt chords are not the Mod+Alt ones, and not the editor's: Mod+Alt+F is
+// replace and Mod+Alt+E is Focus Files, and both still answer to their own keys.
+assert.equal(asked({ ...press("f", { ctrlKey: true, altKey: true, code: "KeyF" }), target: page }), null, "Ctrl+Alt+F on Windows is not File");
+assert.equal(asked({ ...press("e", { ctrlKey: true, altKey: true, code: "KeyE" }), target: page }), "focus-files");
+
+// Edit and View are only the reader's when the source is open, as their menus are.
+assert.equal(asked({ ...press("e", { altKey: true, code: "KeyE" }), target: page }, reader), null, "no Edit menu without a source");
+assert.equal(asked({ ...press("v", { altKey: true, code: "KeyV" }), target: page }, reader), null, "no View menu without a source");
+assert.equal(asked({ ...press("f", { altKey: true, code: "KeyF" }), target: page }, reader), "menu-file", "File is there for everybody");
+assert.equal(asked({ ...press("h", { altKey: true, code: "KeyH" }), target: page }, reader), "menu-help", "and so is Help");
+
+// A phone has no bar, so no word of it can be opened from a key.
+assert.equal(asked({ ...press("f", { altKey: true, code: "KeyF" }), target: page }, { ...workspace, compact: true }), null);
+
+// In Vim or Emacs mode, Alt in the source belongs to the mode: Alt+F is
+// forward-word in Emacs. Outside the source the chord is still the reader's.
+const modalWorkspace = { ...workspace, modalEditor: true };
+assert.equal(asked({ ...press("f", { altKey: true, code: "KeyF" }), target: editor }, modalWorkspace), null, "Alt+F in the source is the mode's");
+assert.equal(asked({ ...press("f", { altKey: true, code: "KeyF" }), target: page }, modalWorkspace), "menu-file", "and outside the source it opens File");
+assert.equal(asked({ ...press("f", { altKey: true, code: "KeyF" }), target: editor }, workspace), "menu-file", "in the default keymap Alt+F opens File from the source too");
+
+// The help table and the palette: the chords are named where they work, and the
+// palette does not offer a menu it would only open from a key.
+assert.equal(menuCommand("palette").menu, "help");
+assert.equal(menuCommand("shortcuts").menu, "help");
+assert.ok(!offered(workspace, { apple: false }).some((entry) => entry.id.startsWith("menu-")), "the palette offers no menu chords");
+
+console.log("commands: one notation, no browser collisions, typing beats a chord, the bar's words open by key, and a help table that cannot drift from the keys");

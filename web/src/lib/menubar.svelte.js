@@ -67,6 +67,26 @@ export const menubar = {
     opened = items[(here + delta + items.length) % items.length].dataset.menubar;
     return true;
   },
+  // With no menu open, the arrows still walk the row, but only from a word that
+  // has the focus: they move the focus to the next word and open nothing. The
+  // Down, Enter and Space keys that open a word are the trigger's own.
+  focusStep(delta) {
+    const items = triggers();
+    const here = items.indexOf(/** @type {HTMLButtonElement} */ (document.activeElement));
+    if (here < 0) return false;
+    items[(here + delta + items.length) % items.length].focus();
+    return true;
+  },
+  // Puts the keyboard on the first line of the menu that is open. A menu the
+  // pointer or Down opens gets this from Zag; one shown from here is not asked,
+  // so the same ArrowDown a person presses on an open menu is sent to its panel.
+  // Waits a frame, because the panel is drawn after the state changes.
+  enter() {
+    requestAnimationFrame(() => {
+      const panel = document.querySelector('[data-scope="menu"][data-part="content"][data-state="open"]');
+      panel?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    });
+  },
   get anchor() {
     return anchor;
   },
