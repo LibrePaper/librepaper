@@ -1408,6 +1408,15 @@
     symbols: lazyComponent(() => import("./SymbolPalette.svelte")),
     math: lazyComponent(() => import("./MathPalette.svelte")),
   };
+  // Loads every lazy panel and the authorship module, so their code is fetched
+  // and cached. Loading does not show anything: each panel is still gated on
+  // its own open or mounted state. A failed chunk is ignored.
+  function prefetchLazyPanels() {
+    return Promise.allSettled([
+      ...Object.values(lazy).map((entry) => entry.load()),
+      import("../lib/authorship.js"),
+    ]);
+  }
   let insertMenu = $state(null);
   // The palettes are overlays over the editor. Their components are kept so a
   // command can ask the Math overlay to open a template, or the Symbols overlay
@@ -4280,7 +4289,11 @@
       // The page shell is cached with the local copy, so the landing page can
       // list local projects when the server cannot be reached. Until it is
       // cached the record has no shellReady, and the next attempt tries again.
-      if (!record.shellReady && await cacheCurrentShell()) await markShellReady(identity);
+      if (!record.shellReady) {
+        // The offline copy only stores code already loaded, so load the lazy panels first.
+        await prefetchLazyPanels();
+        if (await cacheCurrentShell()) await markShellReady(identity);
+      }
       localCopyRemembered = true;
       localCopyRunning = false;
     })().catch(() => {
