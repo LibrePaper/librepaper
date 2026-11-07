@@ -200,9 +200,6 @@ export function createProjectSession({
   // The last tree() build with the document version and rules it came from;
   // calls between changes reuse it.
   let treeCache = null;
-  // The last tree() build and the document version and rules it was built
-  // from. Repeated calls between changes reuse it.
-  let treeCache = null;
   // The four maps that are the directory itself. A change to any of them is a
   // change to the file list; a change under one of them is not, because a
   // file's text sits inside `files`.
@@ -724,7 +721,6 @@ export function createProjectSession({
     /** @param {ProjectRules} rules */
     setRules(rules) {
       projectionRules = rules || {};
-      treeCache = null;
       treeCache = null;
     },
 
