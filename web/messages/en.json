@@ -922,6 +922,7 @@
   "editor_bibliography_unavailable": "Bibliography unavailable: {reason}",
   "editor_cut_changed": "The source changed before Cut finished. Select the text again.",
   "editor_parser_not_loaded": "the parser could not be loaded",
+  "editor_paste_blocked": "The browser will not let LibrePaper read the clipboard here.",
   "editor_paste_changed": "The source changed before Paste finished. Try again.",
   "editor_problems_both": [
     {

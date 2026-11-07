@@ -4638,7 +4638,7 @@
 {/if}
 
 {#if formatBarVisible}
-  <FormatToolbar active={formatActive} hidden={barHidden && !compact} {modalEditor} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} />
+  <FormatToolbar active={formatActive} hidden={barHidden && !compact} {modalEditor} available={can} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} oncommand={(id) => void runCommand(id)} />
 {/if}
 
 {#if compact && modeSwitchShown}
@@ -4834,7 +4834,7 @@
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   oncomment={(id) => focusAnnotation(comments.find((item) => String(item.id) === String(id))?.id, { focus: false })}
-                  onformatstate={(state) => { formatActive = state; }}
+                  onformatstate={(state) => { formatActive = state; refreshEditAvailability(); }}
                   authorship={authorsActive && authorsMap ? { authors: authorsMap, only: authorsOnly } : null}
                   onauthorship={(summary) => (authorsSummary = summary)}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />

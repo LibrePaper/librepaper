@@ -922,7 +922,8 @@
   "editor_bibliography_unavailable": "Literaturverzeichnis nicht verfügbar: {reason}",
   "editor_cut_changed": "Der Quelltext hat sich geändert, bevor das Ausschneiden abgeschlossen war. Wählen Sie den Text erneut aus.",
   "editor_parser_not_loaded": "der Parser konnte nicht geladen werden",
-  "editor_paste_changed": "Der Quelltext hat sich geändert, bevor das Einfügen abgeschlossen war. Versuchen Sie es erneut.",
+  "editor_paste_blocked": "Der Browser erlaubt LibrePaper hier nicht, die Zwischenablage zu lesen.",
+  "editor_paste_changed":"Der Quelltext hat sich geändert, bevor das Einfügen abgeschlossen war. Versuchen Sie es erneut.",
   "editor_problems_both": [
     {
       "declarations": [

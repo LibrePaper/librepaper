@@ -922,7 +922,8 @@
   "editor_bibliography_unavailable": "Bibliografía no disponible: {reason}",
   "editor_cut_changed": "El código fuente cambió antes de terminar «Cortar». Seleccione el texto de nuevo.",
   "editor_parser_not_loaded": "no se pudo cargar el analizador",
-  "editor_paste_changed": "El código fuente cambió antes de terminar «Pegar». Inténtelo de nuevo.",
+  "editor_paste_blocked": "El navegador no permite que LibrePaper lea el portapapeles aquí.",
+  "editor_paste_changed":"El código fuente cambió antes de terminar «Pegar». Inténtelo de nuevo.",
   "editor_problems_both": [
     {
       "declarations": [

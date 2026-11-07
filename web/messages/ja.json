@@ -922,7 +922,8 @@
   "editor_bibliography_unavailable": "参考文献を利用できません：{reason}",
   "editor_cut_changed": "切り取りが完了する前にソースが変更されました。もう一度テキストを選択してください。",
   "editor_parser_not_loaded": "パーサーを読み込めませんでした",
-  "editor_paste_changed": "貼り付けが完了する前にソースが変更されました。もう一度お試しください。",
+  "editor_paste_blocked": "このブラウザーでは、LibrePaperがここでクリップボードを読み取ることはできません。",
+  "editor_paste_changed":"貼り付けが完了する前にソースが変更されました。もう一度お試しください。",
   "editor_problems_both": [
     {
       "declarations": [

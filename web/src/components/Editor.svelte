@@ -257,6 +257,10 @@
   import { markdownFacts } from "../lib/visual-markup/markdown-facts.js";
   import { typstFacts } from "../lib/visual-markup/typst-facts.js";
   import { m } from "../lib/paraglide/messages.js";
+  import { Menu } from "@skeletonlabs/skeleton-svelte";
+  import ExplorerMenu from "./ExplorerMenu.svelte";
+  import { APPLE, labelOf, menuKeys } from "../lib/commands.js";
+  import { SOURCE_MENU, clipboardReadable, rightClickCaret } from "../lib/source-menu.js";
 
   // Whether what is typed here is recorded as a tracked change is not a prop
   // to follow. It starts from `tracking` and is flipped by `startTracking` and
@@ -975,6 +979,44 @@
     return done;
   }
 
+  // Whether the browser lets the editor read the clipboard. Paste is greyed
+  // while it does not: the probe runs when the editor starts and again when a
+  // source menu opens, and a read that is refused turns it off.
+  let pasteReadable = $state(true);
+  function probeClipboard() {
+    return clipboardReadable(navigator).then((readable) => { pasteReadable = readable; });
+  }
+  probeClipboard();
+
+  // The source's right-click menu: each item's availability, asked when it opens.
+  let sourceMenuAvailable = $state({});
+  const sourceMenuKeys = $derived(menuKeys({ modalEditor: keys === "vim" || keys === "emacs", apple: APPLE }));
+
+  // Shown at once from what the editor knows, then again once the clipboard
+  // probe has answered, so Paste is never offered on a stale answer.
+  async function openSourceMenu() {
+    sourceMenuAvailable = editAvailability();
+    await probeClipboard();
+    sourceMenuAvailable = editAvailability();
+  }
+
+  // Runs a source-menu item. Zag hands focus back to the trigger as the menu
+  // closes, so the command waits a tick and then the editor takes the focus
+  // itself. A refused clipboard read greys Paste (editCommand turns it off).
+  function runSourceMenu(command) {
+    setTimeout(() => { void editCommand(command).catch(() => {}); }, 0);
+  }
+
+  // Right-click and the keyboard's menu key open the same menu. The keyboard
+  // has no pointer, so the menu opens at the caret: a synthetic contextmenu
+  // event at the caret reaches the trigger the same way a right click does.
+  function openSourceMenuAtCaret() {
+    if (!view) return false;
+    const rect = view.coordsAtPos(view.state.selection.main.head) ?? view.dom.getBoundingClientRect();
+    view.contentDOM.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: rect.left, clientY: rect.bottom }));
+    return true;
+  }
+
   export function editAvailability() {
     if (!view) return {};
     const selected = !view.state.selection.main.empty;
@@ -984,7 +1026,7 @@
       undo: editable && (manager?.canUndo?.() ?? false),
       redo: editable && (manager?.canRedo?.() ?? false),
       cut: editable && selected, copy: selected,
-      paste: editable, "select-all": true, find: true, replace: editable,
+      paste: editable && pasteReadable, "select-all": true, find: true, replace: editable,
       bold: editable, italic: editable,
       link: editable && canLink(format),
       "numbered-list": editable && canList(format), "bulleted-list": editable && canList(format),
@@ -1043,7 +1085,14 @@
         target.dispatch({ changes: { from, to }, selection: { anchor: from }, annotations: Transaction.userEvent.of("delete.cut") });
       }
     } else if (command === "paste") {
-      const text = await navigator.clipboard.readText();
+      let text;
+      try {
+        text = await navigator.clipboard.readText();
+      } catch (error) {
+        // A refused read: Paste is greyed from now on, and the error still goes to the caller.
+        pasteReadable = false;
+        throw error;
+      }
       if (view !== target || target.state !== state || !editable) throw new Error(m.editor_paste_changed());
       target.dispatch({ ...state.replaceSelection(text), annotations: Transaction.userEvent.of("input.paste"), scrollIntoView: true });
     }
@@ -1320,6 +1369,8 @@
         pendingChanges,
         // The bar over a selection, offering the annotating verbs.
         commentBar,
+        // A right click outside the selection moves the caret there, before the source menu opens.
+        rightClickCaret(),
         authorMarks,
         keymap.of([
           // Everyone tries Ctrl/Cmd-S in an editor.
@@ -1345,6 +1396,9 @@
           { key: "Mod-Shift-7", preventDefault: true, run: () => runStructure("numbered-list") },
           { key: "Mod-Shift-8", preventDefault: true, run: () => runStructure("bulleted-list") },
           { key: "Mod-Alt-m", preventDefault: true, run: () => (void editCommand("comment"), true) },
+          // The source menu from the keyboard: the menu key and Shift+F10.
+          { key: "ContextMenu", preventDefault: true, run: openSourceMenuAtCaret },
+          { key: "Shift-F10", preventDefault: true, run: openSourceMenuAtCaret },
           // Source text size. The keyboard half of the pinch: lib/commands.js names
           // these bindings, and the size is the one lib/editor-zoom.js changes.
           { key: "Mod-=", preventDefault: true, run: () => (setSize(size() + 1), true) },
@@ -1822,7 +1876,25 @@
 
 </script>
 
-<div class="editorhost" bind:this={host}></div>
+<!-- The source's right-click menu, the same one the file tree's menus are: a
+     right click, or the keyboard's menu key, opens it at the pointer or the caret. -->
+<Menu onSelect={(chosen) => runSourceMenu(chosen.value)} onOpenChange={(event) => { if (event.open) void openSourceMenu(); }}>
+  <Menu.ContextTrigger>
+    {#snippet element(attributes)}
+      <div {...attributes} class="editorhost" bind:this={host}></div>
+    {/snippet}
+  </Menu.ContextTrigger>
+  <ExplorerMenu>
+    {#each SOURCE_MENU as group, index}
+      {#if index}<hr class="hr my-1" />{/if}
+      {#each group as command (command)}
+        <Menu.Item value={command} class="menuitem" disabled={!sourceMenuAvailable[command]} title={command === "paste" && !pasteReadable ? m.editor_paste_blocked() : undefined}>
+          <span class="menuitem-label">{labelOf(command)}</span>{#if sourceMenuKeys[command]}<span class="menuitem-keys">{sourceMenuKeys[command]}</span>{/if}
+        </Menu.Item>
+      {/each}
+    {/each}
+  </ExplorerMenu>
+</Menu>
 
 <!-- A pending change is painted by `.change-added`, `.change-removed` and
      `.change-selected` in `styles/librepaper.css`, beside the rest of the
