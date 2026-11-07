@@ -121,15 +121,14 @@ async function highlightedSource(source, path) {
   const lower = base.toLowerCase();
   // Plain text, tables and bibliographies have no grammar worth colouring.
   if (/\.(?:txt|csv|tsv|bib|bst)$/.test(lower) || source.length > HIGHLIGHT_LIMIT) return null;
-  const [{ LanguageDescription, StreamLanguage }, { highlightCode, classHighlighter }, { languages }] = await Promise.all([
+  const [{ LanguageDescription }, { highlightCode, classHighlighter }, { languages }] = await Promise.all([
     import("@codemirror/language"),
     import("@lezer/highlight"),
     import("@codemirror/language-data"),
   ]);
   let language = null;
   if (sourceFormatOf(lower) === "latex") {
-    const { stex } = await import("@codemirror/legacy-modes/mode/stex");
-    language = StreamLanguage.define(stex);
+    ({ latexLanguage: language } = await import("./latex-language/index.js"));
   } else {
     const description = LanguageDescription.matchFilename(languages, base)
       || (lower.endsWith(".csl") ? LanguageDescription.matchLanguageName(languages, "xml", false) : null);

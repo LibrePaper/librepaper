@@ -5,14 +5,12 @@ import { json } from "@codemirror/lang-json";
 import { yamlFrontmatter } from "@codemirror/lang-yaml";
 import { languages } from "@codemirror/language-data";
 import { LanguageDescription } from "@codemirror/language";
-import { stex } from "@codemirror/legacy-modes/mode/stex";
 import { typstLanguage } from "./typst-mode.js";
 import { sourceFormatOf } from "./formats.js";
-import { latexFolding } from "./latex-folding.js";
 import { pandocExtensions } from "./pandoc-markdown.js";
+import { latex } from "./latex-language/index.js";
 
 const typst = StreamLanguage.define(typstLanguage);
-const latex = StreamLanguage.define(stex);
 
 /** Resolve an exact language name for a Markdown or Quarto code fence. */
 export function codeLanguage(info) {
@@ -48,7 +46,7 @@ const markdownSupport = () => yamlFrontmatter({
 function byFormat(format) {
   switch ((format || "").toLowerCase()) {
     case "latex":
-    case "tex": return [latex, latexFolding];
+    case "tex": return latex();
     case "typst": return typst;
     case "html": return html();
     case "quarto":
