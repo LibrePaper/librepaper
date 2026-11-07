@@ -4235,18 +4235,11 @@
     if (template) mathPalette?.openTemplate?.(template);
   }
 
-  // However an overlay closes, the editor gets the keyboard back, once the
-  // dialog has finished returning the focus to whatever opened it. The opener
-  // can be a menu that no longer exists. The Symbols picker skips this on touch
-  // devices (see returnToEditorUnlessTouch).
-  const returnToEditor = () => requestAnimationFrame(() => editor?.focus?.());
-  // On a touch device the editor is not refocused, since that raises the virtual keyboard.
-  const returnToEditorUnlessTouch = () => { if (!matchMedia("(pointer: coarse)").matches) returnToEditor(); };
-
+  // A palette that inserts closes; the dialog returns focus to whatever opened
+  // it, or to the editor when that has gone.
   function closePalette() {
     symbolsOpen = false;
     mathOpen = false;
-    returnToEditor();
   }
 
   // An Escape the palette keeps, to clear its search or leave a form, is
@@ -5083,13 +5076,13 @@
 
 <!-- The palettes open over the editor rather than in the sidebar. Each is
      mounted only while open, so a form left half filled does not come back. -->
-<Modal bind:open={symbolsOpen} title={m.common_insert_symbol()} compact sheet onclose={returnToEditorUnlessTouch}
+<Modal bind:open={symbolsOpen} title={m.common_insert_symbol()} compact sheet
        initialFocus={() => symbolPalette?.focusTarget?.()} onEscapeKeyDown={(event) => paletteEscape(symbolPalette, event)}>
   {#if symbolsOpen}
     <SymbolPalette bind:this={symbolPalette} format={editorFormat} getContext={insertContext} oninsert={(result, context) => applyInsertion(result, context, { focus: false })} oncancel={(context) => editor?.releaseInsertContext?.(context)} />
   {/if}
 </Modal>
-<Modal bind:open={mathOpen} title={m.common_math()} wider onclose={returnToEditor}
+<Modal bind:open={mathOpen} title={m.common_math()} wider
        initialFocus={() => mathPalette?.focusTarget?.()} onEscapeKeyDown={(event) => paletteEscape(mathPalette, event)}>
   {#if mathOpen}
     <MathPalette bind:this={mathPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={closePalette} oncancel={(context) => editor?.releaseInsertContext?.(context)} />
@@ -5097,7 +5090,7 @@
 </Modal>
 
 <!-- Word counts for the open file, read on open and as the text changes. -->
-<Modal bind:open={wordCountOpen} title={m.common_word_count()} onclose={returnToEditor}
+<Modal bind:open={wordCountOpen} title={m.common_word_count()}
   confirm={{ label: m.common_close(), cancel: false, onclick: () => (wordCountOpen = false) }}>
   {#snippet children()}
     <WordCount count={wordCount} />
