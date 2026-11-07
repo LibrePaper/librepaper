@@ -333,3 +333,10 @@ test("math closed implicitly stays math up to the close", () => {
   assert.ok(inMath(state, doc.indexOf("x\n")));
   assert.ok(!inMath(state, doc.indexOf("after")));
 });
+
+test("a space between \\begin or \\end and the brace is allowed", () => {
+  const tree = parse("\\begin {itemize}\n\\item $x$\n\\end {itemize}\n\\begin {verbatim}\n$ % {\n\\end{verbatim}\n\\section{B}\n");
+  assert.deepEqual(errors(tree), []);
+  assert.equal(nodes(tree, "Environment").length, 1);
+  assert.equal(nodes(tree, "VerbatimEnvironment").length, 1);
+});

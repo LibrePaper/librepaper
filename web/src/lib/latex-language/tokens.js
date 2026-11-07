@@ -56,6 +56,13 @@ function braceName(input, offset) {
   return null;
 }
 
+/** The number of spaces or tabs at offset when a `{` follows them, else 0. */
+function spacesToBrace(input, offset) {
+  let gap = 0;
+  while (input.peek(offset + gap) === SPACE || input.peek(offset + gap) === TAB) gap++;
+  return gap && input.peek(offset + gap) === LBRACE ? gap : 0;
+}
+
 /** Pick the first token the parser can shift, or fall back. */
 function firstShiftable(stack, candidates, fallback) {
   for (const term of candidates) if (stack.canShift(term)) return term;
@@ -81,8 +88,10 @@ function controlToken(input, stack) {
   while (isLetter(input.peek(len))) len++;
   const word = input.read(input.pos + 1, input.pos + len);
 
+  // `\begin {name}` is valid too: the keyword token takes the spaces before the brace.
+  const keyword = word === "begin" || word === "end" ? len + spacesToBrace(input, len) : len;
   if (word === "begin") {
-    const name = braceName(input, len);
+    const name = braceName(input, keyword);
     let candidates = [BeginKw];
     if (name !== null) {
       const bare = name.trim().replace(/\*$/, "");
@@ -90,10 +99,11 @@ function controlToken(input, stack) {
       else if (VERBATIM_ENVS.has(bare)) candidates = [VerbBeginKw, BeginKw];
       else if (LISTING_ENVS.has(bare)) candidates = [ListingBeginKw, BeginKw];
     }
-    return input.acceptToken(firstShiftable(stack, candidates, ControlSequence), len);
+    const term = firstShiftable(stack, candidates, ControlSequence);
+    return input.acceptToken(term, term === ControlSequence ? len : keyword);
   }
   if (word === "end") {
-    if (stack.canShift(EndKw)) return input.acceptToken(EndKw, len);
+    if (stack.canShift(EndKw)) return input.acceptToken(EndKw, keyword);
     // An \end that belongs to an outer environment closes whatever is open
     // here (unclosed inline math, say) without consuming it.
     if (stack.canShift(ImplicitClose)) return input.acceptToken(ImplicitClose, 0);
@@ -203,10 +213,9 @@ export const latexTokens = new ExternalTokenizer((input, stack) => {
 /** The name of the verbatim environment whose \begin{...} precedes the input position. */
 function openEnvironment(input) {
   const text = input.read(Math.max(0, input.pos - 4000), input.pos);
-  const at = text.lastIndexOf("\\begin{");
-  if (at < 0) return null;
-  const close = text.indexOf("}", at);
-  return close < 0 ? null : text.slice(at + 7, close);
+  let found = null;
+  for (const match of text.matchAll(/\\begin[ \t]*\{([^{}\n]*)\}/g)) found = match[1];
+  return found;
 }
 
 /** True when the input continues with `marker`. */
