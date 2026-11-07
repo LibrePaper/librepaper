@@ -334,8 +334,14 @@
   /// A state carries no decorations until something puts them there, so this
   /// runs when a file is shown, after every document change (local or
   /// imported), and when the selection or the viewer changes.
+  let drawnEmpty = null; // [view, file] of the last draw that held no changes
   function drawChanges() {
     if (!view || !showing || !session) return;
+    // No changes now and none drawn last time: the marks are already empty.
+    if (!session.doc.getMap(CHANGES).size) {
+      if (drawnEmpty && drawnEmpty[0] === view && drawnEmpty[1] === showing) return;
+      drawnEmpty = [view, showing];
+    } else drawnEmpty = null;
     view.dispatch({
       effects: setChangeMarks.of({
         ...resolveFile(session.doc, showing),
@@ -535,6 +541,7 @@
       return {
         update(update) {
           if (!update.docChanged || !update.transactions.some(recordsEdits)) return;
+          viewEdited = true;
           const doc = session.doc;
           const steps = [];
           for (const transaction of update.transactions) {
@@ -547,8 +554,8 @@
           }
           if (!steps.length) return;
           const composed = composeEdits(steps.map((step) => step.edits));
-          const before = steps[0].transaction.startState.doc.toString();
-          const fragments = composed.some((edit) => edit.to > edit.from) ? fragmentRangesFor(before, composed, createdFragments()) : [];
+          // The text before the edit is only read when something was deleted.
+          const fragments = composed.some((edit) => edit.to > edit.from) ? fragmentRangesFor(steps[0].transaction.startState.doc.toString(), composed, createdFragments()) : [];
           session.anchors.record([{ fileId, edits: composed, fragments }], session.anchorMemory);
           doc.commit({ origin: ANCHORS_ORIGIN });
         },
@@ -626,23 +633,28 @@
     const request = bibliographyRequest();
     const key = bibliographyCacheKey(request);
     if (!bibliographyNeedsAnalysis(request)) {
+      const changed = parsedBibliography !== null || key !== lastBibliographyKey;
       parsedBibliography = null; lastBibliographyKey = key;
-      citationsUpdated();
+      if (changed) citationsUpdated();
       onbibliography?.({ entries: [], diagnostics: [] }, request);
       return;
     }
     if (key !== lastBibliographyKey) { parsedBibliography = null; citationsUpdated(); }
     lastBibliographyKey = key;
-    bibliographyCache.get(request, analyze).then((result) => {
+    bibliographyCache.get(request, analyze, key).then((result) => {
       if (generation !== bibliographyGeneration) return;
       const newlyAvailable = !parsedBibliography && result.entries.length > 0;
+      // A cache hit returns the very result already shown, so the citation
+      // underlines have nothing new to draw.
+      const unchanged = result === parsedBibliography;
       parsedBibliography = result;
-      citationsUpdated();
+      if (!unchanged) citationsUpdated();
       scheduleFacts();
       onbibliography?.(result, request);
-      const currentFormat = formatOf(pathOfDoc(session.doc, showing));
-      const currentContext = view && citationContext(view.state.doc.toString(), view.state.selection.main.head, currentFormat);
-      if (newlyAvailable && view?.hasFocus && currentContext) startCompletion(view);
+      if (newlyAvailable && view?.hasFocus) {
+        const currentFormat = formatOf(pathOfDoc(session.doc, showing));
+        if (citationContext(view.state.doc.toString(), view.state.selection.main.head, currentFormat)) startCompletion(view);
+      }
     }).catch((error) => {
       if (generation !== bibliographyGeneration) return;
       parsedBibliography = null;
@@ -683,7 +695,7 @@
   function scheduleBibliography() {
     bibliographyGeneration += 1;
     clearTimeout(bibliographyTimer);
-    bibliographyTimer = setTimeout(refreshBibliography, 120);
+    bibliographyTimer = setTimeout(refreshBibliography, 500);
     scheduleFacts();
   }
 
@@ -1605,6 +1617,7 @@
   /// The mark keeps the binding from writing the text back, and the anchors
   /// plugin from recording it. The decision that wrote the document already
   /// read the anchor index back (`settleAnchors` in Reader.svelte).
+  let viewEdited = false; // a keystroke in this view has not been seen by a local batch yet
   function reconcileShown() {
     if (!view || !showing) return;
     const text = getTextFromDoc(showing);
@@ -1710,7 +1723,11 @@
       // document without a keystroke here. A local write from outside the
       // view, such as a decision in the Changes panel, is copied into it.
       const unsubscribeChanges = session.doc.subscribe((batch) => queueMicrotask(() => {
-        if (batch.by === "local") reconcileShown();
+        if (batch.by === "local") {
+          // A commit that came from typing in this view cannot have diverged
+          // from it; only writes from elsewhere (the Changes panel) need it.
+          if (batch.origin === ANCHORS_ORIGIN) {} else if (viewEdited) viewEdited = false; else reconcileShown();
+        }
         scheduleDraw();
         scheduleAuthorship();
       }));
