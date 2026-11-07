@@ -23,8 +23,10 @@ const MATH_ENVS = new Set([
   "equation", "align", "gather", "multline", "flalign", "alignat", "displaymath", "math", "eqnarray",
 ]);
 // Environments whose body is opaque. The second set takes options first.
+// Not `example`: verbatim in the R Journal style, but an ordinary theorem-like
+// environment with math in most documents. An R Journal `$` stops at its \end.
 const VERBATIM_ENVS = new Set([
-  "verbatim", "comment", "CodeInput", "CodeOutput", "Sinput", "Soutput", "Scode", "example", "filecontents",
+  "verbatim", "comment", "CodeInput", "CodeOutput", "Sinput", "Soutput", "Scode", "filecontents",
 ]);
 const LISTING_ENVS = new Set(["lstlisting", "minted", "Verbatim", "BVerbatim", "LVerbatim", "Highlighting"]);
 

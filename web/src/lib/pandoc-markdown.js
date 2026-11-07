@@ -162,10 +162,12 @@ function indentAfterQuote(text) {
 function divClose(cx) {
   let start = cx.lineStart + cx.line.text.length + 1;
   let pos = cx.absoluteLineEnd + 1, depth = 1, boundary = true, fence = null;
+  // Indentation counts from the opener's container, such as a list item's content column.
+  const base = cx.line.baseIndent;
   while (pos < cx.to) {
     const { text, end } = /** @type {any} */ (cx).scanLine(pos);
     const body = text.replace(/^[\s>]*/, "");
-    if (indentAfterQuote(text) >= 4) {
+    if (indentAfterQuote(text) - base >= 4) {
       boundary = false;
       start += text.length + 1;
       pos = end + 1;

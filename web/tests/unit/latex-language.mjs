@@ -350,3 +350,11 @@ test("a space between \\begin or \\end and the brace is allowed", () => {
   assert.equal(nodes(tree, "Environment").length, 1);
   assert.equal(nodes(tree, "VerbatimEnvironment").length, 1);
 });
+
+test("an amsthm example is ordinary text with math, not verbatim", () => {
+  const doc = "\\begin{example}\nLet $x^2$ be \\emph{big}.\n\\end{example}\n";
+  const tree = parse(doc);
+  assert.deepEqual(errors(tree), []);
+  assert.equal(nodes(tree, "VerbatimEnvironment").length, 0);
+  assert.equal(inMath(stateFor(doc), doc.indexOf("x^2") + 1), true);
+});

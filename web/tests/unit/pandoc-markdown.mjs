@@ -121,3 +121,9 @@ test("GFM and code are unaffected", () => {
   assert.deepEqual(names("```\n$x$ and @key\n```", ["InlineMath", "Citation"]), []);
   assert.deepEqual(names("`$x$`", ["InlineMath"]), []);
 });
+
+test("a div inside a list item closes at the item's indentation", () => {
+  const doc = "10. ::: note\n    Inside.\n    :::\n\n    After the div.\n";
+  const [div] = texts(doc, "FencedDiv");
+  assert.equal(div, "::: note\n    Inside.\n    :::");
+});
