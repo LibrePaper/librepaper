@@ -197,8 +197,9 @@ impl PostgresCatalog {
 
     /// Adds up to `wanted` bytes to the reservation row `key` for this
     /// document, creating it if needed, and returns the row's new total. The
-    /// locks and the owner and deployment limits are the ones
-    /// `reserve_pending_log_bytes` uses. It grants what fits, and refuses
+    /// document log reserves its quota through this too
+    /// (`reserve_pending_log_bytes`): it takes the document and storage-usage
+    /// locks and checks the owner and deployment limits. It grants what fits, and refuses
     /// when that is less than `minimum`.
     pub async fn reserve_chat_bytes(
         &self,
