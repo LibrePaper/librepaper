@@ -73,7 +73,7 @@ function free(taken, path) {
 /// Returns `{ files, diagnostics, texts }`, where `files` maps
 /// a path to `{ kind, id, digest, bytes }` in UTF-8 path order and `texts`
 /// maps a path to its body.
-export function projectDirectory(doc, rules) {
+export function projectDirectory(doc, rules, { bodies = true } = {}) {
   const diagnostics = [];
   const candidates = [];
 
@@ -102,14 +102,14 @@ export function projectDirectory(doc, rules) {
       diagnostics.push({ kind: "unnamed", id });
       continue;
     }
-    const body = value.toString();
+    const body = bodies ? value.toString() : null;
     candidates.push({
       asset: false,
       key: id,
       id,
       requested: named.get(id),
       digest: "",
-      bytes: encoder.encode(body).length,
+      bytes: bodies ? encoder.encode(body).length : 0,
       text: body,
     });
   }
@@ -227,6 +227,13 @@ export function projectDirectory(doc, rules) {
   diagnostics.sort((left, right) => compareKeys(diagnosticSortKey(left), diagnosticSortKey(right)));
 
   return { files, diagnostics, texts };
+}
+
+/// The same path <-> id layout as `projectDirectory`, without reading any
+/// text body: `texts` is empty and every `bytes` is 0. For lookups that only
+/// need which path a file id has, which is most of them.
+export function projectPaths(doc, rules) {
+  return projectDirectory(doc, rules, { bodies: false });
 }
 
 /// The canonical projection, including the content digests used by snapshots.

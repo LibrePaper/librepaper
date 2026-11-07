@@ -24,7 +24,7 @@
 
 import { LoroDoc, LoroText, EphemeralStore, VersionVector } from "loro-crdt";
 import { checkPlacement, folderPaths, inside, parentPath, relocation, topEntries } from "./file-manager.js";
-import { projectDirectory } from "./projection.js";
+import { projectDirectory, projectPaths } from "./projection.js";
 import { createGeneration } from "./reader/generation.js";
 import { AnchorIndex, MoveMemory } from "./anchors.js";
 import { toLf } from "./line-endings.js";
@@ -777,7 +777,7 @@ export function createProjectSession({
     /// Every file in the document: its id and its path, sorted by path.
     /** @returns {ProjectFile[]} */
     list() {
-      const projection = projectDirectory(doc, projectionRules);
+      const projection = projectPaths(doc, projectionRules);
       return [...projection.files.entries()].map(([path, file]) => ({
         id: file.source,
         path,
@@ -811,7 +811,7 @@ export function createProjectSession({
     /// which is what a diagnostic carries.
     /** @param {string} path */
     idOf(path) {
-      return projectDirectory(doc, projectionRules).files.get(path)?.id || "";
+      return projectPaths(doc, projectionRules).files.get(path)?.id || "";
     },
 
     /** @param {string} id */

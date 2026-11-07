@@ -239,7 +239,7 @@
   import { CHANGES, planEdits, writePlanned, resolveFile, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
-  import { projectDirectory } from "../lib/projection.js";
+  import { projectDirectory, projectPaths } from "../lib/projection.js";
   import { openingFile, resolveInclude } from "../lib/opening.js";
   import { toLf, healLineEndings, LINE_ENDINGS_ORIGIN } from "../lib/line-endings.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
@@ -1507,14 +1507,14 @@
 
   function pathOfDoc(doc, id) {
     if (!doc || !id) return "";
-    for (const [path, file] of projectDirectory(doc, rules ?? null).files) {
+    for (const [path, file] of projectPaths(doc, rules ?? null).files) {
       if (file.kind === "text" && file.id === id) return path;
     }
     return "";
   }
   function textIdForPath(doc, path) {
     if (!doc || !path) return "";
-    const file = projectDirectory(doc, rules ?? null).files.get(path);
+    const file = projectPaths(doc, rules ?? null).files.get(path);
     return file?.kind === "text" ? file.id : "";
   }
   // Project facts for completion sources. The format comes from the edited

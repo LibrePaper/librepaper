@@ -386,9 +386,11 @@
   function pushCommentMarks() {
     if (!editor || !session) return;
     const list = [];
+    const ids = new Map();
     for (const comment of comments) {
       if (comment.sourceStart == null || comment.sourceEnd == null || !comment.sourcePath) continue;
-      const file = session.idOf(comment.sourcePath);
+      if (!ids.has(comment.sourcePath)) ids.set(comment.sourcePath, session.idOf(comment.sourcePath));
+      const file = ids.get(comment.sourcePath);
       if (!file) continue;
       list.push({
         id: String(comment.id),
