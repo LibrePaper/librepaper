@@ -84,7 +84,8 @@ test("citations", () => {
   assert.deepEqual(names("mail a@b.org", ["Citation"]), []);
   assert.deepEqual(names("see @fig-a", ["Citation", "CrossRef"]), ["CrossRef"]);
   assert.deepEqual(names("[link](http://x)", ["Link", "Citation"]), ["Link"]);
-  assert.deepEqual(names("[@a](http://x)", ["Link", "Citation"]), ["Link"]);
+  // The link stays a link; Pandoc reads a key in link text as a citation too.
+  assert.deepEqual(names("[@a](http://x)", ["Link", "Citation"]), ["Link", "Citation"]);
   assert.deepEqual(names("`@doe`", ["Citation"]), []);
 });
 
