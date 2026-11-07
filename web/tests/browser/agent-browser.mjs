@@ -464,8 +464,8 @@ try {
     /downloads its adapter\. To install it for good, run npm install -g pi-acp/,
   );
 
-  await page.evaluate(`(()=>{const input=document.querySelector('textarea[placeholder]');input.value='First';input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,bubbles:true}));})()`);
-  assert.equal(await page.evaluate("document.querySelector('textarea[placeholder]').value"),"First\n");
+  await page.evaluate(`(()=>{const input=document.querySelector('textarea[placeholder]');input.value='First';input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',shiftKey:true,bubbles:true}));})()`);
+  assert.equal(await page.evaluate("document.querySelector('textarea[placeholder]').value"),"First\n", "Shift+Enter is the newline");
 
   // A runner going away leaves drafting alone, and sending would start one.
   // Shift+Enter is a newline and IME Enter cannot send the request

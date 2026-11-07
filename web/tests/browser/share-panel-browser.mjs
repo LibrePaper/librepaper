@@ -96,6 +96,8 @@ const labelled = (label) => document.querySelector('[aria-label="' + label + '"]
 const press = async (node) => {
   check(node, "missing control");
   node.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }));
+  // A real click on a button focuses it; a scripted one does not.
+  node.focus?.();
   node.click();
   await flush();
 };
