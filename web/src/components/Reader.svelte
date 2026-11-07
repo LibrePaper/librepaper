@@ -12,7 +12,6 @@
   import * as history from "../lib/history.js";
   import { createHistorySource } from "../lib/reader/history-source.svelte.js";
   import { CURRENT, NOTHING } from "../lib/history-endpoints.js";
-  import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
   import ComparisonBar from "./reader/ComparisonBar.svelte";
   import { createComparison } from "../lib/reader/comparison.svelte.js";
   import { createWebGit } from "../lib/reader/web-git.svelte.js";
@@ -70,6 +69,7 @@
   import { size as textSize, setSize as setTextSize, DEFAULT_SIZE } from "../lib/editor-type.js";
 
   import { tick, untrack } from "svelte";
+  import { lazyComponent } from "../lib/lazy-component.svelte.js";
   import { onMode } from "../lib/theme.js";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import MenubarMenu from "./MenubarMenu.svelte";
@@ -82,7 +82,6 @@
   import { DOCUMENTATION_URL } from "../lib/site-links.js";
   import { VISUAL_FORMATS } from "../lib/visual-markup/formats.js";
   import Modal from "./Modal.svelte";
-  import CommandPalette from "./CommandPalette.svelte";
   import Toasts from "./Toasts.svelte";
   import { say, toaster } from "../lib/toast.svelte.js";
   import { archive, docxFile, entryDownload, projectFiles, saveBlob } from "../lib/reader/downloads.js";
@@ -94,7 +93,6 @@
   import { onPageZoom } from "../lib/desktop/zoom.js";
   import { agentWaitingBadge } from "../lib/agent-permission.js";
   import Grip from "./Grip.svelte";
-  import SettingsDialog from "./settings/SettingsDialog.svelte";
   import DesktopOnly from "./DesktopOnly.svelte";
   import DesktopMismatch from "./DesktopMismatch.svelte";
   import { anonymousIdentity, update as updateBuildPreferences } from "../lib/build-preferences.js";
@@ -118,8 +116,6 @@
   import { recenteredLeft, placeBar as placeSelectionBar } from "../lib/annotation-bar.js";
   import { VERBS, motivationFor } from "../lib/annotating.js";
   import InsertMenu from "./InsertMenu.svelte";
-  import SymbolPalette from "./SymbolPalette.svelte";
-  import MathPalette from "./MathPalette.svelte";
   import Sidebar from "./layout/Sidebar.svelte";
   import HeaderTabs from "./mobile/HeaderTabs.svelte";
   import ModeSwitch from "./mobile/ModeSwitch.svelte";
@@ -133,14 +129,10 @@
   import Files from "./reader/Files.svelte";
   import Outline from "./reader/Outline.svelte";
   import WordCount from "./reader/WordCount.svelte";
-  import Agent from "./reader/Agent.svelte";
   import Collaboration from "./reader/Collaboration.svelte";
   import Changes from "./reader/Changes.svelte";
   import Share from "./reader/Share.svelte";
-  import Git from "./reader/Git.svelte";
   import Diagnostics from "./reader/Diagnostics.svelte";
-  import History from "./reader/History.svelte";
-  import { loadAuthors } from "../lib/authorship.js";
   import PendingAnnotations from "./reader/PendingAnnotations.svelte";
   import { m } from "../lib/paraglide/messages.js";
 
@@ -1405,6 +1397,17 @@
   // reader joins it too, because that is where the text comes from.
   let Editor = $state(null);
   let editor = $state(null);
+  // Panels and dialogs that are not on screen at open load on first use.
+  const lazy = {
+    agent: lazyComponent(() => import("./reader/Agent.svelte")),
+    git: lazyComponent(() => import("./reader/Git.svelte")),
+    history: lazyComponent(() => import("./reader/History.svelte")),
+    historyWorkspace: lazyComponent(() => import("./reader/HistoryWorkspace.svelte")),
+    settings: lazyComponent(() => import("./settings/SettingsDialog.svelte")),
+    commandPalette: lazyComponent(() => import("./CommandPalette.svelte")),
+    symbols: lazyComponent(() => import("./SymbolPalette.svelte")),
+    math: lazyComponent(() => import("./MathPalette.svelte")),
+  };
   let insertMenu = $state(null);
   // The palettes are overlays over the editor. Their components are kept so a
   // command can ask the Math overlay to open a template, or the Symbols overlay
@@ -1590,6 +1593,7 @@
     authorsLoading = true;
     authorsError = "";
     try {
+      const { loadAuthors } = await import("../lib/authorship.js");
       const map = await loadAuthors(SLUG, authHeaders(KEY));
       if (request === authorsRequests) authorsMap = map;
     } catch (error) {
@@ -2642,14 +2646,16 @@
   let templateSaveKey = "";
   let templateSaveRequestId = "";
 
-  function openSettings(category = "general") {
+  async function openSettings(category = "general") {
     // The editor category carries the shortcut table, and the table greys what
     // the source cannot currently do, so the editor is asked before the page
     // that shows the answer is drawn.
     refreshEditAvailability();
     settingsCategory = category;
+    try { await lazy.settings.load(); } catch { return; }
     settingsOpen = true;
   }
+  $effect(() => { if (settingsOpen) lazy.settings.load().catch(() => {}); });
   // The desktop app asks for Settings from its menu and from Ctrl or Cmd+,.
   $effect(() => {
     const open = () => openSettings();
@@ -2682,6 +2688,19 @@
       ? [...visitedPanels, "collaboration"]
       : visitedPanels,
   );
+  // A panel's code is fetched when the panel is first mounted.
+  $effect(() => {
+    for (const id of mountedPanels) {
+      if (id === "agent" || id === "git") lazy[id].load().catch(() => {});
+      if (id === "history") {
+        lazy.history.load().catch(() => {});
+        lazy.historyWorkspace.load().catch(() => {});
+      }
+    }
+  });
+  $effect(() => {
+    if (comparing === "history") lazy.historyWorkspace.load().catch(() => {});
+  });
   function showMobileView(view) {
     if (view === "source" && !sourceOpen) view = "document";
     mobileView = view;
@@ -4356,7 +4375,7 @@
   async function runCommand(id) {
     if (id === "word-count") return openWordCount();
     if (EDIT_COMMANDS.includes(id)) return chooseEditCommand(id);
-    if (id === "palette") { refreshEditAvailability(); commandPalette = true; return; }
+    if (id === "palette") { refreshEditAvailability(); await lazy.commandPalette.load().catch(() => {}); commandPalette = true; return; }
     if (id.startsWith("menu-")) return openMenu(id.slice("menu-".length));
     if (id === "shortcuts") return openSettings("editor");
     if (id === "focus-files") return focusPanel("files");
@@ -4399,6 +4418,8 @@
   // The palettes open over the editor. Each one inserts at the caret the
   // editor had when it opened, so there is nothing to open without a source.
   async function openPalette(name, template = "") {
+    if (!can[name]) return;
+    try { await lazy[name].load(); } catch { return; }
     if (!can[name]) return;
     symbolsOpen = name === "symbols";
     mathOpen = name === "math";
@@ -4847,12 +4868,15 @@
   {/snippet}
 
   {#snippet agentPanel()}
+    {#if lazy.agent.component}
+    {@const Agent = lazy.agent.component}
     <Agent open={panel === "agent" && shown.comments} slug={SLUG} link={linkFor(SLUG)} canShare={doc.role === "owner"}
       path={session?.paths?.get(openFile) || ""} selection={agentSelection}
       revision={agentSelection?.revision || ""} request={assistantRequest}
       {comments} changes={changeRows} {diagnostics} onreview={reviewAssistantResults} onpreview={previewAssistant}
       onsettings={() => openSettings("agents")} userName={identity || doc.commenting_as || m.common_you()}
       bind:waiting={agentWaiting} />
+    {/if}
   {/snippet}
 
   {#snippet collaborationPanel()}
@@ -4889,9 +4913,12 @@
   {/snippet}
 
   {#snippet gitPanel()}
+    {#if lazy.git.component}
+    {@const Git = lazy.git.component}
     <Git open={panel === "git" && shown.comments}
       web={webGit} slug={SLUG} linkKey={KEY} desktop={hasDesktop}
       connection={webConnection} />
+    {/if}
   {/snippet}
 
   {#snippet diagnosticsPanel()}
@@ -4906,6 +4933,8 @@
   {/snippet}
 
   {#snippet historyPanel()}
+    {#if lazy.history.component}
+    {@const History = lazy.history.component}
     <History {labels} viewing={historySelectedSha} older={historySource.older} newer={historySource.newer} canEdit={mayEdit}
       problem={historyProblem} loaded={timeline.state.loaded} complete={timeline.state.complete}
       loadingMore={timeline.state.loadingMore} moreProblem={timeline.state.moreProblem}
@@ -4928,6 +4957,7 @@
       authorsOnly={authorsOnly}
       onauthorsview={(on) => (authorsView = on)}
       onisolate={(key) => (authorsOnly = key)} />
+    {/if}
   {/snippet}
 
   <!-- Annotations the server has not acknowledged, offered back wherever
@@ -4980,9 +5010,12 @@
         <ComparisonBar says={comparisonSays} onclose={() => { endComparison(); if (compact) showMobileView("sidebar"); }} />
       {/if}
       {#if comparing === "history"}
-        <HistoryWorkspace source={historySource} versions={labels} canEdit={mayEdit} onrestore={restoreLabel}
-          ondownload={downloadArchive}
-          downloading={downloadingSha} downloadProblem={downloadProblem} />
+        {#if lazy.historyWorkspace.component}
+          {@const HistoryWorkspace = lazy.historyWorkspace.component}
+          <HistoryWorkspace source={historySource} versions={labels} canEdit={mayEdit} onrestore={restoreLabel}
+            ondownload={downloadArchive}
+            downloading={downloadingSha} downloadProblem={downloadProblem} />
+        {/if}
       {:else if shownFigure}
         {@render figureBody()}
       {:else if Editor && sourceBound}
@@ -5274,20 +5307,25 @@
 <!-- The keyboard as a list to search. It is drawn from lib/commands.js and runs
      what the menus run, so it cannot drift from what the keys actually do. The
      table to read lives in the editor settings. -->
-<CommandPalette bind:open={commandPalette} context={commandContext} apple={APPLE}
-                onrun={(id) => void runCommand(id)} />
+{#if lazy.commandPalette.component}
+  {@const CommandPalette = lazy.commandPalette.component}
+  <CommandPalette bind:open={commandPalette} context={commandContext} apple={APPLE}
+                  onrun={(id) => void runCommand(id)} />
+{/if}
 
 <!-- The palettes open over the editor rather than in the sidebar. Each is
      mounted only while open, so a form left half filled does not come back. -->
 <Modal bind:open={symbolsOpen} title={m.common_insert_symbol()} compact sheet
        initialFocus={() => symbolPalette?.focusTarget?.()} onEscapeKeyDown={(event) => paletteEscape(symbolPalette, event)}>
-  {#if symbolsOpen}
+  {#if symbolsOpen && lazy.symbols.component}
+    {@const SymbolPalette = lazy.symbols.component}
     <SymbolPalette bind:this={symbolPalette} format={editorFormat} getContext={insertContext} oninsert={(result, context) => applyInsertion(result, context, { focus: false })} oncancel={(context) => editor?.releaseInsertContext?.(context)} />
   {/if}
 </Modal>
 <Modal bind:open={mathOpen} title={m.common_math()} wider
        initialFocus={() => mathPalette?.focusTarget?.()} onEscapeKeyDown={(event) => paletteEscape(mathPalette, event)}>
-  {#if mathOpen}
+  {#if mathOpen && lazy.math.component}
+    {@const MathPalette = lazy.math.component}
     <MathPalette bind:this={mathPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={closePalette} oncancel={(context) => editor?.releaseInsertContext?.(context)} />
   {/if}
 </Modal>
@@ -5301,15 +5339,18 @@
 </Modal>
 
 <!-- The preferences dialog is shared by the navbar menu and sidebar button. -->
-<SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory}
-                remoteConnected={connected} remoteNote={connectionNote}
-                {keys} onkeys={setKeys}
-                {completion} oncompletion={setCompletion} {brackets} onbrackets={setBrackets} {proofing} onproofing={setProofing} {dialect} ondialect={setDialect} {check} oncheck={setCheck}
-                visual={prefs.visual} onvisual={setVisualDefault}
-                commands={commandContext}
-                userId={buildUserId}
-                onbuildpreferences={(format, next) => { if (format === sourceFormat) setBuildPreferences(next); }}
-                account={me} />
+{#if lazy.settings.component}
+  {@const SettingsDialog = lazy.settings.component}
+  <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory}
+                  remoteConnected={connected} remoteNote={connectionNote}
+                  {keys} onkeys={setKeys}
+                  {completion} oncompletion={setCompletion} {brackets} onbrackets={setBrackets} {proofing} onproofing={setProofing} {dialect} ondialect={setDialect} {check} oncheck={setCheck}
+                  visual={prefs.visual} onvisual={setVisualDefault}
+                  commands={commandContext}
+                  userId={buildUserId}
+                  onbuildpreferences={(format, next) => { if (format === sourceFormat) setBuildPreferences(next); }}
+                  account={me} />
+{/if}
 
 <Modal bind:open={templateModalOpen} title={m.readerd_save_as_template()}
   onclose={() => { templateError = ""; templateName = ""; }}
