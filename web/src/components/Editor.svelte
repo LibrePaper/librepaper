@@ -940,8 +940,10 @@
   }
 
   /// Puts the caret at an offset and scrolls it into the middle of the view:
-  /// what a click in the document does when the two are kept in step.
-  export function goTo(at) {
+  /// what a click in the document does when the two are kept in step. With
+  /// `focus: false` the caret and the view move but the keyboard stays where
+  /// it is, which is what a click in the preview needs.
+  export function goTo(at, { focus = true } = {}) {
     if (!view) return;
     // A place remembered earlier may lie past the end of a file that has
     // shrunk since, and CodeMirror throws on a selection outside the text.
@@ -950,7 +952,7 @@
       selection: { anchor: place },
       effects: EditorView.scrollIntoView(place, { y: "center" }),
     });
-    view.focus();
+    if (focus) view.focus();
   }
 
   export function focus() {
