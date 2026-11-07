@@ -68,7 +68,10 @@ export function fromEvent(event, apple = APPLE) {
   const held = [];
   if (apple ? event.metaKey : event.ctrlKey) held.push("mod");
   if (event.altKey) held.push("alt");
-  const named = (event.altKey ? typed(event.code) || key : key).toLowerCase();
+  // Shift+7 is `&` on a US keyboard, so with Shift held a digit key is read
+  // from its position, as Alt reads it, or the chord would never be Mod+Shift+7.
+  const digit = /^Digit([0-9])$/.exec(event.code || "");
+  const named = (event.altKey ? typed(event.code) || key : event.shiftKey && digit ? digit[1] : key).toLowerCase();
   if (event.shiftKey && letters(named)) held.push("shift");
   return [...MODIFIERS.filter((name) => held.includes(name)), named].join("+");
 }
@@ -213,13 +216,22 @@ export const COMMANDS = [
   { id: "word-count", label: m.common_word_count(), category: m.commands_category_editing(), scope: "workspace", menu: "edit", keys: [], available: editable },
   { id: "bold", label: m.common_bold(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+B"], available: (c) => Boolean(c.edit?.bold) },
   { id: "italic", label: m.common_italic(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+I"], available: (c) => Boolean(c.edit?.italic) },
+  // Markup the editor writes into the file, in the file's own syntax. Built by
+  // lib/editing-shortcuts.js; Editor.svelte runs them from its keymap.
+  { id: "link", label: m.common_link(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Mod+K"], available: (c) => Boolean(c.edit?.link) },
+  { id: "comment", label: m.common_comment(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+Alt+M"], available: (c) => Boolean(c.edit?.comment) },
+  ...[1, 2, 3, 4, 5, 6].map((level) => ({
+    id: "heading-" + level, label: m.commands_heading_level({ level }), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Mod+Alt+" + level], available: (c) => Boolean(c.edit?.["heading-" + level]),
+  })),
+  { id: "numbered-list", label: m.common_numbered_list(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Mod+Shift+7"], available: (c) => Boolean(c.edit?.["numbered-list"]) },
+  { id: "bulleted-list", label: m.common_bulleted_list(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Mod+Shift+8"], available: (c) => Boolean(c.edit?.["bulleted-list"]) },
 
   // Navigation. Where the focus goes, which is the part of a workspace a
   // pointer does well and a keyboard has to be told about.
   { id: "palette", label: m.common_command_palette(), category: m.commands_category_navigation(), scope: "workspace", menu: "help", keys: ["Mod+Alt+P"], palette: false, available: ALWAYS },
   { id: "focus-files", label: m.commands_focus_files(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+E"], available: panel("files"), note: m.commands_note_files_panel() },
   { id: "focus-outline", label: m.commands_focus_outline(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+O"], available: panel("outline"), note: m.commands_note_outline_panel() },
-  { id: "focus-comments", label: m.commands_focus_comments(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+M"], available: panel("collaboration"), note: m.commands_note_comments_panel() },
+  { id: "focus-comments", label: m.commands_focus_comments(), category: m.commands_category_navigation(), scope: "workspace", keys: [], available: panel("collaboration"), note: m.commands_note_comments_panel() },
   { id: "focus-preview", label: m.commands_focus_preview(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+V"], available: (c) => Boolean(c.preview), note: m.commands_note_preview_visible() },
 
   // The bar's words from the keyboard, as Google Docs has them: Alt+F opens

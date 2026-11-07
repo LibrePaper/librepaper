@@ -59,6 +59,14 @@ assert.equal(fromEvent(press("\\", { ctrlKey: true, code: "IntlBackslash" }), fa
 // the binding however the keyboard produces it.
 assert.equal(fromEvent(press("?", { shiftKey: true }), false), "?");
 
+// Shift+7 is `&` on a US keyboard, and `*` for Shift+8. With Shift held, a
+// digit key is read from its position, so Mod+Shift+7 is the chord on any layout
+// that puts a digit on that key.
+assert.equal(fromEvent(press("&", { ctrlKey: true, shiftKey: true, code: "Digit7" }), false), "mod+shift+7");
+assert.equal(fromEvent(press("*", { ctrlKey: true, shiftKey: true, code: "Digit8" }), false), "mod+shift+8");
+assert.equal(fromEvent(press("&", { metaKey: true, shiftKey: true, code: "Digit7" }), true), "mod+shift+7", "and on a Mac");
+assert.equal(fromEvent(press("&", { ctrlKey: true, shiftKey: true, code: "" }), false), "mod+&", "without a code the key is all there is");
+
 /* -------------------------------------------------------------- the keycaps */
 
 assert.deepEqual(caps("Mod+Alt+P", true), ["⌘", "⌥", "P"]);
@@ -126,7 +134,11 @@ const workspace = {
   panels: ["files", "outline", "collaboration", "history", "share"],
   preview: true, compilable: true, canPreviewFile: true,
   downloads: { pdf: true, html: false, docx: false },
-  edit: { undo: true, redo: true, cut: true, copy: true, paste: true, "select-all": true, find: true, replace: true, bold: true, italic: true },
+  edit: {
+    undo: true, redo: true, cut: true, copy: true, paste: true, "select-all": true, find: true, replace: true, bold: true, italic: true,
+    link: true, comment: true, "numbered-list": true, "bulleted-list": true,
+    "heading-1": true, "heading-2": true, "heading-3": true, "heading-4": true, "heading-5": true, "heading-6": true,
+  },
 };
 
 const asked = (event, context = workspace) => commandFor(event, context, { apple: false })?.id ?? null;
@@ -369,4 +381,55 @@ assert.equal(onlyGreyed[0].id, "focus-files", "and the name that starts with the
 // The same name for an editor who has the panel lists it as runnable.
 assert.equal(offeredWithUnavailable(workspace, "focus files", { apple: false }).find((entry) => entry.id === "focus-files").unavailable, false, "a context that can run it greys nothing");
 
-console.log("commands: one notation, no browser collisions, typing beats a chord, a help table that cannot drift from the keys, and one name per command");
+
+/* ------------------------------------------------- the editing shortcuts */
+
+const bindingsOf = (id) => bindings(COMMANDS.find((command) => command.id === id), false);
+
+// Mod+Alt+M is the comment on the selection. It moved here from the Comments
+// panel, which keeps its name and has no chord.
+assert.deepEqual(bindingsOf("comment"), ["mod+alt+m"]);
+assert.deepEqual(bindingsOf("focus-comments"), [], "focus comments is still in the palette, without the chord");
+assert.equal(named.comment, "Ctrl+Alt+M");
+assert.equal(menuKeys({ modalEditor: false, apple: true }).comment, "⌘⌥M");
+
+// Editor-owned commands are run by CodeMirror, so the window never answers
+// them, from inside the source or outside it.
+const editing = { ...workspace, edit: { ...workspace.edit } };
+const chord = (key, code, extra = {}) => press(key, { ctrlKey: true, altKey: true, code, ...extra });
+assert.equal(asked({ ...chord("m", "KeyM"), target: editor }, editing), null, "the source answers the comment chord itself");
+assert.equal(asked({ ...chord("m", "KeyM"), target: page }, editing), null, "and the window does not answer it outside the source");
+assert.equal(asked({ ...press("k", { ctrlKey: true, code: "KeyK" }), target: page }, editing), null, "link is the editor's");
+
+assert.deepEqual(bindingsOf("link"), ["mod+k"]);
+assert.deepEqual(bindingsOf("numbered-list"), ["mod+shift+7"]);
+assert.deepEqual(bindingsOf("bulleted-list"), ["mod+shift+8"]);
+for (let level = 1; level <= 6; level += 1) {
+  assert.deepEqual(bindingsOf("heading-" + level), ["mod+alt+" + level], `heading ${level} is Mod+Alt+${level}`);
+}
+assert.equal(named.link, "Ctrl+K");
+assert.equal(named["heading-3"], "Ctrl+Alt+3");
+assert.equal(named["numbered-list"], "Ctrl+Shift+7");
+
+// The new chords are none of the browser's. Mod+U and Mod+H stay unbound.
+for (const shortcut of ["Mod+K", "Mod+Alt+1", "Mod+Alt+6", "Mod+Shift+7", "Mod+Shift+8", "Mod+Alt+M"]) {
+  assert.ok(!reserved(shortcut), `${shortcut} is not the browser's`);
+}
+for (const command of COMMANDS) {
+  for (const binding of [...bindings(command, true), ...bindings(command, false)]) {
+    assert.ok(binding !== "mod+u" && binding !== "mod+h", `${command.id} may not take ${binding}`);
+  }
+}
+
+// The Edit menu's comment is greyed exactly when the chord would do nothing.
+assert.equal(availability({ ...editing, edit: { ...editing.edit, comment: false } }).comment, false);
+assert.equal(availability(editing).comment, true);
+
+// The palette offers the markup commands where the source can take them, and
+// not for a reader who has no source to write into.
+const offeredOf = (context) => offered(context, { apple: false }).map((entry) => entry.id);
+assert.ok(offeredOf(editing).includes("link") && offeredOf(editing).includes("heading-6") && offeredOf(editing).includes("bulleted-list"));
+assert.ok(!offeredOf({ ...editing, edit: { ...editing.edit, link: false } }).includes("link"), "link is not offered where the format has none");
+assert.ok(!offeredOf({ ...reader, edit: {} }).includes("heading-1"), "and not where the editor says it cannot run");
+
+console.log("commands: one notation, no browser collisions, typing beats a chord, and a help table that cannot drift from the keys");

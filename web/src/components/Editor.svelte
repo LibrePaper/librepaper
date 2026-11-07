@@ -222,6 +222,7 @@
 
   import { sourceLanguage } from "../lib/source-language.js";
   import { emphasisCommand } from "../lib/emphasis.js";
+  import { canHeading, canLink, canList, headingEdit, linkEdit, listEdit } from "../lib/editing-shortcuts.js";
   import { sourceHighlighting } from "../lib/source-highlight.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport, selectedBibliographyFiles } from "../lib/bibliography.js";
@@ -978,14 +979,44 @@
     if (!view) return {};
     const selected = !view.state.selection.main.empty;
     const manager = undoManager;
+    const format = formatHere();
     return {
       undo: editable && (manager?.canUndo?.() ?? false),
       redo: editable && (manager?.canRedo?.() ?? false),
       cut: editable && selected, copy: selected,
       paste: editable, "select-all": true, find: true, replace: editable,
       bold: editable, italic: editable,
+      link: editable && canLink(format),
+      "numbered-list": editable && canList(format), "bulleted-list": editable && canList(format),
+      "heading-1": editable && canHeading(format, 1), "heading-2": editable && canHeading(format, 2),
+      "heading-3": editable && canHeading(format, 3), "heading-4": editable && canHeading(format, 4),
+      "heading-5": editable && canHeading(format, 5), "heading-6": editable && canHeading(format, 6),
+      // A comment is made on a selection in the source, and only where the
+      // reader may comment: the same question the bar over a selection asks.
+      comment: Boolean(annotating) && editable && selected,
       "tab-focus": Boolean(view),
     };
+  }
+
+  // The format of the open file for the markup commands, or "" with no session.
+  function formatHere() {
+    return session ? emphasisFormat() : "";
+  }
+
+  // Markup written into the file, in the file's own syntax: each builder is in
+  // lib/editing-shortcuts.js and is run from the keymap and the Edit menu alike.
+  const structure = {
+    link: () => linkEdit(view.state, formatHere()),
+    "numbered-list": () => listEdit(view.state, formatHere(), "numbered"),
+    "bulleted-list": () => listEdit(view.state, formatHere(), "bulleted"),
+    ...Object.fromEntries([1, 2, 3, 4, 5, 6].map((level) => [`heading-${level}`, () => headingEdit(view.state, formatHere(), level)])),
+  };
+  function runStructure(id) {
+    if (!view || view.state.readOnly) return false;
+    const spec = structure[id]?.();
+    if (!spec) return false;
+    view.dispatch(spec);
+    return true;
   }
 
   export async function editCommand(command) {
@@ -998,6 +1029,8 @@
     else if (command === "select-all") selectAll(target);
     else if (command === "bold") boldCommand(target);
     else if (command === "italic") italicCommand(target);
+    else if (command === "comment") onannotate?.("comment", selection());
+    else if (Object.hasOwn(structure, command)) runStructure(command);
     else if (command === "tab-focus") toggleTabFocusMode(target);
     else if (command === "find" || command === "replace") {
       openSearchPanel(target);
@@ -1300,6 +1333,18 @@
           // highest-precedence keymap, so Vim and Emacs keep Ctrl+B and Ctrl+I.
           { key: "Mod-b", preventDefault: true, run: boldCommand },
           { key: "Mod-i", preventDefault: true, run: italicCommand },
+          // Link, headings and lists, and the comment on the selection; the
+          // names are lib/commands.js's, as for bold and italic.
+          { key: "Mod-k", preventDefault: true, run: () => runStructure("link") },
+          { key: "Mod-Alt-1", preventDefault: true, run: () => runStructure("heading-1") },
+          { key: "Mod-Alt-2", preventDefault: true, run: () => runStructure("heading-2") },
+          { key: "Mod-Alt-3", preventDefault: true, run: () => runStructure("heading-3") },
+          { key: "Mod-Alt-4", preventDefault: true, run: () => runStructure("heading-4") },
+          { key: "Mod-Alt-5", preventDefault: true, run: () => runStructure("heading-5") },
+          { key: "Mod-Alt-6", preventDefault: true, run: () => runStructure("heading-6") },
+          { key: "Mod-Shift-7", preventDefault: true, run: () => runStructure("numbered-list") },
+          { key: "Mod-Shift-8", preventDefault: true, run: () => runStructure("bulleted-list") },
+          { key: "Mod-Alt-m", preventDefault: true, run: () => (void editCommand("comment"), true) },
           // Source text size. The keyboard half of the pinch: lib/commands.js names
           // these bindings, and the size is the one lib/editor-zoom.js changes.
           { key: "Mod-=", preventDefault: true, run: () => (setSize(size() + 1), true) },
