@@ -15,6 +15,15 @@ const CHAT_HELLO_LIMIT: i64 = 50;
 /// or the writer task down indefinitely.
 const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How old a moderation answer may be before a socket on that project asks
+/// the catalogue again. Out-of-process moderation (the operator CLI) reaches
+/// a socket within this window, the same bound the idle refresh already
+/// gives a socket that sends nothing.
+pub(super) const MODERATION_RECHECK: Duration = Duration::from_secs(2);
+
+/// Past this many cached slugs, an insert first drops the stale ones.
+const MODERATION_CACHE_PRUNE_AT: usize = 1024;
+
 /// The only protocol this binary speaks. There is no v1 fallback (§6.1): a
 /// client that cannot present this string in `doc-open` is closed with
 /// `upgrade_required` before it can send an update.
@@ -493,7 +502,9 @@ impl Server {
         // Operator moderation can change a project's visibility without an
         // in-process event. Recheck idle sockets on a bounded cadence so a
         // hidden project stops sending document frames even when its reader
-        // has no reason to send a frame of their own.
+        // has no reason to send a frame of their own. The moderation answer
+        // is cached for `MODERATION_RECHECK`, which matches this cadence, so
+        // a hide reaches an idle socket and an active one alike within 2s.
         let mut authorization_refresh = tokio::time::interval_at(
             tokio::time::Instant::now() + Duration::from_secs(2),
             Duration::from_secs(2),
@@ -856,7 +867,11 @@ impl Server {
                                 // flag to set any more -- an unreadable cache
                                 // is `room.unreadable()`, and a lost lease is
                                 // the sequencer's own concern the next time it
-                                // tries to flush.
+                                // tries to flush. A recent successful verify
+                                // is reused for `WRITER_RECHECK` (see
+                                // `verify_writer`); the flush still checks
+                                // the epoch itself, so this is only an early
+                                // close.
                                 if let Err(error) = self.verify_writer().await {
                                     let _ = send_outgoing(
                                         &tx,
@@ -1227,19 +1242,33 @@ impl Server {
     /// frames use this sender-specific path so an expensive catalogue lookup
     /// cannot make every other socket pay the same PostgreSQL query cost.
     pub async fn reauthorize_connection(&self, slug: &str, socket_id: u64) -> bool {
-        // A short ordinary authorization cache is useful for document
-        // commands, but it must not delay an out-of-process moderation hide.
-        match self.store.catalog.project_is_hidden_by_slug(slug).await {
-            Ok(false) => {}
-            Ok(true) => {
-                self.disconnect_connection(slug, socket_id).await;
-                return false;
-            }
-            Err(error) => {
-                tracing::warn!("could not check moderation state for {slug}: {error}");
-                self.disconnect_connection(slug, socket_id).await;
-                return false;
-            }
+        // The moderation answer comes from a cache at most `MODERATION_RECHECK`
+        // old, so a frame does not pay a catalogue query. An out-of-process
+        // hide still reaches the socket within that window. A failed lookup
+        // is never cached and disconnects this sender, as before.
+        let fresh = {
+            let cache = self.moderation_cache.lock().await;
+            cache.get(slug).and_then(|&(hidden, read_at)| {
+                (read_at.elapsed() < MODERATION_RECHECK).then_some(hidden)
+            })
+        };
+        let hidden = match fresh {
+            Some(hidden) => hidden,
+            None => match self.store.catalog.project_is_hidden_by_slug(slug).await {
+                Ok(hidden) => {
+                    self.remember_moderation(slug, hidden).await;
+                    hidden
+                }
+                Err(error) => {
+                    tracing::warn!("could not check moderation state for {slug}: {error}");
+                    self.disconnect_connection(slug, socket_id).await;
+                    return false;
+                }
+            },
+        };
+        if hidden {
+            self.disconnect_connection(slug, socket_id).await;
+            return false;
         }
         let cached = {
             let connections = self.connections.lock().await;
@@ -1295,6 +1324,17 @@ impl Server {
             connection.authorized_at = tokio::time::Instant::now();
         }
         allowed
+    }
+
+    /// Stores a successful moderation read. Stale entries are dropped first
+    /// once the map gets large, so it cannot grow without bound over the
+    /// slugs this process has ever seen.
+    async fn remember_moderation(&self, slug: &str, hidden: bool) {
+        let mut cache = self.moderation_cache.lock().await;
+        if cache.len() >= MODERATION_CACHE_PRUNE_AT {
+            cache.retain(|_, (_, read_at)| read_at.elapsed() < MODERATION_RECHECK);
+        }
+        cache.insert(slug.to_owned(), (hidden, tokio::time::Instant::now()));
     }
 
     /// Whether this socket's principal is the document's owner right now.
@@ -1397,6 +1437,10 @@ impl Server {
     /// and safer than mutating a room's notion of `may_edit` out from under a
     /// running loop.
     pub async fn reauthorize(&self, slug: &str) {
+        // A change made in this process must not wait out the moderation
+        // cache. Dropping the entry makes the next frame read the catalogue.
+        // `reauthorize_all` goes through here per slug, so it clears them too.
+        self.moderation_cache.lock().await.remove(slug);
         let entry = match self.store.get_result(slug).await {
             Ok(entry) => entry,
             Err(error) => {
