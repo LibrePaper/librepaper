@@ -510,8 +510,6 @@
     leavePrepare();
   }
 
-  /// Picking a task and confirming it is the one decision. A send that fails
-  /// leaves the preparation view as it was so the user can retry.
   // Enter sends the task with the note typed under it. The note is optional,
   // so an empty one still sends.
   function extraKeydown(event) {
@@ -520,6 +518,8 @@
     void sendTask();
   }
 
+  /// Picking a task and confirming it is the one decision. A send that fails
+  /// leaves the preparation view as it was so the user can retry.
   async function sendTask() {
     if (busy || !chosen || staleReason || blocker || accessGap || !agentReady) return;
     const entry = chosen;
