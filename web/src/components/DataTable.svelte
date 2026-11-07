@@ -26,6 +26,8 @@
     rows = [],
     rowKey = (row) => row.id,
     rowClass = () => "",
+    // Whether a row is chosen, for a table whose rows are picked. Says so to a screen reader and styles the row.
+    rowSelected = () => undefined,
     label = "",
     // The column being sorted on, and which way. Sorting stays the caller's:
     // it owns the rows, and the order they arrive in is the order shown.
@@ -228,7 +230,7 @@
     </thead>
     <tbody>
       {#each rows as row (rowKey(row))}
-        <tr class={rowClass(row)}>
+        <tr class={rowClass(row)} aria-selected={rowSelected(row)}>
           {#each columns as column (column.key)}
             <td class={column.class || ""} style:text-align={column.align || undefined}>
               {@render cell(column, row)}

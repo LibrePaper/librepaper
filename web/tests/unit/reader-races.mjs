@@ -1212,8 +1212,8 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
   assert.deepEqual(commands.slice(-2), ['latex-html', 'latex-pdf']);
   const view = body('{#snippet viewItems()}', '{/snippet}');
   const file = body('{#snippet fileItems()}', '{/snippet}');
-  assert.match(view, /Lock preview on this file/);
-  assert.match(view, /Unlock the preview/);
+  assert.match(view, /labelOf\("lock-preview"\)/);
+  assert.match(view, /labelOf\("unlock-preview"\)/);
   assert.match(view, /@render previewItems\(\)/);
   // Running code is the top bar's switch, not a View menu item.
   assert.doesNotMatch(view, /local-execution/);

@@ -1,6 +1,6 @@
 import { EditorSelection } from "@codemirror/state";
 import { getLanguage, visualTokens, walk } from "./markup.ts";
-import { menuKeys } from "../commands.js";
+import { bindings, COMMANDS } from "../commands.js";
 import { emphasisCommand, MARKUP } from "../emphasis.js";
 import { m } from "../paraglide/messages.js";
 
@@ -16,7 +16,8 @@ const PLACEHOLDER = "Heading";
 const PLACEHOLDER_ITEM = "Item";
 const SLOT = "\u0001";
 
-const KEYS = menuKeys();
+// The binding a command answers to, canonical, for the tooltip to print.
+const keyOf = (id) => bindings(COMMANDS.find((command) => command.id === id))[0];
 
 // Every tool the bar shows, in the order it draws them. Consecutive tools that
 // share a `group` are drawn together, with a divider before the next group.
@@ -26,11 +27,12 @@ const KEYS = menuKeys();
 //   list     "bullet" | "number": makes the lines a list, or removes the list
 //   insert   an id from INSERT_ACTIONS in lib/insert.js: opens that Insert menu flow
 // `icon` is a name from Icon.svelte's ICONS table, drawn on the button. `label`
-// is the tooltip and accessible name. `shortcut` is the printed key from
-// lib/commands.js, when one exists.
+// is the tooltip and accessible name. `shortcut` is the binding from
+// lib/commands.js, when one exists; the tooltip prints it, and a modal editor
+// mode hides it.
 export const FORMAT_TOOLS = [
-  { id: "bold", label: m.common_bold(), group: "emphasis", mark: "bold", icon: "bold", shortcut: KEYS.bold },
-  { id: "italic", label: m.common_italic(), group: "emphasis", mark: "italic", icon: "italic", shortcut: KEYS.italic },
+  { id: "bold", label: m.common_bold(), group: "emphasis", mark: "bold", icon: "bold", shortcut: keyOf("bold") },
+  { id: "italic", label: m.common_italic(), group: "emphasis", mark: "italic", icon: "italic", shortcut: keyOf("italic") },
   { id: "underline", label: m.formatting_underline(), group: "emphasis", mark: "underline", icon: "underline" },
   { id: "h1", label: m.formatting_heading_1(), group: "heading", heading: 1, icon: "heading-1" },
   { id: "h2", label: m.formatting_heading_2(), group: "heading", heading: 2, icon: "heading-2" },

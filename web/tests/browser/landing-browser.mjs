@@ -300,22 +300,15 @@ try {
   await key("Escape");
   await flush();
 
-  // A canceled confirmation must not send a delete. Confirming does, then the
-  // refreshed list remains usable.
+  // Moving a project to the trash is recoverable, so it happens at once with
+  // no dialog, and its toast offers Undo, which puts the project back.
   await click(trigger("owned"));
   await click('.explorer-menu[data-state="open"] [data-project-action="trash"]');
-  await until("trash confirmation", () => tab.evaluate("Boolean([...document.querySelectorAll('[role=dialog][data-state=open]')].find(dialog => dialog.innerText.includes('seven days')))"));
-  const deletesBefore = await tab.evaluate("testCalls.filter(call => call.path === '/api/documents/owned/delete').length");
-  await tab.evaluate("[...document.querySelectorAll('[role=dialog][data-state=open] button')].find(button => button.textContent.trim() === 'Cancel').click()");
-  await until("trash confirmation closed", () => tab.evaluate("!document.querySelector('[role=dialog][data-state=open]')"));
-  await flush();
-  assert.equal(await tab.evaluate("testCalls.filter(call => call.path === '/api/documents/owned/delete').length"), deletesBefore, "cancel leaves the project alone");
-  await click(trigger("owned"));
-  await click('.explorer-menu[data-state="open"] [data-project-action="trash"]');
-  await until("second trash confirmation", () => tab.evaluate("Boolean([...document.querySelectorAll('[role=dialog][data-state=open]')].find(dialog => dialog.innerText.includes('seven days')))"));
-  await tab.evaluate("[...document.querySelectorAll('[role=dialog][data-state=open] button')].find(button => button.textContent.trim() === 'Move to trash').click()");
   await until("trash request", () => tab.evaluate("testCalls.some(call => call.path === '/api/documents/owned/delete' && call.method === 'POST')"));
-  await until("trash confirmation closed after delete", () => tab.evaluate("!document.querySelector('[role=dialog][data-state=open]')"));
+  assert.equal(await tab.evaluate("Boolean(document.querySelector('[role=dialog][data-state=open]'))"), false, "moving to the trash asks nothing first");
+  await until("trash undo", () => tab.evaluate("[...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Undo')"));
+  await tab.evaluate("[...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Undo').click()");
+  await until("trash undone", () => tab.evaluate("testCalls.some(call => call.path === '/api/documents/owned/untrash' && call.method === 'POST')"));
 
   // Trash rows keep restore and permanent-delete reachable through the same
   // narrow menu; restore leaves the trash after its request succeeds.

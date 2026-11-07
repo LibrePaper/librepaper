@@ -102,7 +102,7 @@ async function main() {
     "a read-link reader has no History workspace");
   assert.equal(await reader.evaluate('!!document.querySelector(".history-workspace")'), false);
   assert.equal(await reader.evaluate(`[...document.querySelectorAll('button')]
-    .some((button) => button.textContent.trim() === 'Restore')`), false,
+    .some((button) => button.textContent.trim() === 'Restore this version')`), false,
     "a read-link reader has no restore control");
 
   // History is an owner workspace. Keep its captured current side open in a
@@ -136,9 +136,9 @@ async function main() {
     return newText.includes('green fox') && !newText.includes('blue fox');
   })()`));
   // Restoring an earlier label creates a new event and updates the live source.
-  await comparisonOwner.evaluate(`([...document.querySelectorAll('.history-workspace button')].find(button => button.textContent.trim() === 'Restore')?.click())`);
+  await comparisonOwner.evaluate(`([...document.querySelectorAll('.history-workspace button')].find(button => button.textContent.trim() === 'Restore this version')?.click())`);
   await until("restore confirmation", () => comparisonOwner.evaluate('document.body.innerText.includes("Restore this version?")'));
-  await comparisonOwner.evaluate(`([...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Restore version')?.click())`);
+  await comparisonOwner.evaluate(`([...document.querySelectorAll('button')].filter(button => button.textContent.trim() === 'Restore this version').at(-1)?.click())`);
   await until("restore label", async () => (await request(historyPath)).labels?.some((label) => label.reason === "restore"));
   const restored = (await request(historyPath)).labels.find((label) => label.reason === "restore");
   assert.ok(restored);

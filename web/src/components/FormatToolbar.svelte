@@ -1,5 +1,6 @@
 <script>
   import Icon from "./Icon.svelte";
+  import ShortcutTip from "./ShortcutTip.svelte";
   import { m } from "../lib/paraglide/messages.js";
   import { FORMAT_TOOLS, isToolActive } from "../lib/visual-markup/formatting.js";
 
@@ -7,7 +8,9 @@
   // offers is FORMAT_TOOLS; `active` is the formatting at the caret, and
   // `onformat(id)` is asked to apply a tool, and
   // `oninsert(actionId)` to open the Insert menu flow of an insert tool.
-  let { active = null, hidden = false, onformat = () => {}, oninsert = () => {} } = $props();
+  // `modalEditor` is true in Vim or Emacs mode, where a tool's key belongs to
+  // the mode and is not printed, the same rule the menus follow.
+  let { active = null, hidden = false, modalEditor = false, onformat = () => {}, oninsert = () => {} } = $props();
 
   // Consecutive tools that share a group are drawn together.
   const GROUPS = FORMAT_TOOLS.reduce((groups, tool) => {
@@ -21,10 +24,6 @@
   // the focus between them.
   let focused = $state(FORMAT_TOOLS[0].id);
   let bar = $state(null);
-
-  function titleOf(tool) {
-    return tool.shortcut ? `${tool.label} (${tool.shortcut})` : tool.label;
-  }
 
   function onkeydown(event) {
     const buttons = [...bar.querySelectorAll("button")];
@@ -45,20 +44,24 @@
         {@const on = isToolActive(tool, active)}
         <!-- The mousedown is cancelled so the click does not take the focus from
              the source, which keeps the selection the tool acts on. -->
-        <button
-          type="button"
-          class="format-tool"
-          data-tool={tool.id}
-          aria-label={tool.label}
-          aria-pressed={on}
-          title={titleOf(tool)}
-          tabindex={focused === tool.id ? 0 : -1}
-          onfocus={() => (focused = tool.id)}
-          onmousedown={(event) => event.preventDefault()}
-          onclick={() => (tool.insert ? oninsert(tool.insert) : onformat(tool.id))}
-        >
-          <Icon name={tool.icon} size={16} />
-        </button>
+        <ShortcutTip text={tool.label} shortcut={modalEditor ? null : tool.shortcut}>
+          {#snippet children(attributes)}
+            <button
+              {...attributes}
+              type="button"
+              class="format-tool"
+              data-tool={tool.id}
+              aria-label={tool.label}
+              aria-pressed={on}
+              tabindex={focused === tool.id ? 0 : -1}
+              onfocus={() => (focused = tool.id)}
+              onmousedown={(event) => event.preventDefault()}
+              onclick={() => (tool.insert ? oninsert(tool.insert) : onformat(tool.id))}
+            >
+              <Icon name={tool.icon} size={16} />
+            </button>
+          {/snippet}
+        </ShortcutTip>
       {/each}
     </div>
   {/each}
@@ -110,19 +113,14 @@
     padding-inline: calc(var(--spacing) * 1.5);
     border: 1px solid transparent;
     border-radius: var(--radius-base);
-    background: none;
     color: inherit;
     font-size: var(--text-sm);
     line-height: 1;
     cursor: pointer;
   }
+  .format-tool:not([aria-pressed="true"]) { background: none; }
   .format-tool:hover {
     background: var(--color-tonal-hover);
-  }
-  .format-tool[aria-pressed="true"] {
-    border-color: var(--color-brand);
-    background: var(--color-row-selected);
-    color: var(--color-brand);
   }
   .format-tool:focus-visible {
     outline: 2px solid var(--color-brand);

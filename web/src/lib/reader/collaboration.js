@@ -53,7 +53,7 @@ const capability = (document_) => JSON.stringify([
  * slug: string, key?: string, fetcher?: typeof fetch,
  * openRoom?: typeof defaultOpenRoom,
  * collab?: CollaborationModule | null,
- * getIdentity?: () => string, getCanEdit?: () => boolean,
+ * getIdentity?: () => string, getAccountId?: () => string, getCanEdit?: () => boolean,
  * onMessage?: (message: RoomMessage) => void, onConnected?: (up: boolean) => void,
  * onPeers?: (count: number) => void, onState?: (state: CollaborationState) => void,
  * onSession?: (session: ReaderSession) => void,
@@ -70,6 +70,7 @@ export function createReaderCollaboration({
   openRoom = defaultOpenRoom,
   collab,
   getIdentity = () => "",
+  getAccountId = () => "",
   getCanEdit = () => false,
   onMessage = () => {},
   onConnected = () => {},
@@ -144,6 +145,8 @@ export function createReaderCollaboration({
       // and a literal here would make every unnamed reader the same person
       // as far as the colour is concerned.
       name: getIdentity() || nextDocument.commenting_as || "",
+      // The account a signed-in person's colour is drawn from; empty otherwise.
+      accountId: getAccountId(),
       slug,
       documentId: nextDocument.document_id,
       createdAt: nextDocument.created_at,

@@ -130,7 +130,7 @@ Menu paths in sentences use the full-width-friendly separator " > " exactly as i
 | history | 履歴 | |
 | version | バージョン | |
 | named version | 名前付きバージョン | |
-| bookmark (history) | ブックマーク | |
+| bookmark (history) | (not used) | Use 名前付きバージョン (named version) instead |
 | restore | 復元 | |
 | revert | 元に戻す | |
 | branch | ブランチ | Git; keep the katakana |

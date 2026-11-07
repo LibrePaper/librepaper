@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { LoroDoc } from "loro-crdt";
 import { authorshipRuns, markSpans, summarize } from "../../src/lib/authorship.js";
+import { personSeed, presenceColour } from "../../src/lib/presence-colour.js";
 
 // A document whose changes carry timestamps, as project-session.js makes them.
 function peerDoc(peer) {
@@ -86,11 +87,14 @@ test("summarize groups two peers of one account into one row, unknown last", () 
   assert.ok(Math.abs(ada.share - 0.7) < 1e-9);
   // The latest of Ada's two peers' changes, 1500 seconds, as a Date.
   assert.equal(ada.last.getTime(), 1500 * 1000);
-  assert.ok(ada.colour);
+  // Each row is coloured from the seed the person's live cursor uses: the
+  // account for Ada, the name for Bob. A later row steps past a colour an
+  // earlier row already wears.
+  assert.equal(ada.colour, presenceColour("account:acc-1"));
 
   assert.equal(bob.key, "name:Bob");
   assert.equal(bob.chars, 2);
-  assert.ok(bob.colour);
+  assert.equal(bob.colour, presenceColour("name:Bob", [ada.colour]));
   assert.notEqual(bob.colour, ada.colour);
 
   assert.equal(unknown.key, "unknown");
@@ -131,8 +135,21 @@ test("an agent sharing its owner's account gets its own row, in either order", (
     assert.match(second.name, /Build bot/);
     assert.equal(second.agent, true);
     assert.equal(second.chars, 2);
+    assert.equal(first.colour, presenceColour("account:acc-1"));
+    assert.equal(second.colour, presenceColour("agent:acc-1:Build bot", [first.colour]));
     assert.notEqual(first.colour, second.colour);
   }
+});
+
+test("a person's row colour is the colour their live cursor takes from the same seed", () => {
+  // The Authors tab and the caret both go through personSeed, so a signed-in
+  // person named differently in two places is still one colour.
+  const firstSeen = new Date("2026-01-01T00:00:00Z");
+  const authors = new Map([
+    ["1", { name: "Ada L.", accountId: "acc-1", agent: false, firstSeen }],
+  ]);
+  const { rows } = summarize([{ from: 0, to: 4, peer: "1", at: 1000 }], authors);
+  assert.equal(rows[0].colour, presenceColour(personSeed({ accountId: "acc-1", name: "Ada Lovelace" })));
 });
 
 test("markSpans draws every run but the unknown ones", () => {

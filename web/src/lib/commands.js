@@ -68,7 +68,10 @@ export function fromEvent(event, apple = APPLE) {
   const held = [];
   if (apple ? event.metaKey : event.ctrlKey) held.push("mod");
   if (event.altKey) held.push("alt");
-  const named = (event.altKey ? typed(event.code) || key : key).toLowerCase();
+  // Shift+7 is `&` on a US keyboard, so with Shift held a digit key is read
+  // from its position, as Alt reads it, or the chord would never be Mod+Shift+7.
+  const digit = /^Digit([0-9])$/.exec(event.code || "");
+  const named = (event.altKey ? typed(event.code) || key : event.shiftKey && digit ? digit[1] : key).toLowerCase();
   if (event.shiftKey && letters(named)) held.push("shift");
   return [...MODIFIERS.filter((name) => held.includes(name)), named].join("+");
 }
@@ -193,6 +196,11 @@ const ALWAYS = () => true;
 const panel = (id) => (context) => (context.panels || []).includes(id);
 const editable = (c) => Boolean(c.mayEdit && c.editing);
 
+// The bar's words opened from the keyboard. A phone has no bar to open, and in
+// the source editor under Vim or Emacs Alt belongs to the mode (Alt+F is
+// forward-word in Emacs), so the chord is left to the editor there.
+const menuChord = (available) => (c) => !c.compact && !(c.modalEditor && c.inSource) && available(c);
+
 /** @type {Command[]} */
 export const COMMANDS = [
   // Editing. CodeMirror's, every one of them, including the search panel.
@@ -202,20 +210,38 @@ export const COMMANDS = [
   { id: "copy", label: m.common_copy(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+C"], available: (c) => Boolean(c.edit?.copy) },
   { id: "paste", label: m.common_paste(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+V"], available: (c) => Boolean(c.edit?.paste) },
   { id: "select-all", label: m.common_select_all(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+A"], available: (c) => Boolean(c.edit?.["select-all"]) },
-  { id: "find", label: m.commands_find(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+F"], available: (c) => Boolean(c.edit?.find) },
-  { id: "replace", label: m.common_replace(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+Alt+F"], available: (c) => Boolean(c.edit?.replace) },
+  { id: "find", label: m.readerb_edit_find(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+F"], available: (c) => Boolean(c.edit?.find) },
+  { id: "replace", label: m.readerb_edit_replace(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+Alt+F"], available: (c) => Boolean(c.edit?.replace) },
   { id: "tab-focus", label: m.commands_tab_focus(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: [{ other: "Mod+M" }, { apple: "Shift+Alt+M" }], available: (c) => Boolean(c.edit?.["tab-focus"]) },
   { id: "word-count", label: m.common_word_count(), category: m.commands_category_editing(), scope: "workspace", menu: "edit", keys: [], available: editable },
   { id: "bold", label: m.common_bold(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+B"], available: (c) => Boolean(c.edit?.bold) },
   { id: "italic", label: m.common_italic(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+I"], available: (c) => Boolean(c.edit?.italic) },
+  // Markup the editor writes into the file, in the file's own syntax. Built by
+  // lib/editing-shortcuts.js; Editor.svelte runs them from its keymap.
+  { id: "link", label: m.common_link(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Mod+K"], available: (c) => Boolean(c.edit?.link) },
+  { id: "comment", label: m.common_comment(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+Alt+M"], available: (c) => Boolean(c.edit?.comment) },
+  ...[1, 2, 3, 4, 5, 6].map((level) => ({
+    id: "heading-" + level, label: m.commands_heading_level({ level }), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Mod+Alt+" + level], available: (c) => Boolean(c.edit?.["heading-" + level]),
+  })),
+  { id: "numbered-list", label: m.common_numbered_list(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Mod+Shift+7"], available: (c) => Boolean(c.edit?.["numbered-list"]) },
+  { id: "bulleted-list", label: m.common_bulleted_list(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Mod+Shift+8"], available: (c) => Boolean(c.edit?.["bulleted-list"]) },
 
   // Navigation. Where the focus goes, which is the part of a workspace a
   // pointer does well and a keyboard has to be told about.
-  { id: "palette", label: m.common_command_palette(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+P"], palette: false, available: ALWAYS },
+  { id: "palette", label: m.common_command_palette(), category: m.commands_category_navigation(), scope: "workspace", menu: "help", keys: ["Mod+Alt+P"], palette: false, available: ALWAYS },
   { id: "focus-files", label: m.commands_focus_files(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+E"], available: panel("files"), note: m.commands_note_files_panel() },
   { id: "focus-outline", label: m.commands_focus_outline(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+O"], available: panel("outline"), note: m.commands_note_outline_panel() },
-  { id: "focus-comments", label: m.commands_focus_comments(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+M"], available: panel("collaboration"), note: m.commands_note_comments_panel() },
+  { id: "focus-comments", label: m.commands_focus_comments(), category: m.commands_category_navigation(), scope: "workspace", keys: [], available: panel("collaboration"), note: m.commands_note_comments_panel() },
   { id: "focus-preview", label: m.commands_focus_preview(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+V"], available: (c) => Boolean(c.preview), note: m.commands_note_preview_visible() },
+
+  // The bar's words from the keyboard, as Google Docs has them: Alt+F opens
+  // File and the rest follow. Windows and Linux only, since Ctrl+Option is
+  // VoiceOver's on a Mac. A menu is opened by its key, so none is in the
+  // palette, and the keyboard puts the focus on its first line.
+  { id: "menu-file", label: m.commands_menu_file(), category: m.commands_category_navigation(), scope: "workspace", palette: false, keys: [{ other: "Alt+F" }], available: menuChord(ALWAYS) },
+  { id: "menu-edit", label: m.commands_menu_edit(), category: m.commands_category_navigation(), scope: "workspace", palette: false, keys: [{ other: "Alt+E" }], available: menuChord(editable) },
+  { id: "menu-view", label: m.commands_menu_view(), category: m.commands_category_navigation(), scope: "workspace", palette: false, keys: [{ other: "Alt+V" }], available: menuChord((c) => Boolean(c.editing)) },
+  { id: "menu-help", label: m.commands_menu_help(), category: m.commands_category_navigation(), scope: "workspace", palette: false, keys: [{ other: "Alt+H" }], available: menuChord(ALWAYS) },
 
   // The two insertion palettes, which open over the editor.
   { id: "symbols", label: m.common_insert_symbol(), category: m.commands_category_insert(), scope: "workspace", keys: ["Mod+Alt+S"], available: editable, note: m.commands_note_editor_open() },
@@ -247,7 +273,7 @@ export const COMMANDS = [
   { id: "text-reset", label: m.commands_text_reset(), category: m.commands_category_workspace(), scope: "editor", owner: "editor", menu: "view", keys: ["Mod+0"], browserKeys: true, available: (c) => Boolean(c.editing) },
   { id: "layout-source", label: m.commands_layout_source(), category: m.commands_category_workspace(), scope: "workspace", keys: [], available: (c) => Boolean(c.editing) },
   { id: "layout-document", label: m.commands_layout_document(), category: m.commands_category_workspace(), scope: "workspace", keys: [], available: (c) => Boolean(c.editing) },
-  { id: "layout-split", label: m.commands_layout_split(), category: m.commands_category_workspace(), scope: "workspace", keys: [], available: (c) => Boolean(c.editing) && !c.compact },
+  { id: "layout-split", label: m.commands_layout_split(), category: m.commands_category_workspace(), scope: "workspace", keys: [], available: (c) => Boolean(c.editing) && !c.compact, note: m.commands_note_wide_layout() },
   { id: "side-left", label: m.common_editor_on_left(), category: m.commands_category_workspace(), scope: "workspace", help: true, keys: [], available: (c) => Boolean(c.editing) && !c.compact, note: m.commands_note_wide_layout() },
   { id: "side-right", label: m.common_editor_on_right(), category: m.commands_category_workspace(), scope: "workspace", help: true, keys: [], available: (c) => Boolean(c.editing) && !c.compact, note: m.commands_note_wide_layout() },
 
@@ -258,9 +284,9 @@ export const COMMANDS = [
 
   // The project. None of these is bound to anything: they are here so the
   // palette can offer them by name and so the one list stays the one list.
-  { id: "new-file", label: m.common_new_file(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
-  { id: "new-folder", label: m.common_new_folder(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
-  { id: "upload", label: m.common_upload_files(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
+  { id: "new-file", label: m.readerd_new_file(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
+  { id: "new-folder", label: m.readerd_new_folder(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
+  { id: "upload", label: m.readerd_upload_files(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
   { id: "download-pdf", label: m.common_download_pdf(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.pdf) },
   { id: "download-html", label: m.commands_download_html(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.html) },
   { id: "download-docx", label: m.commands_download_docx(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.docx) },
@@ -270,10 +296,10 @@ export const COMMANDS = [
   { id: "share", label: m.common_share(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: panel("share") },
   { id: "chat-clear", label: m.commands_chat_clear(), category: m.common_project(), scope: "workspace", keys: [], available: (c) => Boolean(c.canClearChat) },
   { id: "history", label: m.common_history(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: panel("history") },
-  { id: "settings", label: m.commands_settings(), category: m.common_project(), scope: "workspace", menu: "file", keys: ["Mod+,"], available: ALWAYS },
+  { id: "settings", label: m.common_settings(), category: m.common_project(), scope: "workspace", menu: "file", keys: ["Mod+,"], available: ALWAYS },
 
   // Help, which is this list about itself.
-  { id: "shortcuts", label: m.commands_shortcuts(), category: m.commands_category_help(), scope: "workspace", keys: ["?", "Mod+Alt+/"], available: ALWAYS, note: m.commands_note_not_while_typing() },
+  { id: "shortcuts", label: m.commands_shortcuts(), category: m.commands_category_help(), scope: "workspace", menu: "help", keys: ["?", "Mod+Alt+/"], available: ALWAYS, note: m.commands_note_not_while_typing() },
 ];
 
 /// The bindings a command has on this platform, canonical, most-preferred
@@ -336,8 +362,10 @@ export function commandFor(event, context = {}, { commands = COMMANDS, apple = A
   // An editor-owned command is run by CodeMirror when the focus is in the source.
   // The window would run it a second time on the same keystroke.
   if (command.owner === "editor" && writing(target)) return null;
+  // The source is the one place a command can ask about the focus itself: the
+  // Alt chords must know whether the keys are the editor's.
   const available = command.available || ALWAYS;
-  return available(context) ? command : null;
+  return available({ ...context, inSource: Boolean(target?.closest?.(".cm-editor")) }) ? command : null;
 }
 
 /// The keys to print beside a name in a menu, by command id. Empty for a
@@ -424,4 +452,32 @@ export function availability(context = {}, { commands = COMMANDS } = {}) {
   const answers = {};
   for (const command of commands) answers[command.id] = (command.available || ALWAYS)(context);
   return answers;
+}
+
+/// The name a command goes by wherever it is printed. A menu asks for it rather
+/// than carrying its own copy, so the palette and a menu cannot call one command
+/// two things.
+export function labelOf(id, { commands = COMMANDS } = {}) {
+  return commands.find((command) => command.id === id)?.label ?? "";
+}
+
+/// Why a command cannot run here, or "" when the registry gives no reason. A
+/// greyed menu line shows it as its tooltip.
+export function noteOf(id, { commands = COMMANDS } = {}) {
+  return commands.find((command) => command.id === id)?.note ?? "";
+}
+
+/// What the palette lists for a query: the commands that can run now, as
+/// `offered` gives them, followed by the commands that match the query but
+/// cannot run in this context, marked `unavailable` so the palette can grey them
+/// and refuse to select them. With no query nothing is unavailable: a list of
+/// everything the workspace cannot do would bury the things a person is looking
+/// for.
+export function offeredWithUnavailable(context = {}, query = "", { commands = COMMANDS, apple = APPLE } = {}) {
+  const listed = commands
+    .filter((command) => command.palette !== false)
+    .map((command) => ({ ...command, keys: bindings(command, apple), unavailable: !(command.available || ALWAYS)(context) }));
+  const ready = filter(listed.filter((entry) => !entry.unavailable), query);
+  if (!query.trim()) return ready;
+  return [...ready, ...filter(listed.filter((entry) => entry.unavailable), query)];
 }

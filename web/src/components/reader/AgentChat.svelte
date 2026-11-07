@@ -7,6 +7,7 @@
   import ExplorerMenu from "../ExplorerMenu.svelte";
   import ChatTranscript from "../ChatTranscript.svelte";
   import ChatComposer from "../ChatComposer.svelte";
+  import { isSendKey } from "../../lib/send-key.js";
   import { createAgentClient, documentKey } from "../../lib/agent-client.svelte.js";
   import * as local from "../../lib/desktop/client.js";
   import {
@@ -509,6 +510,14 @@
     leavePrepare();
   }
 
+  // Enter sends the task with the note typed under it. The note is optional,
+  // so an empty one still sends.
+  function extraKeydown(event) {
+    if (!isSendKey(event)) return;
+    event.preventDefault();
+    void sendTask();
+  }
+
   /// Picking a task and confirming it is the one decision. A send that fails
   /// leaves the preparation view as it was so the user can retry.
   async function sendTask() {
@@ -780,7 +789,7 @@
       {/if}
       <textarea class="input task-extra" rows="1" placeholder={m.agent_extra_placeholder()} aria-label={m.agent_extra_label()}
                 value={extra} oninput={(event) => extra = event.currentTarget.value}
-                onkeydown={(event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void sendTask(); } }}></textarea>
+                onkeydown={extraKeydown}></textarea>
       {#if staleReason || accessGap || blocker || !agentReady}
         <p class="panel-meta" role="status">{staleReason || (accessGap ? (canGrantEdit ? m.agent_task_tracked_grant() : m.agent_task_tracked_no_access()) : blocker || m.agent_start_first())}</p>
       {/if}

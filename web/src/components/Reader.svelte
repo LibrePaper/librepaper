@@ -62,7 +62,7 @@
   import { localDataForgotten } from "../lib/signed-out.js";
   import { ACTIVITY_WIDTH, DOCUMENT_MIN, GRIP, PANES, RATIOS, clamp, measure, pixels, px, showing } from "../lib/panes.js";
   import { slotId, tabsFor } from "../lib/panels.js";
-  import { APPLE, availability, captured, commandFor, menuKeys, writing } from "../lib/commands.js";
+  import { APPLE, availability, captured, commandFor, labelOf, menuKeys, noteOf, writing } from "../lib/commands.js";
   // Aliased because this file has its own setSize for the pane sizes.
   import { size as textSize, setSize as setTextSize, DEFAULT_SIZE } from "../lib/editor-type.js";
 
@@ -89,6 +89,7 @@
   import Preview from "./Preview.svelte";
   import PreviewControls from "./PreviewControls.svelte";
   import { onPageZoom } from "../lib/desktop/zoom.js";
+  import { agentWaitingBadge } from "../lib/agent-permission.js";
   import Grip from "./Grip.svelte";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
   import DesktopOnly from "./DesktopOnly.svelte";
@@ -205,6 +206,11 @@
   const liveChat = createLiveChat({ slug: SLUG, key: KEY });
   const chatState = liveChat.state;
   let unreadChat = $state(false);
+  // Whether an agent session is waiting for the person's permission. Reported
+  // by the Agent panel; the badge on its tab says so while the panel is hidden.
+  let agentWaiting = $state(false);
+  // Whether the Agent panel is in view; set below, once `panel` and `shown` exist.
+  let agentInView = $state(false);
   let pendingChat;
   let mayChat = $derived(["commenter", "editor", "owner"].includes(doc.role));
   // Sharing is the owner's; seeing who else is in the room is anyone's who is
@@ -1888,6 +1894,7 @@
     },
     changes: {},
     collaboration: unreadChat ? { says: m.readerb_collaboration_unread(), dot: true } : {},
+    agent: agentWaitingBadge({ waiting: agentWaiting, visible: agentInView }),
   });
 
   // A reader is told nothing about live editor diagnostics. They cannot fix
@@ -2695,6 +2702,7 @@
     document: activeMobileView === "document",
     comments: activeMobileView === "sidebar",
   } : showing(panes));
+  $effect(() => { agentInView = panel === "agent" && shown.comments; });
 
   /* --------------------------------------------------------- the phone shell */
 
@@ -2871,6 +2879,7 @@
       { label: m.common_document(), rows: documentRows },
       { label: m.mobilenav_group_application(), rows: [
         { id: "settings", icon: "settings", label: m.common_settings() },
+        { id: "palette", icon: "search", label: m.common_command_palette() },
         { id: "home", icon: "house", label: m.common_projects(), href: "/" },
         { id: "help", icon: "circle-help", label: m.mobilenav_help(), href: DOCUMENTATION_URL, external: true },
         ...(me.name ? [{ id: "signout", icon: "log-out", label: m.common_sign_out() }]
@@ -2882,6 +2891,7 @@
     // The sheet has finished closing by the time the settings dialog, which
     // traps focus too, is opened.
     if (id === "settings") setTimeout(() => openSettings(), 0);
+    else if (id === "palette") setTimeout(() => void runCommand("palette"), 0);
     else if (id === "signout") void signOut();
     else if (id === "home" || id === "help" || id === "signin") return;
     else if (id === "collaborators") showCollaborators();
@@ -2927,12 +2937,15 @@
   };
 
   let editAvailability = $state({});
+  // Every item is named by its command in lib/commands.js, the same name the
+  // palette gives it.
   const editGroups = [
-    [["undo", m.common_undo()], ["redo", m.common_redo()]],
-    [["cut", m.common_cut()], ["copy", m.common_copy()], ["paste", m.common_paste()]],
-    [["select-all", m.common_select_all()]],
-    [["find", m.readerb_edit_find()], ["replace", m.readerb_edit_replace()], ["word-count", m.readerb_edit_word_count()]],
-    [["bold", m.common_bold()], ["italic", m.common_italic()]],
+    [["undo", labelOf("undo")], ["redo", labelOf("redo")]],
+    [["cut", labelOf("cut")], ["copy", labelOf("copy")], ["paste", labelOf("paste")]],
+    [["select-all", labelOf("select-all")]],
+    [["find", labelOf("find")], ["replace", labelOf("replace")], ["word-count", labelOf("word-count")]],
+    [["bold", labelOf("bold")], ["italic", labelOf("italic")]],
+    [["comment", labelOf("comment")]],
   ];
 
   // What the keyboard already does, named beside the item the way a desktop
@@ -2943,7 +2956,10 @@
   // In Vim or Emacs mode the editing keys belong to the mode, and a menu
   // naming them would be lying about what the next keystroke does; the
   // workspace's own keys are not the mode's and stay named.
-  const MENU_KEYS = $derived(menuKeys({ modalEditor: keys === "vim" || keys === "emacs", apple: APPLE }));
+  const modalEditor = $derived(keys === "vim" || keys === "emacs");
+  const MENU_KEYS = $derived(menuKeys({ modalEditor, apple: APPLE }));
+  // A greyed item says why in its tooltip, from the same registry note the palette shows.
+  const tipFor = (id) => (can[id] ? undefined : noteOf(id) || undefined);
 
   function chooseEditCommand(command) {
     if (command === "word-count") return openWordCount();
@@ -3808,6 +3824,8 @@
       key: KEY,
       collab,
       getIdentity: () => identity,
+      // Only a signed-in person has an account; the id is empty for anybody else.
+      getAccountId: () => (me.provider ? me.id || "" : ""),
       getCanEdit: () => mayEdit,
       sourceSync,
       standalone: DEMO,
@@ -4013,7 +4031,7 @@
       documentUrl: DEMO ? "/api/try" : undefined,
       onIdentity: (who) => {
         me = who;
-        if (who.name) session?.rename(who.name);
+        if (who.name || who.id) session?.rename(who.name || "", who.provider ? who.id || "" : "");
       },
       onDocument: showDocument,
       // A document answers a stranger exactly as a missing one does, which
@@ -4176,6 +4194,8 @@
     },
     edit: editAvailability,
     canClearChat: chatState.canClear,
+    // In Vim or Emacs mode Alt is the editor's, so the Alt menu chords stand down in the source.
+    modalEditor: keys === "vim" || keys === "emacs",
   });
 
   // What each command can do about it, asked once. The menus grey a line by
@@ -4199,6 +4219,7 @@
     if (id === "word-count") return openWordCount();
     if (EDIT_COMMANDS.includes(id)) return chooseEditCommand(id);
     if (id === "palette") { refreshEditAvailability(); commandPalette = true; return; }
+    if (id.startsWith("menu-")) return openMenu(id.slice("menu-".length));
     if (id === "shortcuts") return openSettings("editor");
     if (id === "focus-files") return focusPanel("files");
     if (id === "focus-outline") return focusPanel("outline");
@@ -4216,7 +4237,18 @@
     return chooseFileCommand(id);
   }
 
-  const EDIT_COMMANDS = ["undo", "redo", "cut", "copy", "paste", "select-all", "find", "replace", "bold", "italic"];
+  // Alt+F and the rest open a word of the bar, with the keyboard on its first
+  // line. A word that is not on the bar now (Edit with no source, say) stays shut.
+  function openMenu(id) {
+    if (!document.querySelector(`.menubar [data-menubar="${id}"]:not(:disabled)`)) return;
+    menubar.show(id);
+    menubar.enter();
+  }
+
+  const EDIT_COMMANDS = [
+    "undo", "redo", "cut", "copy", "paste", "select-all", "find", "replace", "bold", "italic",
+    "link", "comment", "numbered-list", "bulleted-list", "heading-1", "heading-2", "heading-3", "heading-4", "heading-5", "heading-6",
+  ];
   const LAYOUT_COMMANDS = ["linked", "layout-source", "layout-document", "layout-split", "side-left", "side-right"];
   const TEXT_SIZE_COMMANDS = ["text-bigger", "text-smaller", "text-reset"];
 
@@ -4235,18 +4267,15 @@
     if (template) mathPalette?.openTemplate?.(template);
   }
 
-  // However an overlay closes, the editor gets the keyboard back, once the
-  // dialog has finished returning the focus to whatever opened it. The opener
-  // can be a menu that no longer exists. The Symbols picker skips this on touch
-  // devices (see returnToEditorUnlessTouch).
-  const returnToEditor = () => requestAnimationFrame(() => editor?.focus?.());
-  // On a touch device the editor is not refocused, since that raises the virtual keyboard.
-  const returnToEditorUnlessTouch = () => { if (!matchMedia("(pointer: coarse)").matches) returnToEditor(); };
-
+  // A palette that has just inserted closes and hands the keyboard to the
+  // editor, after the dialog has returned focus to its opener, so typing goes
+  // on where the insertion landed. Escape leaves focus with the opener. On a
+  // touch device the editor is not refocused, since that raises the virtual
+  // keyboard.
   function closePalette() {
     symbolsOpen = false;
     mathOpen = false;
-    returnToEditor();
+    if (!matchMedia("(pointer: coarse)").matches) requestAnimationFrame(() => editor?.focus?.());
   }
 
   // An Escape the palette keeps, to clear its search or leave a form, is
@@ -4359,14 +4388,14 @@
       <span class="menuitem-chevron" aria-hidden="true"><Icon name="chevron-right" size="1rem" /></span>
     </Menu.TriggerItem>
     <ExplorerMenu>
-      {#if mayEdit}<Menu.Item value="download" class="menuitem"><span class="menuitem-label">{m.common_project()}</span></Menu.Item>{/if}
-      {@render exportItem("download-html", "HTML", "html")}
-      {@render exportItem("download-pdf", "PDF", "pdf")}
-      {@render exportItem("download-docx", "DOCX", "docx")}
-      {#if canExportComments && !DEMO}<Menu.Item value="download-comments" class="menuitem"><span class="menuitem-label">{m.common_comments()}</span></Menu.Item>{/if}
+      {#if mayEdit}<Menu.Item value="download" class="menuitem"><span class="menuitem-label">{labelOf("download")}</span></Menu.Item>{/if}
+      {@render exportItem("download-html", labelOf("download-html"), "html")}
+      {@render exportItem("download-pdf", labelOf("download-pdf"), "pdf")}
+      {@render exportItem("download-docx", labelOf("download-docx"), "docx")}
+      {#if canExportComments && !DEMO}<Menu.Item value="download-comments" class="menuitem"><span class="menuitem-label">{labelOf("download-comments")}</span></Menu.Item>{/if}
       {#if mayEdit}
         <Menu.Item value="download-source" class="menuitem" disabled={!toolbarPath}>
-          <span class="menuitem-label">{m.common_source()}</span>
+          <span class="menuitem-label">{labelOf("download-source")}</span>
           {#if !toolbarPath}<span class="export-reason">{m.readerd_download_source_reason()}</span>{/if}
         </Menu.Item>
       {/if}
@@ -4376,25 +4405,25 @@
 
 {#snippet fileItems()}
   {#if mayEdit}
-    <Menu.Item value="new-file" class="menuitem">{m.readerd_new_file()}</Menu.Item>
-    <Menu.Item value="new-folder" class="menuitem">{m.readerd_new_folder()}</Menu.Item>
-    <Menu.Item value="upload" class="menuitem" disabled={DEMO}>{m.readerd_upload_files()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>
+    <Menu.Item value="new-file" class="menuitem">{labelOf("new-file")}</Menu.Item>
+    <Menu.Item value="new-folder" class="menuitem">{labelOf("new-folder")}</Menu.Item>
+    <Menu.Item value="upload" class="menuitem" disabled={DEMO}>{labelOf("upload")}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>
     <hr class="hr my-1" />
   {/if}
   {@render downloadMenu()}
   {#if me?.id || DEMO}<Menu.Item value="save-template" class="menuitem" disabled={DEMO}>{m.readerd_save_as_template_item()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
   <hr class="hr my-1" />
   {#if tabs.some((tab) => tab.id === "git")}<Menu.Item value="git" class="menuitem" disabled={DEMO}>{m.readerd_git_item()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
-  {#if DEMO || canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem" disabled={DEMO}>{m.readerd_share_item()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
+  {#if DEMO || canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem" disabled={DEMO}>{labelOf("share")}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
   <!-- Only where the panel behind it is one this reader is offered: a menu
        that opens a column the rail does not have is the second list of who
        may see what that lib/panels.js exists to prevent. -->
-  {#if tabs.some((tab) => tab.id === "history")}<Menu.Item value="history" class="menuitem" disabled={DEMO}>{m.common_history()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
+  {#if tabs.some((tab) => tab.id === "history")}<Menu.Item value="history" class="menuitem" disabled={DEMO}>{labelOf("history")}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
   <hr class="hr my-1" />
   {#if mayEdit && sourceFormat === "latex" && compilesHere}
-    <Menu.Item value="compile" class="menuitem"><span class="menuitem-label">{m.common_compile_now()}</span>{#if MENU_KEYS.compile}<span class="menuitem-keys">{MENU_KEYS.compile}</span>{/if}</Menu.Item>
+    <Menu.Item value="compile" class="menuitem"><span class="menuitem-label">{labelOf("compile")}</span>{#if MENU_KEYS.compile}<span class="menuitem-keys">{MENU_KEYS.compile}</span>{/if}</Menu.Item>
   {/if}
-  <Menu.Item value="settings" class="menuitem"><span class="menuitem-label">{m.readerd_settings_item()}</span>{#if MENU_KEYS.settings}<span class="menuitem-keys">{MENU_KEYS.settings}</span>{/if}</Menu.Item>
+  <Menu.Item value="settings" class="menuitem"><span class="menuitem-label">{labelOf("settings")}</span>{#if MENU_KEYS.settings}<span class="menuitem-keys">{MENU_KEYS.settings}</span>{/if}</Menu.Item>
   {#if hasDesktop}
     <hr class="hr my-1" />
     <Menu.Item value="quit" class="menuitem">{m.readerd_quit()}</Menu.Item>
@@ -4402,14 +4431,14 @@
 {/snippet}
 
 {#snippet layoutItems()}
-  {#each [["source", m.common_editor()], ["document", m.common_preview()], ["split", m.reader_split()]] as [value, label]}
-    <Menu.Item value="layout-{value}" class="menuitem" disabled={compact && value === "split"}>
+  {#each [["source", labelOf("layout-source")], ["document", labelOf("layout-document")], ["split", labelOf("layout-split")]] as [value, label]}
+    <Menu.Item value="layout-{value}" class="menuitem" disabled={compact && value === "split"} title={compact && value === "split" ? noteOf("layout-split") : undefined}>
       <span class="menuitem-check">{(compact ? activeMobileView === value : layout === value) ? "✓" : ""}</span>{label}
     </Menu.Item>
   {/each}
   <hr class="hr my-1" />
-  {#each [["left", m.common_editor_on_left()], ["right", m.common_editor_on_right()]] as [side, label]}
-    <Menu.Item value="side-{side}" class="menuitem" disabled={compact}>
+  {#each [["left", labelOf("side-left")], ["right", labelOf("side-right")]] as [side, label]}
+    <Menu.Item value="side-{side}" class="menuitem" disabled={compact} title={compact ? noteOf("side-left") : undefined}>
       <span class="menuitem-check">{sourceSide === side ? "✓" : ""}</span>{label}
     </Menu.Item>
   {/each}
@@ -4421,20 +4450,20 @@
   {/each}
   <hr class="hr my-1" />
   <Menu.Item value="linked" class="menuitem">
-    <span class="menuitem-check">{linked ? "✓" : ""}</span><span class="menuitem-label">{m.readerd_keep_in_step()}</span>{#if MENU_KEYS.linked}<span class="menuitem-keys">{MENU_KEYS.linked}</span>{/if}
+    <span class="menuitem-check">{linked ? "✓" : ""}</span><span class="menuitem-label">{labelOf("linked")}</span>{#if MENU_KEYS.linked}<span class="menuitem-keys">{MENU_KEYS.linked}</span>{/if}
   </Menu.Item>
   <Menu.Item value="visual-markup" class="menuitem">
-    <span class="menuitem-check">{visual ? "✓" : ""}</span><span class="menuitem-label">{m.readerd_visual_markup()}</span>{#if MENU_KEYS["visual-markup"]}<span class="menuitem-keys">{MENU_KEYS["visual-markup"]}</span>{/if}
+    <span class="menuitem-check">{visual ? "✓" : ""}</span><span class="menuitem-label">{labelOf("visual-markup")}</span>{#if MENU_KEYS["visual-markup"]}<span class="menuitem-keys">{MENU_KEYS["visual-markup"]}</span>{/if}
   </Menu.Item>
   <hr class="hr my-1" />
   <Menu.Item value="text-bigger" class="menuitem">
-    <span class="menuitem-check"></span><span class="menuitem-label">{m.readerd_bigger_text()}</span>{#if MENU_KEYS["text-bigger"]}<span class="menuitem-keys">{MENU_KEYS["text-bigger"]}</span>{/if}
+    <span class="menuitem-check"></span><span class="menuitem-label">{labelOf("text-bigger")}</span>{#if MENU_KEYS["text-bigger"]}<span class="menuitem-keys">{MENU_KEYS["text-bigger"]}</span>{/if}
   </Menu.Item>
   <Menu.Item value="text-smaller" class="menuitem">
-    <span class="menuitem-check"></span><span class="menuitem-label">{m.readerd_smaller_text()}</span>{#if MENU_KEYS["text-smaller"]}<span class="menuitem-keys">{MENU_KEYS["text-smaller"]}</span>{/if}
+    <span class="menuitem-check"></span><span class="menuitem-label">{labelOf("text-smaller")}</span>{#if MENU_KEYS["text-smaller"]}<span class="menuitem-keys">{MENU_KEYS["text-smaller"]}</span>{/if}
   </Menu.Item>
   <Menu.Item value="text-reset" class="menuitem">
-    <span class="menuitem-check"></span><span class="menuitem-label">{m.readerd_reset_text_size()}</span>{#if MENU_KEYS["text-reset"]}<span class="menuitem-keys">{MENU_KEYS["text-reset"]}</span>{/if}
+    <span class="menuitem-check"></span><span class="menuitem-label">{labelOf("text-reset")}</span>{#if MENU_KEYS["text-reset"]}<span class="menuitem-keys">{MENU_KEYS["text-reset"]}</span>{/if}
   </Menu.Item>
 {/snippet}
 
@@ -4450,8 +4479,8 @@
 {/snippet}
 
 {#snippet viewItems()}
-  <Menu.Item value="lock-preview" class="menuitem" disabled={!can["lock-preview"]}>{m.common_lock_preview_on_file()}</Menu.Item>
-  {#if can["unlock-preview"]}<Menu.Item value="unlock-preview" class="menuitem">{m.common_unlock_the_preview()}</Menu.Item>{/if}
+  <Menu.Item value="lock-preview" class="menuitem" disabled={!can["lock-preview"]} title={tipFor("lock-preview")}>{labelOf("lock-preview")}</Menu.Item>
+  {#if can["unlock-preview"]}<Menu.Item value="unlock-preview" class="menuitem">{labelOf("unlock-preview")}</Menu.Item>{/if}
   <hr class="hr my-1" />
   {@render previewItems()}
   <hr class="hr my-1" />
@@ -4534,6 +4563,9 @@
         {#if participants.length > 3}<span class="presence-more">+{participants.length - 3}</span>{/if}
         {#if !connected && !DEMO}<span class="presence-offline"><span class="presence-offline-dot" aria-hidden="true"></span>{m.common_offline()}</span>{/if}
       </div>
+      <!-- The command palette, at the end of the row where the menus' own
+           keys are named: the same palette Ctrl+Alt+P opens. -->
+      <IconButton icon="search" label={m.common_command_palette()} title={m.commands_palette_tooltip({ keys: MENU_KEYS.palette })} onclick={() => void runCommand("palette")} />
     {/if}
   {/snippet}
   {#snippet menus()}
@@ -4551,7 +4583,7 @@
         {#each editGroups as group, index}
           {#if index}<hr class="hr my-1" />{/if}
           {#each group as [command, label]}
-            <Menu.Item value={command} class="menuitem" disabled={!can[command]}>
+            <Menu.Item value={command} class="menuitem" disabled={!can[command]} title={tipFor(command)}>
               <span class="menuitem-label">{label}</span>{#if MENU_KEYS[command]}<span class="menuitem-keys">{MENU_KEYS[command]}</span>{/if}
             </Menu.Item>
           {/each}
@@ -4564,6 +4596,12 @@
         {@render viewItems()}
       </MenubarMenu>
     {/if}
+    <!-- Help is the registry's two entries that are about the workspace itself;
+         runCommand runs them as it runs the palette and the keyboard. -->
+    <MenubarMenu id="help" label={m.mobilenav_help()} onselect={(id) => void runCommand(id)}>
+      <Menu.Item value="palette" class="menuitem"><span class="menuitem-label">{m.common_command_palette()}</span>{#if MENU_KEYS.palette}<span class="menuitem-keys">{MENU_KEYS.palette}</span>{/if}</Menu.Item>
+      <Menu.Item value="shortcuts" class="menuitem"><span class="menuitem-label">{m.common_keyboard_shortcuts()}</span>{#if MENU_KEYS.shortcuts}<span class="menuitem-keys">{MENU_KEYS.shortcuts}</span>{/if}</Menu.Item>
+    </MenubarMenu>
   {/snippet}
   {#snippet children()}
     {#if compact}
@@ -4600,7 +4638,7 @@
 {/if}
 
 {#if formatBarVisible}
-  <FormatToolbar active={formatActive} hidden={barHidden && !compact} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} />
+  <FormatToolbar active={formatActive} hidden={barHidden && !compact} {modalEditor} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} />
 {/if}
 
 {#if compact && modeSwitchShown}
@@ -4657,7 +4695,8 @@
       path={session?.paths?.get(openFile) || ""} selection={agentSelection}
       revision={agentSelection?.revision || ""} request={assistantRequest}
       {comments} changes={changeRows} {diagnostics} onreview={reviewAssistantResults} onpreview={previewAssistant}
-      onsettings={() => openSettings("agents")} userName={identity || doc.commenting_as || m.common_you()} />
+      onsettings={() => openSettings("agents")} userName={identity || doc.commenting_as || m.common_you()}
+      bind:waiting={agentWaiting} />
   {/snippet}
 
   {#snippet collaborationPanel()}
@@ -5083,13 +5122,13 @@
 
 <!-- The palettes open over the editor rather than in the sidebar. Each is
      mounted only while open, so a form left half filled does not come back. -->
-<Modal bind:open={symbolsOpen} title={m.common_insert_symbol()} compact sheet onclose={returnToEditorUnlessTouch}
+<Modal bind:open={symbolsOpen} title={m.common_insert_symbol()} compact sheet
        initialFocus={() => symbolPalette?.focusTarget?.()} onEscapeKeyDown={(event) => paletteEscape(symbolPalette, event)}>
   {#if symbolsOpen}
     <SymbolPalette bind:this={symbolPalette} format={editorFormat} getContext={insertContext} oninsert={(result, context) => applyInsertion(result, context, { focus: false })} oncancel={(context) => editor?.releaseInsertContext?.(context)} />
   {/if}
 </Modal>
-<Modal bind:open={mathOpen} title={m.common_math()} wider onclose={returnToEditor}
+<Modal bind:open={mathOpen} title={m.common_math()} wider
        initialFocus={() => mathPalette?.focusTarget?.()} onEscapeKeyDown={(event) => paletteEscape(mathPalette, event)}>
   {#if mathOpen}
     <MathPalette bind:this={mathPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={closePalette} oncancel={(context) => editor?.releaseInsertContext?.(context)} />
@@ -5097,7 +5136,7 @@
 </Modal>
 
 <!-- Word counts for the open file, read on open and as the text changes. -->
-<Modal bind:open={wordCountOpen} title={m.common_word_count()} onclose={returnToEditor}
+<Modal bind:open={wordCountOpen} title={m.common_word_count()}
   confirm={{ label: m.common_close(), cancel: false, onclick: () => (wordCountOpen = false) }}>
   {#snippet children()}
     <WordCount count={wordCount} />

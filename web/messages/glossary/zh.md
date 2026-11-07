@@ -131,7 +131,7 @@ Menu path examples: "文件 > 另存为模板", "视图 > HTML", "视图 > PDF".
 | anonymous | 匿名 | |
 | history | 历史记录 | |
 | version | 版本 | |
-| bookmark | 书签 | Named version marker. |
+| named version | 已命名的版本 | In history. Replaces "bookmark" (书签). Verb: 命名 |
 | restore | 恢复 | Also for trash items. |
 | compare | 比较 | |
 | diff | 差异 | |
