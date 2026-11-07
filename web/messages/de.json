@@ -2198,6 +2198,8 @@
   "reader_stale_selection": "Die Seite hat sich geändert, während der Kommentar platziert wurde. Sie wurde auf den aktuellen Text aktualisiert. Wählen Sie die Passage erneut aus und versuchen Sie es noch einmal.",
   "reader_still_connecting": "Die Verbindung zum aktuellen Dokument wird noch hergestellt. Versuchen Sie es erneut, sobald es geladen ist.",
   "reader_tracking_failed": "Änderungen nachverfolgen konnte nicht aktiviert werden: Dieses Dokument ist nicht zum Bearbeiten verbunden.",
+  "reader_tracking_on": "Änderungen werden nachverfolgt",
+  "reader_tracking_open": "Nachverfolgung ist aktiv. Das Panel Änderungen öffnen.",
   "readerb_backup_failing": "Backups sind aktiviert, schlagen aber fehl: {error}. Öffnen Sie Einstellungen > Backups.",
   "readerb_backup_lost_access": "Backups sind aktiviert, aber die Desktop-App hat den Zugriff auf dieses Konto verloren. Öffnen Sie Einstellungen > Backups, um die Verbindung wiederherzustellen.",
   "readerb_agent_waiting": "Der Agent wartet auf Ihre Berechtigung",

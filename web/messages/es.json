@@ -2198,6 +2198,8 @@
   "reader_stale_selection": "La página cambió mientras se colocaba ese comentario. Se actualizó con el texto actual; vuelva a seleccionar el pasaje e inténtelo de nuevo.",
   "reader_still_connecting": "El documento actual aún se está conectando. Reintente cuando haya cargado.",
   "reader_tracking_failed": "No se pudo activar el control de cambios: este documento no está conectado para su edición.",
+  "reader_tracking_on": "Control de cambios",
+  "reader_tracking_open": "El control de cambios está activo. Abrir el panel Cambios.",
   "readerb_backup_failing": "Las copias de seguridad están activadas pero fallan: {error}. Abra Configuración y luego Copias de seguridad.",
   "readerb_backup_lost_access": "Las copias de seguridad están activadas pero la aplicación de escritorio perdió el acceso a esta cuenta. Abra Configuración y luego Copias de seguridad para reconectar.",
   "readerb_agent_waiting": "El agente está esperando su permiso",

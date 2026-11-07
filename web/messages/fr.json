@@ -2198,6 +2198,8 @@
   "reader_stale_selection": "La page a changé pendant l’ajout de ce commentaire. Elle a été actualisée avec le texte actuel; resélectionnez le passage et réessayez.",
   "reader_still_connecting": "Le document actuel est encore en cours de connexion. Réessayez une fois qu’il est chargé.",
   "reader_tracking_failed": "Le suivi des modifications n’a pas pu être activé : ce document n’est pas connecté pour être modifié.",
+  "reader_tracking_on": "Suivi des modifications",
+  "reader_tracking_open": "Le suivi est activé. Ouvrir le panneau Modifications.",
   "readerb_backup_failing": "Les sauvegardes sont activées, mais échouent : {error}. Ouvrez Paramètres > Sauvegardes.",
   "readerb_backup_lost_access": "Les sauvegardes sont activées, mais l’application de bureau a perdu l’accès à ce compte. Ouvrez Paramètres > Sauvegardes pour vous reconnecter.",
   "readerb_agent_waiting": "L’agent attend votre autorisation",

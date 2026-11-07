@@ -2198,6 +2198,8 @@
   "reader_stale_selection": "A página mudou enquanto o comentário era posicionado. Ela foi atualizada para o texto atual; selecione o trecho novamente e tente de novo.",
   "reader_still_connecting": "O documento atual ainda está conectando. Tente novamente quando ele for carregado.",
   "reader_tracking_failed": "Não foi possível ativar o controle de alterações: este documento não está conectado para edição.",
+  "reader_tracking_on": "Controle de alterações",
+  "reader_tracking_open": "O controle de alterações está ativo. Abrir o painel Alterações.",
   "readerb_backup_failing": "Os backups estão ativados, mas estão falhando: {error}. Abra Configurações e depois Backups.",
   "readerb_backup_lost_access": "Os backups estão ativados, mas o aplicativo de desktop perdeu o acesso a esta conta. Abra Configurações e depois Backups para reconectar.",
   "readerb_agent_waiting": "O agente está aguardando sua permissão",
