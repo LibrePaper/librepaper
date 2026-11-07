@@ -85,6 +85,8 @@
   "agent_session_working": "{label}（作業中）",
   "agent_session_needs_input": "{label}（許可が必要）",
   "agent_session_delete": "会話を削除",
+  "agent_session_delete_description": "会話はこのブラウザから削除され、エージェントも停止します。元に戻せません。",
+  "agent_session_delete_question": "この会話を削除しますか？",
   "agent_session_limit": "会話は最大 {count} 件まで",
   "agent_none_found": "このコンピューターに対応するコーディングエージェントが見つかりませんでした。",
   "agent_not_confirmed": "このリクエストは確認されていません。再度送信する前に、上で送信を再試行してください。",
@@ -178,6 +180,7 @@
   "agentsettings_name_required": "名前とコマンドを入力してください。",
   "agentsettings_none": "エージェントが見つかりません。",
   "agentsettings_remove_confirm": "{name}を削除しますか？",
+  "agentsettings_remove_title": "エージェントを削除しますか？",
   "agentsettings_removed": "エージェントを削除しました。",
   "agentsettings_status_added": "追加済み",
   "agentsettings_status_ready": "準備完了",
@@ -1676,25 +1679,8 @@
   "landing_tags_for_aria": "{title}のタグ",
   "landing_trash_empty": "ごみ箱は空です。",
   "landing_trash_note": "ここにあるプロジェクトは、ごみ箱に移動してから7日後に完全に削除されます。",
-  "landing_trash_one": "{title}はごみ箱に移動され、7日間保管されます。それまでは元に戻せます。",
-  "landing_trash_question": "ごみ箱に移動しますか？",
   "landing_trash_read_failed": "ごみ箱を読み込めませんでした。",
   "landing_trash_read_failed_status": "ごみ箱を読み込めませんでした（{status}）",
-  "landing_trash_selected": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "{count}件のプロジェクトがごみ箱に移動され、7日間保管されます。それまでは元に戻せます。",
-        "countPlural=*": "{count}件のプロジェクトがごみ箱に移動され、7日間保管されます。それまでは元に戻せます。"
-      }
-    }
-  ],
   "landing_trashed": [
     {
       "declarations": [

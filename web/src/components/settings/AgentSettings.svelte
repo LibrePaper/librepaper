@@ -2,12 +2,15 @@
   import SettingRow from "./SettingRow.svelte";
   import ToolRow from "./ToolRow.svelte";
   import DesktopOnly from "../DesktopOnly.svelte";
+  import Modal from "../Modal.svelte";
   import { splitArgs } from "../../lib/desktop/args.js";
   import { m } from "../../lib/paraglide/messages.js";
 
   let { view } = $props();
 
   let adding = $state(false);
+  // The custom agent waiting for an answer to "remove it?", if any.
+  let removing = $state(null);
   let invalid = $state("");
   let label = $state("");
   let command = $state("");
@@ -31,6 +34,12 @@
       return;
     }
     if (await view.act("agent-add", m.agentsettings_added(), "/agents", { method: "POST", body: { label: label.trim(), command: argv } })) close();
+  }
+
+  function confirmRemove() {
+    const agent = removing;
+    removing = null;
+    if (agent) void view.act(`agent-${agent.id}`, m.agentsettings_removed(), `/agents/${view.id(agent.id)}`, { method: "DELETE" });
   }
 
   function close() {
@@ -62,10 +71,16 @@
     {#each view.list(view.state?.custom_agents) as agent (agent.id)}
       <ToolRow title={agent.label || agent.id || m.agentsettings_configured_fallback()} description={view.list(agent.command).join(" ")} status={{ label: m.agentsettings_status_added(), tone: "neutral" }}>
         {#snippet actions()}
-          <button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => { if (confirm(m.agentsettings_remove_confirm({ name: agent.label || m.agentsettings_this_agent() }))) void view.act(`agent-${agent.id}`, m.agentsettings_removed(), `/agents/${view.id(agent.id)}`, { method: "DELETE" }); }}>{m.common_remove()}</button>
+          <button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => (removing = agent)}>{m.common_remove()}</button>
         {/snippet}
       </ToolRow>
     {/each}
+    {#if removing}
+      <Modal open title={m.agentsettings_remove_title()} onclose={() => (removing = null)}
+             confirm={{ label: m.common_remove(), tone: "error", oncancel: () => (removing = null), onclick: confirmRemove }}>
+        <p>{m.agentsettings_remove_confirm({ name: removing.label || m.agentsettings_this_agent() })}</p>
+      </Modal>
+    {/if}
     {#if view.state && !detectedAgents.length && !view.list(view.state?.custom_agents).length}<p class="setting-description">{m.agentsettings_none()}</p>{/if}
 
     <div id="agents-add" class="agent-add">

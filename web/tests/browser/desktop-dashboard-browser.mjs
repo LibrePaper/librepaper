@@ -251,7 +251,6 @@ try {
       return [...section.querySelectorAll(".setting-title")].filter((item) => item.textContent === ${JSON.stringify(agentLabel)}).length === 1;
     })()`);
   }, 10000);
-  await b.evaluate("window.confirm = () => true");
   await waitForEnabledButton("Remove", "#agents-list-heading");
   await b.evaluate(`(() => {
     const section = document.querySelector("#agents-list-heading").closest("section");
@@ -259,6 +258,9 @@ try {
       [...item.querySelectorAll(".setting-title")].some((title) => title.textContent.trim() === ${JSON.stringify(agentLabel)}));
     [...row.querySelectorAll("button")].find((button) => button.textContent.trim() === "Remove").click();
   })()`);
+  // Removing an agent asks first, in a dialog whose action is also Remove.
+  await until("remove agent asks first", () => b.evaluate(`Boolean([...document.querySelectorAll('[role="dialog"][data-state="open"] button')].find((button) => button.textContent.trim() === "Remove"))`), 5000);
+  await b.evaluate(`[...document.querySelectorAll('[role="dialog"][data-state="open"] button')].find((button) => button.textContent.trim() === "Remove").click()`);
   await until("custom agent removed through Settings", async () => {
     const response = await apiState();
     return response.ok && !(await response.json()).custom_agents.some((item) => item.id === agentId);

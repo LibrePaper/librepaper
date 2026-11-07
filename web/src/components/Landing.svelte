@@ -121,10 +121,8 @@
   const takenTitles = $derived(documents.filter((doc) => mine(doc)).map((doc) => doc.title));
   let confirming = $state(false);
   let confirmText = $state("");
-  // The trash confirms twice over: once to put a project there, once to empty
-  // it. The sentence differs, and so does what the button does, so the dialog
-  // carries which of the two it is asking.
-  let confirmKind = $state("trash");
+  // Only emptying the trash asks first. Putting a project there is undone from
+  // its toast, so it does not.
   let pendingDeletion = [];
   // The project being renamed, and the name being typed for it.
   let renaming = $state(null);
@@ -767,33 +765,23 @@
 
   /* ----------------------------------------------------------- the trash */
 
-  // Deleting has never destroyed anything immediately: the project is marked
-  // and a purge is queued a week out, and until it runs everything is still
-  // here. So this says what it does, and the trash says how long is left.
+  // Putting a project in the trash is recoverable: the project is marked and a
+  // purge is queued a week out, and until it runs everything is still here. So
+  // it happens at once, and the toast offers to put the projects back. Only
+  // emptying the trash asks first.
   async function deleteSelected() {
     const slugs = [...selected];
     if (!slugs.length) return;
-    confirmText = m.landing_trash_selected({ count: slugs.length });
-    confirmKind = "trash";
-    pendingDeletion = slugs;
-    confirming = true;
+    await moveToTrash(slugs);
   }
 
-  // The same confirmation for one row as for a selection of them: deleting is
-  // deleting, and the sentence that says where the project goes is the point
-  // of the step.
+  // One row and a selection of them take the same path.
   function askDelete(doc) {
-    confirmText = m.landing_trash_one({ title: doc.title });
-    confirmKind = "trash";
-    pendingDeletion = [doc.slug];
-    confirming = true;
+    void moveToTrash([doc.slug]);
   }
 
-  async function reallyDelete() {
-    const slugs = pendingDeletion;
+  async function moveToTrash(slugs) {
     const wasSelected = new Set(slugs.filter((slug) => selected.has(slug)));
-    confirming = false;
-    pendingDeletion = [];
     const results = await Promise.all(
       slugs.map(async (slug) => {
         try {
@@ -823,11 +811,23 @@
       say(m.landing_delete_failed({ count: failed.length }), { kind: "problem", id: "landing:delete" });
     }
     if (succeeded.length) {
-      say(m.landing_trashed({ count: succeeded.length }), { id: "landing:trashed" });
+      say(m.landing_trashed({ count: succeeded.length }), {
+        id: "landing:trashed",
+        action: { label: m.common_undo(), onClick: () => void undoTrash(succeeded) },
+      });
     }
     await showList();
-    // A template is a project, so trashing one from the picker or from the
-    // Templates place takes this path, and what it was listed in is stale.
+    await refreshTemplatesIfListed();
+  }
+
+  async function undoTrash(slugs) {
+    await putBack(slugs);
+    await refreshTemplatesIfListed();
+  }
+
+  // A template is a project, so trashing one from the picker or from the
+  // Templates place takes this path, and what it was listed in is stale.
+  async function refreshTemplatesIfListed() {
     if (newTab || place === "templates") await loadTemplates();
   }
 
@@ -858,7 +858,6 @@
     confirmText = many
       ? m.landing_purge_many({ count: slugs.length })
       : m.landing_purge_one({ title: docs[0].title });
-    confirmKind = "purge";
     pendingDeletion = slugs;
     confirming = true;
   }
@@ -880,7 +879,12 @@
   }
 
   async function restoreSelected() {
-    const slugs = [...selected];
+    await putBack([...selected]);
+  }
+
+  // Puts the given projects back out of the trash. The toolbar and the undo
+  // of a trash toast both come here.
+  async function putBack(slugs) {
     if (!slugs.length) return;
     const back = await eachOf(slugs, "untrash");
     trashed = trashed.filter((each) => !back.has(each.slug));
@@ -1769,13 +1773,9 @@
        confirm={{ label: m.landing_delete_tag(), tone: "error", onclick: reallyDeleteTag, oncancel: () => (tagToDelete = null) }}></Modal>
 
 <Modal bind:open={confirming}
-       title={confirmKind === "purge" ? m.landing_delete_for_good_question() : m.landing_trash_question()}
+       title={m.landing_delete_for_good_question()}
        description={confirmText}
-       confirm={{
-         label: confirmKind === "purge" ? m.landing_delete_for_good() : m.common_move_to_trash(),
-         tone: "error",
-         onclick: confirmKind === "purge" ? reallyPurge : reallyDelete,
-       }}></Modal>
+       confirm={{ label: m.landing_delete_for_good(), tone: "error", onclick: reallyPurge }}></Modal>
 
 <Toasts />
 

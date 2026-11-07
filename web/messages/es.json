@@ -85,6 +85,8 @@
   "agent_session_working": "{label} (trabajando)",
   "agent_session_needs_input": "{label} (necesita permiso)",
   "agent_session_delete": "Eliminar conversación",
+  "agent_session_delete_description": "La conversación se elimina de este navegador y su agente se detiene; no se puede deshacer.",
+  "agent_session_delete_question": "¿Eliminar esta conversación?",
   "agent_session_limit": "Como máximo {count} conversaciones",
   "agent_none_found": "No se encontró ningún agente de programación compatible en este equipo.",
   "agent_not_confirmed": "Esta solicitud no se confirmó. Reintente la entrega más arriba antes de enviarla de nuevo.",
@@ -178,6 +180,7 @@
   "agentsettings_name_required": "Escriba un nombre y un comando.",
   "agentsettings_none": "No se encontraron agentes.",
   "agentsettings_remove_confirm": "¿Quitar {name}?",
+  "agentsettings_remove_title": "¿Quitar el agente?",
   "agentsettings_removed": "Agente quitado.",
   "agentsettings_status_added": "Agregado",
   "agentsettings_status_ready": "Listo",
@@ -1691,25 +1694,8 @@
   "landing_tags_for_aria": "Etiquetas de {title}",
   "landing_trash_empty": "La papelera está vacía.",
   "landing_trash_note": "Los proyectos de aquí se eliminan definitivamente siete días después de enviarse a la papelera.",
-  "landing_trash_one": "{title} se moverá a la papelera, donde permanecerá siete días. Hasta entonces podrá restaurarlo.",
-  "landing_trash_question": "¿Mover a la papelera?",
   "landing_trash_read_failed": "No se pudo leer la papelera.",
   "landing_trash_read_failed_status": "no se pudo leer la papelera ({status})",
-  "landing_trash_selected": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "{count} proyecto se moverá a la papelera, donde permanecerá siete días. Hasta entonces podrá restaurarlo.",
-        "countPlural=*": "{count} proyectos se moverán a la papelera, donde permanecerán siete días. Hasta entonces podrá restaurarlos."
-      }
-    }
-  ],
   "landing_trashed": [
     {
       "declarations": [

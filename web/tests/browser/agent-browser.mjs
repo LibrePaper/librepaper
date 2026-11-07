@@ -187,6 +187,13 @@ window.remount();
 const choose = (label, value) => page.evaluate(
   `(()=>{const s=document.querySelector('select[aria-label=${label}]');s.value=${JSON.stringify(value)};s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
 
+// Deleting a conversation asks first, in a dialog whose action is Delete.
+const deleteConversation = async () => {
+  await page.evaluate('document.querySelector(\'.agent-session:not(.inactive) button[aria-label="Delete conversation"]\').click()');
+  await until("delete conversation asks first", () => page.evaluate(`Boolean([...document.querySelectorAll('[role=dialog] button')].find((button) => button.textContent.trim() === 'Delete'))`), 2000);
+  await page.evaluate(`[...document.querySelectorAll('[role=dialog] button')].find((button) => button.textContent.trim() === 'Delete').click()`);
+};
+
 let server, page;
 try {
   await build({ configFile:false, root, plugins:[svelte(),tailwindcss()], logLevel:"error",
@@ -660,7 +667,7 @@ try {
   // local assistant, ends its channel and clears the transcript/context, and a
   // fresh conversation takes its place. The agent settings remain visible.
   // A socket reconnect keeps the existing conversation and transcript instead.
-  await page.evaluate('document.querySelector("#agent-tab-builtin").click(); document.querySelector(\'.agent-session:not(.inactive) button[aria-label="Delete conversation"]\').click()');
+  await page.evaluate('document.querySelector("#agent-tab-builtin").click()'); await deleteConversation();
   await until("new conversation cleared", () => page.evaluate('document.querySelector(".agent-session:not(.inactive) .chat-form")!==null'), 2000);
   assert.equal(await page.evaluate('document.querySelector(".agent-session:not(.inactive) [role=log]")?.textContent.includes("Explain this")'), false);
   assert.equal(await page.evaluate('window.localCalls.some(call => call.route === "assistant/stop")'), true);
@@ -691,7 +698,7 @@ try {
   // Delete the second conversation, which leaves the first as the only one.
   await switchTo(1);
   await until("second conversation selected", async () => await visibleSession() === secondSession, 2000);
-  await page.evaluate('document.querySelector(\'.agent-session:not(.inactive) button[aria-label="Delete conversation"]\').click()');
+  await deleteConversation();
   await until("second conversation deleted", () => page.evaluate(`document.querySelectorAll('.agent-session').length === 1 && document.querySelector('.agent-session:not(.inactive) select[aria-label="Conversation"]').options.length === 1`), 10000);
   assert.equal(await visibleSession(), firstSession);
   await page.navigate(appUrl);
@@ -751,7 +758,7 @@ try {
   await page.evaluate("window.delayAssistantStatus=true; window.remount()");
   await until("delayed assistant status is pending", () => page.evaluate("window.delayedAssistantStatuses.length===1"), 2000);
   await page.evaluate("window.conversationCreatesBeforePending=window.calls.filter(call=>call.suffix==='').length");
-  await page.evaluate('document.querySelector("#agent-tab-builtin").click(); document.querySelector(\'.agent-session:not(.inactive) button[aria-label="Delete conversation"]\').click()');
+  await page.evaluate('document.querySelector("#agent-tab-builtin").click()'); await deleteConversation();
   await until("conversation changed while status was pending", () => page.evaluate("window.calls.filter(call=>call.suffix==='').length === window.conversationCreatesBeforePending+1"), 3000);
   await page.evaluate("window.delayedAssistantStatuses[0].resolve(Response.json({running:true,state:'ready'}))");
   await new Promise(resolve=>setTimeout(resolve,50));

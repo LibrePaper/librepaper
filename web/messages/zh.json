@@ -85,6 +85,8 @@
   "agent_session_working": "{label}（工作中）",
   "agent_session_needs_input": "{label}（需要许可）",
   "agent_session_delete": "删除对话",
+  "agent_session_delete_description": "此对话将从本浏览器中删除，其代理随之停止，且无法撤销。",
+  "agent_session_delete_question": "删除这个对话？",
   "agent_session_limit": "最多 {count} 个对话",
   "agent_none_found": "在这台电脑上未找到受支持的编程智能体。",
   "agent_not_confirmed": "此请求未得到确认。请先在上方重试发送，再重新发送。",
@@ -178,6 +180,7 @@
   "agentsettings_name_required": "请输入名称和命令。",
   "agentsettings_none": "未找到智能体。",
   "agentsettings_remove_confirm": "移除 {name}？",
+  "agentsettings_remove_title": "移除代理？",
   "agentsettings_removed": "智能体已移除。",
   "agentsettings_status_added": "已添加",
   "agentsettings_status_ready": "就绪",
@@ -1676,25 +1679,8 @@
   "landing_tags_for_aria": "{title} 的标签",
   "landing_trash_empty": "回收站是空的。",
   "landing_trash_note": "回收站中的项目在移入七天后会被永久删除。",
-  "landing_trash_one": "{title} 将移到回收站并保留七天。在此之前你可以恢复它。",
-  "landing_trash_question": "移到回收站？",
   "landing_trash_read_failed": "无法读取回收站。",
   "landing_trash_read_failed_status": "无法读取回收站（{status}）",
-  "landing_trash_selected": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "{count} 个项目将移到回收站并保留七天。在此之前你可以恢复它们。",
-        "countPlural=*": "{count} 个项目将移到回收站并保留七天。在此之前你可以恢复它们。"
-      }
-    }
-  ],
   "landing_trashed": [
     {
       "declarations": [
