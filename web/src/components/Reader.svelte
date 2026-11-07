@@ -2310,6 +2310,20 @@
   // pause, so remote changes and preview-only views do not render every word.
   const PASSIVE_PREVIEW_DEBOUNCE = 1000;
 
+  // Fast formats paint on the next animation frame, so every keystroke in one
+  // frame shares one request and the coordinator queues at most one more.
+  // Frames do not run in a hidden tab, so a hidden page uses a zero timer.
+  // Returns a function that cancels the pending paint.
+  let previewFrame = null;
+  function requestPreviewFrame(run) {
+    if (typeof requestAnimationFrame === "function" && !document.hidden) {
+      const id = requestAnimationFrame(run);
+      return () => cancelAnimationFrame(id);
+    }
+    const id = setTimeout(run, 0);
+    return () => clearTimeout(id);
+  }
+
   function sourceChanged() {
     if (readerDisposed) return;
     sourceGeneration += 1;
@@ -2337,18 +2351,27 @@
     // Fast formats use a short bounded preview cadence. Only LaTeX owns its
     // longer compiler debounce; postponing this timer for every Typst
     // keystroke would starve the preview indefinitely.
-    if (editing && sourceFormat !== "latex" && previewTimer !== null) return;
+    if (editing && sourceFormat !== "latex") {
+      if (previewFrame !== null || previewTimer !== null) return;
+      previewFrame = requestPreviewFrame(() => {
+        previewFrame = null;
+        paintPreview();
+      });
+      return;
+    }
+    if (previewFrame !== null) {
+      previewFrame();
+      previewFrame = null;
+    }
     clearTimeout(previewTimer);
     // A LaTeX compile takes seconds, so it waits for the source to be quiet
-    // for longer -- `latex.DEBOUNCE`, which is that module's number and not
-    // one written twice. A reader watching somebody else type waits longer
-    // still, and the longer of the two wins.
+    // for longer -- `latex.debounce()`, which adapts to the last compile pass.
+    // A reader watching somebody else type waits longer still, and the longer
+    // of the two wins.
     const wait =
       sourceFormat === "latex"
-        ? Math.max(latex.DEBOUNCE, editing ? 0 : PASSIVE_PREVIEW_DEBOUNCE)
-        : editing
-          ? 50
-          : PASSIVE_PREVIEW_DEBOUNCE;
+        ? Math.max(latex.debounce(), editing ? 0 : PASSIVE_PREVIEW_DEBOUNCE)
+        : PASSIVE_PREVIEW_DEBOUNCE;
     previewTimer = setTimeout(paintPreview, wait);
   }
 
