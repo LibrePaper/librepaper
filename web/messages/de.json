@@ -2372,6 +2372,22 @@
   "common_documentation": "Dokumentation",
   "readerd_who_are_you": "Wer sind Sie?",
   "readerd_workspace_view": "Arbeitsbereichsansicht",
+  "references_location": "{path}, Zeile {line}",
+  "references_title": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} Verweis",
+        "countPlural=*": "{count} Verweise"
+      }
+    }
+  ],
   "registry_account": "Konto",
   "registry_account_erase_terms": "löschen entfernen Konto schließen DSGVO Recht auf Löschung vergessen erase delete account gdpr remove close right erasure forget",
   "registry_agents": "KI-Agenten",
@@ -2438,6 +2454,8 @@
   "remotesettings_retrying": "Die Verbindung wird erneut versucht, solange diese Seite geöffnet ist.",
   "remotesettings_status_connected": "Verbunden",
   "remotesettings_status_disconnected": "Getrennt",
+  "rename_invalid": "Geben Sie einen anderen Namen ohne Leerzeichen ein",
+  "rename_label": "{name} umbenennen in",
   "renderers_local_failed": "{format} konnte nicht auf diesem Computer gerendert werden.",
   "renderersettings_aria": "Ort der Darstellung von {name}",
   "renderersettings_description": "{name}-Dokumente werden in diesem Browser gerendert oder, solange „Code ausführen“ aktiviert ist, auf diesem Computer.",

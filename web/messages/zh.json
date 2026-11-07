@@ -2357,6 +2357,22 @@
   "common_documentation": "文档",
   "readerd_who_are_you": "你是谁？",
   "readerd_workspace_view": "工作区视图",
+  "references_location": "{path}，第 {line} 行",
+  "references_title": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} 个交叉引用",
+        "countPlural=*": "{count} 个交叉引用"
+      }
+    }
+  ],
   "registry_account": "账户",
   "registry_account_erase_terms": "删除 抹除 账户 移除 注销 关闭 gdpr 被遗忘权 erase delete account remove close right erasure forget",
   "registry_agents": "AI 智能体",
@@ -2423,6 +2439,8 @@
   "remotesettings_retrying": "此页面打开期间会重试连接。",
   "remotesettings_status_connected": "已连接",
   "remotesettings_status_disconnected": "已断开连接",
+  "rename_invalid": "请输入不含空格的其他名称",
+  "rename_label": "将 {name} 重命名为",
   "renderers_local_failed": "在这台电脑上渲染 {format} 失败。",
   "renderersettings_aria": "{name} 的渲染位置",
   "renderersettings_description": "{name} 文档在此浏览器中渲染；开启“运行代码”后，则在这台电脑上渲染。",

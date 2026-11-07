@@ -2372,6 +2372,22 @@
   "common_documentation": "Documentation",
   "readerd_who_are_you": "Qui êtes-vous?",
   "readerd_workspace_view": "Affichage de l’espace de travail",
+  "references_location": "{path}, ligne {line}",
+  "references_title": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} renvoi",
+        "countPlural=*": "{count} renvois"
+      }
+    }
+  ],
   "registry_account": "Compte",
   "registry_account_erase_terms": "supprimer effacer compte retirer fermer droit à l’oubli oublier erase delete account remove close gdpr right erasure forget",
   "registry_agents": "Agents IA",
@@ -2438,6 +2454,8 @@
   "remotesettings_retrying": "De nouvelles tentatives de connexion ont lieu tant que cette page est ouverte.",
   "remotesettings_status_connected": "Connecté",
   "remotesettings_status_disconnected": "Déconnecté",
+  "rename_invalid": "Saisissez un autre nom, sans espaces",
+  "rename_label": "Renommer {name} en",
   "renderers_local_failed": "Le rendu en {format} sur cet ordinateur a échoué.",
   "renderersettings_aria": "Rendu de {name} dans",
   "renderersettings_description": "Les documents {name} sont produits dans ce navigateur, ou sur cet ordinateur lorsque « Exécuter le code » est activé.",
