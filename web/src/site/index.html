@@ -845,15 +845,12 @@
         <div class="container">
           <div class="feature reverse">
             <div class="feature-copy">
-              <h2>Review changes and history</h2>
+              <h2>Track changes</h2>
               <p>Record edits as tracked changes and decide on each one.</p>
-              <p>LibrePaper keeps the history of every project. Pick a day on the calendar, open any saved version, compare it with another, and restore it if you need to. Name the versions that matter so you can find them again.</p>
               <ul class="details">
                 <li>See who made each change and in which file.</li>
                 <li>Accept or reject changes one at a time.</li>
-                <li>Compare versions to see what changed.</li>
-                <li>Restore an earlier version. The current text is saved first.</li>
-                <li>Download a version, or copy a link to it.</li>
+                <li>Each person turns tracking on or off for their own edits.</li>
               </ul>
             </div>
             <figure class="shot-frame">
@@ -877,10 +874,44 @@
         </div>
       </section>
 
-      <!-- ========================================================= authorship -->
-      <section class="section" id="authorship">
+      <!-- ========================================================== history -->
+      <section class="section" id="history">
         <div class="container">
           <div class="feature">
+            <div class="feature-copy">
+              <h2>History</h2>
+              <p>LibrePaper keeps the history of every project. Pick a day on the calendar, open any saved version, compare it with another, and restore it if you need to. Name the versions that matter so you can find them again.</p>
+              <ul class="details">
+                <li>Compare versions to see what changed.</li>
+                <li>Restore an earlier version. The current text is saved first.</li>
+                <li>Download a version, or copy a link to it.</li>
+              </ul>
+            </div>
+            <figure class="shot-frame">
+              <a class="shot" href="#history-video" aria-label="Play a video of comparing named versions in the history and restoring an earlier one">
+                <img
+                  src="/images/history.webp"
+                  alt="The History panel in LibrePaper: named versions First draft and Second draft in a timeline, and a side-by-side comparison of the first draft with the latest version."
+                  width="2560"
+                  height="1640"
+                  loading="lazy"
+                  decoding="async"
+                />
+                <span class="shot-play" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </span>
+              </a>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========================================================= authorship -->
+      <section class="section section-alt" id="authorship">
+        <div class="container">
+          <div class="feature reverse">
             <div class="feature-copy">
               <h2>Authorship: Who wrote what?</h2>
               <p>LibrePaper records who wrote every passage, whether a collaborator or an AI agent. Open the Authors tab in History to see each person's share of a file and the text in their colour.</p>
@@ -912,9 +943,9 @@
       </section>
 
       <!-- ============================================================ AI -->
-      <section class="section section-alt" id="ai">
+      <section class="section" id="ai">
         <div class="container">
-          <div class="feature reverse">
+          <div class="feature">
             <div class="feature-copy">
               <h2>Work with AI</h2>
               <p>Bring your own AI agent into your writing. The desktop app starts the coding agent you already use, such as Claude Code, Codex, Pi or opencode, and gives it tools to read your document, comment on it and propose tracked changes.</p>
@@ -949,7 +980,7 @@
       </section>
 
       <!-- ============================================================ open -->
-      <section class="section" id="open">
+      <section class="section section-alt" id="open">
         <div class="container">
           <h2 class="section-title">Free and open source</h2>
           <div class="columns">
@@ -978,9 +1009,9 @@
       </section>
 
       <!-- ========================================================== desktop -->
-      <section class="section section-alt" id="desktop">
+      <section class="section" id="desktop">
         <div class="container">
-          <div class="feature">
+          <div class="feature reverse">
             <div class="feature-copy">
               <h2>In the browser or on your desktop</h2>
               <p>Writing, previews, collaboration and review all work in any modern web browser.</p>
@@ -1015,9 +1046,9 @@
       </section>
 
       <!-- ================================================================ git -->
-      <section class="section" id="git">
+      <section class="section section-alt" id="git">
         <div class="container">
-          <div class="feature reverse">
+          <div class="feature">
             <div class="feature-copy">
               <h2>Sync with Git and GitHub</h2>
               <p>Connect a project to a Git repository from the desktop app. Get the repository's changes into the project, and send the project's changes back.</p>
@@ -1049,9 +1080,9 @@
       </section>
 
       <!-- ============================================================ todo -->
-      <section class="section section-alt" id="todo">
+      <section class="section" id="todo">
         <div class="container">
-          <div class="feature">
+          <div class="feature reverse">
             <div class="feature-copy">
               <h2>To-do lists</h2>
               <p>Write a task list in Markdown and turn on visual mode. LibrePaper shows each task with a checkbox, its priority, dates, people and tags.</p>
@@ -1084,7 +1115,7 @@
       </section>
 
       <!-- ========================================================= features -->
-      <section class="section" id="features">
+      <section class="section section-alt" id="features">
         <div class="container">
           <h2 class="section-title features-title">Features</h2>
           <div class="compare-wrap">
@@ -1329,6 +1360,15 @@
         </svg>
       </a>
       <video style="--ratio: 2560 / 1640" src="/images/review-changes.webm" poster="/images/review-changes.webp" width="2560" height="1640" controls muted loop playsinline preload="none"></video>
+    </div>
+    <div class="lightbox" id="history-video">
+      <a class="lightbox-dismiss" href="#" aria-label="Close the video"></a>
+      <a class="lightbox-close" href="#" aria-label="Close the video">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+        </svg>
+      </a>
+      <video style="--ratio: 2560 / 1640" src="/images/history.webm" poster="/images/history.webp" width="2560" height="1640" controls muted loop playsinline preload="none"></video>
     </div>
     <div class="lightbox" id="git-video">
       <a class="lightbox-dismiss" href="#" aria-label="Close the video"></a>
