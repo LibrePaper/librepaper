@@ -74,6 +74,43 @@ test("two people who choose the same colour do not stay that way", async () => {
   }
 });
 
+test("a signed-in person is coloured by their account, as the Authors tab colours them", () => {
+  // Two spellings of one account's name are one colour: the caret follows the
+  // account, the same seed the Authors tab draws the person's row from.
+  const session = createProjectSession({
+    name: "Ada",
+    accountId: "acc-1",
+    presenceId: () => "tab-a",
+    presenceColour,
+    send: () => {},
+    onState: () => {},
+  });
+  try {
+    assert.equal(session.localPresence().color, presenceColour("account:acc-1"));
+    session.rename("Ada Lovelace", "acc-1");
+    assert.equal(session.localPresence().color, presenceColour("account:acc-1"));
+    // Signing out of the account falls back to the name, as an anonymous reader's.
+    session.rename("Ada Lovelace", "");
+    assert.equal(session.localPresence().color, presenceColour("name:Ada Lovelace"));
+  } finally {
+    session.leave();
+  }
+});
+
+test("an anonymous reader with no name still wears their tab's colour", () => {
+  const session = createProjectSession({
+    presenceId: () => "tab-z",
+    presenceColour,
+    send: () => {},
+    onState: () => {},
+  });
+  try {
+    assert.equal(session.localPresence().color, presenceColour("tab-z"));
+  } finally {
+    session.leave();
+  }
+});
+
 test("signing in part way through recolours by the name, not the tab", async () => {
   const peers = room([["", "tab-a"], ["Grace", "tab-b"]], presenceColour);
   try {

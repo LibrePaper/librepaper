@@ -39,6 +39,13 @@ export function permissionAction(input) {
   return humanized || m.agent_permission_continue();
 }
 
+/// The dot on the Agent panel's tab: marked while an agent waits for the
+/// person's permission and the panel is not in view, so the request is not
+/// missed. Nothing is marked while the panel is showing, because the card is.
+export function agentWaitingBadge({ waiting = false, visible = false } = {}) {
+  return waiting && !visible ? { says: m.readerb_agent_waiting(), dot: true } : {};
+}
+
 const KIND_ORDER = ["allow_once", "allow_always", "reject_once", "reject_always"];
 const KIND_LABELS = {
   allow_once: m.agent_permission_allow_once(),

@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { humanizeTool, permissionAction, permissionButtons } from "../../src/lib/agent-permission.js";
+import { agentWaitingBadge, humanizeTool, permissionAction, permissionButtons } from "../../src/lib/agent-permission.js";
+
+test("the Agent tab is marked while an agent waits for permission and the panel is hidden", () => {
+  const badge = agentWaitingBadge({ waiting: true, visible: false });
+  assert.equal(badge.dot, true);
+  assert.equal(badge.says, "Agent is waiting for your permission");
+});
+
+test("the Agent tab is not marked when nothing waits, or when the panel is showing", () => {
+  assert.deepEqual(agentWaitingBadge({ waiting: false, visible: false }), {});
+  assert.deepEqual(agentWaitingBadge({ waiting: true, visible: true }), {});
+  assert.deepEqual(agentWaitingBadge({}), {});
+});
 
 test("humanizeTool rewrites known LibrePaper MCP tools into plain words", () => {
   assert.equal(humanizeTool("Run mcp__librepaper__document_read?"), "Run Read the current document?");
