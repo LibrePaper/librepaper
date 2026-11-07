@@ -2,6 +2,7 @@
   import { tick } from "svelte";
   import IconButton from "./IconButton.svelte";
   import { m } from "../lib/paraglide/messages.js";
+  import { isSendKey } from "../lib/send-key.js";
   let {
     placeholder = m.chatcomposer_placeholder(),
     disabled = false,
@@ -76,19 +77,20 @@
   }
 
   function keydown(event) {
-    if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
-    if (event.shiftKey || event.ctrlKey) {
+    if (isSendKey(event)) {
       event.preventDefault();
-      const textarea = event.currentTarget;
-      const at = textarea.selectionStart;
-      const next = `${draft.slice(0, at)}\n${draft.slice(textarea.selectionEnd)}`;
-      draft = next;
-      ondraft?.(draft);
-      void tick().then(() => textarea.setSelectionRange(at + 1, at + 1));
+      if (canSend && !disabled) event.currentTarget.form?.requestSubmit();
       return;
     }
+    // Shift+Enter: the draft is controlled, so the newline is put in by hand.
+    if (event.key !== "Enter" || !event.shiftKey || event.isComposing || event.keyCode === 229) return;
     event.preventDefault();
-    if (canSend && !disabled) event.currentTarget.form?.requestSubmit();
+    const textarea = event.currentTarget;
+    const at = textarea.selectionStart;
+    const next = `${draft.slice(0, at)}\n${draft.slice(textarea.selectionEnd)}`;
+    draft = next;
+    ondraft?.(draft);
+    void tick().then(() => textarea.setSelectionRange(at + 1, at + 1));
   }
 </script>
 

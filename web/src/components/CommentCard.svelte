@@ -5,6 +5,7 @@
   import Avatar from "./Avatar.svelte";
   import Row from "./layout/Row.svelte";
   import { threadRuns } from "../lib/thread.js";
+  import { isSendKey } from "../lib/send-key.js";
   import { shownSelector } from "../lib/anchor.js";
   import { moment } from "../lib/dates.js";
 
@@ -164,7 +165,7 @@
       replying = false;
       return;
     }
-    if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.isComposing || event.keyCode === 229) return;
+    if (!isSendKey(event)) return;
     event.preventDefault();
     event.currentTarget.form?.requestSubmit();
   }
@@ -206,15 +207,15 @@
     editError = "";
   }
 
-  // Enter makes a new line here, as it is in a note; Ctrl or Cmd with Enter
-  // saves, and Escape lets the words go.
+  // Enter saves, Shift+Enter makes a new line, and Escape lets the words go.
+  // The same send key as the reply box.
   function editKeys(event) {
     if (event.key === "Escape") {
       event.preventDefault();
       stopEdit();
       return;
     }
-    if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey) || event.isComposing) return;
+    if (!isSendKey(event)) return;
     event.preventDefault();
     event.currentTarget.form?.requestSubmit();
   }

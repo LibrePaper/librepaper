@@ -581,7 +581,7 @@
   "commentcard_delete_comment": "Kommentar löschen",
   "commentcard_edit_comment": "Kommentar bearbeiten",
   "commentcard_edit_field": "Bearbeiten",
-  "commentcard_edit_placeholder": "Bearbeiten · Strg+Enter speichert · Esc bricht ab",
+  "commentcard_edit_placeholder": "Bearbeiten · Enter speichert · Esc bricht ab",
   "commentcard_edit_reply": "Antwort bearbeiten",
   "commentcard_edited": "bearbeitet {when}",
   "commentcard_edited_title": "Bearbeitet {when}",

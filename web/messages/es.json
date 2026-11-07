@@ -581,7 +581,7 @@
   "commentcard_delete_comment": "Eliminar comentario",
   "commentcard_edit_comment": "Editar comentario",
   "commentcard_edit_field": "Editar",
-  "commentcard_edit_placeholder": "Editar · Ctrl+Enter guarda · Esc cancela",
+  "commentcard_edit_placeholder": "Editar · Enter guarda · Esc cancela",
   "commentcard_edit_reply": "Editar respuesta",
   "commentcard_edited": "editado {when}",
   "commentcard_edited_title": "Editado {when}",

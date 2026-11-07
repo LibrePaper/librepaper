@@ -581,7 +581,7 @@
   "commentcard_delete_comment": "コメントを削除",
   "commentcard_edit_comment": "コメントを編集",
   "commentcard_edit_field": "編集",
-  "commentcard_edit_placeholder": "編集 · Ctrl+Enterで保存 · Escでキャンセル",
+  "commentcard_edit_placeholder": "編集 · Enterで保存 · Escでキャンセル",
   "commentcard_edit_reply": "返信を編集",
   "commentcard_edited": "編集済み（{when}）",
   "commentcard_edited_title": "編集済み（{when}）",

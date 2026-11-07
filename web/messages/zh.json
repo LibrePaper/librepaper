@@ -581,7 +581,7 @@
   "commentcard_delete_comment": "删除批注",
   "commentcard_edit_comment": "编辑批注",
   "commentcard_edit_field": "编辑",
-  "commentcard_edit_placeholder": "编辑 · Ctrl+Enter 保存 · Esc 取消",
+  "commentcard_edit_placeholder": "编辑 · Enter 保存 · Esc 取消",
   "commentcard_edit_reply": "编辑回复",
   "commentcard_edited": "编辑于 {when}",
   "commentcard_edited_title": "编辑于 {when}",

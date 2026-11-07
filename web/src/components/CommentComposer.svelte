@@ -1,5 +1,6 @@
 <script>
   import { m } from "../lib/paraglide/messages.js";
+  import { isSendKey } from "../lib/send-key.js";
   // Writing the note, in the column where it will live rather than in a
   // dialog over the document it is about. It is the same card as the notes
   // around it, in the place the new one will take, so the passage stays
@@ -44,7 +45,7 @@
       oncancel?.();
       return;
     }
-    if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.isComposing || event.keyCode === 229) return;
+    if (!isSendKey(event)) return;
     event.preventDefault();
     send();
   }

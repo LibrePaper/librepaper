@@ -581,7 +581,7 @@
   "commentcard_delete_comment": "Delete comment",
   "commentcard_edit_comment": "Edit comment",
   "commentcard_edit_field": "Edit",
-  "commentcard_edit_placeholder": "Edit · Ctrl+Enter saves · Esc cancels",
+  "commentcard_edit_placeholder": "Edit · Enter saves · Esc cancels",
   "commentcard_edit_reply": "Edit reply",
   "commentcard_edited": "edited {when}",
   "commentcard_edited_title": "Edited {when}",
