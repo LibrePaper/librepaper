@@ -638,7 +638,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   const ctx = context({
     sourceGeneration: 0, mayEdit: true, publishedBundle: null,
     outlineRevision: 0, sourceFormat: "", editing: false,
-    previewTimer: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
+    previewTimer: null, previewFrame: null, requestPreviewFrame: () => () => {}, PASSIVE_PREVIEW_DEBOUNCE: 1000,
     setTimeout: () => 1, clearTimeout: () => {}, paintPreview: () => {},
     diagnosticPainter: { typed: () => {} },
     refreshReview: () => { reviewed += 1; },
@@ -684,12 +684,12 @@ for (const invalidate of [null, "navigation", "main"]) {
   let scheduled = 0;
   const ctx = context({
     sourceGeneration: 0, editing: true, sourceFormat: "markdown", pdfOutput: false, mayEdit: true, publishedBundle: null,
-    previewTimer: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
+    previewTimer: null, previewFrame: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
+    // Markdown renders on the next frame, never behind a timer.
+    requestPreviewFrame: () => { scheduled += 1; return () => {}; },
     diagnosticPainter: { typed: () => {} },
-    setTimeout: (fn, ms) => {
-      assert.ok(ms <= 50, "Markdown starts rendering within 50 ms of an edit");
-      return ++scheduled;
-    }, clearTimeout: () => {}, paintPreview: () => {},
+    setTimeout: () => assert.fail("an editor's Markdown preview does not wait on a timer"),
+    clearTimeout: () => {}, paintPreview: () => {},
   });
   vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   for (let i = 0; i < 10; i++) vm.runInContext("sourceChanged()", ctx);
@@ -703,11 +703,11 @@ for (const invalidate of [null, "navigation", "main"]) {
   let scheduled = 0;
   const ctx = context({
     sourceGeneration: 0, editing: true, sourceFormat: "typst", pdfOutput: true, compilesHere: true,
-    previewTimer: null, diagnosticPainter: { typed: () => {} },
-    setTimeout: (fn, ms) => {
-      assert.ok(ms <= 50, "Typst starts rendering within 50 ms of an edit");
-      return ++scheduled;
-    }, clearTimeout: () => {}, paintPreview: () => {}, dropHeldRendering: () => {},
+    previewTimer: null, previewFrame: null, diagnosticPainter: { typed: () => {} },
+    // Typst renders on the next frame, never behind a timer.
+    requestPreviewFrame: () => { scheduled += 1; return () => {}; },
+    setTimeout: () => assert.fail("an editor's Typst preview does not wait on a timer"),
+    clearTimeout: () => {}, paintPreview: () => {}, dropHeldRendering: () => {},
     renderingStore: { schedulePoll: () => {}, cancelPoll: () => {} },
   });
   vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
@@ -734,6 +734,7 @@ for (const invalidate of [null, "navigation", "main"]) {
     } },
     diagnosticPainter: { typed: () => {} }, diagnosticContext,
     editing: true, pdfOutput: false, previewTimer: null,
+    previewFrame: null, requestPreviewFrame: () => () => {},
     setTimeout: () => {}, clearTimeout: () => {}, paintPreview: () => {},
   });
   vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
@@ -944,7 +945,10 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   collaboration.start({ created_at: "first", role: "editor" });
   const active = fake.session;
   active.joinOptions.send({ type: "doc-update", update: "held" });
-  assert.equal(sent.length, 1, "the initial y-open is sent");
+  assert.equal(sent.length, 0, "nothing is sent while the socket is connecting");
+  await rooms[0].onConnected(true);
+  assert.equal(sent.length, 1, "the initial y-open is sent when the socket opens");
+  assert.equal(fetches, 0, "the first open trusts the document the boot just fetched");
   rooms[0].onConnected(false);
   const stale = rooms[0].onConnected(true);
   const current = rooms[0].onConnected(true);
@@ -955,6 +959,33 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   assert.equal(sent.filter((message) => message.type === "doc-open").length, 2, "only the current reconnect re-opens");
   collaboration.close();
   assert.equal(active.left, true);
+}
+
+// A document restored from the offline copy may have been replaced while this
+// browser was away, so even the first open checks it before sending.
+{
+  const sent = [];
+  let changed = 0;
+  let fetches = 0;
+  const fake = fakeCollaboration();
+  let roomOptions;
+  const collaboration = createReaderCollaboration({
+    slug: "example",
+    fetcher: async () => { fetches++; return { ok: true, json: async () => ({ created_at: "second", role: "editor" }) }; },
+    openRoom: (_slug, options) => {
+      roomOptions = options;
+      return { send: (message) => sent.push(message), sendLive: () => ({ ok: true }), close: () => {} };
+    },
+    collab: fake.module,
+    getCanEdit: () => true,
+    onDocumentChanged: () => changed++,
+  });
+  collaboration.start({ created_at: "first", role: "editor", local_copy: true });
+  await roomOptions.onConnected(true);
+  collaboration.close();
+  assert.equal(fetches, 1, "a local copy is re-checked on the first open");
+  assert.equal(changed, 1, "a replaced document invalidates the local copy");
+  assert.equal(sent.filter((message) => message.type === "doc-open").length, 0);
 }
 
 // A recreated document or changed capability invalidates the old session and
@@ -982,7 +1013,7 @@ for (const latest of [
   await roomOptions.onConnected(true);
   collaboration.close();
   assert.equal(changed, 1, "changed metadata invalidates the old session");
-  assert.equal(sent.filter((message) => message.type === "doc-open").length, 1);
+  assert.equal(sent.filter((message) => message.type === "doc-open").length, 0, "the invalidated session never opens");
 }
 
 // Late notifications cannot reach a disposed reader. Two halves: the session

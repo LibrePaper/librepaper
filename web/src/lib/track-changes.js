@@ -16,7 +16,7 @@
 //
 // Offsets are UTF-16 everywhere, the same as CodeMirror and loro-crdt in JS.
 
-import { Cursor, LoroMap } from "loro-crdt";
+import { loroClasses } from "./loro-classes.js";
 
 export const CHANGES = "changes";
 
@@ -306,7 +306,7 @@ function fileText(doc, fileId) {
 
 function cursorPos(doc, bytes) {
   try {
-    const result = doc.getCursorPos(Cursor.decode(bytes));
+    const result = doc.getCursorPos(loroClasses.Cursor.decode(bytes));
     if (!result || typeof result.offset !== "number") return null;
     return { offset: result.offset, stale: Boolean(result.update) };
   } catch {
@@ -320,8 +320,8 @@ function cursorPos(doc, bytes) {
 function sameCursor(a, b) {
   if (!(a instanceof Uint8Array) || !(b instanceof Uint8Array)) return false;
   try {
-    const x = Cursor.decode(a);
-    const y = Cursor.decode(b);
+    const x = loroClasses.Cursor.decode(a);
+    const y = loroClasses.Cursor.decode(b);
     return JSON.stringify([x.pos() ?? null, x.side(), x.containerId()]) === JSON.stringify([y.pos() ?? null, y.side(), y.containerId()]);
   } catch {
     return false;
@@ -388,7 +388,7 @@ export function resolveFile(doc, fileId) {
     changes.push({ id: c.id, who: c.who, author: c.author, run: c.run ?? null, at: c.at, from, to, stale, hasCursor: true, legacy: true });
   }
   for (const [id, entry] of doc.getMap(CHANGES).entries()) {
-    if (!(entry instanceof LoroMap)) continue;
+    if (!(entry instanceof loroClasses.LoroMap)) continue;
     const value = /** @type {any} */ (entry);
     if (value.get("file") !== fileId) continue;
     if (value.get("kind") === "fragment") {
@@ -477,7 +477,7 @@ function legacyRecords(doc, fileId) {
   const out = new Map();
   for (const [id, entry] of doc.getMap(CHANGES).entries()) {
     const value = /** @type {any} */ (entry);
-    if (!value || value instanceof LoroMap || value.file !== fileId) continue;
+    if (!value || value instanceof loroClasses.LoroMap || value.file !== fileId) continue;
     if (typeof value.deleted !== "string" || !(value.start instanceof Uint8Array)) continue;
     out.set(id, value);
   }
@@ -542,7 +542,7 @@ function convertLegacy(doc, fileId, id) {
   const map = doc.getMap(CHANGES);
   for (const { change: c } of group) {
     map.delete(c.id);
-    const record = map.setContainer(c.id, new LoroMap());
+    const record = map.setContainer(c.id, new loroClasses.LoroMap());
     record.set("kind", "change");
     record.set("file", fileId);
     record.set("who", c.who);
@@ -554,7 +554,7 @@ function convertLegacy(doc, fileId, id) {
   }
   const owners = new Map(group.map((e) => [e.change.id, e.change]));
   for (const f of outer.fragments) {
-    const record = map.setContainer(f.id, new LoroMap());
+    const record = map.setContainer(f.id, new loroClasses.LoroMap());
     record.set("kind", "fragment");
     record.set("file", fileId);
     const o = owners.get(f.change);
@@ -574,7 +574,7 @@ function convertLegacy(doc, fileId, id) {
 // is a container, converting its legacy record first if need be.
 function materialize(doc, fileId, id) {
   const map = doc.getMap(CHANGES);
-  if (map.get(id) instanceof LoroMap) return;
+  if (map.get(id) instanceof loroClasses.LoroMap) return;
   const colon = id.lastIndexOf(":");
   const legacyId = map.get(id) !== undefined ? id : colon > 0 ? id.slice(0, colon) : id;
   convertLegacy(doc, fileId, legacyId);
@@ -610,7 +610,7 @@ export function listChanges(doc) {
   const seen = new Set();
   for (const [, value] of doc.getMap(CHANGES).entries()) {
     // Legacy records are plain values and name their file too.
-    const file = value instanceof LoroMap ? value.get("file") : /** @type {any} */ (value)?.file;
+    const file = value instanceof loroClasses.LoroMap ? value.get("file") : /** @type {any} */ (value)?.file;
     if (typeof file !== "string" || seen.has(file)) continue;
     seen.add(file);
     const text = fileText(doc, file);
@@ -640,8 +640,8 @@ function writeChange(doc, text, fileId, c, heal = false) {
   const map = doc.getMap(CHANGES);
   materialize(doc, fileId, c.id);
   let record = map.get(c.id);
-  if (!(record instanceof LoroMap)) {
-    record = map.setContainer(c.id, new LoroMap());
+  if (!(record instanceof loroClasses.LoroMap)) {
+    record = map.setContainer(c.id, new loroClasses.LoroMap());
     record.set("kind", "change");
     record.set("file", fileId);
   }
@@ -735,7 +735,7 @@ function rankGap(fragments) {
 function writeFragment(doc, id, fileId, f, startBytes, at, rank, owner, heal = false) {
   const map = doc.getMap(CHANGES);
   let record = map.get(id);
-  if (!(record instanceof LoroMap)) {
+  if (!(record instanceof loroClasses.LoroMap)) {
     // A fragment of a legacy record (id `<legacy>:<i>`) is rewritten, with
     // the whole record it belongs to, only when something about it changes.
     const colon = id.lastIndexOf(":");
@@ -751,8 +751,8 @@ function writeFragment(doc, id, fileId, f, startBytes, at, rank, owner, heal = f
       record = map.get(id);
     }
   }
-  if (!(record instanceof LoroMap)) {
-    record = map.setContainer(id, new LoroMap());
+  if (!(record instanceof loroClasses.LoroMap)) {
+    record = map.setContainer(id, new loroClasses.LoroMap());
     record.set("kind", "fragment");
     record.set("file", fileId);
     if (owner) {
@@ -917,10 +917,10 @@ export function unsuggestedText(doc, fileId) {
 export function accept(doc, id) {
   const map = doc.getMap(CHANGES);
   const plain = /** @type {any} */ (map.get(id));
-  if (plain !== undefined && !(plain instanceof LoroMap) && typeof plain.file === "string") convertLegacy(doc, plain.file, id);
+  if (plain !== undefined && !(plain instanceof loroClasses.LoroMap) && typeof plain.file === "string") convertLegacy(doc, plain.file, id);
   const value = map.get(id);
-  if (!(value instanceof LoroMap) || !decidable(map, value)) return false;
-  for (const [fid, fv] of [...map.entries()]) if (fv instanceof LoroMap && fv.get("kind") === "fragment" && fv.get("change") === id) map.delete(fid);
+  if (!(value instanceof loroClasses.LoroMap) || !decidable(map, value)) return false;
+  for (const [fid, fv] of [...map.entries()]) if (fv instanceof loroClasses.LoroMap && fv.get("kind") === "fragment" && fv.get("change") === id) map.delete(fid);
   map.delete(id);
   doc.commit();
   return true;
@@ -933,7 +933,7 @@ function decidable(map, value) {
   if (kind === "change") return true;
   if (kind !== "fragment") return false;
   const parent = map.get(value.get("change"));
-  return !(parent instanceof LoroMap && parent.get("kind") === "change");
+  return !(parent instanceof loroClasses.LoroMap && parent.get("kind") === "change");
 }
 
 // Rejects one change without committing. See `reject`. With `restored`, each
@@ -944,9 +944,9 @@ function decidable(map, value) {
 function rejectOne(doc, id, restored = null, edits = null) {
   const map = doc.getMap(CHANGES);
   const plain = /** @type {any} */ (map.get(id));
-  if (plain !== undefined && !(plain instanceof LoroMap) && typeof plain.file === "string") convertLegacy(doc, plain.file, id);
+  if (plain !== undefined && !(plain instanceof loroClasses.LoroMap) && typeof plain.file === "string") convertLegacy(doc, plain.file, id);
   const value = map.get(id);
-  if (!(value instanceof LoroMap) || !decidable(map, value)) return false;
+  if (!(value instanceof loroClasses.LoroMap) || !decidable(map, value)) return false;
   const file = /** @type {string} */ (value.get("file"));
   const text = fileText(doc, file);
   if (text) {
@@ -1019,7 +1019,7 @@ function rejectOne(doc, id, restored = null, edits = null) {
     if (restored && span) for (const r of restored.slice(0, early)) r.at -= span.to - span.from;
     for (const at of positions) if (span && at <= span.to) restore(at);
   }
-  for (const [fid, fv] of [...map.entries()]) if (fv instanceof LoroMap && fv.get("kind") === "fragment" && fv.get("change") === id) map.delete(fid);
+  for (const [fid, fv] of [...map.entries()]) if (fv instanceof loroClasses.LoroMap && fv.get("kind") === "fragment" && fv.get("change") === id) map.delete(fid);
   map.delete(id);
   return true;
 }
@@ -1088,11 +1088,11 @@ export function prune(doc, now = Date.now()) {
   const map = doc.getMap(CHANGES);
   let count = 0;
   const files = new Set();
-  for (const [, v] of map.entries()) { const file = v instanceof LoroMap ? v.get("file") : /** @type {any} */ (v)?.file; if (typeof file === "string") files.add(file); }
+  for (const [, v] of map.entries()) { const file = v instanceof loroClasses.LoroMap ? v.get("file") : /** @type {any} */ (v)?.file; if (typeof file === "string") files.add(file); }
   for (const file of files) {
     const text = fileText(doc, file);
     if (!text) {
-      for (const [id, v] of [...map.entries()]) { if (v instanceof LoroMap && v.get("file") === file) { map.delete(id); count += 1; } }
+      for (const [id, v] of [...map.entries()]) { if (v instanceof loroClasses.LoroMap && v.get("file") === file) { map.delete(id); count += 1; } }
       continue;
     }
     const { changes, gaps } = resolveFile(doc, file);
@@ -1104,7 +1104,7 @@ export function prune(doc, now = Date.now()) {
     // last edit, so an old insertion deleted a moment ago still gets its grace.
     // A record found live again loses the mark.
     for (const [id, v] of [...map.entries()]) {
-      if (!(v instanceof LoroMap) || v.get("file") !== file) continue;
+      if (!(v instanceof loroClasses.LoroMap) || v.get("file") !== file) continue;
       const emptiedAt = v.get("emptied");
       if (liveIds.has(id)) { if (emptiedAt !== undefined) v.delete("emptied"); continue; }
       if (typeof emptiedAt !== "number") { v.set("emptied", now); continue; }
@@ -1119,12 +1119,12 @@ export function prune(doc, now = Date.now()) {
     // found live again loses the mark.
     const staleSettled = (id) => {
       const v = map.get(id);
-      if (!(v instanceof LoroMap)) return true;
+      if (!(v instanceof loroClasses.LoroMap)) return true;
       const since = v.get("stale");
       if (typeof since !== "number") { v.set("stale", now); return false; }
       return since < now - SETTLE_MS;
     };
-    const unmark = (id) => { const v = map.get(id); if (v instanceof LoroMap && v.get("stale") !== undefined) v.delete("stale"); };
+    const unmark = (id) => { const v = map.get(id); if (v instanceof loroClasses.LoroMap && v.get("stale") !== undefined) v.delete("stale"); };
     for (const g of gaps) {
       if (!g.stale) { for (const f of g.fragments) unmark(f.id); continue; }
       if (g.fragments.map((f) => staleSettled(f.id)).every(Boolean) && writeGap(doc, text, file, g.at, g.fragments, new Map(), true)) for (const f of g.fragments) unmark(f.id);
