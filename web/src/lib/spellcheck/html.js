@@ -103,7 +103,7 @@ function after(at, length, n) {
 
 // The text with only its ASCII letters lowercased. Other characters, and the
 // length of the string, are unchanged.
-function asciiLower(text) {
+export function asciiLower(text) {
   return text.replace(/[A-Z]+/g, (m) => m.toLowerCase());
 }
 
@@ -111,7 +111,7 @@ function asciiLower(text) {
 // from `from` on, or the end of the text when there is none. The search runs
 // forward only, and a missing `>` ends it, since no later candidate can have
 // one either. `lower` is asciiLower(text).
-function rawEnd(text, lower, name, from) {
+export function rawEnd(text, lower, name, from) {
   const n = text.length;
   const needle = `</${name}`;
   let at = lower.indexOf(needle, from);
