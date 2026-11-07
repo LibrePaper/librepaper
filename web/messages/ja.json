@@ -695,6 +695,7 @@
   "common_command": "コマンド",
   "common_command_palette": "コマンドパレット",
   "common_comment": "コメント",
+  "common_comment_whole_document": "ドキュメント全体にコメント",
   "common_comments": "コメント",
   "common_comments_could_not_be_read": "コメントを読み込めませんでした（{status}）。",
   "common_compile_now": "今すぐコンパイル",

@@ -6,7 +6,7 @@
   import Row from "./layout/Row.svelte";
   import { threadRuns } from "../lib/thread.js";
   import { isSendKey } from "../lib/send-key.js";
-  import { shownSelector } from "../lib/anchor.js";
+  import { aboutWholeDocument, shownSelector } from "../lib/anchor.js";
   import { moment } from "../lib/dates.js";
 
   // One annotation, and everything said about it.
@@ -54,6 +54,9 @@
   // is what the card shows and what the highlight was drawn from, never what
   // the comment is about.
   const shown = $derived(shownSelector(comment));
+  // A remark about the document as a whole. It names no passage, so it has no
+  // place in the page to show or to take the reader to; its card says so.
+  const whole = $derived(aboutWholeDocument(comment));
 
   // A highlight is the one kind of card with nothing of its own to say: no
   // body, just a badge. Without the passage it marks, the card
@@ -114,7 +117,7 @@
   // about it.
   const summary = $derived(
     [
-      shown.exact.trim(),
+      whole ? m.common_whole_document() : shown.exact.trim(),
       (comment.body || "").trim(),
     ]
       .filter(Boolean)
@@ -147,7 +150,7 @@
       open();
       return;
     }
-    if (!comment.orphaned) onreveal?.(comment);
+    if (!comment.orphaned && !whole) onreveal?.(comment);
   }
 
   async function reply() {
@@ -268,10 +271,13 @@
             onclick={open}>{summary}</button>
   {:else}
     <div class="flex flex-col gap-2">
-      {#if unpainted || comment.inSourceOnly || (comment.motivation && comment.motivation !== "commenting")}
+      {#if unpainted || whole || comment.inSourceOnly || (comment.motivation && comment.motivation !== "commenting")}
       <Row gap={1} wrap>
         {#if unpainted}
           <span class="badge {badgeTone}">{badge}</span>
+        {/if}
+        {#if whole}
+          <span class="badge lp-tone-neutral">{m.common_whole_document()}</span>
         {/if}
         {#if comment.inSourceOnly}
           <!-- The rendering lost the words, but the source -- the text that
@@ -386,7 +392,7 @@
        now, and it is still the confirmed one: what it opens is the dialog,
        not the deletion. -->
   <div class="actions">
-    {#if onreveal && !comment.orphaned}
+    {#if onreveal && !comment.orphaned && !whole}
       <IconButton
         icon="eye"
         label={m.commentcard_show_in_document()}
