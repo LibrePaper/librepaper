@@ -212,6 +212,10 @@ export const COMMANDS = [
   { id: "select-all", label: m.common_select_all(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+A"], available: (c) => Boolean(c.edit?.["select-all"]) },
   { id: "find", label: m.readerb_edit_find(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+F"], available: (c) => Boolean(c.edit?.find) },
   { id: "replace", label: m.readerb_edit_replace(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+Alt+F"], available: (c) => Boolean(c.edit?.replace) },
+  // The editor binds these itself (lib/document-index-extensions). F12 is the browser's outside the source.
+  { id: "go-to-definition", label: m.commands_go_to_definition(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["F12"], browserKeys: true, available: (c) => Boolean(c.edit?.["go-to-definition"]) },
+  { id: "find-references", label: m.commands_find_references(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Shift+F12"], available: (c) => Boolean(c.edit?.["find-references"]) },
+  { id: "rename-symbol", label: m.commands_rename_symbol(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["F2"], available: (c) => Boolean(c.edit?.["rename-symbol"]) },
   { id: "tab-focus", label: m.commands_tab_focus(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: [{ other: "Mod+M" }, { apple: "Shift+Alt+M" }], available: (c) => Boolean(c.edit?.["tab-focus"]) },
   { id: "word-count", label: m.common_word_count(), category: m.commands_category_editing(), scope: "workspace", menu: "edit", keys: [], available: editable },
   { id: "bold", label: m.common_bold(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+B"], available: (c) => Boolean(c.edit?.bold) },
