@@ -19,6 +19,7 @@
   let {
     open = false, slug, canShare = false, request = null, link, path = "", selection = null, revision = "",
     diagnostics = [], comments = [], changes = [], onreview, onpreview, onsettings, userName,
+    waiting = $bindable(false),
   } = $props();
   // The tasks copy their text, and the external tab reads the same sharing state.
   const sharing = createSharing({ slug: () => slug, canShare: () => canShare });
@@ -144,7 +145,8 @@
     <Tabs.Content value="builtin" class="agent-builtin-pane">
       <DesktopOnly feature={m.agent_the_agent()} description={m.common_chat_with_coding_agent()}>
         <AgentSessions {slug} {canShare} {link} {path} {selection} {revision} {diagnostics} {comments} {changes}
-                       {onreview} {onpreview} {onsettings} {userName} request={outgoing} />
+                       {onreview} {onpreview} {onsettings} {userName} request={outgoing}
+                       onwaiting={(value) => waiting = value} />
       </DesktopOnly>
     </Tabs.Content>
     {#if canShare}

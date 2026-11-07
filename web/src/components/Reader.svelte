@@ -89,6 +89,7 @@
   import Preview from "./Preview.svelte";
   import PreviewControls from "./PreviewControls.svelte";
   import { onPageZoom } from "../lib/desktop/zoom.js";
+  import { agentWaitingBadge } from "../lib/agent-permission.js";
   import Grip from "./Grip.svelte";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
   import DesktopOnly from "./DesktopOnly.svelte";
@@ -205,6 +206,9 @@
   const liveChat = createLiveChat({ slug: SLUG, key: KEY });
   const chatState = liveChat.state;
   let unreadChat = $state(false);
+  // Whether an agent session is waiting for the person's permission. Reported
+  // by the Agent panel; the badge on its tab says so while the panel is hidden.
+  let agentWaiting = $state(false);
   let pendingChat;
   let mayChat = $derived(["commenter", "editor", "owner"].includes(doc.role));
   // Sharing is the owner's; seeing who else is in the room is anyone's who is
@@ -1888,6 +1892,7 @@
     },
     changes: {},
     collaboration: unreadChat ? { says: m.readerb_collaboration_unread(), dot: true } : {},
+    agent: agentWaitingBadge({ waiting: agentWaiting, visible: panel === "agent" && shown.comments }),
   });
 
   // A reader is told nothing about live editor diagnostics. They cannot fix
@@ -3810,6 +3815,8 @@
       key: KEY,
       collab,
       getIdentity: () => identity,
+      // Only a signed-in person has an account; the id is empty for anybody else.
+      getAccountId: () => (me.provider ? me.id || "" : ""),
       getCanEdit: () => mayEdit,
       sourceSync,
       standalone: DEMO,
@@ -4015,7 +4022,7 @@
       documentUrl: DEMO ? "/api/try" : undefined,
       onIdentity: (who) => {
         me = who;
-        if (who.name) session?.rename(who.name);
+        if (who.name || who.id) session?.rename(who.name || "", who.provider ? who.id || "" : "");
       },
       onDocument: showDocument,
       // A document answers a stranger exactly as a missing one does, which
@@ -4676,7 +4683,8 @@
       path={session?.paths?.get(openFile) || ""} selection={agentSelection}
       revision={agentSelection?.revision || ""} request={assistantRequest}
       {comments} changes={changeRows} {diagnostics} onreview={reviewAssistantResults} onpreview={previewAssistant}
-      onsettings={() => openSettings("agents")} userName={identity || doc.commenting_as || m.common_you()} />
+      onsettings={() => openSettings("agents")} userName={identity || doc.commenting_as || m.common_you()}
+      bind:waiting={agentWaiting} />
   {/snippet}
 
   {#snippet collaborationPanel()}

@@ -13,7 +13,7 @@
   // stay open and their access grants keep renewing.
   let {
     slug, link, canShare = false, path = "", selection = null, revision = "", request = null,
-    diagnostics = [], comments = [], changes = [], onreview, onpreview, onsettings, userName,
+    diagnostics = [], comments = [], changes = [], onreview, onpreview, onsettings, userName, onwaiting = undefined,
   } = $props();
 
   // localStorage can be absent or throw (private windows, blocked site data).
@@ -41,6 +41,10 @@
   // What each session reports about itself: its agent, and whether it is
   // working or waiting for permission. The switcher shows it in the list.
   let statuses = $state({});
+  // Whether any session is waiting for the person to allow or refuse something,
+  // so the panel's badge can say so when the panel is not in view.
+  const anyWaiting = $derived(Object.values(statuses).some((status) => status?.needsInput));
+  $effect(() => { onwaiting?.(anyWaiting); });
   // The Agent instances, by session key, for closing them on delete.
   const instances = {};
 

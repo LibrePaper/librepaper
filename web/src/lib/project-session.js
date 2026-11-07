@@ -29,6 +29,7 @@ import { createGeneration } from "./reader/generation.js";
 import { AnchorIndex, MoveMemory } from "./anchors.js";
 import { toLf } from "./line-endings.js";
 import { m } from "./paraglide/messages.js";
+import { personSeed } from "./presence-colour.js";
 
 /** @typedef {{ name?: string, color?: string, tab?: string, file?: string }} PresenceState */
 /** @typedef {{ type: string, [key: string]: unknown }} SessionMessage */
@@ -139,12 +140,13 @@ export function uniquePresences(states, { localClient = null, localTab = "" } = 
  * onPeers?: (count: number) => void,
  * onState?: (state: SessionState) => void,
  * name?: string,
+ * accountId?: string,
  * mayEdit?: boolean,
  * standalone?: boolean,
  * persistence?: { open?: (doc: LoroDoc, events: PersistenceEvents) => { hydration?: unknown, flush?: () => Promise<unknown>, close?: () => void } | null },
  * fetchReference?: (reference: string) => Promise<Uint8Array>,
  * presenceId?: () => string,
- * presenceColour?: (name: string, taken: string[]) => string,
+ * presenceColour?: (seed: string, taken: string[]) => string,
  * setTimer?: typeof setTimeout,
  * clearTimer?: typeof clearTimeout,
  * }} options
@@ -154,6 +156,7 @@ export function createProjectSession({
   onPeers,
   onState,
   name,
+  accountId = "",
   mayEdit = true,
   // A standalone session has no server. It is joined once its persistence has
   // hydrated, sends nothing, and its `pending` follows the persistence adapter
@@ -196,6 +199,12 @@ export function createProjectSession({
   // presence -- name, colour and all -- overwritten by somebody else's.
   const localTab = presenceId();
   const localKey = `${PRESENCE_PREFIX}${localTab}`;
+  // Who this is, as their colour sees them. A signed-in person is seeded by
+  // their account, so they are one colour everywhere the Authors tab shows
+  // them, whatever name they go by. Anybody else is seeded by their name, and
+  // by their tab until they have one.
+  let person = { name: name || "", accountId: accountId || "" };
+  const colourSeed = () => personSeed(person) || localTab;
 
   // The comment anchors of this document, resolved and kept current for the
   // whole session, whether or not an editor is open: the index follows imports
@@ -419,7 +428,7 @@ export function createProjectSession({
     // Their name, or -- for somebody who has not said who they are -- their
     // tab, which is theirs alone for as long as it is open. One shared
     // "Anonymous" would paint every reader in a file the same colour.
-    color: presenceColour(name || localTab, takenColours()),
+    color: presenceColour(colourSeed(), takenColours()),
     tab: localTab,
   });
 
@@ -487,7 +496,7 @@ export function createProjectSession({
       if (state.color === mine.color && key < localKey) giveWay = true;
     }
     if (!giveWay) return;
-    const next = presenceColour(mine.name || localTab, taken);
+    const next = presenceColour(colourSeed(), taken);
     if (next && next !== mine.color) store.set(localKey, { ...mine, color: next });
   }
 
@@ -1166,14 +1175,16 @@ export function createProjectSession({
       report();
     },
 
-    /// Says who this is, for the label on their caret.
-    /** @param {string} who */
-    rename(who) {
+    /// Says who this is, for the label on their caret, and -- when they are
+    /// signed in -- which account they are, which is what the colour follows.
+    /** @param {string} who @param {string} [account] */
+    rename(who, account = "") {
       const user = store.get(localKey) || {};
-      // The colour follows the name: a reader who signs in part way through
+      person = { name: who || "", accountId: account || "" };
+      // The colour follows the person: a reader who signs in part way through
       // stops being their tab's colour and becomes their own, which is the
       // one everybody else already knows them by.
-      store.set(localKey, { ...user, name: who, color: presenceColour(who || localTab, takenColours()) });
+      store.set(localKey, { ...user, name: who, color: presenceColour(colourSeed(), takenColours()) });
       settleColour();
     },
 

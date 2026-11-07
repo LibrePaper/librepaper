@@ -14,14 +14,26 @@
 // colour and two people are the same again.
 export const PRESENCE_COLOURS = ["#0072b2", "#af4d00", "#007a59", "#975a7c", "#926500", "#377395"];
 
-/// The colour for `seed` -- a name, a handle, or, for somebody who has not
-/// said who they are, their tab's presence id -- avoiding `taken`, the
-/// colours the other people in the file are already wearing.
+/// The seed a person's colour is drawn from, so that the Authors tab and the
+/// live cursor agree. A signed-in person is their account, whatever name they
+/// go by; somebody who has not signed in is their name. Returns "" when there
+/// is neither, so the caller can fall back to the tab. The Authors tab groups
+/// its rows under exactly these keys, which is why it calls this too.
+export function personSeed({ accountId = "", name = "" } = {}) {
+  const account = String(accountId ?? "").trim();
+  if (account) return `account:${account}`;
+  const who = String(name ?? "");
+  return who.trim() ? `name:${who}` : "";
+}
+
+/// The colour for `seed` (see `personSeed`) -- or, for somebody who has said
+/// nothing about themselves, their tab's presence id -- avoiding `taken`, the
+/// colours the other people present in the file are already wearing.
 ///
-/// The seed decides where in the palette to start looking, so somebody alone
-/// in a file gets the same colour every time; the walk from there is what
-/// keeps two people apart, since six hues and a hash alone put two of any
-/// six names together about as often as not. Past six people the palette is
+/// The seed decides the colour: the same seed is the same colour in every
+/// tab, on every peer's screen, and in the Authors tab. Only when `taken`
+/// holds the seeded colour -- that is, a person present would share it -- does
+/// the walk move on to the next free hue. Past six people the palette is
 /// exhausted and the seventh shares, which is the point at which the strip
 /// shows "+N" rather than a badge anyway.
 ///

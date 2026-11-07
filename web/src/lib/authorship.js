@@ -11,7 +11,7 @@
 import { SHELL_HEADERS } from "./api.js";
 import { m } from "./paraglide/messages.js";
 import { locale } from "./locale.js";
-import { presenceColour } from "./presence-colour.js";
+import { personSeed, presenceColour } from "./presence-colour.js";
 
 const asked = (headers) => ({ ...SHELL_HEADERS, ...headers });
 
@@ -89,15 +89,14 @@ export async function loadAuthors(slug, headers = {}) {
 
 /// The key a run is grouped under. An agent gets its own row, keyed by its
 /// owner's account and its label, so it never merges with the owner's own
-/// writing. A person is keyed by the account when there is one, else the name.
-/// Peers absent from the map are unknown.
+/// writing. A person is keyed by the same seed their live cursor is coloured
+/// from (`personSeed`): the account when there is one, else the name. Peers
+/// absent from the map are unknown.
 function keyOf(peer, authors) {
   const author = peer ? authors.get(peer) : undefined;
   if (!author) return "unknown";
   if (author.agent) return `agent:${author.accountId || ""}:${author.name}`;
-  if (author.accountId) return `account:${author.accountId}`;
-  if (author.name) return `name:${author.name}`;
-  return "unknown";
+  return personSeed({ accountId: author.accountId, name: author.name }) || "unknown";
 }
 
 /// Groups runs by person and says who wrote how much. Returns
@@ -143,11 +142,13 @@ export function summarize(runs, authors) {
     if (a.unknown !== b.unknown) return a.unknown ? 1 : -1;
     return b.chars - a.chars;
   });
-  const taken = [];
+  // A row's colour is its seed's colour, the same one the person's live
+  // cursor takes when nobody present shares it. It is not walked past the
+  // other rows: those people are not necessarily in the file now, and a
+  // person's colour here should not move because somebody else edited.
   for (const row of rows) {
     if (row.unknown) continue;
-    row.colour = presenceColour(row.key, taken);
-    taken.push(row.colour);
+    row.colour = presenceColour(row.key);
   }
 
   let since = null;
