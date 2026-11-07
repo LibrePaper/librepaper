@@ -386,13 +386,13 @@ async function runChecks() {
     await step("9: saved versions view", async () => {
       mount({ labels: fixtures.timeline, saved: [], savedLoaded: true });
       await flush();
-      click(choose("Saved"));
+      click(choose("Named"));
       await flush();
-      check(selected("Saved") && !selected("All"),
-        "the saved tab is selected and the all tab is not");
+      check(selected("Named") && !selected("All"),
+        "the named tab is selected and the all tab is not");
       check(calls.some((call) => call[0] === "loadsaved"),
         `choosing saved versions asks for them, calls: ${JSON.stringify(calls)}`);
-      check(statusText().includes("No saved versions yet."),
+      check(statusText().includes("No named versions yet."),
         `an empty saved list says so, shows: ${statusText()}`);
 
       update({ saved: fixtures.saved });
@@ -406,7 +406,7 @@ async function runChecks() {
       await flush();
       click(choose("All"));
       await flush();
-      check(selected("All") && !selected("Saved"),
+      check(selected("All") && !selected("Named"),
         "switching back selects the all tab");
       check(q("li.hx-current") && q(`[data-sha="${keys.olderSha}"] [aria-current="true"]`),
         "switching back restores the timeline and the selection in it");
@@ -422,7 +422,7 @@ async function runChecks() {
 
       mount({ labels: fixtures.timeline, saved: fixtures.longSaved, savedLoaded: true });
       await flush();
-      click(choose("Saved"));
+      click(choose("Named"));
       await flush();
       check(list().scrollWidth <= list().clientWidth + 1,
         `the saved list overflows sideways at 240px: ${list().scrollWidth} wide in ${list().clientWidth}`);
@@ -462,7 +462,7 @@ async function runChecks() {
       await flush();
       const panel = q(".timeline");
       check(versionsOf(panel).length === 5, "versions are on the screen to check");
-      check(!all(".btn", panel).some((node) => text(node) === "Restore"),
+      check(!all(".btn", panel).some((node) => text(node) === "Restore this version"),
         "no Restore button is in the panel");
       const moreIcon = all("svg", panel).some((svg) =>
         all("circle", svg).filter((circle) => Number(circle.getAttribute("r")) === 1).length === 3);

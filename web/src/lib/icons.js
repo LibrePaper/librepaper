@@ -166,6 +166,14 @@ export const ICONS = {
     ["path", "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"],
     ["path", "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"],
   ],
+  // Lucide's link-2-off, for revoking a share link: the link is broken, and
+  // nothing in it is being deleted.
+  "link-off": [
+    ["path", "M9 17H7A5 5 0 0 1 7 7"],
+    ["path", "M15 7h2a5 5 0 0 1 4 8"],
+    ["line", { x1: 8, x2: 12, y1: 12, y2: 12 }],
+    ["line", { x1: 2, x2: 22, y1: 2, y2: 22 }],
+  ],
   check: [["path", "M20 6 9 17l-5-5"]],
   "check-check": [["path", "M18 6 7 17l-5-5"], ["path", "m22 10-7.5 7.5L13 16"]],
   "list-checks": [["path", "m3 17 2 2 4-4"], ["path", "m3 7 2 2 4-4"], ["path", "M13 6h8"], ["path", "M13 12h8"], ["path", "M13 18h8"]],

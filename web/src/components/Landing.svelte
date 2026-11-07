@@ -1394,7 +1394,7 @@
               </Menu>
             {/if}
             <button type="button" class="btn btn-sm lp-tone-error" onclick={deleteSelected}>
-              <Icon name="trash" size={16} /> {m.common_delete()}
+              <Icon name="trash" size={16} /> {m.common_move_to_trash()}
             </button>
           {/if}
           <IconButton icon="x" label={m.landing_clear_selection()} onclick={() => (selected = new Set())} />
