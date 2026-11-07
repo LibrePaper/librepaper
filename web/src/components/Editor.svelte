@@ -32,6 +32,7 @@
   // brought into line with the setting when it is activated.
   const completionCompartment = new Compartment();
   const bracketsCompartment = new Compartment();
+  const latexAssistCompartment = new Compartment();
   const spellcheckCompartment = new Compartment();
   const checkCompartment = new Compartment();
   // The visual layer is drawn only for LaTeX, Typst and Markdown, and its colours follow
@@ -41,6 +42,8 @@
   // empty pair even without closeBrackets, so leaving it in the main keymap
   // would leave the switch half off.
   const completionOn = (on) => (on ? autocompletion({ activateOnTyping: true }) : []);
+  // The LaTeX \end insertion and environment indentation, for LaTeX files only.
+  const latexAssistOn = (on, path) => (formatOf(path) === "latex" ? latexAssistExtensions(on) : []);
   const bracketsOn = (on) => (on ? [closeBrackets(), keymap.of(closeBracketsKeymap)] : []);
   const checkOn = (on, citations, index) => (on ? [lintGutter(), citations, index] : []);
   // The checker for a source, chosen from the setting, the dialect, the prose
@@ -221,6 +224,7 @@
   import { LoroText, UndoManager } from "loro-crdt";
 
   import { sourceLanguage } from "../lib/source-language.js";
+  import { latexAssist as latexAssistExtensions } from "../lib/latex-language/index.js";
   import { foldsChanged, typstFolding } from "../lib/typst-folding.js";
   import { emphasisCommand } from "../lib/emphasis.js";
   import { canHeading, canLink, canList, headingEdit, linkEdit, listEdit } from "../lib/editing-shortcuts.js";
@@ -279,7 +283,7 @@
   // is the id of the change the reviewer is looking at.
   /** @type {{ me?: { who: string, author: string }, [key: string]: any }} */
   let { session, format = "", file = "", keys = "default", editable = true,
-    completion = true, brackets = true, proofing = "browser", dialect = "american", check = true,
+    completion = true, brackets = true, latexAssist = true, proofing = "browser", dialect = "american", check = true,
     tracking = false, me = { who: "", author: "" }, selectedChange = null,
     visual = false, imageUrl = null,
     analyze = analyzeBibliography,
@@ -1480,6 +1484,7 @@
         rectangularSelection(),
         bracketMatching(),
         bracketsCompartment.of(bracketsOn(untrack(() => brackets))),
+        latexAssistCompartment.of(latexAssistOn(untrack(() => latexAssist), path)),
         foldGutter({ foldingChanged: foldsChanged }),
         indentOnInput(),
         highlightSelectionMatches(),
@@ -1651,6 +1656,7 @@
       effects: [
         completionCompartment.reconfigure(completionOn(untrack(() => completion))),
         bracketsCompartment.reconfigure(bracketsOn(untrack(() => brackets))),
+        latexAssistCompartment.reconfigure(latexAssistOn(untrack(() => latexAssist), pathOfDoc(session.doc, id))),
         spellcheckCompartment.reconfigure(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(id), () => target.state.doc.toString())),
         checkCompartment.reconfigure(checkOn(untrack(() => check), citationKeys, indexChecks)),
       ],
@@ -2012,6 +2018,7 @@
   $effect(() => {
     void completion;
     void brackets;
+    void latexAssist;
     void proofing;
     void dialect;
     if (view) syncFeatures(view);

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { EditorState } from "@codemirror/state";
-import { ensureSyntaxTree, foldable } from "@codemirror/language";
+import { ensureSyntaxTree, foldable, getIndentation } from "@codemirror/language";
 import {
-  autoCloseEnvironment, inMath, latex, latexLanguage,
+  autoCloseEnvironment, copyPreviousIndent, inMath, latex, latexAssist, latexLanguage,
 } from "../../src/lib/latex-language/index.js";
 
 const ARTICLE = String.raw`\documentclass[11pt]{article}
@@ -60,7 +60,7 @@ function errors(tree) {
 }
 
 function stateFor(doc, cursor = doc.length) {
-  const state = EditorState.create({ doc, selection: { anchor: cursor }, extensions: [latex()] });
+  const state = EditorState.create({ doc, selection: { anchor: cursor }, extensions: [latex(), autoCloseEnvironment] });
   ensureSyntaxTree(state, state.doc.length, 5000);
   return state;
 }
@@ -286,6 +286,34 @@ test("the extension is exported on its own", () => {
   const state = EditorState.create({ doc: "\\begin{a", selection: { anchor: 8 }, extensions: [autoCloseEnvironment] });
   const tr = state.update({ changes: { from: 8, insert: "}" }, selection: { anchor: 9 }, userEvent: "input.type" });
   assert.equal(tr.newDoc.toString(), "\\begin{a}\n\\end{a}");
+});
+
+test("latexAssist turns the \\end insertion on and the copy-indent off, and back", () => {
+  assert.deepEqual(latexAssist(true), [autoCloseEnvironment]);
+  assert.deepEqual(latexAssist(false), [copyPreviousIndent]);
+  const doc = "\\begin{itemize";
+  const off = EditorState.create({ doc, extensions: [latex(), latexAssist(false)] });
+  const tr = off.update({ changes: { from: 14, insert: "}" }, selection: { anchor: 15 }, userEvent: "input.type" });
+  assert.equal(tr.newDoc.toString(), "\\begin{itemize}");
+  const on = EditorState.create({ doc, extensions: [latex(), latexAssist(true)] });
+  const typed = on.update({ changes: { from: 14, insert: "}" }, selection: { anchor: 15 }, userEvent: "input.type" });
+  assert.equal(typed.newDoc.toString(), "\\begin{itemize}\n\\end{itemize}");
+});
+
+test("with assistance off, a new line copies the indentation of the line above", () => {
+  const doc = "\\begin{itemize}\n  \\item a\n\n  \\item b\n\\end{itemize}";
+  const on = EditorState.create({ doc, extensions: [latex()] });
+  const off = EditorState.create({ doc, extensions: [latex(), latexAssist(false)] });
+  ensureSyntaxTree(on, on.doc.length, 5000);
+  ensureSyntaxTree(off, off.doc.length, 5000);
+  const blank = doc.indexOf("\n\n") + 1;
+  // Off: the blank line takes the indentation of "  \\item a". The closing \\end copies "  \\item b".
+  assert.equal(getIndentation(off, blank), 2);
+  assert.equal(getIndentation(off, doc.indexOf("\\end")), 2);
+  // On, the grammar decides, so the \\end lines up with its \\begin.
+  assert.equal(getIndentation(on, doc.indexOf("\\end")), 0);
+  // The first line has nothing above it.
+  assert.equal(getIndentation(off, 0), 0);
 });
 
 // ---- Speed ------------------------------------------------------------------
