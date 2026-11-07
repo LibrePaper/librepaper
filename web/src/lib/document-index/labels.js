@@ -3,6 +3,7 @@
 
 import { createProjectIndex } from "./project.js";
 import { indexFile } from "./adapters/index.js";
+import { formatOf } from "../formats.js";
 
 /** @typedef {import("./project.js").ProjectIndex} ProjectIndex */
 
@@ -44,9 +45,22 @@ function lineAt(text, offset) {
 }
 
 /**
+ * Whether a file is a document: one that renders on its own, such as a .tex,
+ * .typ, .qmd, .md or .html file. A style or class file (.sty, .cls) is source
+ * for a document, not a document, so its labels are not offered for completion.
+ * Reuses formats.js, which already says which extensions are documents.
+ * @param {string} path
+ * @returns {boolean}
+ */
+export function isDocumentSource(path) {
+  return formatOf(path) !== "";
+}
+
+/**
  * The labels of a project, one entry per name. The first definition wins: the
  * file `first` comes before the others, the rest follow in path order, and each
- * file's labels follow in offset order.
+ * file's labels follow in offset order. Only labels in document files are
+ * listed; labels defined in style or class files still resolve in the index.
  * @param {ProjectIndex} project
  * @param {Record<string, string | null | undefined>} texts source per path, for line numbers
  * @param {{ first?: string, formats?: Set<string> | null }} [options]
@@ -62,7 +76,7 @@ export function labelList(project, texts, { first = "", formats = null } = {}) {
   const out = [];
   for (const path of ordered) {
     const file = project.file(path);
-    if (!file || (formats && !formats.has(file.format))) continue;
+    if (!file || !isDocumentSource(path) || (formats && !formats.has(file.format))) continue;
     const labels = file.items
       .filter((item) => item.kind === "label" && item.name !== undefined)
       .sort((a, b) => a.range[0] - b.range[0]);

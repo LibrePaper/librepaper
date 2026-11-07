@@ -9,6 +9,7 @@ import { dirname, relativePath } from "../completion/paths.js";
 /** @typedef {import("./schema.js").Diagnostic} Diagnostic */
 /** @typedef {import("./schema.js").Namespace} Namespace */
 /** @typedef {import("./project.js").ProjectIndex} ProjectIndex */
+/** @typedef {{ namespace: Namespace, name: string }} Target */
 
 const LOCATABLE = new Set(["label", "ref", "cite", "include", "asset"]);
 
@@ -109,7 +110,7 @@ export function itemAt(project, path, pos) {
  * The namespace and name a ref, cite or label item stands for, or null.
  * @param {ProjectIndex} project
  * @param {IndexItem} item
- * @returns {{ namespace: Namespace, name: string } | null}
+ * @returns {Target | null}
  */
 function targetOf(project, item) {
   if (item.name === undefined) return null;
@@ -144,17 +145,25 @@ export function definition(project, path, pos) {
 }
 
 /**
- * Every use of the name at pos, and optionally its declaration.
+ * The symbol a ref, cite or label at pos stands for, or null.
  * @param {ProjectIndex} project
  * @param {string} path
  * @param {number} pos
+ * @returns {Target | null}
+ */
+export function targetAt(project, path, pos) {
+  const item = itemAt(project, path, pos);
+  return item ? targetOf(project, item) : null;
+}
+
+/**
+ * Every use of a symbol, and optionally its declaration, sorted by path then offset.
+ * @param {ProjectIndex} project
+ * @param {Target} target
  * @param {{ includeDeclaration?: boolean }} [options]
  * @returns {Location[]}
  */
-export function references(project, path, pos, { includeDeclaration = true } = {}) {
-  const item = itemAt(project, path, pos);
-  const target = item ? targetOf(project, item) : null;
-  if (!target) return [];
+export function referencesTo(project, target, { includeDeclaration = true } = {}) {
   const out = project
     .references(target.namespace, target.name)
     .map(({ path: usePath, item: use }) => toLocation(usePath, use));
@@ -164,6 +173,19 @@ export function references(project, path, pos, { includeDeclaration = true } = {
     }
   }
   return sortBySpan(out);
+}
+
+/**
+ * Every use of the name at pos, and optionally its declaration.
+ * @param {ProjectIndex} project
+ * @param {string} path
+ * @param {number} pos
+ * @param {{ includeDeclaration?: boolean }} [options]
+ * @returns {Location[]}
+ */
+export function references(project, path, pos, { includeDeclaration = true } = {}) {
+  const target = targetAt(project, path, pos);
+  return target ? referencesTo(project, target, { includeDeclaration }) : [];
 }
 
 /**
