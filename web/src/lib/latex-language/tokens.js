@@ -30,7 +30,7 @@ const LISTING_ENVS = new Set(["lstlisting", "minted", "Verbatim", "BVerbatim", "
 
 const MATH_DELIMITERS = { 40: ParenOpen, 41: ParenClose, 91: BracketOpen, 93: BracketClose };
 
-/** A letter or @, the characters of a control word (\makeatletter style names). */
+/** A letter or an at sign: the characters of a control word, as in \makeatletter names. */
 function isLetter(ch) {
   return (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) || ch === 64;
 }
