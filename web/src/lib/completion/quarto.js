@@ -8,13 +8,13 @@ import schema from "./quarto-schema.json" with { type: "json" };
 
 /** @typedef {{ id: string, kind: string, path: string, line: number }} QuartoLabel */
 
-const KINDS = ["fig", "tbl", "sec", "eq", "lst", "thm", "lem", "cor", "prp", "cnj", "def", "exm", "exr"];
+export const KINDS = ["fig", "tbl", "sec", "eq", "lst", "thm", "lem", "cor", "prp", "cnj", "def", "exm", "exr"];
 const KIND_ALTERNATION = KINDS.join("|");
-const LABEL = new RegExp(`^(?:${KIND_ALTERNATION})-[\\w-]+$`);
+export const LABEL = new RegExp(`^(?:${KIND_ALTERNATION})-[\\w-]+$`);
 const LABEL_PARTIAL = new RegExp(`^(?:${KIND_ALTERNATION})-[\\w-]*$`);
-const ATTRIBUTE_ID = new RegExp(`\\{#((?:${KIND_ALTERNATION})-[\\w-]+)(?=[\\s}])`, "g");
-const CELL_LABEL = /^#\|\s*label:\s*["']?([^\s"']+)/;
-const HEADER_LABEL = /[\s,]label\s*=\s*["']?([^\s"',}]+)/;
+export const ATTRIBUTE_ID = new RegExp(`\\{#((?:${KIND_ALTERNATION})-[\\w-]+)(?=[\\s}])`, "g");
+export const CELL_LABEL = /^#\|\s*label:\s*["']?([^\s"']+)/;
+export const HEADER_LABEL = /[\s,]label\s*=\s*["']?([^\s"',}]+)/;
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 
 const byName = (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
@@ -38,7 +38,7 @@ const CELL_VALUES = new Map(schema.cell.filter((entry) => entry.values.length).m
  * @param {string[]} lines
  * @returns {Array<{ marker: string, length: number, info: string } | null>}
  */
-function fenceStates(lines) {
+export function fenceStates(lines) {
   const states = new Array(lines.length).fill(null);
   let fence = null;
   lines.forEach((line, index) => {
