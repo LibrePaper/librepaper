@@ -2871,6 +2871,7 @@
       { label: m.common_document(), rows: documentRows },
       { label: m.mobilenav_group_application(), rows: [
         { id: "settings", icon: "settings", label: m.common_settings() },
+        { id: "palette", icon: "search", label: m.common_command_palette() },
         { id: "home", icon: "house", label: m.common_projects(), href: "/" },
         { id: "help", icon: "circle-help", label: m.mobilenav_help(), href: DOCUMENTATION_URL, external: true },
         ...(me.name ? [{ id: "signout", icon: "log-out", label: m.common_sign_out() }]
@@ -2882,6 +2883,7 @@
     // The sheet has finished closing by the time the settings dialog, which
     // traps focus too, is opened.
     if (id === "settings") setTimeout(() => openSettings(), 0);
+    else if (id === "palette") setTimeout(() => void runCommand("palette"), 0);
     else if (id === "signout") void signOut();
     else if (id === "home" || id === "help" || id === "signin") return;
     else if (id === "collaborators") showCollaborators();
@@ -4176,6 +4178,8 @@
     },
     edit: editAvailability,
     canClearChat: chatState.canClear,
+    // In Vim or Emacs mode Alt is the editor's, so the Alt menu chords stand down in the source.
+    modalEditor: keys === "vim" || keys === "emacs",
   });
 
   // What each command can do about it, asked once. The menus grey a line by
@@ -4199,6 +4203,7 @@
     if (id === "word-count") return openWordCount();
     if (EDIT_COMMANDS.includes(id)) return chooseEditCommand(id);
     if (id === "palette") { refreshEditAvailability(); commandPalette = true; return; }
+    if (id.startsWith("menu-")) return openMenu(id.slice("menu-".length));
     if (id === "shortcuts") return openSettings("editor");
     if (id === "focus-files") return focusPanel("files");
     if (id === "focus-outline") return focusPanel("outline");
@@ -4214,6 +4219,14 @@
     if (id === "lock-preview" || id === "unlock-preview") return chooseViewCommand(id);
     if (TEXT_SIZE_COMMANDS.includes(id)) return changeTextSize(id);
     return chooseFileCommand(id);
+  }
+
+  // Alt+F and the rest open a word of the bar, with the keyboard on its first
+  // line. A word that is not on the bar now (Edit with no source, say) stays shut.
+  function openMenu(id) {
+    if (!document.querySelector(`.menubar [data-menubar="${id}"]:not(:disabled)`)) return;
+    menubar.show(id);
+    menubar.enter();
   }
 
   const EDIT_COMMANDS = ["undo", "redo", "cut", "copy", "paste", "select-all", "find", "replace", "bold", "italic"];
@@ -4531,6 +4544,9 @@
         {#if participants.length > 3}<span class="presence-more">+{participants.length - 3}</span>{/if}
         {#if !connected && !DEMO}<span class="presence-offline"><span class="presence-offline-dot" aria-hidden="true"></span>{m.common_offline()}</span>{/if}
       </div>
+      <!-- The command palette, at the end of the row where the menus' own
+           keys are named: the same palette Ctrl+Alt+P opens. -->
+      <IconButton icon="search" label={m.common_command_palette()} title={m.commands_palette_tooltip({ keys: MENU_KEYS.palette })} onclick={() => void runCommand("palette")} />
     {/if}
   {/snippet}
   {#snippet menus()}
@@ -4561,6 +4577,12 @@
         {@render viewItems()}
       </MenubarMenu>
     {/if}
+    <!-- Help is the registry's two entries that are about the workspace itself;
+         runCommand runs them as it runs the palette and the keyboard. -->
+    <MenubarMenu id="help" label={m.mobilenav_help()} onselect={(id) => void runCommand(id)}>
+      <Menu.Item value="palette" class="menuitem"><span class="menuitem-label">{m.common_command_palette()}</span>{#if MENU_KEYS.palette}<span class="menuitem-keys">{MENU_KEYS.palette}</span>{/if}</Menu.Item>
+      <Menu.Item value="shortcuts" class="menuitem"><span class="menuitem-label">{m.common_keyboard_shortcuts()}</span>{#if MENU_KEYS.shortcuts}<span class="menuitem-keys">{MENU_KEYS.shortcuts}</span>{/if}</Menu.Item>
+    </MenubarMenu>
   {/snippet}
   {#snippet children()}
     {#if compact}

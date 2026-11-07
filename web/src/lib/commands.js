@@ -193,6 +193,11 @@ const ALWAYS = () => true;
 const panel = (id) => (context) => (context.panels || []).includes(id);
 const editable = (c) => Boolean(c.mayEdit && c.editing);
 
+// The bar's words opened from the keyboard. A phone has no bar to open, and in
+// the source editor under Vim or Emacs Alt belongs to the mode (Alt+F is
+// forward-word in Emacs), so the chord is left to the editor there.
+const menuChord = (available) => (c) => !c.compact && !(c.modalEditor && c.inSource) && available(c);
+
 /** @type {Command[]} */
 export const COMMANDS = [
   // Editing. CodeMirror's, every one of them, including the search panel.
@@ -211,11 +216,20 @@ export const COMMANDS = [
 
   // Navigation. Where the focus goes, which is the part of a workspace a
   // pointer does well and a keyboard has to be told about.
-  { id: "palette", label: m.common_command_palette(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+P"], palette: false, available: ALWAYS },
+  { id: "palette", label: m.common_command_palette(), category: m.commands_category_navigation(), scope: "workspace", menu: "help", keys: ["Mod+Alt+P"], palette: false, available: ALWAYS },
   { id: "focus-files", label: m.commands_focus_files(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+E"], available: panel("files"), note: m.commands_note_files_panel() },
   { id: "focus-outline", label: m.commands_focus_outline(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+O"], available: panel("outline"), note: m.commands_note_outline_panel() },
   { id: "focus-comments", label: m.commands_focus_comments(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+M"], available: panel("collaboration"), note: m.commands_note_comments_panel() },
   { id: "focus-preview", label: m.commands_focus_preview(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+V"], available: (c) => Boolean(c.preview), note: m.commands_note_preview_visible() },
+
+  // The bar's words from the keyboard, as Google Docs has them: Alt+F opens
+  // File and the rest follow. Windows and Linux only, since Ctrl+Option is
+  // VoiceOver's on a Mac. A menu is opened by its key, so none is in the
+  // palette, and the keyboard puts the focus on its first line.
+  { id: "menu-file", label: m.commands_menu_file(), category: m.commands_category_navigation(), scope: "workspace", palette: false, keys: [{ other: "Alt+F" }], available: menuChord(ALWAYS) },
+  { id: "menu-edit", label: m.commands_menu_edit(), category: m.commands_category_navigation(), scope: "workspace", palette: false, keys: [{ other: "Alt+E" }], available: menuChord(editable) },
+  { id: "menu-view", label: m.commands_menu_view(), category: m.commands_category_navigation(), scope: "workspace", palette: false, keys: [{ other: "Alt+V" }], available: menuChord((c) => Boolean(c.editing)) },
+  { id: "menu-help", label: m.commands_menu_help(), category: m.commands_category_navigation(), scope: "workspace", palette: false, keys: [{ other: "Alt+H" }], available: menuChord(ALWAYS) },
 
   // The two insertion palettes, which open over the editor.
   { id: "symbols", label: m.common_insert_symbol(), category: m.commands_category_insert(), scope: "workspace", keys: ["Mod+Alt+S"], available: editable, note: m.commands_note_editor_open() },
@@ -273,7 +287,7 @@ export const COMMANDS = [
   { id: "settings", label: m.commands_settings(), category: m.common_project(), scope: "workspace", menu: "file", keys: ["Mod+,"], available: ALWAYS },
 
   // Help, which is this list about itself.
-  { id: "shortcuts", label: m.commands_shortcuts(), category: m.commands_category_help(), scope: "workspace", keys: ["?", "Mod+Alt+/"], available: ALWAYS, note: m.commands_note_not_while_typing() },
+  { id: "shortcuts", label: m.commands_shortcuts(), category: m.commands_category_help(), scope: "workspace", menu: "help", keys: ["?", "Mod+Alt+/"], available: ALWAYS, note: m.commands_note_not_while_typing() },
 ];
 
 /// The bindings a command has on this platform, canonical, most-preferred
@@ -336,8 +350,10 @@ export function commandFor(event, context = {}, { commands = COMMANDS, apple = A
   // An editor-owned command is run by CodeMirror when the focus is in the source.
   // The window would run it a second time on the same keystroke.
   if (command.owner === "editor" && writing(target)) return null;
+  // The source is the one place a command can ask about the focus itself: the
+  // Alt chords must know whether the keys are the editor's.
   const available = command.available || ALWAYS;
-  return available(context) ? command : null;
+  return available({ ...context, inSource: Boolean(target?.closest?.(".cm-editor")) }) ? command : null;
 }
 
 /// The keys to print beside a name in a menu, by command id. Empty for a
