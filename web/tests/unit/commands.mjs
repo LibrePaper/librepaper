@@ -390,6 +390,15 @@ const bindingsOf = (id) => bindings(COMMANDS.find((command) => command.id === id
 // panel, which keeps its name and has no chord.
 assert.deepEqual(bindingsOf("comment"), ["mod+alt+m"]);
 assert.deepEqual(bindingsOf("focus-comments"), [], "focus comments is still in the palette, without the chord");
+
+// A remark about the whole document needs no selection, so it has no chord, and
+// the palette offers it by name to anyone who may comment and to nobody else.
+assert.deepEqual(bindingsOf("comment-document"), []);
+assert.equal(labelOf("comment-document"), "Comment on the whole document");
+assert.equal(availability({ ...workspace, canComment: true })["comment-document"], true);
+assert.equal(availability({ ...reader, canComment: false })["comment-document"], false, "a reader cannot comment on the whole document");
+assert.ok(offered({ ...workspace, canComment: true }, { apple: false }).some((entry) => entry.id === "comment-document"), "the palette offers it");
+assert.ok(!offered({ ...reader, canComment: false }, { apple: false }).some((entry) => entry.id === "comment-document"), "and not to a reader");
 assert.equal(named.comment, "Ctrl+Alt+M");
 assert.equal(menuKeys({ modalEditor: false, apple: true }).comment, "⌘⌥M");
 

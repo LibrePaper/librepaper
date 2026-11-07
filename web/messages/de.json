@@ -695,6 +695,7 @@
   "common_command": "Befehl",
   "common_command_palette": "Befehlspalette",
   "common_comment": "Kommentieren",
+  "common_comment_whole_document": "Das gesamte Dokument kommentieren",
   "common_comments": "Kommentare",
   "common_comments_could_not_be_read": "Kommentare konnten nicht gelesen werden ({status}).",
   "common_compile_now": "Jetzt kompilieren",

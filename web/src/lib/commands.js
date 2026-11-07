@@ -220,6 +220,9 @@ export const COMMANDS = [
   // lib/editing-shortcuts.js; Editor.svelte runs them from its keymap.
   { id: "link", label: m.common_link(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Mod+K"], available: (c) => Boolean(c.edit?.link) },
   { id: "comment", label: m.common_comment(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+Alt+M"], available: (c) => Boolean(c.edit?.comment) },
+  // A remark about the whole document. It names no passage, so it needs no
+  // selection and is offered wherever the person may comment.
+  { id: "comment-document", label: m.common_comment_whole_document(), category: m.commands_category_editing(), scope: "workspace", keys: [], available: (c) => Boolean(c.canComment) },
   ...[1, 2, 3, 4, 5, 6].map((level) => ({
     id: "heading-" + level, label: m.commands_heading_level({ level }), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Mod+Alt+" + level], available: (c) => Boolean(c.edit?.["heading-" + level]),
   })),

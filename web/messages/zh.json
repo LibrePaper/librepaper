@@ -695,6 +695,7 @@
   "common_command": "命令",
   "common_command_palette": "命令面板",
   "common_comment": "批注",
+  "common_comment_whole_document": "为整个文档添加批注",
   "common_comments": "批注",
   "common_comments_could_not_be_read": "无法读取批注（{status}）。",
   "common_compile_now": "立即编译",

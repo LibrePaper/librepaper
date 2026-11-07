@@ -22,8 +22,12 @@
   let body = $state("");
   let field = $state(null);
 
+  // A remark about the whole document quotes nothing, so the draft names what
+  // it is about instead.
   const quotation = $derived(
-    m.commentcomposer_quotation({ exact: pending?.exact ?? "" }),
+    pending?.whole
+      ? m.common_whole_document()
+      : m.commentcomposer_quotation({ exact: pending?.exact ?? "" }),
   );
 
   $effect(() => {

@@ -876,6 +876,26 @@
     annotate(which);
   }
 
+  // A remark about the whole document, from the Comments header or the palette.
+  // It names no passage, so there is no selection to make: the draft is opened
+  // as a comment on the document, with nothing to quote.
+  function commentOnDocument() {
+    if (!mayChat) return;
+    if (!renderedProjectCurrent) {
+      say(m.reader_source_rendering(), { kind: "problem", id: "reader:source-rendering" });
+      return;
+    }
+    pending = {
+      exact: "",
+      prefix: "",
+      suffix: "",
+      position: null,
+      whole: true,
+      render_digest: mayEdit ? "" : renderedProjectDigest,
+    };
+    annotate("comment");
+  }
+
   // Picking a colour highlights with it, rather than arming a colour for a
   // second click: the swatches only ever open from Highlight, so the verb is
   // already chosen by the time one is pressed.
@@ -2374,7 +2394,7 @@
   // readers without the source.
   const agentSelection = $derived.by(() => {
     if (sourcePassageNow) return { source: sourcePassageNow, exact: sourcePassageNow.exact };
-    return !mayEdit && pending ? pending : null;
+    return !mayEdit && pending && !pending.whole ? pending : null;
   });
   function outlineCaretChanged() {
     outlineTextChanged();
@@ -4194,6 +4214,7 @@
     },
     edit: editAvailability,
     canClearChat: chatState.canClear,
+    canComment: mayChat,
     // In Vim or Emacs mode Alt is the editor's, so the Alt menu chords stand down in the source.
     modalEditor: keys === "vim" || keys === "emacs",
   });
@@ -4227,6 +4248,7 @@
     // A template command opens the Math overlay on its template.
     if (id.startsWith("math-")) return openPalette("math", id.slice("math-".length));
     if (id === "focus-comments") return focusPanel("collaboration");
+    if (id === "comment-document") return commentOnDocument();
     if (id === "chat-clear") return askClearChat();
     if (id === "focus-preview") return focusPreview();
     if (id === "layout-cycle") return cycleLayout();
@@ -4715,7 +4737,7 @@
       page={annotations.state.page}
       onloadmore={() => void annotations.loadMore()}
       onloadreplies={(comment) => void annotations.loadReplies(comment)}
-      oncommentsend={sendDraft} oncommentcancel={cancelDraft} />
+      oncommentsend={sendDraft} oncommentcancel={cancelDraft} oncommentdocument={commentOnDocument} />
     {@render pendingRecovery("collaboration")}
   {/snippet}
 
