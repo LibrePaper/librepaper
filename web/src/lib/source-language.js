@@ -1,5 +1,5 @@
 import { StreamLanguage } from "@codemirror/language";
-import { markdown } from "@codemirror/lang-markdown";
+import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { html } from "@codemirror/lang-html";
 import { json } from "@codemirror/lang-json";
 import { yamlFrontmatter } from "@codemirror/lang-yaml";
@@ -8,6 +8,7 @@ import { LanguageDescription } from "@codemirror/language";
 import { stex } from "@codemirror/legacy-modes/mode/stex";
 import { typstLanguage } from "./typst-mode.js";
 import { sourceFormatOf } from "./formats.js";
+import { latexFolding } from "./latex-folding.js";
 
 const typst = StreamLanguage.define(typstLanguage);
 const latex = StreamLanguage.define(stex);
@@ -36,19 +37,21 @@ export function codeLanguage(info) {
   return LanguageDescription.matchLanguageName(languages, name, false) || null;
 }
 
-const markdownLanguage = () => yamlFrontmatter({
-  content: markdown({ codeLanguages: codeLanguage }),
+// GitHub-flavoured Markdown: tables, strikethrough, task lists and autolinks.
+// The base is required because markdown() defaults to plain CommonMark.
+const markdownSupport = () => yamlFrontmatter({
+  content: markdown({ base: markdownLanguage, codeLanguages: codeLanguage }),
 });
 
 function byFormat(format) {
   switch ((format || "").toLowerCase()) {
     case "latex":
-    case "tex": return latex;
+    case "tex": return [latex, latexFolding];
     case "typst": return typst;
     case "html": return html();
     case "quarto":
     case "markdown":
-    case "md": return markdownLanguage();
+    case "md": return markdownSupport();
     default: return [];
   }
 }
