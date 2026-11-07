@@ -85,6 +85,8 @@
   "agent_session_working": "{label} (working)",
   "agent_session_needs_input": "{label} (needs permission)",
   "agent_session_delete": "Delete conversation",
+  "agent_session_delete_description": "The conversation is deleted from this browser and its agent stops; this cannot be undone.",
+  "agent_session_delete_question": "Delete this conversation?",
   "agent_session_limit": "At most {count} conversations",
   "agent_none_found": "No supported coding agent was found on this computer.",
   "agent_not_confirmed": "This request was not confirmed. Retry delivery above before sending it again.",
@@ -178,6 +180,7 @@
   "agentsettings_name_required": "Enter a name and a command.",
   "agentsettings_none": "No agents found.",
   "agentsettings_remove_confirm": "Remove {name}?",
+  "agentsettings_remove_title": "Remove agent?",
   "agentsettings_removed": "Agent removed.",
   "agentsettings_status_added": "Added",
   "agentsettings_status_ready": "Ready",
@@ -1692,25 +1695,8 @@
   "landing_tags_for_aria": "Tags for {title}",
   "landing_trash_empty": "The trash is empty.",
   "landing_trash_note": "Projects here are deleted for good seven days after they were put in the trash.",
-  "landing_trash_one": "{title} will move to the trash, where it stays for seven days. Until then you can restore it.",
-  "landing_trash_question": "Move to the trash?",
   "landing_trash_read_failed": "The trash could not be read.",
   "landing_trash_read_failed_status": "the trash could not be read ({status})",
-  "landing_trash_selected": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "{count} project will move to the trash, where it stays for seven days. Until then you can restore it.",
-        "countPlural=*": "{count} projects will move to the trash, where they stay for seven days. Until then you can restore them."
-      }
-    }
-  ],
   "landing_trashed": [
     {
       "declarations": [

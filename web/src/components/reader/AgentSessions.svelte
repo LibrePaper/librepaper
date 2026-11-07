@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
   import AgentChat from "./AgentChat.svelte";
   import IconButton from "../IconButton.svelte";
+  import Modal from "../Modal.svelte";
   import {
     MAX_AGENT_SESSIONS, loadSessions, saveSessions, addSession, removeSession, selectSession,
   } from "../../lib/agent-sessions.js";
@@ -63,6 +64,7 @@
   }
 
   let closing = $state(false);
+  let confirmingDelete = $state(false);
 
   async function remove(key) {
     closing = true;
@@ -96,7 +98,7 @@
                 tone="plain" size="btn-icon-sm" disabled={list.sessions.length >= MAX_AGENT_SESSIONS}
                 onclick={() => commit(addSession(list))} />
     <IconButton icon="trash" label={m.agent_session_delete()} tone="plain" size="btn-icon-sm"
-                disabled={closing} onclick={() => void remove(list.active)} />
+                disabled={closing} onclick={() => (confirmingDelete = true)} />
   </span>
 {/snippet}
 
@@ -108,6 +110,12 @@
            onstate={(v) => statuses[s.key] = v} bind:this={instances[s.key]} />
   </div>
 {/each}
+
+<!-- Deleting a conversation is permanent: its transcript lives only in this
+     browser and its agent is stopped, so it asks first. -->
+<Modal bind:open={confirmingDelete} title={m.agent_session_delete_question()}
+       description={m.agent_session_delete_description()}
+       confirm={{ label: m.common_delete(), tone: "error", onclick: () => { confirmingDelete = false; void remove(list.active); } }}></Modal>
 
 <style>
   .agent-session { display: contents; }

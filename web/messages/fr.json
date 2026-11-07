@@ -85,6 +85,8 @@
   "agent_session_working": "{label} (en cours)",
   "agent_session_needs_input": "{label} (autorisation requise)",
   "agent_session_delete": "Supprimer la conversation",
+  "agent_session_delete_description": "La conversation est supprimée de ce navigateur et son agent s'arrête ; cette action est définitive.",
+  "agent_session_delete_question": "Supprimer cette conversation?",
   "agent_session_limit": "Au maximum {count} conversations",
   "agent_none_found": "Aucun agent de programmation pris en charge n’a été trouvé sur cet ordinateur.",
   "agent_not_confirmed": "Cette demande n’a pas été confirmée. Réessayez l’envoi ci-dessus avant de la renvoyer.",
@@ -178,6 +180,7 @@
   "agentsettings_name_required": "Saisissez un nom et une commande.",
   "agentsettings_none": "Aucun agent trouvé.",
   "agentsettings_remove_confirm": "Supprimer {name}?",
+  "agentsettings_remove_title": "Supprimer l'agent?",
   "agentsettings_removed": "Agent supprimé.",
   "agentsettings_status_added": "Ajouté",
   "agentsettings_status_ready": "Prêt",
@@ -1692,25 +1695,8 @@
   "landing_tags_for_aria": "Étiquettes de {title}",
   "landing_trash_empty": "La corbeille est vide.",
   "landing_trash_note": "Les projets de la corbeille sont supprimés définitivement sept jours après y avoir été placés.",
-  "landing_trash_one": "{title} sera mis à la corbeille, où il restera sept jours. D’ici là, vous pouvez le restaurer.",
-  "landing_trash_question": "Mettre à la corbeille?",
   "landing_trash_read_failed": "La corbeille n’a pas pu être lue.",
   "landing_trash_read_failed_status": "la corbeille n’a pas pu être lue ({status})",
-  "landing_trash_selected": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "{count} projet sera mis à la corbeille, où il restera sept jours. D’ici là, vous pouvez le restaurer.",
-        "countPlural=*": "{count} projets seront mis à la corbeille, où ils resteront sept jours. D’ici là, vous pouvez les restaurer."
-      }
-    }
-  ],
   "landing_trashed": [
     {
       "declarations": [

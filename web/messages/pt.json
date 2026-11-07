@@ -85,6 +85,8 @@
   "agent_session_working": "{label} (trabalhando)",
   "agent_session_needs_input": "{label} (precisa de permissão)",
   "agent_session_delete": "Excluir conversa",
+  "agent_session_delete_description": "A conversa é excluída deste navegador e o agente para; isso não pode ser desfeito.",
+  "agent_session_delete_question": "Excluir esta conversa?",
   "agent_session_limit": "No máximo {count} conversas",
   "agent_none_found": "Nenhum agente de programação compatível foi encontrado neste computador.",
   "agent_not_confirmed": "Esta solicitação não foi confirmada. Tente a entrega novamente acima antes de enviá-la de novo.",
@@ -178,6 +180,7 @@
   "agentsettings_name_required": "Informe um nome e um comando.",
   "agentsettings_none": "Nenhum agente encontrado.",
   "agentsettings_remove_confirm": "Remover {name}?",
+  "agentsettings_remove_title": "Remover agente?",
   "agentsettings_removed": "Agente removido.",
   "agentsettings_status_added": "Adicionado",
   "agentsettings_status_ready": "Pronto",
@@ -1692,25 +1695,8 @@
   "landing_tags_for_aria": "Etiquetas de {title}",
   "landing_trash_empty": "A lixeira está vazia.",
   "landing_trash_note": "Os projetos aqui são excluídos permanentemente sete dias depois de irem para a lixeira.",
-  "landing_trash_one": "{title} irá para a lixeira, onde fica por sete dias. Até lá, você pode restaurá-lo.",
-  "landing_trash_question": "Mover para a lixeira?",
   "landing_trash_read_failed": "Não foi possível ler a lixeira.",
   "landing_trash_read_failed_status": "não foi possível ler a lixeira ({status})",
-  "landing_trash_selected": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "{count} projeto irá para a lixeira, onde fica por sete dias. Até lá, você pode restaurá-lo.",
-        "countPlural=*": "{count} projetos irão para a lixeira, onde ficam por sete dias. Até lá, você pode restaurá-los."
-      }
-    }
-  ],
   "landing_trashed": [
     {
       "declarations": [

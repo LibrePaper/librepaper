@@ -85,6 +85,8 @@
   "agent_session_working": "{label} (arbeitet)",
   "agent_session_needs_input": "{label} (braucht Erlaubnis)",
   "agent_session_delete": "Unterhaltung löschen",
+  "agent_session_delete_description": "Die Unterhaltung wird aus diesem Browser gelöscht und ihr Agent beendet; dies kann nicht rückgängig gemacht werden.",
+  "agent_session_delete_question": "Diese Unterhaltung löschen?",
   "agent_session_limit": "Höchstens {count} Unterhaltungen",
   "agent_none_found": "Auf diesem Computer wurde kein unterstützter Coding-Agent gefunden.",
   "agent_not_confirmed": "Diese Anfrage wurde nicht bestätigt. Versuchen Sie oben die Zustellung erneut, bevor Sie sie noch einmal senden.",
@@ -178,6 +180,7 @@
   "agentsettings_name_required": "Geben Sie einen Namen und einen Befehl ein.",
   "agentsettings_none": "Keine Agenten gefunden.",
   "agentsettings_remove_confirm": "{name} entfernen?",
+  "agentsettings_remove_title": "Agent entfernen?",
   "agentsettings_removed": "Agent entfernt.",
   "agentsettings_status_added": "Hinzugefügt",
   "agentsettings_status_ready": "Bereit",
@@ -1692,25 +1695,8 @@
   "landing_tags_for_aria": "Tags für {title}",
   "landing_trash_empty": "Der Papierkorb ist leer.",
   "landing_trash_note": "Projekte hier werden sieben Tage nach dem Verschieben in den Papierkorb endgültig gelöscht.",
-  "landing_trash_one": "{title} wird in den Papierkorb verschoben und bleibt dort sieben Tage. Bis dahin können Sie es wiederherstellen.",
-  "landing_trash_question": "In den Papierkorb legen?",
   "landing_trash_read_failed": "Der Papierkorb konnte nicht gelesen werden.",
   "landing_trash_read_failed_status": "der Papierkorb konnte nicht gelesen werden ({status})",
-  "landing_trash_selected": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "{count} Projekt wird in den Papierkorb verschoben und bleibt dort sieben Tage. Bis dahin können Sie es wiederherstellen.",
-        "countPlural=*": "{count} Projekte werden in den Papierkorb verschoben und bleiben dort sieben Tage. Bis dahin können Sie sie wiederherstellen."
-      }
-    }
-  ],
   "landing_trashed": [
     {
       "declarations": [
