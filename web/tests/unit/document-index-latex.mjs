@@ -343,3 +343,80 @@ See \ref{fig:b} and \ref{fig:zz}.
     ["main.tex", "fig:b"],
   ]);
 });
+
+test("labels in verbatim environments and \\verb spans are not indexed", () => {
+  const text = String.raw`\begin{minted}{python}
+\label{m1}
+\end{minted}
+\begin{comment}
+\label{m2} \ref{m3}
+\end{comment}
+\verb*+\label{m4}+ \verb|\ref{m5}|
+\label{real}
+`;
+  const items = latexAdapter(text, "main.tex");
+  assert.deepEqual(kindOf(items, "label").map((item) => item.name), ["real"]);
+  assert.deepEqual(kindOf(items, "ref"), []);
+});
+
+test("an escaped percent does not start a comment, a real one does", () => {
+  const text = String.raw`rate 5\% \label{kept} and 5%
+\label{gone}
+\ref{shown} % \ref{hidden} \cite{hidden}
+`;
+  const items = latexAdapter(text, "main.tex");
+  assert.deepEqual(kindOf(items, "label").map((item) => item.name), ["kept", "gone"]);
+  assert.deepEqual(kindOf(items, "ref").map((item) => item.name), ["shown"]);
+  assert.deepEqual(kindOf(items, "cite"), []);
+});
+
+test("a cite with an optional argument gives one item per key", () => {
+  const text = String.raw`See \cite[p.~3]{a, b} and \citep*{c} and \nocite{*}.`;
+  const cites = kindOf(latexAdapter(text, "main.tex"), "cite");
+  assert.deepEqual(cites.map((cite) => cite.name), ["a", "b", "c"]);
+  assert.deepEqual(cites.map((cite) => textOf(text, cite.nameRange)), ["a", "b", "c"]);
+  assert.deepEqual(cites[0].nameRange, [text.indexOf("a,"), text.indexOf("a,") + 1]);
+  assert.ok(cites.every((cite) => cite.namespace === "cite"));
+});
+
+test("a starred section still gives a heading and titles its label", () => {
+  const text = String.raw`\section*{T}\label{sec:t}
+`;
+  const items = latexAdapter(text, "main.tex");
+  assert.deepEqual(kindOf(items, "heading").map((item) => [item.title, item.level]), [["T", 3]]);
+  assert.equal(kindOf(items, "label")[0].title, "T");
+});
+
+test("\\begin with a space before the brace is an environment", () => {
+  const text = String.raw`\begin {figure}
+\caption{Cap}
+\label{fig:s}
+\end {figure}
+`;
+  const items = latexAdapter(text, "main.tex");
+  const [block] = kindOf(items, "block");
+  assert.equal(block.name, "figure");
+  assert.equal(kindOf(items, "label")[0].title, "Cap");
+});
+
+test("labels inside math environments and commands with a space before the brace are read", () => {
+  const text = String.raw`\begin{align}
+a &= b \label {eq:z}
+\end{align}
+\ref {eq:z}
+`;
+  const items = latexAdapter(text, "main.tex");
+  assert.deepEqual(kindOf(items, "label").map((item) => item.name), ["eq:z"]);
+  assert.deepEqual(kindOf(items, "ref").map((item) => item.name), ["eq:z"]);
+  assert.equal(kindOf(items, "math").length, 1);
+});
+
+test("a realistic 350 KB document is indexed in under a second", () => {
+  const text = PAPER.repeat(Math.ceil(350_000 / PAPER.length));
+  assert.ok(text.length >= 350_000);
+  const start = performance.now();
+  const items = latexAdapter(text, "big.tex");
+  const elapsed = performance.now() - start;
+  assert.ok(items.length > 1000);
+  assert.ok(elapsed < 1000, `took ${elapsed} ms`);
+});
