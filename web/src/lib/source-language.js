@@ -9,6 +9,7 @@ import { stex } from "@codemirror/legacy-modes/mode/stex";
 import { typstLanguage } from "./typst-mode.js";
 import { sourceFormatOf } from "./formats.js";
 import { latexFolding } from "./latex-folding.js";
+import { pandocExtensions } from "./pandoc-markdown.js";
 
 const typst = StreamLanguage.define(typstLanguage);
 const latex = StreamLanguage.define(stex);
@@ -37,10 +38,11 @@ export function codeLanguage(info) {
   return LanguageDescription.matchLanguageName(languages, name, false) || null;
 }
 
-// GitHub-flavoured Markdown: tables, strikethrough, task lists and autolinks.
+// GitHub-flavoured Markdown (tables, strikethrough, task lists and autolinks) with
+// Pandoc and Quarto syntax (math, fenced divs, citations, attributes).
 // The base is required because markdown() defaults to plain CommonMark.
 const markdownSupport = () => yamlFrontmatter({
-  content: markdown({ base: markdownLanguage, codeLanguages: codeLanguage }),
+  content: markdown({ base: markdownLanguage, codeLanguages: codeLanguage, extensions: pandocExtensions }),
 });
 
 function byFormat(format) {
