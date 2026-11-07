@@ -143,6 +143,20 @@ const DIV_OPEN = /^(:{3,})[ \t]*(\{[^}\n]*\}|[^\s{}:][^\s{}]*)[ \t]*$/;
 const DIV_CLOSE = /^:{3,}[ \t]*$/;
 const FENCE = /^(`{3,}|~{3,})/;
 
+// Columns of indentation after any blockquote markers; a tab reaches the next multiple of 4.
+function indentAfterQuote(text) {
+  const rest = /^(?:[ \t]*>)*(.*)$/s.exec(text)[1];
+  let column = 0;
+  let index = 0;
+  if (rest !== text && rest[0] === " ") index = 1; // the optional space after >
+  for (; index < rest.length; index++) {
+    if (rest[index] === " ") column++;
+    else if (rest[index] === "\t") column += 4 - column % 4;
+    else break;
+  }
+  return column;
+}
+
 // The start of the line holding the colons that close the div opened on the
 // current line, or past the end of the document when it is never closed.
 function divClose(cx) {
@@ -151,6 +165,12 @@ function divClose(cx) {
   while (pos < cx.to) {
     const { text, end } = /** @type {any} */ (cx).scanLine(pos);
     const body = text.replace(/^[\s>]*/, "");
+    if (indentAfterQuote(text) >= 4) {
+      boundary = false;
+      start += text.length + 1;
+      pos = end + 1;
+      continue;
+    }
     const code = FENCE.exec(body);
     if (fence) {
       if (code && code[1][0] === fence[0] && code[1].length >= fence.length && !body.slice(code[1].length).trim()) fence = null;
@@ -197,6 +217,7 @@ const fencedDiv = {
 function continueDiv(cx, line, close) {
   if (cx.lineStart < close) return true;
   if (cx.lineStart > close) return false;
+  if (line.indent - line.baseIndent >= 4) return false;
   const match = /^:{3,}/.exec(line.text.slice(line.pos));
   if (!match || !DIV_CLOSE.test(line.text.slice(line.pos))) return false;
   const from = cx.lineStart + line.pos;

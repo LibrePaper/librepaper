@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { EditorState } from "@codemirror/state";
 import { foldable } from "@codemirror/language";
-import { byteToUtf16, foldRangesFrom, typstFolding, setFolds, foldsField, folder } from "../../src/lib/typst-folding.js";
+import { byteToUtf16, foldRangesFrom, foldsChanged, typstFolding, setFolds, foldsField, folder } from "../../src/lib/typst-folding.js";
 
 test("byte offsets map to UTF-16 indexes", () => {
   const ascii = byteToUtf16("abc");
@@ -99,4 +99,12 @@ test("a failing request leaves folds empty", async () => {
   h.job.schedule();
   await h.timers.shift()();
   assert.deepEqual(h.applied, []);
+});
+
+test("foldsChanged is true only when the fold ranges change", () => {
+  const state = EditorState.create({ doc: "a\n", extensions: typstFolding({ request: () => new Promise(() => {}) }) });
+  const withFolds = state.update({ effects: setFolds.of([{ from: 0, to: 1 }]) });
+  assert.equal(foldsChanged({ startState: state, state: withFolds.state }), true);
+  const plain = state.update({ changes: { from: 0, insert: "b" } });
+  assert.equal(foldsChanged({ startState: state, state: plain.state }), false);
 });

@@ -74,6 +74,19 @@ test("a fenced div folds from its opening line to its closing line", () => {
   assert.deepEqual(foldable(state, 0, 8), { from: 8, to: doc.indexOf(":::\n", 8) });
 });
 
+test("an indented :::  is code, not a closing fence", () => {
+  const doc = "::: note\nText\n\n    :::\n    code\n\nMore\n:::\n";
+  assert.deepEqual(texts(doc, "FencedDiv"), [doc.trimEnd()]);
+  const state = EditorState.create({
+    doc,
+    extensions: markdown({ base: markdownLanguage, extensions: pandocExtensions }),
+  });
+  ensureSyntaxTree(state, state.doc.length, 1000);
+  assert.deepEqual(foldable(state, 0, 8), { from: 8, to: doc.lastIndexOf(":::") });
+  const tabbed = "::: note\nText\n\n\t:::\n\nMore\n:::";
+  assert.deepEqual(texts(tabbed, "FencedDiv"), [tabbed]);
+});
+
 test("citations", () => {
   const doc = "[@doe99, p. 3; @roe]";
   assert.deepEqual(texts(doc, "CitationKey"), ["@doe99", "@roe"]);

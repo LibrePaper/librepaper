@@ -123,7 +123,7 @@ function commented(text, index) {
 /** Visit the \begin{name} and \end{name} in text, outside comments. */
 function eachEnvironmentTag(text, name, visit) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`\\\\(begin|end)\\{${escaped}\\}`, "g");
+  const pattern = new RegExp(`\\\\(begin|end)[ \\t]*\\{${escaped}\\}`, "g");
   for (let match; (match = pattern.exec(text));) {
     if (!commented(text, match.index)) visit(match[1] === "begin");
   }
@@ -177,7 +177,7 @@ const autoCloseFilter = EditorState.transactionFilter.of((tr) => {
   const line = doc.lineAt(head);
   // Only at the end of the line; text after the cursor means this is an edit, not a new environment.
   if (/\S/.test(doc.sliceString(head, line.to))) return tr;
-  const begin = /\\begin\{([^{}\\%\s]+)\}$/.exec(doc.sliceString(line.from, head));
+  const begin = /\\begin[ \t]*\{([^{}\\%\s]+)\}$/.exec(doc.sliceString(line.from, head));
   if (!begin || begin.index > 0 && doc.sliceString(line.from + begin.index - 1, line.from + begin.index) === "\\") return tr;
   const prefix = doc.sliceString(line.from, line.from + begin.index);
   if (commentStart(prefix) >= 0) return tr;

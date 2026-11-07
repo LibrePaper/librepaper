@@ -131,6 +131,14 @@ export function folder({ getDoc, apply, request, path, delay = DELAY, setTimer =
 }
 
 /**
+ * Whether a view update carries new Typst fold ranges. Pass this as the
+ * foldGutter's `foldingChanged` so arrows appear when the worker answers.
+ */
+export function foldsChanged(update) {
+  return update.startState.field(foldsField, false) !== update.state.field(foldsField, false);
+}
+
+/**
  * Typst folding. `request(path, source)` resolves to the module's answer;
  * `path` names the file in the request (the module only parses).
  */

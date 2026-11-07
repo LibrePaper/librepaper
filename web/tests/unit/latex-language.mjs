@@ -250,6 +250,16 @@ test("no \\end is added when one already follows", () => {
   assert.equal(typeBrace(doc, 14).newDoc.toString(), doc.slice(0, 14) + "}" + doc.slice(14));
 });
 
+test("an existing \\end with a space before the brace counts", () => {
+  const doc = "\\begin{itemize\n\\item a\n\\end {itemize}";
+  assert.equal(typeBrace(doc, 14).newDoc.toString(), doc.slice(0, 14) + "}" + doc.slice(14));
+});
+
+test("typing the } of \\begin {name} inserts the \\end", () => {
+  const tr = typeBrace("\\begin {itemize", 15);
+  assert.equal(tr.newDoc.toString(), "\\begin {itemize}\n\\end{itemize}");
+});
+
 test("a nested environment of the same name still gets its own \\end", () => {
   const doc = "\\begin{itemize}\n\\begin{itemize\n\\end{itemize}";
   const cursor = doc.indexOf("itemize\n\\end") + 7;
