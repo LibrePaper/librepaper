@@ -496,5 +496,20 @@ const page = (comments, { next = null, complete = !next, total, open = total, re
   assert.equal(owned.body, "kept", "a confirmed body is never rolled back");
 }
 
+// A remark about the whole document names no passage: it is sent with the
+// document flag and no words, and the card it shows quotes nothing.
+annotations.comment({ exact: "", prefix: "", suffix: "", position: null, render_digest: "", whole: true }, {
+  motivation: "commenting", body: "About the whole document",
+}, "Local name");
+const remark = sent.at(-1);
+assert.equal(remark.type, "comment");
+assert.equal(remark.document, true);
+assert.equal(remark.exact, "");
+assert.equal("whole" in remark, false, "the draft flag is not sent");
+const whole = view.comments.at(-1);
+assert.equal(whole.body, "About the whole document");
+assert.equal(whole.presentation.rendered_exact, "");
+assert.equal(sent[0].document, false, "a passage comment is sent as one");
+
 assert.ok(paints > 0);
 console.log("reader-annotations: optimistic writes, authoritative reconciliation, bounded paging, retries and decisions passed");

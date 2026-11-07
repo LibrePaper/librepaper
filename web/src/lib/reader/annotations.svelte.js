@@ -172,9 +172,12 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
     repaint();
   }
 
-  /** @param {{ exact: string, prefix?: string, suffix?: string, position?: number | null, render_digest?: string, source?: { file_id: string, start: number, end: number } | null }} selection @param {{ motivation: string, body: string, color?: string }} input @param {string} creator */
+  /** @param {{ exact: string, prefix?: string, suffix?: string, position?: number | null, render_digest?: string, source?: { file_id: string, start: number, end: number } | null, whole?: boolean }} selection `whole` makes it a remark about the document, which names no passage @param {{ motivation: string, body: string, color?: string }} input @param {string} creator */
   function comment(selection, { motivation, body, color }, creator) {
     const temp_id = crypto.randomUUID();
+    // A remark about the whole document is sent with `document` and no
+    // passage: the server takes that flag as the whole of its request.
+    const { whole, ...passage } = selection;
     const colorFields = /^#[0-9a-f]{6}$/i.test(color || "")
       ? { color: color.toLowerCase() } : {};
     // The draft is shown the way a stored comment is shown: from what the
@@ -195,7 +198,13 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
     anchor([optimistic]);
     update([...list(), optimistic]);
     repaint();
-    submit({ type: "comment", ...selection, render_digest: selection.render_digest ?? renderDigest() ?? "", motivation, body, ...colorFields, temp_id });
+    submit({
+      type: "comment",
+      ...passage,
+      document: whole === true,
+      render_digest: selection.render_digest ?? renderDigest() ?? "",
+      motivation, body, ...colorFields, temp_id,
+    });
   }
 
   function reply(parent, body, creator) {

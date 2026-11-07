@@ -26,6 +26,7 @@ const keyOf = (id) => bindings(COMMANDS.find((command) => command.id === id))[0]
 //   heading  1 | 2 | 3: makes the lines a heading of that level, or a paragraph again
 //   list     "bullet" | "number": makes the lines a list, or removes the list
 //   insert   an id from INSERT_ACTIONS in lib/insert.js: opens that Insert menu flow
+//   command  a command id from lib/commands.js: the bar runs it through the editor, as the Edit menu does
 // `icon` is a name from Icon.svelte's ICONS table, drawn on the button. `label`
 // is the tooltip and accessible name. `shortcut` is the binding from
 // lib/commands.js, when one exists; the tooltip prints it, and a modal editor
@@ -46,6 +47,7 @@ export const FORMAT_TOOLS = [
   { id: "cross-reference", label: m.common_cross_reference(), group: "insert", insert: "cross-reference", icon: "hash" },
   { id: "figure", label: m.formatting_image_or_figure(), group: "insert", insert: "figure", icon: "image" },
   { id: "table", label: m.common_table(), group: "insert", insert: "table", icon: "table" },
+  { id: "comment", label: m.common_comment(), group: "comment", command: "comment", icon: "comment", shortcut: keyOf("comment") },
 ];
 
 // Markdown's markup, used where no language definition supplies it. Its bold

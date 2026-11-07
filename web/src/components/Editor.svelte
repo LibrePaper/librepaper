@@ -230,7 +230,7 @@
   import { citationKeysExtension, citationsChanged } from "../lib/citation-keys-extension.js";
   import { completionExtension, formatOfPath } from "../lib/completion/index.js";
   import { searchZotero, zoteroItem } from "../lib/desktop/client.js";
-  import { changeMarks, setChangeMarks } from "../lib/change-marks.js";
+  import { changeMarks, changeMarkClicks, setChangeMarks } from "../lib/change-marks.js";
   import { sourceCommentBar } from "../lib/source-comment-bar.js";
   import { VERBS } from "../lib/annotating.js";
   import { commentMarks, setCommentMarks as setCommentMarksEffect } from "../lib/source-comment-marks.js";
@@ -245,6 +245,7 @@
   import { attachEditorZoom } from "../lib/editor-zoom.js";
   import { start as startEditorType, onFont, onLineHeight, size, setSize, DEFAULT_SIZE } from "../lib/editor-type.js";
   import { snippetTemplate } from "../lib/snippet-template.js";
+  import { FLASH_MS, flashPresence, presenceFlash } from "../lib/presence-flash.js";
   import { formatOf as documentFormat } from "../lib/formats.js";
   import { spellcheckExtension } from "../lib/spellcheck/extension.js";
   import { harperExtension } from "../lib/harper/extension.js";
@@ -257,6 +258,11 @@
   import { markdownFacts } from "../lib/visual-markup/markdown-facts.js";
   import { typstFacts } from "../lib/visual-markup/typst-facts.js";
   import { m } from "../lib/paraglide/messages.js";
+  import { Menu } from "@skeletonlabs/skeleton-svelte";
+  import ExplorerMenu from "./ExplorerMenu.svelte";
+  import { retargetElementAttributes } from "./element-attributes.js";
+  import { APPLE, labelOf, menuKeys } from "../lib/commands.js";
+  import { SOURCE_MENU, clipboardReadable, rightClickCaret } from "../lib/source-menu.js";
 
   // Whether what is typed here is recorded as a tracked change is not a prop
   // to follow. It starts from `tracking` and is flipped by `startTracking` and
@@ -271,7 +277,7 @@
     tracking = false, me = { who: "", author: "" }, selectedChange = null,
     visual = false, imageUrl = null,
     analyze = analyzeBibliography,
-    onchange, oncaret, onfilechange, onbibliography, onsave, onquit, oncomment,
+    onchange, oncaret, onfilechange, onbibliography, onsave, onquit, oncomment, onchangeselect,
     // Called with the caret's formatting (formatState) while visual mode is on.
     onformatstate,
     // Whether the bar over a selection offers the annotating verbs, and what
@@ -297,6 +303,8 @@
   const pendingChanges = changeMarks();
   // The same reasoning as `pendingChanges`: one instance, shared by every file.
   const commentMarkExtension = commentMarks({ onselect: (id) => oncomment?.(id) });
+  // The same reasoning: a click on a tracked change selects its row in the Changes panel.
+  const changeMarkClickExtension = changeMarkClicks({ onselect: (id) => onchangeselect?.(id) });
 
   // Every file's comment marks, as the reader sent them. Only the file on
   // screen is drawn; `show` draws it again when the file changes.
@@ -939,9 +947,40 @@
     return from < to ? { file: showing, from, to } : null;
   }
 
+  let flashTimer = 0;
+  /// Shows a collaborator's place: opens its file when it is not the one shown,
+  /// scrolls the range into view and flashes it in their colour. The caret,
+  /// the selection and the focus stay where they are; only the view moves.
+  /// `colour` is their presence colour, a "#rrggbb" hex, or anything else for
+  /// the theme's fallback.
+  export function revealPeer(id, from, to = from, colour = "") {
+    if (!view || !id) return;
+    show(id);
+    const length = view.state.doc.length;
+    const clamp = (at) => Math.min(Math.max(Number(at) || 0, 0), length);
+    const start = clamp(Math.min(from, to));
+    const end = clamp(Math.max(from, to));
+    const className = typeof colour === "string" && colour.startsWith("#")
+      ? `user-color-${colour.slice(1).toLowerCase()}`
+      : "";
+    view.dispatch({
+      effects: [
+        EditorView.scrollIntoView(start, { y: "center" }),
+        flashPresence.of({ from: start, to: end, className }),
+      ],
+    });
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => {
+      flashTimer = 0;
+      view?.dispatch({ effects: flashPresence.of(null) });
+    }, FLASH_MS);
+  }
+
   /// Puts the caret at an offset and scrolls it into the middle of the view:
-  /// what a click in the document does when the two are kept in step.
-  export function goTo(at) {
+  /// what a click in the document does when the two are kept in step. With
+  /// `focus: false` the caret and the view move but the keyboard stays where
+  /// it is, which is what a click in the preview needs.
+  export function goTo(at, { focus = true } = {}) {
     if (!view) return;
     // A place remembered earlier may lie past the end of a file that has
     // shrunk since, and CodeMirror throws on a selection outside the text.
@@ -950,7 +989,7 @@
       selection: { anchor: place },
       effects: EditorView.scrollIntoView(place, { y: "center" }),
     });
-    view.focus();
+    if (focus) view.focus();
   }
 
   export function focus() {
@@ -975,6 +1014,47 @@
     return done;
   }
 
+  // Whether the browser lets the editor read the clipboard. Paste is greyed
+  // while it does not: the probe runs when the editor starts and again when a
+  // source menu opens, and a read that is refused turns it off.
+  let pasteReadable = $state(true);
+  // Read once: whether the pointer is a finger. Decides whether the source has
+  // a right-click menu at all, and cannot change without remounting the editor.
+  const coarsePointer = typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
+  function probeClipboard() {
+    return clipboardReadable(navigator).then((readable) => { pasteReadable = readable; });
+  }
+  probeClipboard();
+
+  // The source's right-click menu: each item's availability, asked when it opens.
+  let sourceMenuAvailable = $state({});
+  const sourceMenuKeys = $derived(menuKeys({ modalEditor: keys === "vim" || keys === "emacs", apple: APPLE }));
+
+  // Shown at once from what the editor knows, then again once the clipboard
+  // probe has answered, so Paste is never offered on a stale answer.
+  async function openSourceMenu() {
+    sourceMenuAvailable = editAvailability();
+    await probeClipboard();
+    sourceMenuAvailable = editAvailability();
+  }
+
+  // Runs a source-menu item. Zag hands focus back to the trigger as the menu
+  // closes, so the command waits a tick and then the editor takes the focus
+  // itself. A refused clipboard read greys Paste (editCommand turns it off).
+  function runSourceMenu(command) {
+    setTimeout(() => { void editCommand(command).catch(() => {}); }, 0);
+  }
+
+  // Right-click and the keyboard's menu key open the same menu. The keyboard
+  // has no pointer, so the menu opens at the caret: a synthetic contextmenu
+  // event at the caret reaches the trigger the same way a right click does.
+  function openSourceMenuAtCaret() {
+    if (!view) return false;
+    const rect = view.coordsAtPos(view.state.selection.main.head) ?? view.dom.getBoundingClientRect();
+    view.contentDOM.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: rect.left, clientY: rect.bottom }));
+    return true;
+  }
+
   export function editAvailability() {
     if (!view) return {};
     const selected = !view.state.selection.main.empty;
@@ -984,7 +1064,7 @@
       undo: editable && (manager?.canUndo?.() ?? false),
       redo: editable && (manager?.canRedo?.() ?? false),
       cut: editable && selected, copy: selected,
-      paste: editable, "select-all": true, find: true, replace: editable,
+      paste: editable && pasteReadable, "select-all": true, find: true, replace: editable,
       bold: editable, italic: editable,
       link: editable && canLink(format),
       "numbered-list": editable && canList(format), "bulleted-list": editable && canList(format),
@@ -1043,7 +1123,14 @@
         target.dispatch({ changes: { from, to }, selection: { anchor: from }, annotations: Transaction.userEvent.of("delete.cut") });
       }
     } else if (command === "paste") {
-      const text = await navigator.clipboard.readText();
+      let text;
+      try {
+        text = await navigator.clipboard.readText();
+      } catch (error) {
+        // A refused read: Paste is greyed from now on, and the error still goes to the caller.
+        pasteReadable = false;
+        throw error;
+      }
       if (view !== target || target.state !== state || !editable) throw new Error(m.editor_paste_changed());
       target.dispatch({ ...state.replaceSelection(text), annotations: Transaction.userEvent.of("input.paste"), scrollIntoView: true });
     }
@@ -1318,8 +1405,12 @@
         EditorView.lineWrapping,
         // Pending changes, drawn in the text they changed.
         pendingChanges,
+        // The flash over a collaborator's place after a click on their avatar.
+        presenceFlash,
         // The bar over a selection, offering the annotating verbs.
         commentBar,
+        // A right click outside the selection moves the caret there, before the source menu opens.
+        rightClickCaret(),
         authorMarks,
         keymap.of([
           // Everyone tries Ctrl/Cmd-S in an editor.
@@ -1345,6 +1436,9 @@
           { key: "Mod-Shift-7", preventDefault: true, run: () => runStructure("numbered-list") },
           { key: "Mod-Shift-8", preventDefault: true, run: () => runStructure("bulleted-list") },
           { key: "Mod-Alt-m", preventDefault: true, run: () => (void editCommand("comment"), true) },
+          // The source menu from the keyboard: the menu key and Shift+F10.
+          { key: "ContextMenu", preventDefault: true, run: openSourceMenuAtCaret },
+          { key: "Shift-F10", preventDefault: true, run: openSourceMenuAtCaret },
           // Source text size. The keyboard half of the pinch: lib/commands.js names
           // these bindings, and the size is the one lib/editor-zoom.js changes.
           { key: "Mod-=", preventDefault: true, run: () => (setSize(size() + 1), true) },
@@ -1381,6 +1475,7 @@
         // After the change plugin, so the anchors follow records already written.
         anchorsPlugin(id, tracking.created),
         commentMarkExtension,
+        changeMarkClickExtension,
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             // The marks were mapped through the edit. Drawing them again from
@@ -1822,7 +1917,31 @@
 
 </script>
 
-<div class="editorhost" bind:this={host}></div>
+<!-- The source's right-click menu, the same one the file tree's menus are: a
+     right click, or the keyboard's menu key, opens it at the pointer or the caret. -->
+{#if coarsePointer}
+  <!-- On a touch screen a long press is the system's text selection, which a
+       context menu would take over, so the source has no menu there. -->
+  <div class="editorhost" bind:this={host}></div>
+{:else}
+<Menu onSelect={(chosen) => runSourceMenu(chosen.value)} onOpenChange={(event) => { if (event.open) void openSourceMenu(); }}>
+  <Menu.ContextTrigger>
+    {#snippet element(attributes)}
+      <div {...retargetElementAttributes(attributes)} class="editorhost" bind:this={host}></div>
+    {/snippet}
+  </Menu.ContextTrigger>
+  <ExplorerMenu>
+    {#each SOURCE_MENU as group, index}
+      {#if index}<hr class="hr my-1" />{/if}
+      {#each group as command (command)}
+        <Menu.Item value={command} class="menuitem" disabled={!sourceMenuAvailable[command]} title={command === "paste" && !pasteReadable ? m.editor_paste_blocked() : undefined}>
+          <span class="menuitem-label">{labelOf(command)}</span>{#if sourceMenuKeys[command]}<span class="menuitem-keys">{sourceMenuKeys[command]}</span>{/if}
+        </Menu.Item>
+      {/each}
+    {/each}
+  </ExplorerMenu>
+</Menu>
+{/if}
 
 <!-- A pending change is painted by `.change-added`, `.change-removed` and
      `.change-selected` in `styles/librepaper.css`, beside the rest of the

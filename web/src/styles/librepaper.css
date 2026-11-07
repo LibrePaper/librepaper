@@ -918,6 +918,23 @@ main.reader.source-right .editorpane {
 .user-color-af4d00 { --presence: #af4d00; }
 .user-color-007a59 { --presence: #007a59; }
 .user-color-975a7c { --presence: #975a7c; }
+
+/* The flash over a collaborator's place after a click on their avatar
+ * (lib/presence-flash.js). It is a tint in their colour that fades. With
+ * reduced motion there is no fade: the tint stays for the same time and is
+ * then removed by the editor. */
+.cm-line.peer-jump-flash {
+  background-color: color-mix(in srgb, var(--presence, var(--color-text-secondary)) 22%, transparent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .cm-line.peer-jump-flash {
+    animation: peer-jump-fade 1.4s ease-out forwards;
+  }
+}
+@keyframes peer-jump-fade {
+  from { background-color: color-mix(in srgb, var(--presence, var(--color-text-secondary)) 30%, transparent); }
+  to { background-color: transparent; }
+}
 .user-color-926500 { --presence: #926500; }
 .user-color-377395 { --presence: #377395; }
 

@@ -22,7 +22,7 @@
   import { candidateTree, capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
   import { orphanState } from "../lib/orphan.js";
   import * as latex from "../lib/latex.js";
-  import { parse as parseSynctex, lineAt as synctexLineAt } from "../lib/synctex.js";
+  import { parse as parseSynctex, lineAt as synctexLineAt, offsetOfLine as synctexOffsetOfLine } from "../lib/synctex.js";
   import * as localQuarto from "../lib/desktop/client.js";
   import { backups as backupStatusStore } from "../lib/desktop/backups.svelte.js";
   import { basename } from "../lib/file-manager.js";
@@ -37,6 +37,7 @@
   import { createTimeline } from "../lib/reader/timeline.svelte.js";
   import { createPreviewRenderer } from "../lib/reader/preview-render.js";
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
+  import { shareIntroKind } from "../lib/reader/share-intro.js";
   import { forgetProject, markShellReady, rememberProject } from "../lib/offline-projects.js";
   import { cacheCurrentShell } from "../lib/offline-shell.js";
   import { needsSourceRefresh } from "../lib/reader/source-events.js";
@@ -54,8 +55,10 @@
     LINKED,
     PDF_INVERT,
     linkFor,
+    markShareIntroSeen,
     markViewed,
     read,
+    shareIntroSeen,
     takeLinkKey,
     write,
   } from "../lib/storage.js";
@@ -96,6 +99,7 @@
   import DesktopMismatch from "./DesktopMismatch.svelte";
   import { anonymousIdentity, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import Avatar from "./Avatar.svelte";
+  import { presenceJumpTarget } from "../lib/presence-jump.js";
   import { extractOutline } from "../lib/outline.js";
   import { countWordsIn, documentWords, sectionWords } from "../lib/word-count.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
@@ -552,6 +556,9 @@
       case "pdf-caret":
         followPdfClick(message.pdf);
         break;
+      case "click":
+        followPreviewClick(message.offset, message.pdf);
+        break;
       case "focus":
         void focusAnnotation(message.id);
         break;
@@ -710,6 +717,16 @@
     card?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
+  // A click on a tracked change in the source does what a click on a comment
+  // mark does: the row is selected and its panel opened, without taking the
+  // keyboard. The Changes panel brings the row into view.
+  function selectChangeFromSource(id) {
+    const row = changeRows.find((item) => String(item.id) === String(id));
+    if (!row) return;
+    selectedChange = row.id;
+    void showPanel("changes");
+  }
+
   // Remembers the editor's place before a jump to `file` at `offset`. Nothing
   // is remembered when the editor would not move, or when the jump lands where
   // the editor already is. An undefined offset is a line the editor finds
@@ -721,6 +738,25 @@
     const here = { file: ws.openFile, offset: editor.caret() };
     if (here.file === file && here.offset === offset) return;
     jumps.remember(here);
+  }
+
+  // A click on a collaborator's avatar goes to where they are: their file and
+  // their caret in it, brought into view and flashed in their colour. This
+  // reader's own caret and selection are left alone. With no caret known, the
+  // file is opened and nothing more. It needs the source pane, so it does
+  // nothing while the source is closed.
+  async function jumpToPerson(person) {
+    if (!editing || !editor || !session) return;
+    const target = presenceJumpTarget({ file: person.file, caret: session.caretOf(person.peer) });
+    if (!target || !fileExists(target.file)) return;
+    rememberPlace(target.file, target.from);
+    if (compact) {
+      showMobileView("source");
+      await tick();
+    }
+    if (!editing || !editor) return;
+    ws.openFile = target.file;
+    if (target.from != null) editor.revealPeer(target.file, target.from, target.to, person.colour);
   }
 
   // Back is not a jump, so the place it leaves is not remembered. It does
@@ -874,6 +910,26 @@
       source: { file_id: sel.file, start: sel.from, end: sel.to },
     };
     annotate(which);
+  }
+
+  // A remark about the whole document, from the Comments header or the palette.
+  // It names no passage, so there is no selection to make: the draft is opened
+  // as a comment on the document, with nothing to quote.
+  function commentOnDocument() {
+    if (!mayChat) return;
+    if (!renderedProjectCurrent) {
+      say(m.reader_source_rendering(), { kind: "problem", id: "reader:source-rendering" });
+      return;
+    }
+    pending = {
+      exact: "",
+      prefix: "",
+      suffix: "",
+      position: null,
+      whole: true,
+      render_digest: mayEdit ? "" : renderedProjectDigest,
+    };
+    annotate("comment");
   }
 
   // Picking a colour highlights with it, rather than arming a colour for a
@@ -2374,15 +2430,18 @@
   // readers without the source.
   const agentSelection = $derived.by(() => {
     if (sourcePassageNow) return { source: sourcePassageNow, exact: sourcePassageNow.exact };
-    return !mayEdit && pending ? pending : null;
+    return !mayEdit && pending && !pending.whole ? pending : null;
   });
   function outlineCaretChanged() {
     outlineTextChanged();
     followCaret();
   }
 
+  // Set while a click in the preview is placing the caret: the echo of that
+  // move must not scroll the preview to the caret it was just clicked at.
+  let previewPlacing = false;
   function followCaret() {
-    if (!linked || !editing || docText === null) return;
+    if (previewPlacing || !linked || !editing || docText === null) return;
     clearTimeout(stepTimer);
     stepTimer = setTimeout(showCaretInDocument, 120);
   }
@@ -2444,6 +2503,41 @@
     ws.openFile = id;
     editor.openAt(id, precise.line, 1);
     return true;
+  }
+
+  // A plain click in the preview puts the source caret where the words clicked
+  // are in the source, and scrolls the source to show it. The keyboard stays
+  // with the document: the source is moved, not focused. Only the open file is
+  // searched, so a click never switches files, and only on a wide window where
+  // the source is beside the document -- a phone shows one pane at a time and a
+  // click there is for reading.
+  function followPreviewClick(offset, pdfPoint = null) {
+    if (compact || !editing || comparing !== "" || !editor || docText === null || !openFile) return;
+    if (effectiveLayout !== "split" && effectiveLayout !== "source") return;
+    const text = editor.text();
+    if (typeof text !== "string") return;
+    let at = null;
+    if (pdfPoint) {
+      if (sourceFormat !== "latex" || !activeSynctex) return;
+      const precise = activeSynctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y));
+      if (!precise || session.idOf(precise.path) !== openFile) return;
+      // SyncTeX gives a line and no column, so the start of that line is the place.
+      at = synctexOffsetOfLine(text, precise.line);
+    } else {
+      if (offset === null || offset === undefined) return;
+      const openPath = session?.paths?.get(openFile) || "";
+      const format = openPath ? renderers.formatOf(openPath) : sourceFormat;
+      // Exact words only: the widening search a double-click allows would, on
+      // every single click, now and then land somewhere nearby instead.
+      at = sync.sourcePlaceFor(docText, Number(offset) || 0, text, format, { exact: true });
+    }
+    if (at === null || at === undefined) return;
+    previewPlacing = true;
+    try {
+      editor.goTo(at, { focus: false });
+    } finally {
+      previewPlacing = false;
+    }
   }
 
   function setLinked(on) {
@@ -2602,6 +2696,23 @@
   let settled = $state(false);
   // The height of the demo banner, taken off the workspace so the page does not scroll.
   let demoBannerHeight = $state(0);
+  // The first time a project is opened by someone it was shared with, one line
+  // says what the link allows. Shown once per project in this browser, and
+  // until dismissed; an owner, or a role not yet known, is shown nothing.
+  const shareIntroWasSeen = DEMO || shareIntroSeen(SLUG);
+  let shareIntroDismissed = $state(false);
+  // Measured as a fraction of a pixel: a height rounded down leaves the
+  // workspace a pixel too tall, and the page scrolls.
+  /** @type {ResizeObserverSize[] | undefined} */
+  let shareIntroBox = $state();
+  const shareIntroHeight = $derived(shareIntroBox?.[0]?.blockSize ?? 0);
+  const shareIntro = $derived(shareIntroWasSeen || shareIntroDismissed ? null : shareIntroKind(doc.role));
+  // Taken off the workspace only while the line is shown, as the height is
+  // not reset when the banner is removed.
+  const shareIntroOffset = $derived(shareIntro ? shareIntroHeight : 0);
+  $effect(() => {
+    if (shareIntro) markShareIntroSeen(SLUG);
+  });
 
   // Kept current for the background work that consults it.
   $effect(() => {
@@ -4194,6 +4305,7 @@
     },
     edit: editAvailability,
     canClearChat: chatState.canClear,
+    canComment: mayChat,
     // In Vim or Emacs mode Alt is the editor's, so the Alt menu chords stand down in the source.
     modalEditor: keys === "vim" || keys === "emacs",
   });
@@ -4227,6 +4339,7 @@
     // A template command opens the Math overlay on its template.
     if (id.startsWith("math-")) return openPalette("math", id.slice("math-".length));
     if (id === "focus-comments") return focusPanel("collaboration");
+    if (id === "comment-document") return commentOnDocument();
     if (id === "chat-clear") return askClearChat();
     if (id === "focus-preview") return focusPreview();
     if (id === "layout-cycle") return cycleLayout();
@@ -4556,9 +4669,19 @@
            by Diagnostics, so the bar only carries the local execution switch. -->
       {@render visualModeControl()}
       {@render localExecutionControl()}
+      <!-- Shown only while tracked changes are being recorded, so a reviewer
+           who has closed the Changes panel can still see that edits are tracked. -->
+      {#if tracking}
+        <button type="button" class="tracking-pill" title={m.reader_tracking_open()} onclick={() => void focusPanel("changes")}>
+          <Icon name="pencil" size={14} />
+          <span>{m.reader_tracking_on()}</span>
+        </button>
+      {/if}
       <div class="presence" role="group" aria-label={connected ? m.readerd_people_connected({ count: peers }) : connectionNote} title={connected ? m.readerd_people_connected({ count: peers }) : connectionNote}>
         {#each participants.slice(0, 3) as person (person.key)}
-          <Avatar name={person.name} key={person.key} colour={person.colour} size={6} />
+          <button type="button" class="presence-jump" title={person.name} aria-label={m.common_go_to_cursor({ name: person.name })} onclick={() => jumpToPerson(person)}>
+            <Avatar name={person.name} key={person.key} colour={person.colour} size={6} />
+          </button>
         {/each}
         {#if participants.length > 3}<span class="presence-more">+{participants.length - 3}</span>{/if}
         {#if !connected && !DEMO}<span class="presence-offline"><span class="presence-offline-dot" aria-hidden="true"></span>{m.common_offline()}</span>{/if}
@@ -4638,18 +4761,25 @@
 {/if}
 
 {#if formatBarVisible}
-  <FormatToolbar active={formatActive} hidden={barHidden && !compact} {modalEditor} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} />
+  <FormatToolbar active={formatActive} hidden={barHidden && !compact} {modalEditor} available={can} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} oncommand={(id) => void runCommand(id)} />
 {/if}
 
 {#if compact && modeSwitchShown}
   <ModeSwitch mode={shown.source ? "source" : "document"} collapsed={barHidden} onchange={showMobileView} />
 {/if}
 
+{#if shareIntro}
+  <div class="share-intro" role="status" bind:borderBoxSize={shareIntroBox}>
+    <span class="share-intro-text">{shareIntro === "edit" ? m.readerd_share_intro_edit() : shareIntro === "comment" ? m.readerd_share_intro_comment() : m.readerd_share_intro_view_ask()}</span>
+    <button type="button" class="btn btn-sm lp-control-neutral" onclick={() => (shareIntroDismissed = true)}>{m.toasts_dismiss()}</button>
+  </div>
+{/if}
+
 <main id="main" tabindex="-1" class="reader" class:editing={shown.source} class:no-preview={!shown.document}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact} class:bar-hidden={barHidden && !compact}
-      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - var(--librepaper-format-used, 0px) - {demoBannerHeight}px - var(--librepaper-phone-chrome, 0px));{compact ? ` --librepaper-phone-chrome: calc(${phoneChrome});` : ''} --librepaper-format-used: {formatBarVisible ? 'var(--librepaper-format-bar)' : '0px'}; --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
+      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - var(--librepaper-format-used, 0px) - {demoBannerHeight + shareIntroOffset}px - var(--librepaper-phone-chrome, 0px));{compact ? ` --librepaper-phone-chrome: calc(${phoneChrome});` : ''} --librepaper-format-used: {formatBarVisible ? 'var(--librepaper-format-bar)' : '0px'}; --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- What this page is. The title is in the bar, where it is a span beside
        the menus rather than a heading, so the one heading a screen reader
        looks for first is here instead: said once, seen by nobody. -->
@@ -4700,7 +4830,7 @@
   {/snippet}
 
   {#snippet collaborationPanel()}
-    {#if compact}<Presence {participants} />{/if}
+    {#if compact}<Presence {participants} onjump={jumpToPerson} />{/if}
     <Collaboration messages={chatState.messages} more={chatState.more} loadingOlder={chatState.loadingOlder}
       loadError={chatState.loadError} canClear={chatState.canClear} onloadolder={liveChat.loadOlder}
       onclear={askClearChat} {connected} canPost={mayChat} onsend={sendLiveChat}
@@ -4715,7 +4845,7 @@
       page={annotations.state.page}
       onloadmore={() => void annotations.loadMore()}
       onloadreplies={(comment) => void annotations.loadReplies(comment)}
-      oncommentsend={sendDraft} oncommentcancel={cancelDraft} />
+      oncommentsend={sendDraft} oncommentcancel={cancelDraft} oncommentdocument={commentOnDocument} />
     {@render pendingRecovery("collaboration")}
   {/snippet}
 
@@ -4834,7 +4964,8 @@
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   oncomment={(id) => focusAnnotation(comments.find((item) => String(item.id) === String(id))?.id, { focus: false })}
-                  onformatstate={(state) => { formatActive = state; }}
+                  onchangeselect={selectChangeFromSource}
+                  onformatstate={(state) => { formatActive = state; refreshEditAvailability(); }}
                   authorship={authorsActive && authorsMap ? { authors: authorsMap, only: authorsOnly } : null}
                   onauthorship={(summary) => (authorsSummary = summary)}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />
@@ -5215,7 +5346,7 @@
 <Toasts />
 
 <style>
-  .demo-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--spacing) calc(var(--spacing) * 3); padding: calc(var(--spacing) * 1.5) var(--panel-padding, calc(var(--spacing) * 4)); border-bottom: 1px solid var(--color-pane-edge); background: var(--color-subtle); color: var(--color-text); font-size: var(--text-sm); }
+  .demo-banner, .share-intro { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--spacing) calc(var(--spacing) * 3); padding: calc(var(--spacing) * 1.5) var(--panel-padding, calc(var(--spacing) * 4)); border-bottom: 1px solid var(--color-pane-edge); background: var(--color-subtle); color: var(--color-text); font-size: var(--text-sm); }
   .demo-banner-actions { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 2); }
   .editorpane.comparing { grid-template-rows: auto minmax(0, 1fr); }
   .menuitem-chevron { display: inline-flex; margin-left: auto; padding-left: calc(var(--spacing) * 2); }
@@ -5242,11 +5373,16 @@
   @media (max-width: 600px) {
     /* Nobody else here yet: an empty group would still take a gap. */
     .presence:empty { display: none; }
+  .tracking-pill { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * 1.5); min-height: 1.75rem; padding: 0 calc(var(--spacing) * 2.5); border: 1px solid var(--color-divider); border-radius: 999px; background: transparent; color: var(--color-text-secondary); font-size: var(--text-xs); white-space: nowrap; cursor: pointer; }
+  .tracking-pill:hover { background: var(--color-row-hover); color: var(--color-text); }
+  .tracking-pill:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
   }
   .presence { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * .5); color: var(--color-text-secondary); font-size: var(--text-xs); }
   .presence-offline { display: inline-flex; align-items: center; gap: calc(var(--spacing) * .75); color: var(--color-text-secondary); font-size: var(--text-xs); }
   .presence-offline-dot { width: .5rem; height: .5rem; flex: 0 0 .5rem; border-radius: 50%; background: var(--color-error-solid); }
-  .presence :global(.avatar + .avatar) { margin-left: calc(var(--spacing) * -1.5); box-shadow: 0 0 0 2px var(--color-shell); }
+  .presence-jump { display: inline-flex; flex: none; padding: 0; border: 0; border-radius: 50%; background: none; cursor: pointer; }
+  .presence-jump:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+  .presence-jump + .presence-jump { margin-left: calc(var(--spacing) * -1.5); box-shadow: 0 0 0 2px var(--color-shell); }
   .presence-more { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem; margin-left: calc(var(--spacing) * -1.5); border-radius: 50%; background: var(--color-divider); color: var(--color-text-secondary); font-size: .65rem; }
   /* A heading over a run of items. Aligned with the names rather than with
      the panel edge, so the column the items make starts once. */

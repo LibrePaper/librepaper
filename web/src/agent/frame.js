@@ -735,24 +735,52 @@ import { watchPinch } from "../lib/pinch.js";
   // A double-click in the document, reported as an offset into the published text, so
   // the editor can put its caret in the same place. Only the position is sent;
   // a double-click that lands on nothing textual says nothing.
+  // The offset into the published text of the point under the pointer, or null
+  // when the point is not on text this frame published.
+  function textOffsetAt(x, y) {
+    if (!table || !table.nodes.length) return null;
+    const caret = document.caretPositionFromPoint ? document.caretPositionFromPoint(x, y) : null;
+    const node = caret?.offsetNode;
+    if (!node || node.nodeType !== Node.TEXT_NODE) return null;
+    const index = table.index.get(node);
+    if (index === undefined) return null;
+    return table.starts[index] + (caret.offset || 0);
+  }
+
   document.addEventListener("dblclick", (event) => {
     const pdf = globalThis.librepaperViewer?.pointFromClient?.(event.clientX, event.clientY) || null;
-    if (!table.nodes.length) {
+    const offset = textOffsetAt(event.clientX, event.clientY);
+    if (offset === null) {
       if (pdf) post({ type: "pdf-caret", pdf });
       return;
     }
-    const caret = document.caretPositionFromPoint
-      ? document.caretPositionFromPoint(event.clientX, event.clientY)
-      : null;
-    const node = caret?.offsetNode;
-    if (!node || node.nodeType !== Node.TEXT_NODE) {
-      if (pdf) post({ type: "pdf-caret", pdf });
-      return;
-    }
-    const index = table.index.get(node);
-    if (index === undefined) return;
-    const offset = table.starts[index] + (caret.offset || 0);
     post({ type: "caret", offset, pdf });
+  });
+
+  // A plain click, reported so the source caret can follow it without the
+  // keyboard leaving the document. Only a click that did not drag, with the
+  // primary button and no modifier, counts; a double click reports through
+  // dblclick instead; and a click on a link, a control or a comment mark is
+  // left to what it already does.
+  const INTERACTIVE = "a[href],area[href],button,input,select,textarea,label,summary,option,[contenteditable],"
+    + "[role=button],[role=link],[role=checkbox],[role=menuitem],[role=tab],[role=switch],mark[data-librepaper]";
+  const DRAG_TOLERANCE = 4;
+  let pressedAt = null;
+  document.addEventListener("pointerdown", (event) => {
+    pressedAt = event.button === 0 ? { x: event.clientX, y: event.clientY } : null;
+  }, { capture: true });
+  document.addEventListener("click", (event) => {
+    const start = pressedAt;
+    pressedAt = null;
+    if (!start || event.button !== 0 || event.detail !== 1 || event.defaultPrevented) return;
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > DRAG_TOLERANCE) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target || target.closest(INTERACTIVE)) return;
+    const pdf = globalThis.librepaperViewer?.pointFromClient?.(event.clientX, event.clientY) || null;
+    const offset = textOffsetAt(event.clientX, event.clientY);
+    if (offset === null && !pdf) return;
+    post({ type: "click", offset, pdf });
   });
 
   // The keys that act on a selection have to be heard here: the selection is
