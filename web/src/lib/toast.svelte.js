@@ -12,7 +12,11 @@
 // hover, and stacks with the others rather than replacing them.
 import { createToaster } from "@skeletonlabs/skeleton-svelte";
 
+// The toasts' own jump key is F8, not Zag's default Alt+T: Alt+T is also held
+// in Ctrl+Alt+T, the math palette, and the region would take the focus out
+// from under the dialog that chord opens.
 export const toaster = createToaster({
+  hotkey: ["F8"],
   placement: "bottom-end",
   overlap: true,
   gap: 12,
