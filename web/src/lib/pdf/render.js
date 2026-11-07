@@ -305,6 +305,7 @@ function startLazy(entries, ctx) {
   const byFrame = new Map(entries.map((entry) => [entry.frame, entry]));
   let stopped = false;
   let pumping = false;
+  /** @type {(value?: unknown) => void} */
   let resolveFirst = () => {};
   const first = new Promise((resolve) => { resolveFirst = resolve; });
   const gone = () => stopped || ctx.stale();
