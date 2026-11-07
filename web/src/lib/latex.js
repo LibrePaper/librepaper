@@ -213,6 +213,18 @@ async function loadRelease() {
   }
 }
 
+/// Starts the PDF engine's downloads before the first compile: the release,
+/// then the engine files, bundle index and core bundle together. Never rejects.
+export async function warm() {
+  if (!base) return;
+  try {
+    const entry = await loadRelease();
+    const resources = await getResources();
+    const kinds = currentSettings.engine === "xelatex" ? ["xetex", "dvipdfm"] : ["pdftex"];
+    await resources?.warmRelease?.(entry, absoluteBase(), kinds);
+  } catch { /* best effort: a compile fetches what it needs */ }
+}
+
 function timeoutError(what = "the compile") {
   return named("WorkerTimeout", `${what} exceeded its time budget`);
 }

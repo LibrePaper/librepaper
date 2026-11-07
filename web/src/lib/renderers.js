@@ -479,10 +479,22 @@ export function htmlTitleOf(source) {
 /// The promise settles once the engine is loaded, which is what the preview's
 /// waiting display reports as the engine stage. It never rejects: a failure
 /// is reported when something is actually rendered.
-export function warm(format) {
+export function warm(format, source = "") {
   if (format === "html" || format === "text") return Promise.resolve(); // the identity has nothing to fetch
   // LaTeX is not a renderer-worker format: `latex.js` loads the pinned
   // engine release itself, on the editor's side, and reports its own phase.
-  if (format === "latex") return Promise.resolve();
-  return request(format === "quarto" ? "markdown" : format, "warm").then(() => {}, () => {});
+  if (format === "latex") {
+    // The downloads start now rather than at the first paint. Without a
+    // mirror yet, the reader asks again once /api/config has answered.
+    if (!latex.at()) return Promise.resolve();
+    const settings = latex.settings();
+    return settings.output === "pdf" ? latex.warm() : latexHtml.warm(latex.at(), settings);
+  }
+  const loading = [request(format === "quarto" ? "markdown" : format, "warm")];
+  // A document with citations renders in citations.wasm, so it starts at the
+  // same time as the Markdown module rather than at the first render.
+  if ((format === "markdown" || format === "quarto") && needsBibliography({ source })) {
+    loading.push(request("citations", "warm"));
+  }
+  return Promise.all(loading.map((load) => load.then(() => {}, () => {}))).then(() => {});
 }

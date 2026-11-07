@@ -1920,10 +1920,10 @@
   // The renderer engine being downloaded for the preview, or "". LaTeX
   // reports its own loading phase and is never named here.
   let engineLoading = $state("");
-  function warmEngine(format) {
+  function warmEngine(format, source = "") {
     const wanted = format;
     if (!["latex", "html", "text"].includes(format)) engineLoading = format;
-    void renderers.warm(format).then(() => {
+    void renderers.warm(format, source).then(() => {
       if (engineLoading === wanted) engineLoading = "";
     });
   }
@@ -3547,6 +3547,7 @@
         rulesRemembered = remembered;
         workspace.setRules(answer || {});
         if (typeof answer?.latexMirror === "string") latex.at(answer.latexMirror);
+        if (sourceFormat === "latex") void renderers.warm("latex");
       })
       .catch(() => {
         configRetry = setTimeout(loadRules, 30_000);
@@ -3630,7 +3631,7 @@
     previewPath = path;
     sourceFormat = format;
     configureLatex(format, session || readerProjectOwner);
-    warmEngine(format);
+    warmEngine(format, typeof texts[path] === "string" ? texts[path] : "");
     if (!previous) {
       // The first file the preview is given is rendered now. Waiting for the
       // typing pause would hold it for a second or more while the project

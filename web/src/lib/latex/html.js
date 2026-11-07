@@ -1,7 +1,7 @@
 // HTML previews have their own engine lifetime: switching the View menu must
 // not change the PDF compiler's settings or bibliography state.
 import { createEngine } from "./driver.js";
-import { fetchVerified } from "./resources.js";
+import { fetchVerified, warmRelease } from "./resources.js";
 import { m } from "../paraglide/messages.js";
 
 const DEADLINE_MS = 240_000;
@@ -204,10 +204,12 @@ export function createHtmlCompiler({
     if (!bundleFile || !/^[a-f0-9]{64}$/.test(bundleFile.sha256) || !Number.isInteger(bundleFile.size) || bundleFile.size < 0 ||
         bundleFile.sha256 !== release.bundles?.sha256) throw new Error("Missing verified TeX bundle index");
     const indexUrl = new URL(release.bundles.index, base);
-    const index = new Uint8Array(await (await verified(
+    // The index downloads while the engine files do; both are still verified
+    // against their pinned digests before use.
+    const indexRequest = verified(
       { ...release, digest: releaseId }, indexUrl.href, { sha256: bundleFile.sha256, size: bundleFile.size },
-    )).arrayBuffer());
-    if (current !== epoch) throw superseded();
+    ).then(async (response) => new Uint8Array(await response.arrayBuffer()));
+    indexRequest.catch(() => {});
     const target = makeEngine({
       kind: "latexml",
       url: new URL(spec.worker, base).href,
@@ -228,7 +230,7 @@ export function createHtmlCompiler({
       workerName: spec.worker,
     });
     engine = target;
-    await target.init();
+    const [, index] = await Promise.all([target.init(), indexRequest]);
     if (current !== epoch) throw superseded();
     const loaded = await target.loadBundleIndex(index);
     if (current !== epoch) throw superseded();
@@ -343,10 +345,21 @@ export function createHtmlCompiler({
     });
   }
 
-  return { compile, cancel, configuration };
+  /// Fetches the release, engine files, bundle index and core bundle ahead of
+  /// the first compile, all but the release at once. Never rejects.
+  /** @param {string} base @param {Record<string, unknown>} [settings] */
+  async function warm(base, settings = {}) {
+    try {
+      const resolved = await configuration(base, settings);
+      await warmRelease(resolved.release, resolved.base, ["latexml"], { verified });
+    } catch { /* best effort: a compile fetches what it needs */ }
+  }
+
+  return { compile, cancel, configuration, warm };
 }
 
 const compiler = createHtmlCompiler();
 export const compile = compiler.compile;
 export const cancel = compiler.cancel;
 export const configuration = compiler.configuration;
+export const warm = compiler.warm;
