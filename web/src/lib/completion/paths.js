@@ -2,7 +2,17 @@
 // with a slash. Pure functions with no imports, so tests and check scripts can
 // load them directly.
 
-/** @typedef {{ path: string, format: "latex"|"typst"|"markdown"|"quarto"|"html"|"", texts: Record<string, string>, files: string[] }} CompletionProject */
+/**
+ * What completion knows of the project. `labels` is the project's labels from
+ * the editor's live index; when absent, completion indexes `texts` itself.
+ * @typedef {{
+ *   path: string,
+ *   format: "latex"|"typst"|"markdown"|"quarto"|"html"|"",
+ *   texts: Record<string, string>,
+ *   files: string[],
+ *   labels?: (options: { first?: string, formats?: Set<string> }) => Array<{ id: string, path: string, line: number, title?: string }>,
+ * }} CompletionProject
+ */
 /** @typedef {() => CompletionProject} ProjectAccessor */
 
 /** Split a path into segments, dropping "" and "." and collapsing "a/..". */

@@ -226,10 +226,10 @@
   import { sourceHighlighting } from "../lib/source-highlight.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport, selectedBibliographyFiles } from "../lib/bibliography.js";
-  import { typstLabels } from "../lib/citation-keys.js";
   import { citationKeysExtension, citationsChanged } from "../lib/citation-keys-extension.js";
   import { completionExtension, formatOfPath } from "../lib/completion/index.js";
   import { createLiveIndex } from "../lib/document-index/live.js";
+  import { labelList } from "../lib/document-index/labels.js";
   import { indexEditing, indexDiagnostics, indexChanged } from "../lib/document-index-extensions/index.js";
   import { goToDefinition } from "../lib/document-index-extensions/navigation.js";
   import { findReferencesCommand } from "../lib/document-index-extensions/references.js";
@@ -699,7 +699,11 @@
       const texts = {};
       for (const [file, text] of Object.entries(tree.texts)) texts[file] = String(text ?? "");
       const bibliography = parsedBibliography ? parsedBibliography.entries.map((entry) => entry.key) : null;
-      if (liveIndex.refresh({ texts, files: Object.keys(tree.files), bibliography })) view?.dispatch({ effects: indexChanged.of(null) });
+      // The signal is sent after the current task: a query can refresh the
+      // index from inside a view update, where dispatching would throw.
+      if (liveIndex.refresh({ texts, files: Object.keys(tree.files), bibliography })) {
+        queueMicrotask(() => view?.dispatch({ effects: indexChanged.of(null) }));
+      }
     });
   }
   // Sets the document facts on a view. Reconfiguring the visual layer empties
@@ -744,7 +748,11 @@
       return parsedBibliography.entries;
     },
     format: () => formatOf(pathOfDoc(session?.doc, showing)),
-    labels: () => (formatOf(pathOfDoc(session?.doc, showing)) === "typst" ? typstLabels(treeForDoc(session.doc).texts) : new Set()),
+    // Typst's @name is a reference when a label of that name exists. This can
+    // run inside a view update; currentIndex() defers its signal, so it is safe.
+    labels: () => (formatOf(pathOfDoc(session?.doc, showing)) === "typst"
+      ? new Set(labelList(currentIndex(), {}, { formats: new Set(["typst"]) }).map((label) => label.id))
+      : new Set()),
   });
 
   // What the document-index extensions read and do through the editor.
@@ -1702,6 +1710,17 @@
       if (!tree) tree = treeForDoc(doc);
       return tree;
     };
+    /** @type {Record<string, string> | null} the stringified texts, built once */
+    let stringTexts = null;
+    const allTexts = () => {
+      if (stringTexts === null) {
+        /** @type {Record<string, string>} */
+        const texts = {};
+        for (const [file, text] of Object.entries(load().texts)) texts[file] = String(text ?? "");
+        stringTexts = texts;
+      }
+      return stringTexts;
+    };
     return {
       get path() {
         if (projected === null) projected = pathOfDoc(doc, showing) || rawPath;
@@ -1709,13 +1728,14 @@
       },
       format: formatOfPath(rawPath),
       get texts() {
-        /** @type {Record<string, string>} */
-        const texts = {};
-        for (const [file, text] of Object.entries(load().texts)) texts[file] = String(text ?? "");
-        return texts;
+        return allTexts();
       },
       get files() {
         return Object.keys(load().files).sort();
+      },
+      // Labels from the live index, which refreshes before it answers.
+      labels(options) {
+        return labelList(currentIndex(), allTexts(), options);
       },
     };
   }

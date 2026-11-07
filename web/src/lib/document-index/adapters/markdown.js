@@ -14,7 +14,7 @@ import {
   KINDS,
   LABEL,
   fenceStates,
-} from "../../completion/quarto.js";
+} from "../../quarto-labels.js";
 
 /** @typedef {import("../schema.js").IndexItem} IndexItem */
 /** @typedef {{ from: number, to: number, text: string }} Line */

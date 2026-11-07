@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { citedKeys, typstLabels } from "../../src/lib/citation-keys.js";
+import { citedKeys } from "../../src/lib/citation-keys.js";
 import { typstAdapter } from "../../src/lib/document-index/adapters/typst.js";
 import { createProjectIndex } from "../../src/lib/document-index/project.js";
 import { definition, diagnostics } from "../../src/lib/document-index/queries.js";
@@ -68,6 +68,13 @@ const docB = [
   "",
 ].join("\n");
 
+// The label names of each fixture. The raw, comment and #cite(<key>) forms
+// are not labels.
+const EXPECTED_LABELS = {
+  A: ["fig:a", "sec:intro"],
+  B: ["fig:a", "sec:results"],
+};
+
 /** The unique reference names, cites and labels of one source, for equivalence checks. */
 function namesOf(items) {
   return {
@@ -89,7 +96,10 @@ for (const [label, text] of [["A", docA], ["B", docB]]) {
     const markup = kindOf(items, "markup").map((item) => item.range);
     assert.deepEqual(markup, skipRanges(text, "typst"));
 
-    assert.deepEqual(namesOf(items).labels, new Set(typstLabels({ "main.typ": text })));
+    // The label names were read from the fixture by hand. The old label scanner
+    // that used to be the oracle here has been removed. `<smith2020>` in
+    // #cite(...) is a key, not a label, and the raw block's <no> is not one.
+    assert.deepEqual(namesOf(items).labels, new Set(EXPECTED_LABELS[label]));
 
     // citedKeys reads every `@name` as a possible key. Here an either ref is a
     // label or a key, so with no labels given, the adapter's either refs and

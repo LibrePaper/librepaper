@@ -7,7 +7,8 @@ import { CompletionContext } from "@codemirror/autocomplete";
 import schema from "../../src/lib/completion/quarto-schema.json" with { type: "json" };
 import { quartoCompletion, quartoLabels } from "../../src/lib/completion/quarto.js";
 
-function complete(doc, { format = "quarto", texts = {}, path = "main.qmd", explicit = false } = {}) {
+// `labels` stands for the editor's live index, when given.
+function complete(doc, { format = "quarto", texts = {}, path = "main.qmd", explicit = false, labels } = {}) {
   const pos = doc.lastIndexOf("|");
   const state = EditorState.create({ doc: doc.slice(0, pos) + doc.slice(pos + 1) });
   const context = new CompletionContext(state, pos, explicit);
@@ -17,6 +18,7 @@ function complete(doc, { format = "quarto", texts = {}, path = "main.qmd", expli
     format,
     get texts() { reads++; return texts; },
     files: [],
+    ...(labels ? { labels } : {}),
   });
   const result = quartoCompletion(project)(context);
   return { result, pos, reads };
@@ -89,6 +91,18 @@ const labels = (result) => (result ? result.options.map((option) => option.label
 }
 
 // --- cross-references ------------------------------------------------------
+{
+  // The editor's index answers, asked for the first file and Quarto only. The
+  // title becomes `info`.
+  const asked = [];
+  const liveLabels = (options) => {
+    asked.push(options);
+    return [{ id: "fig-live", path: "main.qmd", line: 3, title: "Live" }];
+  };
+  const { result } = complete("See @fi|", { labels: liveLabels });
+  assert.deepEqual(asked, [{ first: "main.qmd", formats: new Set(["quarto"]) }]);
+  assert.deepEqual(result.options, [{ label: "fig-live", type: "variable", detail: "main.qmd:3", info: "Live" }]);
+}
 {
   const texts = { "chap.qmd": "```{r}\n#| label: fig-plot\n```\n\n{#tbl-x}\n" };
   const { result, pos } = complete("Intro {#sec-a}\n\nSee @fi|", { texts });

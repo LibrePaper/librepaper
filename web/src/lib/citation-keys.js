@@ -121,20 +121,6 @@ export function citedKeys(text, format, { labels = new Set() } = {}) {
 }
 
 /**
- * The labels defined in typst sources, which a typst @key may refer to.
- * @param {Record<string, string>} texts path -> source
- * @returns {Set<string>}
- */
-export function typstLabels(texts) {
-  const labels = new Set();
-  for (const [path, source] of Object.entries(texts || {})) {
-    if (!/\.typ$/i.test(path)) continue;
-    for (const match of typstMasked(String(source ?? "")).matchAll(LABEL)) labels.add(match[1]);
-  }
-  return labels;
-}
-
-/**
  * The citations whose key has no bibliography entry. Nothing is unknown until
  * the bibliography is parsed, so null entries give none.
  * @param {{ text: string, format: string, entries: Array<{ key: string }> | null | undefined, labels?: Set<string> }} request

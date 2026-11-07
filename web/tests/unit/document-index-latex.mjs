@@ -6,7 +6,6 @@ import test from "node:test";
 import { extractOutline } from "../../src/lib/outline.js";
 import { citedKeys } from "../../src/lib/citation-keys.js";
 import { skipRanges } from "../../src/lib/spellcheck/index.js";
-import { latexLabels } from "../../src/lib/completion/latex.js";
 import { latexAdapter } from "../../src/lib/document-index/adapters/latex.js";
 import { createProjectIndex } from "../../src/lib/document-index/project.js";
 import { definition, diagnostics, rename } from "../../src/lib/document-index/queries.js";
@@ -101,6 +100,14 @@ const INTRO = String.raw`\section{Intro}\label{fig:b}
 Text with \cite{jones}.
 `;
 
+// The label names of each fixture, sorted. `% \label{fake:comment}` is in a
+// comment and is not a label.
+const EXPECTED_LABELS = {
+  paper: ["eq:main", "fig:plot", "sec:intro"],
+  notes: ["eq:a", "sec:data", "tab:sizes"],
+  intro: ["fig:b"],
+};
+
 for (const [name, text] of [["paper", PAPER], ["notes", NOTES], ["intro", INTRO]]) {
   test(`latex adapter agrees with the scanners on ${name}`, () => {
     const items = latexAdapter(text, `${name}.tex`);
@@ -120,9 +127,10 @@ for (const [name, text] of [["paper", PAPER], ["notes", NOTES], ["intro", INTRO]
       skipRanges(text, "latex"),
     );
 
+    // The label names were read from the fixtures by hand. The old label
+    // scanner that used to be the oracle here has been removed.
     const labelNames = [...new Set(kindOf(items, "label").map((item) => item.name))].sort();
-    const expected = [...new Set(latexLabels({ "main.tex": text }).map((label) => label.id))].sort();
-    assert.deepEqual(labelNames, expected);
+    assert.deepEqual(labelNames, EXPECTED_LABELS[name]);
   });
 }
 
