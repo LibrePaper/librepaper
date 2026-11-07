@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { EditorState } from "@codemirror/state";
 import { createProjectIndex } from "../../src/lib/document-index/project.js";
-import { referenceRows } from "../../src/lib/document-index-extensions/references.js";
+import { findReferencesCommand, referenceRows, references } from "../../src/lib/document-index-extensions/references.js";
+import { indexChanged } from "../../src/lib/document-index-extensions/context.js";
 import { renameTarget } from "../../src/lib/document-index-extensions/rename.js";
 import { m } from "../../src/lib/paraglide/messages.js";
 
@@ -70,7 +71,7 @@ test("reference rows carry line numbers on screen and the path alone elsewhere",
     { path: "main.tex", from: MAIN.indexOf("sec:a"), to: MAIN.indexOf("sec:a") + 5 },
     { path: "main.tex", from: refHead - 1, to: refHead + 4 },
   ];
-  const rows = referenceRows(stateAt(MAIN, refHead), context, locations);
+  const rows = referenceRows(stateAt(MAIN, refHead).doc, context, locations);
   assert.deepEqual(rows, [
     { path: "chap.tex", from: locations[0].from, text: "chap.tex" },
     { path: "main.tex", from: locations[1].from, text: m.references_location({ path: "main.tex", line: 1 }) },
@@ -80,12 +81,12 @@ test("reference rows carry line numbers on screen and the path alone elsewhere",
 
 test("reference rows are empty for no locations", () => {
   const { context } = fixture();
-  assert.deepEqual(referenceRows(stateAt(MAIN, 0), context, []), []);
+  assert.deepEqual(referenceRows(stateAt(MAIN, 0).doc, context, []), []);
 });
 
 test("reference rows fall back to the path when the offset is past the end of the file on screen", () => {
   const { context } = fixture();
-  const rows = referenceRows(stateAt(MAIN, 0), context, [{ path: "main.tex", from: MAIN.length + 10, to: MAIN.length + 12 }]);
+  const rows = referenceRows(stateAt(MAIN, 0).doc, context, [{ path: "main.tex", from: MAIN.length + 10, to: MAIN.length + 12 }]);
   assert.deepEqual(rows, [{ path: "main.tex", from: MAIN.length + 10, text: "main.tex" }]);
 });
 
@@ -118,4 +119,36 @@ test("renameTarget accepts an either-ref once a label of that name exists", () =
     items: [{ kind: "label", name: "smith2020", range: [0, 20], nameRange: [7, 17] }],
   });
   assert.equal(renameTarget(stateAt(MAIN, head), context)?.name, "smith2020", "now a label");
+});
+
+test("the references panel follows the index: it recomputes on a refresh and closes when nothing is left", () => {
+  const { project, context } = fixture();
+  const [field] = references(context);
+  const view = {
+    state: EditorState.create({ doc: MAIN, selection: { anchor: MAIN.indexOf("sec:a") }, extensions: [field] }),
+    dispatch(spec) {
+      this.state = this.state.update(spec).state;
+    },
+  };
+  assert.equal(findReferencesCommand(context)(view), true);
+  const paths = () => view.state.field(field).rows.map((row) => row.path);
+  assert.deepEqual(paths(), ["chap.tex", "main.tex", "main.tex"]);
+
+  // A new file uses the label; the refresh lists it.
+  const NEW = "\\ref{sec:a}\n";
+  project.update({
+    path: "new.tex",
+    format: "latex",
+    length: NEW.length,
+    items: [{ kind: "ref", name: "sec:a", namespace: "label", ...spans(NEW, "\\ref", "sec:a") }],
+  });
+  view.dispatch({ effects: indexChanged.of(null) });
+  assert.deepEqual(paths(), ["chap.tex", "main.tex", "main.tex", "new.tex"]);
+
+  // The label and every reference to it are gone; the refresh closes the panel.
+  project.update({ ...mainIndex, items: mainIndex.items.filter((item) => item.name !== "sec:a") });
+  project.update({ ...chapIndex, items: [] });
+  project.update({ path: "new.tex", format: "latex", length: NEW.length, items: [] });
+  view.dispatch({ effects: indexChanged.of(null) });
+  assert.equal(view.state.field(field), null);
 });
