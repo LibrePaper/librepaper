@@ -2477,7 +2477,9 @@
       if (offset === null || offset === undefined) return;
       const openPath = session?.paths?.get(openFile) || "";
       const format = openPath ? renderers.formatOf(openPath) : sourceFormat;
-      at = sync.sourcePlaceFor(docText, Number(offset) || 0, text, format);
+      // Exact words only: the widening search a double-click allows would, on
+      // every single click, now and then land somewhere nearby instead.
+      at = sync.sourcePlaceFor(docText, Number(offset) || 0, text, format, { exact: true });
     }
     if (at === null || at === undefined) return;
     previewPlacing = true;
