@@ -157,6 +157,11 @@ function indentAfterQuote(text) {
   return column;
 }
 
+// The number of blockquote markers that start a line.
+function quoteDepth(text) {
+  return (/^[\s>]*/.exec(text)[0].match(/>/g) || []).length;
+}
+
 // The start of the line holding the colons that close the div opened on the
 // current line, or past the end of the document when it is never closed.
 function divClose(cx) {
@@ -164,10 +169,13 @@ function divClose(cx) {
   let pos = cx.absoluteLineEnd + 1, depth = 1, boundary = true, fence = null;
   // Indentation counts from the opener's container, such as a list item's content column.
   const base = cx.line.baseIndent;
+  // Fences count only at the opener's blockquote depth: a quoted `> :::`
+  // inside the div is content.
+  const quotes = quoteDepth(cx.line.text.slice(0, cx.line.pos));
   while (pos < cx.to) {
     const { text, end } = /** @type {any} */ (cx).scanLine(pos);
     const body = text.replace(/^[\s>]*/, "");
-    if (indentAfterQuote(text) - base >= 4) {
+    if (indentAfterQuote(text) - base >= 4 || (body.trim() && quoteDepth(text) !== quotes)) {
       boundary = false;
       start += text.length + 1;
       pos = end + 1;

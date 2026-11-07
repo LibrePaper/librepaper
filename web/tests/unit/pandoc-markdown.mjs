@@ -127,3 +127,10 @@ test("a div inside a list item closes at the item's indentation", () => {
   const [div] = texts(doc, "FencedDiv");
   assert.equal(div, "::: note\n    Inside.\n    :::");
 });
+
+test("a quoted ::: inside a div does not close it", () => {
+  const doc = "::: note\nText\n\n> :::\n\nMore\n:::\n";
+  assert.deepEqual(texts(doc, "FencedDiv"), [doc.trimEnd()]);
+  const quoted = "> ::: note\n> Inside.\n> :::\n\nAfter.\n";
+  assert.deepEqual(texts(quoted, "FencedDiv"), ["::: note\n> Inside.\n> :::"]);
+});
