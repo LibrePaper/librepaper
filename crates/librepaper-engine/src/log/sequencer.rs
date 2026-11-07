@@ -77,6 +77,11 @@ pub enum SubscriberClass {
     Reader,
 }
 
+/// The `changes` count of a snapshot exported behind the head, where the
+/// change count at that version is not known without loading it. The version
+/// vector checks of `prove_coverage` still apply.
+pub const CHANGES_UNKNOWN: usize = usize::MAX;
+
 /// What snapshot a compaction exports: full history or shallow state only.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SnapshotMode {
@@ -2532,9 +2537,7 @@ impl Sequencer {
     ) -> Result<Option<(i64, Vec<u8>, Vec<u8>, usize, bool)>> {
         let mut inner = self.inner.lock().await;
         inner.writable()?;
-        if !inner.buffer.is_empty() {
-            return Ok(None);
-        }
+        let buffered = !inner.buffer.is_empty();
         if let Some(why) = &inner.unreadable {
             return Err(SequencerError::Unreadable(why.clone()));
         }
@@ -2545,7 +2548,25 @@ impl Sequencer {
         let through = inner.next_sequence - 1;
         let log_vector = inner.log_vector.clone();
         let cache = inner.cache.as_ref().expect("a cache was just built");
-        if cache.doc.oplog_vv() != log_vector {
+        // An edit can land between the caller's flush and this call. It is in
+        // the head and in the buffer, but in no row, so the head is ahead of
+        // the log. Refusing then starves compaction under steady typing.
+        // Instead the snapshot is exported at the log vector: exactly the
+        // rows `<= through`, which is what the caller deletes. The later edit
+        // stays in the buffer and lands as a row above `through`. Only a
+        // full snapshot of an untrimmed head with no frontier check takes
+        // this path; every other combination keeps the old refusal.
+        let head_vector = cache.doc.oplog_vv();
+        let ahead = buffered
+            && head_vector != log_vector
+            && matches!(
+                head_vector.partial_cmp(&log_vector),
+                Some(std::cmp::Ordering::Greater)
+            )
+            && mode == SnapshotMode::Full
+            && expected_frontier.is_none()
+            && !cache.doc.is_shallow();
+        if !ahead && (buffered || head_vector != log_vector) {
             return Ok(None);
         }
         // Checked under the same lock as the export. Anything that entered the
@@ -2556,7 +2577,12 @@ impl Sequencer {
                 return Ok(None);
             }
         }
-        let changes = cache.doc.len_changes();
+        let changes = if ahead {
+            CHANGES_UNKNOWN
+        } else {
+            cache.doc.len_changes()
+        };
+        let at = ahead.then(|| cache.doc.vv_to_frontiers(&log_vector));
         // §9.3 counts a compaction export against the same bound as a
         // build: it is the same uninterruptible Loro work over the same
         // decoded document, and a deployment compacting four documents at
@@ -2567,7 +2593,12 @@ impl Sequencer {
         let entry_is_shallow = doc.is_shallow();
         let _turn = super::admission::heavy().await;
         let snapshot = tokio::task::spawn_blocking(move || match mode {
-            SnapshotMode::Full => doc.export(ExportMode::Snapshot),
+            SnapshotMode::Full => match at {
+                Some(at) => doc.export(ExportMode::SnapshotAt {
+                    version: std::borrow::Cow::Owned(at),
+                }),
+                None => doc.export(ExportMode::Snapshot),
+            },
             SnapshotMode::Shallow => doc.export(ExportMode::ShallowSnapshot(
                 std::borrow::Cow::Owned(doc.oplog_frontiers()),
             )),

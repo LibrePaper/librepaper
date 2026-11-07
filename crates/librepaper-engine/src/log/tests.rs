@@ -2012,6 +2012,87 @@ async fn a_snapshot_is_refused_once_the_head_moves_past_the_frontier() {
     assert!(taken.is_some(), "the current frontier was refused");
 }
 
+/// Compaction flushes, then snapshots. An edit that lands in between sits in
+/// the head and the buffer but in no row. The snapshot must still be taken, at
+/// the log vector, so it covers exactly the rows it will delete, and the edit
+/// must survive as a row above `through`.
+#[tokio::test]
+async fn a_snapshot_is_taken_at_the_log_vector_when_an_edit_lands_after_the_flush() {
+    use crate::log::sequencer::SnapshotMode;
+
+    let sequencer = bare_sequencer(Arc::new(FakeCatalog::empty()));
+    sequencer
+        .with_head(|_| ())
+        .await
+        .expect("an empty document builds");
+    let mut outbox = Outbox::new();
+    let first = outbox.edit();
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:writer", "account:writer", 1, first)
+            .await,
+        Ingested::Accepted
+    ));
+    sequencer
+        .flush(FlushReason::Barrier)
+        .await
+        .expect("the first edit flushes");
+    let flushed = sequencer.log_state().await;
+    let covered = sequencer
+        .with_head(|doc| doc.oplog_vv())
+        .await
+        .expect("the head reads");
+
+    // The racing edit: after the flush, before the snapshot.
+    let second = outbox.edit();
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:writer", "account:writer", 2, second)
+            .await,
+        Ingested::Accepted
+    ));
+    assert_eq!(sequencer.log_state().await.buffered, 1);
+
+    let (through, snapshot, log_vector, _, _) = sequencer
+        .snapshot_at_log_vector(SnapshotMode::Full)
+        .await
+        .expect("the snapshot is exported")
+        .expect("a buffered edit must not starve compaction");
+    assert_eq!(through, flushed.next_sequence - 1);
+    assert_eq!(log_vector, flushed.log_vector);
+    crate::storage::worker::prove_coverage(
+        &snapshot,
+        &log_vector,
+        crate::log::sequencer::CHANGES_UNKNOWN,
+        SnapshotMode::Full,
+        false,
+    )
+    .expect("the snapshot covers exactly the flushed rows");
+    let scratch = LoroDoc::new();
+    scratch.import(&snapshot).expect("the snapshot loads");
+    assert_eq!(scratch.oplog_vv(), covered, "the snapshot holds the racing edit");
+
+    // The racing edit is still buffered, flushes as a row above `through`, and
+    // the head holds every edit.
+    assert_eq!(sequencer.log_state().await.buffered, 1);
+    sequencer
+        .flush(FlushReason::Barrier)
+        .await
+        .expect("the racing edit flushes");
+    let after = sequencer.log_state().await;
+    assert_eq!(after.buffered, 0);
+    assert!(after.next_sequence - 1 > through, "no row above `through`");
+    let head = sequencer
+        .with_head(|doc| doc.oplog_vv())
+        .await
+        .expect("the head reads");
+    assert_eq!(after.log_vector, head.encode(), "an edit was lost");
+    scratch
+        .import(&sequencer.with_head(|doc| doc.export(ExportMode::all_updates()).unwrap()).await.unwrap())
+        .expect("the remaining update applies");
+    assert_eq!(scratch.oplog_vv(), head);
+}
+
 /// §10, "subscriber too slow: closed; reconnects and reconciles", and §4.5,
 /// "a subscriber whose queue overflows is closed and reconnects".
 ///
