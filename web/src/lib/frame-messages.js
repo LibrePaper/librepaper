@@ -65,6 +65,21 @@ export function validateFrameMessage(input) {
       }
       return { type: "caret", offset: input.offset, pdf };
     }
+    case "click": {
+      // A plain click: the text offset under it when there is text, the PDF
+      // point when there is a page. At least one of the two.
+      let offset = null;
+      if (input.offset !== undefined && input.offset !== null) {
+        if (!Number.isSafeInteger(input.offset) || input.offset < 0 || input.offset > MAX_READY_TEXT) return null;
+        offset = input.offset;
+      }
+      let pdf = null;
+      if (input.pdf !== undefined && input.pdf !== null) {
+        pdf = pdfPoint(input.pdf);
+        if (!pdf) return null;
+      }
+      return offset === null && !pdf ? null : { type: "click", offset, pdf };
+    }
     case "pdf-caret": {
       const pdf = pdfPoint(input.pdf);
       return pdf ? { type: "pdf-caret", pdf } : null;

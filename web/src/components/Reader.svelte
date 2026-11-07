@@ -22,7 +22,7 @@
   import { candidateTree, capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
   import { orphanState } from "../lib/orphan.js";
   import * as latex from "../lib/latex.js";
-  import { parse as parseSynctex, lineAt as synctexLineAt } from "../lib/synctex.js";
+  import { parse as parseSynctex, lineAt as synctexLineAt, offsetOfLine as synctexOffsetOfLine } from "../lib/synctex.js";
   import * as localQuarto from "../lib/desktop/client.js";
   import { backups as backupStatusStore } from "../lib/desktop/backups.svelte.js";
   import { basename } from "../lib/file-manager.js";
@@ -554,6 +554,9 @@
         break;
       case "pdf-caret":
         followPdfClick(message.pdf);
+        break;
+      case "click":
+        followPreviewClick(message.offset, message.pdf);
         break;
       case "focus":
         void focusAnnotation(message.id);
@@ -2384,8 +2387,11 @@
     followCaret();
   }
 
+  // Set while a click in the preview is placing the caret: the echo of that
+  // move must not scroll the preview to the caret it was just clicked at.
+  let previewPlacing = false;
   function followCaret() {
-    if (!linked || !editing || docText === null) return;
+    if (previewPlacing || !linked || !editing || docText === null) return;
     clearTimeout(stepTimer);
     stepTimer = setTimeout(showCaretInDocument, 120);
   }
@@ -2447,6 +2453,39 @@
     ws.openFile = id;
     editor.openAt(id, precise.line, 1);
     return true;
+  }
+
+  // A plain click in the preview puts the source caret where the words clicked
+  // are in the source, and scrolls the source to show it. The keyboard stays
+  // with the document: the source is moved, not focused. Only the open file is
+  // searched, so a click never switches files, and only on a wide window where
+  // the source is beside the document -- a phone shows one pane at a time and a
+  // click there is for reading.
+  function followPreviewClick(offset, pdfPoint = null) {
+    if (compact || !editing || comparing !== "" || !editor || docText === null || !openFile) return;
+    if (effectiveLayout !== "split" && effectiveLayout !== "source") return;
+    const text = editor.text();
+    if (typeof text !== "string") return;
+    let at = null;
+    if (pdfPoint) {
+      if (sourceFormat !== "latex" || !activeSynctex) return;
+      const precise = activeSynctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y));
+      if (!precise || session.idOf(precise.path) !== openFile) return;
+      // SyncTeX gives a line and no column, so the start of that line is the place.
+      at = synctexOffsetOfLine(text, precise.line);
+    } else {
+      if (offset === null || offset === undefined) return;
+      const openPath = session?.paths?.get(openFile) || "";
+      const format = openPath ? renderers.formatOf(openPath) : sourceFormat;
+      at = sync.sourcePlaceFor(docText, Number(offset) || 0, text, format);
+    }
+    if (at === null || at === undefined) return;
+    previewPlacing = true;
+    try {
+      editor.goTo(at, { focus: false });
+    } finally {
+      previewPlacing = false;
+    }
   }
 
   function setLinked(on) {
