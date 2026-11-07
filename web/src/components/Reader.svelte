@@ -2933,6 +2933,7 @@
     [["select-all", m.common_select_all()]],
     [["find", m.readerb_edit_find()], ["replace", m.readerb_edit_replace()], ["word-count", m.readerb_edit_word_count()]],
     [["bold", m.common_bold()], ["italic", m.common_italic()]],
+    [["comment", m.common_comment()]],
   ];
 
   // What the keyboard already does, named beside the item the way a desktop
@@ -4216,7 +4217,10 @@
     return chooseFileCommand(id);
   }
 
-  const EDIT_COMMANDS = ["undo", "redo", "cut", "copy", "paste", "select-all", "find", "replace", "bold", "italic"];
+  const EDIT_COMMANDS = [
+    "undo", "redo", "cut", "copy", "paste", "select-all", "find", "replace", "bold", "italic",
+    "link", "comment", "numbered-list", "bulleted-list", "heading-1", "heading-2", "heading-3", "heading-4", "heading-5", "heading-6",
+  ];
   const LAYOUT_COMMANDS = ["linked", "layout-source", "layout-document", "layout-split", "side-left", "side-right"];
   const TEXT_SIZE_COMMANDS = ["text-bigger", "text-smaller", "text-reset"];
 
