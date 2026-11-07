@@ -31,7 +31,7 @@ import { toLf } from "./line-endings.js";
 import { m } from "./paraglide/messages.js";
 import { personSeed } from "./presence-colour.js";
 
-/** @typedef {{ name?: string, color?: string, tab?: string, file?: string }} PresenceState */
+/** @typedef {{ name?: string, color?: string, tab?: string, file?: string, peer?: string, anchor?: Uint8Array, head?: Uint8Array }} PresenceState */
 /** @typedef {{ type: string, [key: string]: unknown }} SessionMessage */
 /** @typedef {{ local: boolean, pending: number, localPending: number, localError: string, joined: boolean }} SessionState */
 /** @typedef {{ hydrated: () => void, writing: (count?: number) => void, persisted: () => void, failed: (error: Error) => void }} PersistenceEvents */
@@ -995,7 +995,7 @@ export function createProjectSession({
         const container = anchor.containerId();
         let file = "";
         for (const id of files.keys()) {
-          if (files.get(id)?.id === container) { file = String(id); break; }
+          if (/** @type {any} */ (files.get(id))?.id === container) { file = String(id); break; }
         }
         const text = file ? files.get(file) : null;
         if (!(text instanceof LoroText)) return null;

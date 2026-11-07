@@ -13,6 +13,7 @@ const MAX_LINES = 40;
 
 /** @typedef {{ from: number, to: number, className: string } | null} FlashValue */
 /** Set a flash, or clear it with null. */
+/** @type {import("@codemirror/state").StateEffectType<{ from: number, to: number, className: string }>} */
 export const flashPresence = StateEffect.define();
 
 function flashDecorations(doc, { from, to, className }) {

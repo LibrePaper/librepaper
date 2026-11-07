@@ -260,6 +260,7 @@
   import { m } from "../lib/paraglide/messages.js";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
+  import { retargetElementAttributes } from "./element-attributes.js";
   import { APPLE, labelOf, menuKeys } from "../lib/commands.js";
   import { SOURCE_MENU, clipboardReadable, rightClickCaret } from "../lib/source-menu.js";
 
@@ -1926,7 +1927,7 @@
 <Menu onSelect={(chosen) => runSourceMenu(chosen.value)} onOpenChange={(event) => { if (event.open) void openSourceMenu(); }}>
   <Menu.ContextTrigger>
     {#snippet element(attributes)}
-      <div {...attributes} class="editorhost" bind:this={host}></div>
+      <div {...retargetElementAttributes(attributes)} class="editorhost" bind:this={host}></div>
     {/snippet}
   </Menu.ContextTrigger>
   <ExplorerMenu>

@@ -25,7 +25,7 @@ export function rightClickSelection(range, pos) {
 export async function clipboardReadable(nav = globalThis.navigator) {
   if (typeof nav?.clipboard?.readText !== "function") return false;
   try {
-    const status = await nav.permissions?.query({ name: "clipboard-read" });
+    const status = await nav.permissions?.query({ name: /** @type {PermissionName} */ ("clipboard-read") });
     return status?.state !== "denied";
   } catch {
     return true;
