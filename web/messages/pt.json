@@ -1898,6 +1898,7 @@
   "nav_account_menu_label_provider": "Menu da conta, sessão iniciada como {shown} com {provider}",
   "nav_signed_in_with": "Sessão iniciada com {provider}",
   "nav_skip_to_content": "Ir para o conteúdo",
+  "navigation_defined_in": "Definido em {path}",
   "new_project_size_b": "{size} B",
   "new_project_size_gb": "{size} GB",
   "new_project_size_kb": "{size} KB",

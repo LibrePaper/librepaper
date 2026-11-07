@@ -1898,6 +1898,7 @@
   "nav_account_menu_label_provider": "Kontomenü, angemeldet als {shown} mit {provider}",
   "nav_signed_in_with": "Angemeldet mit {provider}",
   "nav_skip_to_content": "Zum Inhalt springen",
+  "navigation_defined_in": "Definiert in {path}",
   "new_project_size_b": "{size} B",
   "new_project_size_gb": "{size} GB",
   "new_project_size_kb": "{size} KB",

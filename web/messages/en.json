@@ -1898,6 +1898,7 @@
   "nav_account_menu_label_provider": "Account menu, signed in as {shown} with {provider}",
   "nav_signed_in_with": "Signed in with {provider}",
   "nav_skip_to_content": "Skip to content",
+  "navigation_defined_in": "Defined in {path}",
   "new_project_size_b": "{size} B",
   "new_project_size_gb": "{size} GB",
   "new_project_size_kb": "{size} KB",
