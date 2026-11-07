@@ -733,6 +733,7 @@
   "common_frequency": "頻度",
   "common_get_desktop_app": "デスクトップアプリを入手",
   "common_give_project_name": "プロジェクト名を入力してください。",
+  "common_go_to_cursor": "{name}のカーソルへ移動",
   "common_grammar_and_spelling": "文法とスペルチェック",
   "common_history": "履歴",
   "common_inline_math": "インライン数式",

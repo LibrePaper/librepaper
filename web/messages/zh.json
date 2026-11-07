@@ -733,6 +733,7 @@
   "common_frequency": "频率",
   "common_get_desktop_app": "获取桌面应用",
   "common_give_project_name": "请为项目命名。",
+  "common_go_to_cursor": "前往{name}的光标",
   "common_grammar_and_spelling": "语法和拼写",
   "common_history": "历史记录",
   "common_inline_math": "行内公式",

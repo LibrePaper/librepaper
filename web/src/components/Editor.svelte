@@ -245,6 +245,7 @@
   import { attachEditorZoom } from "../lib/editor-zoom.js";
   import { start as startEditorType, onFont, onLineHeight, size, setSize, DEFAULT_SIZE } from "../lib/editor-type.js";
   import { snippetTemplate } from "../lib/snippet-template.js";
+  import { FLASH_MS, flashPresence, presenceFlash } from "../lib/presence-flash.js";
   import { formatOf as documentFormat } from "../lib/formats.js";
   import { spellcheckExtension } from "../lib/spellcheck/extension.js";
   import { harperExtension } from "../lib/harper/extension.js";
@@ -945,6 +946,35 @@
     return from < to ? { file: showing, from, to } : null;
   }
 
+  let flashTimer = 0;
+  /// Shows a collaborator's place: opens its file when it is not the one shown,
+  /// scrolls the range into view and flashes it in their colour. The caret,
+  /// the selection and the focus stay where they are; only the view moves.
+  /// `colour` is their presence colour, a "#rrggbb" hex, or anything else for
+  /// the theme's fallback.
+  export function revealPeer(id, from, to = from, colour = "") {
+    if (!view || !id) return;
+    show(id);
+    const length = view.state.doc.length;
+    const clamp = (at) => Math.min(Math.max(Number(at) || 0, 0), length);
+    const start = clamp(Math.min(from, to));
+    const end = clamp(Math.max(from, to));
+    const className = typeof colour === "string" && colour.startsWith("#")
+      ? `user-color-${colour.slice(1).toLowerCase()}`
+      : "";
+    view.dispatch({
+      effects: [
+        EditorView.scrollIntoView(start, { y: "center" }),
+        flashPresence.of({ from: start, to: end, className }),
+      ],
+    });
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => {
+      flashTimer = 0;
+      view?.dispatch({ effects: flashPresence.of(null) });
+    }, FLASH_MS);
+  }
+
   /// Puts the caret at an offset and scrolls it into the middle of the view:
   /// what a click in the document does when the two are kept in step. With
   /// `focus: false` the caret and the view move but the keyboard stays where
@@ -1374,6 +1404,8 @@
         EditorView.lineWrapping,
         // Pending changes, drawn in the text they changed.
         pendingChanges,
+        // The flash over a collaborator's place after a click on their avatar.
+        presenceFlash,
         // The bar over a selection, offering the annotating verbs.
         commentBar,
         // A right click outside the selection moves the caret there, before the source menu opens.
