@@ -35,7 +35,19 @@ function join(folder, name) {
 
 // The text with every LaTeX comment removed. A comment starts at a `%` that
 // an even number of backslashes precedes.
+const strippedCache = new Map();
 function stripLatexComments(body) {
+  // Comment stripping runs for each file several times per preview-target
+  // pass, so the last few results are reused.
+  let out = strippedCache.get(body);
+  if (out === undefined) {
+    if (strippedCache.size >= 256) strippedCache.clear();
+    out = stripComments(body);
+    strippedCache.set(body, out);
+  }
+  return out;
+}
+function stripComments(body) {
   return body
     .split("\n")
     .map((line) => {

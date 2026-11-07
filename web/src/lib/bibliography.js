@@ -112,8 +112,21 @@ export function entryLabel(entry) {
 export function entryDetail(entry) { const value = normalized(entry); return value.container || value.type || ""; }
 export function bibliographyCompletion({ entries, format }) {
   return (context) => {
-    const found = citationContext(context.state.doc.toString(), context.pos, typeof format === "function" ? format() : format);
+    const kind = typeof format === "function" ? format() : format;
+    const { doc } = context.state;
+    const line = doc.lineAt(context.pos);
+    let base = 0, text;
+    if (kind === "latex" || kind === "tex") {
+      // A \cite argument may wrap, but never across more than a few lines.
+      base = doc.line(Math.max(1, line.number - 20)).from;
+      text = doc.sliceString(base, context.pos);
+    } else if (line.text.slice(0, context.pos - line.from).includes("@")) {
+      text = doc.toString(); // fenced code needs the whole prefix; only after an `@`
+    } else return null;
+    const found = citationContext(text, context.pos - base, kind);
     if (!found) return null;
+    found.from += base;
+    found.to += base;
     const available = typeof entries === "function" ? entries() : entries;
     const ranked = rankEntries(available, found.query);
     if (!ranked.length) return null;
