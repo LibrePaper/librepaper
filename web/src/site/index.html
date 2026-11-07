@@ -839,8 +839,42 @@
         </div>
       </section>
 
+      <!-- ========================================================= authorship -->
+      <section class="section section-alt" id="authorship">
+        <div class="container">
+          <div class="feature reverse">
+            <div class="feature-copy">
+              <h2>Authorship: Who wrote what?</h2>
+              <p>LibrePaper records who wrote every passage, whether a collaborator or an AI agent. Open the Authors tab in History to see each person's share of a file and the text in their colour.</p>
+              <ul class="details">
+                <li>See each author's share of a file and when they last edited it.</li>
+                <li>Show only the text one author wrote.</li>
+                <li>Text written by an AI agent carries the agent's name.</li>
+              </ul>
+            </div>
+            <figure class="shot-frame">
+              <a class="shot" href="#authorship-video" aria-label="Play a video of two authors and an AI agent writing, then the Authors view showing who wrote what">
+                <img
+                  src="/images/authorship.webp"
+                  alt="LibrePaper's Authors view: Alice wrote 53% of the file, an AI agent named Claude 26% and Bob 21%, with each author's text highlighted in their colour in the source."
+                  width="2560"
+                  height="1640"
+                  loading="lazy"
+                  decoding="async"
+                />
+                <span class="shot-play" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </span>
+              </a>
+            </figure>
+          </div>
+        </div>
+      </section>
+
       <!-- ============================================================ AI -->
-      <section class="section section-alt" id="ai">
+      <section class="section" id="ai">
         <div class="container">
           <div class="feature">
             <div class="feature-copy">
@@ -877,7 +911,7 @@
       </section>
 
       <!-- ============================================================ open -->
-      <section class="section" id="open">
+      <section class="section section-alt" id="open">
         <div class="container">
           <h2 class="section-title">Free and open source</h2>
           <div class="columns">
@@ -906,7 +940,7 @@
       </section>
 
       <!-- ========================================================== desktop -->
-      <section class="section section-alt" id="desktop">
+      <section class="section" id="desktop">
         <div class="container">
           <div class="feature">
             <div class="feature-copy">
@@ -943,7 +977,7 @@
       </section>
 
       <!-- ============================================================ todo -->
-      <section class="section" id="todo">
+      <section class="section section-alt" id="todo">
         <div class="container">
           <div class="feature reverse">
             <div class="feature-copy">
@@ -978,7 +1012,7 @@
       </section>
 
       <!-- ========================================================= features -->
-      <section class="section section-alt" id="features">
+      <section class="section" id="features">
         <div class="container">
           <h2 class="section-title features-title">Features</h2>
           <div class="compare-wrap">
@@ -1187,6 +1221,15 @@
         </svg>
       </a>
       <video style="--ratio: 2560 / 1640" src="/images/collab-chat.webm" poster="/images/collab-chat.webp" width="2560" height="1640" controls muted loop playsinline preload="none"></video>
+    </div>
+    <div class="lightbox" id="authorship-video">
+      <a class="lightbox-dismiss" href="#" aria-label="Close the video"></a>
+      <a class="lightbox-close" href="#" aria-label="Close the video">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+        </svg>
+      </a>
+      <video style="--ratio: 2560 / 1640" src="/images/authorship.webm" poster="/images/authorship.webp" width="2560" height="1640" controls muted loop playsinline preload="none"></video>
     </div>
     <div class="lightbox" id="todo-video">
       <a class="lightbox-dismiss" href="#" aria-label="Close the video"></a>
