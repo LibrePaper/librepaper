@@ -512,12 +512,12 @@
 
   /// Picking a task and confirming it is the one decision. A send that fails
   /// leaves the preparation view as it was so the user can retry.
-  // Enter sends the task with the note typed under it. An empty note does
-  // nothing, as the send key does in every other box.
+  // Enter sends the task with the note typed under it. The note is optional,
+  // so an empty one still sends.
   function extraKeydown(event) {
     if (!isSendKey(event)) return;
     event.preventDefault();
-    if (extra.trim()) void sendTask();
+    void sendTask();
   }
 
   async function sendTask() {
