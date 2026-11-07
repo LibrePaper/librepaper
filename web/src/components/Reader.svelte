@@ -62,7 +62,7 @@
   import { localDataForgotten } from "../lib/signed-out.js";
   import { ACTIVITY_WIDTH, DOCUMENT_MIN, GRIP, PANES, RATIOS, clamp, measure, pixels, px, showing } from "../lib/panes.js";
   import { slotId, tabsFor } from "../lib/panels.js";
-  import { APPLE, availability, captured, commandFor, menuKeys, writing } from "../lib/commands.js";
+  import { APPLE, availability, captured, commandFor, labelOf, menuKeys, noteOf, writing } from "../lib/commands.js";
   // Aliased because this file has its own setSize for the pane sizes.
   import { size as textSize, setSize as setTextSize, DEFAULT_SIZE } from "../lib/editor-type.js";
 
@@ -2927,12 +2927,14 @@
   };
 
   let editAvailability = $state({});
+  // Every item is named by its command in lib/commands.js, the same name the
+  // palette gives it.
   const editGroups = [
-    [["undo", m.common_undo()], ["redo", m.common_redo()]],
-    [["cut", m.common_cut()], ["copy", m.common_copy()], ["paste", m.common_paste()]],
-    [["select-all", m.common_select_all()]],
-    [["find", m.readerb_edit_find()], ["replace", m.readerb_edit_replace()], ["word-count", m.readerb_edit_word_count()]],
-    [["bold", m.common_bold()], ["italic", m.common_italic()]],
+    [["undo", labelOf("undo")], ["redo", labelOf("redo")]],
+    [["cut", labelOf("cut")], ["copy", labelOf("copy")], ["paste", labelOf("paste")]],
+    [["select-all", labelOf("select-all")]],
+    [["find", labelOf("find")], ["replace", labelOf("replace")], ["word-count", labelOf("word-count")]],
+    [["bold", labelOf("bold")], ["italic", labelOf("italic")]],
   ];
 
   // What the keyboard already does, named beside the item the way a desktop
@@ -2943,7 +2945,10 @@
   // In Vim or Emacs mode the editing keys belong to the mode, and a menu
   // naming them would be lying about what the next keystroke does; the
   // workspace's own keys are not the mode's and stay named.
-  const MENU_KEYS = $derived(menuKeys({ modalEditor: keys === "vim" || keys === "emacs", apple: APPLE }));
+  const modalEditor = $derived(keys === "vim" || keys === "emacs");
+  const MENU_KEYS = $derived(menuKeys({ modalEditor, apple: APPLE }));
+  // A greyed item says why in its tooltip, from the same registry note the palette shows.
+  const tipFor = (id) => (can[id] ? undefined : noteOf(id) || undefined);
 
   function chooseEditCommand(command) {
     if (command === "word-count") return openWordCount();
@@ -4359,14 +4364,14 @@
       <span class="menuitem-chevron" aria-hidden="true"><Icon name="chevron-right" size="1rem" /></span>
     </Menu.TriggerItem>
     <ExplorerMenu>
-      {#if mayEdit}<Menu.Item value="download" class="menuitem"><span class="menuitem-label">{m.common_project()}</span></Menu.Item>{/if}
-      {@render exportItem("download-html", "HTML", "html")}
-      {@render exportItem("download-pdf", "PDF", "pdf")}
-      {@render exportItem("download-docx", "DOCX", "docx")}
-      {#if canExportComments && !DEMO}<Menu.Item value="download-comments" class="menuitem"><span class="menuitem-label">{m.common_comments()}</span></Menu.Item>{/if}
+      {#if mayEdit}<Menu.Item value="download" class="menuitem"><span class="menuitem-label">{labelOf("download")}</span></Menu.Item>{/if}
+      {@render exportItem("download-html", labelOf("download-html"), "html")}
+      {@render exportItem("download-pdf", labelOf("download-pdf"), "pdf")}
+      {@render exportItem("download-docx", labelOf("download-docx"), "docx")}
+      {#if canExportComments && !DEMO}<Menu.Item value="download-comments" class="menuitem"><span class="menuitem-label">{labelOf("download-comments")}</span></Menu.Item>{/if}
       {#if mayEdit}
         <Menu.Item value="download-source" class="menuitem" disabled={!toolbarPath}>
-          <span class="menuitem-label">{m.common_source()}</span>
+          <span class="menuitem-label">{labelOf("download-source")}</span>
           {#if !toolbarPath}<span class="export-reason">{m.readerd_download_source_reason()}</span>{/if}
         </Menu.Item>
       {/if}
@@ -4376,25 +4381,25 @@
 
 {#snippet fileItems()}
   {#if mayEdit}
-    <Menu.Item value="new-file" class="menuitem">{m.readerd_new_file()}</Menu.Item>
-    <Menu.Item value="new-folder" class="menuitem">{m.readerd_new_folder()}</Menu.Item>
-    <Menu.Item value="upload" class="menuitem" disabled={DEMO}>{m.readerd_upload_files()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>
+    <Menu.Item value="new-file" class="menuitem">{labelOf("new-file")}</Menu.Item>
+    <Menu.Item value="new-folder" class="menuitem">{labelOf("new-folder")}</Menu.Item>
+    <Menu.Item value="upload" class="menuitem" disabled={DEMO}>{labelOf("upload")}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>
     <hr class="hr my-1" />
   {/if}
   {@render downloadMenu()}
   {#if me?.id || DEMO}<Menu.Item value="save-template" class="menuitem" disabled={DEMO}>{m.readerd_save_as_template_item()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
   <hr class="hr my-1" />
   {#if tabs.some((tab) => tab.id === "git")}<Menu.Item value="git" class="menuitem" disabled={DEMO}>{m.readerd_git_item()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
-  {#if DEMO || canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem" disabled={DEMO}>{m.readerd_share_item()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
+  {#if DEMO || canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem" disabled={DEMO}>{labelOf("share")}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
   <!-- Only where the panel behind it is one this reader is offered: a menu
        that opens a column the rail does not have is the second list of who
        may see what that lib/panels.js exists to prevent. -->
-  {#if tabs.some((tab) => tab.id === "history")}<Menu.Item value="history" class="menuitem" disabled={DEMO}>{m.common_history()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
+  {#if tabs.some((tab) => tab.id === "history")}<Menu.Item value="history" class="menuitem" disabled={DEMO}>{labelOf("history")}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
   <hr class="hr my-1" />
   {#if mayEdit && sourceFormat === "latex" && compilesHere}
-    <Menu.Item value="compile" class="menuitem"><span class="menuitem-label">{m.common_compile_now()}</span>{#if MENU_KEYS.compile}<span class="menuitem-keys">{MENU_KEYS.compile}</span>{/if}</Menu.Item>
+    <Menu.Item value="compile" class="menuitem"><span class="menuitem-label">{labelOf("compile")}</span>{#if MENU_KEYS.compile}<span class="menuitem-keys">{MENU_KEYS.compile}</span>{/if}</Menu.Item>
   {/if}
-  <Menu.Item value="settings" class="menuitem"><span class="menuitem-label">{m.readerd_settings_item()}</span>{#if MENU_KEYS.settings}<span class="menuitem-keys">{MENU_KEYS.settings}</span>{/if}</Menu.Item>
+  <Menu.Item value="settings" class="menuitem"><span class="menuitem-label">{labelOf("settings")}</span>{#if MENU_KEYS.settings}<span class="menuitem-keys">{MENU_KEYS.settings}</span>{/if}</Menu.Item>
   {#if hasDesktop}
     <hr class="hr my-1" />
     <Menu.Item value="quit" class="menuitem">{m.readerd_quit()}</Menu.Item>
@@ -4402,14 +4407,14 @@
 {/snippet}
 
 {#snippet layoutItems()}
-  {#each [["source", m.common_editor()], ["document", m.common_preview()], ["split", m.reader_split()]] as [value, label]}
-    <Menu.Item value="layout-{value}" class="menuitem" disabled={compact && value === "split"}>
+  {#each [["source", labelOf("layout-source")], ["document", labelOf("layout-document")], ["split", labelOf("layout-split")]] as [value, label]}
+    <Menu.Item value="layout-{value}" class="menuitem" disabled={compact && value === "split"} title={compact && value === "split" ? noteOf("layout-split") : undefined}>
       <span class="menuitem-check">{(compact ? activeMobileView === value : layout === value) ? "✓" : ""}</span>{label}
     </Menu.Item>
   {/each}
   <hr class="hr my-1" />
-  {#each [["left", m.common_editor_on_left()], ["right", m.common_editor_on_right()]] as [side, label]}
-    <Menu.Item value="side-{side}" class="menuitem" disabled={compact}>
+  {#each [["left", labelOf("side-left")], ["right", labelOf("side-right")]] as [side, label]}
+    <Menu.Item value="side-{side}" class="menuitem" disabled={compact} title={compact ? noteOf("side-left") : undefined}>
       <span class="menuitem-check">{sourceSide === side ? "✓" : ""}</span>{label}
     </Menu.Item>
   {/each}
@@ -4421,20 +4426,20 @@
   {/each}
   <hr class="hr my-1" />
   <Menu.Item value="linked" class="menuitem">
-    <span class="menuitem-check">{linked ? "✓" : ""}</span><span class="menuitem-label">{m.readerd_keep_in_step()}</span>{#if MENU_KEYS.linked}<span class="menuitem-keys">{MENU_KEYS.linked}</span>{/if}
+    <span class="menuitem-check">{linked ? "✓" : ""}</span><span class="menuitem-label">{labelOf("linked")}</span>{#if MENU_KEYS.linked}<span class="menuitem-keys">{MENU_KEYS.linked}</span>{/if}
   </Menu.Item>
   <Menu.Item value="visual-markup" class="menuitem">
-    <span class="menuitem-check">{visual ? "✓" : ""}</span><span class="menuitem-label">{m.readerd_visual_markup()}</span>{#if MENU_KEYS["visual-markup"]}<span class="menuitem-keys">{MENU_KEYS["visual-markup"]}</span>{/if}
+    <span class="menuitem-check">{visual ? "✓" : ""}</span><span class="menuitem-label">{labelOf("visual-markup")}</span>{#if MENU_KEYS["visual-markup"]}<span class="menuitem-keys">{MENU_KEYS["visual-markup"]}</span>{/if}
   </Menu.Item>
   <hr class="hr my-1" />
   <Menu.Item value="text-bigger" class="menuitem">
-    <span class="menuitem-check"></span><span class="menuitem-label">{m.readerd_bigger_text()}</span>{#if MENU_KEYS["text-bigger"]}<span class="menuitem-keys">{MENU_KEYS["text-bigger"]}</span>{/if}
+    <span class="menuitem-check"></span><span class="menuitem-label">{labelOf("text-bigger")}</span>{#if MENU_KEYS["text-bigger"]}<span class="menuitem-keys">{MENU_KEYS["text-bigger"]}</span>{/if}
   </Menu.Item>
   <Menu.Item value="text-smaller" class="menuitem">
-    <span class="menuitem-check"></span><span class="menuitem-label">{m.readerd_smaller_text()}</span>{#if MENU_KEYS["text-smaller"]}<span class="menuitem-keys">{MENU_KEYS["text-smaller"]}</span>{/if}
+    <span class="menuitem-check"></span><span class="menuitem-label">{labelOf("text-smaller")}</span>{#if MENU_KEYS["text-smaller"]}<span class="menuitem-keys">{MENU_KEYS["text-smaller"]}</span>{/if}
   </Menu.Item>
   <Menu.Item value="text-reset" class="menuitem">
-    <span class="menuitem-check"></span><span class="menuitem-label">{m.readerd_reset_text_size()}</span>{#if MENU_KEYS["text-reset"]}<span class="menuitem-keys">{MENU_KEYS["text-reset"]}</span>{/if}
+    <span class="menuitem-check"></span><span class="menuitem-label">{labelOf("text-reset")}</span>{#if MENU_KEYS["text-reset"]}<span class="menuitem-keys">{MENU_KEYS["text-reset"]}</span>{/if}
   </Menu.Item>
 {/snippet}
 
@@ -4450,8 +4455,8 @@
 {/snippet}
 
 {#snippet viewItems()}
-  <Menu.Item value="lock-preview" class="menuitem" disabled={!can["lock-preview"]}>{m.common_lock_preview_on_file()}</Menu.Item>
-  {#if can["unlock-preview"]}<Menu.Item value="unlock-preview" class="menuitem">{m.common_unlock_the_preview()}</Menu.Item>{/if}
+  <Menu.Item value="lock-preview" class="menuitem" disabled={!can["lock-preview"]} title={tipFor("lock-preview")}>{labelOf("lock-preview")}</Menu.Item>
+  {#if can["unlock-preview"]}<Menu.Item value="unlock-preview" class="menuitem">{labelOf("unlock-preview")}</Menu.Item>{/if}
   <hr class="hr my-1" />
   {@render previewItems()}
   <hr class="hr my-1" />
@@ -4551,7 +4556,7 @@
         {#each editGroups as group, index}
           {#if index}<hr class="hr my-1" />{/if}
           {#each group as [command, label]}
-            <Menu.Item value={command} class="menuitem" disabled={!can[command]}>
+            <Menu.Item value={command} class="menuitem" disabled={!can[command]} title={tipFor(command)}>
               <span class="menuitem-label">{label}</span>{#if MENU_KEYS[command]}<span class="menuitem-keys">{MENU_KEYS[command]}</span>{/if}
             </Menu.Item>
           {/each}
@@ -4600,7 +4605,7 @@
 {/if}
 
 {#if formatBarVisible}
-  <FormatToolbar active={formatActive} hidden={barHidden && !compact} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} />
+  <FormatToolbar active={formatActive} hidden={barHidden && !compact} {modalEditor} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} />
 {/if}
 
 {#if compact && modeSwitchShown}

@@ -1,6 +1,6 @@
 <script>
-  import { Tooltip } from "@skeletonlabs/skeleton-svelte";
   import Icon from "./Icon.svelte";
+  import ShortcutTip from "./ShortcutTip.svelte";
   import { retargetElementAttributes } from "./element-attributes.js";
 
   // One button, one shape. Every icon control in the application is this, so
@@ -19,6 +19,10 @@
     icon,
     label,
     title = label,
+    // The binding this control answers to, from lib/commands.js, printed as a
+    // keycap in its tooltip. Null where there is none, or where the key belongs
+    // to a modal editor mode.
+    shortcut = null,
     href = null,
     // A link to another site opens in a new tab, which the desktop app sends to the system browser.
     external = false,
@@ -50,40 +54,33 @@
   const classes = $derived(`btn-icon icon-control ${visibleLabel ? "has-compact-label" : ""} ${size ? "" : "icon-standard"} ${tone === "plain" || (tone === null && pressed !== true) ? "icon-plain" : ""} ${size ?? ""} ${preset} ${colour ?? ""}`);
 </script>
 
-<Tooltip openDelay={150} closeDelay={100} positioning={{ placement: "bottom" }}>
-  <!-- The trigger is the control itself rather than a wrapper around it: an
-       element in between would break the row the controls sit in. -->
-  <Tooltip.Trigger>
-    {#snippet element(attributes)}
-      {#if href}
-        <a {...retargetElementAttributes(attributes)} {href} target={external ? "_blank" : undefined} rel={external ? "noreferrer" : undefined} class={classes} aria-label={label}>
-          <Icon name={icon} {filled} />
-          {#if visibleLabel}<span class="compact-label" aria-hidden="true">{visibleLabel}</span>{/if}
-        </a>
-      {:else}
-        <button
-          {...attributes}
-          type={type === "submit" ? "submit" : "button"}
-          class={classes}
-          aria-label={label}
-          aria-controls={controls ?? undefined}
-          aria-expanded={expanded === null ? undefined : expanded}
-          aria-pressed={pressed === null ? undefined : pressed}
-          {disabled}
-          {onclick}
-        >
-          <Icon name={icon} {filled} />
-          {#if visibleLabel}<span class="compact-label" aria-hidden="true">{visibleLabel}</span>{/if}
-        </button>
-      {/if}
-    {/snippet}
-  </Tooltip.Trigger>
-  <Tooltip.Positioner class="z-50">
-    <Tooltip.Content class="card lp-control-neutral px-2 py-1 text-xs shadow-lg">
-      {title}
-    </Tooltip.Content>
-  </Tooltip.Positioner>
-</Tooltip>
+<!-- The trigger is the control itself rather than a wrapper around it: an
+     element in between would break the row the controls sit in. -->
+<ShortcutTip text={title} {shortcut}>
+  {#snippet children(attributes)}
+    {#if href}
+      <a {...retargetElementAttributes(attributes)} {href} target={external ? "_blank" : undefined} rel={external ? "noreferrer" : undefined} class={classes} aria-label={label}>
+        <Icon name={icon} {filled} />
+        {#if visibleLabel}<span class="compact-label" aria-hidden="true">{visibleLabel}</span>{/if}
+      </a>
+    {:else}
+      <button
+        {...attributes}
+        type={type === "submit" ? "submit" : "button"}
+        class={classes}
+        aria-label={label}
+        aria-controls={controls ?? undefined}
+        aria-expanded={expanded === null ? undefined : expanded}
+        aria-pressed={pressed === null ? undefined : pressed}
+        {disabled}
+        {onclick}
+      >
+        <Icon name={icon} {filled} />
+        {#if visibleLabel}<span class="compact-label" aria-hidden="true">{visibleLabel}</span>{/if}
+      </button>
+    {/if}
+  {/snippet}
+</ShortcutTip>
 
 <style>
   .compact-label { display: block; max-width: 100%; overflow: hidden; color: inherit; font-size: 10px; font-weight: 500; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }

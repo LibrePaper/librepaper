@@ -8,6 +8,7 @@
   import Modal from "../Modal.svelte";
   import ExplorerMenu from "../ExplorerMenu.svelte";
   import { checkDirectoryPath, checkPath, collisionKey } from "../../lib/paths.js";
+  import { labelOf } from "../../lib/commands.js";
   import { basename, parentPath, inside, nodeKey, fileTree, folderPaths, topEntries, checkPlacement, copyPath, droppedFiles } from "../../lib/file-manager.js";
   import { expandArchives } from "../../lib/project-upload.js";
   import { unzip } from "../../lib/zip.js";
@@ -363,9 +364,9 @@
   <ExplorerMenu>
     {#if mayEdit}
       {#if node.kind === "folder"}
-        <Menu.Item value="file" class="menuitem">{m.common_new_file()}</Menu.Item>
-        <Menu.Item value="folder" class="menuitem">{m.common_new_folder()}</Menu.Item>
-        <Menu.Item value="upload" class="menuitem" disabled={busy || demo}>{demo ? m.files_upload_demo() : m.common_upload_files()}</Menu.Item>
+        <Menu.Item value="file" class="menuitem">{labelOf("new-file")}</Menu.Item>
+        <Menu.Item value="folder" class="menuitem">{labelOf("new-folder")}</Menu.Item>
+        <Menu.Item value="upload" class="menuitem" disabled={busy || demo}>{demo ? m.files_upload_demo() : labelOf("upload")}</Menu.Item>
       {/if}
       <Menu.Item value="rename" class="menuitem">{m.common_rename()} <span class="ml-auto text-xs">F2</span></Menu.Item>
       <Menu.Item value="move" class="menuitem">{m.files_move_to()}</Menu.Item>
