@@ -1845,8 +1845,13 @@
     const path = toolbarPath;
     return renderers.formatOf(path) || (path && path === previewPath ? sourceFormat : "");
   });
-  const outlineHeadings = $derived.by(() => panel === "outline" && mayEdit
-    ? extractOutline(outlineSource, outlineFormat) : []);
+  // Typst headings come from the typst module once it has answered for exactly
+  // this text; until then, and for the other formats, from the scanner.
+  const outlineHeadings = $derived.by(() => {
+    if (panel !== "outline" || !mayEdit) return [];
+    const parsed = outlineFormat === "typst" && editing ? editor?.moduleOutline?.(openFile, outlineSource) : null;
+    return parsed ?? extractOutline(outlineSource, outlineFormat);
+  });
   // Word counts for each heading in the Outline panel.
   const outlineSections = $derived.by(() => panel === "outline" && mayEdit
     ? sectionWords(outlineSource, outlineFormat, outlineHeadings) : []);
@@ -4988,7 +4993,7 @@
       {:else if Editor && sourceBound}
         <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
-                  onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
+                  onbibliography={bibliographyAnalyzed} onsymbols={() => (outlineRevision += 1)} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   oncomment={(id) => focusAnnotation(comments.find((item) => String(item.id) === String(id))?.id, { focus: false })}
                   onchangeselect={selectChangeFromSource}
                   onformatstate={(state) => { formatActive = state; refreshEditAvailability(); }}
