@@ -87,13 +87,15 @@ test("summarize groups two peers of one account into one row, unknown last", () 
   assert.ok(Math.abs(ada.share - 0.7) < 1e-9);
   // The latest of Ada's two peers' changes, 1500 seconds, as a Date.
   assert.equal(ada.last.getTime(), 1500 * 1000);
-  // Each row wears the colour of its seed, which is the colour the person's
-  // live cursor takes: the account for Ada, the name for Bob.
+  // Each row is coloured from the seed the person's live cursor uses: the
+  // account for Ada, the name for Bob. A later row steps past a colour an
+  // earlier row already wears.
   assert.equal(ada.colour, presenceColour("account:acc-1"));
 
   assert.equal(bob.key, "name:Bob");
   assert.equal(bob.chars, 2);
-  assert.equal(bob.colour, presenceColour("name:Bob"));
+  assert.equal(bob.colour, presenceColour("name:Bob", [ada.colour]));
+  assert.notEqual(bob.colour, ada.colour);
 
   assert.equal(unknown.key, "unknown");
   assert.equal(unknown.unknown, true);
@@ -134,7 +136,8 @@ test("an agent sharing its owner's account gets its own row, in either order", (
     assert.equal(second.agent, true);
     assert.equal(second.chars, 2);
     assert.equal(first.colour, presenceColour("account:acc-1"));
-    assert.equal(second.colour, presenceColour("agent:acc-1:Build bot"));
+    assert.equal(second.colour, presenceColour("agent:acc-1:Build bot", [first.colour]));
+    assert.notEqual(first.colour, second.colour);
   }
 });
 

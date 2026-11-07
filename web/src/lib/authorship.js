@@ -142,13 +142,16 @@ export function summarize(runs, authors) {
     if (a.unknown !== b.unknown) return a.unknown ? 1 : -1;
     return b.chars - a.chars;
   });
-  // A row's colour is its seed's colour, the same one the person's live
-  // cursor takes when nobody present shares it. It is not walked past the
-  // other rows: those people are not necessarily in the file now, and a
-  // person's colour here should not move because somebody else edited.
+  // A row's colour is drawn from the same seed as the person's live cursor,
+  // and moves on to a free hue only when an earlier row already wears it, as
+  // the cursor does when somebody present wears it. Six hues and a hash alone
+  // would put two of three authors together too often for the tab to tell
+  // them apart.
+  const taken = [];
   for (const row of rows) {
     if (row.unknown) continue;
-    row.colour = presenceColour(row.key);
+    row.colour = presenceColour(row.key, taken);
+    taken.push(row.colour);
   }
 
   let since = null;
