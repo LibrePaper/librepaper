@@ -38,10 +38,11 @@ function join(folder, name) {
 const strippedCache = new Map();
 function stripLatexComments(body) {
   // Comment stripping runs for each file several times per preview-target
-  // pass, so the last few results are reused.
+  // pass, so the last few results are reused. Kept small: every keystroke
+  // makes a new body, and a body can be megabytes.
   let out = strippedCache.get(body);
   if (out === undefined) {
-    if (strippedCache.size >= 256) strippedCache.clear();
+    if (strippedCache.size >= 8) strippedCache.clear();
     out = stripComments(body);
     strippedCache.set(body, out);
   }

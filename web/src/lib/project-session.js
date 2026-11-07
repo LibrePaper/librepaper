@@ -810,7 +810,10 @@ export function createProjectSession({
     /** @returns {ProjectTree} */
     tree() {
       const version = doc.oplogVersion();
-      if (!treeCache || treeCache.rules !== projectionRules || treeCache.version.compare(version) !== 0) {
+      // Uncommitted operations are in the text but not yet in the version, so
+      // a cached build could be stale until the commit: build afresh then.
+      const pending = doc.getPendingTxnLength() > 0;
+      if (pending || !treeCache || treeCache.rules !== projectionRules || treeCache.version.compare(version) !== 0) {
         const build = () => {
           const projection = projectDirectory(doc, projectionRules);
           const texts = Object.create(null);
