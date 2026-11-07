@@ -167,6 +167,8 @@
   }
   function returnFocus() {
     if (usable(opener)) return opener;
+    // On a touch device focusing the editor raises the virtual keyboard.
+    if (matchMedia("(pointer: coarse)").matches) return undefined;
     const editor = document.querySelector(".cm-content");
     return editor && editor.getClientRects().length > 0 ? editor : undefined;
   }

@@ -4235,11 +4235,15 @@
     if (template) mathPalette?.openTemplate?.(template);
   }
 
-  // A palette that inserts closes; the dialog returns focus to whatever opened
-  // it, or to the editor when that has gone.
+  // A palette that has just inserted closes and hands the keyboard to the
+  // editor, after the dialog has returned focus to its opener, so typing goes
+  // on where the insertion landed. Escape leaves focus with the opener. On a
+  // touch device the editor is not refocused, since that raises the virtual
+  // keyboard.
   function closePalette() {
     symbolsOpen = false;
     mathOpen = false;
+    if (!matchMedia("(pointer: coarse)").matches) requestAnimationFrame(() => editor?.focus?.());
   }
 
   // An Escape the palette keeps, to clear its search or leave a form, is
