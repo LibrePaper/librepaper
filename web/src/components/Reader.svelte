@@ -2517,10 +2517,12 @@
     const text = editor.text();
     if (typeof text !== "string") return;
     let at = null;
-    if (pdfPoint) {
-      if (sourceFormat !== "latex" || !activeSynctex) return;
-      const precise = activeSynctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y));
-      if (!precise || session.idOf(precise.path) !== openFile) return;
+    // SyncTeX is only for LaTeX. Any other format, or a SyncTeX point that does
+    // not resolve to the open file, falls back to the text the click carried.
+    const precise = pdfPoint && sourceFormat === "latex" && activeSynctex
+      ? activeSynctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y))
+      : null;
+    if (precise && session.idOf(precise.path) === openFile) {
       // SyncTeX gives a line and no column, so the start of that line is the place.
       at = synctexOffsetOfLine(text, precise.line);
     } else {
@@ -2701,15 +2703,14 @@
   // until dismissed; an owner, or a role not yet known, is shown nothing.
   const shareIntroWasSeen = DEMO || shareIntroSeen(SLUG);
   let shareIntroDismissed = $state(false);
-  // Measured as a fraction of a pixel: a height rounded down leaves the
-  // workspace a pixel too tall, and the page scrolls.
-  /** @type {ResizeObserverSize[] | undefined} */
-  let shareIntroBox = $state();
-  const shareIntroHeight = $derived(shareIntroBox?.[0]?.blockSize ?? 0);
+  let shareIntroHeight = $state(0);
   const shareIntro = $derived(shareIntroWasSeen || shareIntroDismissed ? null : shareIntroKind(doc.role));
   // Taken off the workspace only while the line is shown, as the height is
   // not reset when the banner is removed.
-  const shareIntroOffset = $derived(shareIntro ? shareIntroHeight : 0);
+  // clientHeight is a whole number, rounded down from the banner's true height;
+  // one more pixel keeps the workspace from ending a fraction too tall, which
+  // would let the page scroll.
+  const shareIntroOffset = $derived(shareIntro ? shareIntroHeight + 1 : 0);
   $effect(() => {
     if (shareIntro) markShareIntroSeen(SLUG);
   });
@@ -4769,7 +4770,7 @@
 {/if}
 
 {#if shareIntro}
-  <div class="share-intro" role="status" bind:borderBoxSize={shareIntroBox}>
+  <div class="share-intro" role="status" bind:clientHeight={shareIntroHeight}>
     <span class="share-intro-text">{shareIntro === "edit" ? m.readerd_share_intro_edit() : shareIntro === "comment" ? m.readerd_share_intro_comment() : m.readerd_share_intro_view_ask()}</span>
     <button type="button" class="btn btn-sm lp-control-neutral" onclick={() => (shareIntroDismissed = true)}>{m.toasts_dismiss()}</button>
   </div>
@@ -5373,10 +5374,10 @@
   @media (max-width: 600px) {
     /* Nobody else here yet: an empty group would still take a gap. */
     .presence:empty { display: none; }
+  }
   .tracking-pill { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * 1.5); min-height: 1.75rem; padding: 0 calc(var(--spacing) * 2.5); border: 1px solid var(--color-divider); border-radius: 999px; background: transparent; color: var(--color-text-secondary); font-size: var(--text-xs); white-space: nowrap; cursor: pointer; }
   .tracking-pill:hover { background: var(--color-row-hover); color: var(--color-text); }
   .tracking-pill:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
-  }
   .presence { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * .5); color: var(--color-text-secondary); font-size: var(--text-xs); }
   .presence-offline { display: inline-flex; align-items: center; gap: calc(var(--spacing) * .75); color: var(--color-text-secondary); font-size: var(--text-xs); }
   .presence-offline-dot { width: .5rem; height: .5rem; flex: 0 0 .5rem; border-radius: 50%; background: var(--color-error-solid); }

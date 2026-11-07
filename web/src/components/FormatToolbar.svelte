@@ -28,8 +28,22 @@
   let focused = $state(FORMAT_TOOLS[0].id);
   let bar = $state(null);
 
+  // A tool whose command is unavailable is drawn disabled, and a disabled button
+  // cannot take the focus, so it is neither an arrow-key stop nor the Tab stop.
+  function isDisabled(tool) {
+    return Boolean(tool.command && available && !available[tool.command]);
+  }
+
+  // The Tab stop is the focused tool while it is enabled; otherwise it falls
+  // back to the first enabled tool, so the toolbar stays reachable with Tab.
+  const tabStop = $derived.by(() => {
+    const enabled = FORMAT_TOOLS.filter((tool) => !isDisabled(tool));
+    if (enabled.some((tool) => tool.id === focused)) return focused;
+    return enabled[0]?.id ?? null;
+  });
+
   function onkeydown(event) {
-    const buttons = [...bar.querySelectorAll("button")];
+    const buttons = [...bar.querySelectorAll("button:not(:disabled)")];
     const here = buttons.indexOf(document.activeElement);
     if (here === -1) return;
     const step = { ArrowRight: here + 1, ArrowLeft: here - 1, Home: 0, End: buttons.length - 1 }[event.key];
@@ -56,8 +70,8 @@
               data-tool={tool.id}
               aria-label={tool.label}
               aria-pressed={on}
-              tabindex={focused === tool.id ? 0 : -1}
-              disabled={tool.command && available ? !available[tool.command] : false}
+              tabindex={tabStop === tool.id ? 0 : -1}
+              disabled={isDisabled(tool)}
               onfocus={() => (focused = tool.id)}
               onmousedown={(event) => event.preventDefault()}
               onclick={() => (tool.command ? oncommand(tool.command) : tool.insert ? oninsert(tool.insert) : onformat(tool.id))}
