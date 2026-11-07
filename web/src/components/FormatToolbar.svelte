@@ -110,19 +110,14 @@
     padding-inline: calc(var(--spacing) * 1.5);
     border: 1px solid transparent;
     border-radius: var(--radius-base);
-    background: none;
     color: inherit;
     font-size: var(--text-sm);
     line-height: 1;
     cursor: pointer;
   }
+  .format-tool:not([aria-pressed="true"]) { background: none; }
   .format-tool:hover {
     background: var(--color-tonal-hover);
-  }
-  .format-tool[aria-pressed="true"] {
-    border-color: var(--color-brand);
-    background: var(--color-row-selected);
-    color: var(--color-brand);
   }
   .format-tool:focus-visible {
     outline: 2px solid var(--color-brand);

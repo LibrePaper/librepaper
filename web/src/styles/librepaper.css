@@ -137,8 +137,6 @@ main.workspace .rail-item:last-child { margin-top: calc(var(--spacing) * 3); }
 }
 .explorer-row { padding-left: calc(--spacing(2) + (var(--depth, 1) - 1) * --spacing(4)); }
 .explorer-row:hover, .explorer-open { background: var(--color-row-hover); }
-.explorer-row[data-selected] { background: var(--color-row-selected); box-shadow: inset 2px 0 var(--color-brand); }
-.explorer [data-part="branch"][data-selected] > [data-part="context-trigger"] .explorer-row { background: var(--color-row-selected); box-shadow: inset 2px 0 var(--color-brand); }
 .explorer-row:focus-visible, .explorer [data-part="branch"]:focus-visible > [data-part="context-trigger"] .explorer-row {
   outline: 2px solid var(--color-focus);
   outline-offset: -2px;
@@ -467,18 +465,41 @@ input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [ty
 
 /* ---------------------------------------------------------------- timeline */
 
-/* The history, in the column the comments otherwise have. Its list of days
-   lives in its own file. What is left here is the one thing every selectable
-   moment in it shares: which one is being looked at. */
-/* The moment being looked at. A tinted ground and nothing else: the row was
-   also carrying a left stripe, which is a second way of saying the one thing
-   the background already says, and in a list of revisions two devices for
-   "this one" is one too many. */
-.timeline-here,
-.timeline-here:hover {
+/* ------------------------------------------------ selected and pressed */
+
+/* The one look for "this is the chosen one" in a list, a tree, a table or a
+   set of cards: the selected-row ground and the text colour, and nothing else.
+   No stripe and no border, so the same selection reads the same in the file
+   tree, the changes, the comments, the outline, the history and the projects
+   table. Mark the state with ARIA where the element has a role for it
+   (aria-selected, aria-current), with the tree's data-selected, or with
+   `.lp-selected` where it has none. Focus is a separate ring, below, so a
+   selected row that also has focus shows both. Tabs keep their own underline
+   (see `.panel-tabs`). */
+.lp-selected,
+.explorer-row[data-selected],
+.explorer [data-part="branch"][data-selected] > [data-part="context-trigger"] .explorer-row,
+[aria-selected="true"]:not([role="tab"], [role="treeitem"]),
+[aria-current="true"],
+[aria-current="location"] {
   background: var(--color-row-selected);
-  border-radius: 4px;
+  color: var(--color-text);
 }
+:is(.lp-selected, .explorer-row[data-selected], [aria-selected="true"]:not([role="tab"], [role="treeitem"]), [aria-current="true"], [aria-current="location"]):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+}
+
+/* The one look for a toggle that is on (`aria-pressed="true"`): the same
+   selected ground, so a pressed control reads as chosen. Swatches are the
+   exception: their fill is the colour they stand for. A class from a
+   component can still set its own fill, which is deliberate. */
+button[aria-pressed="true"]:not(.tag-swatch) {
+  background: var(--color-row-selected);
+  color: var(--color-text);
+}
+button[aria-pressed="true"]:not(.tag-swatch):hover:not(:disabled) { background: var(--color-tonal-hover); }
+button[aria-pressed="true"]:not(.tag-swatch):focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 
 /* Whatever is left when the document is not showing takes the room it would
    have had: the source if it is there, the comments otherwise. */
@@ -1381,10 +1402,13 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
    forced colours it said nothing at all. A border is the one thing that
    survives, so that is what these become. */
 @media (forced-colors: active) {
+  .lp-selected,
   .explorer-row[data-selected],
-  .timeline-here,
+  [aria-selected="true"]:not([role="tab"], [role="treeitem"]),
+  [aria-current="true"],
+  [aria-current="location"],
   .panel-tabs > [role="tab"][aria-selected="true"],
-  .icon-control[aria-pressed="true"] {
+  button[aria-pressed="true"] {
     outline: 2px solid;
     outline-offset: -2px;
   }

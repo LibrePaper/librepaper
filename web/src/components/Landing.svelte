@@ -1416,7 +1416,7 @@
         {columns}
         rows={shown}
         rowKey={(doc) => doc.slug}
-        rowClass={(doc) => (selected.has(doc.slug) ? "picked" : "")}
+        rowSelected={(doc) => selected.has(doc.slug)}
         className="projects-table"
         label={placeName}
         {sortBy}
@@ -1808,7 +1808,6 @@
   :global(.projects-table th) { border: 0; font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--color-text-secondary); font-weight: 600; }
   :global(.projects-table td) { border: 0; border-top: 1px solid var(--color-pane-edge); vertical-align: middle; }
   :global(.projects-table tbody tr:hover) { background: var(--color-subtle); }
-  :global(.projects-table tbody tr.picked) { background: var(--color-row-selected); }
 
   /* The one column that has to say more than its width allows. Every other
      width is in the column list at the head of this file. */

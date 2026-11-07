@@ -495,7 +495,7 @@
               type="button"
               class="hx-single"
               data-nav
-              class:timeline-here={!viewing}
+              class:lp-selected={!viewing}
               aria-current={!viewing ? "true" : undefined}
               aria-label={[m.history_latest_version(), currentTag].filter(Boolean).join(", ")}
               onclick={() => onview?.("")}
@@ -586,7 +586,7 @@
                 <button
                   type="button"
                   class="hx-main hx-author"
-                  class:timeline-here={pressed}
+                  class:lp-selected={pressed}
                   aria-pressed={pressed}
                   title={named}
                   onclick={() => onisolate?.(pressed ? null : row.key)}
@@ -714,7 +714,7 @@
           type="button"
           class="hx-single"
           data-nav
-          class:timeline-here={here}
+          class:lp-selected={here}
           aria-current={here ? "true" : undefined}
           title={describe(what, detail, first.sha)}
           aria-label={describe(what, detail, first.sha)}
@@ -776,7 +776,7 @@
         <button
           type="button"
           class="hx-version-main"
-          class:timeline-here={here}
+          class:lp-selected={here}
           data-nav
           aria-current={here ? "true" : undefined}
           title={m.history_row_tip({ what: told(point), detail: stamp(point.at) || shortSha(point.sha) })}
@@ -821,7 +821,7 @@
           type="button"
           class="hx-main"
           data-nav
-          class:timeline-here={viewing === point.sha}
+          class:lp-selected={viewing === point.sha}
           aria-current={viewing === point.sha ? "true" : undefined}
           title={m.history_row_tip({ what: point.label, detail: savedWhen(point.at) })}
           aria-label={tipWith(point.label, savedWhen(point.at), end)}
@@ -993,7 +993,7 @@
     border-radius: 4px;
     text-align: left;
   }
-  .hx-main:hover:not(.timeline-here) { background: var(--color-row-hover); }
+  .hx-main:hover:not(.lp-selected) { background: var(--color-row-hover); }
   .hx-text { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; line-height: 1.3; }
   .hx-line1 {
     min-width: 0;
@@ -1038,16 +1038,15 @@
     font-weight: 600;
   }
   .hx-session:hover,
-  .hx-single:hover:not(.timeline-here),
-  .hx-version-main:hover:not(.timeline-here) { background: var(--color-row-hover); }
-  /* The selected row: a quiet background, an accent on its edge and a
-     heavier time. The global class is overridden here. */
-  .hx-single.timeline-here,
-  .hx-version-main.timeline-here { border-radius: 5px; box-shadow: inset 2px 0 var(--color-brand); }
-  .timeline-here .hx-when { font-weight: 600; }
-  /* A closed session holding the version being read: the selected row's edge
-     accent, without its background, and a heavier label. */
-  .hx-holds { box-shadow: inset 2px 0 var(--color-brand); }
+  .hx-single:hover:not(.lp-selected),
+  .hx-version-main:hover:not(.lp-selected) { background: var(--color-row-hover); }
+  /* The selected row takes the shared selected ground (librepaper.css). Its
+     time is heavier. */
+  .hx-single.lp-selected,
+  .hx-version-main.lp-selected { border-radius: 5px; }
+  .lp-selected .hx-when { font-weight: 600; }
+  /* A closed session holding the version being read: a heavier label, with no
+     ground of its own. */
   .hx-holds .hx-ev1 { font-weight: 600; }
   .hx-ev1, .hx-ev2 { display: flex; align-items: center; gap: 4px; }
   .hx-ev1 { font-size: 0.8125rem; }

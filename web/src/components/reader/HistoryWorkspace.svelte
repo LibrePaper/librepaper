@@ -248,10 +248,10 @@
   .history-endpoint {
     display: flex; align-items: center; gap: 0.5rem; min-width: 0; min-height: 2.25rem; padding: 0 0.625rem;
     font-size: var(--panel-font-size); text-align: left; cursor: pointer;
-    color: inherit; background: var(--color-raised); border: 1px solid var(--color-divider); border-radius: 6px;
+    color: inherit; border: 1px solid var(--color-divider); border-radius: 6px;
   }
   .history-endpoint:hover { border-color: var(--color-brand); }
-  .history-endpoint[aria-pressed="true"] { border-color: var(--color-brand); box-shadow: 0 0 0 1px var(--color-brand); }
+  .history-endpoint:not([aria-pressed="true"]) { background: var(--color-raised); }
   .history-endpoint:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
   .history-endpoint-side { font-size: var(--panel-meta-size); flex: none; }
   .history-endpoint-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
