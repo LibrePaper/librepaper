@@ -1892,6 +1892,7 @@
   "nav_account_menu_label_provider": "Menu du compte, connecté en tant que {shown} avec {provider}",
   "nav_signed_in_with": "Connecté avec {provider}",
   "nav_skip_to_content": "Aller au contenu",
+  "navigation_defined_in": "Défini dans {path}",
   "new_project_size_b": "{size} o",
   "new_project_size_gb": "{size} Go",
   "new_project_size_kb": "{size} Ko",

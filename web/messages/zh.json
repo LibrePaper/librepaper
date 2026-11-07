@@ -1877,6 +1877,7 @@
   "nav_account_menu_label_provider": "账户菜单，已通过 {provider} 登录为 {shown}",
   "nav_signed_in_with": "已通过 {provider} 登录",
   "nav_skip_to_content": "跳到内容",
+  "navigation_defined_in": "定义于 {path}",
   "new_project_size_b": "{size} B",
   "new_project_size_gb": "{size} GB",
   "new_project_size_kb": "{size} KB",
