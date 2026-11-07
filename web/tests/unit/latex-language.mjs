@@ -289,3 +289,47 @@ test("a 350 KB document parses in well under 1.5 seconds", () => {
   assert.equal(tree.length, text.length);
   assert.ok(elapsed < 1500, `parse took ${Math.round(elapsed)} ms`);
 });
+
+// ---- Constructs that open and never close where they stand -------------------
+
+test("constructs that end at an enclosing brace or \\end do not swallow the document", () => {
+  const cases = {
+    "newenvironment": "\\newenvironment{foo}{\\begin{center}}{\\end{center}}\n\\section{B}\n",
+    "def with begin and end": "\\def\\x{\\begin{itemize}}\n\\def\\y{\\end{itemize}}\n\\section{B}\n",
+    "ifnextchar": "\\def\\a{\\@ifnextchar[{\\b{#1}}{#1}}\n\\section{B}\n",
+    "CodeInput": "\\begin{CodeInput}\nR> p$estimate[1:4] % x {\n\\end{CodeInput}\n\\section{B}\n",
+    "example": "\\begin{example}\nR> p$estimate[1:4] % x {\n\\end{example}\n\\section{B}\n",
+    "example*": "\\begin{example*}\nR> p$x % {\n\\end{example*}\n\\section{B}\n",
+    "Sinput": "\\begin{Sinput}\nR> p$estimate[1:4] % x {\n\\end{Sinput}\n\\section{B}\n",
+    "Highlighting": "\\begin{Highlighting}[]\n\\KeywordTok{x}$\n\\end{Highlighting}\n\\section{B}\n",
+    "Verbatim*": "\\begin{Verbatim*}[frame=single]\n$ % {\n\\end{Verbatim*}\n\\section{B}\n",
+    "url": "\\url{http://x.org/a%20b#c}\n\\section{B}\n",
+    "href": "\\href{http://x.org/%20}{text}\n\\section{B}\n",
+    "optional argument across a blank line": "\\item[x\n\ny]\n\\section{B}\n",
+    "nested implicit closes": "{\\begin{a}\\begin{b} x}\n\\section{B}\n",
+    "inline math before an outer end": "\\begin{a}\ntext $x\n\\end{a}\n\\section{B}\n",
+  };
+  for (const [label, doc] of Object.entries(cases)) {
+    const tree = parse(doc);
+    assert.deepEqual(errors(tree), [], label);
+    const section = tree.resolveInner(doc.lastIndexOf("\\section") + 1, 1);
+    assert.equal(section.name, "SectionName", label);
+    assert.equal(section.parent.name, "Command", label);
+    assert.equal(section.parent.parent.name, "Document", label);
+  }
+});
+
+test("\\url and \\href arguments are opaque", () => {
+  const doc = "\\url{http://x.org/a%20b#c} \\href{http://x.org/%20}{text}";
+  const tree = parse(doc);
+  const urls = nodes(tree, "UrlArg").map((n) => doc.slice(n.from, n.to));
+  assert.deepEqual(urls, ["{http://x.org/a%20b#c}", "{http://x.org/%20}"]);
+  assert.equal(nodes(tree, "Comment").length, 0);
+});
+
+test("math closed implicitly stays math up to the close", () => {
+  const doc = "\\begin{a}\ntext $x\n\\end{a}\nafter";
+  const state = stateFor(doc);
+  assert.ok(inMath(state, doc.indexOf("x\n")));
+  assert.ok(!inMath(state, doc.indexOf("after")));
+});

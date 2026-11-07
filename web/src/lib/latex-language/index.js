@@ -56,6 +56,7 @@ export const latexLanguage = LRLanguage.define({
         "OpenBrace CloseBrace": tags.brace,
         "OptOpen OptClose": tags.squareBracket,
         "Verb VerbBody": tags.monospace,
+        UrlArg: tags.url,
       }),
       foldNodeProp.add({
         [ENVIRONMENTS]: foldEnvironment,
@@ -82,7 +83,7 @@ export const latexSectionFolding = latexFolding;
 
 const MATH_NODES = new Set(["InlineMath", "DisplayMath", "MathEnvironment"]);
 const OPAQUE_NODES = new Set(["Comment", "Verb", "VerbBody"]);
-const CLOSERS = new Set(["DollarClose", "DisplayDollar", "ParenClose", "BracketClose", "EndEnv"]);
+const CLOSERS = new Set(["DollarClose", "DisplayDollar", "ParenClose", "BracketClose", "EndEnv", "ImplicitClose"]);
 
 /**
  * Whether pos is inside math: between the delimiters of $...$, \(...\),
