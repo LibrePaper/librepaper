@@ -37,6 +37,7 @@
   import { createTimeline } from "../lib/reader/timeline.svelte.js";
   import { createPreviewRenderer } from "../lib/reader/preview-render.js";
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
+  import { shareIntroKind } from "../lib/reader/share-intro.js";
   import { forgetProject, markShellReady, rememberProject } from "../lib/offline-projects.js";
   import { cacheCurrentShell } from "../lib/offline-shell.js";
   import { needsSourceRefresh } from "../lib/reader/source-events.js";
@@ -54,8 +55,10 @@
     LINKED,
     PDF_INVERT,
     linkFor,
+    markShareIntroSeen,
     markViewed,
     read,
+    shareIntroSeen,
     takeLinkKey,
     write,
   } from "../lib/storage.js";
@@ -2602,6 +2605,19 @@
   let settled = $state(false);
   // The height of the demo banner, taken off the workspace so the page does not scroll.
   let demoBannerHeight = $state(0);
+  // The first time a project is opened by someone it was shared with, one line
+  // says what the link allows. Shown once per project in this browser, and
+  // until dismissed; an owner, or a role not yet known, is shown nothing.
+  const shareIntroWasSeen = DEMO || shareIntroSeen(SLUG);
+  let shareIntroDismissed = $state(false);
+  let shareIntroHeight = $state(0);
+  const shareIntro = $derived(shareIntroWasSeen || shareIntroDismissed ? null : shareIntroKind(doc.role));
+  // Taken off the workspace only while the line is shown, as the height is
+  // not reset when the banner is removed.
+  const shareIntroOffset = $derived(shareIntro ? shareIntroHeight : 0);
+  $effect(() => {
+    if (shareIntro) markShareIntroSeen(SLUG);
+  });
 
   // Kept current for the background work that consults it.
   $effect(() => {
@@ -4645,11 +4661,18 @@
   <ModeSwitch mode={shown.source ? "source" : "document"} collapsed={barHidden} onchange={showMobileView} />
 {/if}
 
+{#if shareIntro}
+  <div class="share-intro" role="status" bind:clientHeight={shareIntroHeight}>
+    <span class="share-intro-text">{shareIntro === "edit" ? m.readerd_share_intro_edit() : shareIntro === "comment" ? m.readerd_share_intro_comment() : m.readerd_share_intro_view_ask()}</span>
+    <button type="button" class="btn btn-sm lp-control-neutral" onclick={() => (shareIntroDismissed = true)}>{m.toasts_dismiss()}</button>
+  </div>
+{/if}
+
 <main id="main" tabindex="-1" class="reader" class:editing={shown.source} class:no-preview={!shown.document}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact} class:bar-hidden={barHidden && !compact}
-      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - var(--librepaper-format-used, 0px) - {demoBannerHeight}px - var(--librepaper-phone-chrome, 0px));{compact ? ` --librepaper-phone-chrome: calc(${phoneChrome});` : ''} --librepaper-format-used: {formatBarVisible ? 'var(--librepaper-format-bar)' : '0px'}; --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
+      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - var(--librepaper-format-used, 0px) - {demoBannerHeight + shareIntroOffset}px - var(--librepaper-phone-chrome, 0px));{compact ? ` --librepaper-phone-chrome: calc(${phoneChrome});` : ''} --librepaper-format-used: {formatBarVisible ? 'var(--librepaper-format-bar)' : '0px'}; --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- What this page is. The title is in the bar, where it is a span beside
        the menus rather than a heading, so the one heading a screen reader
        looks for first is here instead: said once, seen by nobody. -->
@@ -5215,7 +5238,7 @@
 <Toasts />
 
 <style>
-  .demo-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--spacing) calc(var(--spacing) * 3); padding: calc(var(--spacing) * 1.5) var(--panel-padding, calc(var(--spacing) * 4)); border-bottom: 1px solid var(--color-pane-edge); background: var(--color-subtle); color: var(--color-text); font-size: var(--text-sm); }
+  .demo-banner, .share-intro { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--spacing) calc(var(--spacing) * 3); padding: calc(var(--spacing) * 1.5) var(--panel-padding, calc(var(--spacing) * 4)); border-bottom: 1px solid var(--color-pane-edge); background: var(--color-subtle); color: var(--color-text); font-size: var(--text-sm); }
   .demo-banner-actions { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 2); }
   .editorpane.comparing { grid-template-rows: auto minmax(0, 1fr); }
   .menuitem-chevron { display: inline-flex; margin-left: auto; padding-left: calc(var(--spacing) * 2); }

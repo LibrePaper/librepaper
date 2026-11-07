@@ -28,6 +28,8 @@ export function write(key, value) {
 // Every agent chat transcript is kept under this prefix, one key per document.
 export const AGENT_SESSION_PREFIX = "librepaper.agent.session.";
 export const VIEWED = "librepaper-viewed";
+// The projects whose share-link note has been shown in this browser, by slug.
+export const SHARE_INTRO = "librepaper-share-intro";
 export const LINKED = "librepaper-linked";
 // Whether PDF pages are drawn inverted while the application is dark. A habit
 // of the person reading rather than of the document.
@@ -151,4 +153,20 @@ export function markViewed(slug) {
   const seen = read(VIEWED, {});
   seen[slug] = new Date().toISOString();
   write(VIEWED, seen);
+}
+
+/// Whether this browser has already shown the note about what a share link
+/// allows for this project. Shown once per project, so a link opened again
+/// does not repeat it.
+export function shareIntroSeen(slug) {
+  const seen = read(SHARE_INTRO, {});
+  return Boolean(seen && typeof seen === "object" && seen[slug] === true);
+}
+
+export function markShareIntroSeen(slug) {
+  if (localDataForgotten()) return;
+  const seen = read(SHARE_INTRO, {});
+  const next = seen && typeof seen === "object" ? seen : {};
+  next[slug] = true;
+  write(SHARE_INTRO, next);
 }
