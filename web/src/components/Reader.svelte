@@ -2517,10 +2517,12 @@
     const text = editor.text();
     if (typeof text !== "string") return;
     let at = null;
-    if (pdfPoint) {
-      if (sourceFormat !== "latex" || !activeSynctex) return;
-      const precise = activeSynctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y));
-      if (!precise || session.idOf(precise.path) !== openFile) return;
+    // SyncTeX is only for LaTeX. Any other format, or a SyncTeX point that does
+    // not resolve to the open file, falls back to the text the click carried.
+    const precise = pdfPoint && sourceFormat === "latex" && activeSynctex
+      ? activeSynctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y))
+      : null;
+    if (precise && session.idOf(precise.path) === openFile) {
       // SyncTeX gives a line and no column, so the start of that line is the place.
       at = synctexOffsetOfLine(text, precise.line);
     } else {
@@ -5373,10 +5375,10 @@
   @media (max-width: 600px) {
     /* Nobody else here yet: an empty group would still take a gap. */
     .presence:empty { display: none; }
+  }
   .tracking-pill { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * 1.5); min-height: 1.75rem; padding: 0 calc(var(--spacing) * 2.5); border: 1px solid var(--color-divider); border-radius: 999px; background: transparent; color: var(--color-text-secondary); font-size: var(--text-xs); white-space: nowrap; cursor: pointer; }
   .tracking-pill:hover { background: var(--color-row-hover); color: var(--color-text); }
   .tracking-pill:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
-  }
   .presence { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * .5); color: var(--color-text-secondary); font-size: var(--text-xs); }
   .presence-offline { display: inline-flex; align-items: center; gap: calc(var(--spacing) * .75); color: var(--color-text-secondary); font-size: var(--text-xs); }
   .presence-offline-dot { width: .5rem; height: .5rem; flex: 0 0 .5rem; border-radius: 50%; background: var(--color-error-solid); }
