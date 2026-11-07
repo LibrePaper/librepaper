@@ -22,7 +22,7 @@
 // CRDT across client restarts; on reconnect the whole local state is sent and
 // merged, so changes made on either side of the gap reach the other.
 
-import { LoroDoc, LoroText, EphemeralStore, VersionVector, Cursor, LoroMap } from "loro-crdt";
+import { Cursor, LoroDoc, LoroMap, LoroText, EphemeralStore, VersionVector } from "loro-crdt";
 import { setLoroClasses } from "./loro-classes.js";
 import { checkPlacement, folderPaths, inside, parentPath, relocation, topEntries } from "./file-manager.js";
 import { projectDirectory, projectPaths } from "./projection.js";
@@ -38,7 +38,7 @@ import { personSeed } from "./presence-colour.js";
 // Loro is in use here is the one those modules then see.
 setLoroClasses({ Cursor, LoroMap });
 
-/** @typedef {{ name?: string, color?: string, tab?: string, file?: string }} PresenceState */
+/** @typedef {{ name?: string, color?: string, tab?: string, file?: string, peer?: string, anchor?: Uint8Array, head?: Uint8Array }} PresenceState */
 /** @typedef {{ type: string, [key: string]: unknown }} SessionMessage */
 /** @typedef {{ local: boolean, pending: number, localPending: number, localError: string, joined: boolean }} SessionState */
 /** @typedef {{ hydrated: () => void, writing: (count?: number) => void, persisted: () => void, failed: (error: Error) => void }} PersistenceEvents */
@@ -81,6 +81,11 @@ export const DIRECTORY_ORIGIN = "directory";
 // A person's presence lives under this prefix and their tab's id: the store
 // is shared and last-write-wins per key, so peers need a key each.
 export const PRESENCE_PREFIX = "user:";
+
+// The editor binding publishes each caret under `<peer id>` plus this suffix,
+// as Loro cursors (vendor/loro-codemirror/ephemeral.ts). A presence record
+// carries its peer id so the caret can be found from the person.
+const CARET_SUFFIX = "-cm-cursor";
 
 /// Whether `key` holds somebody's presence rather than, say, a caret.
 const isPresence = (key) => String(key).startsWith(PRESENCE_PREFIX);
@@ -432,6 +437,8 @@ export function createProjectSession({
   // asks for it again if the name arrives after the join.
   store.set(localKey, {
     name: name || "Anonymous",
+    // The Loro peer id, which names this browser's caret in the store.
+    peer: doc.peerIdStr,
     // Their name, or -- for somebody who has not said who they are -- their
     // tab, which is theirs alone for as long as it is open. One shared
     // "Anonymous" would paint every reader in a file the same colour.
@@ -972,9 +979,45 @@ export function createProjectSession({
           // the presence strip and the caret in the text are the same person
           // in the same colour.
           colour: state?.color || "",
+          // The file they said they are in, and their peer id for `caretOf`.
+          file: state?.file || "",
+          peer: state?.peer || "",
         });
       }
       return result;
+    },
+
+    /// Where another person's caret is: the file it is in, and the UTF-16
+    /// offsets of its anchor and head there. The caret is published as Loro
+    /// cursors, which name the text they sit in, so the file is found from the
+    /// cursor and not from the presence record. Null when they have no caret,
+    /// or it points at a file that is gone. Reads only; nothing here moves a
+    /// caret or a selection.
+    /** @param {string} peer */
+    caretOf(peer) {
+      const published = peer ? store.get(`${peer}${CARET_SUFFIX}`) : null;
+      if (!published?.anchor) return null;
+      try {
+        const anchor = Cursor.decode(published.anchor);
+        const container = anchor.containerId();
+        let file = "";
+        for (const id of files.keys()) {
+          if (/** @type {any} */ (files.get(id))?.id === container) { file = String(id); break; }
+        }
+        const text = file ? files.get(file) : null;
+        if (!(text instanceof LoroText)) return null;
+        const toUtf16 = (cursor) => {
+          const at = doc.getCursorPos(cursor);
+          if (!at) return null;
+          return text.convertPos(at.offset, "unicode", "utf16") ?? at.offset;
+        };
+        const from = toUtf16(anchor);
+        if (from == null) return null;
+        const head = published.head ? toUtf16(Cursor.decode(published.head)) : from;
+        return { file, anchor: from, head: head ?? from };
+      } catch {
+        return null;
+      }
     },
 
     /// What to send to join, or to rejoin: what this browser already has, so

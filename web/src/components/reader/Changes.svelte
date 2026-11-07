@@ -1,5 +1,6 @@
 <script>
   import { Menu, Switch } from "@skeletonlabs/skeleton-svelte";
+  import { untrack } from "svelte";
   import { m } from "../../lib/paraglide/messages.js";
   import ExplorerMenu from "../ExplorerMenu.svelte";
   import Icon from "../Icon.svelte";
@@ -134,6 +135,22 @@
     if (next.size !== checked.size) checked = next;
   });
   $effect(() => { if (expanded && !filteredRows.some((item) => item.id === expanded)) expanded = ""; });
+  // A change picked elsewhere, by a click on its mark in the source, becomes
+  // the active row and is brought into view. A filter that hides it is widened
+  // to every change first. This only sets the row: it does not reveal the
+  // change in the source again, since the click already placed the caret.
+  $effect(() => {
+    const id = selected;
+    if (!id) return;
+    untrack(() => {
+      if (!filteredRows.some((item) => item.id === id)) {
+        if (!changes.some((item) => item.id === id)) return;
+        scope = "all";
+      }
+      expanded = id;
+      requestAnimationFrame(() => document.getElementById(`change-${id}`)?.scrollIntoView({ block: "nearest" }));
+    });
+  });
   $effect(() => { if (selecting && (!canReview || !filteredRows.length)) stopSelecting(); });
 
   function startSelecting() { selecting = true; confirming = null; }

@@ -10,7 +10,10 @@
   // `oninsert(actionId)` to open the Insert menu flow of an insert tool.
   // `modalEditor` is true in Vim or Emacs mode, where a tool's key belongs to
   // the mode and is not printed, the same rule the menus follow.
-  let { active = null, hidden = false, modalEditor = false, onformat = () => {}, oninsert = () => {} } = $props();
+  // `oncommand(id)` runs a tool that names a command from lib/commands.js, and
+  // `available` is the Edit menu's availability by command id: a tool whose
+  // command is unavailable is drawn disabled.
+  let { active = null, hidden = false, modalEditor = false, available = null, onformat = () => {}, oninsert = () => {}, oncommand = () => {} } = $props();
 
   // Consecutive tools that share a group are drawn together.
   const GROUPS = FORMAT_TOOLS.reduce((groups, tool) => {
@@ -25,8 +28,22 @@
   let focused = $state(FORMAT_TOOLS[0].id);
   let bar = $state(null);
 
+  // A tool whose command is unavailable is drawn disabled, and a disabled button
+  // cannot take the focus, so it is neither an arrow-key stop nor the Tab stop.
+  function isDisabled(tool) {
+    return Boolean(tool.command && available && !available[tool.command]);
+  }
+
+  // The Tab stop is the focused tool while it is enabled; otherwise it falls
+  // back to the first enabled tool, so the toolbar stays reachable with Tab.
+  const tabStop = $derived.by(() => {
+    const enabled = FORMAT_TOOLS.filter((tool) => !isDisabled(tool));
+    if (enabled.some((tool) => tool.id === focused)) return focused;
+    return enabled[0]?.id ?? null;
+  });
+
   function onkeydown(event) {
-    const buttons = [...bar.querySelectorAll("button")];
+    const buttons = [...bar.querySelectorAll("button:not(:disabled)")];
     const here = buttons.indexOf(document.activeElement);
     if (here === -1) return;
     const step = { ArrowRight: here + 1, ArrowLeft: here - 1, Home: 0, End: buttons.length - 1 }[event.key];
@@ -53,10 +70,11 @@
               data-tool={tool.id}
               aria-label={tool.label}
               aria-pressed={on}
-              tabindex={focused === tool.id ? 0 : -1}
+              tabindex={tabStop === tool.id ? 0 : -1}
+              disabled={isDisabled(tool)}
               onfocus={() => (focused = tool.id)}
               onmousedown={(event) => event.preventDefault()}
-              onclick={() => (tool.insert ? oninsert(tool.insert) : onformat(tool.id))}
+              onclick={() => (tool.command ? oncommand(tool.command) : tool.insert ? oninsert(tool.insert) : onformat(tool.id))}
             >
               <Icon name={tool.icon} size={16} />
             </button>
@@ -119,8 +137,12 @@
     cursor: pointer;
   }
   .format-tool:not([aria-pressed="true"]) { background: none; }
-  .format-tool:hover {
+  .format-tool:hover:not(:disabled) {
     background: var(--color-tonal-hover);
+  }
+  .format-tool:disabled {
+    opacity: 0.45;
+    cursor: default;
   }
   .format-tool:focus-visible {
     outline: 2px solid var(--color-brand);

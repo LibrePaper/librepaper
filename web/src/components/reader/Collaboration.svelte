@@ -24,6 +24,8 @@
     // The draft being written, which belongs to the Comments tab whatever it
     // will become.
     composing = null, needsLogin = false, signInHref = "", oncommentsend = undefined, oncommentcancel = undefined,
+    // Starts a comment on the whole document, from the Comments tab's header.
+    oncommentdocument = undefined,
   } = $props();
   // View-only links never see the chat, so there is no tab for it.
   const VIEWS = $derived([
@@ -52,7 +54,8 @@
     <Tabs.Content value="chat"><Chat {messages} {more} {loadingOlder} {loadError} {onloadolder} {connected} {canPost} {onsend} /></Tabs.Content>
     <Tabs.Content value="comments">
       <Comments {...common()} {comments} filter="comments" cardIdPrefix="collaboration-comment"
-        {composing} {needsLogin} {signInHref} onsend={oncommentsend} oncancel={oncommentcancel} />
+        {composing} {needsLogin} {signInHref} onsend={oncommentsend} oncancel={oncommentcancel}
+        onwholedocument={oncommentdocument} />
     </Tabs.Content>
     <Tabs.Content value="highlights">
       <Comments {...common()} {comments} filter="highlights" title={m.collaboration_highlights()}

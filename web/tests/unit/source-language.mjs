@@ -89,6 +89,13 @@ assert.equal(syntaxTree(EditorState.create({ doc: "# heading", extensions: sourc
   "a named unsupported file should take precedence over the fallback format");
 
 assert.equal(languageName("json"), "JSON", ".json code fence should resolve to JSON language");
+const gfm = "| a | b |\n| - | - |\n| 1 | 2 |\n\n~~gone~~\n";
+const gfmState = EditorState.create({ doc: gfm, extensions: sourceLanguage("notes.md") });
+const gfmNodes = new Set();
+ensureSyntaxTree(gfmState, gfmState.doc.length, 1000)?.iterate({ enter: (node) => { gfmNodes.add(node.name); } });
+assert.ok(gfmNodes.has("Table"), "GFM table was not parsed in a .md file");
+assert.ok(gfmNodes.has("Strikethrough"), "GFM strikethrough was not parsed in a .md file");
+
 const json = highlighted("config.json", '{\n  "key": "value"\n}');
 assert.ok(syntaxTree(EditorState.create({ doc: json.source, extensions: sourceLanguage("config.json") })).length > 0,
   ".json file should produce a complete syntax tree");

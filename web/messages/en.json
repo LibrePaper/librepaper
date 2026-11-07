@@ -544,10 +544,12 @@
   "commands_download_docx": "Download DOCX",
   "commands_download_html": "Download HTML",
   "commands_download_source": "Download source file",
+  "commands_find_references": "Find references",
   "commands_focus_comments": "Focus Comments",
   "commands_focus_files": "Focus Files",
   "commands_focus_outline": "Focus Outline",
   "commands_focus_preview": "Focus Preview",
+  "commands_go_to_definition": "Go to definition",
   "commands_heading_level": "Heading {level}",
   "commands_layout_cycle":"Toggle editor / preview / split",
   "commands_layout_document": "Show preview only",
@@ -570,6 +572,7 @@
   "commands_note_preview_visible": "Preview visible",
   "commands_note_wide_layout": "Wide layout",
   "commands_palette_tooltip": "Command palette ({keys})",
+  "commands_rename_symbol": "Rename label",
   "commands_shortcuts": "Show keyboard shortcuts",
   "commands_tab_focus": "Toggle Tab key moves focus",
   "commands_text_bigger": "Bigger text",
@@ -695,6 +698,7 @@
   "common_command": "Command",
   "common_command_palette": "Command palette",
   "common_comment": "Comment",
+  "common_comment_whole_document": "Comment on the whole document",
   "common_comments": "Comments",
   "common_comments_could_not_be_read": "Comments could not be read ({status}).",
   "common_compile_now": "Compile now",
@@ -733,6 +737,7 @@
   "common_frequency": "Frequency",
   "common_get_desktop_app": "Get the desktop app",
   "common_give_project_name": "Give the project a name.",
+  "common_go_to_cursor": "Go to {name}'s cursor",
   "common_grammar_and_spelling": "Grammar and spelling",
   "common_history": "History",
   "common_inline_math": "Inline math",
@@ -922,6 +927,7 @@
   "editor_bibliography_unavailable": "Bibliography unavailable: {reason}",
   "editor_cut_changed": "The source changed before Cut finished. Select the text again.",
   "editor_parser_not_loaded": "the parser could not be loaded",
+  "editor_paste_blocked": "The browser will not let LibrePaper read the clipboard here.",
   "editor_paste_changed": "The source changed before Paste finished. Try again.",
   "editor_problems_both": [
     {
@@ -1348,6 +1354,9 @@
   "index_category_logic": "Logic and sets",
   "index_category_operators": "Operators",
   "index_category_relations": "Relations",
+  "index_diagnostics_missing_file": "No file named {name} in the project",
+  "index_diagnostics_replace": "Replace with {name}",
+  "index_diagnostics_unknown_label": "No label named {name}",
   "index_edit_in_source": "Edit in source",
   "index_emoji_lualatex": "The emoji package needs LuaLaTeX.",
   "index_gloss_unknown": "No acronym named {key}",
@@ -1889,6 +1898,7 @@
   "nav_account_menu_label_provider": "Account menu, signed in as {shown} with {provider}",
   "nav_signed_in_with": "Signed in with {provider}",
   "nav_skip_to_content": "Skip to content",
+  "navigation_defined_in": "Defined in {path}",
   "new_project_size_b": "{size} B",
   "new_project_size_gb": "{size} GB",
   "new_project_size_kb": "{size} KB",
@@ -2198,6 +2208,8 @@
   "reader_stale_selection": "The page changed while that comment was being placed. It has been refreshed to the current text; reselect the passage and try again.",
   "reader_still_connecting": "The current document is still connecting. Please retry when it has loaded.",
   "reader_tracking_failed": "Track changes could not be turned on: this document is not connected for editing.",
+  "reader_tracking_on": "Tracking changes",
+  "reader_tracking_open": "Tracking is on. Open the Changes panel.",
   "readerb_backup_failing": "Backups are on but failing: {error}. Open Settings, then Backups.",
   "readerb_backup_lost_access": "Backups are on but the desktop app lost access to this account. Open Settings, then Backups, to reconnect.",
   "readerb_agent_waiting": "Agent is waiting for your permission",
@@ -2349,6 +2361,9 @@
   "readerd_run_code_hint": "Run this document's code on this computer. Off whenever a document opens.",
   "readerd_save_as_template": "Save as template",
   "readerd_save_as_template_item": "Save as template…",
+  "readerd_share_intro_comment": "You can view and comment on this project.",
+  "readerd_share_intro_edit": "You can edit this project.",
+  "readerd_share_intro_view_ask": "You can view this project. Ask the owner for a link that allows comments.",
   "readerd_show_pdf": "Show the PDF",
   "readerd_shown_inside": "{name}, shown inside {path}",
   "readerd_sign_in_to_open": "Sign in to open this document",
@@ -2364,6 +2379,22 @@
   "common_documentation": "Documentation",
   "readerd_who_are_you": "Who are you?",
   "readerd_workspace_view": "Workspace view",
+  "references_location": "{path}, line {line}",
+  "references_title": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} reference",
+        "countPlural=*": "{count} references"
+      }
+    }
+  ],
   "registry_account": "Account",
   "registry_account_erase_terms": "erase delete account remove close gdpr right erasure forget",
   "registry_agents": "AI agents",
@@ -2430,6 +2461,8 @@
   "remotesettings_retrying": "Connection retries while this page is open.",
   "remotesettings_status_connected": "Connected",
   "remotesettings_status_disconnected": "Disconnected",
+  "rename_invalid": "Enter a different name without spaces",
+  "rename_label": "Rename {name} to",
   "renderers_local_failed": "Rendering {format} on this computer failed.",
   "renderersettings_aria": "{name} renders in",
   "renderersettings_description": "{name} documents render in this browser, or on this computer while Run code is on.",

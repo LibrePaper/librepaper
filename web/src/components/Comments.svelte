@@ -4,6 +4,7 @@
   import CommentCard from "./CommentCard.svelte";
   import CommentComposer from "./CommentComposer.svelte";
   import PanelHeader from "./PanelHeader.svelte";
+  import { aboutWholeDocument } from "../lib/anchor.js";
 
   // The annotations, in document order: an annotation is about a place in the
   // text, so the column follows the page rather than the order things were
@@ -41,6 +42,9 @@
     // has to be told where the next one comes from -- so it stays put.
     hint = m.comments_hint(),
     onhistory = undefined,
+    // Starts a comment on the document as a whole. Shown only where commenting
+    // is allowed, and only by the caller that owns the draft.
+    onwholedocument = undefined,
     cardIdPrefix = "comment",
     // The id of the annotation the page has singled out, if any.
     selected = "",
@@ -55,7 +59,10 @@
     attachable = false,
   } = $props();
 
+  // A remark about the whole document has no passage, so it sorts first: it
+  // is about the top of the document, which is where every passage starts.
   function place(comment) {
+    if (aboutWholeDocument(comment)) return -1;
     return Number.isFinite(comment.start) ? comment.start : Infinity;
   }
 
@@ -65,6 +72,7 @@
   // there when it is sent.
   function placeDraft(pending) {
     if (!pending) return Infinity;
+    if (pending.whole) return -1;
     return Number.isFinite(pending.position) ? pending.position : Infinity;
   }
 
@@ -140,6 +148,9 @@
       <div class="flex flex-wrap items-center gap-1">
         {#if onhistory}
           <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={onhistory}>{m.comments_show_changes()}</button>
+        {/if}
+        {#if canComment && onwholedocument}
+          <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => onwholedocument?.()}>{m.common_comment_whole_document()}</button>
         {/if}
         {#if canComment && (resolvable.length || clearable.length || (canModerate && deletable.length))}
           <div class="bulk flex gap-1" role="group" aria-label={partial ? m.comments_group_loaded() : m.comments_group_all()}>

@@ -780,7 +780,7 @@
               <h2>Collaborate</h2>
               <p>Write together in real time, with individual cursors and undo history. Discuss a passage where it sits in the text, or talk in the project chat.</p>
               <ul class="details">
-                <li>Comment on a passage and discuss it in a thread.</li>
+                <li>See each collaborator's cursor as they type.</li>
                 <li>Talk with collaborators in the project chat.</li>
                 <li>Share a link that lets someone read, comment or edit.</li>
               </ul>
@@ -806,41 +806,144 @@
         </div>
       </section>
 
-      <!-- ============================================================ review -->
-      <section class="section" id="review">
+      <!-- ======================================================== comments -->
+      <section class="section" id="comments">
         <div class="container">
           <div class="feature">
             <div class="feature-copy">
-              <h2>Review changes and history</h2>
+              <h2>Comment on a passage</h2>
+              <p>Select text in the preview and comment on it. Collaborators reply in a thread beside the document, and you resolve the thread when it is settled.</p>
+              <ul class="details">
+                <li>Comment on a passage and discuss it in a thread.</li>
+                <li>Reply to, edit or resolve each comment.</li>
+                <li>Highlight passages in colour.</li>
+              </ul>
+            </div>
+            <figure class="shot-frame">
+              <a class="shot" href="#comments-video" aria-label="Play a video of commenting on a passage, a reply in the thread, and resolving it">
+                <img
+                  src="/images/comments.webp"
+                  alt="A comment thread in LibrePaper: Alice asks about a passage selected in the preview and Bob replies, beside the Typst source and its preview."
+                  width="2560"
+                  height="1640"
+                  loading="lazy"
+                  decoding="async"
+                />
+                <span class="shot-play" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </span>
+              </a>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ review -->
+      <section class="section section-alt" id="review">
+        <div class="container">
+          <div class="feature reverse">
+            <div class="feature-copy">
+              <h2>Track changes</h2>
               <p>Record edits as tracked changes and decide on each one.</p>
-              <p>LibrePaper keeps the history of every project. Pick a day on the calendar, open any saved version, compare it with another, and restore it if you need to. Name the versions that matter so you can find them again.</p>
               <ul class="details">
                 <li>See who made each change and in which file.</li>
                 <li>Accept or reject changes one at a time.</li>
+                <li>Each person turns tracking on or off for their own edits.</li>
+              </ul>
+            </div>
+            <figure class="shot-frame">
+              <a class="shot" href="#review-video" aria-label="Play a video of tracking changes, then accepting and rejecting them">
+                <img
+                  src="/images/review-changes.webp"
+                  alt="The Changes panel with three tracked changes, a replacement, a deletion and an addition, each with Reject and Accept buttons, beside the Typst source with the changes marked."
+                  width="2560"
+                  height="1640"
+                  loading="lazy"
+                  decoding="async"
+                />
+                <span class="shot-play" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </span>
+              </a>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========================================================== history -->
+      <section class="section" id="history">
+        <div class="container">
+          <div class="feature">
+            <div class="feature-copy">
+              <h2>History</h2>
+              <p>LibrePaper keeps the history of every project. Pick a day on the calendar, open any saved version, compare it with another, and restore it if you need to. Name the versions that matter so you can find them again.</p>
+              <ul class="details">
                 <li>Compare versions to see what changed.</li>
                 <li>Restore an earlier version. The current text is saved first.</li>
                 <li>Download a version, or copy a link to it.</li>
               </ul>
             </div>
             <figure class="shot-frame">
-              <picture>
-                <source type="image/webp" srcset="/images/track-changes.webp">
+              <a class="shot" href="#history-video" aria-label="Play a video of comparing named versions in the history and restoring an earlier one">
                 <img
-                  src="/images/track-changes.png"
-                  alt="The Changes panel in LibrePaper with one pending insertion, its author and file, and Reject and Accept buttons, beside the Typst source with the inserted line outlined."
-                  width="1171"
-                  height="678"
+                  src="/images/history.webp"
+                  alt="The History panel in LibrePaper: named versions First draft and Second draft in a timeline, and a side-by-side comparison of the first draft with the latest version."
+                  width="2560"
+                  height="1640"
                   loading="lazy"
                   decoding="async"
                 />
-              </picture>
+                <span class="shot-play" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </span>
+              </a>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========================================================= authorship -->
+      <section class="section section-alt" id="authorship">
+        <div class="container">
+          <div class="feature reverse">
+            <div class="feature-copy">
+              <h2>Authorship: Who wrote what?</h2>
+              <p>LibrePaper records who wrote every passage, whether a collaborator or an AI agent. Open the Authors tab in History to see each person's share of a file and the text in their colour.</p>
+              <ul class="details">
+                <li>See each author's share of a file and when they last edited it.</li>
+                <li>Show only the text one author wrote.</li>
+                <li>Text written by an AI agent carries the agent's name.</li>
+              </ul>
+            </div>
+            <figure class="shot-frame">
+              <a class="shot" href="#authorship-video" aria-label="Play a video of two authors and an AI agent writing, then the Authors view showing who wrote what">
+                <img
+                  src="/images/authorship.webp"
+                  alt="LibrePaper's Authors view: Alice wrote 53% of the file, an AI agent named Claude 26% and Bob 21%, with each author's text highlighted in their colour in the source."
+                  width="2560"
+                  height="1640"
+                  loading="lazy"
+                  decoding="async"
+                />
+                <span class="shot-play" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </span>
+              </a>
             </figure>
           </div>
         </div>
       </section>
 
       <!-- ============================================================ AI -->
-      <section class="section section-alt" id="ai">
+      <section class="section" id="ai">
         <div class="container">
           <div class="feature">
             <div class="feature-copy">
@@ -877,7 +980,7 @@
       </section>
 
       <!-- ============================================================ open -->
-      <section class="section" id="open">
+      <section class="section section-alt" id="open">
         <div class="container">
           <h2 class="section-title">Free and open source</h2>
           <div class="columns">
@@ -906,9 +1009,9 @@
       </section>
 
       <!-- ========================================================== desktop -->
-      <section class="section section-alt" id="desktop">
+      <section class="section" id="desktop">
         <div class="container">
-          <div class="feature">
+          <div class="feature reverse">
             <div class="feature-copy">
               <h2>In the browser or on your desktop</h2>
               <p>Writing, previews, collaboration and review all work in any modern web browser.</p>
@@ -937,6 +1040,40 @@
                   decoding="async"
                 />
               </picture>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================================================================ git -->
+      <section class="section section-alt" id="git">
+        <div class="container">
+          <div class="feature">
+            <div class="feature-copy">
+              <h2>Sync with Git and GitHub</h2>
+              <p>Connect a project to a Git repository from the desktop app. Get the repository's changes into the project, and send the project's changes back.</p>
+              <ul class="details">
+                <li>Works with GitHub or any Git host, through your own SSH key or credential helper.</li>
+                <li>Use a repository on your computer, or a GitHub Action that keeps one in step with no computer involved.</li>
+                <li>The <code>librepaper pull</code> and <code>push</code> commands do the same from a terminal. <a href="/git.html">Read the Git docs</a>.</li>
+              </ul>
+            </div>
+            <figure class="shot-frame">
+              <a class="shot" href="#git-video" aria-label="Play a video of the desktop app connecting a GitHub repository, getting changes made on GitHub and sending changes back">
+                <img
+                  src="/images/git-desktop.webp"
+                  alt="The Git panel of the LibrePaper desktop app connected to a GitHub repository, with Get repository changes and Send project changes buttons, beside the source and preview."
+                  width="2560"
+                  height="1640"
+                  loading="lazy"
+                  decoding="async"
+                />
+                <span class="shot-play" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </span>
+              </a>
             </figure>
           </div>
         </div>
@@ -1188,6 +1325,15 @@
       </a>
       <video style="--ratio: 2560 / 1640" src="/images/collab-chat.webm" poster="/images/collab-chat.webp" width="2560" height="1640" controls muted loop playsinline preload="none"></video>
     </div>
+    <div class="lightbox" id="authorship-video">
+      <a class="lightbox-dismiss" href="#" aria-label="Close the video"></a>
+      <a class="lightbox-close" href="#" aria-label="Close the video">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+        </svg>
+      </a>
+      <video style="--ratio: 2560 / 1640" src="/images/authorship.webm" poster="/images/authorship.webp" width="2560" height="1640" controls muted loop playsinline preload="none"></video>
+    </div>
     <div class="lightbox" id="todo-video">
       <a class="lightbox-dismiss" href="#" aria-label="Close the video"></a>
       <a class="lightbox-close" href="#" aria-label="Close the video">
@@ -1196,6 +1342,42 @@
         </svg>
       </a>
       <video style="--ratio: 1896 / 978" src="/images/todo-list.webm" poster="/images/todo-list.webp" width="1896" height="978" controls muted loop playsinline preload="none"></video>
+    </div>
+    <div class="lightbox" id="comments-video">
+      <a class="lightbox-dismiss" href="#" aria-label="Close the video"></a>
+      <a class="lightbox-close" href="#" aria-label="Close the video">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+        </svg>
+      </a>
+      <video style="--ratio: 2560 / 1640" src="/images/comments.webm" poster="/images/comments.webp" width="2560" height="1640" controls muted loop playsinline preload="none"></video>
+    </div>
+    <div class="lightbox" id="review-video">
+      <a class="lightbox-dismiss" href="#" aria-label="Close the video"></a>
+      <a class="lightbox-close" href="#" aria-label="Close the video">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+        </svg>
+      </a>
+      <video style="--ratio: 2560 / 1640" src="/images/review-changes.webm" poster="/images/review-changes.webp" width="2560" height="1640" controls muted loop playsinline preload="none"></video>
+    </div>
+    <div class="lightbox" id="history-video">
+      <a class="lightbox-dismiss" href="#" aria-label="Close the video"></a>
+      <a class="lightbox-close" href="#" aria-label="Close the video">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+        </svg>
+      </a>
+      <video style="--ratio: 2560 / 1640" src="/images/history.webm" poster="/images/history.webp" width="2560" height="1640" controls muted loop playsinline preload="none"></video>
+    </div>
+    <div class="lightbox" id="git-video">
+      <a class="lightbox-dismiss" href="#" aria-label="Close the video"></a>
+      <a class="lightbox-close" href="#" aria-label="Close the video">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+        </svg>
+      </a>
+      <video style="--ratio: 2560 / 1640" src="/images/git-desktop.webm" poster="/images/git-desktop.webp" width="2560" height="1640" controls muted loop playsinline preload="none"></video>
     </div>
 
     <!-- Escape closes any larger view. The overlay itself is CSS, so it opens

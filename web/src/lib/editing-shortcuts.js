@@ -64,6 +64,9 @@ const LATEX_SECTIONS = ["section", "subsection", "subsubsection", "paragraph", "
 const LATEX_HEADING = /^\\(?:part|chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?\{/;
 const MARKDOWN_HEADING = /^#{1,6}(?=[ \t]|$)[ \t]*/;
 const TYPST_HEADING = /^=+(?=[ \t]|$)[ \t]*/;
+// An HTML heading's opening tag, attributes and all, and its closing tag.
+const HTML_OPEN_HEADING = /^<h[1-6](?=[\s>])[^>]*>/i;
+const HTML_CLOSE_HEADING = /<\/h[1-6]>[ \t]*$/i;
 
 /// Every selected line becomes a heading of `level` in the file's markup. A
 /// heading already there is replaced, not nested.
@@ -79,11 +82,18 @@ export function headingEdit(state, format, level) {
       edits.push({ from: at, to: at + (wrapped ? old[0].length : 0), insert: `\\${LATEX_SECTIONS[level - 1]}{`, bias: "end" });
       if (!wrapped) edits.push({ from: line.to, to: line.to, insert: "}", bias: "start" });
     } else if (family === "html") {
-      const open = /^<h[1-6](?:\s[^>]*)?>/i.exec(body);
-      const close = open ? /<\/h[1-6]>[ \t]*$/i.exec(body) : null;
-      const wrapped = Boolean(open && close);
-      edits.push({ from: at, to: at + (wrapped ? open[0].length : 0), insert: `<h${level}>`, bias: "end" });
-      edits.push({ from: wrapped ? line.to - close[0].length : line.to, to: line.to, insert: `</h${level}>`, bias: "start" });
+      const open = HTML_OPEN_HEADING.exec(body);
+      const close = open ? HTML_CLOSE_HEADING.exec(body) : null;
+      if (open && close) {
+        // Only the level digit of each tag name changes; the attributes stay.
+        const openDigit = at + "<h".length;
+        const closeDigit = at + close.index + "</h".length;
+        edits.push({ from: openDigit, to: openDigit + 1, insert: String(level), bias: "end" });
+        edits.push({ from: closeDigit, to: closeDigit + 1, insert: String(level), bias: "end" });
+      } else {
+        edits.push({ from: at, to: at, insert: `<h${level}>`, bias: "end" });
+        edits.push({ from: line.to, to: line.to, insert: `</h${level}>`, bias: "start" });
+      }
     } else {
       const old = (family === "typst" ? TYPST_HEADING : MARKDOWN_HEADING).exec(body);
       const mark = family === "typst" ? "=" : "#";
@@ -137,9 +147,13 @@ const NEW_MARKER = {
 export function listEdit(state, format, kind) {
   const family = markupFamily(format);
   if (!family || !LIST_KINDS.includes(kind)) return null;
-  const items = linesOf(state.doc, state.selection.main).filter((line) => line.text.trim() !== "");
+  const lines = linesOf(state.doc, state.selection.main);
+  // When the selection holds the list's own wrapper lines, they are the wrapper
+  // and only the lines between them are items.
+  const own = family === "latex" || family === "html" ? ownWrapper(family, lines) : null;
+  const items = (own ? lines.slice(1, -1) : lines).filter((line) => line.text.trim() !== "");
   if (!items.length) return null;
-  if (family === "latex" || family === "html") return wrappedList(state, family, kind, items);
+  if (family === "latex" || family === "html") return wrappedList(state, family, kind, items, own);
   const on = !items.every((line) => KIND_MARKER[family][kind].test(where(line).body));
   const edits = [];
   items.forEach((line, index) => {
@@ -155,10 +169,10 @@ export function listEdit(state, format, kind) {
   return specOf(state, edits);
 }
 
-function wrappedList(state, family, kind, items) {
+function wrappedList(state, family, kind, items, own) {
   const first = items[0];
   const last = items[items.length - 1];
-  const wrap = wrapperAround(state.doc, first, last, family);
+  const wrap = own ?? wrapperAround(state.doc, first, last, family);
   const env = ENVIRONMENT[family][kind];
   const edits = [];
 
@@ -205,12 +219,22 @@ function wrappedList(state, family, kind, items) {
 // the markup's own kind: a `\begin{...}` line above and its `\end{...}` below.
 function wrapperAround(doc, first, last, family) {
   if (first.number === 1 || last.number >= doc.lines) return null;
-  const begin = doc.line(first.number - 1);
-  const end = doc.line(last.number + 1);
+  return wrapperBetween(family, doc.line(first.number - 1), doc.line(last.number + 1));
+}
+
+// The environment whose opening line and closing line are these two, or null.
+function wrapperBetween(family, begin, end) {
   const open = WRAP_OPEN[family].exec(begin.text);
   const close = WRAP_CLOSE[family].exec(end.text);
   if (!open || !close || open[1] !== close[1]) return null;
   return { kind: ENVIRONMENT_KIND[family][open[1]], begin, end };
+}
+
+// The environment the selection itself spans: its first line opens it and its
+// last line closes it.
+function ownWrapper(family, lines) {
+  if (lines.length < 2) return null;
+  return wrapperBetween(family, lines[0], lines[lines.length - 1]);
 }
 
 /* ------------------------------------------------------------------ helpers */

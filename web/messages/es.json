@@ -544,10 +544,12 @@
   "commands_download_docx": "Descargar DOCX",
   "commands_download_html": "Descargar HTML",
   "commands_download_source": "Descargar archivo de código fuente",
+  "commands_find_references": "Buscar referencias",
   "commands_focus_comments": "Ir a Comentarios",
   "commands_focus_files": "Ir a Archivos",
   "commands_focus_outline": "Ir a Esquema",
   "commands_focus_preview": "Ir a Vista previa",
+  "commands_go_to_definition": "Ir a la definición",
   "commands_heading_level": "Encabezado {level}",
   "commands_layout_cycle":"Alternar editor / vista previa / dividido",
   "commands_layout_document": "Mostrar solo la vista previa",
@@ -570,6 +572,7 @@
   "commands_note_preview_visible": "Vista previa visible",
   "commands_note_wide_layout": "Diseño ancho",
   "commands_palette_tooltip": "Paleta de comandos ({keys})",
+  "commands_rename_symbol": "Renombrar etiqueta",
   "commands_shortcuts": "Mostrar atajos de teclado",
   "commands_tab_focus": "Alternar que la tecla Tab mueva el foco",
   "commands_text_bigger": "Texto más grande",
@@ -695,6 +698,7 @@
   "common_command": "Comando",
   "common_command_palette": "Paleta de comandos",
   "common_comment": "Comentar",
+  "common_comment_whole_document": "Comentar el documento completo",
   "common_comments": "Comentarios",
   "common_comments_could_not_be_read": "No se pudieron leer los comentarios ({status}).",
   "common_compile_now": "Compilar ahora",
@@ -733,6 +737,7 @@
   "common_frequency": "Frecuencia",
   "common_get_desktop_app": "Obtener la aplicación de escritorio",
   "common_give_project_name": "Asigne un nombre al proyecto.",
+  "common_go_to_cursor": "Ir al cursor de {name}",
   "common_grammar_and_spelling": "Gramática y ortografía",
   "common_history": "Historial",
   "common_inline_math": "Matemáticas en línea",
@@ -922,7 +927,8 @@
   "editor_bibliography_unavailable": "Bibliografía no disponible: {reason}",
   "editor_cut_changed": "El código fuente cambió antes de terminar «Cortar». Seleccione el texto de nuevo.",
   "editor_parser_not_loaded": "no se pudo cargar el analizador",
-  "editor_paste_changed": "El código fuente cambió antes de terminar «Pegar». Inténtelo de nuevo.",
+  "editor_paste_blocked": "El navegador no permite que LibrePaper lea el portapapeles aquí.",
+  "editor_paste_changed":"El código fuente cambió antes de terminar «Pegar». Inténtelo de nuevo.",
   "editor_problems_both": [
     {
       "declarations": [
@@ -1348,6 +1354,9 @@
   "index_category_logic": "Lógica y conjuntos",
   "index_category_operators": "Operadores",
   "index_category_relations": "Relaciones",
+  "index_diagnostics_missing_file": "No hay ningún archivo llamado {name} en el proyecto",
+  "index_diagnostics_replace": "Reemplazar por {name}",
+  "index_diagnostics_unknown_label": "No hay ninguna etiqueta llamada {name}",
   "index_edit_in_source": "Editar en el código fuente",
   "index_emoji_lualatex": "El paquete emoji necesita LuaLaTeX.",
   "index_gloss_unknown": "No hay ningún acrónimo llamado {key}",
@@ -1889,6 +1898,7 @@
   "nav_account_menu_label_provider": "Menú de la cuenta, sesión iniciada como {shown} con {provider}",
   "nav_signed_in_with": "Sesión iniciada con {provider}",
   "nav_skip_to_content": "Saltar al contenido",
+  "navigation_defined_in": "Definido en {path}",
   "new_project_size_b": "{size} B",
   "new_project_size_gb": "{size} GB",
   "new_project_size_kb": "{size} KB",
@@ -2198,6 +2208,8 @@
   "reader_stale_selection": "La página cambió mientras se colocaba ese comentario. Se actualizó con el texto actual; vuelva a seleccionar el pasaje e inténtelo de nuevo.",
   "reader_still_connecting": "El documento actual aún se está conectando. Reintente cuando haya cargado.",
   "reader_tracking_failed": "No se pudo activar el control de cambios: este documento no está conectado para su edición.",
+  "reader_tracking_on": "Control de cambios",
+  "reader_tracking_open": "El control de cambios está activo. Abrir el panel Cambios.",
   "readerb_backup_failing": "Las copias de seguridad están activadas pero fallan: {error}. Abra Configuración y luego Copias de seguridad.",
   "readerb_backup_lost_access": "Las copias de seguridad están activadas pero la aplicación de escritorio perdió el acceso a esta cuenta. Abra Configuración y luego Copias de seguridad para reconectar.",
   "readerb_agent_waiting": "El agente está esperando su permiso",
@@ -2349,6 +2361,9 @@
   "readerd_run_code_hint": "Ejecuta el código de este documento en este equipo. Se desactiva cada vez que se abre un documento.",
   "readerd_save_as_template": "Guardar como plantilla",
   "readerd_save_as_template_item": "Guardar como plantilla…",
+  "readerd_share_intro_comment": "Puede ver y comentar este proyecto.",
+  "readerd_share_intro_edit": "Puede editar este proyecto.",
+  "readerd_share_intro_view_ask": "Puede ver este proyecto. Pida al propietario un enlace que permita comentar.",
   "readerd_show_pdf": "Mostrar el PDF",
   "readerd_shown_inside": "{name}, mostrado dentro de {path}",
   "readerd_sign_in_to_open": "Inicie sesión para abrir este documento",
@@ -2364,6 +2379,22 @@
   "common_documentation": "Documentación",
   "readerd_who_are_you": "¿Quién es usted?",
   "readerd_workspace_view": "Vista del espacio de trabajo",
+  "references_location": "{path}, línea {line}",
+  "references_title": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} referencia",
+        "countPlural=*": "{count} referencias"
+      }
+    }
+  ],
   "registry_account": "Cuenta",
   "registry_account_erase_terms": "borrar eliminar cuenta quitar cerrar rgpd derecho supresión olvido erase delete account remove close gdpr right erasure forget",
   "registry_agents": "Agentes de IA",
@@ -2430,6 +2461,8 @@
   "remotesettings_retrying": "La conexión se reintenta mientras esta página esté abierta.",
   "remotesettings_status_connected": "Conectado",
   "remotesettings_status_disconnected": "Desconectado",
+  "rename_invalid": "Escriba un nombre distinto, sin espacios",
+  "rename_label": "Renombrar {name} a",
   "renderers_local_failed": "Error al compilar {format} en este equipo.",
   "renderersettings_aria": "{name} se compila en",
   "renderersettings_description": "Los documentos de {name} se compilan en este navegador, o en este equipo mientras «Ejecutar código» esté activado.",

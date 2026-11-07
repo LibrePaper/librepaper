@@ -2,9 +2,9 @@
 // languageData, so every language (including plain text) gets them, and each
 // source gates itself on the project's format.
 import { EditorState } from "@codemirror/state";
-import { latexCompletion, latexLabels } from "./latex.js";
-import { markdownCompletion, markdownLabels } from "./markdown.js";
-import { quartoCompletion, quartoLabels } from "./quarto.js";
+import { latexCompletion } from "./latex.js";
+import { markdownCompletion } from "./markdown.js";
+import { quartoCompletion } from "./quarto.js";
 import { taskCompletion } from "./tasks.js";
 import { typstCompletion } from "./typst.js";
 import { sourceFormatOf } from "../formats.js";
@@ -34,12 +34,4 @@ export function completionExtension({ project, sources = [] }) {
   ];
   const entries = all.map((source) => ({ autocomplete: source }));
   return EditorState.languageData.of(() => entries);
-}
-
-/** Labels for cross references, dispatched by format. */
-export function projectLabels(texts, format) {
-  if (format === "markdown") return markdownLabels(texts);
-  if (format === "quarto") return [...quartoLabels(texts), ...markdownLabels(texts)];
-  if (format === "latex") return latexLabels(texts);
-  return [];
 }

@@ -3,10 +3,10 @@
 const WORD = /[-\p{L}\p{N}_:.+]/u;
 const LATEX_CITE = /\\(?:(?:no|paren|text|auto|foot|smart|super|Paren|Text|Auto|Foot|Smart|Super)?[Cc]ite(?:p|t|author|year)?\*?)\s*(?:\[[^\]]*\]\s*)*\{([^}]*)\}/g;
 const MARKDOWN_AT = /@[-\p{L}\p{N}_:.+]+/gu;
-const TYPST_AT = /@[-\p{L}\p{N}_:.]+/gu;
-const TYPST_CITE = /#cite\(\s*<([-\p{L}\p{N}_:.]+)>/gu;
+export const TYPST_AT = /@[-\p{L}\p{N}_:.]+/gu;
+export const TYPST_CITE = /#cite\(\s*<([-\p{L}\p{N}_:.]+)>/gu;
 // A label declaration, not a label used as an argument such as #cite(<key>).
-const LABEL = /(?<![(,]\s*)<([\p{L}\p{N}_\-:.]+)>/gu;
+export const LABEL = /(?<![(,]\s*)<([\p{L}\p{N}_\-:.]+)>/gu;
 const INLINE_CODE = /(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g;
 const TYPST_FENCED = /(`{3,})[\s\S]*?\1/g;
 const TYPST_COMMENT = /(?<!:)\/\/[^\n]*/g;
@@ -44,7 +44,7 @@ function splitKeys(body, start) {
 }
 
 // Matches of the at-pattern that are not part of a word, an address or a path.
-function atKeys(text, pattern) {
+export function atKeys(text, pattern) {
   const found = [];
   for (const match of text.matchAll(pattern)) {
     const previous = text[match.index - 1] || "";
@@ -76,8 +76,21 @@ function markdownMasked(text) {
 
 // The typst source with raw blocks, raw spans and line comments blanked. It runs
 // on the whole text so that multiline raw blocks are masked too.
-function typstMasked(text) {
+export function typstMasked(text) {
   return text.replace(TYPST_FENCED, blank).replace(INLINE_CODE, blank).replace(TYPST_COMMENT, blank);
+}
+
+// The [from, to) spans of the typst raw blocks and raw spans, found in the same
+// order typstMasked blanks them, so the spans match what the mask removed.
+/** @param {string} text @returns {Array<[number, number]>} */
+export function typstCodeSpans(text) {
+  /** @type {Array<[number, number]>} */
+  const spans = [];
+  for (const match of text.matchAll(TYPST_FENCED)) spans.push([match.index, match.index + match[0].length]);
+  for (const match of text.replace(TYPST_FENCED, blank).matchAll(INLINE_CODE)) {
+    spans.push([match.index, match.index + match[0].length]);
+  }
+  return spans;
 }
 
 /**
@@ -105,20 +118,6 @@ export function citedKeys(text, format, { labels = new Set() } = {}) {
     return [];
   }
   return found.sort((a, b) => a.from - b.from);
-}
-
-/**
- * The labels defined in typst sources, which a typst @key may refer to.
- * @param {Record<string, string>} texts path -> source
- * @returns {Set<string>}
- */
-export function typstLabels(texts) {
-  const labels = new Set();
-  for (const [path, source] of Object.entries(texts || {})) {
-    if (!/\.typ$/i.test(path)) continue;
-    for (const match of typstMasked(String(source ?? "")).matchAll(LABEL)) labels.add(match[1]);
-  }
-  return labels;
 }
 
 /**

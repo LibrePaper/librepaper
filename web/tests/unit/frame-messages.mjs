@@ -16,6 +16,15 @@ assert.deepEqual(accepted({ type: "selection", selector: { exact: "selected text
 assert.deepEqual(accepted({ type: "selection", selector: null }), { type: "selection", selector: null });
 assert.deepEqual(accepted({ type: "caret", offset: 9, pdf: { page: 2, x: 0, y: 12 } }), { type: "caret", offset: 9, pdf: { page: 2, x: 0, y: 12 } });
 assert.deepEqual(accepted({ type: "pdf-caret", pdf: { page: 1, x: 10, y: 20 } }), { type: "pdf-caret", pdf: { page: 1, x: 10, y: 20 } });
+// A plain click carries the text offset under it, the PDF point, or both; a
+// click with neither says nothing the reader can use.
+assert.deepEqual(accepted({ type: "click", offset: 14, pdf: null }), { type: "click", offset: 14, pdf: null });
+assert.deepEqual(accepted({ type: "click", pdf: { page: 2, x: 5, y: 6 }, junk: 1 }), { type: "click", offset: null, pdf: { page: 2, x: 5, y: 6 } });
+assert.equal(accepted({ type: "click", offset: null, pdf: null }), null);
+assert.equal(accepted({ type: "click" }), null);
+assert.equal(accepted({ type: "click", offset: -3 }), null);
+assert.equal(accepted({ type: "click", offset: 1.5 }), null);
+assert.equal(accepted({ type: "click", offset: 3, pdf: { page: 1, x: NaN, y: 1 } }), null);
 const viewerBase = { page: 3, pages: 12, sidebar: true, spread: false, invert: false, presenting: false, find: null };
 assert.deepEqual(accepted({ type: "viewer-state", drawn: true, mode: "page-fit", scale: 1.25, ...viewerBase }), { type: "viewer-state", drawn: true, mode: "page-fit", scale: 1.25, ...viewerBase });
 assert.deepEqual(accepted({ type: "viewer-state", drawn: false, mode: "1.5", scale: null, ...viewerBase, page: 0, pages: 0 }), { type: "viewer-state", drawn: false, mode: "1.5", scale: null, ...viewerBase, page: 0, pages: 0 });

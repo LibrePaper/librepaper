@@ -85,3 +85,19 @@ export function lineAt(text, offset) {
   for (let at = 0; at < Math.min(Math.max(0, offset), text.length); at += 1) if (text.charCodeAt(at) === 10) line += 1;
   return line;
 }
+
+/// The offset where a 1-based line starts, the inverse of `lineAt`. A line past
+/// the end is the start of the last line, so a stale record still lands in the
+/// text rather than off the end of it.
+export function offsetOfLine(text, line) {
+  const target = Math.max(1, Math.floor(Number(line) || 1));
+  let current = 1;
+  let at = 0;
+  while (current < target) {
+    const next = text.indexOf("\n", at);
+    if (next === -1) break;
+    at = next + 1;
+    current += 1;
+  }
+  return at;
+}

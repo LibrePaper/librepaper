@@ -544,10 +544,12 @@
   "commands_download_docx": "DOCX herunterladen",
   "commands_download_html": "HTML herunterladen",
   "commands_download_source": "Quelldatei herunterladen",
+  "commands_find_references": "Verweise suchen",
   "commands_focus_comments": "Fokus auf Kommentare",
   "commands_focus_files": "Fokus auf Dateien",
   "commands_focus_outline": "Fokus auf Gliederung",
   "commands_focus_preview": "Fokus auf Vorschau",
+  "commands_go_to_definition": "Zur Definition springen",
   "commands_heading_level": "Überschrift {level}",
   "commands_layout_cycle":"Zwischen Editor, Vorschau und geteilter Ansicht wechseln",
   "commands_layout_document": "Nur Vorschau anzeigen",
@@ -570,6 +572,7 @@
   "commands_note_preview_visible": "Vorschau sichtbar",
   "commands_note_wide_layout": "Breites Layout",
   "commands_palette_tooltip": "Befehlspalette ({keys})",
+  "commands_rename_symbol": "Label umbenennen",
   "commands_shortcuts": "Tastenkürzel anzeigen",
   "commands_tab_focus": "Fokuswechsel mit der Tab-Taste umschalten",
   "commands_text_bigger": "Größerer Text",
@@ -695,6 +698,7 @@
   "common_command": "Befehl",
   "common_command_palette": "Befehlspalette",
   "common_comment": "Kommentieren",
+  "common_comment_whole_document": "Das gesamte Dokument kommentieren",
   "common_comments": "Kommentare",
   "common_comments_could_not_be_read": "Kommentare konnten nicht gelesen werden ({status}).",
   "common_compile_now": "Jetzt kompilieren",
@@ -733,6 +737,7 @@
   "common_frequency": "Häufigkeit",
   "common_get_desktop_app": "Desktop-App herunterladen",
   "common_give_project_name": "Geben Sie dem Projekt einen Namen.",
+  "common_go_to_cursor": "Zum Cursor von {name} springen",
   "common_grammar_and_spelling": "Grammatik und Rechtschreibung",
   "common_history": "Verlauf",
   "common_inline_math": "Formel im Text",
@@ -922,7 +927,8 @@
   "editor_bibliography_unavailable": "Literaturverzeichnis nicht verfügbar: {reason}",
   "editor_cut_changed": "Der Quelltext hat sich geändert, bevor das Ausschneiden abgeschlossen war. Wählen Sie den Text erneut aus.",
   "editor_parser_not_loaded": "der Parser konnte nicht geladen werden",
-  "editor_paste_changed": "Der Quelltext hat sich geändert, bevor das Einfügen abgeschlossen war. Versuchen Sie es erneut.",
+  "editor_paste_blocked": "Der Browser erlaubt LibrePaper hier nicht, die Zwischenablage zu lesen.",
+  "editor_paste_changed":"Der Quelltext hat sich geändert, bevor das Einfügen abgeschlossen war. Versuchen Sie es erneut.",
   "editor_problems_both": [
     {
       "declarations": [
@@ -1348,6 +1354,9 @@
   "index_category_logic": "Logik und Mengen",
   "index_category_operators": "Operatoren",
   "index_category_relations": "Relationen",
+  "index_diagnostics_missing_file": "Keine Datei namens {name} im Projekt",
+  "index_diagnostics_replace": "Ersetzen durch {name}",
+  "index_diagnostics_unknown_label": "Kein Label namens {name}",
   "index_edit_in_source": "Im Quelltext bearbeiten",
   "index_emoji_lualatex": "Das Paket emoji benötigt LuaLaTeX.",
   "index_gloss_unknown": "Kein Akronym namens {key}",
@@ -1889,6 +1898,7 @@
   "nav_account_menu_label_provider": "Kontomenü, angemeldet als {shown} mit {provider}",
   "nav_signed_in_with": "Angemeldet mit {provider}",
   "nav_skip_to_content": "Zum Inhalt springen",
+  "navigation_defined_in": "Definiert in {path}",
   "new_project_size_b": "{size} B",
   "new_project_size_gb": "{size} GB",
   "new_project_size_kb": "{size} KB",
@@ -2198,6 +2208,8 @@
   "reader_stale_selection": "Die Seite hat sich geändert, während der Kommentar platziert wurde. Sie wurde auf den aktuellen Text aktualisiert. Wählen Sie die Passage erneut aus und versuchen Sie es noch einmal.",
   "reader_still_connecting": "Die Verbindung zum aktuellen Dokument wird noch hergestellt. Versuchen Sie es erneut, sobald es geladen ist.",
   "reader_tracking_failed": "Änderungen nachverfolgen konnte nicht aktiviert werden: Dieses Dokument ist nicht zum Bearbeiten verbunden.",
+  "reader_tracking_on": "Änderungen werden nachverfolgt",
+  "reader_tracking_open": "Nachverfolgung ist aktiv. Das Panel Änderungen öffnen.",
   "readerb_backup_failing": "Backups sind aktiviert, schlagen aber fehl: {error}. Öffnen Sie Einstellungen > Backups.",
   "readerb_backup_lost_access": "Backups sind aktiviert, aber die Desktop-App hat den Zugriff auf dieses Konto verloren. Öffnen Sie Einstellungen > Backups, um die Verbindung wiederherzustellen.",
   "readerb_agent_waiting": "Der Agent wartet auf Ihre Berechtigung",
@@ -2349,6 +2361,9 @@
   "readerd_run_code_hint": "Den Code dieses Dokuments auf diesem Computer ausführen. Beim Öffnen eines Dokuments immer aus.",
   "readerd_save_as_template": "Als Vorlage speichern",
   "readerd_save_as_template_item": "Als Vorlage speichern…",
+  "readerd_share_intro_comment": "Sie können dieses Projekt ansehen und kommentieren.",
+  "readerd_share_intro_edit": "Sie können dieses Projekt bearbeiten.",
+  "readerd_share_intro_view_ask": "Sie können dieses Projekt ansehen. Bitten Sie den Eigentümer um einen Link, mit dem Sie kommentieren können.",
   "readerd_show_pdf": "PDF anzeigen",
   "readerd_shown_inside": "{name}, angezeigt in {path}",
   "readerd_sign_in_to_open": "Zum Öffnen dieses Dokuments anmelden",
@@ -2364,6 +2379,22 @@
   "common_documentation": "Dokumentation",
   "readerd_who_are_you": "Wer sind Sie?",
   "readerd_workspace_view": "Arbeitsbereichsansicht",
+  "references_location": "{path}, Zeile {line}",
+  "references_title": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} Verweis",
+        "countPlural=*": "{count} Verweise"
+      }
+    }
+  ],
   "registry_account": "Konto",
   "registry_account_erase_terms": "löschen entfernen Konto schließen DSGVO Recht auf Löschung vergessen erase delete account gdpr remove close right erasure forget",
   "registry_agents": "KI-Agenten",
@@ -2430,6 +2461,8 @@
   "remotesettings_retrying": "Die Verbindung wird erneut versucht, solange diese Seite geöffnet ist.",
   "remotesettings_status_connected": "Verbunden",
   "remotesettings_status_disconnected": "Getrennt",
+  "rename_invalid": "Geben Sie einen anderen Namen ohne Leerzeichen ein",
+  "rename_label": "{name} umbenennen in",
   "renderers_local_failed": "{format} konnte nicht auf diesem Computer gerendert werden.",
   "renderersettings_aria": "Ort der Darstellung von {name}",
   "renderersettings_description": "{name}-Dokumente werden in diesem Browser gerendert oder, solange „Code ausführen“ aktiviert ist, auf diesem Computer.",
