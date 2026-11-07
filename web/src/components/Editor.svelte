@@ -1726,7 +1726,10 @@
         if (batch.by === "local") {
           // A commit that came from typing in this view cannot have diverged
           // from it; only writes from elsewhere (the Changes panel) need it.
-          if (batch.origin === ANCHORS_ORIGIN) {} else if (viewEdited) viewEdited = false; else reconcileShown();
+          if (batch.origin !== ANCHORS_ORIGIN) {
+            if (viewEdited) viewEdited = false;
+            else reconcileShown();
+          }
         }
         scheduleDraw();
         scheduleAuthorship();
