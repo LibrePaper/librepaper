@@ -145,10 +145,13 @@ async function withDocument(bytes, fn) {
 /// `options` is `{ mode, spread, sidebarWidth, presenting, density, ongo,
 /// beforeswap, afterswap }`. The result is `null` when a newer render won, otherwise
 /// `{ pages, document, sizes, rastered }` with the page sizes in PDF points.
-/// Every page is in the document when this returns, but only those in view
-/// are drawn; `rastered` settles when the rest are too. The
-/// document is left open for the sidebar; `discard` releases it. A superseded
-/// or failed render releases its own.
+/// Every page is in the document when this returns, at its exact size and
+/// carrying its text, but only the pages in or near view have their canvas,
+/// selectable text spans and links: the rest are built as they approach the
+/// viewport. `rastered` settles when the pages near the viewport after the
+/// swap are built. The document is left open for the sidebar and for the
+/// lazy pages; `discard` releases it. A superseded or failed render
+/// releases its own.
 ///
 /// `beforeswap()` runs just before the single swap and returns whatever the
 /// caller needs to keep the reading position; `afterswap` gets it back
@@ -160,9 +163,11 @@ export async function render(bytes, root, options = {}) {
   const loading = startLoading(bytes);
   let document_ = null;
   let handedOn = false;
+  const entries = [];
+  const stale = () => mine !== generation;
   try {
     document_ = await loading.promise;
-    if (mine !== generation) return null;
+    if (stale()) return null;
 
     // Everything is built off-document and swapped in at the end. Painting page
     // by page into the live body would have the agent's observer republish a
@@ -171,9 +176,6 @@ export async function render(bytes, root, options = {}) {
     const staging = document.createElement("div");
     staging.className = spread ? "pages spread" : "pages";
     const starts = [];
-    // One entry per page, holding what the raster needs: the pdf.js page is
-    // kept open until its canvas is drawn.
-    const entries = [];
     let offset = 0;
 
     // Every page is drawn at one scale, chosen from the widest page: a
@@ -181,12 +183,13 @@ export async function render(bytes, root, options = {}) {
     // pages, and rescaling halfway down it would read as a mistake, but a
     // later page wider than the first must not be the one that overflows.
     const sizes = [];
+    const pages = [];
     for (let number = 1; number <= document_.numPages; number++) {
-      const probe = await document_.getPage(number);
-      if (mine !== generation) return null;
-      const size = probe.getViewport({ scale: 1 });
+      const page = await document_.getPage(number);
+      if (stale()) return null;
+      const size = page.getViewport({ scale: 1 });
       sizes.push({ width: size.width, height: size.height });
-      probe.cleanup();
+      pages.push(page);
     }
     const widest = Math.max(1, ...sizes.map((size) => size.width));
     const tallest = Math.max(1, ...sizes.map((size) => size.height));
@@ -198,9 +201,20 @@ export async function render(bytes, root, options = {}) {
     renderScale = scale;
     staging.dataset.scale = String(scale / (96 / 72));
 
-    for (let number = 1; number <= document_.numPages; number++) {
-      const page = await document_.getPage(number);
-      if (mine !== generation) return null;
+    // The agent publishes the text of the whole document, so every page's
+    // text content is read (in the worker, a few pages at a time) even though
+    // only some pages get their span layer built.
+    const contents = new Array(pages.length);
+    const BATCH = 8;
+    for (let from = 0; from < pages.length; from += BATCH) {
+      await Promise.all(pages.slice(from, from + BATCH).map(async (page, i) => {
+        contents[from + i] = await page.getTextContent();
+      }));
+      if (stale()) return null;
+    }
+
+    for (let number = 1; number <= pages.length; number++) {
+      const page = pages[number - 1];
       const viewport = page.getViewport({ scale });
 
       const frame = document.createElement("div");
@@ -218,114 +232,196 @@ export async function render(bytes, root, options = {}) {
       frame.style.setProperty("--scale-round-x", "1px");
       frame.style.setProperty("--scale-round-y", "1px");
 
-      // WebKit leaves page zoom out of devicePixelRatio, so in the desktop app
-      // at 125% the canvas would be drawn for 100% and stretched. The host
-      // tells the frame the zoom as `density` and it multiplies in here. The
-      // cap bounds the canvas memory of a large page on a dense screen.
-      const ratio = Math.min((globalThis.devicePixelRatio || 1) * density, 3);
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.floor(viewport.width * ratio);
-      canvas.height = Math.floor(viewport.height * ratio);
-      canvas.style.width = `${Math.floor(viewport.width)}px`;
-      canvas.style.height = `${Math.floor(viewport.height)}px`;
-      frame.append(canvas);
-
+      // Until the page is built, its text is one hidden node: the same string
+      // the span layer will hold, so the document's text, its offsets and the
+      // anchors made against them do not depend on which pages are built.
+      const joined = joinedText(contents[number - 1].items, number > 1);
       const layer = document.createElement("div");
       layer.className = "textLayer";
+      if (joined) layer.append(gap(joined));
       frame.append(layer);
       staging.append(frame);
 
-      entries.push({ number, page, canvas, viewport, ratio, height: viewport.height });
-
-      const content = await page.getTextContent();
-      const text = new pdfjs.TextLayer({ textContentSource: content, container: layer, viewport });
-      await text.render();
-      if (mine !== generation) return null;
-
       starts.push(offset);
-      rewrite(text.textDivs, content.items, number > 1);
-      // pdf.js may omit a content item from `textDivs` (for example a font
-      // run with no selectable glyphs). The agent anchors against the DOM it
-      // can actually walk, so page offsets must use that DOM length rather
-      // than the theoretical content-item total returned by rewrite().
-      offset += frame.textContent.length;
+      offset += joined.length;
 
-      // The links come after the offset is taken, so that nothing they hold
-      // could ever count as text. A page whose annotations cannot be read is
-      // still a page worth showing.
-      try {
-        const links = await linkLayer(page, viewport, document_, ongo);
-        if (mine !== generation) return null;
-        frame.append(links);
-      } catch {
-        if (mine !== generation) return null;
-      }
+      entries.push({ number, page, frame, viewport, content: contents[number - 1], built: false,
+        building: false, wanted: false, task: null, height: viewport.height });
     }
 
-    // Only the pages that will be in view after the swap are rasterized
-    // before it. The rest are frames with their canvases already sized, so
-    // the document the agent reads is complete, and they are drawn after the
-    // swap: drawing into a canvas that is already in place changes no DOM.
-    // The anchor is read once here to choose them and again at the swap to
-    // restore the position, because the reader may have scrolled meanwhile.
+    // Only the pages that will be in view after the swap are built before
+    // it, plus one either side. The rest are sized frames: drawing into them
+    // later changes no text. The anchor is read once here to choose them and
+    // again at the swap to restore the position, because the reader may have
+    // scrolled meanwhile.
     const hint = beforeswap?.();
     const target = Math.min(Math.max(1, hint?.page ?? 1), entries.length);
-    const wanted = 2 * document.documentElement.clientHeight * (spread ? 2 : 1);
+    const wanted = document.documentElement.clientHeight * (spread ? 2 : 1);
     const early = new Set();
     if (target > 1) early.add(target - 1);
     for (let number = target, height = 0; number <= entries.length && height < wanted; number++) {
       early.add(number);
       height += entries[number - 1].height;
     }
+    const last = Math.max(...early);
+    if (last < entries.length) early.add(last + 1);
+    const ctx = { document: document_, ongo, stale, ratio: Math.min((globalThis.devicePixelRatio || 1) * density, 3) };
     for (const number of [...early].sort((a, b) => a - b)) {
-      await rasterize(entries[number - 1]);
-      if (mine !== generation) return null;
+      await buildPage(entries[number - 1], ctx);
+      if (stale()) return null;
     }
 
     const anchor = beforeswap?.();
+    // The previous document's lazy work stops here, before its pages go.
+    stopLazy();
     root.replaceChildren(staging);
     pageStarts = starts;
     afterswap?.(anchor);
     loadings.set(document_, loading);
     handedOn = true;
-    const rest = entries.filter((entry) => !early.has(entry.number));
-    return { pages: document_.numPages, document: document_, sizes,
-      rastered: rasterizeRest(rest, () => mine !== generation) };
+    const rastered = startLazy(entries, ctx);
+    return { pages: document_.numPages, document: document_, sizes, rastered };
   } finally {
-    if (!handedOn) await closeDocument(document_, loading);
+    if (!handedOn) {
+      for (const entry of entries) entry.task?.cancel();
+      await closeDocument(document_, loading);
+    }
   }
 }
 
-/// Draw one page into the canvas its frame already holds, then release the
-/// pdf.js page. The canvas keeps its size and place; only its pixels change.
-async function rasterize(entry) {
-  await entry.page.render({
-    canvas: entry.canvas,
-    canvasContext: entry.canvas.getContext("2d"),
-    viewport: entry.viewport,
-    transform: entry.ratio === 1 ? null : [entry.ratio, 0, 0, entry.ratio, 0, 0],
-  }).promise;
-  entry.page.cleanup();
+/// Lazy building of the pages that were not ready at the swap.
+let lazy = null;
+
+function stopLazy() {
+  lazy?.stop();
+  lazy = null;
 }
 
-/// Draw the pages left over after the swap, nearest the viewport first. The
-/// promise settles when every page is drawn or a newer render has taken over,
-/// and never rejects: a page that cannot be drawn stays a blank page, as one
-/// whose annotations cannot be read stays a page.
-async function rasterizeRest(entries, superseded) {
-  const middle = innerHeight / 2;
-  const distance = (entry) => {
-    const rect = entry.canvas.getBoundingClientRect();
-    return Math.abs((rect.top + rect.bottom) / 2 - middle);
-  };
-  const order = entries.map((entry) => ({ entry, away: distance(entry) })).sort((a, b) => a.away - b.away);
-  for (const { entry } of order) {
-    if (superseded()) return;
+/// Build the remaining pages as they come within about a viewport of the
+/// screen. Returns a promise that settles when the pages near the viewport
+/// have been built (or the document was superseded); it never rejects.
+function startLazy(entries, ctx) {
+  const queue = [];
+  const byFrame = new Map(entries.map((entry) => [entry.frame, entry]));
+  let stopped = false;
+  let pumping = false;
+  let resolveFirst = () => {};
+  const first = new Promise((resolve) => { resolveFirst = resolve; });
+  const gone = () => stopped || ctx.stale();
+
+  async function pump() {
+    if (pumping) return;
+    pumping = true;
     try {
-      await rasterize(entry);
-    } catch {
-      /* a newer render may have released the document under this page */
+      while (!gone()) {
+        const entry = queue.shift();
+        if (!entry) break;
+        if (entry.built || entry.building || !entry.wanted) continue;
+        try {
+          await buildPage(entry, { ...ctx, stale: gone });
+        } catch {
+          /* a page that cannot be built stays a sized, blank page */
+        }
+      }
+    } finally {
+      pumping = false;
+      resolveFirst();
     }
+  }
+
+  const todo = entries.filter((entry) => !entry.built);
+  let observer = null;
+  if (todo.length === 0) {
+    resolveFirst();
+  } else {
+    try {
+      // `root: document` makes the margin apply inside a frame whose parent
+      // is another origin, where the implicit root would ignore it.
+      observer = new IntersectionObserver((changes) => {
+        for (const change of changes) {
+          const entry = byFrame.get(change.target);
+          if (!entry || entry.built) continue;
+          entry.wanted = change.isIntersecting;
+          if (change.isIntersecting && !queue.includes(entry)) queue.push(entry);
+        }
+        void pump();
+      }, { root: document, rootMargin: "100% 0px 100% 0px" });
+      for (const entry of todo) observer.observe(entry.frame);
+    } catch {
+      // No observer to wait on: build the rest in idle time, in order.
+      for (const entry of todo) { entry.wanted = true; queue.push(entry); }
+      const idle = globalThis.requestIdleCallback ?? ((fn) => setTimeout(fn, 50));
+      idle(() => { void pump(); });
+    }
+  }
+
+  lazy = {
+    stop() {
+      stopped = true;
+      observer?.disconnect();
+      for (const entry of entries) entry.task?.cancel();
+      queue.length = 0;
+      resolveFirst();
+    },
+  };
+  return first;
+}
+
+/// Make one page complete: its canvas drawn, its selectable text spans in
+/// place of the hidden text node, and its links. The page is inserted into
+/// the frame only once drawn, so a page is never seen half-built.
+async function buildPage(entry, ctx) {
+  if (entry.built || entry.building) return;
+  entry.building = true;
+  const { frame, page, viewport, number } = entry;
+  const { ratio, stale } = ctx;
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.floor(viewport.width * ratio);
+    canvas.height = Math.floor(viewport.height * ratio);
+    // WebKit leaves page zoom out of devicePixelRatio, so in the desktop app
+    // at 125% the canvas would be drawn for 100% and stretched. The host
+    // tells the frame the zoom as `density` and it multiplies in here. The
+    // cap bounds the canvas memory of a large page on a dense screen.
+    canvas.style.width = `${Math.floor(viewport.width)}px`;
+    canvas.style.height = `${Math.floor(viewport.height)}px`;
+    try {
+      entry.task = page.render({
+        canvas,
+        canvasContext: canvas.getContext("2d"),
+        viewport,
+        transform: ratio === 1 ? null : [ratio, 0, 0, ratio, 0, 0],
+      });
+      await entry.task.promise;
+    } catch {
+      /* cancelled, or a page that cannot be drawn: blank, but still a page */
+    }
+    entry.task = null;
+    if (stale()) return;
+    frame.prepend(canvas);
+
+    const layer = document.createElement("div");
+    layer.className = "textLayer";
+    const text = new pdfjs.TextLayer({ textContentSource: entry.content, container: layer, viewport });
+    await text.render();
+    if (stale()) return;
+    rewrite(text.textDivs, entry.content.items, number > 1);
+    frame.querySelector(".textLayer")?.replaceWith(layer);
+
+    // The links come after the text, so that nothing they hold could ever
+    // count as text. A page whose annotations cannot be read is still a page.
+    try {
+      const links = await linkLayer(page, viewport, ctx.document, ctx.ongo);
+      if (stale()) return;
+      frame.append(links);
+    } catch {
+      /* no links */
+    }
+    entry.built = true;
+    entry.content = null;
+    page.cleanup();
+  } finally {
+    entry.building = false;
   }
 }
 
@@ -365,6 +461,16 @@ function runsOf(items) {
       height: Math.hypot(item.transform[2], item.transform[3]) || item.height || 1,
       eol: Boolean(item.hasEOL),
     }));
+}
+
+/// The text a page holds once built, as one string, without any DOM: what
+/// `rewrite` leaves in the span layer. A page that is not built yet carries
+/// this as a single hidden node, so the published text is the same whether
+/// or not the page has been reached.
+function joinedText(items, leadingBreak) {
+  const pieces = piecesOf([runsOf(items)]);
+  if (!pieces.some((piece) => piece.kind !== "gap")) return "";
+  return (leadingBreak ? "\n\n" : "") + pieces.map((piece) => piece.text).join("");
 }
 
 /// Turn pdf.js's spans into something the agent can read as prose.

@@ -487,7 +487,7 @@ async function run() {
     await frame.contentWindow.librepaperViewer.rastered;
     return { total: frame.contentDocument.querySelectorAll(".page canvas").length, inked: window.inked() };
   `);
-  check("and every page is drawn once the background raster ends", rastered.total === 150 && rastered.inked === 150, JSON.stringify(rastered));
+  check("and only the pages near the viewport are drawn once the lazy build settles", rastered.total === 150 && rastered.inked > 0 && rastered.inked < 150, JSON.stringify(rastered));
 
   /* --- a resize while a paint runs still reports the delivery drawn ------- */
 
