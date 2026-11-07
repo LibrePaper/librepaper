@@ -49,18 +49,18 @@ function stateWith(doc) {
 test("the fold service offers the range starting on the line", () => {
   const doc = "#f[\n  x\n]\n";
   let state = stateWith(doc);
-  assert.equal(foldable(state, 0, 4), null);
-  state = state.update({ effects: setFolds.of([{ from: 4, to: 9 }]) }).state;
-  assert.deepEqual(foldable(state, 0, 4), { from: 4, to: 9 });
-  assert.equal(foldable(state, 5, 8), null);
+  assert.equal(foldable(state, 0, 3), null);
+  state = state.update({ effects: setFolds.of([{ from: 3, to: 8 }]) }).state;
+  assert.deepEqual(foldable(state, 0, 3), { from: 3, to: 8 });
+  assert.equal(foldable(state, 4, 7), null);
 });
 
 test("folds follow an insertion before them", () => {
   let state = stateWith("#f[\n  x\n]\n");
-  state = state.update({ effects: setFolds.of([{ from: 4, to: 9 }]) }).state;
+  state = state.update({ effects: setFolds.of([{ from: 3, to: 8 }]) }).state;
   state = state.update({ changes: { from: 0, insert: "ab\n" } }).state;
-  assert.deepEqual(state.field(foldsField), [{ from: 7, to: 12 }]);
-  assert.deepEqual(foldable(state, 3, 7), { from: 7, to: 12 });
+  assert.deepEqual(state.field(foldsField), [{ from: 6, to: 11 }]);
+  assert.deepEqual(foldable(state, 3, 6), { from: 6, to: 11 });
 });
 
 function harness(request) {
