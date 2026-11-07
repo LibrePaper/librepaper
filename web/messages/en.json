@@ -2198,6 +2198,8 @@
   "reader_stale_selection": "The page changed while that comment was being placed. It has been refreshed to the current text; reselect the passage and try again.",
   "reader_still_connecting": "The current document is still connecting. Please retry when it has loaded.",
   "reader_tracking_failed": "Track changes could not be turned on: this document is not connected for editing.",
+  "reader_tracking_on": "Tracking changes",
+  "reader_tracking_open": "Tracking is on. Open the Changes panel.",
   "readerb_backup_failing": "Backups are on but failing: {error}. Open Settings, then Backups.",
   "readerb_backup_lost_access": "Backups are on but the desktop app lost access to this account. Open Settings, then Backups, to reconnect.",
   "readerb_agent_waiting": "Agent is waiting for your permission",

@@ -230,7 +230,7 @@
   import { citationKeysExtension, citationsChanged } from "../lib/citation-keys-extension.js";
   import { completionExtension, formatOfPath } from "../lib/completion/index.js";
   import { searchZotero, zoteroItem } from "../lib/desktop/client.js";
-  import { changeMarks, setChangeMarks } from "../lib/change-marks.js";
+  import { changeMarks, changeMarkClicks, setChangeMarks } from "../lib/change-marks.js";
   import { sourceCommentBar } from "../lib/source-comment-bar.js";
   import { VERBS } from "../lib/annotating.js";
   import { commentMarks, setCommentMarks as setCommentMarksEffect } from "../lib/source-comment-marks.js";
@@ -271,7 +271,7 @@
     tracking = false, me = { who: "", author: "" }, selectedChange = null,
     visual = false, imageUrl = null,
     analyze = analyzeBibliography,
-    onchange, oncaret, onfilechange, onbibliography, onsave, onquit, oncomment,
+    onchange, oncaret, onfilechange, onbibliography, onsave, onquit, oncomment, onchangeselect,
     // Called with the caret's formatting (formatState) while visual mode is on.
     onformatstate,
     // Whether the bar over a selection offers the annotating verbs, and what
@@ -297,6 +297,8 @@
   const pendingChanges = changeMarks();
   // The same reasoning as `pendingChanges`: one instance, shared by every file.
   const commentMarkExtension = commentMarks({ onselect: (id) => oncomment?.(id) });
+  // The same reasoning: a click on a tracked change selects its row in the Changes panel.
+  const changeMarkClickExtension = changeMarkClicks({ onselect: (id) => onchangeselect?.(id) });
 
   // Every file's comment marks, as the reader sent them. Only the file on
   // screen is drawn; `show` draws it again when the file changes.
@@ -1381,6 +1383,7 @@
         // After the change plugin, so the anchors follow records already written.
         anchorsPlugin(id, tracking.created),
         commentMarkExtension,
+        changeMarkClickExtension,
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             // The marks were mapped through the edit. Drawing them again from

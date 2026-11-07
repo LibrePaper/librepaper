@@ -2183,6 +2183,8 @@
   "reader_stale_selection": "放置该批注时页面发生了变化，已刷新为当前文本。请重新选择段落后再试。",
   "reader_still_connecting": "当前文档仍在连接。请在加载完成后重试。",
   "reader_tracking_failed": "无法开启修订：此文档未连接到编辑。",
+  "reader_tracking_on": "正在记录修订",
+  "reader_tracking_open": "修订记录已开启。打开“修改”面板。",
   "readerb_backup_failing": "备份已开启但失败：{error}。请前往 设置 > 备份。",
   "readerb_backup_lost_access": "备份已开启，但桌面应用失去了对此账户的访问权限。要重新连接，请前往 设置 > 备份。",
   "readerb_agent_waiting": "智能体正在等待你的授权",

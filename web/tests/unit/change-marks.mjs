@@ -5,7 +5,7 @@
 // marks follow edits instead of being cleared, and a fresh list replaces them.
 import assert from "node:assert/strict";
 import { EditorState } from "@codemirror/state";
-import { changeMarks, setChangeMarks } from "../../src/lib/change-marks.js";
+import { changeIdOf, changeMarks, setChangeMarks } from "../../src/lib/change-marks.js";
 
 const field = changeMarks();
 const me = { who: "me" };
@@ -108,6 +108,20 @@ const cat = [{ change: "c1", text: "cat" }];
   assert.equal(marks.find((mark) => mark.tag === "removed").from, 15);
   const redrawn = edited.update({ effects: setChangeMarks.of({ changes: [], gaps: [], me }) }).state;
   assert.deepEqual(found(redrawn), [], "a fresh list replaces the mapped marks");
+}
+
+{
+  // A mark names its change, so a click on it can select the change's row.
+  const state = draw("The dog sat.", { changes: [change()], gaps: [gap(4, cat)], me });
+  const ids = [];
+  state.field(field).between(0, state.doc.length, (from, to, value) => {
+    ids.push(value.spec?.attributes?.["data-change"] ?? value.widget?.change);
+  });
+  assert.deepEqual(ids, ["c1", "c1"], "the inserted span and the removed text both name c1");
+  // The id comes from the nearest marked node; a node without one has none.
+  assert.equal(changeIdOf({ closest: () => ({ dataset: { change: "c2" } }) }), "c2");
+  assert.equal(changeIdOf({ closest: () => null }), null);
+  assert.equal(changeIdOf(null), null);
 }
 
 console.log("change-marks: pending changes are drawn in the text, mapped through edits, and replaced on request");

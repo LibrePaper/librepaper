@@ -83,7 +83,7 @@ function marksFor(state, changes, gaps, me, selected) {
       marks.push(
         Decoration.mark({
           class: `change-added${stateClasses(change, me, selected)}`,
-          attributes: { title: change.author || "" },
+          attributes: { title: change.author || "", "data-change": change.id },
         }).range(change.from, change.to),
       );
     }
@@ -124,5 +124,29 @@ export function changeMarks() {
       return value;
     },
     provide: (field) => EditorView.decorations.from(field),
+  });
+}
+
+/// The id of the tracked change a node sits in, or null. A mark carries its
+/// change's id, and so does the widget that shows removed text, so a click
+/// on either one reaches the same change.
+export function changeIdOf(node) {
+  const owner = node?.closest?.("[data-change]");
+  return owner ? owner.dataset.change : null;
+}
+
+/// Clicks on a tracked change. `onselect(id)` gets the change's id; the click
+/// still places the caret, as a click on a comment mark does. Its own
+/// extension rather than part of `changeMarks()`, which is a field and is read
+/// as one.
+/** @param {{ onselect?: (id: string) => void }} [options] */
+export function changeMarkClicks({ onselect } = {}) {
+  return EditorView.domEventHandlers({
+    click(event) {
+      const id = changeIdOf(/** @type {Element | null} */ (event.target));
+      if (id) onselect?.(id);
+      // Not handled here: the click still places the caret.
+      return false;
+    },
   });
 }

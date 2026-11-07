@@ -710,6 +710,16 @@
     card?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
+  // A click on a tracked change in the source does what a click on a comment
+  // mark does: the row is selected and its panel opened, without taking the
+  // keyboard. The Changes panel brings the row into view.
+  function selectChangeFromSource(id) {
+    const row = changeRows.find((item) => String(item.id) === String(id));
+    if (!row) return;
+    selectedChange = row.id;
+    void showPanel("changes");
+  }
+
   // Remembers the editor's place before a jump to `file` at `offset`. Nothing
   // is remembered when the editor would not move, or when the jump lands where
   // the editor already is. An undefined offset is a line the editor finds
@@ -4556,6 +4566,14 @@
            by Diagnostics, so the bar only carries the local execution switch. -->
       {@render visualModeControl()}
       {@render localExecutionControl()}
+      <!-- Shown only while tracked changes are being recorded, so a reviewer
+           who has closed the Changes panel can still see that edits are tracked. -->
+      {#if tracking}
+        <button type="button" class="tracking-pill" title={m.reader_tracking_open()} onclick={() => void focusPanel("changes")}>
+          <Icon name="pencil" size={14} />
+          <span>{m.reader_tracking_on()}</span>
+        </button>
+      {/if}
       <div class="presence" role="group" aria-label={connected ? m.readerd_people_connected({ count: peers }) : connectionNote} title={connected ? m.readerd_people_connected({ count: peers }) : connectionNote}>
         {#each participants.slice(0, 3) as person (person.key)}
           <Avatar name={person.name} key={person.key} colour={person.colour} size={6} />
@@ -4834,6 +4852,7 @@
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   oncomment={(id) => focusAnnotation(comments.find((item) => String(item.id) === String(id))?.id, { focus: false })}
+                  onchangeselect={selectChangeFromSource}
                   onformatstate={(state) => { formatActive = state; }}
                   authorship={authorsActive && authorsMap ? { authors: authorsMap, only: authorsOnly } : null}
                   onauthorship={(summary) => (authorsSummary = summary)}
@@ -5242,6 +5261,9 @@
   @media (max-width: 600px) {
     /* Nobody else here yet: an empty group would still take a gap. */
     .presence:empty { display: none; }
+  .tracking-pill { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * 1.5); min-height: 1.75rem; padding: 0 calc(var(--spacing) * 2.5); border: 1px solid var(--color-divider); border-radius: 999px; background: transparent; color: var(--color-text-secondary); font-size: var(--text-xs); white-space: nowrap; cursor: pointer; }
+  .tracking-pill:hover { background: var(--color-row-hover); color: var(--color-text); }
+  .tracking-pill:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
   }
   .presence { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * .5); color: var(--color-text-secondary); font-size: var(--text-xs); }
   .presence-offline { display: inline-flex; align-items: center; gap: calc(var(--spacing) * .75); color: var(--color-text-secondary); font-size: var(--text-xs); }
