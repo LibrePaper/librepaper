@@ -2701,7 +2701,11 @@
   // until dismissed; an owner, or a role not yet known, is shown nothing.
   const shareIntroWasSeen = DEMO || shareIntroSeen(SLUG);
   let shareIntroDismissed = $state(false);
-  let shareIntroHeight = $state(0);
+  // Measured as a fraction of a pixel: a height rounded down leaves the
+  // workspace a pixel too tall, and the page scrolls.
+  /** @type {ResizeObserverSize[] | undefined} */
+  let shareIntroBox = $state();
+  const shareIntroHeight = $derived(shareIntroBox?.[0]?.blockSize ?? 0);
   const shareIntro = $derived(shareIntroWasSeen || shareIntroDismissed ? null : shareIntroKind(doc.role));
   // Taken off the workspace only while the line is shown, as the height is
   // not reset when the banner is removed.
@@ -4765,7 +4769,7 @@
 {/if}
 
 {#if shareIntro}
-  <div class="share-intro" role="status" bind:clientHeight={shareIntroHeight}>
+  <div class="share-intro" role="status" bind:borderBoxSize={shareIntroBox}>
     <span class="share-intro-text">{shareIntro === "edit" ? m.readerd_share_intro_edit() : shareIntro === "comment" ? m.readerd_share_intro_comment() : m.readerd_share_intro_view_ask()}</span>
     <button type="button" class="btn btn-sm lp-control-neutral" onclick={() => (shareIntroDismissed = true)}>{m.toasts_dismiss()}</button>
   </div>
