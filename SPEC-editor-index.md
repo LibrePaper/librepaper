@@ -166,10 +166,15 @@ Each step ships on its own and leaves the app working.
    `citedKeys` and `skipRanges` return on the existing fixtures.
 3. **Labels and references.** Go to definition, find references, rename and
    unknown-reference diagnostics, for every format at once.
-4. **Move consumers.** The outline, completion's label lists
-   (`projectLabels`), spellcheck, Harper and word count read the index. The
-   old per-format functions are deleted once nothing calls them, and their
-   regexes move inside the adapters.
+4. **Move consumers.** Label completion (LaTeX `\ref`, Quarto `@`) and the
+   citation checker's Typst labels read the index, through the editor's live
+   index; `latexLabels`, `typstLabels` and `projectLabels` are gone. The
+   outline, spellcheck regions and word count stay on `extractOutline` and
+   `skipRanges`: those are the adapters' own scanners, so routing the
+   consumers through the index would call the same code later, and spellcheck
+   needs the live text of the open file, which the index trails by an edit
+   pause. Quarto's label scan lives in `lib/quarto-labels.js`, shared by
+   completion and the Markdown adapter.
 5. **Better parsers.** Replace adapter internals: Markdown with Pandoc and
    Quarto extensions to the Markdown parser; LaTeX with our own grammar;
    Typst with the renderer worker (see `wasm-typst`'s `SPIKE-tinymist.md`).

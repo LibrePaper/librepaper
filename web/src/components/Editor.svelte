@@ -699,7 +699,11 @@
       const texts = {};
       for (const [file, text] of Object.entries(tree.texts)) texts[file] = String(text ?? "");
       const bibliography = parsedBibliography ? parsedBibliography.entries.map((entry) => entry.key) : null;
-      if (liveIndex.refresh({ texts, files: Object.keys(tree.files), bibliography })) view?.dispatch({ effects: indexChanged.of(null) });
+      // The signal is sent after the current task: a query can refresh the
+      // index from inside a view update, where dispatching would throw.
+      if (liveIndex.refresh({ texts, files: Object.keys(tree.files), bibliography })) {
+        queueMicrotask(() => view?.dispatch({ effects: indexChanged.of(null) }));
+      }
     });
   }
   // Sets the document facts on a view. Reconfiguring the visual layer empties
@@ -744,11 +748,10 @@
       return parsedBibliography.entries;
     },
     format: () => formatOf(pathOfDoc(session?.doc, showing)),
-    // This runs inside a CodeMirror view update, where currentIndex() could
-    // dispatch a refresh, so it reads the live index as it stands. The index is
-    // refreshed on the same edit pause that rescans the citations.
+    // Typst's @name is a reference when a label of that name exists. This can
+    // run inside a view update; currentIndex() defers its signal, so it is safe.
     labels: () => (formatOf(pathOfDoc(session?.doc, showing)) === "typst"
-      ? new Set(labelList(liveIndex.project, {}, { formats: new Set(["typst"]) }).map((label) => label.id))
+      ? new Set(labelList(currentIndex(), {}, { formats: new Set(["typst"]) }).map((label) => label.id))
       : new Set()),
   });
 

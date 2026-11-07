@@ -3,13 +3,13 @@
 // load them directly.
 
 /**
+ * What completion knows of the project. `labels` is the project's labels from
+ * the editor's live index; when absent, completion indexes `texts` itself.
  * @typedef {{
  *   path: string,
  *   format: "latex"|"typst"|"markdown"|"quarto"|"html"|"",
  *   texts: Record<string, string>,
  *   files: string[],
- *   // The project's labels from the editor's live index; when absent,
- *   // completion indexes `texts` itself.
  *   labels?: (options: { first?: string, formats?: Set<string> }) => Array<{ id: string, path: string, line: number, title?: string }>,
  * }} CompletionProject
  */
