@@ -148,7 +148,20 @@ export function bibliographyCacheKey({ main = "", format = "", source = "", text
     /^\s*bibliography\s*:/i.test(line) || /^\s*-\s*[^#].*\.bib\s*$/i.test(line) ||
     /#bibliography\s*\(|\\(?:addbibresource|bibliography)\b/.test(line) || /^\s*(?:---|\.\.\.)\s*$/.test(line) || /\/\*|\*\//.test(line)
       ? [`${index + 1}:${line}`] : []).join("\n");
-  return JSON.stringify({ main: string(main), format: string(format), config, selected: selectedBibliographyFiles(source, format), bib: bibliographyFiles({ texts }).map((path) => [path, string(texts[path])]) });
+  return JSON.stringify({ main: string(main), format: string(format), config, selected: selectedBibliographyFiles(source, format), bib: bibliographyFiles({ texts }).map((path) => [path, string(texts[path]).length, contentHash(string(texts[path]))]) });
+}
+// A 53-bit hash of a text, so that the key holds a number where it once held
+// the whole file. Together with the length, a collision is not a concern.
+function contentHash(text) {
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 2654435761);
+    h2 = Math.imul(h2 ^ c, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return 4294967296 * (2097151 & h2) + (h1 >>> 0);
 }
 
 function collisionSuffix(index) {
@@ -261,8 +274,7 @@ export function planZoteroImport({ source, targetPath, texts, item, format = "ma
 }
 export class BibliographyCache {
   constructor(limit = 4) { this.limit = limit; this.values = new Map(); }
-  get(request, analyze) {
-    const key = bibliographyCacheKey(request);
+  get(request, analyze, key = bibliographyCacheKey(request)) {
     if (this.values.has(key)) { const value = this.values.get(key); this.values.delete(key); this.values.set(key, value); return value; }
     const promise = Promise.resolve().then(() => analyze(request)).then((result) => ({ entries: (result?.entries || []).map(normalized), diagnostics: result?.diagnostics || [] })).catch((error) => { this.values.delete(key); throw error; });
     this.values.set(key, promise);
