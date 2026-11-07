@@ -96,6 +96,7 @@
   import DesktopMismatch from "./DesktopMismatch.svelte";
   import { anonymousIdentity, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import Avatar from "./Avatar.svelte";
+  import { presenceJumpTarget } from "../lib/presence-jump.js";
   import { extractOutline } from "../lib/outline.js";
   import { countWordsIn, documentWords, sectionWords } from "../lib/word-count.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
@@ -721,6 +722,25 @@
     const here = { file: ws.openFile, offset: editor.caret() };
     if (here.file === file && here.offset === offset) return;
     jumps.remember(here);
+  }
+
+  // A click on a collaborator's avatar goes to where they are: their file and
+  // their caret in it, brought into view and flashed in their colour. This
+  // reader's own caret and selection are left alone. With no caret known, the
+  // file is opened and nothing more. It needs the source pane, so it does
+  // nothing while the source is closed.
+  async function jumpToPerson(person) {
+    if (!editing || !editor || !session) return;
+    const target = presenceJumpTarget({ file: person.file, caret: session.caretOf(person.peer) });
+    if (!target || !fileExists(target.file)) return;
+    rememberPlace(target.file, target.from);
+    if (compact) {
+      showMobileView("source");
+      await tick();
+    }
+    if (!editing || !editor) return;
+    ws.openFile = target.file;
+    if (target.from != null) editor.revealPeer(target.file, target.from, target.to, person.colour);
   }
 
   // Back is not a jump, so the place it leaves is not remembered. It does
@@ -4558,7 +4578,9 @@
       {@render localExecutionControl()}
       <div class="presence" role="group" aria-label={connected ? m.readerd_people_connected({ count: peers }) : connectionNote} title={connected ? m.readerd_people_connected({ count: peers }) : connectionNote}>
         {#each participants.slice(0, 3) as person (person.key)}
-          <Avatar name={person.name} key={person.key} colour={person.colour} size={6} />
+          <button type="button" class="presence-jump" title={person.name} aria-label={m.common_go_to_cursor({ name: person.name })} onclick={() => jumpToPerson(person)}>
+            <Avatar name={person.name} key={person.key} colour={person.colour} size={6} />
+          </button>
         {/each}
         {#if participants.length > 3}<span class="presence-more">+{participants.length - 3}</span>{/if}
         {#if !connected && !DEMO}<span class="presence-offline"><span class="presence-offline-dot" aria-hidden="true"></span>{m.common_offline()}</span>{/if}
@@ -4700,7 +4722,7 @@
   {/snippet}
 
   {#snippet collaborationPanel()}
-    {#if compact}<Presence {participants} />{/if}
+    {#if compact}<Presence {participants} onjump={jumpToPerson} />{/if}
     <Collaboration messages={chatState.messages} more={chatState.more} loadingOlder={chatState.loadingOlder}
       loadError={chatState.loadError} canClear={chatState.canClear} onloadolder={liveChat.loadOlder}
       onclear={askClearChat} {connected} canPost={mayChat} onsend={sendLiveChat}
@@ -5246,7 +5268,9 @@
   .presence { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * .5); color: var(--color-text-secondary); font-size: var(--text-xs); }
   .presence-offline { display: inline-flex; align-items: center; gap: calc(var(--spacing) * .75); color: var(--color-text-secondary); font-size: var(--text-xs); }
   .presence-offline-dot { width: .5rem; height: .5rem; flex: 0 0 .5rem; border-radius: 50%; background: var(--color-error-solid); }
-  .presence :global(.avatar + .avatar) { margin-left: calc(var(--spacing) * -1.5); box-shadow: 0 0 0 2px var(--color-shell); }
+  .presence-jump { display: inline-flex; flex: none; padding: 0; border: 0; border-radius: 50%; background: none; cursor: pointer; }
+  .presence-jump:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+  .presence-jump + .presence-jump { margin-left: calc(var(--spacing) * -1.5); box-shadow: 0 0 0 2px var(--color-shell); }
   .presence-more { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem; margin-left: calc(var(--spacing) * -1.5); border-radius: 50%; background: var(--color-divider); color: var(--color-text-secondary); font-size: .65rem; }
   /* A heading over a run of items. Aligned with the names rather than with
      the panel edge, so the column the items make starts once. */

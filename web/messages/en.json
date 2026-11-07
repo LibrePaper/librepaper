@@ -733,6 +733,7 @@
   "common_frequency": "Frequency",
   "common_get_desktop_app": "Get the desktop app",
   "common_give_project_name": "Give the project a name.",
+  "common_go_to_cursor": "Go to {name}'s cursor",
   "common_grammar_and_spelling": "Grammar and spelling",
   "common_history": "History",
   "common_inline_math": "Inline math",

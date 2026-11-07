@@ -733,6 +733,7 @@
   "common_frequency": "Frecuencia",
   "common_get_desktop_app": "Obtener la aplicación de escritorio",
   "common_give_project_name": "Asigne un nombre al proyecto.",
+  "common_go_to_cursor": "Ir al cursor de {name}",
   "common_grammar_and_spelling": "Gramática y ortografía",
   "common_history": "Historial",
   "common_inline_math": "Matemáticas en línea",
