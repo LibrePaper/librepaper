@@ -42,7 +42,7 @@
   // would leave the switch half off.
   const completionOn = (on) => (on ? autocompletion({ activateOnTyping: true }) : []);
   const bracketsOn = (on) => (on ? [closeBrackets(), keymap.of(closeBracketsKeymap)] : []);
-  const checkOn = (on, citations) => (on ? [lintGutter(), citations] : []);
+  const checkOn = (on, citations, index) => (on ? [lintGutter(), citations, index] : []);
   // The checker for a source, chosen from the setting, the dialect, the prose
   // format of the file and its text, which is read only when Harper is asked for. Code and data files get no checker, and
   // the browser's spellcheck is off there, where every identifier would be
@@ -229,6 +229,11 @@
   import { typstLabels } from "../lib/citation-keys.js";
   import { citationKeysExtension, citationsChanged } from "../lib/citation-keys-extension.js";
   import { completionExtension, formatOfPath } from "../lib/completion/index.js";
+  import { createLiveIndex } from "../lib/document-index/live.js";
+  import { indexEditing, indexDiagnostics, indexChanged } from "../lib/document-index-extensions/index.js";
+  import { goToDefinition } from "../lib/document-index-extensions/navigation.js";
+  import { findReferencesCommand } from "../lib/document-index-extensions/references.js";
+  import { renameCommand } from "../lib/document-index-extensions/rename.js";
   import { searchZotero, zoteroItem } from "../lib/desktop/client.js";
   import { changeMarks, changeMarkClicks, setChangeMarks } from "../lib/change-marks.js";
   import { sourceCommentBar } from "../lib/source-comment-bar.js";
@@ -668,6 +673,34 @@
   function scheduleFacts() {
     clearTimeout(factsTimer);
     factsTimer = setTimeout(refreshFacts, 300);
+    clearTimeout(indexTimer);
+    indexDirty = true;
+    indexTimer = setTimeout(refreshIndex, 300);
+  }
+  // The project index behind go to definition, hover, references, rename and
+  // the index diagnostics. It follows the facts' cadence.
+  const liveIndex = createLiveIndex();
+  let indexTimer = null;
+  // Set by any edit, local or remote, and cleared by a refresh. A query reads
+  // the index through `currentIndex`, which refreshes first while it is set, so
+  // offsets are never those of text that has since changed.
+  let indexDirty = true;
+  function currentIndex() {
+    if (indexDirty) refreshIndex();
+    return liveIndex.project;
+  }
+  function refreshIndex() {
+    clearTimeout(indexTimer);
+    indexDirty = false;
+    untrack(() => {
+      if (!session?.doc) return;
+      const tree = treeForDoc(session.doc);
+      /** @type {Record<string, string>} */
+      const texts = {};
+      for (const [file, text] of Object.entries(tree.texts)) texts[file] = String(text ?? "");
+      const bibliography = parsedBibliography ? parsedBibliography.entries.map((entry) => entry.key) : null;
+      if (liveIndex.refresh({ texts, files: Object.keys(tree.files), bibliography })) view?.dispatch({ effects: indexChanged.of(null) });
+    });
   }
   // Sets the document facts on a view. Reconfiguring the visual layer empties
   // them, so this runs again after each reconfigure with `fresh` set. Otherwise
@@ -713,6 +746,41 @@
     format: () => formatOf(pathOfDoc(session?.doc, showing)),
     labels: () => (formatOf(pathOfDoc(session?.doc, showing)) === "typst" ? typstLabels(treeForDoc(session.doc).texts) : new Set()),
   });
+
+  // What the document-index extensions read and do through the editor.
+  /** @type {import("../lib/document-index-extensions/context.js").IndexContext} */
+  const indexContext = {
+    project: currentIndex,
+    path: () => pathOfDoc(session.doc, showing),
+    open: (path, at) => {
+      const id = textIdForPath(session.doc, path);
+      if (id) goToIn(id, at);
+    },
+    applyEdits: (edits) => {
+      const byPath = new Map();
+      for (const edit of edits) {
+        if (!byPath.has(edit.path)) byPath.set(edit.path, []);
+        byPath.get(edit.path).push(edit);
+      }
+      const here = pathOfDoc(session.doc, showing);
+      for (const [path, list] of byPath) {
+        const id = textIdForPath(session.doc, path);
+        if (!id) continue;
+        if (path === here && view) {
+          view.dispatch({
+            changes: list.map(({ from, to, insert }) => ({ from, to, insert })),
+            userEvent: "input.rename",
+            scrollIntoView: true,
+          });
+          continue;
+        }
+        const text = getTextFromDoc(id);
+        if (!text) continue;
+        for (const { from, to, insert } of [...list].sort((a, b) => b.from - a.from)) writeText(id, text, from, to, insert);
+      }
+    },
+  };
+  const indexChecks = indexDiagnostics(indexContext);
 
   // Maps a Zotero search response into the entries the completion list reads.
   function zoteroEntries(response) {
@@ -1065,6 +1133,7 @@
       redo: editable && (manager?.canRedo?.() ?? false),
       cut: editable && selected, copy: selected,
       paste: editable && pasteReadable, "select-all": true, find: true, replace: editable,
+      "go-to-definition": true, "find-references": true, "rename-symbol": editable,
       bold: editable, italic: editable,
       link: editable && canLink(format),
       "numbered-list": editable && canList(format), "bulleted-list": editable && canList(format),
@@ -1112,6 +1181,9 @@
     else if (command === "comment") onannotate?.("comment", selection());
     else if (Object.hasOwn(structure, command)) runStructure(command);
     else if (command === "tab-focus") toggleTabFocusMode(target);
+    else if (command === "go-to-definition") goToDefinition(target, indexContext);
+    else if (command === "find-references") findReferencesCommand(indexContext)(target);
+    else if (command === "rename-symbol") renameCommand(indexContext)(target);
     else if (command === "find" || command === "replace") {
       openSearchPanel(target);
       if (command === "replace") target.dom.querySelector('[name="replace"]')?.focus();
@@ -1397,10 +1469,13 @@
           project: completionProject,
           sources: [bibliographyCompletion({ entries: bibliographyEntries, format: () => formatOf(pathOfDoc(session.doc, showing)) })],
         }),
+        // Go to definition, hover, references and rename over the project index.
+        indexEditing(indexContext),
+        EditorView.updateListener.of((update) => { if (update.docChanged) indexDirty = true; }),
         // Where a compile's errors are shown: the gutter mark, and with it the
         // underline and the hover the lint extension draws. Drawn only while
         // the check is on.
-        checkCompartment.of(checkOn(untrack(() => check), citationKeys)),
+        checkCompartment.of(checkOn(untrack(() => check), citationKeys, indexChecks)),
         visualCompartment.of(visualOn(untrack(() => visual), path)),
         EditorView.lineWrapping,
         // Pending changes, drawn in the text they changed.
@@ -1554,7 +1629,7 @@
         completionCompartment.reconfigure(completionOn(untrack(() => completion))),
         bracketsCompartment.reconfigure(bracketsOn(untrack(() => brackets))),
         spellcheckCompartment.reconfigure(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(id), () => target.state.doc.toString())),
-        checkCompartment.reconfigure(checkOn(untrack(() => check), citationKeys)),
+        checkCompartment.reconfigure(checkOn(untrack(() => check), citationKeys, indexChecks)),
       ],
     });
   }
@@ -1811,11 +1886,13 @@
       }));
       refreshBibliography();
       refreshFacts(view, showing, true);
+      refreshIndex();
       view.focus();
       return () => {
         bibliographyGeneration += 1;
         clearTimeout(bibliographyTimer);
         clearTimeout(factsTimer);
+        clearTimeout(indexTimer);
         clearTimeout(authorshipTimer);
         if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
         unsubscribeChanges();

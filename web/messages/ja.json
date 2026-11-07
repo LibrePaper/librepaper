@@ -544,10 +544,12 @@
   "commands_download_docx": "DOCXをダウンロード",
   "commands_download_html": "HTMLをダウンロード",
   "commands_download_source": "ソースファイルをダウンロード",
+  "commands_find_references": "参照を検索",
   "commands_focus_comments": "コメントにフォーカス",
   "commands_focus_files": "ファイルにフォーカス",
   "commands_focus_outline": "アウトラインにフォーカス",
   "commands_focus_preview": "プレビューにフォーカス",
+  "commands_go_to_definition": "定義へ移動",
   "commands_heading_level": "見出し {level}",
   "commands_layout_cycle":"エディター / プレビュー / 分割を切り替え",
   "commands_layout_document": "プレビューのみ表示",
@@ -570,6 +572,7 @@
   "commands_note_preview_visible": "プレビュー表示中",
   "commands_note_wide_layout": "ワイドレイアウト",
   "commands_palette_tooltip": "コマンドパレット ({keys})",
+  "commands_rename_symbol": "ラベルの名前を変更",
   "commands_shortcuts": "キーボードショートカットを表示",
   "commands_tab_focus": "Tabキーでフォーカスを移動する設定を切り替え",
   "commands_text_bigger": "テキストを大きく",
@@ -1336,6 +1339,9 @@
   "index_category_logic": "論理と集合",
   "index_category_operators": "演算子",
   "index_category_relations": "関係記号",
+  "index_diagnostics_missing_file": "プロジェクトに{name}というファイルはありません",
+  "index_diagnostics_replace": "{name}に置換",
+  "index_diagnostics_unknown_label": "{name}という名前のラベルはありません",
   "index_edit_in_source": "ソースで編集",
   "index_emoji_lualatex": "emojiパッケージにはLuaLaTeXが必要です。",
   "index_gloss_unknown": "{key}という略語はありません",
@@ -1877,6 +1883,7 @@
   "nav_account_menu_label_provider": "アカウントメニュー（{provider}で{shown}としてサインイン中）",
   "nav_signed_in_with": "{provider}でサインイン中",
   "nav_skip_to_content": "コンテンツへスキップ",
+  "navigation_defined_in": "{path} で定義",
   "new_project_size_b": "{size} B",
   "new_project_size_gb": "{size} GB",
   "new_project_size_kb": "{size} KB",
@@ -2357,6 +2364,22 @@
   "common_documentation": "ドキュメント",
   "readerd_who_are_you": "お名前は？",
   "readerd_workspace_view": "ワークスペース表示",
+  "references_location": "{path}、{line}行目",
+  "references_title": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count}件の参照",
+        "countPlural=*": "{count}件の参照"
+      }
+    }
+  ],
   "registry_account": "アカウント",
   "registry_account_erase_terms": "消去 削除 アカウント 退会 閉鎖 忘れられる権利 erase delete account remove close gdpr right erasure forget",
   "registry_agents": "AIエージェント",
@@ -2423,6 +2446,8 @@
   "remotesettings_retrying": "このページを開いている間、接続を再試行します。",
   "remotesettings_status_connected": "接続済み",
   "remotesettings_status_disconnected": "切断",
+  "rename_invalid": "スペースを含まない別の名前を入力してください",
+  "rename_label": "{name} の名前を変更",
   "renderers_local_failed": "このコンピューターで{format}をレンダリングできませんでした。",
   "renderersettings_aria": "{name}のレンダリング先",
   "renderersettings_description": "{name}ドキュメントは、このブラウザーで、または「コードを実行」がオンの間はこのコンピューターでレンダリングされます。",

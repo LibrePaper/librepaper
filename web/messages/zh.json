@@ -544,10 +544,12 @@
   "commands_download_docx": "下载 DOCX",
   "commands_download_html": "下载 HTML",
   "commands_download_source": "下载源文件",
+  "commands_find_references": "查找引用",
   "commands_focus_comments": "聚焦批注",
   "commands_focus_files": "聚焦文件",
   "commands_focus_outline": "聚焦大纲",
   "commands_focus_preview": "聚焦预览",
+  "commands_go_to_definition": "转到定义",
   "commands_heading_level": "标题 {level}",
   "commands_layout_cycle":"切换编辑器 / 预览 / 分栏",
   "commands_layout_document": "仅显示预览",
@@ -570,6 +572,7 @@
   "commands_note_preview_visible": "预览可见",
   "commands_note_wide_layout": "宽布局",
   "commands_palette_tooltip": "命令面板 ({keys})",
+  "commands_rename_symbol": "重命名标签",
   "commands_shortcuts": "显示快捷键",
   "commands_tab_focus": "切换 Tab 键移动焦点",
   "commands_text_bigger": "放大文字",
@@ -1336,6 +1339,9 @@
   "index_category_logic": "逻辑与集合",
   "index_category_operators": "运算符",
   "index_category_relations": "关系符",
+  "index_diagnostics_missing_file": "项目中没有名为 {name} 的文件",
+  "index_diagnostics_replace": "替换为 {name}",
+  "index_diagnostics_unknown_label": "没有名为 {name} 的标签",
   "index_edit_in_source": "在源码中编辑",
   "index_emoji_lualatex": "emoji 宏包需要 LuaLaTeX。",
   "index_gloss_unknown": "没有名为 {key} 的缩略语",
@@ -1877,6 +1883,7 @@
   "nav_account_menu_label_provider": "账户菜单，已通过 {provider} 登录为 {shown}",
   "nav_signed_in_with": "已通过 {provider} 登录",
   "nav_skip_to_content": "跳到内容",
+  "navigation_defined_in": "定义于 {path}",
   "new_project_size_b": "{size} B",
   "new_project_size_gb": "{size} GB",
   "new_project_size_kb": "{size} KB",
@@ -2357,6 +2364,22 @@
   "common_documentation": "文档",
   "readerd_who_are_you": "你是谁？",
   "readerd_workspace_view": "工作区视图",
+  "references_location": "{path}，第 {line} 行",
+  "references_title": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} 个交叉引用",
+        "countPlural=*": "{count} 个交叉引用"
+      }
+    }
+  ],
   "registry_account": "账户",
   "registry_account_erase_terms": "删除 抹除 账户 移除 注销 关闭 gdpr 被遗忘权 erase delete account remove close right erasure forget",
   "registry_agents": "AI 智能体",
@@ -2423,6 +2446,8 @@
   "remotesettings_retrying": "此页面打开期间会重试连接。",
   "remotesettings_status_connected": "已连接",
   "remotesettings_status_disconnected": "已断开连接",
+  "rename_invalid": "请输入不含空格的其他名称",
+  "rename_label": "将 {name} 重命名为",
   "renderers_local_failed": "在这台电脑上渲染 {format} 失败。",
   "renderersettings_aria": "{name} 的渲染位置",
   "renderersettings_description": "{name} 文档在此浏览器中渲染；开启“运行代码”后，则在这台电脑上渲染。",
