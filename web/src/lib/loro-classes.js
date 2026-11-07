@@ -17,7 +17,7 @@ export function setLoroClasses(loro) {
   loroClasses.LoroMap = loro.LoroMap;
 }
 
-if (typeof process !== "undefined" && process.versions?.node) {
+if (/** @type {any} */ (globalThis).process?.versions?.node) {
   const specifier = "loro-crdt";
   setLoroClasses(await import(/* @vite-ignore */ specifier));
 }
