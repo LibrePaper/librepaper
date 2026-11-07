@@ -91,7 +91,7 @@
       const usable = (element) => element instanceof HTMLElement && element !== document.body && element.isConnected && element.getClientRects().length > 0;
       if (usable(target)) target.focus();
       else {
-        const editor = document.querySelector(".cm-content");
+        const editor = /** @type {HTMLElement | null} */ (document.querySelector(".cm-content"));
         if (editor && editor.getClientRects().length > 0) editor.focus();
       }
     });

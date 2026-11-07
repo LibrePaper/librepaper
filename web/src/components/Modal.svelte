@@ -144,7 +144,7 @@
   });
 
   let confirmButton = $state(null);
-  let bodyEl = null;
+  let bodyEl = $state(null);
   const FIELD = "input:not([disabled]):not([type=hidden]), textarea:not([disabled]), select:not([disabled])";
   // Zag's own default is the first tabbable in the card, which is the cross,
   // so the choice is made here. A palette whose first control is not what it

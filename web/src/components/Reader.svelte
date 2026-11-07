@@ -209,6 +209,8 @@
   // Whether an agent session is waiting for the person's permission. Reported
   // by the Agent panel; the badge on its tab says so while the panel is hidden.
   let agentWaiting = $state(false);
+  // Whether the Agent panel is in view; set below, once `panel` and `shown` exist.
+  let agentInView = $state(false);
   let pendingChat;
   let mayChat = $derived(["commenter", "editor", "owner"].includes(doc.role));
   // Sharing is the owner's; seeing who else is in the room is anyone's who is
@@ -1892,7 +1894,7 @@
     },
     changes: {},
     collaboration: unreadChat ? { says: m.readerb_collaboration_unread(), dot: true } : {},
-    agent: agentWaitingBadge({ waiting: agentWaiting, visible: panel === "agent" && shown.comments }),
+    agent: agentWaitingBadge({ waiting: agentWaiting, visible: agentInView }),
   });
 
   // A reader is told nothing about live editor diagnostics. They cannot fix
@@ -2700,6 +2702,7 @@
     document: activeMobileView === "document",
     comments: activeMobileView === "sidebar",
   } : showing(panes));
+  $effect(() => { agentInView = panel === "agent" && shown.comments; });
 
   /* --------------------------------------------------------- the phone shell */
 
