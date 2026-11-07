@@ -93,7 +93,9 @@ export function createReaderCollaboration({
   let disposed = false;
   // The document was fetched moments ago by the boot that started this
   // collaboration, so the first time the socket comes up there is nothing to
-  // re-check. Any drop clears it: later opens are genuine reconnects.
+  // re-check. A document restored from the offline copy gets no shortcut (it
+  // may have been replaced meanwhile), and any drop clears it: later opens
+  // are genuine reconnects.
   let firstOpen = true;
   const reconnects = createGeneration();
   // Which session is the current one. A session that has been replaced or
@@ -233,6 +235,7 @@ export function createReaderCollaboration({
     if (disposed) return null;
     if (session) return session;
     document_ = nextDocument;
+    firstOpen = !nextDocument.local_copy;
     return join(nextDocument);
   }
 
