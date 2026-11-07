@@ -38,7 +38,7 @@ const web = fileURLToPath(new URL("../../", import.meta.url));
 ///
 /// Anchored, so `loro-crdt/web` and `loro-crdt/base64` still resolve normally.
 export const loroAlias = [
-  { find: /^loro-crdt$/, replacement: `${web}node_modules/loro-crdt/browser/index.js` },
+  { find: /^loro-crdt$/, replacement: `${web}tests/helpers/loro-browser.js` },
 ];
 
 /// The MIME type a test's static server should answer with, given the path it

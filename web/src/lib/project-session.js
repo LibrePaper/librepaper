@@ -22,7 +22,8 @@
 // CRDT across client restarts; on reconnect the whole local state is sent and
 // merged, so changes made on either side of the gap reach the other.
 
-import { LoroDoc, LoroText, EphemeralStore, VersionVector } from "loro-crdt";
+import { LoroDoc, LoroText, EphemeralStore, VersionVector, Cursor, LoroMap } from "loro-crdt";
+import { setLoroClasses } from "./loro-classes.js";
 import { checkPlacement, folderPaths, inside, parentPath, relocation, topEntries } from "./file-manager.js";
 import { projectDirectory, projectPaths } from "./projection.js";
 import { createGeneration } from "./reader/generation.js";
@@ -30,6 +31,12 @@ import { AnchorIndex, MoveMemory } from "./anchors.js";
 import { toLf } from "./line-endings.js";
 import { m } from "./paraglide/messages.js";
 import { personSeed } from "./presence-colour.js";
+
+// Anchors and track changes read the Loro classes from a registry so that the
+// reader can load them without the CRDT. Every editing path loads this module,
+// which imports Loro anyway, so it fills the registry too: whichever build of
+// Loro is in use here is the one those modules then see.
+setLoroClasses({ Cursor, LoroMap });
 
 /** @typedef {{ name?: string, color?: string, tab?: string, file?: string }} PresenceState */
 /** @typedef {{ type: string, [key: string]: unknown }} SessionMessage */

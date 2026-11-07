@@ -695,7 +695,7 @@
   function scheduleBibliography() {
     bibliographyGeneration += 1;
     clearTimeout(bibliographyTimer);
-    bibliographyTimer = setTimeout(refreshBibliography, 500);
+    bibliographyTimer = setTimeout(refreshBibliography, 120);
     scheduleFacts();
   }
 
