@@ -1,19 +1,21 @@
 // LaTeX completion over a real EditorState and CompletionContext, with the
-// project accessor faked. Covers label scanning, comment handling, each
-// trigger, the \begin insertion, the arity snippet, the package list, and the
-// shape of the vendored LaTeX-Workshop list.
+// project accessor faked. Covers label lookup through the document index,
+// comment handling, each trigger, the \begin insertion, the arity snippet, the
+// package list, and the shape of the vendored LaTeX-Workshop list.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { CompletionContext } from "@codemirror/autocomplete";
 import { EditorState } from "@codemirror/state";
-import { latexCompletion, latexLabels } from "../../src/lib/completion/latex.js";
+import { latexCompletion } from "../../src/lib/completion/latex.js";
 import { PACKAGES } from "../../src/lib/completion/latex-packages.js";
+import { indexTexts, labelList } from "../../src/lib/document-index/labels.js";
 
 // The edited document is the text up to the cursor, which is the end of it.
-function complete(doc, { format = "latex", texts = {}, files = [], path = "main.tex", pos = doc.length } = {}) {
+// `labels` stands for the editor's live index, when given.
+function complete(doc, { format = "latex", texts = {}, files = [], path = "main.tex", pos = doc.length, labels } = {}) {
   const state = EditorState.create({ doc });
   const context = new CompletionContext(state, pos, true);
-  return latexCompletion(() => ({ path, format, texts, files }))(context);
+  return latexCompletion(() => ({ path, format, texts, files, ...(labels ? { labels } : {}) }))(context);
 }
 
 const labelsOf = (result) => result.options.map((option) => option.label).sort();
@@ -26,20 +28,48 @@ function applyTo(option, doc, from, to) {
   return out;
 }
 
-// --- latexLabels -----------------------------------------------------------
+// --- labels from the document index ----------------------------------------
 {
-  const labels = latexLabels({
+  // Comments are ignored, a .md file is not LaTeX, and paths sort before
+  // offsets: chap/two.ltx comes before main.tex.
+  const texts = {
     "main.tex": "\\label{sec:intro}\n% \\label{hidden}\n\\label{fig:one} \\label{plain}\n\\label{eq:a} 100\\% \\label{shown}",
     "chap/two.ltx": "\\section{Two}\\label{sec:two}",
     "notes.md": "\\label{nope}",
-  });
+  };
+  const labels = labelList(indexTexts(texts), texts, { formats: new Set(["latex"]) })
+    .map(({ id, path, line }) => ({ id, path, line }));
   assert.deepEqual(labels, [
-    { id: "sec:two", kind: "sec", path: "chap/two.ltx", line: 1 },
-    { id: "sec:intro", kind: "sec", path: "main.tex", line: 1 },
-    { id: "fig:one", kind: "fig", path: "main.tex", line: 3 },
-    { id: "plain", kind: "label", path: "main.tex", line: 3 },
-    { id: "eq:a", kind: "eq", path: "main.tex", line: 4 },
-    { id: "shown", kind: "label", path: "main.tex", line: 4 },
+    { id: "sec:two", path: "chap/two.ltx", line: 1 },
+    { id: "sec:intro", path: "main.tex", line: 1 },
+    { id: "fig:one", path: "main.tex", line: 3 },
+    { id: "plain", path: "main.tex", line: 3 },
+    { id: "eq:a", path: "main.tex", line: 4 },
+    { id: "shown", path: "main.tex", line: 4 },
+  ]);
+}
+
+// Without the editor's index, completion indexes the texts itself, and the
+// edited document is read from the editor, not from `texts`.
+{
+  const doc = "\\label{fig:b}\n\\ref{";
+  const result = complete(doc, { texts: { "main.tex": "\\label{stale}", "a.tex": "\\label{sec:a}" } });
+  assert.deepEqual(labelsOf(result), ["fig:b", "sec:a"]);
+}
+
+// With the editor's index, completion asks it for the labels, first file and
+// LaTeX only, and shows what it answers, with the title as `info`.
+{
+  const asked = [];
+  const labels = (options) => {
+    asked.push(options);
+    return [{ id: "fig:live", path: "main.tex", line: 7, title: "A plot" }, { id: "sec:x", path: "a.tex", line: 2 }];
+  };
+  const result = complete("\\ref{", { labels, texts: { "main.tex": "" } });
+  assert.deepEqual(asked, [{ first: "main.tex", formats: new Set(["latex"]) }]);
+  assert.deepEqual(result.options, [
+    { label: "fig:live", type: "variable", detail: "main.tex:7", info: "A plot" },
+    { label: "sec:x", type: "variable", detail: "a.tex:2" },
   ]);
 }
 

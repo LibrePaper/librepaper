@@ -7,7 +7,7 @@ import { snippet, snippetCompletion } from "@codemirror/autocomplete";
 import workshop from "./latex-workshop.json" with { type: "json" };
 import { CORE, PACKAGES } from "./latex-packages.js";
 import { pathOptions } from "./paths.js";
-import { formatOf } from "../formats.js";
+import { indexTexts, labelList } from "../document-index/labels.js";
 import { m } from "../paraglide/messages.js";
 
 const REFERENCE = /\\(?:ref|eqref|pageref|autoref|cref|Cref|nameref)\*?\{([^{}]*)$/;
@@ -23,7 +23,6 @@ const DEFINED_OPERATOR = /\\DeclareMathOperator\*?\s*\{\\([A-Za-z]+)\}/g;
 const DEFINED_DEF = /\\def\\([A-Za-z]+)/g;
 const DEFINED_ENVIRONMENT = /\\(?:re)?newenvironment\*?\{([A-Za-z]+\*?)\}/g;
 const USED_PACKAGE = /\\usepackage\s*(?:\[[^\]]*\])?\s*\{([^{}]*)\}/g;
-const LABEL = /\\label\{([^{}]+)\}/g;
 
 const GRAPHIC_EXTENSIONS = ["png", "jpg", "jpeg", "pdf", "eps", "svg"];
 const FALLBACK_BODY = "\n\t${}";
@@ -47,27 +46,6 @@ function stripComment(line) {
 
 function codeOf(text) {
   return String(text).split("\n").map(stripComment).join("\n");
-}
-
-/**
- * Labels in every .tex and .ltx text, comments ignored. The kind is the part
- * of the label before a colon (fig, tab, eq, sec), or "label" without one.
- * @param {Record<string, string>} texts
- * @returns {Array<{ id: string, kind: string, path: string, line: number }>}
- */
-export function latexLabels(texts) {
-  const labels = [];
-  for (const path of Object.keys(texts).sort()) {
-    if (formatOf(path) !== "latex") continue;
-    String(texts[path]).split("\n").forEach((raw, index) => {
-      for (const match of stripComment(raw).matchAll(LABEL)) {
-        const id = match[1];
-        const colon = id.indexOf(":");
-        labels.push({ id, kind: colon > 0 ? id.slice(0, colon) : "label", path, line: index + 1 });
-      }
-    });
-  }
-  return labels;
 }
 
 // Names the project defines or loads, read from every text.
@@ -162,17 +140,19 @@ function listToken(inner) {
 
 function referenceResult(context, p, inner) {
   const token = listToken(inner);
-  const seen = new Set();
-  const options = [];
-  const labels = [
-    ...latexLabels({ [p.path]: context.state.doc.toString() }),
-    ...latexLabels(p.texts),
-  ];
-  for (const label of labels) {
-    if (seen.has(label.id)) continue;
-    seen.add(label.id);
-    options.push({ label: label.id, type: "variable", detail: `${label.path}:${label.line}` });
-  }
+  const formats = new Set(["latex"]);
+  const texts = { ...p.texts, [p.path]: context.state.doc.toString() };
+  // The editor's live index already holds the edited document: it refreshes
+  // before answering.
+  const labels = p.labels
+    ? p.labels({ first: p.path, formats })
+    : labelList(indexTexts(texts), texts, { first: p.path, formats });
+  const options = labels.map((label) => ({
+    label: label.id,
+    type: "variable",
+    detail: `${label.path}:${label.line}`,
+    ...(label.title ? { info: label.title } : {}),
+  }));
   return { from: context.pos - token.length, options, validFor: /^[^{},]*$/ };
 }
 

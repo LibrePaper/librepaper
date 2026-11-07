@@ -5,8 +5,10 @@
 // are built once at load. Cross-references read other project files only
 // after the trigger matches, so a keystroke elsewhere costs nothing.
 import schema from "./quarto-schema.json" with { type: "json" };
+import { indexTexts, labelList } from "../document-index/labels.js";
 
 /** @typedef {{ id: string, kind: string, path: string, line: number }} QuartoLabel */
+/** @typedef {{ path: string, texts: Record<string, string>, labels?: (options: { first?: string, formats?: Set<string> }) => Array<{ id: string, path: string, line: number, title?: string }> }} ReferenceProject */
 
 export const KINDS = ["fig", "tbl", "sec", "eq", "lst", "thm", "lem", "cor", "prp", "cnj", "def", "exm", "exr"];
 const KIND_ALTERNATION = KINDS.join("|");
@@ -119,17 +121,27 @@ export function quartoLabels(texts) {
   return found;
 }
 
-/** Cross-reference options: the edited document first, then other files, one per id. */
+/**
+ * Cross-reference options: the edited document first, then other files, one per id.
+ * @param {ReferenceProject} project
+ * @param {string} documentText the live text of the edited document
+ * @param {string} documentPath
+ * @returns {Array<{ label: string, type: string, detail: string, info?: string }>}
+ */
 function referenceOptions(project, documentText, documentPath) {
-  const seen = new Set();
-  const options = [];
-  const all = [...labelsIn(documentText, documentPath), ...quartoLabels(project.texts).filter((label) => label.path !== documentPath)];
-  for (const label of all) {
-    if (seen.has(label.id)) continue;
-    seen.add(label.id);
-    options.push({ label: label.id, type: "variable", detail: `${label.path}:${label.line}` });
-  }
-  return options;
+  const formats = new Set(["quarto"]);
+  const texts = { ...project.texts, [documentPath]: documentText };
+  // The editor's live index already holds the edited document: it refreshes
+  // before answering.
+  const labels = project.labels
+    ? project.labels({ first: documentPath, formats })
+    : labelList(indexTexts(texts), texts, { first: documentPath, formats });
+  return labels.map((label) => ({
+    label: label.id,
+    type: "variable",
+    detail: `${label.path}:${label.line}`,
+    ...(label.title ? { info: label.title } : {}),
+  }));
 }
 
 /**
