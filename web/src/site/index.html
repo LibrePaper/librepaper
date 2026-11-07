@@ -786,18 +786,21 @@
               </ul>
             </div>
             <figure class="shot-frame">
-              <picture>
-                <source type="image/webp" srcset="/images/comment-thread.webp">
+              <a class="shot" href="#collab-video" aria-label="Play a video of two people editing a Typst document at once, with live preview and project chat">
                 <img
-                  class="shot-small"
-                  src="/images/comment-thread.png"
-                  alt="A comment thread in LibrePaper: three messages between two collaborators, with buttons to resolve, delete and reply."
-                  width="540"
-                  height="451"
+                  src="/images/collab-chat.webp"
+                  alt="Alice's LibrePaper window: the project chat in the sidebar, the Typst source in the middle with Bob's labelled cursor, and the live PDF preview on the right."
+                  width="2560"
+                  height="1640"
                   loading="lazy"
                   decoding="async"
                 />
-              </picture>
+                <span class="shot-play" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </span>
+              </a>
             </figure>
           </div>
         </div>
@@ -1175,6 +1178,15 @@
         </svg>
       </a>
       <video style="--ratio: 3440 / 1440" src="/images/agent-sidebar.webm" poster="/images/agent-sidebar-poster.webp" width="3440" height="1440" controls playsinline preload="none" data-manual-play></video>
+    </div>
+    <div class="lightbox" id="collab-video">
+      <a class="lightbox-dismiss" href="#" aria-label="Close the video"></a>
+      <a class="lightbox-close" href="#" aria-label="Close the video">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+        </svg>
+      </a>
+      <video style="--ratio: 2560 / 1640" src="/images/collab-chat.webm" poster="/images/collab-chat.webp" width="2560" height="1640" controls muted loop playsinline preload="none"></video>
     </div>
     <div class="lightbox" id="todo-video">
       <a class="lightbox-dismiss" href="#" aria-label="Close the video"></a>
