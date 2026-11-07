@@ -32,7 +32,6 @@
         <button
           type="button"
           class="outline-heading"
-          class:active={activeHeading === heading.from}
           style="--outline-indent: {Math.max(0, heading.level - firstLevel)}"
           aria-current={activeHeading === heading.from ? "location" : undefined}
           title={heading.title}
@@ -69,7 +68,6 @@
   .outline-count { flex: none; font-variant-numeric: tabular-nums; }
   .outline-heading:hover, .outline-heading:focus-visible { background: var(--color-divider); }
   .outline-heading:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
-  .outline-heading.active { background: var(--color-row-selected); color: var(--color-link); font-weight: 600; }
   .outline-empty { margin: auto; padding: calc(var(--spacing) * 4); color: var(--color-text-secondary); font-size: var(--text-sm); text-align: center; }
   /* Phones: a heading is a finger's height. Indentation keeps three levels of
      hierarchy and stops there, so a deep heading keeps its words at 320px. */

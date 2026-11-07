@@ -257,7 +257,7 @@
     ? 'lp-control-tonal-brand opacity-70'
     : 'lp-control-tonal-brand'}"
   class:collapsed
-  class:selected
+  class:lp-selected={selected}
   bind:this={card}
   tabindex="-1"
   onfocus={() => (expanded = true)}
@@ -472,11 +472,10 @@
 </article>
 
 <style>
-  .card.comment-card { box-sizing: border-box; min-width: 0; padding: 10px 13px; border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-raised); }
-  .card.comment-card.selected { border-color: color-mix(in oklab, var(--color-brand) 45%, var(--color-border)); border-left: 3px solid var(--color-brand); padding-left: 11px; background: color-mix(in oklab, var(--color-brand) 5%, var(--color-raised)); }
-  @media (forced-colors: active) {
-    .card.comment-card.selected { border: 1px solid Highlight; border-left-width: 3px; }
-  }
+  .card.comment-card { box-sizing: border-box; min-width: 0; padding: 10px 13px; border: 1px solid var(--color-border); border-radius: 9px; }
+  /* The selected card takes the shared selected ground (librepaper.css), so the
+     raised ground goes only to the cards that are not selected. */
+  .card.comment-card:not(.lp-selected) { background: var(--color-raised); }
 
   /* The conversation: runs of one author separated by a little air, the lines
      within a run tight enough to read as one person still talking. No rail

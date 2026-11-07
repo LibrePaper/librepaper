@@ -333,7 +333,7 @@
   <div class="changes-list" role="list" aria-label={m.changes_queue_label()}>
     {#each filteredRows as item (item.id)}
       {@const isActive = active === item.id}
-      <article class="change-row" class:active={isActive} class:picked={checked.has(item.id)} role="listitem">
+      <article class="change-row" class:lp-selected={isActive || checked.has(item.id)} role="listitem">
         {#if selecting}<div class="row-head"><label class="row-pick-hit"><input type="checkbox" class="row-pick" checked={checked.has(item.id)} aria-label={selectKind(item)} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} /></label>{@render rowMain(item, isActive)}</div>{:else}{@render rowMain(item, isActive)}{/if}
         {#if isLong(item)}<button type="button" class="row-more" aria-expanded={expandedText.has(item.id)} onclick={() => toggleText(item)}>{expandedText.has(item.id) ? m.changes_show_less() : m.changes_show_more()}</button>{/if}
         <!-- Every change offers its answer, so a reviewer can act on any row
@@ -397,9 +397,6 @@
      the hairline between one change and the next. */
   .change-row { position: relative; content-visibility: auto; contain-intrinsic-size: 0 3.4rem; padding: .75rem var(--panel-padding); border-bottom: 1px solid var(--color-divider); }
   .change-row:hover { background: var(--color-row-hover); }
-  /* The row under review is tinted and marked with a thin bar on its left edge. */
-  .change-row.active { background: color-mix(in srgb, var(--color-brand) 7%, transparent); box-shadow: inset 2px 0 0 var(--color-brand); }
-  .change-row.picked { background: color-mix(in srgb, var(--color-brand) 10%, transparent); }
   .row-head { display: flex; align-items: flex-start; gap: .5rem; }
   .row-pick { flex: none; margin-top: .2rem; width: 1rem; height: 1rem; }
   .row-pick-hit { display: contents; }
