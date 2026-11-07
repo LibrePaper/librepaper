@@ -218,6 +218,9 @@ export function createProjectSession({
   const assets = doc.getMap("assets");
   const meta = doc.getMap("meta");
   let projectionRules = null;
+  // The last tree() build with the document version and rules it came from;
+  // calls between changes reuse it.
+  let treeCache = null;
   // The four maps that are the directory itself. A change to any of them is a
   // change to the file list; a change under one of them is not, because a
   // file's text sits inside `files`.
@@ -770,6 +773,7 @@ export function createProjectSession({
     /** @param {ProjectRules} rules */
     setRules(rules) {
       projectionRules = rules || {};
+      treeCache = null;
     },
 
     /* --------------------------------------------------------- the directory */
@@ -857,20 +861,36 @@ export function createProjectSession({
     /// fetches them.
     /** @returns {ProjectTree} */
     tree() {
-      const projection = projectDirectory(doc, projectionRules);
-      const texts = Object.create(null);
-      const entries = Object.create(null);
-      const digests = Object.create(null);
-      for (const [path, file] of projection.files) {
-        if (file.kind === "text") {
-          texts[path] = projection.texts.get(path);
-          entries[path] = { kind: "text", id: file.id };
-        } else {
-          digests[path] = file.digest;
-          entries[path] = { kind: "asset", sha: file.digest };
-        }
+      const version = doc.oplogVersion();
+      // Uncommitted operations are in the text but not yet in the version, so
+      // a cached build could be stale until the commit: build afresh then.
+      const pending = doc.getPendingTxnLength() > 0;
+      if (pending || !treeCache || treeCache.rules !== projectionRules || treeCache.version.compare(version) !== 0) {
+        const build = () => {
+          const projection = projectDirectory(doc, projectionRules);
+          const texts = Object.create(null);
+          const entries = Object.create(null);
+          const digests = Object.create(null);
+          for (const [path, file] of projection.files) {
+            if (file.kind === "text") {
+              texts[path] = projection.texts.get(path);
+              entries[path] = { kind: "text", id: file.id };
+            } else {
+              digests[path] = file.digest;
+              entries[path] = { kind: "asset", sha: file.digest };
+            }
+          }
+          return { texts, digests, files: entries };
+        };
+        treeCache = { version, rules: projectionRules, tree: build() };
       }
-      return { texts, digests, files: entries };
+      // Callers get their own top-level maps, so none can change the cache.
+      const { texts, digests, files } = treeCache.tree;
+      return {
+        texts: Object.assign(Object.create(null), texts),
+        digests: Object.assign(Object.create(null), digests),
+        files: Object.assign(Object.create(null), files),
+      };
     },
 
     /// The text at a path, for the caller that has a path and not an id --
