@@ -1,6 +1,7 @@
-// A single click in the preview must not move the source editor. Only a
-// double-click reports a place. Exercise the shipped listeners with fake DOM
-// objects.
+// A plain click in the preview reports where it landed, so the source caret can
+// follow; a drag, a modified click or a second click of a double-click does not.
+// A double-click reports its place as before. Exercise the shipped listeners
+// with fake DOM objects.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
@@ -20,10 +21,12 @@ class Node {}
 Node.TEXT_NODE = 3;
 
 function harness({ selectedId = "", nodes = [], index = new Map(), starts = [], caret = null, pdf = null }) {
-  const listeners = new Map();
+  // Every listener for a type, in order: the frame installs two for "click".
+  const all = new Map();
+  const listeners = { has: (type) => all.has(type), get: (type) => (event) => (all.get(type) || []).forEach((listener) => listener(event)) };
   const posts = [];
   const document = {
-    addEventListener(type, listener) { listeners.set(type, listener); },
+    addEventListener(type, listener) { all.set(type, [...(all.get(type) || []), listener]); },
     caretPositionFromPoint: () => caret,
   };
   const table = { nodes, index, starts };
@@ -37,31 +40,49 @@ function harness({ selectedId = "", nodes = [], index = new Map(), starts = [], 
   return { listeners, posts };
 }
 
-const event = { target: new Element(), clientX: 1, clientY: 2, button: 0 };
+const event = { target: new Element(), clientX: 1, clientY: 2, button: 0, detail: 1 };
+// A press and its click at the same point, as a plain click arrives.
+const click = (listeners, at = event) => { listeners.get("pointerdown")(at); listeners.get("click")(at); };
 
 // A single click on an unmarked place posts nothing at all.
 {
   const { listeners, posts } = harness({});
   assert.equal(listeners.has("dblclick"), true, "a double-click listener is installed");
-  listeners.get("click")(event);
-  assert.deepEqual(posts, [], "a single click posts no caret");
+  click(listeners);
+  assert.deepEqual(posts, [], "a click on nothing textual posts nothing");
 }
 
-// A single click on a text node posts nothing either.
+// A plain click on text reports its offset into the published text.
 {
   const text = new Node();
   text.nodeType = Node.TEXT_NODE;
   const { listeners, posts } = harness({
     nodes: [text], index: new Map([[text, 0]]), starts: [10], caret: { offsetNode: text, offset: 4 },
   });
-  listeners.get("click")(event);
-  assert.deepEqual(posts, [], "a single click on text posts no caret");
+  click(listeners);
+  assert.deepEqual(posts, [{ type: "click", offset: 14, pdf: null }], "a plain click reports where it landed");
+}
+
+// A drag, a modified click and the second click of a double-click report nothing.
+for (const [variant, why] of [
+  [{ clientX: 40 }, "a drag"],
+  [{ ctrlKey: true }, "a modified click"],
+  [{ detail: 2 }, "a second click"],
+]) {
+  const text = new Node();
+  text.nodeType = Node.TEXT_NODE;
+  const { listeners, posts } = harness({
+    nodes: [text], index: new Map([[text, 0]]), starts: [10], caret: { offsetNode: text, offset: 4 },
+  });
+  listeners.get("pointerdown")(event);
+  listeners.get("click")({ ...event, ...variant });
+  assert.deepEqual(posts, [], `${why} reports no place`);
 }
 
 // A click on a mark ring clears it and nothing else.
 {
   const { listeners, posts } = harness({ selectedId: "c1" });
-  listeners.get("click")(event);
+  click(listeners);
   assert.deepEqual(posts, [{ type: "unfocus" }], "a click outside the mark clears the ring");
 }
 
@@ -83,4 +104,4 @@ const event = { target: new Element(), clientX: 1, clientY: 2, button: 0 };
   assert.deepEqual(posts, [{ type: "pdf-caret", pdf: { page: 1, x: 3, y: 4 } }], "a double-click reports the PDF point");
 }
 
-console.log("frame-caret: single clicks leave the source alone, double-clicks report the place");
+console.log("frame-caret: plain clicks and double-clicks report the place; drags and modified clicks do not");
