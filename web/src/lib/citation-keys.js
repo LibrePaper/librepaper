@@ -82,7 +82,9 @@ export function typstMasked(text) {
 
 // The [from, to) spans of the typst raw blocks and raw spans, found in the same
 // order typstMasked blanks them, so the spans match what the mask removed.
+/** @param {string} text @returns {Array<[number, number]>} */
 export function typstCodeSpans(text) {
+  /** @type {Array<[number, number]>} */
   const spans = [];
   for (const match of text.matchAll(TYPST_FENCED)) spans.push([match.index, match.index + match[0].length]);
   for (const match of text.replace(TYPST_FENCED, blank).matchAll(INLINE_CODE)) {

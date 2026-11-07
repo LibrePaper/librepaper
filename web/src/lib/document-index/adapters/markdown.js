@@ -377,6 +377,7 @@ export function markdownAdapter(text, path) {
   /**
    * @param {Div} div
    * @param {number} to end of the block range
+   * @returns {IndexItem}
    */
   const divBlock = (div, to) => ({
     kind: "block",

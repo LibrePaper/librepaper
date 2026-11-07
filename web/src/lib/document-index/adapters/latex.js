@@ -383,6 +383,31 @@ export function latexAdapter(text, _path) {
     items.push({ kind: "markup", range: pair(from, to), attrs: { prose: "skip" } });
   }
 
+  // Each caption's environment is found once, keeping the first caption per
+  // environment. Headings and tags are in source order, so the nearest heading
+  // and the first tag after it are found by binary search.
+  /** @type {Map<Span | null, string>} */
+  const captionOf = new Map();
+  for (const caption of captions) {
+    const span = innermost(spans, caption.at);
+    if (!captionOf.has(span)) captionOf.set(span, caption.title);
+  }
+  /**
+   * Index of the first element whose `from` is >= `at` (elements sorted by from).
+   * @param {Array<{ from: number }>} list
+   * @param {number} at
+   * @returns {number}
+   */
+  const firstFrom = (list, at) => {
+    let low = 0;
+    let high = list.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (list[mid].from < at) low = mid + 1;
+      else high = mid;
+    }
+    return low;
+  };
   /**
    * The title of a label at `at`: the caption in the same innermost
    * environment, else the nearest preceding heading when no \begin or \end
@@ -393,16 +418,14 @@ export function latexAdapter(text, _path) {
   const labelTitle = (at) => {
     const span = innermost(spans, at);
     if (span) {
-      const caption = captions.find((candidate) => innermost(spans, candidate.at) === span);
-      if (caption) return caption.title;
+      const caption = captionOf.get(span);
+      if (caption !== undefined) return caption;
     }
-    let nearest = /** @type {{ title: string, from: number } | null} */ (null);
-    for (const heading of headings) {
-      if (heading.from < at && (nearest === null || heading.from > nearest.from)) nearest = heading;
-    }
-    const heading = nearest;
-    if (heading === null) return undefined;
-    const crossed = tags.some((tag) => tag.from > heading.from && tag.from < at);
+    const before = firstFrom(headings, at) - 1;
+    if (before < 0) return undefined;
+    const heading = headings[before];
+    const next = tags[firstFrom(tags, heading.from + 1)];
+    const crossed = next !== undefined && next.from < at;
     return crossed ? undefined : heading.title;
   };
 
