@@ -922,7 +922,8 @@
   "editor_bibliography_unavailable": "参考文献不可用：{reason}",
   "editor_cut_changed": "源码在剪切完成前发生了变化。请重新选择文本。",
   "editor_parser_not_loaded": "无法加载解析器",
-  "editor_paste_changed": "源码在粘贴完成前发生了变化。请重试。",
+  "editor_paste_blocked": "浏览器不允许 LibrePaper 在此读取剪贴板。",
+  "editor_paste_changed":"源码在粘贴完成前发生了变化。请重试。",
   "editor_problems_both": [
     {
       "declarations": [

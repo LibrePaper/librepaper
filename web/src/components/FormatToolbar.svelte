@@ -10,7 +10,10 @@
   // `oninsert(actionId)` to open the Insert menu flow of an insert tool.
   // `modalEditor` is true in Vim or Emacs mode, where a tool's key belongs to
   // the mode and is not printed, the same rule the menus follow.
-  let { active = null, hidden = false, modalEditor = false, onformat = () => {}, oninsert = () => {} } = $props();
+  // `oncommand(id)` runs a tool that names a command from lib/commands.js, and
+  // `available` is the Edit menu's availability by command id: a tool whose
+  // command is unavailable is drawn disabled.
+  let { active = null, hidden = false, modalEditor = false, available = null, onformat = () => {}, oninsert = () => {}, oncommand = () => {} } = $props();
 
   // Consecutive tools that share a group are drawn together.
   const GROUPS = FORMAT_TOOLS.reduce((groups, tool) => {
@@ -54,9 +57,10 @@
               aria-label={tool.label}
               aria-pressed={on}
               tabindex={focused === tool.id ? 0 : -1}
+              disabled={tool.command && available ? !available[tool.command] : false}
               onfocus={() => (focused = tool.id)}
               onmousedown={(event) => event.preventDefault()}
-              onclick={() => (tool.insert ? oninsert(tool.insert) : onformat(tool.id))}
+              onclick={() => (tool.command ? oncommand(tool.command) : tool.insert ? oninsert(tool.insert) : onformat(tool.id))}
             >
               <Icon name={tool.icon} size={16} />
             </button>
@@ -119,8 +123,12 @@
     cursor: pointer;
   }
   .format-tool:not([aria-pressed="true"]) { background: none; }
-  .format-tool:hover {
+  .format-tool:hover:not(:disabled) {
     background: var(--color-tonal-hover);
+  }
+  .format-tool:disabled {
+    opacity: 0.45;
+    cursor: default;
   }
   .format-tool:focus-visible {
     outline: 2px solid var(--color-brand);

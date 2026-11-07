@@ -922,7 +922,8 @@
   "editor_bibliography_unavailable": "Bibliographie indisponible : {reason}",
   "editor_cut_changed": "La source a changé avant la fin de l’action « Couper ». Sélectionnez à nouveau le texte.",
   "editor_parser_not_loaded": "l’analyseur n’a pas pu être chargé",
-  "editor_paste_changed": "La source a changé avant la fin de l’action « Coller ». Réessayez.",
+  "editor_paste_blocked": "Le navigateur n’autorise pas LibrePaper à lire le presse-papiers ici.",
+  "editor_paste_changed":"La source a changé avant la fin de l’action « Coller ». Réessayez.",
   "editor_problems_both": [
     {
       "declarations": [
