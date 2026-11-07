@@ -1178,9 +1178,7 @@ impl Server {
                 "updates": batches.iter().map(|batch| encode_update(batch)).collect::<Vec<_>>(),
             }));
         }
-        let (reference, digest) = self
-            .state_reference(slug, pack_rows(batches))
-            .await?;
+        let (reference, digest) = self.state_reference(slug, pack_rows(batches)).await?;
         Some(json!({
             "type": "doc-rows",
             "protocol": PROTOCOL,
@@ -1590,7 +1588,10 @@ mod join_rows_tests {
         // These are the bytes the inline form base64-encodes, batch for batch.
         let inline: Vec<String> = rows.iter().map(|b| encode_update(b)).collect();
         assert_eq!(
-            unpacked.iter().map(|b| encode_update(b)).collect::<Vec<_>>(),
+            unpacked
+                .iter()
+                .map(|b| encode_update(b))
+                .collect::<Vec<_>>(),
             inline
         );
     }

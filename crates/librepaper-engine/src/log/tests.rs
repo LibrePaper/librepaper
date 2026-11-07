@@ -2070,7 +2070,11 @@ async fn a_snapshot_is_taken_at_the_log_vector_when_an_edit_lands_after_the_flus
     .expect("the snapshot covers exactly the flushed rows");
     let scratch = LoroDoc::new();
     scratch.import(&snapshot).expect("the snapshot loads");
-    assert_eq!(scratch.oplog_vv(), covered, "the snapshot holds the racing edit");
+    assert_eq!(
+        scratch.oplog_vv(),
+        covered,
+        "the snapshot holds the racing edit"
+    );
 
     // The racing edit is still buffered, flushes as a row above `through`, and
     // the head holds every edit.
@@ -2088,7 +2092,12 @@ async fn a_snapshot_is_taken_at_the_log_vector_when_an_edit_lands_after_the_flus
         .expect("the head reads");
     assert_eq!(after.log_vector, head.encode(), "an edit was lost");
     scratch
-        .import(&sequencer.with_head(|doc| doc.export(ExportMode::all_updates()).unwrap()).await.unwrap())
+        .import(
+            &sequencer
+                .with_head(|doc| doc.export(ExportMode::all_updates()).unwrap())
+                .await
+                .unwrap(),
+        )
         .expect("the remaining update applies");
     assert_eq!(scratch.oplog_vv(), head);
 }

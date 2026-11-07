@@ -1268,8 +1268,7 @@ pub fn prove_coverage(
             if scratch.is_shallow() && !entry_is_shallow {
                 return Err("the snapshot is shallow and this compaction is not".into());
             }
-            if changes != crate::log::sequencer::CHANGES_UNKNOWN
-                && scratch.len_changes() != changes
+            if changes != crate::log::sequencer::CHANGES_UNKNOWN && scratch.len_changes() != changes
             {
                 return Err(format!(
                     "the loaded snapshot holds {} changes and the entry held {changes}",
