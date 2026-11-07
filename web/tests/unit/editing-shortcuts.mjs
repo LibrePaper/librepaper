@@ -86,6 +86,18 @@ assert.equal(applied(stateOf("\\subsection{Intro}"), headingEdit(stateOf("\\subs
 assert.equal(applied(stateOf("Intro"), headingEdit(stateOf("Intro"), "html", 3)).doc, "<h3>Intro</h3>");
 assert.equal(applied(stateOf("<h1>Intro</h1>"), headingEdit(stateOf("<h1>Intro</h1>"), "html", 2)).doc, "<h2>Intro</h2>");
 
+// Changing the level of an HTML heading keeps its attributes; only the tag names change.
+assert.equal(
+  applied(stateOf('<h1 id="intro" class="chapter">Intro</h1>'), headingEdit(stateOf('<h1 id="intro" class="chapter">Intro</h1>'), "html", 2)).doc,
+  '<h2 id="intro" class="chapter">Intro</h2>',
+  "id and class survive a level change",
+);
+assert.equal(
+  applied(stateOf('<h2 class="note">Intro</h2>'), headingEdit(stateOf('<h2 class="note">Intro</h2>'), "html", 4)).doc,
+  '<h4 class="note">Intro</h4>',
+  "a change from h2 to h4 keeps the class",
+);
+
 // The caret stays before a closing tag it was in front of.
 assert.equal(applied(stateOf("Intro", 5), headingEdit(stateOf("Intro", 5), "html", 3)).anchor, 9, "the caret is inside <h3>, before </h3>");
 
@@ -144,6 +156,24 @@ assert.equal(
   applied(stateOf(ordered, 5, 26), listEdit(stateOf(ordered, 5, 26), "html", "bulleted")).doc,
   "<ul>\n<li>a</li>\n<li>b</li>\n</ul>",
   "a different kind renames the HTML list",
+);
+
+// A selection that holds the list's own wrapper lines, from the opening line to
+// the closing one, treats them as the wrapper: the same kind takes the list off,
+// and a different kind renames it, as when only the items are selected.
+const wholeHtml = "<ul>\n<li>a</li>\n<li>b</li>\n</ul>";
+assert.equal(applied(two(wholeHtml), listEdit(two(wholeHtml), "html", "bulleted")).doc, "a\nb", "the whole HTML list, wrappers included, is taken off");
+assert.equal(
+  applied(two(wholeHtml), listEdit(two(wholeHtml), "html", "numbered")).doc,
+  "<ol>\n<li>a</li>\n<li>b</li>\n</ol>",
+  "the whole HTML list changes kind, its wrappers renamed",
+);
+const wholeLatex = "\\begin{itemize}\n\\item a\n\\item b\n\\end{itemize}";
+assert.equal(applied(two(wholeLatex), listEdit(two(wholeLatex), "latex", "bulleted")).doc, "a\nb", "the whole LaTeX itemize is taken off");
+assert.equal(
+  applied(two(wholeLatex), listEdit(two(wholeLatex), "latex", "numbered")).doc,
+  "\\begin{enumerate}\n\\item a\n\\item b\n\\end{enumerate}",
+  "the whole LaTeX itemize changes kind, its wrappers renamed",
 );
 
 console.log("editing-shortcuts: links, headings and lists in each format's own markup, toggled and carried by the caret");
