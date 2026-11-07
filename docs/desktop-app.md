@@ -8,6 +8,14 @@ The desktop app is not an offline editor. You can switch between the browser and
 
 Every install except the plain macOS `.dmg` puts two commands on your PATH: `librepaper` (the [command line](cli.html)) and `librepaper-desktop` (the app). You do not need the command line to write. Once installed, open LibrePaper from your applications menu, or run `librepaper-desktop` in a terminal.
 
+## Other servers
+
+Out of the box, the app opens app.librepaper.org. It works only with servers you have chosen, because a server you choose can use this computer's tools through the app, such as running code or latexmk. To use a self-hosted server, click **Change server** on the app's sign-in page, or start the app with `librepaper-desktop --server https://paper.example.org/`.
+
+If a link says "Open in desktop app" and points to a server you have not chosen yet, the app asks whether to use that server. Choose it only if you trust it, because it then becomes your default server. If you cancel, the app says that the link was not opened.
+
+If two copies of the app are installed, for example a portable copy and an installed one, links open in whichever copy is already running.
+
 ## Binaries
 
 Download the installer from the [latest release on GitHub](https://github.com/LibrePaper/librepaper/releases/latest):
