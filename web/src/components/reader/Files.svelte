@@ -78,12 +78,30 @@
   function selectionFor(node) { return selected.includes(node.id) ? topEntries(chosen) : [entryOf(node)].filter(Boolean); }
   function expand(path) { if (path) expanded = [...new Set([...expanded, `folder:${path}`])]; }
   function reset() { editing = null; draft = ""; refusal = ""; uploadWarning = ""; }
+  // Naming is an inline dialog, so it follows the rule of the modal dialogs:
+  // when it ends, focus goes back to what had it when it began, or to the
+  // editor when that has gone, and never to the body.
+  let namingOpener = null;
+  function endNaming() {
+    const target = namingOpener;
+    namingOpener = null;
+    reset();
+    tick().then(() => {
+      const usable = (element) => element instanceof HTMLElement && element !== document.body && element.isConnected && element.getClientRects().length > 0;
+      if (usable(target)) target.focus();
+      else {
+        const editor = document.querySelector(".cm-content");
+        if (editor && editor.getClientRects().length > 0) editor.focus();
+      }
+    });
+  }
   function focusName(element) { tick().then(() => { element.focus(); element.select(); }); }
   // `start` and `choose` are exported for the toolbar's File menu, which
   // offers what this panel's own toolbar does without making a person open
   // the panel first to find it.
   export function start(type, entry = null, parent = currentFolder) {
     if (!mayEdit) return;
+    namingOpener = document.activeElement;
     refusal = "";
     editing = { type, entry, parent };
     draft = type === "rename" ? basename(entry.path) : "";
@@ -101,13 +119,13 @@
         if (kind === "folder") await onmkdir?.(normalized);
         else await onadd?.(normalized);
       }
-      reset();
+      endNaming();
     } catch (error) { refusal = error.message; }
   }
   function namingKey(event) {
     event.stopPropagation();
     if (event.key === "Enter") { event.preventDefault(); commit(); }
-    if (event.key === "Escape") { event.preventDefault(); reset(); }
+    if (event.key === "Escape") { event.preventDefault(); endNaming(); }
   }
   function ask(type, targets) {
     if (!mayEdit || !targets.length) return;
@@ -296,7 +314,7 @@
         <div class="flex items-center gap-1">
           <input id="new-project-entry" class="name" aria-label={editing.type === "folder" ? m.files_new_folder_name() : m.files_new_file_name()} bind:value={draft} use:focusName onkeydown={namingKey} />
           <IconButton icon="check" label={editing.type === "folder" ? m.files_create_folder() : m.files_create_file()} onclick={commit} />
-          <IconButton icon="x" label={m.common_cancel()} onclick={reset} />
+          <IconButton icon="x" label={m.common_cancel()} onclick={endNaming} />
         </div>
       </div>
     {/if}
@@ -335,7 +353,7 @@
   <Icon name={node.kind === "folder" ? "folder" : node.kind === "asset" ? "image" : "file-text"} />
   {#if editing?.type === "rename" && editing.entry.path === node.path}
     <input class="name" aria-label={m.files_rename_path({ path: node.path })} bind:value={draft} use:focusName onkeydown={namingKey} onclick={(event) => event.stopPropagation()} />
-    <span onclick={(event) => event.stopPropagation()} role="presentation"><IconButton icon="check" label={m.files_save_name()} onclick={commit} /><IconButton icon="x" label={m.files_cancel_rename()} onclick={reset} /></span>
+    <span onclick={(event) => event.stopPropagation()} role="presentation"><IconButton icon="check" label={m.files_save_name()} onclick={commit} /><IconButton icon="x" label={m.files_cancel_rename()} onclick={endNaming} /></span>
   {:else if node.kind === "folder"}
     <TreeView.BranchText class="explorer-name">{node.name}</TreeView.BranchText>
   {:else}
