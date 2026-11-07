@@ -1173,8 +1173,8 @@
   "history_authors_since": "作成者は{date}から記録されます。それより前に書かれたテキストは「不明な作成者」と表示されます。",
   "history_authors_since_none": "作成者は今後から記録されます。それより前に書かれたテキストは「不明な作成者」と表示されます。",
   "history_before_first": "最初のバージョンより前",
-  "history_bookmark_latest": "最新バージョンをブックマーク",
-  "history_bookmark_version": "このバージョンをブックマーク",
+  "history_bookmark_latest": "最新バージョンに名前を付ける",
+  "history_bookmark_version": "このバージョンに名前を付ける",
   "history_by": "{who}による",
   "history_commented": "コメント",
   "history_contributors": [
@@ -1205,7 +1205,7 @@
   "history_load_older": "古い履歴を読み込む",
   "history_loading": "履歴を読み込み中…",
   "history_loading_older": "古い履歴を読み込み中…",
-  "history_loading_saved": "保存したバージョンを読み込み中…",
+  "history_loading_saved": "名前付きバージョンを読み込み中…",
   "history_month": "月",
   "history_more_versions": [
     {
@@ -1222,9 +1222,9 @@
       }
     }
   ],
-  "history_name_bookmark": "このブックマークに名前を付ける",
+  "history_name_bookmark": "このバージョンに名前を付ける",
   "history_newer_tag": "新しい",
-  "history_no_saved": "保存したバージョンはまだありません。バージョンをブックマークすると、名前を付けて保存できます。",
+  "history_no_saved": "名前付きバージョンはまだありません。バージョンに名前を付けると、ここからすぐに見つけられます。",
   "history_no_versions_in_month": "{month}にバージョンはありません。最も近い期間を表示しています。",
   "history_no_versions_shown": "表示するバージョンがありません。",
   "history_none": "以前のバージョンはありません",
@@ -1233,14 +1233,15 @@
   "history_push": "プッシュ済み",
   "history_pushed_by": "{author}がプッシュ",
   "history_recovered": "復旧",
-  "history_remove_saved": "保存したバージョンから削除",
-  "history_rename_bookmark": "このブックマークの名前を変更",
+  "history_remove_saved": "名前を削除",
+  "history_rename_bookmark": "この名前付きバージョンの名前を変更",
   "history_replaced_by_restore": "復元により置き換え",
+  "history_restore_this_version": "このバージョンを復元",
   "history_restored": "復元済み",
   "history_restored_version": "復元したバージョン",
   "history_row_tip": "{what}、{detail}",
   "history_row_tip_endpoint": "{what}、{detail}、{endpoint}",
-  "history_saved_short": "保存済み",
+  "history_saved_short": "名前付き",
   "history_select_first_prompt": "最初のバージョンを選択",
   "history_select_newer_prompt": "より新しい版を選択",
   "history_select_older_prompt": "より古い版を選択",
@@ -1676,7 +1677,7 @@
   "landing_tags_for_aria": "{title}のタグ",
   "landing_trash_empty": "ごみ箱は空です。",
   "landing_trash_note": "ここにあるプロジェクトは、ごみ箱に移動してから7日後に完全に削除されます。",
-  "landing_trash_one": "{title}はごみ箱に移動され、7日間保管されます。それまでは元に戻せます。",
+  "landing_trash_one": "{title}はごみ箱に移動され、7日間保管されます。それまでは復元できます。",
   "landing_trash_question": "ごみ箱に移動しますか？",
   "landing_trash_read_failed": "ごみ箱を読み込めませんでした。",
   "landing_trash_read_failed_status": "ごみ箱を読み込めませんでした（{status}）",
@@ -1690,8 +1691,8 @@
         "countPlural"
       ],
       "match": {
-        "countPlural=one": "{count}件のプロジェクトがごみ箱に移動され、7日間保管されます。それまでは元に戻せます。",
-        "countPlural=*": "{count}件のプロジェクトがごみ箱に移動され、7日間保管されます。それまでは元に戻せます。"
+        "countPlural=one": "{count}件のプロジェクトがごみ箱に移動され、7日間保管されます。それまでは復元できます。",
+        "countPlural=*": "{count}件のプロジェクトがごみ箱に移動され、7日間保管されます。それまでは復元できます。"
       }
     }
   ],
@@ -2138,7 +2139,7 @@
   "quotasettings_delete_template": "テンプレートを削除",
   "quotasettings_delete_template_for": "テンプレート{name}を削除",
   "quotasettings_delete_template_lead": "「",
-  "quotasettings_delete_template_rest": "」はごみ箱に移動し、7日間保管されます。それまでは元に戻せます。",
+  "quotasettings_delete_template_rest": "」はごみ箱に移動し、7日間保管されます。それまでは復元できます。",
   "quotasettings_delete_template_title": "テンプレートを削除しますか？",
   "quotasettings_deleting": "削除中…",
   "quotasettings_empty": "空",
@@ -2339,7 +2340,7 @@
   "readerd_restore_anyway": "それでも復元",
   "readerd_restore_description": "{name}を復元します。プロジェクト内のすべてのファイルが置き換えられ、現在のバージョンは履歴に残ります。",
   "readerd_restore_moved": "これを開いている間にプロジェクトが変更されました。現在のプロジェクトを{name}で上書きして復元しますか？現在のバージョンは履歴に残ります。",
-  "readerd_restore_version": "バージョンを復元",
+  "readerd_restore_version": "このバージョンを復元",
   "readerd_restore_version_title": "このバージョンを復元しますか？",
   "readerd_restoring": "復元中…",
   "readerd_run_code": "コードを実行",
@@ -2648,7 +2649,7 @@
   "timeline_name_failed": "そのバージョンに名前を付けられませんでした。",
   "timeline_older_read_failed": "以前のバージョンを読み込めませんでした。",
   "timeline_restore_failed": "そのバージョンを復元できませんでした。プロジェクトは変更されていません。",
-  "timeline_saved_read_failed": "保存済みのバージョンを読み込めませんでした。",
+  "timeline_saved_read_failed": "名前付きバージョンを読み込めませんでした。",
   "timeline_this_version": "このバージョン",
   "toasts_dismiss": "閉じる",
   "tokenreveal_agent_setup": "エージェントの設定",

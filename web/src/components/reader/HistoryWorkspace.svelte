@@ -229,7 +229,7 @@
         {#if stored(source.target)}
           <button type="button" class="btn btn-sm lp-control-tonal-brand history-restore"
                   title={m.historyworkspace_restore_title({ version: targetLabel })}
-                  onclick={() => onrestore?.(source.target)}>{m.historyworkspace_restore_title({ version: targetLabel })}</button>
+                  onclick={() => onrestore?.(source.target)}>{m.history_restore_this_version()}</button>
         {/if}
       </div>
     {/if}

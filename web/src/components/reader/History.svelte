@@ -837,7 +837,7 @@
           {#if canEdit}
             <IconButton icon="pencil" tone="plain" size="btn-icon-sm" label={m.common_rename()}
                         onclick={() => startNaming(point)} />
-            <IconButton icon="trash" tone="plain" size="btn-icon-sm" label={m.history_remove_saved()}
+            <IconButton icon="x" tone="plain" size="btn-icon-sm" label={m.history_remove_saved()}
                         onclick={() => unbookmark(point)} />
           {/if}
         </span>

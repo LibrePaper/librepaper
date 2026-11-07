@@ -92,7 +92,7 @@ Menu titles must be identical everywhere, including in paths such as "View > PDF
 | public | público | |
 | history | histórico | |
 | version | versão | |
-| bookmark | marcador | In history, a named version. "Favorito" is the browser sense and is avoided |
+| named version | versão nomeada | In history. Replaces "bookmark" (marcador). Verb: "nomear". "Favorito" is the browser sense and is avoided |
 | compare | comparar | |
 | branch | branch | Commonly kept in English by Brazilian developers. Alternative "ramificação" is rare. Keep "branch" |
 | commit | commit | Keep. Verb: "fazer commit" |

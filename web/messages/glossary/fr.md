@@ -180,7 +180,7 @@ Command categories in the palette: Changes = Modifications, Editing = Édition, 
 | public / private | public / privé | |
 | history | historique | |
 | version | version | |
-| bookmark | signet | A named version |
+| named version | version nommée | Replaces "bookmark" (signet). Verb: "nommer" |
 | restore this version | Restaurer cette version | |
 | compare | comparer | |
 | diff | différences | |
@@ -282,7 +282,7 @@ Command categories in the palette: Changes = Modifications, Editing = Édition, 
 | Split | Verb, split the view | Diviser l’affichage |
 | Draft | Unsent text or an unpublished version | Brouillon |
 | Label | LaTeX label or tag-like name | Étiquette |
-| Label | Name given to a saved version | Nom (verb "nommer") |
+| Label | Name given to a named version | Nom (verb "nommer") |
 | Caption | Text under a figure | Légende |
 | Source | The editable text | Source |
 | Source | Origin of a citation | Source |
@@ -373,7 +373,7 @@ These resolve the English strings that currently have more than one French trans
 | Agent name | Nom de l’agent | Literal. Use "Nom de l’agent IA" only when the English says "AI agent" |
 | Highlight | Both right | Verb button "Surligner". Noun "Surlignage" |
 | Comments could not be read ({status}). | Les commentaires n’ont pas pu être lus ({status}). | The passive "n’a pas pu être" form dominates the catalogue |
-| Saved | Enregistré | "Enreg." only for the key marked short (history_saved_short) |
+| Saved | Enregistré | history_saved_short is now "Nommées" (named versions), not "Enreg." |
 | Insert | Both right | Menu title "Insertion". Button "Insérer" |
 | Normal | Both right | Agree with the noun: "Normal" (interligne), "Normale" (priorité) |
 | Keep both | Garder les deux | "Garder" dominates the catalogue |

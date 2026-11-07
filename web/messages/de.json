@@ -1173,8 +1173,8 @@
   "history_authors_since": "Die Autorschaft wird ab dem {date} erfasst. Früher geschriebener Text wird als Unbekannter Autor angezeigt.",
   "history_authors_since_none": "Die Autorschaft wird ab jetzt erfasst. Früher geschriebener Text wird als Unbekannter Autor angezeigt.",
   "history_before_first": "Vor der ersten Version",
-  "history_bookmark_latest": "Lesezeichen für die neueste Version setzen",
-  "history_bookmark_version": "Lesezeichen für diese Version setzen",
+  "history_bookmark_latest": "Neueste Version benennen",
+  "history_bookmark_version": "Diese Version benennen",
   "history_by": "von {who}",
   "history_commented": "Kommentiert",
   "history_contributors": [
@@ -1205,7 +1205,7 @@
   "history_load_older": "Älteren Verlauf laden",
   "history_loading": "Verlauf wird geladen…",
   "history_loading_older": "Älterer Verlauf wird geladen…",
-  "history_loading_saved": "Gespeicherte Versionen werden geladen…",
+  "history_loading_saved": "Benannte Versionen werden geladen…",
   "history_month": "Monat",
   "history_more_versions": [
     {
@@ -1222,9 +1222,9 @@
       }
     }
   ],
-  "history_name_bookmark": "Dieses Lesezeichen benennen",
+  "history_name_bookmark": "Diese Version benennen",
   "history_newer_tag": "Neuere",
-  "history_no_saved": "Noch keine gespeicherten Versionen. Setzen Sie ein Lesezeichen für eine Version, um sie mit Namen zu speichern.",
+  "history_no_saved": "Noch keine benannten Versionen. Benennen Sie eine Version, um sie hier später wiederzufinden.",
   "history_no_versions_in_month": "Keine Versionen für {month}. Der nächstliegende Zeitraum wird angezeigt.",
   "history_no_versions_shown": "Keine Versionen zum Anzeigen.",
   "history_none": "Keine früheren Versionen",
@@ -1233,14 +1233,15 @@
   "history_push": "Gepusht",
   "history_pushed_by": "Gepusht von {author}",
   "history_recovered": "Wiederhergestellt",
-  "history_remove_saved": "Aus gespeicherten Versionen entfernen",
-  "history_rename_bookmark": "Dieses Lesezeichen umbenennen",
+  "history_remove_saved": "Name entfernen",
+  "history_rename_bookmark": "Diese benannte Version umbenennen",
   "history_replaced_by_restore": "Durch eine Wiederherstellung ersetzt",
+  "history_restore_this_version": "Diese Version wiederherstellen",
   "history_restored": "Wiederhergestellt",
   "history_restored_version": "Wiederhergestellte Version",
   "history_row_tip": "{what}, {detail}",
   "history_row_tip_endpoint": "{what}, {detail}, {endpoint}",
-  "history_saved_short": "Gespeichert",
+  "history_saved_short": "Benannt",
   "history_select_first_prompt": "Erste Version auswählen",
   "history_select_newer_prompt": "Neuere Version auswählen",
   "history_select_older_prompt": "Ältere Version auswählen",
@@ -1582,8 +1583,8 @@
       }
     }
   ],
-  "landing_put_back": "Zurücklegen",
-  "landing_put_back_aria": "{title} zurück in Ihre Projekte legen",
+  "landing_put_back": "Wiederherstellen",
+  "landing_put_back_aria": "{title} in Ihre Projekte wiederherstellen",
   "landing_refresh_failed": "Aktualisierung fehlgeschlagen ({status})",
   "landing_refresh_invalid": "Die Aktualisierung lieferte eine ungültige Liste",
   "landing_remove_from_shared": "Aus „Geteilt“ entfernen",
@@ -1691,7 +1692,7 @@
   "landing_tags_for_aria": "Tags für {title}",
   "landing_trash_empty": "Der Papierkorb ist leer.",
   "landing_trash_note": "Projekte hier werden sieben Tage nach dem Verschieben in den Papierkorb endgültig gelöscht.",
-  "landing_trash_one": "{title} wird in den Papierkorb verschoben und bleibt dort sieben Tage. Bis dahin können Sie es zurücklegen.",
+  "landing_trash_one": "{title} wird in den Papierkorb verschoben und bleibt dort sieben Tage. Bis dahin können Sie es wiederherstellen.",
   "landing_trash_question": "In den Papierkorb legen?",
   "landing_trash_read_failed": "Der Papierkorb konnte nicht gelesen werden.",
   "landing_trash_read_failed_status": "der Papierkorb konnte nicht gelesen werden ({status})",
@@ -1705,8 +1706,8 @@
         "countPlural"
       ],
       "match": {
-        "countPlural=one": "{count} Projekt wird in den Papierkorb verschoben und bleibt dort sieben Tage. Bis dahin können Sie es zurücklegen.",
-        "countPlural=*": "{count} Projekte werden in den Papierkorb verschoben und bleiben dort sieben Tage. Bis dahin können Sie sie zurücklegen."
+        "countPlural=one": "{count} Projekt wird in den Papierkorb verschoben und bleibt dort sieben Tage. Bis dahin können Sie es wiederherstellen.",
+        "countPlural=*": "{count} Projekte werden in den Papierkorb verschoben und bleiben dort sieben Tage. Bis dahin können Sie sie wiederherstellen."
       }
     }
   ],
@@ -2354,7 +2355,7 @@
   "readerd_restore_anyway": "Trotzdem wiederherstellen",
   "readerd_restore_description": "{name} wiederherstellen. Alle Dateien im Projekt werden ersetzt, und die aktuelle Version bleibt im Verlauf erhalten.",
   "readerd_restore_moved": "Das Projekt hat sich geändert, während dieser Dialog geöffnet war. {name} über das Projekt in seinem jetzigen Stand wiederherstellen? Die aktuelle Version bleibt im Verlauf erhalten.",
-  "readerd_restore_version": "Version wiederherstellen",
+  "readerd_restore_version": "Diese Version wiederherstellen",
   "readerd_restore_version_title": "Diese Version wiederherstellen?",
   "readerd_restoring": "Wird wiederhergestellt…",
   "readerd_run_code": "Code ausführen",
@@ -2663,7 +2664,7 @@
   "timeline_name_failed": "Diese Version konnte nicht benannt werden.",
   "timeline_older_read_failed": "Ältere Versionen konnten nicht gelesen werden.",
   "timeline_restore_failed": "Diese Version konnte nicht wiederhergestellt werden. Das Projekt ist unverändert.",
-  "timeline_saved_read_failed": "Gespeicherte Versionen konnten nicht gelesen werden.",
+  "timeline_saved_read_failed": "Benannte Versionen konnten nicht gelesen werden.",
   "timeline_this_version": "diese Version",
   "toasts_dismiss": "Schließen",
   "tokenreveal_agent_setup": "Agent einrichten",

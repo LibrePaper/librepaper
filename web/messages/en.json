@@ -615,7 +615,7 @@
   "commentcomposer_placeholder": "Comment · Enter sends · Esc cancels",
   "commentcomposer_quotation": "“{exact}”",
   "commentcomposer_sign_in_rest": "to comment on this document.",
-  "comments_clear": "Clear resolved",
+  "comments_clear": "Delete resolved",
   "comments_clear_all_title": "Delete every resolved comment",
   "comments_clear_loaded_title": "Delete every resolved comment that is loaded",
   "comments_delete_all": "Delete all",
@@ -1173,8 +1173,8 @@
   "history_authors_since": "Authorship is recorded from {date}. Text written earlier shows as Unknown author.",
   "history_authors_since_none": "Authorship is recorded from now on. Text written earlier shows as Unknown author.",
   "history_before_first": "Before the first version",
-  "history_bookmark_latest": "Bookmark the latest version",
-  "history_bookmark_version": "Bookmark this version",
+  "history_bookmark_latest": "Name the latest version",
+  "history_bookmark_version": "Name this version",
   "history_by": "by {who}",
   "history_commented": "Commented",
   "history_contributors": [
@@ -1205,7 +1205,7 @@
   "history_load_older": "Load older history",
   "history_loading": "Loading history…",
   "history_loading_older": "Loading older history…",
-  "history_loading_saved": "Loading saved versions…",
+  "history_loading_saved": "Loading named versions…",
   "history_month": "Month",
   "history_more_versions": [
     {
@@ -1222,9 +1222,9 @@
       }
     }
   ],
-  "history_name_bookmark": "Name this bookmark",
+  "history_name_bookmark": "Name this version",
   "history_newer_tag": "Newer",
-  "history_no_saved": "No saved versions yet. Bookmark a version to save it by name.",
+  "history_no_saved": "No named versions yet. Name a version to find it here later.",
   "history_no_versions_in_month": "No versions in {month}. Showing the nearest period.",
   "history_no_versions_shown": "No versions to show.",
   "history_none": "No previous versions",
@@ -1233,14 +1233,15 @@
   "history_push": "Pushed",
   "history_pushed_by": "Pushed by {author}",
   "history_recovered": "Recovered",
-  "history_remove_saved": "Remove from saved versions",
-  "history_rename_bookmark": "Rename this bookmark",
+  "history_remove_saved": "Remove name",
+  "history_rename_bookmark": "Rename this named version",
   "history_replaced_by_restore": "Replaced by a restore",
+  "history_restore_this_version": "Restore this version",
   "history_restored": "Restored",
   "history_restored_version": "Restored version",
   "history_row_tip": "{what}, {detail}",
   "history_row_tip_endpoint": "{what}, {detail}, {endpoint}",
-  "history_saved_short": "Saved",
+  "history_saved_short": "Named",
   "history_select_first_prompt": "Select the first version",
   "history_select_newer_prompt": "Select a newer version",
   "history_select_older_prompt": "Select an older version",
@@ -1504,7 +1505,7 @@
   "landing_delete_for_good": "Delete for good",
   "landing_delete_for_good_aria": "Delete {title} for good",
   "landing_delete_for_good_question": "Delete for good?",
-  "landing_delete_forever": "Delete forever",
+  "landing_delete_forever": "Delete for good",
   "landing_delete_tag": "Delete tag",
   "landing_delete_tag_aria": "Delete {name}",
   "landing_delete_tag_question": "Delete this tag?",
@@ -1582,8 +1583,8 @@
       }
     }
   ],
-  "landing_put_back": "Put back",
-  "landing_put_back_aria": "Put {title} back in your projects",
+  "landing_put_back": "Restore",
+  "landing_put_back_aria": "Restore {title} to your projects",
   "landing_refresh_failed": "refresh failed ({status})",
   "landing_refresh_invalid": "refresh returned an invalid listing",
   "landing_remove_from_shared": "Remove from Shared",
@@ -1691,7 +1692,7 @@
   "landing_tags_for_aria": "Tags for {title}",
   "landing_trash_empty": "The trash is empty.",
   "landing_trash_note": "Projects here are deleted for good seven days after they were put in the trash.",
-  "landing_trash_one": "{title} will move to the trash, where it stays for seven days. Until then you can put it back.",
+  "landing_trash_one": "{title} will move to the trash, where it stays for seven days. Until then you can restore it.",
   "landing_trash_question": "Move to the trash?",
   "landing_trash_read_failed": "The trash could not be read.",
   "landing_trash_read_failed_status": "the trash could not be read ({status})",
@@ -1705,8 +1706,8 @@
         "countPlural"
       ],
       "match": {
-        "countPlural=one": "{count} project will move to the trash, where it stays for seven days. Until then you can put it back.",
-        "countPlural=*": "{count} projects will move to the trash, where they stay for seven days. Until then you can put them back."
+        "countPlural=one": "{count} project will move to the trash, where it stays for seven days. Until then you can restore it.",
+        "countPlural=*": "{count} projects will move to the trash, where they stay for seven days. Until then you can restore them."
       }
     }
   ],
@@ -2153,7 +2154,7 @@
   "quotasettings_delete_template": "Delete template",
   "quotasettings_delete_template_for": "Delete template {name}",
   "quotasettings_delete_template_lead": "“",
-  "quotasettings_delete_template_rest": "” will move to the trash, where it stays for seven days. Until then you can put it back.",
+  "quotasettings_delete_template_rest": "” will move to the trash, where it stays for seven days. Until then you can restore it.",
   "quotasettings_delete_template_title": "Delete template?",
   "quotasettings_deleting": "Deleting...",
   "quotasettings_empty": "Empty",
@@ -2354,7 +2355,7 @@
   "readerd_restore_anyway": "Restore anyway",
   "readerd_restore_description": "Restore {name}. Every file in the project is replaced, and the current version is preserved in history.",
   "readerd_restore_moved": "The project changed while this was open. Restore {name} over the project as it now stands? The current version will be preserved in history.",
-  "readerd_restore_version": "Restore version",
+  "readerd_restore_version": "Restore this version",
   "readerd_restore_version_title": "Restore this version?",
   "readerd_restoring": "Restoring…",
   "readerd_run_code": "Run code",
@@ -2663,7 +2664,7 @@
   "timeline_name_failed": "That version could not be named.",
   "timeline_older_read_failed": "Older versions could not be read.",
   "timeline_restore_failed": "That version could not be restored. The project is unchanged.",
-  "timeline_saved_read_failed": "Saved versions could not be read.",
+  "timeline_saved_read_failed": "Named versions could not be read.",
   "timeline_this_version": "this version",
   "toasts_dismiss": "Dismiss",
   "tokenreveal_agent_setup": "Agent setup",

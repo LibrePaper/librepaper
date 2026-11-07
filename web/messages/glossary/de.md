@@ -110,7 +110,7 @@ Menu paths in sentences use the same words with " > ": "Ansicht > PDF", "Datei >
 | collaboration | Zusammenarbeit | |
 | history | Verlauf | Matches Google Docs "Versionsverlauf"; short form "Verlauf" |
 | version | Version | |
-| bookmark | Lesezeichen | |
+| named version | Benannte Version | Replaces "bookmark" (Lesezeichen). Verb: "benennen" |
 | draft | Entwurf | |
 | restore | Wiederherstellen | |
 | recover | Wiederherstellen | Same word; note the context |
