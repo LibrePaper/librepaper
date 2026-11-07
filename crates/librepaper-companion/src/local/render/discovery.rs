@@ -100,12 +100,12 @@ async fn probe_program(argv0: &str, path: &OsStr) -> Found {
     let Some(resolved) = resolve_in(argv0, path) else {
         return Found::default();
     };
-    // Isolated, because this decides what is installed and a tool that reads
-    // its configuration from the ambient environment would make the answer
-    // depend on who started the service.
+    // Run in the service's environment, the one a render uses, so the answer
+    // predicts whether a build works. Run in a fresh directory, so files where
+    // the service started cannot change it.
     let version = super::super::tools::version_line(
         &resolved,
-        super::super::tools::Probe::isolated(PROBE_TIMEOUT),
+        super::super::tools::Probe::discovery(PROBE_TIMEOUT),
     )
     .await;
     Found {
