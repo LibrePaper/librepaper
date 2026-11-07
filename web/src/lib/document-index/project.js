@@ -93,7 +93,15 @@ export function createProjectIndex(options = {}) {
     const extension = extensionOf(fromPath);
     if (!hasExtension && kind === "asset") candidates.push(...ASSET_EXTENSIONS.map((ext) => `${base}.${ext}`));
     else if (!hasExtension && extension) candidates.push(`${base}.${extension}`);
-    return candidates.find((candidate) => known.has(candidate)) ?? null;
+    const found = candidates.find((candidate) => known.has(candidate));
+    if (found) return found;
+    // Images are also looked up in folders the format configures, such as
+    // LaTeX's \graphicspath, which the index does not read. Accept the one
+    // project file, in any folder, whose path ends with the name.
+    if (kind !== "asset") return null;
+    const tails = candidates.map((candidate) => `/${candidate.slice(candidate.lastIndexOf("/") + 1)}`);
+    const matches = [...known].filter((path) => tails.some((tail) => `/${path}`.endsWith(tail)));
+    return matches.length === 1 ? matches[0] : null;
   }
 
   const resolveFile = options.resolveFile ?? resolveFileDefault;

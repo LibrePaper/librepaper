@@ -196,6 +196,12 @@ test("definition of an include uses resolveFile, with extension inference", () =
   assert.equal(project.resolveFile("main.tex", "plot", "asset"), "plot.png");
   assert.equal(project.resolveFile("main.tex", "plot"), null);
   assert.equal(project.resolveFile("sub/a.tex", "/plot.png", "asset"), "plot.png");
+  // An image found only in another folder, as with \graphicspath, resolves when unique.
+  project.setFiles(["main.tex", "figures/curve.pdf", "a/twin.png", "b/twin.png"]);
+  assert.equal(project.resolveFile("main.tex", "curve", "asset"), "figures/curve.pdf");
+  assert.equal(project.resolveFile("main.tex", "twin", "asset"), null);
+  assert.equal(project.resolveFile("main.tex", "curve"), null);
+  project.setFiles(["main.tex", "intro.tex", "typ.typ", "plot.png"]);
 
   project.setFiles(null);
   assert.equal(project.resolveFile("main.tex", "intro"), null);

@@ -17,7 +17,7 @@ const port = 37000 + Math.floor(Math.random() * 1000);
 const imports = (path) => JSON.stringify(join(root, path));
 
 const project = {
-  "main.tex": "\\documentclass{article}\n\\begin{document}\n\\input{intro}\nSee \\ref{fig:a} and \\ref{fig:missing}.\n\\end{document}\n",
+  "main.tex": "\\documentclass{article}\n\\begin{document}\n\\input{intro}\nSee \\ref{fig:a} and \\ref{fig:ab}.\n\\end{document}\n",
   "intro.tex": "\\section{Intro}\n\\begin{figure}\n\\caption{A plot}\\label{fig:a}\n\\end{figure}\n",
 };
 
@@ -155,7 +155,7 @@ const checks = {
   diagnostics(result) {
     const mine = result.filter((diagnostic) => diagnostic.source === "librepaper-index");
     assert.equal(mine.length, 1, "diagnostics: expected one librepaper-index diagnostic: " + JSON.stringify(result));
-    assert.ok(mine[0].covered.includes("fig:missing"), "diagnostics: the range should cover fig:missing, got " + JSON.stringify(mine[0].covered));
+    assert.ok(mine[0].covered.includes("fig:ab"), "diagnostics: the range should cover fig:ab, got " + JSON.stringify(mine[0].covered));
     assert.ok(mine[0].actions >= 1, "diagnostics: expected at least one suggestion");
   },
   references(result) {
