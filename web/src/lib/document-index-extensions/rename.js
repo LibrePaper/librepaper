@@ -35,6 +35,7 @@ export function renameTarget(state, context) {
 }
 
 /** Opens the panel for this target, or closes it with null. */
+/** @type {import("@codemirror/state").StateEffectType<{ head: number, name: string } | null>} */
 const showRename = StateEffect.define();
 
 /**

@@ -674,13 +674,24 @@
     clearTimeout(factsTimer);
     factsTimer = setTimeout(refreshFacts, 300);
     clearTimeout(indexTimer);
+    indexDirty = true;
     indexTimer = setTimeout(refreshIndex, 300);
   }
   // The project index behind go to definition, hover, references, rename and
   // the index diagnostics. It follows the facts' cadence.
   const liveIndex = createLiveIndex();
   let indexTimer = null;
+  // Set by any edit, local or remote, and cleared by a refresh. A query reads
+  // the index through `currentIndex`, which refreshes first while it is set, so
+  // offsets are never those of text that has since changed.
+  let indexDirty = true;
+  function currentIndex() {
+    if (indexDirty) refreshIndex();
+    return liveIndex.project;
+  }
   function refreshIndex() {
+    clearTimeout(indexTimer);
+    indexDirty = false;
     untrack(() => {
       if (!session?.doc) return;
       const tree = treeForDoc(session.doc);
@@ -739,7 +750,7 @@
   // What the document-index extensions read and do through the editor.
   /** @type {import("../lib/document-index-extensions/context.js").IndexContext} */
   const indexContext = {
-    project: () => liveIndex.project,
+    project: currentIndex,
     path: () => pathOfDoc(session.doc, showing),
     open: (path, at) => {
       const id = textIdForPath(session.doc, path);
@@ -1170,7 +1181,7 @@
     else if (command === "comment") onannotate?.("comment", selection());
     else if (Object.hasOwn(structure, command)) runStructure(command);
     else if (command === "tab-focus") toggleTabFocusMode(target);
-    else if (command === "go-to-definition") goToDefinition(target);
+    else if (command === "go-to-definition") goToDefinition(target, indexContext);
     else if (command === "find-references") findReferencesCommand(indexContext)(target);
     else if (command === "rename-symbol") renameCommand(indexContext)(target);
     else if (command === "find" || command === "replace") {
@@ -1460,6 +1471,7 @@
         }),
         // Go to definition, hover, references and rename over the project index.
         indexEditing(indexContext),
+        EditorView.updateListener.of((update) => { if (update.docChanged) indexDirty = true; }),
         // Where a compile's errors are shown: the gutter mark, and with it the
         // underline and the hover the lint extension draws. Drawn only while
         // the check is on.

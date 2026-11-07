@@ -34,6 +34,7 @@ export function goToDefinition(view, context) {
 const linkMark = Decoration.mark({ class: "cm-index-link" });
 
 /** Sets the span to underline (a [from, to] pair), or null to clear it. */
+/** @type {import("@codemirror/state").StateEffectType<[number, number] | null>} */
 const setLink = StateEffect.define();
 
 /**

@@ -36,6 +36,7 @@ export function referenceRows(state, context, locations) {
 }
 
 /** Opens the panel with these rows, or closes it with null. */
+/** @type {import("@codemirror/state").StateEffectType<ReferenceRow[] | null>} */
 const showReferences = StateEffect.define();
 
 /**
