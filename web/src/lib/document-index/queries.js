@@ -137,7 +137,7 @@ export function definition(project, path, pos) {
     return project.definitions("label", item.name).map(({ path: defPath, item: def }) => toLocation(defPath, def));
   }
   if (item.kind === "include" || item.kind === "asset") {
-    const resolved = project.resolveFile(path, item.name);
+    const resolved = project.resolveFile(path, item.name, item.kind);
     return resolved === null ? [] : [{ path: resolved, from: 0, to: 0 }];
   }
   return [];
@@ -282,7 +282,7 @@ export function diagnostics(project, path) {
     const name = item.name;
 
     if (item.kind === "include" || item.kind === "asset") {
-      if (known === null || project.resolveFile(path, name) !== null) continue;
+      if (known === null || project.resolveFile(path, name, item.kind) !== null) continue;
       const candidates = known.map((knownPath) => {
         const display = relativePath(dirname(path), knownPath);
         return hasExtension(name) ? display : display.replace(/\.[^./]*$/, "");

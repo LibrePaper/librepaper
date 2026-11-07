@@ -192,6 +192,9 @@ test("definition of an include uses resolveFile, with extension inference", () =
   assert.equal(project.resolveFile("sub/a.tex", "../main"), "main.tex");
   assert.equal(project.resolveFile("sub/a.tex", "../typ"), null);
   assert.equal(project.resolveFile("sub/a.tex", "../typ.typ"), "typ.typ");
+  // An image named without an extension tries the image extensions, not .tex.
+  assert.equal(project.resolveFile("main.tex", "plot", "asset"), "plot.png");
+  assert.equal(project.resolveFile("main.tex", "plot"), null);
 
   project.setFiles(null);
   assert.equal(project.resolveFile("main.tex", "intro"), null);

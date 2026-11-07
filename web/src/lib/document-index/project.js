@@ -6,7 +6,10 @@ import { dirname, normalizePath, resolvePath } from "../completion/paths.js";
 /** @typedef {import("./schema.js").FileIndex} FileIndex */
 /** @typedef {import("./schema.js").IndexItem} IndexItem */
 /** @typedef {import("./schema.js").Namespace} Namespace */
-/** @typedef {(fromPath: string, name: string) => string | null} ResolveFile */
+/** @typedef {(fromPath: string, name: string, kind?: string) => string | null} ResolveFile */
+
+// Extensions LaTeX tries for an image named without one.
+const ASSET_EXTENSIONS = ["pdf", "png", "jpg", "jpeg", "eps", "svg"];
 
 /** @param {string} a @param {string} b @returns {number} */
 const byText = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
@@ -76,17 +79,19 @@ export function createProjectIndex(options = {}) {
 
   /**
    * Resolve a name written relative to the directory of `fromPath`. Tries the
-   * name as written, then with the extension of `fromPath` when the name has none.
+   * name as written, then, when the name has no extension, the image
+   * extensions for an asset or the extension of `fromPath` for anything else.
    * @type {ResolveFile}
    */
-  function resolveFileDefault(fromPath, name) {
+  function resolveFileDefault(fromPath, name, kind) {
     const known = fileSet;
     if (!known) return null;
     const base = resolvePath(dirname(fromPath), name);
     const candidates = [base];
     const hasExtension = /\.[^./]+$/.test(name.slice(name.lastIndexOf("/") + 1));
     const extension = extensionOf(fromPath);
-    if (!hasExtension && extension) candidates.push(`${base}.${extension}`);
+    if (!hasExtension && kind === "asset") candidates.push(...ASSET_EXTENSIONS.map((ext) => `${base}.${ext}`));
+    else if (!hasExtension && extension) candidates.push(`${base}.${extension}`);
     return candidates.find((candidate) => known.has(candidate)) ?? null;
   }
 
