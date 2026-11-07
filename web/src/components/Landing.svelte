@@ -1308,7 +1308,7 @@
               </div>
               <div class="tags-menu-divider" role="separator"></div>
               <Menu.Item value="new-tag" class="menuitem project-action-item" data-rail-action="new-tag">
-                <Icon name="plus" size="1rem" /><span class="menuitem-label">{m.common_new_tag()}</span>
+                <Icon name="plus" size="1rem" /><span class="menuitem-label">{m.landing_new_tag_ellipsis()}</span>
               </Menu.Item>
               {#if userTags.length}
                 <Menu.Item value="manage-tags" class="menuitem project-action-item" data-rail-action="manage-tags">

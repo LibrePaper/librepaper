@@ -123,7 +123,7 @@
         <Menu.Item value="tags:new" class="menuitem workspace-action" data-workspace-action="new-tag">
           <span class="menuitem-check" aria-hidden="true"></span>
           <Icon name="plus" size="1rem" />
-          <span class="menuitem-label">{m.common_new_tag()}</span>
+          <span class="menuitem-label">{m.landing_new_tag_ellipsis()}</span>
         </Menu.Item>
         {#if tags.length}
           <Menu.Item value="tags:manage" class="menuitem workspace-action" data-workspace-action="manage-tags">

@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import {
   COMMANDS, RESERVED, availability, bindings, caps, commandFor, filter, fromEvent, helpTable,
-  label, menuKeys, normalize, offered, reserved, typeable,
+  label, labelOf, menuKeys, noteOf, normalize, offered, offeredWithUnavailable, reserved, typeable,
 } from "../../src/lib/commands.js";
 import { MATH_TEMPLATES } from "../../src/lib/symbols/templates.js";
 
@@ -325,4 +325,48 @@ assert.equal(menuCommand("palette").menu, "help");
 assert.equal(menuCommand("shortcuts").menu, "help");
 assert.ok(!offered(workspace, { apple: false }).some((entry) => entry.id.startsWith("menu-")), "the palette offers no menu chords");
 
-console.log("commands: one notation, no browser collisions, typing beats a chord, the bar's words open by key, and a help table that cannot drift from the keys");
+
+/* ------------------------------------- one name, and the reason it is greyed */
+
+// A menu prints the registry's name, so the palette and the menus cannot call
+// one command two things. A name that opens a prompt says so with an ellipsis;
+// one that only opens a panel or a dialog with nothing to fill in does not.
+assert.equal(labelOf("linked"), "Keep in step", "the menu names it as the palette does");
+assert.equal(labelOf("new-file"), "New file…", "a name that asks for a file name ends in an ellipsis");
+assert.equal(labelOf("find"), "Find…", "Find asks for what to find");
+assert.equal(labelOf("share"), "Share", "Share opens a panel and asks nothing");
+assert.equal(labelOf("settings"), "Settings", "Settings opens a dialog and asks nothing");
+assert.equal(labelOf("word-count"), "Word count", "Word count shows a count and asks nothing");
+assert.equal(labelOf("no-such-command"), "", "an unknown id names nothing");
+
+// The reason a command cannot run is the registry's note, not a menu's guess.
+assert.ok(noteOf("focus-files").length > 0, "a greyed command has its reason");
+assert.equal(noteOf("undo"), "", "and a command with no reason says none");
+
+// With no query nothing is greyed, so the palette opens on what it can run.
+const plain = offeredWithUnavailable(reader, "", { apple: false });
+assert.deepEqual(plain.map((entry) => entry.id), offered(reader, { apple: false }).map((entry) => entry.id), "an empty query lists what is offered, and nothing else");
+assert.ok(!plain.some((entry) => entry.unavailable), "and greys nothing");
+
+// A query that matches a command this reader cannot run lists it greyed, after
+// the commands that can run. Focus Preview is offered; Focus Files is not.
+const asking = offeredWithUnavailable(reader, "focus", { apple: false });
+const greyedAt = asking.findIndex((entry) => entry.unavailable);
+assert.ok(greyedAt > 0, "the commands that can run come first");
+assert.ok(asking.slice(0, greyedAt).every((entry) => !entry.unavailable), "nothing greyed sits among the available matches");
+assert.ok(asking.slice(greyedAt).every((entry) => entry.unavailable), "everything after them is greyed");
+assert.equal(asking.find((entry) => entry.id === "focus-preview").unavailable, false);
+assert.equal(asking.find((entry) => entry.id === "focus-files").unavailable, true, "Focus Files matches but cannot run for a reader");
+assert.equal(asking.find((entry) => entry.id === "focus-files").note, noteOf("focus-files"), "with its reason");
+assert.ok(!asking.some((entry) => entry.id === "palette"), "the palette still does not offer itself");
+
+// A query that matches only what cannot run lists only that, and nothing is
+// selectable among it because nothing is available.
+const onlyGreyed = offeredWithUnavailable(reader, "focus files", { apple: false });
+assert.ok(onlyGreyed.every((entry) => entry.unavailable), "nothing a reader can run matches, so everything listed is greyed");
+assert.equal(onlyGreyed[0].id, "focus-files", "and the name that starts with the query is first");
+
+// The same name for an editor who has the panel lists it as runnable.
+assert.equal(offeredWithUnavailable(workspace, "focus files", { apple: false }).find((entry) => entry.id === "focus-files").unavailable, false, "a context that can run it greys nothing");
+
+console.log("commands: one notation, no browser collisions, typing beats a chord, a help table that cannot drift from the keys, and one name per command");
