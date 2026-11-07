@@ -8,6 +8,7 @@ import { LanguageDescription } from "@codemirror/language";
 import { typstLanguage } from "./typst-mode.js";
 import { sourceFormatOf } from "./formats.js";
 import { pandocExtensions } from "./pandoc-markdown.js";
+import { quartoOptions } from "./quarto-options.js";
 import { latex } from "./latex-language/index.js";
 
 const typst = StreamLanguage.define(typstLanguage);
@@ -49,7 +50,7 @@ function byFormat(format) {
     case "tex": return latex();
     case "typst": return typst;
     case "html": return html();
-    case "quarto":
+    case "quarto": return [markdownSupport(), quartoOptions];
     case "markdown":
     case "md": return markdownSupport();
     default: return [];
