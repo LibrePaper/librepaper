@@ -38,12 +38,17 @@ function commentStart(line) {
   return -1;
 }
 
+/** @typedef {{ kind: "begin" | "end" | "section", name: string, depth?: number, line: number, from: number, to: number }} Token */
+
 /**
  * Yield, in document order, the \begin and \end tokens and the sectioning
  * commands from startLine to the end of the document. Tokens are
  * { kind: "begin" | "end" | "section", name, depth, line, from, to }.
  * Comments and verbatim bodies produce no tokens, except the \end that closes
  * a verbatim body, which is yielded so the body's own fold can find it.
+ * @param {import("@codemirror/state").Text} doc
+ * @param {number} startLine
+ * @returns {Generator<Token, undefined>}
  */
 function* latexTokens(doc, startLine) {
   let verbatim = null;
@@ -86,7 +91,7 @@ function* latexTokens(doc, startLine) {
       let entered = false;
       while ((match = token.exec(raw)) && match.index + match[0].length <= limit) {
         const name = match[2].trim();
-        const kind = match[1];
+        const kind = /** @type {"begin" | "end"} */ (match[1]);
         yield {
           kind,
           name,
@@ -154,6 +159,9 @@ function environmentFold(doc, line) {
 /** Fold range for the line starting at lineStart, or null. */
 function latexFoldRange(state, lineStart) {
   const line = state.doc.lineAt(lineStart);
+  // The gutter asks about every visible line; most open nothing, and the scans
+  // below would otherwise walk ahead to the next token for each of them.
+  if (!line.text.includes("\\begin") && !SECTION.test(line.text)) return null;
   return sectionFold(state.doc, line) ?? environmentFold(state.doc, line);
 }
 
