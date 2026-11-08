@@ -364,6 +364,8 @@ impl Registry {
         for sequencer in self.all().await {
             let state = sequencer.log_state().await;
             if state.subscribers == 0 && state.buffered == 0 {
+                // An idle document must not keep holding quota in PostgreSQL.
+                sequencer.release_reservation().await;
                 idle.push(sequencer.document_id);
             }
         }
@@ -391,6 +393,7 @@ impl Registry {
             if let Err(error) = sequencer.flush(FlushReason::Shutdown).await {
                 tracing::warn!("could not flush {} at shutdown: {error}", sequencer.slug);
             }
+            sequencer.release_reservation().await;
         }
         self.resident.lock().await.clear();
     }

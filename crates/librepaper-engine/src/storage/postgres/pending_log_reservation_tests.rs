@@ -1,6 +1,6 @@
-//! Durable admission survives a failed flush and is replaced on commit.
+//! Durable admission is reserved in chunks, survives a failed flush, and is
+//! drawn down by the flush that consumes it.
 
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::super::usage::{usage_bytes, Sources, UsageScope};
@@ -47,32 +47,28 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
         .await
         .unwrap();
     let reservation_key = Uuid::now_v7();
-    let digest: [u8; 32] = Sha256::digest(b"x").into();
-    catalog
-        .reserve_pending_log_bytes(document.id, reservation_key, 32, digest)
-        .await
-        .unwrap();
-    assert!(catalog
-        .reserve_pending_log_bytes(
-            document.id,
-            reservation_key,
-            32,
-            Sha256::digest(b"different payload").into(),
-        )
-        .await
-        .is_err());
-    catalog
-        .reserve_pending_log_bytes(document.id, reservation_key, 32, digest)
-        .await
-        .unwrap();
-    let reserved_total: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(sum(bytes),0)::bigint FROM pending_log_reservations WHERE document_id=$1",
-    )
-    .bind(document.id)
-    .fetch_one(catalog.pool())
-    .await
-    .unwrap();
-    assert_eq!(reserved_total, 32);
+    assert_eq!(
+        catalog
+            .reserve_pending_log_bytes(document.id, reservation_key, 64, 64)
+            .await
+            .unwrap(),
+        64
+    );
+    // Growing the same row is one row, not a second reservation.
+    assert_eq!(
+        catalog
+            .reserve_pending_log_bytes(document.id, reservation_key, 16, 16)
+            .await
+            .unwrap(),
+        80
+    );
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM pending_log_reservations WHERE document_id=$1")
+            .bind(document.id)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+    assert_eq!(rows, 1);
 
     let mut tx = catalog.begin_fenced_flush(document.id, 0).await.unwrap();
     catalog
@@ -85,7 +81,7 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
                 vector: b"vector",
                 source_format: None,
             },
-            &[reservation_key],
+            reservation_key,
             32,
         )
         .await
@@ -99,7 +95,7 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
     .fetch_one(catalog.pool())
     .await
     .unwrap();
-    assert_eq!(remaining, 32);
+    assert_eq!(remaining, 80);
 
     let mut tx = catalog.begin_fenced_flush(document.id, 0).await.unwrap();
     catalog
@@ -112,8 +108,56 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
                 vector: b"vector",
                 source_format: None,
             },
-            &[reservation_key],
+            reservation_key,
             32,
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT bytes FROM pending_log_reservations WHERE document_id=$1 AND reservation_id=$2",
+    )
+    .bind(document.id)
+    .bind(reservation_key)
+    .fetch_one(catalog.pool())
+    .await
+    .unwrap();
+    assert_eq!(remaining, 48);
+    assert_eq!(catalog.log_sequence(document.id).await.unwrap(), 1);
+
+    // Taking more than the row holds is a lost reservation.
+    let mut tx = catalog.begin_fenced_flush(document.id, 1).await.unwrap();
+    assert!(catalog
+        .insert_log_row_reserved(
+            &mut tx,
+            document.id,
+            FlushRow {
+                expected_update_sequence: 1,
+                update_bytes: b"x",
+                vector: b"vector",
+                source_format: None,
+            },
+            reservation_key,
+            49,
+        )
+        .await
+        .is_err());
+    tx.rollback().await.unwrap();
+
+    // Taking exactly what is left deletes the row.
+    let mut tx = catalog.begin_fenced_flush(document.id, 1).await.unwrap();
+    catalog
+        .insert_log_row_reserved(
+            &mut tx,
+            document.id,
+            FlushRow {
+                expected_update_sequence: 1,
+                update_bytes: b"x",
+                vector: b"vector",
+                source_format: None,
+            },
+            reservation_key,
+            48,
         )
         .await
         .unwrap();
@@ -125,7 +169,7 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
             .await
             .unwrap();
     assert_eq!(count, 0);
-    assert_eq!(catalog.log_sequence(document.id).await.unwrap(), 1);
+    assert_eq!(catalog.log_sequence(document.id).await.unwrap(), 2);
 }
 
 #[tokio::test]
@@ -164,20 +208,24 @@ async fn quota_admission_rejects_before_acceptance_and_hidden_prefix_still_flush
         .unwrap();
 
     let first_key = Uuid::now_v7();
-    let first_digest: [u8; 32] = Sha256::digest(b"first").into();
     catalog
-        .reserve_pending_log_bytes(document.id, first_key, 32, first_digest)
+        .reserve_pending_log_bytes(document.id, first_key, 32, 32)
         .await
         .unwrap();
+    // 8 bytes remain: a batch needing 16 is refused, and a chunk that does
+    // not fit is granted as the shortfall when that is all a batch needs.
     assert!(catalog
-        .reserve_pending_log_bytes(
-            document.id,
-            Uuid::now_v7(),
-            16,
-            Sha256::digest(b"second").into(),
-        )
+        .reserve_pending_log_bytes(document.id, Uuid::now_v7(), 64, 16)
         .await
         .is_err());
+    let second_key = Uuid::now_v7();
+    assert_eq!(
+        catalog
+            .reserve_pending_log_bytes(document.id, second_key, 64, 8)
+            .await
+            .unwrap(),
+        8
+    );
     catalog
         .moderate_project(&document.slug, true, "test-operator", "abusive project")
         .await
@@ -194,21 +242,24 @@ async fn quota_admission_rejects_before_acceptance_and_hidden_prefix_still_flush
                 vector: b"vector",
                 source_format: None,
             },
-            &[first_key],
+            first_key,
             32,
         )
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    let remaining: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM pending_log_reservations WHERE document_id=$1")
-            .bind(document.id)
-            .fetch_one(catalog.pool())
-            .await
-            .unwrap();
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pending_log_reservations WHERE document_id=$1 AND reservation_id=$2",
+    )
+    .bind(document.id)
+    .bind(first_key)
+    .fetch_one(catalog.pool())
+    .await
+    .unwrap();
     assert_eq!(remaining, 0);
     assert_eq!(catalog.log_sequence(document.id).await.unwrap(), 1);
 }
+
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn durable_ledger_usage_replaces_pending_reservation_on_flush() {
@@ -242,12 +293,7 @@ async fn durable_ledger_usage_replaces_pending_reservation_on_flush() {
     let deployment_before = catalog.durable_usage_bytes(None).await.unwrap();
     let reservation_key = Uuid::now_v7();
     catalog
-        .reserve_pending_log_bytes(
-            document.id,
-            reservation_key,
-            32,
-            Sha256::digest(b"x").into(),
-        )
+        .reserve_pending_log_bytes(document.id, reservation_key, 32, 32)
         .await
         .unwrap();
     assert_eq!(
@@ -278,7 +324,7 @@ async fn durable_ledger_usage_replaces_pending_reservation_on_flush() {
                 vector: b"vector",
                 source_format: None,
             },
-            &[reservation_key],
+            reservation_key,
             32,
         )
         .await
