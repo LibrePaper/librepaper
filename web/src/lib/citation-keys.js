@@ -72,6 +72,17 @@ function markdownMasked(text) {
   }).join("\n");
 }
 
+/**
+ * Whether the typst reference whose `@` is at `at` follows a letter or digit,
+ * as in an e-mail address. Typst reads `me@example.org` as a reference; the
+ * index and the citation checks leave it alone, as they always have.
+ * @param {string} text
+ * @param {number} at
+ */
+export function typstRefInWord(text, at) {
+  return at > 0 && /[\p{L}\p{N}]/u.test(text[at - 1]);
+}
+
 // The citation keys of a typst tree: @key references that name no label in
 // the project, and the labels of #cite(<key>) calls. Comments, raw text and
 // strings are not parsed as references, so they cannot yield keys.
@@ -83,7 +94,7 @@ function typstKeys(text, labels) {
     enter(ref) {
       if (ref.name === "Ref") {
         const marker = ref.node.getChild("RefMarker");
-        if (!marker) return;
+        if (!marker || typstRefInWord(text, marker.from)) return;
         // An @ may name a label as well as a bibliography key.
         const key = text.slice(marker.from + 1, marker.to);
         if (key && !labels.has(key)) found.push({ key, from: marker.from + 1, to: marker.to });

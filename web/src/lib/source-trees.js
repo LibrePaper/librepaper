@@ -195,14 +195,15 @@ export function typstTree(text, key) {
 
 /**
  * Calls `listener()` once typst-syntax.wasm has loaded, if it is not loaded
- * yet. Returns a function that unsubscribes.
+ * yet. Subscribing does not start the load: the first `typstTree` call does,
+ * so a project without Typst files never fetches the module. Returns a
+ * function that unsubscribes.
  * @param {() => void} listener
  * @returns {() => void}
  */
 export function onTypstSyntax(listener) {
   if (typstSyntax()) return () => {};
   typstListeners.add(listener);
-  startTypstSyntax();
   return () => {
     typstListeners.delete(listener);
   };

@@ -287,7 +287,7 @@
     tracking = false, me = { who: "", author: "" }, selectedChange = null,
     visual = false, imageUrl = null,
     analyze = analyzeBibliography,
-    onchange, oncaret, onfilechange, onsyntax, onbibliography, onsave, onquit, oncomment, onchangeselect,
+    onchange, oncaret, onfilechange, onbibliography, onsave, onquit, oncomment, onchangeselect,
     // Called with the caret's formatting (formatState) while visual mode is on.
     onformatstate,
     // Whether the bar over a selection offers the annotating verbs, and what
@@ -2041,7 +2041,8 @@
   });
 
   // typst-syntax.wasm loads after the first paint. The Typst features read its
-  // tree, so the index, the spellcheck and the outline are computed again then.
+  // tree, so the index and the spellcheck are computed again then. The reader
+  // follows the load itself for the outline.
   $effect(() => onTypstSyntax(() => {
     indexDirty = true;
     refreshIndex();
@@ -2051,8 +2052,6 @@
         effects: spellcheckCompartment.reconfigure(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(showing), () => target.state.doc.toString())),
       });
     }
-    // After the current task, as the other signals to the reader are.
-    queueMicrotask(() => onsyntax?.());
   }));
 
 </script>

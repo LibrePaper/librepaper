@@ -4,6 +4,9 @@
 import assert from "node:assert/strict";
 import { createProjectIndex } from "../../src/lib/document-index/project.js";
 import { indexTexts, isDocumentSource, labelList } from "../../src/lib/document-index/labels.js";
+import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
+
+await loadTypstSyntaxForTests();
 
 const label = (name, from, title) => ({ kind: "label", name, range: [from, from + name.length], ...(title ? { title } : {}) });
 

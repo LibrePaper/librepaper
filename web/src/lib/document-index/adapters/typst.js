@@ -9,6 +9,7 @@
 
 import { extractOutline } from "../../outline.js";
 import { skipRanges } from "../../spellcheck/index.js";
+import { typstRefInWord } from "../../citation-keys.js";
 import { typstTree } from "../../source-trees.js";
 
 /** @typedef {import("../schema.js").IndexItem} IndexItem */
@@ -63,7 +64,7 @@ export function typstAdapter(text, path) {
           return;
         case "Ref": {
           const marker = node.getChild("RefMarker");
-          if (!marker) return;
+          if (!marker || typstRefInWord(source, marker.from)) return;
           items.push({
             kind: "ref",
             range: [marker.from, marker.to],
