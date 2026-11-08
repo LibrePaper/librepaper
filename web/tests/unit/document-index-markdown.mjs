@@ -6,6 +6,7 @@ import {
   definition,
   diagnostics,
   references,
+  rename,
 } from "../../src/lib/document-index/queries.js";
 import { citedKeys } from "../../src/lib/citation-keys.js";
 import { quartoLabels } from "../../src/lib/completion/quarto.js";
@@ -379,4 +380,17 @@ test("a 300 KB document indexes in under two seconds", () => {
   const elapsed = performance.now() - start;
   assert.ok(items.length > 1000);
   assert.ok(elapsed < 2000, `took ${elapsed} ms`);
+});
+
+test("a dotted id is one label, and renaming it replaces all of it", () => {
+  const text = "# Intro {#intro.v2}\n\nSee [the intro](#intro.v2).\n";
+  const [label] = markdownAdapter(text, "a.md").filter((item) => item.kind === "label");
+  assert.equal(label.name, "intro.v2");
+  assert.equal(text.slice(...label.nameRange), "intro.v2");
+  const project = createProjectIndex();
+  project.setFiles(["a.md"]);
+  project.update({ path: "a.md", format: "markdown", items: markdownAdapter(text, "a.md"), length: text.length });
+  const edits = rename(project, "a.md", label.nameRange[0], "intro.v3");
+  assert.ok(edits && edits.length >= 1);
+  for (const edit of edits) assert.equal(text.slice(edit.from, edit.to), "intro.v2");
 });

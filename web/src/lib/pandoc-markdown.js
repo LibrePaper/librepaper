@@ -29,7 +29,8 @@ function blocksCitation(previous) {
 
 // Attribute lists: `{#id .class key=value key2="v w"}`. Returns the Attributes
 // element, or null when the text is not a well-formed list.
-const ATTRIBUTE = /(?:#([^\s#.={}"']+))|(?:\.([^\s#.={}"']+))|(?:([^\s=#.{}"']+)=("[^"]*"|'[^']*'|[^\s"'{}]+))/y;
+// Ids and classes may contain dots (`#intro.v2`), so attributes are separated by blanks.
+const ATTRIBUTE = /(?:#([^\s#={}"']+))|(?:\.([^\s#={}"']+))|(?:([^\s=#.{}"']+)=("[^"]*"|'[^']*'|[^\s"'{}]+))/y;
 function attributeList(cx, text, from) {
   if (text[0] !== "{" || text[text.length - 1] !== "}") return null;
   const inner = text.slice(1, -1);
@@ -49,6 +50,7 @@ function attributeList(cx, text, from) {
       children.push(cx.elt("AttributeValue", start + match[3].length + 1, start + match[0].length));
     }
     i = ATTRIBUTE.lastIndex;
+    if (i < inner.length && !/\s/.test(inner[i])) return null;
   }
   if (!children.length) return null;
   return cx.elt("Attributes", from, from + text.length, children);
