@@ -1,15 +1,13 @@
 // Citation keys in a source file, and the keys that have no bibliography entry.
 // Pure text helpers, so the editor and the check scripts share them.
+import { typstTree } from "./source-trees.js";
+
 const WORD = /[-\p{L}\p{N}_:.+]/u;
 const LATEX_CITE = /\\(?:(?:no|paren|text|auto|foot|smart|super|Paren|Text|Auto|Foot|Smart|Super)?[Cc]ite(?:p|t|author|year)?\*?)\s*(?:\[[^\]]*\]\s*)*\{([^}]*)\}/g;
 const MARKDOWN_AT = /@[-\p{L}\p{N}_:.+]+/gu;
-export const TYPST_AT = /@[-\p{L}\p{N}_:.]+/gu;
-export const TYPST_CITE = /#cite\(\s*<([-\p{L}\p{N}_:.]+)>/gu;
 // A label declaration, not a label used as an argument such as #cite(<key>).
 export const LABEL = /(?<![(,]\s*)<([\p{L}\p{N}_\-:.]+)>/gu;
 const INLINE_CODE = /(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g;
-const TYPST_FENCED = /(`{3,})[\s\S]*?\1/g;
-const TYPST_COMMENT = /(?<!:)\/\/[^\n]*/g;
 const CROSS_REF = /^(fig|tbl|sec|eq|lst|thm|lem|cor|prp|cnj|def|exm|exr|sol|rem|tip|nte|wrn|imp|cau)[-:]/;
 
 // Replaces everything but line breaks, so offsets and line numbers stay valid.
@@ -74,23 +72,33 @@ function markdownMasked(text) {
   }).join("\n");
 }
 
-// The typst source with raw blocks, raw spans and line comments blanked. It runs
-// on the whole text so that multiline raw blocks are masked too.
-export function typstMasked(text) {
-  return text.replace(TYPST_FENCED, blank).replace(INLINE_CODE, blank).replace(TYPST_COMMENT, blank);
-}
-
-// The [from, to) spans of the typst raw blocks and raw spans, found in the same
-// order typstMasked blanks them, so the spans match what the mask removed.
-/** @param {string} text @returns {Array<[number, number]>} */
-export function typstCodeSpans(text) {
-  /** @type {Array<[number, number]>} */
-  const spans = [];
-  for (const match of text.matchAll(TYPST_FENCED)) spans.push([match.index, match.index + match[0].length]);
-  for (const match of text.replace(TYPST_FENCED, blank).matchAll(INLINE_CODE)) {
-    spans.push([match.index, match.index + match[0].length]);
-  }
-  return spans;
+// The citation keys of a typst tree: @key references that name no label in
+// the project, and the labels of #cite(<key>) calls. Comments, raw text and
+// strings are not parsed as references, so they cannot yield keys.
+function typstKeys(text, labels) {
+  const tree = typstTree(text);
+  if (!tree) return [];
+  const found = [];
+  tree.iterate({
+    enter(ref) {
+      if (ref.name === "Ref") {
+        const marker = ref.node.getChild("RefMarker");
+        if (!marker) return;
+        // An @ may name a label as well as a bibliography key.
+        const key = text.slice(marker.from + 1, marker.to);
+        if (key && !labels.has(key)) found.push({ key, from: marker.from + 1, to: marker.to });
+        return;
+      }
+      if (ref.name !== "FuncCall") return;
+      const callee = ref.node.firstChild;
+      if (!callee || callee.name !== "Ident" || text.slice(callee.from, callee.to) !== "cite") return;
+      for (let arg = ref.node.getChild("Args")?.firstChild; arg; arg = arg.nextSibling) {
+        if (arg.name !== "Label" || arg.to - arg.from < 3) continue;
+        found.push({ key: text.slice(arg.from + 1, arg.to - 1), from: arg.from + 1, to: arg.to - 1 });
+      }
+    },
+  });
+  return found;
 }
 
 /**
@@ -106,12 +114,7 @@ export function citedKeys(text, format, { labels = new Set() } = {}) {
   if (format === "latex" || format === "tex") {
     found = latexKeys(text);
   } else if (format === "typst") {
-    const masked = typstMasked(text);
-    // An @ may name a label as well as a bibliography key; #cite(<key>) names a key.
-    found = [...atKeys(masked, TYPST_AT).filter((cite) => !labels.has(cite.key)), ...[...masked.matchAll(TYPST_CITE)].map((match) => {
-      const from = match.index + match[0].indexOf("<") + 1;
-      return { key: match[1], from, to: from + match[1].length };
-    })];
+    found = typstKeys(text, labels);
   } else if (format === "markdown" || format === "quarto") {
     found = atKeys(markdownMasked(text), MARKDOWN_AT).filter((cite) => !CROSS_REF.test(cite.key));
   } else {

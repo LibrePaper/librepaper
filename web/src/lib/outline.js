@@ -1,4 +1,4 @@
-import { latexTree, markdownTree } from "./source-trees.js";
+import { latexTree, markdownTree, typstTree } from "./source-trees.js";
 
 /*
  * Extract a small, source-oriented outline without compiling or executing the
@@ -15,19 +15,6 @@ const LATEX_LEVELS = new Map([
   ["paragraph", 6],
   ["subparagraph", 7],
 ]);
-
-function documentLines(source) {
-  const lines = [];
-  let start = 0;
-  for (let i = 0; i <= source.length; i++) {
-    if (i !== source.length && source[i] !== "\n" && source[i] !== "\r") continue;
-    lines.push({ start, end: i, text: source.slice(start, i) });
-    if (i === source.length) break;
-    if (source[i] === "\r" && source[i + 1] === "\n") i++;
-    start = i + 1;
-  }
-  return lines;
-}
 
 function lineStarts(source) {
   const starts = [0];
@@ -75,133 +62,65 @@ function visible(source, mask, from, to) {
   return value;
 }
 
-function typstMask(source, lines) {
-  const mask = new Uint8Array(source.length);
-  // Typst block comments nest.  Line comments are marked to the end of their
-  // line; a small quote state avoids treating // inside a string as a comment.
-  let blockDepth = 0;
-  let quote = false;
-  let escaped = false;
-  for (let i = 0; i < source.length; i++) {
-    if (mask[i]) continue;
-    const two = source.slice(i, i + 2);
-    if (blockDepth) {
-      markRange(mask, i, i + 1);
-      if (two === "/*") { blockDepth++; markRange(mask, i, i + 2); i++; }
-      else if (two === "*/") { blockDepth--; markRange(mask, i, i + 2); i++; }
-      continue;
-    }
-    if (quote) {
-      if (escaped) escaped = false;
-      else if (source[i] === "\\") escaped = true;
-      else if (source[i] === '"') quote = false;
-      continue;
-    }
-    if (source[i] === '"') { quote = true; continue; }
-    if (two === "/*") { blockDepth = 1; markRange(mask, i, i + 2); i++; continue; }
-    if (two === "//") {
-      let end = source.indexOf("\n", i);
-      if (end < 0) end = source.length;
-      markRange(mask, i, end);
-      i = end - 1;
-    }
-  }
-
-  // Raw fences inside comments must not open a raw block.  Do this after
-  // comments have been masked, and count only visible fence markers.
-  let raw = false;
-  for (const line of lines) {
-    let rawMarkers = 0;
-    for (let at = line.start; at < line.end - 2; at++) {
-      if (!mask[at] && source.slice(at, at + 3) === "```") { rawMarkers++; at += 2; }
-    }
-    if (raw) {
-      markRange(mask, line.start, line.end);
-      if (rawMarkers % 2 === 1) raw = false;
-    } else if (rawMarkers) {
-      markRange(mask, line.start, line.end);
-      if (rawMarkers % 2 === 1) raw = true;
-    }
-  }
-  return mask;
-}
-
-function balanced(source, mask, open, left, right) {
-  let depth = 0;
-  let quote = false;
-  let escaped = false;
-  for (let i = open; i < source.length; i++) {
-    if (mask[i]) continue;
-    const char = source[i];
-    if (quote) {
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === '"') quote = false;
-      continue;
-    }
-    if (char === '"') { quote = true; continue; }
-    if (char === left) depth++;
-    else if (char === right && --depth === 0) return i;
-  }
-  return -1;
+// The visible text of a Typst node range, with comments dropped.
+function typstText(tree, source, from, to) {
+  let value = "";
+  let cursor = from;
+  tree.iterate({
+    from,
+    to,
+    enter(ref) {
+      if (ref.name !== "LineComment" && ref.name !== "BlockComment") return;
+      const start = Math.max(cursor, ref.from);
+      const end = Math.min(to, ref.to);
+      if (end <= start) return;
+      value += source.slice(cursor, start);
+      cursor = end;
+    },
+  });
+  return value + source.slice(cursor, to);
 }
 
 function extractTypst(source, starts) {
-  const lines = documentLines(source);
-  const mask = typstMask(source, lines);
+  const tree = typstTree(source);
+  if (!tree) return [];
   const result = [];
-  for (const line of lines) {
-    if (mask[line.start]) continue;
-    const text = visible(source, mask, line.start, line.end);
-    const markup = /^(\s*)(={1,})(?:[ \t]+(.*)|[ \t]*)$/.exec(text);
-    if (markup) addHeading(result, starts, markup[3] || "", markup[2].length, line.start + markup[1].length);
-  }
-
-  // Function-form headings are useful in generated Typst and are common in
-  // templates: #heading(level: 2)[A title] and #heading[A title].
-  for (let i = 0; i < source.length; i++) {
-    if (mask[i] || source[i] !== "#" || !source.startsWith("#heading", i) || typstLiteralAt(source, i)) continue;
-    const after = i + 8;
-    if (/[A-Za-z0-9_-]/u.test(source[after] || "")) continue;
-    let cursor = after;
-    while (/\s/u.test(source[cursor] || "")) cursor++;
-    let level = 1;
-    if (source[cursor] === "(") {
-      const close = balanced(source, mask, cursor, "(", ")");
-      if (close < 0) continue;
-      const options = visible(source, mask, cursor + 1, close);
-      const match = /(?:^|,)\s*level\s*:\s*(\d+)/u.exec(options);
-      if (match) level = Number(match[1]);
-      cursor = close + 1;
-      while (/\s/u.test(source[cursor] || "")) cursor++;
-    }
-    if (source[cursor] !== "[") continue;
-    const close = balanced(source, mask, cursor, "[", "]");
-    if (close < 0) continue;
-    addHeading(result, starts, visible(source, mask, cursor + 1, close), level, i);
-  }
+  tree.iterate({
+    enter(ref) {
+      if (ref.name === "Heading") {
+        // The level is the length of the "=" marker. The title is the markup
+        // of the heading, so a trailing label or comment is not part of it.
+        const marker = ref.node.getChild("HeadingMarker");
+        const markup = ref.node.getChild("Markup");
+        const level = marker ? marker.to - marker.from : 0;
+        addHeading(result, starts, markup ? typstText(tree, source, markup.from, markup.to) : "", level, ref.from);
+        return;
+      }
+      if (ref.name !== "FuncCall") return;
+      // Function-form headings are useful in generated Typst and are common in
+      // templates: #heading(level: 2)[A title] and #heading[A title].
+      const callee = ref.node.firstChild;
+      if (!callee || callee.name !== "Ident" || source.slice(callee.from, callee.to) !== "heading") return;
+      const args = ref.node.getChild("Args");
+      const content = args?.getChild("ContentBlock");
+      if (!content) return;
+      let level = 1;
+      for (let arg = args.firstChild; arg; arg = arg.nextSibling) {
+        if (arg.name !== "Named") continue;
+        const name = arg.firstChild;
+        const value = arg.lastChild;
+        if (name?.name === "Ident" && source.slice(name.from, name.to) === "level" && value?.name === "Int") {
+          level = Number(source.slice(value.from, value.to));
+          break;
+        }
+      }
+      const hash = ref.node.prevSibling;
+      const from = hash?.name === "Hash" ? hash.from : ref.from;
+      const markup = content.getChild("Markup");
+      addHeading(result, starts, markup ? typstText(tree, source, markup.from, markup.to) : "", level, from);
+    },
+  });
   return result.sort((a, b) => a.from - b.from);
-}
-
-function typstLiteralAt(source, offset) {
-  let lineStart = source.lastIndexOf("\n", offset - 1) + 1;
-  let string = false;
-  let raw = false;
-  let escaped = false;
-  for (let i = lineStart; i < offset; i++) {
-    if (string) {
-      if (escaped) escaped = false;
-      else if (source[i] === "\\") escaped = true;
-      else if (source[i] === '"') string = false;
-      continue;
-    }
-    if (source[i] === '"') { string = true; continue; }
-    if (source[i] === "`") {
-      if (source.slice(i, i + 3) === "```") { i += 2; continue; }
-      raw = !raw;
-    }
-  }
-  return string || raw;
 }
 
 function htmlTagEnd(source, start) {
