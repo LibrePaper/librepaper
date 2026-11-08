@@ -235,4 +235,13 @@ function words(text) {
   assert.deepEqual(words("\\author{Jane Doe} \\title{My Paper}"), ["My", "Paper"]);
 }
 
+{
+  // A percent sign inside \verb is text, not a comment.
+  assert.deepEqual(words("\\verb|50%| kept\nnext"), ["kept", "next"]);
+}
+{
+  // A comment inside a name argument hides a brace, and the group closes at the real one.
+  assert.deepEqual(words("\\cite{a% }\nkeys} after"), ["after"]);
+}
+
 console.log("spellcheck-latex: markup is skipped and prose is kept");
