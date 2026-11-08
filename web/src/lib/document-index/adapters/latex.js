@@ -213,7 +213,7 @@ export function latexAdapter(text, _path) {
     const at = ref.from;
     const bodyFrom = group.from + 1;
     const body = text.slice(bodyFrom, group.to - 1);
-    // A caption keeps nested groups such as \\emph{...} in its title.
+    // A caption keeps nested groups such as \emph{...} in its title.
     if (word !== "\\caption" && (body.includes("{") || body.includes("}"))) return;
     const range = pair(at, group.to);
 
