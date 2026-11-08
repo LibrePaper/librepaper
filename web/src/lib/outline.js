@@ -315,14 +315,17 @@ function extractMarkdown(source, starts) {
         from = marks.length ? marks[0].to : node.from;
         to = marks.length > 1 ? marks[marks.length - 1].from : node.to;
       } else {
-        // The underline is the last mark; the title is everything before it.
-        from = node.from;
+        // The underline is the last mark. A paragraph line above the title
+        // belongs to the heading in CommonMark, but the outline has always
+        // shown only the line just above the underline, as Pandoc reads it.
         to = marks.length ? marks[marks.length - 1].from : node.to;
+        const text = body.slice(node.from, to).replace(/\s+$/u, "");
+        from = node.from + text.lastIndexOf("\n") + 1;
       }
       // A trailing attribute list ({#id .class}) is not part of the title.
       if (last && last.name === "Attributes" && last.to <= to && !/\S/u.test(body.slice(last.to, to))) to = last.from;
-      const lead = body.slice(node.from, node.to).length - body.slice(node.from, node.to).trimStart().length;
-      addHeading(result, starts, body.slice(from, Math.max(from, to)), level, node.from + (match[1] === "Setext" ? lead : 0));
+      const start = match[1] === "Setext" ? from + (body.slice(from, to).length - body.slice(from, to).trimStart().length) : node.from;
+      addHeading(result, starts, body.slice(from, Math.max(from, to)), level, start);
       return false;
     },
   });
@@ -339,7 +342,7 @@ function extractLatex(source, starts) {
       const node = ref.node;
       const name = node.firstChild;
       if (!name || name.name !== "SectionName") return;
-      const level = LATEX_LEVELS.get(source.slice(name.from, name.to).replace(/\*$/u, "").toLowerCase());
+      const level = LATEX_LEVELS.get(source.slice(name.from + 1, name.to).replace(/\*$/u, "").toLowerCase());
       if (!level) return false;
       // An unfinished [short title] means the command is still being typed.
       const optional = name.nextSibling;

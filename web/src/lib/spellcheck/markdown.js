@@ -10,7 +10,7 @@
 // delimiter is remembered, so a line full of unmatched openers costs one scan
 // rather than one scan per opener.
 
-import { markdownTree } from "../source-trees.js";
+import { frontMatterRange, markdownTree } from "../source-trees.js";
 
 // Nodes that are markup from end to end. Link text, headings and the rest stay prose.
 const WHOLE = new Set([
@@ -61,6 +61,9 @@ export function markdownSkips(text) {
   /** @type {Array<[number, number]>} */
   const skips = [];
   if (typeof text !== "string" || !text) return skips;
+  // Front matter still being typed has no closing line yet. The index reads
+  // the text as Markdown then, but its YAML keys are not prose to check.
+  if (/^---[ \t]*\r?(?:\n|$)/.test(text) && !frontMatterRange(text)) return [[0, text.length]];
   const { tree, body, frontMatter } = markdownTree(text);
   const n = body.length;
   const skip = (from, to) => {
