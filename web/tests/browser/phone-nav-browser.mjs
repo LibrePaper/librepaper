@@ -28,6 +28,7 @@ const id = "main"; const text = new LoroText(); text.insert(0, Array.from({lengt
 // The project opens on the first file by name, so the long one sorts first.
 files.setContainer(id, text); paths.set(id, "a-main.html");
 for (let i = 0; i < 70; i++) { const file = new LoroText(); file.insert(0, 'chapter ' + i); files.setContainer('chapter-' + i, file); paths.set('chapter-' + i, 'chapter-' + i + '.html'); }
+const notes = new LoroText(); notes.insert(0, '# Notes\\n\\nA paragraph.'); files.setContainer('notes', notes); paths.set('notes', 'notes.md');
 server.commit();
 const update = encode(server.export({ mode: "update" }));
 const vector = encode(server.oplogVersion().encode());
@@ -373,6 +374,22 @@ try {
     await click(backBtn);
     await until(`${id} list closed`, async () => !(await visible('.mobile-command-view')), 3000);
   }
+
+  // An Insert dialog opens from the list, though the header it was built in is hidden by then.
+  await click('.mobile-tab-bar [data-destination="files"]');
+  await until('notes.md is listed', () => visible('.explorer-row[title="notes.md"]'), 5000);
+  await b.evaluate(`document.querySelector('.explorer-row[title="notes.md"]').click()`);
+  await until('notes.md leaves the file list', async () => (await modeOf()) !== 'mobile-sidebar', 5000);
+  await toMode('source');
+  await until('notes.md in the source', () => b.evaluate(`document.querySelector('.cm-content')?.textContent.includes('Notes')`), 5000);
+  await openMore();
+  await click('.mobile-sheet [data-row="command:insert"]');
+  await until('insert list', () => visible('.mobile-command-view'), 3000);
+  await click('.mobile-command-row[data-command="link"]');
+  await until('the Insert dialog shows', () => b.evaluate(`[...document.querySelectorAll('[role=dialog]:not([hidden])')].some(node => node.getClientRects().length && !node.closest('.mobile-sheet'))`), 3000);
+  assert.equal(await visible('nav.phone-shell'), false, 'the header stays hidden behind the dialog');
+  await key('Escape', 'Escape', 27);
+  await until('the Insert dialog closes', () => b.evaluate(`![...document.querySelectorAll('[role=dialog]:not([hidden])')].some(node => node.getClientRects().length)`), 3000);
 
   // i. The keyboard. This is a simulation: a real one is not available here.
   await toMode('source');

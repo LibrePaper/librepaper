@@ -1049,10 +1049,10 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
     transition: margin-top 200ms ease, height 200ms ease;
   }
   /* The reader's phone header (Back and a title, over the views that are not
-     tabs) is a slimmer bar than the landing page's: only the mode switch below it steps aside on scroll. The
-     mode switch and the keyboard bar are taken off the
-     workspace's height inline (--librepaper-phone-chrome, set by the Reader),
-     which is why `main.reader` subtracts it above. */
+     tabs) is a slimmer bar than the landing page's. The tab bar, the mode switch
+     and the keyboard bar are taken off the workspace's height inline
+     (--librepaper-phone-chrome, set by the Reader), which is why `main.reader`
+     subtracts it above. */
   :root:has(main.reader.adapted) { --librepaper-bar: calc(3.25rem + env(safe-area-inset-top)); }
   /* On a tab screen the header is not drawn at all. */
   :root:has(main.reader.adapted.phone-tabs) { --librepaper-bar: 0px; }

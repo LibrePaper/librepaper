@@ -502,7 +502,6 @@ try {
   assert.equal(shell.more,1,'exactly one More trigger');
   assert.ok(shell.tabs.every(([width,height]) => height >= 44),'tab bar buttons are at least 44px tall: ' + JSON.stringify(shell));
   assert.ok(shell.modeButtons.every(([width,height]) => width >= 44 && height >= 44),'mode switch buttons are at least 44px: ' + JSON.stringify(shell));
-  assert.equal(shell.title,undefined,'the document screen has no file name in the header');
   assert.equal(await visible('nav.phone-shell'),false,'the document screen has no header');
   // Everything the tab bar has no room for lives in the More sheet.
   await openMore();

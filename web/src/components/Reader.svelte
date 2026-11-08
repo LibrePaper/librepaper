@@ -2948,14 +2948,14 @@
   const modeSwitchShown = $derived(sourceOpen && !comparing && !mobileCommand && !keyboardOpen && activeMobileView !== "sidebar");
   const keyboardBarShown = $derived(keyboardOpen && shown.source && mayEdit && !comparing && !mobileCommand);
   // Everything the phone adds around the workspace, summed for its height.
-  const phoneChrome = $derived(compact ? [
+  const phoneChrome = $derived.by(() => (compact ? [
     tabsShown ? "env(safe-area-inset-top)" : "",
     modeSwitchShown && !barHidden ? "2.75rem" : "",
     tabBarShown ? "3.5rem + env(safe-area-inset-bottom)" : "",
     !tabBarShown && !keyboardOpen ? "env(safe-area-inset-bottom)" : "",
     keyboardBarShown ? "2.75rem" : "",
     keyboardOpen ? "var(--librepaper-keyboard, 0px)" : "",
-  ].filter(Boolean).join(" + ") || "0px" : "0px");
+  ].filter(Boolean).join(" + ") || "0px" : "0px"));
 
   function openCommand(kind) {
     if (kind === "edit") refreshEditAvailability();
