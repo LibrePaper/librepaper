@@ -39,17 +39,6 @@ function folding(wasm, { path = "main.typ", source = "" }) {
   return text ? JSON.parse(text) : null;
 }
 
-// The outline symbols of one file (headings and top-level lets), also parse
-// only. A module built before `symbols` answers null, and the editor keeps its
-// scanner-based outline.
-/** @param {import("./renderer-wasm.js").RendererWasm} wasm @param {RendererArgs} args */
-function symbols(wasm, { path = "main.typ", source = "" }) {
-  if (typeof wasm.symbols !== "function") return null;
-  const { bytes } = call(wasm, "symbols", JSON.stringify({ path, source }));
-  const text = new TextDecoder().decode(bytes);
-  return text ? JSON.parse(text) : null;
-}
-
 async function render(wasm, tree, title, format) {
   const { bytes, text, kind, ok, diagnostics } = await renderResolving(wasm, tree, title, fetched, { format });
   if (ok && format === "html" && kind === "html") return { html: text, diagnostics };
@@ -85,7 +74,6 @@ rendererScope.onmessage = ({ data: { id, url, operation, args } }) => {
       }
       else if (operation === "complete") result = complete(wasm, args);
       else if (operation === "folding") result = folding(wasm, args);
-      else if (operation === "symbols") result = symbols(wasm, args);
       else if (operation === "failure") result = call(wasm, "failure_page", args.title).text;
       else if (operation !== "warm") throw new Error(`Unknown renderer operation: ${operation}`);
       const transfer = result?.pdf instanceof ArrayBuffer ? [result.pdf] : [];

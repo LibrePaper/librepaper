@@ -6,6 +6,7 @@
 import { TreeFragment } from "@lezer/common";
 import { parser as latexParser } from "./latex-language/parser.js";
 import { pandocMarkdownParser } from "./pandoc-markdown.js";
+import { loadTypstSyntax, typstSyntax } from "./typst-language/module.js";
 
 /** @typedef {import("@lezer/common").Tree} Tree */
 /** @typedef {{ tree: Tree, body: string, frontMatter: [number, number] | null }} MarkdownTrees */
@@ -152,4 +153,57 @@ export function markdownTree(text, key) {
   const result = { tree, body, frontMatter };
   byText.markdown.set(text, { text, result });
   return result;
+}
+
+/** @type {Promise<void> | null} the one load of typst-syntax.wasm, started by the first request */
+let typstLoading = null;
+/** @type {Set<() => void>} */
+const typstListeners = new Set();
+
+/** Starts loading typst-syntax.wasm, once. The listeners run when it arrives. */
+function startTypstSyntax() {
+  if (typstLoading) return;
+  typstLoading = loadTypstSyntax().then((api) => {
+    if (!api) return;
+    const listeners = [...typstListeners];
+    typstListeners.clear();
+    for (const listener of listeners) {
+      try {
+        listener();
+      } catch {
+        // One listener's failure must not stop the others.
+      }
+    }
+  });
+}
+
+/**
+ * The Typst syntax tree of `text`, or null while typst-syntax.wasm is not
+ * loaded (the first call starts loading it).
+ * @param {string} text
+ * @param {string} [key] usually the file path; lets an edit reuse the old tree
+ * @returns {import("@lezer/common").Tree | null}
+ */
+export function typstTree(text, key) {
+  const api = typstSyntax();
+  if (!api) {
+    startTypstSyntax();
+    return null;
+  }
+  return api.tree(text, key);
+}
+
+/**
+ * Calls `listener()` once typst-syntax.wasm has loaded, if it is not loaded
+ * yet. Returns a function that unsubscribes.
+ * @param {() => void} listener
+ * @returns {() => void}
+ */
+export function onTypstSyntax(listener) {
+  if (typstSyntax()) return () => {};
+  typstListeners.add(listener);
+  startTypstSyntax();
+  return () => {
+    typstListeners.delete(listener);
+  };
 }
