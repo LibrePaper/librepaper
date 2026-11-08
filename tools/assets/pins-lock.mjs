@@ -8,6 +8,7 @@ export const PINNED_FILES = new Map([
   ["bibliography.wasm", { repo: "wasm-bibliography", prefix: "wasm" }],
   ["citations.wasm", { repo: "wasm-bibliography", prefix: "wasm" }],
   ["typst.wasm", { repo: "wasm-typst", prefix: "wasm" }],
+  ["typst-syntax.wasm", { repo: "wasm-typst", prefix: "wasm" }],
   ["pandoc.wasm", { repo: "wasm-upstream", prefix: "wasm" }],
   ["harper.wasm", { repo: "wasm-upstream", prefix: "wasm" }],
   ...["jetbrains-mono", "jetbrains-mono-italic", "jetbrains-mono-semibold", "fira-code", "source-code-pro",

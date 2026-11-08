@@ -23,6 +23,7 @@ BIB     := web/wasm/bibliography.wasm
 CITES   := web/wasm/citations.wasm
 # Fetched, not built: see assets.lock and the pinned inputs section below.
 TYPST   := web/wasm/typst.wasm
+TYPST_SYNTAX := web/wasm/typst-syntax.wasm
 PANDOC  := web/wasm/pandoc.wasm
 HARPER  := web/wasm/harper.wasm
 # The pages. web/dist is entirely a build output, so it is an input to
@@ -37,7 +38,7 @@ LCM_DIR := web/vendor/loro-codemirror
 LCM     := $(LCM_DIR)/index.ts $(LCM_DIR)/sync.ts $(LCM_DIR)/undo.ts \
            $(LCM_DIR)/awareness.ts $(LCM_DIR)/ephemeral.ts $(LCM_DIR)/utils.ts
 # Everything tools/assets/pins.mjs fetch writes; see the pinned inputs section below.
-PINNED  := $(WASM) $(BIB) $(CITES) $(TYPST) $(PANDOC) $(HARPER) $(LCM)
+PINNED  := $(WASM) $(BIB) $(CITES) $(TYPST) $(TYPST_SYNTAX) $(PANDOC) $(HARPER) $(LCM)
 # web/src/site is deliberately not in this list. The marketing page and the
 # docs chrome are built by vite.site.config.js into docs/_site, which the
 # binary does not embed, and no page under web/pages reaches them. Counting

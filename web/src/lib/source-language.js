@@ -1,17 +1,14 @@
-import { StreamLanguage } from "@codemirror/language";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { html } from "@codemirror/lang-html";
 import { json } from "@codemirror/lang-json";
 import { yamlFrontmatter } from "@codemirror/lang-yaml";
 import { languages } from "@codemirror/language-data";
 import { LanguageDescription } from "@codemirror/language";
-import { typstLanguage } from "./typst-mode.js";
+import { typst } from "./typst-language/index.js";
 import { sourceFormatOf } from "./formats.js";
 import { pandocExtensions } from "./pandoc-markdown.js";
 import { quartoOptions } from "./quarto-options.js";
 import { latex } from "./latex-language/index.js";
-
-const typst = StreamLanguage.define(typstLanguage);
 
 /** Resolve an exact language name for a Markdown or Quarto code fence. */
 export function codeLanguage(info) {
@@ -48,7 +45,7 @@ function byFormat(format) {
   switch ((format || "").toLowerCase()) {
     case "latex":
     case "tex": return latex();
-    case "typst": return typst;
+    case "typst": return typst();
     case "html": return html();
     case "quarto": return [markdownSupport(), quartoOptions];
     case "markdown":

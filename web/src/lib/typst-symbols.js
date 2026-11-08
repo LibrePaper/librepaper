@@ -4,10 +4,92 @@
 // in UTF-16, and decides which outline the Outline panel shows.
 
 import { ViewPlugin } from "@codemirror/view";
-import { byteToUtf16, defaultRequest, folder } from "./typst-folding.js";
+import { rendererRequest } from "./renderer-client.js";
 import { extractOutline } from "./outline.js";
 
 const DELAY = 400;
+
+/**
+ * A function mapping a UTF-8 byte offset of `source` to a UTF-16 index. An
+ * offset inside a character rounds down to its start; one past the end clamps.
+ */
+export function byteToUtf16(source) {
+  const bytes = [];
+  const units = [];
+  let total = 0;
+  for (let i = 0; i < source.length; ) {
+    const code = source.codePointAt(i);
+    bytes.push(total);
+    units.push(i);
+    total += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+    i += code > 0xffff ? 2 : 1;
+  }
+  return (offset) => {
+    if (!(offset > 0)) return 0;
+    if (offset >= total) return source.length;
+    let low = 0;
+    let high = bytes.length - 1;
+    while (low < high) {
+      const mid = (low + high + 1) >> 1;
+      if (bytes[mid] <= offset) low = mid;
+      else high = mid - 1;
+    }
+    return units[low];
+  };
+}
+
+/** The default request: the typst module, asked over the renderer worker. */
+export function defaultRequest(path, source, operation = "symbols") {
+  const modules = globalThis.LIBREPAPER_MODULES || {};
+  const url = modules.typst;
+  if (!url) return Promise.resolve(null);
+  return rendererRequest(new URL(url, globalThis.location.href).href, operation, { path, source });
+}
+
+/**
+ * Refreshes an answer: `schedule()` after a change waits, asks for the current
+ * text, and applies the answer only if the document is still the one asked
+ * about; otherwise it asks again. `convert(source, answer)` shapes what `apply`
+ * receives. Returns `{schedule, destroy}`.
+ * @param {{
+ *   getDoc: () => import("@codemirror/state").Text,
+ *   apply: (value: any) => void,
+ *   request: (path: string, source: string) => Promise<any>,
+ *   path: () => string,
+ *   convert: (source: string, answer: any) => any,
+ *   delay?: number,
+ *   setTimer?: (run: () => void, delay: number) => any,
+ *   clearTimer?: (timer: any) => void,
+ * }} options
+ */
+export function folder({ getDoc, apply, request, path, convert, delay = DELAY, setTimer = setTimeout, clearTimer = clearTimeout }) {
+  let timer = null;
+  let dead = false;
+  const run = async () => {
+    timer = null;
+    const doc = getDoc();
+    let answer = null;
+    try {
+      answer = await request(path(), doc.toString());
+    } catch {
+      return;
+    }
+    if (dead) return;
+    if (getDoc() !== doc) return schedule();
+    apply(convert(doc.toString(), answer));
+  };
+  const schedule = () => {
+    if (dead) return;
+    if (timer !== null) clearTimer(timer);
+    timer = setTimer(run, delay);
+  };
+  const destroy = () => {
+    dead = true;
+    if (timer !== null) clearTimer(timer);
+    timer = null;
+  };
+  return { schedule, destroy };
+}
 
 /** The index kinds the module's answer replaces in the adapter's items. */
 export const SYMBOL_KINDS = new Set(["heading", "definition"]);
@@ -91,7 +173,7 @@ export function typstOutline(source, stored) {
 export const symbolsRequest = (path, source) => defaultRequest(path, source, "symbols");
 
 /**
- * A view plugin that asks for the file's symbols after edits, like folding.
+ * A view plugin that asks for the file's symbols after edits, after a pause in typing.
  * `onSymbols(source, items)` gets each answer for the text it was computed
  * from; `onSymbols(null, null)` is called when the plugin is destroyed.
  */
