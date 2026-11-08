@@ -30,7 +30,7 @@ async function instantiate(source) {
     return (await WebAssembly.instantiate(await response.arrayBuffer(), {})).instance;
   }
   const bytes = source instanceof Uint8Array ? source : new Uint8Array(source);
-  return (await WebAssembly.instantiate(bytes, {})).instance;
+  return WebAssembly.instantiate(await WebAssembly.compile(bytes), {});
 }
 
 function readString(exports, ptr, len) {
@@ -83,12 +83,12 @@ function build(exports) {
   /** The tree of a source handle, copied out of the module's memory. */
   const read = (handle, length) => {
     const ptr = exports.source_tree(handle);
-    const count = exports.tree_len();
+    // tree_len counts u32s; the root comes last and its size covers them all.
+    const words = exports.tree_len();
     const memory = exports.memory.buffer;
-    // tree_len counts u32s; tolerate a count of nodes by checking the root's size.
-    let words = count;
-    if (ptr + words * 4 > memory.byteLength || new Uint32Array(memory, ptr, words)[words - 1] !== words) words = count * 4;
-    if (!(words >= 4) || ptr + words * 4 > memory.byteLength) throw new Error("typst-syntax: bad tree");
+    if (words < 4 || ptr + words * 4 > memory.byteLength || new Uint32Array(memory, ptr, words)[words - 1] !== words) {
+      throw new Error("typst-syntax: bad tree");
+    }
     // Tree.build wants a plain array (a typed array would be taken for a cursor).
     const buffer = Array.from(new Uint32Array(memory, ptr, words));
     return Tree.build({ buffer, nodeSet, topID, length });

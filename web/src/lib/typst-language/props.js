@@ -14,15 +14,17 @@ const OPERATORS = "Plus Minus Star Slash Hat Eq EqEq ExclEq Lt LtEq Gt GtEq Plus
 const EXPRESSIONS = ["Binary", "Unary", "LetBinding", "DestructAssignment", "Named", "Keyed"];
 const operatorSelectors = EXPRESSIONS.flatMap((parent) => OPERATORS.split(" ").map((kind) => `${parent}/${kind}`)).join(" ");
 
+// Markup nodes hold their words in Text children, so their tag is inherited
+// (`/...`) or the words would stay plain.
 const highlighting = styleTags({
-  "Heading HeadingMarker": tags.heading,
-  Strong: tags.strong,
-  Emph: tags.emphasis,
-  "Raw RawLang RawDelim RawTrimmed": tags.monospace,
-  Link: tags.url,
-  Label: tags.labelName,
-  "Ref RefMarker": tags.link,
-  "Equation Math": tags.special(tags.string),
+  "Heading/...": tags.heading,
+  "Strong/...": tags.strong,
+  "Emph/...": tags.emphasis,
+  "Raw/...": tags.monospace,
+  "Link/...": tags.url,
+  "Label/...": tags.labelName,
+  "Ref/...": tags.link,
+  "Equation/...": tags.special(tags.string),
   Dollar: tags.processingInstruction,
   MathIdent: tags.variableName,
   "Escape Shorthand": tags.escape,
