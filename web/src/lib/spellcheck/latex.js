@@ -1,6 +1,8 @@
-// Markup that the spellchecker skips in LaTeX source. One left-to-right pass:
-// each construct is consumed in a single jump, so the scan is linear and no
-// character is read twice.
+// Markup that the spellchecker skips in LaTeX source. The ranges come from the
+// parse tree of our own LaTeX grammar, so the editor, the document index and
+// the spellchecker agree on what is a command, a group, math, verbatim text or
+// a comment. One walk over the tree, so the scan is linear.
+import { latexTree } from "../source-trees.js";
 
 // Commands whose first braced argument names a key, file or package, not words.
 const NAME_ARGUMENT = new Set([
@@ -74,23 +76,19 @@ const SPEC_ENVIRONMENTS = new Map([
   ["wraptable", 2],
 ]);
 
-// A command name: letters and @, with an optional trailing star.
-const COMMAND_NAME = /[A-Za-z@]+\*?/y;
-// The {name} after \begin, with blanks allowed before it: spaces and tabs, then
-// at most one newline. Nothing here nests, so it cannot backtrack badly.
-const ENVIRONMENT_NAME = /[ \t]*(?:\n[ \t]*)?\{([^{}\n]*)\}/y;
-// The blanks allowed before an argument, as a regular expression source.
-const BLANK = "[ \\t]*(?:\\n[ \\t]*)?";
-// The start of an \end tag, as a regular expression source.
-const END_TAG = "\\\\end";
 // An unbraced file name after \input, as in \input chapters/b.tex. It runs to
 // a blank, a comment, a command or a group, as TeX reads it.
 const FILE_NAME = /[^ \t\r\n\f\v%\\{}]+/y;
+// A blank line: the line end that starts a paragraph break.
+const BLANK_LINE = /\n[ \t]*\n/g;
 
-// Escapes a string so that it matches itself inside a regular expression.
-function escapeRe(s) {
-  return s.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
-}
+// Nodes whose whole span is markup: comments, math and \verb come from the
+// grammar's own tokens, so nothing inside them is read again.
+const WHOLE_NODES = new Set([
+  "Comment", "DisplayMath", "MathEnvironment", "Verb", "EndEnv",
+]);
+// The braced nodes that can be the argument of a command.
+const GROUPS = new Set(["Group", "MathGroup", "UrlArg"]);
 
 /**
  * Ranges of a LaTeX source that are markup rather than prose, for the
@@ -100,69 +98,54 @@ function escapeRe(s) {
  * @returns {Array<[number, number]>}
  */
 export function latexSkips(text) {
+  if (typeof text !== "string") return [];
   const n = text.length;
   const skips = [];
-  // The last line-end search. No newline lies from `eolFrom` up to `eolAt`,
-  // which is the newline found there, or the text end.
-  let eolFrom = -1;
-  let eolAt = -1;
+  // Everything before this offset is already skipped, so the walk does not
+  // enter nodes that end there. A node that straddles it is entered, so what
+  // follows an unclosed group is still read.
+  let skipTo = 0;
+  // The last blank-line search. No blank line starts from `blankFrom` up to
+  // `blankAt`, which is the one found there, or the text end.
+  let blankFrom = -1;
+  let blankAt = -1;
 
   function push(from, to) {
-    skips.push([from, to]);
-    return to;
+    if (to > n) to = n;
+    if (to > from) skips.push([from, to]);
+  }
+
+  // Skips a range and keeps the walk from re-reading it.
+  function skip(from, to) {
+    push(from, to);
+    if (to > skipTo) skipTo = to;
+  }
+
+  // Index of the line end that starts the first blank line at or after `from`,
+  // or the text end. Memoized, so unclosed groups never rescan the same text.
+  function blankLine(from) {
+    if (from >= blankFrom && from <= blankAt) return blankAt;
+    BLANK_LINE.lastIndex = from;
+    const hit = BLANK_LINE.exec(text);
+    blankFrom = from;
+    blankAt = hit ? hit.index : n;
+    return blankAt;
   }
 
   function lineEnd(from) {
-    if (from >= eolFrom && from <= eolAt) return eolAt;
     const at = text.indexOf("\n", from);
-    eolFrom = from;
-    eolAt = at < 0 ? n : at;
-    return eolAt;
+    return at < 0 ? n : at;
   }
 
-  // A search for one pattern that remembers its last result. A match at
-  // `hit.index` answers every call from `start` up to that index, and a miss
-  // answers every later call, because no match starts in between. A call that
-  // moves backward searches again.
-  function matcher(source) {
-    const re = new RegExp(source, "g");
-    let start = -1;
-    let hit = null;
-    return (from) => {
-      if (start >= 0 && from >= start && (hit === null || from <= hit.index)) return hit;
-      start = from;
-      re.lastIndex = from;
-      hit = re.exec(text);
-      return hit;
-    };
-  }
-
-  // The first "]" at or after a position. Without the memo, every unclosed "["
-  // would rescan to the end of the text.
-  const nextClose = matcher("\\]");
-  // The first ")" at or after a position, memoized the same way.
-  const nextParen = matcher("\\)");
-
-  // One matcher per verbatim delimiter and per skipped environment, so each
-  // search over a stretch of text happens at most once per pattern.
-  const verbClosers = new Map();
-  const envClosers = new Map();
-
-  function verbCloser(ch) {
-    if (!verbClosers.has(ch)) verbClosers.set(ch, matcher(escapeRe(ch)));
-    return verbClosers.get(ch);
-  }
-
-  function envCloser(name) {
-    if (!envClosers.has(name)) {
-      envClosers.set(name, matcher(`${END_TAG}${BLANK}\\{${escapeRe(name)}\\}`));
-    }
-    return envClosers.get(name);
+  // A node closed by a real closing token. A parser that recovers from a
+  // missing closer leaves a zero-length one, which does not count.
+  function closedBy(node, closer) {
+    const last = node.lastChild;
+    return last !== null && last.name === closer && last.to > last.from;
   }
 
   // Index of the first character after the blanks at `at`: spaces and tabs,
-  // then at most one newline, then spaces and tabs. The caller decides whether
-  // those blanks are consumed.
+  // then at most one newline, then spaces and tabs.
   function argumentStart(at) {
     let k = at;
     while (text[k] === " " || text[k] === "\t") k++;
@@ -173,109 +156,107 @@ export function latexSkips(text) {
     return k;
   }
 
-  // Index of the first character after the blanks at `at`. With `comments`, a
-  // "%" comment and its line end also count as blanks, so a table spec may
-  // run over lines of comments.
+  // Like argumentStart. With `comments`, a "%" comment and its line end also
+  // count as blanks, so a table spec may run over lines of comments.
   function gapEnd(at, comments) {
     let k = argumentStart(at);
     while (comments && text[k] === "%") k = argumentStart(lineEnd(k));
     return k;
   }
 
-  // Index just past an unbraced file name at `at`, after spaces and tabs. Without
-  // a name, the index is just past the blanks, which are not words either.
-  function fileName(at) {
-    let k = at;
-    while (text[k] === " " || text[k] === "\t") k++;
-    FILE_NAME.lastIndex = k;
-    const match = FILE_NAME.exec(text);
-    return match ? k + match[0].length : k;
-  }
-
-  // Index just past the [...] groups that directly follow `at`. A "[" with no
-  // closing "]" is prose and is left alone. With `spaced`, blanks may come
-  // before each group, as in \cite [note] {key}.
-  function skipOptions(at, spaced) {
-    let k = at;
-    for (;;) {
-      const open = spaced ? argumentStart(k) : k;
-      if (text[open] !== "[") break;
-      const hit = nextClose(open + 1);
-      if (!hit) break;
-      k = hit.index + 1;
-    }
-    return k;
-  }
-
-  // Index just past the balanced {...} group that opens at `at`. An unclosed
-  // group ends at the next blank line, so a half-typed \cite{ hides one
-  // paragraph at most. Without a blank line it runs to the end of the text.
-  function skipGroup(at) {
-    let depth = 0;
-    for (let k = at; k < n; k++) {
-      const ch = text[k];
-      if (ch === "\\") k++;
-      else if (ch === "{") depth++;
-      else if (ch === "}" && --depth === 0) return k + 1;
-      else if (ch === "\n") {
-        let j = k + 1;
-        while (text[j] === " " || text[j] === "\t") j++;
-        if (text[j] === "\n") return k;
+  // A lookup of the node that covers an offset, for the siblings after
+  // `start`. Offsets only grow, so the lookup moves forward and each sibling is
+  // passed once. A command's optional argument is its child, so the lookup
+  // leaves the command for its next sibling when the children run out.
+  function siblings(start) {
+    let node = start;
+    return (k) => {
+      while (node && node.to <= k) {
+        node = node.nextSibling ?? (node.parent?.name === "Command" ? node.parent.nextSibling : null);
       }
-    }
-    return n;
+      return node;
+    };
   }
 
-  // Index just past the closer of a math run whose body starts at `at`. Inline
-  // runs end at the line end when unclosed, so one missing "$" cannot hide the
-  // rest of the document. Display runs go to the end of the text.
-  function mathEnd(at, closer, display) {
-    let k = at;
-    while (k < n) {
-      if (text.startsWith(closer, k)) return k + closer.length;
-      const ch = text[k];
-      if (ch === "\\") k += !display && text[k + 1] === "\n" ? 1 : 2;
-      else if (ch === "\n" && !display) return k;
-      else k++;
+  // Index just past the [...] group that opens at `open`, or -1 when none does.
+  // Directly after a command or \begin tag the grammar made it an optional
+  // argument. After blanks or a star it is plain text, and then the "]" must be
+  // in the same text node. A "[" with no closing "]" is prose.
+  function optionEnd(open, at) {
+    if (text[open] !== "[") return -1;
+    const node = at(open);
+    if (!node || node.from > open) return -1;
+    if (node.name === "OptionalArgument") {
+      return node.from === open && closedBy(node, "OptClose") ? node.to : -1;
     }
-    return n;
+    if (node.name !== "Text") return -1;
+    for (let k = open + 1; k < node.to; k++) if (text[k] === "]") return k + 1;
+    return -1;
   }
 
-  // Index just past a \verb or \verb* whose delimiter sits at `at`. A closing
-  // delimiter at or past the line end counts as unclosed, so the \verb ends at
-  // its line end.
-  function verb(at) {
-    const eol = lineEnd(at);
-    if (at >= eol) return at;
-    const hit = verbCloser(text[at])(at + 1);
-    return hit && hit.index < eol ? hit.index + 1 : eol;
+  // Index just past the [...] groups that follow `from`. With `spaced`, blanks
+  // may come before each group, as in \cite [note] {key}.
+  function skipOptions(from, spaced, at) {
+    let k = from;
+    for (;;) {
+      const end = optionEnd(spaced ? argumentStart(k) : k, at);
+      if (end < 0) return k;
+      k = end;
+    }
+  }
+
+  // Index just past the braced group that opens at `open`. A group the grammar
+  // closed ends at its brace. One it did not close, or a half-typed \cite{
+  // whose brace is only found paragraphs later, ends at the next blank line,
+  // so it hides one paragraph at most.
+  function groupEnd(open, at) {
+    const node = at(open);
+    let end = n;
+    if (node && node.from === open && GROUPS.has(node.name)) {
+      if (node.name === "UrlArg" || closedBy(node, "CloseBrace")) end = node.to;
+    }
+    const blank = blankLine(open);
+    return blank < end ? blank : end;
   }
 
   // Index just past the leading groups of a command or environment whose
   // arguments are markup. Each of the first `count` braced groups may have
   // optional [...] groups before it. With `comments`, blanks and comments may
   // separate the groups. A missing group ends the run at the last group taken.
-  function markupArguments(at, count, comments) {
-    let k = at;
+  function markupArguments(from, count, comments, at) {
+    let k = from;
     for (let g = 0; g < count; g++) {
       let open = gapEnd(k, comments);
-      while (text[open] === "[") {
-        const hit = nextClose(open + 1);
-        if (!hit) break;
-        open = gapEnd(hit.index + 1, comments);
+      for (let end = optionEnd(open, at); end >= 0; end = optionEnd(open, at)) {
+        open = gapEnd(end, comments);
       }
       if (text[open] !== "{") break;
-      k = skipGroup(open);
+      k = groupEnd(open, at);
     }
     return k;
   }
 
-  // Index just past a "(...)" trim spec at `at` whose ")" is on the same line,
-  // as \cmidrule(lr) has. Without one, the index is `at`.
-  function trimSpec(at) {
-    if (text[at] !== "(") return at;
-    const hit = nextParen(at + 1);
-    return hit && hit.index < lineEnd(at) ? hit.index + 1 : at;
+  // Index just past a "(...)" trim spec at `from` whose ")" is on the same line
+  // and in the same text node, as \cmidrule(lr) has. Without one, `from`.
+  function trimSpec(from, at) {
+    if (text[from] !== "(") return from;
+    const node = at(from);
+    if (!node || node.name !== "Text" || node.from > from) return from;
+    for (let k = from + 1; k < node.to && text[k] !== "\n"; k++) {
+      if (text[k] === ")") return k + 1;
+    }
+    return from;
+  }
+
+  // Index just past an unbraced file name at `from`, after spaces and tabs.
+  // Without a name, the index is just past the blanks, which are not words
+  // either.
+  function fileName(from) {
+    let k = from;
+    while (text[k] === " " || text[k] === "\t") k++;
+    FILE_NAME.lastIndex = k;
+    const match = FILE_NAME.exec(text);
+    return match ? k + match[0].length : k;
   }
 
   function takesName(name) {
@@ -288,71 +269,102 @@ export function latexSkips(text) {
   // may separate the command from each argument. When no argument follows, the
   // blanks are left in the prose. An unbraced \input name ends the command, so
   // a bracket after the file name is prose.
-  function argumentCommand(name, at) {
-    let k = skipOptions(at, true);
+  function argumentCommand(name, from, at) {
+    let k = skipOptions(from, true, at);
     const brace = argumentStart(k);
-    if (text[brace] === "{") k = skipGroup(brace);
+    if (text[brace] === "{") k = groupEnd(brace, at);
     else if (name === "input") return fileName(k);
-    k = skipOptions(k, true);
+    k = skipOptions(k, true, at);
     const body = argumentStart(k);
-    if (DEFINITIONS.has(name) && text[body] === "{") k = skipGroup(body);
+    if (DEFINITIONS.has(name) && text[body] === "{") k = groupEnd(body, at);
     return k;
   }
 
-  // Handles the backslash at `i`. The caller guarantees a character follows it.
-  function command(i) {
-    COMMAND_NAME.lastIndex = i + 1;
-    const match = COMMAND_NAME.exec(text);
-    if (!match) {
-      // A control symbol such as \\, \%, \$ or \{ is one non-letter character.
-      // \( and \[ open math, and \$ must not open it, so they are checked here.
-      const symbol = text[i + 1];
-      if (symbol === "(") return push(i, mathEnd(i + 2, "\\)", false));
-      if (symbol === "[") return push(i, mathEnd(i + 2, "\\]", true));
-      const width = text.codePointAt(i + 1) > 0xffff ? 3 : 2;
-      return push(i, skipOptions(i + width, false));
-    }
-    const token = match[0];
-    const name = token.endsWith("*") ? token.slice(0, -1) : token;
-    const at = i + 1 + token.length;
-    if (name === "verb") return push(i, verb(at));
-    if (name === "begin" || name === "end") {
-      ENVIRONMENT_NAME.lastIndex = at;
-      const env = ENVIRONMENT_NAME.exec(text);
-      if (name === "begin" && env && SKIPPED_ENVIRONMENTS.has(env[1])) {
-        // The body is skipped whole, so nothing inside it is scanned. The
-        // closing tag may have blanks before its name, as in \end {equation}.
-        const hit = envCloser(env[1])(at + env[0].length);
-        return push(i, hit ? hit.index + hit[0].length : n);
-      }
-      if (name === "begin" && env && SPEC_ENVIRONMENTS.has(env[1])) {
-        // The spec groups are markup, and the body after them stays prose.
-        const count = SPEC_ENVIRONMENTS.get(env[1]);
-        return push(i, markupArguments(at + env[0].length, count, true));
-      }
-    }
+  // A control word or sectioning word with the arguments that are markup.
+  // Returns after recording the skip; prose arguments are left to the walk.
+  function command(node, first) {
+    const star = first.name === "ControlSequence" && text[first.to] === "*";
+    const nameEnd = star ? first.to + 1 : first.to;
+    // A sectioning word's token already holds its star.
+    const name = text.slice(first.from + 1, first.to).replace(/\*$/, "");
+    const at = siblings(first.nextSibling ?? node.nextSibling);
+
     const markup = MARKUP_ARGUMENTS.get(name);
     if (markup !== undefined) {
-      const from = name === "cmidrule" ? trimSpec(at) : at;
-      return push(i, markupArguments(from, markup, false));
+      const from = name === "cmidrule" ? trimSpec(nameEnd, at) : nameEnd;
+      return skip(first.from, markupArguments(from, markup, false, at));
     }
-    if (takesName(name)) return push(i, argumentCommand(name, at));
-    if (PROSE_OPTIONS.has(name)) return push(i, at);
-    return push(i, skipOptions(at, false));
+    if (takesName(name)) return skip(first.from, argumentCommand(name, nameEnd, at));
+    // The words of these options are prose: only the command name is markup.
+    if (PROSE_OPTIONS.has(name)) return skip(first.from, nameEnd);
+    skip(first.from, skipOptions(nameEnd, false, at));
   }
 
-  let i = 0;
-  while (i < n) {
-    const ch = text[i];
-    if (ch === "%") {
-      i = push(i, lineEnd(i));
-    } else if (ch === "$") {
-      i = push(i, text[i + 1] === "$" ? mathEnd(i + 2, "$$", true) : mathEnd(i + 1, "$", false));
-    } else if (ch === "\\" && i + 1 < n) {
-      i = command(i);
-    } else {
-      i++;
-    }
+  // A \begin tag: it is markup with its optional argument, and a table or box
+  // environment's spec groups too. The body after them stays prose.
+  function beginTag(node) {
+    const name = node.getChild("EnvName");
+    const env = name ? text.slice(name.from, name.to).trim() : "";
+    const count = SPEC_ENVIRONMENTS.get(env);
+    const at = siblings(node.nextSibling);
+    if (count !== undefined) return skip(node.from, markupArguments(node.to, count, true, at));
+    skip(node.from, skipOptions(node.to, false, at));
   }
+
+  // Math that was never closed. A missing "$" or "\)" ends at the line end, so
+  // one stray dollar cannot hide the rest of the document.
+  function inlineMath(node) {
+    const closer = node.lastChild?.name;
+    const closed = (closer === "DollarClose" || closer === "ParenClose") && node.lastChild.to > node.lastChild.from;
+    skip(node.from, closed ? node.to : Math.min(node.to, lineEnd(node.from)));
+  }
+
+  latexTree(text).iterate({
+    enter(ref) {
+      if (ref.to <= skipTo) return false;
+      const name = ref.name;
+      if (WHOLE_NODES.has(name)) {
+        skip(ref.from, ref.to);
+        return false;
+      }
+      switch (name) {
+        case "InlineMath":
+          inlineMath(ref.node);
+          return false;
+        case "VerbatimEnvironment": {
+          // An unclosed one runs to the end of the text.
+          const node = ref.node;
+          skip(ref.from, closedBy(node, "EndEnv") ? ref.to : n);
+          return false;
+        }
+        case "Environment": {
+          const node = ref.node;
+          const tag = node.firstChild?.getChild("EnvName");
+          if (tag && SKIPPED_ENVIRONMENTS.has(text.slice(tag.from, tag.to).trim())) {
+            skip(ref.from, ref.to);
+            return false;
+          }
+          return true;
+        }
+        case "BeginEnv":
+          beginTag(ref.node);
+          return false;
+        case "Command": {
+          const node = ref.node;
+          const first = node.firstChild;
+          if (first && first.name !== "ControlSymbol") {
+            command(node, first);
+            return true;
+          }
+          // A control symbol such as \\, \% or \$ is skipped, with the
+          // [...] options that directly follow, as in \\[2pt].
+          if (first) skip(first.from, skipOptions(first.to, false, siblings(node.nextSibling)));
+          return false;
+        }
+        default:
+          return true;
+      }
+    },
+  });
   return skips;
 }
