@@ -57,6 +57,8 @@ export const EDITOR_LINE_HEIGHT = "librepaper-editor-line-height";
 export const EDITOR_COMPLETION = "librepaper-editor-completion";
 // Whether typing an opening bracket adds the closing one.
 export const EDITOR_BRACKETS = "librepaper-editor-brackets";
+// Whether LaTeX files close \begin with its \end and indent inside environments.
+export const EDITOR_LATEX_ASSIST = "librepaper-editor-latex-assist";
 // Which checker underlines the source: "off", "browser" or "harper". Prose files only. Older builds stored true or false.
 export const EDITOR_SPELLCHECK = "librepaper-editor-spellcheck";
 // The English dialect Harper checks against: "american", "british", "canadian", "australian" or "indian".

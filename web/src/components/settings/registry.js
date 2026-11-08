@@ -39,6 +39,7 @@ export const CATEGORIES = [
       { id: "editor-keys", says: m.common_key_bindings(), terms: m.registry_editor_keys_terms() },
       { id: "editor-completion", says: m.common_autocomplete(), terms: m.registry_editor_completion_terms() },
       { id: "editor-brackets", says: m.common_close_brackets(), terms: m.registry_editor_brackets_terms() },
+      { id: "editor-latex-assist", says: m.editorsettings_latex_assist(), terms: m.registry_editor_latex_assist_terms() },
       { id: "editor-check", says: m.common_code_check(), terms: m.registry_editor_check_terms() },
       { id: "editor-proofing", says: m.common_grammar_and_spelling(), terms: m.registry_editor_proofing_terms() },
       { id: "editor-dialect", says: m.common_english_dialect(), terms: m.registry_editor_dialect_terms() },

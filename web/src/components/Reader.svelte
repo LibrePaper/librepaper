@@ -2631,6 +2631,7 @@
   const keys = $derived(prefs.keys);
   const completion = $derived(prefs.completion);
   const brackets = $derived(prefs.brackets);
+  const latexAssist = $derived(prefs.latexAssist);
   const proofing = $derived(prefs.proofing);
   const dialect = $derived(prefs.dialect);
   const check = $derived(prefs.check);
@@ -3125,6 +3126,7 @@
   const setKeys = (next) => preferences.setKeys(next);
   const setCompletion = (on) => preferences.setCompletion(on);
   const setBrackets = (on) => preferences.setBrackets(on);
+  const setLatexAssist = (on) => preferences.setLatexAssist(on);
   const setProofing = (value) => preferences.setProofing(value);
   const setDialect = (value) => preferences.setDialect(value);
   const setCheck = (on) => preferences.setCheck(on);
@@ -4991,7 +4993,7 @@
       {:else if shownFigure}
         {@render figureBody()}
       {:else if Editor && sourceBound}
-        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
+        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
                   onbibliography={bibliographyAnalyzed} onsymbols={() => (outlineRevision += 1)} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   oncomment={(id) => focusAnnotation(comments.find((item) => String(item.id) === String(id))?.id, { focus: false })}
@@ -5309,7 +5311,7 @@
 <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory}
                 remoteConnected={connected} remoteNote={connectionNote}
                 {keys} onkeys={setKeys}
-                {completion} oncompletion={setCompletion} {brackets} onbrackets={setBrackets} {proofing} onproofing={setProofing} {dialect} ondialect={setDialect} {check} oncheck={setCheck}
+                {completion} oncompletion={setCompletion} {brackets} onbrackets={setBrackets} {latexAssist} onlatexassist={setLatexAssist} {proofing} onproofing={setProofing} {dialect} ondialect={setDialect} {check} oncheck={setCheck}
                 visual={prefs.visual} onvisual={setVisualDefault}
                 commands={commandContext}
                 userId={buildUserId}

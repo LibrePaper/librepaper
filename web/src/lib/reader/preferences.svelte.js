@@ -16,7 +16,7 @@
 // this one does not, so every one of them is checked against what is on
 // offer now rather than trusted.
 
-import { EDITOR_BRACKETS, EDITOR_CHECK, EDITOR_COMPLETION, EDITOR_DIALECT, EDITOR_SPELLCHECK, EDITOR_VISUAL, KEYMAP, SOURCE_SIDE, read, write } from "../storage.js";
+import { EDITOR_BRACKETS, EDITOR_CHECK, EDITOR_COMPLETION, EDITOR_DIALECT, EDITOR_LATEX_ASSIST, EDITOR_SPELLCHECK, EDITOR_VISUAL, KEYMAP, SOURCE_SIDE, read, write } from "../storage.js";
 import { PANES, remember, stored } from "../panes.js";
 
 const KEYMAPS = ["vim", "emacs"];
@@ -41,6 +41,7 @@ export function createPreferences() {
     // On unless a stored false says otherwise, so a first visit gets all three.
     completion: read(EDITOR_COMPLETION, true) !== false,
     brackets: read(EDITOR_BRACKETS, true) !== false,
+    latexAssist: read(EDITOR_LATEX_ASSIST, true) !== false,
     proofing: readProofing(),
     dialect: oneOf(DIALECTS, read(EDITOR_DIALECT, "american"), "american"),
     check: read(EDITOR_CHECK, true) !== false,
@@ -74,6 +75,10 @@ export function createPreferences() {
     setBrackets(on) {
       state.brackets = Boolean(on);
       write(EDITOR_BRACKETS, Boolean(on));
+    },
+    setLatexAssist(on) {
+      state.latexAssist = Boolean(on);
+      write(EDITOR_LATEX_ASSIST, Boolean(on));
     },
     setProofing(value) {
       state.proofing = oneOf(PROOFING, value, "browser");

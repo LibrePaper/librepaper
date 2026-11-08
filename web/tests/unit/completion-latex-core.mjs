@@ -3,11 +3,14 @@
 import assert from "node:assert/strict";
 import { CompletionContext } from "@codemirror/autocomplete";
 import { EditorState } from "@codemirror/state";
+import { ensureSyntaxTree } from "@codemirror/language";
+import { latex } from "../../src/lib/latex-language/index.js";
 import { latexCompletion } from "../../src/lib/completion/latex.js";
 import { CORE } from "../../src/lib/completion/latex-packages.js";
 
 function complete(doc, { texts = {} } = {}) {
-  const state = EditorState.create({ doc });
+  const state = EditorState.create({ doc, extensions: [latex()] });
+  ensureSyntaxTree(state, state.doc.length, 5000);
   const context = new CompletionContext(state, doc.length, true);
   return latexCompletion(() => ({ path: "main.tex", format: "latex", texts, files: [] }))(context);
 }
@@ -26,9 +29,15 @@ const labelsOf = (result) => result.options.map((option) => option.label);
 {
   const result = complete("\\");
   const labels = labelsOf(result);
-  for (const name of ["section", "textbf", "frac", "documentclass"]) {
+  for (const name of ["section", "textbf", "documentclass"]) {
     assert.ok(labels.includes(name), name);
   }
+}
+
+// \frac is a math command: offered in math, hidden in text.
+{
+  assert.ok(labelsOf(complete("$\\fr")).includes("frac"));
+  assert.ok(!labelsOf(complete("\\fr")).includes("frac"));
 }
 
 // Core environments are offered after \begin{, tabular included.
