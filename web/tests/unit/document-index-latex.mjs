@@ -440,3 +440,21 @@ test("a caption title leaves out comments", () => {
   assert.equal(label.name, "fig:b");
   assert.equal(label.title, "A comparison");
 });
+
+test("a long caption keeps its title and a long cite list keeps its keys", () => {
+  const words = "word ".repeat(80).trim();
+  const keys = Array.from({ length: 40 }, (_, k) => `key${k}`);
+  const text = `\\begin{figure}\n\\caption{${words}}\n\\label{fig:c}\n\\end{figure}\n\\cite{${keys.join(", ")}}\n`;
+  const items = latexAdapter(text, "main.tex");
+  assert.equal(kindOf(items, "label")[0].title, words);
+  assert.deepEqual(kindOf(items, "cite").map((cite) => cite.name), keys);
+});
+
+test("a comment before a ref or include target is not part of its name", () => {
+  const text = "\\ref{% note\nsec:a}\n\\input{% chapter\nintro}\n";
+  const items = latexAdapter(text, "main.tex");
+  const [ref] = kindOf(items, "ref");
+  assert.equal(ref.name, "sec:a");
+  assert.equal(text.slice(...ref.nameRange), "sec:a");
+  assert.equal(kindOf(items, "include")[0].name, "intro");
+});

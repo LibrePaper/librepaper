@@ -106,7 +106,7 @@ function piece(part, start) {
 function argumentOf(anchor, text) {
   let depth = 0;
   for (let node = anchor.nextSibling; node; node = node.nextSibling) {
-    if (node.to - anchor.to > 200) return null;
+    if (node.from - anchor.to > 200) return null;
     if (node.name === "Comment") continue;
     if (node.name === "Text") {
       const chunk = text.slice(node.from, node.to);
@@ -124,19 +124,20 @@ function argumentOf(anchor, text) {
 }
 
 /**
- * The source between two offsets with every comment inside the group removed.
+ * The source between two offsets with every comment inside the group blanked
+ * to spaces, so names never include comment text and offsets stay put.
  * @param {string} text
  * @param {number} from
  * @param {number} to
  * @param {import("@lezer/common").SyntaxNode} group
  * @returns {string}
  */
-function withoutComments(text, from, to, group) {
+function maskComments(text, from, to, group) {
   let out = "";
   let cursor = from;
   group.cursor().iterate((ref) => {
     if (ref.name !== "Comment" || ref.from < from || ref.to > to) return;
-    out += text.slice(cursor, ref.from);
+    out += text.slice(cursor, ref.from) + " ".repeat(ref.to - ref.from);
     cursor = ref.to;
   });
   return out + text.slice(cursor, to);
@@ -237,7 +238,7 @@ export function latexAdapter(text, _path) {
     if (!group) return;
     const at = ref.from;
     const bodyFrom = group.from + 1;
-    const body = text.slice(bodyFrom, group.to - 1);
+    const body = maskComments(text, bodyFrom, group.to - 1, group);
     // A caption keeps nested groups such as \emph{...} in its title.
     if (word !== "\\caption" && (body.includes("{") || body.includes("}"))) return;
     const range = pair(at, group.to);
@@ -263,7 +264,7 @@ export function latexAdapter(text, _path) {
       });
     } else if (word === "\\caption") {
       const span = open.at(-1);
-      const title = withoutComments(text, bodyFrom, group.to - 1, group).replace(/\s+/g, " ").trim();
+      const title = body.replace(/\s+/g, " ").trim();
       if (span && title && !captionOf.has(span)) captionOf.set(span, title);
     } else if (REFS.has(word)) {
       for (const key of pieces(body, bodyFrom)) {
