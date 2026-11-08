@@ -225,7 +225,7 @@
 
   import { sourceFormat, sourceLanguage } from "../lib/source-language.js";
   import { latexAssist as latexAssistExtensions } from "../lib/latex-language/index.js";
-  import { typstSymbols, SYMBOL_KINDS, headingsOf } from "../lib/typst-symbols.js";
+  import { onTypstSyntax } from "../lib/source-trees.js";
   import { emphasisCommand } from "../lib/emphasis.js";
   import { canHeading, canLink, canList, headingEdit, linkEdit, listEdit } from "../lib/editing-shortcuts.js";
   import { sourceHighlighting } from "../lib/source-highlight.js";
@@ -287,7 +287,7 @@
     tracking = false, me = { who: "", author: "" }, selectedChange = null,
     visual = false, imageUrl = null,
     analyze = analyzeBibliography,
-    onchange, oncaret, onfilechange, onsymbols, onbibliography, onsave, onquit, oncomment, onchangeselect,
+    onchange, oncaret, onfilechange, onsyntax, onbibliography, onsave, onquit, oncomment, onchangeselect,
     // Called with the caret's formatting (formatState) while visual mode is on.
     onformatstate,
     // Whether the bar over a selection offers the annotating verbs, and what
@@ -705,30 +705,6 @@
   function currentIndex() {
     if (indexDirty) refreshIndex();
     return liveIndex.project;
-  }
-  // The typst module's symbols for the open `.typ` file, by file id: the text
-  // they were computed from and the outline headings in them. Reader reads
-  // them through `moduleOutline`, which checks the text.
-  const moduleSymbols = new Map();
-  /** @param {string} id @param {string} path @param {string | null} source @param {any[] | null} items */
-  function takeSymbols(id, path, source, items) {
-    if (source === null || items === null) {
-      moduleSymbols.delete(id);
-      liveIndex.clearOverlay(path);
-    } else {
-      moduleSymbols.set(id, { source, headings: headingsOf(source, items) });
-      liveIndex.setOverlay(path, { kinds: SYMBOL_KINDS, items, source });
-      // Applies the overlay and signals through the microtask in refreshIndex.
-      refreshIndex();
-    }
-    // After the current task: this can run while a view is being destroyed.
-    queueMicrotask(() => onsymbols?.());
-  }
-  /// The module's headings for `source` of file `id`, or null when none were
-  /// computed from exactly that text.
-  export function moduleOutline(id, source) {
-    const stored = moduleSymbols.get(id);
-    return stored && stored.source === source ? stored.headings : null;
   }
   function refreshIndex() {
     clearTimeout(indexTimer);
@@ -1514,9 +1490,6 @@
         highlightSelectionMatches(),
         sourceHighlighting,
         sourceLanguage(path, format),
-        formatOf(path) === "typst"
-          ? typstSymbols({ path: () => path, onSymbols: (source, items) => takeSymbols(id, path, source, items) })
-          : [],
         completionCompartment.of(completionOn(untrack(() => completion))),
         completionExtension({
           project: completionProject,
@@ -2066,6 +2039,21 @@
     void visual;
     if (view) untrack(() => syncVisual(view));
   });
+
+  // typst-syntax.wasm loads after the first paint. The Typst features read its
+  // tree, so the index, the spellcheck and the outline are computed again then.
+  $effect(() => onTypstSyntax(() => {
+    indexDirty = true;
+    refreshIndex();
+    const target = view;
+    if (target) {
+      target.dispatch({
+        effects: spellcheckCompartment.reconfigure(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(showing), () => target.state.doc.toString())),
+      });
+    }
+    // After the current task, as the other signals to the reader are.
+    queueMicrotask(() => onsyntax?.());
+  }));
 
 </script>
 
