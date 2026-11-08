@@ -270,9 +270,9 @@ const citationBracket = {
     const after = cx.char(pos + 1);
     if (after === OPEN_PAREN || after === OPEN_BRACKET) return -1;
     const parts = /** @type {any} */ (cx).parts;
-    const citation = cx.parser.getNodeType("Citation").id;
-    const mark = cx.parser.getNodeType("CitationMark").id;
-    const crossRef = cx.parser.getNodeType("CrossRef").id;
+    const citation = cx.parser.getNodeType("Citation");
+    const mark = cx.parser.getNodeType("CitationMark");
+    const crossRef = cx.parser.getNodeType("CrossRef");
     let open = -1, keyed = false;
     for (let i = parts.length - 1; i >= 0; i--) {
       const part = parts[i];
@@ -322,7 +322,7 @@ const attributesInline = {
     const after = text.slice(close + 1);
     const attached = before === ")" || before === "]" || before === "`";
     // After a space the list belongs to a heading or a display equation, so it must end the text.
-    const trailing = (before === " " || before === "\t") && !after.trim();
+    const trailing = (before === undefined || before === " " || before === "\t") && !after.trim();
     if (!attached && !trailing) return -1;
     const list = attributeList(cx, text.slice(i, close + 1), pos);
     return list ? cx.addElement(list) : -1;

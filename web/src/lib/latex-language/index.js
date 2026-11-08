@@ -208,7 +208,7 @@ export const copyPreviousIndent = indentService.of((context, pos) => {
   const doc = context.state.doc;
   for (let number = doc.lineAt(pos).number - 1; number >= 1; number--) {
     const text = doc.line(number).text;
-    if (/\S/.test(text)) return countColumn(text, context.state.tabSize);
+    if (/\S/.test(text)) return countColumn(/^\s*/.exec(text)[0], context.state.tabSize);
   }
   return 0;
 });

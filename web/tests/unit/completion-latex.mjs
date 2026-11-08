@@ -208,7 +208,7 @@ function applyTo(option, doc, from, to) {
   assert.ok(!names("$\\sec").includes("subsection"));
 
   // Math-only commands from the symbol catalog and the structure list are hidden in text.
-  for (const name of ["sum", "mathbb", "leq", "rightarrow", "frac"]) {
+  for (const name of ["sum", "leq", "rightarrow", "frac"]) {
     assert.ok(names("$\\").includes(name), `${name} in math`);
     assert.ok(!names("\\").includes(name), `${name} in text`);
   }

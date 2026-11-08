@@ -43,7 +43,7 @@
   // would leave the switch half off.
   const completionOn = (on) => (on ? autocompletion({ activateOnTyping: true }) : []);
   // The LaTeX \end insertion and environment indentation, for LaTeX files only.
-  const latexAssistOn = (on, path) => (formatOf(path) === "latex" ? latexAssistExtensions(on) : []);
+  const latexAssistOn = (on, isLatex) => (isLatex ? latexAssistExtensions(on) : []);
   const bracketsOn = (on) => (on ? [closeBrackets(), keymap.of(closeBracketsKeymap)] : []);
   const checkOn = (on, citations, index) => (on ? [lintGutter(), citations, index] : []);
   // The checker for a source, chosen from the setting, the dialect, the prose
@@ -1509,7 +1509,7 @@
         rectangularSelection(),
         bracketMatching(),
         bracketsCompartment.of(bracketsOn(untrack(() => brackets))),
-        latexAssistCompartment.of(latexAssistOn(untrack(() => latexAssist), path)),
+        latexAssistCompartment.of(latexAssistOn(untrack(() => latexAssist), formatOf(path) === "latex")),
         foldGutter({ foldingChanged: foldsChanged }),
         indentOnInput(),
         highlightSelectionMatches(),
@@ -1684,7 +1684,7 @@
       effects: [
         completionCompartment.reconfigure(completionOn(untrack(() => completion))),
         bracketsCompartment.reconfigure(bracketsOn(untrack(() => brackets))),
-        latexAssistCompartment.reconfigure(latexAssistOn(untrack(() => latexAssist), pathOfDoc(session.doc, id))),
+        latexAssistCompartment.reconfigure(latexAssistOn(untrack(() => latexAssist), formatOf(pathOfDoc(session.doc, id)) === "latex")),
         spellcheckCompartment.reconfigure(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(id), () => target.state.doc.toString())),
         checkCompartment.reconfigure(checkOn(untrack(() => check), citationKeys, indexChecks)),
       ],
