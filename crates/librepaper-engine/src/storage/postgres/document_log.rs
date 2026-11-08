@@ -393,7 +393,10 @@ impl PostgresCatalog {
         }) {
             return Err(Error::Invalid("source identity is invalid".into()));
         }
-        if reserved_bytes < 0 || (reservation.is_nil() != (reserved_bytes == 0)) {
+        // Zero bytes means the flushed batches drew nothing from a
+        // reservation (a row written at creation, say), whatever key the
+        // sequencer holds; only a positive charge needs a real row.
+        if reserved_bytes < 0 || (reservation.is_nil() && reserved_bytes > 0) {
             return Err(Error::Invalid("invalid pending log reservation".into()));
         }
         let owner_id: Uuid = sqlx::query_scalar("SELECT owner_id FROM documents WHERE id=$1")
