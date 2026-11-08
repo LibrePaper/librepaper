@@ -236,7 +236,7 @@ function words(text) {
 }
 
 {
-  // A percent sign inside \\verb is text, not a comment.
+  // A percent sign inside \verb is text, not a comment.
   assert.deepEqual(words("\\verb|50%| kept\nnext"), ["kept", "next"]);
 }
 {
