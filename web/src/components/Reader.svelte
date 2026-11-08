@@ -99,6 +99,7 @@
   import Avatar from "./Avatar.svelte";
   import { presenceJumpTarget } from "../lib/presence-jump.js";
   import { extractOutline } from "../lib/outline.js";
+  import { onTypstSyntax } from "../lib/source-trees.js";
   import { countWordsIn, documentWords, sectionWords } from "../lib/word-count.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
   import { rememberPreview, lastPreview, flushAll } from "../lib/reader/preview-cache.js";
@@ -1858,14 +1859,12 @@
     const path = toolbarPath;
     return renderers.formatOf(path) || (path && path === previewPath ? sourceFormat : "");
   });
-  // Typst headings come from the typst module once it has answered for exactly
-  // this text; until then, and for the other formats, from the scanner.
+  // The outline of the open file. Typst reads the typst module's tree, which
+  // is empty until the module loads; the revision brings the outline back then.
   const outlineHeadings = $derived.by(() => {
-    // Typst symbols arrive after the source is unchanged; read the revision so they refresh.
     void outlineRevision;
     if (panel !== "outline" || !mayEdit) return [];
-    const parsed = outlineFormat === "typst" && editing ? editor?.moduleOutline?.(openFile, outlineSource) : null;
-    return parsed ?? extractOutline(outlineSource, outlineFormat);
+    return extractOutline(outlineSource, outlineFormat);
   });
   // Word counts for each heading in the Outline panel.
   const outlineSections = $derived.by(() => panel === "outline" && mayEdit
@@ -3506,6 +3505,9 @@
   const isDisplayableImage = (path) => /\.(?:png|jpg|jpeg|gif|svg|webp)$/i.test(path);
   let outlineActiveFrom = $state(null);
   let outlineRevision = $state(0);
+  // The outline can be shown with no editor open, so it also follows the typst
+  // module's arrival itself.
+  $effect(() => onTypstSyntax(() => { outlineRevision += 1; }));
   // What the preview draws. `previewPath` is the file, `previewReason` says
   // why it is that one (the file itself, the file it is shown inside, the file
   // the preview is locked on, or nothing at all) and
@@ -5048,7 +5050,7 @@
       {:else if Editor && sourceBound}
         <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
-                  onbibliography={bibliographyAnalyzed} onsymbols={() => (outlineRevision += 1)} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
+                  onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   oncomment={(id) => focusAnnotation(comments.find((item) => String(item.id) === String(id))?.id, { focus: false })}
                   onchangeselect={selectChangeFromSource}
                   onformatstate={(state) => { formatActive = state; refreshEditAvailability(); }}

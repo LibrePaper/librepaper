@@ -6,6 +6,9 @@ import { createProjectIndex } from "../../src/lib/document-index/project.js";
 import { definition, diagnostics } from "../../src/lib/document-index/queries.js";
 import { extractOutline } from "../../src/lib/outline.js";
 import { skipRanges } from "../../src/lib/spellcheck/index.js";
+import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
+
+await loadTypstSyntaxForTests();
 
 /** Range of the first `needle` at or after `from`. */
 function at(text, needle, from = 0) {
@@ -118,7 +121,7 @@ test("headings run to the end of their line and keep the outline's title", () =>
   const [first, second] = kindOf(typstAdapter(text, "a.typ"), "heading");
   assert.deepEqual(first.range, [0, text.indexOf("\n")]);
   assert.equal(first.level, 1);
-  assert.equal(first.title, "Intro <sec:intro>");
+  assert.equal(first.title, "Intro");
   assert.deepEqual(second.range, [text.indexOf("== Sub"), text.length - 1]);
   assert.equal(second.level, 2);
   assert.equal(second.title, "Sub");
@@ -182,6 +185,16 @@ test("refs in math, comments and raw text are not indexed", () => {
   assert.deepEqual(kindOf(typstAdapter(text, "a.typ"), "ref"), []);
 });
 
+test("an at-reference inside a raw block or a comment is not a reference", () => {
+  const text = "Raw `@rawref` and\n```\n@blockref\n```\n// @commented\nReal @real here.\n";
+  assert.deepEqual(kindOf(typstAdapter(text, "a.typ"), "ref").map((r) => r.name), ["real"]);
+});
+
+test("#let inside a raw block is not a definition", () => {
+  const text = "```typ\n#let inside = 1\n```\n#let outside = 2\n";
+  assert.deepEqual(kindOf(typstAdapter(text, "a.typ"), "definition").map((d) => d.name), ["outside"]);
+});
+
 test("#ref(<name>) is a label reference", () => {
   const text = "See #ref(<fig:a>) here.\n";
   const [ref] = kindOf(typstAdapter(text, "a.typ"), "ref");
@@ -206,7 +219,7 @@ test("include, image and bibliography items carry their paths", () => {
   const text = [
     '#include "chapters/a.typ"',
     '#image("plot.png")',
-    'image("b.pdf", width: 1cm)',
+    'image("b.pdf", width: 1cm)', // no #: plain text in markup
     'myimage("not-an-asset.png")',
     '#bibliography(("a.bib", "b.bib"))',
     '#bibliography("refs.bib")',
@@ -219,7 +232,7 @@ test("include, image and bibliography items carry their paths", () => {
   assert.deepEqual(includes[0].nameRange, at(text, "chapters/a.typ"));
 
   const assets = kindOf(items, "asset");
-  assert.deepEqual(assets.map((a) => a.name), ["plot.png", "b.pdf"]);
+  assert.deepEqual(assets.map((a) => a.name), ["plot.png"]);
   assert.deepEqual(assets[0].nameRange, at(text, "plot.png"));
 
   const bibliography = kindOf(items, "bibliography");
@@ -268,10 +281,10 @@ test("multi-line bracket and brace blocks opened on a hash line are blocks, sing
   assert.deepEqual(kindOf(typstAdapter(plain, "a.typ"), "block"), []);
 });
 
-test("a bracket inside a string literal does not close a block", () => {
+test("a quote in markup does not protect a bracket: the block ends there, as Typst reads it", () => {
   const text = '#block[\n  "]"\n]\n';
   const [block] = kindOf(typstAdapter(text, "a.typ"), "block");
-  assert.deepEqual(block.range, [text.indexOf("[") + 1, text.lastIndexOf("]")]);
+  assert.deepEqual(block.range, [text.indexOf("[") + 1, text.indexOf("]")]);
 });
 
 test("labels inside comments and raw text are not indexed", () => {

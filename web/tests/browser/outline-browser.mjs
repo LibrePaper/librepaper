@@ -20,6 +20,7 @@ import { KATEX_DEFINE, serveKatex } from "../helpers/katex.mjs";
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const temp = mkdtempSync(join(tmpdir(), "librepaper-outline-browser-"));
 const entry = join(temp, "entry.js");
+const syntaxWasm = process.env.LIBREPAPER_TYPST_SYNTAX_WASM || join(root, "web/wasm/typst-syntax.wasm");
 const room = join(temp, "room.js");
 const out = join(temp, "build");
 
@@ -134,8 +135,13 @@ globalThis.WebSocket = class {
   }
   close() { this.onclose?.(); }
 };
+// Typst outlines read typst-syntax.wasm's tree, so the page offers the module
+// and lets its request through to the test server.
+globalThis.LIBREPAPER_MODULES = { "typst-syntax": "/typst-syntax.wasm" };
+const realFetch = globalThis.fetch.bind(globalThis);
 globalThis.fetch = async (url) => {
   const path = String(url);
+  if (path.endsWith('/typst-syntax.wasm')) return realFetch(url);
   if (path.endsWith('/me')) return Response.json({name:'Outline tester',providers:[]});
   if (path.endsWith('/config')) return Response.json({text_extensions:['.html','.md','.qmd','.typ','.tex','.bib'],asset_extensions:[],max_path:200});
   const documentMatch = path.match(/\\/api\\/documents\\/([^/]+)$/);
@@ -169,6 +175,11 @@ try {
   });
   httpServer = createServer((request, response) => {
     if (serveKatex(request, response)) return;
+    if (request.url === "/typst-syntax.wasm") {
+      response.setHeader("content-type", "application/wasm");
+      response.end(readFileSync(syntaxWasm));
+      return;
+    }
     if (request.url?.startsWith("/docs/")) {
       response.setHeader("content-type", "text/html");
       response.end('<!doctype html><html data-theme="librepaper"><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/librepaper-web.css"></head><body><script type="module" src="/check.js"></script></body></html>');

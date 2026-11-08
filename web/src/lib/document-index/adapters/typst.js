@@ -1,133 +1,100 @@
-// The typst adapter of the document index. It reads one typst source with the
-// existing scanners (the outline, the spellcheck skips) and the masks in
-// citation-keys.js, and maps what they find to IndexItems. Synchronous and pure:
-// the result depends only on the text. `path` is part of the adapter signature;
-// the adapter reads the text alone.
+// The typst adapter of the document index. It walks the typst-syntax parse
+// tree of one source (typstTree in source-trees.js) and maps the nodes it finds
+// to IndexItems: refs, cites, labels, definitions, includes, assets,
+// bibliographies, code, math and blocks. Headings come from the outline and the
+// spellcheck skips from skipRanges. Offsets are UTF-16 offsets into the text.
+// `path` is the key the parse tree is cached under, so an edit reparses
+// incrementally. Without a loaded parser the adapter returns no items.
+// Synchronous and pure: the result depends only on the text.
 
 import { extractOutline } from "../../outline.js";
 import { skipRanges } from "../../spellcheck/index.js";
-import {
-  LABEL,
-  TYPST_AT,
-  TYPST_CITE,
-  atKeys,
-  typstCodeSpans,
-  typstMasked,
-} from "../../citation-keys.js";
+import { typstRefInWord } from "../../citation-keys.js";
+import { typstTree } from "../../source-trees.js";
 
 /** @typedef {import("../schema.js").IndexItem} IndexItem */
-/** @typedef {[number, number]} Span */
-/** @typedef {{ open: number, close: number }} Args */
 /**
- * A closed `( ... )`: where it ends (exclusive), whether its line has a `#`,
- * whether it is a `#figure(` call, and its argument brackets.
- * @typedef {{ end: number, hash: boolean, figure: boolean, args: Args }} ParenInfo
- */
-/**
- * An open bracket on the stack.
- * @typedef {{ ch: string, pos: number, hash: boolean, figure: boolean, parenOf: ParenInfo | null }} Opener
+ * A node of the typst parse tree (a Lezer SyntaxNode).
+ * @typedef {any} SyntaxNode
  */
 
-const OPENER_OF = { ")": "(", "]": "[", "}": "{" };
-const REF_CALL = /#ref\(\s*<([-\p{L}\p{N}_:.]+)>/gu;
-const CITE_LABEL_CALL = /#cite\(\s*label\(\s*"([^"\n]+)"\s*\)/gu;
-const INCLUDE = /#include\s*\(?\s*"([^"\n]*)"/gu;
-const IMAGE = /(?<![\p{L}\p{N}_.-])#?image\(\s*"([^"\n]*)"/gu;
-const BIBLIOGRAPHY = /(?<![\p{L}\p{N}_.-])#?bibliography\(([^)]*)\)/gu;
-const DEFINITION = /^([ \t]*)#let[ \t]+([\p{L}_][\p{L}\p{N}_-]*)(\()?/gmu;
-const CLOSE_PAREN = /\s*\)/y;
+/** Children of an argument list that are not positional arguments. */
+const NOT_ARGUMENT = new Set([
+  "LeftParen",
+  "RightParen",
+  "Space",
+  "Comma",
+  "LineComment",
+  "BlockComment",
+  "Named",
+]);
 
 /**
- * The typst items of one source. Items are not sorted.
+ * The items of one typst source. Items are not sorted.
  * @param {string} text
  * @param {string} path
  * @returns {IndexItem[]}
  */
 export function typstAdapter(text, path) {
-  void path;
   const source = String(text ?? "");
-  const masked = typstMasked(source);
-  const math = mathSpans(masked);
+  const tree = typstTree(source, path);
+  if (!tree) return [];
+
   const headings = headingItems(source);
-  const { blocks, figureEnds } = scanBrackets(masked, math);
 
   /** @type {IndexItem[]} */
   const items = [...headings];
-
   for (const range of skipRanges(source, "typst")) {
     items.push({ kind: "markup", range, attrs: { prose: "skip" } });
   }
-  for (const range of typstCodeSpans(source)) items.push({ kind: "code", range });
-  for (const range of math) items.push({ kind: "math", range });
-  for (const range of blocks) items.push({ kind: "block", range });
 
-  for (const { key, from, to } of atKeys(masked, TYPST_AT)) {
-    if (spanIn(math, from - 1)) continue;
-    items.push({ kind: "ref", range: [from - 1, to], name: key, nameRange: [from, to], namespace: "either" });
-  }
-  for (const match of masked.matchAll(REF_CALL)) {
-    const nameFrom = match.index + match[0].indexOf("<") + 1;
-    items.push({
-      kind: "ref",
-      range: [match.index, closeCall(masked, match.index + match[0].length)],
-      name: match[1],
-      nameRange: [nameFrom, nameFrom + match[1].length],
-      namespace: "label",
-    });
-  }
-
-  for (const match of masked.matchAll(TYPST_CITE)) {
-    const nameFrom = match.index + match[0].indexOf("<") + 1;
-    items.push(citeItem(masked, match.index, match[0].length, match[1], nameFrom));
-  }
-  for (const match of masked.matchAll(CITE_LABEL_CALL)) {
-    const nameFrom = match.index + match[0].indexOf('"') + 1;
-    items.push(citeItem(masked, match.index, match[0].length, match[1], nameFrom));
-  }
-
-  for (const match of masked.matchAll(INCLUDE)) {
-    const nameFrom = match.index + match[0].indexOf('"') + 1;
-    items.push(quotedItem("include", match.index, match[0].length, match[1], nameFrom));
-  }
-  for (const match of masked.matchAll(IMAGE)) {
-    const nameFrom = match.index + match[0].indexOf('"') + 1;
-    items.push(quotedItem("asset", match.index, match[0].length, match[1], nameFrom));
-  }
-  for (const match of masked.matchAll(BIBLIOGRAPHY)) {
-    const groupFrom = match.index + match[0].indexOf("(") + 1;
-    for (const literal of match[1].matchAll(/"([^"\n]*)"/g)) {
-      const at = groupFrom + literal.index;
-      items.push(quotedItem("bibliography", at, literal[0].length, literal[1], at + 1));
-    }
-  }
-
-  for (const match of masked.matchAll(DEFINITION)) {
-    const from = match.index + match[1].length;
-    const nameFrom = match.index + match[0].length - (match[3] ? 1 : 0) - match[2].length;
-    const nameTo = nameFrom + match[2].length;
-    items.push({
-      kind: "definition",
-      range: [from, nameTo],
-      name: match[2],
-      nameRange: [nameFrom, nameTo],
-      attrs: { type: match[3] ? "function" : "variable" },
-    });
-  }
-
-  for (const match of masked.matchAll(LABEL)) {
-    const from = match.index;
-    const to = from + match[0].length;
-    /** @type {IndexItem} */
-    const item = {
-      kind: "label",
-      range: [from, to],
-      name: match[1],
-      nameRange: [from + 1, from + 1 + match[1].length],
-    };
-    const title = headingTitleAt(source, headings, from, to, match[1]) ?? captionBefore(source, masked, figureEnds, from);
-    if (title) item.title = title;
-    items.push(item);
-  }
+  tree.iterate({
+    enter(ref) {
+      const node = ref.node;
+      switch (node.name) {
+        case "Raw":
+          items.push({ kind: "code", range: [node.from, node.to] });
+          return;
+        case "Equation":
+          items.push({ kind: "math", range: [node.from, node.to] });
+          return;
+        case "ContentBlock":
+        case "CodeBlock":
+          if (isBlock(source, node)) items.push({ kind: "block", range: [node.from + 1, node.to - 1] });
+          return;
+        case "Ref": {
+          const marker = node.getChild("RefMarker");
+          if (!marker || typstRefInWord(source, marker.from)) return;
+          items.push({
+            kind: "ref",
+            range: [marker.from, marker.to],
+            name: source.slice(marker.from + 1, marker.to),
+            nameRange: [marker.from + 1, marker.to],
+            namespace: "either",
+          });
+          return;
+        }
+        case "FuncCall":
+          items.push(...callItems(source, node));
+          return;
+        case "ModuleInclude": {
+          const str = positionalStrings(node)[0];
+          if (str) items.push(quotedItem("include", (hashBefore(node) ?? node).from, str, source));
+          return;
+        }
+        case "LetBinding": {
+          const definition = definitionItem(source, node);
+          if (definition) items.push(definition);
+          return;
+        }
+        case "Label":
+          if (node.parent?.name !== "Args") items.push(labelItem(source, headings, node));
+          return;
+        default:
+          return;
+      }
+    },
+  });
 
   return items;
 }
@@ -146,228 +113,239 @@ function headingItems(source) {
 }
 
 /**
- * Spans of `$...$` math in the masked text, paired in order. An unpaired `$`
- * gives no span. `\$` is not a delimiter.
- * @param {string} masked
- * @returns {Span[]}
+ * The `#` directly before a markup-level node, or null.
+ * @param {SyntaxNode} node
+ * @returns {SyntaxNode | null}
  */
-function mathSpans(masked) {
-  /** @type {Span[]} */
-  const spans = [];
-  let open = -1;
-  for (let i = 0; i < masked.length; i++) {
-    if (masked[i] !== "$" || escaped(masked, i)) continue;
-    if (open < 0) open = i;
-    else {
-      spans.push([open, i + 1]);
-      open = -1;
-    }
+function hashBefore(node) {
+  const previous = node.prevSibling;
+  return previous?.name === "Hash" ? previous : null;
+}
+
+/**
+ * The name of a call whose callee is a plain identifier, or null.
+ * @param {string} source
+ * @param {SyntaxNode} call
+ * @returns {string | null}
+ */
+function calleeName(source, call) {
+  const callee = call.firstChild;
+  return callee?.name === "Ident" ? source.slice(callee.from, callee.to) : null;
+}
+
+/**
+ * The first positional argument of an argument list, or null.
+ * @param {SyntaxNode} args
+ * @returns {SyntaxNode | null}
+ */
+function firstArgument(args) {
+  for (let child = args.firstChild; child; child = child.nextSibling) {
+    if (!NOT_ARGUMENT.has(child.name)) return child;
   }
-  return spans;
+  return null;
 }
 
 /**
- * Whether the character at `at` is preceded by an odd number of backslashes.
- * @param {string} text
- * @param {number} at
- * @returns {boolean}
+ * The string literals of a node that are not named arguments, looking into
+ * arrays and parenthesized values.
+ * @param {SyntaxNode} node
+ * @param {SyntaxNode[]} [out]
+ * @returns {SyntaxNode[]}
  */
-function escaped(text, at) {
-  let count = 0;
-  while (at - 1 - count >= 0 && text[at - 1 - count] === "\\") count++;
-  return count % 2 === 1;
-}
-
-/**
- * @param {Span[]} spans
- * @param {number} at
- * @returns {boolean}
- */
-function spanIn(spans, at) {
-  return spans.some(([from, to]) => at >= from && at < to);
-}
-
-/**
- * Whether the line holding `at` has a `#` before `at`.
- * @param {string} text
- * @param {number} at
- * @returns {boolean}
- */
-function lineHasHash(text, at) {
-  const start = text.lastIndexOf("\n", at - 1) + 1;
-  return text.slice(start, at).includes("#");
-}
-
-/**
- * The index of the quote that closes the string opened at `open`, on the same
- * line, or -1. Escapes are skipped.
- * @param {string} text
- * @param {number} open
- * @returns {number}
- */
-function closingQuote(text, open) {
-  for (let j = open + 1; j < text.length && text[j] !== "\n"; j++) {
-    if (text[j] === "\\") j++;
-    else if (text[j] === '"') return j;
+function positionalStrings(node, out = []) {
+  for (let child = node.firstChild; child; child = child.nextSibling) {
+    if (child.name === "Str") out.push(child);
+    else if (child.name === "Array" || child.name === "Parenthesized") positionalStrings(child, out);
   }
-  return -1;
+  return out;
 }
 
 /**
- * Walk the masked text once, matching brackets. Brackets in math and strings
- * are skipped. A `[` or `{` is a block when its statement starts with `#`: its
- * own line has a `#`, or it directly follows the `)` of a call whose line has
- * one (`#figure(` ... `)[`). Only blocks that span lines are returned.
- * `figureEnds` maps the offset just after a `)` or `]` that ends a `#figure`
- * call (or its content block) to that call's argument brackets.
- * @param {string} masked
- * @param {Span[]} math
- * @returns {{ blocks: Span[], figureEnds: Map<number, Args> }}
+ * The name between the delimiters of a label or string literal.
+ * @param {string} source
+ * @param {SyntaxNode} node
+ * @returns {{ name: string, nameRange: [number, number] }}
  */
-function scanBrackets(masked, math) {
-  const mathAt = new Map(math.map(([from, to]) => [from, to]));
-  /** @type {Opener[]} */
-  const stack = [];
-  /** @type {Span[]} */
-  const blocks = [];
-  /** @type {Map<number, Args>} */
-  const figureEnds = new Map();
-  /** @type {ParenInfo | null} */
-  let lastParen = null;
-
-  for (let i = 0; i < masked.length; i++) {
-    const mathEnd = mathAt.get(i);
-    if (mathEnd !== undefined) {
-      i = mathEnd - 1;
-      continue;
-    }
-    const ch = masked[i];
-    if (ch === '"') {
-      const close = closingQuote(masked, i);
-      if (close >= 0) i = close;
-      continue;
-    }
-    if (ch === "(" || ch === "[" || ch === "{") {
-      const parenOf = ch === "[" && lastParen && lastParen.end === i ? lastParen : null;
-      stack.push({
-        ch,
-        pos: i,
-        hash: parenOf ? parenOf.hash : lineHasHash(masked, i),
-        figure: ch === "(" && /#figure\s*$/.test(masked.slice(Math.max(0, i - 40), i)),
-        parenOf,
-      });
-      continue;
-    }
-    if (ch !== ")" && ch !== "]" && ch !== "}") continue;
-    const top = stack[stack.length - 1];
-    if (!top || top.ch !== OPENER_OF[ch]) continue;
-    stack.pop();
-    if (ch === ")") {
-      lastParen = { end: i + 1, hash: top.hash, figure: top.figure, args: { open: top.pos, close: i } };
-      if (top.figure) figureEnds.set(i + 1, lastParen.args);
-      continue;
-    }
-    if (top.hash && masked.slice(top.pos, i).includes("\n")) blocks.push([top.pos + 1, i]);
-    if (ch === "]" && top.parenOf?.figure) figureEnds.set(i + 1, top.parenOf.args);
-  }
-  return { blocks, figureEnds };
+function innerOf(source, node) {
+  const nameRange = /** @type {[number, number]} */ ([node.from + 1, node.to - 1]);
+  return { name: source.slice(nameRange[0], nameRange[1]), nameRange };
 }
 
 /**
- * The end of a call that may be closed by `)` after `end`, when one follows
- * (with only whitespace between). Otherwise `end`.
- * @param {string} masked
- * @param {number} end
- * @returns {number}
- */
-function closeCall(masked, end) {
-  CLOSE_PAREN.lastIndex = end;
-  return CLOSE_PAREN.exec(masked) ? CLOSE_PAREN.lastIndex : end;
-}
-
-/**
- * A `#cite` item. Its range runs to the closing paren of the call.
- * @param {string} masked
+ * A path-carrying item: the range runs from `from` to the end of the string
+ * literal, the name is the literal's contents.
+ * @param {"include" | "asset" | "bibliography"} kind
  * @param {number} from
- * @param {number} length
- * @param {string} key
- * @param {number} nameFrom
+ * @param {SyntaxNode} str
+ * @param {string} source
  * @returns {IndexItem}
  */
-function citeItem(masked, from, length, key, nameFrom) {
+function quotedItem(kind, from, str, source) {
+  return { kind, range: [from, str.to], ...innerOf(source, str) };
+}
+
+/**
+ * Whether a bracket or brace block is one of the multi-line blocks the index
+ * keeps: it spans lines and its statement starts with `#`.
+ * @param {string} source
+ * @param {SyntaxNode} node
+ * @returns {boolean}
+ */
+function isBlock(source, node) {
+  if (!source.slice(node.from, node.to).includes("\n")) return false;
+  let top = node;
+  while (top.parent && top.parent.name !== "Markup" && top.parent.name !== "Code") top = top.parent;
+  return top.prevSibling?.name === "Hash";
+}
+
+/**
+ * Whether the position `at` is the first non-blank text of its line.
+ * @param {string} source
+ * @param {number} at
+ * @returns {boolean}
+ */
+function startsLine(source, at) {
+  const start = source.lastIndexOf("\n", at - 1) + 1;
+  return source.slice(start, at).trim() === "";
+}
+
+/**
+ * The items of one call: `#cite`, `#ref`, `image`, `bibliography`.
+ * @param {string} source
+ * @param {SyntaxNode} node
+ * @returns {IndexItem[]}
+ */
+function callItems(source, node) {
+  const name = calleeName(source, node);
+  const args = node.getChild("Args");
+  if (!name || !args) return [];
+  const hash = hashBefore(node);
+  const first = firstArgument(args);
+
+  switch (name) {
+    case "cite": {
+      if (!hash || !first) return [];
+      let key = null;
+      if (first.name === "Label") key = innerOf(source, first);
+      else if (first.name === "FuncCall" && calleeName(source, first) === "label") {
+        const str = firstArgument(first.getChild("Args"));
+        if (str?.name === "Str") key = innerOf(source, str);
+      }
+      if (!key) return [];
+      return [{ kind: "cite", range: [hash.from, node.to], ...key, namespace: "cite" }];
+    }
+    case "ref": {
+      if (!hash || first?.name !== "Label") return [];
+      return [{ kind: "ref", range: [hash.from, node.to], ...innerOf(source, first), namespace: "label" }];
+    }
+    case "image": {
+      if (first?.name !== "Str") return [];
+      return [quotedItem("asset", (hash ?? node.firstChild).from, first, source)];
+    }
+    case "bibliography":
+      return positionalStrings(args).map((str) => quotedItem("bibliography", str.from, str, source));
+    default:
+      return [];
+  }
+}
+
+/**
+ * A `#let` definition at the start of a markup line. `#let f(...) = ...` is a
+ * function, `#let x = ...` a variable.
+ * @param {string} source
+ * @param {SyntaxNode} node
+ * @returns {IndexItem | null}
+ */
+function definitionItem(source, node) {
+  const hash = hashBefore(node);
+  if (!hash || !startsLine(source, hash.from)) return null;
+  let target = null;
+  for (let child = node.firstChild; child; child = child.nextSibling) {
+    if (child.name === "Ident" || child.name === "Closure") {
+      target = child;
+      break;
+    }
+  }
+  if (!target) return null;
+  const isFunction = target.name === "Closure";
+  const ident = isFunction ? target.firstChild : target;
+  if (ident?.name !== "Ident") return null;
+  const nameRange = /** @type {[number, number]} */ ([ident.from, ident.to]);
   return {
-    kind: "cite",
-    range: [from, closeCall(masked, from + length)],
-    name: key,
-    nameRange: [nameFrom, nameFrom + key.length],
-    namespace: "cite",
+    kind: "definition",
+    range: [hash.from, ident.to],
+    name: source.slice(ident.from, ident.to),
+    nameRange,
+    attrs: { type: isFunction ? "function" : "variable" },
   };
 }
 
 /**
- * A path-carrying item (include, asset, bibliography). Its range is the call
- * head or literal up to the closing quote.
- * @param {"include" | "asset" | "bibliography"} kind
- * @param {number} from
- * @param {number} length
- * @param {string} path
- * @param {number} nameFrom
- * @returns {IndexItem}
- */
-function quotedItem(kind, from, length, path, nameFrom) {
-  return { kind, range: [from, from + length], name: path, nameRange: [nameFrom, nameFrom + path.length] };
-}
-
-/**
- * The heading title when the label ends a heading line, without the label.
+ * A label declaration. Its title is the heading it ends, or the caption of the
+ * figure it follows.
  * @param {string} source
  * @param {IndexItem[]} headings
- * @param {number} from
- * @param {number} to
- * @param {string} name
- * @returns {string | null}
+ * @param {SyntaxNode} node
+ * @returns {IndexItem}
  */
-function headingTitleAt(source, headings, from, to, name) {
-  const heading = headings.find((item) => item.range[0] <= from && from < item.range[1]);
-  if (!heading || source.slice(to, heading.range[1]).trim() !== "") return null;
-  const title = (heading.title ?? "").split(`<${name}>`).join("").replace(/\s+/g, " ").trim();
-  return title || null;
+function labelItem(source, headings, node) {
+  /** @type {IndexItem} */
+  const item = { kind: "label", range: [node.from, node.to], ...innerOf(source, node) };
+  const title = labelTitle(source, headings, node);
+  if (title) item.title = title;
+  return item;
 }
 
 /**
- * The caption of the `#figure` the label follows, when the label directly
- * follows a figure call (or its content block).
+ * The title of a label: the heading title when the label ends a heading line,
+ * else the caption of the `figure` call it directly follows.
  * @param {string} source
- * @param {string} masked
- * @param {Map<number, Args>} figureEnds
- * @param {number} labelFrom
+ * @param {IndexItem[]} headings
+ * @param {SyntaxNode} label
  * @returns {string | null}
  */
-function captionBefore(source, masked, figureEnds, labelFrom) {
-  let end = labelFrom;
-  while (end > 0 && /\s/.test(masked[end - 1])) end--;
-  const args = figureEnds.get(end);
-  if (!args) return null;
-  const inner = masked.slice(args.open + 1, args.close);
-  const match = /\bcaption\s*:\s*\[/.exec(inner);
-  if (!match) return null;
-  const open = args.open + 1 + match.index + match[0].length - 1;
-  const close = matchingBracket(masked, open);
-  if (close < 0) return null;
-  return source.slice(open + 1, close).replace(/\s+/g, " ").trim() || null;
+function labelTitle(source, headings, label) {
+  let before = label.prevSibling;
+  while (before?.name === "Space") before = before.prevSibling;
+  if (!before) return null;
+
+  if (before.name === "Heading") {
+    if (source.slice(before.to, label.from).includes("\n")) return null;
+    const heading = headings.find((item) => item.range[0] <= label.from && label.from < item.range[1]);
+    if (!heading) return null;
+    const { name } = innerOf(source, label);
+    return collapse((heading.title ?? "").split(`<${name}>`).join(""));
+  }
+
+  if (before.name === "FuncCall" && calleeName(source, before) === "figure") {
+    const caption = captionOf(source, before);
+    return caption ? collapse(source.slice(caption.from + 1, caption.to - 1)) : null;
+  }
+  return null;
 }
 
 /**
- * The index of the `]` matching the `[` at `open`, or -1.
- * @param {string} text
- * @param {number} open
- * @returns {number}
+ * The content block given as the `caption:` argument of a call, or null.
+ * @param {string} source
+ * @param {SyntaxNode} call
+ * @returns {SyntaxNode | null}
  */
-function matchingBracket(text, open) {
-  let depth = 0;
-  for (let i = open; i < text.length; i++) {
-    if (text[i] === "[") depth++;
-    else if (text[i] === "]" && --depth === 0) return i;
+function captionOf(source, call) {
+  const args = call.getChild("Args");
+  for (let child = args?.firstChild; child; child = child.nextSibling) {
+    if (child.name !== "Named") continue;
+    const key = child.firstChild;
+    if (key?.name !== "Ident" || source.slice(key.from, key.to) !== "caption") continue;
+    return child.getChild("ContentBlock");
   }
-  return -1;
+  return null;
+}
+
+/**
+ * Whitespace collapsed and trimmed, or null when nothing is left.
+ * @param {string} text
+ * @returns {string | null}
+ */
+function collapse(text) {
+  return text.replace(/\s+/g, " ").trim() || null;
 }

@@ -6,6 +6,9 @@
 // the text, and Quarto shares the Markdown scanner.
 import assert from "node:assert/strict";
 import { skipRanges } from "../../src/lib/spellcheck/index.js";
+import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
+
+await loadTypstSyntaxForTests();
 
 // The shape every result must have, whatever the format or text.
 function assertWellFormed(ranges, text) {
