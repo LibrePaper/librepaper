@@ -277,3 +277,18 @@ function words(text) {
 {
   assert.deepEqual(words("[".repeat(20000) + " word"), ["word"]);
 }
+
+// A task list marker is markup, so its x is not a word.
+{
+  assert.deepEqual(words("- [x] done"), ["done"]);
+}
+
+// An entity is markup, so its name is not a word.
+{
+  assert.deepEqual(words("AT&amp;T"), ["AT", "T"]);
+}
+
+// Inline code may continue on the next line.
+{
+  assert.deepEqual(words("a `b\nc` d"), ["a", "d"]);
+}
