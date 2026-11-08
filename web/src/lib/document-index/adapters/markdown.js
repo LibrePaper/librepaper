@@ -7,7 +7,7 @@
 // includes. Plain Markdown emits no references: its "@key" forms are citations.
 
 import { extractOutline } from "../../outline.js";
-import { pandocMarkdownParser } from "../../pandoc-markdown.js";
+import { frontMatterRange, markdownTree } from "../../source-trees.js";
 import { skipRanges } from "../../spellcheck/index.js";
 import {
   CELL_LABEL,
@@ -23,8 +23,6 @@ import {
 /** @typedef {{ first: number, last: number, fence: Fence, closed: boolean }} FenceRun */
 
 const LINE_BREAK = /\r\n|\n|\r/g;
-const FRONT_MATTER_START = /^---\s*$/;
-const FRONT_MATTER_END = /^(?:---|\.\.\.)\s*$/;
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 const OPTION_LINE = /^#\|/;
 const INLINE_CODE = /(`+)(?!`)[^`\n]*?(?<!`)\1(?!`)/g;
@@ -93,14 +91,11 @@ function joinLines(texts, lines, source) {
 /**
  * The line index of the closing front matter delimiter, or -1.
  * @param {Line[]} lines
+ * @param {[number, number] | null} range from frontMatterRange
  * @returns {number}
  */
-function frontMatterEnd(lines) {
-  if (!FRONT_MATTER_START.test(lines[0].text)) return -1;
-  for (let i = 1; i < lines.length; i++) {
-    if (FRONT_MATTER_END.test(lines[i].text)) return i;
-  }
-  return -1;
+function frontMatterEnd(lines, range) {
+  return range ? lines.findIndex((line) => line.to === range[1]) : -1;
 }
 
 /**
@@ -282,15 +277,13 @@ function lineAt(lines, offset) {
 /**
  * What the Pandoc syntax tree knows: math spans, code spans, fenced divs,
  * attribute ids, citation keys and cross references, all with absolute offsets.
- * The front matter is blanked first so the tree starts at the body.
+ * The shared tree skips the front matter and keeps every offset.
  * @param {string} source
  * @param {Line[]} lines
- * @param {number} frontEnd index of the closing front matter line, or -1
+ * @param {string} path
  */
-function treeFacts(source, lines, frontEnd) {
-  let body = frontEnd >= 0 ? blankRanges(source, [[0, lines[frontEnd].to]]) : source;
-  // The parser reads \n only. Same-length replacements keep every offset.
-  body = body.replace(/\r\n?/g, (match) => (match.length === 2 ? " \n" : "\n"));
+function treeFacts(source, lines, path) {
+  const { tree, body } = markdownTree(source, path);
   /** @type {Array<[number, number]>} */
   const math = [];
   /** @type {Array<[number, number]>} */
@@ -303,7 +296,7 @@ function treeFacts(source, lines, frontEnd) {
   const cites = [];
   /** @type {Array<{ name: string, from: number, to: number }>} */
   const refs = [];
-  pandocMarkdownParser.parse(body).iterate({
+  tree.iterate({
     enter(node) {
       switch (node.name) {
         case "InlineMath":
@@ -377,7 +370,7 @@ export function markdownAdapter(text, path) {
   /** @type {IndexItem[]} */
   const items = [];
 
-  const frontEnd = frontMatterEnd(lines);
+  const frontEnd = frontMatterEnd(lines, frontMatterRange(source));
   const bodyStart = frontEnd + 1;
   const states = fenceStates(lines.slice(bodyStart).map((line) => line.text));
   const runs = fenceRuns(lines, states, bodyStart);
@@ -406,7 +399,7 @@ export function markdownAdapter(text, path) {
     lines,
     source,
   );
-  const tree = treeFacts(source, lines, frontEnd);
+  const tree = treeFacts(source, lines, String(path ?? ""));
   const prose = blankRanges(visible, tree.math);
 
   // Headings, from the existing outline scanner.
