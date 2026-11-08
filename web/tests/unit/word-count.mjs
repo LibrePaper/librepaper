@@ -9,6 +9,9 @@ import {
   sectionWords,
 } from "../../src/lib/word-count.js";
 import { includesOf } from "../../src/lib/opening.js";
+import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
+
+await loadTypstSyntaxForTests();
 
 // LaTeX: commands and comments are skipped, prose and caption text count.
 {
