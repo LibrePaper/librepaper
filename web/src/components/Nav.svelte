@@ -20,11 +20,12 @@
   //
   // `signIn` drops the Sign in link for the page that link leads to.
   //
-  // `phoneShell` is the Reader's phone header: a back control and the title
-  // take the room, the tools sit at the end, and the account and the menubar
-  // give way (the account is in the More sheet, the menubar stays mounted for
-  // its dialogs and shortcuts).
-  let { me = {}, children = undefined, menus = undefined, tools = undefined, phoneMenu = false, phoneShell = false, hidden = false, signIn = true } = $props();
+  // `phoneShell` is the Reader's phone header, shown over the views that are
+  // not tabs: a back control and the title take the room, and the account and
+  // the menubar give way (the account is in the More sheet, the menubar stays
+  // mounted for its dialogs and shortcuts). `phoneBare` hides the header on the
+  // tab screens, where the bottom bar replaces it; the nav stays mounted.
+  let { me = {}, children = undefined, menus = undefined, tools = undefined, phoneMenu = false, phoneShell = false, phoneBare = false, hidden = false, signIn = true } = $props();
 </script>
 
 <!-- The way past the bar. Every page puts twenty-odd controls between the
@@ -34,7 +35,7 @@
      invisible otherwise, which is the only time anyone needs it. -->
 <a class="skip-link" href="#main">{m.nav_skip_to_content()}</a>
 
-<nav class="flex items-center justify-between gap-4" class:phone-menu={phoneMenu} class:phone-shell={phoneShell} class:bar-hidden={hidden}>
+<nav class="flex items-center justify-between gap-4" class:phone-menu={phoneMenu} class:phone-shell={phoneShell} class:phone-bare={phoneBare} class:bar-hidden={hidden}>
   <div class="nav-identity flex min-w-0 items-center gap-3">
     {#if children}
       <span class="nav-trail flex min-w-0 items-center gap-3">
@@ -163,5 +164,6 @@
     .phone-shell .nav-trail { display: flex; flex: 1 1 0; min-width: 0; gap: 0; }
     .phone-shell .nav-actions { flex: none; gap: 0; }
     .phone-shell .nav-account { display: none; }
+    nav.phone-bare { display: none; }
   }
 </style>

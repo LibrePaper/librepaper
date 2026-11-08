@@ -32,7 +32,9 @@
 
   .chips {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
     gap: 0.5rem;
     margin: 0;
     padding: 0;
@@ -42,9 +44,8 @@
   .chip {
     display: flex;
     align-items: center;
+    flex: none;
     gap: 0.375rem;
-    min-width: 0;
-    max-width: 100%;
   }
 
   .jump {

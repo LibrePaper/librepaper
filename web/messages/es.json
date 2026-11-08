@@ -1877,7 +1877,6 @@
   "mergeeditor_sides": " · {baseline} a la izquierda, {target} a la derecha",
   "mergeeditor_source_only": " · código fuente de {baseline}",
   "mergeeditor_target_default": "Documento actual",
-  "mobilenav_back_to_projects": "Volver a los proyectos",
   "mobilenav_navigation": "Navegación del documento",
   "mobilenav_collaborators": "Colaboradores",
   "mobilenav_more": "Más",

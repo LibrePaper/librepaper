@@ -146,7 +146,7 @@ try {
   // A tapped file on a phone opens on the preview. The Files column is opened
   // from the Files tab, as a person does it, and chapter-1.html is tapped there.
   const press = async (selector) => { await b.evaluate(`(() => { const node=document.querySelector(${JSON.stringify(selector)}); node.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'mouse'})); node.click(); })()`); await flush(); };
-  await press('.mobile-header-tabs [data-destination="files"]');
+  await press('.mobile-tab-bar [data-destination="files"]');
   await until('files column shows the files', () => visible('.sidebar .explorer'), 5000);
   await until('chapter-1.html is listed', () => b.evaluate(`Boolean(document.querySelector('.explorer-row[title="chapter-1.html"]'))`), 5000);
   await b.evaluate(`document.querySelector('.explorer-row[title="chapter-1.html"]').click()`);
