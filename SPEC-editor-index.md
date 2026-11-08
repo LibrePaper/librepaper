@@ -186,11 +186,14 @@ Each step ships on its own and leaves the app working.
    - **Typst:** folding comes from the typst module's parse-only `folding`
      export, through the renderer worker (`lib/typst-folding.js`).
 
-   The adapters still run their scanners. Swapping their internals for the
-   trees is the remaining part of this step. The LaTeX and Markdown parsers
-   are plain JavaScript, so an adapter can call them directly. The Typst
-   module only runs in the worker, so the Typst adapter keeps its synchronous
-   scanner. `symbols` stays unused until something needs it asynchronously.
+   The LaTeX and Markdown adapters read those trees for comments, verbatim,
+   code, math, environments and divs, citations, labels and references. They
+   keep `extractOutline` for heading titles and `skipRanges` for spellcheck,
+   which other consumers share. The Typst adapter keeps its synchronous
+   scanner. For the open `.typ` file, the module's parse-only `symbols`
+   answer is laid over the scanner's headings and definitions in the live
+   index (`setOverlay`), only while the text matches. The Outline panel shows
+   the module's headings for that file once they have arrived.
 
 ## Non-goals
 

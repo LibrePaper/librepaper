@@ -3,11 +3,11 @@
 // agrees with the plain-text scanners in citation-keys.js (what is a citation)
 // and quarto-labels.js (what is a label).
 import { foldNodeProp } from "@codemirror/language";
+import { GFM, InlineContext, Subscript, Superscript, parser as commonmark } from "@lezer/markdown";
 import { styleTags, tags as t } from "@lezer/highlight";
 
-const AT = 64, DOLLAR = 36, OPEN_BRACKET = 91, OPEN_PAREN = 40, OPEN_BRACE = 123, BACKTICK = 96;
+const AT = 64, DOLLAR = 36, OPEN_BRACKET = 91, CLOSE_BRACKET = 93, OPEN_PAREN = 40, OPEN_BRACE = 123, BACKTICK = 96;
 const WORD = /[-\p{L}\p{N}_:.+]/u;
-const KEY = /@[\p{L}\p{N}_][-\p{L}\p{N}_:.+]*/gu;
 const CROSS_REF = /^(fig|tbl|sec|eq|lst|thm|lem|cor|prp|cnj|def|exm|exr|sol|rem|tip|nte|wrn|imp|cau)[-:]/;
 
 // ---- helpers -------------------------------------------------------------
@@ -29,7 +29,8 @@ function blocksCitation(previous) {
 
 // Attribute lists: `{#id .class key=value key2="v w"}`. Returns the Attributes
 // element, or null when the text is not a well-formed list.
-const ATTRIBUTE = /(?:#([^\s#.={}"']+))|(?:\.([^\s#.={}"']+))|(?:([^\s=#.{}"']+)=("[^"]*"|'[^']*'|[^\s"'{}]+))/y;
+// Ids and classes may contain dots (`#intro.v2`), so attributes are separated by blanks.
+const ATTRIBUTE = /(?:#([^\s#={}"']+))|(?:\.([^\s#={}"']+))|(?:([^\s=#.{}"']+)=("[^"]*"|'[^']*'|[^\s"'{}]+))/y;
 function attributeList(cx, text, from) {
   if (text[0] !== "{" || text[text.length - 1] !== "}") return null;
   const inner = text.slice(1, -1);
@@ -49,6 +50,7 @@ function attributeList(cx, text, from) {
       children.push(cx.elt("AttributeValue", start + match[3].length + 1, start + match[0].length));
     }
     i = ATTRIBUTE.lastIndex;
+    if (i < inner.length && !/\s/.test(inner[i])) return null;
   }
   if (!children.length) return null;
   return cx.elt("Attributes", from, from + text.length, children);
@@ -245,31 +247,52 @@ function keyAt(cx, pos, text) {
   return cx.elt(name, pos, pos + key.length);
 }
 
+// A citation bracket reuses the Link parser's `[` delimiter. When the matching
+// `]` closes content that holds a key and is not followed by `(` or `[`, the
+// already parsed inline content (emphasis, math, keys) is wrapped in a Citation.
+// Anything else is left for LinkEnd, so links, footnotes and spans are unchanged.
+function flattenCitations(cx, elements, citation, mark) {
+  const out = [];
+  for (const element of elements) {
+    // A bare Citation holds just its key; a bracketed one starts with a mark.
+    if (element.type === citation && element.children[0]?.type !== mark) out.push(...element.children);
+    else {
+      if (element.children.length) element.children = flattenCitations(cx, element.children, citation, mark);
+      out.push(element);
+    }
+  }
+  return out;
+}
+
 const citationBracket = {
   name: "PandocCitation",
-  before: "Link",
+  before: "LinkEnd",
   parse(cx, next, pos) {
-    if (next !== OPEN_BRACKET) return -1;
-    let end = pos + 1;
-    for (; end < cx.end; end++) {
-      const code = cx.char(end);
-      if (code === OPEN_BRACKET || code === BACKTICK) return -1;
-      if (code === 93) break;
-    }
-    if (end >= cx.end) return -1;
-    const after = cx.char(end + 1);
+    if (next !== CLOSE_BRACKET) return -1;
+    const after = cx.char(pos + 1);
     if (after === OPEN_PAREN || after === OPEN_BRACKET) return -1;
-    const content = cx.slice(pos + 1, end);
-    const keys = [];
-    for (const match of content.matchAll(KEY)) {
-      if (blocksCitation(content[match.index - 1])) continue;
-      keys.push(keyAt(cx, pos + 1 + match.index, match[0]));
+    const parts = /** @type {any} */ (cx).parts;
+    const citation = cx.parser.getNodeType("Citation");
+    const mark = cx.parser.getNodeType("CitationMark");
+    const crossRef = cx.parser.getNodeType("CrossRef");
+    let open = -1, keyed = false;
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const part = parts[i];
+      if (!part) continue;
+      if (part.type === InlineContext.linkStart) {
+        if (part.side) open = i;
+        break;
+      }
+      if (part.type === InlineContext.imageStart) break;
+      if (part.type === citation || part.type === crossRef) keyed = true;
     }
-    if (!keys.length) return -1;
-    return cx.addElement(cx.elt("Citation", pos, end + 1, [
+    if (open < 0 || !keyed) return -1;
+    const start = parts[open].from;
+    const content = flattenCitations(cx, cx.takeContent(open), citation, mark);
+    return cx.addElement(cx.elt("Citation", start, pos + 1, [
+      cx.elt("CitationMark", start, start + 1),
+      ...content,
       cx.elt("CitationMark", pos, pos + 1),
-      ...keys,
-      cx.elt("CitationMark", end, end + 1),
     ]));
   },
 };
@@ -301,7 +324,7 @@ const attributesInline = {
     const after = text.slice(close + 1);
     const attached = before === ")" || before === "]" || before === "`";
     // After a space the list belongs to a heading or a display equation, so it must end the text.
-    const trailing = (before === " " || before === "\t") && !after.trim();
+    const trailing = (before === undefined || before === " " || before === "\t") && !after.trim();
     if (!attached && !trailing) return -1;
     const list = attributeList(cx, text.slice(i, close + 1), pos);
     return list ? cx.addElement(list) : -1;
@@ -344,3 +367,9 @@ export const pandocExtensions = [{
     }),
   ],
 }];
+
+/**
+ * The Markdown parser the editor uses, without the editor: GFM and Pandoc
+ * syntax. For reading a tree outside a CodeMirror state, such as the document index.
+ */
+export const pandocMarkdownParser = commonmark.configure([GFM, Subscript, Superscript, pandocExtensions]);

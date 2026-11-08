@@ -6,6 +6,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { CompletionContext } from "@codemirror/autocomplete";
 import { EditorState } from "@codemirror/state";
+import { ensureSyntaxTree } from "@codemirror/language";
+import { latex } from "../../src/lib/latex-language/index.js";
 import { latexCompletion } from "../../src/lib/completion/latex.js";
 import { PACKAGES } from "../../src/lib/completion/latex-packages.js";
 import { indexTexts, labelList } from "../../src/lib/document-index/labels.js";
@@ -183,6 +185,60 @@ function applyTo(option, doc, from, to) {
   const names = result.options.map((option) => option.label);
   assert.ok(names.includes("hello"));
   assert.equal(names.filter((name) => name === "begin").length, 1);
+}
+
+// --- Math and text mode -------------------------------------------------------
+{
+  const inLatex = (doc, options) => {
+    const state = EditorState.create({ doc, extensions: [latex()] });
+    ensureSyntaxTree(state, state.doc.length, 5000);
+    const context = new CompletionContext(state, doc.length, true);
+    return latexCompletion(() => ({ path: "main.tex", format: "latex", texts: {}, files: [], ...options }))(context);
+  };
+  const names = (doc, options) => inLatex(doc, options).options.map((option) => option.label);
+
+  // Greek letters are math: offered in math, absent from text.
+  assert.ok(names("$\\al").includes("alpha"));
+  assert.ok(!names("\\al").includes("alpha"));
+  assert.ok(names("\\[ \\al").includes("alpha"));
+
+  // Sectioning is text: offered in text, absent from math.
+  assert.ok(names("\\sec").includes("section"));
+  assert.ok(!names("$\\sec").includes("section"));
+  assert.ok(!names("$\\sec").includes("subsection"));
+
+  // Math-only commands from the symbol catalog and the structure list are hidden in text.
+  for (const name of ["sum", "leq", "rightarrow", "frac"]) {
+    assert.ok(names("$\\").includes(name), `${name} in math`);
+    assert.ok(!names("\\").includes(name), `${name} in text`);
+  }
+  // \hline is valid in math arrays, so it is offered there.
+  assert.ok(names("$\\begin{array}{c} \\h").includes("hline"));
+  // Commands that work in both are offered in both.
+  for (const name of ["textbf", "label", "ldots", "ref"]) {
+    assert.ok(names("$\\").includes(name), `${name} in math`);
+    assert.ok(names("\\").includes(name), `${name} in text`);
+  }
+
+  // Math commands rank first in math.
+  const alpha = inLatex("$\\al").options.find((option) => option.label === "alpha");
+  const textbf = inLatex("$\\te").options.find((option) => option.label === "textbf");
+  assert.ok(alpha.boost > (textbf.boost ?? 0));
+
+  // Commands the project defines are offered everywhere.
+  const texts = { "p.tex": "\\newcommand{\\section}{x}\\newcommand{\\alpha}{y}" };
+  assert.ok(names("$\\sec", { texts }).includes("section"));
+  assert.ok(names("\\al", { texts }).includes("alpha"));
+
+  // Inside math, \begin{ offers the math-inner environments only.
+  const inner = names("$$ \\begin{");
+  assert.ok(inner.includes("aligned"));
+  assert.ok(inner.includes("cases"));
+  assert.ok(inner.includes("pmatrix"));
+  assert.ok(!inner.includes("itemize"));
+  const outer = names("\\begin{");
+  assert.ok(outer.includes("itemize"));
+  assert.ok(outer.includes("figure"));
 }
 
 // --- Null cases -------------------------------------------------------------

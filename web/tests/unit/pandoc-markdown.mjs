@@ -102,6 +102,25 @@ test("citations", () => {
   assert.deepEqual(names("`@doe`", ["Citation"]), []);
 });
 
+test("a bracketed citation keeps inline parsing in its prefix and suffix", () => {
+  const doc = "[see *discussion* @doe99, p. 3; $x^2$ @roe]";
+  assert.deepEqual(texts(doc, "Citation"), [doc]);
+  assert.deepEqual(texts(doc, "Emphasis"), ["*discussion*"]);
+  assert.deepEqual(texts(doc, "InlineMath"), ["$x^2$"]);
+  assert.deepEqual(texts(doc, "CitationKey"), ["@doe99", "@roe"]);
+  assert.deepEqual(texts(doc, "CitationMark"), ["[", "]"]);
+  assert.deepEqual(texts("[*@a*]", "CitationKey"), ["@a"]);
+  assert.deepEqual(texts("text [@a] and @b", "Citation"), ["[@a]", "@b"]);
+});
+
+test("brackets without a key stay links, footnotes and spans", () => {
+  assert.deepEqual(names("[text](x)", ["Link", "Citation"]), ["Link"]);
+  assert.deepEqual(names("[^1] note", ["Citation"]), []);
+  assert.deepEqual(names("[text]{.class}", ["Citation", "AttributeClass"]), ["AttributeClass"]);
+  assert.deepEqual(names("[@a][ref]", ["Link", "CitationMark"]), ["Link"]);
+  assert.deepEqual(names("[@a](http://x)", ["Link", "CitationMark"]), ["Link"]);
+});
+
 test("attribute lists", () => {
   assert.deepEqual(texts("# Heading {#sec-intro}", "Attributes"), ["{#sec-intro}"]);
   assert.deepEqual(texts("# Heading {#sec-intro}", "AttributeId"), ["#sec-intro"]);

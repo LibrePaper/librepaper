@@ -6,6 +6,7 @@ import {
   definition,
   diagnostics,
   references,
+  rename,
 } from "../../src/lib/document-index/queries.js";
 import { citedKeys } from "../../src/lib/citation-keys.js";
 import { quartoLabels } from "../../src/lib/completion/quarto.js";
@@ -328,4 +329,68 @@ test("end to end: a two-file Quarto project resolves, diagnoses and lists refere
   const codes = diagnostics(project, "a.qmd").map((diagnostic) => `${diagnostic.code}:${diagnostic.name}`);
   assert.deepEqual(codes.sort(), ["missing-file:nope.qmd", "unknown-label:fig-gone"]);
   assert.deepEqual(diagnostics(project, "b.qmd"), []);
+});
+
+test("the tree keeps @keys in code, math and addresses from being citations", () => {
+  const text = [
+    "Real [@smith] and @jones.",
+    "",
+    "Inline `@code` and mail a@b.org and $x @inmath y$ here.",
+    "",
+    "```r",
+    "@block",
+    "```",
+    "",
+    "    @indented",
+    "",
+    "$$",
+    "@display",
+    "$$",
+    "",
+  ].join("\n");
+  for (const path of ["a.md", "a.qmd"]) {
+    const cites = kindOf(markdownAdapter(text, path), "cite");
+    assert.deepEqual(cites.map((item) => item.name), ["smith", "jones"]);
+    assert.deepEqual(cites.map((item) => named(text, item)), ["smith", "jones"]);
+  }
+  assert.deepEqual(kindOf(markdownAdapter(text, "a.qmd"), "ref"), []);
+});
+
+test("inline code and indented code are code items; a bracketed citation with emphasis still cites", () => {
+  const text = "Use `x` here.\n\n    indented\n\n[see *this* @a, $m$ @b]\n";
+  const items = markdownAdapter(text, "a.md");
+  assert.deepEqual(kindOf(items, "code").map((item) => text.slice(...item.range)), ["`x`", "indented"]);
+  assert.deepEqual(kindOf(items, "cite").map((item) => item.name), ["a", "b"]);
+  assert.deepEqual(kindOf(items, "math").map((item) => text.slice(...item.range)), ["$m$"]);
+});
+
+test("Windows line breaks and front matter keep every offset", () => {
+  const text = "---\r\nt: 1\r\n---\r\n\r\nSee [@k] and $x$.\r\n";
+  const items = markdownAdapter(text, "a.md");
+  const [cite] = kindOf(items, "cite");
+  assert.equal(named(text, cite), "k");
+  assert.deepEqual(kindOf(items, "math").map((item) => text.slice(...item.range)), ["$x$"]);
+});
+
+test("a 300 KB document indexes in under two seconds", () => {
+  const paragraph = "Some *prose* with [@key1; @key2], $a_1 + b$ math and `code`, see @fig-a.\n\n::: note\ntext {#sec-x}\n:::\n\n";
+  const text = paragraph.repeat(Math.ceil(300000 / paragraph.length));
+  const start = performance.now();
+  const items = markdownAdapter(text, "big.qmd");
+  const elapsed = performance.now() - start;
+  assert.ok(items.length > 1000);
+  assert.ok(elapsed < 2000, `took ${elapsed} ms`);
+});
+
+test("a dotted id is one label, and renaming it replaces all of it", () => {
+  const text = "# Intro {#intro.v2}\n\nSee [the intro](#intro.v2).\n";
+  const [label] = markdownAdapter(text, "a.md").filter((item) => item.kind === "label");
+  assert.equal(label.name, "intro.v2");
+  assert.equal(text.slice(...label.nameRange), "intro.v2");
+  const project = createProjectIndex();
+  project.setFiles(["a.md"]);
+  project.update({ path: "a.md", format: "markdown", items: markdownAdapter(text, "a.md"), length: text.length });
+  const edits = rename(project, "a.md", label.nameRange[0], "intro.v3");
+  assert.ok(edits && edits.length >= 1);
+  for (const edit of edits) assert.equal(text.slice(edit.from, edit.to), "intro.v2");
 });

@@ -8,6 +8,7 @@ import { LanguageDescription } from "@codemirror/language";
 import { typstLanguage } from "./typst-mode.js";
 import { sourceFormatOf } from "./formats.js";
 import { pandocExtensions } from "./pandoc-markdown.js";
+import { quartoOptions } from "./quarto-options.js";
 import { latex } from "./latex-language/index.js";
 
 const typst = StreamLanguage.define(typstLanguage);
@@ -49,23 +50,37 @@ function byFormat(format) {
     case "tex": return latex();
     case "typst": return typst;
     case "html": return html();
-    case "quarto":
+    case "quarto": return [markdownSupport(), quartoOptions];
     case "markdown":
     case "md": return markdownSupport();
     default: return [];
   }
 }
 
-/** Select a CodeMirror language from a file path, falling back for unnamed text. */
-export function sourceLanguage(path, fallback = "") {
+/**
+ * The format sourceLanguage() picks for a path: "latex", "typst", "html",
+ * "quarto", "markdown", "json", or "" for plain text.
+ * @param {string} path
+ * @param {string} [fallback] The declared format, for empty paths and .txt.
+ */
+export function sourceFormat(path, fallback = "") {
   const lower = typeof path === "string" ? path.toLowerCase() : "";
   const extension = lower.slice(lower.lastIndexOf("/") + 1);
   const format = sourceFormatOf(extension);
-  if (format) return byFormat(format);
-  if (/\.json$/.test(extension)) return json();
+  if (format) return format;
+  if (/\.json$/.test(extension)) return "json";
 
   // Named files of an unsupported type are plain text. Empty paths and .txt
   // retain the document's declared format, as they did in the editor before.
-  if (extension && !extension.endsWith(".txt")) return [];
-  return byFormat(fallback);
+  if (extension && !extension.endsWith(".txt")) return "";
+  const declared = (fallback || "").toLowerCase();
+  if (declared === "tex") return "latex";
+  if (declared === "md") return "markdown";
+  return declared;
+}
+
+/** Select a CodeMirror language from a file path, falling back for unnamed text. */
+export function sourceLanguage(path, fallback = "") {
+  const format = sourceFormat(path, fallback);
+  return format === "json" ? json() : byFormat(format);
 }

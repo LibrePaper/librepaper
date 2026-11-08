@@ -1685,6 +1685,7 @@
                 keys={preferences.state.keys} onkeys={preferences.setKeys}
                 completion={preferences.state.completion} oncompletion={preferences.setCompletion}
                 brackets={preferences.state.brackets} onbrackets={preferences.setBrackets}
+                latexAssist={preferences.state.latexAssist} onlatexassist={preferences.setLatexAssist}
                 proofing={preferences.state.proofing} onproofing={preferences.setProofing}
                 dialect={preferences.state.dialect} ondialect={preferences.setDialect}
                 check={preferences.state.check} oncheck={preferences.setCheck} />

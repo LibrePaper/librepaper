@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EditorState } from "@codemirror/state";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { highlightTree, tagHighlighter, tags } from "@lezer/highlight";
-import { codeLanguage, sourceLanguage } from "../../src/lib/source-language.js";
+import { codeLanguage, sourceFormat, sourceLanguage } from "../../src/lib/source-language.js";
 
 const languageName = (info) => codeLanguage(info)?.name || null;
 
@@ -101,5 +101,13 @@ assert.ok(syntaxTree(EditorState.create({ doc: json.source, extensions: sourceLa
   ".json file should produce a complete syntax tree");
 hasToken(json, "key", "property", "JSON property name was not highlighted");
 hasToken(json, '"value"', "string", "JSON string value was not highlighted");
+
+assert.equal(sourceFormat("a/b.sty"), "latex");
+assert.equal(sourceFormat("x.cls"), "latex");
+assert.equal(sourceFormat("main.tex"), "latex");
+assert.equal(sourceFormat("notes.txt", "markdown"), "markdown");
+assert.equal(sourceFormat("", "tex"), "latex");
+assert.equal(sourceFormat("data.json"), "json");
+assert.equal(sourceFormat("README"), "");
 
 console.log("source language: filename modes, exact fence aliases, embedded syntax and plain-text fallback passed");

@@ -60,12 +60,15 @@ export function foldRangesFrom(source, answer) {
   return out.sort((a, b) => a.from - b.from || b.to - a.to);
 }
 
-/** The default request: the typst module, asked over the renderer worker. */
-export function defaultRequest(path, source) {
+/**
+ * The default request: the typst module, asked over the renderer worker.
+ * `operation` names the parse-only question ("folding" or "symbols").
+ */
+export function defaultRequest(path, source, operation = "folding") {
   const modules = globalThis.LIBREPAPER_MODULES || {};
   const url = modules.typst;
   if (!url) return Promise.resolve(null);
-  return rendererRequest(new URL(url, globalThis.location.href).href, "folding", { path, source });
+  return rendererRequest(new URL(url, globalThis.location.href).href, operation, { path, source });
 }
 
 export const setFolds = StateEffect.define();
@@ -99,9 +102,20 @@ export function foldAt(ranges, lineStart, lineEnd) {
 /**
  * Refreshes folds: `schedule()` after a change waits, asks for the current
  * text, and applies the answer only if the document is still the one asked
- * about; otherwise it asks again. Returns `{schedule, destroy}`.
+ * about; otherwise it asks again. `convert(source, answer)` shapes what `apply`
+ * receives (fold ranges by default). Returns `{schedule, destroy}`.
+ * @param {{
+ *   getDoc: () => import("@codemirror/state").Text,
+ *   apply: (value: any) => void,
+ *   request: (path: string, source: string) => Promise<any>,
+ *   path: () => string,
+ *   convert?: (source: string, answer: any) => any,
+ *   delay?: number,
+ *   setTimer?: (run: () => void, delay: number) => any,
+ *   clearTimer?: (timer: any) => void,
+ * }} options
  */
-export function folder({ getDoc, apply, request, path, delay = DELAY, setTimer = setTimeout, clearTimer = clearTimeout }) {
+export function folder({ getDoc, apply, request, path, convert = foldRangesFrom, delay = DELAY, setTimer = setTimeout, clearTimer = clearTimeout }) {
   let timer = null;
   let dead = false;
   const run = async () => {
@@ -115,7 +129,7 @@ export function folder({ getDoc, apply, request, path, delay = DELAY, setTimer =
     }
     if (dead) return;
     if (getDoc() !== doc) return schedule();
-    apply(foldRangesFrom(doc.toString(), answer));
+    apply(convert(doc.toString(), answer));
   };
   const schedule = () => {
     if (dead) return;

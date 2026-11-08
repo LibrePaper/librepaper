@@ -8,6 +8,8 @@ import workshop from "./latex-workshop.json" with { type: "json" };
 import { CORE, PACKAGES } from "./latex-packages.js";
 import { pathOptions } from "./paths.js";
 import { indexTexts, labelList } from "../document-index/labels.js";
+import { inMath } from "../latex-language/index.js";
+import { SYMBOLS } from "../symbols/index.js";
 import { m } from "../paraglide/messages.js";
 
 const REFERENCE = /\\(?:ref|eqref|pageref|autoref|cref|Cref|nameref)\*?\{([^{}]*)$/;
@@ -88,13 +90,77 @@ function unique(entries) {
   return out;
 }
 
-function commandEntry(name, snippetText, detail) {
-  const completion = { label: name, type: "function", detail };
-  return { name, option: snippetText === undefined ? completion : snippetCompletion(snippetText, completion) };
+// Math or text mode. A command is offered by where the cursor is, by one rule
+// (built-in names only; commands the project defines are always offered):
+//  - Math-only commands are hidden outside math, where they are errors, and
+//    ranked first inside it. They are every command the symbol catalog files
+//    under Greek letters, operators, relations, arrows, logic, accents and
+//    delimiters (a text symbol like \dag is in the catalog's text group and is
+//    not math-only), plus MATH_STRUCTURE below for what the catalog has no tile for.
+//  - Text-only commands (document structure, floats, lists, page layout) are
+//    hidden inside math. Font commands such as \textbf, \text and \textrm stay
+//    available in math, because they work there.
+//  - Everything else is offered in both modes.
+const MATH_CATEGORIES = new Set(["greek", "operators", "relations", "arrows", "logic", "accents", "delimiters"]);
+// \underline and \overline also work in text mode.
+const MATH_CATALOG_EXEMPT = new Set(["underline", "overline"]);
+const MATH_STRUCTURE = [
+  "frac", "dfrac", "tfrac", "cfrac", "binom", "dbinom", "tbinom", "sqrt", "left", "right", "middle",
+  "big", "Big", "bigg", "Bigg", "bigl", "bigr", "Bigl", "Bigr", "biggl", "biggr", "Biggl", "Biggr",
+  "mathbb", "mathcal", "mathfrak", "mathscr", "mathbf", "mathrm", "mathit", "mathsf", "mathtt",
+  "mathnormal", "boldsymbol", "bm", "overbrace", "underbrace", "overset", "underset", "stackrel",
+  "substack", "limits", "nolimits", "displaystyle", "textstyle", "scriptstyle", "scriptscriptstyle",
+  "operatorname", "cdots", "ddots", "vdots", "to", "gets", "iff", "implies", "impliedby", "lvert", "rvert",
+  "lVert", "rVert", "langle", "rangle", "lfloor", "rfloor", "lceil", "rceil", "tag", "nonumber", "notag",
+  "mathop", "mathbin", "mathrel", "mathord", "mathopen", "mathclose", "mathpunct", "mathstrut",
+  "widehat", "widetilde", "overrightarrow", "overleftarrow", "xrightarrow", "xleftarrow",
+];
+const TEXT_ONLY = new Set([
+  "documentclass", "usepackage", "part", "chapter", "section", "section*", "subsection", "subsection*",
+  "subsubsection", "subsubsection*", "paragraph", "subparagraph", "title", "author", "date", "maketitle",
+  "tableofcontents", "listoffigures", "listoftables", "appendix", "appendixname", "bibliography",
+  "bibliographystyle", "bibitem", "caption", "centering", "raggedright", "raggedleft", "itshape",
+  "ttfamily", "item", "newpage", "clearpage", "cleardoublepage", "pagebreak", "nopagebreak", "linebreak",
+  "nolinebreak", "newline", "noindent", "par", "vfill", "thispagestyle", "pagename", "today", "glossary",
+  "makeglossary", "makeindex", "footnotemark", "inputlineno", "kill", "hlinefill",
+]);
+const MATH_ONLY = new Set(MATH_STRUCTURE);
+for (const symbol of SYMBOLS) {
+  if (!MATH_CATEGORIES.has(symbol.category)) continue;
+  for (const match of symbol.latex.matchAll(/\\([A-Za-z]+)/g)) {
+    if (!MATH_CATALOG_EXEMPT.has(match[1])) MATH_ONLY.add(match[1]);
+  }
 }
 
-function environmentEntry(name, body, detail) {
-  return { name, body, detail };
+// Environments that only exist inside math. Inside math only these are offered.
+const MATH_INNER_ENVIRONMENTS = new Set([
+  "aligned", "alignedat", "gathered", "split", "cases", "dcases", "rcases", "drcases", "array", "subarray",
+  "matrix", "pmatrix", "bmatrix", "Bmatrix", "vmatrix", "Vmatrix", "smallmatrix", "psmallmatrix",
+  "bsmallmatrix", "Bsmallmatrix", "vsmallmatrix", "Vsmallmatrix",
+]);
+
+function commandEntry(name, snippetText, detail, project = false) {
+  const completion = { label: name, type: "function", detail };
+  return { name, project, option: snippetText === undefined ? completion : snippetCompletion(snippetText, completion) };
+}
+
+// The commands that fit the mode, math-only ones ranked first inside math.
+function forMode(entries, math) {
+  const out = [];
+  for (const entry of entries) {
+    if (entry.project) { out.push(entry.option); continue; }
+    if (math) {
+      if (TEXT_ONLY.has(entry.name)) continue;
+      out.push(MATH_ONLY.has(entry.name) ? { ...entry.option, boost: 10 } : entry.option);
+    } else if (!MATH_ONLY.has(entry.name)) {
+      out.push(entry.option);
+    }
+  }
+  return out;
+}
+
+function environmentEntry(name, body, detail, project = false) {
+  return { name, body, detail, project };
 }
 
 function arityTemplate(arity) {
@@ -211,15 +277,17 @@ export function latexCompletion(project) {
       const found = definitions(texts);
       const packages = loadedPackages(found.packages);
       const entries = unique([
-        ...found.environments.map((name) => environmentEntry(name, undefined, m.latex_defined_in_project())),
+        ...found.environments.map((name) => environmentEntry(name, undefined, m.latex_defined_in_project(), true)),
         ...CORE_ENVIRONMENTS,
         ...WORKSHOP_ENVIRONMENTS,
         ...packages.flatMap((name) => PACKAGE_ENVIRONMENTS[name]),
       ]);
+      const math = inMath(context.state, context.pos);
+      const shown = math ? entries.filter((entry) => entry.project || MATH_INNER_ENVIRONMENTS.has(entry.name)) : entries;
       const next = line.number < context.state.doc.lines ? context.state.doc.line(line.number + 1).text : "";
       return {
         from: context.pos - match[1].length,
-        options: entries.map((entry) => environmentOption(entry, next.includes(`\\end{${entry.name}}`))),
+        options: shown.map((entry) => environmentOption(entry, next.includes(`\\end{${entry.name}}`))),
         validFor: /^[A-Za-z*]*$/,
       };
     }
@@ -234,6 +302,7 @@ export function latexCompletion(project) {
           item.name,
           item.arity ? `${item.name}${arityTemplate(item.arity)}` : undefined,
           m.latex_defined_in_project(),
+          true,
         )),
         ...CORE_COMMANDS,
         ...WORKSHOP_COMMANDS,
@@ -241,7 +310,7 @@ export function latexCompletion(project) {
       ]);
       return {
         from: context.pos - match[1].length,
-        options: entries.map((entry) => entry.option),
+        options: forMode(entries, inMath(context.state, context.pos)),
         validFor: /^[A-Za-z]*$/,
       };
     }

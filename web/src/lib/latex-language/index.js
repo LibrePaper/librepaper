@@ -2,9 +2,9 @@
 // parser.js by tools/latex-grammar.mjs) plus highlighting, folding,
 // indentation and a few editing helpers.
 import {
-  LRLanguage, LanguageSupport, foldNodeProp, indentNodeProp, delimitedIndent, syntaxTree,
+  LRLanguage, LanguageSupport, foldNodeProp, indentNodeProp, delimitedIndent, indentService, syntaxTree,
 } from "@codemirror/language";
-import { EditorState } from "@codemirror/state";
+import { EditorState, countColumn } from "@codemirror/state";
 import { styleTags, tags } from "@lezer/highlight";
 import { parser } from "./parser.js";
 import { latexFolding } from "../latex-folding.js";
@@ -199,7 +199,41 @@ const autoCloseFilter = EditorState.transactionFilter.of((tr) => {
 
 export const autoCloseEnvironment = autoCloseFilter;
 
-/** LaTeX language support: parser, highlighting, folding and \end completion. */
+/**
+ * Plain auto-indent: a new line takes the indentation of the closest line above
+ * it that is not blank. Indent services are consulted before the syntax tree,
+ * so this replaces the grammar's environment and group indentation.
+ */
+export const copyPreviousIndent = indentService.of((context, pos) => {
+  const doc = context.state.doc;
+  const current = doc.lineAt(pos);
+  // On Enter the service runs before the newline exists, so the line being
+  // split is the one to copy from, up to the cursor.
+  if (context.simulatedBreak === pos) {
+    const before = doc.sliceString(current.from, pos);
+    if (/\S/.test(before)) return countColumn(/^\s*/.exec(before)[0], context.state.tabSize);
+  }
+  for (let number = current.number - 1; number >= 1; number--) {
+    const text = doc.line(number).text;
+    if (/\S/.test(text)) return countColumn(/^\s*/.exec(text)[0], context.state.tabSize);
+  }
+  return 0;
+});
+
+/**
+ * The editing help a setting turns on and off: closing \begin with its \end
+ * and indenting inside environments and groups. Off, new lines just copy the
+ * indentation above. The grammar still provides highlighting and folding.
+ * @param {boolean} on
+ */
+export function latexAssist(on) {
+  return on ? [autoCloseEnvironment] : [copyPreviousIndent];
+}
+
+/**
+ * LaTeX language support: parser, highlighting, folding and tree indentation.
+ * The \end insertion comes separately, from latexAssist().
+ */
 export function latex() {
-  return new LanguageSupport(latexLanguage, [latexSectionFolding, autoCloseEnvironment]);
+  return new LanguageSupport(latexLanguage, [latexSectionFolding]);
 }
