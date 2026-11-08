@@ -404,5 +404,5 @@ test("Enter after an indented first line copies its indentation", () => {
 });
 
 test("Enter on a blank line copies the indentation of the line above it", () => {
-  assert.equal(afterEnter("    text\n"), "    text\n    ");
+  assert.equal(afterEnter("    text\n"), "    text\n\n    ");
 });
