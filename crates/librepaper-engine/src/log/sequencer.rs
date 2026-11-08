@@ -649,13 +649,7 @@ impl LogCatalog for PostgresCatalog {
         reserved_bytes: i64,
         scratch: super::pending::Reservation,
     ) -> BoxFuture<'a, postgres::Result<i64>> {
-        Box::pin(self.flush_log_row_charged(
-            document_id,
-            row,
-            reservation,
-            reserved_bytes,
-            scratch,
-        ))
+        Box::pin(self.flush_log_row_charged(document_id, row, reservation, reserved_bytes, scratch))
     }
 
     fn reserve_log_bytes<'a>(

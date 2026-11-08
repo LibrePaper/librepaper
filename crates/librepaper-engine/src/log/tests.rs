@@ -254,7 +254,8 @@ impl LogCatalog for FakeCatalog {
                     "simulated: this write did not happen".into(),
                 ));
             }
-            self.reserved_row.fetch_sub(reserved_bytes, Ordering::SeqCst);
+            self.reserved_row
+                .fetch_sub(reserved_bytes, Ordering::SeqCst);
             self.flushed.lock().unwrap().push(row.update_bytes.to_vec());
             Ok(self.next_sequence.fetch_add(1, Ordering::SeqCst))
         })
