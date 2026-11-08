@@ -427,3 +427,16 @@ test("a caption keeps nested groups in its title", () => {
   assert.equal(label.name, "fig:a");
   assert.equal(label.title, "A \\emph{comparison}");
 });
+
+test("a cite finds its keys past an optional argument that holds a command", () => {
+  const text = String.raw`See \cite[see][\S~3]{key} and \cite[p.~\textbf{2}]{other}.`;
+  const cites = kindOf(latexAdapter(text, "main.tex"), "cite");
+  assert.deepEqual(cites.map((cite) => cite.name), ["key", "other"]);
+});
+
+test("a caption title leaves out comments", () => {
+  const text = "\\begin{figure}\n\\caption{A % note\ncomparison}\n\\label{fig:b}\n\\end{figure}\n";
+  const [label] = kindOf(latexAdapter(text, "main.tex"), "label");
+  assert.equal(label.name, "fig:b");
+  assert.equal(label.title, "A comparison");
+});

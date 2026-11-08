@@ -19,9 +19,6 @@ const OPERATOR = /\\DeclareMathOperator\*?\s*\{\s*\\([A-Za-z@]+)\s*\}/g;
 const DEF = /\\def\\([A-Za-z@]+)/g;
 const ENVIRONMENT_DEFINITION = /\\(?:newenvironment|renewenvironment)\*?\s*\{\s*([A-Za-z][A-Za-z0-9*]*)\s*\}/g;
 const CITE = /^\\(?:(?:no|paren|text|auto|foot|smart|super|Paren|Text|Auto|Foot|Smart|Super)?[Cc]ite(?:p|t|author|year)?)$/;
-// Text that may sit between a command and its brace argument: blanks, a star,
-// or a further [optional] argument.
-const BETWEEN = /^(?:[\s*]|\[[^\]\n]*\])*$/;
 
 const REFS = new Set([
   "ref", "eqref", "pageref", "autoref", "cref", "Cref", "nameref", "vref", "cpageref", "labelcref",
@@ -99,22 +96,50 @@ function piece(part, start) {
 /**
  * The brace group that is the argument of a command: the first Group or
  * MathGroup after the anchor, skipping blanks, a star, comments and further
- * [optional] arguments. The anchor is the Command node, or the bare
- * ControlSequence inside math.
+ * [optional] arguments. An optional argument may hold commands and groups, as
+ * in \cite[see][\S~3]{key}, so inside an open [ any node is skipped. The
+ * anchor is the Command node, or the bare ControlSequence inside math.
  * @param {import("@lezer/common").SyntaxNode} anchor
  * @param {string} text
  * @returns {import("@lezer/common").SyntaxNode | null} a closed group, or null
  */
 function argumentOf(anchor, text) {
+  let depth = 0;
   for (let node = anchor.nextSibling; node; node = node.nextSibling) {
-    if (node.name === "Group" || node.name === "MathGroup") {
-      return node.lastChild?.name === "CloseBrace" ? node : null;
-    }
+    if (node.to - anchor.to > 200) return null;
     if (node.name === "Comment") continue;
-    if (node.name !== "Text" || node.to - node.from > 200) return null;
-    if (!BETWEEN.test(text.slice(node.from, node.to))) return null;
+    if (node.name === "Text") {
+      const chunk = text.slice(node.from, node.to);
+      if (depth > 0 && /\n\s*\n/.test(chunk)) return null;
+      for (const char of chunk) {
+        if (char === "[") depth++;
+        else if (char === "]" && depth > 0) depth--;
+        else if (depth === 0 && !/[\s*]/.test(char)) return null;
+      }
+    } else if (depth === 0) {
+      return (node.name === "Group" || node.name === "MathGroup") && node.lastChild?.name === "CloseBrace" ? node : null;
+    }
   }
   return null;
+}
+
+/**
+ * The source between two offsets with every comment inside the group removed.
+ * @param {string} text
+ * @param {number} from
+ * @param {number} to
+ * @param {import("@lezer/common").SyntaxNode} group
+ * @returns {string}
+ */
+function withoutComments(text, from, to, group) {
+  let out = "";
+  let cursor = from;
+  group.cursor().iterate((ref) => {
+    if (ref.name !== "Comment" || ref.from < from || ref.to > to) return;
+    out += text.slice(cursor, ref.from);
+    cursor = ref.to;
+  });
+  return out + text.slice(cursor, to);
 }
 
 /**
@@ -238,7 +263,7 @@ export function latexAdapter(text, _path) {
       });
     } else if (word === "\\caption") {
       const span = open.at(-1);
-      const title = body.replace(/\s+/g, " ").trim();
+      const title = withoutComments(text, bodyFrom, group.to - 1, group).replace(/\s+/g, " ").trim();
       if (span && title && !captionOf.has(span)) captionOf.set(span, title);
     } else if (REFS.has(word)) {
       for (const key of pieces(body, bodyFrom)) {

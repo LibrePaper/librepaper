@@ -212,6 +212,8 @@ function applyTo(option, doc, from, to) {
     assert.ok(names("$\\").includes(name), `${name} in math`);
     assert.ok(!names("\\").includes(name), `${name} in text`);
   }
+  // \hline is valid in math arrays, so it is offered there.
+  assert.ok(names("$\\begin{array}{c} \\h").includes("hline"));
   // Commands that work in both are offered in both.
   for (const name of ["textbf", "label", "ldots", "ref"]) {
     assert.ok(names("$\\").includes(name), `${name} in math`);

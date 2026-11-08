@@ -122,7 +122,7 @@ const TEXT_ONLY = new Set([
   "bibliographystyle", "bibitem", "caption", "centering", "raggedright", "raggedleft", "itshape",
   "ttfamily", "item", "newpage", "clearpage", "cleardoublepage", "pagebreak", "nopagebreak", "linebreak",
   "nolinebreak", "newline", "noindent", "par", "vfill", "thispagestyle", "pagename", "today", "glossary",
-  "makeglossary", "makeindex", "footnotemark", "inputlineno", "kill", "hline", "hlinefill",
+  "makeglossary", "makeindex", "footnotemark", "inputlineno", "kill", "hlinefill",
 ]);
 const MATH_ONLY = new Set(MATH_STRUCTURE);
 for (const symbol of SYMBOLS) {
