@@ -292,3 +292,8 @@ function words(text) {
 {
   assert.deepEqual(words("a `b\nc` d"), ["a", "d"]);
 }
+
+// Raw LaTeX that Pandoc passes through: the command names are markup.
+{
+  assert.deepEqual(words("See \\index{models} the \\textbf{bold} word."), ["See", "models", "the", "bold", "word"]);
+}

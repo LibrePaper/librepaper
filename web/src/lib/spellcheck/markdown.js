@@ -34,7 +34,8 @@ const LINE_MARKUP = /\{\{<(?:[^\n>]|>(?!\}\}))*(?:>\}\}|(?=\n|$))|^[ \t]*#\|[^\n
 
 // Markup in prose, one group per kind: bare URL, e-mail address, footnote
 // marker, the target after a closing bracket, HTML comment, HTML tag, a tag
-// opened but not closed, and a display math opener at the start of a line.
+// opened but not closed, a display math opener at the start of a line, and a
+// raw LaTeX command name such as \index or \frac, which Pandoc passes through.
 // Inline HTML is a node already; these catch raw HTML blocks and broken markup.
 const PROSE = new RegExp(
   [
@@ -46,6 +47,7 @@ const PROSE = new RegExp(
     String.raw`(<(?:\/[A-Za-z]|![A-Za-z]|[A-Za-z])[^<>\n]*>)`,
     String.raw`(<[A-Za-z\/!][^\s<>]*)`,
     String.raw`(^ {0,3}\$\$)`,
+    String.raw`(\\[A-Za-z@]+\*?)`,
   ].join("|"),
   "gm",
 );

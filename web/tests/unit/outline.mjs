@@ -85,3 +85,9 @@ for (const [format, source, expected] of reviewCases) {
 assert.doesNotThrow(() => extractOutline('<h1>&#9999999999; heading</h1>', 'html'));
 
 console.log("outline: markdown/quarto, typst, html, and latex extraction passed");
+
+// A comment nested in a group of a LaTeX title is dropped, as at the top level.
+{
+  const titles = extractOutline("\\section{A {b % note\nc} d}\n", "latex").map((h) => h.title);
+  assert.deepEqual(titles, ["A {b c} d"]);
+}

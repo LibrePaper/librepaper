@@ -94,7 +94,7 @@ class Recent {
   }
 }
 
-/** Results by parsed text, and the last parse per key for reuse. @type {Recent<{ text: string, result: any }>} */
+/** Results by parsed text, and the last parse per key for reuse. @type {{ latex: Recent<{ text: string, result: Tree }>, markdown: Recent<{ text: string, result: MarkdownTrees }> }} */
 const byText = { latex: new Recent(), markdown: new Recent() };
 /** @type {{ latex: Recent<{ text: string, tree: Tree }>, markdown: Recent<{ text: string, tree: Tree }> }} */
 const byKey = { latex: new Recent(), markdown: new Recent() };

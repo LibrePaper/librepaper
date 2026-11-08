@@ -354,11 +354,13 @@ function extractLatex(source, starts) {
       let title = "";
       let cursor = group.from + 1;
       const end = group.lastChild.from;
-      for (let child = group.firstChild; child; child = child.nextSibling) {
-        if (child.name !== "Comment" && child.name !== "Verb" && child.name !== "VerbatimEnvironment") continue;
+      // At any depth: a comment inside a nested group is dropped too.
+      group.cursor().iterate((child) => {
+        if (child.name !== "Comment" && child.name !== "Verb" && child.name !== "VerbatimEnvironment") return;
         title += source.slice(cursor, child.from);
         cursor = child.to;
-      }
+        return false;
+      });
       title += source.slice(cursor, end);
       addHeading(result, starts, title, level, node.from);
       skipUntil = group.to;
