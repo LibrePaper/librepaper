@@ -2,6 +2,9 @@
 // spellchecker must skip, and which words it still reads as prose.
 import assert from "node:assert/strict";
 
+import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
+
+await loadTypstSyntaxForTests();
 const { typstSkips } = await import("../../src/lib/spellcheck/typst.js");
 
 // The words the spellchecker still sees: the text with every skipped range
@@ -238,6 +241,24 @@ function words(text) {
 // A long line of completed inline raw spans is scanned in linear time, and its last word is kept.
 {
   assert.deepEqual(words("`x` ".repeat(20000) + "word"), ["word"]);
+}
+
+// Markup inside a figure's caption argument is prose, and its strong text too.
+{
+  assert.deepEqual(
+    words('#figure(image("a.png"), caption: [Results of *the* run]) <fig:r>'),
+    ["Results", "of", "the", "run"],
+  );
+}
+
+// The supplement of a reference is a content block, so its words are prose.
+{
+  assert.deepEqual(words("See @smith2020[p. 3 of the text]."), ["See", "p", "of", "the", "text"]);
+}
+
+// A content block inside a code block after `#` is prose, and the code around it is not.
+{
+  assert.deepEqual(words("#{ let t = [Inside block] }\nAfter"), ["Inside", "block", "After"]);
 }
 
 console.log("spellcheck-typst: markup ranges the spellchecker skips");
