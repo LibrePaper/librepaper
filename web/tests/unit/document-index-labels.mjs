@@ -3,7 +3,7 @@
 // files the index of texts skips.
 import assert from "node:assert/strict";
 import { createProjectIndex } from "../../src/lib/document-index/project.js";
-import { indexTexts, labelList } from "../../src/lib/document-index/labels.js";
+import { indexTexts, isDocumentSource, labelList } from "../../src/lib/document-index/labels.js";
 
 const label = (name, from, title) => ({ kind: "label", name, range: [from, from + name.length], ...(title ? { title } : {}) });
 
@@ -87,6 +87,29 @@ function projectOf(files) {
   const [titled, plain] = labelList(project, {});
   assert.equal(titled.title, "Results");
   assert.equal("title" in plain, false);
+}
+
+// --- document sources only -----------------------------------------------------
+{
+  const project = projectOf([
+    { path: "main.tex", format: "latex", items: [label("sec:a", 0)] },
+    { path: "pkg.sty", format: "latex", items: [label("pkg:a", 0)] },
+  ]);
+  const texts = { "main.tex": "\\label{sec:a}", "pkg.sty": "\\label{pkg:a}" };
+  assert.deepEqual(labelList(project, texts).map((entry) => entry.id), ["sec:a"]);
+  assert.deepEqual(labelList(project, texts, { formats: new Set(["latex"]) }).map((entry) => entry.id), ["sec:a"]);
+  // The index still holds the style file's label, so it resolves.
+  assert.equal(project.definitions("label", "pkg:a").length, 1);
+}
+
+// isDocumentSource: the document extensions of formats.js, and not style, class or bibliography files.
+{
+  for (const path of ["main.tex", "chap/two.ltx", "deck.typ", "notes.md", "notes.markdown", "page.html", "page.htm", "doc.qmd"]) {
+    assert.equal(isDocumentSource(path), true, path);
+  }
+  for (const path of ["pkg.sty", "class.cls", "defs.def", "refs.bib", "fig.pgf", "notes.txt", ""]) {
+    assert.equal(isDocumentSource(path), false, path);
+  }
 }
 
 // --- indexTexts ----------------------------------------------------------------

@@ -175,9 +175,22 @@ Each step ships on its own and leaves the app working.
    needs the live text of the open file, which the index trails by an edit
    pause. Quarto's label scan lives in `lib/quarto-labels.js`, shared by
    completion and the Markdown adapter.
-5. **Better parsers.** Replace adapter internals: Markdown with Pandoc and
-   Quarto extensions to the Markdown parser; LaTeX with our own grammar;
-   Typst with the renderer worker (see `wasm-typst`'s `SPIKE-tinymist.md`).
+5. **Better parsers.** The editor now has them:
+   - **LaTeX:** our own Lezer grammar, `lib/latex-language/`. Its parser is
+     generated with `bun run grammar:latex`. It provides highlighting, folding
+     of environments and groups, indentation, `inMath` and auto-close of
+     `\end{…}`.
+   - **Markdown and Quarto:** Pandoc and Quarto extensions to the Markdown
+     parser, `lib/pandoc-markdown.js`, covering dollar math, fenced divs,
+     citations, cross references and attribute lists.
+   - **Typst:** folding comes from the typst module's parse-only `folding`
+     export, through the renderer worker (`lib/typst-folding.js`).
+
+   The adapters still run their scanners. Swapping their internals for the
+   trees is the remaining part of this step. The LaTeX and Markdown parsers
+   are plain JavaScript, so an adapter can call them directly. The Typst
+   module only runs in the worker, so the Typst adapter keeps its synchronous
+   scanner. `symbols` stays unused until something needs it asynchronously.
 
 ## Non-goals
 

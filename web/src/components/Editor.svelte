@@ -221,6 +221,7 @@
   import { LoroText, UndoManager } from "loro-crdt";
 
   import { sourceLanguage } from "../lib/source-language.js";
+  import { foldsChanged, typstFolding } from "../lib/typst-folding.js";
   import { emphasisCommand } from "../lib/emphasis.js";
   import { canHeading, canLink, canList, headingEdit, linkEdit, listEdit } from "../lib/editing-shortcuts.js";
   import { sourceHighlighting } from "../lib/source-highlight.js";
@@ -1479,11 +1480,13 @@
         rectangularSelection(),
         bracketMatching(),
         bracketsCompartment.of(bracketsOn(untrack(() => brackets))),
-        foldGutter(),
+        foldGutter({ foldingChanged: foldsChanged }),
         indentOnInput(),
         highlightSelectionMatches(),
         sourceHighlighting,
         sourceLanguage(path, format),
+        // Typst folds come from the typst module, which only the source editor should ask.
+        formatOf(path) === "typst" ? typstFolding() : [],
         completionCompartment.of(completionOn(untrack(() => completion))),
         completionExtension({
           project: completionProject,
