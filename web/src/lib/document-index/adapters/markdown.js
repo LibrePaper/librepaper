@@ -1,14 +1,15 @@
-// Index items for Markdown and Quarto sources. Headings, cite keys and
-// spellcheck skips come from the existing scanners. Labels, references,
-// includes, assets, bibliographies, blocks and math are scanned here.
+// Index items for Markdown and Quarto sources. Math, inline and indented code,
+// citations, cross references, fenced divs and attribute ids come from the
+// Pandoc syntax tree, so code, math and addresses never read as citations.
+// Headings and spellcheck skips come from the existing scanners; fences,
+// executable cells, includes, assets and bibliographies are scanned here.
 // Quarto mode (".qmd") adds cross-references, executable-cell labels and
 // includes. Plain Markdown emits no references: its "@key" forms are citations.
 
 import { extractOutline } from "../../outline.js";
-import { citedKeys } from "../../citation-keys.js";
+import { pandocMarkdownParser } from "../../pandoc-markdown.js";
 import { skipRanges } from "../../spellcheck/index.js";
 import {
-  ATTRIBUTE_ID,
   CELL_LABEL,
   HEADER_LABEL,
   KINDS,
@@ -20,22 +21,18 @@ import {
 /** @typedef {{ from: number, to: number, text: string }} Line */
 /** @typedef {{ marker: string, length: number, info: string }} Fence */
 /** @typedef {{ first: number, last: number, fence: Fence, closed: boolean }} FenceRun */
-/** @typedef {{ colons: number, line: number, cls: string }} Div */
 
 const LINE_BREAK = /\r\n|\n|\r/g;
 const FRONT_MATTER_START = /^---\s*$/;
 const FRONT_MATTER_END = /^(?:---|\.\.\.)\s*$/;
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
-const DIV = /^ {0,3}(:{3,})[ \t]*(.*?)[ \t]*$/;
 const OPTION_LINE = /^#\|/;
 const INLINE_CODE = /(`+)(?!`)[^`\n]*?(?<!`)\1(?!`)/g;
-const DISPLAY_MATH = /(?<!\\)\$\$[\s\S]*?(?<!\\)\$\$/g;
-const INLINE_MATH = /(?<!\\)\$(?![\s$])(?:\\.|[^$\\\n])*?[^\s$\\]\$(?!\d)/g;
-const ATTRIBUTE = /\{#([^\s{}]+)(?=[\s}])/g;
 const IMAGE = /!\[([^\]\n]*)\]\((<[^>\n]*>|[^)\s]*)(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'))?\)/g;
 const INCLUDE = /\{\{<\s*include\s+([^\s>]+)\s*>\}\}/g;
 const URL_SCHEME = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
-const REF = new RegExp(`(?<![\\w@])@((?:${KINDS.join("|")})-[\\w-]*\\w)`, "g");
+const OPTION_REF = new RegExp(`(?<![\\w@])@((?:${KINDS.join("|")})-[\\w-]*\\w)`, "g");
+const REF_NAME = new RegExp(`^(?:${KINDS.join("|")})-[\w-]*\w$`);
 const CELL_CAPTION = /^#\|\s*(?:fig|tbl)-cap:\s*(.*?)\s*$/;
 const IMAGE_BEFORE = /!\[([^\]\n]*)\]\([^()\n]*\)\s*$/;
 const TABLE_CAPTION_BEFORE = /^\s{0,3}:\s+(.*?)\s*$/;
@@ -91,20 +88,6 @@ function joinLines(texts, lines, source) {
     if (index + 1 < lines.length) out += source.slice(line.to, lines[index + 1].from);
   });
   return out;
-}
-
-/**
- * Display and inline math spans, sorted. Escaped dollars are not math.
- * @param {string} text with code already blanked
- * @returns {Array<[number, number]>}
- */
-function mathSpans(text) {
-  /** @type {Array<[number, number]>} */
-  const spans = [];
-  for (const match of text.matchAll(DISPLAY_MATH)) spans.push([match.index, match.index + match[0].length]);
-  const rest = blankRanges(text, spans);
-  for (const match of rest.matchAll(INLINE_MATH)) spans.push([match.index, match.index + match[0].length]);
-  return spans.sort((a, b) => a[0] - b[0]);
 }
 
 /**
@@ -267,16 +250,6 @@ function unquote(value) {
 }
 
 /**
- * The class a fenced div names: the first ".class" in braces, or a bare word.
- * @param {string} rest text after the colons
- * @returns {string}
- */
-function divClass(rest) {
-  const match = rest.startsWith("{") ? /\.([\w-]+)/.exec(rest) : /^([\w-]+)/.exec(rest);
-  return match ? match[1] : "";
-}
-
-/**
  * Title shown for a label: the heading on its line, else the image or table
  * caption before its attribute block.
  * @param {string} shown the label's line, with code blanked
@@ -292,6 +265,102 @@ function labelTitle(shown, index, heading) {
   const table = TABLE_CAPTION_BEFORE.exec(before);
   if (table) return table[1].trim();
   return "";
+}
+
+/** The index of the line holding `offset`. @param {Line[]} lines @param {number} offset */
+function lineAt(lines, offset) {
+  let low = 0;
+  let high = lines.length - 1;
+  while (low < high) {
+    const mid = (low + high + 1) >> 1;
+    if (lines[mid].from <= offset) low = mid;
+    else high = mid - 1;
+  }
+  return low;
+}
+
+/**
+ * What the Pandoc syntax tree knows: math spans, code spans, fenced divs,
+ * attribute ids, citation keys and cross references, all with absolute offsets.
+ * The front matter is blanked first so the tree starts at the body.
+ * @param {string} source
+ * @param {Line[]} lines
+ * @param {number} frontEnd index of the closing front matter line, or -1
+ */
+function treeFacts(source, lines, frontEnd) {
+  let body = frontEnd >= 0 ? blankRanges(source, [[0, lines[frontEnd].to]]) : source;
+  // The parser reads \n only. Same-length replacements keep every offset.
+  body = body.replace(/\r\n?/g, (match) => (match.length === 2 ? " \n" : "\n"));
+  /** @type {Array<[number, number]>} */
+  const math = [];
+  /** @type {Array<[number, number]>} */
+  const code = [];
+  /** @type {Array<{ from: number, to: number, cls: string }>} */
+  const divs = [];
+  /** @type {Array<{ name: string, from: number, attributes: [number, number] }>} */
+  const ids = [];
+  /** @type {Array<{ name: string, from: number, to: number }>} */
+  const cites = [];
+  /** @type {Array<{ name: string, from: number, to: number }>} */
+  const refs = [];
+  pandocMarkdownParser.parse(body).iterate({
+    enter(node) {
+      switch (node.name) {
+        case "InlineMath":
+          math.push([node.from, node.to]);
+          return false;
+        case "DisplayMath": {
+          // The span ends at the closing $$, before any attribute list, whose id is still a label.
+          let to = node.to;
+          for (let child = node.node.lastChild; child; child = child.prevSibling) {
+            if (child.name === "DisplayMathMark") {
+              to = child.to;
+              break;
+            }
+          }
+          math.push([node.from, to]);
+          return true;
+        }
+        case "InlineCode":
+        case "CodeBlock":
+          code.push([node.from, node.to]);
+          return false;
+        case "FencedCode":
+          return false;
+        case "FencedDiv": {
+          const first = node.node.firstChild;
+          const last = node.node.lastChild;
+          const open = body.indexOf("\n", node.from);
+          const closed = last && last !== first && last.name === "FencedDivMark";
+          const attributes = node.node.getChild("Attributes");
+          const cls = attributes?.getChild("AttributeClass");
+          divs.push({
+            from: open < 0 || open > node.to ? node.to : open,
+            to: closed ? lines[lineAt(lines, last.from)].from : source.length,
+            cls: cls ? body.slice(body[cls.from] === "." ? cls.from + 1 : cls.from, cls.to) : "",
+          });
+          return true;
+        }
+        case "AttributeId": {
+          const attributes = node.node.parent;
+          if (attributes?.name === "Attributes") {
+            ids.push({ name: body.slice(node.from + 1, node.to), from: node.from, attributes: [attributes.from, attributes.to] });
+          }
+          return false;
+        }
+        case "CitationKey":
+        case "CrossRef": {
+          const entry = { name: body.slice(node.from + 1, node.to), from: node.from, to: node.to };
+          (node.name === "CitationKey" ? cites : refs).push(entry);
+          return false;
+        }
+        default:
+          return true;
+      }
+    },
+  });
+
+  return { math, code, divs, ids, cites, refs };
 }
 
 /**
@@ -327,7 +396,7 @@ export function markdownAdapter(text, path) {
   }
 
   // visible: code blanked, offsets kept. labelText: option lines blanked too,
-  // so "{#id}" inside a cell option is not a label. prose: math blanked too.
+  // so a title is read from the label's line without a cell option. prose: math blanked too.
   const visibleLines = lines.map((line, i) =>
     isCode[i] && !isOption[i] ? blankOf(line.text) : line.text.replace(INLINE_CODE, blankOf),
   );
@@ -337,8 +406,8 @@ export function markdownAdapter(text, path) {
     lines,
     source,
   );
-  const math = mathSpans(visible);
-  const prose = blankRanges(visible, math);
+  const tree = treeFacts(source, lines, frontEnd);
+  const prose = blankRanges(visible, tree.math);
 
   // Headings, from the existing outline scanner.
   /** @type {Map<number, { title: string }>} */
@@ -371,70 +440,63 @@ export function markdownAdapter(text, path) {
   }
   for (const cell of cells) items.push(...cellItems(lines, cell));
 
-  // Fenced divs, nested by colon count.
-  /** @type {Div[]} */
-  const open = [];
-  /**
-   * @param {Div} div
-   * @param {number} to end of the block range
-   * @returns {IndexItem}
-   */
-  const divBlock = (div, to) => ({
-    kind: "block",
-    name: "div",
-    range: [lines[div.line].to, to],
-    attrs: { class: div.cls },
-  });
-  for (let i = 0; i < lines.length; i++) {
-    if (isCode[i]) continue;
-    const match = DIV.exec(lines[i].text);
-    if (!match) continue;
-    if (match[2]) {
-      open.push({ colons: match[1].length, line: i, cls: divClass(match[2]) });
-    } else if (open.length && match[1].length >= open[open.length - 1].colons) {
-      const div = /** @type {Div} */ (open.pop());
-      items.push(divBlock(div, lines[i].from));
-    }
+  // Fenced divs, from the tree.
+  for (const div of tree.divs) {
+    items.push({
+      kind: "block",
+      name: "div",
+      range: [div.from, div.to],
+      attrs: { class: div.cls },
+    });
   }
-  for (const div of open) items.push(divBlock(div, source.length));
 
   // Labels: explicit attribute ids outside code.
-  const attribute = quarto ? ATTRIBUTE_ID : ATTRIBUTE;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+  for (const id of tree.ids) {
+    if (quarto && !LABEL.test(id.name)) continue;
+    const line = lines[lineAt(lines, id.from)];
     const shown = labelText.slice(line.from, line.to);
-    for (const match of shown.matchAll(attribute)) {
-      const name = match[1];
-      const from = line.from + match.index + 2;
-      const close = shown.indexOf("}", match.index + match[0].length);
-      /** @type {IndexItem} */
-      const item = {
-        kind: "label",
-        name,
-        nameRange: [from, from + name.length],
-        range: [line.from + match.index, close >= 0 ? line.from + close + 1 : from + name.length],
-      };
-      const title = labelTitle(shown, match.index, headingAt.get(i + 1));
-      if (title) item.title = title;
-      items.push(item);
-    }
+    /** @type {IndexItem} */
+    const item = {
+      kind: "label",
+      name: id.name,
+      nameRange: [id.from + 1, id.from + 1 + id.name.length],
+      range: [id.attributes[0], id.attributes[1]],
+    };
+    const title = labelTitle(shown, id.attributes[0] - line.from, headingAt.get(lineAt(lines, id.from) + 1));
+    if (title) item.title = title;
+    items.push(item);
   }
 
   // Math.
-  for (const [from, to] of math) items.push({ kind: "math", range: [from, to] });
+  for (const [from, to] of tree.math) items.push({ kind: "math", range: [from, to] });
+  for (const [from, to] of tree.code) items.push({ kind: "code", range: [from, to] });
 
   // References (Quarto only), includes (Quarto only), and image assets.
   if (quarto) {
-    for (const match of prose.matchAll(REF)) {
-      const to = match.index + match[0].length;
+    for (const ref of tree.refs) {
+      if (!REF_NAME.test(ref.name)) continue;
       items.push({
         kind: "ref",
         namespace: "label",
-        name: match[1],
-        range: [match.index, to],
-        nameRange: [match.index + 1, to],
+        name: ref.name,
+        range: [ref.from, ref.to],
+        nameRange: [ref.from + 1, ref.to],
       });
     }
+    // Cell options are code, but Quarto reads them as Markdown for references.
+    lines.forEach((line, i) => {
+      if (!isOption[i]) return;
+      for (const match of line.text.matchAll(OPTION_REF)) {
+        const from = line.from + match.index;
+        items.push({
+          kind: "ref",
+          namespace: "label",
+          name: match[1],
+          range: [from, from + match[0].length],
+          nameRange: [from + 1, from + match[0].length],
+        });
+      }
+    });
     for (const match of prose.matchAll(INCLUDE)) {
       const head = match[0].replace(/\s*>\}\}$/, "");
       const to = match.index + head.length;
@@ -462,13 +524,13 @@ export function markdownAdapter(text, path) {
   }
 
   // Citations and spellcheck skips, from the existing scanners.
-  for (const cite of citedKeys(source, format)) {
+  for (const cite of tree.cites) {
     items.push({
       kind: "cite",
-      name: cite.key,
+      name: cite.name,
       namespace: "cite",
-      range: [cite.from, cite.to],
-      nameRange: [cite.from, cite.to],
+      range: [cite.from + 1, cite.to],
+      nameRange: [cite.from + 1, cite.to],
     });
   }
   for (const [from, to] of skipRanges(source, format)) {
