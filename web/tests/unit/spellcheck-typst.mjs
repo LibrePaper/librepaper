@@ -67,9 +67,9 @@ function words(text) {
   assert.deepEqual(words("Let $ alpha\n + beta $ hold."), ["Let", "hold"]);
 }
 
-// Unclosed math ends at its line end, so the next line is prose.
+// Unclosed math runs to the end of the text, as Typst reads it.
 {
-  assert.deepEqual(words("Unclosed $x\nmore"), ["Unclosed", "more"]);
+  assert.deepEqual(words("Unclosed $x\nmore"), ["Unclosed"]);
 }
 
 // A backslash-escaped dollar is a literal dollar, not an opening of math.
@@ -104,9 +104,9 @@ function words(text) {
   assert.deepEqual(words("```python\nprint(x)\n```\nAfter"), ["After"]);
 }
 
-// Unclosed inline raw ends at its line end.
+// Unclosed inline raw runs to the end of the text, as Typst reads it.
 {
-  assert.deepEqual(words("a `unclosed\nnext"), ["a", "next"]);
+  assert.deepEqual(words("a `unclosed\nnext"), ["a"]);
 }
 
 // Unclosed fenced raw runs to the end of the text.
@@ -139,9 +139,9 @@ function words(text) {
   assert.deepEqual(words("#let note = [Inside here]\nNext"), ["Inside", "here", "Next"]);
 }
 
-// An unbalanced call does not throw, and the prose after it is still read.
+// An unbalanced call does not throw; what follows is its arguments, which are code.
 {
-  assert.deepEqual(words("#f(\nHello\nWorld"), ["Hello", "World"]);
+  assert.deepEqual(words("#f(\nHello\nWorld"), []);
 }
 
 // A multi-line call that closes is skipped as a whole.
@@ -218,9 +218,9 @@ function words(text) {
   assert.deepEqual(words('#f("a\\"b)") x'), ["x"]);
 }
 
-// A string that is never closed ends at its line, and the next line is prose.
+// A string that is never closed runs to the end of the text, as Typst reads it.
 {
-  assert.deepEqual(words('#f("abc\nnext'), ["next"]);
+  assert.deepEqual(words('#f("abc\nnext'), []);
 }
 
 // Empty input has nothing to skip.
