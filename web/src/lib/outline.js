@@ -1,3 +1,5 @@
+import { latexTree, markdownTree } from "./source-trees.js";
+
 /*
  * Extract a small, source-oriented outline without compiling or executing the
  * document.  All offsets deliberately use JavaScript string indices: these
@@ -12,11 +14,6 @@ const LATEX_LEVELS = new Map([
   ["subsubsection", 5],
   ["paragraph", 6],
   ["subparagraph", 7],
-]);
-
-const VERBATIM_ENVIRONMENTS = new Set([
-  "verbatim", "verbatim*", "verbatiminput", "lstlisting", "minted",
-  "comment", "alltt",
 ]);
 
 function documentLines(source) {
@@ -72,88 +69,10 @@ function markRange(mask, start, end) {
   mask.fill(1, from, to);
 }
 
-function markdownMask(source, lines) {
-  const mask = new Uint8Array(source.length);
-
-  // YAML front matter is only special at the start of the document.  A BOM
-  // is allowed before its opening delimiter.
-  let first = 0;
-  if (source.charCodeAt(0) === 0xfeff) first = 1;
-  if (lines.length && lines[0].start <= first && /^\s*---\s*$/.test(lines[0].text.slice(first))) {
-    let close = -1;
-    for (let i = 1; i < lines.length; i++) {
-      if (/^\s*(?:---|\.\.\.)\s*$/.test(lines[i].text)) { close = i; break; }
-    }
-    if (close >= 0) markRange(mask, lines[0].start, lines[close].end);
-  }
-
-  // HTML comments may contain arbitrary Markdown, including apparent fences.
-  for (let i = 0; i < source.length;) {
-    const open = source.indexOf("<!--", i);
-    if (open < 0) break;
-    const close = source.indexOf("-->", open + 4);
-    markRange(mask, open, close < 0 ? source.length : close + 3);
-    i = close < 0 ? source.length : close + 3;
-  }
-  // HTML raw blocks are also opaque when they occur in Markdown/Quarto.
-  const htmlMask = htmlCommentAndRawMask(source);
-  for (let i = 0; i < mask.length; i++) if (htmlMask[i]) mask[i] = 1;
-
-  let fence = null;
-  for (const line of lines) {
-    const text = visible(source, mask, line.start, line.end);
-    const fenceMatch = /^ {0,3}(`{3,}|~{3,})/.exec(text);
-    if (fence) {
-      markRange(mask, line.start, line.end);
-      const close = new RegExp(`^ {0,3}${fence.char}{${fence.length},}[ \\t]*$`).test(text);
-      if (close) fence = null;
-      continue;
-    }
-    if (fenceMatch) {
-      fence = { char: fenceMatch[1][0], length: fenceMatch[1].length };
-      markRange(mask, line.start, line.end);
-      continue;
-    }
-    // CommonMark indented code blocks use four spaces (or a tab).  Treating
-    // every such line as code is intentionally conservative for an outline.
-    if (/^(?: {4,}|\t)/.test(text)) markRange(mask, line.start, line.end);
-  }
-  return mask;
-}
-
 function visible(source, mask, from, to) {
   let value = "";
   for (let i = from; i < to; i++) if (!mask[i]) value += source[i];
   return value;
-}
-
-function extractMarkdown(source, starts) {
-  const lines = documentLines(source);
-  const mask = markdownMask(source, lines);
-  const result = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (mask[line.start]) continue;
-    const text = visible(source, mask, line.start, line.end);
-    const atx = /^( {0,3})(#{1,6})(?:[ \t]+(.*)|[ \t]*)$/.exec(text);
-    if (atx) {
-      let title = atx[3] || "";
-      // CommonMark's optional closing sequence is only a closing sequence
-      // when separated from the title by whitespace.
-      title = title.replace(/[ \t]+#+[ \t]*$/u, "");
-      addHeading(result, starts, title, atx[2].length, line.start + atx[1].length);
-      continue;
-    }
-    if (i + 1 >= lines.length || mask[lines[i + 1].start]) continue;
-    const underline = visible(source, mask, lines[i + 1].start, lines[i + 1].end);
-    const setext = /^ {0,3}(=+|-+)[ \t]*$/.exec(underline);
-    const isBlockMarker = /^\s*(?:[-+*](?:\s+|$)|\d+[.)]\s+|(?:[-*_]\s*){3,})/u.test(text);
-    if (!setext || !text.trim() || isBlockMarker) continue;
-    addHeading(result, starts, text, setext[1][0] === "=" ? 1 : 2, line.start + (text.length - text.trimStart().length));
-    i++;
-  }
-  return result;
 }
 
 function typstMask(source, lines) {
@@ -374,89 +293,80 @@ function extractHtml(source, starts) {
   return result;
 }
 
-function latexMask(source) {
-  const mask = new Uint8Array(source.length);
-  for (let i = 0; i < source.length; i++) {
-    if (source[i] === "%") {
-      let slashes = 0;
-      for (let j = i - 1; j >= 0 && source[j] === "\\"; j--) slashes++;
-      if (slashes % 2 === 0) {
-        let end = i;
-        while (end < source.length && source[end] !== "\n" && source[end] !== "\r") end++;
-        markRange(mask, i, end);
-        i = end - 1;
+function extractMarkdown(source, starts) {
+  const { tree, body } = markdownTree(source);
+  const result = [];
+  tree.iterate({
+    enter(ref) {
+      const match = /^(ATX|Setext)Heading([1-6])$/.exec(ref.name);
+      if (!match) return;
+      const node = ref.node;
+      const level = Number(match[2]);
+      const marks = [];
+      let last = null;
+      for (let child = node.firstChild; child; child = child.nextSibling) {
+        if (child.name === "HeaderMark") marks.push(child);
+        else last = child;
       }
-    }
-  }
-
-  // Hide verbatim environments, including their contents and delimiters.
-  const begin = /\\begin\s*\{\s*([^{}]+?)\s*\}/gi;
-  let match;
-  while ((match = begin.exec(source))) {
-    if (mask[match.index]) continue;
-    const environment = match[1].trim().toLowerCase();
-    if (!VERBATIM_ENVIRONMENTS.has(environment)) continue;
-    const escapedEnvironment = environment.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
-    const endPattern = new RegExp(`\\\\end\\s*\\{\\s*${escapedEnvironment}\\s*\\}`, "i");
-    const endMatch = endPattern.exec(source.slice(match.index + match[0].length));
-    const end = endMatch ? match.index + match[0].length + endMatch.index + endMatch[0].length : source.length;
-    markRange(mask, match.index, end);
-  }
-
-  // Inline \verb and \lstinline delimiters can contain arbitrary commands.
-  const inline = /\\(?:verb|lstinline)\*?/g;
-  while ((match = inline.exec(source))) {
-    if (mask[match.index]) continue;
-    let delimiter = match.index + match[0].length;
-    while (/\s/u.test(source[delimiter] || "")) delimiter++;
-    if (delimiter >= source.length) continue;
-    const end = source.indexOf(source[delimiter], delimiter + 1);
-    markRange(mask, match.index, end < 0 ? source.length : end + 1);
-  }
-  return mask;
-}
-
-function latexBalanced(source, mask, open, left, right) {
-  let depth = 0;
-  for (let i = open; i < source.length; i++) {
-    if (mask[i]) continue;
-    if (source[i] === "\\") { i++; continue; }
-    if (source[i] === left) depth++;
-    else if (source[i] === right && --depth === 0) return i;
-  }
-  return -1;
+      let from;
+      let to;
+      if (match[1] === "ATX") {
+        // The opening mark is first; a closing sequence is a second mark.
+        from = marks.length ? marks[0].to : node.from;
+        to = marks.length > 1 ? marks[marks.length - 1].from : node.to;
+      } else {
+        // The underline is the last mark. A paragraph line above the title
+        // belongs to the heading in CommonMark, but the outline has always
+        // shown only the line just above the underline, as Pandoc reads it.
+        to = marks.length ? marks[marks.length - 1].from : node.to;
+        const text = body.slice(node.from, to).replace(/\s+$/u, "");
+        from = node.from + text.lastIndexOf("\n") + 1;
+      }
+      // A trailing attribute list ({#id .class}) is not part of the title.
+      if (last && last.name === "Attributes" && last.to <= to && !/\S/u.test(body.slice(last.to, to))) to = last.from;
+      const start = match[1] === "Setext" ? from + (body.slice(from, to).length - body.slice(from, to).trimStart().length) : node.from;
+      addHeading(result, starts, body.slice(from, Math.max(from, to)), level, start);
+      return false;
+    },
+  });
+  return result;
 }
 
 function extractLatex(source, starts) {
-  const mask = latexMask(source);
-  const skip = (at) => {
-    while (at < source.length && (mask[at] || /\s/u.test(source[at]))) at++;
-    return at;
-  };
+  const tree = latexTree(source);
   const result = [];
-  for (let i = 0; i < source.length; i++) {
-    if (mask[i] || source[i] !== "\\") continue;
-    if (i > 0 && source[i - 1] === "\\") continue;
-    let end = i + 1;
-    while (/[A-Za-z@]/u.test(source[end] || "")) end++;
-    const name = source.slice(i + 1, end).toLowerCase();
-    const level = LATEX_LEVELS.get(name);
-    if (!level) continue;
-    let cursor = skip(end);
-    if (source[cursor] === "*") cursor++;
-    cursor = skip(cursor);
-    if (source[cursor] === "[") {
-      const optional = latexBalanced(source, mask, cursor, "[", "]");
-      if (optional < 0) continue;
-      cursor = optional + 1;
-      cursor = skip(cursor);
-    }
-    if (source[cursor] !== "{") continue;
-    const close = latexBalanced(source, mask, cursor, "{", "}");
-    if (close < 0) continue;
-    addHeading(result, starts, visible(source, mask, cursor + 1, close), level, i);
-    i = close;
-  }
+  let skipUntil = 0;
+  tree.iterate({
+    enter(ref) {
+      if (ref.name !== "Command" || ref.from < skipUntil) return;
+      const node = ref.node;
+      const name = node.firstChild;
+      if (!name || name.name !== "SectionName") return;
+      const level = LATEX_LEVELS.get(source.slice(name.from + 1, name.to).replace(/\*$/u, "").toLowerCase());
+      if (!level) return false;
+      // An unfinished [short title] means the command is still being typed.
+      const optional = name.nextSibling;
+      if (optional && optional.name === "OptionalArgument" && optional.lastChild?.name !== "OptClose") return false;
+      let group = node.nextSibling;
+      while (group && (group.name === "Comment" || (group.name === "Text" && !/\S/u.test(source.slice(group.from, group.to))))) group = group.nextSibling;
+      if (!group || group.name !== "Group" || group.lastChild?.name !== "CloseBrace") return false;
+      // The title is the braced source with comments and \verb spans dropped.
+      let title = "";
+      let cursor = group.from + 1;
+      const end = group.lastChild.from;
+      // At any depth: a comment inside a nested group is dropped too.
+      group.cursor().iterate((child) => {
+        if (child.name !== "Comment" && child.name !== "Verb" && child.name !== "VerbatimEnvironment") return;
+        title += source.slice(cursor, child.from);
+        cursor = child.to;
+        return false;
+      });
+      title += source.slice(cursor, end);
+      addHeading(result, starts, title, level, node.from);
+      skipUntil = group.to;
+      return false;
+    },
+  });
   return result;
 }
 
