@@ -28,17 +28,6 @@ function complete(wasm, { tree, path = "", source = "", offset = 0, explicit = f
   return text ? JSON.parse(text) : null;
 }
 
-// Editor folding asks the module for the foldable ranges of one file. It only
-// parses, so no project files are handed over. A module built before folding
-// has no answer, which is not an error: nothing folds.
-/** @param {import("./renderer-wasm.js").RendererWasm} wasm @param {RendererArgs} args */
-function folding(wasm, { path = "main.typ", source = "" }) {
-  if (typeof wasm.folding !== "function") return null;
-  const { bytes } = call(wasm, "folding", JSON.stringify({ path, source }));
-  const text = new TextDecoder().decode(bytes);
-  return text ? JSON.parse(text) : null;
-}
-
 async function render(wasm, tree, title, format) {
   const { bytes, text, kind, ok, diagnostics } = await renderResolving(wasm, tree, title, fetched, { format });
   if (ok && format === "html" && kind === "html") return { html: text, diagnostics };
@@ -73,7 +62,6 @@ rendererScope.onmessage = ({ data: { id, url, operation, args } }) => {
         result = JSON.parse(raw || "[]");
       }
       else if (operation === "complete") result = complete(wasm, args);
-      else if (operation === "folding") result = folding(wasm, args);
       else if (operation === "failure") result = call(wasm, "failure_page", args.title).text;
       else if (operation !== "warm") throw new Error(`Unknown renderer operation: ${operation}`);
       const transfer = result?.pdf instanceof ArrayBuffer ? [result.pdf] : [];
