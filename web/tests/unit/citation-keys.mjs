@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { citedKeys, unknownCitations } from "../../src/lib/citation-keys.js";
 import { indexTexts, labelList } from "../../src/lib/document-index/labels.js";
+import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
+
+await loadTypstSyntaxForTests();
 
 const keys = (text, format, options) => citedKeys(text, format, options).map((cite) => cite.key);
 
@@ -60,3 +63,5 @@ assert.deepEqual(
   ["Smith"],
 );
 assert.deepEqual(citedKeys("= Intro <intro>\n#cite(<intro>) and @intro", "typst", { labels: new Set(["intro"]) }).map((cite) => cite.key), ["intro"]);
+// A backtick in a line comment does not open a raw span, and @hidden in the comment is not a citation.
+assert.deepEqual(keys("// a ` tick @hidden\nSee @smith and `code`", "typst"), ["smith"]);

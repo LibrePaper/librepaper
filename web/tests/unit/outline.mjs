@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { extractOutline } from "../../src/lib/outline.js";
+import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
+
+await loadTypstSyntaxForTests();
 
 const headings = (source, format) => extractOutline(source, format).map(({ title, level, from, line }) => ({ title, level, from, line }));
 
@@ -71,6 +74,7 @@ const reviewCases = [
  ['typst', '#let x = "#heading[Fake]"\n= Real', ['Real']],
  ['typst', '/* ``` */\n= Real', ['Real']],
  ['typst', '#heading(level: 2, numbering: none)[Real]', ['Real']],
+ ['typst', '````\n= Fake\n```\n= Still\n````\n= Real', ['Real']],
  ['latex', String.raw`\section% hi
 {Real}`, ['Real']],
  ['latex', String.raw`\begin{verbatim*}
