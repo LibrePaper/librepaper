@@ -420,3 +420,10 @@ test("a realistic 350 KB document is indexed in under a second", () => {
   assert.ok(items.length > 1000);
   assert.ok(elapsed < 1000, `took ${elapsed} ms`);
 });
+
+test("a caption keeps nested groups in its title", () => {
+  const text = "\\begin{figure}\n\\caption{A \\emph{comparison}}\n\\label{fig:a}\n\\end{figure}\n";
+  const [label] = kindOf(latexAdapter(text, "main.tex"), "label");
+  assert.equal(label.name, "fig:a");
+  assert.equal(label.title, "A \\emph{comparison}");
+});

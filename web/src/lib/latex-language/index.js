@@ -206,7 +206,14 @@ export const autoCloseEnvironment = autoCloseFilter;
  */
 export const copyPreviousIndent = indentService.of((context, pos) => {
   const doc = context.state.doc;
-  for (let number = doc.lineAt(pos).number - 1; number >= 1; number--) {
+  const current = doc.lineAt(pos);
+  // On Enter the service runs before the newline exists, so the line being
+  // split is the one to copy from, up to the cursor.
+  if (context.simulatedBreak === pos) {
+    const before = doc.sliceString(current.from, pos);
+    if (/\S/.test(before)) return countColumn(/^\s*/.exec(before)[0], context.state.tabSize);
+  }
+  for (let number = current.number - 1; number >= 1; number--) {
     const text = doc.line(number).text;
     if (/\S/.test(text)) return countColumn(/^\s*/.exec(text)[0], context.state.tabSize);
   }

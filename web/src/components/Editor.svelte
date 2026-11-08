@@ -223,7 +223,7 @@
   import { undoManagerField, undo as undoCommand, redo as redoCommand } from "../lib/loro-undo.js";
   import { LoroText, UndoManager } from "loro-crdt";
 
-  import { sourceLanguage } from "../lib/source-language.js";
+  import { sourceFormat, sourceLanguage } from "../lib/source-language.js";
   import { latexAssist as latexAssistExtensions } from "../lib/latex-language/index.js";
   import { foldsChanged, typstFolding } from "../lib/typst-folding.js";
   import { typstSymbols, SYMBOL_KINDS, headingsOf } from "../lib/typst-symbols.js";
@@ -1509,7 +1509,7 @@
         rectangularSelection(),
         bracketMatching(),
         bracketsCompartment.of(bracketsOn(untrack(() => brackets))),
-        latexAssistCompartment.of(latexAssistOn(untrack(() => latexAssist), formatOf(path) === "latex")),
+        latexAssistCompartment.of(latexAssistOn(untrack(() => latexAssist), sourceFormat(path, format) === "latex")),
         foldGutter({ foldingChanged: foldsChanged }),
         indentOnInput(),
         highlightSelectionMatches(),
@@ -1684,7 +1684,7 @@
       effects: [
         completionCompartment.reconfigure(completionOn(untrack(() => completion))),
         bracketsCompartment.reconfigure(bracketsOn(untrack(() => brackets))),
-        latexAssistCompartment.reconfigure(latexAssistOn(untrack(() => latexAssist), formatOf(pathOfDoc(session.doc, id)) === "latex")),
+        latexAssistCompartment.reconfigure(latexAssistOn(untrack(() => latexAssist), sourceFormat(pathOfDoc(session.doc, id), format) === "latex")),
         spellcheckCompartment.reconfigure(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(id), () => target.state.doc.toString())),
         checkCompartment.reconfigure(checkOn(untrack(() => check), citationKeys, indexChecks)),
       ],

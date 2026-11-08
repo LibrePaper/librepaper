@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { EditorState } from "@codemirror/state";
+import { insertNewlineAndIndent } from "@codemirror/commands";
 import { ensureSyntaxTree, foldable, getIndentation } from "@codemirror/language";
 import {
   autoCloseEnvironment, copyPreviousIndent, inMath, latex, latexAssist, latexLanguage,
@@ -385,4 +386,23 @@ test("an amsthm example is ordinary text with math, not verbatim", () => {
   assert.deepEqual(errors(tree), []);
   assert.equal(nodes(tree, "VerbatimEnvironment").length, 0);
   assert.equal(inMath(stateFor(doc), doc.indexOf("x^2") + 1), true);
+});
+
+/** The document after Enter at the end of `doc`, with the assist off. */
+function afterEnter(doc) {
+  let state = EditorState.create({
+    doc,
+    selection: { anchor: doc.length },
+    extensions: [latex(), latexAssist(false)],
+  });
+  insertNewlineAndIndent({ state, dispatch: (tr) => { state = tr.state; } });
+  return state.doc.toString();
+}
+
+test("Enter after an indented first line copies its indentation", () => {
+  assert.equal(afterEnter("  \\begin{x}"), "  \\begin{x}\n  ");
+});
+
+test("Enter on a blank line copies the indentation of the line above it", () => {
+  assert.equal(afterEnter("    text\n"), "    text\n    ");
 });

@@ -1861,6 +1861,8 @@
   // Typst headings come from the typst module once it has answered for exactly
   // this text; until then, and for the other formats, from the scanner.
   const outlineHeadings = $derived.by(() => {
+    // Typst symbols arrive after the source is unchanged; read the revision so they refresh.
+    void outlineRevision;
     if (panel !== "outline" || !mayEdit) return [];
     const parsed = outlineFormat === "typst" && editing ? editor?.moduleOutline?.(openFile, outlineSource) : null;
     return parsed ?? extractOutline(outlineSource, outlineFormat);
