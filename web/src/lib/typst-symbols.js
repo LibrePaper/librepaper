@@ -28,6 +28,7 @@ export function stripLabel(name) {
 export function symbolItems(source, answer) {
   const symbols = answer && Array.isArray(answer.symbols) ? answer.symbols : [];
   const convert = byteToUtf16(source);
+  /** @type {import("./document-index/schema.js").IndexItem[]} */
   const items = [];
   for (const symbol of symbols) {
     if (!symbol || !Number.isFinite(symbol.from) || !Number.isFinite(symbol.to)) continue;

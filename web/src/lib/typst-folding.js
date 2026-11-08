@@ -104,6 +104,16 @@ export function foldAt(ranges, lineStart, lineEnd) {
  * text, and applies the answer only if the document is still the one asked
  * about; otherwise it asks again. `convert(source, answer)` shapes what `apply`
  * receives (fold ranges by default). Returns `{schedule, destroy}`.
+ * @param {{
+ *   getDoc: () => import("@codemirror/state").Text,
+ *   apply: (value: any) => void,
+ *   request: (path: string, source: string) => Promise<any>,
+ *   path: () => string,
+ *   convert?: (source: string, answer: any) => any,
+ *   delay?: number,
+ *   setTimer?: (run: () => void, delay: number) => any,
+ *   clearTimer?: (timer: any) => void,
+ * }} options
  */
 export function folder({ getDoc, apply, request, path, convert = foldRangesFrom, delay = DELAY, setTimer = setTimeout, clearTimer = clearTimeout }) {
   let timer = null;
