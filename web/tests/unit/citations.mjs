@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { BibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, bibliographyRegistration, citationContext, entryLabel, insertCitation, planZoteroImport, rankEntries, zoteroCitationKey } from "../../src/lib/bibliography.js";
+import { Text } from "@codemirror/state";
 
 const entries = [
   { key: "smith2020", authors: ["Jane Smith"], year: 2020, title: "A Study of Rivers", container: "Nature" },
@@ -23,13 +24,13 @@ assert.equal(citationContext("@smith", 6, "html"), null);
 assert.equal(insertCitation("See @smi", 8, "smith2020", "markdown"), "See @smith2020");
 assert.equal(insertCitation("See \\citep{smith, jo}", 20, "jones2019", "latex"), "See \\citep{smith, jones2019}");
 
-const fake = (text, pos) => ({ pos, explicit: true, state: { doc: { toString: () => text } } });
+const fake = (text, pos) => ({ pos, explicit: true, state: { doc: Text.of(text.split("\n")) } });
 const completion = bibliographyCompletion({ entries, format: "markdown" })(fake("See @smi", 8));
 assert.equal(completion.options[0].label, "smith2020");
 assert.equal(completion.options[0].displayLabel.includes("Rivers"), true);
 assert.equal(completion.filter, false);
 assert.equal(bibliographyCompletion({ entries: [], format: "markdown" })(fake("@", 1)), null);
-assert.equal(bibliographyCompletion({ entries, format: "markdown" })(fake("See @smith2020 ", 16)), null);
+assert.equal(bibliographyCompletion({ entries, format: "markdown" })(fake("See @smith2020 ", 15)), null);
 assert.equal(citationContext("see @smith2020 for details", 26, "markdown"), null, "prose after a citation is not a query");
 assert.deepEqual(citationContext("see @smi", 8, "markdown"), { kind: "markdown", from: 5, to: 8, query: "smi", trigger: "@" });
 assert.deepEqual(citationContext("[@smith2020; @jo", 16, "markdown"), { kind: "markdown", from: 14, to: 16, query: "jo", trigger: "@" });

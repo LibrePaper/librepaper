@@ -2,7 +2,7 @@
   import Icon from "./Icon.svelte";
   import ShortcutTip from "./ShortcutTip.svelte";
   import { m } from "../lib/paraglide/messages.js";
-  import { FORMAT_TOOLS, isToolActive } from "../lib/visual-markup/formatting.js";
+  import { FORMAT_TOOLS, isToolActive } from "../lib/visual-markup/format-tools.js";
 
   // The formatting row under the top bar, shown in visual mode. What it
   // offers is FORMAT_TOOLS; `active` is the formatting at the caret, and

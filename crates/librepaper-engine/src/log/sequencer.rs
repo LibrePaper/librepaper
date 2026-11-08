@@ -77,6 +77,11 @@ pub enum SubscriberClass {
     Reader,
 }
 
+/// The `changes` count of a snapshot exported behind the head, where the
+/// change count at that version is not known without loading it. The version
+/// vector checks of `prove_coverage` still apply.
+pub const CHANGES_UNKNOWN: usize = usize::MAX;
+
 /// What snapshot a compaction exports: full history or shallow state only.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SnapshotMode {
@@ -107,6 +112,11 @@ struct Subscriber {
     peer_key: String,
 }
 
+/// How much durable quota a sequencer reserves at a time. One reservation row
+/// covers many batches, so typing costs a PostgreSQL write transaction (and its
+/// storage-usage row lock) once per chunk rather than once per keystroke.
+pub const LOG_RESERVATION_CHUNK: i64 = 64 * 1024;
+
 /// One batch in the buffer: what arrived, from whom, what it covers, and the
 /// deployment-wide reservation that admitted it.
 ///
@@ -126,8 +136,11 @@ struct Pending {
     /// `Drop`, so there is no path -- error, panic, cancellation -- on which
     /// removing the batch forgets to give the bytes back.
     charge: super::pending::Reservation,
-    /// Durable quota reserved before this batch was acknowledged to peers.
+    /// Durable quota this batch consumed from the sequencer's reservation
+    /// row, taken before the batch was acknowledged to peers.
     durable_charge: i64,
+    /// Identifies the batch for duplicate detection inside the buffer. It is
+    /// not stored anywhere.
     durable_key: Uuid,
     durable_digest: [u8; 32],
 }
@@ -543,18 +556,32 @@ pub trait LogCatalog: Send + Sync {
         &'a self,
         document_id: Uuid,
         row: FlushRow<'a>,
-        reserved_keys: &'a [Uuid],
+        reservation: Uuid,
         reserved_bytes: i64,
         scratch: super::pending::Reservation,
     ) -> BoxFuture<'a, postgres::Result<i64>>;
+    /// Grows this document's quota reservation row by up to `wanted` bytes
+    /// and returns the row's new total, refusing when less than `minimum`
+    /// fits. Called by ingest only when the in-memory headroom is spent, so
+    /// once per chunk of typing. The default grants everything, for a fake
+    /// that has no quota.
     fn reserve_log_bytes<'a>(
         &'a self,
         document_id: Uuid,
         reservation_key: Uuid,
-        bytes: i64,
-        digest: [u8; 32],
+        wanted: i64,
+        minimum: i64,
+    ) -> BoxFuture<'a, postgres::Result<i64>> {
+        let _ = (document_id, reservation_key, minimum);
+        Box::pin(async move { Ok(wanted) })
+    }
+    /// Deletes the reservation row, giving back what no flush consumed.
+    fn release_log_reservation<'a>(
+        &'a self,
+        document_id: Uuid,
+        reservation_key: Uuid,
     ) -> BoxFuture<'a, postgres::Result<()>> {
-        let _ = (document_id, reservation_key, bytes, digest);
+        let _ = (document_id, reservation_key);
         Box::pin(async { Ok(()) })
     }
     fn persistence_connection(
@@ -574,7 +601,7 @@ pub trait LogCatalog: Send + Sync {
         tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
         row: FlushRow<'a>,
-        reserved_keys: &'a [Uuid],
+        reservation: Uuid,
         reserved_bytes: i64,
     ) -> BoxFuture<'a, postgres::Result<i64>>;
     /// The compaction base, read through the object store (§4.3). Returns a
@@ -618,27 +645,29 @@ impl LogCatalog for PostgresCatalog {
         &'a self,
         document_id: Uuid,
         row: FlushRow<'a>,
-        reserved_keys: &'a [Uuid],
+        reservation: Uuid,
         reserved_bytes: i64,
         scratch: super::pending::Reservation,
     ) -> BoxFuture<'a, postgres::Result<i64>> {
-        Box::pin(self.flush_log_row_charged(
-            document_id,
-            row,
-            reserved_keys,
-            reserved_bytes,
-            scratch,
-        ))
+        Box::pin(self.flush_log_row_charged(document_id, row, reservation, reserved_bytes, scratch))
     }
 
     fn reserve_log_bytes<'a>(
         &'a self,
         document_id: Uuid,
         reservation_key: Uuid,
-        bytes: i64,
-        digest: [u8; 32],
+        wanted: i64,
+        minimum: i64,
+    ) -> BoxFuture<'a, postgres::Result<i64>> {
+        Box::pin(self.reserve_pending_log_bytes(document_id, reservation_key, wanted, minimum))
+    }
+
+    fn release_log_reservation<'a>(
+        &'a self,
+        document_id: Uuid,
+        reservation_key: Uuid,
     ) -> BoxFuture<'a, postgres::Result<()>> {
-        Box::pin(self.reserve_pending_log_bytes(document_id, reservation_key, bytes, digest))
+        Box::pin(self.release_pending_log_reservation(document_id, reservation_key))
     }
 
     fn persistence_connection(
@@ -672,10 +701,10 @@ impl LogCatalog for PostgresCatalog {
         tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
         row: FlushRow<'a>,
-        reserved_keys: &'a [Uuid],
+        reservation: Uuid,
         reserved_bytes: i64,
     ) -> BoxFuture<'a, postgres::Result<i64>> {
-        Box::pin(self.insert_log_row_reserved(tx, document_id, row, reserved_keys, reserved_bytes))
+        Box::pin(self.insert_log_row_reserved(tx, document_id, row, reservation, reserved_bytes))
     }
 
     fn read_base(
@@ -708,6 +737,16 @@ struct Inner {
     /// The log vector plus the buffer. Never stored.
     head_vector: VersionVector,
     buffer: Vec<Pending>,
+    /// The id of this sequencer's quota reservation row in
+    /// `pending_log_reservations`. Fixed for the sequencer's life; the row is
+    /// created by the first growth and recreated after a release.
+    reservation_key: Uuid,
+    /// Bytes the reservation row holds, as far as this sequencer knows.
+    /// Always at least `durable_buffered`: headroom is the difference.
+    reserved: i64,
+    /// The sum of the buffered batches' `durable_charge`: what the row holds
+    /// that a flush has yet to take off it.
+    durable_buffered: i64,
     /// The payload bytes in the buffer. What the resident estimate is taken
     /// from, because framing is not part of what a decoded document costs.
     buffer_bytes: usize,
@@ -884,7 +923,17 @@ impl Inner {
         )
     }
 
-    fn retire(&mut self, take: usize, written: i64, vector: VersionVector, row_bytes: usize) {
+    fn retire(
+        &mut self,
+        take: usize,
+        written: i64,
+        vector: VersionVector,
+        row_bytes: usize,
+        reserved_bytes: i64,
+    ) {
+        // The flush took its batches' charge off the reservation row in the
+        // same transaction as the row, so the sequencer's copy follows.
+        self.reserved = self.reserved.saturating_sub(reserved_bytes);
         self.next_sequence = written + 1;
         self.log_vector = vector;
         // Draining is what releases the pending charge: each `Pending` owns
@@ -893,6 +942,11 @@ impl Inner {
         // being written stay buffered and stay charged.
         self.buffer.drain(..take);
         self.buffer_bytes = self.buffer.iter().map(|pending| pending.bytes.len()).sum();
+        self.durable_buffered = self
+            .buffer
+            .iter()
+            .map(|pending| pending.durable_charge)
+            .fold(0_i64, i64::saturating_add);
         self.charged_bytes = self.charge_of(self.buffer.len());
         self.row_bytes = self.row_bytes.saturating_add(row_bytes as u64);
         self.uncompacted_count = self.uncompacted_count.saturating_add(1);
@@ -1064,6 +1118,9 @@ impl Sequencer {
                 head_vector: log_vector.clone(),
                 log_vector,
                 buffer: Vec::new(),
+                reservation_key: Uuid::now_v7(),
+                reserved: 0,
+                durable_buffered: 0,
                 buffer_bytes: 0,
                 charged_bytes: 0,
                 oldest_arrival: None,
@@ -1309,19 +1366,39 @@ impl Sequencer {
         let durable_charge = charge
             .bytes()
             .saturating_add(frame::ROW_HEADER_BYTES as u64) as i64;
-        if self
-            .catalog
-            .reserve_log_bytes(self.document_id, durable_key, durable_charge, digest)
-            .await
-            .is_err()
-        {
-            return retryable(
-                &inner,
-                "this account's storage is full",
-                "storage_quota",
-                false,
-            );
+        // Durable quota, reserved BEFORE the batch is accepted and relayed so
+        // that no other consumer can take the space and make the flush fail
+        // later. The reservation is one row held in chunks: a batch that fits
+        // the headroom already reserved is consumed in memory, and only a
+        // batch that outgrows it costs a PostgreSQL transaction -- one per
+        // 64 KiB of typing, not one per keystroke. The chunk is asked for in
+        // full; if the quota cannot fit it, the row grows by exactly the
+        // shortfall, so a batch is refused only when it genuinely does not
+        // fit, as it would be with a reservation per batch.
+        let headroom = inner.reserved.saturating_sub(inner.durable_buffered);
+        if headroom < durable_charge {
+            match self
+                .catalog
+                .reserve_log_bytes(
+                    self.document_id,
+                    inner.reservation_key,
+                    LOG_RESERVATION_CHUNK.max(durable_charge),
+                    durable_charge - headroom,
+                )
+                .await
+            {
+                Ok(total) => inner.reserved = total,
+                Err(_) => {
+                    return retryable(
+                        &inner,
+                        "this account's storage is full",
+                        "storage_quota",
+                        false,
+                    );
+                }
+            }
         }
+        inner.durable_buffered = inner.durable_buffered.saturating_add(durable_charge);
 
         // A warm document grows synchronously below. Extend its reservation
         // before importing; if the budget cannot cover the growth, evict
@@ -1382,6 +1459,31 @@ impl Sequencer {
         });
         self.note_source_changed(&mut inner);
         Ingested::Accepted
+    }
+
+    /// Gives back the durable quota this sequencer reserved and no flush has
+    /// consumed, by deleting its reservation row. Does nothing while batches
+    /// are buffered: they still own their share of the row. Called when the
+    /// document goes idle and at shutdown, so an idle document holds no
+    /// quota. A failure is logged and leaves the row, and the in-memory
+    /// headroom, as they were: the row is still real, and a crash or restart
+    /// clears it (`clear_stale_pending_log_reservations`).
+    pub async fn release_reservation(&self) {
+        let mut inner = self.inner.lock().await;
+        if !inner.buffer.is_empty() || inner.reserved <= 0 {
+            return;
+        }
+        match self
+            .catalog
+            .release_log_reservation(self.document_id, inner.reservation_key)
+            .await
+        {
+            Ok(()) => inner.reserved = 0,
+            Err(error) => tracing::warn!(
+                "could not release the log reservation of {}: {error}",
+                self.slug
+            ),
+        }
     }
 
     /// Whether a flush is due, and why. The sequencer keeps no timer of its
@@ -1467,7 +1569,7 @@ impl Sequencer {
         };
         let (
             take,
-            reserved_keys,
+            reservation_key,
             reserved_bytes,
             acknowledged,
             encoded,
@@ -1514,10 +1616,7 @@ impl Sequencer {
             };
             (
                 take,
-                inner.buffer[..take]
-                    .iter()
-                    .map(|pending| pending.durable_key)
-                    .collect::<Vec<_>>(),
+                inner.reservation_key,
                 inner.buffer[..take]
                     .iter()
                     .map(|pending| pending.durable_charge)
@@ -1543,7 +1642,7 @@ impl Sequencer {
                     vector: &vector.encode(),
                     source_format: identity.as_deref(),
                 },
-                &reserved_keys,
+                reservation_key,
                 reserved_bytes,
                 driver_scratch,
             )
@@ -1570,7 +1669,7 @@ impl Sequencer {
         drop(encoded);
         drop(scratch);
         let mut inner = self.inner.lock().await;
-        inner.retire(take, written, vector, row_bytes);
+        inner.retire(take, written, vector, row_bytes, reserved_bytes);
         self.ledger.charge(self.owner_id, row_bytes as i64);
         let compaction_due = inner.compaction_due(self.catalog.compaction_thresholds());
         acknowledge(&mut inner, &acknowledged);
@@ -2027,17 +2126,20 @@ impl Sequencer {
             )
         };
         let row_bytes = encoded.len();
+        // The buffered prefix's share of the reservation row. The row this
+        // command writes consumes it in the same transaction, exactly as an
+        // ordinary flush does.
+        let reserved_bytes = if acknowledged.is_empty() {
+            0
+        } else {
+            inner.buffer[..take]
+                .iter()
+                .map(|pending| pending.durable_charge)
+                .fold(0_i64, i64::saturating_add)
+        };
         let source_sequence = if acknowledged.is_empty() {
             expected
         } else {
-            let reserved_keys: Vec<_> = inner.buffer[..take]
-                .iter()
-                .map(|pending| pending.durable_key)
-                .collect();
-            let reserved_bytes = inner.buffer[..take]
-                .iter()
-                .map(|pending| pending.durable_charge)
-                .fold(0_i64, i64::saturating_add);
             let written = self
                 .catalog
                 .insert_log_row(
@@ -2049,7 +2151,7 @@ impl Sequencer {
                         vector: &vector.encode(),
                         source_format: identity.as_deref(),
                     },
-                    &reserved_keys,
+                    inner.reservation_key,
                     reserved_bytes,
                 )
                 .await?;
@@ -2125,7 +2227,7 @@ impl Sequencer {
         // committed, for a number the first encoding knew.
         let wrote_a_row = !acknowledged.is_empty();
         if wrote_a_row {
-            inner.retire(take, source_sequence, vector, row_bytes);
+            inner.retire(take, source_sequence, vector, row_bytes, reserved_bytes);
             self.ledger.charge(self.owner_id, row_bytes as i64);
         }
         if let Some(source) = &prepared {
@@ -2532,9 +2634,7 @@ impl Sequencer {
     ) -> Result<Option<(i64, Vec<u8>, Vec<u8>, usize, bool)>> {
         let mut inner = self.inner.lock().await;
         inner.writable()?;
-        if !inner.buffer.is_empty() {
-            return Ok(None);
-        }
+        let buffered = !inner.buffer.is_empty();
         if let Some(why) = &inner.unreadable {
             return Err(SequencerError::Unreadable(why.clone()));
         }
@@ -2545,7 +2645,25 @@ impl Sequencer {
         let through = inner.next_sequence - 1;
         let log_vector = inner.log_vector.clone();
         let cache = inner.cache.as_ref().expect("a cache was just built");
-        if cache.doc.oplog_vv() != log_vector {
+        // An edit can land between the caller's flush and this call. It is in
+        // the head and in the buffer, but in no row, so the head is ahead of
+        // the log. Refusing then starves compaction under steady typing.
+        // Instead the snapshot is exported at the log vector: exactly the
+        // rows `<= through`, which is what the caller deletes. The later edit
+        // stays in the buffer and lands as a row above `through`. Only a
+        // full snapshot of an untrimmed head with no frontier check takes
+        // this path; every other combination keeps the old refusal.
+        let head_vector = cache.doc.oplog_vv();
+        let ahead = buffered
+            && head_vector != log_vector
+            && matches!(
+                head_vector.partial_cmp(&log_vector),
+                Some(std::cmp::Ordering::Greater)
+            )
+            && mode == SnapshotMode::Full
+            && expected_frontier.is_none()
+            && !cache.doc.is_shallow();
+        if !ahead && (buffered || head_vector != log_vector) {
             return Ok(None);
         }
         // Checked under the same lock as the export. Anything that entered the
@@ -2556,7 +2674,12 @@ impl Sequencer {
                 return Ok(None);
             }
         }
-        let changes = cache.doc.len_changes();
+        let changes = if ahead {
+            CHANGES_UNKNOWN
+        } else {
+            cache.doc.len_changes()
+        };
+        let at = ahead.then(|| cache.doc.vv_to_frontiers(&log_vector));
         // §9.3 counts a compaction export against the same bound as a
         // build: it is the same uninterruptible Loro work over the same
         // decoded document, and a deployment compacting four documents at
@@ -2567,7 +2690,12 @@ impl Sequencer {
         let entry_is_shallow = doc.is_shallow();
         let _turn = super::admission::heavy().await;
         let snapshot = tokio::task::spawn_blocking(move || match mode {
-            SnapshotMode::Full => doc.export(ExportMode::Snapshot),
+            SnapshotMode::Full => match at {
+                Some(at) => doc.export(ExportMode::SnapshotAt {
+                    version: std::borrow::Cow::Owned(at),
+                }),
+                None => doc.export(ExportMode::Snapshot),
+            },
             SnapshotMode::Shallow => doc.export(ExportMode::ShallowSnapshot(
                 std::borrow::Cow::Owned(doc.oplog_frontiers()),
             )),
@@ -2977,8 +3105,8 @@ fn covers(holder: &VersionVector, wanted: &VersionVector) -> bool {
 
 /// Stable across retries of the same batch. Client sequence and payload
 /// digest both participate, so the same sequence may carry distinct updates.
-/// The key is the first 16 bytes of a SHA-256 in a version 8 UUID. Keys are
-/// cleared each writer epoch, so changing the scheme cannot strand a stored key.
+/// The key is the first 16 bytes of a SHA-256 in a version 8 UUID. It only
+/// recognises a resent batch still in the buffer; it is never stored.
 fn durable_reservation_key(
     document_id: Uuid,
     peer_key: &str,

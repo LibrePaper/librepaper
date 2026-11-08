@@ -13,6 +13,7 @@ import { blockPageZoom } from "../lib/pinch.js";
 import { listenForSignOut } from "../lib/local-data.js";
 import { signedOutHref } from "../lib/api.js";
 import { markDocumentLanguage } from "../lib/locale.js";
+import loroWasmUrl from "loro-crdt/web/loro_wasm_bg.wasm?url";
 
 markDocumentLanguage();
 
@@ -44,5 +45,14 @@ globalThis.LIBREPAPER_MODULES = JSON.parse(document.getElementById("librepaper-m
 const initialSettings = intake() ? "tools" : "";
 mount(Boundary, { target: document.body, props: { component: Reader, props: { initialSettings }, name: "the reader" } });
 void registerOfflineShell();
+// The CRDT's wasm is fetched only once a session starts, which is after the
+// document has been asked for. Hinting it here lets the browser fetch it at
+// idle priority while the page is still waiting on that answer, so an editor
+// opens without three quarters of a megabyte on its critical path. It is only
+// downloaded, never compiled, for someone who turns out to be a reader.
+const loroHint = document.createElement("link");
+loroHint.rel = "prefetch";
+loroHint.href = loroWasmUrl;
+document.head.append(loroHint);
 // A signed-out browser must not keep writing the previous account's work.
 listenForSignOut(() => location.replace(signedOutHref()));

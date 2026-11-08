@@ -266,3 +266,58 @@ export function evictOtherReleases(release) {
   }
   return evictions.get(current);
 }
+
+/// The URLs of the bundles an engine reads first, named "core" in the index.
+/// The index is the release's `bundles.json`; an entry is a URL or an object
+/// holding one, relative to the index's directory.
+/** @param {Uint8Array} bytes @param {string} directory */
+function coreBundleUrls(bytes, directory) {
+  try {
+    const index = JSON.parse(new TextDecoder().decode(bytes));
+    const urls = [];
+    for (const [key, entry] of Object.entries(index?.bundles || {})) {
+      const path = typeof entry === "string" ? entry : entry?.url ?? entry?.path;
+      if (typeof path !== "string") continue;
+      if (key === "core" || /(^|\/)core[^/]*\.tar$/.test(path)) urls.push(new URL(path, directory).href);
+    }
+    return urls;
+  } catch { return []; }
+}
+
+/// Fetches ahead of the first compile what an engine kind will ask for: its
+/// files and the bundle index at once (every file keeps its digest check and
+/// lands in Cache Storage), then the core bundle as soon as the index names
+/// it, instead of when the engine first asks. Never rejects.
+/** @param {LatexRelease & {id?: string, engines?: any, files?: any, bundles?: any}} release @param {string} base @param {string[]} kinds @param {{verified?: typeof fetchVerified}} [options] */
+export async function warmRelease(release, base, kinds, { verified = fetchVerified } = {}) {
+  const quiet = (promise) => promise.catch(() => null);
+  const verify = (store, name) => {
+    const file = typeof name === "string" ? release.files?.[name] : name;
+    if (!file?.url) return Promise.resolve(null);
+    return quiet(verified(store, new URL(file.url, base).href, file));
+  };
+  const jobs = [];
+  const names = new Set();
+  for (const kind of kinds) {
+    const spec = release.engines?.[kind];
+    for (const name of spec?.files || (spec?.worker ? [spec.worker] : [])) names.add(name);
+  }
+  for (const name of names) jobs.push(verify(release, name));
+  const bundles = release.bundles;
+  if (bundles?.index) {
+    const file = Object.values(release.files || {}).find((entry) => entry?.url === bundles.index);
+    const indexUrl = new URL(bundles.index, base);
+    jobs.push((async () => {
+      const response = await verify({ ...release, digest: release.id }, file);
+      if (!response) return;
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      await Promise.all(coreBundleUrls(bytes, new URL(".", indexUrl).href).map(async (url) => {
+        try {
+          const answer = await fetch(url);
+          if (answer.ok) await answer.body?.pipeTo(new WritableStream());
+        } catch { /* the engine fetches it when it needs it */ }
+      }));
+    })().catch(() => {}));
+  }
+  await Promise.all(jobs);
+}

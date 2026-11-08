@@ -17,6 +17,10 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
       let stored = false;
       let record = null;
       let persistedVector = null;
+      // Bytes of delta rows not yet folded into the snapshot, kept in memory
+      // so a steady-state write never has to read them back.
+      let pendingBytes = 0;
+      let compactScheduled = false;
       let pendingFlush = Promise.resolve();
       let unsubscribe;
       let hydrating = true;
@@ -42,6 +46,27 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
               mode: "update",
               ...(persistedVector ? { from: VersionVector.decode(persistedVector) } : {}),
             });
+            if (record?.version === 3 && record.snapshot) {
+              // Steady state: the snapshot record is untouched, so write only
+              // the new delta row. The row count is read from the index
+              // (no values), so rows other tabs added or compacted away are
+              // still counted correctly.
+              const transaction = database.transaction(UPDATES, "readwrite");
+              const done = transactionDone(transaction);
+              const updates = transaction.objectStore(UPDATES);
+              const counted = requestResult(updates.index("project").count(key));
+              updates.add({ project: key, id: updateId(), update, vector: version, bytes: update.byteLength });
+              const count = (await counted) + 1;
+              await done;
+              pendingBytes += update.byteLength;
+              persistedVector = version;
+              stored = true;
+              writing = false;
+              if (count >= COMPACT_AFTER_UPDATES || pendingBytes >= COMPACT_AFTER_BYTES) scheduleCompaction();
+              if (dirty) return putState();
+              events.persisted();
+              return;
+            }
             const transaction = database.transaction([STATES, UPDATES], "readwrite");
             const done = transactionDone(transaction);
             const states = transaction.objectStore(STATES);
@@ -55,6 +80,7 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
             const count = pending.length + 1;
             const bytes = pending.reduce((sum, item) => sum + Number(item.bytes || item.update?.byteLength || 0), 0)
               + update.byteLength;
+            let compacted = false;
             let next = current?.version === 3 ? current : {
               version: 3,
               snapshot: current?.snapshot || (current instanceof Uint8Array ? current : null),
@@ -68,10 +94,12 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
               next = { ...next, version: 3, snapshot, vector: merging.oplogVersion().encode() };
               for (const item of pending) updates.delete([key, item.id]);
               updates.delete([key, entry.id]);
+              compacted = true;
             }
             states.put(next, key);
             await done;
             record = next;
+            pendingBytes = compacted ? 0 : bytes;
             persistedVector = version;
             stored = true;
             writing = false;
@@ -85,6 +113,50 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
         })();
         pendingFlush.catch(() => {});
         return pendingFlush;
+      }
+
+      function scheduleCompaction() {
+        if (compactScheduled || closed) return;
+        compactScheduled = true;
+        const run = () => { compactScheduled = false; void compact(); };
+        if (typeof globalThis.requestIdleCallback === "function") globalThis.requestIdleCallback(run, { timeout: 5000 });
+        else setTimeout(run, 200);
+      }
+
+      // Folds the stored deltas into the snapshot off the typing path.
+      async function compact() {
+        if (closed) return;
+        if (writing) { scheduleCompaction(); return; }
+        writing = true;
+        pendingFlush = (async () => {
+          try {
+            database ||= await openOfflineDatabase(indexedDB_);
+            const transaction = database.transaction([STATES, UPDATES], "readwrite");
+            const done = transactionDone(transaction);
+            const states = transaction.objectStore(STATES);
+            const updates = transaction.objectStore(UPDATES);
+            const [current, pending] = await Promise.all([requestResult(states.get(key)), updatesFor(transaction)]);
+            if (current?.version === 3 && current.snapshot) {
+              const merging = new LoroDoc();
+              merging.import(new Uint8Array(current.snapshot));
+              for (const item of pending) merging.import(new Uint8Array(item.update));
+              const next = { ...current, version: 3, snapshot: merging.export({ mode: "update" }), vector: merging.oplogVersion().encode() };
+              for (const item of pending) updates.delete([key, item.id]);
+              states.put(next, key);
+              await done;
+              record = next;
+              pendingBytes = 0;
+            } else {
+              await done;
+            }
+          } catch (error) {
+            events.failed(error);
+          } finally {
+            writing = false;
+            if (dirty && !closed) void putState();
+          }
+        })();
+        pendingFlush.catch(() => {});
       }
 
       // The offline copy is a recovery point, not merely an outbox. Persist
@@ -129,6 +201,7 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
             const transaction = database.transaction(UPDATES, "readonly");
             const pending = await updatesFor(transaction);
             for (const item of pending) doc.import(new Uint8Array(item.update));
+            pendingBytes = pending.reduce((sum, item) => sum + Number(item.bytes || item.update?.byteLength || 0), 0);
             if (pending.length) persistedVector = doc.oplogVersion().encode();
           }
           hydrating = false;

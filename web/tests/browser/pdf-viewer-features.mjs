@@ -244,13 +244,26 @@ async function run() {
     const state = window.state();
     return { state, canvases: window.doc().querySelectorAll('.page canvas').length };
   `);
+  // Every page has a sized frame; only the pages near the viewport are drawn
+  // before the rest come within reach.
+  const frames = await tab.eval("return window.doc().querySelectorAll('.page').length");
   check("viewer-state carries the page count and the default switches",
-    first.state?.drawn === true && first.state.page >= 1 && first.state.pages === first.canvases && first.canvases === 6
+    first.state?.drawn === true && first.state.page >= 1 && first.state.pages === 6 && frames === 6
+      && first.canvases >= 1 && first.canvases <= 6
       && first.state.sidebar === false && first.state.spread === false && first.state.invert === false
       && first.state.presenting === false && first.state.find === null,
     JSON.stringify(first));
 
-  // 2. Links.
+  // 2. Links. Pages build their layers as they come near, so scroll through
+  // the document first and every page then has one.
+  await tab.eval(`
+    const win = window.win();
+    for (let y = 0; y <= win.document.documentElement.scrollHeight; y += win.innerHeight / 2) {
+      win.scrollTo({ top: y, left: 0, behavior: 'instant' });
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    await new Promise((r) => setTimeout(r, 400));
+  `);
   const layers = await tab.eval(`
     const pages = [...window.doc().querySelectorAll('.page')];
     return { pages: pages.length, layers: pages.filter((p) => p.querySelector('.linkLayer')).length,
