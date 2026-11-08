@@ -16,6 +16,8 @@ const temporary = mkdtempSync(join(tmpdir(), "librepaper-source-grammar-check-")
 const output = join(temporary, "build"), profile = join(temporary, "chrome"), entry = join(temporary, "entry.js");
 const port = 37000 + Math.floor(Math.random() * 1000);
 const typstWasm = process.env.LIBREPAPER_TYPST_WASM || join(root, "web/wasm/typst.wasm");
+const syntaxWasm = process.env.LIBREPAPER_TYPST_SYNTAX_WASM || join(root, "web/wasm/typst-syntax.wasm");
+const syntaxUrl = existsSync(syntaxWasm) ? "/wasm/" + createHash("sha256").update(readFileSync(syntaxWasm)).digest("hex") + "/typst-syntax.wasm" : "/wasm/missing/typst-syntax.wasm";
 // The renderer checks a module against the digest in its URL, as the mirror lays it out.
 const typstUrl = existsSync(typstWasm) ? "/wasm/" + createHash("sha256").update(readFileSync(typstWasm)).digest("hex") + "/typst.wasm" : "/wasm/missing/typst.wasm";
 const imports = (path) => JSON.stringify(join(root, path));
@@ -93,9 +95,12 @@ const scenarios = {
   "typst-fold": async ({ view }) => {
     const doc = view.state.doc;
     const letLine = doc.line(4), heading = doc.line(1);
+    // The wasm language is active once the tree has a Heading node.
+    const hasHeading = () => { let found = false; syntaxTree(view.state).iterate({ enter: (node) => { if (node.name === "Heading") found = true; } }); return found; };
+    const active = await poll(() => hasHeading() || null, 10000);
     const range = await poll(() => foldable(view.state, letLine.from, letLine.to), 10000);
     const headingRange = await poll(() => foldable(view.state, heading.from, heading.to), 10000);
-    return { range, headingRange, covered: range ? doc.sliceString(range.from, range.to) : null, headingEnd: heading.to, letFrom: letLine.from };
+    return { active: !!active, range, headingRange, covered: range ? doc.sliceString(range.from, range.to) : null, headingEnd: heading.to, letFrom: letLine.from };
   },
 };
 
@@ -135,7 +140,7 @@ writeFileSync(entry, [
   "import { createClassComponent } from " + imports("web/node_modules/svelte/src/legacy/legacy-client.js") + ";",
   "import { join as joinSession } from " + imports("web/src/lib/collab.js") + ";",
   "import Editor from " + imports("web/src/components/Editor.svelte") + ";",
-  "globalThis.LIBREPAPER_MODULES = { typst: " + JSON.stringify(typstUrl) + " };",
+  "globalThis.LIBREPAPER_MODULES = { typst: " + JSON.stringify(typstUrl) + ", \"typst-syntax\": " + JSON.stringify(syntaxUrl) + " };",
   pageSource,
 ].join("\n"));
 
@@ -163,6 +168,7 @@ const checks = {
     for (const name of ["FencedDiv", "InlineMath", "Citation"]) assert.ok(r.names.includes(name), "markdown-div-fold: no " + name + " node in " + JSON.stringify(r.names));
   },
   "typst-fold"(r) {
+    assert.ok(r.active, "typst-fold: the wasm language never produced a Heading node (is web/wasm/typst-syntax.wasm present?)");
     assert.ok(r.range, "typst-fold: the #let block never became foldable (is web/wasm/typst.wasm present?)");
     assert.equal(r.covered, "\n  x + 1\n", "typst-fold: wrong fold range " + JSON.stringify(r.range));
     assert.ok(r.headingRange, "typst-fold: the heading should be foldable");
@@ -178,6 +184,10 @@ try {
     if (request.url === typstUrl) {
       if (!existsSync(typstWasm)) { response.statusCode = 404; response.end(); return; }
       response.setHeader("Content-Type", "application/wasm"); response.end(readFileSync(typstWasm)); return;
+    }
+    if (request.url === syntaxUrl) {
+      if (!existsSync(syntaxWasm)) { response.statusCode = 404; response.end(); return; }
+      response.setHeader("Content-Type", "application/wasm"); response.end(readFileSync(syntaxWasm)); return;
     }
     const file = join(output, request.url.slice(1));
     if (request.url !== "/" && existsSync(file)) { response.setHeader("Content-Type", "text/javascript"); response.end(readFileSync(file)); }

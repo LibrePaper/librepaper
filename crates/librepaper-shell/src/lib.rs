@@ -37,6 +37,7 @@ const PINS: &[Pin] = &[
     pin("bibliography.wasm", "wasm"),
     pin("citations.wasm", "wasm"),
     pin("typst.wasm", "wasm"),
+    pin("typst-syntax.wasm", "wasm"),
     pin("pandoc.wasm", "wasm"),
     pin("harper.wasm", "wasm"),
     pin("jetbrains-mono.woff2", "fonts"),
@@ -269,6 +270,7 @@ mod shell_tests {
             "bibliography",
             "citations",
             "typst",
+            "typst-syntax",
             "pandoc",
             "harper",
         ] {
@@ -277,7 +279,7 @@ mod shell_tests {
                 format!("https://assets.example/wasm/{sha}/{name}.wasm")
             );
         }
-        assert_eq!(modules.as_object().unwrap().len(), 6);
+        assert_eq!(modules.as_object().unwrap().len(), 7);
     }
 
     #[test]

@@ -225,7 +225,6 @@
 
   import { sourceFormat, sourceLanguage } from "../lib/source-language.js";
   import { latexAssist as latexAssistExtensions } from "../lib/latex-language/index.js";
-  import { foldsChanged, typstFolding } from "../lib/typst-folding.js";
   import { typstSymbols, SYMBOL_KINDS, headingsOf } from "../lib/typst-symbols.js";
   import { emphasisCommand } from "../lib/emphasis.js";
   import { canHeading, canLink, canList, headingEdit, linkEdit, listEdit } from "../lib/editing-shortcuts.js";
@@ -1510,13 +1509,11 @@
         bracketMatching(),
         bracketsCompartment.of(bracketsOn(untrack(() => brackets))),
         latexAssistCompartment.of(latexAssistOn(untrack(() => latexAssist), sourceFormat(path, format) === "latex")),
-        foldGutter({ foldingChanged: foldsChanged }),
+        foldGutter(),
         indentOnInput(),
         highlightSelectionMatches(),
         sourceHighlighting,
         sourceLanguage(path, format),
-        // Typst folds come from the typst module, which only the source editor should ask.
-        formatOf(path) === "typst" ? typstFolding() : [],
         formatOf(path) === "typst"
           ? typstSymbols({ path: () => path, onSymbols: (source, items) => takeSymbols(id, path, source, items) })
           : [],
