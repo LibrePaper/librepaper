@@ -118,6 +118,10 @@ pub use sharing::*;
 pub use signin::*;
 use socket::*;
 
+/// How long a successful writer-lease verify is reused before the next
+/// keystroke probes the lease again. See `Server::verify_writer`.
+const WRITER_RECHECK: Duration = Duration::from_secs(1);
+
 /// The document boundary shared by HTTP handlers and realtime rooms.
 ///
 /// Keeping the durable store and the resident-room cache together prevents a
@@ -306,6 +310,14 @@ pub struct Server {
     /// with. Inserted when a socket attaches to a room and removed on every
     /// exit from `run_socket`, so a stale entry never outlives its socket.
     connections: tokio::sync::Mutex<HashMap<u64, Connection>>,
+    /// Last moderation answer per slug, with when it was read. Lets a frame
+    /// skip the catalogue query while the answer is at most
+    /// `socket::MODERATION_RECHECK` old. Only successful reads are stored, and
+    /// `reauthorize` drops a slug's entry when this process changes it.
+    moderation_cache: tokio::sync::Mutex<HashMap<String, (bool, tokio::time::Instant)>>,
+    /// The epoch and time of the last writer-lease verify that succeeded. A
+    /// failed verify is never stored, so it is always retried.
+    writer_verified: tokio::sync::Mutex<Option<(tokio::time::Instant, i64)>>,
     /// Exact large handshake baselines. References never re-read a live room:
     /// commits after capture therefore cannot change the fetched bytes.
     state_transfers: tokio::sync::Mutex<StateTransfers>,
@@ -850,6 +862,8 @@ impl Server {
             socket_budget,
             sockets: AtomicU64::new(1),
             connections: tokio::sync::Mutex::new(HashMap::new()),
+            moderation_cache: tokio::sync::Mutex::new(HashMap::new()),
+            writer_verified: tokio::sync::Mutex::new(None),
             state_transfers: tokio::sync::Mutex::new(StateTransfers::default()),
         }
     }
@@ -858,17 +872,31 @@ impl Server {
         self.writer = Some(tokio::sync::Mutex::new(lease));
     }
 
+    /// The ordinary writer-lease check for a mutation. A success is reused for
+    /// `WRITER_RECHECK`, so a burst of keystrokes costs one lease probe rather
+    /// than one each, all queued behind the lease mutex. That is safe because
+    /// every flush transaction re-checks the writer epoch itself; this check
+    /// only closes a socket early, and a lost lease is still caught by the
+    /// next probe or the next flush. A loss is always seen at once, since
+    /// `writer_lost` is read before the cache.
     pub async fn verify_writer(&self) -> Result<i64, librepaper_engine::storage::postgres::Error> {
         if self.writer_lost.load(Ordering::Acquire) {
             return Err(librepaper_engine::storage::postgres::Error::Ownership(
                 "writer ownership was lost".into(),
             ));
         }
+        if let Some((verified_at, epoch)) = *self.writer_verified.lock().await {
+            if verified_at.elapsed() < WRITER_RECHECK {
+                return Ok(epoch);
+            }
+        }
         let writer = self.writer.as_ref().ok_or_else(|| {
             librepaper_engine::storage::postgres::Error::Ownership("writer is not ready".into())
         })?;
         let mut writer = writer.lock().await;
-        self.verify_writer_locked(&mut writer).await
+        let epoch = self.verify_writer_locked(&mut writer).await?;
+        *self.writer_verified.lock().await = Some((tokio::time::Instant::now(), epoch));
+        Ok(epoch)
     }
 
     async fn verify_writer_locked(

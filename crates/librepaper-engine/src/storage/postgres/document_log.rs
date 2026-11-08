@@ -345,7 +345,7 @@ impl PostgresCatalog {
         &self,
         document_id: Uuid,
         row: FlushRow<'_>,
-        reserved_keys: &[Uuid],
+        reservation: Uuid,
         reserved_bytes: i64,
         scratch: crate::log::pending::Reservation,
     ) -> Result<i64> {
@@ -354,7 +354,7 @@ impl PostgresCatalog {
         self.check_fenced_flush(&mut tx, document_id, row.expected_update_sequence)
             .await?;
         let sequence = self
-            .insert_log_row_reserved(&mut tx, document_id, row, reserved_keys, reserved_bytes)
+            .insert_log_row_reserved(&mut tx, document_id, row, reservation, reserved_bytes)
             .await?;
         tx.commit().await?;
         connection.complete();
@@ -373,7 +373,7 @@ impl PostgresCatalog {
         document_id: Uuid,
         row: FlushRow<'_>,
     ) -> Result<i64> {
-        self.insert_log_row_reserved(tx, document_id, row, &[], 0)
+        self.insert_log_row_reserved(tx, document_id, row, Uuid::nil(), 0)
             .await
     }
 
@@ -382,7 +382,7 @@ impl PostgresCatalog {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
         row: FlushRow<'_>,
-        reserved_keys: &[Uuid],
+        reservation: Uuid,
         reserved_bytes: i64,
     ) -> Result<i64> {
         if row.update_bytes.is_empty() {
@@ -393,7 +393,10 @@ impl PostgresCatalog {
         }) {
             return Err(Error::Invalid("source identity is invalid".into()));
         }
-        if reserved_bytes < 0 || (reserved_keys.is_empty() != (reserved_bytes == 0)) {
+        // Zero bytes means the flushed batches drew nothing from a
+        // reservation (a row written at creation, say), whatever key the
+        // sequencer holds; only a positive charge needs a real row.
+        if reserved_bytes < 0 || (reservation.is_nil() && reserved_bytes > 0) {
             return Err(Error::Invalid("invalid pending log reservation".into()));
         }
         let owner_id: Uuid = sqlx::query_scalar("SELECT owner_id FROM documents WHERE id=$1")
@@ -402,20 +405,38 @@ impl PostgresCatalog {
             .await?;
         lock_storage_usage(tx).await?;
         if reserved_bytes > 0 {
+            // The sequencer reserves in chunks, so the row is shared by every
+            // batch it has accepted and this flush takes its own batches'
+            // charge off it. `bytes` must stay positive, so an exact
+            // drawdown deletes the row. A missing row, or one holding less
+            // than the flush charges, means the reservation was lost.
             let epoch = self.writer_epoch()?;
-            let removed: Vec<i64> = sqlx::query_scalar(
+            let emptied = sqlx::query(
                 "DELETE FROM pending_log_reservations \
-                 WHERE document_id=$1 AND writer_epoch=$2 AND reservation_id=ANY($3) \
-                 RETURNING bytes",
+                 WHERE reservation_id=$1 AND document_id=$2 AND writer_epoch=$3 AND bytes=$4",
             )
+            .bind(reservation)
             .bind(document_id)
             .bind(epoch)
-            .bind(reserved_keys)
-            .fetch_all(&mut **tx)
-            .await?;
-            let removed_bytes = removed.iter().copied().fold(0_i64, i64::saturating_add);
-            if removed.len() != reserved_keys.len() || removed_bytes != reserved_bytes {
-                return Err(Error::Conflict("pending log reservation was lost".into()));
+            .bind(reserved_bytes)
+            .execute(&mut **tx)
+            .await?
+            .rows_affected();
+            if emptied == 0 {
+                let reduced = sqlx::query(
+                    "UPDATE pending_log_reservations SET bytes=bytes-$4 \
+                     WHERE reservation_id=$1 AND document_id=$2 AND writer_epoch=$3 AND bytes>$4",
+                )
+                .bind(reservation)
+                .bind(document_id)
+                .bind(epoch)
+                .bind(reserved_bytes)
+                .execute(&mut **tx)
+                .await?
+                .rows_affected();
+                if reduced == 0 {
+                    return Err(Error::Conflict("pending log reservation was lost".into()));
+                }
             }
         }
         let owner_usage = usage_bytes(tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
@@ -456,113 +477,38 @@ impl PostgresCatalog {
         Ok(sequence)
     }
 
-    /// Persist a quota reservation before an accepted source batch is
-    /// relayed. Each batch reserves its frame charge plus a row header; a
-    /// flush replaces the prefix reservation with the actual encoded row in
-    /// the same transaction.
+    /// Grows the document's log reservation row `reservation_key` by up to
+    /// `wanted` bytes, creating the row if needed, and returns the row's new
+    /// total. It is called before a source batch is acknowledged and relayed,
+    /// and only when the sequencer's in-memory headroom cannot cover the
+    /// batch, so it runs once per chunk of typing rather than once per
+    /// keystroke. It grants what the owner and deployment limits leave and
+    /// refuses with a quota error when that is less than `minimum`.
+    ///
+    /// The row has the same shape as a chat reservation and shares its
+    /// locking and limit checks. A flush takes its batches' charge off the
+    /// row (`insert_log_row_reserved`), and the sequencer deletes what is
+    /// left when the document goes idle.
     pub async fn reserve_pending_log_bytes(
         &self,
         document_id: Uuid,
         reservation_key: Uuid,
-        bytes: i64,
-        digest: [u8; 32],
-    ) -> Result<()> {
-        if bytes <= 0 {
-            return Err(Error::Invalid("invalid pending log reservation".into()));
-        }
-        let mut tx = self
-            .begin_write(
-                Fence::Required,
-                &[Lock::Document(document_id), Lock::StorageUsage],
-            )
-            .await?;
-        let owner_id: Option<Uuid> = sqlx::query_scalar(
-            "SELECT owner_id FROM documents WHERE id=$1 AND status='active' \
-             AND NOT EXISTS(SELECT 1 FROM moderated_projects WHERE document_id=$1)",
-        )
-        .bind(document_id)
-        .fetch_optional(&mut **tx)
-        .await?;
-        let owner_id = owner_id.ok_or(Error::NotFound)?;
-        let owner_usage = usage_bytes(&mut tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
-        let epoch = self.writer_epoch()?;
-        if let Some((existing_document, existing_epoch, existing_bytes, existing_digest)) =
-            sqlx::query_as::<_, (Uuid, i64, i64, Vec<u8>)>(
-                "SELECT document_id,writer_epoch,bytes,batch_digest \
-                 FROM pending_log_reservations WHERE reservation_id=$1",
-            )
-            .bind(reservation_key)
-            .fetch_optional(&mut **tx)
-            .await?
-        {
-            tx.commit().await?;
-            return if existing_document == document_id
-                && existing_epoch == epoch
-                && existing_bytes == bytes
-                && existing_digest.as_slice() == digest.as_slice()
-            {
-                Ok(())
-            } else {
-                Err(Error::Conflict(
-                    "pending source batch identity was reused with different bytes".into(),
-                ))
-            };
-        }
-        let deployment_usage = usage_bytes(&mut tx, UsageScope::Deployment, Sources::ALL).await?;
-        if owner_usage.saturating_add(bytes) > self.policy.owner_bytes {
-            return Err(Error::Quota(super::QuotaScope::Owner));
-        }
-        if deployment_usage.saturating_add(bytes) > self.policy.deployment_bytes {
-            return Err(Error::Quota(super::QuotaScope::Deployment));
-        }
-        sqlx::query(
-            "INSERT INTO pending_log_reservations \
-             (reservation_id,document_id,writer_epoch,bytes,batch_digest) \
-             VALUES($1,$2,$3,$4,$5)",
-        )
-        .bind(reservation_key)
-        .bind(document_id)
-        .bind(epoch)
-        .bind(bytes)
-        .bind(digest.as_slice())
-        .execute(&mut **tx)
-        .await?;
-        match tx.commit().await {
-            Ok(()) => Ok(()),
-            Err(commit_error) => match self
-                .pending_log_reservation_matches(reservation_key, document_id, epoch, bytes, digest)
-                .await
-            {
-                Ok(true) => Ok(()),
-                Ok(false) => Err(Error::from(commit_error)),
-                Err(reconcile_error) => Err(reconcile_error),
-            },
-        }
+        wanted: i64,
+        minimum: i64,
+    ) -> Result<i64> {
+        self.reserve_chat_bytes(document_id, reservation_key, wanted, minimum)
+            .await
     }
 
-    async fn pending_log_reservation_matches(
+    /// Deletes the log reservation row `reservation_key`. A missing row is
+    /// not an error.
+    pub async fn release_pending_log_reservation(
         &self,
-        reservation_key: Uuid,
         document_id: Uuid,
-        epoch: i64,
-        bytes: i64,
-        digest: [u8; 32],
-    ) -> Result<bool> {
-        let existing = sqlx::query_as::<_, (Uuid, i64, i64, Vec<u8>)>(
-            "SELECT document_id,writer_epoch,bytes,batch_digest \
-             FROM pending_log_reservations WHERE reservation_id=$1",
-        )
-        .bind(reservation_key)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(existing.is_some_and(
-            |(existing_document, existing_epoch, existing_bytes, existing_digest)| {
-                existing_document == document_id
-                    && existing_epoch == epoch
-                    && existing_bytes == bytes
-                    && existing_digest.as_slice() == digest.as_slice()
-            },
-        ))
+        reservation_key: Uuid,
+    ) -> Result<()> {
+        self.release_chat_reservation(document_id, reservation_key)
+            .await
     }
 
     pub async fn clear_stale_pending_log_reservations(&self) -> Result<()> {

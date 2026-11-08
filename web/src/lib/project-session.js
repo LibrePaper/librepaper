@@ -111,7 +111,28 @@ const encode = (bytes) => {
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
 };
-const decode = (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
+const decode = (text) =>
+  typeof Uint8Array.fromBase64 === "function"
+    ? Uint8Array.fromBase64(text)
+    : Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
+
+/// Splits a referenced rows blob into its batches: each is a `u32`
+/// big-endian length followed by that many bytes. A blob that does not divide
+/// exactly is refused, never partly imported.
+function unpackRows(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const batches = [];
+  let at = 0;
+  while (at < bytes.length) {
+    if (at + 4 > bytes.length) throw new Error(m.project_session_integrity());
+    const length = view.getUint32(at);
+    at += 4;
+    if (at + length > bytes.length) throw new Error(m.project_session_integrity());
+    batches.push(bytes.subarray(at, at + length));
+    at += length;
+  }
+  return batches;
+}
 
 
 // An id for a file: twelve hex characters, which is what `session.rs` mints
@@ -197,6 +218,9 @@ export function createProjectSession({
   const assets = doc.getMap("assets");
   const meta = doc.getMap("meta");
   let projectionRules = null;
+  // The last tree() build with the document version and rules it came from;
+  // calls between changes reuse it.
+  let treeCache = null;
   // The four maps that are the directory itself. A change to any of them is a
   // change to the file list; a change under one of them is not, because a
   // file's text sits inside `files`.
@@ -294,6 +318,35 @@ export function createProjectSession({
     connection.cancel();
     joinGate = Promise.resolve();
   }
+  // Fetches what a frame names by reference and checks it against the digest
+  // the frame carries. Resolves to nothing when the connection has gone or a
+  // vanished reference restarted the join; throws on any other failure.
+  async function fetchVerified(frame, stale) {
+    if (!fetchReference) throw new Error(m.project_session_cannot_fetch_reference());
+    let referenced;
+    try {
+      referenced = await fetchReference(frame.ref);
+    } catch (error) {
+      // A failure belongs to the socket that asked. Asking again on a
+      // connection that has gone would open a document nobody is
+      // reading, and raising on one would hand the error to whoever is
+      // now joining instead.
+      if (!speaksForThisJoin(stale)) return undefined;
+      if (error?.restartBaseline) {
+        send(openMessage());
+        return undefined;
+      }
+      throw error;
+    }
+    if (!speaksForThisJoin(stale)) return undefined;
+    const verified = Boolean(frame.digest) && await sha256Hex(referenced) === frame.digest;
+    // Hashing is a turn of its own, and a long one for a large base.
+    if (!speaksForThisJoin(stale)) return undefined;
+    if (!verified) {
+      throw new Error(m.project_session_integrity());
+    }
+    return referenced;
+  }
   function sequenceJoin(step) {
     const ran = joinGate.then(step, step);
     // The gate itself must never reject, or every join step queued behind a
@@ -386,6 +439,8 @@ export function createProjectSession({
     type: "doc-open",
     vector: encode(doc.oplogVersion().encode()),
     protocol: "librepaper.room.v3",
+    // This browser can fetch a large `doc-rows` payload by reference.
+    rowsRef: true,
   });
   try {
     persister = persistence?.open?.(doc, {
@@ -718,6 +773,7 @@ export function createProjectSession({
     /** @param {ProjectRules} rules */
     setRules(rules) {
       projectionRules = rules || {};
+      treeCache = null;
     },
 
     /* --------------------------------------------------------- the directory */
@@ -805,20 +861,36 @@ export function createProjectSession({
     /// fetches them.
     /** @returns {ProjectTree} */
     tree() {
-      const projection = projectDirectory(doc, projectionRules);
-      const texts = Object.create(null);
-      const entries = Object.create(null);
-      const digests = Object.create(null);
-      for (const [path, file] of projection.files) {
-        if (file.kind === "text") {
-          texts[path] = projection.texts.get(path);
-          entries[path] = { kind: "text", id: file.id };
-        } else {
-          digests[path] = file.digest;
-          entries[path] = { kind: "asset", sha: file.digest };
-        }
+      const version = doc.oplogVersion();
+      // Uncommitted operations are in the text but not yet in the version, so
+      // a cached build could be stale until the commit: build afresh then.
+      const pending = doc.getPendingTxnLength() > 0;
+      if (pending || !treeCache || treeCache.rules !== projectionRules || treeCache.version.compare(version) !== 0) {
+        const build = () => {
+          const projection = projectDirectory(doc, projectionRules);
+          const texts = Object.create(null);
+          const entries = Object.create(null);
+          const digests = Object.create(null);
+          for (const [path, file] of projection.files) {
+            if (file.kind === "text") {
+              texts[path] = projection.texts.get(path);
+              entries[path] = { kind: "text", id: file.id };
+            } else {
+              digests[path] = file.digest;
+              entries[path] = { kind: "asset", sha: file.digest };
+            }
+          }
+          return { texts, digests, files: entries };
+        };
+        treeCache = { version, rules: projectionRules, tree: build() };
       }
-      return { texts, digests, files: entries };
+      // Callers get their own top-level maps, so none can change the cache.
+      const { texts, digests, files } = treeCache.tree;
+      return {
+        texts: Object.assign(Object.create(null), texts),
+        digests: Object.assign(Object.create(null), digests),
+        files: Object.assign(Object.create(null), files),
+      };
     },
 
     /// The text at a path, for the caller that has a path and not an id --
@@ -1070,29 +1142,8 @@ export function createProjectSession({
           // same-origin marker rule A turns on, and the link key a reader
           // arrived with. Without them a document too large to send inline was
           // refused, which is what the notebook examples were doing.
-          if (!fetchReference) throw new Error(m.project_session_cannot_fetch_reference());
-          let referenced;
-          try {
-            referenced = await fetchReference(state.ref);
-          } catch (error) {
-            // A failure belongs to the socket that asked. Asking again on a
-            // connection that has gone would open a document nobody is
-            // reading, and raising on one would hand the error to whoever is
-            // now joining instead.
-            if (!speaksForThisJoin(stale)) return;
-            if (error?.restartBaseline) {
-              send(openMessage());
-              return;
-            }
-            throw error;
-          }
-          if (!speaksForThisJoin(stale)) return;
-          const verified = Boolean(state.digest) && await sha256Hex(referenced) === state.digest;
-          // Hashing is a turn of its own, and a long one for a large base.
-          if (!speaksForThisJoin(stale)) return;
-          if (!verified) {
-            throw new Error(m.project_session_integrity());
-          }
+          const referenced = await fetchVerified(state, stale);
+          if (!referenced) return;
           doc.import(referenced);
         } else if (state.base) {
           doc.import(decode(state.base));
@@ -1127,7 +1178,14 @@ export function createProjectSession({
         if (frame.protocol !== "librepaper.room.v3") {
           throw new Error(m.project_session_newer_version());
         }
-        if (frame.updates?.length) doc.importBatch(frame.updates.map(decode));
+        if (frame.ref) {
+          // Same fetch, authority and checks as a referenced base, and in
+          // the same order: it is sequenced behind that base's import.
+          const referenced = await fetchVerified(frame, stale);
+          if (!referenced) return;
+          const batches = unpackRows(referenced);
+          if (batches.length) doc.importBatch(batches);
+        } else if (frame.updates?.length) doc.importBatch(frame.updates.map(decode));
         flushRemoteDuringHydration();
         finishJoin(frame.vector, frame.durableVector);
       });
