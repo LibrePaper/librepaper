@@ -6,7 +6,7 @@
 // output must not drift. Definitions are read by regex from the source with
 // the tree's comments and verbatim text blanked.
 
-import { parser } from "../../latex-language/parser.js";
+import { latexTree } from "../../source-trees.js";
 import { extractOutline } from "../../outline.js";
 import { skipRanges } from "../../spellcheck/index.js";
 
@@ -190,11 +190,11 @@ function firstFrom(list, at) {
 /**
  * Items for one LaTeX source.
  * @param {string} text the file's text
- * @param {string} _path the file's path; the scan reads only the text
+ * @param {string} path the file's path, the key for reusing its last parse
  * @returns {IndexItem[]}
  */
-export function latexAdapter(text, _path) {
-  const tree = parser.parse(text);
+export function latexAdapter(text, path) {
+  const tree = latexTree(text, path);
   const headings = extractOutline(text, "latex");
   /** @type {IndexItem[]} */
   const items = [];
