@@ -4145,12 +4145,16 @@
       return;
     }
     settled = true;
+    await startCollaboration(document_);
     // Load the browser renderer for readers as well as editors; this is all
-    // transient and does not create a server-side result.
+    // transient and does not create a server-side result. Started after the
+    // collaboration module is in, because the editor cannot open without its
+    // CRDT and the engine (ten megabytes for Typst) would otherwise share the
+    // connection with it: the engine finishes no later this way, and the
+    // editor opens about a second sooner on a slow link.
     if (format) {
       warmEngine(format);
     }
-    await startCollaboration(document_);
     // The directory arrives after the session does. A session object alone is
     // not a snapshot.
     // No chooser and no saved distribution: `latex.configure` tells the
