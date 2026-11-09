@@ -110,6 +110,7 @@
   import { createFrameOverlays } from "../lib/reader/frame-overlays.js";
   import { createRenderDiagnostics } from "../lib/reader/render-diagnostics.js";
   import { createRenderCoordinator } from "../lib/reader/render-coordinator.js";
+  import { createSourceSchedule } from "../lib/reader/source-schedule.js";
   import { createRenderStatus } from "../lib/reader/render-status.svelte.js";
   import { provide } from "../lib/support/providers.js";
   import { createSteadyBusy } from "../lib/reader/steady-busy.js";
@@ -187,7 +188,7 @@
       // now. The target puts its format in place and paints the page this
       // browser last drew for it.
       target.update();
-      sourceGeneration += 1;
+      schedule.bump();
       outlineRevision += 1;
       settled = true;
       void paintPreview();
@@ -311,8 +312,7 @@
     framePreview?.clear();
     painted.reset({ keepSynctex: true });
     renderStatus.resetFailure();
-    clearTimeout(previewTimer);
-    previewTimer = null;
+    schedule.cancel();
     await tick();
     if (!readerDisposed) void paintPreview();
   }
@@ -357,8 +357,7 @@
     framePreview?.clear();
     painted.reset({ keepSynctex: true });
     renderStatus.resetFailure();
-    clearTimeout(previewTimer);
-    previewTimer = null;
+    schedule.cancel();
     await tick();
     if (!readerDisposed) void paintPreview();
   }
@@ -1473,7 +1472,7 @@
     invalidate: () => renderCoordinator.invalidate(),
     clearFrame: () => framePreview.clear(),
     navigateFrame: () => { if (docsOrigin) navigateFrame(); },
-    cancelDebounce: () => { clearTimeout(previewTimer); previewTimer = null; },
+    cancelDebounce: () => schedule.cancel(),
     resetStatus: () => renderStatus.resetFailure(),
     cleared: () => {
       renderStatus.clearDocx();
@@ -1823,10 +1822,16 @@
   // and a document belongs on the documents origin, not in this page. The
   // agent republishes its text from there, which re-anchors every comment
   // against what was just typed.
-  let sourceGeneration = 0;
+  const schedule = createSourceSchedule({
+    editing: () => editing,
+    format: () => sourceFormat,
+    latexDebounce: () => latex.debounce(),
+    paint: () => paintPreview(),
+    retarget: () => target.update(),
+  });
   const renderCoordinator = createRenderCoordinator({
     navigation: () => target.navigation,
-    source: () => sourceGeneration,
+    source: () => schedule.generation,
     main: () => treeNow().main,
     // Called rather than passed: the renderer is built further down the file,
     // and this closure is what lets the coordinator exist before it.
@@ -1931,11 +1936,6 @@
       selection: range && range.file === openFile ? countWordsIn(editor.text(), outlineFormat, range.from, range.to) : null,
     };
   });
-  // Keep one render in flight and coalesce requests into the latest tree.
-  // This bounds the worker queue while typing, and keeps each LaTeX PDF
-  // tied to the snapshot digest of the tree that produced it.
-  let previewTimer = null;
-
   // What the last compile said. When it is painted is `diagnostics.js`'s
   // rule, and the wait it counts is from the keystroke rather than from the
   // render that noticed the error, so a slow render does not add its own
@@ -2366,7 +2366,7 @@
     facts: () => ({
       disposed: readerDisposed,
       navigation: target.navigation,
-      source: sourceGeneration,
+      source: schedule.generation,
       everPainted: painted.ever,
       format: sourceFormat,
       hasSession: Boolean(session),
@@ -2389,8 +2389,7 @@
     onsynctex: (parsed) => { painted.synctex = parsed; },
     send: (message) => tell(message),
     clearDebounce: () => {
-      clearTimeout(previewTimer);
-      previewTimer = null;
+      schedule.cancel();
     },
     refreshFrame: () => refreshFramedPage(),
     debug: (...parts) => {
@@ -2400,27 +2399,9 @@
     },
   });
 
-  // A source that is not actively being edited in this browser waits for a
-  // pause, so remote changes and preview-only views do not render every word.
-  const PASSIVE_PREVIEW_DEBOUNCE = 1000;
-
-  // Fast formats paint on the next animation frame, so every keystroke in one
-  // frame shares one request and the coordinator queues at most one more.
-  // Frames do not run in a hidden tab, so a hidden page uses a zero timer.
-  // Returns a function that cancels the pending paint.
-  let previewFrame = null;
-  function requestPreviewFrame(run) {
-    if (typeof requestAnimationFrame === "function" && !document.hidden) {
-      const id = requestAnimationFrame(run);
-      return () => cancelAnimationFrame(id);
-    }
-    const id = setTimeout(run, 0);
-    return () => clearTimeout(id);
-  }
-
   function sourceChanged() {
     if (readerDisposed) return;
-    sourceGeneration += 1;
+    schedule.bump();
     painted.state.empty = false;
     refreshReview();
     outlineRevision += 1;
@@ -2428,7 +2409,7 @@
       const main = previewPath;
       const parsed = quarto.parseQuarto(String(session.textOf(session.idOf(main))?.toString?.() ?? ""), { path: main });
       const nextDiagnostics = parsed.diagnostics.map((item) => diagnosticContext(item, { main, texts: { [main]: parsed.source } }, ""));
-      const diagnosticsGeneration = sourceGeneration;
+      const diagnosticsGeneration = schedule.generation;
       // Loro can notify this observer from inside CodeMirror's update
       // listener. Editor.setDiagnostics dispatches another update, which
       // CodeMirror rejects while the first one is still in progress. Source
@@ -2436,37 +2417,13 @@
       // the current transaction has returned and is skipped if newer text
       // arrived before then.
       queueMicrotask(() => {
-        if (readerDisposed || diagnosticsGeneration !== sourceGeneration) return;
+        if (readerDisposed || diagnosticsGeneration !== schedule.generation) return;
         diagnosticsController.render(nextDiagnostics);
       });
     }
     // The keystroke, which is what the diagnostic wait is measured from.
     diagnosticPainter.typed();
-    // Fast formats use a short bounded preview cadence. Only LaTeX owns its
-    // longer compiler debounce; postponing this timer for every Typst
-    // keystroke would starve the preview indefinitely.
-    if (editing && sourceFormat !== "latex") {
-      if (previewFrame !== null || previewTimer !== null) return;
-      previewFrame = requestPreviewFrame(() => {
-        previewFrame = null;
-        paintPreview();
-      });
-      return;
-    }
-    if (previewFrame !== null) {
-      previewFrame();
-      previewFrame = null;
-    }
-    clearTimeout(previewTimer);
-    // A LaTeX compile takes seconds, so it waits for the source to be quiet
-    // for longer -- `latex.debounce()`, which adapts to the last compile pass.
-    // A reader watching somebody else type waits longer still, and the longer
-    // of the two wins.
-    const wait =
-      sourceFormat === "latex"
-        ? Math.max(latex.debounce(), editing ? 0 : PASSIVE_PREVIEW_DEBOUNCE)
-        : PASSIVE_PREVIEW_DEBOUNCE;
-    previewTimer = setTimeout(paintPreview, wait);
+    schedule.changed();
   }
 
   /* ------------------------------------------------------- keeping in step */
@@ -3271,7 +3228,7 @@
     docx: exportAvailability(displayedFormat, "docx", { local: exportsLocally }),
   });
 
-  const docxDownload = $derived(renderState.docxArtifact && renderState.docxArtifact.source === sourceGeneration && renderState.docxArtifact.navigation === target.navigation ? renderState.docxArtifact : null);
+  const docxDownload = $derived(renderState.docxArtifact && renderState.docxArtifact.source === schedule.generation && renderState.docxArtifact.navigation === target.navigation ? renderState.docxArtifact : null);
 
   // The identity of the source the frame was last drawn from, so an export
   // can tell whether the page on screen is the current document.
@@ -3626,16 +3583,6 @@
     target.unlock();
   }
 
-  // Any edit can change which file includes which, so the preview target is
-  // worked out again once typing pauses, so the texts are read once per pause
-  // and not once per keystroke.
-  const TARGET_PAUSE = 500;
-  let targetTimer = null;
-  function scheduleTargetUpdate() {
-    clearTimeout(targetTimer);
-    targetTimer = setTimeout(() => target.update(), TARGET_PAUSE);
-  }
-
   // A file added, renamed or removed: the list is redrawn and the document is
   // rendered again, because every one of those changes what a compiler would
   // produce. An edit to the text of any file is a source change too, because
@@ -3648,7 +3595,7 @@
     if (active.directoryChanged(events)) refreshFiles();
     if (needsSourceRefresh(events)) {
       sourceChanged();
-      scheduleTargetUpdate();
+      schedule.scheduleTarget();
     }
   }
 
@@ -4104,10 +4051,8 @@
       target.bump();
       renderers.cancelPreview();
       clearTimeout(reviewTimer);
-      clearTimeout(previewTimer);
-      clearTimeout(targetTimer);
+      schedule.dispose();
       projection.dispose();
-      previewTimer = null;
       boot.dispose();
       framePreview.dispose();
       stopLatex();

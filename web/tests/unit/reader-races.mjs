@@ -12,6 +12,7 @@ import { createReaderCollaboration } from "../../src/lib/reader/collaboration.js
 import { createProjectSession } from "../../src/lib/project-session.js";
 import { createPreviewRenderer } from "../../src/lib/reader/preview-render.js";
 import { createRenderCoordinator } from "../../src/lib/reader/render-coordinator.js";
+import { createSourceSchedule } from "../../src/lib/reader/source-schedule.js";
 import { loadRunes } from "../helpers/runes.mjs";
 import { needsSourceRefresh } from "../../src/lib/reader/source-events.js";
 import { englishSource } from "../helpers/english-source.mjs";
@@ -205,6 +206,7 @@ const context = (values) => {
     previewChoices: [],
     lockedFile: "",
     target: { navigation: 0, bump() { this.navigation += 1; } },
+    schedule: { generation: 0 },
     SLUG: "doc",
     buildPreferences: { selection: "automatic", backend: "browser", output: "html" },
     session: null,
@@ -215,7 +217,7 @@ const context = (values) => {
   });
   ctx.renderCoordinator = createRenderCoordinator({
     navigation: () => ctx.target.navigation,
-    source: () => ctx.sourceGeneration,
+    source: () => ctx.schedule.generation,
     main: () => ctx.treeNow?.().main || "",
     render: (ticket) => ctx.renderPreview(ticket),
   });
@@ -397,7 +399,7 @@ console.log("reader-races: all checks passed");
   const active = { files,
     directoryChanged: (events) => !Array.isArray(events) || events.some((event) => directory.has(event.target)) };
   let targets = 0;
-  const ctx = context({ session: active, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: () => changes++, scheduleTargetUpdate: () => targets++ });
+  const ctx = context({ session: active, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: () => changes++, schedule: { scheduleTarget: () => targets++ } });
   vm.runInContext(body("  function filesChanged(events, active = session)", "  function refreshPeers()"), ctx);
   ctx.events = [{ target: "cid:2@1:Text" }];
   vm.runInContext("filesChanged(events)", ctx);
@@ -606,17 +608,16 @@ for (const invalidate of [null, "navigation", "main"]) {
   let rescheduled = 0;
   const ctx = context({
     painted: createPainted(),
-    sourceGeneration: 0, mayEdit: true, publishedBundle: null,
+    mayEdit: true, publishedBundle: null,
     outlineRevision: 0, sourceFormat: "", editing: false,
-    previewTimer: null, previewFrame: null, requestPreviewFrame: () => () => {}, PASSIVE_PREVIEW_DEBOUNCE: 1000,
-    setTimeout: () => 1, clearTimeout: () => {}, paintPreview: () => {},
+    schedule: createSourceSchedule({ editing: () => false, format: () => "", setTimer: () => 1, clearTimer: () => {} }),
     diagnosticPainter: { typed: () => {} },
     refreshReview: () => { reviewed += 1; },
     bundle: { keepCurrent: () => { rescheduled += 1; } },
   });
   vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   vm.runInContext("sourceChanged()", ctx);
-  assert.equal(ctx.sourceGeneration, 1);
+  assert.equal(ctx.schedule.generation, 1);
   assert.equal(reviewed, 1, "an edit refreshes the rows of the Changes panel");
   assert.equal(rescheduled, 0, "an edit never schedules a stored reader rendition");
 }
@@ -649,44 +650,6 @@ for (const invalidate of [null, "navigation", "main"]) {
   assert.deepEqual(JSON.parse(JSON.stringify(ctx.changeRows)), [], "no session, no rows");
 }
 
-// Further keystrokes must not postpone an editor's already scheduled preview.
-{
-  let scheduled = 0;
-  const ctx = context({
-    painted: createPainted(),
-    sourceGeneration: 0, editing: true, sourceFormat: "markdown", pdfOutput: false, mayEdit: true, publishedBundle: null,
-    previewTimer: null, previewFrame: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
-    // Markdown renders on the next frame, never behind a timer.
-    requestPreviewFrame: () => { scheduled += 1; return () => {}; },
-    diagnosticPainter: { typed: () => {} },
-    setTimeout: () => assert.fail("an editor's Markdown preview does not wait on a timer"),
-    clearTimeout: () => {}, paintPreview: () => {},
-  });
-  vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
-  for (let i = 0; i < 10; i++) vm.runInContext("sourceChanged()", ctx);
-  assert.equal(scheduled, 1);
-  assert.equal(ctx.sourceGeneration, 10);
-}
-
-// Typst's PDF compiler is still scheduled at a bounded cadence: continuous
-// typing must not keep moving the timer's deadline forever.
-{
-  let scheduled = 0;
-  const ctx = context({
-    painted: createPainted(),
-    sourceGeneration: 0, editing: true, sourceFormat: "typst", pdfOutput: true, compilesHere: true,
-    previewTimer: null, previewFrame: null, diagnosticPainter: { typed: () => {} },
-    // Typst renders on the next frame, never behind a timer.
-    requestPreviewFrame: () => { scheduled += 1; return () => {}; },
-    setTimeout: () => assert.fail("an editor's Typst preview does not wait on a timer"),
-    clearTimeout: () => {}, paintPreview: () => {}, dropHeldRendering: () => {},
-    renderingStore: { schedulePoll: () => {}, cancelPoll: () => {} },
-  });
-  vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
-  for (let i = 0; i < 10; i++) vm.runInContext("sourceChanged()", ctx);
-  assert.equal(scheduled, 1, "Typst preview timer remains bounded during typing");
-}
-
 // Loro may notify the main-text observer from inside CodeMirror's update
 // listener. Diagnostic painting must wait until that update has returned;
 // otherwise Editor.setDiagnostics dispatches a forbidden nested update.
@@ -695,8 +658,12 @@ for (const invalidate of [null, "navigation", "main"]) {
   let paintedDiagnostics = 0;
   const ctx = context({
     painted: createPainted(),
-    sourceGeneration: 0, quartoFreshnessSerial: 0, sourceFormat: "quarto", quartoView: "draft",
+    quartoFreshnessSerial: 0, sourceFormat: "quarto", quartoView: "draft",
     previewPath: "main.qmd",
+    schedule: createSourceSchedule({
+      editing: () => true, format: () => "quarto", paint: () => {},
+      requestFrame: () => 1, cancelFrame: () => {}, setTimer: () => 1, clearTimer: () => {},
+    }),
     session: {
       idOf: () => "main", textOf: () => ({ toString: () => "# Draft\n" }),
     },
@@ -706,9 +673,7 @@ for (const invalidate of [null, "navigation", "main"]) {
       paintedDiagnostics++;
     } },
     diagnosticPainter: { typed: () => {} }, diagnosticContext,
-    editing: true, pdfOutput: false, previewTimer: null,
-    previewFrame: null, requestPreviewFrame: () => () => {},
-    setTimeout: () => {}, clearTimeout: () => {}, paintPreview: () => {},
+    editing: true, pdfOutput: false,
   });
   vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   vm.runInContext("sourceChanged()", ctx);
@@ -1130,7 +1095,7 @@ for (const latest of [
     Object.defineProperty(globalThis, 'previewPath', { get() { return target.state.path; } });
     Object.defineProperty(globalThis, 'aloneSet', { get() { return target.state.alone; } });
   `, ctx);
-  vm.runInContext(`${body('  function lockPreviewOn(id)', '  function lockPreview(id)')}\n${body('  function lockPreview(id)', '  function unlockPreview()')}\n${body('  function unlockPreview()', '  // Any edit can change')}\n${body('  function treeNow()', '  // Painting the preview')}`, ctx);
+  vm.runInContext(`${body('  function lockPreviewOn(id)', '  function lockPreview(id)')}\n${body('  function lockPreview(id)', '  function unlockPreview()')}\n${body('  function unlockPreview()', '  // A file added, renamed or removed')}\n${body('  function treeNow()', '  // Painting the preview')}`, ctx);
   const treeMain = () => vm.runInContext('treeNow().main', ctx);
 
   // The eye locks without moving the source, and the source-only layout makes
