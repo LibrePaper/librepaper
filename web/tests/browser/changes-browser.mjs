@@ -71,8 +71,8 @@ window.rows = () => [...document.querySelectorAll('.change-row')].map((row) => (
   removed: row.querySelector('.deletion .change-text')?.textContent?.trim() || '',
   added: row.querySelector('.insertion .change-text')?.textContent?.trim() || '',
   meta: row.querySelector('.row-meta')?.textContent?.trim() || '',
-  active: row.classList.contains('active'),
-  picked: row.classList.contains('picked'),
+  active: row.getAttribute('aria-current') === 'true',
+  picked: !!row.querySelector('.row-pick')?.checked,
 }));
 window.count = () => document.querySelector('.changes-toolbar .changes-count')?.textContent?.trim() || '';
 window.scope = () => document.querySelector('.changes-toolbar .scope-label')?.textContent?.trim() || '';

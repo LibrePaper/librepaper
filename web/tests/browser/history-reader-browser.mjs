@@ -180,8 +180,8 @@ try {
   assert.equal(await switchPressed('Previous'), 'true', 'Previous is the default');
   const endLabel = which => tab.evaluate(`document.querySelector('.history-endpoint[title="Change ${which} version"] .history-endpoint-label')?.textContent.trim() || ''`);
   const clickedName = await endLabel('newer'), olderName = await endLabel('older');
-  const restoreText = await tab.evaluate(`document.querySelector('.history-restore')?.textContent.trim() || ''`);
-  assert.ok(restoreText.includes(clickedName) && !restoreText.includes(olderName), `restore names the clicked version, says: ${restoreText}`);
+  const restoreTitle = await tab.evaluate(`document.querySelector('.history-restore')?.getAttribute('title') || ''`);
+  assert.ok(restoreTitle.includes(clickedName) && !restoreTitle.includes(olderName), `restore names the clicked version, title: ${restoreTitle}`);
   await tab.evaluate(`${switchButton('Latest')}.click()`);
   await until('Latest is chosen', async () => (await switchPressed('Latest')) === 'true', 3000);
   await expectDiff(sources[1], current);
