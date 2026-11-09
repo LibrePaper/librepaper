@@ -4,6 +4,7 @@
 import { EditorView, ViewPlugin, Decoration } from "@codemirror/view";
 import { RangeSetBuilder, StateEffect } from "@codemirror/state";
 import { skipRanges } from "./index.js";
+import { onTypstSyntax } from "../source-trees.js";
 
 // Above this length a scan, a full pass over the text, costs more than the
 // underlines are worth, so no markup is marked.
@@ -23,6 +24,10 @@ const rescanned = StateEffect.define();
 // rather than scanning the text again.
 const extensions = new Map();
 
+// Names each view's text for the parsers, so an edit re-parses from the
+// view's previous tree.
+let views = 0;
+
 /**
  * The browser's spellcheck for a prose file, with its markup marked
  * spellcheck="false" so only the prose is checked.
@@ -38,9 +43,13 @@ function build(format) {
   const markup = ViewPlugin.fromClass(class {
     constructor(view) {
       this.view = view;
-      this.ranges = scanFor(view.state.doc);
+      this.key = `spellcheck:${++views}`;
+      this.ranges = this.scan(view.state.doc);
       this.timer = null;
       this.decorations = this.build(view);
+      // Until typst-syntax.wasm loads, a Typst text is skipped whole. Scan
+      // again when it arrives.
+      this.unsubscribe = format === "typst" ? onTypstSyntax(() => this.rescan()) : null;
     }
 
     update(update) {
@@ -64,12 +73,18 @@ function build(format) {
 
     rescan() {
       this.timer = null;
-      this.ranges = scanFor(this.view.state.doc);
+      this.ranges = this.scan(this.view.state.doc);
       this.view.dispatch({ effects: rescanned.of(null) });
     }
 
     destroy() {
       clearTimeout(this.timer);
+      this.unsubscribe?.();
+    }
+
+    scan(doc) {
+      if (doc.length > MAX_SCAN_LENGTH) return [];
+      return skipRanges(doc.toString(), format, this.key);
     }
 
     // Marks the part of each skipped range that is on screen. The ranges are
@@ -93,11 +108,6 @@ function build(format) {
   }, {
     decorations: (plugin) => plugin.decorations,
   });
-
-  function scanFor(doc) {
-    if (doc.length > MAX_SCAN_LENGTH) return [];
-    return skipRanges(doc.toString(), format);
-  }
 
   return [EditorView.contentAttributes.of({ spellcheck: "true" }), markup];
 }

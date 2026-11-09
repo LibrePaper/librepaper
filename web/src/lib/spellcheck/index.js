@@ -22,13 +22,14 @@ const SCANNERS = new Map([
  * non-empty [from, to) ranges.
  * @param {string} text
  * @param {string} format  "latex" | "typst" | "markdown" | "quarto" | "html" | anything else
+ * @param {string} [key]  names the document, so an edit re-parses from its previous tree
  * @returns {Array<[number, number]>}
  */
-export function skipRanges(text, format) {
+export function skipRanges(text, format, key) {
   const scan = SCANNERS.get(format);
   if (!scan) return [];
   const end = text.length;
-  const clamped = scan(text)
+  const clamped = scan(text, key)
     .map(([from, to]) => [Math.max(0, Math.min(from, end)), Math.max(0, Math.min(to, end))])
     .filter(([from, to]) => to > from)
     .sort((a, b) => a[0] - b[0]);

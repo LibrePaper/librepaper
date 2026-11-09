@@ -163,8 +163,12 @@ const typstListeners = new Set();
 /** Starts loading typst-syntax.wasm, once. The listeners run when it arrives. */
 function startTypstSyntax() {
   if (typstLoading) return;
+  // A load that fails or finds no module is forgotten, so a later call retries.
   typstLoading = loadTypstSyntax().then((api) => {
-    if (!api) return;
+    if (!api) {
+      typstLoading = null;
+      return;
+    }
     const listeners = [...typstListeners];
     typstListeners.clear();
     for (const listener of listeners) {
@@ -174,6 +178,8 @@ function startTypstSyntax() {
         // One listener's failure must not stop the others.
       }
     }
+  }, () => {
+    typstLoading = null;
   });
 }
 
