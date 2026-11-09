@@ -19,6 +19,7 @@ import { englishSource } from "../helpers/english-source.mjs";
 
 const { createBuildSettings } = await loadRunes(new URL("../../src/lib/reader/build-settings.svelte.js", import.meta.url));
 const { createTimeline } = await loadRunes(new URL("../../src/lib/reader/timeline.svelte.js", import.meta.url));
+const { createPainted } = await loadRunes(new URL("../../src/lib/reader/painted.svelte.js", import.meta.url));
 
 const reader = englishSource(readFileSync(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8"));
 const body = (start, end) => {
@@ -445,7 +446,7 @@ console.log("reader-races: all checks passed");
     liveTreeNow: () => ({ texts: { "paper.tex": "\\documentclass{article}" }, digests: {} }),
     previewTarget, rendersAlone, openingFile, includersOf, readerProjectOwner: {}, warmEngine: () => {},
     tick: async () => ({ then: () => {} }), paintPreview: () => {},
-    navigationGeneration: 0, everPainted: false, everPaintedShown: false,
+    navigationGeneration: 0, painted: createPainted(),
     docsOrigin: null, navigateFrame: () => {},
     framePreview: { clear: () => {} },
     renderCoordinator: { invalidate: () => {} },
@@ -636,6 +637,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   let reviewed = 0;
   let rescheduled = 0;
   const ctx = context({
+    painted: createPainted(),
     sourceGeneration: 0, mayEdit: true, publishedBundle: null,
     outlineRevision: 0, sourceFormat: "", editing: false,
     previewTimer: null, previewFrame: null, requestPreviewFrame: () => () => {}, PASSIVE_PREVIEW_DEBOUNCE: 1000,
@@ -683,6 +685,7 @@ for (const invalidate of [null, "navigation", "main"]) {
 {
   let scheduled = 0;
   const ctx = context({
+    painted: createPainted(),
     sourceGeneration: 0, editing: true, sourceFormat: "markdown", pdfOutput: false, mayEdit: true, publishedBundle: null,
     previewTimer: null, previewFrame: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
     // Markdown renders on the next frame, never behind a timer.
@@ -702,6 +705,7 @@ for (const invalidate of [null, "navigation", "main"]) {
 {
   let scheduled = 0;
   const ctx = context({
+    painted: createPainted(),
     sourceGeneration: 0, editing: true, sourceFormat: "typst", pdfOutput: true, compilesHere: true,
     previewTimer: null, previewFrame: null, diagnosticPainter: { typed: () => {} },
     // Typst renders on the next frame, never behind a timer.
@@ -722,6 +726,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   let inEditorUpdate = true;
   let paintedDiagnostics = 0;
   const ctx = context({
+    painted: createPainted(),
     sourceGeneration: 0, quartoFreshnessSerial: 0, sourceFormat: "quarto", quartoView: "draft",
     previewPath: "main.qmd",
     session: {
@@ -1150,7 +1155,7 @@ for (const latest of [
     renderCoordinator: { invalidate: () => {} },
     renderStatus: { resetFailure: () => {}, clearDocx: () => {} },
     diagnosticPainter: { rendered: () => {} },
-    previewTimer: null, deliveredKind: '', activeSynctex: null, previewCleared: false,
+    previewTimer: null, painted: createPainted(), previewCleared: false,
     navigateFrame: () => {},
     tick: async () => {}, paintPreview: () => painted++,
   });

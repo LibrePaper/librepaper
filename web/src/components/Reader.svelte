@@ -32,6 +32,7 @@
   import { createReaderCollaboration } from "../lib/reader/collaboration.js";
   import { createWorkspace } from "../lib/reader/workspace.svelte.js";
   import { createProjectionSource } from "../lib/reader/projection-source.svelte.js";
+  import { createPainted } from "../lib/reader/painted.svelte.js";
   import { createJumps, isBackChord } from "../lib/reader/jumps.svelte.js";
   import { createBuildSettings } from "../lib/reader/build-settings.svelte.js";
   import { createTimeline } from "../lib/reader/timeline.svelte.js";
@@ -307,11 +308,7 @@
     renderers.cancelPreview({ keepWarm: true });
     latex.cancel();
     framePreview?.clear();
-    deliveredKind = "";
-    everPainted = false;
-    everPaintedShown = false;
-    documentEmpty = false;
-    pageDrawn = false;
+    painted.reset({ keepSynctex: true });
     renderStatus.resetFailure();
     clearTimeout(previewTimer);
     previewTimer = null;
@@ -357,11 +354,7 @@
     navigationGeneration += 1;
     renderers.cancelPreview({ keepWarm: true });
     framePreview?.clear();
-    deliveredKind = "";
-    everPainted = false;
-    everPaintedShown = false;
-    documentEmpty = false;
-    pageDrawn = false;
+    painted.reset({ keepSynctex: true });
     renderStatus.resetFailure();
     clearTimeout(previewTimer);
     previewTimer = null;
@@ -532,7 +525,7 @@
         // The pages of the newest delivery are on screen, so the waiting
         // display gives way to them. A paint of an older delivery does not.
         frameHasPage = true;
-        if (message.frameGeneration >= framePreview.deliveredGeneration) pageDrawn = true;
+        if (message.frameGeneration >= framePreview.deliveredGeneration) painted.drawn();
         break;
       case "viewer-state":
         viewerView = message.drawn
@@ -1919,33 +1912,20 @@
     deliver: (list) => editor?.setDiagnostics?.(list),
   });
   const diagnosticPainter = diagnosticsController.painter;
-  // Whether the frame has ever shown a page. Until it has, a document that
-  // does not compile has nothing to keep on the screen.
-  let everPainted = false;
-  // The same fact, in a form the markup may read. `everPainted` is a plain
-  // variable on purpose -- it is written from inside a render and read
-  // nowhere near one -- and a reader's "not yet rendered" is the one place
-  // the question is asked from the template.
-  let everPaintedShown = $state(false);
-  // Whether the page for the current target is on the screen. For a PDF that
-  // is the viewer saying it drew; a page that is only delivered is still
-  // blank in a viewer that is loading. Reset wherever `everPaintedShown` is.
-  let pageDrawn = $state(false);
+  // What the preview frame shows, and what it has shown since it last loaded.
+  // The facts and their resets live in painted.svelte.js.
+  const painted = createPainted();
   // Whether the frame shows any page at all since it last loaded, even one
   // of another file. The viewer swaps new pages in only once they are drawn,
   // so such a frame can stay in sight while it draws the next one.
   let frameHasPage = $state(false);
-  // The render found nothing to draw: the file is known and has no text. This
-  // settles the preview, so nothing is left to wait for. Reset wherever
-  // `everPaintedShown` is, and by any change to the source.
-  let documentEmpty = $state(false);
   // A delivered PDF the viewer has not confirmed within this long is shown
   // anyway. The confirmation is what keeps the frame out of sight, and a
   // viewer that never sends it must not leave the pane waiting for ever.
   const DRAWN_GRACE_MS = 4000;
   $effect(() => {
-    if (!pdfOutput || !everPaintedShown || pageDrawn) return;
-    const timer = setTimeout(() => { pageDrawn = true; }, DRAWN_GRACE_MS);
+    if (!pdfOutput || !painted.state.shown || painted.state.drawn) return;
+    const timer = setTimeout(() => painted.drawn(), DRAWN_GRACE_MS);
     return () => clearTimeout(timer);
   });
   // The renderer engine being downloaded for the preview, or "". LaTeX
@@ -2156,7 +2136,7 @@
   // reported as a tool requirement instead of opening a retained result.
   const compilesHere = $derived(renderers.compilerAvailable(sourceFormat));
   // Nothing can be drawn here, so there is nothing to wait for.
-  const noCompiler = $derived(pdfOutput && !everPaintedShown && !renderState.failure && !compilesHere);
+  const noCompiler = $derived(pdfOutput && !painted.state.shown && !renderState.failure && !compilesHere);
 
   // The LaTeX compile status: idle, running, or failed, with progress and
   // messages. Used by Diagnostics and the preview's progress line.
@@ -2200,10 +2180,6 @@
     untrack(() => diagnosticsController.refresh());
   });
 
-  // The kind of the payload the frame was last handed -- "pdf", "html", or
-  // "" since the last navigation. `framePreview.preview()` knows the same,
-  // but not reactively, and the File menu's download items follow this.
-  let deliveredKind = $state("");
   // What the PDF frame is showing, as the frame itself reports it: whether a
   // page is drawn at all, the zoom mode in force, and the scale it came out
   // at. The header's controls are drawn from this rather than from what was
@@ -2239,7 +2215,6 @@
   let darkNow = $state(false);
   $effect(() => onMode((next) => (darkNow = next === "dark")));
   let viewerTool = $state("select");
-  let activeSynctex = null;
   framePreview = createFramePreview({
     slug: SLUG,
     getDocsOrigin: () => docsOrigin,
@@ -2253,22 +2228,17 @@
       // it loads. Until then the controls go away rather than describing the
       // document that just left.
       viewerView = null;
-      pageDrawn = false;
+      painted.navigated();
       viewerTool = "select";
       invertSent = false;
       densitySent = false;
       findAsk = 0;
       renderCoordinator.invalidate();
-      deliveredKind = "";
       renderStatus.clearDocx();
-      activeSynctex = null;
       frameOverlays.resetAnnotations();
     },
     onDelivered: (payload) => {
-      deliveredKind = payload.kind;
-      everPainted = true;
-      everPaintedShown = true;
-      documentEmpty = false;
+      painted.delivered();
       // An HTML page is on screen the moment it is handed over.
       if (payload.kind === "html") frameHasPage = true;
     },
@@ -2352,19 +2322,14 @@
       if (!mayEdit) renderedProjectDigest = projectDigest || "";
     },
     onEmpty: () => {
-      deliveredKind = "";
-      everPainted = false;
-      everPaintedShown = false;
-      pageDrawn = false;
-      activeSynctex = null;
+      painted.reset({ empty: true });
       renderStatus.resetFailure();
-      documentEmpty = true;
     },
     facts: () => ({
       disposed: readerDisposed,
       navigation: navigationGeneration,
       source: sourceGeneration,
-      everPainted,
+      everPainted: painted.ever,
       format: sourceFormat,
       hasSession: Boolean(session),
       paintsTheFrame,
@@ -2383,7 +2348,7 @@
       return manual;
     },
     manualPending: () => manualCompile,
-    onsynctex: (parsed) => { activeSynctex = parsed; },
+    onsynctex: (parsed) => { painted.synctex = parsed; },
     send: (message) => tell(message),
     clearDebounce: () => {
       clearTimeout(previewTimer);
@@ -2418,7 +2383,7 @@
   function sourceChanged() {
     if (readerDisposed) return;
     sourceGeneration += 1;
-    documentEmpty = false;
+    painted.state.empty = false;
     refreshReview();
     outlineRevision += 1;
     if (sourceFormat === "quarto" && session && previewPath) {
@@ -2515,9 +2480,9 @@
     // stripping .tex comments out of it would blank the wrong runs.
     const openPath = session?.paths?.get(openFile) || "";
     const format = openPath ? renderers.formatOf(openPath) : sourceFormat;
-    if (format === "latex" && typeof activeSynctex !== "undefined" && activeSynctex) {
+    if (format === "latex" && typeof painted.synctex !== "undefined" && painted.synctex) {
       const path = session?.paths?.get(openFile) || "";
-      const precise = activeSynctex.forward(path, synctexLineAt(editor.text(), editor.caret()));
+      const precise = painted.synctex.forward(path, synctexLineAt(editor.text(), editor.caret()));
       if (precise) {
         tell({ type: "synctex-locate", page: precise.page, x: precise.x, y: precise.y });
         return;
@@ -2555,8 +2520,8 @@
 
   function followPdfClick(pdfPoint) {
     if (!linked || !editing || !editor || sourceFormat !== "latex" ||
-        typeof activeSynctex === "undefined" || !activeSynctex || !pdfPoint) return false;
-    const precise = activeSynctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y));
+        typeof painted.synctex === "undefined" || !painted.synctex || !pdfPoint) return false;
+    const precise = painted.synctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y));
     const id = precise && session.idOf(precise.path);
     if (!id) return false;
     rememberPlace(id);
@@ -2579,8 +2544,8 @@
     let at = null;
     // SyncTeX is only for LaTeX. Any other format, or a SyncTeX point that does
     // not resolve to the open file, falls back to the text the click carried.
-    const precise = pdfPoint && sourceFormat === "latex" && activeSynctex
-      ? activeSynctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y))
+    const precise = pdfPoint && sourceFormat === "latex" && painted.synctex
+      ? painted.synctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y))
       : null;
     if (precise && session.idOf(precise.path) === openFile) {
       // SyncTeX gives a line and no column, so the start of that line is the place.
@@ -3619,12 +3584,7 @@
     clearTimeout(previewTimer);
     previewTimer = null;
     framePreview.clear();
-    deliveredKind = "";
-    everPainted = false;
-    everPaintedShown = false;
-    documentEmpty = false;
-    pageDrawn = false;
-    activeSynctex = null;
+    painted.reset();
     renderStatus.resetFailure();
     renderStatus.clearDocx();
     diagnosticPainter.rendered({ page: false, diagnostics: [] });
@@ -3691,11 +3651,7 @@
     renderCoordinator.invalidate();
     framePreview.clear();
     // Only the render of the new file installs a click map.
-    activeSynctex = null;
-    everPainted = false;
-    everPaintedShown = false;
-    documentEmpty = false;
-    pageDrawn = false;
+    painted.reset();
     renderStatus.resetFailure();
     // The frame is reloaded only when the kind of page changes. Moving between
     // two files of the same kind keeps it, so switching files in the list does
@@ -3773,18 +3729,18 @@
 
   // A failure is reported once the render has settled as failed. One that a
   // retry is already superseding is not.
-  const failedBeforeRender = $derived(renderState.failure && !everPaintedShown && !compiling);
+  const failedBeforeRender = $derived(renderState.failure && !painted.state.shown && !compiling);
   // The one waiting display. It stands in for the pane until the page for the
   // current target is drawn, whatever the format. A stand-in page from the
   // cache is drawn like any other, so a recompile under one never lands here.
-  const pageIsUp = $derived(pdfOutput ? pageDrawn : everPaintedShown);
+  const pageIsUp = $derived(pdfOutput ? painted.state.drawn : painted.state.shown);
   const waiting = $derived(Boolean(
     shown.document && previewPath && compilesHere && !pageIsUp
       && !documentNeedsSignIn && !heldFile && !projection.state.unreadable && !projectEmpty && !previewCard
-      && !failedBeforeRender && !documentEmpty,
+      && !failedBeforeRender && !painted.state.empty,
   ));
   const waitStage = $derived(waitStageOf({
-    pageDelivered: pdfOutput && everPaintedShown,
+    pageDelivered: pdfOutput && painted.state.shown,
     latexPhase: sourceFormat === "latex" && !latexHtmlPreview ? latexPhase : "",
     latexScope: sourceFormat === "latex" && !latexHtmlPreview ? String(latexState.progress?.scope || "") : "",
     engineLoading: engineLoading && engineLoading === sourceFormat ? engineLoading : "",
@@ -3797,7 +3753,7 @@
   const steadyWaiting = createSteadyBusy({ onchange: (shown) => (waitingShown = shown) });
   // A delivered PDF in a frame that already shows pages is swapped in by the
   // viewer once it is drawn, so there is nothing to wait for on screen.
-  const waitingNeeded = $derived(waiting && !(frameHasPage && pdfOutput && everPaintedShown));
+  const waitingNeeded = $derived(waiting && !(frameHasPage && pdfOutput && painted.state.shown));
   $effect(() => {
     steadyWaiting.set(waitingNeeded);
   });
@@ -5178,7 +5134,7 @@
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
            controls={previewControls}
            notice={previewChip ? previewNotice : undefined}
-           cover={documentEmpty ? emptyCover : waitingUp ? waitingCover : undefined}
+           cover={painted.state.empty ? emptyCover : waitingUp ? waitingCover : undefined}
            busy={previewBusy && !waitingUp}
            progress={!waitingUp ? waitProgress : null}
            away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || noCompiler || failedBeforeRender || Boolean(projection.state.unreadable) || Boolean(previewCard)} />

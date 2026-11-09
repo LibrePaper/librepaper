@@ -115,9 +115,9 @@ assert.match(previewSource, /framePreview\.clear\?\.\(\);[\s\S]*?onEmpty\(\);/);
 // An empty document settles the preview. The waiting display gives way to a
 // cover of the Reader's, which works over the PDF viewer too, since that frame
 // ignores an html message.
-assert.match(readerSource, /!failedBeforeRender && !documentEmpty/);
-assert.match(readerSource, /cover=\{documentEmpty \? emptyCover : waitingUp \? waitingCover : undefined\}/);
-assert.match(readerSource, /onEmpty: \(\) => \{[\s\S]*?renderStatus\.resetFailure\(\);\s*documentEmpty = true;/);
+assert.match(readerSource, /!failedBeforeRender && !painted\.state\.empty/);
+assert.match(readerSource, /cover=\{painted\.state\.empty \? emptyCover : waitingUp \? waitingCover : undefined\}/);
+assert.match(readerSource, /onEmpty: \(\) => \{\s*painted\.reset\(\{ empty: true \}\);\s*renderStatus\.resetFailure\(\);\s*\}/);
 assert.doesNotMatch(previewSource, /This document is empty/);
 assert.doesNotMatch(readerSource, /project-folder|ProjectFolderSetting/);
 // HTML/PDF output format choice for markdown and quarto in View menu.
