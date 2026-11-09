@@ -1493,9 +1493,9 @@ impl Sequencer {
         if !inner.buffer.is_empty() {
             return false;
         }
-        if inner.reserved <= 0 {
-            return true;
-        }
+        // No early return on `reserved <= 0`: after a flush whose reply was
+        // lost the copy is set to zero, an underestimate, while the row may
+        // still hold bytes. Deleting a row that is already gone is harmless.
         match self
             .catalog
             .release_log_reservation(self.document_id, inner.reservation_key)

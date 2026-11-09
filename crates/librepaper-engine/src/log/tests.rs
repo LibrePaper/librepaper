@@ -158,6 +158,8 @@ struct FakeCatalog {
     reserved_row: AtomicI64,
     /// How many times a reservation transaction was asked for.
     reserve_calls: AtomicI64,
+    /// The (wanted, minimum) of each reservation request, in order.
+    reserve_asks: Mutex<Vec<(i64, i64)>>,
     /// How many times the reservation row was released.
     releases: AtomicI64,
 }
@@ -182,6 +184,7 @@ impl FakeCatalog {
             reserve_room: AtomicI64::new(i64::MAX),
             reserved_row: AtomicI64::new(0),
             reserve_calls: AtomicI64::new(0),
+            reserve_asks: Mutex::new(Vec::new()),
             releases: AtomicI64::new(0),
         }
     }
@@ -285,6 +288,7 @@ impl LogCatalog for FakeCatalog {
         minimum: i64,
     ) -> BoxFuture<'a, postgres::Result<i64>> {
         self.reserve_calls.fetch_add(1, Ordering::SeqCst);
+        self.reserve_asks.lock().unwrap().push((wanted, minimum));
         if minimum > wanted {
             return Box::pin(async {
                 Err(postgres::Error::Invalid("invalid chat reservation".into()))
@@ -500,6 +504,9 @@ async fn a_growth_between_flush_commit_and_retire_does_not_double_subtract() {
     ));
     release.notify_one();
     flushing.await.unwrap().unwrap().unwrap();
+    // The gate stays in the fake for later flushes; let the next one
+    // through (a stored permit) or it would wait here forever.
+    release.notify_one();
     // Typing on is accepted, and the row is never driven below what the
     // buffered batch needs.
     assert!(matches!(
@@ -509,6 +516,9 @@ async fn a_growth_between_flush_commit_and_retire_does_not_double_subtract() {
         Ingested::Accepted
     ));
     assert!(catalog.reserved_row.load(Ordering::SeqCst) > 0);
+    for (wanted, minimum) in catalog.reserve_asks.lock().unwrap().iter() {
+        assert!(minimum <= wanted, "asked for {minimum} at least but {wanted} at most");
+    }
     sequencer.flush(FlushReason::Barrier).await.unwrap();
     assert!(sequencer.release_reservation().await);
     assert_eq!(catalog.reserved_row.load(Ordering::SeqCst), 0);
