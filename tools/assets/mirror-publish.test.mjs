@@ -6,6 +6,10 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+// The operator's shell may export an age key command (one runs sudo); the
+// publisher would run it to unlock keys.yaml. Tests set their own.
+for (const key of ["SOPS_AGE_KEY", "SOPS_AGE_KEY_CMD", "LIBREPAPER_AGE_KEY_CMD"]) delete process.env[key];
+
 const repo = fileURLToPath(new URL('../..', import.meta.url));
 const deploy = join(repo, 'tools/assets/mirror');
 

@@ -43,6 +43,7 @@ Commands:
 Environment:
   MIRROR=DIR      LaTeX mirror directory (default ../wasm-latex/mirror)
   KEYS=FILE       sops-encrypted keys (default tools/deploy/keys.yaml)
+  LIBREPAPER_AGE_KEY_CMD=CMD  prints the age identity for tools/deploy/keys.yaml (falls back to SOPS_AGE_KEY_CMD)
   S3_BUCKET=NAME  bucket name (default: LIBREPAPER_MIRROR_S3_BUCKET)
   S3_PUBLIC_BASE_URL=URL  public HTTPS URL for bucket probes; required with custom S3_ENDPOINT or S3_REGION
 USAGE
@@ -115,10 +116,24 @@ push_mirrors() {
 # configuration to the bucket probes and the mirror publisher.
 load_publish_credentials() {
   KEYS="${KEYS:-tools/deploy/keys.yaml}"
-  local secrets_json='{}' credentials_json
+  local secrets_json='{}' credentials_json identity='' identity_cmd name
+  identity_cmd="${LIBREPAPER_AGE_KEY_CMD:-}"
+  name=LIBREPAPER_AGE_KEY_CMD
+  if [ -z "$identity_cmd" ]; then identity_cmd="${SOPS_AGE_KEY_CMD:-}"; name=SOPS_AGE_KEY_CMD; fi
   if [ -z "${S3_ENDPOINT:-}" ] || [ -z "${S3_REGION:-}" ] || [ -z "${S3_BUCKET:-}" ] || \
       [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
-    if ! secrets_json=$(sops --decrypt --output-type json "$KEYS" 2>/dev/null); then
+    # sops runs SOPS_AGE_KEY_CMD once per recipient, so a passphrase command would
+    # prompt up to three times. Unlock the identity once and pass only it to sops.
+    if [ -z "${SOPS_AGE_KEY:-}" ] && [ -n "$identity_cmd" ]; then
+      if ! identity=$(eval "$identity_cmd"); then
+        printf 'Error: could not unlock the age identity (%s)\n' "$name" >&2
+        exit 1
+      fi
+      if ! secrets_json=$(env -u SOPS_AGE_KEY_CMD SOPS_AGE_KEY="$identity" sops --decrypt --output-type json "$KEYS" 2>/dev/null); then
+        printf '%s\n' 'Error: SOPS could not load deploy keys' >&2
+        exit 1
+      fi
+    elif ! secrets_json=$(sops --decrypt --output-type json "$KEYS" 2>/dev/null); then
       printf '%s\n' 'Error: SOPS could not load deploy keys' >&2
       exit 1
     fi
