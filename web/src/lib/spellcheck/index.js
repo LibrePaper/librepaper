@@ -9,6 +9,7 @@ import { typstSkips } from "./typst.js";
 import { markdownSkips } from "./markdown.js";
 import { htmlSkips } from "./html.js";
 
+/** @type {Map<string, (text: string, key?: string) => Array<[number, number]>>} */
 const SCANNERS = new Map([
   ["latex", latexSkips],
   ["typst", typstSkips],

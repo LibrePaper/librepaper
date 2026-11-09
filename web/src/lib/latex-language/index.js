@@ -47,9 +47,11 @@ function indentEnvironment(context) {
   const name = node.getChild("BeginEnv")?.getChild("EnvName") ?? node.firstChild?.getChild("EnvName");
   if (name && state.sliceDoc(name.from, name.to).trim() === "document") return context.baseIndent;
   const first = state.doc.lineAt(node.from).number;
-  const current = state.doc.lineAt(context.pos).number;
-  for (let n = first + 1; n < current; n++) {
-    const text = state.doc.line(n).text;
+  const here = state.doc.lineAt(context.pos);
+  // On Enter the position is the end of the line being split, so the part of
+  // that line before it counts as a body line too.
+  for (let n = first + 1; n <= here.number; n++) {
+    const text = n === here.number ? here.text.slice(0, context.pos - here.from) : state.doc.line(n).text;
     if (/\S/.test(text) && !/^\s*\\end\b/.test(text)) return countColumn(/^\s*/.exec(text)[0], state.tabSize);
   }
   return context.baseIndent + context.unit;

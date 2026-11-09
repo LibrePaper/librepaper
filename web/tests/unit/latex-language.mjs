@@ -426,8 +426,8 @@ test("Enter in the body of document does not indent", () => {
 
 test("Enter in an environment body follows the first body line, else indents one unit", () => {
   assert.equal(afterAssistedEnter("\\begin{itemize}\n\\end{itemize}", 15), "\\begin{itemize}\n  \n\\end{itemize}");
-  assert.equal(afterAssistedEnter("\\begin{itemize}\n\\item a"), "\\begin{itemize}\n\\item a\n");
-  assert.equal(afterAssistedEnter("\\begin{itemize}\n    \\item a"), "\\begin{itemize}\n    \\item a\n    ");
+  assert.equal(afterAssistedEnter("\\begin{itemize}\n\\item a\n\\end{itemize}", 23), "\\begin{itemize}\n\\item a\n\n\\end{itemize}");
+  assert.equal(afterAssistedEnter("\\begin{itemize}\n    \\item a\n\\end{itemize}", 27), "\\begin{itemize}\n    \\item a\n    \n\\end{itemize}");
 });
 
 test("display math closes at a blank line", () => {
