@@ -35,13 +35,14 @@
     z-index: 1;
     display: flex;
     align-items: stretch;
-    height: 2.75rem;
+    /* The 1px divider is added to the row so each tab keeps a 44px target. */
+    height: calc(2.75rem + 1px);
     border-bottom: 1px solid var(--color-divider);
     background: var(--color-shell);
   }
 
   .mobile-mode-switch.collapsed:not(:focus-within) {
-    margin-top: -2.75rem;
+    margin-top: calc(-2.75rem - 1px);
     visibility: hidden;
   }
 
