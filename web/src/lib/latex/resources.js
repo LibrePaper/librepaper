@@ -308,7 +308,7 @@ export async function warmRelease(release, base, kinds, { verified = fetchVerifi
     const file = Object.values(release.files || {}).find((entry) => entry?.url === bundles.index);
     const indexUrl = new URL(bundles.index, base);
     jobs.push((async () => {
-      const response = await verify({ ...release, digest: release.id }, file);
+      const response = await verify(release, file);
       if (!response) return;
       const bytes = new Uint8Array(await response.arrayBuffer());
       await Promise.all(coreBundleUrls(bytes, new URL(".", indexUrl).href).map(async (url) => {

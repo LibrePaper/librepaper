@@ -2190,6 +2190,7 @@
   "reader_select_passage_first": "请先在编辑器中选择段落。",
   "reader_source_moved": "选择该段落后，源码已发生变化。请等待当前页面渲染完成，然后重新选择段落，草稿会保留。",
   "reader_source_rendering": "源码已发生变化，当前页面仍在渲染。你的选择会保留，请在页面更新后重试。",
+  "reader_panel_unavailable": "无法加载此面板。请检查网络连接后重试。",
   "reader_split": "分栏",
   "reader_stale_selection": "放置该批注时页面发生了变化，已刷新为当前文本。请重新选择段落后再试。",
   "reader_still_connecting": "当前文档仍在连接。请在加载完成后重试。",

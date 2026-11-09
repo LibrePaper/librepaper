@@ -1413,12 +1413,19 @@
   };
   // Loads every lazy panel and the authorship module, so their code is fetched
   // and cached. Loading does not show anything: each panel is still gated on
-  // its own open or mounted state. A failed chunk is ignored.
-  function prefetchLazyPanels() {
-    return Promise.allSettled([
+  // its own open or mounted state. Resolves true only when every chunk loaded,
+  // so the offline copy is not called ready with a panel missing.
+  async function prefetchLazyPanels() {
+    const results = await Promise.allSettled([
       ...Object.values(lazy).map((entry) => entry.load()),
       import("../lib/authorship.js"),
     ]);
+    return results.every((result) => result.status === "fulfilled");
+  }
+  // A panel whose code cannot be fetched (offline, or a release that has moved
+  // on) says so, rather than doing nothing.
+  function lazyFailed() {
+    say(m.reader_panel_unavailable(), { kind: "problem", id: "reader:panel-unavailable" });
   }
   let insertMenu = $state(null);
   // The palettes are overlays over the editor. Their components are kept so a
@@ -2558,7 +2565,7 @@
   // the source is beside the document -- a phone shows one pane at a time and a
   // click there is for reading.
   function followPreviewClick(offset, pdfPoint = null) {
-    if (compact || !editing || comparing !== "" || !editor || docText === null || !openFile) return;
+    if (!linked || compact || !editing || comparing !== "" || !editor || docText === null || !openFile) return;
     if (effectiveLayout !== "split" && effectiveLayout !== "source") return;
     const text = editor.text();
     if (typeof text !== "string") return;
@@ -2670,7 +2677,7 @@
     // that shows the answer is drawn.
     refreshEditAvailability();
     settingsCategory = category;
-    try { await lazy.settings.load(); } catch { return; }
+    try { await lazy.settings.load(); } catch { lazyFailed(); return; }
     settingsOpen = true;
   }
   $effect(() => { if (settingsOpen) lazy.settings.load().catch(() => {}); });
@@ -4310,10 +4317,11 @@
       // The page shell is cached with the local copy, so the landing page can
       // list local projects when the server cannot be reached. Until it is
       // cached the record has no shellReady, and the next attempt tries again.
+      // A record cached by an older build has no shellReady for this one, so
+      // it is cached again and picks up chunks that have since become lazy.
       if (!record.shellReady) {
         // The offline copy only stores code already loaded, so load the lazy panels first.
-        await prefetchLazyPanels();
-        if (await cacheCurrentShell()) await markShellReady(identity);
+        if (await prefetchLazyPanels() && await cacheCurrentShell()) await markShellReady(identity);
       }
       localCopyRemembered = true;
       localCopyRunning = false;
@@ -4410,7 +4418,7 @@
   async function runCommand(id) {
     if (id === "word-count") return openWordCount();
     if (EDIT_COMMANDS.includes(id)) return chooseEditCommand(id);
-    if (id === "palette") { refreshEditAvailability(); await lazy.commandPalette.load().catch(() => {}); commandPalette = true; return; }
+    if (id === "palette") { refreshEditAvailability(); try { await lazy.commandPalette.load(); } catch { lazyFailed(); return; } commandPalette = true; return; }
     if (id.startsWith("menu-")) return openMenu(id.slice("menu-".length));
     if (id === "shortcuts") return openSettings("editor");
     if (id === "focus-files") return focusPanel("files");
@@ -4454,7 +4462,7 @@
   // editor had when it opened, so there is nothing to open without a source.
   async function openPalette(name, template = "") {
     if (!can[name]) return;
-    try { await lazy[name].load(); } catch { return; }
+    try { await lazy[name].load(); } catch { lazyFailed(); return; }
     if (!can[name]) return;
     symbolsOpen = name === "symbols";
     mathOpen = name === "math";

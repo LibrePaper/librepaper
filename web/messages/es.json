@@ -2205,6 +2205,7 @@
   "reader_select_passage_first": "Seleccione primero el pasaje en el editor.",
   "reader_source_moved": "El código fuente cambió desde que se seleccionó este pasaje. Espere a que termine de compilarse la página actual y vuelva a seleccionar el pasaje; el borrador se conserva.",
   "reader_source_rendering": "El código fuente cambió y la página actual aún se está compilando. Su selección se conserva; reintente cuando se actualice la página.",
+  "reader_panel_unavailable": "No se pudo cargar este panel. Compruebe su conexión e inténtelo de nuevo.",
   "reader_split": "Dividir",
   "reader_stale_selection": "La página cambió mientras se colocaba ese comentario. Se actualizó con el texto actual; vuelva a seleccionar el pasaje e inténtelo de nuevo.",
   "reader_still_connecting": "El documento actual aún se está conectando. Reintente cuando haya cargado.",
