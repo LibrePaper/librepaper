@@ -4766,9 +4766,6 @@
         {#if participants.length > 3}<span class="presence-more">+{participants.length - 3}</span>{/if}
         {#if !connected && !DEMO}<span class="presence-offline"><span class="presence-offline-dot" aria-hidden="true"></span>{m.common_offline()}</span>{/if}
       </div>
-      <!-- The command palette, at the end of the row where the menus' own
-           keys are named: the same palette Ctrl+Alt+P opens. -->
-      <IconButton icon="search" label={m.common_command_palette()} title={m.commands_palette_tooltip({ keys: MENU_KEYS.palette })} onclick={() => void runCommand("palette")} />
     {/if}
   {/snippet}
   {#snippet menus()}
