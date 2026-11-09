@@ -295,7 +295,7 @@ try {
   await visitFiles('document');
   await visit('outline', 'source');
   await visitFiles('source');
-  // Collaborators is a row of the Document group, and opens the collaboration panel.
+  // Collaborators is a row of the panels section, and opens the collaboration panel.
   await toMode('document');
   await openMore();
   assert.ok((await rows()).includes('collaborators'), 'an editor is offered collaborators');
