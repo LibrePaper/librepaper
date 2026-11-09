@@ -2940,7 +2940,7 @@
   }
 
   const mobileCommandTitles = $derived({
-    file: m.mobilenav_file_actions(), edit: m.mobilenav_edit(), view: m.mobilenav_view(), insert: m.common_insert(),
+    file: m.common_file(), edit: m.mobilenav_edit(), view: m.mobilenav_view(), insert: m.common_insert(),
   });
   // What the header calls the place the reader is in.
   const mobileTitle = $derived.by(() => (
@@ -3024,7 +3024,6 @@
   // as short as their rail was.
   const PANEL_ICONS = { files: "folder", outline: "list-tree", history: "history", changes: "file-pen-line",
     agent: "bot", git: "git-branch", diagnostics: "triangle-alert", share: "users" };
-  const MORE_GROUPS = { navigate: ["outline", "history"], review: ["changes"], tools: ["agent", "git", "diagnostics"] };
   function panelRow(id) {
     const tab = tabs.find((item) => item.id === id);
     if (!tab) return null;
@@ -3035,32 +3034,34 @@
       disabled: tab.disabled || undefined, dot: badges[id]?.dot || undefined, count: total || undefined,
     };
   }
+  // The More sheet has three sections, as the desktop does: the menus (File,
+  // Edit, View, Insert, as on the menubar), then the panels in rail order
+  // with Collaborators last, then the application rows (settings, projects,
+  // help, sign in or out, as in the account menu). Sections have no headings;
+  // a thin divider separates them.
   const moreSections = $derived.by(() => {
-    const rows = (ids) => ids.map(panelRow).filter(Boolean);
-    // A panel added to lib/panels.js and not named here is listed under Tools
-    // rather than lost. Files and Comments are tabs and Share is under Document.
-    const named = new Set([...MORE_GROUPS.navigate, ...MORE_GROUPS.review, ...MORE_GROUPS.tools, "share", "collaboration", "files"]);
-    const others = tabs.filter((tab) => !named.has(tab.id)).map((tab) => tab.id);
-    const documentRows = [
-      { id: "command:file", icon: "file", label: m.mobilenav_file_actions() },
+    // Files and Comments are header tabs, not panels, so they are not listed here.
+    const panelRows = tabs
+      .filter((tab) => tab.id !== "files" && tab.id !== "collaboration")
+      .map((tab) => panelRow(tab.id))
+      .filter(Boolean);
+    const menuRows = [
+      { id: "command:file", icon: "file", label: m.common_file(), submenu: true },
       ...(editing && mayEdit ? [
-        { id: "command:edit", icon: "pencil", label: m.mobilenav_edit(), disabled: !editor || !!shownFigure || undefined },
+        { id: "command:edit", icon: "pencil", label: m.mobilenav_edit(), disabled: !editor || !!shownFigure || undefined, submenu: true },
       ] : []),
-      ...(editing ? [{ id: "command:view", icon: "eye", label: m.mobilenav_view() }] : []),
+      ...(editing ? [{ id: "command:view", icon: "eye", label: m.mobilenav_view(), submenu: true }] : []),
       ...(editing && mayEdit ? [
-        { id: "command:insert", icon: "plus", label: m.common_insert(), disabled: !editor || undefined },
+        { id: "command:insert", icon: "plus", label: m.common_insert(), disabled: !editor || undefined, submenu: true },
       ] : []),
-      ...(tabs.some((tab) => tab.id === "collaboration") ? [
-        { id: "collaborators", icon: "users", label: m.mobilenav_collaborators(), count: participants.length > 1 ? participants.length : undefined },
-      ] : []),
-      panelRow("share"),
-    ].filter(Boolean);
+    ];
+    const collaborationRows = tabs.some((tab) => tab.id === "collaboration") ? [
+      { id: "collaborators", icon: "users", label: m.mobilenav_collaborators(), count: participants.length > 1 ? participants.length : undefined },
+    ] : [];
     return [
-      { label: m.mobilenav_group_navigate(), rows: rows(MORE_GROUPS.navigate) },
-      { label: m.mobilenav_group_review(), rows: rows(MORE_GROUPS.review) },
-      { label: m.mobilenav_group_tools(), rows: rows([...MORE_GROUPS.tools, ...others]) },
-      { label: m.common_document(), rows: documentRows },
-      { label: m.mobilenav_group_application(), rows: [
+      { rows: menuRows },
+      { rows: [...panelRows, ...collaborationRows] },
+      { rows: [
         { id: "settings", icon: "settings", label: m.common_settings() },
         { id: "palette", icon: "search", label: m.common_command_palette() },
         { id: "home", icon: "house", label: m.common_projects(), href: "/" },

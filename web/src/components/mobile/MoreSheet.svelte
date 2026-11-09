@@ -5,8 +5,10 @@
   import { m } from "../../lib/paraglide/messages.js";
 
   // The phone's More menu: everything the tab bar does not hold, as a
-  // sheet that rises from the bottom. Sections are { label, rows }; a row is
-  // a button that reports its id, or a link that navigates and also reports.
+  // sheet that rises from the bottom. Sections are { label?, rows }, drawn one
+  // after another with a thin divider between them. A row is a button that
+  // reports its id, or a link that navigates and also reports; a row with
+  // `submenu` shows a trailing arrow because it opens a deeper list.
   //
   // Dialog gives the sheet the same focus trap, Escape, backdrop dismissal,
   // focus return and scroll lock as Modal.svelte. Its handle and body can be
@@ -164,6 +166,9 @@
     <span class="row-count">{row.count.toLocaleString(locale())}</span>
   {/if}
   {#if row.dot}<span class="row-dot" aria-hidden="true"></span>{/if}
+  {#if row.submenu}
+    <span class="row-chevron" aria-hidden="true"><Icon name="chevron-right" size={18} /></span>
+  {/if}
 {/snippet}
 
 <Dialog {open} {onOpenChange} {finalFocusEl} initialFocusEl={() => document.querySelector(".mobile-sheet")}>
@@ -185,6 +190,7 @@
           ></button>
           <div class="mobile-sheet-list">
             {#each sections as section, index (index)}
+              {#if index > 0}<div class="mobile-sheet-divider" aria-hidden="true"></div>{/if}
               {#if section.label}
                 <div class="mobile-sheet-label">{section.label}</div>
               {/if}
@@ -310,6 +316,12 @@
     color: var(--color-text-secondary);
   }
 
+  .mobile-sheet-divider {
+    height: 1px;
+    margin-block: 0.25rem;
+    background: var(--color-divider);
+  }
+
   .mobile-sheet-row {
     display: flex;
     align-items: center;
@@ -365,7 +377,16 @@
     background: var(--color-brand);
   }
 
-  .row-count + .row-dot {
+  .row-chevron {
+    display: flex;
+    flex: none;
+    margin-left: auto;
+    color: var(--color-text-secondary);
+  }
+
+  .row-count + .row-dot,
+  .row-count + .row-chevron,
+  .row-dot + .row-chevron {
     margin-left: 0.5rem;
   }
 </style>
