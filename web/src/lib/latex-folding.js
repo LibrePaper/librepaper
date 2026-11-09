@@ -14,8 +14,10 @@
 // verbatim body which began earlier is not recognised as such.
 
 import { foldService } from "@codemirror/language";
+import { VERBATIM_ENVS, LISTING_ENVS } from "./latex-language/tokens.js";
 
-const VERBATIM = new Set(["verbatim", "verbatim*", "lstlisting", "minted", "comment"]);
+// The same environments the grammar treats as opaque, starred forms included.
+const VERBATIM = new Set([...VERBATIM_ENVS, ...LISTING_ENVS].flatMap((name) => [name, `${name}*`]));
 const SECTION_DEPTH = {
   part: 1,
   chapter: 2,
