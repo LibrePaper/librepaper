@@ -44,7 +44,6 @@
   import { cacheCurrentShell } from "../lib/offline-shell.js";
   import { needsSourceRefresh } from "../lib/reader/source-events.js";
   import {
-    SHELL_HEADERS,
     authHeaders,
     configOrRemembered,
     keyHeaders,
@@ -137,6 +136,7 @@
   import Share from "./reader/Share.svelte";
   import Diagnostics from "./reader/Diagnostics.svelte";
   import PendingAnnotations from "./reader/PendingAnnotations.svelte";
+  import SaveTemplateDialog from "./reader/SaveTemplateDialog.svelte";
   import { m } from "../lib/paraglide/messages.js";
 
   // The demo sandbox at /try runs wholly in this browser. Its slug and
@@ -2671,12 +2671,7 @@
   // point opens the same dialog on the category it is about.
   let settingsOpen = $state(untrack(() => initialSettings === "tools"));
   let settingsCategory = $state(untrack(() => initialSettings || "general"));
-  let savingTemplate = $state(false);
-  let templateModalOpen = $state(false);
-  let templateName = $state("");
-  let templateError = $state("");
-  let templateSaveKey = "";
-  let templateSaveRequestId = "";
+  let saveTemplateDialog = $state(null);
 
   async function openSettings(category = "general") {
     // The editor category carries the shortcut table, and the table greys what
@@ -3243,7 +3238,7 @@
     if (value === "download-comments") return downloadComments();
     if (value === "download-pdf" || value === "download-html" || value === "download-docx") return downloadAs(value.slice(9));
     if (value === "share" || value === "history" || value === "git") return openPanel(value);
-    if (value === "save-template") return openSaveTemplateModal();
+    if (value === "save-template") return saveTemplateDialog?.open();
     if (!["new-file", "new-folder", "upload"].includes(value)) return;
     await openPanel("files");
     await tick();
@@ -3390,56 +3385,6 @@
       say(error.message || m.readerc_comments_export_failed(), { kind: "problem", id });
     } finally {
       exporting = false;
-    }
-  }
-
-  function openSaveTemplateModal() {
-    templateName = doc.title || "";
-    templateError = "";
-    templateSaveKey = "";
-    templateSaveRequestId = "";
-    templateModalOpen = true;
-  }
-
-  async function saveTemplate() {
-    const title = templateName.trim();
-    if (!title) {
-      templateError = m.readerc_template_name_required();
-      return;
-    }
-    const key = `librepaper:template-save:${SLUG}:${title}`;
-    if (templateSaveKey !== key || !templateSaveRequestId) {
-      templateSaveKey = key;
-      try {
-        templateSaveRequestId = sessionStorage.getItem(key) || "";
-      } catch {
-        templateSaveRequestId = "";
-      }
-      if (!templateSaveRequestId) {
-        templateSaveRequestId = crypto.randomUUID();
-        try { sessionStorage.setItem(key, templateSaveRequestId); } catch { /* in-memory retries still reuse it */ }
-      }
-    }
-    savingTemplate = true;
-    try {
-      const response = await fetch(`/api/documents/${SLUG}/template`, {
-        method: "POST",
-        headers: { ...SHELL_HEADERS, "Content-Type": "application/json" },
-        body: JSON.stringify({ title, request_id: templateSaveRequestId }),
-      });
-      if (!response.ok) {
-        templateError = (await response.json().catch(() => ({}))).error || m.readerc_template_save_failed();
-        return;
-      }
-      try { sessionStorage.removeItem(key); } catch { /* no persistent key was available */ }
-      templateSaveKey = "";
-      templateSaveRequestId = "";
-      templateModalOpen = false;
-      say(m.readerc_template_saved({ title }), { id: "reader:saved-template" });
-    } catch (error) {
-      templateError = error?.message || m.readerc_template_save_failed();
-    } finally {
-      savingTemplate = false;
     }
   }
 
@@ -4872,18 +4817,7 @@
                   account={me} />
 {/if}
 
-<Modal bind:open={templateModalOpen} title={m.readerd_save_as_template()}
-  onclose={() => { templateError = ""; templateName = ""; }}
-  confirm={{ label: savingTemplate ? m.common_saving() : m.common_save(), disabled: savingTemplate, onclick: saveTemplate }}>
-  {#snippet children()}
-    <label class="label">
-      <span class="label-text">{m.readerd_template_name()}</span>
-      <!-- svelte-ignore a11y_autofocus -- the dialog exists to ask this one thing -->
-      <input class="input" autofocus bind:value={templateName} />
-    </label>
-    {#if templateError}<p class="lp-text-error text-sm">{templateError}</p>{/if}
-  {/snippet}
-</Modal>
+<SaveTemplateDialog bind:this={saveTemplateDialog} slug={SLUG} title={doc.title} />
 
 <Modal bind:open={timeline.state.restoring} title={m.readerd_restore_version_title()}
   description={restoreMoved
