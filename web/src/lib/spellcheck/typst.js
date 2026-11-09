@@ -16,11 +16,12 @@ import { typstTree } from "../source-trees.js";
  * Raw and equation contents are never prose. Everything else is skipped.
  * When the parser is not loaded yet, the whole text is skipped.
  * @param {string} text
+ * @param {string} [key] names the document, so an edit re-parses from its previous tree
  * @returns {Array<[number, number]>}
  */
-export function typstSkips(text) {
+export function typstSkips(text, key) {
   if (typeof text !== "string" || text.length === 0) return [];
-  const tree = typstTree(text);
+  const tree = typstTree(text, key);
   if (!tree) return [[0, text.length]];
   /** @type {Array<[number, number]>} */
   const skips = [];

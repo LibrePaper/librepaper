@@ -559,7 +559,7 @@ pub trait LogCatalog: Send + Sync {
         reservation: Uuid,
         reserved_bytes: i64,
         scratch: super::pending::Reservation,
-    ) -> BoxFuture<'a, postgres::Result<i64>>;
+    ) -> BoxFuture<'a, postgres::Result<(i64, Option<i64>)>>;
     /// Grows this document's quota reservation row by up to `wanted` bytes
     /// and returns the row's new total, refusing when less than `minimum`
     /// fits. Called by ingest only when the in-memory headroom is spent, so
@@ -648,7 +648,7 @@ impl LogCatalog for PostgresCatalog {
         reservation: Uuid,
         reserved_bytes: i64,
         scratch: super::pending::Reservation,
-    ) -> BoxFuture<'a, postgres::Result<i64>> {
+    ) -> BoxFuture<'a, postgres::Result<(i64, Option<i64>)>> {
         Box::pin(self.flush_log_row_charged(document_id, row, reservation, reserved_bytes, scratch))
     }
 
@@ -930,10 +930,27 @@ impl Inner {
         vector: VersionVector,
         row_bytes: usize,
         reserved_bytes: i64,
+        reserved_after: Option<i64>,
     ) {
         // The flush took its batches' charge off the reservation row in the
         // same transaction as the row, so the sequencer's copy follows.
-        self.reserved = self.reserved.saturating_sub(reserved_bytes);
+        //
+        // An ordinary flush runs without `inner`, so a reservation growth can
+        // land between its commit and this call. Whether that growth's total
+        // still included the flushed charge depends on which side of the
+        // commit it ran, and subtracting is only right for one of them: the
+        // other double-counts and drives headroom negative. So the flush
+        // hands back what the row held right after its drawdown and the copy
+        // is set to that. When a growth ran after the commit this can be
+        // lower than the row (by at most that growth), never higher; a low
+        // copy only means the next ingest asks for a little more, and the
+        // reply to that resyncs it exactly. `None` is a caller holding
+        // `inner` across the whole write (a semantic command), where
+        // subtracting is exact.
+        self.reserved = match reserved_after {
+            Some(after) => after.max(0),
+            None => self.reserved.saturating_sub(reserved_bytes),
+        };
         self.next_sequence = written + 1;
         self.log_vector = vector;
         // Draining is what releases the pending charge: each `Pending` owns
@@ -1377,13 +1394,14 @@ impl Sequencer {
         // fit, as it would be with a reservation per batch.
         let headroom = inner.reserved.saturating_sub(inner.durable_buffered);
         if headroom < durable_charge {
+            let minimum = durable_charge - headroom;
             match self
                 .catalog
                 .reserve_log_bytes(
                     self.document_id,
                     inner.reservation_key,
-                    LOG_RESERVATION_CHUNK.max(durable_charge),
-                    durable_charge - headroom,
+                    LOG_RESERVATION_CHUNK.max(minimum),
+                    minimum,
                 )
                 .await
             {
@@ -1468,21 +1486,32 @@ impl Sequencer {
     /// quota. A failure is logged and leaves the row, and the in-memory
     /// headroom, as they were: the row is still real, and a crash or restart
     /// clears it (`clear_stale_pending_log_reservations`).
-    pub async fn release_reservation(&self) {
+    /// Returns whether the sequencer now holds nothing, so a caller that
+    /// means to drop it can tell a failed release (false) from a done one.
+    pub async fn release_reservation(&self) -> bool {
         let mut inner = self.inner.lock().await;
-        if !inner.buffer.is_empty() || inner.reserved <= 0 {
-            return;
+        if !inner.buffer.is_empty() {
+            return false;
         }
+        // No early return on `reserved <= 0`: after a flush whose reply was
+        // lost the copy is set to zero, an underestimate, while the row may
+        // still hold bytes. Deleting a row that is already gone is harmless.
         match self
             .catalog
             .release_log_reservation(self.document_id, inner.reservation_key)
             .await
         {
-            Ok(()) => inner.reserved = 0,
-            Err(error) => tracing::warn!(
-                "could not release the log reservation of {}: {error}",
-                self.slug
-            ),
+            Ok(()) => {
+                inner.reserved = 0;
+                true
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "could not release the log reservation of {}: {error}",
+                    self.slug
+                );
+                false
+            }
         }
     }
 
@@ -1632,7 +1661,7 @@ impl Sequencer {
 
         let driver_scratch =
             scratch.split(super::pending::driver_scratch_for(encoded.len() as u64));
-        let written = match self
+        let (written, remaining) = match self
             .catalog
             .flush_log_row(
                 self.document_id,
@@ -1653,7 +1682,10 @@ impl Sequencer {
                 .resolve_ambiguous_flush(expected, &vector.encode(), error)
                 .await
             {
-                Ok(sequence) => sequence,
+                // The response was lost, so what the row holds now is not
+                // known. Zero is the safe underestimate: the next ingest
+                // reserves afresh and learns the real total.
+                Ok(sequence) => (sequence, None),
                 Err(SequencerError::Fenced(why)) => {
                     self.close_fenced(why.clone()).await;
                     return Err(SequencerError::Fenced(why));
@@ -1669,7 +1701,15 @@ impl Sequencer {
         drop(encoded);
         drop(scratch);
         let mut inner = self.inner.lock().await;
-        inner.retire(take, written, vector, row_bytes, reserved_bytes);
+        let reserved_after = (reserved_bytes > 0).then(|| remaining.unwrap_or(0));
+        inner.retire(
+            take,
+            written,
+            vector,
+            row_bytes,
+            reserved_bytes,
+            reserved_after,
+        );
         self.ledger.charge(self.owner_id, row_bytes as i64);
         let compaction_due = inner.compaction_due(self.catalog.compaction_thresholds());
         acknowledge(&mut inner, &acknowledged);
@@ -2227,7 +2267,14 @@ impl Sequencer {
         // committed, for a number the first encoding knew.
         let wrote_a_row = !acknowledged.is_empty();
         if wrote_a_row {
-            inner.retire(take, source_sequence, vector, row_bytes, reserved_bytes);
+            inner.retire(
+                take,
+                source_sequence,
+                vector,
+                row_bytes,
+                reserved_bytes,
+                None,
+            );
             self.ledger.charge(self.owner_id, row_bytes as i64);
         }
         if let Some(source) = &prepared {

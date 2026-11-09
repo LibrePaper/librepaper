@@ -87,3 +87,25 @@ test("refresh returns true when the file list changes", () => {
   assert.deepEqual(live.project.knownFiles(), ["a.tex", "figures/plot.png"]);
   assert.equal(live.refresh({ texts, files: ["figures/plot.png", "a.tex"], bibliography: null }), false);
 });
+
+test("invalidate makes the next refresh index unchanged files again", () => {
+  const live = createLiveIndex();
+  const snapshot = {
+    texts: { "a.tex": "\\label{fig:a}\n", "b.tex": "\\label{fig:b}\n" },
+    files: ["a.tex", "b.tex"],
+    bibliography: null,
+  };
+  live.refresh(snapshot);
+  const a = live.project.file("a.tex");
+  const b = live.project.file("b.tex");
+  assert.equal(live.refresh(snapshot), false);
+
+  live.invalidate((path) => path === "a.tex");
+  assert.equal(live.refresh(snapshot), true);
+  assert.notEqual(live.project.file("a.tex"), a, "the invalidated file is indexed again");
+  assert.equal(live.project.file("b.tex"), b, "other files are left alone");
+
+  live.invalidate();
+  live.refresh(snapshot);
+  assert.notEqual(live.project.file("b.tex"), b, "without a filter every file is indexed again");
+});

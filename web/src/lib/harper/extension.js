@@ -6,6 +6,7 @@
 import { EditorView, Decoration, ViewPlugin, closeHoverTooltips, hoverTooltip, showTooltip } from "@codemirror/view";
 import { StateEffect, StateField } from "@codemirror/state";
 import { addWord, lintProse } from "./client.js";
+import { onTypstSyntax } from "../source-trees.js";
 import { keepLint, paragraphs, proseText } from "./prose.js";
 import { m } from "../paraglide/messages.js";
 
@@ -34,6 +35,10 @@ const openCard = StateEffect.define();
 // whenever one changes or a file is shown, and handing CodeMirror the same
 // plugin keeps it rather than checking the text again.
 const extensions = new Map();
+
+// Names each view's text for the parsers, so an edit re-parses from the
+// view's previous tree.
+let views = 0;
 
 /**
  * Harper's grammar and spelling underlines for a prose file. The card of fixes
@@ -74,9 +79,21 @@ function build(format, dialect) {
       // which must not open the hover card.
       this.touch = false;
       this.tapStart = null;
-      // Paragraph text to its lints, with offsets from the paragraph start.
+      this.key = `harper:${++views}`;
+      // Paragraph text to { masked, lints }: the lints of that paragraph as
+      // read through the masked text, with offsets from the paragraph start.
       this.cache = new Map();
+      // Bumped when the cache is cleared, so a pass in flight does not refill
+      // it with lints from before.
+      this.generation = 0;
       this.decorations = Decoration.none;
+      // Until typst-syntax.wasm loads, a Typst text is masked whole and has no
+      // lints. Check again when it arrives.
+      this.unsubscribe = format === "typst" ? onTypstSyntax(() => {
+        this.cache.clear();
+        this.generation++;
+        this.schedule(0);
+      }) : null;
       this.schedule(0);
     }
 
@@ -96,6 +113,7 @@ function build(format, dialect) {
     destroy() {
       this.destroyed = true;
       clearTimeout(this.timer);
+      this.unsubscribe?.();
     }
 
     schedule(delay) {
@@ -136,15 +154,20 @@ function build(format, dialect) {
       const text = doc.toString();
       // The markup scanners need the whole document for context, so the text
       // is masked once and each paragraph is cut out of the masked copy.
-      const { text: masked, skips } = proseText(text, format);
+      const generation = this.generation;
+      const { text: masked, skips } = proseText(text, format, this.key);
       for (const { from, to } of this.visibleParagraphs(text)) {
         const original = text.slice(from, to);
-        if (this.cache.has(original)) continue;
-        const found = await lintProse(masked.slice(from, to), dialect);
+        const slice = masked.slice(from, to);
+        // The lints come from the masked text, so a paragraph whose mask has
+        // changed is checked again.
+        if (this.cache.get(original)?.masked === slice) continue;
+        const found = await lintProse(slice, dialect);
         if (this.destroyed) return;
+        if (generation !== this.generation) return;
         const kept = found.filter((lint) =>
           keepLint({ ...lint, from: lint.from + from, to: lint.to + from }, skips));
-        this.cache.set(original, kept);
+        this.cache.set(original, { masked: slice, lints: kept });
         while (this.cache.size > MAX_CACHE) this.cache.delete(this.cache.keys().next().value);
       }
     }
@@ -170,7 +193,7 @@ function build(format, dialect) {
       const text = doc.toString();
       const marks = [];
       for (const { from, to } of this.visibleParagraphs(text)) {
-        const lints = this.cache.get(text.slice(from, to));
+        const lints = this.cache.get(text.slice(from, to))?.lints;
         if (!lints) continue;
         for (const lint of lints) {
           const start = from + lint.from;
@@ -186,7 +209,7 @@ function build(format, dialect) {
     // Forgets every paragraph with a finding on this word, so the next pass
     // checks it again with the word in the dictionary.
     forget(word) {
-      for (const [key, lints] of this.cache) {
+      for (const [key, { lints }] of this.cache) {
         if (lints.some((lint) => lint.problem === word)) this.cache.delete(key);
       }
     }

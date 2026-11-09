@@ -14,6 +14,11 @@ const PROJECTS = "projects";
 export const STATES = "states";
 export const UPDATES = "updates";
 
+// The build this code came from, as the bundler defines it; empty in tests.
+function buildId() {
+  return typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "";
+}
+
 export function requestResult(request) {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
@@ -125,7 +130,12 @@ export async function rememberProject(metadata, indexedDB_ = globalThis.indexedD
     const store = transaction.objectStore(PROJECTS);
     // Remembering a project again must not forget that its shell is cached.
     const existing = await requestResult(store.get(key));
-    if (existing?.shellReady) record.shellReady = true;
+    // The mark holds only for the build that cached the shell: a newer build
+    // has chunks the old cache lacks, so it must be cached again.
+    if (existing?.shellReady && existing.shellBuild === buildId()) {
+      record.shellReady = true;
+      record.shellBuild = existing.shellBuild;
+    }
     store.put(record);
     await done;
   });
@@ -148,7 +158,7 @@ export async function markShellReady({ server, documentId, slug, createdAt }, in
     const done = transactionDone(transaction);
     const store = transaction.objectStore(PROJECTS);
     const record = await requestResult(store.get(key));
-    if (record) store.put({ ...record, shellReady: true });
+    if (record) store.put({ ...record, shellReady: true, shellBuild: buildId() });
     await done;
   });
 }

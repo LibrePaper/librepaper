@@ -950,6 +950,29 @@ import { watchPinch } from "../lib/pinch.js";
     pending = setTimeout(() => publish(true), 250);
   };
 
+  // A PDF page that is built lazily swaps its hidden text for the real text
+  // layer as it scrolls near. The text is the same, so the reader has nothing
+  // new to hear: a full republish on every scroll would be a `ready` and a
+  // repaint each time. Only this frame's own state is refreshed: the node table
+  // is rescanned and the remembered highlights are painted again, since the
+  // swap dropped any that sat on that page.
+  let lazyPending = null;
+  const lazyBuilt = () => {
+    clearTimeout(lazyPending);
+    lazyPending = setTimeout(() => {
+      scan();
+      if (lastRanges && lastRanges.length) highlight(lastRanges);
+    }, 250);
+  };
+  const withinPage = (node) => {
+    const element = node instanceof Element ? node : node?.parentElement;
+    return Boolean(element?.closest?.(".page[data-page]"));
+  };
+  const onMutations = (records) => {
+    if (records.every((record) => withinPage(record.target))) lazyBuilt();
+    else republish();
+  };
+
   function watch() {
     publish();
     // The first bundle runs in the child frame's load handler. The
@@ -957,7 +980,7 @@ import { watchPinch } from "../lib/pinch.js";
     // frame binding, can settle just afterward. Repeat once on the next task;
     // later bundles remain mutation-driven.
     setTimeout(() => publish(true), 0);
-    observer = new MutationObserver(republish);
+    observer = new MutationObserver(onMutations);
     observer.observe(document.body, {
       childList: true,
       characterData: true,

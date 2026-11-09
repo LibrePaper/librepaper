@@ -30,18 +30,32 @@ export function indexTexts(texts) {
 }
 
 /**
- * The 1-based line of an offset in a text. A missing text is line 1.
- * @param {string | null | undefined} text
+ * Offsets at which each line of a text starts.
+ * @param {string} text
+ * @returns {number[]}
+ */
+function lineStarts(text) {
+  const starts = [0];
+  for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) starts.push(i + 1);
+  return starts;
+}
+
+/**
+ * The 1-based line of an offset, by binary search over the line starts. An
+ * offset past the end is on the last line.
+ * @param {number[]} starts
  * @param {number} offset UTF-16 offset
  * @returns {number}
  */
-function lineAt(text, offset) {
-  if (text == null) return 1;
-  let line = 1;
-  for (let i = 0; i < offset && i < text.length; i++) {
-    if (text[i] === "\n") line++;
+function lineIn(starts, offset) {
+  let low = 0;
+  let high = starts.length - 1;
+  while (low < high) {
+    const mid = (low + high + 1) >> 1;
+    if (starts[mid] <= offset) low = mid;
+    else high = mid - 1;
   }
-  return line;
+  return low + 1;
 }
 
 /**
@@ -74,6 +88,16 @@ export function labelList(project, texts, { first = "", formats = null } = {}) {
   const seen = new Set();
   /** @type {LabelEntry[]} */
   const out = [];
+  /** @type {Map<string, number[]>} */
+  const startsOf = new Map();
+  /** @param {string} path @returns {number[] | null} */
+  const startsFor = (path) => {
+    const text = texts[path];
+    if (text == null) return null;
+    let starts = startsOf.get(path);
+    if (!starts) startsOf.set(path, (starts = lineStarts(String(text))));
+    return starts;
+  };
   for (const path of ordered) {
     const file = project.file(path);
     if (!file || !isDocumentSource(path) || (formats && !formats.has(file.format))) continue;
@@ -85,7 +109,7 @@ export function labelList(project, texts, { first = "", formats = null } = {}) {
       if (seen.has(id)) continue;
       seen.add(id);
       /** @type {LabelEntry} */
-      const entry = { id, path, line: lineAt(texts[path], item.range[0]) };
+      const entry = { id, path, line: lineIn(startsFor(path) ?? [0], item.range[0]) };
       if (item.title !== undefined) entry.title = item.title;
       out.push(entry);
     }

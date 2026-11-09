@@ -11,7 +11,7 @@ const NAME_ARGUMENT = new Set([
   "RequirePackage", "documentclass", "bibliography", "bibliographystyle",
   "addbibresource", "url", "href", "begin", "end", "newcommand",
   "renewcommand", "providecommand", "newenvironment", "renewenvironment",
-  "setlength", "addtolength", "setcounter", "addtocounter", "newcounter",
+  "DeclareMathOperator", "setlength", "addtolength", "setcounter", "addtocounter", "newcounter",
   "pagestyle", "thispagestyle", "hypersetup", "graphicspath",
   "lstinputlisting", "inputminted", "usetikzlibrary", "definecolor", "color",
   "textcolor", "author",
@@ -21,7 +21,7 @@ const NAME_ARGUMENT = new Set([
 // \newcommand{\R}[1]{...}. The body is markup too.
 const DEFINITIONS = new Set([
   "newcommand", "renewcommand", "providecommand",
-  "newenvironment", "renewenvironment",
+  "newenvironment", "renewenvironment", "DeclareMathOperator",
 ]);
 
 // Link and cite commands whose braced argument is visible text, not a key.
@@ -95,9 +95,10 @@ const GROUPS = new Set(["Group", "MathGroup", "UrlArg"]);
  * spellchecker to skip. Half-open [from, to) offsets into `text` (UTF-16, as
  * JavaScript strings index). Any order; overlaps allowed.
  * @param {string} text
+ * @param {string} [key] names the document, so an edit re-parses from its previous tree
  * @returns {Array<[number, number]>}
  */
-export function latexSkips(text) {
+export function latexSkips(text, key) {
   if (typeof text !== "string") return [];
   const n = text.length;
   const skips = [];
@@ -181,8 +182,10 @@ export function latexSkips(text) {
   // Index just past the [...] group that opens at `open`, or -1 when none does.
   // Directly after a command or \begin tag the grammar made it an optional
   // argument. After blanks or a star it is plain text, and then the "]" must be
-  // in the same text node. A "[" with no closing "]" is prose.
-  function optionEnd(open, at) {
+  // in the same text node. A "[" with no closing "]" is prose. With `loose`
+  // (a definition's default value, which may hold commands that split the
+  // text), a "]" later on the same line closes it.
+  function optionEnd(open, at, loose = false) {
     if (text[open] !== "[") return -1;
     const node = at(open);
     if (!node || node.from > open) return -1;
@@ -191,15 +194,17 @@ export function latexSkips(text) {
     }
     if (node.name !== "Text") return -1;
     for (let k = open + 1; k < node.to; k++) if (text[k] === "]") return k + 1;
-    return -1;
+    if (!loose) return -1;
+    const close = text.indexOf("]", open + 1);
+    return close >= 0 && close < lineEnd(open) ? close + 1 : -1;
   }
 
   // Index just past the [...] groups that follow `from`. With `spaced`, blanks
   // may come before each group, as in \cite [note] {key}.
-  function skipOptions(from, spaced, at) {
+  function skipOptions(from, spaced, at, loose = false) {
     let k = from;
     for (;;) {
-      const end = optionEnd(spaced ? argumentStart(k) : k, at);
+      const end = optionEnd(spaced ? argumentStart(k) : k, at, loose);
       if (end < 0) return k;
       k = end;
     }
@@ -270,11 +275,12 @@ export function latexSkips(text) {
   // blanks are left in the prose. An unbraced \input name ends the command, so
   // a bracket after the file name is prose.
   function argumentCommand(name, from, at) {
-    let k = skipOptions(from, true, at);
+    const loose = DEFINITIONS.has(name);
+    let k = skipOptions(from, true, at, loose);
     const brace = argumentStart(k);
     if (text[brace] === "{") k = groupEnd(brace, at);
     else if (name === "input") return fileName(k);
-    k = skipOptions(k, true, at);
+    k = skipOptions(k, true, at, loose);
     const body = argumentStart(k);
     if (DEFINITIONS.has(name) && text[body] === "{") k = groupEnd(body, at);
     return k;
@@ -319,7 +325,7 @@ export function latexSkips(text) {
     skip(node.from, closed ? node.to : Math.min(node.to, lineEnd(node.from)));
   }
 
-  latexTree(text).iterate({
+  latexTree(text, key).iterate({
     enter(ref) {
       if (ref.to <= skipTo) return false;
       const name = ref.name;

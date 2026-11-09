@@ -152,3 +152,23 @@ test("the references panel follows the index: it recomputes on a refresh and clo
   view.dispatch({ effects: indexChanged.of(null) });
   assert.equal(view.state.field(field), null);
 });
+
+test("the rename panel keeps its constructor while edits move its caret", async () => {
+  const { showPanel } = await import("@codemirror/view");
+  const { renameCommand, rename: renameExtension } = await import("../../src/lib/document-index-extensions/rename.js");
+  const { context } = fixture();
+  let state = EditorState.create({ doc: MAIN, extensions: [renameExtension(context)], selection: { anchor: MAIN.indexOf("sec:a") + 1 } });
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(spec) {
+      state = state.update(spec).state;
+    },
+  };
+  assert.equal(renameCommand(context)(view), true);
+  const [opened] = state.facet(showPanel);
+  assert.equal(typeof opened, "function");
+  view.dispatch({ changes: { from: 0, insert: "% collaborator line\n" } });
+  assert.equal(state.facet(showPanel)[0], opened, "an edit does not rebuild the panel");
+});

@@ -406,3 +406,56 @@ test("Enter after an indented first line copies its indentation", () => {
 test("Enter on a blank line copies the indentation of the line above it", () => {
   assert.equal(afterEnter("    text\n"), "    text\n\n    ");
 });
+
+/** The document after Enter at the end of `doc`, with the assist on. */
+function afterAssistedEnter(doc, cursor = doc.length) {
+  let state = EditorState.create({
+    doc,
+    selection: { anchor: cursor },
+    extensions: [latex(), latexAssist(true)],
+  });
+  ensureSyntaxTree(state, state.doc.length, 5000);
+  insertNewlineAndIndent({ state, dispatch: (tr) => { state = tr.state; } });
+  return state.doc.toString();
+}
+
+test("Enter in the body of document does not indent", () => {
+  assert.equal(afterAssistedEnter("\\begin{document}\nHello"), "\\begin{document}\nHello\n");
+  assert.equal(afterAssistedEnter("\\begin{document}"), "\\begin{document}\n");
+});
+
+test("Enter in an environment body follows the first body line, else indents one unit", () => {
+  assert.equal(afterAssistedEnter("\\begin{itemize}\n\\end{itemize}", 15), "\\begin{itemize}\n  \n\\end{itemize}");
+  assert.equal(afterAssistedEnter("\\begin{itemize}\n\\item a\n\\end{itemize}", 23), "\\begin{itemize}\n\\item a\n\n\\end{itemize}");
+  assert.equal(afterAssistedEnter("\\begin{itemize}\n    \\item a\n\\end{itemize}", 27), "\\begin{itemize}\n    \\item a\n    \n\\end{itemize}");
+});
+
+test("display math closes at a blank line", () => {
+  for (const doc of ["See $$ here.\n\n\\section{Next}", "See \\[ here.\n\n\\section{Next}"]) {
+    const tree = parse(doc);
+    assert.equal(nodes(tree, "SectionName").length, 1);
+    assert.equal(nodes(tree, "Command").length, 1, "the section is a command outside the math");
+    const math = nodes(tree, "DisplayMath")[0];
+    assert.ok(math.to <= doc.indexOf("\n\n") + 1, "the formula stops at the blank line");
+  }
+});
+
+test("unclosed math ends before a sectioning command", () => {
+  for (const doc of ["$x\n\\section{B}", "$$x\n\\section{B}", "\\[x\n\\section{B}"]) {
+    const tree = parse(doc);
+    const command = nodes(tree, "Command")[0];
+    assert.ok(command, doc);
+    const math = nodes(tree, "InlineMath").concat(nodes(tree, "DisplayMath"))[0];
+    assert.ok(math.to <= command.from, doc);
+  }
+});
+
+test("typing the closing $$ reparses incrementally to the fresh tree", async () => {
+  const { TreeFragment } = await import("@lezer/common");
+  const before = "A\n\n$$x\n\n\\section{B}\nText\n";
+  const insert = before.indexOf("x") + 1;
+  const after = `${before.slice(0, insert)}$$${before.slice(insert)}`;
+  const fragments = TreeFragment.applyChanges(TreeFragment.addTree(parse(before)), [{ fromA: insert, toA: insert, fromB: insert, toB: insert + 2 }]);
+  const incremental = latexLanguage.parser.parse(after, fragments);
+  assert.equal(incremental.toString(), parse(after).toString());
+});

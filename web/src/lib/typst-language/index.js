@@ -7,7 +7,7 @@ import { ViewPlugin } from "@codemirror/view";
 import { Language, LanguageSupport, StreamLanguage, foldService, syntaxTree } from "@codemirror/language";
 import { Parser } from "@lezer/common";
 import { typstLanguage as streamMode } from "../typst-mode.js";
-import { loadTypstSyntax } from "./module.js";
+import { loadTypstSyntax, typstSyntax } from "./module.js";
 import { typstData } from "./props.js";
 
 class TypstParser extends Parser {
@@ -80,6 +80,9 @@ export function typstSupport(api) {
 
 /** The Typst language: the stream mode now, the wasm tree once it loads. */
 export function typst() {
+  // Already loaded: no stream-mode paint first.
+  const loaded = typstSyntax();
+  if (loaded) return typstSupport(loaded);
   const compartment = new Compartment();
   const upgrade = ViewPlugin.define((view) => {
     let alive = true;

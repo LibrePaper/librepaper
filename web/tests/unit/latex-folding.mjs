@@ -80,3 +80,9 @@ test("an unmatched \\begin gives no fold", () => {
 test("a section with an empty body or a single line gives no fold", () => {
   assert.equal(folded("\\section{A}\n\\section{B}\nx", 1), null);
 });
+
+test("a \\begin inside a Verbatim body gives no fold", () => {
+  const doc = "\\begin{Verbatim}\n\\begin{itemize}\nx\n\\end{Verbatim}\n";
+  assert.equal(folded(doc, 2), null);
+  assert.equal(folded(doc, 1), "\n\\begin{itemize}\nx\n");
+});

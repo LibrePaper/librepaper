@@ -2,6 +2,7 @@
 // index first, then the file path, then a UTF-16 position where needed.
 
 import { dirname, relativePath } from "../completion/paths.js";
+import { labelNameAllowed } from "./label-names.js";
 
 /** @typedef {import("./schema.js").IndexItem} IndexItem */
 /** @typedef {import("./schema.js").Location} Location */
@@ -9,7 +10,7 @@ import { dirname, relativePath } from "../completion/paths.js";
 /** @typedef {import("./schema.js").Diagnostic} Diagnostic */
 /** @typedef {import("./schema.js").Namespace} Namespace */
 /** @typedef {import("./project.js").ProjectIndex} ProjectIndex */
-/** @typedef {{ namespace: Namespace, name: string }} Target */
+/** @typedef {{ namespace: Namespace, name: string, path?: string }} Target `path` is the file the symbol was named in, which scopes its labels */
 
 const LOCATABLE = new Set(["label", "ref", "cite", "include", "asset"]);
 
@@ -110,14 +111,15 @@ export function itemAt(project, path, pos) {
  * The namespace and name a ref, cite or label item stands for, or null.
  * @param {ProjectIndex} project
  * @param {IndexItem} item
+ * @param {string} path the file holding the item
  * @returns {Target | null}
  */
-function targetOf(project, item) {
+function targetOf(project, item, path) {
   if (item.name === undefined) return null;
-  if (item.kind === "label") return { namespace: "label", name: item.name };
+  if (item.kind === "label") return { namespace: "label", name: item.name, path };
   if (item.kind === "ref" || item.kind === "cite") {
-    const namespace = project.namespaceOf(item);
-    return namespace ? { namespace, name: item.name } : null;
+    const namespace = project.namespaceOf(item, path);
+    return namespace ? { namespace, name: item.name, path } : null;
   }
   return null;
 }
@@ -134,8 +136,8 @@ export function definition(project, path, pos) {
   const item = itemAt(project, path, pos);
   if (!item || item.name === undefined) return [];
   if (item.kind === "ref" || item.kind === "cite") {
-    if (project.namespaceOf(item) !== "label") return [];
-    return project.definitions("label", item.name).map(({ path: defPath, item: def }) => toLocation(defPath, def));
+    if (project.namespaceOf(item, path) !== "label") return [];
+    return project.definitions("label", item.name, path).map(({ path: defPath, item: def }) => toLocation(defPath, def));
   }
   if (item.kind === "include" || item.kind === "asset") {
     const resolved = project.resolveFile(path, item.name, item.kind);
@@ -153,7 +155,7 @@ export function definition(project, path, pos) {
  */
 export function targetAt(project, path, pos) {
   const item = itemAt(project, path, pos);
-  return item ? targetOf(project, item) : null;
+  return item ? targetOf(project, item, path) : null;
 }
 
 /**
@@ -165,10 +167,10 @@ export function targetAt(project, path, pos) {
  */
 export function referencesTo(project, target, { includeDeclaration = true } = {}) {
   const out = project
-    .references(target.namespace, target.name)
+    .references(target.namespace, target.name, target.path)
     .map(({ path: usePath, item: use }) => toLocation(usePath, use));
   if (includeDeclaration) {
-    for (const { path: defPath, item: def } of project.definitions(target.namespace, target.name)) {
+    for (const { path: defPath, item: def } of project.definitions(target.namespace, target.name, target.path)) {
       out.push(toLocation(defPath, def));
     }
   }
@@ -189,22 +191,42 @@ export function references(project, path, pos, { includeDeclaration = true } = {
 }
 
 /**
+ * Why a rename cannot apply: "invalid" for a position that is not a label or a
+ * name that is empty, spaced or unchanged, "chars" for a name the file's format
+ * cannot hold, "exists" when another label already has the name. Null when it can.
+ * @param {ProjectIndex} project
+ * @param {string} path
+ * @param {number} pos
+ * @param {string} newName
+ * @returns {"invalid" | "chars" | "exists" | null}
+ */
+export function renameProblem(project, path, pos, newName) {
+  const item = itemAt(project, path, pos);
+  if (!item || item.name === undefined) return "invalid";
+  const isLabel = item.kind === "label" || (item.kind === "ref" && project.namespaceOf(item, path) === "label");
+  if (!isLabel) return "invalid";
+  if (typeof newName !== "string" || newName === "" || /\s/.test(newName) || newName === item.name) return "invalid";
+  const format = project.file(path)?.format ?? "";
+  if (!labelNameAllowed(format, item.name, newName)) return "chars";
+  if (project.definitions("label", newName, path).length > 0) return "exists";
+  return null;
+}
+
+/**
  * Rename a label: its definitions and every reference that resolves to it.
  * @param {ProjectIndex} project
  * @param {string} path
  * @param {number} pos
  * @param {string} newName
- * @returns {Edit[] | null} null when the position is not a label or the name is not usable
+ * @returns {Edit[] | null} null when `renameProblem` finds one
  */
 export function rename(project, path, pos, newName) {
-  const item = itemAt(project, path, pos);
-  if (!item || item.name === undefined) return null;
-  const isLabel = item.kind === "label" || (item.kind === "ref" && project.namespaceOf(item) === "label");
-  if (!isLabel) return null;
-  if (typeof newName !== "string" || newName === "" || /\s/.test(newName) || newName === item.name) return null;
+  if (renameProblem(project, path, pos, newName) !== null) return null;
+  const item = /** @type {IndexItem} */ (itemAt(project, path, pos));
+  const name = /** @type {string} */ (item.name);
   const sites = [
-    ...project.definitions("label", item.name),
-    ...project.references("label", item.name),
+    ...project.definitions("label", name, path),
+    ...project.references("label", name, path),
   ];
   /** @type {Edit[]} */
   const edits = [];
@@ -225,9 +247,9 @@ export function rename(project, path, pos, newName) {
 export function hover(project, path, pos) {
   const item = itemAt(project, path, pos);
   if (!item || (item.kind !== "ref" && item.kind !== "cite")) return null;
-  const target = targetOf(project, item);
+  const target = targetOf(project, item, path);
   if (!target) return null;
-  const targets = project.definitions(target.namespace, target.name).map(({ path: defPath, item: def }) => {
+  const targets = project.definitions(target.namespace, target.name, target.path).map(({ path: defPath, item: def }) => {
     const location = toLocation(defPath, def);
     return def.title === undefined ? location : { ...location, title: def.title };
   });
@@ -305,8 +327,10 @@ export function diagnostics(project, path) {
 
     if (item.kind === "include" || item.kind === "asset") {
       if (known === null || project.resolveFile(path, name, item.kind) !== null) continue;
+      // LaTeX names read from the project root, so suggest them from there.
+      const fromRoot = file.format === "latex";
       const candidates = known.map((knownPath) => {
-        const display = relativePath(dirname(path), knownPath);
+        const display = fromRoot ? knownPath : relativePath(dirname(path), knownPath);
         return hasExtension(name) ? display : display.replace(/\.[^./]*$/, "");
       });
       report(item, "missing-file", closest(name, candidates));
@@ -314,10 +338,10 @@ export function diagnostics(project, path) {
     }
 
     if (item.kind === "ref") {
-      const namespace = project.namespaceOf(item);
+      const namespace = project.namespaceOf(item, path);
       if (namespace === "label" && item.namespace === "label") {
-        if (project.definitions("label", name).length === 0) {
-          report(item, "unknown-label", closest(name, project.names("label")));
+        if (project.definitions("label", name, path).length === 0) {
+          report(item, "unknown-label", closest(name, project.names("label", path)));
         }
       } else if (namespace === "cite" && item.namespace === "either") {
         if (project.hasCitation(name) === false) {

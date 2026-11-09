@@ -348,17 +348,17 @@ impl PostgresCatalog {
         reservation: Uuid,
         reserved_bytes: i64,
         scratch: crate::log::pending::Reservation,
-    ) -> Result<i64> {
+    ) -> Result<(i64, Option<i64>)> {
         let mut connection = self.persistence_connection(scratch).await?;
         let mut tx = connection.begin().await?;
         self.check_fenced_flush(&mut tx, document_id, row.expected_update_sequence)
             .await?;
-        let sequence = self
-            .insert_log_row_reserved(&mut tx, document_id, row, reservation, reserved_bytes)
+        let written = self
+            .insert_log_row_drawn(&mut tx, document_id, row, reservation, reserved_bytes)
             .await?;
         tx.commit().await?;
         connection.complete();
-        Ok(sequence)
+        Ok(written)
     }
 
     /// The row itself, inside a transaction the caller opened and will
@@ -385,6 +385,24 @@ impl PostgresCatalog {
         reservation: Uuid,
         reserved_bytes: i64,
     ) -> Result<i64> {
+        self.insert_log_row_drawn(tx, document_id, row, reservation, reserved_bytes)
+            .await
+            .map(|(sequence, _)| sequence)
+    }
+
+    /// `insert_log_row_reserved`, also returning what the reservation row
+    /// holds after the drawdown (`None` when nothing was drawn). The
+    /// sequencer resyncs its copy from that number rather than subtracting,
+    /// because a reservation growth may have run before or after this
+    /// transaction committed and subtracting is only right for the first.
+    pub async fn insert_log_row_drawn(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        row: FlushRow<'_>,
+        reservation: Uuid,
+        reserved_bytes: i64,
+    ) -> Result<(i64, Option<i64>)> {
         if row.update_bytes.is_empty() {
             return Err(Error::Invalid("a flush row holds no batches".into()));
         }
@@ -404,6 +422,7 @@ impl PostgresCatalog {
             .fetch_one(&mut **tx)
             .await?;
         lock_storage_usage(tx).await?;
+        let mut remaining = None;
         if reserved_bytes > 0 {
             // The sequencer reserves in chunks, so the row is shared by every
             // batch it has accepted and this flush takes its own batches'
@@ -423,20 +442,25 @@ impl PostgresCatalog {
             .await?
             .rows_affected();
             if emptied == 0 {
-                let reduced = sqlx::query(
+                let reduced: Option<i64> = sqlx::query_scalar(
                     "UPDATE pending_log_reservations SET bytes=bytes-$4 \
-                     WHERE reservation_id=$1 AND document_id=$2 AND writer_epoch=$3 AND bytes>$4",
+                     WHERE reservation_id=$1 AND document_id=$2 AND writer_epoch=$3 AND bytes>$4 \
+                     RETURNING bytes",
                 )
                 .bind(reservation)
                 .bind(document_id)
                 .bind(epoch)
                 .bind(reserved_bytes)
-                .execute(&mut **tx)
-                .await?
-                .rows_affected();
-                if reduced == 0 {
-                    return Err(Error::Conflict("pending log reservation was lost".into()));
+                .fetch_optional(&mut **tx)
+                .await?;
+                match reduced {
+                    Some(bytes) => remaining = Some(bytes),
+                    None => {
+                        return Err(Error::Conflict("pending log reservation was lost".into()));
+                    }
                 }
+            } else {
+                remaining = Some(0);
             }
         }
         let owner_usage = usage_bytes(tx, UsageScope::Owner(owner_id), Sources::ALL).await?;
@@ -474,7 +498,7 @@ impl PostgresCatalog {
         )
         .execute(&mut **tx)
         .await?;
-        Ok(sequence)
+        Ok((sequence, remaining))
     }
 
     /// Grows the document's log reservation row `reservation_key` by up to

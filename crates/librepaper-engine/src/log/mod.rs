@@ -365,8 +365,12 @@ impl Registry {
             let state = sequencer.log_state().await;
             if state.subscribers == 0 && state.buffered == 0 {
                 // An idle document must not keep holding quota in PostgreSQL.
-                sequencer.release_reservation().await;
-                idle.push(sequencer.document_id);
+                // A failed release keeps the sequencer resident, so the next
+                // sweep tries again instead of orphaning the row's quota
+                // until a restart.
+                if sequencer.release_reservation().await {
+                    idle.push(sequencer.document_id);
+                }
             }
         }
         if idle.is_empty() {

@@ -61,12 +61,37 @@ export function linkEdit(state, format) {
 /* ------------------------------------------------------------- the headings */
 
 const LATEX_SECTIONS = ["section", "subsection", "subsubsection", "paragraph", "subparagraph"];
-const LATEX_HEADING = /^\\(?:part|chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?\{/;
+// The command name (star included) and optional argument of a heading, up to its opening brace.
+const LATEX_HEADING = /^(\\(?:part|chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?)(?:\[[^\]]*\])?\{/;
 const MARKDOWN_HEADING = /^#{1,6}(?=[ \t]|$)[ \t]*/;
 const TYPST_HEADING = /^=+(?=[ \t]|$)[ \t]*/;
 // An HTML heading's opening tag, attributes and all, and its closing tag.
 const HTML_OPEN_HEADING = /^<h[1-6](?=[\s>])[^>]*>/i;
 const HTML_CLOSE_HEADING = /<\/h[1-6]>[ \t]*$/i;
+
+/// Offset of the first unescaped % in a line, or -1.
+function commentStart(text) {
+  let slashes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (char === "%" && slashes % 2 === 0) return i;
+    slashes = char === "\\" ? slashes + 1 : 0;
+  }
+  return -1;
+}
+
+/// Whether the brace at `open` is closed on the same line, counting nested braces.
+function braceCloses(text, open) {
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    const char = text[i];
+    if (char === "\\") i++;
+    else if (char === "%") return false;
+    else if (char === "{") depth++;
+    else if (char === "}" && --depth === 0) return true;
+  }
+  return false;
+}
 
 /// Every selected line becomes a heading of `level` in the file's markup. A
 /// heading already there is replaced, not nested.
@@ -78,9 +103,18 @@ export function headingEdit(state, format, level) {
     const { at, body } = where(line);
     if (family === "latex") {
       const old = LATEX_HEADING.exec(body);
-      const wrapped = Boolean(old) && /\}[ \t]*$/.test(body);
-      edits.push({ from: at, to: at + (wrapped ? old[0].length : 0), insert: `\\${LATEX_SECTIONS[level - 1]}{`, bias: "end" });
-      if (!wrapped) edits.push({ from: line.to, to: line.to, insert: "}", bias: "start" });
+      const command = `\\${LATEX_SECTIONS[level - 1]}`;
+      if (old && braceCloses(body, old[0].length - 1)) {
+        // Whatever follows the closing brace (a \label, a comment) stays as it is.
+        edits.push({ from: at, to: at + old[1].length, insert: command, bias: "end" });
+        continue;
+      }
+      // The brace goes before a trailing comment, after the text's last character.
+      const comment = commentStart(body);
+      const textEnd = (comment < 0 ? body : body.slice(0, comment)).trimEnd().length;
+      const close = at + textEnd;
+      edits.push({ from: at, to: at, insert: `${command}{`, bias: "end" });
+      edits.push({ from: close, to: close, insert: "}", bias: "start" });
     } else if (family === "html") {
       const open = HTML_OPEN_HEADING.exec(body);
       const close = open ? HTML_CLOSE_HEADING.exec(body) : null;

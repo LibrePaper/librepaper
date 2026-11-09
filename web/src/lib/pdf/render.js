@@ -308,7 +308,10 @@ function startLazy(entries, ctx) {
   /** @type {(value?: unknown) => void} */
   let resolveFirst = () => {};
   const first = new Promise((resolve) => { resolveFirst = resolve; });
-  const gone = () => stopped || ctx.stale();
+  // Only the swap to a newer document stops this builder (`stopLazy`), not the
+  // newer render merely starting: until the swap the old pages are still the
+  // ones on screen, and their unbuilt pages should keep filling in.
+  const gone = () => stopped;
 
   async function pump() {
     if (pumping) return;
@@ -406,7 +409,7 @@ async function buildPage(entry, ctx) {
     const text = new pdfjs.TextLayer({ textContentSource: entry.content, container: layer, viewport });
     await text.render();
     if (stale()) return;
-    rewrite(text.textDivs, entry.content.items, number > 1);
+    rewrite(layer, text.textDivs, entry.content.items, number > 1);
     frame.querySelector(".textLayer")?.replaceWith(layer);
 
     // The links come after the text, so that nothing they hold could ever
@@ -483,21 +486,20 @@ function joinedText(items, leadingBreak) {
 ///
 /// Returns how many characters of joined text this page contributed, so the
 /// caller can keep the page-start table.
-function rewrite(textDivs, items, leadingBreak) {
+function rewrite(layer, textDivs, items, leadingBreak) {
   const runs = runsOf(items);
   // `piecesOf` puts the blank line between pages; here each page is rewritten
   // on its own, so it is asked for one page and the break is added by hand.
   const pieces = piecesOf([runs]);
 
   let length = 0;
-  if (leadingBreak) {
-    // The gap between two pages. It lives in the earlier page's own layer so
-    // that a page removed takes its separator with it.
-    const first = textDivs[0];
-    if (first) {
-      first.before(gap("\n\n"));
-      length += 2;
-    }
+  if (leadingBreak && pieces.some((piece) => piece.kind !== "gap")) {
+    // The gap between two pages. It lives in the page's own layer so that a
+    // page removed takes its separator with it. It goes against the layer, not
+    // the first span: that span can be detached, and `before` would then do
+    // nothing while the count still included the break.
+    layer.prepend(gap("\n\n"));
+    length += 2;
   }
   let at = 0; // which span the next "run" piece belongs to
   let last = null;

@@ -1048,7 +1048,8 @@
   /// the theme's fallback.
   export function revealPeer(id, from, to = from, colour = "") {
     if (!view || !id) return;
-    show(id);
+    // Looking at a collaborator is not typing: the keyboard stays put.
+    show(id, { focus: false });
     const length = view.state.doc.length;
     const clamp = (at) => Math.min(Math.max(Number(at) || 0, 0), length);
     const start = clamp(Math.min(from, to));
@@ -1828,7 +1829,7 @@
     });
   }
 
-  function show(id) {
+  function show(id, { focus = true } = {}) {
     if (!view || !id || id === showing) return;
     if (showing && activeDocument) stateMap(activeDocument).set(showing, view.state);
     const document_ = session.doc;
@@ -1866,7 +1867,7 @@
     // The authorship marks belong to the file too, and the summary the reader
     // shows is for the file now on screen.
     drawAuthorship();
-    view.focus();
+    if (focus) view.focus();
   }
 
   /// The file the view is showing, which the reader asks when it has a
@@ -2040,18 +2041,14 @@
     if (view) untrack(() => syncVisual(view));
   });
 
-  // typst-syntax.wasm loads after the first paint. The Typst features read its
-  // tree, so the index and the spellcheck are computed again then. The reader
-  // follows the load itself for the outline.
+  // typst-syntax.wasm loads after the first paint. The Typst files were seen
+  // without a tree until now, so the index reads them again. The spellcheck
+  // and Harper plugins rescan on their own, and the reader follows the load
+  // itself for the outline.
   $effect(() => onTypstSyntax(() => {
+    liveIndex.invalidate((path) => path.endsWith(".typ"));
     indexDirty = true;
     refreshIndex();
-    const target = view;
-    if (target) {
-      target.dispatch({
-        effects: spellcheckCompartment.reconfigure(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(showing), () => target.state.doc.toString())),
-      });
-    }
   }));
 
 </script>

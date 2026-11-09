@@ -3,7 +3,7 @@ import test from "node:test";
 import { citedKeys } from "../../src/lib/citation-keys.js";
 import { typstAdapter } from "../../src/lib/document-index/adapters/typst.js";
 import { createProjectIndex } from "../../src/lib/document-index/project.js";
-import { definition, diagnostics } from "../../src/lib/document-index/queries.js";
+import { definition, diagnostics, rename } from "../../src/lib/document-index/queries.js";
 import { extractOutline } from "../../src/lib/outline.js";
 import { skipRanges } from "../../src/lib/spellcheck/index.js";
 import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
@@ -309,4 +309,17 @@ test("project index resolves typst refs, cites and unknown names end to end", ()
 
   const found = diagnostics(project, "main.typ");
   assert.deepEqual(found.map((d) => [d.code, d.name]), [["unknown-reference", "nope"]]);
+});
+
+test("a label passed to any call is a reference, so rename and references find it", () => {
+  const text = "= Top <top>\n#link(<top>)[up] #query(<top>) #ref(<top>) #cite(<smith>)\n";
+  const items = typstAdapter(text, "a.typ");
+  const refs = items.filter((item) => item.kind === "ref");
+  assert.deepEqual(refs.map((item) => text.slice(...item.nameRange)), ["top", "top", "top"]);
+  assert.equal(refs.length, 3, "link, query and ref each give one ref");
+  const project = createProjectIndex();
+  project.update({ path: "a.typ", format: "typst", items, length: text.length });
+  const edits = rename(project, "a.typ", text.indexOf("<top>") + 1, "start");
+  assert.equal(edits.length, 4);
+  for (const edit of edits) assert.equal(text.slice(edit.from, edit.to), "top");
 });

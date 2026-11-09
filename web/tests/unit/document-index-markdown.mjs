@@ -394,3 +394,22 @@ test("a dotted id is one label, and renaming it replaces all of it", () => {
   assert.ok(edits && edits.length >= 1);
   for (const edit of edits) assert.equal(text.slice(edit.from, edit.to), "intro.v2");
 });
+
+test("a quoted include path loses its quotes and keeps an exact nameRange", () => {
+  const text = 'Before\n\n{{< include "_x.qmd" >}}\n\n{{< include _y.qmd >}}\n';
+  const includes = markdownAdapter(text, "a.qmd").filter((item) => item.kind === "include");
+  assert.deepEqual(includes.map((item) => item.name), ["_x.qmd", "_y.qmd"]);
+  for (const item of includes) assert.equal(text.slice(...item.nameRange), item.name);
+});
+
+test("an image path is percent-decoded and loses its query and fragment", () => {
+  const text = "![a](my%20fig.png) ![b](img.png?raw=1) ![c](pic.png#x) ![d](100%.png)\n";
+  const assets = markdownAdapter(text, "a.md").filter((item) => item.kind === "asset");
+  assert.deepEqual(assets.map((item) => item.name), ["my fig.png", "img.png", "pic.png", "100%.png"]);
+  assert.equal(text.slice(...assets[0].nameRange), "my%20fig.png");
+  assert.equal(text.slice(...assets[1].nameRange), "img.png");
+  const project = createProjectIndex();
+  project.setFiles(["a.md", "my fig.png", "img.png", "pic.png", "100%.png"]);
+  project.update({ path: "a.md", format: "markdown", items: markdownAdapter(text, "a.md"), length: text.length });
+  assert.deepEqual(diagnostics(project, "a.md"), []);
+});
