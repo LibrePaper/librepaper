@@ -2205,6 +2205,7 @@
   "reader_select_passage_first": "Wählen Sie zuerst die Passage im Editor aus.",
   "reader_source_moved": "Der Quelltext hat sich seit der Auswahl dieser Passage geändert. Warten Sie, bis die aktuelle Seite fertig gerendert ist, und wählen Sie die Passage erneut aus. Der Entwurf bleibt erhalten.",
   "reader_source_rendering": "Der Quelltext hat sich geändert, und die aktuelle Seite wird noch gerendert. Ihre Auswahl bleibt erhalten. Versuchen Sie es erneut, sobald die Seite aktualisiert ist.",
+  "reader_panel_unavailable": "Dieses Fenster konnte nicht geladen werden. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
   "reader_split": "Ansicht teilen",
   "reader_stale_selection": "Die Seite hat sich geändert, während der Kommentar platziert wurde. Sie wurde auf den aktuellen Text aktualisiert. Wählen Sie die Passage erneut aus und versuchen Sie es noch einmal.",
   "reader_still_connecting": "Die Verbindung zum aktuellen Dokument wird noch hergestellt. Versuchen Sie es erneut, sobald es geladen ist.",

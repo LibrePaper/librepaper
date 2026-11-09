@@ -2205,6 +2205,7 @@
   "reader_select_passage_first": "Selecione primeiro o trecho no editor.",
   "reader_source_moved": "O código-fonte mudou desde que este trecho foi selecionado. Aguarde a página atual terminar de ser renderizada e selecione o trecho novamente; o rascunho é mantido.",
   "reader_source_rendering": "O código-fonte mudou e a página atual ainda está sendo renderizada. Sua seleção é mantida; tente novamente depois que a página for atualizada.",
+  "reader_panel_unavailable": "Não foi possível carregar este painel. Verifique sua conexão e tente novamente.",
   "reader_split": "Dividir",
   "reader_stale_selection": "A página mudou enquanto o comentário era posicionado. Ela foi atualizada para o texto atual; selecione o trecho novamente e tente de novo.",
   "reader_still_connecting": "O documento atual ainda está conectando. Tente novamente quando ele for carregado.",

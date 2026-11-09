@@ -2205,6 +2205,7 @@
   "reader_select_passage_first": "Select the passage in the editor first.",
   "reader_source_moved": "The source changed since this passage was selected. Wait for the current page to finish rendering, then select the passage again; the draft is kept.",
   "reader_source_rendering": "The source changed and the current page is still rendering. Your selection is kept; retry after the page updates.",
+  "reader_panel_unavailable": "This panel could not be loaded. Check your connection and try again.",
   "reader_split": "Split",
   "reader_stale_selection": "The page changed while that comment was being placed. It has been refreshed to the current text; reselect the passage and try again.",
   "reader_still_connecting": "The current document is still connecting. Please retry when it has loaded.",

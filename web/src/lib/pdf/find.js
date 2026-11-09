@@ -113,6 +113,10 @@ export function createFind({ root, onresult }) {
   let query = "";
   let matches = []; // { page, range }
   let index = -1;
+  // The current match sits on a page that is not built yet, so it has no
+  // position to scroll to. The page is scrolled into view instead, and the
+  // match is revealed properly once the page has built and `refresh` runs.
+  let revealAfterBuild = false;
 
   const highlights = globalThis.CSS?.highlights;
   const canHighlight = Boolean(highlights && globalThis.Highlight);
@@ -158,8 +162,19 @@ export function createFind({ root, onresult }) {
   }
 
   function reveal() {
-    const rect = matches[index]?.range.getBoundingClientRect();
-    if (!rect || (rect.width === 0 && rect.height === 0)) return;
+    revealAfterBuild = false;
+    const match = matches[index];
+    const rect = match?.range.getBoundingClientRect();
+    if (!rect) return;
+    if (rect.width === 0 && rect.height === 0) {
+      // Text held in a hidden node of a page not built yet: go to the page,
+      // which is what makes it build.
+      const frame = root()?.querySelector?.(`.page[data-page="${match.page}"]`);
+      if (!frame) return;
+      revealAfterBuild = true;
+      frame.scrollIntoView?.({ block: "center", behavior: "instant" });
+      return;
+    }
     const top = rect.top + rect.height / 2 - window.innerHeight / 2;
     const offscreen = rect.left < 0 || rect.right > window.innerWidth;
     const left = offscreen ? rect.left + rect.width / 2 - window.innerWidth / 2 : 0;
@@ -191,6 +206,7 @@ export function createFind({ root, onresult }) {
     matches = collect();
     index = matches.length === 0 ? -1 : Math.max(0, Math.min(index, matches.length - 1));
     paint();
+    if (revealAfterBuild && index >= 0) reveal();
     report();
   }
 
@@ -198,6 +214,7 @@ export function createFind({ root, onresult }) {
     query = "";
     matches = [];
     index = -1;
+    revealAfterBuild = false;
     if (canHighlight) {
       highlights.delete("lp-find");
       highlights.delete("lp-find-current");
