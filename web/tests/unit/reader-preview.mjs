@@ -37,7 +37,7 @@ const editorSource = englishSource(await readFile(new URL("../../src/components/
 // Reader links receive renderer capability before their early prepare return,
 // and bind LaTeX to a stable owner across source refreshes.
 assert.match(readerSource, /renderers\.offerLatex\([\s\S]*?if \(!mayEdit\) \{/);
-assert.match(readerSource, /configureLatex\(format, session \|\| readerProjectOwner\)/);
+assert.match(readerSource, /configureLatex\(format, format \? \(session \|\| readerProjectOwner\) : undefined\)/);
 // The source identity stamped on a finished page is the one captured when
 // that render began, never a refreshed project's live identity.
 assert.match(previewSource, /const capturedProjectDigest = start\.projectDigest \|\| ""/);

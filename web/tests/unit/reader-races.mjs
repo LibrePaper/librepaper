@@ -14,12 +14,12 @@ import { createPreviewRenderer } from "../../src/lib/reader/preview-render.js";
 import { createRenderCoordinator } from "../../src/lib/reader/render-coordinator.js";
 import { loadRunes } from "../helpers/runes.mjs";
 import { needsSourceRefresh } from "../../src/lib/reader/source-events.js";
-import { openingFile, previewTarget, rendersAlone, includersOf } from "../../src/lib/opening.js";
 import { englishSource } from "../helpers/english-source.mjs";
 
 const { createBuildSettings } = await loadRunes(new URL("../../src/lib/reader/build-settings.svelte.js", import.meta.url));
 const { createTimeline } = await loadRunes(new URL("../../src/lib/reader/timeline.svelte.js", import.meta.url));
 const { createPainted } = await loadRunes(new URL("../../src/lib/reader/painted.svelte.js", import.meta.url));
+const { createPreviewTarget } = await loadRunes(new URL("../../src/lib/reader/preview-target.svelte.js", import.meta.url));
 
 const reader = englishSource(readFileSync(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8"));
 const body = (start, end) => {
@@ -204,6 +204,7 @@ const context = (values) => {
     previewReason: "none",
     previewChoices: [],
     lockedFile: "",
+    target: { navigation: 0, bump() { this.navigation += 1; } },
     SLUG: "doc",
     buildPreferences: { selection: "automatic", backend: "browser", output: "html" },
     session: null,
@@ -213,7 +214,7 @@ const context = (values) => {
     ...values,
   });
   ctx.renderCoordinator = createRenderCoordinator({
-    navigation: () => ctx.navigationGeneration,
+    navigation: () => ctx.target.navigation,
     source: () => ctx.sourceGeneration,
     main: () => ctx.treeNow?.().main || "",
     render: (ticket) => ctx.renderPreview(ticket),
@@ -429,39 +430,6 @@ console.log("reader-races: all checks passed");
   ctx.other = other;
   vm.runInContext("filesChanged(events, other)", ctx);
   assert.equal(changes, 6, "stale session events are ignored");
-}
-
-// Pointing the preview at a LaTeX file configures the already joined project,
-// even though the initial prepare ran while it was Markdown.
-{
-  let configured = 0;
-  const ctx = context({
-    session: { latexSettings: () => ({ engine: "auto" }) },
-    // The directory itself belongs to the workspace, which is driven on its
-    // own in tests/unit/workspace.mjs. What is checked here is the other half
-    // of that read: re-pointing the preview at the file that is open, which is
-    // a rendering question rather than a directory one.
-    files: [], sourceFormat: "markdown",
-    openTextPath: "paper.tex", lockedPath: "", aloneSet: new Set(), visitorFile: "",
-    liveTreeNow: () => ({ texts: { "paper.tex": "\\documentclass{article}" }, digests: {} }),
-    previewTarget, rendersAlone, openingFile, includersOf, readerProjectOwner: {}, warmEngine: () => {},
-    tick: async () => ({ then: () => {} }), paintPreview: () => {},
-    navigationGeneration: 0, painted: createPainted(),
-    docsOrigin: null, navigateFrame: () => {},
-    framePreview: { clear: () => {} },
-    renderCoordinator: { invalidate: () => {} },
-    renderStatus: { resetFailure: () => {} },
-    renderers: { formatOf: () => "latex", previewFormatOf: () => "latex", warm: () => {} },
-   
-    configureLatex: () => configured++,
-    mayEdit: true, mainPathNow: () => "paper.tex",
-  });
-  vm.runInContext(body("  function updatePreviewTarget()", "  // The preview follows the open file"), ctx);
-  vm.runInContext("updatePreviewTarget()", ctx);
-  assert.equal(configured, 1);
-  assert.equal(ctx.previewPath, "paper.tex");
-  assert.equal(ctx.previewReason, "alone");
-  assert.equal(ctx.sourceFormat, "latex");
 }
 
 // LaTeX configuration follows format/session lifetime. Build settings are
@@ -1125,10 +1093,11 @@ for (const latest of [
   assert.equal(timers[0].cleared, true, "teardown clears the chat timer");
 }
 
-// The preview follows the file open in the source. A file that cannot render
-// alone is shown inside the one file that includes it, a file with nothing to
-// draw empties the preview, and a lock keeps the preview on one file while the
-// source moves on.
+// Reader's share of the preview lock. The target is driven on its own in
+// tests/unit/preview-target.mjs; what is checked here is what Reader adds
+// around it: the eye refuses a file that cannot render alone, a lock opens the
+// split layout when the source is shown alone, and treeNow names the file the
+// target draws.
 {
   const texts = {
     'thesis.tex': '\\documentclass{book}\n\\input{chapters/intro}',
@@ -1138,97 +1107,57 @@ for (const latest of [
   };
   const files = Object.keys(texts).map(path => ({ id: path, path, kind: 'text' }));
   files.push({ id: 'logo.png', path: 'logo.png', kind: 'asset' });
-  const configured = [];
-  let cleared = 0, painted = 0;
+  const painted = createPainted();
   const ctx = context({
     session: { paths: new Map(files.map(f => [f.id, f.path])) },
-    files, openFile: 'thesis.tex', sourceFormat: '', aloneSet: new Set(), visitorFile: '',
+    files, openFile: 'refs.bib',
     compact: false, layout: 'source', showMobileView: () => {},
-    viewing: null, editing: true, editor: { text: () => null },
+    viewing: null, editing: true,
     liveTreeNow: () => ({ texts, digests: {} }),
-    previewTarget, rendersAlone, openingFile, includersOf, readerProjectOwner: {}, warmEngine: () => {},
-    renderers: { formatOf: p => p.endsWith('.tex') ? 'latex' : '', previewFormatOf: p => p.endsWith('.tex') ? 'latex' : '', warm: () => {} },
-    configureLatex: f => configured.push(f),
-    SLUG: 'thesis', location: {origin:'http://localhost'},
-    navigationGeneration: 0, issued: 0, docsOrigin: null,
-    framePreview: {clear: () => cleared++},
-    renderCoordinator: { invalidate: () => {} },
-    renderStatus: { resetFailure: () => {}, clearDocx: () => {} },
-    diagnosticPainter: { rendered: () => {} },
-    previewTimer: null, painted: createPainted(), previewCleared: false,
-    navigateFrame: () => {},
-    tick: async () => {}, paintPreview: () => painted++,
+    SLUG: 'thesis',
   });
-  // `lockedPath`, `openTextPath` and the visitor-aware `filesShown` and
-  // `shownOpenId` are derived in the page; here they are read from the same
-  // two ids, as an editor with a session sees them.
+  ctx.target = createPreviewTarget({
+    texts: () => texts,
+    formatOf: (path) => (path.endsWith('.tex') ? 'latex' : ''),
+    open: () => ({
+      textPath: files.find((f) => f.id === ctx.openFile && f.kind === 'text')?.path || '',
+      hasFile: Boolean(ctx.openFile),
+    }),
+    lockedPath: () => files.find((f) => f.id === ctx.target.state.lockedFile)?.path || '',
+    painted: () => painted,
+  });
   vm.runInContext(`
-    Object.defineProperty(globalThis, 'filesShown', { get() { return files; } });
-    Object.defineProperty(globalThis, 'shownOpenId', { get() { return openFile; } });
-    Object.defineProperty(globalThis, 'lockedPath', { get() { return files.find((f) => f.id === lockedFile)?.path || ''; } });
-    Object.defineProperty(globalThis, 'openTextPath', { get() { return files.find((f) => f.id === openFile && f.kind === 'text')?.path || ''; } });
+    Object.defineProperty(globalThis, 'previewPath', { get() { return target.state.path; } });
+    Object.defineProperty(globalThis, 'aloneSet', { get() { return target.state.alone; } });
   `, ctx);
-  vm.runInContext(`${body('  /// Empties the preview', '  // A project with no file at all')}\n${body('  function updatePreviewTarget()', '  // The preview follows the open file')}\n${body('  function lockPreviewOn(id)', '  // Any edit can change')}`, ctx);
-  vm.runInContext(body('  function treeNow()', '  // Painting the preview'), ctx);
-  const open = (id) => { ctx.openFile = id; vm.runInContext('updatePreviewTarget()', ctx); };
+  vm.runInContext(`${body('  function lockPreviewOn(id)', '  function lockPreview(id)')}\n${body('  function lockPreview(id)', '  function unlockPreview()')}\n${body('  function unlockPreview()', '  // Any edit can change')}\n${body('  function treeNow()', '  // Painting the preview')}`, ctx);
+  const treeMain = () => vm.runInContext('treeNow().main', ctx);
 
-  vm.runInContext('updatePreviewTarget()', ctx);
-  assert.equal(ctx.previewPath, 'thesis.tex', 'the preview starts on the open file');
-  assert.equal(ctx.previewReason, 'alone');
-  assert.deepEqual([...ctx.aloneSet].sort(), ['appendix.tex', 'thesis.tex'], 'the files that render alone are the ones the eye offers');
-
-  open('appendix.tex');
-  assert.equal(ctx.previewPath, 'appendix.tex', 'opening a file that renders alone moves the preview');
-  assert.equal(vm.runInContext('treeNow().main', ctx), 'appendix.tex');
-  await new Promise(setImmediate);
-  assert.equal(painted, 1);
-
-  open('chapters/intro.tex');
-  assert.equal(ctx.previewPath, 'thesis.tex', 'an included file is shown inside its includer');
-  assert.equal(ctx.previewReason, 'inside');
-  assert.equal(vm.runInContext('treeNow().main', ctx), 'thesis.tex');
-
-  open('refs.bib');
-  assert.equal(ctx.previewPath, '', 'a file with nothing to draw empties the preview');
-  assert.equal(ctx.previewReason, 'none');
-  assert.equal(ctx.sourceFormat, '');
-
-  // The eye locks without moving the source.
+  // The eye locks without moving the source, and the source-only layout makes
+  // room for the preview.
+  ctx.target.update();
   vm.runInContext('lockPreview("appendix.tex")', ctx);
   assert.equal(ctx.openFile, 'refs.bib', 'locking does not open the file');
-  assert.equal(ctx.previewPath, 'appendix.tex');
-  assert.equal(ctx.previewReason, 'locked');
+  assert.equal(ctx.target.state.lockedFile, 'appendix.tex');
   assert.equal(ctx.layout, 'split', 'a source-only layout makes room for the preview');
-  open('chapters/intro.tex');
-  assert.equal(ctx.previewPath, 'appendix.tex', 'the lock holds while the source moves');
-  assert.equal(vm.runInContext('treeNow().main', ctx), 'appendix.tex');
+  assert.equal(treeMain(), 'appendix.tex', 'treeNow names the file the target draws');
 
+  // The eye offers only the files that render alone, so neither an included
+  // file nor an asset can take the lock.
   vm.runInContext('lockPreview("chapters/intro.tex")', ctx);
-  assert.equal(ctx.lockedFile, 'appendix.tex', 'a file that cannot render alone cannot be locked');
+  assert.equal(ctx.target.state.lockedFile, 'appendix.tex', 'a file that cannot render alone cannot be locked');
+  vm.runInContext('lockPreview("logo.png")', ctx);
+  assert.equal(ctx.target.state.lockedFile, 'appendix.tex', 'an asset cannot be locked');
 
-  // A figure open in the source leaves the preview where it is.
-  open('logo.png');
-  assert.equal(ctx.previewPath, 'appendix.tex');
-
+  // The lock holds while the source moves, and unlocking follows the source again.
+  ctx.openFile = 'chapters/intro.tex';
+  ctx.target.update();
+  assert.equal(treeMain(), 'appendix.tex', 'the lock holds while the source moves');
   vm.runInContext('unlockPreview()', ctx);
-  open('chapters/intro.tex');
-  assert.equal(ctx.previewPath, 'thesis.tex', 'unlocking returns to following the open file');
-  assert.equal(ctx.lockedFile, '');
-
-  // The lock is by identity: a rename keeps it, and a delete drops it.
-  vm.runInContext('lockPreview("appendix.tex")', ctx);
-  files.find(f => f.id === 'appendix.tex').path = 'annex.tex';
-  texts['annex.tex'] = texts['appendix.tex']; delete texts['appendix.tex'];
-  open('chapters/intro.tex');
-  assert.equal(ctx.previewPath, 'annex.tex');
-  ctx.files = files.filter(f => f.id !== 'appendix.tex');
-  delete texts['annex.tex'];
-  open('chapters/intro.tex');
-  assert.equal(ctx.lockedFile, '', 'deleting the locked file drops the lock');
-  assert.equal(ctx.previewPath, 'thesis.tex');
-  assert.ok(cleared >= 3);
+  assert.equal(ctx.target.state.lockedFile, '');
+  assert.equal(treeMain(), 'thesis.tex', 'unlocking returns to following the open file');
 }
-console.log('reader-races: the preview follows the open file, shows includes inside, and honours the lock');
+console.log("reader-races: the eye offers only the files that render alone, and treeNow names the file the target draws");
 
 // Main and secondary previews never expose the retired rendering store.
 assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//);

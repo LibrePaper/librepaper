@@ -33,6 +33,7 @@
   import { createWorkspace } from "../lib/reader/workspace.svelte.js";
   import { createProjectionSource } from "../lib/reader/projection-source.svelte.js";
   import { createPainted } from "../lib/reader/painted.svelte.js";
+  import { createPreviewTarget } from "../lib/reader/preview-target.svelte.js";
   import { createJumps, isBackChord } from "../lib/reader/jumps.svelte.js";
   import { createBuildSettings } from "../lib/reader/build-settings.svelte.js";
   import { createTimeline } from "../lib/reader/timeline.svelte.js";
@@ -105,7 +106,7 @@
   import { countWordsIn, documentWords, sectionWords } from "../lib/word-count.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
   import { rememberPreview, lastPreview, flushAll } from "../lib/reader/preview-cache.js";
-  import { previewTarget, rendersAlone, openingFile, includersOf } from "../lib/opening.js";
+  import { previewTarget } from "../lib/opening.js";
   import { createFrameOverlays } from "../lib/reader/frame-overlays.js";
   import { createRenderDiagnostics } from "../lib/reader/render-diagnostics.js";
   import { createRenderCoordinator } from "../lib/reader/render-coordinator.js";
@@ -185,7 +186,7 @@
       // A reader opens on the file the project opens on, whichever that is
       // now. The target puts its format in place and paints the page this
       // browser last drew for it.
-      updatePreviewTarget();
+      target.update();
       sourceGeneration += 1;
       outlineRevision += 1;
       settled = true;
@@ -304,7 +305,7 @@
     if (latexOutput === next) return;
     buildSettings.state.latexOutput = next;
     setBuildPreferences(updateBuildPreferences(buildScope(), "latex", { output: next }));
-    navigationGeneration += 1;
+    target.bump();
     renderers.cancelPreview({ keepWarm: true });
     latex.cancel();
     framePreview?.clear();
@@ -329,7 +330,7 @@
   // Everything in flight stops: a render that finishes after the renderer, or
   // the reader, has changed must not reach the pane.
   function stopRendering() {
-    navigationGeneration += 1;
+    target.bump();
     renderers.cancelPreview({ keepWarm: true });
     latex.cancel();
   }
@@ -341,7 +342,7 @@
     setBuildPreferences(updateBuildPreferences(buildScope(), "typst", { output: typstOutput }));
     // Invalidate every pending delivery. A PDF that finishes after this
     // gesture must never replace the HTML frame.
-    navigationGeneration += 1;
+    target.bump();
     void paintPreview();
   }
 
@@ -351,7 +352,7 @@
     const next = format === "html" ? "html" : "pdf";
     if (markdownOutput === next) return;
     setBuildPreferences(updateBuildPreferences(buildScope(), sourceFormat, { output: next }));
-    navigationGeneration += 1;
+    target.bump();
     renderers.cancelPreview({ keepWarm: true });
     framePreview?.clear();
     painted.reset({ keepSynctex: true });
@@ -1453,7 +1454,45 @@
   let session = $state.raw(null);
   let editing = $state(false);
   let mayEdit = $state(false);
-  let sourceFormat = $state("");
+  // What the preview draws: the file, its format, why it is that one, the
+  // choices when the open file has no preview of its own, and the lock. The
+  // rule is `lib/opening.js`'s; the state and its changes are kept in
+  // preview-target.svelte.js. Every callback is lazy, so the things it names
+  // may be declared further down.
+  const target = createPreviewTarget({
+    texts: () => liveTreeNow().texts,
+    formatOf: (path) => renderers.previewFormatOf(path),
+    open: () => ({ textPath: openTextPath, hasFile: Boolean(openFile) }),
+    lockedPath: () => lockedPath,
+    // A link holder reading a file in place of the preview keeps the preview
+    // as it was underneath, so going back to it shows the same page at once.
+    skip: () => (!session && !projection.state.project) || (!mayEdit && viewing),
+    painted: () => painted,
+    configure: (format) => configureLatex(format, format ? (session || readerProjectOwner) : undefined),
+    warm: (format, text) => warmEngine(format, text),
+    invalidate: () => renderCoordinator.invalidate(),
+    clearFrame: () => framePreview.clear(),
+    navigateFrame: () => { if (docsOrigin) navigateFrame(); },
+    cancelDebounce: () => { clearTimeout(previewTimer); previewTimer = null; },
+    resetStatus: () => renderStatus.resetFailure(),
+    cleared: () => {
+      renderStatus.clearDocx();
+      diagnosticPainter.rendered({ page: false, diagnostics: [] });
+    },
+    paint: () => { void paintPreview(); },
+    settle: () => tick(),
+    disposed: () => readerDisposed,
+  });
+  // Reads of the preview's state under the names the page has always used.
+  // They are reads only: every write goes through `target`.
+  const previewPath = $derived(target.state.path);
+  const sourceFormat = $derived(target.state.format);
+  const previewReason = $derived(target.state.reason);
+  const previewChoices = $derived(target.state.choices);
+  const lockedFile = $derived(target.state.lockedFile);
+  // The paths that render on their own, which is what the eye in Files offers
+  // to lock. Worked out with the target, from the same texts.
+  const aloneSet = $derived(target.state.alone);
 
   let peers = $state(1);
   let participants = $state([]);
@@ -1592,7 +1631,6 @@
     if (before === "normal") untrack(() => showMobileView("sidebar"));
     else if (mode === "normal" && historySource.newer) untrack(() => showMobileView("source"));
   });
-  let navigationGeneration = 0;
   // Which file the reader arrived asking for, when the landing page's search
   // found the project by one of its files. Honoured once the directory has
   // arrived, and once only.
@@ -1787,7 +1825,7 @@
   // against what was just typed.
   let sourceGeneration = 0;
   const renderCoordinator = createRenderCoordinator({
-    navigation: () => navigationGeneration,
+    navigation: () => target.navigation,
     source: () => sourceGeneration,
     main: () => treeNow().main,
     // Called rather than passed: the renderer is built further down the file,
@@ -2327,7 +2365,7 @@
     },
     facts: () => ({
       disposed: readerDisposed,
-      navigation: navigationGeneration,
+      navigation: target.navigation,
       source: sourceGeneration,
       everPainted: painted.ever,
       format: sourceFormat,
@@ -3233,7 +3271,7 @@
     docx: exportAvailability(displayedFormat, "docx", { local: exportsLocally }),
   });
 
-  const docxDownload = $derived(renderState.docxArtifact && renderState.docxArtifact.source === sourceGeneration && renderState.docxArtifact.navigation === navigationGeneration ? renderState.docxArtifact : null);
+  const docxDownload = $derived(renderState.docxArtifact && renderState.docxArtifact.source === sourceGeneration && renderState.docxArtifact.navigation === target.navigation ? renderState.docxArtifact : null);
 
   // The identity of the source the frame was last drawn from, so an export
   // can tell whether the page on screen is the current document.
@@ -3439,7 +3477,7 @@
     arrivedFile: ARRIVED_FILE,
     say: (message) => say(message, { id: "reader:files-moved" }),
     paint: () => paintPreview(),
-    retarget: () => updatePreviewTarget(),
+    retarget: () => target.update(),
     onarrived: (file) => openTheFile(file),
   });
   const ws = workspace.state;
@@ -3494,22 +3532,9 @@
   // The outline can be shown with no editor open, so it also follows the typst
   // module's arrival itself.
   $effect(() => onTypstSyntax(() => { outlineRevision += 1; }));
-  // What the preview draws. `previewPath` is the file, `previewReason` says
-  // why it is that one (the file itself, the file it is shown inside, the file
-  // the preview is locked on, or nothing at all) and
-  // `previewChoices` lists the files that could host the open file when it has
-  // no preview of its own.
-  // The rule is `lib/opening.js`'s; this is where its answer is kept.
-  let previewPath = $state("");
-  let previewReason = $state("none");
-  let previewChoices = $state([]);
-  // The file the preview is locked on, by identity so a rename keeps the lock.
-  // It lasts for this visit: nothing stores it and nobody else sees it.
-  let lockedFile = $state("");
+  // The path of the file the preview is locked on. The lock itself is held by
+  // the target, by identity, so a rename keeps it.
   const lockedPath = $derived(files.find((file) => file.id === lockedFile)?.path || "");
-  // The paths that render on their own, which is what the eye in Files offers
-  // to lock. Worked out with the target, from the same texts.
-  let aloneSet = $state.raw(new Set());
   const toolbarPath = $derived(files.find((file) => file.id === openFile)?.path || "");
   const openTextPath = $derived(files.find((file) => file.id === openFile && file.kind === "text")?.path || "");
   const previewNoteItems = $derived(previewNotes({
@@ -3567,114 +3592,26 @@
   // directory one.
   const refreshFiles = () => workspace.refresh();
 
-  // Set when the preview was emptied because there was nothing to show, so
-  // that the next file to become renderable is painted: with no previous
-  // target, the first target is otherwise left to the initial paint.
-  let previewCleared = false;
-
-  /// Empties the preview: no file is being followed, no format is selected and
-  /// nothing is drawn. No render is attempted and no engine is warmed.
-  function clearPreview() {
-    previewCleared = true;
-    previewPath = "";
-    sourceFormat = "";
-    configureLatex("");
-    navigationGeneration += 1;
-    renderCoordinator.invalidate();
-    clearTimeout(previewTimer);
-    previewTimer = null;
-    framePreview.clear();
-    painted.reset();
-    renderStatus.resetFailure();
-    renderStatus.clearDocx();
-    diagnosticPainter.rendered({ page: false, diagnostics: [] });
-  }
-
   // A project with no file at all, as opposed to one whose directory has not
   // arrived yet. The directory is read from the session itself so that a
   // stale file list cannot report a project as empty.
   const projectEmpty = $derived(mayEdit
     ? Boolean(session && persistence.joined && files.length === 0 && session.list().length === 0)
     : Boolean(projection.state.project && !Object.keys(projection.state.project.tree?.files || projection.state.project.texts || {}).length));
-  $effect(() => { if (projectEmpty) untrack(clearPreview); });
-
-  // Works out which file the preview draws and moves it there. It runs when
-  // the open file changes, when the lock does, when the directory does, and a
-  // moment after any edit, because which file includes which is read from the
-  // texts. A target that has not changed costs a comparison and nothing else.
-  function updatePreviewTarget() {
-    if (readerDisposed || (!session && !projection.state.project)) return;
-    // A link holder reading a file in place of the preview keeps the preview
-    // as it was underneath, so going back to it shows the same page at once.
-    if (!mayEdit && viewing) return;
-    const texts = liveTreeNow().texts;
-    if (lockedFile && !lockedPath) lockedFile = "";
-    // With a figure open there is no open text, so the preview stays on the
-    // file it has. Nothing open at all means the file the project opens on.
-    const open = openTextPath || (openFile ? previewPath : "") || openingFile(texts) || "";
-    const target = previewTarget({ open, locked: lockedPath, texts });
-    const includers = includersOf(texts);
-    const alone = Object.keys(texts).filter((path) => rendersAlone(path, texts, includers)).sort();
-    if (alone.length !== aloneSet.size || alone.some((path) => !aloneSet.has(path))) aloneSet = new Set(alone);
-    if (target.reason !== previewReason) previewReason = target.reason;
-    if (target.choices.join("\n") !== previewChoices.join("\n")) previewChoices = target.choices;
-    const path = target.path || "";
-    const format = path ? renderers.previewFormatOf(path) : "";
-    // Nothing the preview could follow: the open file has no renderer, or it
-    // is part of a document no single file stands for, or there is no file.
-    if (!format) {
-      if (previewPath) clearPreview();
-      return;
-    }
-    if (previewPath === path && sourceFormat === format) return;
-    const previous = previewPath || sourceFormat || (previewCleared ? "cleared" : "");
-    previewCleared = false;
-    previewPath = path;
-    sourceFormat = format;
-    configureLatex(format, session || readerProjectOwner);
-    warmEngine(format, typeof texts[path] === "string" ? texts[path] : "");
-    if (!previous) {
-      // The first file the preview is given is rendered now. Waiting for the
-      // typing pause would hold it for a second or more while the project
-      // loads, since every hydration step restarts that timer.
-      clearTimeout(previewTimer);
-      previewTimer = null;
-      void tick().then(() => {
-        if (!readerDisposed && previewPath === path) void paintPreview();
-      });
-      return;
-    }
-    // Invalidate both running compiles and replayed pages, even when the
-    // two selected files use the same renderer or both produce PDFs.
-    navigationGeneration += 1;
-    const mine = navigationGeneration;
-    renderCoordinator.invalidate();
-    framePreview.clear();
-    // Only the render of the new file installs a click map.
-    painted.reset();
-    renderStatus.resetFailure();
-    // The frame is reloaded only when the kind of page changes. Moving between
-    // two files of the same kind keeps it, so switching files in the list does
-    // not pay for a frame load before the cached page can be shown.
-    if (docsOrigin) navigateFrame();
-    void tick().then(() => {
-      if (!readerDisposed && mine === navigationGeneration) void paintPreview();
-    });
-  }
+  $effect(() => { if (projectEmpty) untrack(() => target.clear()); });
 
   // The preview follows the open file, and follows the lock when there is one.
   $effect(() => {
     void openFile;
     void lockedFile;
-    untrack(updatePreviewTarget);
+    untrack(() => target.update());
   });
 
   // The eye in Files, the View menu and the card all lock the preview, and
   // none of them opens the file. A phone shows the preview it just moved.
   function lockPreviewOn(id) {
-    lockedFile = id;
     viewing = false;
-    updatePreviewTarget();
+    target.lock(id);
     if (!compact && layout === "source") layout = "split";
     if (compact) showMobileView("document");
   }
@@ -3686,8 +3623,7 @@
   }
 
   function unlockPreview() {
-    lockedFile = "";
-    updatePreviewTarget();
+    target.unlock();
   }
 
   // Any edit can change which file includes which, so the preview target is
@@ -3697,7 +3633,7 @@
   let targetTimer = null;
   function scheduleTargetUpdate() {
     clearTimeout(targetTimer);
-    targetTimer = setTimeout(() => updatePreviewTarget(), TARGET_PAUSE);
+    targetTimer = setTimeout(() => target.update(), TARGET_PAUSE);
   }
 
   // A file added, renamed or removed: the list is redrawn and the document is
@@ -4052,7 +3988,7 @@
     // An empty project has no format; the first file added gives it one.
     const format = document_.source_format ||
       (document_.execution_engine === "quarto" ? "quarto" : "");
-    sourceFormat = format;
+    target.state.format = format;
     scopeLocalApp();
     // Every reader compiles from source when the browser has the engine. A
     // missing engine produces an actionable local-tool message below.
@@ -4165,7 +4101,7 @@
       // page this document will open with next time.
       void flushAll();
       renderCoordinator.invalidate();
-      navigationGeneration += 1;
+      target.bump();
       renderers.cancelPreview();
       clearTimeout(reviewTimer);
       clearTimeout(previewTimer);
