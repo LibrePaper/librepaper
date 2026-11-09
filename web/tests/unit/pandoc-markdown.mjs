@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { ensureSyntaxTree, foldable } from "@codemirror/language";
 import { EditorState } from "@codemirror/state";
+import { TreeFragment } from "@lezer/common";
 import { pandocExtensions } from "../../src/lib/pandoc-markdown.js";
 
 const parser = markdown({ base: markdownLanguage, extensions: pandocExtensions }).language.parser;
@@ -20,6 +21,24 @@ function nodes(text, only) {
 }
 const names = (text, only) => nodes(text, only).map(([name]) => name);
 const texts = (text, name) => nodes(text, [name]).map(([, body]) => body);
+
+// Every node with its positions, one per line, so whole trees compare as strings.
+function shape(tree) {
+  const found = [];
+  tree.iterate({
+    enter(node) {
+      if (node.name !== "Document") found.push(`${node.name} ${node.from} ${node.to}`);
+    },
+  });
+  return found.join("\n");
+}
+
+// Reparsing a document with its own tree as fragments must give the fresh tree.
+function assertIncremental(text) {
+  const fresh = shape(parser.parse(text));
+  const incremental = shape(parser.parse(text, TreeFragment.addTree(parser.parse(text))));
+  assert.equal(incremental, fresh);
+}
 
 test("inline math follows Pandoc's dollar rules", () => {
   assert.deepEqual(texts("a $x^2$ b", "InlineMath"), ["$x^2$"]);
@@ -56,12 +75,32 @@ test("fenced divs hold Markdown blocks", () => {
   assert.deepEqual(texts("a :::\nb", "FencedDiv"), []);
 });
 
-test("fenced divs nest and may be left open", () => {
+test("fenced divs nest", () => {
   const doc = "::: outer\n\n::::: {.inner}\nx\n:::::\n\ny\n:::";
   assert.deepEqual(texts(doc, "FencedDiv"), [doc, "::::: {.inner}\nx\n:::::"]);
+});
+
+test("an opener without a closing fence is paragraph text", () => {
   const open = "::: note\nbody *em*\n\nmore";
-  assert.deepEqual(texts(open, "FencedDiv"), [open]);
+  assert.deepEqual(texts(open, "FencedDiv"), []);
   assert.deepEqual(texts(open, "Emphasis"), ["*em*"]);
+  assert.deepEqual(names("::: note\nbody", ["FencedDivMark"]), []);
+});
+
+test("a closing fence ends an indented code block and the div, in fresh and incremental parses", () => {
+  const doc = "::: note\n    code\n:::\n\nafter";
+  assert.deepEqual(texts(doc, "FencedDiv"), ["::: note\n    code\n:::"]);
+  assert.deepEqual(texts(doc, "FencedDivMark"), [":::", ":::"]);
+  assert.deepEqual(texts(doc, "CodeBlock"), ["code"]);
+  assert.deepEqual(texts(doc, "Paragraph"), ["after"]);
+  for (const text of [doc, "::: note\n    code\n:::\n", "::: note\nbody\n\nmore"]) assertIncremental(text);
+});
+
+test("a div closed inside a list item keeps its closing fence inside the div", () => {
+  const doc = "- item\n\n  ::: note\n  text\n  :::\n  after\n";
+  assert.deepEqual(texts(doc, "FencedDiv"), ["::: note\n  text\n  :::"]);
+  assert.deepEqual(texts(doc, "FencedDivMark"), [":::", ":::"]);
+  assertIncremental(doc);
 });
 
 test("a fenced div folds from its opening line to its closing line", () => {

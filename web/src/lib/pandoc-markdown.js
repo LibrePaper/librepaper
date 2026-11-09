@@ -212,6 +212,8 @@ const fencedDiv = {
     const match = DIV_OPEN.exec(body);
     if (!match) return false;
     const close = divClose(cx);
+    // Without a closing fence the opener is plain paragraph text, as in Pandoc.
+    if (close > cx.to) return false;
     const from = cx.lineStart + line.pos;
     cx.startComposite("FencedDiv", line.pos, close);
     cx.addElement(cx.elt("FencedDivMark", from, from + match[1].length));
@@ -226,6 +228,9 @@ const fencedDiv = {
   },
 };
 
+// The closing fence is the div's last line. It returns false, so the div ends on
+// this line: a true return would leave the consumed fence to an open indented
+// code block, which reads an empty line and runs on past the fence.
 function continueDiv(cx, line, close) {
   if (cx.lineStart < close) return true;
   if (cx.lineStart > close) return false;
@@ -235,7 +240,7 @@ function continueDiv(cx, line, close) {
   const from = cx.lineStart + line.pos;
   line.addMarker(cx.elt("FencedDivMark", from, from + match[0].length));
   line.moveBase(line.text.length);
-  return true;
+  return false;
 }
 
 // ---- citations and cross references ---------------------------------------
