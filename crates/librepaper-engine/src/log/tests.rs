@@ -312,7 +312,9 @@ impl LogCatalog for FakeCatalog {
     ) -> BoxFuture<'a, postgres::Result<()>> {
         if self.fail_release.load(Ordering::SeqCst) {
             return Box::pin(async {
-                Err(postgres::Error::Conflict("simulated: release failed".into()))
+                Err(postgres::Error::Conflict(
+                    "simulated: release failed".into(),
+                ))
             });
         }
         self.releases.fetch_add(1, Ordering::SeqCst);
@@ -517,7 +519,10 @@ async fn a_growth_between_flush_commit_and_retire_does_not_double_subtract() {
     ));
     assert!(catalog.reserved_row.load(Ordering::SeqCst) > 0);
     for (wanted, minimum) in catalog.reserve_asks.lock().unwrap().iter() {
-        assert!(minimum <= wanted, "asked for {minimum} at least but {wanted} at most");
+        assert!(
+            minimum <= wanted,
+            "asked for {minimum} at least but {wanted} at most"
+        );
     }
     sequencer.flush(FlushReason::Barrier).await.unwrap();
     assert!(sequencer.release_reservation().await);

@@ -99,7 +99,7 @@ function words(text) {
 // Div markers and the class name after them are markup; the div body is prose.
 {
   assert.deepEqual(
-    words("::: {.callout-note}\nNote text\n:::\n::: callout-tip\nTip text"),
+    words("::: {.callout-note}\nNote text\n:::\n::: callout-tip\nTip text\n:::"),
     ["Note", "text", "Tip", "text"],
   );
 }

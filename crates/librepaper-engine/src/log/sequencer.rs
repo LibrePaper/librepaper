@@ -2267,7 +2267,14 @@ impl Sequencer {
         // committed, for a number the first encoding knew.
         let wrote_a_row = !acknowledged.is_empty();
         if wrote_a_row {
-            inner.retire(take, source_sequence, vector, row_bytes, reserved_bytes, None);
+            inner.retire(
+                take,
+                source_sequence,
+                vector,
+                row_bytes,
+                reserved_bytes,
+                None,
+            );
             self.ledger.charge(self.owner_id, row_bytes as i64);
         }
         if let Some(source) = &prepared {
