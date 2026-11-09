@@ -65,22 +65,19 @@
     write,
   } from "../lib/storage.js";
   import { localDataForgotten } from "../lib/signed-out.js";
-  import { ACTIVITY_WIDTH, DOCUMENT_MIN, GRIP, PANES, RATIOS, clamp, measure, pixels, px, showing } from "../lib/panes.js";
+  import { ACTIVITY_WIDTH, DOCUMENT_MIN, GRIP, PANES, clamp, measure, pixels, px, showing } from "../lib/panes.js";
   import { slotId, tabsFor } from "../lib/panels.js";
-  import { APPLE, availability, captured, commandFor, labelOf, menuKeys, noteOf, writing } from "../lib/commands.js";
+  import { APPLE, availability, captured, commandFor, labelOf, menuKeys, writing } from "../lib/commands.js";
   // Aliased because this file has its own setSize for the pane sizes.
   import { size as textSize, setSize as setTextSize, DEFAULT_SIZE } from "../lib/editor-type.js";
 
   import { tick, untrack } from "svelte";
   import { lazyComponent } from "../lib/lazy-component.svelte.js";
   import { onMode } from "../lib/theme.js";
-  import { Menu } from "@skeletonlabs/skeleton-svelte";
-  import MenubarMenu from "./MenubarMenu.svelte";
   import { menubar } from "../lib/menubar.svelte.js";
   import Nav from "./Nav.svelte";
   import FormatToolbar from "./FormatToolbar.svelte";
   import Icon from "./Icon.svelte";
-  import ExplorerMenu from "./ExplorerMenu.svelte";
   import IconButton from "./IconButton.svelte";
   import { DOCUMENTATION_URL } from "../lib/site-links.js";
   import { VISUAL_FORMATS } from "../lib/visual-markup/formats.js";
@@ -121,6 +118,7 @@
   import { recenteredLeft, placeBar as placeSelectionBar } from "../lib/annotation-bar.js";
   import { VERBS, motivationFor } from "../lib/annotating.js";
   import InsertMenu from "./InsertMenu.svelte";
+  import Menus from "./reader/Menus.svelte";
   import Sidebar from "./layout/Sidebar.svelte";
   import TabBar from "./mobile/TabBar.svelte";
   import ModeSwitch from "./mobile/ModeSwitch.svelte";
@@ -3150,8 +3148,6 @@
   // workspace's own keys are not the mode's and stay named.
   const modalEditor = $derived(keys === "vim" || keys === "emacs");
   const MENU_KEYS = $derived(menuKeys({ modalEditor, apple: APPLE }));
-  // A greyed item says why in its tooltip, from the same registry note the palette shows.
-  const tipFor = (id) => (can[id] ? undefined : noteOf(id) || undefined);
 
   function chooseEditCommand(command) {
     if (command === "word-count") return openWordCount();
@@ -4204,124 +4200,6 @@
 
 <svelte:window bind:innerWidth={width} onresize={() => (unit = measure())} onkeydown={shortcut} onbeforeunload={beforeUnload} onpagehide={() => session?.leave()} />
 
-{#snippet exportItem(value, label, target)}
-  {@const state = exportable[target]}
-  <Menu.Item value={value} class="menuitem" disabled={!state.ok}>
-    <span class="menuitem-label">{label}</span>
-    {#if !state.ok && state.reason}<span class="export-reason">{state.reason}</span>{/if}
-  </Menu.Item>
-{/snippet}
-
-<!-- A child menu reports its own selections, so it gets the same handler as
-     the File menu; Zag does not pass a sub-menu's select up to its parent. -->
-{#snippet downloadMenu()}
-  <Menu open={downloadOpen}
-        onOpenChange={(event) => (downloadOpen = event.open)}
-        onSelect={(chosen) => void chooseFileCommand(chosen.value)}>
-    <Menu.TriggerItem value="submenu:download" class="menuitem">
-      <span class="menuitem-label">{m.common_download()}</span>
-      <span class="menuitem-chevron" aria-hidden="true"><Icon name="chevron-right" size="1rem" /></span>
-    </Menu.TriggerItem>
-    <ExplorerMenu>
-      {#if mayEdit}<Menu.Item value="download" class="menuitem"><span class="menuitem-label">{labelOf("download")}</span></Menu.Item>{/if}
-      {@render exportItem("download-html", labelOf("download-html"), "html")}
-      {@render exportItem("download-pdf", labelOf("download-pdf"), "pdf")}
-      {@render exportItem("download-docx", labelOf("download-docx"), "docx")}
-      {#if canExportComments && !DEMO}<Menu.Item value="download-comments" class="menuitem"><span class="menuitem-label">{labelOf("download-comments")}</span></Menu.Item>{/if}
-      {#if mayEdit}
-        <Menu.Item value="download-source" class="menuitem" disabled={!toolbarPath}>
-          <span class="menuitem-label">{labelOf("download-source")}</span>
-          {#if !toolbarPath}<span class="export-reason">{m.readerd_download_source_reason()}</span>{/if}
-        </Menu.Item>
-      {/if}
-    </ExplorerMenu>
-  </Menu>
-{/snippet}
-
-{#snippet fileItems()}
-  {#if mayEdit}
-    <Menu.Item value="new-file" class="menuitem">{labelOf("new-file")}</Menu.Item>
-    <Menu.Item value="new-folder" class="menuitem">{labelOf("new-folder")}</Menu.Item>
-    <Menu.Item value="upload" class="menuitem" disabled={DEMO}>{labelOf("upload")}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>
-    <hr class="hr my-1" />
-  {/if}
-  {@render downloadMenu()}
-  {#if me?.id || DEMO}<Menu.Item value="save-template" class="menuitem" disabled={DEMO}>{m.readerd_save_as_template_item()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
-  <hr class="hr my-1" />
-  {#if tabs.some((tab) => tab.id === "git")}<Menu.Item value="git" class="menuitem" disabled={DEMO}>{m.readerd_git_item()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
-  {#if DEMO || canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem" disabled={DEMO}>{labelOf("share")}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
-  <!-- Only where the panel behind it is one this reader is offered: a menu
-       that opens a column the rail does not have is the second list of who
-       may see what that lib/panels.js exists to prevent. -->
-  {#if tabs.some((tab) => tab.id === "history")}<Menu.Item value="history" class="menuitem" disabled={DEMO}>{labelOf("history")}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
-  <hr class="hr my-1" />
-  {#if mayEdit && sourceFormat === "latex" && compilesHere}
-    <Menu.Item value="compile" class="menuitem"><span class="menuitem-label">{labelOf("compile")}</span>{#if MENU_KEYS.compile}<span class="menuitem-keys">{MENU_KEYS.compile}</span>{/if}</Menu.Item>
-  {/if}
-  <Menu.Item value="settings" class="menuitem"><span class="menuitem-label">{labelOf("settings")}</span>{#if MENU_KEYS.settings}<span class="menuitem-keys">{MENU_KEYS.settings}</span>{/if}</Menu.Item>
-  {#if hasDesktop}
-    <hr class="hr my-1" />
-    <Menu.Item value="quit" class="menuitem">{m.readerd_quit()}</Menu.Item>
-  {/if}
-{/snippet}
-
-{#snippet layoutItems()}
-  {#each [["source", labelOf("layout-source")], ["document", labelOf("layout-document")], ["split", labelOf("layout-split")]] as [value, label]}
-    <Menu.Item value="layout-{value}" class="menuitem" disabled={compact && value === "split"} title={compact && value === "split" ? noteOf("layout-split") : undefined}>
-      <span class="menuitem-check">{(compact ? activeMobileView === value : layout === value) ? "✓" : ""}</span>{label}
-    </Menu.Item>
-  {/each}
-  <hr class="hr my-1" />
-  {#each [["left", labelOf("side-left")], ["right", labelOf("side-right")]] as [side, label]}
-    <Menu.Item value="side-{side}" class="menuitem" disabled={compact} title={compact ? noteOf("side-left") : undefined}>
-      <span class="menuitem-check">{sourceSide === side ? "✓" : ""}</span>{label}
-    </Menu.Item>
-  {/each}
-  <hr class="hr my-1" />
-  {#each RATIOS as ratio}
-    <Menu.Item value="ratio-{ratio.share}" class="menuitem" disabled={compact}>
-      <span class="menuitem-check">{sizes[PANES.editor.key] === ratio.share ? "✓" : ""}</span>{ratio.says}
-    </Menu.Item>
-  {/each}
-  <hr class="hr my-1" />
-  <Menu.Item value="linked" class="menuitem">
-    <span class="menuitem-check">{linked ? "✓" : ""}</span><span class="menuitem-label">{labelOf("linked")}</span>{#if MENU_KEYS.linked}<span class="menuitem-keys">{MENU_KEYS.linked}</span>{/if}
-  </Menu.Item>
-  <Menu.Item value="visual-markup" class="menuitem">
-    <span class="menuitem-check">{visual ? "✓" : ""}</span><span class="menuitem-label">{labelOf("visual-markup")}</span>{#if MENU_KEYS["visual-markup"]}<span class="menuitem-keys">{MENU_KEYS["visual-markup"]}</span>{/if}
-  </Menu.Item>
-  <hr class="hr my-1" />
-  <Menu.Item value="text-bigger" class="menuitem">
-    <span class="menuitem-check"></span><span class="menuitem-label">{labelOf("text-bigger")}</span>{#if MENU_KEYS["text-bigger"]}<span class="menuitem-keys">{MENU_KEYS["text-bigger"]}</span>{/if}
-  </Menu.Item>
-  <Menu.Item value="text-smaller" class="menuitem">
-    <span class="menuitem-check"></span><span class="menuitem-label">{labelOf("text-smaller")}</span>{#if MENU_KEYS["text-smaller"]}<span class="menuitem-keys">{MENU_KEYS["text-smaller"]}</span>{/if}
-  </Menu.Item>
-  <Menu.Item value="text-reset" class="menuitem">
-    <span class="menuitem-check"></span><span class="menuitem-label">{labelOf("text-reset")}</span>{#if MENU_KEYS["text-reset"]}<span class="menuitem-keys">{MENU_KEYS["text-reset"]}</span>{/if}
-  </Menu.Item>
-{/snippet}
-
-{#snippet previewItems()}
-  {@const selectedFormat = displayedFormat === "latex" ? latexOutput : displayedFormat === "typst" ? typstOutput : ["markdown", "quarto"].includes(displayedFormat) ? markdownOutput : "html"}
-  {@const selectableFormat = ["latex", "typst", "markdown", "quarto"].includes(displayedFormat)}
-  <Menu.Item value="format-html" class="menuitem" disabled={!selectableFormat}>
-    <span class="menuitem-check">{selectedFormat === "html" ? "✓" : ""}</span>HTML
-  </Menu.Item>
-  <Menu.Item value="format-pdf" class="menuitem" disabled={!selectableFormat}>
-    <span class="menuitem-check">{selectedFormat === "pdf" ? "✓" : ""}</span>PDF
-  </Menu.Item>
-{/snippet}
-
-{#snippet viewItems()}
-  <Menu.Item value="lock-preview" class="menuitem" disabled={!can["lock-preview"]} title={tipFor("lock-preview")}>{labelOf("lock-preview")}</Menu.Item>
-  {#if can["unlock-preview"]}<Menu.Item value="unlock-preview" class="menuitem">{labelOf("unlock-preview")}</Menu.Item>{/if}
-  <hr class="hr my-1" />
-  {@render previewItems()}
-  <hr class="hr my-1" />
-  {@render layoutItems()}
-{/snippet}
-
 {#snippet faceSwitch()}
   <div class="face-switch" role="group" aria-label={m.readerd_workspace_view()}>
     <IconButton icon="eye" label={m.common_preview()} pressed={shown.document}
@@ -4401,39 +4279,21 @@
     {/if}
   {/snippet}
   {#snippet menus()}
-    <!-- The File menu is the project's, not the preview's: new files, uploads,
-         downloads, sharing, history and settings all belong to the project
-         whatever pane is on screen, so it stays put when the document pane is
-         hidden. -->
-    <MenubarMenu id="file" label={m.common_file()} onselect={(command) => void chooseFileCommand(command)}>
-      {@render fileItems()}
-    </MenubarMenu>
-    {#if editing && mayEdit}
-      <MenubarMenu id="edit" label={m.readerd_edit_menu()} disabled={!editor || !!shownFigure}
-                   onopen={refreshEditAvailability}
-                   onselect={chooseEditCommand}>
-        {#each editGroups as group, index}
-          {#if index}<hr class="hr my-1" />{/if}
-          {#each group as [command, label]}
-            <Menu.Item value={command} class="menuitem" disabled={!can[command]} title={tipFor(command)}>
-              <span class="menuitem-label">{label}</span>{#if MENU_KEYS[command]}<span class="menuitem-keys">{MENU_KEYS[command]}</span>{/if}
-            </Menu.Item>
-          {/each}
-        {/each}
-      </MenubarMenu>
-      <InsertMenu bind:this={insertMenu} getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpalette={(id) => void openPalette(id)} keys={{ symbols: MENU_KEYS.symbols, math: MENU_KEYS.math }} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} onzoterosearch={localQuarto.desktop() ? (query) => editor?.zoteroSearch?.(query) : null} onzoteroimport={(items) => editor?.importZoteroItems?.(items)} disabled={!mayEdit || !editor} demo={DEMO} />
-    {/if}
-    {#if editing}
-      <MenubarMenu id="view" label={m.reader_menu_view()} onselect={chooseViewCommand}>
-        {@render viewItems()}
-      </MenubarMenu>
-    {/if}
-    <!-- Help is the registry's two entries that are about the workspace itself;
-         runCommand runs them as it runs the palette and the keyboard. -->
-    <MenubarMenu id="help" label={m.mobilenav_help()} onselect={(id) => void runCommand(id)}>
-      <Menu.Item value="palette" class="menuitem"><span class="menuitem-label">{m.common_command_palette()}</span>{#if MENU_KEYS.palette}<span class="menuitem-keys">{MENU_KEYS.palette}</span>{/if}</Menu.Item>
-      <Menu.Item value="shortcuts" class="menuitem"><span class="menuitem-label">{m.common_keyboard_shortcuts()}</span>{#if MENU_KEYS.shortcuts}<span class="menuitem-keys">{MENU_KEYS.shortcuts}</span>{/if}</Menu.Item>
-    </MenubarMenu>
+    <Menus role={{ mayEdit, me, canSeeSharing, canPublish, canExportComments }} demo={DEMO} demoHint={DEMO_HINT} {tabs} {hasDesktop}
+      source={{ format: sourceFormat, compilesHere, toolbarPath, editing, editorReady: Boolean(editor), figureShown: Boolean(shownFigure) }}
+      {exportable}
+      view={{ compact, activeMobileView, layout, sourceSide, editorShare: sizes[PANES.editor.key], linked, visual }}
+      outputs={{ displayedFormat, latexOutput, typstOutput, markdownOutput }}
+      {can} keys={MENU_KEYS} {editGroups} bind:downloadOpen
+      onfile={(command) => void chooseFileCommand(command)}
+      onedit={chooseEditCommand}
+      oneditopen={refreshEditAvailability}
+      onview={chooseViewCommand}
+      onhelp={(id) => void runCommand(id)}>
+      {#snippet insert()}
+        <InsertMenu bind:this={insertMenu} getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpalette={(id) => void openPalette(id)} keys={{ symbols: MENU_KEYS.symbols, math: MENU_KEYS.math }} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} onzoterosearch={localQuarto.desktop() ? (query) => editor?.zoteroSearch?.(query) : null} onzoteroimport={(items) => editor?.importZoteroItems?.(items)} disabled={!mayEdit || !editor} demo={DEMO} />
+      {/snippet}
+    </Menus>
   {/snippet}
   {#snippet children()}
     {#if compact}
@@ -5076,8 +4936,6 @@
   .demo-banner, .share-intro { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--spacing) calc(var(--spacing) * 3); padding: calc(var(--spacing) * 1.5) var(--panel-padding, calc(var(--spacing) * 4)); border-bottom: 1px solid var(--color-pane-edge); background: var(--color-subtle); color: var(--color-text); font-size: var(--text-sm); }
   .demo-banner-actions { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 2); }
   .editorpane.comparing { grid-template-rows: auto minmax(0, 1fr); }
-  .menuitem-chevron { display: inline-flex; margin-left: auto; padding-left: calc(var(--spacing) * 2); }
-  .export-reason { flex: 0 0 auto; margin-left: auto; max-width: 12rem; overflow: hidden; color: var(--color-text-secondary); font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
   .bar-toggle { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1.5); cursor: pointer; font-size: var(--text-sm); white-space: nowrap; }
   .nav-document {
     display: block;

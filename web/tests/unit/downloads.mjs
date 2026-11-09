@@ -13,6 +13,7 @@ import {
 } from "../../src/lib/reader/downloads.js";
 
 const reader = englishSource(readFileSync(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8"));
+const menus = englishSource(readFileSync(new URL("../../src/components/reader/Menus.svelte", import.meta.url), "utf8"));
 const body = (start, end) => {
   const from = reader.indexOf(start);
   assert.notEqual(from, -1, `Reader function not found: ${start}`);
@@ -90,8 +91,8 @@ await assert.rejects(
 // The action is absent as well as guarded. Editors and owners are the two
 // roles for which Reader sets `mayEdit`.
 assert.match(
-  reader,
-  /\{#if mayEdit\}(?:(?!\{#if|\{\/if\})[\s\S])*<Menu\.Item value="download" class="menuitem"><span class="menuitem-label">\{labelOf\("download"\)\}<\/span><\/Menu\.Item>[\s\S]*?\{\/if\}/,
+  menus,
+  /\{#if role\.mayEdit\}(?:(?!\{#if|\{\/if\})[\s\S])*<Menu\.Item value="download" class="menuitem"><span class="menuitem-label">\{labelOf\("download"\)\}<\/span><\/Menu\.Item>[\s\S]*?\{\/if\}/,
   "the File menu only offers the project archive to editors and owners",
 );
 

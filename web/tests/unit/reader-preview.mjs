@@ -29,6 +29,7 @@ assert.equal(messages.at(-1).type, "preview");
 quartoPdf.dispose();
 
 const readerSource = englishSource(await readFile(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8"));
+const menusSource = englishSource(await readFile(new URL("../../src/components/reader/Menus.svelte", import.meta.url), "utf8"));
 const previewSource = englishSource(await readFile(new URL("../../src/lib/reader/preview-render.js", import.meta.url), "utf8"));
 const viteSource = await readFile(new URL("../../vite.config.js", import.meta.url), "utf8");
 const offlineSource = englishSource(await readFile(new URL("../../src/lib/offline-projects.js", import.meta.url), "utf8"));
@@ -121,5 +122,5 @@ assert.match(readerSource, /onEmpty: \(\) => \{\s*painted\.reset\(\{ empty: true
 assert.doesNotMatch(previewSource, /This document is empty/);
 assert.doesNotMatch(readerSource, /project-folder|ProjectFolderSetting/);
 // HTML/PDF output format choice for markdown and quarto in View menu.
-assert.match(readerSource, /\{@const selectableFormat = \["latex", "typst", "markdown", "quarto"\]\.includes\(displayedFormat\)\}/);
+assert.match(menusSource, /\{@const selectableFormat = \["latex", "typst", "markdown", "quarto"\]\.includes\(outputs\.displayedFormat\)\}/);
 assert.match(readerSource, /async function setMarkdownOutput\(format\)/);

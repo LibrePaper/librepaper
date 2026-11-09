@@ -1097,8 +1097,16 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
   assert.deepEqual(commands, ['lock:paper.tex','unlock','layout-split']);
   vm.runInContext('chooseViewCommand("preview-latex-html"); chooseViewCommand("preview-latex-pdf")', ctx);
   assert.deepEqual(commands.slice(-2), ['latex-html', 'latex-pdf']);
-  const view = body('{#snippet viewItems()}', '{/snippet}');
-  const file = body('{#snippet fileItems()}', '{/snippet}');
+  const menusSource = englishSource(readFileSync(new URL("../../src/components/reader/Menus.svelte", import.meta.url), "utf8"));
+  const menuBody = (start, end) => {
+    const from = menusSource.indexOf(start);
+    assert.notEqual(from, -1, `Menus snippet not found: ${start}`);
+    const to = menusSource.indexOf(end, from);
+    assert.notEqual(to, -1, `Menus snippet boundary not found: ${end}`);
+    return menusSource.slice(from, to);
+  };
+  const view = menuBody('{#snippet viewItems()}', '{/snippet}');
+  const file = menuBody('{#snippet fileItems()}', '{/snippet}');
   assert.match(view, /labelOf\("lock-preview"\)/);
   assert.match(view, /labelOf\("unlock-preview"\)/);
   assert.match(view, /@render previewItems\(\)/);
@@ -1110,10 +1118,9 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
   assert.match(file, /value="settings"/);
   assert.match(file, /value="compile"/);
   assert.doesNotMatch(reader, /label="Tools"/);
-  const menus = body('{#snippet menus()}', '{#snippet children()}');
-  assert.match(menus, /<MenubarMenu id="file" label="File"/);
-  assert.match(menus, /<MenubarMenu id="edit" label="Edit"/);
-  assert.match(menus, /<MenubarMenu id="view" label="View"/);
+  assert.match(menusSource, /<MenubarMenu id="file" label="File"/);
+  assert.match(menusSource, /<MenubarMenu id="edit" label="Edit"/);
+  assert.match(menusSource, /<MenubarMenu id="view" label="View"/);
 }
 console.log('reader-races: View menu exposes explicit preview controls at every width');
 
