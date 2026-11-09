@@ -257,10 +257,10 @@ function extractLatex(source, starts) {
   let skipUntil = 0;
   tree.iterate({
     enter(ref) {
-      if (ref.name !== "Command" || ref.from < skipUntil) return;
-      const node = ref.node;
-      const name = node.firstChild;
-      if (!name || name.name !== "SectionName") return;
+      if (ref.name !== "SectionName" || ref.from < skipUntil) return;
+      // Normally the first child of a Command; inside unclosed math it is a bare item.
+      const name = ref.node;
+      const node = name.parent?.name === "Command" ? name.parent : name;
       const level = LATEX_LEVELS.get(source.slice(name.from + 1, name.to).replace(/\*$/u, "").toLowerCase());
       if (!level) return false;
       // An unfinished [short title] means the command is still being typed.
@@ -268,7 +268,7 @@ function extractLatex(source, starts) {
       if (optional && optional.name === "OptionalArgument" && optional.lastChild?.name !== "OptClose") return false;
       let group = node.nextSibling;
       while (group && (group.name === "Comment" || (group.name === "Text" && !/\S/u.test(source.slice(group.from, group.to))))) group = group.nextSibling;
-      if (!group || group.name !== "Group" || group.lastChild?.name !== "CloseBrace") return false;
+      if (!group || (group.name !== "Group" && group.name !== "MathGroup") || group.lastChild?.name !== "CloseBrace") return false;
       // The title is the braced source with comments and \verb spans dropped.
       let title = "";
       let cursor = group.from + 1;

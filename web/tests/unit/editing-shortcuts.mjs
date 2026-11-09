@@ -177,3 +177,14 @@ assert.equal(
 );
 
 console.log("editing-shortcuts: links, headings and lists in each format's own markup, toggled and carried by the caret");
+
+// LaTeX headings: the brace goes before a comment, and an existing heading is
+// found by its matching brace.
+{
+  const latexHeading = (doc, level) => applied(stateOf(doc), headingEdit(stateOf(doc), "latex", level)).doc;
+  assert.equal(latexHeading("Intro text % todo", 1), "\\section{Intro text} % todo");
+  assert.equal(latexHeading("Intro 50\\% done", 1), "\\section{Intro 50\\% done}");
+  assert.equal(latexHeading("\\section{Title} % old", 2), "\\subsection{Title} % old");
+  assert.equal(latexHeading("\\section{T}\\label{x} more", 2), "\\subsection{T}\\label{x} more");
+  assert.equal(latexHeading("\\section*{A {b}}", 3), "\\subsubsection{A {b}}");
+}

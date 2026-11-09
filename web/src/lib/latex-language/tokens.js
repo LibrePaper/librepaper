@@ -25,10 +25,10 @@ const MATH_ENVS = new Set([
 // Environments whose body is opaque. The second set takes options first.
 // Not `example`: verbatim in the R Journal style, but an ordinary theorem-like
 // environment with math in most documents. An R Journal `$` stops at its \end.
-const VERBATIM_ENVS = new Set([
+export const VERBATIM_ENVS = new Set([
   "verbatim", "comment", "CodeInput", "CodeOutput", "Sinput", "Soutput", "Scode", "filecontents",
 ]);
-const LISTING_ENVS = new Set(["lstlisting", "minted", "Verbatim", "BVerbatim", "LVerbatim", "Highlighting"]);
+export const LISTING_ENVS = new Set(["lstlisting", "minted", "Verbatim", "BVerbatim", "LVerbatim", "Highlighting"]);
 
 const MATH_DELIMITERS = { 40: ParenOpen, 41: ParenClose, 91: BracketOpen, 93: BracketClose };
 
@@ -43,6 +43,15 @@ function atParagraphBreak(input) {
   let i = 1;
   for (let ch = input.peek(i); ch === SPACE || ch === TAB; ch = input.peek(++i));
   return input.peek(i) === NEWLINE;
+}
+
+/**
+ * Whether the parser is inside $...$, \(...\), $$...$$ or \[...\] (not a
+ * math environment or a group within one). Only there can a formula close.
+ */
+function inDelimitedMath(stack) {
+  return stack.canShift(DollarClose) || stack.canShift(ParenClose) || stack.canShift(BracketClose) ||
+    (stack.canShift(DisplayDollar) && stack.canShift(StrayDollar));
 }
 
 /** The environment name in `{name}` starting at offset, or null. */
@@ -124,6 +133,8 @@ function controlToken(input, stack) {
     }
   }
   if (SECTIONS.has(word)) {
+    // A heading cannot sit inside a formula: an unclosed one ends before it.
+    if (inDelimitedMath(stack) && stack.canShift(ImplicitClose)) return input.acceptToken(ImplicitClose, 0);
     return input.acceptToken(SectionName, input.peek(len) === STAR ? len + 1 : len);
   }
   return input.acceptToken(ControlSequence, len);
@@ -162,8 +173,10 @@ function textToken(input, stack) {
   const closeBracket = stack.canShift(OptClose);
   // Inline math ends at a blank line, as it does in TeX, so one stray `$`
   // does not turn the rest of the document into math.
+  // Display math ($$ and \[) ends there too, with a zero-length ImplicitClose.
   const inlineClose = stack.canShift(DollarClose) ? DollarClose
-    : stack.canShift(ParenClose) ? ParenClose : 0;
+    : stack.canShift(ParenClose) ? ParenClose
+      : inDelimitedMath(stack) && stack.canShift(ImplicitClose) ? ImplicitClose : 0;
   if (inlineClose && atParagraphBreak(input)) return input.acceptToken(inlineClose, 0);
   // An optional argument never spans a blank line either.
   if (closeBracket && atParagraphBreak(input)) return input.acceptToken(ImplicitClose, 0);

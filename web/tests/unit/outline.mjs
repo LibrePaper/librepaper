@@ -95,3 +95,9 @@ console.log("outline: markdown/quarto, typst, html, and latex extraction passed"
   const titles = extractOutline("\\section{A {b % note\nc} d}\n", "latex").map((h) => h.title);
   assert.deepEqual(titles, ["A {b c} d"]);
 }
+
+// A heading after an unclosed formula is still listed.
+{
+  const titles = extractOutline("See $$ here.\n\n\\section{Next}\n$x\n\\section{B}\n", "latex").map((h) => h.title);
+  assert.deepEqual(titles, ["Next", "B"]);
+}

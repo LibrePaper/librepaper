@@ -34,10 +34,25 @@ function foldGroup(node, state) {
     ? { from, to: close.from } : null;
 }
 
-/** Indent the body of an environment one unit; line up a closing \end with its \begin. */
+/**
+ * Indent the body of an environment one unit, or like the body's first line
+ * when it already has one, so a document that does not indent bodies is not
+ * fought. A closing \end lines up with its \begin, and the body of `document`
+ * is not indented at all.
+ */
 function indentEnvironment(context) {
   const closing = /^\s*\\end\b/.test(context.textAfter);
-  return context.baseIndent + (closing ? 0 : context.unit);
+  if (closing) return context.baseIndent;
+  const { state, node } = context;
+  const name = node.getChild("BeginEnv")?.getChild("EnvName") ?? node.firstChild?.getChild("EnvName");
+  if (name && state.sliceDoc(name.from, name.to).trim() === "document") return context.baseIndent;
+  const first = state.doc.lineAt(node.from).number;
+  const current = state.doc.lineAt(context.pos).number;
+  for (let n = first + 1; n < current; n++) {
+    const text = state.doc.line(n).text;
+    if (/\S/.test(text) && !/^\s*\\end\b/.test(text)) return countColumn(/^\s*/.exec(text)[0], state.tabSize);
+  }
+  return context.baseIndent + context.unit;
 }
 
 export const latexLanguage = LRLanguage.define({
