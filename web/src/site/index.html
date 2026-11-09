@@ -246,9 +246,9 @@
         }
       }
 
-      @media (min-width: 600px) {
+      @media (min-width: 960px) {
         .strip-list {
-          grid-template-columns: repeat(3, 1fr);
+          grid-template-columns: repeat(4, 1fr);
         }
       }
 
@@ -480,6 +480,50 @@
 
       @media (min-width: 960px) {
         .columns {
+          grid-template-columns: repeat(4, 1fr);
+        }
+      }
+
+      /* The video cards: a grid of thumbnails, each with a heading and a short paragraph. */
+      .video-grid {
+        display: grid;
+        gap: 2rem 1.75rem;
+        margin-top: 2rem;
+      }
+
+      .video-card .shot-frame img {
+        width: 100%;
+        height: auto;
+        aspect-ratio: 16 / 10;
+        object-fit: cover;
+        object-position: left top;
+      }
+
+      .video-card h3 {
+        font-size: 1.25rem;
+        font-weight: 500;
+        margin: 1rem 0 0.5rem;
+        color: var(--neutral-12);
+      }
+
+      .video-card p {
+        color: var(--neutral-11);
+        line-height: 1.6;
+        margin: 0;
+      }
+
+      .video-card .links {
+        margin-top: 0.75rem;
+      }
+
+      @media (min-width: 600px) {
+        .video-grid {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+
+      @media (min-width: 1200px) {
+        .video-grid {
           grid-template-columns: repeat(4, 1fr);
         }
       }
@@ -736,13 +780,25 @@
               <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5A4.8 8 0 0 1 12 8a4.8 8 0 0 1 4.5-5 2.5 2.5 0 0 1 0 5"/>
               </svg>
-              <a class="strip-link" href="#open"><span class="strip-title">Free to use</span> <span class="strip-sub">at librepaper.org</span></a>
+              <a class="strip-link" href="/what.html"><span class="strip-title">Free to use</span> <span class="strip-sub">at librepaper.org</span></a>
+            </li>
+            <li class="strip-item">
+              <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+              </svg>
+              <a class="strip-link" href="https://github.com/LibrePaper/librepaper"><span class="strip-title">Open source</span> <span class="strip-sub">MIT License</span></a>
             </li>
             <li class="strip-item">
               <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/>
               </svg>
-              <a class="strip-link" href="/host/simple.html"><span class="strip-title">Open source</span> <span class="strip-sub">and self-hostable</span></a>
+              <a class="strip-link" href="/host/simple.html"><span class="strip-title">Self-hostable</span> <span class="strip-sub">one program and PostgreSQL</span></a>
+            </li>
+            <li class="strip-item">
+              <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="M12 10v6"/><path d="m15 13-3 3-3-3"/>
+              </svg>
+              <a class="strip-link" href="/backups.html"><span class="strip-title">Your files</span> <span class="strip-sub">download or back up to disk</span></a>
             </li>
             <li class="strip-item">
               <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -772,238 +828,188 @@
         </div>
       </section>
 
-      <!-- ======================================================== collaborate -->
-      <section class="section section-alt" id="collaborate">
+      <!-- ========================================================== videos -->
+      <section class="section section-alt" id="tour">
         <div class="container">
-          <div class="feature reverse">
-            <div class="feature-copy">
-              <h2>Collaborate</h2>
+          <h2 class="section-title">See it in action</h2>
+          <div class="video-grid">
+            <article class="video-card" id="collaborate">
+              <figure class="shot-frame">
+                <a class="shot" href="#collab-video" aria-label="Play a video of two people editing a Typst document at once, with live preview and project chat">
+                  <img
+                    src="/images/collab-chat.webp"
+                    alt="Alice's LibrePaper window: the project chat in the sidebar, the Typst source in the middle with Bob's labelled cursor, and the live PDF preview on the right."
+                    width="2560"
+                    height="1640"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <span class="shot-play" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                  </span>
+                </a>
+              </figure>
+              <h3>Collaborate</h3>
               <p>Write together in real time, with individual cursors and undo history. Discuss a passage where it sits in the text, or talk in the project chat.</p>
-              <ul class="details">
-                <li>See each collaborator's cursor as they type.</li>
-                <li>Talk with collaborators in the project chat.</li>
-                <li>Share a link that lets someone read, comment or edit.</li>
-              </ul>
-            </div>
-            <figure class="shot-frame">
-              <a class="shot" href="#collab-video" aria-label="Play a video of two people editing a Typst document at once, with live preview and project chat">
-                <img
-                  src="/images/collab-chat.webp"
-                  alt="Alice's LibrePaper window: the project chat in the sidebar, the Typst source in the middle with Bob's labelled cursor, and the live PDF preview on the right."
-                  width="2560"
-                  height="1640"
-                  loading="lazy"
-                  decoding="async"
-                />
-                <span class="shot-play" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                </span>
-              </a>
-            </figure>
-          </div>
-        </div>
-      </section>
+            </article>
 
-      <!-- ======================================================== comments -->
-      <section class="section" id="comments">
-        <div class="container">
-          <div class="feature">
-            <div class="feature-copy">
-              <h2>Comment on a passage</h2>
+            <article class="video-card" id="comments">
+              <figure class="shot-frame">
+                <a class="shot" href="#comments-video" aria-label="Play a video of commenting on a passage, a reply in the thread, and resolving it">
+                  <img
+                    src="/images/comments.webp"
+                    alt="A comment thread in LibrePaper: Alice asks about a passage selected in the preview and Bob replies, beside the Typst source and its preview."
+                    width="2560"
+                    height="1640"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <span class="shot-play" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                  </span>
+                </a>
+              </figure>
+              <h3>Comment on a passage</h3>
               <p>Select text in the preview and comment on it. Collaborators reply in a thread beside the document, and you resolve the thread when it is settled.</p>
-              <ul class="details">
-                <li>Comment on a passage and discuss it in a thread.</li>
-                <li>Reply to, edit or resolve each comment.</li>
-                <li>Highlight passages in colour.</li>
-              </ul>
-            </div>
-            <figure class="shot-frame">
-              <a class="shot" href="#comments-video" aria-label="Play a video of commenting on a passage, a reply in the thread, and resolving it">
-                <img
-                  src="/images/comments.webp"
-                  alt="A comment thread in LibrePaper: Alice asks about a passage selected in the preview and Bob replies, beside the Typst source and its preview."
-                  width="2560"
-                  height="1640"
-                  loading="lazy"
-                  decoding="async"
-                />
-                <span class="shot-play" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                </span>
-              </a>
-            </figure>
-          </div>
-        </div>
-      </section>
+            </article>
 
-      <!-- ============================================================ review -->
-      <section class="section section-alt" id="review">
-        <div class="container">
-          <div class="feature reverse">
-            <div class="feature-copy">
-              <h2>Track changes</h2>
-              <p>Record edits as tracked changes and decide on each one.</p>
-              <ul class="details">
-                <li>See who made each change and in which file.</li>
-                <li>Accept or reject changes one at a time.</li>
-                <li>Each person turns tracking on or off for their own edits.</li>
-              </ul>
-            </div>
-            <figure class="shot-frame">
-              <a class="shot" href="#review-video" aria-label="Play a video of tracking changes, then accepting and rejecting them">
-                <img
-                  src="/images/review-changes.webp"
-                  alt="The Changes panel with three tracked changes, a replacement, a deletion and an addition, each with Reject and Accept buttons, beside the Typst source with the changes marked."
-                  width="2560"
-                  height="1640"
-                  loading="lazy"
-                  decoding="async"
-                />
-                <span class="shot-play" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                </span>
-              </a>
-            </figure>
-          </div>
-        </div>
-      </section>
+            <article class="video-card" id="review">
+              <figure class="shot-frame">
+                <a class="shot" href="#review-video" aria-label="Play a video of tracking changes, then accepting and rejecting them">
+                  <img
+                    src="/images/review-changes.webp"
+                    alt="The Changes panel with three tracked changes, a replacement, a deletion and an addition, each with Reject and Accept buttons, beside the Typst source with the changes marked."
+                    width="2560"
+                    height="1640"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <span class="shot-play" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                  </span>
+                </a>
+              </figure>
+              <h3>Track changes</h3>
+              <p>Record edits as tracked changes, then accept or reject each one. You see who made each change and in which file, and each person turns tracking on or off for their own edits.</p>
+            </article>
 
-      <!-- ========================================================== history -->
-      <section class="section" id="history">
-        <div class="container">
-          <div class="feature">
-            <div class="feature-copy">
-              <h2>History</h2>
-              <p>LibrePaper keeps the history of every project. Pick a day on the calendar, open any saved version, compare it with another, and restore it if you need to. Name the versions that matter so you can find them again.</p>
-              <ul class="details">
-                <li>Compare versions to see what changed.</li>
-                <li>Restore an earlier version. The current text is saved first.</li>
-                <li>Download a version, or copy a link to it.</li>
-              </ul>
-            </div>
-            <figure class="shot-frame">
-              <a class="shot" href="#history-video" aria-label="Play a video of comparing named versions in the history and restoring an earlier one">
-                <img
-                  src="/images/history.webp"
-                  alt="The History panel in LibrePaper: named versions First draft and Second draft in a timeline, and a side-by-side comparison of the first draft with the latest version."
-                  width="2560"
-                  height="1640"
-                  loading="lazy"
-                  decoding="async"
-                />
-                <span class="shot-play" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                </span>
-              </a>
-            </figure>
-          </div>
-        </div>
-      </section>
+            <article class="video-card" id="history">
+              <figure class="shot-frame">
+                <a class="shot" href="#history-video" aria-label="Play a video of comparing named versions in the history and restoring an earlier one">
+                  <img
+                    src="/images/history.webp"
+                    alt="The History panel in LibrePaper: named versions First draft and Second draft in a timeline, and a side-by-side comparison of the first draft with the latest version."
+                    width="2560"
+                    height="1640"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <span class="shot-play" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                  </span>
+                </a>
+              </figure>
+              <h3>History</h3>
+              <p>LibrePaper keeps every project's history. Name the versions that matter, compare any two, and restore an earlier one; the current text is saved first.</p>
+            </article>
 
-      <!-- ========================================================= authorship -->
-      <section class="section section-alt" id="authorship">
-        <div class="container">
-          <div class="feature reverse">
-            <div class="feature-copy">
-              <h2>Authorship: Who wrote what?</h2>
+            <article class="video-card" id="authorship">
+              <figure class="shot-frame">
+                <a class="shot" href="#authorship-video" aria-label="Play a video of two authors and an AI agent writing, then the Authors view showing who wrote what">
+                  <img
+                    src="/images/authorship.webp"
+                    alt="LibrePaper's Authors view: Alice wrote 53% of the file, an AI agent named Claude 26% and Bob 21%, with each author's text highlighted in their colour in the source."
+                    width="2560"
+                    height="1640"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <span class="shot-play" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                  </span>
+                </a>
+              </figure>
+              <h3>Authorship: Who wrote what?</h3>
               <p>LibrePaper records who wrote every passage, whether a collaborator or an AI agent. Open the Authors tab in History to see each person's share of a file and the text in their colour.</p>
-              <ul class="details">
-                <li>See each author's share of a file and when they last edited it.</li>
-                <li>Show only the text one author wrote.</li>
-                <li>Text written by an AI agent carries the agent's name.</li>
-              </ul>
-            </div>
-            <figure class="shot-frame">
-              <a class="shot" href="#authorship-video" aria-label="Play a video of two authors and an AI agent writing, then the Authors view showing who wrote what">
-                <img
-                  src="/images/authorship.webp"
-                  alt="LibrePaper's Authors view: Alice wrote 53% of the file, an AI agent named Claude 26% and Bob 21%, with each author's text highlighted in their colour in the source."
-                  width="2560"
-                  height="1640"
-                  loading="lazy"
-                  decoding="async"
-                />
-                <span class="shot-play" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                </span>
-              </a>
-            </figure>
-          </div>
-        </div>
-      </section>
+            </article>
 
-      <!-- ============================================================ AI -->
-      <section class="section" id="ai">
-        <div class="container">
-          <div class="feature">
-            <div class="feature-copy">
-              <h2>Work with AI</h2>
-              <p>Bring your own AI agent into your writing. The desktop app starts the coding agent you already use, such as Claude Code, Codex, Pi or opencode, and gives it tools to read your document, comment on it and propose tracked changes.</p>
-              <p>Your API keys stay with you, not on LibrePaper's servers. No model runs on the LibrePaper server, and you need no additional subscription.</p>
-              <ul class="details">
-                <li>Select a passage to run a writing or review task.</li>
-                <li>Ask for changes in the sidebar chat.</li>
-                <li>Decide whether an agent may read, comment or edit.</li>
-                <li>Accept or reject every change an agent proposes.</li>
-              </ul>
+            <article class="video-card" id="ai">
+              <figure class="shot-frame">
+                <a class="shot" href="#agent-video" aria-label="Play a narrated video of chatting with an agent in LibrePaper and connecting an external agent">
+                  <img
+                    src="/images/agent-sidebar.webp"
+                    alt="LibrePaper next to an external agent's window: asked to add a paragraph, the agent has proposed it as a tracked change in the document."
+                    width="1720"
+                    height="720"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <span class="shot-play" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                  </span>
+                </a>
+              </figure>
+              <h3>Work with AI</h3>
+              <p>The desktop app starts the AI agent you already use, such as Claude Code, Codex, Pi or opencode. Your API keys stay with you, not on LibrePaper's servers.</p>
               <p class="links"><a href="/agents.html">Set up an agent</a></p>
-            </div>
-            <figure class="shot-frame">
-              <a class="shot" href="#agent-video" aria-label="Play a narrated video of chatting with an agent in LibrePaper and connecting an external agent">
-                <img
-                  src="/images/agent-sidebar.webp"
-                  alt="LibrePaper next to an external agent's window: asked to add a paragraph, the agent has proposed it as a tracked change in the document."
-                  width="1720"
-                  height="720"
-                  loading="lazy"
-                  decoding="async"
-                />
-                <span class="shot-play" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                </span>
-              </a>
-            </figure>
-          </div>
-        </div>
-      </section>
+            </article>
 
-      <!-- ============================================================ open -->
-      <section class="section section-alt" id="open">
-        <div class="container">
-          <h2 class="section-title">Free and open source</h2>
-          <div class="columns">
-            <div>
-              <h3>Free to use</h3>
-              <p>Every feature of LibrePaper is free. The public service at librepaper.org gives each account a fixed amount of storage.</p>
-              <p class="links"><a href="/what.html">Limits of the public service</a></p>
-            </div>
-            <div>
-              <h3>Open source</h3>
-              <p>The source code is released under the MIT License. Anyone can read it, change it and run it.</p>
-              <p class="links"><a href="https://github.com/LibrePaper/librepaper">Source code on GitHub</a></p>
-            </div>
-            <div>
-              <h3>Self-hosting</h3>
-              <p>Run your own server with one program and a PostgreSQL database.</p>
-              <p class="links"><a href="/host/simple.html">Host your own server</a></p>
-            </div>
-            <div>
-              <h3>Your files</h3>
-              <p>Download any project as ordinary files. The desktop app can back up every project to your disk.</p>
-              <p class="links"><a href="/backups.html">Local backups</a></p>
-            </div>
+            <article class="video-card" id="git">
+              <figure class="shot-frame">
+                <a class="shot" href="#git-video" aria-label="Play a video of the desktop app connecting a GitHub repository, getting changes made on GitHub and sending changes back">
+                  <img
+                    src="/images/git-desktop.webp"
+                    alt="The Git panel of the LibrePaper desktop app connected to a GitHub repository, with Get repository changes and Send project changes buttons, beside the source and preview."
+                    width="2560"
+                    height="1640"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <span class="shot-play" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                  </span>
+                </a>
+              </figure>
+              <h3>Sync with Git and GitHub</h3>
+              <p>Connect a project to a Git repository from the desktop app, and get or send changes in either direction. Works with GitHub or any Git host, from your computer or through a GitHub Action.</p>
+              <p class="links"><a href="/git.html">Read the Git docs</a></p>
+            </article>
+
+            <article class="video-card" id="todo">
+              <figure class="shot-frame">
+                <a class="shot" href="#todo-video" aria-label="Play a video of a to-do list in visual mode">
+                  <img
+                    src="/images/todo-list.webp"
+                    alt="A Markdown to-do list in LibrePaper's visual mode: tasks with checkboxes, priorities, due dates, assignees and tags."
+                    width="1896"
+                    height="978"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <span class="shot-play" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                  </span>
+                </a>
+              </figure>
+              <h3>To-do lists</h3>
+              <p>Write a task list in Markdown and turn on visual mode to see each task with a checkbox, priority, dates, people and tags. The file stays plain Markdown that any editor can read.</p>
+            </article>
           </div>
         </div>
       </section>
@@ -1040,75 +1046,6 @@
                   decoding="async"
                 />
               </picture>
-            </figure>
-          </div>
-        </div>
-      </section>
-
-      <!-- ================================================================ git -->
-      <section class="section section-alt" id="git">
-        <div class="container">
-          <div class="feature">
-            <div class="feature-copy">
-              <h2>Sync with Git and GitHub</h2>
-              <p>Connect a project to a Git repository from the desktop app. Get the repository's changes into the project, and send the project's changes back.</p>
-              <ul class="details">
-                <li>Works with GitHub or any Git host, through your own SSH key or credential helper.</li>
-                <li>Use a repository on your computer, or a GitHub Action that keeps one in step with no computer involved.</li>
-                <li>The <code>librepaper pull</code> and <code>push</code> commands do the same from a terminal. <a href="/git.html">Read the Git docs</a>.</li>
-              </ul>
-            </div>
-            <figure class="shot-frame">
-              <a class="shot" href="#git-video" aria-label="Play a video of the desktop app connecting a GitHub repository, getting changes made on GitHub and sending changes back">
-                <img
-                  src="/images/git-desktop.webp"
-                  alt="The Git panel of the LibrePaper desktop app connected to a GitHub repository, with Get repository changes and Send project changes buttons, beside the source and preview."
-                  width="2560"
-                  height="1640"
-                  loading="lazy"
-                  decoding="async"
-                />
-                <span class="shot-play" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                </span>
-              </a>
-            </figure>
-          </div>
-        </div>
-      </section>
-
-      <!-- ============================================================ todo -->
-      <section class="section" id="todo">
-        <div class="container">
-          <div class="feature reverse">
-            <div class="feature-copy">
-              <h2>To-do lists</h2>
-              <p>Write a task list in Markdown and turn on visual mode. LibrePaper shows each task with a checkbox, its priority, dates, people and tags.</p>
-              <ul class="details">
-                <li>Click a box to mark a task done, in progress or cancelled.</li>
-                <li>Add fields such as <code>due:</code>, <code>priority:</code> or <code>assignee:</code> to a task.</li>
-                <li>Nest tasks to follow a checklist's progress.</li>
-                <li>The file stays plain Markdown that any editor can read.</li>
-              </ul>
-            </div>
-            <figure class="shot-frame">
-              <a class="shot" href="#todo-video" aria-label="Play a video of a to-do list in visual mode">
-                <img
-                  src="/images/todo-list.webp"
-                  alt="A Markdown to-do list in LibrePaper's visual mode: tasks with checkboxes, priorities, due dates, assignees and tags."
-                  width="1896"
-                  height="978"
-                  loading="lazy"
-                  decoding="async"
-                />
-                <span class="shot-play" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                </span>
-              </a>
             </figure>
           </div>
         </div>
