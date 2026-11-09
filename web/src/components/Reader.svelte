@@ -31,6 +31,7 @@
   import { createLiveChat } from "../lib/reader/live-chat.svelte.js";
   import { createReaderCollaboration } from "../lib/reader/collaboration.js";
   import { createWorkspace } from "../lib/reader/workspace.svelte.js";
+  import { createProjectionSource } from "../lib/reader/projection-source.svelte.js";
   import { createJumps, isBackChord } from "../lib/reader/jumps.svelte.js";
   import { createBuildSettings } from "../lib/reader/build-settings.svelte.js";
   import { createTimeline } from "../lib/reader/timeline.svelte.js";
@@ -169,18 +170,36 @@
   let frameSrc = $state(null);
   // Non-editors render this allowlisted current-state projection. It has the
   // same shape as the editor adapter but contains no CRDT or history payload.
-  let currentProject = $state(null);
+  // Its fetch, etag and refresh schedule are owned by the projection source;
+  // what stays here is what the Reader does when one lands or fails.
+  const projection = createProjectionSource({
+    slug: SLUG,
+    key: KEY,
+    active: () => !mayEdit,
+    hidden: () => hidden,
+    onProject: (next) => {
+      workspace.fromProject(next);
+      changeRows = readerChangeRows(next.changes);
+      if (selectedChange && !changeRows.some((row) => row.id === selectedChange)) selectedChange = null;
+      // A reader opens on the file the project opens on, whichever that is
+      // now. The target puts its format in place and paints the page this
+      // browser last drew for it.
+      updatePreviewTarget();
+      sourceGeneration += 1;
+      outlineRevision += 1;
+      settled = true;
+      void paintPreview();
+    },
+    onProblem: (message) => {
+      // Never leave the pane spinning on a project this browser has not yet
+      // shown anything for: a reader with no source of its own has nothing
+      // else to paint while this stays broken, so the loading state ends here.
+      if (!projection.state.project) settled = true;
+      say(message, { kind: "problem", id: "reader:project-load" });
+    },
+  });
   const readerProjectOwner = {};
-  let projectEtag = "";
-  let projectFetch = null;
-  let projectRefreshPending = false;
-  let projectRefreshTimer = null;
   let renderedProjectDigest = $state("");
-  // Set only when this browser has never successfully shown a projection for
-  // this document: an empty pane has nothing else to say for itself, so this
-  // is what the document pane below renders instead of staying blank while
-  // `settled` silently ends the loading state (§2.2).
-  let projectUnreadable = $state("");
   // One page is kept per file, so the key names the file as well as the project.
   const previewCacheKey = (path) => `${SLUG}:${doc?.created_at || "unknown"}|${path}`;
   const lastCachedPage = async (path) => lastPreview(previewCacheKey(path));
@@ -579,7 +598,7 @@
   // What the bar offers over what is selected. Nothing is offered when
   // nothing is.
   const renderedProjectCurrent = $derived.by(() =>
-    mayEdit || Boolean(renderedProjectDigest && renderedProjectDigest === currentProject?.project_digest),
+    mayEdit || Boolean(renderedProjectDigest && renderedProjectDigest === projection.state.project?.project_digest),
   );
   const shownVerbs = $derived.by(() => pending && renderedProjectCurrent ? VERBS : []);
   let highlightColor = $state(HIGHLIGHT_COLORS[0]);
@@ -939,7 +958,7 @@
 
   function submitAnnotation({ motivation, body }) {
     if (!pending || !mayChat) return false;
-    if (!mayEdit && pending.render_digest !== currentProject?.project_digest) {
+    if (!mayEdit && pending.render_digest !== projection.state.project?.project_digest) {
       say(m.reader_source_moved(), { kind: "problem", id: "reader:source-moved" });
       return false;
     }
@@ -963,7 +982,7 @@
   function sendDraft({ body }) {
     if (!composing) return false;
     const held = composing.pending;
-    const moved = !mayEdit && held.render_digest !== currentProject?.project_digest;
+    const moved = !mayEdit && held.render_digest !== projection.state.project?.project_digest;
     const reselected = moved && pending && pending.render_digest === renderedProjectDigest;
     pending = reselected ? { ...pending } : held;
     if (!submitAnnotation({ motivation: motivationFor("comment"), body })) return false;
@@ -1271,7 +1290,7 @@
         outbox.failed(event.temp_id, m.reader_passage_changed());
         if (event.temp_id) annotations.removePending(event.temp_id);
         renderedProjectDigest = event.digest;
-        if (!mayEdit) void refreshCurrentProject();
+        if (!mayEdit) void projection.refresh();
         say(
           m.reader_stale_selection(),
           { kind: "problem", id: "reader:stale-selection" },
@@ -1349,7 +1368,7 @@
       // projection, carrying the digest this fetch already remembers as the
       // etag (§11). An editor's own `session` hears every edit directly and
       // has nothing to do here.
-      if (!mayEdit) void refreshCurrentProject();
+      if (!mayEdit) void projection.refresh();
       return;
     }
     if (event.type === "doc-update") {
@@ -1387,7 +1406,7 @@
     }
 
     if (event.type === "project-changed") {
-      scheduleCurrentProjectRefresh();
+      projection.schedule();
       return;
     }
   }
@@ -1748,19 +1767,7 @@
   // its list remains live while the document pane is showing a label, so
   // downloads must use the same source as that list.
   function liveTreeNow() {
-    if (!session) {
-      if (!currentProject) return { main: "", texts: {}, digests: {} };
-      const digests = {};
-      for (const [path, file] of Object.entries(currentProject.tree?.files || {})) {
-        if (file?.kind === "asset" && file.digest) digests[path] = file.digest;
-      }
-      return {
-        main: "",
-        texts: { ...(currentProject.texts || {}) },
-        digests,
-        settings: currentProject.tree?.settings || null,
-      };
-    }
+    if (!session) return projection.tree();
     const tree = session.tree();
     // CodeMirror owns the active Loro binding and exposes the text it is
     // displaying. During a local transaction its view can be one tick ahead
@@ -2365,7 +2372,7 @@
       typstOutput,
       buildPreferences,
       localExecution,
-      projectDigest: mayEdit ? "" : currentProject?.project_digest || "",
+      projectDigest: mayEdit ? "" : projection.state.project?.project_digest || "",
     }),
     tree: () => treeNow(),
     gather: (digests) => gatherFigures(digests),
@@ -2788,7 +2795,7 @@
   $effect(() => {
     const track = () => {
       hidden = document.visibilityState === "hidden";
-      if (!hidden && projectRefreshPending && !mayEdit) scheduleCurrentProjectRefresh();
+      if (!hidden && !mayEdit) projection.resume();
     };
     document.addEventListener("visibilitychange", track);
     return () => document.removeEventListener("visibilitychange", track);
@@ -3628,7 +3635,7 @@
   // stale file list cannot report a project as empty.
   const projectEmpty = $derived(mayEdit
     ? Boolean(session && persistence.joined && files.length === 0 && session.list().length === 0)
-    : Boolean(currentProject && !Object.keys(currentProject.tree?.files || currentProject.texts || {}).length));
+    : Boolean(projection.state.project && !Object.keys(projection.state.project.tree?.files || projection.state.project.texts || {}).length));
   $effect(() => { if (projectEmpty) untrack(clearPreview); });
 
   // Works out which file the preview draws and moves it there. It runs when
@@ -3636,7 +3643,7 @@
   // moment after any edit, because which file includes which is read from the
   // texts. A target that has not changed costs a comparison and nothing else.
   function updatePreviewTarget() {
-    if (readerDisposed || (!session && !currentProject)) return;
+    if (readerDisposed || (!session && !projection.state.project)) return;
     // A link holder reading a file in place of the preview keeps the preview
     // as it was underneath, so going back to it shows the same page at once.
     if (!mayEdit && viewing) return;
@@ -3773,7 +3780,7 @@
   const pageIsUp = $derived(pdfOutput ? pageDrawn : everPaintedShown);
   const waiting = $derived(Boolean(
     shown.document && previewPath && compilesHere && !pageIsUp
-      && !documentNeedsSignIn && !heldFile && !projectUnreadable && !projectEmpty && !previewCard
+      && !documentNeedsSignIn && !heldFile && !projection.state.unreadable && !projectEmpty && !previewCard
       && !failedBeforeRender && !documentEmpty,
   ));
   const waitStage = $derived(waitStageOf({
@@ -3806,7 +3813,7 @@
   function viewTheFile(file) {
     if (openFile !== file.id) outlineActiveFrom = null;
     workspace.show(file);
-    const texts = currentProject?.texts || {};
+    const texts = projection.state.project?.texts || {};
     viewing = file.kind !== "text" || previewTarget({ open: file.path, locked: lockedPath, texts }).reason === "none";
     if (compact) showMobileView("document");
   }
@@ -4030,7 +4037,7 @@
         // A publish that happened while this browser was not listening was
         // announced to nobody: the offer is pushed over this very socket. So
         // the way back up is where a reader asks whether they missed one.
-        if (up && !mayEdit) void refreshCurrentProject();
+        if (up && !mayEdit) void projection.refresh();
       },
       ...sessionEvents(),
       onDocumentChanged: () => {
@@ -4043,77 +4050,6 @@
       if (readerDisposed) return;
       await seedTryProject(session);
     }
-  }
-
-  async function refreshCurrentProject() {
-    if (readerDisposed || mayEdit) return;
-    if (projectFetch) {
-      projectRefreshPending = true;
-      return projectFetch;
-    }
-    const headers = authHeaders(KEY);
-    if (projectEtag) headers["If-None-Match"] = projectEtag;
-    projectFetch = (async () => {
-      const response = await fetch(`/api/documents/${encodeURIComponent(SLUG)}/project`, { headers });
-      if (response.status === 304) return;
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        // A document whose projection exceeds a resource bound answers 503
-        // and stays unreadable on the server until recovered (§2.2); its
-        // editors can still type and export locally, but this browser is a
-        // reader with no source of its own to fall back to. Carry the status
-        // so the catch below can say that plainly rather than the generic
-        // "could not be loaded" a transient network failure gets.
-        const failure = Object.assign(new Error(body.error || m.readerc_project_load_failed()), { status: response.status });
-        throw failure;
-      }
-      const next = await response.json();
-      if (readerDisposed || mayEdit) return;
-      projectEtag = response.headers.get("etag") || `"${next.project_digest}"`;
-      currentProject = next;
-      workspace.fromProject(next);
-      changeRows = readerChangeRows(next.changes);
-      if (selectedChange && !changeRows.some((row) => row.id === selectedChange)) selectedChange = null;
-      projectUnreadable = "";
-      // A reader opens on the file the project opens on, whichever that is
-      // now. The target puts its format in place and paints the page this
-      // browser last drew for it.
-      updatePreviewTarget();
-      sourceGeneration += 1;
-      outlineRevision += 1;
-      settled = true;
-      void paintPreview();
-    })().catch((error) => {
-      if (readerDisposed) return;
-      const message = error?.status === 503
-        ? (error.message || m.readerc_too_large())
-        : (error?.message || m.readerc_project_load_failed());
-      // Never leave the pane spinning on a project this browser has not yet
-      // shown anything for: a reader with no source of its own has nothing
-      // else to paint while this stays broken, so the loading state has to
-      // end here rather than waiting on a render that is never coming.
-      if (!currentProject) {
-        projectUnreadable = message;
-        settled = true;
-      }
-      say(message, { kind: "problem", id: "reader:project-load" });
-    }).finally(() => {
-      projectFetch = null;
-      if (projectRefreshPending) {
-        scheduleCurrentProjectRefresh();
-      }
-    });
-    return projectFetch;
-  }
-
-  function scheduleCurrentProjectRefresh() {
-    projectRefreshPending = true;
-    if (hidden || projectRefreshTimer !== null) return;
-    projectRefreshTimer = setTimeout(() => {
-      projectRefreshTimer = null;
-      projectRefreshPending = false;
-      void refreshCurrentProject();
-    }, 1000);
   }
 
   // What this browser may do with the document, and whether it can render it
@@ -4152,7 +4088,7 @@
     // current project. They share the renderer but never join CRDT sync.
     if (!mayEdit) {
       await startCollaboration(document_, { sourceSync: false });
-      await refreshCurrentProject();
+      await projection.refresh();
       return;
     }
     // Rendering follows the durable source format. Generated-result identity
@@ -4278,8 +4214,7 @@
       clearTimeout(reviewTimer);
       clearTimeout(previewTimer);
       clearTimeout(targetTimer);
-      clearTimeout(projectRefreshTimer);
-      projectRefreshTimer = null;
+      projection.dispose();
       previewTimer = null;
       boot.dispose();
       framePreview.dispose();
@@ -5084,7 +5019,7 @@
       {#if heldFile.kind === "asset" && shownFigure}
         {@render figureBody()}
       {:else}
-        <pre class="fileview-text">{currentProject?.texts?.[heldFile.path] ?? ""}</pre>
+        <pre class="fileview-text">{projection.state.project?.texts?.[heldFile.path] ?? ""}</pre>
       {/if}
     </section>
   {:else if documentNeedsSignIn}
@@ -5099,7 +5034,7 @@
         </div>
       </div>
     </section>
-  {:else if shown.document && projectUnreadable}
+  {:else if shown.document && projection.state.unreadable}
     <!-- No projection ever arrived, so there is no tree to compile and no
          renderer card below has anything to say. This is the one state that
          is not "not yet" -- the server itself has nothing to hand this
@@ -5108,9 +5043,9 @@
     <section class="latexpane">
       <div class="notyet">
         <h2 class="h4">{m.readerd_cannot_show()}</h2>
-        <p class="lp-text-secondary text-sm">{projectUnreadable}</p>
+        <p class="lp-text-secondary text-sm">{projection.state.unreadable}</p>
         <div class="notyet-actions">
-          <button class="btn btn-sm lp-control-tonal-brand" onclick={() => void refreshCurrentProject()}>{m.common_try_again()}</button>
+          <button class="btn btn-sm lp-control-tonal-brand" onclick={() => void projection.refresh()}>{m.common_try_again()}</button>
         </div>
       </div>
     </section>
@@ -5246,7 +5181,7 @@
            cover={documentEmpty ? emptyCover : waitingUp ? waitingCover : undefined}
            busy={previewBusy && !waitingUp}
            progress={!waitingUp ? waitProgress : null}
-           away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || noCompiler || failedBeforeRender || Boolean(projectUnreadable) || Boolean(previewCard)} />
+           away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || noCompiler || failedBeforeRender || Boolean(projection.state.unreadable) || Boolean(previewCard)} />
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
        so the split can be seen moving without the iframe reflowing on every

@@ -45,35 +45,8 @@ assert.deepEqual(
   "the render builds the file the preview shows",
 );
 
-// Read-only viewers (no session) must populate digests from asset entries
-// in the currentProject.tree.files, which uses .digest property (not .sha).
-{
-  const roContext = vm.createContext({
-    session: null,
-    currentProject: {
-      texts: { "readme.md": "content" },
-      tree: {
-        files: {
-          "image.png": { kind: "asset", digest: "abc123def456" },
-          "data.json": { kind: "text" },
-        },
-        settings: null,
-      },
-    },
-  });
-  vm.runInContext(liveTreeNow, roContext);
-  const result = JSON.parse(JSON.stringify(vm.runInContext("liveTreeNow()", roContext)));
-  assert.deepEqual(
-    result,
-    {
-      main: "",
-      texts: { "readme.md": "content" },
-      digests: { "image.png": "abc123def456" },
-      settings: null,
-    },
-    "read-only viewer populates digests from asset entries in project response",
-  );
-}
+// A read-only viewer has no session; the tree it is given comes from the
+// projection source, and `projection-source.mjs` checks it.
 
 // The archive is cut from the tree and directory the caller passed, so a
 // folder added while the assets are in flight cannot reach it. That ordering
