@@ -2040,18 +2040,14 @@
     if (view) untrack(() => syncVisual(view));
   });
 
-  // typst-syntax.wasm loads after the first paint. The Typst features read its
-  // tree, so the index and the spellcheck are computed again then. The reader
-  // follows the load itself for the outline.
+  // typst-syntax.wasm loads after the first paint. The Typst files were seen
+  // without a tree until now, so the index reads them again. The spellcheck
+  // and Harper plugins rescan on their own, and the reader follows the load
+  // itself for the outline.
   $effect(() => onTypstSyntax(() => {
+    liveIndex.invalidate((path) => path.endsWith(".typ"));
     indexDirty = true;
     refreshIndex();
-    const target = view;
-    if (target) {
-      target.dispatch({
-        effects: spellcheckCompartment.reconfigure(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(showing), () => target.state.doc.toString())),
-      });
-    }
   }));
 
 </script>

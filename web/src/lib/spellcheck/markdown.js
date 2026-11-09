@@ -58,15 +58,16 @@ const STOP = /[\]\s]/g;
 /// for the spellchecker to skip. Half-open [from, to) offsets into `text`.
 /// Any order; overlaps allowed.
 /// @param {string} text
+/// @param {string} [key] names the document, so an edit re-parses from its previous tree
 /// @returns {Array<[number, number]>}
-export function markdownSkips(text) {
+export function markdownSkips(text, key) {
   /** @type {Array<[number, number]>} */
   const skips = [];
   if (typeof text !== "string" || !text) return skips;
   // Front matter still being typed has no closing line yet. The index reads
   // the text as Markdown then, but its YAML keys are not prose to check.
   if (/^---[ \t]*\r?(?:\n|$)/.test(text) && !frontMatterRange(text)) return [[0, text.length]];
-  const { tree, body, frontMatter } = markdownTree(text);
+  const { tree, body, frontMatter } = markdownTree(text, key);
   const n = body.length;
   const skip = (from, to) => {
     const end = Math.min(to, n);

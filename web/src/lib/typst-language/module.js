@@ -108,7 +108,12 @@ function build(exports) {
     if (entry) {
       sources.delete(slot);
       const { from, to, insert } = changedRange(entry.text, text);
-      const ok = withString(insert, (ptr, len) => exports.source_edit(entry.handle, from, to, ptr, len));
+      let ok = 0;
+      try {
+        ok = withString(insert, (ptr, len) => exports.source_edit(entry.handle, from, to, ptr, len));
+      } catch {
+        // A trap in the module: drop the handle and parse again from scratch.
+      }
       if (ok !== 1) { free(entry); entry = null; }
     }
     if (!entry) entry = { handle: withString(text, (ptr, len) => exports.source_new(ptr, len)), text: "" };
@@ -122,8 +127,19 @@ function build(exports) {
       if (oldest === keyless) keyless = null;
       free(evicted);
     }
-    return read(entry.handle, text.length);
+    try {
+      return read(entry.handle, text.length);
+    } catch (error) {
+      // A bad tree or a trap: forget the source so the next call starts clean.
+      sources.delete(name);
+      if (name === keyless) keyless = null;
+      free(entry);
+      throw error;
+    }
   };
+
+  /** A tree with no children, for a text the module could not parse. */
+  const emptyTree = (length) => new Tree(nodeSet.types[topID], [], [], length);
 
   return {
     nodeSet,
@@ -139,7 +155,13 @@ function build(exports) {
     tree(text, key) {
       const known = memo.get(text);
       if (known) { memo.delete(text); memo.set(text, known); return known; }
-      const tree = parse(text, key);
+      let tree;
+      try {
+        tree = parse(text, key);
+      } catch {
+        // Not remembered, so a later call tries the module again.
+        return emptyTree(text.length);
+      }
       memo.set(text, tree);
       if (memo.size > MEMO) memo.delete(memo.keys().next().value);
       return tree;

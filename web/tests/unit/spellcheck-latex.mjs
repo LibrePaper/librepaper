@@ -14,6 +14,11 @@ function words(text) {
 }
 
 {
+  // A default value holding a command splits the text, but is still an option.
+  assert.deepEqual(words("\\newcommand{\\overlay}[3][0.62\\textwidth]{\\x #1} ok"), ["ok"]);
+  assert.deepEqual(words("\\renewcommand{\\a}[1][\\textwidth]{b} ok"), ["ok"]);
+}
+{
   // Plain prose is untouched.
   assert.deepEqual(words("The quick brown fox."), ["The", "quick", "brown", "fox"]);
 }

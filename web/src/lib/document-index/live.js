@@ -35,6 +35,7 @@ function sameList(a, b) {
  * @returns {{
  *   project: ProjectIndex,
  *   refresh: (snapshot: LiveSnapshot) => boolean,
+ *   invalidate: (matches?: (path: string) => boolean) => void,
  * }}
  */
 export function createLiveIndex() {
@@ -48,6 +49,19 @@ export function createLiveIndex() {
 
   return {
     project,
+
+    /**
+     * Forgets what was indexed from the paths `matches` accepts (all of them
+     * without it), so the next refresh indexes them again even though their
+     * text is the same. For a file whose index depends on more than its text,
+     * such as Typst source, which is read once typst-syntax.wasm has loaded.
+     * @param {(path: string) => boolean} [matches]
+     */
+    invalidate(matches) {
+      for (const path of [...seen.keys()]) {
+        if (!matches || matches(path)) seen.delete(path);
+      }
+    },
 
     /**
      * @param {LiveSnapshot} snapshot
