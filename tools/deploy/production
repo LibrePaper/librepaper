@@ -32,10 +32,15 @@ http_request() {
 # passphrase on every key, so unlock_identity asks once and keeps the identity
 # in a shell variable that is never exported: only sops receives it. sops gets
 # SOPS_AGE_KEY_CMD unset, not empty: sops 3.13 panics on an empty one.
+# LIBREPAPER_AGE_KEY_CMD wins over SOPS_AGE_KEY_CMD when set: production keys are
+# encrypted to personal identities, not to the machine key that SOPS_AGE_KEY_CMD
+# usually points at.
 AGE_IDENTITY=
 unlock_identity() {
-	[ -z "$AGE_IDENTITY" ] && [ -n "${SOPS_AGE_KEY_CMD:-}" ] || return 0
-	AGE_IDENTITY=$(eval "$SOPS_AGE_KEY_CMD") || die "could not unlock the age identity (SOPS_AGE_KEY_CMD)"
+	local cmd="${LIBREPAPER_AGE_KEY_CMD:-}" name=LIBREPAPER_AGE_KEY_CMD
+	if [ -z "$cmd" ]; then cmd="${SOPS_AGE_KEY_CMD:-}"; name=SOPS_AGE_KEY_CMD; fi
+	[ -z "$AGE_IDENTITY" ] && [ -n "$cmd" ] || return 0
+	AGE_IDENTITY=$(eval "$cmd") || die "could not unlock the age identity ($name)"
 }
 key() {
 	if [ -n "$AGE_IDENTITY" ]; then

@@ -8,6 +8,10 @@ import test from 'node:test';
 import { mappedEnvironment, metadataFor, preflightMirror, publisherEnvironment, selectedMirrorFields, stagePinnedMirrors } from './mirror.mjs';
 import { PINNED_FILES } from './pins-lock.mjs';
 
+// The operator's shell may export an age key command (one runs sudo); the
+// publisher would run it to unlock keys.yaml. Tests set their own.
+for (const key of ["SOPS_AGE_KEY", "SOPS_AGE_KEY_CMD", "LIBREPAPER_AGE_KEY_CMD"]) delete process.env[key];
+
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 // === push-mirrors tests ===
@@ -269,5 +273,35 @@ fs.writeFileSync(storePath,JSON.stringify(store));
     assert.ok(puts.some((call) => call.key.startsWith("latex/")));
     assert.ok(calls.every((call) => call.endpoint === "https://ovh.example.invalid" && call.region === "bhs" &&
       call.bucket === "explicit-bucket" && call.id === "override-id" && call.secret === "override-secret"));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("LIBREPAPER_AGE_KEY_CMD unlocks the identity once and SOPS_AGE_KEY_CMD is not used", async () => {
+  const root = await mkdtemp(join(tmpdir(), "push-mirrors-age-key-"));
+  const bin = join(root, "bin");
+  const paths = await makeMirrors(root);
+  const counter = join(root, "unlocks");
+  const sopsSeen = join(root, "sops-age");
+  await mkdir(bin);
+  const sops = join(bin, "sops");
+  const aws = join(bin, "aws");
+  await writeFile(sops, `#!${process.execPath}\nrequire('node:fs').appendFileSync(process.env.SOPS_SEEN, [process.env.SOPS_AGE_KEY ?? '', process.env.SOPS_AGE_KEY_CMD ?? ''].join('|') + '\\n');\nprocess.stdout.write(JSON.stringify({ LIBREPAPER_MIRROR_S3_ENDPOINT:'https://ovh.example.invalid', LIBREPAPER_MIRROR_S3_REGION:'bhs', LIBREPAPER_MIRROR_S3_ACCESS_KEY_ID:'id', LIBREPAPER_MIRROR_S3_SECRET_ACCESS_KEY:'secret', LIBREPAPER_MIRROR_S3_BUCKET:'asset-bucket' }));\n`);
+  // The fake stops the publish at its first AWS call: this test covers the credential step only.
+  await writeFile(aws, `#!${process.execPath}\nprocess.exit(1);\n`);
+  await chmod(sops, 0o755);
+  await chmod(aws, 0o755);
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, ASSETS_DIR: paths.assets, ASSETS_LOCK: paths.lock, MIRROR: paths.latex, SOPS_SEEN: sopsSeen };
+  for (const key of ['S3_ENDPOINT', 'S3_REGION', 'S3_BUCKET', 'S3_PUBLIC_BASE_URL', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'SOPS_AGE_KEY']) delete env[key];
+  env.SOPS_AGE_KEY_CMD = 'false';
+  env.LIBREPAPER_AGE_KEY_CMD = `printf x >> '${counter}'; printf 'AGE-SECRET-KEY-1TEST'`;
+  try {
+    let error;
+    try { execFileSync(process.execPath, ['tools/assets/mirror.mjs', 'publish'], { encoding: "utf8", env }); }
+    catch (caught) { error = caught; }
+    assert.ok(error);
+    assert.doesNotMatch(error.stderr, /could not unlock the age identity/);
+    assert.equal(await readFile(counter, "utf8"), "x", "the identity command did not run exactly once");
+    const seen = (await readFile(sopsSeen, "utf8")).trim().split("\n");
+    assert.deepEqual(seen, ["AGE-SECRET-KEY-1TEST|"]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

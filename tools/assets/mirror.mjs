@@ -652,9 +652,23 @@ export async function publisherEnvironment(env, loadSecrets = loadSecretsFromSop
   return mappedEnvironment(candidate);
 }
 
+// sops runs SOPS_AGE_KEY_CMD once per recipient, so a passphrase command would
+// prompt up to three times. As in tools/assets/mirror, unlock the identity once
+// (LIBREPAPER_AGE_KEY_CMD first: production keys are encrypted to personal
+// identities, not the machine key SOPS_AGE_KEY_CMD usually names) and hand only
+// it to sops.
+async function sopsEnvironment(env = process.env) {
+  const command = env.LIBREPAPER_AGE_KEY_CMD || env.SOPS_AGE_KEY_CMD;
+  if (env.SOPS_AGE_KEY || !command) return env;
+  const { stdout } = await runFile("sh", ["-c", command], { env, maxBuffer: 1024 * 1024 });
+  const { SOPS_AGE_KEY_CMD: _unused, ...rest } = env;
+  return { ...rest, SOPS_AGE_KEY: stdout.trim() };
+}
+
 async function loadSecretsFromSops(keysFile) {
   try {
     const { stdout } = await runFile("sops", ["--decrypt", "--output-type", "json", keysFile], {
+      env: await sopsEnvironment(),
       maxBuffer: 1024 * 1024,
     });
     const secrets = JSON.parse(stdout);
