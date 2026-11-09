@@ -1,4 +1,5 @@
 import { m } from "../paraglide/messages.js";
+import { renderScope } from "./render-scope.js";
 
 // One render of the document, from the source in this tab.
 //
@@ -145,7 +146,7 @@ export function createPreviewRenderer({
       refreshFrame();
       return;
     }
-    const source = tree();
+    const source = renderScope(tree());
     const capturedNavigation = start.navigation;
     const capturedSource = start.source;
     const capturedProjectDigest = start.projectDigest || "";
@@ -293,7 +294,7 @@ export function createPreviewRenderer({
         // is still byte-for-byte the one that produced it.
         const unchanged = format === "latex" && coordinator.isNewer(ticket)
           && capturedNavigation === facts().navigation
-          && identity === await snapshotDigest(tree());
+          && identity === await snapshotDigest(renderScope(tree()));
         if (!unchanged) return;
       }
       coordinator.commit(ticket);
