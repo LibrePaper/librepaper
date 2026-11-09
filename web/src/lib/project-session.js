@@ -94,6 +94,9 @@ const isPresence = (key) => String(key).startsWith(PRESENCE_PREFIX);
 // sending the latest state at this rate is enough for a smooth cursor while
 // avoiding one room frame per keystroke.
 const AWARENESS_THROTTLE_MS = 100;
+// The store forgets an entry 30 s after its last write, on every peer, so the
+// owner rewrites it at half that (the same pairing as Yjs awareness).
+const PRESENCE_HEARTBEAT_MS = 15_000;
 // How long to wait before resending work the server refused for want of room
 // to hold it, and how far that wait is allowed to grow. The server is under
 // pressure by definition when this fires, so the first retry is already a
@@ -182,6 +185,8 @@ export function uniquePresences(states, { localClient = null, localTab = "" } = 
  * presenceColour?: (seed: string, taken: string[]) => string,
  * setTimer?: typeof setTimeout,
  * clearTimer?: typeof clearTimeout,
+ * setRepeat?: typeof setInterval,
+ * clearRepeat?: typeof clearInterval,
  * }} options
  */
 export function createProjectSession({
@@ -201,6 +206,8 @@ export function createProjectSession({
   presenceColour = () => "",
   setTimer = globalThis.setTimeout,
   clearTimer = globalThis.clearTimeout,
+  setRepeat = globalThis.setInterval,
+  clearRepeat = globalThis.clearInterval,
 }) {
   const doc = new LoroDoc();
   // The Authors view dates each run of text from the change timestamps.
@@ -235,6 +242,16 @@ export function createProjectSession({
   // presence -- name, colour and all -- overwritten by somebody else's.
   const localTab = presenceId();
   const localKey = `${PRESENCE_PREFIX}${localTab}`;
+  // The last record this browser wrote under `localKey`, kept so that an entry
+  // the store has already expired (a throttled background tab, say) can be
+  // written again rather than lost.
+  let lastPresence = null;
+  // Rewrites the local record on a timer while joined, so peers never expire it.
+  let heartbeatTimer = null;
+  function setLocalPresence(value) {
+    lastPresence = value;
+    store.set(localKey, value);
+  }
   // Who this is, as their colour sees them. A signed-in person is seeded by
   // their account, so they are one colour everywhere the Authors tab shows
   // them, whatever name they go by. Anybody else is seeded by their name, and
@@ -490,7 +507,7 @@ export function createProjectSession({
   // `color` is the wire spelling every peer already reads. It is the person's
   // colour rather than this session's: it comes from the name, and `rename`
   // asks for it again if the name arrives after the join.
-  store.set(localKey, {
+  setLocalPresence({
     name: name || "Anonymous",
     // The Loro peer id, which names this browser's caret in the store.
     peer: doc.peerIdStr,
@@ -555,7 +572,7 @@ export function createProjectSession({
   /// moves and it moves once -- the other stays where everybody already sees
   /// it, and somebody who was alone in the file keeps the colour they had.
   function settleColour() {
-    const mine = store.get(localKey);
+    const mine = store.get(localKey) || lastPresence;
     if (!mine?.color) return;
     const taken = [];
     let giveWay = false;
@@ -566,12 +583,26 @@ export function createProjectSession({
     }
     if (!giveWay) return;
     const next = presenceColour(colourSeed(), taken);
-    if (next && next !== mine.color) store.set(localKey, { ...mine, color: next });
+    if (next && next !== mine.color) setLocalPresence({ ...mine, color: next });
   }
 
   function clearPresenceTimer() {
     if (presenceTimer !== null) clearTimer(presenceTimer);
     presenceTimer = null;
+  }
+
+  function startHeartbeat() {
+    if (heartbeatTimer !== null) return;
+    heartbeatTimer = setRepeat(() => {
+      if (left || !joined || !lastPresence) return;
+      // The local subscription sends this through the usual throttle.
+      setLocalPresence({ ...lastPresence });
+    }, PRESENCE_HEARTBEAT_MS);
+  }
+
+  function stopHeartbeat() {
+    if (heartbeatTimer !== null) clearRepeat(heartbeatTimer);
+    heartbeatTimer = null;
   }
 
   function sendPresence(bytes) {
@@ -600,6 +631,19 @@ export function createProjectSession({
       // People, not keys: a caret and a file are keys of their own, and
       // counting those said four people were here when two were.
       onPeers?.(Object.keys(store.getAllStates()).filter(isPresence).length);
+      // The server relays presence without keeping it, so somebody who has
+      // just arrived has heard from nobody already here. Each person already
+      // here answers the first record from a key they have not seen. Only
+      // `added` keys trigger this, never `updated`, so two people already
+      // known to each other do not answer each other forever.
+      if (
+        !left && joined && event.by === "import"
+        && event.added.some((key) => isPresence(key) && key !== localKey)
+      ) {
+        if (lastPresence && !store.get(localKey)) setLocalPresence({ ...lastPresence });
+        const bytes = store.encode(localKey);
+        if (bytes && bytes.byteLength) sendPresence(bytes);
+      }
       if (left || event.by !== "local") return;
 
       const changed = event.added.concat(event.updated, event.removed);
@@ -734,6 +778,7 @@ export function createProjectSession({
       return false;
     }
     joined = true;
+    if (mayEdit && !standalone) startHeartbeat();
     announcePresence();
     if (mayEdit) catchUp(vector);
     else report();
@@ -1013,8 +1058,8 @@ export function createProjectSession({
     /// file; this is for the list.
     /** @param {string} id */
     inFile(id) {
-      const user = store.get(localKey) || {};
-      store.set(localKey, { ...user, file: id });
+      const user = store.get(localKey) || lastPresence || {};
+      setLocalPresence({ ...user, file: id });
     },
 
     /// Who is in which file: an id to the initials of the people in it.
@@ -1270,6 +1315,7 @@ export function createProjectSession({
     disconnected() {
       joined = false;
       announced = false;
+      stopHeartbeat();
       // Whatever the old socket's join was still waiting on -- hydration, a
       // referenced base, its digest -- is no longer anybody's answer. The next
       // join starts from an empty gate and catches up on its own.
@@ -1287,12 +1333,12 @@ export function createProjectSession({
     /// signed in -- which account they are, which is what the colour follows.
     /** @param {string} who @param {string} [account] */
     rename(who, account = "") {
-      const user = store.get(localKey) || {};
+      const user = store.get(localKey) || lastPresence || {};
       person = { name: who || "", accountId: account || "" };
       // The colour follows the person: a reader who signs in part way through
       // stops being their tab's colour and becomes their own, which is the
       // one everybody else already knows them by.
-      store.set(localKey, { ...user, name: who, color: presenceColour(colourSeed(), takenColours()) });
+      setLocalPresence({ ...user, name: who, color: presenceColour(colourSeed(), takenColours()) });
       settleColour();
     },
 
@@ -1303,6 +1349,7 @@ export function createProjectSession({
     },
 
     leave() {
+      stopHeartbeat();
       clearPresenceTimer();
       clearPressureTimer();
       pendingPresence.clear();

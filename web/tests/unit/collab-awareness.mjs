@@ -104,6 +104,135 @@ try {
   if (!left) session.leave();
 }
 
+// The heartbeat must rewrite this browser's record before peers expire it, and
+// stop with the socket or the session.
+{
+  const clock = fakeClock();
+  const sent = [];
+  const session = join({
+    send: (message) => sent.push(message),
+    mayEdit: true,
+    setTimer: clock.setTimer,
+    clearTimer: clock.clearTimer,
+    setRepeat: clock.setRepeat,
+    clearRepeat: clock.clearRepeat,
+  });
+  const { vector } = session.open();
+  await session.start({ protocol: "librepaper.room.v3", vector, updates: [] });
+  assert.equal(clock.repeats.size, 1, "joining registers one repeating timer");
+  assert.deepEqual(clock.repeatDelays, [15000], "the heartbeat runs every 15 s");
+
+  sent.length = 0;
+  [...clock.repeats.values()][0]();
+  clock.runTimers();
+  const beats = presenceFrames(sent);
+  assert.equal(beats.length, 1, "a heartbeat sends one presence frame");
+  const probe = new EphemeralStore(30000);
+  probe.apply(decode(beats[0].update));
+  assert.ok(
+    probe.getAllStates()[`user:${session.localPresence().tab}`],
+    "the heartbeat frame carries this session's own record",
+  );
+  probe.destroy();
+  session.leave();
+  assert.equal(clock.repeats.size, 0, "leave clears the heartbeat");
+}
+
+{
+  const clock = fakeClock();
+  const session = join({
+    send: () => {},
+    mayEdit: true,
+    setTimer: clock.setTimer,
+    clearTimer: clock.clearTimer,
+    setRepeat: clock.setRepeat,
+    clearRepeat: clock.clearRepeat,
+  });
+  const { vector } = session.open();
+  await session.start({ protocol: "librepaper.room.v3", vector, updates: [] });
+  assert.equal(clock.repeats.size, 1);
+  session.disconnected();
+  assert.equal(clock.repeats.size, 0, "disconnect clears the heartbeat");
+  await session.start({ protocol: "librepaper.room.v3", vector, updates: [] });
+  assert.equal(clock.repeats.size, 1, "rejoining restarts the heartbeat");
+  session.leave();
+  assert.equal(clock.repeats.size, 0, "leave clears the heartbeat after a rejoin");
+}
+
+// Somebody who has just arrived has heard from nobody here, so each person
+// already present answers the first record they see from them, once.
+{
+  const clock = fakeClock();
+  const sent = [];
+  const session = join({
+    send: (message) => sent.push(message),
+    mayEdit: true,
+    setTimer: clock.setTimer,
+    clearTimer: clock.clearTimer,
+    setRepeat: clock.setRepeat,
+    clearRepeat: clock.clearRepeat,
+  });
+  const { vector } = session.open();
+  await session.start({ protocol: "librepaper.room.v3", vector, updates: [] });
+  sent.length = 0;
+
+  const other = new EphemeralStore(30000);
+  other.set("user:other", { name: "Grace", tab: "other" });
+  session.applyPresence(encode(other.encode("user:other")));
+  const answers = presenceFrames(sent);
+  assert.equal(answers.length, 1, "a newcomer's first record is answered immediately");
+  const probe = new EphemeralStore(30000);
+  probe.apply(decode(answers[0].update));
+  assert.ok(
+    probe.getAllStates()[`user:${session.localPresence().tab}`],
+    "the answer carries this session's own record",
+  );
+  probe.destroy();
+
+  other.set("user:other", { name: "Grace", tab: "other", file: "notes" });
+  sent.length = 0;
+  session.applyPresence(encode(other.encode("user:other")));
+  assert.equal(presenceFrames(sent).length, 0, "an update from a known key is not answered");
+
+  other.destroy();
+  session.leave();
+}
+
+function fakeClock() {
+  const timers = new Map();
+  const repeats = new Map();
+  const repeatDelays = [];
+  let nextId = 0;
+  return {
+    repeats,
+    repeatDelays,
+    setTimer(callback, delay) {
+      assert.equal(delay, 100);
+      const id = ++nextId;
+      timers.set(id, callback);
+      return id;
+    },
+    clearTimer(id) {
+      timers.delete(id);
+    },
+    runTimers() {
+      for (const [id, callback] of [...timers]) {
+        timers.delete(id);
+        callback();
+      }
+    },
+    setRepeat(callback, delay) {
+      repeatDelays.push(delay);
+      const id = ++nextId;
+      repeats.set(id, callback);
+      return id;
+    },
+    clearRepeat(id) {
+      repeats.delete(id);
+    },
+  };
+}
+
 function decode(text) {
   return Uint8Array.from(atob(text), (character) => character.charCodeAt(0));
 }
