@@ -253,3 +253,15 @@ test("an unknown fragment is an unknown-label diagnostic; a missing image is mis
     ],
   );
 });
+
+test("a fragment names an id on its own page only", () => {
+  const one = '<h1 id="top">One</h1><a href="#top">up</a>';
+  const two = '<a href="#top">up</a>';
+  const project = createProjectIndex();
+  project.setFiles(["one.html", "two.html"]);
+  for (const [path, text] of [["one.html", one], ["two.html", two]]) {
+    project.update({ path, format: "html", length: text.length, items: htmlAdapter(text, path) });
+  }
+  assert.deepEqual(diagnostics(project, "one.html"), []);
+  assert.deepEqual(diagnostics(project, "two.html").map((item) => item.code), ["unknown-label"]);
+});

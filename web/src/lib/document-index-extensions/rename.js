@@ -3,7 +3,7 @@
 
 import { StateEffect, StateField } from "@codemirror/state";
 import { keymap, showPanel } from "@codemirror/view";
-import { itemAt, rename as renameEdits } from "../document-index/queries.js";
+import { itemAt, rename as renameEdits, renameProblem } from "../document-index/queries.js";
 import { m } from "../paraglide/messages.js";
 
 /** @typedef {import("./context.js").IndexContext} IndexContext */
@@ -30,21 +30,22 @@ export function renameTarget(state, context) {
   const item = itemAt(project, context.path(), state.selection.main.head);
   if (!item || item.name === undefined) return null;
   if (item.kind === "label") return item;
-  if (item.kind === "ref" && project.namespaceOf(item) === "label") return item;
+  if (item.kind === "ref" && project.namespaceOf(item, context.path()) === "label") return item;
   return null;
 }
 
 /** Opens the panel for this target, or closes it with null. */
-/** @type {import("@codemirror/state").StateEffectType<{ head: number, name: string } | null>} */
+/** @type {import("@codemirror/state").StateEffectType<RenameTarget | null>} */
 const showRename = StateEffect.define();
 
 /**
  * @param {EditorView} view
  * @param {IndexContext} context
- * @param {RenameTarget} target
+ * @param {() => RenameTarget} getTarget the target now, with `head` mapped through edits since the panel opened
  * @returns {Panel}
  */
-function createPanel(view, context, target) {
+function createPanel(view, context, getTarget) {
+  const target = getTarget();
   /** Closes the panel and returns focus to the editor. */
   const close = () => {
     view.dispatch({ effects: showRename.of(null) });
@@ -91,9 +92,12 @@ function createPanel(view, context, target) {
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    const edits = renameEdits(context.project(), context.path(), target.head, input.value);
+    const { head } = getTarget();
+    const problem = renameProblem(context.project(), context.path(), head, input.value);
+    const edits = problem === null ? renameEdits(context.project(), context.path(), head, input.value) : null;
     if (edits === null) {
-      status.textContent = m.rename_invalid();
+      status.textContent =
+        problem === "chars" ? m.rename_invalid_chars() : problem === "exists" ? m.rename_exists() : m.rename_invalid();
       input.setAttribute("aria-invalid", "true");
       input.focus();
       return;
@@ -135,16 +139,29 @@ export function renameCommand(context) {
  * @returns {Extension}
  */
 export function rename(context) {
+  /**
+   * The open target and the panel constructor made for it. The constructor
+   * stays the same while `head` is mapped, so edits do not rebuild the panel.
+   * @typedef {RenameTarget & { make: (view: EditorView) => Panel }} OpenRename
+   */
+  /** @type {StateField<OpenRename | null>} */
   const field = StateField.define({
     create: () => null,
     update(value, tr) {
+      if (value !== null && tr.docChanged) value = { ...value, head: tr.changes.mapPos(value.head) };
       for (const effect of tr.effects) {
-        if (effect.is(showRename)) value = effect.value;
+        if (!effect.is(showRename)) continue;
+        value =
+          effect.value === null
+            ? null
+            : {
+                ...effect.value,
+                make: (view) => createPanel(view, context, () => /** @type {OpenRename} */ (view.state.field(field))),
+              };
       }
       return value;
     },
-    provide: (f) =>
-      showPanel.from(f, (target) => (target === null ? null : (view) => createPanel(view, context, target))),
+    provide: (f) => showPanel.from(f, (target) => (target === null ? null : target.make)),
   });
 
   return [field, keymap.of([{ key: "F2", run: renameCommand(context), preventDefault: true }])];

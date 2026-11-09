@@ -11,6 +11,7 @@ import {
   proseRanges,
   references,
   rename,
+  renameProblem,
   symbols,
 } from "../../src/lib/document-index/queries.js";
 
@@ -408,4 +409,94 @@ test("levenshtein counts single-character edits", () => {
   assert.equal(levenshtein("fig:bb", "fig:a"), 2);
   assert.equal(levenshtein("fig:a", "fig:bb"), 2);
   assert.equal(levenshtein("same", "same"), 0);
+});
+
+test("LaTeX includes resolve from the project root, then beside the including file", () => {
+  const project = createProjectIndex();
+  project.setFiles(["main.tex", "chapters/ch1.tex", "chapters/sec1.tex", "chapters/figs/a.png", "figs/b.png"]);
+  assert.equal(project.resolveFile("chapters/ch1.tex", "chapters/sec1"), "chapters/sec1.tex");
+  // Beside the including file still works, as opening.js allows.
+  assert.equal(project.resolveFile("chapters/ch1.tex", "sec1"), "chapters/sec1.tex");
+  assert.equal(project.resolveFile("chapters/ch1.tex", "figs/b", "asset"), "figs/b.png");
+  assert.equal(project.resolveFile("chapters/ch1.tex", "figs/a.png", "asset"), "chapters/figs/a.png");
+  assert.equal(project.resolveFile("chapters/ch1.tex", "nope"), null);
+});
+
+test("a LaTeX missing-file quick fix suggests the root-relative path", () => {
+  const text = "\\input{chapters/sec}\n";
+  const project = createProjectIndex();
+  project.setFiles(["main.tex", "chapters/ch1.tex", "chapters/sec1.tex"]);
+  project.update({
+    path: "chapters/ch1.tex",
+    format: "latex",
+    length: text.length,
+    items: [{ kind: "include", range: [0, text.length - 1], name: "chapters/sec", nameRange: [7, 19] }],
+  });
+  const [found] = diagnostics(project, "chapters/ch1.tex");
+  assert.equal(found.code, "missing-file");
+  assert.deepEqual(found.suggestions, ["chapters/sec1"]);
+});
+
+test("labels scope to their format family, and HTML fragments to their page", () => {
+  const project = createProjectIndex();
+  project.update({ path: "a.html", format: "html", length: 2, items: [{ kind: "label", range: [0, 1], name: "x", nameRange: [0, 1] }] });
+  project.update({ path: "b.html", format: "html", length: 1, items: [{ kind: "ref", range: [0, 1], name: "x", nameRange: [0, 1], namespace: "label" }] });
+  project.update({ path: "c.typ", format: "typst", length: 1, items: [{ kind: "ref", range: [0, 1], name: "x", nameRange: [0, 1], namespace: "either" }] });
+  project.update({ path: "d.tex", format: "latex", length: 1, items: [{ kind: "label", range: [0, 1], name: "x", nameRange: [0, 1] }] });
+  // b.html's #x has no x on b.html, though a.html has an id x.
+  assert.deepEqual(definition(project, "b.html", 0), []);
+  assert.deepEqual(diagnostics(project, "b.html").map((d) => d.code), ["unknown-label"]);
+  // A Typst @x is not a label ref just because HTML or LaTeX define x.
+  assert.equal(project.namespaceOf(project.file("c.typ").items[0], "c.typ"), "cite");
+  assert.deepEqual(project.definitions("label", "x", "c.typ"), []);
+  assert.deepEqual(project.definitions("label", "x", "a.html").map((d) => d.path), ["a.html"]);
+  assert.deepEqual(project.names("label", "d.tex"), ["x"]);
+  assert.deepEqual(project.names("label", "c.typ"), []);
+  // Renaming the id on a.html leaves b.html's fragment alone.
+  assert.deepEqual(rename(project, "a.html", 0, "y"), [{ path: "a.html", from: 0, to: 1, insert: "y" }]);
+});
+
+test("rename validates the new name per format and refuses a name that exists", () => {
+  const project = createProjectIndex();
+  const add = (path, format, names) =>
+    project.update({
+      path,
+      format,
+      length: 100,
+      items: names.map((name, i) => ({ kind: "label", range: [i * 10, i * 10 + 5], name, nameRange: [i * 10, i * 10 + 5] })),
+    });
+  add("a.tex", "latex", ["fig:a", "fig:taken"]);
+  add("a.typ", "typst", ["eq:a"]);
+  add("a.qmd", "quarto", ["fig-a", "intro"]);
+  add("a.html", "html", ["top"]);
+  assert.equal(renameProblem(project, "a.tex", 0, "fig:b"), null);
+  for (const bad of ["a{b", "a}b", "a%b", "a,b", "a\\b", "a#b"]) assert.equal(renameProblem(project, "a.tex", 0, bad), "chars", bad);
+  assert.equal(renameProblem(project, "a.tex", 0, "fig:taken"), "exists");
+  assert.equal(rename(project, "a.tex", 0, "fig:taken"), null);
+  assert.equal(renameProblem(project, "a.tex", 0, "fig a"), "invalid");
+  assert.equal(renameProblem(project, "a.typ", 0, "eq:b"), null);
+  assert.equal(renameProblem(project, "a.typ", 0, "eq b!"), "invalid");
+  assert.equal(renameProblem(project, "a.typ", 0, "eq$b"), "chars");
+  assert.equal(renameProblem(project, "a.qmd", 0, "fig-b"), null);
+  assert.equal(renameProblem(project, "a.qmd", 0, "tbl-b"), "chars", "fig- keeps its prefix");
+  assert.equal(renameProblem(project, "a.qmd", 0, "fig-"), "chars");
+  assert.equal(renameProblem(project, "a.qmd", 10, "tbl-b"), null, "a plain id may change");
+  assert.equal(renameProblem(project, "a.html", 0, 'a"b'), "chars");
+  assert.equal(renameProblem(project, "a.html", 0, "bottom"), null);
+  // A name taken in another format family is not a collision.
+  assert.equal(renameProblem(project, "a.typ", 0, "top"), null);
+});
+
+test("label lookups follow updates and removals", () => {
+  const project = createProjectIndex();
+  const file = (path, name) => ({ path, format: "latex", length: 5, items: [{ kind: "label", range: [0, 5], name, nameRange: [0, 5] }] });
+  project.update(file("a.tex", "one"));
+  assert.deepEqual(project.names("label"), ["one"]);
+  project.update(file("b.tex", "two"));
+  assert.deepEqual(project.names("label"), ["one", "two"]);
+  project.update(file("a.tex", "three"));
+  assert.equal(project.definitions("label", "one").length, 0);
+  assert.equal(project.definitions("label", "three").length, 1);
+  project.remove("b.tex");
+  assert.deepEqual(project.names("label"), ["three"]);
 });
