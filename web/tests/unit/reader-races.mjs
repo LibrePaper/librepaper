@@ -31,17 +31,6 @@ const body = (start, end) => {
   return reader.slice(from, to);
 };
 
-// Initial Quarto setup must configure the desktop app as active for an editor.
-// If permission is assigned afterwards, editable onboarding examples remain
-// on the Markdown fallback even when the desktop app is already there.
-{
-  const prepare = body("  async function prepare(document_)", "  $effect(() => {");
-  assert.ok(
-    prepare.indexOf("mayEdit = Boolean(allowed)") < prepare.indexOf("scopeLocalApp()"),
-    "prepare resolves edit permission before scoping the local app, which is active only for an editor",
-  );
-}
-
 // Session lifecycle checks use the extracted resource owners directly. The
 // fake room/session expose only the contracts Reader needs, which keeps these
 // checks focused on stale metadata and teardown rather than WebSocket syntax.
@@ -812,40 +801,8 @@ for (const invalidate of [null, "navigation", "main"]) {
 }
 console.log("reader-races: continuous preview, render coalescing and navigation guards passed");
 
-// Ctrl-S names where the work is, and reserves "saved" for the server. This
-// browser's own storage is evictable and is one device, so an offline Ctrl-S
-// says what will happen to the typing rather than calling it saved.
-{
-  const said = [];
-  const ctx = context({
-    connected: true, persistence: { pending: 1, local: true, joined: true },
-    say: (value) => { said.push(value); },
-  });
-  vm.runInContext(body("  function reportPersistence()", "  // There is no save, so a close"), ctx);
-  vm.runInContext("reportPersistence()", ctx);
-  assert.deepEqual(said, [], "work without durable coverage is not reported as saved");
-  ctx.persistence.pending = 0;
-  ctx.persistence.joined = false;
-  vm.runInContext("reportPersistence()", ctx);
-  assert.deepEqual(said, [], "a connected socket is not a completed join");
-  ctx.persistence.joined = true;
-  vm.runInContext("reportPersistence()", ctx);
-  assert.deepEqual(said, ["Saved on the server."]);
-  ctx.connected = false;
-  vm.runInContext("reportPersistence()", ctx);
-  assert.match(said[1], /^Offline. Everything typed so far has already reached the server./);
-  ctx.persistence.pending = 2;
-  vm.runInContext("reportPersistence()", ctx);
-  assert.match(said[2], /in this browser only/, "work the server has not seen is not called saved");
-  assert.doesNotMatch(said[1] + said[2], /saved/i, "the word is the server's");
-  // A local write that failed says so through its own failure, not here.
-  ctx.persistence = { pending: 0, local: true, localError: "quota exceeded" };
-  vm.runInContext("reportPersistence()", ctx);
-  assert.equal(said.length, 3);
-}
-
-// Closing the page is held only while work has reached neither the server nor
-// this browser.
+// Closing the page is held when the opening says the work is at risk. What
+// counts as at risk is the opening's, and is checked in opening-sequence.mjs.
 {
   const unloadBody = body("  function beforeUnload(event)", "  // The arrangement is changed");
   const closing = (ctx) => {

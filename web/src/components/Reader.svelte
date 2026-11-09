@@ -29,7 +29,7 @@
   import { createReaderBoot } from "../lib/reader/boot.js";
   import { createPendingChat } from "../lib/reader/chat.js";
   import { createLiveChat } from "../lib/reader/live-chat.svelte.js";
-  import { createReaderCollaboration } from "../lib/reader/collaboration.js";
+  import { createOpening } from "../lib/reader/opening.svelte.js";
   import { createWorkspace } from "../lib/reader/workspace.svelte.js";
   import { createProjectionSource } from "../lib/reader/projection-source.svelte.js";
   import { createPainted } from "../lib/reader/painted.svelte.js";
@@ -190,14 +190,14 @@
       target.update();
       schedule.bump();
       outlineRevision += 1;
-      settled = true;
+      lifecycle.settle();
       void paintPreview();
     },
     onProblem: (message) => {
       // Never leave the pane spinning on a project this browser has not yet
       // shown anything for: a reader with no source of its own has nothing
       // else to paint while this stays broken, so the loading state ends here.
-      if (!projection.state.project) settled = true;
+      if (!projection.state.project) lifecycle.settle();
       say(message, { kind: "problem", id: "reader:project-load" });
     },
   });
@@ -207,9 +207,136 @@
   const previewCacheKey = (path) => `${SLUG}:${doc?.created_at || "unknown"}|${path}`;
   const lastCachedPage = async (path) => lastPreview(previewCacheKey(path));
   const cachePage = (path, page, identity) => rememberPreview(previewCacheKey(path), page, identity);
-  // Set when the page was opened from this browser's copy because the server
-  // could not be reached, so the page says it may be missing newer changes.
-  let openedLocally = $state(false);
+  // The opening sequence, and what it knows once it has run: the role, the
+  // socket, whether the work is safe, who else is here, the session and the
+  // room. Every effect is a callback, and every callback is lazy, so the
+  // things they name may be declared further down. The state is read here
+  // under the names the page has always used; every write goes through
+  // `lifecycle`.
+  const lifecycle = createOpening({
+    slug: SLUG,
+    key: KEY,
+    standalone: DEMO,
+    getIdentity: () => identity,
+    // Only a signed-in person has an account; the id is empty for anybody else.
+    getAccountId: () => (me.provider ? me.id || "" : ""),
+    disposed: () => readerDisposed,
+    onMessage: receive,
+    seed: DEMO
+      ? async (active) => {
+        const { seedTryProject } = await import("../lib/try-project.js");
+        if (readerDisposed) return;
+        await seedTryProject(active);
+      }
+      : null,
+    roleKnown: (document_) => {
+      const offeredRenderers = Array.isArray(document_.renderers) ? document_.renderers : ["markdown"];
+      renderers.offerLatex(offeredRenderers.includes("latex"));
+      // The workspace guards its own writes, so it is told once, here, where
+      // the permission is settled.
+      ws.canEdit = mayEdit;
+      timeline.state.canEdit = mayEdit;
+      // Access was reduced, so this browser should stop offering an editable copy
+      // of a project it may no longer edit. A copy opened from this browser has no
+      // server answer behind its role, so it is kept as it is.
+      if (!mayEdit && !openedLocally) {
+        forgetProject({ server: location.origin, documentId: document_.document_id, slug: SLUG, createdAt: document_.created_at })
+          .catch(() => {});
+      }
+      // A panel this visit has already moved to may not be one this role is
+      // offered. A phone keeps the view it opened on.
+      if (panel && !tabs.some((tab) => tab.id === panel)) {
+        const view = mobileView;
+        showPanel(home);
+        mobileView = view;
+      }
+    },
+    formatKnown: (format) => {
+      target.state.format = format;
+      scopeLocalApp();
+    },
+    canRender: (format) => Boolean(renderers.outputKind(format)),
+    noRenderer: (format) => {
+      say(m.readerc_no_renderer({ format }), { kind: "problem", id: "reader:no-renderer" });
+    },
+    refreshProjection: () => projection.refresh(),
+    editorReady: (format) => {
+      // Load the browser renderer for readers as well as editors; this is all
+      // transient and does not create a server-side result. Started after the
+      // collaboration module is in, because the editor cannot open without its
+      // CRDT and the engine (ten megabytes for Typst) would otherwise share the
+      // connection with it: the engine finishes no later this way, and the
+      // editor opens about a second sooner on a slow link.
+      if (format) {
+        warmEngine(format);
+      }
+      // The directory arrives after the session does. A session object alone is
+      // not a snapshot.
+      // No chooser and no saved distribution: `latex.configure` tells the
+      // controller which project this is and what it is allowed to do, and the
+      // first `paintPreview` (from `startEditing` below, or an edit) is what
+      // actually starts loading the engine. `session.latexSettings()` needs the
+      // session that `start` just built, which is why this comes after
+      // it rather than beside the old restore-a-distribution code above.
+      configureLatex(sourceFormat);
+      // A document its author may edit opens ready to be worked on: that is what
+      // they came for.
+      if (mayEdit) startEditing();
+    },
+    onConnected: (up) => {
+      if (!up) {
+        pendingChat?.disconnect();
+        outbox.disconnected();
+      }
+      // A publish that happened while this browser was not listening was
+      // announced to nobody: the offer is pushed over this very socket. So
+      // the way back up is where a reader asks whether they missed one.
+      if (up && !mayEdit) void projection.refresh();
+    },
+    onSession: (active) => {
+      changesUnsubscribe?.();
+      // The changes live beside the text in the document, so any commit
+      // can move them, an accept or reject included, and that is not a text
+      // event. Imports from other peers arrive here as well.
+      changesUnsubscribe = active?.doc.subscribe(refreshReview) || null;
+      // The attachments of an editor are derived from the document, so they
+      // are followed on every commit.
+      followAnnotations?.();
+      followAnnotations = active ? annotations.follow(active.doc) : null;
+      refreshReview();
+      workspace.attach(active);
+      refreshFiles();
+      refreshPeers();
+      // A restored document can already contain its complete tree when
+      // the session is handed over, so no later source event is guaranteed.
+      // Render once from that hydrated tree after Svelte has applied the
+      // format and file-list state.
+      void tick().then(() => {
+        if (!readerDisposed && active === session) void paintPreview();
+      });
+    },
+    onFiles: (events, active) => filesChanged(events, active),
+    onAwareness: () => { if (!readerDisposed) refreshPeers(); },
+    onDocumentChanged: () => {
+      location.reload();
+    },
+    localStorageFailed: (error) => {
+      say(m.readerc_local_storage_failed({ error }), { kind: "problem", id: "reader:local-storage-failed" });
+    },
+    paint: () => { paintPreview(); },
+    openFailed: (error) => {
+      say(error.message || m.reader_open_failed(), { kind: "problem", id: "reader:open-failed" });
+    },
+  });
+  const mayEdit = $derived(lifecycle.state.mayEdit);
+  const connected = $derived(lifecycle.state.connected);
+  const persistence = $derived(lifecycle.state.persistence);
+  const peers = $derived(lifecycle.state.peers);
+  const settled = $derived(lifecycle.state.settled);
+  const openedLocally = $derived(lifecycle.state.openedLocally);
+  const session = $derived(lifecycle.session);
+  const collaboration = $derived(lifecycle.collaboration);
+  const atRisk = $derived(lifecycle.atRisk);
   /** @type {ReaderUser} */
   let me = $state({ id: "" });
   const backupStatus = $derived(backupStatusStore.status);
@@ -218,7 +345,6 @@
   // belongs on neither.
   let identity = $derived(me.name || "");
   let canModerate = $derived(Boolean(doc.can_moderate));
-  let connected = $state(false);
   // Whether this tab is the one in front of the reader. Only background work
   // consults it; nothing about the document depends on being looked at.
   let hidden = $state(typeof document !== "undefined" && document.visibilityState === "hidden");
@@ -237,12 +363,6 @@
   // which is most of the point of a blind review.
   let canSeeSharing = $derived(Boolean(doc.can_see_sharing));
   let canPublish = $derived(["editor", "owner"].includes(doc.role));
-
-  // Whether this browser's work is safe, which is a different question from
-  // whether the socket is up. `pending` counts the updates the server has not
-  // yet said it has written; `local` says the document is in this browser's
-  // own storage, which is what makes a reload safe while the socket is down.
-  let persistence = $state({ pending: 0, local: false, localPending: 0, localError: "", joined: false });
 
   /* --------------------------------------------------------------- anchoring */
 
@@ -1040,7 +1160,6 @@
 
   /* -------------------------------------------------------------------- room */
 
-  let collaboration = $state(null);
   let clearingChat = $state(false);
   function askClearChat() {
     if (chatState.canClear) clearingChat = true;
@@ -1309,52 +1428,7 @@
       return;
     }
 
-    // The shared document: the state of the session as it stands, one more
-    // change to it, what the server has written, who else is in it, or where
-    // their carets are. A reader receives all of this too -- that is how they
-    // see the current text -- and sends none of it.
-    if (event.type === "doc-state") {
-      const active = session;
-      active
-        ?.start(event)
-        .then(() => {
-          if (active !== session) return;
-          paintPreview();
-        })
-        .catch((error) => {
-          say(error.message || m.reader_open_failed(), { kind: "problem", id: "reader:open-failed" });
-        });
-      peers = event.count || 1;
-      return;
-    }
-    if (event.type === "doc-rows") {
-      // The rows this browser's vector did not cover, plus whatever is still
-      // in the server's buffer (§6.2). It is a join like `doc-state`, and it
-      // is awaited the same way: `doc-rows` can arrive as the whole join
-      // reply on its own, so `session.rows` awaits hydration itself, and it
-      // is sequenced behind any `start` that is still mid-fetch for a
-      // referenced base (project-session.js `joinGate`), so it can no longer
-      // be assumed synchronous.
-      const active = session;
-      active
-        ?.rows(event)
-        .then(() => {
-          if (active !== session) return;
-          paintPreview();
-        })
-        .catch((error) => {
-          say(error.message || m.reader_open_failed(), { kind: "problem", id: "reader:open-failed" });
-        });
-      return;
-    }
-    if (event.type === "doc-gap") {
-      // The server refused a batch because it did not cover what that batch
-      // started from, and dropped it rather than queueing it (§5 step 4).
-      // Nothing is lost: exporting from the vector the server named resends
-      // the refused operations along with anything else it is missing.
-      session?.gap(event.vector);
-      return;
-    }
+    if (lifecycle.receive(event)) return;
     if (event.type === "source-changed") {
       // Readers and commenters never join CRDT sync (§2.1), so this frame is
       // the only way this browser learns the head moved: refetch the
@@ -1362,28 +1436,6 @@
       // etag (§11). An editor's own `session` hears every edit directly and
       // has nothing to do here.
       if (!mayEdit) void projection.refresh();
-      return;
-    }
-    if (event.type === "doc-update") {
-      session?.apply(event.update);
-      return;
-    }
-    if (event.type === "doc-presence") {
-      session?.applyPresence(event.update);
-      return;
-    }
-    if (event.type === "doc-ack") {
-      // Retire transmission bookkeeping. An empty catch-up can be acknowledged
-      // while earlier work is still buffered, so this does not prove saving.
-      session?.acknowledge(event.upTo || 0);
-      return;
-    }
-    if (event.type === "doc-durable") {
-      session?.durable(event.vector);
-      return;
-    }
-    if (event.type === "doc-peers") {
-      peers = event.count || 1;
       return;
     }
 
@@ -1447,12 +1499,7 @@
   let mathPalette = $state(null);
   let symbolsOpen = $state(false);
   let mathOpen = $state(false);
-  // Raw on purpose: the session is a bag of Loro types and functions, and the
-  // collaboration module hands the same object back in its callbacks, which
-  // are compared to this by identity. A deep proxy would never be equal to it.
-  let session = $state.raw(null);
   let editing = $state(false);
-  let mayEdit = $state(false);
   // What the preview draws: the file, its format, why it is that one, the
   // choices when the open file has no preview of its own, and the lock. The
   // rule is `lib/opening.js`'s; the state and its changes are kept in
@@ -1493,7 +1540,6 @@
   // to lock. Worked out with the target, from the same texts.
   const aloneSet = $derived(target.state.alone);
 
-  let peers = $state(1);
   let participants = $state([]);
   let linked = $state(read(LINKED, false) === true);
   // The formatting at the caret, from the Editor while visual mode is on.
@@ -1509,10 +1555,6 @@
       ? m.reader_offline_kept_locally()
       : m.reader_offline_reconnecting();
   });
-
-  // A close is only worth interrupting when the work has reached neither this
-  // browser's storage nor the server.
-  const atRisk = $derived(Boolean(mayEdit && (persistence.localError || (persistence.pending && !persistence.local))));
 
   // What the document is called, which is what the rendered page is titled.
   // The title it was published under wins; a document that never had one is
@@ -2729,9 +2771,6 @@
     : tabs.some((tab) => tab.id === "collaboration") ? "collaboration"
     : "",
   );
-  // Whether the document has said who this browser is. Until it has, the
-  // column is drawn empty rather than as one audience's and then the other's.
-  let settled = $state(false);
   // The height of the demo banner, taken off the workspace so the page does not scroll.
   let demoBannerHeight = $state(0);
   // The first time a project is opened by someone it was shared with, one line
@@ -3807,168 +3846,6 @@
     paintPreview();
   }
 
-  // What the Reader hears from a session joined to a room.
-  function sessionEvents() {
-    return {
-      onPeers: (count) => { if (!readerDisposed) peers = Math.max(peers, count); },
-      onState: (state_) => {
-        // Teardown sets this before it closes the collaboration, so a local
-        // write landing in that window has a UI to miss.
-        if (readerDisposed) return;
-        const newlyFailed = state_.localError && state_.localError !== persistence.localError;
-        persistence = state_;
-        if (newlyFailed) say(m.readerc_local_storage_failed({ error: state_.localError }), { kind: "problem", id: "reader:local-storage-failed" });
-      },
-      onSession: (active) => {
-        session = active;
-        changesUnsubscribe?.();
-        // The changes live beside the text in the document, so any commit
-        // can move them, an accept or reject included, and that is not a text
-        // event. Imports from other peers arrive here as well.
-        changesUnsubscribe = active?.doc.subscribe(refreshReview) || null;
-        // The attachments of an editor are derived from the document, so they
-        // are followed on every commit.
-        followAnnotations?.();
-        followAnnotations = active ? annotations.follow(active.doc) : null;
-        refreshReview();
-        workspace.attach(active);
-        refreshFiles();
-        refreshPeers();
-        // A restored document can already contain its complete tree when
-        // the session is handed over, so no later source event is guaranteed.
-        // Render once from that hydrated tree after Svelte has applied the
-        // format and file-list state.
-        void tick().then(() => {
-          if (!readerDisposed && active === session) void paintPreview();
-        });
-      },
-      onFiles: filesChanged,
-      onAwareness: () => { if (!readerDisposed) refreshPeers(); },
-    };
-  }
-
-  // The CRDT is loaded here and nowhere else. A reader with a link to a
-  // published document never joins the source room, so it never asks for the
-  // three megabytes of loro wasm behind it; an editor pays for them once, on
-  // the way in, rather than before the page has drawn.
-  async function startCollaboration(document_, { sourceSync = true } = {}) {
-    collaboration?.close();
-    const collab = sourceSync ? await import("../lib/collab.js") : null;
-    // Awaiting the module gave the reader time to be torn down or replaced.
-    if (readerDisposed) return;
-    collaboration = createReaderCollaboration({
-      slug: SLUG,
-      key: KEY,
-      collab,
-      getIdentity: () => identity,
-      // Only a signed-in person has an account; the id is empty for anybody else.
-      getAccountId: () => (me.provider ? me.id || "" : ""),
-      getCanEdit: () => mayEdit,
-      sourceSync,
-      standalone: DEMO,
-      onMessage: receive,
-      onConnected: (up) => {
-        connected = up;
-        if (!up) {
-          pendingChat?.disconnect();
-          outbox.disconnected();
-        }
-        // A publish that happened while this browser was not listening was
-        // announced to nobody: the offer is pushed over this very socket. So
-        // the way back up is where a reader asks whether they missed one.
-        if (up && !mayEdit) void projection.refresh();
-      },
-      ...sessionEvents(),
-      onDocumentChanged: () => {
-        location.reload();
-      },
-    });
-    session = collaboration.start(document_);
-    if (DEMO) {
-      const { seedTryProject } = await import("../lib/try-project.js");
-      if (readerDisposed) return;
-      await seedTryProject(session);
-    }
-  }
-
-  // What this browser may do with the document, and whether it can render it
-  // at all.
-  async function prepare(document_) {
-    // The role endpoint answer is authoritative for every affordance.
-    const ROLES = ["reader", "commenter", "editor", "owner"];
-    const allowed = ROLES.indexOf(document_.role) >= ROLES.indexOf("editor");
-    // The desktop app must see the resolved permission on its first
-    // configuration. In particular, account examples arrive as editable
-    // Quarto documents; configuring before this assignment leaves the
-    // desktop app inactive and the pane stuck on its Markdown fallback.
-    mayEdit = Boolean(allowed);
-    const offeredRenderers = Array.isArray(document_.renderers) ? document_.renderers : ["markdown"];
-    renderers.offerLatex(offeredRenderers.includes("latex"));
-    // The workspace guards its own writes, so it is told once, here, where
-    // the permission is settled.
-    ws.canEdit = mayEdit;
-    timeline.state.canEdit = mayEdit;
-    openedLocally = Boolean(document_.local_copy);
-    // Access was reduced, so this browser should stop offering an editable copy
-    // of a project it may no longer edit. A copy opened from this browser has no
-    // server answer behind its role, so it is kept as it is.
-    if (!mayEdit && !openedLocally) {
-      forgetProject({ server: location.origin, documentId: document_.document_id, slug: SLUG, createdAt: document_.created_at })
-        .catch(() => {});
-    }
-    // A panel this visit has already moved to may not be one this role is
-    // offered. A phone keeps the view it opened on.
-    if (panel && !tabs.some((tab) => tab.id === panel)) {
-      const view = mobileView;
-      showPanel(home);
-      mobileView = view;
-    }
-    // Reader and commenter links receive an allowlisted projection of the
-    // current project. They share the renderer but never join CRDT sync.
-    if (!mayEdit) {
-      await startCollaboration(document_, { sourceSync: false });
-      await projection.refresh();
-      return;
-    }
-    // Rendering follows the durable source format. Generated-result identity
-    // is deliberately absent: a reader compiles this source on demand.
-    // An empty project has no format; the first file added gives it one.
-    const format = document_.source_format ||
-      (document_.execution_engine === "quarto" ? "quarto" : "");
-    target.state.format = format;
-    scopeLocalApp();
-    // Every reader compiles from source when the browser has the engine. A
-    // missing engine produces an actionable local-tool message below.
-    if (format && !renderers.outputKind(format)) {
-      say(m.readerc_no_renderer({ format }), { kind: "problem", id: "reader:no-renderer" });
-      settled = true;
-      return;
-    }
-    settled = true;
-    await startCollaboration(document_);
-    // Load the browser renderer for readers as well as editors; this is all
-    // transient and does not create a server-side result. Started after the
-    // collaboration module is in, because the editor cannot open without its
-    // CRDT and the engine (ten megabytes for Typst) would otherwise share the
-    // connection with it: the engine finishes no later this way, and the
-    // editor opens about a second sooner on a slow link.
-    if (format) {
-      warmEngine(format);
-    }
-    // The directory arrives after the session does. A session object alone is
-    // not a snapshot.
-    // No chooser and no saved distribution: `latex.configure` tells the
-    // controller which project this is and what it is allowed to do, and the
-    // first `paintPreview` (from `startEditing` below, or an edit) is what
-    // actually starts loading the engine. `session.latexSettings()` needs the
-    // session that `startCollaboration` just built, which is why this comes after
-    // it rather than beside the old restore-a-distribution code above.
-    configureLatex(sourceFormat);
-    // A document its author may edit opens ready to be worked on: that is what
-    // they came for.
-    if (mayEdit) startEditing();
-  }
-
   // A document is shown once the server has answered for it.
   function showDocument(found) {
     doc = found;
@@ -3983,7 +3860,7 @@
     // LaTeX document, a PDF an editor's browser compiled, which needs a
     // frame that can draw one. Set after `prepare`, which is what settles
     // the format and so which frame this document wants.
-    void prepare(found);
+    void lifecycle.prepare(found);
     if (!separate) {
       renderStatus.failed(NO_DOCS_ORIGIN);
       say(NO_DOCS_ORIGIN, { kind: "problem", id: "reader:no-docs-origin" });
@@ -4061,7 +3938,7 @@
       changesUnsubscribe = null;
       followAnnotations?.();
       followAnnotations = null;
-      collaboration?.close();
+      lifecycle.close();
     };
   });
 
@@ -4105,28 +3982,10 @@
 
   // Ctrl-S reports the durability the server has confirmed for local work.
   // Typing is saved automatically, but a buffered edit is not durable yet.
-  //
-  // "Saved" is the word to be careful with. This browser's own storage is not
-  // a save: it is evictable, it is one device, and it holds nothing the
-  // server has not also been sent only while the socket is down. So an
-  // offline Ctrl-S says where the work currently is and what will happen to
-  // it, and leaves the word alone. Only the server copy is called saved.
+  // What it says, and why it avoids the word "saved", is the opening's.
   function reportPersistence() {
-    // A local write that failed or is still in flight is not worth
-    // reassuring anybody about; the failure says so on its own.
-    if (persistence.localError || persistence.localPending) return;
-    if (!connected) {
-      if (!persistence.local) return;
-      say(
-        persistence.pending
-          ? m.readerc_offline_pending()
-          : m.readerc_offline_saved(),
-        { id: "reader:persistence" },
-      );
-      return;
-    }
-    if (!persistence.joined || persistence.pending) return;
-    say(m.readerc_saved_on_server(), { id: "reader:persistence" });
+    const message = lifecycle.report();
+    if (message) say(message, { id: "reader:persistence" });
   }
 
   // There is no save, so a close is almost never worth interrupting: the
