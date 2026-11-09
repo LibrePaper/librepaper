@@ -2,6 +2,8 @@
 // bibliography keys, and the lookups that cross files.
 
 import { dirname, normalizePath, resolvePath } from "../completion/paths.js";
+import { sourceFormatOf } from "../formats.js";
+import { labelScope } from "./label-names.js";
 
 /** @typedef {import("./schema.js").FileIndex} FileIndex */
 /** @typedef {import("./schema.js").IndexItem} IndexItem */
@@ -34,11 +36,11 @@ function extensionOf(path) {
  *   setFiles: (paths: string[] | null) => void,
  *   knownFiles: () => string[] | null,
  *   setBibliography: (keys: string[] | null) => void,
- *   namespaceOf: (item: IndexItem) => Namespace | null,
- *   definitions: (namespace: Namespace, name: string) => Array<{ path: string, item: IndexItem }>,
+ *   namespaceOf: (item: IndexItem, fromPath?: string) => Namespace | null,
+ *   definitions: (namespace: Namespace, name: string, fromPath?: string) => Array<{ path: string, item: IndexItem }>,
  *   hasCitation: (key: string) => boolean | null,
- *   references: (namespace: Namespace, name: string) => Array<{ path: string, item: IndexItem }>,
- *   names: (namespace: Namespace) => string[],
+ *   references: (namespace: Namespace, name: string, fromPath?: string) => Array<{ path: string, item: IndexItem }>,
+ *   names: (namespace: Namespace, fromPath?: string) => string[],
  *   resolveFile: ResolveFile,
  * }}
  */
@@ -53,22 +55,56 @@ export function createProjectIndex(options = {}) {
   /** @returns {Array<[string, FileIndex]>} */
   const sortedEntries = () => [...files.entries()].sort(([a], [b]) => byText(a, b));
 
-  /** @param {string} name @returns {boolean} */
-  function labelExists(name) {
-    for (const file of files.values()) {
-      if (file.items.some((item) => item.kind === "label" && item.name === name)) return true;
+  /**
+   * Label definitions by name, in path then item order. Built on first use and
+   * dropped whenever a file changes.
+   * @type {Map<string, Array<{ path: string, item: IndexItem }>> | null}
+   */
+  let labelIndex = null;
+
+  /** @returns {Map<string, Array<{ path: string, item: IndexItem }>>} */
+  function labelDefinitions() {
+    if (labelIndex) return labelIndex;
+    labelIndex = new Map();
+    for (const [path, file] of sortedEntries()) {
+      for (const item of file.items) {
+        if (item.kind !== "label" || item.name === undefined) continue;
+        const list = labelIndex.get(item.name);
+        if (list) list.push({ path, item });
+        else labelIndex.set(item.name, [{ path, item }]);
+      }
     }
-    return false;
+    return labelIndex;
+  }
+
+  /**
+   * Whether a label at `defPath` can be named from `fromPath`: the same format
+   * family, and for HTML the same page. Without `fromPath`, any label counts.
+   * @param {string} defPath
+   * @param {string | undefined} fromPath
+   * @returns {boolean}
+   */
+  const sameScope = (defPath, fromPath) =>
+    fromPath === undefined || labelScope(files.get(defPath)?.format ?? "", defPath) === labelScope(files.get(fromPath)?.format ?? "", fromPath);
+
+  /**
+   * @param {string} name
+   * @param {string} [fromPath]
+   * @returns {boolean}
+   */
+  function labelExists(name, fromPath) {
+    return (labelDefinitions().get(name) ?? []).some(({ path }) => sameScope(path, fromPath));
   }
 
   /**
    * @param {IndexItem} item
+   * @param {string} [fromPath] the file holding `item`; scopes an either-ref
    * @returns {Namespace | null}
    */
-  function namespaceOf(item) {
+  function namespaceOf(item, fromPath) {
     if (item.kind === "ref") {
       if (item.namespace === "either") {
-        return item.name !== undefined && labelExists(item.name) ? "label" : "cite";
+        return item.name !== undefined && labelExists(item.name, fromPath) ? "label" : "cite";
       }
       return item.namespace ?? "label";
     }
@@ -81,18 +117,24 @@ export function createProjectIndex(options = {}) {
    * Resolve a name written relative to the directory of `fromPath`. Tries the
    * name as written, then, when the name has no extension, the image
    * extensions for an asset or the extension of `fromPath` for anything else.
+   * LaTeX reads \input and \includegraphics names from the project root (the
+   * folder the main file compiles in), so there the root-relative path is tried
+   * first and the path beside `fromPath` second, as opening.js does.
    * @type {ResolveFile}
    */
   function resolveFileDefault(fromPath, name, kind) {
     const known = fileSet;
     if (!known) return null;
     // A name with a leading slash is relative to the project root, as in HTML.
-    const base = name.startsWith("/") ? normalizePath(name) : resolvePath(dirname(fromPath), name);
-    const candidates = [base];
+    const bases = name.startsWith("/") ? [normalizePath(name)] : [resolvePath(dirname(fromPath), name)];
+    if (!name.startsWith("/") && sourceFormatOf(fromPath) === "latex") bases.unshift(normalizePath(name));
     const hasExtension = /\.[^./]+$/.test(name.slice(name.lastIndexOf("/") + 1));
     const extension = extensionOf(fromPath);
-    if (!hasExtension && kind === "asset") candidates.push(...ASSET_EXTENSIONS.map((ext) => `${base}.${ext}`));
-    else if (!hasExtension && extension) candidates.push(`${base}.${extension}`);
+    const candidates = [...new Set(bases)].flatMap((base) => {
+      if (hasExtension) return [base];
+      if (kind === "asset") return [base, ...ASSET_EXTENSIONS.map((ext) => `${base}.${ext}`)];
+      return extension ? [base, `${base}.${extension}`] : [base];
+    });
     const found = candidates.find((candidate) => known.has(candidate));
     if (found) return found;
     // Images are also looked up in folders the format configures, such as
@@ -113,6 +155,7 @@ export function createProjectIndex(options = {}) {
      */
     update(fileIndex) {
       files.set(fileIndex.path, fileIndex);
+      labelIndex = null;
     },
 
     /**
@@ -121,6 +164,7 @@ export function createProjectIndex(options = {}) {
      */
     remove(path) {
       files.delete(path);
+      labelIndex = null;
     },
 
     /**
@@ -161,21 +205,16 @@ export function createProjectIndex(options = {}) {
 
     /**
      * Label definitions across files. Citations are defined outside the index,
-     * so the cite namespace has none here.
+     * so the cite namespace has none here. With `fromPath`, only labels that
+     * file can name: the same format family, and for HTML the same page.
      * @param {Namespace} namespace
      * @param {string} name
+     * @param {string} [fromPath]
      * @returns {Array<{ path: string, item: IndexItem }>}
      */
-    definitions(namespace, name) {
+    definitions(namespace, name, fromPath) {
       if (namespace !== "label") return [];
-      /** @type {Array<{ path: string, item: IndexItem }>} */
-      const out = [];
-      for (const [path, file] of sortedEntries()) {
-        for (const item of file.items) {
-          if (item.kind === "label" && item.name === name) out.push({ path, item });
-        }
-      }
-      return out;
+      return (labelDefinitions().get(name) ?? []).filter(({ path }) => sameScope(path, fromPath));
     },
 
     /**
@@ -191,9 +230,10 @@ export function createProjectIndex(options = {}) {
      * then offset order.
      * @param {Namespace} namespace
      * @param {string} name
+     * @param {string} [fromPath] keeps only the refs that scope to this file's labels
      * @returns {Array<{ path: string, item: IndexItem }>}
      */
-    references(namespace, name) {
+    references(namespace, name, fromPath) {
       /** @type {Array<{ path: string, item: IndexItem }>} */
       const out = [];
       for (const [path, file] of sortedEntries()) {
@@ -201,7 +241,8 @@ export function createProjectIndex(options = {}) {
           if (
             (item.kind === "ref" || item.kind === "cite") &&
             item.name === name &&
-            namespaceOf(item) === namespace
+            namespaceOf(item, path) === namespace &&
+            (namespace !== "label" || sameScope(path, fromPath))
           ) {
             out.push({ path, item });
           }
@@ -213,18 +254,16 @@ export function createProjectIndex(options = {}) {
     /**
      * Sorted unique names: label names, or bibliography keys (empty if unknown).
      * @param {Namespace} namespace
+     * @param {string} [fromPath]
      * @returns {string[]}
      */
-    names(namespace) {
+    names(namespace, fromPath) {
       if (namespace === "cite") return bibliography === null ? [] : [...bibliography].sort(byText);
       if (namespace === "label") {
-        const set = new Set();
-        for (const file of files.values()) {
-          for (const item of file.items) {
-            if (item.kind === "label" && item.name !== undefined) set.add(item.name);
-          }
-        }
-        return [...set].sort(byText);
+        const set = [...labelDefinitions()]
+          .filter(([, defs]) => defs.some(({ path }) => sameScope(path, fromPath)))
+          .map(([label]) => label);
+        return set.sort(byText);
       }
       return [];
     },

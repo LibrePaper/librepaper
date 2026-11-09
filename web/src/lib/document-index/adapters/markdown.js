@@ -492,11 +492,15 @@ export function markdownAdapter(text, path) {
     });
     for (const match of prose.matchAll(INCLUDE)) {
       const head = match[0].replace(/\s*>\}\}$/, "");
-      const to = match.index + head.length;
-      const from = to - match[1].length;
+      let to = match.index + head.length;
+      // Quarto allows the path in matching quotes; the name excludes them.
+      const quoted = match[1].length >= 2 && /^(["']).*\1$/.test(match[1]);
+      const name = quoted ? match[1].slice(1, -1) : match[1];
+      if (quoted) to -= 1;
+      const from = to - name.length;
       items.push({
         kind: "include",
-        name: match[1],
+        name,
         range: [match.index, match.index + match[0].length],
         nameRange: [from, to],
       });
@@ -505,14 +509,21 @@ export function markdownAdapter(text, path) {
   for (const match of prose.matchAll(IMAGE)) {
     const angled = match[2].startsWith("<");
     const target = angled ? match[2].slice(1, -1) : match[2];
-    const name = target.replace(/#.*$/, "");
-    if (!name || target.startsWith("#") || target.startsWith("//") || URL_SCHEME.test(target)) continue;
+    const rawName = target.replace(/[?#].*$/, "");
+    if (!rawName || target.startsWith("#") || target.startsWith("//") || URL_SCHEME.test(target)) continue;
+    // The file on disk has the decoded name: my%20fig.png is "my fig.png".
+    let name = rawName;
+    try {
+      name = decodeURIComponent(rawName);
+    } catch {
+      // A stray % is part of the name.
+    }
     const from = match.index + match[0].indexOf("](") + 2 + (angled ? 1 : 0);
     items.push({
       kind: "asset",
       name,
       range: [match.index, match.index + match[0].length],
-      nameRange: [from, from + name.length],
+      nameRange: [from, from + rawName.length],
     });
   }
 

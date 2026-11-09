@@ -89,6 +89,14 @@ export function typstAdapter(text, path) {
         }
         case "Label":
           if (node.parent?.name !== "Args") items.push(labelItem(source, headings, node));
+          else {
+            // A label passed to a call, as in #link(<x>) or query(<x>), refers
+            // to it. cite and ref read their own label in callItems.
+            const callee = node.parent.parent ? calleeName(source, node.parent.parent) : null;
+            if (callee !== "cite" && callee !== "ref") {
+              items.push({ kind: "ref", range: [node.from, node.to], ...innerOf(source, node), namespace: "label" });
+            }
+          }
           return;
         default:
           return;
