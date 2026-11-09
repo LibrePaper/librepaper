@@ -89,7 +89,7 @@ debug = "line-tables-only"
 debug = "line-tables-only"
 
 [workspace.package]
-version = "0.0.68"
+version = "0.0.69"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/LibrePaper/librepaper"

@@ -350,7 +350,7 @@
   <div class="changes-list" role="list" aria-label={m.changes_queue_label()}>
     {#each filteredRows as item (item.id)}
       {@const isActive = active === item.id}
-      <article class="change-row" class:lp-selected={isActive || checked.has(item.id)} role="listitem">
+      <article class="change-row" class:lp-selected={isActive || checked.has(item.id)} aria-current={isActive ? "true" : undefined} role="listitem">
         {#if selecting}<div class="row-head"><label class="row-pick-hit"><input type="checkbox" class="row-pick" checked={checked.has(item.id)} aria-label={selectKind(item)} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} /></label>{@render rowMain(item, isActive)}</div>{:else}{@render rowMain(item, isActive)}{/if}
         {#if isLong(item)}<button type="button" class="row-more" aria-expanded={expandedText.has(item.id)} onclick={() => toggleText(item)}>{expandedText.has(item.id) ? m.changes_show_less() : m.changes_show_more()}</button>{/if}
         <!-- Every change offers its answer, so a reviewer can act on any row
