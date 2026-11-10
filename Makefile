@@ -100,7 +100,7 @@ test: pins $(SHELL_OUT)  ## Run every check, the web and Rust halves in parallel
 	@echo "test: passed -- NOT everything. Still to run:"
 	@echo "  tools/test/suite browser                  the components in a real chromium"
 	@echo "  tools/dev/db test                         the PostgreSQL-gated cases, in a throwaway container"
-	@echo "  make check                                test + browser + reader smoke in one go"
+	@echo "  make check                                test + browser + the deployment scenarios in one go"
 
 # The web and Rust halves do not depend on each other, so `test` runs them side
 # by side. Each half can also be run alone.
@@ -141,11 +141,14 @@ test-nextest:
 		cargo test --workspace; \
 	fi
 
-# One command that means what a green `test` looks like it means. The Postgres
-# cases stay out: they need docker and take long. Run `tools/dev/db test`.
-check: test  ## Run the test suite, the browser components and the reader smoke test
-	@tools/test/suite browser
-	@tools/test/suite smoke
+# One command that means what a green `test` looks like it means. The binary is
+# built first and handed to the browser suite, because a browser test that
+# drives it skips when it is missing. The deployment scenarios need docker for
+# a throwaway PostgreSQL. The other Postgres cases stay out: they take long.
+# Run `tools/dev/db test`.
+check: test $(BIN)  ## Run the test suite, the browser components and the deployment scenarios
+	@LIBREPAPER_TEST_BINARY="$(CURDIR)/$(BIN)" tools/test/suite browser
+	@LIBREPAPER_TEST_BINARY="$(CURDIR)/$(BIN)" tools/test/suite e2e
 
 # Not part of `test`: it needs Docker. It drives the built binary, so the
 # binary is built first, wherever CARGO_TARGET_DIR puts it.

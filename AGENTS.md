@@ -43,7 +43,7 @@ Between phases and before handing back, run only the tests and checks that match
 - One Rust crate under `crates/`: run `cargo check -p <crate>`, `cargo nextest run -p <crate>`, and `cargo clippy -p <crate> --all-targets -- -D warnings`. When the crate's public API changed, run the same commands for each crate that depends on it.
 - Several crates, or `Cargo.toml` or `Cargo.lock`: run `make test-rust`.
 - Code under `web/src` or `web/tests`: run the affected test files with `node --test <file>` from `web/`. Unit and integration files need `--experimental-transform-types`. When `.svelte` or `.js` types changed, also run `cd web && bun run check:types`. `make test-web` covers all of it.
-- A browser behavior change: run the relevant `web/tests/browser/*.mjs` file. No `make` target runs these.
+- A browser behavior change: run the relevant `web/tests/browser/*.mjs` file. `make test` does not run these. `make check` does, with the deployment scenarios under `web/tests/e2e`.
 - A script under `tools/` or `web/tools/`: run its own `*.test.mjs` with `node --test <file>`.
 - Documentation or prose only: run nothing.
 
