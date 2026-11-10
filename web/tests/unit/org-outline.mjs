@@ -91,10 +91,10 @@ test("org outline reads done states declared by TODO keyword lines", () => {
   ]);
 });
 
+// Typst is left out: its outline needs typst-syntax.wasm, which this file does not load.
 test("other formats do not report Org fields", () => {
   const sources = {
     markdown: "# TODO [#A] Plan :work:\n",
-    typst: "= TODO Plan :work:\n",
     html: "<h1>TODO Plan</h1>\n",
     latex: "\\section{TODO Plan}\n",
   };
