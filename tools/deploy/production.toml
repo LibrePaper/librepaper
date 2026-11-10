@@ -90,6 +90,11 @@ erase_inactive_after = "365d"
 # expire_after = "30d"
 # expire_from = "updated"            # or "created"
 
+# Links the sign-in page shows as this server's terms of service and privacy policy.
+[legal]
+terms_url = "https://librepaper.org/terms.html"
+privacy_url = "https://librepaper.org/privacy.html"
+
 # Optional tracing filter for application logs.
 # [logging]
 # filter = "info,loro_internal=warn"

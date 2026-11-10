@@ -522,6 +522,10 @@ impl Server {
                                 "publishers": self.publishers.public_description(),
                                 "commenters": self.commenters.public_description(),
                                 "site": self.site.clone().unwrap_or_default(),
+                                "legal": {
+                                    "terms_url": self.legal_terms_url,
+                                    "privacy_url": self.legal_privacy_url,
+                                },
                             }),
                         );
                         self.clear_dead_session(&mut response, headers, arrival)
@@ -562,6 +566,12 @@ impl Server {
                         // deployment, or nothing at all, which the page reads
                         // as its own front page.
                         "site": self.site.clone().unwrap_or_default(),
+                        // The operator's terms and privacy links, each a URL
+                        // or null when not configured.
+                        "legal": {
+                            "terms_url": self.legal_terms_url,
+                            "privacy_url": self.legal_privacy_url,
+                        },
                     }),
                 );
                 if !id.is_signed_in() {

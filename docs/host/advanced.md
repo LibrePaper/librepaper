@@ -396,6 +396,7 @@ Every limit and the retention settings are listed, with their defaults, at the e
 - With [object storage](#object-storage), disk is no longer the constraint on `deployment_storage_mib`: set it to what you are willing to store.
 - `[retention]` deletes documents after `expire_after`, counted from the last update by default or from creation.
 - `erase_inactive_after` in `[retention]` erases accounts that have not signed in for that long, with every document they own. It is off by default and must be at least 60 days. The admin console shows how many accounts it will erase in the next 30 days.
+- `[legal]` sets `terms_url` and `privacy_url`. When set, the sign-in page and the notice shown to share-link visitors link to them. Leave them out and no notice is shown.
 
 ## Other apps on the same server
 

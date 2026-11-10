@@ -505,6 +505,8 @@ fn serve_options(
         expire_after: resolved.expire_after,
         expire_from: resolved.expire_from,
         erase_inactive_after: resolved.erase_inactive_after,
+        legal_terms_url: resolved.legal_terms_url,
+        legal_privacy_url: resolved.legal_privacy_url,
         asset_mirror: resolved.asset_mirror,
         load_shell: librepaper_shell::load_shell,
         latex_release: librepaper_shell::latex_release(),
