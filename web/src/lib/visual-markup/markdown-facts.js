@@ -19,7 +19,7 @@ const CODE = new Set(["FencedCode", "CodeBlock", "InlineCode", "InlineMath", "Di
 const HEADING_NODE = /^(ATX|Setext)Heading([1-6])$/;
 
 // Joins and resolves . and .. so that paths compare as project paths.
-function normalize(path) {
+export function normalize(path) {
   const parts = [];
   for (const part of path.split("/")) {
     if (part === "" || part === ".") continue;
