@@ -59,7 +59,7 @@ export async function typstTree(tree, { from, run = pandoc }) {
     if (style) variables.bibliographystyle = style;
   }
   if (from === "org") {
-    const org = orgForPandoc(tree.texts?.[tree.main] ?? "");
+    const org = orgForPandoc(tree.texts?.[tree.main] ?? "", { to: "typst" });
     texts = { ...texts, [tree.main]: org.text };
     Object.assign(variables, org.variables);
     if (org.headerIncludes) variables["header-includes"] += `\n${org.headerIncludes}`;

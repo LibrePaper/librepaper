@@ -83,3 +83,50 @@ test("with num:nil a link to a named element is still a citation", () => {
   const result = orgForPandoc("#+OPTIONS: num:nil\n#+NAME: fig:one\n| a |\n\n[[fig:one]]\n");
   assert.ok(result.text.endsWith("[cite:@fig:one]\n"), result.text);
 });
+
+// The LaTeX target: math is kept as written, internal links become \autoref
+// snippets, and section numbering is reported rather than set as a variable.
+const latex = (source) => orgForPandoc(source, { to: "latex" });
+
+test("for LaTeX, math is left as written and gets no Typst header", () => {
+  const source = "Intro.\n\n\\begin{align}\nx &= 1\n\\end{align}\n";
+  const result = latex(source);
+  assert.equal(result.text, source);
+  assert.equal("headerIncludes" in result, false);
+  assert.deepEqual(result.variables, {});
+});
+
+test("for LaTeX, an internal link becomes an \\autoref snippet", () => {
+  assert.equal(
+    latex("* Methods\n:PROPERTIES:\n:CUSTOM_ID: methods\n:END:\n\nSee [[#methods]] and [[*Methods]].\n").text,
+    "* Methods\n:PROPERTIES:\n:CUSTOM_ID: methods\n:END:\n\nSee @@latex:\\autoref{methods}@@ and @@latex:\\autoref{methods}@@.\n",
+  );
+  assert.equal(
+    latex("#+NAME: fig:one\n#+CAPTION: A table\n| a | b |\n\n[[fig:one]]\n").text,
+    "#+NAME: fig:one\n#+CAPTION: A table\n| a | b |\n\n@@latex:\\autoref{fig:one}@@\n",
+  );
+  assert.equal(
+    latex("\\begin{equation}\n\\label{eq:one}\ny = x\n\\end{equation}\n\nSee [[#eq:one]].\n").text,
+    "\\begin{equation}\n\\label{eq:one}\ny = x\n\\end{equation}\n\nSee @@latex:\\autoref{eq:one}@@.\n",
+  );
+});
+
+test("for LaTeX, a described link keeps its text and an unknown target is left alone", () => {
+  const heading = "* Methods\n:PROPERTIES:\n:CUSTOM_ID: methods\n:END:\n\n";
+  const source = `${heading}[[#methods][the section]] and [[#nowhere]].\n`;
+  assert.equal(latex(source).text, source);
+  assert.equal(latex(`${heading}[[*Methods][x]] and [[#nowhere]].\n`).text, `${heading}[[#methods][x]] and [[#nowhere]].\n`);
+});
+
+test("for LaTeX, num:nil gives a heading link its title and reports unnumbered sections", () => {
+  const result = latex("#+OPTIONS: num:nil\n* Methods\n:PROPERTIES:\n:CUSTOM_ID: methods\n:END:\n\nSee [[#methods]] and [[*Methods][x]].\n");
+  assert.equal(result.text, "#+OPTIONS: num:nil\n* Methods\n:PROPERTIES:\n:CUSTOM_ID: methods\n:END:\n\nSee [[#methods][Methods]] and [[#methods][x]].\n");
+  assert.equal(result.numberSections, false);
+});
+
+test("numberSections is true unless num:nil or num:0, for either target", () => {
+  assert.equal(latex("* Methods\n").numberSections, true);
+  assert.equal(latex("#+OPTIONS: num:0\n* Methods\n").numberSections, false);
+  assert.equal(orgForPandoc("* Methods\n").numberSections, true);
+  assert.equal(orgForPandoc("#+OPTIONS: num:nil\n* Methods\n").numberSections, false);
+});

@@ -1,11 +1,14 @@
 // Org text as Pandoc should read it. Pandoc's Org reader handles prose well,
-// but three things break a paper that Typst then has to compile: a bare LaTeX
+// but a few things break a paper on the way to a PDF. For Typst, a bare LaTeX
 // math environment is dropped, an internal link becomes an external link or a
 // Typst call with no body, and a reference to a section fails because Typst
-// only numbers headings when asked. This pass finds those on the Org syntax
-// tree and rewrites the Org text into the forms Pandoc handles: math wrapped
-// in `$$`, an internal link as a citation (`[cite:@id]`, which Typst resolves
-// as a reference), and a link with a visible description as `[[#id][text]]`.
+// only numbers headings when asked. For LaTeX, the math is kept as written, but
+// an internal link is still best expressed as a cross-reference. This pass
+// finds those on the Org syntax tree and rewrites the Org text into the forms
+// Pandoc handles: for Typst, math wrapped in `$$` and an internal link as a
+// citation (`[cite:@id]`, which Typst resolves as a reference); for LaTeX, an
+// internal link as a `\autoref` export snippet. A link with a visible
+// description becomes `[[#id][text]]` for both.
 // Offsets are UTF-16 offsets into the text. Edits are applied back to front so
 // the offsets of the ones still to apply stay valid.
 
@@ -59,15 +62,17 @@ function headingId(title, taken) {
 }
 
 /**
- * Rewrites Org text for Pandoc's Org reader and says what the Typst output
- * needs. `text` is one Org document. Returns `{ text, variables }` where
- * `variables` may hold `sectionnumbering` (Pandoc's Typst template reads it),
- * and `headerIncludes` is present only when a numbered equation needs a
- * Typst `#set` line.
+ * Rewrites Org text for Pandoc's Org reader. `text` is one Org document and
+ * `to` is "typst" (the default) or "latex", the format Pandoc will write.
+ * Returns `{ text, numberSections, variables }`: `numberSections` is false only
+ * for `num:nil` or `num:0`, and `variables` holds `sectionnumbering` for Typst
+ * (Pandoc's Typst template reads it). For Typst, `headerIncludes` is present
+ * only when a numbered equation needs a `#set` line.
  * @param {string} text
- * @returns {{ text: string, variables: Record<string, string>, headerIncludes?: string }}
+ * @param {{ to?: "typst" | "latex" }} [options]
+ * @returns {{ text: string, numberSections: boolean, variables: Record<string, string>, headerIncludes?: string }}
  */
-export function orgForPandoc(text) {
+export function orgForPandoc(text, { to = "typst" } = {}) {
   const tree = orgTree(text);
   const all = [...descendants(tree.topNode)];
   const of = (name) => all.filter((node) => node.name === name);
@@ -122,10 +127,13 @@ export function orgForPandoc(text) {
     const name = source(env.getChild("LatexEnvBegin").getChild("LatexEnvName")).trim();
     const base = name.replace(/\*$/, "");
     if (!MATH.has(base)) continue;
-    // Pandoc drops a bare math environment; inside $$ it becomes display math.
-    edits.push({ from: env.from, to: env.from, insert: "$$" });
-    edits.push({ from: env.to, to: env.to, insert: "$$" });
-    if (NUMBERED.has(base) && !name.endsWith("*")) numberedMath = true;
+    // Pandoc drops a bare math environment for Typst; inside $$ it becomes display math.
+    // LaTeX keeps the environment as written.
+    if (to === "typst") {
+      edits.push({ from: env.from, to: env.from, insert: "$$" });
+      edits.push({ from: env.to, to: env.to, insert: "$$" });
+      if (NUMBERED.has(base) && !name.endsWith("*")) numberedMath = true;
+    }
     for (const match of source(env).matchAll(LABEL)) {
       if (!targets.has(match[1])) targets.set(match[1], { heading: false, title: "" });
     }
@@ -156,6 +164,8 @@ export function orgForPandoc(text) {
       insert = `[[#${found.id}][${source(description)}]]`;
     } else if (found.heading && !numbered) {
       insert = `[[#${found.id}][${found.title || found.id}]]`;
+    } else if (to === "latex") {
+      insert = `@@latex:\\autoref{${found.id}}@@`;
     } else {
       insert = `[cite:@${found.id}]`;
     }
@@ -167,8 +177,9 @@ export function orgForPandoc(text) {
     out = out.slice(0, edit.from) + edit.insert + out.slice(edit.to);
   }
 
-  /** @type {{ text: string, variables: Record<string, string>, headerIncludes?: string }} */
-  const result = { text: out, variables: numbered ? { sectionnumbering: "1.1" } : {} };
+  if (to === "latex") return { text: out, numberSections: numbered, variables: {} };
+  /** @type {{ text: string, numberSections: boolean, variables: Record<string, string>, headerIncludes?: string }} */
+  const result = { text: out, numberSections: numbered, variables: numbered ? { sectionnumbering: "1.1" } : {} };
   if (numberedMath) result.headerIncludes = EQUATION_NUMBERING;
   return result;
 }
