@@ -5,6 +5,8 @@ import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createPandoc } from "../../src/lib/pandoc/worker.js";
+import { typstTree } from "../../src/lib/pandoc/typst.js";
+import { orgLatexTree } from "../../src/lib/pandoc/latex.js";
 
 const path = fileURLToPath(new URL("../../wasm/pandoc.wasm", import.meta.url));
 
@@ -24,4 +26,78 @@ test("Pandoc converts a nested Markdown project to Typst with a bibliography", {
   const again = await pandoc.convert({ ...options, "input-files": ["paper/main.md"] }, files);
   assert.ok(again.output.length > 0);
   await assert.rejects(pandoc.convert({ ...options, "input-files": ["missing.md"] }, files), /missing\.md/);
+});
+
+test("Pandoc converts an Org project to Typst with its links and equations resolved", { timeout: 300000 }, async (t) => {
+  if (!existsSync(path)) return t.skip("web/wasm/pandoc.wasm missing");
+  const pandoc = await createPandoc(readFileSync(path));
+  const source = [
+    "#+TITLE: Paper",
+    "#+NAME: fig:one",
+    "#+CAPTION: A table",
+    "| a | b |",
+    "|---+---|",
+    "| 1 | 2 |",
+    "",
+    "* Methods",
+    ":PROPERTIES:",
+    ":CUSTOM_ID: methods",
+    ":END:",
+    "",
+    "We fit the model, see [[#methods]] and [[#eq:one]].",
+    "",
+    "\\begin{equation}",
+    "\\label{eq:one}",
+    "y = \\beta x",
+    "\\end{equation}",
+    "",
+    "As [cite:@fig:one] shows.",
+    "",
+  ].join("\n");
+  const tree = { main: "paper/main.org", texts: { "paper/main.org": source }, assets: {} };
+  const out = await typstTree(tree, { from: "org", run: pandoc.convert });
+  const typst = out.texts[out.main];
+  assert.ok(typst.includes("@fig:one"), typst);
+  assert.ok(typst.includes("@methods"), typst);
+  assert.ok(typst.includes("<eq:one>"), typst);
+  assert.ok(typst.includes("$ "), typst);
+  assert.ok(typst.includes("math.equation(numbering"), typst);
+  assert.ok(!typst.includes("#link(<"), typst);
+});
+
+test("Pandoc converts an Org project to LaTeX with citations, cross-references and the preamble", { timeout: 300000 }, async (t) => {
+  if (!existsSync(path)) return t.skip("web/wasm/pandoc.wasm missing");
+  const pandoc = await createPandoc(readFileSync(path));
+  const source = [
+    "#+TITLE: Paper",
+    "#+LATEX_HEADER: \\newcommand{\\R}{\\mathbb{R}}",
+    "#+BIBLIOGRAPHY: refs.bib",
+    "#+NAME: fig:one",
+    "#+CAPTION: A table",
+    "| a | b |",
+    "|---+---|",
+    "| 1 | 2 |",
+    "",
+    "* Methods",
+    ":PROPERTIES:",
+    ":CUSTOM_ID: methods",
+    ":END:",
+    "",
+    "We fit the model, see [[#methods]] and [[fig:one]], citing [cite:@knuth84].",
+    "",
+    "\\begin{align}",
+    "y &= \\beta x",
+    "\\end{align}",
+    "",
+  ].join("\n");
+  const bib = "@book{knuth84, author = {Knuth, Donald}, title = {The TeXbook}, year = {1984}}\n";
+  const tree = { main: "paper/main.org", texts: { "paper/main.org": source, "paper/refs.bib": bib }, assets: {} };
+  const out = await orgLatexTree(tree, { run: pandoc.convert });
+  const tex = out.texts[out.main];
+  assert.ok(tex.includes("\\autocite{knuth84}"), tex);
+  assert.ok(tex.includes("\\begin{align}"), tex);
+  assert.ok(tex.includes("\\autoref{fig:one}"), tex);
+  assert.ok(tex.includes("\\addbibresource"), tex);
+  assert.ok(tex.includes("\\newcommand{\\R}"), tex);
+  assert.ok(tex.includes("\\section{Methods}"), tex);
 });

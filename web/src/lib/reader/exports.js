@@ -1,12 +1,13 @@
 // What a document can be exported as, and how each file is made.
 //
 // Every source format offers a PDF, an HTML page and a Word file, produced in
-// this browser, except Org, which has no PDF. LaTeX and Typst compile to PDF and
-// render to HTML; Markdown and Quarto render to HTML and reach a PDF through
-// Pandoc and Typst; authored HTML is its own page and reaches a PDF the same
-// way; Org renders to HTML only. A Word file is Pandoc's reading of the HTML
-// page. Nothing here touches the DOM, and nothing is
-// fetched or uploaded: the Reader supplies the tree it already holds.
+// this browser. LaTeX and Typst compile to PDF and render to HTML; Markdown,
+// Quarto and authored HTML render to HTML and reach a PDF through Pandoc and
+// Typst. Org renders to HTML and reaches a PDF through Pandoc and LaTeX, or
+// through Pandoc and Typst where there is no LaTeX compiler; the Org text is
+// first rewritten by pandoc/org.js. A Word file is Pandoc's reading of the HTML
+// page. Nothing here touches the DOM, and nothing is fetched or uploaded: the
+// Reader supplies the tree it already holds.
 //
 // An export follows the Run code switch, as the preview does: with it on in
 // the desktop app and the format set to this computer, a file the format has a
@@ -16,6 +17,7 @@
 
 import { pandocAvailable } from "../pandoc/client.js";
 import { dirOf, pandocPath, typstTree } from "../pandoc/typst.js";
+import { orgLatexTree } from "../pandoc/latex.js";
 import { compilerAvailable } from "../renderers.js";
 import { LOCAL_OUTPUTS } from "../desktop/client.js";
 import { parseQuarto } from "../engines/quarto.js";
@@ -68,11 +70,14 @@ export function exportAvailability(format, target, deps = {}) {
   };
   const pandocNeed = [hasPandoc, m.exports_no_pandoc()];
   const noRenderer = (name) => [compiler(name), m.exports_no_renderer({ name: name === "latex" ? "LaTeX" : name === "typst" ? "Typst" : name === "org" ? "Org" : "Markdown" })];
-  // Org renders to one HTML page and has no PDF. Its Word file is Pandoc's
-  // reading of that HTML page, as for Markdown, so it needs no Org reader.
+  // Org renders to one HTML page. Its PDF is Pandoc's LaTeX for the Org text,
+  // compiled by the LaTeX renderer, or Pandoc's Typst compiled by the Typst
+  // renderer where there is no LaTeX compiler. Its Word file is Pandoc's reading
+  // of that HTML page, as for Markdown.
   if (format === "org") {
-    if (target === "pdf") return { ok: false, reason: m.exports_org_no_pdf() };
-    return target === "html" ? needs(noRenderer("org")) : needs(noRenderer("org"), pandocNeed);
+    if (target === "html") return needs(noRenderer("org"));
+    if (target === "pdf") return needs(pandocNeed, [compiler("latex") || compiler("typst"), m.exports_no_renderer({ name: "LaTeX" })]);
+    return needs(noRenderer("org"), pandocNeed);
   }
   if (format === "html") {
     if (target === "html") return { ok: true };
@@ -115,12 +120,14 @@ export function pandocMath(html) {
 ///   wanted and `previewCurrent` says it is of the source on screen.
 /// - `project`: the document's slug, which a local build is scoped to.
 /// - `render`: `renderers.render`. `run`: Pandoc.
+/// - `compiler`: whether a format has a renderer on this deployment; an Org PDF
+///   uses LaTeX when it does, and Typst otherwise.
 /// - `local`: whether the desktop app builds the file with the command for
 ///   its format, false for the browser route.
 ///
 /// Resolves `{ blob, name }`; rejects with an Error whose message is a plain
 /// sentence.
-export async function exportFile({ target, format, tree, title, slug, project = "", preview, previewCurrent, render: renderIn, run, local = false }) {
+export async function exportFile({ target, format, tree, title, slug, project = "", preview, previewCurrent, render: renderIn, run, local = false, compiler = compilerAvailable }) {
   const reused = previewCurrent && preview?.kind === target ? preview : null;
   const render = (source, name, options) => renderIn(source, name, options);
 
@@ -155,6 +162,11 @@ export async function exportFile({ target, format, tree, title, slug, project = 
     let result;
     if (format === "html") {
       result = await render(await typstTree(tree, { from: "html", run }), title, { format: "pdf", project });
+    } else if (format === "org") {
+      // LaTeX when this deployment has its compiler, else the Typst route.
+      result = compiler("latex")
+        ? await render(await orgLatexTree(tree, { run }), title, { format: "pdf", project })
+        : await render(await typstTree(tree, { from: "org", run }), title, { format: "pdf", project });
     } else if (format === "markdown" || format === "quarto") {
       result = await render(tree, title, { format: "pdf", project, buildPreferences: MARKDOWN_PDF });
     } else {

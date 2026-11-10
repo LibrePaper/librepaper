@@ -1,8 +1,11 @@
-// Markdown and HTML documents reach a PDF by way of Typst: Pandoc, running
+// Markdown, HTML and Org documents reach a PDF by way of Typst: Pandoc, running
 // in the browser as WebAssembly, writes a Typst source and the Typst renderer
-// compiles it. This turns one render tree into the other.
+// compiles it. This turns one render tree into the other. Org text is first
+// rewritten by orgForPandoc, which fixes the constructs Pandoc gets wrong for a
+// paper (bare math, internal links, section numbers).
 
 import { pandoc } from "./client.js";
+import { orgForPandoc } from "./org.js";
 import { parseQuarto } from "../engines/quarto.js";
 
 /// The folder a project path sits in, or "." for a path at the root.
@@ -39,18 +42,27 @@ function citationStyle(source, path) {
 
 /// Turn a Markdown or HTML document into a tree the Typst renderer compiles to PDF.
 ///
-/// `tree` is `{ main, texts, assets, ... }` with `main` a Markdown, Quarto or
-/// HTML path; a Quarto caller passes the tree already expanded. `from` is
-/// "markdown" or "html". `run` is Pandoc, injected by tests.
+/// `tree` is `{ main, texts, assets, ... }` with `main` a Markdown, Quarto,
+/// HTML or Org path; a Quarto caller passes the tree already expanded. `from`
+/// is "markdown", "html" or "org". `run` is Pandoc, injected by tests.
 ///
 /// Citations are not resolved by Pandoc: it writes `@key` and a
-/// `#bibliography(...)` call, and Typst formats them.
+/// `#bibliography(...)` call, and Typst formats them. For Org, Pandoc reads the
+/// text orgForPandoc returns, and the section numbering and equation numbering
+/// it asks for are added to the variables.
 export async function typstTree(tree, { from, run = pandoc }) {
   const typPath = pandocPath(tree, "typ");
   const variables = { "header-includes": "#set bibliography(title: none)" };
+  let texts = { ...tree.texts, ...tree.assets };
   if (from === "markdown") {
     const style = citationStyle(tree.texts?.[tree.main] ?? "", tree.main);
     if (style) variables.bibliographystyle = style;
+  }
+  if (from === "org") {
+    const org = orgForPandoc(tree.texts?.[tree.main] ?? "", { to: "typst" });
+    texts = { ...texts, [tree.main]: org.text };
+    Object.assign(variables, org.variables);
+    if (org.headerIncludes) variables["header-includes"] += `\n${org.headerIncludes}`;
   }
   const { output } = await run(
     {
@@ -61,7 +73,7 @@ export async function typstTree(tree, { from, run = pandoc }) {
       "resource-path": [dirOf(tree.main)],
       variables,
     },
-    { ...tree.texts, ...tree.assets },
+    texts,
   );
   return { ...tree, main: typPath, texts: { ...tree.texts, [typPath]: new TextDecoder().decode(output) } };
 }

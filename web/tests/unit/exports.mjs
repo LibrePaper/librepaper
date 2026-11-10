@@ -36,13 +36,15 @@ const all = (...formats) => (format) => formats.includes(format);
   assert.equal(exportAvailability("latex", "rtf", rich).ok, false);
 }
 
-// Org renders to HTML and, through Pandoc, to Word; it has no PDF.
+// Org renders to HTML; its Word file goes through Pandoc. Its PDF goes through Pandoc and LaTeX, or Pandoc and Typst without a LaTeX compiler.
 {
-  const org = { pandoc: true, compiler: all("org") };
-  assert.deepEqual(exportAvailability("org", "html", org), { ok: true });
-  assert.equal(exportAvailability("org", "pdf", org).ok, false);
-  assert.deepEqual(exportAvailability("org", "docx", org), { ok: true });
+  const org = { pandoc: true, compiler: all("org", "latex") };
+  for (const target of EXPORT_TARGETS) assert.deepEqual(exportAvailability("org", target, org), { ok: true }, `org to ${target}`);
+  assert.deepEqual(exportAvailability("org", "pdf", { pandoc: true, compiler: all("org", "typst") }), { ok: true }, "org PDF through Typst");
+  assert.equal(exportAvailability("org", "pdf", { pandoc: true, compiler: all("org") }).ok, false, "no LaTeX and no Typst, no Org PDF");
+  assert.equal(exportAvailability("org", "pdf", { pandoc: false, compiler: all("org", "latex", "typst") }).ok, false, "no Pandoc, no Org PDF");
   assert.equal(exportAvailability("org", "docx", { pandoc: false, compiler: all("org") }).ok, false);
+  assert.equal(exportAvailability("org", "html", { pandoc: true, compiler: all("latex", "typst") }).ok, false, "the HTML page needs the Org renderer");
 }
 
 // A format that renders on this computer offers the files its command makes, whatever this browser can render.
