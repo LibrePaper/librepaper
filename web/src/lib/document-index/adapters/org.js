@@ -109,9 +109,15 @@ function internalTarget(target, from, todoWords) {
   }
   if (target.startsWith("*")) {
     const words = collapse(target.slice(1)).split(" ");
-    if (words.length > 1 && todoWords.has(words[0])) words.shift();
+    let start = from + 1;
+    if (words.length > 1 && todoWords.has(words[0])) {
+      // The name range starts at the title, after the keyword and its blanks.
+      const keyword = /^\s*\S+\s+/.exec(target.slice(1));
+      start += keyword ? keyword[0].length : 0;
+      words.shift();
+    }
     const name = words.join(" ");
-    return name ? { name, from: from + 1, to, heading: true } : null;
+    return name ? { name, from: start, to, heading: true } : null;
   }
   return collapse(target) ? { name: target, from, to, heading: false } : null;
 }
