@@ -28,7 +28,7 @@ librepaper.org uses your data to run the service: to sign you in, to store and t
 
 librepaper.org, your files and the backups are hosted in Canada by OVHcloud. Connections to librepaper.org use HTTPS.
 
-- **Accounts** keep the sign-in provider and account ID, a handle, a display name, an email address (Google only), and when the account was created and last used.
+- **Accounts** keep the sign-in provider and account ID, a handle, a display name, an email address, and when the account was created and last used. From GitHub, the address is your primary verified one. Other people never see it, and it is used only to contact you about your account.
 - **Documents** keep the title, format, owner, dates, every file and the edit history.
 - **Comments, highlights and replies** keep their author and the passage they refer to.
 - **Project chat** keeps each message with its text, the author's name and the time it was sent.
