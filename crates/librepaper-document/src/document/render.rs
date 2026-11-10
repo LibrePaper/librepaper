@@ -15,6 +15,10 @@ pub fn is_quarto(name: &str) -> bool {
     name.to_ascii_lowercase().ends_with(".qmd")
 }
 
+pub fn is_org(name: &str) -> bool {
+    name.to_ascii_lowercase().ends_with(".org")
+}
+
 /// Read metadata without rewriting the editable source. Incomplete front matter
 /// is an ordinary editing state and falls back to a heading.
 pub fn title_from_quarto(source: &str) -> String {
@@ -39,6 +43,80 @@ pub fn title_from_quarto(source: &str) -> String {
         }
     }
     title_from_markdown(source)
+}
+
+/// An Org document's title: the value of its first non-empty `#+TITLE:`
+/// keyword, or failing that the text of its first top-level headline with
+/// any TODO keyword, priority cookie and trailing tags taken off. This is a
+/// scan like the others; Org's full syntax is not needed for a default title.
+pub fn title_from_org(source: &str) -> String {
+    let mut headline = None;
+    for line in lines(source).map(|line| line.body) {
+        if let Some(keyword) = line.trim_start().strip_prefix("#+") {
+            if let Some((key, value)) = keyword.split_once(':') {
+                let value = value.trim();
+                if key.eq_ignore_ascii_case("title") && !value.is_empty() {
+                    return value.to_string();
+                }
+            }
+        }
+        if headline.is_none() {
+            if let Some(rest) = line.strip_prefix("* ") {
+                headline = Some(org_headline_title(rest));
+            }
+        }
+    }
+    headline.unwrap_or_default()
+}
+
+/// The title a headline's text carries, without its keyword, cookie or tags.
+fn org_headline_title(text: &str) -> String {
+    let text = text.trim();
+    let text = text
+        .strip_prefix("TODO ")
+        .or_else(|| text.strip_prefix("DONE "))
+        .unwrap_or(text)
+        .trim_start();
+    let text = strip_org_priority(text);
+    strip_org_tags(text).to_string()
+}
+
+/// `[#A]`, `[#1]` or `[#42]` at the front of a headline, with the space after
+/// it. Anything else in brackets is part of the title.
+fn strip_org_priority(text: &str) -> &str {
+    let Some(rest) = text.strip_prefix("[#") else {
+        return text;
+    };
+    let Some((cookie, after)) = rest.split_once(']') else {
+        return text;
+    };
+    let single_letter = cookie.len() == 1 && cookie.chars().all(|c| c.is_ascii_uppercase());
+    let number = !cookie.is_empty() && cookie.chars().all(|c| c.is_ascii_digit());
+    if single_letter || number {
+        after.trim_start()
+    } else {
+        text
+    }
+}
+
+/// Trailing tags, `  :tag1:tag2:` at the end of a headline. The tags must be
+/// preceded by whitespace, so a colon inside the title is left alone.
+fn strip_org_tags(text: &str) -> &str {
+    let Some(at) = text.rfind(char::is_whitespace) else {
+        return text;
+    };
+    let tags = text[at..].trim_start();
+    let is_tag_list = tags.len() >= 3
+        && tags.starts_with(':')
+        && tags.ends_with(':')
+        && tags[1..tags.len() - 1]
+            .split(':')
+            .all(|tag| !tag.is_empty() && !tag.contains(char::is_whitespace));
+    if is_tag_list {
+        text[..at].trim_end()
+    } else {
+        text
+    }
 }
 
 pub fn is_typst(name: &str) -> bool {
@@ -239,6 +317,11 @@ pub fn document_format(name: &str) -> Option<&'static str> {
         Some("latex")
     } else if is_quarto(name) {
         Some("quarto")
+    } else if is_org(name) {
+        // Org is rendered in the browser by its own pinned module, like the
+        // other text formats. Nothing about the filename says whether a
+        // deployment serves it, so it is named here whatever it may need.
+        Some("org")
     } else if is_markdown(name) {
         Some("markdown")
     } else if is_html(name) {
@@ -322,5 +405,37 @@ mod tests {
             title_from_latex("\\title{A Title\\thanks{funding}}"),
             "A Title"
         );
+    }
+
+    #[test]
+    fn org_title_from_keyword() {
+        assert_eq!(title_from_org("#+TITLE: My Title\n* Heading\nBody"), "My Title");
+    }
+
+    #[test]
+    fn org_title_keyword_is_case_insensitive() {
+        assert_eq!(title_from_org("#+title:   My Title  \nBody"), "My Title");
+    }
+
+    #[test]
+    fn org_title_falls_back_to_headline_without_todo_priority_or_tags() {
+        assert_eq!(title_from_org("Intro\n* TODO [#A] My Title   :work:draft:\nBody"), "My Title");
+    }
+
+    #[test]
+    fn org_title_empty_source() {
+        assert_eq!(title_from_org(""), "");
+    }
+
+    #[test]
+    fn org_is_org_ignores_case() {
+        assert!(is_org("paper.org"));
+        assert!(is_org("PAPER.ORG"));
+        assert!(!is_org("paper.org.txt"));
+    }
+
+    #[test]
+    fn org_document_format() {
+        assert_eq!(document_format("paper.org"), Some("org"));
     }
 }

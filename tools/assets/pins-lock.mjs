@@ -5,6 +5,7 @@ import { join } from "node:path";
 // prefix it lives under, both in web/ locally and on the asset mirror.
 export const PINNED_FILES = new Map([
   ["markdown.wasm", { repo: "wasm-markdown", prefix: "wasm" }],
+  ["org.wasm", { repo: "wasm-orgmode", prefix: "wasm" }],
   ["bibliography.wasm", { repo: "wasm-bibliography", prefix: "wasm" }],
   ["citations.wasm", { repo: "wasm-bibliography", prefix: "wasm" }],
   ["typst.wasm", { repo: "wasm-typst", prefix: "wasm" }],

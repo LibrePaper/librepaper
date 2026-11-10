@@ -31,6 +31,7 @@ fn default_path(format: &str) -> &'static str {
         "typst" => "document.typ",
         "markdown" => "document.md",
         "quarto" => "document.qmd",
+        "org" => "document.org",
         "html" => "document.html",
         "latex" => "document.tex",
         _ => "document.txt",
@@ -868,6 +869,7 @@ impl Server {
                             "latex" => {
                                 librepaper_document::document::render::title_from_latex(&text)
                             }
+                            "org" => librepaper_document::document::render::title_from_org(&text),
                             // An HTML document's source is its own bytes,
                             // through the identity renderer, so it opens in
                             // the editor like the others.
