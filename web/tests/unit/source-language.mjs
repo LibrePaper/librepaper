@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { EditorState } from "@codemirror/state";
-import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
+import { LanguageDescription, ensureSyntaxTree, foldable, syntaxTree } from "@codemirror/language";
+import { languages } from "@codemirror/language-data";
 import { highlightTree, tagHighlighter, tags } from "@lezer/highlight";
 import { codeLanguage, sourceFormat, sourceLanguage } from "../../src/lib/source-language.js";
 
@@ -81,11 +82,29 @@ hasToken(quarto, "\"Demo\"", "string", "YAML front matter string was not highlig
 hasToken(quarto, "# comment", "comment", "Quarto chunk options prevented embedded Python highlighting");
 hasToken(quarto, "\"plot\"", "string", "Quarto embedded Python string was not highlighted");
 
-assert.equal(syntaxTree(EditorState.create({ doc: "plain", extensions: sourceLanguage("data.py") })).length, 0,
-  "unsupported named files should remain plain text");
+assert.equal(sourceFormat("data.py"), "", "named Python files are still outside the format table");
+assert.equal(syntaxTree(EditorState.create({ doc: "plain", extensions: sourceLanguage("README") })).length, 0,
+  "a name with no known language should remain plain text");
+assert.equal(syntaxTree(EditorState.create({ doc: "plain", extensions: sourceLanguage("data.xyz") })).length, 0,
+  "an unknown extension should remain plain text");
+
+// Language-data modes load on first use. Loading one here lets the
+// synchronous sourceLanguage() return the loaded support directly.
+for (const [filename, load] of [
+  ["data.py", () => LanguageDescription.matchFilename(languages, "data.py")],
+  ["model.r", () => LanguageDescription.matchFilename(languages, "model.r")],
+  ["style.csl", () => LanguageDescription.matchLanguageName(languages, "xml", false)],
+]) {
+  const description = load();
+  assert.ok(description, `${filename} has no language-data description`);
+  await description.load();
+}
+hasToken(highlighted("data.py", "# comment\nprint(\"hi\")"), "# comment", "comment", "Python comment was not highlighted");
+hasToken(highlighted("model.r", "# comment\nx <- 1"), "# comment", "comment", "R comment was not highlighted");
+hasToken(highlighted("style.csl", "<!-- x -->\n<style/>"), "<!-- x -->", "comment", "CSL XML comment was not highlighted");
 assert.ok(syntaxTree(EditorState.create({ doc: "# heading", extensions: sourceLanguage("", "markdown") })).length > 0,
   "an unnamed document should use its declared format");
-assert.equal(syntaxTree(EditorState.create({ doc: "# heading", extensions: sourceLanguage("data.py", "markdown") })).length, 0,
+assert.equal(syntaxTree(EditorState.create({ doc: "# heading", extensions: sourceLanguage("data.xyz", "markdown") })).length, 0,
   "a named unsupported file should take precedence over the fallback format");
 
 assert.equal(languageName("json"), "JSON", ".json code fence should resolve to JSON language");
@@ -109,5 +128,21 @@ assert.equal(sourceFormat("notes.txt", "markdown"), "markdown");
 assert.equal(sourceFormat("", "tex"), "latex");
 assert.equal(sourceFormat("data.json"), "json");
 assert.equal(sourceFormat("README"), "");
+
+// BibTeX: entries, nested braces, quoted values and % comments.
+const bibSource = "@article{key2020,\n  title = {A {Nested} Title},\n  year = 2020,\n  author = \"Doe, J.\"\n}\n% note\n";
+const bib = highlighted("refs.bib", bibSource);
+hasToken(bib, "article", "keyword", "BibTeX entry type was not highlighted as a keyword");
+hasToken(bib, "title", "property", "BibTeX field name was not highlighted");
+// Braces carry their own tag, which splits the braced span, so check its text runs.
+hasToken(bib, "A ", "string", "BibTeX braced value was not highlighted as a string");
+hasToken(bib, "Nested", "string", "BibTeX nested braced group was not highlighted as a string");
+hasToken(bib, "Title", "string", "BibTeX braced value after a nested group was not highlighted");
+hasToken(bib, "\"Doe, J.\"", "string", "BibTeX quoted value was not highlighted as a string");
+hasToken(bib, "note", "comment", "BibTeX % comment was not highlighted");
+const bibState = EditorState.create({ doc: bibSource, extensions: sourceLanguage("refs.bib") });
+ensureSyntaxTree(bibState, bibState.doc.length, 1000);
+const bibFirstLine = bibState.doc.line(1);
+assert.ok(foldable(bibState, bibFirstLine.from, bibFirstLine.to), "a multi-line BibTeX entry should fold");
 
 console.log("source language: filename modes, exact fence aliases, embedded syntax and plain-text fallback passed");
