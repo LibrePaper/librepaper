@@ -2562,7 +2562,6 @@
   "submissions_not_confirmed_retry": "送信を確認できませんでした。再試行して、確認または送信してください。",
   "switchserverdialog_current": "現在",
   "switchserverdialog_loading": "サーバーを読み込んでいます…",
-  "switchserverdialog_main": "LibrePaper のメインサーバー",
   "switchserverdialog_note": "サーバーを変更しても、もう一方のサーバーからはサインアウトされません。",
   "switchserverdialog_other": "またはアドレスを入力",
   "switchserverdialog_placeholder": "https://",
