@@ -376,7 +376,7 @@ fn append_tar(
 }
 
 fn validate_format(format: &str) -> Result<(), ArchiveError> {
-    if matches!(format, "markdown" | "html" | "typst" | "latex" | "quarto") {
+    if matches!(format, "markdown" | "html" | "typst" | "latex" | "quarto" | "org") {
         Ok(())
     } else {
         Err(ArchiveError::Invalid(format!(

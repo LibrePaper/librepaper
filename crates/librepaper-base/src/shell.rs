@@ -39,13 +39,14 @@ pub struct ShellFile {
 }
 
 /// The source formats this process can render in a reader, and so offer an
-/// editor for. Markdown and typst are rendered by modules the browser loads
-/// from the asset mirror; HTML needs no module at all, its renderer being the
-/// identity.
+/// editor for. Markdown, typst and Org are rendered by modules the browser
+/// loads from the asset mirror; HTML needs no module at all, its renderer being
+/// the identity.
 pub fn renderers() -> Vec<String> {
     vec![
         "markdown".to_string(),
         "quarto".to_string(),
+        "org".to_string(),
         "html".to_string(),
         "typst".to_string(),
     ]

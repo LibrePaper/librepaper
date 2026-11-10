@@ -1582,7 +1582,7 @@ fn validate_document(input: &NewDocument) -> Result<()> {
     if !matches!(input.ownership_mode.as_str(), "owned" | "open")
         || !matches!(
             input.source_format.as_str(),
-            "markdown" | "html" | "typst" | "latex" | "quarto"
+            "markdown" | "html" | "typst" | "latex" | "quarto" | "org"
         )
     {
         return Err(Error::Invalid("invalid document kind".into()));

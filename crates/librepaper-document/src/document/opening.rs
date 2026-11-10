@@ -43,7 +43,7 @@ pub fn renders_alone(
     let included = includers.get(path).is_some_and(|from| !from.is_empty());
     match document_format(path) {
         Some("latex") => texts.get(path).is_some_and(|body| has_document_class(body)),
-        Some("typst") => !included,
+        Some("typst") | Some("org") => !included,
         Some("quarto") | Some("markdown") => !base_name(path).starts_with('_') && !included,
         Some("html") => true,
         _ => false,
@@ -150,6 +150,7 @@ fn included_names(format: &str, body: &str) -> Vec<String> {
     match format {
         "latex" => latex_names(&strip_latex_comments(body)),
         "typst" => typst_names(body),
+        "org" => org_names(body),
         "quarto" | "markdown" => shortcode_names(body),
         _ => Vec::new(),
     }
@@ -243,6 +244,35 @@ fn typst_names(body: &str) -> Vec<String> {
     names
 }
 
+/// The names `#+INCLUDE:` and `#+SETUPFILE:` point at. The keyword is
+/// case-insensitive, and the target is the first argument, optionally in double
+/// quotes. A `::search` suffix names a place inside the file, not another file,
+/// so it is dropped; a URL is not a file of the project and is ignored.
+fn org_names(body: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in lines(body).map(|line| line.body) {
+        let Some(keyword) = line.trim_start().strip_prefix("#+") else {
+            continue;
+        };
+        let Some((key, argument)) = keyword.split_once(':') else {
+            continue;
+        };
+        if !(key.eq_ignore_ascii_case("include") || key.eq_ignore_ascii_case("setupfile")) {
+            continue;
+        }
+        let argument = argument.trim_start();
+        let target = match argument.strip_prefix('"') {
+            Some(quoted) => quoted.split('"').next().unwrap_or(""),
+            None => argument.split_whitespace().next().unwrap_or(""),
+        };
+        let target = target.split("::").next().unwrap_or("").trim();
+        if !target.is_empty() && !target.contains("://") {
+            names.push(target.to_string());
+        }
+    }
+    names
+}
+
 fn shortcode_names(body: &str) -> Vec<String> {
     let mut names = Vec::new();
     let mut rest = body;
@@ -319,5 +349,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn an_included_org_file_does_not_render_alone_and_a_top_level_one_does() {
+        let texts: BTreeMap<String, String> = [
+            (
+                "paper.org".to_string(),
+                "#+TITLE: Paper\n#+INCLUDE: \"sections/intro.org::*Intro\"\n".to_string(),
+            ),
+            ("sections/intro.org".to_string(), "* Intro\nBody\n".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let found = includers(&texts);
+        assert_eq!(found["sections/intro.org"], vec!["paper.org".to_string()]);
+        assert!(renders_alone("paper.org", &texts, &found));
+        assert!(!renders_alone("sections/intro.org", &texts, &found));
     }
 }
