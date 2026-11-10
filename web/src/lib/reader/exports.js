@@ -6,8 +6,8 @@
 // Typst. Org renders to HTML and reaches a PDF through Pandoc and LaTeX, or
 // through Pandoc and Typst where there is no LaTeX compiler; the Org text is
 // first rewritten by pandoc/org.js. A Word file is Pandoc's reading of the HTML
-// page. Nothing here touches // the DOM, and nothing is fetched or uploaded: the Reader supplies the tree it
-// already holds.
+// page. Nothing here touches the DOM, and nothing is fetched or uploaded: the
+// Reader supplies the tree it already holds.
 //
 // An export follows the Run code switch, as the preview does: with it on in
 // the desktop app and the format set to this computer, a file the format has a
