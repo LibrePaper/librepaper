@@ -6,6 +6,8 @@ import { styleTags, tags } from "@lezer/highlight";
 
 export const typstData = defineLanguageFacet({
   commentTokens: { line: "//", block: { open: "/*", close: "*/" } },
+  // No apostrophe: in Typst it is prose, not a quote.
+  closeBrackets: { brackets: ["(", "[", "{", "\"", "$"] },
 });
 
 // Operators are only operators inside an expression: `*` and `_` in markup

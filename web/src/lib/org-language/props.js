@@ -8,6 +8,8 @@ import { styleTags, tags } from "@lezer/highlight";
 
 export const orgData = defineLanguageFacet({
   commentTokens: { line: "# " },
+  // No apostrophe (prose), no markup characters (they collide with lists, headlines and paths).
+  closeBrackets: { brackets: ["(", "[", "{", "\""] },
 });
 
 const highlighting = styleTags({
