@@ -231,6 +231,7 @@
   import { onTypstSyntax } from "../lib/source-trees.js";
   import { emphasisCommand } from "../lib/emphasis.js";
   import { canHeading, canLink, canList, headingEdit, linkEdit, listEdit } from "../lib/editing-shortcuts.js";
+  import { ORG_COMMANDS } from "../lib/org-editing.js";
   import { sourceHighlighting } from "../lib/source-highlight.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport, selectedBibliographyFiles } from "../lib/bibliography.js";
@@ -1172,6 +1173,8 @@
       "heading-1": editable && canHeading(format, 1), "heading-2": editable && canHeading(format, 2),
       "heading-3": editable && canHeading(format, 3), "heading-4": editable && canHeading(format, 4),
       "heading-5": editable && canHeading(format, 5), "heading-6": editable && canHeading(format, 6),
+      // The Org structure commands, in an Org file only.
+      ...Object.fromEntries(Object.keys(ORG_COMMANDS).map((id) => [id, editable && format === "org"])),
       // A comment is made on a selection in the source, and only where the
       // reader may comment: the same question the bar over a selection asks.
       comment: Boolean(annotating) && editable && selected,
@@ -1212,6 +1215,7 @@
     else if (command === "italic") italicCommand(target);
     else if (command === "comment") onannotate?.("comment", selection());
     else if (Object.hasOwn(structure, command)) runStructure(command);
+    else if (Object.hasOwn(ORG_COMMANDS, command)) ORG_COMMANDS[command](target);
     else if (command === "tab-focus") toggleTabFocusMode(target);
     else if (command === "go-to-definition") goToDefinition(target, indexContext);
     else if (command === "find-references") findReferencesCommand(indexContext)(target);

@@ -233,6 +233,22 @@ export const COMMANDS = [
   { id: "numbered-list", label: m.common_numbered_list(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Mod+Shift+7"], available: (c) => Boolean(c.edit?.["numbered-list"]) },
   { id: "bulleted-list", label: m.common_bulleted_list(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Mod+Shift+8"], available: (c) => Boolean(c.edit?.["bulleted-list"]) },
 
+  // Org structure, offered in Org files only. The keys are bound by the Org
+  // language's keymap (lib/org-editing.js). Alt+Left and Alt+Right are the
+  // browser's, so promote and demote go without a key here, and the palette
+  // is where they are found.
+  { id: "org-promote", label: m.commands_org_promote(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: [], available: (c) => Boolean(c.edit?.["org-promote"]) },
+  { id: "org-demote", label: m.commands_org_demote(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: [], available: (c) => Boolean(c.edit?.["org-demote"]) },
+  { id: "org-promote-subtree", label: m.commands_org_promote_subtree(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Alt+Shift+ArrowLeft"], available: (c) => Boolean(c.edit?.["org-promote-subtree"]) },
+  { id: "org-demote-subtree", label: m.commands_org_demote_subtree(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Alt+Shift+ArrowRight"], available: (c) => Boolean(c.edit?.["org-demote-subtree"]) },
+  { id: "org-move-up", label: m.commands_org_move_up(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Alt+ArrowUp"], available: (c) => Boolean(c.edit?.["org-move-up"]) },
+  { id: "org-move-down", label: m.commands_org_move_down(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Alt+ArrowDown"], available: (c) => Boolean(c.edit?.["org-move-down"]) },
+  { id: "org-new-heading", label: m.commands_org_new_heading(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Alt+Enter"], available: (c) => Boolean(c.edit?.["org-new-heading"]) },
+  { id: "org-todo-next", label: m.commands_org_todo_next(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Shift+ArrowRight"], available: (c) => Boolean(c.edit?.["org-todo-next"]) },
+  { id: "org-todo-previous", label: m.commands_org_todo_previous(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Shift+ArrowLeft"], available: (c) => Boolean(c.edit?.["org-todo-previous"]) },
+  { id: "org-toggle-checkbox", label: m.commands_org_toggle_checkbox(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: [], available: (c) => Boolean(c.edit?.["org-toggle-checkbox"]) },
+  { id: "org-fold", label: m.commands_org_fold(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: [], available: (c) => Boolean(c.edit?.["org-fold"]) },
+
   // Navigation. Where the focus goes, which is the part of a workspace a
   // pointer does well and a keyboard has to be told about.
   { id: "palette", label: m.common_command_palette(), category: m.commands_category_navigation(), scope: "workspace", menu: "help", keys: ["Mod+Alt+P"], palette: false, available: ALWAYS },
