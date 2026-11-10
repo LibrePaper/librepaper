@@ -5,6 +5,7 @@ import { indentService, Language, LanguageSupport } from "@codemirror/language";
 import { countColumn, Prec } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
 import { enclosing, orgKeymap } from "../org-editing.js";
+import { pipeTableAt, pipeTableKeymap } from "../pipe-table-keymap.js";
 import { parser } from "./parser.js";
 import { orgData } from "./props.js";
 
@@ -44,7 +45,11 @@ function orgIndent(context, pos) {
   return null;
 }
 
-/** The Org-mode language support. */
+/** The Org-mode language support. Table keys come first, so Tab in a table moves between cells. */
 export function org() {
-  return new LanguageSupport(orgLanguage, [Prec.high(keymap.of(orgKeymap)), indentService.of(orgIndent)]);
+  return new LanguageSupport(orgLanguage, [
+    Prec.high(keymap.of(pipeTableKeymap("org", pipeTableAt))),
+    Prec.high(keymap.of(orgKeymap)),
+    indentService.of(orgIndent),
+  ]);
 }

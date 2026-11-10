@@ -1,3 +1,5 @@
+import { Prec } from "@codemirror/state";
+import { keymap } from "@codemirror/view";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { html } from "@codemirror/lang-html";
 import { json } from "@codemirror/lang-json";
@@ -10,6 +12,7 @@ import { pandocExtensions } from "./pandoc-markdown.js";
 import { quartoOptions } from "./quarto-options.js";
 import { latex } from "./latex-language/index.js";
 import { org } from "./org-language/index.js";
+import { pipeTableAt, pipeTableKeymap } from "./pipe-table-keymap.js";
 
 /** Resolve an exact language name for a Markdown or Quarto code fence. */
 export function codeLanguage(info) {
@@ -42,6 +45,9 @@ const markdownSupport = () => yamlFrontmatter({
   content: markdown({ base: markdownLanguage, codeLanguages: codeLanguage, extensions: pandocExtensions }),
 });
 
+// Tab, Shift-Tab and Enter move through pipe tables; outside a table they fall through.
+const markdownTables = () => Prec.high(keymap.of(pipeTableKeymap("markdown", pipeTableAt)));
+
 function byFormat(format) {
   switch ((format || "").toLowerCase()) {
     case "latex":
@@ -49,9 +55,9 @@ function byFormat(format) {
     case "typst": return typst();
     case "org": return org();
     case "html": return html();
-    case "quarto": return [markdownSupport(), quartoOptions];
+    case "quarto": return [markdownSupport(), markdownTables(), quartoOptions];
     case "markdown":
-    case "md": return markdownSupport();
+    case "md": return [markdownSupport(), markdownTables()];
     default: return [];
   }
 }
