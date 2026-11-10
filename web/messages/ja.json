@@ -1021,6 +1021,7 @@
   "exports_kind_not_exportable": "この種類のファイルはエクスポートできません。",
   "exports_no_pandoc": "このデプロイではPandocを利用できません。",
   "exports_no_renderer": "このデプロイでは{name}ドキュメントをレンダリングできません。",
+  "exports_org_no_pdf": "Org文書にはPDF出力がありません。",
   "exports_pdf_not_made": "PDFを作成できませんでした。",
   "exports_pdf_not_made_reason": "PDFを作成できませんでした：{message}",
   "extension_add_to_dictionary": "辞書に追加",

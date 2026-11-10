@@ -1,0 +1,6 @@
+#+TITLE: {{title}}
+#+AUTHOR: {{author}}
+
+* Introduction
+
+Write here.

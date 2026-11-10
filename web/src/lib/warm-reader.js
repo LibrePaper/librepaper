@@ -49,6 +49,7 @@ async function prefetch(formats, latexOutput) {
     if ((wanted.has("markdown") || wanted.has("quarto")) && typeof modules.markdown === "string") {
       addEngine(new URL(modules.markdown, location.origin).href);
     }
+    if (wanted.has("org") && typeof modules.org === "string") addEngine(new URL(modules.org, location.origin).href);
     if (wanted.has("latex")) await addLatexEngines(latexOutput, addEngine);
     await drain(engines);
   } catch { /* best effort: the document page works without the warm cache */ }
