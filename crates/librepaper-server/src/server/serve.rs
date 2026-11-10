@@ -73,6 +73,10 @@ pub struct ServeOptions {
     pub expire_after: Option<String>,
     pub expire_from: Option<String>,
     pub erase_inactive_after: Option<String>,
+    /// The operator's terms of service and privacy policy, or nothing. The
+    /// sign-in page and the share-link notice link to them.
+    pub legal_terms_url: Option<String>,
+    pub legal_privacy_url: Option<String>,
     /// HTTPS static mirror URL published to browsers. Renderer and LaTeX
     /// distribution bytes are fetched directly by the browser and never pass
     /// through this process.
@@ -604,6 +608,8 @@ pub async fn serve(options: ServeOptions) {
     instance.paths = Some(deployment_paths.clone());
     instance.admin_github_ids = options.admin_github_ids;
     instance.erase_inactive_after = inactive_after;
+    instance.legal_terms_url = options.legal_terms_url;
+    instance.legal_privacy_url = options.legal_privacy_url;
     // The history behind the graphs page opens only when the page has a name.
     // A file that cannot be opened costs the graphs and nothing else: the
     // server never refuses to start over disposable measurements.

@@ -779,6 +779,7 @@
   "common_pages": "Seiten",
   "common_paste": "Einfügen",
   "common_preview": "Vorschau",
+  "common_privacy_policy": "Datenschutzerklärung",
   "common_programs": "Programme",
   "common_project": "Projekt",
   "common_project_read_only": "Dieses Projekt ist schreibgeschützt.",
@@ -831,6 +832,7 @@
     }
   ],
   "common_templates": "Vorlagen",
+  "common_terms_of_service": "Nutzungsbedingungen",
   "common_text": "Text",
   "common_theme": "Design",
   "common_this_computer": "Dieser Computer",
@@ -1776,6 +1778,7 @@
   "latexfilessettings_empty": "Noch nichts heruntergeladen. Zwischengespeicherte Compiler-Dateien beschleunigen PDF-Builds. Das Entfernen ändert Ihre Dokumente nicht.",
   "latexfilessettings_measuring": "Wird gemessen… Zwischengespeicherte Compiler-Dateien beschleunigen PDF-Builds. Das Entfernen ändert Ihre Dokumente nicht.",
   "latexfilessettings_used": "Speicher belegt: {size}. Zwischengespeicherte Compiler-Dateien beschleunigen PDF-Builds. Das Entfernen ändert Ihre Dokumente nicht.",
+  "legalnotice_accept": "Mit dem Fortfahren akzeptieren Sie die Richtlinien dieses Servers:",
   "links_go_to_page": "Zu Seite {page}",
   "live_chat_history_read_failed": "Der Chatverlauf konnte nicht gelesen werden. Es wird erneut versucht.",
   "live_chat_older_failed": "Ältere Nachrichten konnten nicht gelesen werden.",

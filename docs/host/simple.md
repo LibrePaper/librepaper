@@ -168,6 +168,11 @@ trusted_networks = ["172.29.0.0/16"]
 # expire_after = "30d"
 # expire_from = "updated"            # or "created"
 # erase_inactive_after = "365d"      # erase accounts with no sign-in for this long, with their documents
+
+# Optional. Links the sign-in page shows as this server's terms of service and privacy policy.
+# [legal]
+# terms_url = "https://example.org/terms.html"
+# privacy_url = "https://example.org/privacy.html"
 ```
 
 ### Update configuration

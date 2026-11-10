@@ -42,6 +42,7 @@
   import { createPreviewRenderer } from "../lib/reader/preview-render.js";
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
   import { shareIntroKind } from "../lib/reader/share-intro.js";
+  import LegalNotice from "./LegalNotice.svelte";
   import { forgetProject, markShellReady, rememberProject } from "../lib/offline-projects.js";
   import { cacheCurrentShell } from "../lib/offline-shell.js";
   import { needsSourceRefresh } from "../lib/reader/source-events.js";
@@ -2766,6 +2767,12 @@
   $effect(() => {
     if (shareIntro) markShareIntroSeen(SLUG);
   });
+  // The policy links come from /api/me; fetched only while the banner that shows them is up.
+  let shareIntroLegal = $state(undefined);
+  $effect(() => {
+    if (!shareIntro) return;
+    whoami().then((who) => (shareIntroLegal = who?.legal));
+  });
 
   // Kept current for the background work that consults it.
   $effect(() => {
@@ -4053,6 +4060,7 @@
 {#if shareIntro}
   <div class="share-intro" role="status" bind:clientHeight={shareIntroHeight}>
     <span class="share-intro-text">{shareIntro === "edit" ? m.readerd_share_intro_edit() : shareIntro === "comment" ? m.readerd_share_intro_comment() : m.readerd_share_intro_view_ask()}</span>
+    <LegalNotice legal={shareIntroLegal} />
     <button type="button" class="btn btn-sm lp-control-neutral" onclick={() => (shareIntroDismissed = true)}>{m.toasts_dismiss()}</button>
   </div>
 {/if}

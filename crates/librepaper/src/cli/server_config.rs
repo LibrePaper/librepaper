@@ -78,6 +78,8 @@ pub(crate) struct ResolvedConfig {
     pub(crate) expire_after: Option<String>,
     pub(crate) expire_from: Option<String>,
     pub(crate) erase_inactive_after: Option<String>,
+    pub(crate) legal_terms_url: Option<String>,
+    pub(crate) legal_privacy_url: Option<String>,
     pub(crate) asset_mirror: String,
     pub(crate) metrics_address: Option<SocketAddr>,
     pub(crate) log_filter: String,
@@ -153,6 +155,7 @@ struct Raw {
     access: Access,
     limits: Limits,
     retention: Retention,
+    legal: Legal,
     assets: Assets,
     metrics: Metrics,
     proxy: Proxy,
@@ -269,6 +272,12 @@ struct Retention {
     expire_after: Option<Input<String>>,
     expire_from: Option<Input<String>>,
     erase_inactive_after: Option<Input<String>>,
+}
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Legal {
+    terms_url: Option<Input<String>>,
+    privacy_url: Option<Input<String>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -453,6 +462,7 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
             "access",
             "limits",
             "retention",
+            "legal",
             "assets",
             "metrics",
             "proxy",
@@ -571,6 +581,7 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
         "retention",
         &["expire_after", "expire_from", "erase_inactive_after"],
     )?;
+    section(v, "legal", &["terms_url", "privacy_url"])?;
     section(v, "assets", &["mirror"])?;
     section(v, "metrics", &["address"])?;
     section(v, "proxy", &["trusted_networks"])?;
@@ -747,6 +758,14 @@ pub(crate) fn load_with_postgres_env(
         raw.retention.expire_from,
         "updated".into(),
     )?);
+    let legal_terms_url = r
+        .optional("legal.terms_url", raw.legal.terms_url)?
+        .map(|value| check_legal_url("legal.terms_url", &value))
+        .transpose()?;
+    let legal_privacy_url = r
+        .optional("legal.privacy_url", raw.legal.privacy_url)?
+        .map(|value| check_legal_url("legal.privacy_url", &value))
+        .transpose()?;
     let asset_mirror = r.value(
         "assets.mirror",
         raw.assets.mirror,
@@ -897,6 +916,8 @@ pub(crate) fn load_with_postgres_env(
         expire_after,
         expire_from,
         erase_inactive_after,
+        legal_terms_url,
+        legal_privacy_url,
         asset_mirror,
         metrics_address,
         log_filter,
@@ -1218,6 +1239,24 @@ fn check_issuers(providers: &[OidcProvider]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Legal links are shown to every reader, so they must be absolute https URLs
+/// of at most 2048 characters with no control characters.
+fn check_legal_url(key: &str, value: &str) -> Result<String, String> {
+    let refused = || {
+        format!(
+            "{key} must be an absolute https:// URL of at most 2048 characters with no control characters"
+        )
+    };
+    if value.chars().count() > 2048 || value.chars().any(char::is_control) {
+        return Err(refused());
+    }
+    let parsed = url::Url::parse(value).map_err(|_| refused())?;
+    if parsed.scheme() != "https" || parsed.host_str().is_none() {
+        return Err(refused());
+    }
+    Ok(value.to_owned())
 }
 
 /// Labels are shown on the sign-in page, so blank, long and control
@@ -1740,6 +1779,21 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         "retention.erase_inactive_after",
         "erase_inactive_after",
         c.erase_inactive_after.as_deref(),
+    );
+    section(&mut out, "legal");
+    optional(
+        &mut out,
+        &c.sources,
+        "legal.terms_url",
+        "terms_url",
+        c.legal_terms_url.as_deref(),
+    );
+    optional(
+        &mut out,
+        &c.sources,
+        "legal.privacy_url",
+        "privacy_url",
+        c.legal_privacy_url.as_deref(),
     );
     section(&mut out, "assets");
     value(
@@ -2344,6 +2398,33 @@ client_secret = { file = "missing-oauth-secret" }
         assert!(shown.contains("erase_inactive_after = \"365d\""));
         let unset = load_text("").unwrap();
         assert_eq!(unset.erase_inactive_after, None);
+    }
+    #[test]
+    fn legal_links_are_read_from_legal() {
+        let loaded = load_text(
+            "[legal]\nterms_url = \"https://example.org/terms.html\"\nprivacy_url = \"https://example.org/privacy.html\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            loaded.legal_terms_url.as_deref(),
+            Some("https://example.org/terms.html")
+        );
+        assert_eq!(
+            loaded.legal_privacy_url.as_deref(),
+            Some("https://example.org/privacy.html")
+        );
+    }
+    #[test]
+    fn legal_links_are_none_when_unset() {
+        let loaded = load_text("").unwrap();
+        assert_eq!(loaded.legal_terms_url, None);
+        assert_eq!(loaded.legal_privacy_url, None);
+    }
+    #[test]
+    fn legal_links_must_be_https() {
+        let error =
+            load_text("[legal]\nterms_url = \"http://example.org/terms.html\"\n").unwrap_err();
+        assert!(error.contains("legal.terms_url"), "{error}");
     }
     #[test]
     fn display_redacts_database_and_auth_and_is_toml() {

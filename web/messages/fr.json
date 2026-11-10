@@ -779,6 +779,7 @@
   "common_pages": "Pages",
   "common_paste": "Coller",
   "common_preview": "Aperçu",
+  "common_privacy_policy": "Politique de confidentialité",
   "common_programs": "Programmes",
   "common_project": "Projet",
   "common_project_read_only": "Ce projet est en lecture seule.",
@@ -831,6 +832,7 @@
     }
   ],
   "common_templates": "Modèles",
+  "common_terms_of_service": "Conditions d’utilisation",
   "common_text": "Texte",
   "common_theme": "Thème",
   "common_this_computer": "Cet ordinateur",
@@ -1776,6 +1778,7 @@
   "latexfilessettings_empty": "Aucun fichier téléchargé pour l’instant. Les fichiers du compilateur conservés en cache accélèrent les compilations de PDF. Leur suppression n’affecte pas vos documents.",
   "latexfilessettings_measuring": "Mesure en cours… Les fichiers du compilateur conservés en cache accélèrent les compilations de PDF. Leur suppression n’affecte pas vos documents.",
   "latexfilessettings_used": "Stockage utilisé : {size}. Les fichiers du compilateur conservés en cache accélèrent les compilations de PDF. Leur suppression n’affecte pas vos documents.",
+  "legalnotice_accept": "En continuant, vous acceptez les politiques de ce serveur :",
   "links_go_to_page": "Aller à la page {page}",
   "live_chat_history_read_failed": "L’historique du clavardage n’a pas pu être lu. Nouvelle tentative.",
   "live_chat_older_failed": "Les messages plus anciens n’ont pas pu être lus.",
