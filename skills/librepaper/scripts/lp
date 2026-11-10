@@ -11,6 +11,8 @@ Usage:
   lp suggest <path> --find TEXT --replace TEXT
   lp insert <path> (--after TEXT | --before TEXT | --end) --text TEXT
   lp create <path> --text TEXT
+  lp withdraw <change_id> [<change_id> ...]
+                               withdraw your own pending tracked changes
   lp call <tool> [json|-]      call a tool with the given arguments
   lp write <tool> [json|-]     same, adding a fresh operation {epoch, id}
   lp result <operation-json>   ask whether an uncertain write landed
@@ -557,6 +559,14 @@ def cmd_create(rest):
     send_write("document_files", {"create": [{"path": args.path, "text": text}]}, state)
 
 
+def cmd_withdraw(rest):
+    parser = argparse.ArgumentParser(prog="lp withdraw")
+    parser.add_argument("change_ids", nargs="+", metavar="change_id")
+    args = parser.parse_args(rest)
+    state = fresh_state()
+    send_write("document_withdraw", {"change_ids": args.change_ids}, state)
+
+
 def connect_model(rest):
     # Takes --model NAME or --model=NAME; other arguments are left alone.
     model, index = "", 0
@@ -622,6 +632,7 @@ def connect(rest):
     if perms.get("suggest"):
         lines.append(f"  {RUN} --project {slug} suggest <path> --find '<exact text>' --replace '<new text>'")
         lines.append(f"  {RUN} --project {slug} insert <path> --after '<exact text>' --text '<new text>'")
+        lines.append(f"  {RUN} --project {slug} withdraw <change_id> [<change_id> ...]")
     if perms.get("apply"):
         lines.append(f"  {RUN} --project {slug} create <path> --text '<content>'")
     if len(lines) > 4:
@@ -722,6 +733,8 @@ def dispatch(command, rest):
         cmd_insert(rest)
     elif command == "create":
         cmd_create(rest)
+    elif command == "withdraw":
+        cmd_withdraw(rest)
     elif command in ("call", "write"):
         if not rest:
             die(f"usage: lp {command} <tool> [json|-]")
