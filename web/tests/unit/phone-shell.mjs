@@ -209,8 +209,9 @@ function page(overrides = {}) {
 {
   const { phone, state, world } = page();
   assert.equal(phone.chrome, "env(safe-area-inset-top) + 2.75rem + 3.5rem + env(safe-area-inset-bottom)");
+  // Once the bar hides on scroll, the mode switch and the tab bar both leave the chrome.
   world.barHidden = true;
-  assert.equal(phone.chrome, "env(safe-area-inset-top) + 3.5rem + env(safe-area-inset-bottom)");
+  assert.equal(phone.chrome, "env(safe-area-inset-top) + env(safe-area-inset-bottom)");
   world.barHidden = false;
   state.mobileView = "source";
   state.keyboardOpen = true;
