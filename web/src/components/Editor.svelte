@@ -267,6 +267,7 @@
   import { documentFacts } from "../lib/visual-markup/facts.js";
   import { markdownFacts } from "../lib/visual-markup/markdown-facts.js";
   import { typstFacts } from "../lib/visual-markup/typst-facts.js";
+  import { orgFacts } from "../lib/visual-markup/org-facts.js";
   import { m } from "../lib/paraglide/messages.js";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
@@ -733,7 +734,7 @@
     untrack(() => {
       const path = pathOfDoc(session.doc, id);
       const format = formatOf(path);
-      const compute = { latex: documentFacts, markdown: markdownFacts, typst: typstFacts }[format];
+      const compute = { latex: documentFacts, markdown: markdownFacts, org: orgFacts, typst: typstFacts }[format];
       if (!target || !visual || !compute) return;
       const facts = compute(treeForDoc(session.doc).texts, entry || path, path, bibliographyEntries());
       const sent = JSON.stringify(facts, factsJson);
