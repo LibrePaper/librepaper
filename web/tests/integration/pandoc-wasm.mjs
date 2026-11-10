@@ -5,6 +5,10 @@ import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createPandoc } from "../../src/lib/pandoc/worker.js";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+// The Org pre-pass reads org.wasm's tree.
+await loadOrgSyntaxForTests();
 import { typstTree } from "../../src/lib/pandoc/typst.js";
 import { orgLatexTree } from "../../src/lib/pandoc/latex.js";
 
