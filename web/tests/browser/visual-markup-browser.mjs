@@ -1222,7 +1222,8 @@ try {
   const refsClass = refsPreamble.match(/\\documentclass(?:\[[^\]]*\])?\{([^}]*)\}/)[1];
   const refsPackages = [...refsPreamble.matchAll(/\\usepackage(?:\[[^\]]*\])?\{([^}]*)\}/g)]
     .reduce((count, match) => count + match[1].split(",").length, 0);
-  const refsSummary = `Preamble${refsClass} · ${refsPackages} ${refsPackages === 1 ? "package" : "packages"}`;
+  // The disclosure leaves the count out when the preamble loads no package.
+  const refsSummary = refsPackages === 0 ? `Preamble${refsClass}` : `Preamble${refsClass} · ${refsPackages} ${refsPackages === 1 ? "package" : "packages"}`;
   const tb = result.titleBlock;
   assert.equal(tb.titleClick.head, refsSample.indexOf("\\title{") + 7, "a click on the title did not put the caret at the start of the \\title argument");
   assert.ok(tb.titleClick.text.includes("\\title{A Study}"), "a click on the title did not show \\title{A Study}");

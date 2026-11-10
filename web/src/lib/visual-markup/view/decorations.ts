@@ -410,13 +410,13 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
 const LINE_ELEMENT = 1;
 const LINE_ZERO = 2;
 const LINE_BLANK = 3;
-// A line that carries its own spacing: a widget block, a heading or a figure.
+// A line that carries its own spacing: a widget block or a heading.
 const LINE_SPACED = 4;
 
 // A blank source line is paragraph spacing, not a line of text. Each unrevealed
 // whitespace-only line outside any styled or replaced block gets cm-lv-blank; the
 // rest of a run also gets -extra (collapsed), and a line beside a spaced element
-// (a heading, figure, widget or pill, which pads itself) gets -tight. Other styled
+// (a heading, widget or pill, which pads itself) gets -tight. Other styled
 // lines, such as theorems and lists, have no padding, so they do not collapse a blank.
 // The kinds come from the decorations already built, so nothing is re-parsed.
 function markBlankLines(state: EditorState, decorations: CMRange<Decoration>[], revealed: Set<number>): void {
@@ -427,7 +427,10 @@ function markBlankLines(state: EditorState, decorations: CMRange<Decoration>[], 
     const spec = range.value.spec;
     if (spec.block) {
       // A hidden run with no summary is zero height; a widget or pill is a spaced element.
-      const mark = spec.widget ? LINE_SPACED : LINE_ZERO;
+      // An environment's header (Theorem, Proof, Abstract) is a widget without padding of
+      // its own, so it is a plain element and the blank line before it keeps its height.
+      const header = String((spec.widget as { className?: unknown } | undefined)?.className ?? '').includes('cm-lp-envhead');
+      const mark = !spec.widget ? LINE_ZERO : header ? LINE_ELEMENT : LINE_SPACED;
       const last = doc.lineAt(range.to).number;
       // A spaced line outranks a plain one, which outranks a zero-height line.
       for (let n = doc.lineAt(range.from).number; n <= last; n++) {
@@ -438,7 +441,7 @@ function markBlankLines(state: EditorState, decorations: CMRange<Decoration>[], 
       if (spec.class === 'cm-lv-syntax-line') {
         if (kind[n] === 0) kind[n] = LINE_ZERO;
       } else if (kind[n] !== LINE_SPACED) {
-        const isSpaced = spec.class.includes('cm-lv-heading') || spec.class.includes('cm-lv-figure');
+        const isSpaced = spec.class.includes('cm-lv-heading');
         kind[n] = isSpaced ? LINE_SPACED : LINE_ELEMENT;
       }
     }
