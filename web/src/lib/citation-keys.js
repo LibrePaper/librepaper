@@ -72,31 +72,35 @@ function markdownMasked(text) {
   }).join("\n");
 }
 
-const ORG_BLOCK_BEGIN = /^\s*#\+BEGIN_(SRC|EXAMPLE|EXPORT|COMMENT)\b/i;
-const ORG_BLOCK_END = /^\s*#\+END_(\w+)\b/i;
-const ORG_COMMENT = /^\s*#(?: |$)/;
-const ORG_VERBATIM = /(?<![\p{L}\p{N}])([~=])(?=\S)[^~=\n]*?\S\1(?![\p{L}\p{N}])/gu;
+// The Org node types whose text is not citations: blocks (with their begin and
+// end lines), comment lines, =verbatim=, ~code~ and inline source.
+const ORG_MASKED_NODES = new Set(["Block", "Comment", "Verbatim", "Code", "InlineSrc"]);
 
 /**
- * The Org source with the regions that are not citations blanked: the lines of
- * SRC, EXAMPLE, EXPORT and COMMENT blocks, comment lines starting with "# ",
- * and ~code~ and =verbatim= spans. Blanking keeps every offset and line break.
+ * The Org source with the regions that are not citations blanked: the blocks,
+ * comment lines, =verbatim= and ~code~ spans and inline source that the Org
+ * tree finds. Blanking keeps every offset and line break.
  * @param {string} text
  * @returns {string}
  */
 export function orgMasked(text) {
-  let block = null;
-  return String(text ?? "").split("\n").map((line) => {
-    if (block) {
-      const end = line.match(ORG_BLOCK_END);
-      if (end && end[1].toUpperCase() === block) block = null;
-      return blank(line);
-    }
-    const begin = line.match(ORG_BLOCK_BEGIN);
-    if (begin) { block = begin[1].toUpperCase(); return blank(line); }
-    if (ORG_COMMENT.test(line)) return blank(line);
-    return line.replace(ORG_VERBATIM, blank);
-  }).join("\n");
+  text = String(text ?? "");
+  const ranges = [];
+  orgTree(text).iterate({
+    enter(ref) {
+      if (!ORG_MASKED_NODES.has(ref.name)) return;
+      ranges.push([ref.from, ref.to]);
+      // The text inside a masked node is masked with it.
+      return false;
+    },
+  });
+  let out = "";
+  let at = 0;
+  for (const [from, to] of ranges) {
+    out += text.slice(at, from) + blank(text.slice(from, to));
+    at = to;
+  }
+  return out + text.slice(at);
 }
 
 // The keys of the citations of an Org tree: code, comments and verbatim text
