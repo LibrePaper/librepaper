@@ -257,8 +257,8 @@ function valueItems(name, line, body) {
   const filled = body.filter((entry) => entry.text.trim());
   const last = body.at(-1) ?? line;
 
-  /** @param {string} value @param {{ from: number, to: number } | null} span */
-  const item = (value, span, range = [line.from, line.to]) => {
+  /** @param {string} value @param {{ from: number, to: number } | null} span @param {[number, number]} [range] */
+  const item = (value, span, range = /** @type {[number, number]} */ ([line.from, line.to])) => {
     if (!value) return [];
     /** @type {IndexItem} */
     const found = { kind: "metadata", name, title: value, range };
