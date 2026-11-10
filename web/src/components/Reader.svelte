@@ -138,6 +138,9 @@
   import Diagnostics from "./reader/Diagnostics.svelte";
   import PendingAnnotations from "./reader/PendingAnnotations.svelte";
   import SaveTemplateDialog from "./reader/SaveTemplateDialog.svelte";
+  import DeleteCommentsDialog from "./reader/DeleteCommentsDialog.svelte";
+  import ClearChatDialog from "./reader/ClearChatDialog.svelte";
+  import IdentityDialog from "./reader/IdentityDialog.svelte";
   import { m } from "../lib/paraglide/messages.js";
 
   // The demo sandbox at /try runs wholly in this browser. Its slug and
@@ -974,9 +977,8 @@
   // from rather than reading `pending`, so a stray selection elsewhere in
   // the document cannot move a note that is half written onto other words.
   let composing = $state(null);
-  let identifying = $state(false);
-  let deleting = $state(false);
-  let pendingDelete = $state([]);
+  let identityDialog = $state(null);
+  let deleteCommentsDialog = $state(null);
 
   const needsLogin = $derived(!identity && Boolean(me.comments_need_login));
 
@@ -1013,7 +1015,7 @@
       return;
     }
     if (!identity && me.providers?.length) {
-      identifying = true;
+      identityDialog?.ask();
       return;
     }
     openDraft();
@@ -1111,20 +1113,11 @@
   const edit = annotations.edit;
 
   function askDelete(comment) {
-    askDeleteMany([comment]);
+    deleteCommentsDialog?.ask([comment]);
   }
 
   function askDeleteMany(items) {
-    if (!items.length) return;
-    pendingDelete = items;
-    deleting = true;
-  }
-
-  function confirmDelete() {
-    const items = pendingDelete;
-    pendingDelete = [];
-    deleting = false;
-    for (const comment of items) annotations.delete(comment);
+    deleteCommentsDialog?.ask(items);
   }
 
   function reply(comment, body, name) {
@@ -1159,13 +1152,9 @@
 
   /* -------------------------------------------------------------------- room */
 
-  let clearingChat = $state(false);
+  let clearChatDialog = $state(null);
   function askClearChat() {
-    if (chatState.canClear) clearingChat = true;
-  }
-  function confirmClearChat() {
-    clearingChat = false;
-    collaboration?.send({ type: "chat-clear" });
+    if (chatState.canClear) clearChatDialog?.ask();
   }
   function sendLiveChat(text) {
     if (!collaboration || !connected || !mayChat) return Promise.resolve(false);
@@ -4621,36 +4610,11 @@
   {/if}
 </Modal>
 
-<!-- Deleting a thread cannot be undone, so it is confirmed. -->
-<Modal
-  bind:open={deleting}
-  title={pendingDelete.length > 1 ? m.readerd_delete_many_comments_title({ count: pendingDelete.length }) : m.readerd_delete_comment_title()}
-  description={pendingDelete.length > 1
-    ? m.readerd_delete_many_comments_body()
-    : m.readerd_delete_comment_body()}
-  confirm={{ label: m.common_delete(), tone: "error", onclick: confirmDelete }}
-></Modal>
+<DeleteCommentsDialog bind:this={deleteCommentsDialog} ondelete={(comment) => annotations.delete(comment)} />
 
-<!-- Clearing the chat deletes it for everyone, so it is confirmed. -->
-<Modal
-  bind:open={clearingChat}
-  title={m.readerd_delete_chat_title()}
-  description={m.readerd_delete_chat_body()}
-  confirm={{ label: m.readerd_delete_history(), tone: "error", onclick: confirmClearChat }}
-></Modal>
+<ClearChatDialog bind:this={clearChatDialog} onclear={() => collaboration?.send({ type: "chat-clear" })} />
 
-<!-- Signed out, a commenter chooses how to be named before they write. -->
-<Modal
-  bind:open={identifying}
-  title={m.readerd_who_are_you()}
-  description={m.readerd_choose_identity()}
-  cancelLabel={m.common_sign_in()}
-  confirm={{
-    label: m.readerd_continue_as({ name: doc.commenting_as || m.common_anonymous() }),
-    oncancel: () => { identifying = false; location.href = signInHref(); },
-    onclick: () => { identifying = false; openDraft(); },
-  }}
-></Modal>
+<IdentityDialog bind:this={identityDialog} name={doc.commenting_as || m.common_anonymous()} signInHref={signInHref} oncontinue={() => openDraft()} />
 
 <Toasts />
 
