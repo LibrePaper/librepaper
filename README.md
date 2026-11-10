@@ -1,6 +1,6 @@
 # LibrePaper
 
-Create or upload an HTML, Markdown, Typst, LaTeX or Quarto project in the
+Create or upload an HTML, Markdown, Org, Typst, LaTeX or Quarto project in the
 browser, share a link to it, and collect comments and highlights in real time.
 
 - Highlight passages, suggest edits, and comment on the text

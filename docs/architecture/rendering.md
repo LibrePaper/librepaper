@@ -4,21 +4,34 @@ title: "Rendering and live sync"
 
 ## Publishing and rendering
 
-Markdown, Typst and LaTeX are compiled in the browser by plain WebAssembly modules with small exports.
+Markdown, Org, Typst and LaTeX are compiled in the browser by plain WebAssembly modules with small exports.
 
 LaTeX engines and TeX Live packages are fetched from an HTTPS mirror from `latex/<sha256>/`, pinned in `assets.lock`. The mirror is append-only. Files are content-addressed and cached in browser storage. An operator can set `[assets].mirror` in the server TOML to host a copy.
 
-Compilation runs in one worker per module. Markdown and Quarto produce flow HTML. LaTeX and Typst produce paged PDF. The deployment never renders or stores a compiler. The editor keeps the last successfully rendered page while the engine warms.
+Compilation runs in one worker per module. Markdown, Org and Quarto produce flow HTML. LaTeX and Typst produce paged PDF. The deployment never renders or stores a compiler. The editor keeps the last successfully rendered page while the engine warms.
 
 ## Downloads
 
-File > Download offers Source, PDF, HTML and DOCX for every format. Each file is made in the browser from the live source and never stored.
+File > Download offers Source, PDF, HTML and DOCX for every format except Org, which has no PDF. Each file is made in the browser from the live source and never stored.
 
 - PDF: LaTeX and Typst use their own engines. Markdown, Quarto and HTML go through Pandoc to a Typst source, which the Typst engine compiles. Typst formats the citations, with the style named by `csl` or `bibliography-style`.
 - HTML: each format's own HTML renderer. Authored HTML is downloaded as written.
 - DOCX: Pandoc reads the HTML rendering.
 
 Pandoc is the official `pandoc.wasm` build, pinned in `assets.lock` and fetched from the mirror on the first PDF or DOCX that needs it. It runs in its own worker. View > PDF for Markdown and Quarto takes the same route, so a PDF needs the desktop app only when Run code is on. Harper's grammar checker is the unmodified slim wasm from the harper.js npm package. It is fetched from the mirror only when someone picks Harper in Settings, and it runs in its own worker. Both modules are released, unmodified, by LibrePaper/wasm-upstream.
+
+## Org
+
+Org files (`.org`) are rendered by `org.wasm`, released by [LibrePaper/wasm-orgmode](https://github.com/LibrePaper/wasm-orgmode). Its parser began as [orgize](https://github.com/PoiScript/orgize) by Alex Lin and is developed in that repository.
+
+The preview shows headlines with their TODO keyword and priority, `SCHEDULED`, `DEADLINE` and `CLOSED` planning lines, clock entries from a `LOGBOOK` drawer, tables with captions, footnotes collected at the end, and math typeset with KaTeX. `#+INCLUDE:` and `#+SETUPFILE:` decide which file a project opens on.
+
+Some of Org is not supported:
+
+- Code blocks are shown as source. Nothing is executed.
+- Citations written as `[cite:@key]` are recognised in the editor, with completion and insertion, but the preview does not format them.
+- There is no PDF output.
+- `#+OPTIONS` and macros are not interpreted.
 
 ## The live head
 
