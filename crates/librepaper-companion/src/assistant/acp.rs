@@ -92,7 +92,12 @@ fn bounded_text(value: Option<&str>, max_bytes: usize) -> Option<String> {
 
 /// The tools the document bridge exposes, by the name the server gives them.
 const COMMENTER_TOOLS: [&str; 3] = ["document_read", "document_comment", "document_result"];
-const EDITOR_TOOLS: [&str; 3] = ["document_propose", "document_apply", "document_files"];
+const EDITOR_TOOLS: [&str; 4] = [
+    "document_propose",
+    "document_apply",
+    "document_files",
+    "document_withdraw",
+];
 
 /// How many announced tool calls one session remembers.
 const ANNOUNCED_LIMIT: usize = 256;
@@ -1106,7 +1111,12 @@ mod tests {
             assert!(access_allows("commenter", tool));
             assert!(access_allows("editor", tool));
         }
-        for tool in ["document_propose", "document_apply", "document_files"] {
+        for tool in [
+            "document_propose",
+            "document_apply",
+            "document_files",
+            "document_withdraw",
+        ] {
             assert!(!access_allows("commenter", tool));
             assert!(access_allows("editor", tool));
         }

@@ -524,6 +524,7 @@ impl Journal {
                             | "document_apply"
                             | "document_files"
                             | "document_comment"
+                            | "document_withdraw"
                     )
             })
             .count();
@@ -708,6 +709,7 @@ fn changes_document(tool: &str) -> bool {
             | "document_apply"
             | "document_files"
             | "document_comment"
+            | "document_withdraw"
             | "document_result"
     )
 }

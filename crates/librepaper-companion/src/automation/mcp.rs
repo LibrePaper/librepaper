@@ -31,16 +31,17 @@ use crate::automation::peer::AutomationPeer;
 
 /// The tools every assistant session needs. A Reader is served only these; a
 /// Commenter also gets `document_comment`, and an Editor `document_propose`,
-/// `document_apply` and `document_files`.
+/// `document_apply`, `document_files` and `document_withdraw`.
 const REQUIRED_ASSISTANT_TOOLS: [&str; 2] = ["document_read", "document_result"];
 
 /// The tools whose arguments need an operation identity injected. The served
 /// schemas omit `operation` entirely, so a model never sees or mints one.
-const MUTATING_TOOLS: [&str; 4] = [
+const MUTATING_TOOLS: [&str; 5] = [
     "document_propose",
     "document_apply",
     "document_files",
     "document_comment",
+    "document_withdraw",
 ];
 
 fn missing_assistant_tools<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<&'static str> {
