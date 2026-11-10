@@ -1,12 +1,12 @@
 // What a document can be exported as, and how each file is made.
 //
 // Every source format offers a PDF, an HTML page and a Word file, produced in
-// this browser, except Org, which has no PDF. LaTeX and Typst compile to PDF and
-// render to HTML; Markdown and Quarto render to HTML and reach a PDF through
-// Pandoc and Typst; authored HTML is its own page and reaches a PDF the same
-// way; Org renders to HTML only. A Word file is Pandoc's reading of the HTML
-// page. Nothing here touches the DOM, and nothing is
-// fetched or uploaded: the Reader supplies the tree it already holds.
+// this browser. LaTeX and Typst compile to PDF and render to HTML; Markdown,
+// Quarto, Org and authored HTML render to HTML and reach a PDF through Pandoc
+// and Typst (for Org, after the pass in pandoc/org.js that fixes its links and
+// math). A Word file is Pandoc's reading of the HTML page. Nothing here touches
+// the DOM, and nothing is fetched or uploaded: the Reader supplies the tree it
+// already holds.
 //
 // An export follows the Run code switch, as the preview does: with it on in
 // the desktop app and the format set to this computer, a file the format has a
@@ -68,11 +68,12 @@ export function exportAvailability(format, target, deps = {}) {
   };
   const pandocNeed = [hasPandoc, m.exports_no_pandoc()];
   const noRenderer = (name) => [compiler(name), m.exports_no_renderer({ name: name === "latex" ? "LaTeX" : name === "typst" ? "Typst" : name === "org" ? "Org" : "Markdown" })];
-  // Org renders to one HTML page and has no PDF. Its Word file is Pandoc's
-  // reading of that HTML page, as for Markdown, so it needs no Org reader.
+  // Org renders to one HTML page. Its PDF is Pandoc's Typst for the Org text,
+  // compiled by the Typst renderer, as for authored HTML. Its Word file is
+  // Pandoc's reading of that HTML page, as for Markdown.
   if (format === "org") {
-    if (target === "pdf") return { ok: false, reason: m.exports_org_no_pdf() };
-    return target === "html" ? needs(noRenderer("org")) : needs(noRenderer("org"), pandocNeed);
+    if (target === "html") return needs(noRenderer("org"));
+    return target === "pdf" ? needs(noRenderer("typst"), pandocNeed) : needs(noRenderer("org"), pandocNeed);
   }
   if (format === "html") {
     if (target === "html") return { ok: true };
@@ -155,6 +156,8 @@ export async function exportFile({ target, format, tree, title, slug, project = 
     let result;
     if (format === "html") {
       result = await render(await typstTree(tree, { from: "html", run }), title, { format: "pdf", project });
+    } else if (format === "org") {
+      result = await render(await typstTree(tree, { from: "org", run }), title, { format: "pdf", project });
     } else if (format === "markdown" || format === "quarto") {
       result = await render(tree, title, { format: "pdf", project, buildPreferences: MARKDOWN_PDF });
     } else {
