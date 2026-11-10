@@ -6,6 +6,7 @@
 
 import { pandoc } from "./client.js";
 import { orgForPandoc } from "./org.js";
+import { expandOrgIncludes } from "../org-include.js";
 import { parseQuarto } from "../engines/quarto.js";
 
 /// The folder a project path sits in, or "." for a path at the root.
@@ -59,7 +60,9 @@ export async function typstTree(tree, { from, run = pandoc }) {
     if (style) variables.bibliographystyle = style;
   }
   if (from === "org") {
-    const org = orgForPandoc(tree.texts?.[tree.main] ?? "", { to: "typst" });
+    // Includes are expanded first, so Pandoc reads one file and resolves links into included sections.
+    const expanded = expandOrgIncludes(tree);
+    const org = orgForPandoc(expanded.texts?.[expanded.main] ?? "", { to: "typst" });
     texts = { ...texts, [tree.main]: org.text };
     Object.assign(variables, org.variables);
     if (org.headerIncludes) variables["header-includes"] += `\n${org.headerIncludes}`;

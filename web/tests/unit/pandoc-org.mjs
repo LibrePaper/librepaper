@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { orgForPandoc } from "../../src/lib/pandoc/org.js";
+import { expandOrgIncludes } from "../../src/lib/org-include.js";
 
 const EQUATION_NUMBERING = '#set math.equation(numbering: "(1)")';
 
@@ -129,4 +130,21 @@ test("numberSections is true unless num:nil or num:0, for either target", () => 
   assert.equal(latex("#+OPTIONS: num:0\n* Methods\n").numberSections, false);
   assert.equal(orgForPandoc("* Methods\n").numberSections, true);
   assert.equal(orgForPandoc("#+OPTIONS: num:nil\n* Methods\n").numberSections, false);
+});
+
+test("a heading link into an included file resolves once the includes are expanded", () => {
+  const tree = {
+    main: "paper.org",
+    texts: {
+      "paper.org": "* Intro\nSee [[*Methods]].\n#+INCLUDE: \"sections/methods.org\"\n",
+      "sections/methods.org": "* Methods\nText.\n",
+    },
+    assets: {},
+  };
+  // Without the expansion the main file alone has no Methods heading.
+  assert.match(orgForPandoc(tree.texts["paper.org"]).text, /\[\[\*Methods\]\]/);
+  const expanded = expandOrgIncludes(tree).texts["paper.org"];
+  const out = orgForPandoc(expanded).text;
+  assert.equal(out.includes("[[*Methods]]"), false);
+  assert.match(out, /\[cite:@methods\]/);
 });

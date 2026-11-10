@@ -5,6 +5,7 @@
 
 import { pandoc } from "./client.js";
 import { orgForPandoc } from "./org.js";
+import { expandOrgIncludes } from "../org-include.js";
 import { dirOf, pandocPath } from "./typst.js";
 
 /// Turn an Org document into a tree the LaTeX renderer compiles to PDF.
@@ -16,7 +17,9 @@ import { dirOf, pandocPath } from "./typst.js";
 /// the Org file.
 export async function orgLatexTree(tree, { run = pandoc } = {}) {
   const texPath = pandocPath(tree, "tex");
-  const org = orgForPandoc(tree.texts?.[tree.main] ?? "", { to: "latex" });
+  // Includes are expanded first, so Pandoc reads one file and resolves links into included sections.
+  const expanded = expandOrgIncludes(tree);
+  const org = orgForPandoc(expanded.texts?.[expanded.main] ?? "", { to: "latex" });
   const { output } = await run(
     {
       from: "org",
