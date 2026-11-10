@@ -34,13 +34,13 @@ struct Pin {
 /// files are the faces the editor offers, each fetched when it is used.
 const PINS: &[Pin] = &[
     pin("markdown.wasm", "wasm"),
+    pin("org.wasm", "wasm"),
     pin("bibliography.wasm", "wasm"),
     pin("citations.wasm", "wasm"),
     pin("typst.wasm", "wasm"),
     pin("typst-syntax.wasm", "wasm"),
     pin("pandoc.wasm", "wasm"),
     pin("harper.wasm", "wasm"),
-    pin("org.wasm", "wasm"),
     pin("jetbrains-mono.woff2", "fonts"),
     pin("jetbrains-mono-italic.woff2", "fonts"),
     pin("jetbrains-mono-semibold.woff2", "fonts"),
