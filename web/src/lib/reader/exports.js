@@ -1,10 +1,11 @@
 // What a document can be exported as, and how each file is made.
 //
 // Every source format offers a PDF, an HTML page and a Word file, produced in
-// this browser. LaTeX and Typst compile to PDF and render to HTML; Markdown
-// and Quarto render to HTML and reach a PDF through Pandoc and Typst; authored
-// HTML is its own page and reaches a PDF the same way. A Word file is Pandoc's
-// reading of the HTML page. Nothing here touches the DOM, and nothing is
+// this browser, except Org, which has no PDF. LaTeX and Typst compile to PDF and
+// render to HTML; Markdown and Quarto render to HTML and reach a PDF through
+// Pandoc and Typst; authored HTML is its own page and reaches a PDF the same
+// way; Org renders to HTML only. A Word file is Pandoc's reading of the HTML
+// page. Nothing here touches the DOM, and nothing is
 // fetched or uploaded: the Reader supplies the tree it already holds.
 //
 // An export follows the Run code switch, as the preview does: with it on in
@@ -57,7 +58,7 @@ export function exportAvailability(format, target, deps = {}) {
   const hasPandoc = deps.pandoc ?? pandocAvailable();
   const compiler = deps.compiler ?? compilerAvailable;
   if (!EXPORT_TARGETS.includes(target)) return { ok: false, reason: m.exports_kind_not_exportable() };
-  if (!["latex", "typst", "markdown", "quarto", "html"].includes(format)) {
+  if (!["latex", "typst", "markdown", "quarto", "org", "html"].includes(format)) {
     return { ok: false, reason: m.exports_formats_only() };
   }
   if (madeLocally(format, target, deps.local, deps.outputs)) return { ok: true };
@@ -66,7 +67,13 @@ export function exportAvailability(format, target, deps = {}) {
     return { ok: true };
   };
   const pandocNeed = [hasPandoc, m.exports_no_pandoc()];
-  const noRenderer = (name) => [compiler(name), m.exports_no_renderer({ name: name === "latex" ? "LaTeX" : name === "typst" ? "Typst" : "Markdown" })];
+  const noRenderer = (name) => [compiler(name), m.exports_no_renderer({ name: name === "latex" ? "LaTeX" : name === "typst" ? "Typst" : name === "org" ? "Org" : "Markdown" })];
+  // Org renders to one HTML page and has no PDF. Its Word file is Pandoc's
+  // reading of that HTML page, as for Markdown, so it needs no Org reader.
+  if (format === "org") {
+    if (target === "pdf") return { ok: false, reason: m.exports_org_no_pdf() };
+    return target === "html" ? needs(noRenderer("org")) : needs(noRenderer("org"), pandocNeed);
+  }
   if (format === "html") {
     if (target === "html") return { ok: true };
     return target === "pdf" ? needs(noRenderer("typst"), pandocNeed) : needs(pandocNeed);

@@ -1021,6 +1021,7 @@
   "exports_kind_not_exportable": "Ce type de fichier ne peut pas être exporté.",
   "exports_no_pandoc": "Ce déploiement n’offre pas Pandoc.",
   "exports_no_renderer": "Ce déploiement ne peut pas compiler les documents {name}.",
+  "exports_org_no_pdf": "Les documents Org n’ont pas de sortie PDF.",
   "exports_pdf_not_made": "Le PDF n’a pas pu être créé.",
   "exports_pdf_not_made_reason": "Le PDF n’a pas pu être créé : {message}",
   "extension_add_to_dictionary": "Ajouter au dictionnaire",

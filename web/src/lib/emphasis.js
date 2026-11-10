@@ -12,6 +12,10 @@ export const MARKUP = {
   typst: { bold: ["*", "*"], italic: ["_", "_"] },
   markdown: { bold: ["**", "**"], italic: ["*", "*"] },
   quarto: { bold: ["**", "**"], italic: ["*", "*"] },
+  // Org's bold is a single star, so it takes the wrapping path and not the
+  // star-run path Markdown uses. wrapEdit unwraps "*word*" when the selection
+  // is the word, or the whole "*word*".
+  org: { bold: ["*", "*"], italic: ["/", "/"] },
   html: { bold: ["<strong>", "</strong>"], italic: ["<em>", "</em>"] },
 };
 

@@ -320,6 +320,7 @@ impl Default for Configuration {
                 ".md",
                 ".markdown",
                 ".qmd",
+                ".org",
                 ".csl",
                 ".r",
                 ".py",
@@ -398,16 +399,26 @@ impl Default for Configuration {
             // own is a document like any other -- one that reaches its
             // figures and its bibliography only if it came with them, which
             // is what `publish <directory>` is for.
-            extensions: [".html", ".htm", ".md", ".markdown", ".qmd", ".typ", ".tex"]
-                .map(String::from)
-                .to_vec(),
+            extensions: [
+                ".html",
+                ".htm",
+                ".md",
+                ".markdown",
+                ".qmd",
+                ".org",
+                ".typ",
+                ".tex",
+            ]
+            .map(String::from)
+            .to_vec(),
             // HTML is a source format like the other two, and its renderer is
             // the identity: there is no longer a document without a source.
             // LaTeX is one with no renderer on this side at all -- the store
             // keeps the source, and a browser that has fetched a distribution
             // is the only thing anywhere that can make pages of it. Which is
-            // why `storable_source` and `renderers` are two questions.
-            source_formats: ["markdown", "quarto", "typst", "html", "latex"]
+            // why `storable_source` and `renderers` are two questions. Org is
+            // rendered in the browser by its own module, as Markdown is.
+            source_formats: ["markdown", "quarto", "org", "typst", "html", "latex"]
                 .map(String::from)
                 .to_vec(),
             caps: CapLimit {

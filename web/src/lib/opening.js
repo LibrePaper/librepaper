@@ -122,6 +122,31 @@ function typstNames(body) {
   return found.sort((a, b) => a.start - b.start).map((entry) => entry.name);
 }
 
+// The names `#+INCLUDE:` and `#+SETUPFILE:` point at. The keyword is
+// case-insensitive, and the target is the first argument, optionally in double
+// quotes. A `::search` suffix names a place inside the file, not another file,
+// so it is dropped; a URL is not a file of the project and is ignored.
+function orgNames(body) {
+  const names = [];
+  for (const raw of body.split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    const trimmed = line.replace(/^\s+/, "");
+    if (!trimmed.startsWith("#+")) continue;
+    const keyword = trimmed.slice(2);
+    const colon = keyword.indexOf(":");
+    if (colon < 0) continue;
+    const key = keyword.slice(0, colon).toLowerCase();
+    if (key !== "include" && key !== "setupfile") continue;
+    const argument = keyword.slice(colon + 1).replace(/^\s+/, "");
+    const target = argument.startsWith('"')
+      ? argument.slice(1).split('"')[0]
+      : argument.split(/\s+/)[0];
+    const file = target.split("::")[0].trim();
+    if (file && !file.includes("://")) names.push(file);
+  }
+  return names;
+}
+
 function shortcodeNames(body) {
   const names = [];
   let rest = body;
@@ -141,6 +166,7 @@ function shortcodeNames(body) {
 function includedNames(format, body) {
   if (format === "latex") return latexNames(stripLatexComments(body));
   if (format === "typst") return typstNames(body);
+  if (format === "org") return orgNames(body);
   if (format === "quarto" || format === "markdown") return shortcodeNames(body);
   return [];
 }
@@ -203,6 +229,7 @@ export function rendersAlone(path, texts, includers = includersOf(texts)) {
     case "latex":
       return Object.hasOwn(texts, path) && hasDocumentClass(texts[path]);
     case "typst":
+    case "org":
       return !included;
     case "quarto":
     case "markdown":

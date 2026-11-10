@@ -7,10 +7,11 @@
  * the editor's live index; when absent, completion indexes `texts` itself.
  * @typedef {{
  *   path: string,
- *   format: "latex"|"typst"|"markdown"|"quarto"|"html"|"",
+ *   format: "latex"|"typst"|"markdown"|"quarto"|"org"|"html"|"",
  *   texts: Record<string, string>,
  *   files: string[],
  *   labels?: (options: { first?: string, formats?: Set<string> }) => Array<{ id: string, path: string, line: number, title?: string }>,
+ *   entries?: () => Array<{ key: string }>,
  * }} CompletionProject
  */
 /** @typedef {() => CompletionProject} ProjectAccessor */

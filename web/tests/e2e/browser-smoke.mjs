@@ -350,6 +350,7 @@ async function vimKeys(tab, sequence) {
 /* ----------------------------------------------------------------- the run */
 
 const MARKDOWN = "# A Paper\n\nThe first paragraph.\n";
+const ORG = "#+TITLE: An Org Paper\n\n* TODO Methods\n\nThe org paragraph with *bold* and $x^2$.\n";
 
 async function run() {
   await requiredUntil("the server", async () => (await fetch(`${BASE}/api/config`)).ok);
@@ -419,6 +420,46 @@ async function run() {
     await wait(100);
   }
   check("the preview advances during continuous typing", liveWhileTyping);
+
+  /* --- 1b. Org: the same loop for an Org document --- */
+
+  // Org is rendered to HTML in the browser by a WebAssembly module, the same
+  // way Markdown is, so the same loop must hold for it.
+  const orgDoc = await deployment.publish({
+    title: "An Org Paper",
+    source: ORG,
+    source_format: "org",
+  });
+  const orgSlug = orgDoc.slug;
+  const orgEditor = await openTab(`${BASE}/docs/${orgSlug}`, [
+    SESSION,
+  ], { ownProfile: true });
+  const orgPainted = await until("the Org frame is painted", async () =>
+    (await orgEditor.evalInFrame("return document.body.innerText", orgSlug))?.includes("The org paragraph with bold"),
+  );
+  check(
+    "an Org document is rendered into the frame",
+    orgPainted,
+    orgPainted ? "" : `console: ${orgEditor.console.slice(-3).join(" | ")}`,
+  );
+
+  const orgTodo = await orgEditor.evalInFrame(`return document.querySelector("span.todo")?.textContent`, orgSlug);
+  check("an Org headline shows its TODO keyword", orgTodo === "TODO", String(orgTodo));
+
+  const orgMath = await until("the Org math is typeset", () =>
+    orgEditor.evalInFrame(`return Boolean(document.querySelector(".katex"))`, orgSlug),
+    10000,
+  );
+  check("Org math is typeset in the frame", Boolean(orgMath));
+
+  await appendText(orgEditor, "\n\nAn org sentence typed in the browser.\n");
+  const orgTyped = await until("typing reaches the Org frame", async () =>
+    (await orgEditor.evalInFrame("return document.body.innerText", orgSlug))?.includes("typed in the browser"),
+  );
+  check("what is typed in an Org document is rendered into the frame", orgTyped);
+
+  // The tab stays open: the existing sections never close a tab; the browser
+  // itself is closed at the end of the run.
 
   /* --- 2. read-only live updates ------------------------------------------ */
 

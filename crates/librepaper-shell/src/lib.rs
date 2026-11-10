@@ -29,11 +29,12 @@ struct Pin {
     prefix: &'static str,
 }
 
-/// The renderers and the editor fonts, which are not in the binary. The five
+/// The renderers and the editor fonts, which are not in the binary. The eight
 /// `wasm` modules are fetched by the page that renders with them; the `fonts`
 /// files are the faces the editor offers, each fetched when it is used.
 const PINS: &[Pin] = &[
     pin("markdown.wasm", "wasm"),
+    pin("org.wasm", "wasm"),
     pin("bibliography.wasm", "wasm"),
     pin("citations.wasm", "wasm"),
     pin("typst.wasm", "wasm"),
@@ -273,13 +274,14 @@ mod shell_tests {
             "typst-syntax",
             "pandoc",
             "harper",
+            "org",
         ] {
             assert_eq!(
                 modules[name],
                 format!("https://assets.example/wasm/{sha}/{name}.wasm")
             );
         }
-        assert_eq!(modules.as_object().unwrap().len(), 7);
+        assert_eq!(modules.as_object().unwrap().len(), 8);
     }
 
     #[test]

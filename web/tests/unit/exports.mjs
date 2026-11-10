@@ -36,6 +36,15 @@ const all = (...formats) => (format) => formats.includes(format);
   assert.equal(exportAvailability("latex", "rtf", rich).ok, false);
 }
 
+// Org renders to HTML and, through Pandoc, to Word; it has no PDF.
+{
+  const org = { pandoc: true, compiler: all("org") };
+  assert.deepEqual(exportAvailability("org", "html", org), { ok: true });
+  assert.equal(exportAvailability("org", "pdf", org).ok, false);
+  assert.deepEqual(exportAvailability("org", "docx", org), { ok: true });
+  assert.equal(exportAvailability("org", "docx", { pandoc: false, compiler: all("org") }).ok, false);
+}
+
 // A format that renders on this computer offers the files its command makes, whatever this browser can render.
 {
   // A deployment with no browser LaTeX, and Pandoc.
