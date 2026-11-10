@@ -1,7 +1,7 @@
 // Org's structural editing, read from the Lezer tree of ./org-language/parser.js:
 // promoting and demoting headlines and items, moving sections and items,
-// adding a heading or an item, cycling a TODO keyword, toggling a checkbox and
-// folding a section. Each edit is a state-level builder that returns a
+// adding a heading or an item, continuing a list on Enter, cycling a TODO
+// keyword, toggling a checkbox and folding a section. Each edit is a state-level builder that returns a
 // transaction spec, or null where it does not apply, so that the next binding
 // gets the key. The commands are thin wrappers that dispatch the spec on a view.
 
@@ -109,6 +109,14 @@ function moveEdit(state, up) {
 
 /* ------------------------------------------------------- new heading */
 
+// The bullet a new item after `item` starts with: the same bullet, or a number one higher.
+function nextBullet(state, item) {
+  const bullet = child(item, "ListBullet");
+  const text = state.sliceDoc(bullet.from, bullet.to);
+  const numbered = /^(\d+)([.)])$/.exec(text);
+  return numbered ? `${Number(numbered[1]) + 1}${numbered[2]}` : text;
+}
+
 // A new headline after the current section, at its level, or a new item after
 // the current item. The item keeps its bullet (a number goes up by one) and
 // its checkbox, which starts empty.
@@ -118,17 +126,42 @@ function newHeadingEdit(state) {
   if (item) {
     const line = state.doc.lineAt(item.from);
     const lead = line.text.slice(0, item.from - line.from);
-    const bullet = state.sliceDoc(child(item, "ListBullet").from, child(item, "ListBullet").to);
-    const numbered = /^(\d+)([.)])$/.exec(bullet);
-    const next = numbered ? `${Number(numbered[1]) + 1}${numbered[2]}` : bullet;
     const box = child(item, "Checkbox") ? "[ ] " : "";
-    const insert = "\n" + lead + next + " " + box;
+    const insert = "\n" + lead + nextBullet(state, item) + " " + box;
     return { changes: { from: item.to, insert }, selection: { anchor: item.to + insert.length } };
   }
   const section = enclosing(state, pos, "Section");
   if (!section) return null;
   const insert = "\n" + "*".repeat(levelOf(child(section, "Headline"))) + " ";
   return { changes: { from: section.to, insert }, selection: { anchor: section.to + insert.length } };
+}
+
+// Enter in a list item starts the next item, as Markdown's list continuation
+// does. The text after the caret moves onto the new item. An item with no text
+// ends the list: its bullet and checkbox go, and the line keeps its indentation.
+// A description item (`- term :: text`) continues with its bullet alone.
+// Anywhere else this returns null, so the Org Enter runs.
+function continueListEdit(state) {
+  const { main } = state.selection;
+  if (!main.empty) return null;
+  const item = listItemOn(state, main.head);
+  if (!item) return null;
+  const bullet = child(item, "ListBullet");
+  const box = child(item, "Checkbox");
+  const head = box ? box.to : bullet.to;
+  if (main.head < head) return null;
+  const line = state.doc.lineAt(item.from);
+  if (!state.sliceDoc(head, line.to).trim()) {
+    return { changes: { from: bullet.from, to: line.to }, selection: { anchor: bullet.from } };
+  }
+  const lead = line.text.slice(0, bullet.from - line.from);
+  const described = child(item, "ListTag") !== null;
+  const marker = nextBullet(state, item) + " " + (box && !described ? "[ ] " : "");
+  // The blanks where the caret splits the text are dropped, so the moved text starts at its first word.
+  let to = main.head;
+  while (to < line.to && /[ \t]/.test(state.sliceDoc(to, to + 1))) to++;
+  const insert = "\n" + lead + marker;
+  return { changes: { from: main.head, to, insert }, selection: { anchor: main.head + insert.length } };
 }
 
 /* ----------------------------------------------------- TODO keywords */
@@ -222,6 +255,7 @@ export const demoteSubtree = command((state) => levelEdit(state, 1, true));
 export const moveUp = command((state) => moveEdit(state, true));
 export const moveDown = command((state) => moveEdit(state, false));
 export const newHeading = command(newHeadingEdit);
+export const continueList = command(continueListEdit);
 export const todoNext = command((state) => todoEdit(state, true));
 export const todoPrevious = command((state) => todoEdit(state, false));
 export const toggleCheckbox = command(checkboxEdit);
@@ -251,6 +285,7 @@ export const orgKeymap = [
   { key: "Alt-ArrowUp", run: moveUp },
   { key: "Alt-ArrowDown", run: moveDown },
   { key: "Alt-Enter", run: newHeading },
+  { key: "Enter", run: continueList },
   { key: "Shift-ArrowRight", run: todoNext },
   { key: "Shift-ArrowLeft", run: todoPrevious },
   { key: "Tab", run: foldCycle },
