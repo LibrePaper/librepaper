@@ -27,13 +27,12 @@ if (!existsSync(wasm)) {
     assert.deepEqual(typstTableKeymap.map((binding) => binding.key), ["Tab", "Shift-Tab"]);
   });
 
-  test("Tab moves to the next cell's inside start", () => {
+  test("Tab moves to the next cell and selects its text", () => {
     const doc = "#table(\n  columns: 3,\n  [a], [b], [c],\n)";
     const { handled, state } = press(nextTableCell, doc, { at: doc.indexOf("[a]") + 1, extensions: extensions() });
     assert.equal(handled, true);
     assert.equal(state.doc.toString(), doc);
-    assert.deepEqual(state.selection.main.from, doc.indexOf("[b]") + 1);
-    assert.equal(state.selection.main.empty, true);
+    assert.deepEqual([state.selection.main.from, state.selection.main.to], [doc.indexOf("[b]") + 1, doc.indexOf("[b]") + 2]);
   });
 
   test("Tab from inside a cell's text moves on and selects the next cell's text", () => {
@@ -99,7 +98,7 @@ if (!existsSync(wasm)) {
     const at = doc.indexOf("[a]") + 1;
     const { handled, state } = press(nextTableCell, doc, { at, extensions: extensions() });
     assert.equal(handled, true);
-    assert.equal(state.selection.main.head, doc.indexOf("[b]") + 1);
+    assert.equal(state.selection.main.from, doc.indexOf("[b]") + 1);
   });
 
   test("outside a table the commands return false and change nothing", () => {
