@@ -1,6 +1,8 @@
 // The language a source declares for itself. Harper only knows English, so the
 // editor asks this before running it and stays quiet on a document written in
 // French or German.
+import { orgTree } from "../source-trees.js";
+
 const SCAN = 20000;
 
 // Babel and polyglossia names for English, besides anything that starts with "en".
@@ -45,14 +47,23 @@ function markdown(text) {
   return null;
 }
 
-// The first `#+LANGUAGE:` keyword in the head. Keywords are read in any case,
-// and the head is where a file keeps them.
+// The first `#+LANGUAGE:` keyword in the head, read from the Org tree so one
+// inside a source block does not count. Keywords are read in any case.
 function org(text) {
-  for (const line of text.split(/\r?\n/)) {
-    const lang = /^[ \t]*#\+language:[ \t]*(\S+)/i.exec(line);
-    if (lang) return lang[1];
-  }
-  return null;
+  let found = null;
+  orgTree(text).iterate({
+    enter(ref) {
+      if (found !== null) return false;
+      if (ref.name !== "Keyword") return ref.name === "Document" || ref.name === "Section";
+      const key = ref.node.getChild("KeywordKey");
+      const value = ref.node.getChild("KeywordValue");
+      if (key && value && text.slice(key.from, key.to).toUpperCase() === "LANGUAGE") {
+        found = text.slice(value.from, value.to).split(/\s/)[0] || null;
+      }
+      return false;
+    },
+  });
+  return found;
 }
 
 function html(text) {

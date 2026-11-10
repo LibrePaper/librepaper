@@ -6,6 +6,7 @@
 // both pass `web/tests/fixtures/opening.json`.
 
 import { formatOf } from "./formats.js";
+import { orgTree } from "./source-trees.js";
 import { compareUtf8 } from "./projection-digest.js";
 
 function baseName(path) {
@@ -128,22 +129,22 @@ function typstNames(body) {
 // so it is dropped; a URL is not a file of the project and is ignored.
 function orgNames(body) {
   const names = [];
-  for (const raw of body.split("\n")) {
-    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
-    const trimmed = line.replace(/^\s+/, "");
-    if (!trimmed.startsWith("#+")) continue;
-    const keyword = trimmed.slice(2);
-    const colon = keyword.indexOf(":");
-    if (colon < 0) continue;
-    const key = keyword.slice(0, colon).toLowerCase();
-    if (key !== "include" && key !== "setupfile") continue;
-    const argument = keyword.slice(colon + 1).replace(/^\s+/, "");
-    const target = argument.startsWith('"')
-      ? argument.slice(1).split('"')[0]
-      : argument.split(/\s+/)[0];
-    const file = target.split("::")[0].trim();
-    if (file && !file.includes("://")) names.push(file);
-  }
+  orgTree(body).iterate({
+    enter(ref) {
+      if (ref.name !== "Keyword") return;
+      const key = ref.node.getChild("KeywordKey");
+      const value = ref.node.getChild("KeywordValue");
+      if (!key || !value) return;
+      const name = body.slice(key.from, key.to).toLowerCase();
+      if (name !== "include" && name !== "setupfile") return;
+      const argument = body.slice(value.from, value.to);
+      const target = argument.startsWith('"')
+        ? argument.slice(1).split('"')[0]
+        : argument.split(/\s+/)[0];
+      const file = target.split("::")[0].trim();
+      if (file && !file.includes("://")) names.push(file);
+    },
+  });
   return names;
 }
 

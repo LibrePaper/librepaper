@@ -9,7 +9,7 @@ import { sourceFormatOf } from "./formats.js";
 import { pandocExtensions } from "./pandoc-markdown.js";
 import { quartoOptions } from "./quarto-options.js";
 import { latex } from "./latex-language/index.js";
-import { org } from "./org-language.js";
+import { org } from "./org-language/index.js";
 
 /** Resolve an exact language name for a Markdown or Quarto code fence. */
 export function codeLanguage(info) {

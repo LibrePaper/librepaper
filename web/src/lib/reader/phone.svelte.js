@@ -173,8 +173,8 @@ export function createPhone({
   const phoneChrome = $derived.by(() => (arrangement.compact ? [
     tabsShown ? "env(safe-area-inset-top)" : "",
     modeSwitchShown && !barHidden() ? "2.75rem" : "",
-    tabBarShown ? "3.5rem + env(safe-area-inset-bottom)" : "",
-    !tabBarShown && !arrangement.state.keyboardOpen ? "env(safe-area-inset-bottom)" : "",
+    tabBarShown && !barHidden() ? "3.5rem + env(safe-area-inset-bottom)" : "",
+    (!tabBarShown || barHidden()) && !arrangement.state.keyboardOpen ? "env(safe-area-inset-bottom)" : "",
     keyboardBarShown ? "2.75rem" : "",
     arrangement.state.keyboardOpen ? "var(--librepaper-keyboard, 0px)" : "",
   ].filter(Boolean).join(" + ") || "0px" : "0px"));

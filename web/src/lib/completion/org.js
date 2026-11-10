@@ -1,6 +1,7 @@
 // Completion for Org sources: citation keys, cross-reference targets, file
 // paths, block names and keywords. Declines unless the edited file is Org.
 import { orgMasked } from "../citation-keys.js";
+import { orgTree } from "../source-trees.js";
 import { bibliographyCompletion } from "../bibliography.js";
 import { dirname, normalizePath, pathOptions } from "./paths.js";
 
@@ -13,10 +14,6 @@ const INCLUDE = /^\s*#\+INCLUDE:\s*"([^"\n]*)$/i;
 const BIBLIOGRAPHY = /^\s*#\+BIBLIOGRAPHY:[ \t]*"?([^"\n]*)$/i;
 const BLOCK = /^\s*#\+BEGIN_(\w*)$/i;
 const KEYWORD = /^\s*#\+(\w*)$/;
-const TARGET = /<<([^<>\s]+)>>/g;
-const NAME = /^\s*#\+NAME:\s*(\S+)/i;
-const CUSTOM_ID = /^\s*:CUSTOM_ID:\s*(\S+)/i;
-const HEADING = /^\*+\s+(.*?)\s*$/;
 
 const BLOCKS = ["SRC", "QUOTE", "EXAMPLE", "VERSE", "CENTER", "COMMENT", "EXPORT"];
 const KEYWORDS = ["TITLE:", "AUTHOR:", "DATE:", "CAPTION:", "NAME:", "OPTIONS:", "INCLUDE:", "BIBLIOGRAPHY:", "LANGUAGE:", "TOC:"];
@@ -44,17 +41,38 @@ export function orgLabels(texts = {}, first = "") {
     labels.push({ label, type, detail: `${path}:${line}`, ...(info ? { info } : {}) });
   };
   for (const path of ordered) {
-    const lines = orgMasked(String(texts[path] ?? "")).split("\n");
+    const text = String(texts[path] ?? "");
+    const lineOf = (offset) => {
+      let line = 1;
+      for (let at = text.indexOf("\n"); at >= 0 && at < offset; at = text.indexOf("\n", at + 1)) line++;
+      return line;
+    };
+    const slice = (node) => text.slice(node.from, node.to);
     let title = "";
-    lines.forEach((line, index) => {
-      const heading = line.match(HEADING);
-      if (heading) title = heading[1];
-      const number = index + 1;
-      for (const target of line.matchAll(TARGET)) add(target[1], "variable", path, number, "");
-      const name = line.match(NAME);
-      if (name) add(name[1], "variable", path, number, "");
-      const id = line.match(CUSTOM_ID);
-      if (id) add(`#${id[1]}`, "heading", path, number, title);
+    orgTree(text).iterate({
+      enter(ref) {
+        const node = ref.node;
+        if (ref.name === "Headline") {
+          const heading = node.getChild("Title");
+          title = heading ? slice(heading).trim() : "";
+        } else if (ref.name === "Target") {
+          add(text.slice(ref.from + 2, ref.to - 2), "variable", path, lineOf(ref.from), "");
+        } else if (ref.name === "Keyword") {
+          const key = node.getChild("KeywordKey");
+          const value = node.getChild("KeywordValue");
+          if (key && value && slice(key).toLowerCase() === "name") {
+            const name = slice(value).split(/\s+/)[0];
+            if (name) add(name, "variable", path, lineOf(ref.from), "");
+          }
+        } else if (ref.name === "Property") {
+          const key = node.getChild("PropertyKey");
+          const value = node.getChild("PropertyValue");
+          if (key && value && slice(key).toLowerCase() === "custom_id") {
+            const id = slice(value).split(/\s+/)[0];
+            if (id) add(`#${id}`, "heading", path, lineOf(ref.from), title);
+          }
+        }
+      },
     });
   }
   return labels;

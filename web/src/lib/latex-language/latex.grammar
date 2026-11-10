@@ -13,14 +13,25 @@
 // that matches its own \begin. The tokenizers ask the parser what it can
 // shift (stack.canShift) rather than keeping a state of their own.
 //
+// Text mode also splits the characters that other tools need to see as nodes:
+// ligatures (`` '' --- -- ` '), the tie (~) and square brackets that no
+// optional argument claimed. Whether `[...]` after a macro is an argument
+// depends on the macro's signature, which the grammar does not know, so
+// OptOpen/OptClose bind only directly after a control word and every other
+// bracket is an OpenBracket or CloseBracket node. Math keeps all of these as
+// plain Text.
+//
 // Text and math are separate item sets so that the tokenizers can tell which
 // one they are in: a `$` inside a group inside \( ... \) is not math syntax.
+
+@context trackEnvironments from "./tokens.js"
 
 @top Document { item* }
 
 item {
   Comment | Command | Environment | MathEnvironment | VerbatimEnvironment |
-  InlineMath | DisplayMath | Group | Verb | Text
+  InlineMath | DisplayMath | Group | Verb | Text |
+  Ligature | Tie | OpenBracket | CloseBracket
 }
 
 mathItem {
@@ -39,9 +50,10 @@ Command {
 // token from tokens.js) ends it there, or at a } that belongs to an enclosing group.
 OptionalArgument { OptOpen item* (OptClose | ImplicitClose) }
 
-Group { OpenBrace item* CloseBrace }
+// An unclosed group ends (ImplicitClose) at the \end of an environment that was opened outside it.
+Group { OpenBrace item* (CloseBrace | ImplicitClose) }
 
-MathGroup { OpenBrace mathItem* CloseBrace }
+MathGroup { OpenBrace mathItem* (CloseBrace | ImplicitClose) }
 
 BeginEnv { BeginKw OpenBrace EnvName CloseBrace }
 MathBeginEnv { MathBeginKw OpenBrace EnvName CloseBrace }
@@ -101,6 +113,10 @@ DisplayMath {
   OptClose,
   ImplicitClose,
   UrlArg,
+  Ligature,
+  Tie,
+  OpenBracket,
+  CloseBracket,
   Text
 }
 

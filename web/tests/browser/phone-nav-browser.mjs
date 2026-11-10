@@ -363,6 +363,26 @@ try {
   assert.equal(await b.evaluate('document.querySelectorAll(".mobile-mode-switch [aria-selected=true]").length'), 1);
   assert.ok(Math.abs(await b.evaluate('document.querySelector(".cm-scroller").scrollTop') - top) < 2, 'the source keeps its scroll');
 
+  // g2. Scrolling down sets the tab bar aside with the mode switch; scrolling up brings both back.
+  await toMode('source');
+  for (const top of [0, 200, 400, 600]) {
+    await b.evaluate(`document.querySelector(".cm-scroller").scrollTop = ${top}`);
+    await flush();
+  }
+  await wait(260);
+  await until('tab bar steps aside', () => b.evaluate(`document.querySelector(".mobile-tab-bar").classList.contains("hidden")`), 3000);
+  assert.equal(await b.evaluate(`document.querySelector(".mobile-mode-switch").classList.contains("collapsed")`), true, 'the mode switch steps aside too');
+  assert.ok(await b.evaluate(`document.querySelector("main.reader").getBoundingClientRect().bottom > innerHeight - 20`), 'the workspace grows into the space the bar leaves');
+  for (const top of [400, 200]) {
+    await b.evaluate(`document.querySelector(".cm-scroller").scrollTop = ${top}`);
+    await flush();
+  }
+  await wait(260);
+  await until('tab bar comes back', () => b.evaluate(`!document.querySelector(".mobile-tab-bar").classList.contains("hidden")`), 3000);
+  assert.equal(await b.evaluate(`document.querySelector(".mobile-mode-switch").classList.contains("collapsed")`), false, 'the mode switch comes back with the bar');
+  await b.evaluate(`document.querySelector(".cm-scroller").scrollTop = 0`);
+  await flush();
+
   // h. File, Edit, View and Insert are lists, not menus hanging from a trigger.
   for (const id of ['file', 'edit', 'view', 'insert']) {
     await toMode('source');

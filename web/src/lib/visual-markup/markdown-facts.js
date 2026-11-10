@@ -49,15 +49,13 @@ const idOfAttributes = (body, attributes) => {
 };
 
 // Whether an Attributes node labels an element that Quarto numbers: a fenced
-// div, display math, an image, or a table caption (a line that starts with ": ").
-function labelsElement(body, attributes) {
+// div, display math, an image, or a table caption.
+function labelsElement(attributes) {
   const parent = attributes.parent;
   if (parent?.name === "FencedDiv" || parent?.name === "DisplayMath") return true;
   const before = attributes.prevSibling?.name;
   if (before === "Image" || before === "DisplayMath") return true;
-  if (parent?.name !== "Paragraph") return false;
-  const line = body.lastIndexOf("\n", attributes.from - 1) + 1;
-  return body[line] === ":" && (body[line + 1] === " " || body[line + 1] === "\t");
+  return parent?.name === "TableCaption";
 }
 
 // The things the scan reacts to, in the order they occur in the tree: headings,
@@ -113,7 +111,7 @@ function eventsOf(source, path) {
         return;
       }
       if (name === "Attributes") {
-        if (labelsElement(body, node)) events.push({ at: node.from, type: "label", id: idOfAttributes(body, node) });
+        if (labelsElement(node)) events.push({ at: node.from, type: "label", id: idOfAttributes(body, node) });
         return false;
       }
       if (name === "CitationKey") {

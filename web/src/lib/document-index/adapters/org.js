@@ -1,121 +1,42 @@
-// The adapter for Org-mode sources. Headings come from the outline. Labels
-// (<<targets>>, :CUSTOM_ID: properties and #+NAME keywords), figures, tables,
-// citations, bibliography files and includes are read line by line here, so
-// that nothing inside a source, example, export or comment block is reported.
+// The adapter for Org-mode sources. It walks the Org syntax tree
+// (org-language/parser.js), so nothing inside a source, example, export or
+// comment block is reported, and no regex searches the source for syntax.
+// Headings come from the outline, labels (<<targets>>, :CUSTOM_ID: properties
+// and #+NAME keywords), image links, citations, bibliography files and
+// includes from the tree. A regex below only reads the text of one node.
 // Pure: same text, same items. No DOM, no project access, so it runs in Node as
 // well as the browser.
 
+import { orgTree } from "../../source-trees.js";
 import { extractOutline } from "../../outline.js";
 
 /** @typedef {import("../schema.js").IndexItem} IndexItem */
-/** @typedef {{ first: number, last: number, name: string, lang: string }} CodeBlock */
+/** @typedef {import("@lezer/common").SyntaxNode} SyntaxNode */
 
 // Blocks whose content is code or a comment: nothing in them is indexed.
 const CODE_BLOCKS = new Set(["src", "example", "export", "comment"]);
-const BLOCK_BEGIN = /^[ \t]*#\+begin_(\w+)(?:[ \t]+(\S+))?/i;
-const BLOCK_END = /^[ \t]*#\+end_(\w+)\b/i;
-const DRAWER_OPEN = /^[ \t]*:([\w-]+):[ \t]*$/;
-const DRAWER_END = /^[ \t]*:END:[ \t]*$/i;
-const HEADLINE = /^\*+[ \t]+/;
-const KEYWORD = /^[ \t]*#\+[\w-]+(?:\[[^\]]*\])?:/;
-const NAME = /^([ \t]*#\+name:[ \t]*)(\S.*?)[ \t]*$/i;
-const CAPTION = /^[ \t]*#\+caption(?:\[[^\]]*\])?:[ \t]*(.*?)[ \t]*$/i;
-const CUSTOM_ID = /^([ \t]*:CUSTOM_ID:[ \t]+)(\S+)[ \t]*$/i;
-const INCLUDE = /^([ \t]*#\+include:[ \t]*)(.*)$/i;
-const BIBLIOGRAPHY = /^([ \t]*#\+bibliography:[ \t]*)(.*)$/i;
-const TABLE_ROW = /^[ \t]*\|/;
-const TARGET = /<<([^>\n]+)>>/g;
-const LINK = /\[\[([^[\]\n]+)\](?:\[[^[\]\n]*\])?\]/g;
 const IMAGE_EXTENSION = /\.(?:png|jpe?g|gif|svg|webp|pdf)$/i;
-const CITE = /\[cite(?:\/[^:\]\n]*)?:([^\]\n]*)\]/g;
-const CITE_KEY = /(?:^|[\s;])@([\p{L}\p{N}_\-.:+]*[\p{L}\p{N}_+])/gu;
 
 /**
- * Lines with their offsets. Separators are not part of any line.
+ * The start of the line that holds `from`, when `from` follows only blanks.
  * @param {string} text
- * @returns {Array<{ from: number, to: number, text: string }>}
+ * @param {number} from
+ * @returns {number}
  */
-function splitLines(text) {
-  const lines = [];
-  let from = 0;
-  const pattern = /\r\n|\r|\n/g;
-  for (const match of text.matchAll(pattern)) {
-    lines.push({ from, to: match.index, text: text.slice(from, match.index) });
-    from = match.index + match[0].length;
-  }
-  lines.push({ from, to: text.length, text: text.slice(from) });
-  return lines;
+function lineStart(text, from) {
+  while (from > 0 && (text[from - 1] === " " || text[from - 1] === "\t")) from--;
+  return from;
 }
 
 /**
- * Code blocks, and which lines are hidden from indexing: the lines of a code
- * or comment block, delimiters included. Also the property drawer name of
- * each line inside a drawer.
- * @param {Array<{ from: number, to: number, text: string }>} lines
- * @returns {{ hidden: Uint8Array, drawerOf: string[], codeBlocks: CodeBlock[] }}
+ * The text of a node's first child with this name, or undefined.
+ * @param {string} text
+ * @param {SyntaxNode} node
+ * @param {string} name
  */
-function classify(lines) {
-  const hidden = new Uint8Array(lines.length);
-  const drawerOf = new Array(lines.length).fill("");
-  /** @type {CodeBlock[]} */
-  const codeBlocks = [];
-  /** @type {{ name: string, line: number, lang: string, code: boolean } | null} */
-  let block = null;
-  let drawer = "";
-  for (let i = 0; i < lines.length; i++) {
-    const text = lines[i].text;
-    if (block) {
-      if (block.code) hidden[i] = 1;
-      const end = BLOCK_END.exec(text);
-      if (end && end[1].toLowerCase() === block.name) {
-        if (block.code) codeBlocks.push({ first: block.line, last: i, name: block.name, lang: block.lang });
-        block = null;
-      }
-      continue;
-    }
-    // A headline ends an open drawer, as Org does.
-    if (HEADLINE.test(text)) drawer = "";
-    if (drawer) {
-      if (DRAWER_END.test(text)) drawer = "";
-      else drawerOf[i] = drawer;
-      continue;
-    }
-    const begin = BLOCK_BEGIN.exec(text);
-    if (begin) {
-      const name = begin[1].toLowerCase();
-      block = { name, line: i, lang: begin[2] ?? "", code: CODE_BLOCKS.has(name) };
-      if (block.code) hidden[i] = 1;
-      continue;
-    }
-    if (HEADLINE.test(text)) continue;
-    const open = DRAWER_OPEN.exec(text);
-    if (open && open[1].toUpperCase() !== "END") drawer = open[1].toUpperCase();
-  }
-  // An unclosed code block runs to the end of the text.
-  if (block?.code) codeBlocks.push({ first: block.line, last: lines.length - 1, name: block.name, lang: block.lang });
-  return { hidden, drawerOf, codeBlocks };
-}
-
-/**
- * The range and code block items of one code block.
- * @param {Array<{ from: number, to: number, text: string }>} lines
- * @param {CodeBlock} block
- * @returns {IndexItem[]}
- */
-function codeItems(lines, block) {
-  const first = lines[block.first];
-  const last = lines[block.last];
-  /** @type {IndexItem[]} */
-  const items = [{ kind: "code", range: [first.from, last.to] }];
-  if (block.last > block.first) {
-    items.push({
-      kind: "block",
-      name: "code",
-      range: [first.to, last.from],
-      attrs: { lang: block.lang },
-    });
-  }
-  return items;
+function childText(text, node, name) {
+  const child = node.getChild(name);
+  return child ? text.slice(child.from, child.to) : undefined;
 }
 
 /**
@@ -137,228 +58,251 @@ function words(value, offset) {
 }
 
 /**
- * Image links on one line: [[file:a.png]], [[./a.png]] and [[a.png][text]].
- * Only a local path to an image counts. A `::suffix` is not part of the name.
+ * The image a Link node points to, or null: [[file:a.png]], [[./a.png]] and
+ * [[a.png][text]]. Only a local path to an image counts. A `::suffix` is not
+ * part of the name.
  * @param {string} text
- * @returns {Array<{ name: string, from: number, to: number, nameFrom: number, nameTo: number }>}
+ * @param {SyntaxNode} link
+ * @returns {{ name: string, nameFrom: number, nameTo: number } | null}
  */
-function imageLinks(text) {
-  const out = [];
-  for (const match of text.matchAll(LINK)) {
-    const target = match[1];
-    const prefixed = /^file:/i.test(target);
-    if (!prefixed && /^[A-Za-z][\w+.-]*:/.test(target)) continue;
-    const raw = prefixed ? target.slice(5) : target;
-    const name = raw.replace(/::.*$/, "");
-    if (!IMAGE_EXTENSION.test(name)) continue;
-    const nameFrom = match.index + 2 + (target.length - raw.length);
-    out.push({
-      name,
-      from: match.index,
-      to: match.index + match[0].length,
-      nameFrom,
-      nameTo: nameFrom + name.length,
-    });
-  }
-  return out;
+function imageLink(text, link) {
+  if (!text.startsWith("[[", link.from)) return null;
+  const targetNode = link.getChild("LinkTarget");
+  if (!targetNode) return null;
+  const target = text.slice(targetNode.from, targetNode.to);
+  const prefixed = /^file:/i.test(target);
+  if (!prefixed && /^[A-Za-z][\w+.-]*:/.test(target)) return null;
+  const raw = prefixed ? target.slice(5) : target;
+  const name = raw.replace(/::.*$/, "");
+  if (!IMAGE_EXTENSION.test(name)) return null;
+  const nameFrom = targetNode.from + (target.length - raw.length);
+  return { name, nameFrom, nameTo: nameFrom + name.length };
 }
 
 /**
- * The run of keyword lines (#+KEY: value) that holds line `i`, first and last
- * index inclusive. Hidden lines end a run.
- * @param {Array<{ text: string }>} lines
- * @param {Uint8Array} hidden
- * @param {number} i
- * @returns {[number, number]}
+ * The keyword's upper-cased name without an `[option]`, or "".
+ * @param {string} text
+ * @param {SyntaxNode} keyword
  */
-function keywordRun(lines, hidden, i) {
-  const keyword = (j) => j >= 0 && j < lines.length && !hidden[j] && KEYWORD.test(lines[j].text);
-  let first = i;
-  let last = i;
-  while (keyword(first - 1)) first--;
-  while (keyword(last + 1)) last++;
-  return [first, last];
+function keywordName(text, keyword) {
+  const key = childText(text, keyword, "KeywordKey") ?? "";
+  const at = key.indexOf("[");
+  return (at < 0 ? key : key.slice(0, at)).toUpperCase();
 }
 
 /**
- * The caption in a keyword run nearest to line `i`, or undefined.
- * @param {Array<{ text: string }>} lines
- * @param {Uint8Array} hidden
- * @param {[number, number]} run
- * @param {number} i
+ * The run of Keyword siblings, on consecutive lines, that holds `keyword`.
+ * @param {string} text
+ * @param {SyntaxNode} keyword
+ * @returns {SyntaxNode[]}
+ */
+function keywordRun(text, keyword) {
+  const adjacent = (a, b) => /^(?:\r\n|\r|\n)$/.test(text.slice(a.to, b.from));
+  const run = [keyword];
+  for (let n = keyword.prevSibling; n && n.name === "Keyword" && adjacent(n, run[0]); n = n.prevSibling) run.unshift(n);
+  for (let n = keyword.nextSibling; n && n.name === "Keyword" && adjacent(run[run.length - 1], n); n = n.nextSibling) run.push(n);
+  return run;
+}
+
+/**
+ * The caption in a keyword run nearest to the keyword at index `at`.
+ * @param {string} text
+ * @param {SyntaxNode[]} run
+ * @param {number} at
  * @returns {string | undefined}
  */
-function captionNear(lines, hidden, [first, last], i) {
+function captionNear(text, run, at) {
   let best;
   let bestDistance = Infinity;
-  for (let j = first; j <= last; j++) {
-    if (hidden[j]) continue;
-    const caption = CAPTION.exec(lines[j].text);
-    if (!caption || !caption[1]) continue;
-    const distance = Math.abs(j - i);
+  run.forEach((keyword, j) => {
+    if (keywordName(text, keyword) !== "CAPTION") return;
+    const caption = childText(text, keyword, "KeywordValue");
+    if (!caption) return;
+    const distance = Math.abs(j - at);
     if (distance < bestDistance) {
-      best = caption[1];
+      best = caption;
       bestDistance = distance;
     }
-  }
+  });
   return best;
 }
 
 /**
- * The element a #+NAME run names: a table (its rows) or a figure link (its
- * line), directly below the run. Null for anything else.
- * @param {Array<{ from: number, to: number, text: string }>} lines
- * @param {Uint8Array} hidden
- * @param {number} last index of the run's last line
+ * The element a #+NAME run names: a table (its rows) or a figure paragraph
+ * (its first line), directly below the run. Null for anything else.
+ * @param {string} text
+ * @param {SyntaxNode} last the run's last keyword
  * @returns {[number, number] | null}
  */
-function namedElement(lines, hidden, last) {
-  const next = last + 1;
-  if (next >= lines.length || hidden[next]) return null;
-  const text = lines[next].text;
-  if (TABLE_ROW.test(text)) {
-    let end = next;
-    while (end + 1 < lines.length && !hidden[end + 1] && TABLE_ROW.test(lines[end + 1].text)) end++;
-    return [lines[next].from, lines[end].to];
+function namedElement(text, last) {
+  const next = last.nextSibling;
+  if (!next || !/^(?:\r\n|\r|\n)$/.test(text.slice(last.to, next.from))) return null;
+  if (next.name === "Table") {
+    let end = next.from;
+    for (let row = next.firstChild; row; row = row.nextSibling) if (row.name === "TableRow" || row.name === "TableRule") end = row.to;
+    return end > next.from ? [next.from, end] : null;
   }
-  if (imageLinks(text).length) return [lines[next].from, lines[next].to];
+  if (next.name !== "Paragraph") return null;
+  const newline = text.slice(next.from, next.to).search(/[\r\n]/);
+  const to = newline < 0 ? next.to : next.from + newline;
+  const cursor = next.cursor();
+  do {
+    if (cursor.name === "Link" && cursor.from < to && imageLink(text, cursor.node)) return [next.from, to];
+  } while (cursor.next());
   return null;
 }
 
 /**
  * The index items of one Org-mode source.
  * @param {string} text
- * @param {string} _path unused: the Org adapter reads only the text
+ * @param {string} path the file path, the key of its parse
  * @returns {IndexItem[]}
  */
-export function orgAdapter(text, _path) {
+export function orgAdapter(text, path) {
   const source = String(text ?? "");
-  const lines = splitLines(source);
-  const { hidden, drawerOf, codeBlocks } = classify(lines);
+  const tree = orgTree(source, path);
   /** @type {IndexItem[]} */
   const items = [];
 
   // Headings, from the outline. The title of the latest one names a
   // property drawer's CUSTOM_ID.
-  /** @type {Map<number, string>} */
-  const titleAt = new Map();
-  for (const heading of extractOutline(source, "org")) {
-    const line = lines[heading.line - 1];
-    titleAt.set(heading.line - 1, heading.title);
-    items.push({
-      kind: "heading",
-      range: [heading.from, line.to],
-      level: heading.level,
-      title: heading.title,
-    });
-  }
-
-  for (const block of codeBlocks) items.push(...codeItems(lines, block));
-
+  const titleAt = new Map(extractOutline(source, "org").map((heading) => [heading.from, heading.title]));
   let title;
-  for (let i = 0; i < lines.length; i++) {
-    if (hidden[i]) continue;
-    const line = lines[i];
-    const value = line.text;
-    if (titleAt.has(i)) title = titleAt.get(i);
 
-    const name = NAME.exec(value);
-    if (name) {
-      const [first, last] = keywordRun(lines, hidden, i);
-      /** @type {IndexItem} */
-      const label = {
-        kind: "label",
-        name: name[2],
-        nameRange: [line.from + name[1].length, line.from + name[1].length + name[2].length],
-        range: namedElement(lines, hidden, last) ?? [line.from, line.to],
-      };
-      const caption = captionNear(lines, hidden, [first, last], i);
-      if (caption) label.title = caption;
-      items.push(label);
-      continue;
-    }
-
-    if (drawerOf[i] === "PROPERTIES") {
-      const id = CUSTOM_ID.exec(value);
-      if (id) {
-        const from = line.from + id[1].length;
-        /** @type {IndexItem} */
-        const label = {
-          kind: "label",
-          name: id[2],
-          nameRange: [from, from + id[2].length],
-          range: [line.from, line.to],
-        };
-        if (title !== undefined) label.title = title;
-        items.push(label);
-        continue;
+  tree.iterate({
+    enter(ref) {
+      const node = ref.node;
+      switch (ref.name) {
+        case "Headline": {
+          if (titleAt.has(ref.from)) {
+            title = titleAt.get(ref.from);
+            const stars = node.getChild("Stars");
+            items.push({
+              kind: "heading",
+              range: [lineStart(source, ref.from), ref.to],
+              level: stars ? stars.to - stars.from : 1,
+              title,
+            });
+          }
+          // The title holds targets, links and citations.
+          return;
+        }
+        case "Block": {
+          const begin = node.getChild("BlockBegin");
+          const end = node.getChild("BlockEnd");
+          const name = (begin ? childText(source, begin, "BlockName") ?? "" : "").toLowerCase();
+          if (!CODE_BLOCKS.has(name)) return;
+          const from = lineStart(source, ref.from);
+          items.push({ kind: "code", range: [from, ref.to] });
+          if (begin) {
+            const parameters = childText(source, begin, "BlockParameters") ?? "";
+            items.push({
+              kind: "block",
+              name: "code",
+              range: [begin.to, end ? lineStart(source, end.from) : ref.to],
+              attrs: { lang: parameters.split(/\s+/)[0] },
+            });
+          }
+          return false;
+        }
+        case "Property": {
+          const key = childText(source, node, "PropertyKey");
+          const value = node.getChild("PropertyValue");
+          if (key?.toUpperCase() !== "CUSTOM_ID" || node.parent?.name !== "PropertyDrawer" || !value) return;
+          const id = source.slice(value.from, value.to);
+          if (/\s/.test(id)) return;
+          /** @type {IndexItem} */
+          const label = {
+            kind: "label",
+            name: id,
+            nameRange: [value.from, value.to],
+            range: [lineStart(source, ref.from), ref.to],
+          };
+          if (title !== undefined) label.title = title;
+          items.push(label);
+          return;
+        }
+        case "Keyword": {
+          const name = keywordName(source, node);
+          const valueNode = node.getChild("KeywordValue");
+          if (!valueNode) return;
+          const value = source.slice(valueNode.from, valueNode.to);
+          if (name === "NAME") {
+            const run = keywordRun(source, node);
+            /** @type {IndexItem} */
+            const label = {
+              kind: "label",
+              name: value,
+              nameRange: [valueNode.from, valueNode.to],
+              range: namedElement(source, run[run.length - 1]) ?? [lineStart(source, ref.from), ref.to],
+            };
+            const caption = captionNear(source, run, run.findIndex((keyword) => keyword.from === ref.from));
+            if (caption) label.title = caption;
+            items.push(label);
+          } else if (name === "INCLUDE") {
+            const first = words(value, valueNode.from)[0];
+            if (first) {
+              const file = first.text.replace(/::.*$/, "");
+              items.push({
+                kind: "include",
+                name: file,
+                nameRange: [first.from, first.from + file.length],
+                range: [lineStart(source, ref.from), ref.to],
+              });
+            }
+          } else if (name === "BIBLIOGRAPHY") {
+            for (const word of words(value, valueNode.from)) {
+              if (word.text.startsWith(":")) break;
+              items.push({
+                kind: "bibliography",
+                name: word.text,
+                nameRange: [word.from, word.to],
+                range: [lineStart(source, ref.from), ref.to],
+              });
+            }
+          }
+          // A caption holds inline nodes, so it is walked for targets.
+          return name === "CAPTION" ? undefined : false;
+        }
+        case "Target": {
+          const target = source.slice(ref.from + 2, ref.to - 2);
+          if (!target.trim()) return;
+          items.push({
+            kind: "label",
+            name: target,
+            nameRange: [ref.from + 2, ref.to - 2],
+            range: [ref.from, ref.to],
+          });
+          return;
+        }
+        case "Link": {
+          const image = imageLink(source, node);
+          if (image) {
+            items.push({
+              kind: "asset",
+              name: image.name,
+              range: [ref.from, ref.to],
+              nameRange: [image.nameFrom, image.nameTo],
+            });
+          }
+          return;
+        }
+        case "Citation": {
+          for (let key = node.firstChild; key; key = key.nextSibling) {
+            if (key.name !== "CitationKey") continue;
+            items.push({
+              kind: "cite",
+              name: source.slice(key.from, key.to),
+              namespace: "cite",
+              range: [key.from, key.to],
+              nameRange: [key.from, key.to],
+            });
+          }
+          return false;
+        }
       }
-    }
-
-    const include = INCLUDE.exec(value);
-    if (include) {
-      const first = words(include[2], line.from + include[1].length)[0];
-      if (first) {
-        const name = first.text.replace(/::.*$/, "");
-        items.push({
-          kind: "include",
-          name,
-          nameRange: [first.from, first.from + name.length],
-          range: [line.from, line.to],
-        });
-      }
-      continue;
-    }
-
-    const bibliography = BIBLIOGRAPHY.exec(value);
-    if (bibliography) {
-      for (const word of words(bibliography[2], line.from + bibliography[1].length)) {
-        if (word.text.startsWith(":")) break;
-        items.push({
-          kind: "bibliography",
-          name: word.text,
-          nameRange: [word.from, word.to],
-          range: [line.from, line.to],
-        });
-      }
-      continue;
-    }
-
-    for (const match of value.matchAll(TARGET)) {
-      const target = match[1];
-      if (!target.trim()) continue;
-      const from = line.from + match.index + 2;
-      items.push({
-        kind: "label",
-        name: target,
-        nameRange: [from, from + target.length],
-        range: [line.from + match.index, line.from + match.index + match[0].length],
-      });
-    }
-
-    for (const link of imageLinks(value)) {
-      items.push({
-        kind: "asset",
-        name: link.name,
-        range: [line.from + link.from, line.from + link.to],
-        nameRange: [line.from + link.nameFrom, line.from + link.nameTo],
-      });
-    }
-
-    for (const match of value.matchAll(CITE)) {
-      const body = line.from + match.index + match[0].indexOf(":") + 1;
-      for (const key of match[1].matchAll(CITE_KEY)) {
-        const from = body + key.index + key[0].length - key[1].length;
-        items.push({
-          kind: "cite",
-          name: key[1],
-          namespace: "cite",
-          range: [from, from + key[1].length],
-          nameRange: [from, from + key[1].length],
-        });
-      }
-    }
-  }
+    },
+  });
 
   return items.sort((a, b) => a.range[0] - b.range[0] || a.range[1] - b.range[1]);
 }

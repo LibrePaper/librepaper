@@ -27,6 +27,50 @@ adapter.
    across the project: everything that crosses files or needs names. This spec
    is about this layer.
 
+## One grammar per format
+
+Every format follows one rule. It has one grammar that recognizes every piece
+of syntax any feature cares about. Consumers read the tree. None of them
+searches source text for syntax.
+
+Four layers make the rule concrete:
+
+| Layer | Job | Per format |
+|---|---|---|
+| Grammar | all structure and syntax | one grammar: Lezer, or `typst-syntax` for Typst |
+| Catalog | meaning: command signatures, heading levels, accent marks, widget kinds | data tables |
+| Tree→Token mapper | turns nodes plus the catalog into the visual layer's Token model | a thin walker, `web/src/lib/visual-markup/languages/<format>/tree.ts` |
+| Other views | highlighting `styleTags`, index adapter, spellcheck, outline, facts | each a walk over the same tree, from `web/src/lib/source-trees.js` |
+
+**Reading text.** A consumer may interpret the text of a single node: an
+environment name, a fence info string, an attribute list, a `#| key: value`
+line in a code cell, or the character after an accent control symbol (TeX's
+own next-token rule). A consumer never scans across nodes looking for
+constructs. If a feature needs a construct the grammar lacks, the construct
+goes into the grammar.
+
+**TeX's macro-dependent syntax.** The grammar emits the lexical pieces:
+control sequences, groups, brackets, ligature and tie tokens. Whether `[...]`
+after a command is an optional argument depends on the macro's signature, so
+the catalog decides it, in the walker.
+
+**Regression net.** Visual tokens are pinned by the golden corpus in
+`web/tests/fixtures/visual-tokens/`, checked by
+`web/tests/unit/visual-tree-tokens.mjs`. After an intended change, run
+`web/tools/visual-golden.mjs` and review the golden diff.
+
+**Adding a format**, in this order:
+
+1. Write the grammar. It is ours, under MIT. Never bundle a GPL grammar.
+2. Wire it into `source-trees.js`.
+3. Add the catalog, the mapper, the `styleTags`, the index adapter and the
+   spellcheck skips.
+4. Add corpus files to the golden set.
+
+Org mode is next. It has an index adapter (`adapters/org.js`) and a
+highlighter (`web/src/lib/org-language.js`) but no grammar, so it starts at
+step 1.
+
 ## The index
 
 A file's index is a list of items. Positions are UTF-16 offsets into the
@@ -152,6 +196,11 @@ web/src/lib/document-index/
   writers.js         writeRef, writeCite, writeLabel per format
 web/src/lib/document-index-extensions/
   navigation.js  rename.js  diagnostics.js  hover.js
+web/src/lib/source-trees.js                          parsed tree per format, read by every view
+web/src/lib/latex-language/                          our LaTeX grammar (Lezer) and its parser
+web/src/lib/typst-language/                          Typst language support
+web/src/lib/pandoc-markdown.js                       Pandoc and Quarto extensions to the Markdown parser
+web/src/lib/visual-markup/languages/<format>/tree.ts tree-to-token mappers for the visual layer
 ```
 
 ## Migration

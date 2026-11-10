@@ -11,7 +11,8 @@ test("org outline lists headlines with their levels and cleaned titles", () => {
     "** TODO [#A] Methods :tag:",
     "* COMMENT hidden",
     "#+begin_src",
-    "* not a heading",
+    // As in Org, a starred line is a headline even inside a block (Org escapes it as ,*).
+    "* inside a block",
     "#+END_SRC",
     "*** Deep",
     "",
@@ -19,6 +20,7 @@ test("org outline lists headlines with their levels and cleaned titles", () => {
   assert.deepEqual(headings(source), [
     { title: "Intro", level: 1 },
     { title: "Methods", level: 2 },
+    { title: "inside a block", level: 1 },
     { title: "Deep", level: 3 },
   ]);
 });

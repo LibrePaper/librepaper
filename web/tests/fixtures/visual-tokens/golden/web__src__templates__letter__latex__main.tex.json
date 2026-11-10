@@ -14,18 +14,12 @@
     "to": 65
   },
   {
-    "args": [],
-    "from": 65,
-    "kind": "command",
-    "name": "documentclass",
-    "to": 79
-  },
-  {
-    "from": 79,
-    "kind": "text",
-    "to": 214
-  },
-  {
+    "args": [
+      {
+        "from": 215,
+        "to": 223
+      }
+    ],
     "body": {
       "from": 215,
       "to": 223
@@ -37,8 +31,15 @@
         "to": 223
       }
     ],
-    "from": 214,
-    "kind": "group",
+    "from": 65,
+    "kind": "command",
+    "name": "documentclass",
+    "options": [
+      {
+        "from": 80,
+        "to": 213
+      }
+    ],
     "to": 224
   },
   {

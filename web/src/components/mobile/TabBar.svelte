@@ -17,6 +17,11 @@
     onfiles = () => {},
     oncomments = () => {},
     onmore = () => {},
+    // While the page scrolls down the bar steps aside, like the mode switch.
+    // Focus landing in it brings it back, so a keyboard user is never left
+    // tabbing into an invisible bar.
+    hidden = false,
+    onreveal = () => {},
   } = $props();
 
   const moreLabel = $derived(offlineNote ? `${m.mobilenav_more()}, ${offlineNote}` : m.mobilenav_more());
@@ -24,7 +29,7 @@
 
 <!-- A div around the nav, not the nav itself: the page puts this directly under
      <body>, where the site bar's global `body > nav` rule would apply. -->
-<div class="mobile-tab-bar">
+<div class="mobile-tab-bar" class:hidden onfocusin={onreveal}>
   <nav aria-label={m.mobilenav_navigation()}>
     <button
       type="button"
@@ -93,6 +98,19 @@
     padding-inline: env(safe-area-inset-left) env(safe-area-inset-right);
     border-top: 1px solid var(--color-pane-edge);
     background: var(--color-shell);
+  }
+
+  /* The bar steps aside while the page scrolls down, with the mode switch, which
+     gives the document its room back. It comes back the moment focus lands in it. */
+  .mobile-tab-bar.hidden:not(:focus-within) {
+    transform: translateY(100%);
+    visibility: hidden;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .mobile-tab-bar {
+      transition: transform 180ms ease, visibility 180ms ease;
+    }
   }
 
   nav {
