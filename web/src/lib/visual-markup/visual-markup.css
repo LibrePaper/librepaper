@@ -6,6 +6,7 @@
 .cm-editor.cm-lp-visual {
   --font-mono: var(--editor-font-family, var(--font-editor));
   --doc-font: ui-serif, "Iowan Old Style", "Source Serif 4", Georgia, Cambria, serif;
+  --doc-font-size: 1.125em;
   --doc-line-height: 1.55;
   --doc-measure: 72ch;
   --doc-title-size: 1.9em;
@@ -26,6 +27,7 @@
   max-width: calc(var(--doc-measure) + var(--spacing) * 6);
   margin-inline: auto;
   font-family: var(--doc-font);
+  font-size: var(--doc-font-size);
   line-height: var(--doc-line-height);
 }
 
@@ -520,6 +522,19 @@
   max-width: 100%;
   padding: 0;
   line-height: 0;
+  text-align: center;
+}
+
+/* A left or right figure keeps its side: the image is as wide as its inline width
+   and sits at the edge the modifier names. */
+.cm-editor.cm-lp-visual .cm-line.cm-lv-figure-simple.cm-lv-figure-left .cm-lv-image { text-align: left; }
+.cm-editor.cm-lp-visual .cm-line.cm-lv-figure-simple.cm-lv-figure-right .cm-lv-image { text-align: right; }
+
+/* CodeMirror adds a zero-width image beside each widget to hold the caret. In a
+   column flex line each one would take a row of its own, so it is taken out of
+   flow instead. It is not display:none, which would take away the caret's place. */
+.cm-editor.cm-lp-visual .cm-line.cm-lv-figure-simple > .cm-widgetBuffer {
+  position: absolute;
 }
 
 .cm-editor.cm-lp-visual .cm-line.cm-lv-figure-simple .cm-lv-image img {

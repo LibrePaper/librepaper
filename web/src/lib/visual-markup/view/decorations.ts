@@ -410,11 +410,14 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
 const LINE_ELEMENT = 1;
 const LINE_ZERO = 2;
 const LINE_BLANK = 3;
+// A line that carries its own spacing: a widget block, a heading or a figure.
+const LINE_SPACED = 4;
 
 // A blank source line is paragraph spacing, not a line of text. Each unrevealed
 // whitespace-only line outside any styled or replaced block gets cm-lv-blank; the
-// rest of a run also gets -extra (collapsed), and a line beside a heading, widget,
-// pill, list or other styled line gets -tight (that element has its own spacing).
+// rest of a run also gets -extra (collapsed), and a line beside a spaced element
+// (a heading, figure, widget or pill, which pads itself) gets -tight. Other styled
+// lines, such as theorems and lists, have no padding, so they do not collapse a blank.
 // The kinds come from the decorations already built, so nothing is re-parsed.
 function markBlankLines(state: EditorState, decorations: CMRange<Decoration>[], revealed: Set<number>): void {
   const doc = state.doc;
@@ -423,16 +426,20 @@ function markBlankLines(state: EditorState, decorations: CMRange<Decoration>[], 
   for (const range of decorations) {
     const spec = range.value.spec;
     if (spec.block) {
-      // A hidden run with no summary is zero height; a widget or pill is an element.
-      const mark = spec.widget ? LINE_ELEMENT : LINE_ZERO;
+      // A hidden run with no summary is zero height; a widget or pill is a spaced element.
+      const mark = spec.widget ? LINE_SPACED : LINE_ZERO;
       const last = doc.lineAt(range.to).number;
-      for (let n = doc.lineAt(range.from).number; n <= last; n++) if (kind[n] !== LINE_ELEMENT) kind[n] = mark;
+      // A spaced line outranks a plain one, which outranks a zero-height line.
+      for (let n = doc.lineAt(range.from).number; n <= last; n++) {
+        if (kind[n] !== LINE_SPACED && (mark === LINE_SPACED || kind[n] !== LINE_ELEMENT)) kind[n] = mark;
+      }
     } else if (range.from === range.to && spec.class !== undefined && !spec.widget) {
       const n = doc.lineAt(range.from).number;
       if (spec.class === 'cm-lv-syntax-line') {
         if (kind[n] === 0) kind[n] = LINE_ZERO;
-      } else {
-        kind[n] = LINE_ELEMENT;
+      } else if (kind[n] !== LINE_SPACED) {
+        const isSpaced = spec.class.includes('cm-lv-heading') || spec.class.includes('cm-lv-figure');
+        kind[n] = isSpaced ? LINE_SPACED : LINE_ELEMENT;
       }
     }
   }
@@ -441,11 +448,12 @@ function markBlankLines(state: EditorState, decorations: CMRange<Decoration>[], 
     if (kind[n] === 0 && !revealed.has(n) && /^\s*$/.test(doc.line(n).text)) kind[n] = LINE_BLANK;
   }
 
-  // The nearest line that is neither zero height nor blank, from a line outward.
-  const element = (from: number, step: number): boolean => {
+  // The nearest line that is neither zero height nor blank, from a line outward,
+  // is a spaced element.
+  const spaced = (from: number, step: number): boolean => {
     for (let n = from; n >= 1 && n <= doc.lines; n += step) {
       if (kind[n] === LINE_ZERO) continue;
-      return kind[n] === LINE_ELEMENT;
+      return kind[n] === LINE_SPACED;
     }
     return false;
   };
@@ -462,7 +470,7 @@ function markBlankLines(state: EditorState, decorations: CMRange<Decoration>[], 
     for (let m = n + 1; m <= doc.lines && (kind[m] === LINE_BLANK || kind[m] === LINE_ZERO); m++) {
       if (kind[m] === LINE_BLANK) end = m;
     }
-    const tight = element(first - 1, -1) || element(end + 1, 1);
+    const tight = spaced(first - 1, -1) || spaced(end + 1, 1);
     for (let m = first; m <= end; m++) {
       if (kind[m] !== LINE_BLANK) continue;
       const extra = m !== first;

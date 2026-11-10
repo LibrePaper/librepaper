@@ -175,17 +175,16 @@ function style(token: Token): TokenStyle | null {
         const properties: string[] = [];
         if (color) properties.push(name === 'textcolor' ? `color:${color}` : `background-color:${color}`);
         if (border) properties.push(`box-shadow:inset 0 0 0 1px ${border}`);
+        // A figure's caption starts with its number, when the numbering pass has one. The
+        // caption class is matched before the catalog, so the number is added on this branch.
         return {
           class: known,
-          attributes: properties.length ? { style: properties.join(';') } : undefined
+          attributes: properties.length ? { style: properties.join(';') } : undefined,
+          ...(full === 'caption' ? { before: 'captionnum' } : {})
         };
       }
       const spec = COMMANDS.get(name);
-      if (spec) {
-        const style = commandStyle(spec.render);
-        // A figure's caption starts with its number, when the numbering pass has one.
-        return name === 'caption' && !token.star ? { ...style, before: 'captionnum' } : style;
-      }
+      if (spec) return commandStyle(spec.render);
       if (EDITABLE_COMMANDS.has(full)) return { class: 'cm-lv-cmd' };
       // A user macro is known only from the document: the widget expands it, or
       // draws nothing and the command shows as source.
