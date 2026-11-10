@@ -404,7 +404,8 @@ export function diagnostics(project, path) {
         .some(({ item: def }) => def !== item && def.attrs?.implicit !== "true");
       if (duplicated) report(item, "duplicate-label", []);
       if (namespace === "footnote") {
-        if (project.references("footnote", name, path).length === 0) report(item, "unused-footnote", []);
+        // An inline definition ([fn:x:text]) is used where it stands.
+        if (item.attrs?.inline !== "true" && project.references("footnote", name, path).length === 0) report(item, "unused-footnote", []);
       } else {
         const kind = targetKind(item);
         if (kind !== null && NUMBERED_TARGETS.has(kind) && project.references("label", name, path).length === 0) {

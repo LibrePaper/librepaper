@@ -484,7 +484,7 @@ export function orgAdapter(text, path) {
           const range = [ref.from, ref.to];
           items.push(
             source[label.to] === ":"
-              ? { kind: "label", namespace: "footnote", name, nameRange, range, attrs: { target: "footnote" } }
+              ? { kind: "label", namespace: "footnote", name, nameRange, range, attrs: { target: "footnote", inline: "true" } }
               : { kind: "ref", namespace: "footnote", name, nameRange, range },
           );
           return;

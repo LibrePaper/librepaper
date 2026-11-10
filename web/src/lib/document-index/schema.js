@@ -31,7 +31,7 @@
  *   level?: number,
  *   title?: string,
  *   namespace?: "label" | "cite" | "either" | "footnote",
- *   attrs?: Record<string, string>,
+ *   attrs?: Record<string, string>, // also inline: "true" on a footnote defined where it is used
  * }} IndexItem
  */
 
