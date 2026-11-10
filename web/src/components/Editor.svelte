@@ -635,6 +635,7 @@
     if (lower.endsWith(".typ")) return "typst";
     if (lower.endsWith(".md") || lower.endsWith(".markdown") || lower.endsWith(".qmd")) return "markdown";
     if (lower.endsWith(".tex") || lower.endsWith(".ltx")) return "latex";
+    if (lower.endsWith(".org")) return "org";
     return "";
   }
   function bibliographyEntries() { return parsedBibliography?.entries || []; }
