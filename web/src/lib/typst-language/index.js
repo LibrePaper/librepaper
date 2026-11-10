@@ -2,13 +2,14 @@
 // tree, for highlighting, folding and indentation. `typst()` starts with the
 // small stream mode and swaps the real tree in when the module has loaded; if
 // it never does, the stream mode simply stays.
-import { Compartment } from "@codemirror/state";
-import { ViewPlugin } from "@codemirror/view";
+import { Compartment, Prec } from "@codemirror/state";
+import { ViewPlugin, keymap } from "@codemirror/view";
 import { Language, LanguageSupport, StreamLanguage, foldService, syntaxTree } from "@codemirror/language";
 import { Parser } from "@lezer/common";
 import { typstLanguage as streamMode } from "../typst-mode.js";
 import { loadTypstSyntax, typstSyntax } from "./module.js";
 import { typstData } from "./props.js";
+import { typstTableKeymap } from "./table-keys.js";
 
 class TypstParser extends Parser {
   constructor(api) {
@@ -72,7 +73,7 @@ export function typstSupport(api) {
   let support = supports.get(api);
   if (!support) {
     const language = new Language(typstData, new TypstParser(api), [], "typst");
-    support = new LanguageSupport(language, [headingSections]);
+    support = new LanguageSupport(language, [headingSections, Prec.high(keymap.of(typstTableKeymap))]);
     supports.set(api, support);
   }
   return support;
