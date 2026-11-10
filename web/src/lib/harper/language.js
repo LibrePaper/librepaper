@@ -51,7 +51,7 @@ function markdown(text) {
 // inside a source block does not count. Keywords are read in any case.
 function org(text) {
   let found = null;
-  orgTree(text).iterate({
+  orgTree(text)?.iterate({
     enter(ref) {
       if (found !== null) return false;
       if (ref.name !== "Keyword") return ref.name === "Document" || ref.name === "Section";

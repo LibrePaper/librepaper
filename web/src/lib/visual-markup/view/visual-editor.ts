@@ -4,7 +4,7 @@ import { BlockType, Decoration, DecorationSet, EditorView, keymap, ViewPlugin, V
 import { ConfigService, DEFAULT_CONFIG, EditorConfig } from '../core/config';
 import { getLanguage } from '../core/language';
 import { Token } from '../core/tokens';
-import { onTypstSyntax } from '../../source-trees.js';
+import { onOrgSyntax, onTypstSyntax } from '../../source-trees.js';
 import { buildDecorations, caretParked, revealRanges } from './decorations';
 import { createTheme } from './theme';
 import './widgets';
@@ -285,15 +285,17 @@ const stepIntoBlocks = ViewPlugin.fromClass(
   }
 );
 
-// Typst tokens come from typst-syntax.wasm, which loads on the first parse. Until
-// then a Typst file draws nothing; when it arrives, the layer is rebuilt from the tree.
-const typstArrival = ViewPlugin.fromClass(
+// Typst and Org tokens come from wasm modules (typst-syntax.wasm, org.wasm), which load on the
+// first parse. Until then such a file draws nothing; when the module arrives, the layer is
+// rebuilt from the tree.
+const syntaxArrival = ViewPlugin.fromClass(
   class {
     private stop: (() => void) | null = null;
 
     constructor(view: EditorView) {
-      if (view.state.field(visualState).language !== 'typst') return;
-      this.stop = onTypstSyntax(() => {
+      const language = view.state.field(visualState).language;
+      if (language !== 'typst' && language !== 'org') return;
+      this.stop = (language === 'typst' ? onTypstSyntax : onOrgSyntax)(() => {
         this.stop = null;
         view.dispatch({ effects: refreshVisual.of(null) });
       });
@@ -307,7 +309,7 @@ const typstArrival = ViewPlugin.fromClass(
 
 export function visualExtension(): Extension {
   // caretParked comes first: the decoration field reads it when it is created.
-  return [caretParked, visualState, decorationField, rebuildAfterPause, arrowKeymap, stepIntoBlocks, typstArrival];
+  return [caretParked, visualState, decorationField, rebuildAfterPause, arrowKeymap, stepIntoBlocks, syntaxArrival];
 }
 
 // The tokens of the parse the visual layer last drew, or null when there is no

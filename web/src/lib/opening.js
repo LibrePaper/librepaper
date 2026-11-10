@@ -129,7 +129,7 @@ function typstNames(body) {
 // so it is dropped; a URL is not a file of the project and is ignored.
 function orgNames(body) {
   const names = [];
-  orgTree(body).iterate({
+  orgTree(body)?.iterate({
     enter(ref) {
       if (ref.name !== "Keyword") return;
       const key = ref.node.getChild("KeywordKey");

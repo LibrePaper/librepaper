@@ -4,7 +4,7 @@
 import { EditorView, ViewPlugin, Decoration } from "@codemirror/view";
 import { RangeSetBuilder, StateEffect } from "@codemirror/state";
 import { skipRanges } from "./index.js";
-import { onTypstSyntax } from "../source-trees.js";
+import { onOrgSyntax, onTypstSyntax } from "../source-trees.js";
 
 // Above this length a scan, a full pass over the text, costs more than the
 // underlines are worth, so no markup is marked.
@@ -47,9 +47,9 @@ function build(format) {
       this.ranges = this.scan(view.state.doc);
       this.timer = null;
       this.decorations = this.build(view);
-      // Until typst-syntax.wasm loads, a Typst text is skipped whole. Scan
+      // Until typst-syntax.wasm or org.wasm loads, a Typst or Org text is skipped whole. Scan
       // again when it arrives.
-      this.unsubscribe = format === "typst" ? onTypstSyntax(() => this.rescan()) : null;
+      this.unsubscribe = format === "typst" ? onTypstSyntax(() => this.rescan()) : format === "org" ? onOrgSyntax(() => this.rescan()) : null;
     }
 
     update(update) {

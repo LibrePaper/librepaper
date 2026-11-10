@@ -509,7 +509,7 @@ function orgNoteNumber(source, from) {
 // The text of an Org note `[fn:label] text`, found in the syntax tree.
 function orgDefinitionText(source, label) {
   let found = "";
-  orgTree(source).iterate({
+  orgTree(source)?.iterate({
     enter(node) {
       if (found || node.name !== "FootnoteDefinition") return;
       const labelNode = node.node.getChild("FootnoteLabel");

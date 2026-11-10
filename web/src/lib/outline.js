@@ -337,6 +337,7 @@ function orgHeadlineFields(node, source, done) {
 // fields. A COMMENT headline is not listed.
 function extractOrg(source, starts) {
   const tree = orgTree(source);
+  if (!tree) return [];
   const done = orgDoneStates(tree, source);
   const result = [];
   tree.iterate({

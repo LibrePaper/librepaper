@@ -1,4 +1,4 @@
-// Org's structural editing, read from the Lezer tree of ./org-language/parser.js:
+// Org's structural editing, read from the Lezer tree of org.wasm (org-language/module.js):
 // promoting and demoting headlines and items, moving sections and items,
 // adding a heading or an item, continuing a list on Enter, cycling a TODO
 // keyword, toggling a checkbox and folding a section. Each edit is a state-level builder that returns a

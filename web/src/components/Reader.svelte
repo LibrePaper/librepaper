@@ -101,7 +101,7 @@
   import Avatar from "./Avatar.svelte";
   import { presenceJumpTarget } from "../lib/presence-jump.js";
   import { extractOutline } from "../lib/outline.js";
-  import { onTypstSyntax } from "../lib/source-trees.js";
+  import { onOrgSyntax, onTypstSyntax } from "../lib/source-trees.js";
   import { countWordsIn, documentWords, sectionWords } from "../lib/word-count.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
   import { rememberPreview, lastPreview, flushAll } from "../lib/reader/preview-cache.js";
@@ -3254,6 +3254,7 @@
   // The outline can be shown with no editor open, so it also follows the typst
   // module's arrival itself.
   $effect(() => onTypstSyntax(() => { outlineRevision += 1; }));
+  $effect(() => onOrgSyntax(() => { outlineRevision += 1; }));
   // The path of the file the preview is locked on. The lock itself is held by
   // the target, by identity, so a rename keeps it.
   const lockedPath = $derived(files.find((file) => file.id === lockedFile)?.path || "");

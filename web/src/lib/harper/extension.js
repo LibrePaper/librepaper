@@ -6,7 +6,7 @@
 import { EditorView, Decoration, ViewPlugin, closeHoverTooltips, hoverTooltip, showTooltip } from "@codemirror/view";
 import { StateEffect, StateField } from "@codemirror/state";
 import { addWord, lintProse } from "./client.js";
-import { onTypstSyntax } from "../source-trees.js";
+import { onOrgSyntax, onTypstSyntax } from "../source-trees.js";
 import { keepLint, paragraphs, proseText } from "./prose.js";
 import { m } from "../paraglide/messages.js";
 
@@ -87,13 +87,14 @@ function build(format, dialect) {
       // it with lints from before.
       this.generation = 0;
       this.decorations = Decoration.none;
-      // Until typst-syntax.wasm loads, a Typst text is masked whole and has no
+      // Until typst-syntax.wasm or org.wasm loads, a Typst or Org text is masked whole and has no
       // lints. Check again when it arrives.
-      this.unsubscribe = format === "typst" ? onTypstSyntax(() => {
+      const refresh = () => {
         this.cache.clear();
         this.generation++;
         this.schedule(0);
-      }) : null;
+      };
+      this.unsubscribe = format === "typst" ? onTypstSyntax(refresh) : format === "org" ? onOrgSyntax(refresh) : null;
       this.schedule(0);
     }
 

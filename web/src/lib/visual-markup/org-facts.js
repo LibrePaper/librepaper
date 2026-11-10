@@ -82,6 +82,7 @@ function isFigure(text, node) {
 
 function scanFile(path, source, state, stack) {
   const tree = orgTree(source, path);
+  if (!tree) return;
   const limit = path === state.root ? (state.limit = numLimit(source, tree)) : state.limit;
   /** @type {{ name?: string, caption?: string, has: boolean } | null} */
   let pending = null;

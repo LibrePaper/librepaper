@@ -3,6 +3,7 @@ import { formatOf, previewFormatOf } from "./formats.js";
 import { textPage } from "./text-page.js";
 import { typstTree } from "./pandoc/typst.js";
 import { expandOrgIncludes } from "./org-include.js";
+import { orgTreeReady } from "./source-trees.js";
 import { parse as parseLatexLog } from "./latex/log.js";
 import { parse as parseTypstLog } from "./typst-log.js";
 // The renderers, loaded into the editor.
@@ -290,6 +291,7 @@ export async function render(tree, title, { manual = false, format: requestedFor
   const module = (format === "markdown" || format === "quarto") && needsBibliography({ source }) ? "citations" : format === "quarto" ? "markdown" : format;
   if (format === "typst") return renderTypst(quartoTree, title, requestedFormat, capturedModules, capturedSettings);
   // The Org renderer does not follow #+INCLUDE, so the included text goes in first.
+  if (format === "org") await orgTreeReady(quartoTree.texts?.[quartoTree.main] ?? "");
   const renderable = format === "org" ? expandOrgIncludes(quartoTree) : quartoTree;
   return request(module, "render", {
     tree: renderTree(renderable, capturedSettings),

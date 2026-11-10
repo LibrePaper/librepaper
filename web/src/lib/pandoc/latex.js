@@ -5,6 +5,7 @@
 
 import { pandoc } from "./client.js";
 import { orgForPandoc } from "./org.js";
+import { orgTreeReady } from "../source-trees.js";
 import { expandOrgIncludes } from "../org-include.js";
 import { dirOf, pandocPath } from "./typst.js";
 
@@ -18,6 +19,7 @@ import { dirOf, pandocPath } from "./typst.js";
 export async function orgLatexTree(tree, { run = pandoc } = {}) {
   const texPath = pandocPath(tree, "tex");
   // Includes are expanded first, so Pandoc reads one file and resolves links into included sections.
+  await orgTreeReady(tree.texts?.[tree.main] ?? "");
   const expanded = expandOrgIncludes(tree);
   const org = orgForPandoc(expanded.texts?.[expanded.main] ?? "", { to: "latex" });
   const { output } = await run(
