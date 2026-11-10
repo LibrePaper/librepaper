@@ -45,6 +45,16 @@ function markdown(text) {
   return null;
 }
 
+// The first `#+LANGUAGE:` keyword in the head. Keywords are read in any case,
+// and the head is where a file keeps them.
+function org(text) {
+  for (const line of text.split(/\r?\n/)) {
+    const lang = /^[ \t]*#\+language:[ \t]*(\S+)/i.exec(line);
+    if (lang) return lang[1];
+  }
+  return null;
+}
+
 function html(text) {
   const tag = /<html\b[^>]*>/i.exec(text);
   if (!tag) return null;
@@ -64,6 +74,7 @@ export function declaredLanguage(text, format) {
   if (format === "typst") return typst(head) || null;
   if (format === "markdown" || format === "quarto") return markdown(head) || null;
   if (format === "html") return html(head) || null;
+  if (format === "org") return org(head) || null;
   return null;
 }
 
