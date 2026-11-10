@@ -35,6 +35,34 @@ const CELL_CAPTION = /^#\|\s*(?:fig|tbl)-cap:\s*(.*?)\s*$/;
 const IMAGE_BEFORE = /!\[([^\]\n]*)\]\([^()\n]*\)\s*$/;
 const TABLE_CAPTION_BEFORE = /^\s{0,3}:\s+(.*?)\s*$/;
 const HEADING_ATTRIBUTE = /\s*\{[^{}]*\}\s*$/;
+const WWW = /^www\./i;
+const ANCHOR_OR_ABSOLUTE = /^[#/]/;
+const LABEL_PREFIX = /^([a-z]+)-/;
+
+// The target of a label by its Quarto prefix. KINDS lists the kinds Quarto
+// numbers; sol and rem are theorem-like as well.
+const TARGET_OF_PREFIX = {
+  sec: "section",
+  fig: "figure",
+  tbl: "table",
+  eq: "equation",
+  lst: "listing",
+  thm: "theorem",
+  lem: "theorem",
+  cor: "theorem",
+  prp: "theorem",
+  cnj: "theorem",
+  def: "theorem",
+  exm: "theorem",
+  exr: "theorem",
+  sol: "theorem",
+  rem: "theorem",
+};
+
+const METADATA_NAMES = { title: "title", subtitle: "subtitle", author: "author", date: "date", lang: "language", abstract: "abstract" };
+const TOP_LEVEL_KEY = /^([A-Za-z_][\w-]*):(?=\s|$)/;
+const CONTINUATION = /^(?:[ \t-]|\s*$)/;
+const LIST_ENTRY = /^\s*-(?:[ \t]|$)/;
 
 /**
  * Lines with their offsets. Separators are not part of any line.
@@ -188,6 +216,123 @@ function frontMatterItems(lines, end) {
       items.push(...bibliographyItems(item, lines[j].from + dash[0].length, lines[j]));
     }
   }
+  items.push(...metadataItems(lines, end));
+  return items;
+}
+
+/**
+ * A scalar as written, without quotes or a trailing comment, with the span of
+ * its text. `offset` is the absolute offset of raw[0].
+ * @param {string} raw
+ * @param {number} offset
+ * @returns {{ value: string, from: number, to: number }}
+ */
+function scalarSpan(raw, offset) {
+  const lead = raw.length - raw.trimStart().length;
+  let value = raw.trim();
+  if (!/^["']/.test(value)) value = value.replace(/[ \t]+#.*$/, "");
+  let from = offset + lead;
+  if (value.length >= 2 && /^(["']).*\1$/.test(value)) {
+    value = value.slice(1, -1);
+    from += 1;
+  }
+  return { value, from, to: from + value.length };
+}
+
+/**
+ * Metadata items for one front matter key. Handles a scalar, an inline list,
+ * a block scalar, a block list (plain or `name:` entries), a `name:` mapping,
+ * and any other indented text, joined into one value.
+ * @param {string} name the metadata item name
+ * @param {Line} line the key's line
+ * @param {Line[]} body the indented lines under the key
+ * @returns {IndexItem[]}
+ */
+function valueItems(name, line, body) {
+  const colon = line.text.indexOf(":");
+  let p = colon + 1;
+  while (p < line.text.length && (line.text[p] === " " || line.text[p] === "\t")) p++;
+  const rest = line.text.slice(p).replace(/[ \t]+$/, "");
+  const offset = line.from + p;
+  const filled = body.filter((entry) => entry.text.trim());
+  const last = body.at(-1) ?? line;
+
+  /** @param {string} value @param {{ from: number, to: number } | null} span */
+  const item = (value, span, range = [line.from, line.to]) => {
+    if (!value) return [];
+    /** @type {IndexItem} */
+    const found = { kind: "metadata", name, title: value, range };
+    if (span) found.nameRange = [span.from, span.to];
+    return [found];
+  };
+
+  if (rest.startsWith("[")) {
+    const inner = rest.endsWith("]") ? rest.slice(1, -1) : rest.slice(1);
+    return [...inner.matchAll(/[^,]+/g)].flatMap((match) => {
+      const span = scalarSpan(match[0], offset + 1 + match.index);
+      return item(span.value, span);
+    });
+  }
+  if (/^[|>][-+\d]*$/.test(rest)) {
+    const value = filled.map((entry) => entry.text.trim()).join(" ");
+    return item(value, null, [line.from, last.to]);
+  }
+  if (rest) {
+    const span = scalarSpan(rest, offset);
+    return item(span.value, span);
+  }
+  if (!filled.length) return [];
+
+  const first = filled[0].text;
+  if (LIST_ENTRY.test(first)) {
+    // A block list. Only authors are lists: each entry is a name, or a `name:` mapping.
+    if (name !== "author") return [];
+    return body.filter((entry) => LIST_ENTRY.test(entry.text)).flatMap((entry) => {
+      const dash = /^\s*-[ \t]*/.exec(entry.text)[0];
+      let start = entry.from + dash.length;
+      let content = entry.text.slice(dash.length);
+      const named = /^name:/.exec(content);
+      if (named) {
+        content = content.slice(named[0].length);
+        start += named[0].length;
+      }
+      const span = scalarSpan(content, start);
+      return item(span.value, span, [entry.from, entry.to]);
+    });
+  }
+  if (/^\s*[A-Za-z_][\w-]*:/.test(first)) {
+    // A mapping under the key: only an author's `name:` is read.
+    const named = filled.find((entry) => /^\s*name:/.test(entry.text));
+    if (name !== "author" || !named) return [];
+    const at = named.text.indexOf("name:") + "name:".length;
+    const span = scalarSpan(named.text.slice(at), named.from + at);
+    return item(span.value, span, [named.from, named.to]);
+  }
+  // Indented text under the key, such as a multi-line plain scalar.
+  const value = filled.map((entry) => entry.text.trim()).join(" ");
+  return item(value, null, [line.from, last.to]);
+}
+
+/**
+ * Metadata items from the YAML front matter lines between the delimiters. A
+ * small line reader: top-level keys with their indented continuation lines.
+ * @param {Line[]} lines
+ * @param {number} end index of the closing delimiter line
+ * @returns {IndexItem[]}
+ */
+function metadataItems(lines, end) {
+  /** @type {IndexItem[]} */
+  const items = [];
+  let i = 1;
+  while (i < end) {
+    let last = i;
+    while (last + 1 < end && CONTINUATION.test(lines[last + 1].text)) last++;
+    const key = TOP_LEVEL_KEY.exec(lines[i].text);
+    if (key && Object.hasOwn(METADATA_NAMES, key[1])) {
+      items.push(...valueItems(METADATA_NAMES[key[1]], lines[i], lines.slice(i + 1, last + 1)));
+    }
+    i = last + 1;
+  }
   return items;
 }
 
@@ -235,6 +380,7 @@ function cellItems(lines, cell) {
     range: [target.line.from, target.line.to],
   };
   if (caption) item.title = caption;
+  item.attrs = { target: targetOf(target.name, false) };
   return [item];
 }
 
@@ -275,6 +421,58 @@ function lineAt(lines, offset) {
 }
 
 /**
+ * The kind a label names: its Quarto prefix decides; otherwise a heading's id
+ * is a section, and anything else is other.
+ * @param {string} name
+ * @param {boolean} heading whether the label sits on a heading line
+ * @returns {string}
+ */
+function targetOf(name, heading) {
+  const prefix = LABEL_PREFIX.exec(name)?.[1];
+  if (prefix && Object.hasOwn(TARGET_OF_PREFIX, prefix)) return TARGET_OF_PREFIX[prefix];
+  return heading ? "section" : "other";
+}
+
+/**
+ * A link item for one destination, or null. A destination with a scheme, or
+ * a bare URL that starts with www., is external. A relative path is a file
+ * link, with any #fragment kept apart. Anchors, absolute paths and addresses
+ * without a scheme are not links to project files.
+ * @param {string} raw the destination as written
+ * @param {number} from absolute offset of raw[0]
+ * @param {[number, number]} range span of the whole link
+ * @param {boolean} bare the destination is a bare URL or an autolink, not `(...)`
+ * @returns {IndexItem | null}
+ */
+function linkItem(raw, from, range, bare) {
+  let target = raw;
+  let start = from;
+  if (target.startsWith("<") && target.endsWith(">")) {
+    target = target.slice(1, -1);
+    start += 1;
+  }
+  if (!target) return null;
+  if (URL_SCHEME.test(target) || target.startsWith("//") || WWW.test(target)) {
+    return { kind: "link", name: target, nameRange: [start, start + target.length], range, attrs: { external: "true" } };
+  }
+  if (bare || ANCHOR_OR_ABSOLUTE.test(target)) return null;
+  const hash = target.indexOf("#");
+  const path = hash < 0 ? target : target.slice(0, hash);
+  if (!path) return null;
+  // The file on disk has the decoded name, as image paths do.
+  let name = path;
+  try {
+    name = decodeURIComponent(path);
+  } catch {
+    // A stray % is part of the name.
+  }
+  /** @type {Record<string, string>} */
+  const attrs = { file: "true" };
+  if (hash >= 0) attrs.fragment = target.slice(hash + 1);
+  return { kind: "link", name, nameRange: [start, start + path.length], range, attrs };
+}
+
+/**
  * What the Pandoc syntax tree knows: math spans, code spans, fenced divs,
  * attribute ids, citation keys and cross references, all with absolute offsets.
  * The shared tree skips the front matter and keeps every offset.
@@ -296,9 +494,58 @@ function treeFacts(source, lines, path) {
   const cites = [];
   /** @type {Array<{ name: string, from: number, to: number }>} */
   const refs = [];
+  /** @type {IndexItem[]} */
+  const links = [];
+  /** @type {Array<{ name: string, from: number, to: number }>} */
+  const noteRefs = [];
+  /** @type {Array<{ name: string, from: number, to: number }>} */
+  const noteDefs = [];
+  // Absolute offsets of URL nodes already read as a link's destination or an autolink.
+  /** @type {Set<number>} */
+  const handled = new Set();
   tree.iterate({
     enter(node) {
       switch (node.name) {
+        case "Link": {
+          // The destination follows the "(" mark, after the link text, which may hold a bare URL.
+          let url = null;
+          for (let child = node.node.lastChild; child; child = child.prevSibling) {
+            if (child.name === "URL" && child.prevSibling?.name === "LinkMark" && body[child.prevSibling.from] === "(") {
+              url = child;
+              break;
+            }
+          }
+          if (url) {
+            handled.add(url.from);
+            const item = linkItem(body.slice(url.from, url.to), url.from, [node.from, node.to], false);
+            if (item) links.push(item);
+          }
+          return true;
+        }
+        case "Autolink": {
+          const url = node.node.getChild("URL");
+          if (url) {
+            handled.add(url.from);
+            const item = linkItem(body.slice(url.from, url.to), url.from, [node.from, node.to], true);
+            if (item) links.push(item);
+          }
+          return false;
+        }
+        case "URL": {
+          // A bare URL, from the GFM autolink extension. Image sources are assets.
+          if (handled.has(node.from) || node.node.parent?.name === "Image") return false;
+          const item = linkItem(body.slice(node.from, node.to), node.from, [node.from, node.to], true);
+          if (item) links.push(item);
+          return false;
+        }
+        case "FootnoteReference":
+          noteRefs.push({ name: body.slice(node.from + 2, node.to - 1), from: node.from, to: node.to });
+          return false;
+        case "FootnoteLabel":
+          if (node.node.parent?.name === "FootnoteDefinition") {
+            noteDefs.push({ name: body.slice(node.from + 2, node.to - 1), from: node.from, to: node.to });
+          }
+          return false;
         case "InlineMath":
           math.push([node.from, node.to]);
           return false;
@@ -353,7 +600,7 @@ function treeFacts(source, lines, path) {
     },
   });
 
-  return { math, code, divs, ids, cites, refs };
+  return { math, code, divs, ids, cites, refs, links, noteRefs, noteDefs };
 }
 
 /**
@@ -455,8 +702,10 @@ export function markdownAdapter(text, path) {
       nameRange: [id.from + 1, id.from + 1 + id.name.length],
       range: [id.attributes[0], id.attributes[1]],
     };
-    const title = labelTitle(shown, id.attributes[0] - line.from, headingAt.get(lineAt(lines, id.from) + 1));
+    const heading = headingAt.get(lineAt(lines, id.from) + 1);
+    const title = labelTitle(shown, id.attributes[0] - line.from, heading);
     if (title) item.title = title;
+    item.attrs = { target: targetOf(id.name, heading !== undefined) };
     items.push(item);
   }
 
@@ -526,6 +775,29 @@ export function markdownAdapter(text, path) {
       nameRange: [from, from + rawName.length],
     });
   }
+
+  // Footnotes, in their own namespace; an inline note (^[...]) has no label and emits nothing.
+  for (const note of tree.noteDefs) {
+    const line = lines[lineAt(lines, note.from)];
+    items.push({
+      kind: "label",
+      namespace: "footnote",
+      name: note.name,
+      nameRange: [note.from + 2, note.to - 1],
+      range: [line.from, line.to],
+      attrs: { target: "footnote" },
+    });
+  }
+  for (const note of tree.noteRefs) {
+    items.push({
+      kind: "ref",
+      namespace: "footnote",
+      name: note.name,
+      nameRange: [note.from + 2, note.to - 1],
+      range: [note.from, note.to],
+    });
+  }
+  items.push(...tree.links);
 
   // Citations and spellcheck skips, from the existing scanners.
   for (const cite of tree.cites) {

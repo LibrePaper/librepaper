@@ -413,3 +413,143 @@ test("an image path is percent-decoded and loses its query and fragment", () => 
   project.update({ path: "a.md", format: "markdown", items: markdownAdapter(text, "a.md"), length: text.length });
   assert.deepEqual(diagnostics(project, "a.md"), []);
 });
+
+test("Quarto label targets come from the prefix: sec, fig, tbl, eq, lst and theorem-like kinds", () => {
+  const text = [
+    "# Intro {#sec-intro}",
+    "",
+    "## Lemma {#lem-k}",
+    "",
+    "![A](a.png){#fig-a}",
+    "",
+    ": Cap {#tbl-b}",
+    "",
+    "$$",
+    "a = b",
+    "$$ {#eq-c}",
+    "",
+    "```{r}",
+    "#| label: lst-j",
+    "x",
+    "```",
+    "",
+  ].join("\n");
+  const labels = kindOf(markdownAdapter(text, "a.qmd"), "label");
+  assert.deepEqual(labels.map((item) => [item.name, item.attrs.target]), [
+    ["sec-intro", "section"],
+    ["lem-k", "theorem"],
+    ["fig-a", "figure"],
+    ["tbl-b", "table"],
+    ["eq-c", "equation"],
+    ["lst-j", "listing"],
+  ]);
+  assert.equal(labels.some((item) => item.attrs.implicit), false);
+});
+
+test("plain Markdown label targets: prefix first, then a heading is a section, else other", () => {
+  const text = "# Intro {#intro}\n\n![x](a.png){#pic}\n\n## Solution {#sol-r}\n";
+  const labels = kindOf(markdownAdapter(text, "notes.md"), "label");
+  assert.deepEqual(labels.map((item) => [item.name, item.attrs.target]), [
+    ["intro", "section"],
+    ["pic", "other"],
+    ["sol-r", "theorem"],
+  ]);
+});
+
+test("footnote references and definitions form their own namespace; inline notes emit nothing", () => {
+  const text = "A claim.[^a] Another[^b] and an inline ^[note text].\n\n[^a]: The definition.\n\n[^b]: Second.\n";
+  for (const path of ["a.md", "a.qmd"]) {
+    const items = markdownAdapter(text, path);
+    const defs = kindOf(items, "label").filter((item) => item.namespace === "footnote");
+    assert.deepEqual(defs.map((item) => item.name), ["a", "b"]);
+    assert.deepEqual(defs.map((item) => named(text, item)), ["a", "b"]);
+    assert.ok(defs.every((item) => item.attrs.target === "footnote"));
+    const refs = kindOf(items, "ref").filter((item) => item.namespace === "footnote");
+    assert.deepEqual(refs.map((item) => item.name), ["a", "b"]);
+    assert.deepEqual(refs.map((item) => text.slice(...item.range)), ["[^a]", "[^b]"]);
+    assert.deepEqual(refs.map((item) => named(text, item)), ["a", "b"]);
+    assert.equal(kindOf(items, "label").some((item) => item.name === "note text"), false);
+  }
+});
+
+test("links: external URLs, relative files with the fragment apart; anchors and images are not links", () => {
+  const text = [
+    "See [the guide](sections/rendering.md#top) and [home](https://example.org/a?b=1).",
+    "",
+    "Mail <mailto:team@example.org> or visit <https://example.com>.",
+    "",
+    "Bare https://bare.example.org/x here, [top](#intro) and [notes](<notes/with space.md>).",
+    "",
+    "An image ![pic](img/a.png) stays an asset.",
+    "",
+  ].join("\n");
+  const links = kindOf(markdownAdapter(text, "a.md"), "link");
+  assert.deepEqual(links.map((item) => item.name), [
+    "sections/rendering.md",
+    "https://example.org/a?b=1",
+    "mailto:team@example.org",
+    "https://example.com",
+    "https://bare.example.org/x",
+    "notes/with space.md",
+  ]);
+  const [guide, home, mail, site, bare, notes] = links;
+  assert.deepEqual(guide.attrs, { file: "true", fragment: "top" });
+  assert.equal(named(text, guide), "sections/rendering.md");
+  assert.equal(text.slice(...guide.range), "[the guide](sections/rendering.md#top)");
+  assert.deepEqual(home.attrs, { external: "true" });
+  assert.equal(named(text, home), "https://example.org/a?b=1");
+  assert.deepEqual(mail.attrs, { external: "true" });
+  assert.equal(text.slice(...mail.range), "<mailto:team@example.org>");
+  assert.deepEqual(site.attrs, { external: "true" });
+  assert.deepEqual(bare.attrs, { external: "true" });
+  assert.equal(text.slice(...bare.range), "https://bare.example.org/x");
+  assert.deepEqual(notes.attrs, { file: "true" });
+  assert.equal(named(text, notes), "notes/with space.md");
+});
+
+test("front matter metadata: title, subtitle, authors, date, language and abstract", () => {
+  const text = [
+    "---",
+    'title: "Notes"',
+    "subtitle: Part one",
+    "author:",
+    "  - Jane Doe",
+    "  - name: John Roe",
+    "    affiliation: Somewhere",
+    "date: 2026-01-02",
+    "lang: fr",
+    "abstract: |",
+    "  First line.",
+    "  Second line.",
+    "---",
+    "",
+    "Body.",
+    "",
+  ].join("\n");
+  for (const path of ["a.md", "a.qmd"]) {
+    const items = kindOf(markdownAdapter(text, path), "metadata");
+    assert.deepEqual(items.map((item) => [item.name, item.title]), [
+      ["title", "Notes"],
+      ["subtitle", "Part one"],
+      ["author", "Jane Doe"],
+      ["author", "John Roe"],
+      ["date", "2026-01-02"],
+      ["language", "fr"],
+      ["abstract", "First line. Second line."],
+    ]);
+  }
+  const items = kindOf(markdownAdapter(text, "a.md"), "metadata");
+  assert.equal(text.slice(...items[0].range), 'title: "Notes"');
+  assert.equal(named(text, items[0]), "Notes");
+  assert.equal(named(text, items[2]), "Jane Doe");
+  assert.equal(named(text, items[3]), "John Roe");
+});
+
+test("front matter authors: a quoted string and an inline list", () => {
+  const single = '---\nauthor: "Jane Doe"\n---\n';
+  assert.deepEqual(kindOf(markdownAdapter(single, "a.md"), "metadata").map((item) => item.title), ["Jane Doe"]);
+  const list = '---\nauthor: [Jane Doe, "John Roe"]\n---\n';
+  const items = kindOf(markdownAdapter(list, "a.md"), "metadata");
+  assert.deepEqual(items.map((item) => item.title), ["Jane Doe", "John Roe"]);
+  assert.equal(named(list, items[1]), "John Roe");
+});
