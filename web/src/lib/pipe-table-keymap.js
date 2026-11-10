@@ -17,7 +17,7 @@ const TBLFM = /^[ \t]*#\+TBLFM:/im;
 export function pipeTableAt(state, pos) {
   // Both sides, so a cursor at the very end of a table (end of its last line) is in it.
   let node = null;
-  for (const side of [-1, 1]) {
+  for (const side of /** @type {const} */ ([-1, 1])) {
     for (let at = syntaxTree(state).resolveInner(pos, side); at && !node; at = at.parent) {
       if (at.name === "Table") node = at;
     }

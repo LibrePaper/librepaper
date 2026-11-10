@@ -368,7 +368,9 @@ export function orgAdapter(text, path) {
           // [fn::text] has no label. [fn:x:text] defines x, and [fn:x] refers to it.
           if (!label || label.to === label.from) return;
           const name = `fn:${source.slice(label.from, label.to)}`;
+          /** @type {[number, number]} */
           const nameRange = [label.from, label.to];
+          /** @type {[number, number]} */
           const range = [ref.from, ref.to];
           items.push(
             source[label.to] === ":"

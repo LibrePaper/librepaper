@@ -129,10 +129,10 @@ export function tableLines(text) {
  */
 export function parsePipeTable(text) {
   const lines = tableLines(text);
-  const rows = lines.map(line => {
-    if (line.rule) return line.align ? { kind: "rule", align: line.align } : { kind: "rule" };
-    return { kind: "cells", cells: line.cells.map(cell => cell.value) };
-  });
+  /** @type {PipeRow[]} */
+  const rows = lines.map(line => /** @type {PipeRow} */ (line.rule
+    ? (line.align ? { kind: "rule", align: line.align } : { kind: "rule" })
+    : { kind: "cells", cells: line.cells.map(cell => cell.value) }));
   return { rows, indent: lines[0]?.indent ?? "" };
 }
 
@@ -156,7 +156,8 @@ export function formatPipeTable(rows, flavor, indent = "") {
   const markdown = flavor === "markdown";
   const cellRows = rows.filter(row => row.kind === "cells");
   const columns = Math.max(1, ...cellRows.map(row => row.cells.length));
-  const align = markdown ? (rows.find(row => row.kind === "rule" && row.align)?.align ?? []) : [];
+  const rule = /** @type {{ kind: "rule", align?: Alignment[] } | undefined} */ (rows.find(row => row.kind === "rule" && row.align));
+  const align = markdown ? (rule?.align ?? []) : [];
   const minimum = markdown ? 3 : 0;
   const widths = Array.from({ length: columns }, (_, column) =>
     Math.max(minimum, ...cellRows.map(row => displayWidth(row.cells[column] ?? "")))

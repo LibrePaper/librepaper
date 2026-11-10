@@ -12,7 +12,7 @@ import { foldable, foldedRanges, foldEffect, syntaxTree, unfoldEffect } from "@c
 /** The nearest ancestor of pos (or the node at pos) named `name`, or null. Both sides of pos are tried, so a caret at a boundary finds the node it touches. */
 export function enclosing(state, pos, name) {
   const tree = syntaxTree(state);
-  for (const side of [-1, 1]) {
+  for (const side of /** @type {const} */ ([-1, 1])) {
     for (let node = tree.resolveInner(pos, side); node; node = node.parent) if (node.name === name) return node;
   }
   return null;

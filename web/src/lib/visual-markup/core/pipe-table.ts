@@ -32,7 +32,8 @@ export function pipeTableAdapter(flavor: 'org' | 'markdown'): TableAdapter {
       let rows: Row[];
       if (flavor === 'markdown') {
         // Markdown has one separator, under the header, with the alignment the table had.
-        const align = original.find(row => row.kind === 'rule' && row.align)?.align;
+        const rule = original.find(row => row.kind === 'rule' && row.align) as { kind: 'rule'; align?: Array<'left' | 'center' | 'right' | null> } | undefined;
+        const align = rule?.align;
         rows = [
           { kind: 'cells', cells: cells[0] },
           { kind: 'rule', align },
