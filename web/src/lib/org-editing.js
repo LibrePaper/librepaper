@@ -140,10 +140,11 @@ const TODO_KEYWORD = /^(TODO|SEQ_TODO|TYP_TODO)$/;
 function todoWords(state) {
   const words = [];
   syntaxTree(state).iterate({
-    enter(node) {
-      if (node.name !== "Keyword") return;
-      const key = child(node, "KeywordKey");
-      const value = child(node, "KeywordValue");
+    enter(ref) {
+      if (ref.name !== "Keyword") return;
+      // The ref has no children of its own; its node does.
+      const key = child(ref.node, "KeywordKey");
+      const value = child(ref.node, "KeywordValue");
       if (!key || !value) return;
       if (!TODO_KEYWORD.test(state.sliceDoc(key.from, key.to).split("[")[0].trim().toUpperCase())) return;
       for (const word of state.sliceDoc(value.from, value.to).split(/\s+/)) {
