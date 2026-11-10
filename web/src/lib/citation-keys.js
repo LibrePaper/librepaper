@@ -72,6 +72,49 @@ function markdownMasked(text) {
   }).join("\n");
 }
 
+const ORG_BLOCK_BEGIN = /^\s*#\+BEGIN_(SRC|EXAMPLE|EXPORT|COMMENT)\b/i;
+const ORG_BLOCK_END = /^\s*#\+END_(\w+)\b/i;
+const ORG_COMMENT = /^\s*#(?: |$)/;
+const ORG_VERBATIM = /(?<![\p{L}\p{N}])([~=])(?=\S)[^~=\n]*?\S\1(?![\p{L}\p{N}])/gu;
+const ORG_CITE = /\[cite(?:\/[a-z\/]+)?:([^\]\n]*)\]/g;
+const ORG_AT = /@[-\p{L}\p{N}_:.+\/]+/gu;
+
+/**
+ * The Org source with the regions that are not citations blanked: the lines of
+ * SRC, EXAMPLE, EXPORT and COMMENT blocks, comment lines starting with "# ",
+ * and ~code~ and =verbatim= spans. Blanking keeps every offset and line break.
+ * @param {string} text
+ * @returns {string}
+ */
+export function orgMasked(text) {
+  let block = null;
+  return String(text ?? "").split("\n").map((line) => {
+    if (block) {
+      const end = line.match(ORG_BLOCK_END);
+      if (end && end[1].toUpperCase() === block) block = null;
+      return blank(line);
+    }
+    const begin = line.match(ORG_BLOCK_BEGIN);
+    if (begin) { block = begin[1].toUpperCase(); return blank(line); }
+    if (ORG_COMMENT.test(line)) return blank(line);
+    return line.replace(ORG_VERBATIM, blank);
+  }).join("\n");
+}
+
+// The keys of the [cite…:…] groups of an Org text. The @ is only read inside a group.
+function orgKeys(text) {
+  const masked = orgMasked(text);
+  const found = [];
+  for (const group of masked.matchAll(ORG_CITE)) {
+    const body = group[1];
+    const start = group.index + group[0].length - 1 - body.length;
+    for (const cite of atKeys(body, ORG_AT)) {
+      found.push({ key: cite.key, from: start + cite.from, to: start + cite.to });
+    }
+  }
+  return found;
+}
+
 /**
  * Whether the typst reference whose `@` is at `at` follows a letter or digit,
  * as in an e-mail address. Typst reads `me@example.org` as a reference; the
@@ -115,7 +158,7 @@ function typstKeys(text, labels) {
 /**
  * The citation keys in a source file, with the UTF-16 offsets of each key.
  * @param {string} text
- * @param {string} format "latex", "tex", "typst", "markdown" or "quarto"
+ * @param {string} format "latex", "tex", "typst", "markdown", "quarto" or "org"
  * @param {{ labels?: Set<string> }} [options] typst labels, which are cross references
  * @returns {Array<{ key: string, from: number, to: number }>}
  */
@@ -128,6 +171,8 @@ export function citedKeys(text, format, { labels = new Set() } = {}) {
     found = typstKeys(text, labels);
   } else if (format === "markdown" || format === "quarto") {
     found = atKeys(markdownMasked(text), MARKDOWN_AT).filter((cite) => !CROSS_REF.test(cite.key));
+  } else if (format === "org") {
+    found = orgKeys(text);
   } else {
     return [];
   }
