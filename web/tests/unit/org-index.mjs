@@ -3,6 +3,9 @@ import test from "node:test";
 import { indexFile } from "../../src/lib/document-index/adapters/index.js";
 import { createProjectIndex } from "../../src/lib/document-index/project.js";
 import { definition, diagnostics } from "../../src/lib/document-index/queries.js";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+await loadOrgSyntaxForTests();
 
 /** The items of one kind, in source order. */
 const ofKind = (items, kind) => items.filter((item) => item.kind === kind);

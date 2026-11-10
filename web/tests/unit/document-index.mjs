@@ -17,6 +17,9 @@ import {
   symbols,
   targetKind,
 } from "../../src/lib/document-index/queries.js";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+await loadOrgSyntaxForTests();
 
 /** Range of the first `needle` at or after `from`. */
 function at(text, needle, from = 0) {

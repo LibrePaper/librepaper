@@ -5,6 +5,9 @@ import { skipRanges } from "../../src/lib/spellcheck/index.js";
 import { countWords } from "../../src/lib/word-count.js";
 import { declaredLanguage, isEnglishDocument } from "../../src/lib/harper/language.js";
 import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+await loadOrgSyntaxForTests();
 
 await loadTypstSyntaxForTests();
 

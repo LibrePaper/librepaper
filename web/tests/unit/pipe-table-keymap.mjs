@@ -5,6 +5,9 @@ import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { org } from "../../src/lib/org-language/index.js";
 import { pandocExtensions } from "../../src/lib/pandoc-markdown.js";
 import { pipeTableAt, pipeTableKeymap } from "../../src/lib/pipe-table-keymap.js";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+await loadOrgSyntaxForTests();
 
 // A view stand-in: the keys read the state and dispatch changes, and nothing else.
 function editor(doc, anchor, extensions) {

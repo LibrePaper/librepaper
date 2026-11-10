@@ -3,6 +3,9 @@ import { test } from "node:test";
 import { TreeFragment } from "@lezer/common";
 import { parseOrg, parseStats, parser } from "../../src/lib/org-language/parser.js";
 import { orgTree } from "../../src/lib/source-trees.js";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+await loadOrgSyntaxForTests();
 
 /** About 200 KB: level-1 sections with nested ones, a src block, a table, inline markup. */
 function makeDocument(sections = 400) {

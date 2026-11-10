@@ -7,6 +7,9 @@
 import assert from "node:assert/strict";
 import { skipRanges } from "../../src/lib/spellcheck/index.js";
 import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+await loadOrgSyntaxForTests();
 
 await loadTypstSyntaxForTests();
 

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { extractOutline } from "../../src/lib/outline.js";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+await loadOrgSyntaxForTests();
 
 const headings = (source) => extractOutline(source, "org").map(({ title, level }) => ({ title, level }));
 

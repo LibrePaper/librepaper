@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { orgFacts } from "../../src/lib/visual-markup/org-facts.js";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+await loadOrgSyntaxForTests();
 
 const facts = (text, extra = {}) => orgFacts({ "main.org": text, ...extra }, "main.org", "main.org");
 const numbers = (f) => [...f.headingNumbers.values()];
