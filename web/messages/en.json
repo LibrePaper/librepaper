@@ -2041,6 +2041,11 @@
     }
   ],
   "outline_document": "Document outline",
+  "outline_filter_all": "All headings",
+  "outline_filter_label": "Show headings",
+  "outline_filter_no_match": "No headings match this filter.",
+  "outline_filter_open_todos": "Open TODOs",
+  "outline_filter_tag": "Tag: {tag}",
   "outline_no_headings": "No headings in this file.",
   "panels_git": "Git",
   "panels_shared": "Shared with me",

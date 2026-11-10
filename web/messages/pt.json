@@ -2041,6 +2041,11 @@
     }
   ],
   "outline_document": "Estrutura de tópicos do documento",
+  "outline_filter_all": "Todos os títulos",
+  "outline_filter_label": "Mostrar títulos",
+  "outline_filter_no_match": "Nenhum título corresponde a este filtro.",
+  "outline_filter_open_todos": "TODO abertos",
+  "outline_filter_tag": "Etiqueta: {tag}",
   "outline_no_headings": "Nenhum título neste arquivo.",
   "panels_git": "Git",
   "panels_shared": "Compartilhados comigo",

@@ -2026,6 +2026,11 @@
     }
   ],
   "outline_document": "文档大纲",
+  "outline_filter_all": "所有标题",
+  "outline_filter_label": "显示标题",
+  "outline_filter_no_match": "没有符合此筛选条件的标题。",
+  "outline_filter_open_todos": "未完成的 TODO",
+  "outline_filter_tag": "标签：{tag}",
   "outline_no_headings": "此文件中没有标题。",
   "panels_git": "Git",
   "panels_shared": "与我分享",

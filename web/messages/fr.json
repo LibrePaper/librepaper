@@ -2041,6 +2041,11 @@
     }
   ],
   "outline_document": "Plan du document",
+  "outline_filter_all": "Tous les titres",
+  "outline_filter_label": "Afficher les titres",
+  "outline_filter_no_match": "Aucun titre ne correspond à ce filtre.",
+  "outline_filter_open_todos": "TODO ouverts",
+  "outline_filter_tag": "Étiquette : {tag}",
   "outline_no_headings": "Aucun titre dans ce fichier.",
   "panels_git": "Git",
   "panels_shared": "Partagés avec moi",
