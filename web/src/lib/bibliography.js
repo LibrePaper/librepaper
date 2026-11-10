@@ -95,14 +95,61 @@ function latexContext(text, position) {
   if (from < position && !KEY.test(text.slice(from, position))) return null;
   return { kind: "latex", from, to: position, query: text.slice(from, position), trigger: latest[0].trim() };
 }
+// An Org citation group opens with [cite:, [cite/t:, [cite/na: and so on.
+const ORG_CITE_OPEN = /\[cite(?:\/[a-z/]+)?:/g;
+const ORG_KEY = /[-\p{L}\p{N}_:.+/]/u;
+// The last citation group opened on the line before `position`, and where its body starts.
+function orgGroup(text, position) {
+  const lineStart = text.lastIndexOf("\n", position - 1) + 1;
+  const prefix = text.slice(lineStart, position);
+  let latest = null;
+  for (const match of prefix.matchAll(ORG_CITE_OPEN)) latest = match;
+  if (!latest) return null;
+  const open = lineStart + latest.index + latest[0].length;
+  return text.slice(open, position).includes("]") ? null : { open };
+}
+function orgContext(text, position) {
+  const group = orgGroup(text, position);
+  if (!group) return null;
+  let from = position;
+  while (from > group.open && ORG_KEY.test(text[from - 1])) from--;
+  if (text[from - 1] !== "@" || from - 1 < group.open) return null;
+  const previous = text[from - 2] || "";
+  if (/[\p{L}\p{N}@/]/u.test(previous)) return null;
+  return { kind: "org", from, to: position, query: text.slice(from, position), trigger: "@" };
+}
+// The end of the citation group around `position`: its "]" when the group is closed, else `position`.
+function orgInsertionPoint(text, position) {
+  const close = text.indexOf("]", position);
+  if (close === -1) return position;
+  const between = text.slice(position, close);
+  return /[\n[]/.test(between) ? position : close;
+}
 export function citationContext(text, position = text.length, format = "markdown") {
   text = string(text);
   position = Math.max(0, Math.min(Number(position), text.length));
+  if (format === "org") return orgContext(text, position);
   return format === "latex" || format === "tex" ? latexContext(text, position) : markupContext(text, position, format);
 }
 export function insertCitation(text, position, key, format = "markdown") {
+  if (format === "org") return insertOrgCitation(string(text), Math.max(0, Math.min(Number(position), string(text).length)), string(key));
   const context = citationContext(text, position, format);
   return context && key ? text.slice(0, context.from) + string(key) + text.slice(context.to) : string(text);
+}
+// Replaces a partial key being typed; otherwise adds the key to the group around the
+// cursor, after a ";"; otherwise starts a new [cite:@key] group at the cursor.
+function insertOrgCitation(text, position, key) {
+  if (!key) return text;
+  const context = orgContext(text, position);
+  if (context) return text.slice(0, context.from) + key + text.slice(context.to);
+  const group = orgGroup(text, position);
+  if (group) {
+    const at = orgInsertionPoint(text, position);
+    const body = text.slice(group.open, at);
+    const separator = body.trim() && !/;\s*$/.test(body) ? ";" : "";
+    return text.slice(0, at) + separator + "@" + key + text.slice(at);
+  }
+  return text.slice(0, position) + `[cite:@${key}]` + text.slice(position);
 }
 export function entryLabel(entry) {
   const value = normalized(entry), names = surnames(value);
@@ -151,6 +198,12 @@ export function selectedBibliographyFiles(source, format) {
     for (const match of string(source).matchAll(/#bibliography\s*\(([^)]*)\)/g)) names.push(...[...match[1].matchAll(/["']([^"']+\.bib)["']/gi)].map((item) => item[1]));
   } else if (format === "latex" || format === "tex") {
     for (const match of string(source).matchAll(/\\(?:addbibresource|bibliography)\s*(?:\[[^]]*\])?\{([^}]+)\}/g)) names.push(...match[1].split(",").map((name) => name.trim()).filter(Boolean));
+  } else if (format === "org") {
+    // One path per #+BIBLIOGRAPHY: line, optionally quoted.
+    for (const match of string(source).matchAll(/^[ \t]*#\+BIBLIOGRAPHY:[ \t]*(.*?)[ \t]*\r?$/gim)) {
+      const name = match[1].replace(/^["']|["']$/g, "").trim();
+      if (name) names.push(name);
+    }
   }
   return [...new Set(names)].sort();
 }
@@ -243,6 +296,21 @@ export function bibliographyRegistration(source, path = "references.bib", format
     if (selectedBibliographyFiles(source, format).length) return null;
     const lead = source.endsWith("\n") ? "" : "\n";
     return { from: source.length, to: source.length, insert: `${lead}#bibliography("${path}")\n` };
+  }
+  if (format === "org") {
+    if (selectedBibliographyFiles(source, format).length) return null;
+    const eol = source.includes("\r\n") ? "\r\n" : "\n";
+    const line = `#+BIBLIOGRAPHY: ${/\s/.test(path) ? `"${path}"` : path}`;
+    // The header is the run of #+KEY: lines at the top; the new line goes after its last line.
+    const lines = source.split("\n");
+    let count = 0;
+    while (count < lines.length && /^#\+[A-Za-z_0-9-]+:/.test(lines[count])) count++;
+    if (!count) return { from: 0, to: 0, insert: line + eol };
+    // The last line of a file without a final line break holds the header's end.
+    if (count === lines.length) return { from: source.length, to: source.length, insert: eol + line };
+    let from = 0;
+    for (let i = 0; i < count; i++) from += lines[i].length + 1;
+    return { from, to: from, insert: line + eol };
   }
   if (selectedBibliographyFiles(source, "markdown").length) return null;
   const line = `bibliography: ${path}\n`;
