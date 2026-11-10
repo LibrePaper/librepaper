@@ -1,4 +1,4 @@
-import { Rule } from '../../core/language';
+import { Rule, RuleContext } from '../../core/language';
 import { Range, Token } from '../../core/tokens';
 import { inner, isEscaped, matchDelimited, matchFenced, matchLine, skipSpace } from '../../core/scanner';
 import { ARGUMENT_COUNT, ESCAPABLE, FIRST_ARGUMENT_COMMANDS, HEADING_LEVELS, LITERAL_ARGUMENT_COMMANDS, MATH_ENVIRONMENTS, TABLE_ENVIRONMENT_ARGS, TABLE_ENVIRONMENTS, VERBATIM_ENVIRONMENTS } from './commands';
@@ -79,10 +79,14 @@ export const environment: Rule = (source, pos, ctx) => {
   if (!header) return null;
 
   const name = header[1];
-  const argsFrom = pos + header[0].length;
-  const end = findMatchingEnd(source, argsFrom, name);
+  const end = findMatchingEnd(source, pos + header[0].length, name);
   if (end === -1) return null;
+  return environmentToken(source, pos, name, end, ctx);
+};
 
+// Builds the token of `\begin{name}` at pos whose `\end{name}` starts at `end`. Shared by the rule and the tree walker.
+export function environmentToken(source: string, pos: number, name: string, end: number, ctx: RuleContext): Token {
+  const argsFrom = pos + `\\begin{${name}}`.length;
   const spec = ENVIRONMENTS.get(name) ?? ENVIRONMENTS.get(name.replace(/\*$/, ''));
   const tableArgs = TABLE_ENVIRONMENT_ARGS.get(name);
   // The star is part of the environment name here, so the signature has no `s`.
@@ -126,7 +130,7 @@ export const environment: Rule = (source, pos, ctx) => {
   }
 
   return token;
-};
+}
 
 export const heading: Rule = (source, pos, ctx) => {
   if (source[pos] !== '\\') return null;
@@ -444,7 +448,7 @@ function baseGlyph(content: string): string | null {
   return /^[a-zA-Z]+$/.test(content) ? content : null;
 }
 
-function findMatchingEnd(source: string, from: number, name: string): number {
+export function findMatchingEnd(source: string, from: number, name: string): number {
   const open = `\\begin{${name}}`;
   const close = `\\end{${name}}`;
   let depth = 1;
