@@ -206,8 +206,17 @@ impl Server {
 
     /// The end of every flow: set the session cookie, drop the state cookie,
     /// and go back where the person started. Every provider finishes here, so
-    /// a session cookie is set in exactly one place.
-    pub(super) async fn sign_in(&self, arrival: &Arrival, who: &Identity, next: &str) -> Reply {
+    /// a session cookie is set in exactly one place. `email` is a contact
+    /// address read separately from the provider, for a provider such as GitHub
+    /// whose handle is not an address; without one, a handle that is an address
+    /// is used.
+    pub(super) async fn sign_in(
+        &self,
+        arrival: &Arrival,
+        who: &Identity,
+        email: Option<String>,
+        next: &str,
+    ) -> Reply {
         let https = arrival.is_https();
         let mut signed_who = who.clone();
         {
@@ -218,7 +227,7 @@ impl Server {
                 provider_subject: Some(who.id.clone()),
                 handle: who.handle.clone(),
                 display_name: who.name.clone(),
-                email: who.handle.contains('@').then(|| who.handle.clone()),
+                email: email.or_else(|| who.handle.contains('@').then(|| who.handle.clone())),
             };
             match crate::server::upsert_account_job(catalog, profile).await {
                 Ok(account) if account.status == "active" => {
@@ -271,9 +280,9 @@ impl Server {
         let begin = Begin::new();
         if id == PROVIDER_GITHUB && self.app.configured() {
             let callback = arrival.callback_url();
-            let url = self
-                .app
-                .authorize_url(&callback, &begin.state, &begin.verifier);
+            let url =
+                self.app
+                    .authorize_url(&callback, &begin.state, &begin.verifier, "user:email");
             return begin.redirect(id, &url, &next, https);
         }
         let Some(provider) = self.oidc(id) else {
@@ -346,7 +355,7 @@ impl Server {
             )
             .await;
         match signed_in {
-            Ok(who) => self.sign_in(arrival, &who, &callback.next).await,
+            Ok(who) => self.sign_in(arrival, &who, None, &callback.next).await,
             Err(error) => {
                 match &error {
                     SignInError::Discovery(reason)
@@ -443,7 +452,8 @@ impl Server {
                     Ok(who) => who,
                     Err(_) => return Some(plain(502, "github would not say who you are")),
                 };
-                Some(self.sign_in(arrival, &who, &callback.next).await)
+                let email = self.app.contact_email(&token).await;
+                Some(self.sign_in(arrival, &who, email, &callback.next).await)
             }
             "/auth/logout" => {
                 // A GET here would be a plain link or a browser prefetch either
