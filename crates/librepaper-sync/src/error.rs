@@ -51,6 +51,12 @@ pub enum Error {
     /// A git command failed, or git is not there.
     #[error("git: {0}")]
     Git(String),
+    /// A git command ran past its time limit and was stopped with its children.
+    #[error("git {command} took too long (more than {seconds} seconds) and was stopped; a hook or filter in the repository may be stuck")]
+    GitTimeout { command: String, seconds: u64 },
+    /// A git command wrote more than sync will read.
+    #[error("git {command} wrote more output than sync will read, so it was stopped")]
+    GitOutput { command: String },
     #[error("{}: {source}", .path.display())]
     Io {
         path: PathBuf,

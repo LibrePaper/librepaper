@@ -11,6 +11,7 @@
 import { SHELL_HEADERS } from "./api.js";
 import { m } from "./paraglide/messages.js";
 import { locale } from "./locale.js";
+import { cursorAt } from "./loro-cursor.js";
 import { personSeed, presenceColour } from "./presence-colour.js";
 
 const asked = (headers) => ({ ...SHELL_HEADERS, ...headers });
@@ -30,7 +31,7 @@ export function authorshipRuns(doc, text) {
   let offset = 0;
   for (const char of source) {
     const width = char.length;
-    const cursor = text.getCursor(offset, 0);
+    const cursor = cursorAt(text, offset, 0, source);
     const id = cursor?.pos();
     cursor?.free?.();
     const peer = id ? id.peer : "";

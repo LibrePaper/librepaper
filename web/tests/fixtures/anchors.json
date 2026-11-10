@@ -621,5 +621,322 @@
       ],
       "memorySize": 0
     }
+  },
+  {
+    "name": "an insertion of an emoji before an emoji passage moves it by two units",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hi 😀 there.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 3, "to": 5, "detached": false, "fragment": null, "offset": null, "exact": "😀", "prefix": "Hi ", "suffix": " there.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 0, "to": 0, "insert": "😀" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "😀Hi 😀 there.",
+          "anchors": [{ "id": "a", "from": 5, "to": 7, "detached": false, "exact": "😀", "state": "set" }]
+        }
+      ],
+      "memorySize": 0
+    }
+  },
+  {
+    "name": "an emoji inserted exactly at the start of an emoji passage stays outside",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hi 😀 there.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 3, "to": 5, "detached": false, "fragment": null, "offset": null, "exact": "😀", "prefix": "Hi ", "suffix": " there.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 3, "to": 3, "insert": "😀" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hi 😀😀 there.",
+          "anchors": [{ "id": "a", "from": 5, "to": 7, "detached": false, "exact": "😀", "state": "set" }]
+        }
+      ],
+      "memorySize": 0
+    }
+  },
+  {
+    "name": "an emoji inserted exactly at the end of an emoji passage stays outside",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hi 😀 there.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 3, "to": 5, "detached": false, "fragment": null, "offset": null, "exact": "😀", "prefix": "Hi ", "suffix": " there.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 5, "to": 5, "insert": "😀" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hi 😀😀 there.",
+          "anchors": [{ "id": "a", "from": 3, "to": 5, "detached": false, "exact": "😀", "state": "kept" }]
+        }
+      ],
+      "memorySize": 0
+    }
+  },
+  {
+    "name": "an emoji inserted inside a plain passage grows it by two units",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hello brave world.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 6, "to": 11, "detached": false, "fragment": null, "offset": null, "exact": "brave", "prefix": "Hello ", "suffix": " world.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 8, "to": 8, "insert": "😀" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hello br😀ave world.",
+          "anchors": [{ "id": "a", "from": 6, "to": 13, "detached": false, "exact": "brave", "state": "set" }]
+        }
+      ],
+      "memorySize": 0
+    }
+  },
+  {
+    "name": "an emoji inserted between the two emoji of a passage grows it by two units",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "a😀😀b",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 1, "to": 5, "detached": false, "fragment": null, "offset": null, "exact": "😀😀", "prefix": "a", "suffix": "b", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 3, "to": 3, "insert": "😀" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "a😀😀😀b",
+          "anchors": [{ "id": "a", "from": 1, "to": 7, "detached": false, "exact": "😀😀", "state": "set" }]
+        }
+      ],
+      "memorySize": 0
+    }
+  },
+  {
+    "name": "deleting a passage that is one emoji detaches it with a length of two units",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hi 😀 there.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 3, "to": 5, "detached": false, "fragment": null, "offset": null, "exact": "😀", "prefix": "Hi ", "suffix": " there.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 3, "to": 5, "insert": "" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hi  there.",
+          "anchors": [
+            { "id": "a", "from": 0, "to": 0, "detached": true, "fragment": null, "offset": null, "length": 2, "exact": "😀", "state": "set" }
+          ]
+        }
+      ],
+      "memorySize": 1
+    }
+  },
+  {
+    "name": "deleting the emoji at the head of a passage shrinks it by two units and remembers the head",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hi 😀 there.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 3, "to": 11, "detached": false, "fragment": null, "offset": null, "exact": "😀 there", "prefix": "Hi ", "suffix": ".", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 3, "to": 5, "insert": "" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hi  there.",
+          "anchors": [{ "id": "a", "from": 3, "to": 9, "detached": false, "exact": "😀 there", "state": "set" }]
+        }
+      ],
+      "memorySize": 1
+    }
+  },
+  {
+    "name": "deleting text after the emoji inside a passage that holds one remembers nothing",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hi 😀 there.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 3, "to": 11, "detached": false, "fragment": null, "offset": null, "exact": "😀 there", "prefix": "Hi ", "suffix": ".", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 5, "to": 7, "insert": "" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hi 😀here.",
+          "anchors": [{ "id": "a", "from": 3, "to": 9, "detached": false, "exact": "😀 there", "state": "set" }]
+        }
+      ],
+      "memorySize": 0
+    }
+  },
+  {
+    "name": "replacing an emoji passage with another emoji detaches it and the insert does not re-pin it",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hi 😀 there.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 3, "to": 5, "detached": false, "fragment": null, "offset": null, "exact": "😀", "prefix": "Hi ", "suffix": " there.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 3, "to": 5, "insert": "😁" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hi 😁 there.",
+          "anchors": [{ "id": "a", "from": 0, "to": 0, "detached": true, "length": 2, "exact": "😀", "state": "set" }]
+        }
+      ],
+      "memorySize": 1
+    }
+  },
+  {
+    "name": "paste of a cut emoji after a letter re-pins it two units wide",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hi  there.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 0, "to": 0, "detached": true, "fragment": null, "offset": null, "length": 2, "exact": "😀", "prefix": "Hi ", "suffix": " there.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 3, "to": 3, "insert": "x😀" }]
+      }
+    ],
+    "memory": [
+      { "text": "😀", "held": [{ "id": "a", "offset": 0, "text": "😀" }] }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hi x😀 there.",
+          "anchors": [{ "id": "a", "from": 4, "to": 6, "detached": false, "exact": "😀", "state": "set" }]
+        }
+      ],
+      "memorySize": 0
+    }
+  },
+  {
+    "name": "paste of a cut emoji and word re-pins each at its offset in units",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hi  there.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 0, "to": 0, "detached": true, "fragment": null, "offset": null, "length": 2, "exact": "😀", "prefix": "Hi ", "suffix": " ab there.", "collapsed": false, "unresolved": false },
+          { "id": "b", "file": "f1", "from": 0, "to": 0, "detached": true, "fragment": null, "offset": null, "length": 2, "exact": "ab", "prefix": "Hi 😀 ", "suffix": " there.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 3, "to": 3, "insert": "😀 ab" }]
+      }
+    ],
+    "memory": [
+      { "text": "😀 ab", "held": [{ "id": "a", "offset": 0, "text": "😀" }, { "id": "b", "offset": 3, "text": "ab" }] }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hi 😀 ab there.",
+          "anchors": [
+            { "id": "a", "from": 3, "to": 5, "detached": false, "state": "set" },
+            { "id": "b", "from": 6, "to": 8, "detached": false, "state": "set" }
+          ]
+        }
+      ],
+      "memorySize": 0
+    }
+  },
+  {
+    "name": "an insertion holding the remembered emoji twice re-pins nothing and keeps the entry",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hi  there.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 0, "to": 0, "detached": true, "fragment": null, "offset": null, "length": 2, "exact": "😀", "prefix": "Hi ", "suffix": " there.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 3, "to": 3, "insert": "😀y😀" }]
+      }
+    ],
+    "memory": [
+      { "text": "😀", "held": [{ "id": "a", "offset": 0, "text": "😀" }] }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hi 😀y😀 there.",
+          "anchors": [{ "id": "a", "from": 0, "to": 0, "detached": true, "state": "kept" }]
+        }
+      ],
+      "memorySize": 1
+    }
+  },
+  {
+    "name": "an insertion of three emoji holds a remembered pair twice, overlapping, and re-pins nothing",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hi  there.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 0, "to": 0, "detached": true, "fragment": null, "offset": null, "length": 4, "exact": "😀😀", "prefix": "Hi ", "suffix": " there.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 3, "to": 3, "insert": "😀😀😀" }]
+      }
+    ],
+    "memory": [
+      { "text": "😀😀", "held": [{ "id": "a", "offset": 0, "text": "😀😀" }] }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hi 😀😀😀 there.",
+          "anchors": [{ "id": "a", "from": 0, "to": 0, "detached": true, "state": "kept" }]
+        }
+      ],
+      "memorySize": 1
+    }
   }
 ]

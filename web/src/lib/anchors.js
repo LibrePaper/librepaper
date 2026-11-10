@@ -29,6 +29,7 @@
 // Offsets are UTF-16 everywhere, the same as CodeMirror and loro-crdt in JS.
 
 import { loroClasses } from "./loro-classes.js";
+import { cursorAt } from "./loro-cursor.js";
 import { CHANGES, resolveFile } from "./track-changes.js";
 
 export const ANCHORS = "anchors";
@@ -549,8 +550,8 @@ export function createAnchor(doc, fileId, id, from, to, { exact, prefix, suffix 
   const text = fileText(doc, fileId);
   if (!text || !(to > from)) return false;
   const body = text.toString();
-  const start = text.getCursor(from, -1);
-  const end = text.getCursor(lastCharStart(body, to), 1);
+  const start = cursorAt(text, from, -1, body);
+  const end = cursorAt(text, lastCharStart(body, to), 1, body);
   if (!start || !end) return false;
   doc.setNextCommitOrigin(ANCHORS_ORIGIN);
   const record = doc.getMap(ANCHORS).setContainer(id, new loroClasses.LoroMap());
@@ -584,8 +585,8 @@ export function attachByHand(doc, index, memory, id, fileId, from, to) {
   const body = text.toString();
   if (!(to > from) || to > body.length) return false;
   // Reads come first. The commit origin is set before the first write.
-  const start = text.getCursor(from, -1);
-  const end = text.getCursor(lastCharStart(body, to), 1);
+  const start = cursorAt(text, from, -1, body);
+  const end = cursorAt(text, lastCharStart(body, to), 1, body);
   if (!start || !end) return false;
   // The context stops short of a split surrogate pair at either edge.
   let prefixAt = Math.max(0, from - CONTEXT_UNITS);
@@ -649,8 +650,8 @@ export function writeAnchors(doc, planned) {
       }
       if (!text || !(a.to > a.from)) continue;
       const body = text.toString();
-      const start = text.getCursor(a.from, -1);
-      const end = text.getCursor(lastCharStart(body, a.to), 1);
+      const start = cursorAt(text, a.from, -1, body);
+      const end = cursorAt(text, lastCharStart(body, a.to), 1, body);
       if (!start || !end) continue;
       const reattach = !old || old.detached || old.file !== file.fileId;
       const have = a.touched === true || reattach ? null : resolvedSpan(doc, text, old);
@@ -1053,8 +1054,8 @@ export function restoreByFragments(doc, fileId, restored) {
     const from = r.at + offset;
     const to = Math.min(from + length, r.at + r.text.length);
     if (!(to > from)) continue;
-    const start = text.getCursor(from, -1);
-    const end = text.getCursor(lastCharStart(body, to), 1);
+    const start = cursorAt(text, from, -1, body);
+    const end = cursorAt(text, lastCharStart(body, to), 1, body);
     if (!start || !end) continue;
     repins.push({ id, value, place: { file: fileId, start: start.encode(), end: end.encode() } });
   }
