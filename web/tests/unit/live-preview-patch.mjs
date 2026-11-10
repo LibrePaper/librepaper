@@ -1,7 +1,7 @@
 // livePatch: which edits can be shown by patching the rendered preview, and
 // what the patch says. Everything doubtful must come back null.
 import assert from "node:assert/strict";
-import { livePatch } from "../../src/lib/live-preview/patch.js";
+import { livePatch, paragraphText } from "../../src/lib/live-preview/patch.js";
 
 // A main file whose body starts on line 3.
 const doc = (body) => `\\begin{document}\n\n${body}\n\n\\end{document}\n`;
@@ -130,4 +130,22 @@ console.log("live-preview-patch: ok");
   assert.ok(patch);
   assert.equal(patch.after, "");
   assert.equal(patch.before, short.slice(0, -1));
+}
+
+// paragraphText: the paragraph around an offset of the new text.
+{
+  const para = (text, needle) => paragraphText({ path: "main.tex", text, at: text.indexOf(needle) + needle.length, isMain: true });
+  // A new plain paragraph after another one.
+  assert.deepEqual(para(doc("First one.\n\nSecond one"), "Second one"), { startLine: 5, endLine: 5, text: "Second one" });
+  // A command in the paragraph: refused.
+  assert.equal(para(doc("First one.\n\nSecond \\cite{x} one"), "Second"), null);
+  // The preamble: refused.
+  assert.equal(paragraphText({ path: "main.tex", text: "Some words\n\\begin{document}\n\n\\end{document}\n", at: 5, isMain: true }), null);
+  // Several lines collapse to one.
+  assert.deepEqual(para(doc("First one.\n\nSecond   line\nthird line"), "third"), { startLine: 5, endLine: 6, text: "Second line third line" });
+  // The apostrophe is rendered.
+  assert.equal(para(doc("First one.\n\nIt's here"), "It's").text, "It\u2019s here");
+  // Not a tex file, and a blank line.
+  assert.equal(paragraphText({ path: "a.md", text: "words", at: 2, isMain: false }), null);
+  assert.equal(para(doc("First one.\n\n\nx"), "First one.\n"), null);
 }

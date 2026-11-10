@@ -9,6 +9,7 @@ import { latexTree } from "../source-trees.js";
 /**
  * @typedef {{ kind: "prose", file: string, line: number, before: string, deleted: string, inserted: string, after: string }} ProsePatch
  * @typedef {{ kind: "math", file: string, line: number, oldTex: string, tex: string, display: boolean }} MathPatch
+ * @typedef {{ kind: "paragraph", file: string, anchorLine: number, text: string }} ParagraphPatch
  * @typedef {ProsePatch | MathPatch} Patch
  * @typedef {{ from: number, oldTo: number, newTo: number }} Span
  * @typedef {import("@lezer/common").SyntaxNode} SyntaxNode
@@ -348,4 +349,30 @@ export function livePatch(edit) {
   if (oldText.slice(span.from, span.oldTo).includes("\n") || newText.slice(span.from, span.newTo).includes("\n")) return null;
   const oldNode = mathAround(latexTree(oldText, path), span.from);
   return oldNode ? mathPatch(edit, span, oldNode) : prosePatch(edit, span);
+}
+
+/**
+ * The paragraph around offset `at` of the new text, as the preview would show
+ * it: the lines between the blank lines above and below, collapsed to one
+ * line. Null unless every character renders as itself and `at` is in running
+ * text.
+ * @param {{ path: string, text: string, at: number, isMain: boolean }} edit
+ * @returns {{ startLine: number, endLine: number, text: string } | null}
+ */
+export function paragraphText({ path, text, at, isMain }) {
+  if (!/\.tex$/i.test(path)) return null;
+  const lines = text.split("\n");
+  const index = lineOf(text, at) - 1;
+  if (index < 0 || index >= lines.length || lines[index].trim() === "") return null;
+  let first = index;
+  while (first > 0 && lines[first - 1].trim() !== "") first--;
+  let last = index;
+  while (last < lines.length - 1 && lines[last + 1].trim() !== "") last++;
+  const paragraph = lines.slice(first, last + 1).join("\n");
+  for (const char of paragraph) if (char !== "\n" && !PLAIN_CHAR.test(char)) return null;
+  if (/--|``|''|[!?]`/.test(paragraph)) return null;
+  if (!inRunningText(latexTree(text, path), text, at, isMain)) return null;
+  const collapsed = paragraph.replace(/\s+/g, " ").trim();
+  if (collapsed === "") return null;
+  return { startLine: first + 1, endLine: last + 1, text: render(collapsed) };
 }

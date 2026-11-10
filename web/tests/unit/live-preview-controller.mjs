@@ -130,3 +130,47 @@ live.reset();
 live.edited(base, "main.tex");
 live.edited({ ...base, "main.tex": doc("The quicxk brown fox jumps.") }, "main.tex");
 assert.equal(sent.length, 0);
+
+// New lines inside a paragraph map to the nearest line above.
+{
+  const compiledPage = lines("\\begin{document}", "", "Alpha line one", "Beta line.", "", "\\end{document}");
+  const files2 = { "main.tex": compiledPage, "a.tex": other };
+  sent.length = 0;
+  live.reset();
+  live.compiled(files2);
+  // Enter at the end of line 3 sends nothing, then typing on the new line 4 patches line 3.
+  const enter = compiledPage.replace("line one\n", "line one\n\n");
+  live.edited({ ...files2, "main.tex": enter }, "main.tex");
+  assert.equal(sent.length, 0);
+  const typed = enter.replace("line one\n\n", "line one\ncontinues here\n");
+  live.edited({ ...files2, "main.tex": typed }, "main.tex");
+  assert.equal(sent.at(-1)?.patch.kind, "paragraph");
+}
+{
+  const compiledPage = lines("\\begin{document}", "", "Alpha line one", "", "Beta line.", "", "\\end{document}");
+  const files2 = { "main.tex": compiledPage, "a.tex": other };
+  sent.length = 0;
+  live.reset();
+  live.compiled(files2);
+  // Enter Enter after line 3 makes a new paragraph; each keystroke resends it.
+  let current2 = compiledPage.replace("Alpha line one\n", "Alpha line one\n\n\n");
+  live.edited({ ...files2, "main.tex": current2 }, "main.tex");
+  assert.equal(sent.length, 0);
+  current2 = current2.replace("one\n\n\n", "one\n\nN\n");
+  live.edited({ ...files2, "main.tex": current2 }, "main.tex");
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].patch, { kind: "paragraph", file: "main.tex", anchorLine: 3, text: "N" });
+  current2 = current2.replace("N\n", "Ne\n");
+  live.edited({ ...files2, "main.tex": current2 }, "main.tex");
+  assert.deepEqual(sent.at(-1).patch, { kind: "paragraph", file: "main.tex", anchorLine: 3, text: "Ne" });
+  // Typing in an existing paragraph still sends a prose patch.
+  const before2 = sent.length;
+  live.edited({ ...files2, "main.tex": current2.replace("Beta line.", "Betaa line.") }, "main.tex");
+  assert.equal(sent.length, before2 + 1);
+  assert.equal(sent.at(-1).patch.kind, "prose");
+  assert.equal(sent.at(-1).patch.line, 5);
+  // After the compile, the new paragraph is ordinary.
+  live.compiled({ ...files2, "main.tex": current2 });
+  live.edited({ ...files2, "main.tex": current2.replace("Ne\n", "New\n") }, "main.tex");
+  assert.equal(sent.at(-1).patch.kind, "prose");
+}

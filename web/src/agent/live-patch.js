@@ -190,6 +190,54 @@ function applyMath(document, sources, katex, patch) {
   return true;
 }
 
+const BLOCK_TAGS = "p, h1, h2, h3, h4, h5, h6, li, td, figcaption, dt, dd";
+
+// A paragraph the last compile has not seen: shown as a provisional paragraph
+// after the block that owns the anchor line, and updated on every keystroke.
+function applyParagraph(document, sources, patch) {
+  const { file, anchorLine, text } = patch;
+  if (typeof file !== "string" || typeof text !== "string" || !Number.isInteger(anchorLine)) return false;
+  const tag = Array.isArray(sources) ? sources.indexOf(file) : -1;
+  if (tag < 0) return false;
+  const key = `${tag}:${anchorLine}`;
+  const existing = [...document.querySelectorAll("[data-lp-para]")].find((element) => element.getAttribute("data-lp-para") === key);
+  if (existing) {
+    if (text === "") {
+      existing.remove();
+      return true;
+    }
+    const target = existing.querySelector("p");
+    if (!target || target.textContent === text) return false;
+    target.textContent = text;
+    return true;
+  }
+  if (text === "") return false;
+
+  let anchor = null;
+  let latest = -1;
+  for (const element of document.querySelectorAll(BLOCK_TAGS)) {
+    if (element.closest(SKIP)) continue;
+    const position = parseSourcepos(element.getAttribute("data-sourcepos"));
+    if (!position || position.tag !== tag || position.startLine > anchorLine) continue;
+    if (position.startLine >= latest) {
+      latest = position.startLine;
+      anchor = element;
+    }
+  }
+  if (!anchor) return false;
+  const container = anchor.closest(".ltx_para") || anchor;
+  const div = document.createElement("div");
+  div.className = "ltx_para";
+  div.setAttribute("data-lp-provisional", "");
+  div.setAttribute("data-lp-para", key);
+  const paragraph = document.createElement("p");
+  paragraph.className = "ltx_p";
+  paragraph.textContent = text;
+  div.appendChild(paragraph);
+  container.after(div);
+  return true;
+}
+
 // Returns true only if the page was changed.
 /**
  * @param {Document} document
@@ -200,6 +248,7 @@ export function applyLivePatch(document, { sources, katex } = {}, patch) {
   try {
     if (!document || !patch || typeof patch !== "object") return false;
     if (patch.kind === "prose") return applyProse(document, sources, patch);
+    if (patch.kind === "paragraph") return applyParagraph(document, sources, patch);
     if (patch.kind === "math") return applyMath(document, sources, katex, patch);
   } catch {
     return false;

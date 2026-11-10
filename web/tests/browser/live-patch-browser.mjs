@@ -117,6 +117,23 @@ try {
   await rejected("wrong line", math({ line: 30, oldTex: "x^{4}", tex: "x" }));
   await rejected("wrong file (math)", math({ file: "other.tex", oldTex: "x^{4}", tex: "x" }));
 
+  // Paragraph patches, on elements added after the other cases.
+  await page.evaluate(`document.getElementById('root').insertAdjacentHTML('beforeend', '<section id="s1"><h2 class="ltx_title ltx_title_section" id="h1" data-sourcepos="0:40:1-0:40:1">Heading</h2><div class="ltx_para" id="w1"><p class="ltx_p" data-sourcepos="0:42:2-0:42:2">Wrapped paragraph.</p></div></section>')`);
+  const para = (over) => ({ kind: "paragraph", file: "main.tex", anchorLine: 42, text: "New", ...over });
+  const provisional = () => page.evaluate("document.querySelectorAll('[data-lp-para]').length");
+  assert.equal(await call(para()), true);
+  assert.equal(await page.evaluate("document.getElementById('w1').nextElementSibling.getAttribute('data-lp-para')"), "0:42");
+  assert.equal(await page.evaluate("document.getElementById('w1').nextElementSibling.querySelector('p.ltx_p').textContent"), "New");
+  assert.equal(await call(para({ text: "New words" })), true);
+  assert.equal(await provisional(), 1, "same anchor updates in place");
+  assert.equal(await page.evaluate("document.querySelector('[data-lp-para] p').textContent"), "New words");
+  assert.equal(await call(para({ text: "New words" })), false, "equal text changes nothing");
+  assert.equal(await call(para({ text: "" })), true);
+  assert.equal(await provisional(), 0, "empty text removes it");
+  assert.equal(await call(para({ anchorLine: 40 })), true);
+  assert.equal(await page.evaluate("document.getElementById('h1').nextElementSibling.getAttribute('data-lp-para')"), "0:40", "after the heading");
+  await rejected("paragraph for an unknown file", para({ file: "nope.tex", anchorLine: 41 }));
+
   console.log("live-patch-browser: prose and math patches apply to exactly one node and refuse every ambiguous case");
 } finally {
   await page?.close?.();

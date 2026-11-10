@@ -9,7 +9,7 @@
 // mapping walks those operations backwards. A line in text the compile has
 // not seen gets no patch.
 
-import { livePatch } from "./patch.js";
+import { livePatch, paragraphText } from "./patch.js";
 
 const isTex = (path) => /\.tex$/i.test(path);
 
@@ -53,27 +53,66 @@ function lineOperation(previous, next) {
 
 /**
  * Maps a line of the text after the last operation back to the compiled text.
- * Operations are applied from last to first. Null when the line is one the
- * operations added, since the compile never had it.
+ * Operations are applied from last to first. A line the operations added has no
+ * compiled line: with `created: "null"` the answer is null; with
+ * `created: "nearest"` it is the nearest line above that existed, which may be
+ * a wrong guess that the frame's exact text match then rejects.
  * @param {Array<{ at: number, removed: number, added: number, lineStart: boolean }>} ops
  * @param {number} line 1-based
+ * @param {{ created?: "null" | "nearest" }} [options]
  * @returns {number | null}
  */
-function mapThrough(ops, line) {
+function mapThrough(ops, line, { created = "null" } = {}) {
   for (let i = ops.length - 1; i >= 0; i--) {
     const { at, removed, added, lineStart } = ops[i];
     if (line < at) continue;
     if (lineStart) {
       // Lines at .. at + added - 1 are new; the old line `at` is now at + added.
-      if (line < at + added) return null;
+      if (line < at + added) {
+        if (created === "null" || at <= 1) return null;
+        line = at - 1;
+        continue;
+      }
     } else {
       // Line `at` keeps its start; the lines after it up to at + added are new.
       if (line === at) continue;
-      if (line <= at + added) return null;
+      if (line <= at + added) {
+        if (created === "null") return null;
+        line = at;
+        continue;
+      }
     }
     line = line - added + removed;
   }
   return line;
+}
+
+/**
+ * The paragraph patch for an edit that created a paragraph the last compile
+ * has not seen, or null.
+ * @param {string} path
+ * @param {string} oldText
+ * @param {string} newText
+ * @param {string} main
+ * @param {Array<{ at: number, removed: number, added: number, lineStart: boolean }>} list operations before this edit
+ */
+function newParagraph(path, oldText, newText, main, list) {
+  const span = changedSpan(oldText, newText);
+  if (!span) return null;
+  const found = paragraphText({ path, text: newText, at: span.from, isMain: path === main });
+  if (!found) return null;
+  const operation = lineOperation(oldText, newText);
+  const all = operation ? [...list, operation] : list;
+  for (let l = found.startLine; l <= found.endLine; l++) {
+    if (mapThrough(all, l) !== null) return null;
+  }
+  const lines = newText.split("\n");
+  for (let l = found.startLine - 1; l >= 1; l--) {
+    if (lines[l - 1].trim() === "") continue;
+    const anchorLine = mapThrough(all, l);
+    if (anchorLine !== null) return { kind: "paragraph", file: path, anchorLine, text: found.text };
+  }
+  return null;
 }
 
 /**
@@ -108,12 +147,17 @@ export function createLivePreview({ send }) {
       // The patch is mapped through the operations recorded before this edit.
       let patch = null;
       let line = null;
+      /** @type {object | null} */
+      let paragraph = null;
       if (changed.length === 1) {
         const [path] = changed;
         if (isTex(path) && compiledTexts.has(path) && previous.has(path) && texts.has(path)) {
-          patch = livePatch({ path, oldText: previous.get(path), newText: texts.get(path), isMain: path === main });
+          const oldText = previous.get(path);
+          const newText = texts.get(path);
           const list = ops.get(path);
-          if (patch && list !== null) line = mapThrough(list ?? [], patch.line);
+          patch = livePatch({ path, oldText, newText, isMain: path === main });
+          if (patch && list !== null) line = mapThrough(list ?? [], patch.line, { created: "nearest" });
+          if (line === null && list !== null) paragraph = newParagraph(path, oldText, newText, main, list ?? []);
         }
       }
 
@@ -131,6 +175,7 @@ export function createLivePreview({ send }) {
       }
 
       if (patch && line !== null) send({ type: "preview-patch", patch: { ...patch, line } });
+      else if (paragraph) send({ type: "preview-patch", patch: paragraph });
     },
 
     /** @param {Record<string, string>} next the texts that were compiled */
