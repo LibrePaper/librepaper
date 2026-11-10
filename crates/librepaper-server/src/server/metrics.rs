@@ -383,7 +383,7 @@ impl Metrics {
             ));
         }
         if let Some(used) = snapshot
-            .pointer("/storage_ledger/deployment_bytes")
+            .pointer("/storage/retained_bytes")
             .and_then(json_number)
         {
             gauges.push((
@@ -549,13 +549,16 @@ async fn handle_metrics(State(server): State<Arc<super::Server>>) -> Response<Bo
 /// Refresh aggregate gauges at a low fixed rate. The one-second timeout makes
 /// a stuck status query harmless to the user-facing request path.
 pub fn spawn_sampler(tasks: &mut librepaper_base::tasks::Tasks, server: Arc<super::Server>) {
-    // The stored total the graphs draw. The storage ledger in the snapshot
-    // moves only when a log row is flushed or compacted, so it misses
-    // uploads, command rows, new documents and deletions until the next
-    // restart. The catalogue's total is exact. Asking for it only when the
-    // graphs are about to record keeps it to one query a minute, and a
-    // failed ask keeps the last figure.
+    // The deployment's stored total, as the catalogue sums it. The storage
+    // gauges and the graphs both read it from `snapshot["storage"]`. It is
+    // asked for when it is not yet known and then about once a minute: when
+    // the graphs are about to record a row, or, with no graphs configured,
+    // when a minute has passed since the last ask. A failed ask keeps the
+    // last figure.
+    const STORED_REFRESH: Duration = Duration::from_secs(60);
     let stored: Arc<std::sync::Mutex<Option<i64>>> = Arc::new(std::sync::Mutex::new(None));
+    let asked_at: Arc<std::sync::Mutex<Option<std::time::Instant>>> =
+        Arc::new(std::sync::Mutex::new(None));
     tasks.every(
         "metrics-sampler",
         Duration::from_secs(15),
@@ -563,6 +566,7 @@ pub fn spawn_sampler(tasks: &mut librepaper_base::tasks::Tasks, server: Arc<supe
         move || {
             let server = server.clone();
             let stored = stored.clone();
+            let asked_at = asked_at.clone();
             async move {
                 let snapshot =
                     tokio::time::timeout(SCRAPE_SAMPLE_TIMEOUT, server.metrics_snapshot()).await;
@@ -570,12 +574,17 @@ pub fn spawn_sampler(tasks: &mut librepaper_base::tasks::Tasks, server: Arc<supe
                     server.metrics.note_snapshot_failure();
                     return;
                 };
-                server.metrics.update_gauges(&snapshot, &server.config);
-                let Some(graphs) = server.graphs.clone() else {
-                    return;
-                };
                 let known = *stored.lock().unwrap_or_else(|e| e.into_inner());
-                if known.is_none() || graphs.due() {
+                let due = match &server.graphs {
+                    Some(graphs) => graphs.due(),
+                    None => asked_at
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .is_none_or(|at| at.elapsed() >= STORED_REFRESH),
+                };
+                if known.is_none() || due {
+                    *asked_at.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some(std::time::Instant::now());
                     let asked = tokio::time::timeout(
                         SCRAPE_SAMPLE_TIMEOUT,
                         server.store.catalog.usage_bytes(None),
@@ -589,6 +598,10 @@ pub fn spawn_sampler(tasks: &mut librepaper_base::tasks::Tasks, server: Arc<supe
                 if let Some(bytes) = known {
                     snapshot["storage"] = serde_json::json!({ "retained_bytes": bytes });
                 }
+                server.metrics.update_gauges(&snapshot, &server.config);
+                let Some(graphs) = server.graphs.clone() else {
+                    return;
+                };
                 let live = server.metrics.live.clone();
                 let observed =
                     tokio::task::spawn_blocking(move || graphs.observe(&snapshot, &live)).await;
@@ -784,10 +797,13 @@ const GAUGE_FIELDS: &[(&str, &str, &str)] = &[
         "database",
         "begin_wait_max_us",
     ),
+    // The catalogue's stored total, not an in-process estimate: the sampler
+    // asks for it about once a minute, so the gauge is that fresh. The name
+    // keeps "ledger" for dashboards that already chart it.
     (
         "librepaper_storage_ledger_deployment_bytes",
-        "storage_ledger",
-        "deployment_bytes",
+        "storage",
+        "retained_bytes",
     ),
     ("librepaper_host_process_rss_bytes", "host", "rss_bytes"),
     (

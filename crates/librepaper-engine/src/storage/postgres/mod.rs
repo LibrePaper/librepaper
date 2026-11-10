@@ -2854,14 +2854,12 @@ mod tests {
         let sequencer = Sequencer::from_parts(
             document.id,
             document.slug.clone(),
-            uuid::Uuid::nil(),
             catalog_arc,
             blobs,
             config,
             budget,
             pending,
             "deployment-test-peer".into(),
-            crate::log::ledger::StorageLedger::new(),
             2,
             loro::VersionVector::default(),
             0,
@@ -3234,7 +3232,6 @@ mod tests {
             budget,
             pending,
             "deployment-test-peer".into(),
-            crate::log::ledger::StorageLedger::new(),
             Arc::new(std::sync::OnceLock::new()),
         )
         .await
@@ -3430,7 +3427,6 @@ mod tests {
             budget,
             pending,
             "deployment-test-peer".into(),
-            crate::log::ledger::StorageLedger::new(),
             Arc::new(std::sync::OnceLock::new()),
         )
         .await

@@ -982,8 +982,6 @@ impl Inner {
 pub struct Sequencer {
     pub document_id: Uuid,
     pub slug: String,
-    owner_id: Uuid,
-    ledger: Arc<super::ledger::StorageLedger>,
     inner: tokio::sync::Mutex<Inner>,
     catalog: Arc<dyn LogCatalog>,
     blobs: Arc<dyn BlobStore>,
@@ -1046,7 +1044,6 @@ impl Sequencer {
         budget: Arc<Budget>,
         pending: Arc<super::pending::PendingBudget>,
         deployment_peer_key: String,
-        ledger: Arc<super::ledger::StorageLedger>,
         compaction: Arc<std::sync::OnceLock<crate::storage::worker::Handle>>,
     ) -> Result<Self> {
         // Admission's own two reads, made against the concrete catalogue.
@@ -1055,7 +1052,6 @@ impl Sequencer {
         // every test double had to answer and nothing else ever called.
         let head = catalog.log_head(document_id).await?;
         let base = catalog.log_base(document_id).await?;
-        ledger.refresh(&catalog, head.owner_id).await?;
         // Upcast once, here: every other method sees only the questions and
         // writes in `LogCatalog`, not the concrete catalog, which is what
         // lets `from_parts` build a sequencer without one (§14.2).
@@ -1068,14 +1064,12 @@ impl Sequencer {
         Ok(Self::from_parts(
             document_id,
             slug,
-            head.owner_id,
             catalog,
             blobs,
             config,
             budget,
             pending,
             deployment_peer_key,
-            ledger,
             head.update_sequence + 1,
             log_vector,
             base.as_ref()
@@ -1097,14 +1091,12 @@ impl Sequencer {
     pub fn from_parts(
         document_id: Uuid,
         slug: String,
-        owner_id: Uuid,
         catalog: Arc<dyn LogCatalog>,
         blobs: Arc<dyn BlobStore>,
         config: Arc<Configuration>,
         budget: Arc<Budget>,
         pending: Arc<super::pending::PendingBudget>,
         deployment_peer_key: String,
-        ledger: Arc<super::ledger::StorageLedger>,
         next_sequence: i64,
         log_vector: VersionVector,
         base_bytes: u64,
@@ -1128,8 +1120,6 @@ impl Sequencer {
         Self {
             document_id,
             slug,
-            owner_id,
-            ledger,
             inner: tokio::sync::Mutex::new(Inner {
                 next_sequence,
                 head_vector: log_vector.clone(),
@@ -1177,27 +1167,6 @@ impl Sequencer {
     pub fn set_gap_check_enforced(&self, enforced: bool) {
         self.gap_check
             .store(enforced, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Whether charging `bytes` more to this document's owner would pass a
-    /// storage quota, and which one.
-    pub fn storage_would_exceed(&self, bytes: i64) -> Option<&'static str> {
-        self.ledger.would_exceed(
-            self.owner_id,
-            bytes,
-            self.config.storage.per_owner,
-            self.config.storage.total,
-        )
-    }
-
-    /// The bytes the ledger currently holds for this document's owner.
-    pub fn owner_storage_bytes(&self) -> i64 {
-        self.ledger.owner_bytes(self.owner_id)
-    }
-
-    /// Moves the owner's and the deployment's in-memory storage figures.
-    pub fn charge_storage(&self, delta: i64) {
-        self.ledger.charge(self.owner_id, delta);
     }
 
     /// Moves the rate limiter's clock forward, so a test can spend an
@@ -1328,14 +1297,6 @@ impl Sequencer {
         // What this batch will cost the deployment if it is accepted: its
         // payload and the framing the row will spend on it.
         let charge = bytes.len().saturating_add(frame::overhead(peer_key));
-        if let Some(reason) = self.ledger.would_exceed(
-            self.owner_id,
-            charge as i64,
-            self.config.storage.per_owner,
-            self.config.storage.total,
-        ) {
-            return retryable(&inner, "this account's storage is full", reason, false);
-        }
         // The per-document ceiling, on the charge rather than the payload.
         // An empty buffer always admits one update whatever it weighs
         // (max_pending_charge), or a single maximum-size update would be
@@ -1710,7 +1671,6 @@ impl Sequencer {
             reserved_bytes,
             reserved_after,
         );
-        self.ledger.charge(self.owner_id, row_bytes as i64);
         let compaction_due = inner.compaction_due(self.catalog.compaction_thresholds());
         acknowledge(&mut inner, &acknowledged);
         notify_durable(&mut inner);
@@ -2275,7 +2235,6 @@ impl Sequencer {
                 reserved_bytes,
                 None,
             );
-            self.ledger.charge(self.owner_id, row_bytes as i64);
         }
         if let Some(source) = &prepared {
             inner.head_vector.merge(&source.end);
@@ -2798,8 +2757,6 @@ impl Sequencer {
             _transaction: transaction,
             inner,
             slug: &self.slug,
-            owner_id: self.owner_id,
-            ledger: self.ledger.clone(),
         }
     }
 
@@ -2817,8 +2774,6 @@ pub struct CompactionGate<'a> {
     _transaction: tokio::sync::MutexGuard<'a, ()>,
     inner: tokio::sync::MutexGuard<'a, Inner>,
     slug: &'a str,
-    owner_id: Uuid,
-    ledger: Arc<super::ledger::StorageLedger>,
 }
 
 impl CompactionGate<'_> {
@@ -2848,8 +2803,6 @@ impl CompactionGate<'_> {
         row_bytes: u64,
         uncompacted_count: i64,
     ) {
-        let before = self.inner.base_bytes.saturating_add(self.inner.row_bytes);
-        let after = base_bytes.saturating_add(row_bytes);
         if let Ok(vector) = decode_vector(vector) {
             self.inner.base_vector = vector;
         }
@@ -2857,8 +2810,6 @@ impl CompactionGate<'_> {
         self.inner.base_bytes = base_bytes;
         self.inner.row_bytes = row_bytes;
         self.inner.uncompacted_count = uncompacted_count;
-        self.ledger
-            .charge(self.owner_id, after as i64 - before as i64);
         tracing::debug!("{} compacted through {through}", self.slug);
     }
 
