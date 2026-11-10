@@ -224,7 +224,7 @@ test("org footnote definitions and references live in the footnote namespace", (
   const { items } = indexFile("notes.org", text);
   const definitions = ofKind(items, "label").filter((item) => item.namespace === "footnote");
   assert.deepEqual(definitions.map((item) => item.name), ["b", "a"]);
-  assert.deepEqual(definitions.map((item) => item.attrs), [{ target: "footnote" }, { target: "footnote" }]);
+  assert.deepEqual(definitions.map((item) => item.attrs), [{ target: "footnote", inline: "true" }, { target: "footnote" }]);
   assert.equal(span(text, definitions[1].nameRange), "a");
 
   const refs = ofKind(items, "ref");
