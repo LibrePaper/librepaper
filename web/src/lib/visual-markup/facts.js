@@ -4,17 +4,19 @@
 // the numbering pass is shared by the labels, the theorems and the citations.
 
 import { rankEntries } from "../bibliography.js";
-import { numberLabels, stripComments, theoremDefinitions } from "./labels.js";
+import { bracketed, braced, groupAfter, latexCommands, keyValues, readArguments, skipSpace } from "../latex-language/args.js";
+import { numberLabels, theoremDefinitions } from "./labels.js";
 
-const NEWACRONYM = /\\newacronym\s*(?:\[[^\]]*\]\s*)?\{([^{}]*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}/g;
-const ACRO = /\\acro\s*\{([^{}]*)\}\s*(?:\[([^\]]*)\])?\s*\{((?:[^{}]|\{[^{}]*\})*)\}/g;
-const DECLARE_ACRONYM = /\\DeclareAcronym\s*\{([^{}]*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}/g;
-const GLOSSARY_ENTRY = /\\newglossaryentry\s*\{([^{}]*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}/g;
-
-// A definition head: \newcommand, \renewcommand, \providecommand (group 1), the
-// xparse forms (group 2), \def (group 3) and \DeclareMathOperator (group 4, the star).
-const DEFINE = /\\(?:(new|renew|provide)command\*?|(New|Renew|Provide)DocumentCommand|(def)(?=\\)|DeclareMathOperator(\*?))/g;
-const MACRO_NAME = /\s*(?:\{\s*\\([A-Za-z@]+)\s*\}|\\([A-Za-z@]+))/y;
+// Definition heads: newcommand, renewcommand, providecommand (starred forms
+// too), the xparse forms, def and DeclareMathOperator.
+const COMMAND_DEFINITIONS = new Map([
+  ["newcommand", "new"],
+  ["renewcommand", "new"],
+  ["providecommand", "provide"],
+  ["NewDocumentCommand", "document"],
+  ["RenewDocumentCommand", "document"],
+  ["ProvideDocumentCommand", "provide-document"],
+]);
 
 const CITE_STYLE_NUMERIC = /^(?:numeric|ieee|nature|vancouver|science|alphabetic)/;
 const CITE_STYLE_AUTHOR_YEAR = /^(?:authoryear|authordate|authortitle|apa|chicago|harvard|mla)/;
@@ -39,8 +41,6 @@ const BIBSTYLE = new Map([
 /// shown in the editor (its environment offsets are the ones reported), and
 /// `entries` the parsed bibliography entries.
 export function documentFacts(texts, main, open, entries = []) {
-  const plain = {};
-  for (const path of Object.keys(texts)) plain[path] = stripComments(texts[path] ?? "");
   const theorems = theoremDefinitions(texts);
   const environmentNumbers = new Map();
   const headingNumbers = new Map();
@@ -54,17 +54,17 @@ export function documentFacts(texts, main, open, entries = []) {
       if (!order.has(key)) order.set(key, order.size + 1);
     },
   });
-  const { textMacros, mathMacros } = macroFacts(plain);
+  const { textMacros, mathMacros } = macroFacts(texts);
   return {
     labels,
     citations: citationFacts(entries, order),
-    acronyms: acronymFacts(plain),
+    acronyms: acronymFacts(texts),
     textMacros,
     mathMacros,
     theorems,
     environmentNumbers,
     headingNumbers,
-    citeStyle: citeStyleOf(plain),
+    citeStyle: citeStyleOf(texts),
   };
 }
 
@@ -94,65 +94,64 @@ function surnamesOf(entry) {
   });
 }
 
-// The value of `name = value` in a key-value list. A braced value is read
-// without its braces.
-function field(list, name) {
-  const match = new RegExp(`(?:^|[,\\s])${name}\\s*=\\s*(?:\\{((?:[^{}]|\\{[^{}]*\\})*)\\}|([^,{}]*))`).exec(list);
-  return (match?.[1] ?? match?.[2] ?? "").trim();
+// The commands of each project text, with comments blanked.
+function lexed(texts) {
+  return Object.keys(texts).map((path) => latexCommands(texts[path] ?? "", path));
 }
+
+const group = braced;
+const bracket = bracketed;
+const skip = skipSpace;
 
 function acronymFacts(texts) {
   const acronyms = new Map();
-  for (const path of Object.keys(texts)) {
-    const text = texts[path];
-    for (const match of text.matchAll(NEWACRONYM)) {
-      acronyms.set(match[1].trim(), { short: match[2].trim(), long: match[3].trim() });
+  for (const { code, commands } of lexed(texts)) {
+    const calls = (name) => commands.filter((command) => command.type === "command" && command.name === name);
+    for (const command of calls("newacronym")) {
+      // \newacronym[options]{key}{short}{long}
+      const args = readArguments(code, command.to).filter((arg) => arg.kind === "group");
+      if (args.length >= 3) {
+        acronyms.set(args[0].value.trim(), { short: args[1].value.trim(), long: args[2].value.trim() });
+      }
     }
-    for (const match of text.matchAll(ACRO)) {
-      const key = match[1].trim();
-      acronyms.set(key, { short: match[2]?.trim() || key, long: match[3].trim() });
+    for (const command of calls("acro")) {
+      // \acro{key}[short]{long}
+      const args = readArguments(code, command.to);
+      if (args[0]?.kind !== "group") continue;
+      const key = args[0].value.trim();
+      const short = args[1]?.kind === "optional" ? args[1] : null;
+      const long = args[short ? 2 : 1];
+      if (long?.kind !== "group") continue;
+      acronyms.set(key, { short: short?.value.trim() || key, long: long.value.trim() });
     }
-    for (const match of text.matchAll(DECLARE_ACRONYM)) {
-      acronyms.set(match[1].trim(), { short: field(match[2], "short"), long: field(match[2], "long") });
+    for (const command of calls("DeclareAcronym")) {
+      const args = readArguments(code, command.to);
+      if (args[0]?.kind !== "group" || args[1]?.kind !== "group") continue;
+      const fields = keyValues(args[1].value);
+      acronyms.set(args[0].value.trim(), { short: fields.get("short") ?? "", long: fields.get("long") ?? "" });
     }
-    for (const match of text.matchAll(GLOSSARY_ENTRY)) {
-      acronyms.set(match[1].trim(), { short: field(match[2], "name"), long: field(match[2], "description") });
+    for (const command of calls("newglossaryentry")) {
+      const args = readArguments(code, command.to);
+      if (args[0]?.kind !== "group" || args[1]?.kind !== "group") continue;
+      const fields = keyValues(args[1].value);
+      acronyms.set(args[0].value.trim(), { short: fields.get("name") ?? "", long: fields.get("description") ?? "" });
     }
   }
   return acronyms;
 }
 
-// The balanced {...} group that opens at `at`: its inner text, and the index
-// after its close. Null when there is no group there.
-function group(text, at) {
-  if (text[at] !== "{") return null;
-  let depth = 0;
-  for (let i = at; i < text.length; i++) {
-    if (text[i] === "\\") i++;
-    else if (text[i] === "{") depth++;
-    else if (text[i] === "}" && --depth === 0) return { value: text.slice(at + 1, i), next: i + 1 };
-  }
-  return null;
-}
-
-// A [...] argument that opens at `at`, without nesting.
-function bracket(text, at) {
-  if (text[at] !== "[") return null;
-  const close = text.indexOf("]", at);
-  return close === -1 ? null : { value: text.slice(at + 1, close), next: close + 1 };
-}
-
-function skip(text, at) {
-  let i = at;
-  while (i < text.length && /\s/.test(text[i])) i++;
-  return i;
-}
-
 // The name a definition defines, braced or bare, as \name.
 function macroName(text, at) {
-  MACRO_NAME.lastIndex = at;
-  const match = MACRO_NAME.exec(text);
-  return match ? { name: match[1] ?? match[2], next: MACRO_NAME.lastIndex } : null;
+  let i = skip(text, at);
+  if (text[i] === "{") {
+    const inner = group(text, i);
+    const match = inner && /^\s*\\([A-Za-z@]+)\s*$/.exec(inner.value);
+    return match ? { name: match[1], next: inner.next } : null;
+  }
+  const match = /\\([A-Za-z@]+)/y;
+  match.lastIndex = i;
+  const found = match.exec(text);
+  return found ? { name: found[1], next: match.lastIndex } : null;
 }
 
 // \newcommand, \renewcommand, \providecommand: the argument count, a
@@ -207,32 +206,37 @@ function documentCommand(text, at) {
 function macroFacts(texts) {
   const textMacros = new Map();
   const operators = {};
-  for (const path of Object.keys(texts)) {
-    const text = texts[path];
-    for (const match of text.matchAll(DEFINE)) {
-      const at = match.index + match[0].length;
-      if (match[4] !== undefined) {
-        const name = macroName(text, at);
-        const body = name && group(text, skip(text, name.next));
-        if (body) operators[`\\${name.name}`] = `\\operatorname${match[4]}{${body.value}}`;
+  for (const { code, commands } of lexed(texts)) {
+    for (const command of commands) {
+      if (command.type !== "command") continue;
+      const kind = command.name === "def" ? "def" : command.name === "DeclareMathOperator" ? "operator" : COMMAND_DEFINITIONS.get(command.name);
+      if (!kind) continue;
+      // \def defines a bare control word, so the backslash must follow it.
+      if (kind === "def" && code[command.to] !== "\\") continue;
+      // The star belongs to \newcommand* and \DeclareMathOperator*.
+      const starred = command.star && (kind === "new" || kind === "provide" || kind === "operator");
+      const at = starred ? command.to + 1 : command.to;
+      const name = macroName(code, at);
+      if (!name) continue;
+      if (kind === "operator") {
+        const body = group(code, skip(code, name.next));
+        if (body) operators[`\\${name.name}`] = `\\operatorname${command.star ? "*" : ""}{${body.value}}`;
         continue;
       }
-      const name = macroName(text, at);
-      if (!name) continue;
       // Text macros are keyed by bare name, as command tokens carry them.
       const key = name.name;
       let definition = null;
-      if (match[3]) {
-        const body = group(text, skip(text, name.next));
+      if (kind === "def") {
+        const body = group(code, skip(code, name.next));
         if (body) definition = { args: 0, optional: null, body: body.value };
-      } else if (match[2]) {
-        definition = documentCommand(text, name.next);
+      } else if (kind === "document" || kind === "provide-document") {
+        definition = documentCommand(code, name.next);
       } else {
-        definition = newCommand(text, name.next);
+        definition = newCommand(code, name.next);
       }
       if (!definition) continue;
       // \providecommand leaves an existing definition alone.
-      if ((match[1] === "provide" || match[2] === "Provide") && textMacros.has(key)) continue;
+      if ((kind === "provide" || kind === "provide-document") && textMacros.has(key)) continue;
       textMacros.set(key, definition);
     }
   }
@@ -250,20 +254,26 @@ function citeStyleOf(texts) {
   let biblatex = null;
   let natbib = null;
   let bibliography = null;
-  for (const path of Object.keys(texts)) {
-    const text = texts[path];
-    for (const match of text.matchAll(/\\usepackage\s*(?:\[([^\]]*)\])?\s*\{([^}]*)\}/g)) {
-      const packages = match[2].split(",").map((name) => name.trim());
-      const options = (match[1] ?? "").split(",").map((option) => option.trim());
-      if (packages.includes("biblatex")) {
-        const style = /\bstyle\s*=\s*([\w-]+)/.exec(match[1] ?? "")?.[1];
-        if (style && CITE_STYLE_NUMERIC.test(style)) biblatex = "numeric";
-        else if (style && CITE_STYLE_AUTHOR_YEAR.test(style)) biblatex = "author-year";
+  for (const { code, commands } of lexed(texts)) {
+    for (const command of commands) {
+      if (command.type !== "command") continue;
+      if (command.name === "usepackage") {
+        const args = readArguments(code, command.to);
+        const optional = args[0]?.kind === "optional" ? args[0] : null;
+        const names = args[optional ? 1 : 0];
+        if (names?.kind !== "group") continue;
+        const packages = names.value.split(",").map((name) => name.trim());
+        const options = (optional?.value ?? "").split(",").map((option) => option.trim());
+        if (packages.includes("biblatex")) {
+          const style = keyValues(optional?.value ?? "").get("style");
+          if (style && CITE_STYLE_NUMERIC.test(style)) biblatex = "numeric";
+          else if (style && CITE_STYLE_AUTHOR_YEAR.test(style)) biblatex = "author-year";
+        }
+        if (packages.includes("natbib")) natbib = options.includes("numbers") ? "numeric" : "author-year";
+      } else if (command.name === "bibliographystyle") {
+        const style = groupAfter(code, command.to);
+        if (style) bibliography = BIBSTYLE.get(style.value.trim()) ?? bibliography;
       }
-      if (packages.includes("natbib")) natbib = options.includes("numbers") ? "numeric" : "author-year";
-    }
-    for (const match of text.matchAll(/\\bibliographystyle\s*\{([^}]*)\}/g)) {
-      bibliography = BIBSTYLE.get(match[1].trim()) ?? bibliography;
     }
   }
   return biblatex ?? natbib ?? bibliography ?? "author-year";

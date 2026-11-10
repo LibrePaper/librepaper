@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { typstFacts } from "../../src/lib/visual-markup/typst-facts.js";
+import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
+
+await loadTypstSyntaxForTests();
 
 // Headings are numbered only while a numbering is set. A label after a heading binds to it.
 {
