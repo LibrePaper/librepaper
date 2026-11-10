@@ -46,6 +46,7 @@ const typstSample = "= Heading\nSome *bold* and $x^2 + y^2$ here.";
 const markdownSample = "# Readme\n\nSome *emphasis* and $x$ here.";
 // An Org file: keywords, a TODO heading with a priority and a tag, a scheduled
 // date, a property drawer, inline markup, math, an internal link and two tasks.
+// It ends on plain text: the caret goes to the end, and its line shows its source.
 const orgSample = [
   "#+TITLE: Org sample",
   "#+AUTHOR: A. Writer",
@@ -57,6 +58,8 @@ const orgSample = [
   "Some *bold*, /italic/ and $x^2 + y^2$ here, see [[#one]].",
   "- [ ] a task",
   "- [X] done task",
+  "",
+  "The end.",
 ].join("\n");
 // A Quarto paper: front matter, numbered sections, inline and block markup, a
 // code cell with a label, an image figure, a captioned table, display and inline
