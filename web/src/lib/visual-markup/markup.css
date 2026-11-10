@@ -4,6 +4,10 @@
   line-height: 1.3;
 }
 
+/* Spacing before a heading comes from the heading, not from the blank line. */
+.cm-lv-heading.cm-lp-block-first { padding-top: 1.2em; }
+.cm-lv-heading.cm-lp-block-last { padding-bottom: 0.3em; }
+
 .cm-lv-h1 { font-size: var(--doc-h1-size); }
 .cm-lv-h2 { font-size: var(--doc-h2-size); }
 .cm-lv-h3 { font-size: var(--doc-h3-size); }

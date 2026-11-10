@@ -398,11 +398,79 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
     }
   }
 
+  if (!options.showCommands) markBlankLines(state, decorations, revealed);
+
   return {
     decorations: Decoration.set(decorations, true),
     atomic: RangeSet.of(atomic, true),
     tokens: parsed
   };
+}
+
+const LINE_ELEMENT = 1;
+const LINE_ZERO = 2;
+const LINE_BLANK = 3;
+
+// A blank source line is paragraph spacing, not a line of text. Each unrevealed
+// whitespace-only line outside any styled or replaced block gets cm-lv-blank; the
+// rest of a run also gets -extra (collapsed), and a line beside a heading, widget,
+// pill, list or other styled line gets -tight (that element has its own spacing).
+// The kinds come from the decorations already built, so nothing is re-parsed.
+function markBlankLines(state: EditorState, decorations: CMRange<Decoration>[], revealed: Set<number>): void {
+  const doc = state.doc;
+  const kind = new Uint8Array(doc.lines + 2);
+
+  for (const range of decorations) {
+    const spec = range.value.spec;
+    if (spec.block) {
+      // A hidden run with no summary is zero height; a widget or pill is an element.
+      const mark = spec.widget ? LINE_ELEMENT : LINE_ZERO;
+      const last = doc.lineAt(range.to).number;
+      for (let n = doc.lineAt(range.from).number; n <= last; n++) if (kind[n] !== LINE_ELEMENT) kind[n] = mark;
+    } else if (range.from === range.to && spec.class !== undefined && !spec.widget) {
+      const n = doc.lineAt(range.from).number;
+      if (spec.class === 'cm-lv-syntax-line') {
+        if (kind[n] === 0) kind[n] = LINE_ZERO;
+      } else {
+        kind[n] = LINE_ELEMENT;
+      }
+    }
+  }
+
+  for (let n = 1; n <= doc.lines; n++) {
+    if (kind[n] === 0 && !revealed.has(n) && /^\s*$/.test(doc.line(n).text)) kind[n] = LINE_BLANK;
+  }
+
+  // The nearest line that is neither zero height nor blank, from a line outward.
+  const element = (from: number, step: number): boolean => {
+    for (let n = from; n >= 1 && n <= doc.lines; n += step) {
+      if (kind[n] === LINE_ZERO) continue;
+      return kind[n] === LINE_ELEMENT;
+    }
+    return false;
+  };
+
+  let n = 1;
+  while (n <= doc.lines) {
+    if (kind[n] !== LINE_BLANK) {
+      n++;
+      continue;
+    }
+    // A run of blank lines, zero-height lines between them included.
+    const first = n;
+    let end = n;
+    for (let m = n + 1; m <= doc.lines && (kind[m] === LINE_BLANK || kind[m] === LINE_ZERO); m++) {
+      if (kind[m] === LINE_BLANK) end = m;
+    }
+    const tight = element(first - 1, -1) || element(end + 1, 1);
+    for (let m = first; m <= end; m++) {
+      if (kind[m] !== LINE_BLANK) continue;
+      const extra = m !== first;
+      const name = `cm-lv-blank${extra ? ' cm-lv-blank-extra' : ''}${tight && !extra ? ' cm-lv-blank-tight' : ''}`;
+      decorations.push(Decoration.line({ class: name }).range(doc.line(m).from));
+    }
+    n = end + 1;
+  }
 }
 
 // Block pills with only whitespace between them, none of it on a revealed line,
