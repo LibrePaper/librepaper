@@ -47,6 +47,11 @@ const multiline = (state, from, to) => from < to && state.doc.lineAt(from).numbe
 /** Fold from the end of the node's first line to the start of the line its last child opens. */
 function foldToLastLine(node, state) {
   const last = node.lastChild;
+  // A block still being typed has no end line: fold to its last content.
+  if (node.name === "Block" && last && last.name !== "BlockEnd") {
+    const from = state.doc.lineAt(node.from).to;
+    return node.to > from ? { from, to: node.to } : null;
+  }
   if (!last || last.from === node.firstChild?.from) return null;
   const from = state.doc.lineAt(node.from).to;
   const to = state.doc.lineAt(last.from).from - 1;

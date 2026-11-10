@@ -48,11 +48,11 @@
 //     KeywordValue                the value, trimmed. Inline nodes only for
 //                                 TITLE, SUBTITLE, AUTHOR, DATE, CAPTION; raw otherwise
 //   Block                         `#+begin_NAME` ... `#+end_NAME`:
-//                                 [BlockBegin, body?, BlockEnd]. An unclosed begin line
-//                                 and a stray end line are not blocks: BlockBegin and
-//                                 BlockEnd then appear alone as elements (outside any
-//                                 Block), and the lines after an unclosed begin are
-//                                 ordinary elements.
+//                                 [BlockBegin, body?, BlockEnd?]. While typing, a block
+//                                 may lack its BlockEnd: it then runs to the end of the
+//                                 section (a headline still ends it) or of the document.
+//                                 A stray end line with no open block is a BlockEnd
+//                                 alone, outside any Block.
 //     BlockBegin                  the begin line: [BlockName, BlockParameters?]
 //       BlockName                 NAME as written (compare case-insensitively)
 //       BlockParameters           the rest of the line, trimmed; for src and
@@ -461,27 +461,26 @@ class OrgParse {
       }
       begin.kids.push(params);
     }
-    if (j < 0) {
-      // No end line: the begin line is an element of its own and what follows is ordinary.
-      kids.push(begin);
-      return i + 1;
-    }
-    const endLine = this.lines[j];
-    const block = node("Block", begin.from, endLine.end, [begin]);
-    if (j > i + 1) {
+    // An unclosed block runs to the end of the section or the document.
+    let stop = j < 0 ? hi : j;
+    if (j < 0) while (stop - 1 > i && this.lines[stop - 1].blank) stop--;
+    const endLine = j < 0 ? null : this.lines[j];
+    const block = node("Block", begin.from, endLine ? endLine.end : begin.to, [begin]);
+    if (stop > i + 1) {
       const from = this.lines[i + 1].from;
-      const to = this.lines[j - 1].to;
+      const to = this.lines[stop - 1].to;
       if (VERBATIM_BLOCKS.has(lower)) block.kids.push(node("VerbatimBody", from, to));
       else if (lower === "comment") block.kids.push(node("CommentBody", from, to));
       else {
         const body = node("BlockBody", from, to);
-        this.elements(i + 1, j, body.kids);
+        this.elements(i + 1, stop, body.kids);
         block.kids.push(body);
       }
+      if (!endLine) block.to = this.lines[stop - 1].end;
     }
-    block.kids.push(node("BlockEnd", endLine.from + endLine.lead, endLine.end));
+    if (endLine) block.kids.push(node("BlockEnd", endLine.from + endLine.lead, endLine.end));
     kids.push(block);
-    return j + 1;
+    return j < 0 ? hi : j + 1;
   }
 
   drawer(i, hi, ln, kids) {

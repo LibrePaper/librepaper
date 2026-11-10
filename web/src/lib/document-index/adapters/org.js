@@ -194,12 +194,12 @@ export function orgAdapter(text, path) {
           if (!CODE_BLOCKS.has(name)) return;
           const from = lineStart(source, ref.from);
           items.push({ kind: "code", range: [from, ref.to] });
-          if (begin && end) {
+          if (begin) {
             const parameters = childText(source, begin, "BlockParameters") ?? "";
             items.push({
               kind: "block",
               name: "code",
-              range: [begin.to, lineStart(source, end.from)],
+              range: [begin.to, end ? lineStart(source, end.from) : ref.to],
               attrs: { lang: parameters.split(/\s+/)[0] },
             });
           }
