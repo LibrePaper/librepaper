@@ -7,6 +7,8 @@
 // fetched from the document's own origin the first time a document with math
 // arrives, and never for one without.
 //
+import { numberDisplays, parseReference } from "./math-numbering.js";
+
 // Written against a `document` and a `window` passed in rather than the
 // globals, so the checks can drive it with a stand-in for either.
 
@@ -45,15 +47,64 @@ export function prepareQuartoMath(root) {
 /// HTML, and the text of a passage is what comments are anchored into -- a
 /// formula that appears twice in that text would be a passage that reads
 /// differently from how it looks.
-export function typeset(katex, spans) {
+export function typeset(katex, spans, numbering) {
   for (const span of spans) {
-    span.setAttribute?.("data-equation-source", span.textContent);
-    katex.render(span.textContent, span, {
-      displayMode: span.dataset.mathStyle === "display",
+    const source = span.textContent;
+    span.setAttribute?.("data-equation-source", source);
+    const display = span.dataset.mathStyle === "display";
+    if (!display && numbering && linkReference(span, source, numbering)) continue;
+    katex.render(display ? (numbering?.tex.get(span) ?? source) : source, span, {
+      displayMode: display,
       throwOnError: false,
       output: "html",
     });
   }
+}
+
+// An inline \ref{k} or \eqref{k} of a known label becomes a link to the
+// equation. The child element keeps `untypeset` from taking the span again.
+function linkReference(span, source, { labels, document }) {
+  const reference = parseReference(source);
+  const number = reference && labels.get(reference.key);
+  if (!number) return false;
+  const link = document.createElement("a");
+  link.setAttribute("href", `#${reference.key}`);
+  link.textContent = reference.kind === "eqref" ? `(${number})` : String(number);
+  span.textContent = "";
+  span.appendChild(link);
+  return true;
+}
+
+/// The TeX of every display formula in order, typeset or not: a rendered one
+/// keeps its TeX in `data-equation-source`, so numbers stay put on a repeat.
+function displaySpans(root) {
+  return [...root.querySelectorAll("span[data-math-style]")].filter(
+    (span) => span.dataset.mathStyle === "display",
+  );
+}
+
+/// Numbers the document's display formulas, gives each labelled one an id
+/// to link to (unless something else has it) and points `<a href="key">`
+/// links, as Org emits for [[key]], at them. Returns what `typeset` needs.
+export function numberDocument(root, document) {
+  const spans = displaySpans(root);
+  const sources = spans.map(
+    (span) => (span.firstElementChild && span.getAttribute?.("data-equation-source")) || span.textContent,
+  );
+  const { tex, keys, labels } = numberDisplays(sources);
+  spans.forEach((span, i) => {
+    const key = keys[i][0];
+    if (!key || !span.setAttribute) return;
+    const holder = document.getElementById?.(key);
+    if (!holder) span.setAttribute("id", key);
+  });
+  for (const link of root.querySelectorAll("a[href]")) {
+    const href = link.getAttribute("href");
+    if (!labels.has(href)) continue;
+    link.setAttribute("href", `#${href}`);
+    if (link.textContent === href) link.textContent = String(labels.get(href));
+  }
+  return { tex: new Map(spans.map((span, i) => [span, tex[i]])), labels, document };
 }
 
 /**
@@ -105,13 +156,13 @@ export function createMathTypesetter({ base, document, window, load = createKate
     const spans = untypeset(document.body);
     if (spans.length === 0) return false;
     if (window.katex) {
-      typeset(window.katex, spans);
+      typeset(window.katex, spans, numberDocument(document.body, document));
       return true;
     }
     // The spans may have been replaced by the time the script arrives, so
     // they are found again rather than kept.
     load().then(
-      (katex) => typeset(katex, untypeset(document.body)),
+      (katex) => typeset(katex, untypeset(document.body), numberDocument(document.body, document)),
       () => {},
     );
     return false;

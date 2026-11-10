@@ -1,20 +1,26 @@
 // The typesetter, driven with a stand-in document: which spans it takes,
 // what it asks KaTeX for, and how it fetches KaTeX once and only when needed.
 import assert from "node:assert/strict";
-import { createMathTypesetter, prepareQuartoMath, typeset, untypeset } from "../../src/lib/math.js";
+import { createMathTypesetter, numberDocument, prepareQuartoMath, typeset, untypeset } from "../../src/lib/math.js";
 
 function span(style, tex, rendered = false) {
-  return {
+  const attributes = {};
+  const node = {
     dataset: { mathStyle: style },
     textContent: tex,
     firstElementChild: rendered ? { className: "katex" } : null,
+    attributes,
+    setAttribute(name, value) { attributes[name] = value; },
+    getAttribute(name) { return attributes[name] ?? null; },
+    appendChild(child) { this.firstElementChild = child; },
   };
+  return node;
 }
 
 function fakeDocument(spans) {
   const head = { children: [], appendChild(node) { this.children.push(node); return node; } };
   const body = { querySelectorAll: (selector) => selector === "span[data-math-style]" ? spans : [] };
-  return { head, body, createElement: (tag) => ({ tag }) };
+  return { head, body, createElement: (tag) => span(tag, "") };
 }
 
 // Quarto's inert MathJax input is stripped of its delimiters and handed to
@@ -64,7 +70,7 @@ function fakeDocument(spans) {
   assert.equal(document.head.children.length, 0, "nothing loaded for a document without math");
 
   const spans = [span("inline", "x")];
-  document.body.querySelectorAll = () => spans;
+  document.body.querySelectorAll = (selector) => selector === "span[data-math-style]" ? spans : [];
   assert.equal(typesetMath(), false, "not yet typeset: KaTeX has to arrive first");
   const [link, script] = document.head.children;
   assert.equal(link.rel, "stylesheet");
@@ -94,6 +100,74 @@ function fakeDocument(spans) {
   await new Promise((done) => setTimeout(done, 0));
   typesetMath();
   assert.equal(document.head.children.length, 3, "the script asked for again after a failure, the stylesheet not");
+}
+
+// Equation numbering: stand-in document with spans, links and ids.
+function numbered(spans, links = [], taken = {}) {
+  const body = {
+    querySelectorAll: (selector) =>
+      selector === "span[data-math-style]" ? spans : selector === "a[href]" ? links : [],
+  };
+  const document = { body, getElementById: (id) => taken[id] ?? null, createElement: (tag) => span(tag, "") };
+  const rendered = [];
+  const katex = {
+    render: (tex, node) => {
+      rendered.push(tex);
+      node.firstElementChild = { className: "katex" };
+    },
+  };
+  const run = () => typeset(katex, untypeset(body), numberDocument(body, document));
+  return { run, rendered, document };
+}
+
+{
+  const eq = span("display", "\\begin{equation}\nSE = x\n\\label{eq:se}\n\\end{equation}");
+  const eq2 = span("display", "\\begin{equation}\ny\n\\end{equation}");
+  const star = span("display", "\\begin{equation*}\nz\n\\end{equation*}");
+  const align = span("display", "\\begin{align}\nx &= 1 \\label{eq:x}\\\\\ny &= 2 \\nonumber\\\\\nw &= 3\n\\end{align}");
+  const multline = span("display", "\\begin{multline}\na \\\\ b\n\\end{multline}");
+  const tagged = span("display", "\\begin{equation}\nq \\tag{A}\n\\end{equation}");
+  const ref = span("inline", "\\ref{eq:se}");
+  const eqref = span("inline", "\\eqref{eq:x}");
+  const unknown = span("inline", "\\ref{nope}");
+  const link = { attributes: { href: "eq:se" }, textContent: "eq:se", getAttribute(n) { return this.attributes[n]; }, setAttribute(n, v) { this.attributes[n] = v; } };
+  const spans = [ref, eq, eq2, star, align, multline, tagged, eqref, unknown];
+  const t = numbered(spans, [link]);
+  t.run();
+  assert.equal(t.rendered.length, 9 - 2, "the two linked references are not sent to KaTeX");
+  assert.ok(t.rendered[0].includes("SE = x") && t.rendered[0].includes("\\tag{1}"));
+  assert.ok(!t.rendered.join("").includes("\\label"));
+  assert.ok(t.rendered[1].includes("\\tag{2}"), "second equation is number 2");
+  assert.ok(!t.rendered[2].includes("\\tag"), "equation* is not numbered");
+  assert.ok(t.rendered[3].startsWith("\\begin{align*}"));
+  assert.equal([...t.rendered[3].matchAll(/\\tag\{(\d+)\}/g)].map((m) => m[1]).join(), "3,4", "nonumber row skipped");
+  assert.ok(!t.rendered[3].includes("nonumber"));
+  assert.ok(t.rendered[4].startsWith("\\begin{gather*}") && t.rendered[4].includes("\\tag{5}"), "multline rewritten");
+  assert.ok(t.rendered[5].includes("\\tag{A}") && !t.rendered[5].includes("\\tag{6}"), "own tag kept, not counted");
+  assert.equal(ref.firstElementChild.textContent, "1");
+  assert.equal(ref.firstElementChild.attributes.href, "#eq:se");
+  assert.equal(eqref.firstElementChild.textContent, "(3)");
+  assert.equal(t.rendered[6], "\\ref{nope}", "unknown key left for KaTeX");
+  assert.equal(eq.attributes.id, "eq:se");
+  assert.equal(align.attributes.id, "eq:x");
+  assert.equal(link.attributes.href, "#eq:se");
+  assert.equal(link.textContent, "1");
+
+  // A second pass renumbers nothing and renders nothing again.
+  const before = t.rendered.length;
+  t.run();
+  assert.equal(t.rendered.length, before);
+  assert.equal(ref.firstElementChild.textContent, "1");
+  const again = numberDocument({ querySelectorAll: (q) => q === "span[data-math-style]" ? spans : [] }, t.document);
+  assert.equal(again.labels.get("eq:x"), 3);
+  assert.equal(again.labels.get("eq:se"), 1);
+}
+
+// An id already taken elsewhere is left alone.
+{
+  const eq = span("display", "\\begin{equation}a\\label{k}\\end{equation}");
+  numbered([eq], [], { k: {} }).run();
+  assert.equal(eq.attributes.id, undefined);
 }
 
 console.log("math: spans, KaTeX options, one lazy load, retry after failure passed");
