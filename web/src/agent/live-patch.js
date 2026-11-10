@@ -100,7 +100,12 @@ function applyProse(document, sources, patch) {
     reachable.push({ element, startLine: position.startLine });
     latest = Math.max(latest, position.startLine);
   }
-  let candidates = reachable.filter((entry) => entry.startLine === latest).map((entry) => entry.element);
+  // An inline element (an \emph span, a citation) can start later on the
+  // paragraph's lines than the paragraph itself; the edit may be in the plain
+  // text around it, so search its enclosing block.
+  const BLOCK = "p, h1, h2, h3, h4, h5, h6, li, td, th, figcaption, dt, dd";
+  let candidates = [...new Set(reachable.filter((entry) => entry.startLine === latest)
+    .map((entry) => entry.element.closest(BLOCK) || entry.element))];
   // Keep the deepest of those, so a nested wrapper with the same start loses.
   candidates = candidates.filter((element) => !candidates.some((other) => other !== element && element.contains(other)));
 
