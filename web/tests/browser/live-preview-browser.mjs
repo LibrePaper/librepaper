@@ -87,6 +87,7 @@ if (!hostedMirrorUrl) {
   mirrorBase = mirrorServer.latexUrl;
 }const scratch = mkdtempSync(join(tmpdir(), "librepaper-live-preview-"));
 const appData = join(scratch, "app-data");
+mkdirSync(appData, { recursive: true });
 let tab;
 let app;
 let postgres;
