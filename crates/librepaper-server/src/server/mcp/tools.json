@@ -327,6 +327,44 @@
       }
     },
     {
+      "name": "document_withdraw",
+      "description": "Withdraw your own pending tracked changes, by the change ids a document_propose returned in effects. The text they replaced comes back. Changes by anyone else, or already decided, are refused.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "document_id": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Omit this. The endpoint already serves exactly one document, and supplying a different value is refused. Pass it only to echo back the document_id a previous document_read returned; a file name is not a document identifier."
+          },
+          "operation": { "$ref": "#/$defs/OperationKey" },
+          "change_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "minItems": 1,
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "operation",
+          "change_ids"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "document_apply",
       "description": "Apply a candidate only when the user authorized direct edits. Refuses changed source.",
       "inputSchema": {
