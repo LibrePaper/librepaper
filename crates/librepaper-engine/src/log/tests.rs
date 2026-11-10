@@ -408,14 +408,12 @@ fn sequencer_sharing_pending(
     Sequencer::from_parts(
         Uuid::new_v4(),
         "test-doc".to_string(),
-        Uuid::nil(),
         catalog,
         blobs(),
         Arc::new(Configuration::default()),
         Budget::new(u64::MAX / 2, DEFAULT_EXPANSION),
         pending,
         "deployment.peer.test".to_string(),
-        crate::log::ledger::StorageLedger::new(),
         1,
         VersionVector::default(),
         0,
@@ -569,15 +567,14 @@ async fn a_batch_that_fits_only_as_a_shortfall_is_still_accepted() {
     assert!(held > 0 && held < crate::log::sequencer::LOG_RESERVATION_CHUNK);
     catalog.reserve_room.store(0, Ordering::SeqCst);
     // Whatever headroom is left cannot cover a further batch once the quota
-    // is gone entirely, and the refusal is the usual storage one.
+    // is gone entirely, and the refusal comes from the reservation.
     let mut refused = false;
     for sent in 2..200 {
-        if matches!(
-            sequencer
-                .ingest(1, "account:writer", "account:writer", sent, outbox.edit())
-                .await,
-            Ingested::Retryable(_)
-        ) {
+        if let Ingested::Retryable(retry) = sequencer
+            .ingest(1, "account:writer", "account:writer", sent, outbox.edit())
+            .await
+        {
+            assert_eq!(retry.reason, "storage_quota");
             refused = true;
             break;
         }
@@ -1650,14 +1647,12 @@ fn join_fixture() -> JoinFixture {
     let sequencer = Sequencer::from_parts(
         Uuid::new_v4(),
         "join-fixture".to_string(),
-        Uuid::nil(),
         catalog,
         blobs(),
         Arc::new(Configuration::default()),
         Budget::new(u64::MAX / 2, DEFAULT_EXPANSION),
         generous_pending(),
         "deployment.peer.test".to_string(),
-        crate::log::ledger::StorageLedger::new(),
         3,
         v2.clone(),
         0,
@@ -1879,14 +1874,12 @@ fn compaction_fixture(
     let sequencer = Arc::new(Sequencer::from_parts(
         Uuid::new_v4(),
         "compaction-fixture".to_string(),
-        Uuid::nil(),
         catalog.clone(),
         blobs(),
         Arc::new(Configuration::default()),
         Budget::new(u64::MAX / 2, DEFAULT_EXPANSION),
         generous_pending(),
         "deployment.peer.test".to_string(),
-        crate::log::ledger::StorageLedger::new(),
         3,
         v2.clone(),
         0,
@@ -2491,14 +2484,12 @@ fn sequencer_with_logged_weight(log_bytes: u64, budget: Arc<Budget>) -> Sequence
     Sequencer::from_parts(
         Uuid::new_v4(),
         "test-doc".to_string(),
-        Uuid::nil(),
         Arc::new(FakeCatalog::empty()),
         blobs(),
         Arc::new(Configuration::default()),
         budget,
         generous_pending(),
         "deployment.peer.test".to_string(),
-        crate::log::ledger::StorageLedger::new(),
         1,
         VersionVector::default(),
         log_bytes,

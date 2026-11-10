@@ -1545,9 +1545,10 @@ impl PostgresCatalog {
         Ok(changed)
     }
 
-    /// Durable-only usage for the sequencer's soft ledger. Pending source
-    /// reservations are replaced by durable row charges on flush; including
-    /// them here would let that ledger count the same work twice.
+    /// Durable-only usage: what is stored, leaving out pending reservations.
+    /// A reservation is replaced by the durable row charge on flush, so a
+    /// caller that compares usage before and after a flush asks for this
+    /// figure rather than counting the same work twice.
     pub async fn durable_usage_bytes(&self, account_id: Option<Uuid>) -> Result<i64> {
         let scope = account_id.map_or(UsageScope::Deployment, UsageScope::Owner);
         let mut conn = self.pool.acquire().await?;

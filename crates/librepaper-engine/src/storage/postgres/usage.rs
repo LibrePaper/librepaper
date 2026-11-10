@@ -1,7 +1,7 @@
 //! The one definition of what counts toward a storage quota.
 //!
 //! Every quota check names the sources it charges, so a deliberate omission
-//! (the sequencer's soft ledger leaves out pending reservations) shows at
+//! (a durable-only sum leaves out pending reservations) shows at
 //! the call site instead of hiding in a hand-written sum.
 
 use sqlx::PgConnection;

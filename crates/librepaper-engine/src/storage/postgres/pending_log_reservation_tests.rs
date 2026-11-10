@@ -262,7 +262,7 @@ async fn quota_admission_rejects_before_acceptance_and_hidden_prefix_still_flush
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn durable_ledger_usage_replaces_pending_reservation_on_flush() {
+async fn durable_usage_replaces_pending_reservation_on_flush() {
     let catalog = catalog().await;
     crate::testing::reset(&catalog).await;
     let _writer = catalog.claim_writer().await.unwrap();
@@ -340,6 +340,104 @@ async fn durable_ledger_usage_replaces_pending_reservation_on_flush() {
         owner_after
     );
     assert_eq!(catalog.usage_bytes(None).await.unwrap(), deployment_after);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_open_document_is_refused_while_the_owner_is_full_and_accepted_once_space_is_freed() {
+    use crate::log::sequencer::{Ingested, Sequencer};
+    use crate::log::{Budget, PendingBudget};
+    use crate::storage::blob::{BlobStore, FsStore};
+    use std::sync::Arc;
+
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+        .expect("set LIBREPAPER_TEST_POSTGRES_URL to a throwaway PostgreSQL database");
+    let mut options = PostgresOptions::new(url);
+    options.policy.owner_bytes = 1_000_000;
+    let catalog = PostgresCatalog::connect(options).await.unwrap();
+    catalog.migrate().await.unwrap();
+    crate::testing::reset(&catalog).await;
+    let _writer = catalog.claim_writer().await.unwrap();
+    let tag = Uuid::now_v7();
+    let account = catalog
+        .create_account(NewAccount {
+            kind: "anonymous".into(),
+            provider: None,
+            provider_subject: None,
+            handle: format!("freed-{tag}"),
+            display_name: "Freed space test".into(),
+            email: None,
+        })
+        .await
+        .unwrap();
+    let mut documents = Vec::new();
+    for name in ["open", "other"] {
+        documents.push(
+            catalog
+                .create_document(NewDocument {
+                    slug: format!("freed-{name}-{tag}"),
+                    owner_id: account.id,
+                    owner_session_generation: None,
+                    ownership_mode: "owned".into(),
+                    title: "Freed space test".into(),
+                    source_format: "markdown".into(),
+                })
+                .await
+                .unwrap(),
+        );
+    }
+
+    // Open the first document once; it stays open for the whole test.
+    let object_root = tempfile::tempdir().unwrap();
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
+    let config = Arc::new(librepaper_base::config::Configuration::default());
+    let budget = Budget::new(config.memory_budget_bytes, config.cache_expansion);
+    let pending = PendingBudget::new(config.pending_bytes, config.pending_scratch_bytes);
+    let sequencer = Sequencer::admit(
+        documents[0].id,
+        documents[0].slug.clone(),
+        Arc::new(catalog.clone()),
+        blobs,
+        config,
+        budget,
+        pending,
+        "deployment-test-peer".into(),
+        Arc::new(std::sync::OnceLock::new()),
+    )
+    .await
+    .unwrap();
+
+    // The other document takes every byte of the owner's allowance.
+    let used = catalog.usage_bytes(Some(account.id)).await.unwrap();
+    let hog = Uuid::now_v7();
+    let rest = 1_000_000 - used;
+    catalog
+        .reserve_pending_log_bytes(documents[1].id, hog, rest, rest)
+        .await
+        .unwrap();
+
+    let mut outbox = crate::testing::Outbox::new();
+    let update = outbox.edit();
+    let refused = sequencer
+        .ingest(1, "test-peer", "test-principal", 1, update.clone())
+        .await;
+    match refused {
+        Ingested::Retryable(retry) => assert_eq!(retry.reason, "storage_quota"),
+        other => panic!("a full owner must be refused, got {other:?}"),
+    }
+
+    // Space is freed in the database; the document is not reopened.
+    catalog
+        .release_pending_log_reservation(documents[1].id, hog)
+        .await
+        .unwrap();
+    let accepted = sequencer
+        .ingest(1, "test-peer", "test-principal", 1, update)
+        .await;
+    assert!(
+        matches!(accepted, Ingested::Accepted),
+        "the same open document accepts the update once space is free, got {accepted:?}"
+    );
 }
 
 /// The sums the hand-written code computed before `usage_bytes` replaced them.
