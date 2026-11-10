@@ -2121,5 +2121,220 @@
       ],
       "gaps": []
     }
+  },
+  {
+    "name": "astral characters: typing an emoji between a BMP accent and a space records two units",
+    "before": "café ☕ naïve",
+    "state": { "changes": [], "gaps": [] },
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 4, "to": 4, "insert": "😀" }],
+    "after": "café😀 ☕ naïve",
+    "expect": {
+      "changes": [{ "id": "new-1", "who": "me", "from": 4, "to": 6 }],
+      "gaps": []
+    }
+  },
+  {
+    "name": "astral characters: typing an emoji between two emoji",
+    "before": "a😀😀b",
+    "state": { "changes": [], "gaps": [] },
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 3, "to": 3, "insert": "😀" }],
+    "after": "a😀😀😀b",
+    "expect": {
+      "changes": [{ "id": "new-1", "who": "me", "from": 3, "to": 5 }],
+      "gaps": []
+    }
+  },
+  {
+    "name": "astral characters: typing a letter between two emoji",
+    "before": "a😀😀b",
+    "state": { "changes": [], "gaps": [] },
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 3, "to": 3, "insert": "X" }],
+    "after": "a😀X😀b",
+    "expect": {
+      "changes": [{ "id": "new-1", "who": "me", "from": 3, "to": 4 }],
+      "gaps": []
+    }
+  },
+  {
+    "name": "astral characters: replacing an emoji with another keeps the deleted one whole",
+    "before": "a😀b",
+    "state": { "changes": [], "gaps": [] },
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 1, "to": 3, "insert": "😁" }],
+    "after": "a😁b",
+    "expect": {
+      "changes": [{ "id": "new-1", "who": "me", "from": 1, "to": 3 }],
+      "gaps": [
+        { "at": 1, "fragments": [{ "change": "new-1", "text": "😀" }] }
+      ]
+    }
+  },
+  {
+    "name": "astral characters: replacing BMP non-ASCII text between two emoji",
+    "before": "😀é☕😀",
+    "state": { "changes": [], "gaps": [] },
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 2, "to": 4, "insert": "e" }],
+    "after": "😀e😀",
+    "expect": {
+      "changes": [{ "id": "new-1", "who": "me", "from": 2, "to": 3 }],
+      "gaps": [
+        { "at": 2, "fragments": [{ "change": "new-1", "text": "é☕" }] }
+      ]
+    }
+  },
+  {
+    "name": "astral characters: two replacements in one batch, each of an emoji",
+    "before": "😀 a 😀 b",
+    "state": { "changes": [], "gaps": [] },
+    "me": { "who": "me", "author": "Me" },
+    "edits": [
+      { "from": 0, "to": 2, "insert": "X" },
+      { "from": 5, "to": 7, "insert": "Y" }
+    ],
+    "after": "X a Y b",
+    "expect": {
+      "changes": [
+        { "id": "new-1", "who": "me", "from": 0, "to": 1 },
+        { "id": "new-2", "who": "me", "from": 4, "to": 5 }
+      ],
+      "gaps": [
+        { "at": 0, "fragments": [{ "change": "new-1", "text": "😀" }] },
+        { "at": 4, "fragments": [{ "change": "new-2", "text": "😀" }] }
+      ]
+    }
+  },
+  {
+    "name": "astral characters: replacing the middle of three emoji",
+    "before": "😀😀😀",
+    "state": { "changes": [], "gaps": [] },
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 2, "to": 4, "insert": "X" }],
+    "after": "😀X😀",
+    "expect": {
+      "changes": [{ "id": "new-1", "who": "me", "from": 2, "to": 3 }],
+      "gaps": [
+        { "at": 2, "fragments": [{ "change": "new-1", "text": "😀" }] }
+      ]
+    }
+  },
+  {
+    "name": "astral characters: backspacing an original emoji before own insertion prepends it whole",
+    "before": "a😀Xb",
+    "state": { "changes": [{ "id": "a", "who": "me", "from": 3, "to": 4 }], "gaps": [] },
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 1, "to": 3, "insert": "" }],
+    "after": "aXb",
+    "expect": {
+      "changes": [{ "id": "a", "who": "me", "from": 1, "to": 2 }],
+      "gaps": [
+        { "at": 1, "fragments": [{ "change": "a", "text": "😀" }] }
+      ]
+    }
+  },
+  {
+    "name": "astral characters: typing an emoji at the end of an own insertion",
+    "before": "abXYcd",
+    "state": { "changes": [{ "id": "a", "who": "me", "from": 2, "to": 4 }], "gaps": [] },
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 4, "to": 4, "insert": "😀" }],
+    "after": "abXY😀cd",
+    "expect": {
+      "changes": [{ "id": "a", "who": "me", "from": 2, "to": 6 }],
+      "gaps": []
+    }
+  },
+  {
+    "name": "astral characters: typing an emoji at the start of an own insertion that holds one",
+    "before": "abX😀cd",
+    "state": { "changes": [{ "id": "a", "who": "me", "from": 2, "to": 5 }], "gaps": [] },
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 2, "to": 2, "insert": "😀" }],
+    "after": "ab😀X😀cd",
+    "expect": {
+      "changes": [{ "id": "a", "who": "me", "from": 2, "to": 7 }],
+      "gaps": []
+    }
+  },
+  {
+    "name": "astral characters: deleting an original emoji next to own pure deletion extends its fragment",
+    "before": "a😀b",
+    "state": {
+      "changes": [{ "id": "a", "who": "me", "from": 1, "to": 1 }],
+      "gaps": [{ "at": 1, "fragments": [{ "change": "a", "text": "z" }] }]
+    },
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 1, "to": 3, "insert": "" }],
+    "after": "ab",
+    "expect": {
+      "changes": [{ "id": "a", "who": "me", "from": 1, "to": 1 }],
+      "gaps": [
+        { "at": 1, "fragments": [{ "change": "a", "text": "z😀" }] }
+      ]
+    }
+  },
+  {
+    "name": "astral characters: typing an emoji at an own deletion point makes a replacement",
+    "before": "x😀é☕😀y",
+    "state": {
+      "changes": [{ "id": "a", "who": "me", "from": 3, "to": 3 }],
+      "gaps": [{ "at": 3, "fragments": [{ "change": "a", "text": "q" }] }]
+    },
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 3, "to": 3, "insert": "😀" }],
+    "after": "x😀😀é☕😀y",
+    "expect": {
+      "changes": [{ "id": "a", "who": "me", "from": 3, "to": 5 }],
+      "gaps": [
+        { "at": 3, "fragments": [{ "change": "a", "text": "q" }] }
+      ]
+    }
+  },
+  {
+    "name": "astral characters: inserting between an emoji and a letter inside another author's insertion splits it",
+    "before": "ab😀Wcd",
+    "state": { "changes": [{ "id": "b", "who": "bob", "from": 2, "to": 5 }], "gaps": [] },
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 4, "to": 4, "insert": "Q" }],
+    "after": "ab😀QWcd",
+    "expect": {
+      "changes": [
+        { "id": "b", "who": "bob", "from": 2, "to": 4 },
+        { "id": "new-1", "who": "me", "from": 4, "to": 5 },
+        { "id": "new-2", "who": "bob", "from": 5, "to": 6 }
+      ],
+      "gaps": []
+    }
+  },
+  {
+    "name": "astral characters: deleting an emoji inside another author's insertion shrinks it by two units",
+    "before": "ab😀Wcd",
+    "state": { "changes": [{ "id": "b", "who": "bob", "from": 2, "to": 5 }], "gaps": [] },
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 2, "to": 4, "insert": "" }],
+    "after": "abWcd",
+    "expect": {
+      "changes": [{ "id": "b", "who": "bob", "from": 2, "to": 3 }],
+      "gaps": []
+    }
+  },
+  {
+    "name": "astral characters: an untracked emoji inside a pending span splits it",
+    "before": "abXYZcdef",
+    "state": { "changes": [{ "id": "a", "who": "bob", "from": 2, "to": 5 }], "gaps": [] },
+    "me": { "who": "", "author": "" },
+    "untracked": true,
+    "edits": [{ "from": 3, "to": 3, "insert": "😀" }],
+    "after": "abX😀YZcdef",
+    "expect": {
+      "changes": [
+        { "id": "a", "who": "bob", "from": 2, "to": 3 },
+        { "id": "new-1", "who": "bob", "from": 5, "to": 7 }
+      ],
+      "gaps": []
+    }
   }
 ]

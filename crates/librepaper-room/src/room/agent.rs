@@ -995,4 +995,99 @@ mod tests {
             }]
         );
     }
+
+    const FRAGMENT_FIXTURES: &str =
+        include_str!("../../../../web/tests/fixtures/fragment-ranges.json");
+
+    #[derive(Deserialize)]
+    struct FxEdit {
+        from: usize,
+        to: usize,
+        insert: String,
+    }
+
+    #[derive(Deserialize)]
+    struct FxFragmentIn {
+        id: String,
+        text: String,
+        at: usize,
+    }
+
+    #[derive(Deserialize)]
+    struct FxRange {
+        id: String,
+        edit: usize,
+        start: usize,
+        end: usize,
+    }
+
+    #[derive(Deserialize)]
+    struct FragmentFixture {
+        name: String,
+        before: String,
+        edits: Vec<FxEdit>,
+        after: String,
+        fragments: Vec<FxFragmentIn>,
+        expect: Vec<FxRange>,
+    }
+
+    /// Converts a UTF-16 offset in `s` to a code point offset. The fixture
+    /// counts a fragment's gap in UTF-16 units of the text after the edits;
+    /// the resolver, and so `FragmentInfo::at`, counts code points.
+    fn cp(s: &str, utf16: usize) -> usize {
+        let mut units = 0;
+        for (i, ch) in s.chars().enumerate() {
+            if units >= utf16 {
+                return i;
+            }
+            units += ch.len_utf16();
+        }
+        s.chars().count()
+    }
+
+    /// Kata b4bb is not pinned here, on either side: with the author's own
+    /// pending insertion deleted together with the original text around it,
+    /// the deleted text never equals the fragment. See the JS twin.
+    #[test]
+    fn fragment_ranges_shared_fixtures() {
+        let fixtures: Vec<FragmentFixture> = serde_json::from_str(FRAGMENT_FIXTURES).unwrap();
+        assert!(!fixtures.is_empty());
+        for fx in fixtures {
+            let edits: Vec<session::Edit> = fx
+                .edits
+                .iter()
+                .map(|e| session::Edit {
+                    at: e.from,
+                    delete: e.to - e.from,
+                    insert: e.insert.clone(),
+                })
+                .collect();
+            let fragments: Vec<track::FragmentInfo> = fx
+                .fragments
+                .iter()
+                .map(|f| track::FragmentInfo {
+                    id: f.id.clone(),
+                    change: "c".to_string(),
+                    text: f.text.clone(),
+                    at: cp(&fx.after, f.at),
+                })
+                .collect();
+            let want: Vec<FragmentRange> = fx
+                .expect
+                .iter()
+                .map(|r| FragmentRange {
+                    id: r.id.clone(),
+                    edit: r.edit,
+                    start: r.start,
+                    end: r.end,
+                })
+                .collect();
+            assert_eq!(
+                fragment_ranges(&fx.before, &edits, &fragments),
+                want,
+                "fixture: {}",
+                fx.name
+            );
+        }
+    }
 }
