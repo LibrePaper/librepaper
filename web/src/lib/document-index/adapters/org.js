@@ -220,7 +220,8 @@ export function orgAdapter(text, path) {
   // is named by its title as a `*Title` link spells it, so a bare name that is
   // a headline title also resolves to it. org-facts.js spells the same targets
   // as #<id>, *<Title>, <name> and <target>. A headline is marked `form:
-  // "heading"`: its title is not a rename site.
+  // "heading"`: its title is not a rename site. A footnote is marked `form:
+  // "footnote"`: its name carries the `fn:` prefix its nameRange does not.
 
   tree.iterate({
     enter(ref) {
@@ -351,6 +352,7 @@ export function orgAdapter(text, path) {
               name: `fn:${source.slice(label.from, label.to)}`,
               nameRange: [label.from, label.to],
               range: [ref.from, ref.to],
+              attrs: { form: "footnote" },
             });
           }
           return;
@@ -364,8 +366,8 @@ export function orgAdapter(text, path) {
           const range = [ref.from, ref.to];
           items.push(
             source[label.to] === ":"
-              ? { kind: "label", name, nameRange, range }
-              : { kind: "ref", name, namespace: "label", nameRange, range },
+              ? { kind: "label", name, nameRange, range, attrs: { form: "footnote" } }
+              : { kind: "ref", name, namespace: "label", nameRange, range, attrs: { form: "footnote" } },
           );
           return;
         }

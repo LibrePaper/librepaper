@@ -206,12 +206,14 @@ export function renameProblem(project, path, pos, newName) {
   const isLabel = item.kind === "label" || (item.kind === "ref" && project.namespaceOf(item, path) === "label");
   if (!isLabel) return "invalid";
   if (typeof newName !== "string" || newName === "" || /\s/.test(newName) || newName === item.name) return "invalid";
-  // An Org headline is named by its title, which rename does not rewrite, so a
-  // name that resolves to a headline cannot be renamed without breaking the link.
-  const headlineName =
-    item.attrs?.form === "heading" ||
-    project.definitions("label", item.name, path).some(({ item: def }) => def.attrs?.form === "heading");
-  if (headlineName) return "invalid";
+  // An Org headline is named by its title, which rename does not rewrite, and
+  // an Org footnote's name carries an `fn:` prefix its name range leaves out,
+  // so neither can be renamed without breaking its links.
+  const fixed = (form) => form === "heading" || form === "footnote";
+  const unrenameable =
+    fixed(item.attrs?.form) ||
+    project.definitions("label", item.name, path).some(({ item: def }) => fixed(def.attrs?.form));
+  if (unrenameable) return "invalid";
   const format = project.file(path)?.format ?? "";
   if (!labelNameAllowed(format, item.name, newName)) return "chars";
   if (project.definitions("label", newName, path).length > 0) return "exists";
