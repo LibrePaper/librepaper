@@ -779,6 +779,7 @@
   "common_pages": "ページ",
   "common_paste": "貼り付け",
   "common_preview": "プレビュー",
+  "common_privacy_policy": "プライバシーポリシー",
   "common_programs": "プログラム",
   "common_project": "プロジェクト",
   "common_project_read_only": "このプロジェクトは読み取り専用です。",
@@ -831,6 +832,7 @@
     }
   ],
   "common_templates": "テンプレート",
+  "common_terms_of_service": "利用規約",
   "common_text": "テキスト",
   "common_theme": "テーマ",
   "common_this_computer": "このコンピューター",
@@ -1761,6 +1763,7 @@
   "latexfilessettings_empty": "ダウンロード済みのファイルはありません。キャッシュされたコンパイラーのファイルはPDFのビルドを高速化します。削除してもドキュメントは残ります。",
   "latexfilessettings_measuring": "計測中… キャッシュされたコンパイラーのファイルはPDFのビルドを高速化します。削除してもドキュメントは残ります。",
   "latexfilessettings_used": "使用中のストレージ：{size}。キャッシュされたコンパイラーのファイルはPDFのビルドを高速化します。削除してもドキュメントは残ります。",
+  "legalnotice_accept": "続行することで、このサーバーのポリシーに同意したものとみなされます：",
   "links_go_to_page": "{page}ページへ移動",
   "live_chat_history_read_failed": "チャット履歴を読み込めませんでした。再試行しています。",
   "live_chat_older_failed": "以前のメッセージを読み込めませんでした。",

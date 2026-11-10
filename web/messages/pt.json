@@ -779,6 +779,7 @@
   "common_pages": "Páginas",
   "common_paste": "Colar",
   "common_preview": "Pré-visualização",
+  "common_privacy_policy": "Política de privacidade",
   "common_programs": "Programas",
   "common_project": "Projeto",
   "common_project_read_only": "Este projeto é somente leitura.",
@@ -831,6 +832,7 @@
     }
   ],
   "common_templates": "Modelos",
+  "common_terms_of_service": "Termos de serviço",
   "common_text": "Texto",
   "common_theme": "Tema",
   "common_this_computer": "Este computador",
@@ -1776,6 +1778,7 @@
   "latexfilessettings_empty": "Nada baixado ainda. Os arquivos em cache do compilador aceleram a geração de PDF. Removê-los não afeta seus documentos.",
   "latexfilessettings_measuring": "Medindo… Os arquivos em cache do compilador aceleram a geração de PDF. Removê-los não afeta seus documentos.",
   "latexfilessettings_used": "Armazenamento usado: {size}. Os arquivos em cache do compilador aceleram a geração de PDF. Removê-los não afeta seus documentos.",
+  "legalnotice_accept": "Ao continuar, você aceita as políticas deste servidor:",
   "links_go_to_page": "Ir para a página {page}",
   "live_chat_history_read_failed": "Não foi possível ler o histórico do chat. Tentando novamente.",
   "live_chat_older_failed": "Não foi possível ler as mensagens mais antigas.",

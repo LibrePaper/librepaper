@@ -2,6 +2,7 @@
   import Nav from "./Nav.svelte";
   import Icon from "./Icon.svelte";
   import Logo from "./Logo.svelte";
+  import LegalNotice from "./LegalNotice.svelte";
   import { me as whoami } from "../lib/api.js";
   import { INSTALL_URL, desktop, shellAction } from "../lib/desktop/client.js";
   import { BACKUPS_URL } from "../lib/site-links.js";
@@ -72,6 +73,9 @@
         </a>
       {/each}
     </div>
+    {#if me.legal?.terms_url || me.legal?.privacy_url}
+      <p class="signin-legal"><LegalNotice legal={me.legal} /></p>
+    {/if}
   </section>
   {#if inDesktop}
     <!-- The desktop app confirms the switch in its own native dialog, so the page asks nothing more. -->
@@ -183,6 +187,10 @@
   .signin-provider-icon :global(svg) {
     width: 20px;
     height: 20px;
+  }
+
+  .signin-legal {
+    margin: 0;
   }
 
   .signin-warning {
