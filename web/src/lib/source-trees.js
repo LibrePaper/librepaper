@@ -5,6 +5,7 @@
 
 import { TreeFragment } from "@lezer/common";
 import { parser as latexParser } from "./latex-language/parser.js";
+import { parseOrg } from "./org-language/parser.js";
 import { pandocMarkdownParser } from "./pandoc-markdown.js";
 import { loadTypstSyntax, typstSyntax } from "./typst-language/module.js";
 
@@ -95,8 +96,8 @@ class Recent {
   }
 }
 
-/** Results by parsed text, and the last parse per key for reuse. @type {{ latex: Recent<{ text: string, result: Tree }>, markdown: Recent<{ text: string, result: MarkdownTrees }> }} */
-const byText = { latex: new Recent(), markdown: new Recent() };
+/** Results by parsed text, and the last parse per key for reuse. @type {{ latex: Recent<{ text: string, result: Tree }>, markdown: Recent<{ text: string, result: MarkdownTrees }>, org: Recent<{ text: string, result: Tree }> }} */
+const byText = { latex: new Recent(), markdown: new Recent(), org: new Recent() };
 /** @type {{ latex: Recent<{ text: string, tree: Tree }>, markdown: Recent<{ text: string, tree: Tree }> }} */
 const byKey = { latex: new Recent(), markdown: new Recent() };
 
@@ -153,6 +154,21 @@ export function markdownTree(text, key) {
   const result = { tree, body, frontMatter };
   byText.markdown.set(text, { text, result });
   return result;
+}
+
+/**
+ * The Org syntax tree of exactly `text`. The parser reads the whole text, so
+ * an edit re-parses it; the result is remembered by text.
+ * @param {string} text
+ * @param {string} [_key] usually the file path; unused, kept for symmetry with the other formats
+ * @returns {Tree}
+ */
+export function orgTree(text, _key) {
+  const hit = byText.org.get(text);
+  if (hit) return hit.result;
+  const tree = parseOrg(text);
+  byText.org.set(text, { text, result: tree });
+  return tree;
 }
 
 /** @type {Promise<void> | null} the one load of typst-syntax.wasm, started by the first request */

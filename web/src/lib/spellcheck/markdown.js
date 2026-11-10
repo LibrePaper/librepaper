@@ -2,9 +2,9 @@
 // source editor shows, so markup it cannot read (fences, math, link targets,
 // attributes) is reported as ranges to leave alone. The ranges come from the
 // parse tree of the Pandoc Markdown parser, so they agree with highlighting and
-// the document index. A few things the grammar does not model (shortcodes,
-// cell option lines, bare URLs, e-mail addresses, footnote markers) are found
-// by scanning the text that is still prose.
+// the document index. A few things are still found by scanning the text that is
+// still prose: cell option lines, unfinished shortcodes, e-mail addresses and
+// markup the parser left as text.
 //
 // Nothing here backtracks. The regexes are flat, and each search for a closing
 // delimiter is remembered, so a line full of unmatched openers costs one scan
@@ -22,6 +22,9 @@ const WHOLE = new Set([
   "ProcessingInstruction", "ProcessingInstructionBlock",
   "Escape", "Entity",
   "EmphasisMark", "StrikethroughMark", "SubscriptMark", "SuperscriptMark", "TaskMarker",
+  "HighlightMark", "InlineNoteMark",
+  "Shortcode", "TaskField",
+  "FootnoteReference", "FootnoteLabel",
 ]);
 
 // Skipped ranges are blanked with this before the prose scan. It is white
@@ -84,9 +87,7 @@ export function markdownSkips(text, key) {
         return false;
       }
       if (node.name === "LinkReference") {
-        // A footnote definition's label is markup and the note is prose; the
-        // label is found with the other footnote markers below.
-        if (body.charCodeAt(node.from + 1) !== 94) skip(node.from, node.to);
+        skip(node.from, node.to);
         return false;
       }
       if (node.name === "Link" || node.name === "Image") {
