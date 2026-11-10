@@ -79,6 +79,14 @@ assert.equal(isEnglishDocument(sample, "org"), false);
 assert.equal(declaredLanguage("#+language: en\n* Hi", "org"), "en");
 assert.equal(declaredLanguage("* Just a headline\n", "org"), null);
 
+// A :NAME: line with no :END: before the next headline is prose, not a drawer.
+{
+  assert.ok(proseOf("Para one.\n:smile:\nPara two.\n").includes("Para two"));
+  const drawer = proseOf("* H\n:PROPERTIES:\n:ID: zzid\n:END:\nBody.\n");
+  assert.ok(drawer.includes("Body"));
+  assert.ok(!drawer.includes("zzid"));
+}
+
 // An unterminated block runs to the end of the text without throwing.
 {
   const text = "Before words.\n#+BEGIN_SRC R\nx <- 1\nmore code";

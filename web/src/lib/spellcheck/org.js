@@ -16,6 +16,8 @@ const PRIORITY = /\[#[A-Za-z0-9]+\][ \t]*/y;
 // A tag group such as ":a:b:", checked against the last word of a headline.
 const TAGS = /^:(?:[^\s:]+:)+$/;
 const CHECKBOX = /\[[ Xx-]\](?=[ \t]|$)[ \t]*/y;
+const DRAWER_END = /^[ \t]*:end:[ \t]*$/i;
+const HEADLINE_LINE = /^\*+[ \t]/;
 
 const MATH = /\$[^\s$](?:[^$\n]*[^\s$])?\$(?![\p{L}\p{N}])/uy;
 const CODE = /~[^\s~](?:[^~\n]*[^\s~])?~(?![\p{L}\p{N}])/uy;
@@ -38,19 +40,42 @@ export function orgSkips(text) {
   const out = [];
   if (typeof text !== "string" || !text) return out;
   const state = { block: /** @type {string | null} */ (null), drawer: false, math: /** @type {string | null} */ (null) };
-  const n = text.length;
-  let at = 0;
-  while (at < n) {
-    let end = text.indexOf("\n", at);
-    if (end === -1) end = n;
-    scanLine(text.slice(at, end), at, state, out);
-    at = end + 1;
+  const lines = text.split("\n");
+  const index = nextLineIndex(lines);
+  let base = 0;
+  for (let i = 0; i < lines.length; i++) {
+    scanLine(lines[i], base, state, out, i, index);
+    base += lines[i].length + 1;
   }
   return out;
 }
 
+// For each line index i (and n, the end), the index of the next headline line
+// at or after i, and of the next :END: line at or after i. A line with none
+// is given n. Two backward passes, so the whole scan stays linear.
+function nextLineIndex(lines) {
+  const n = lines.length;
+  const nextHeadline = new Array(n + 1);
+  const nextEnd = new Array(n + 1);
+  nextHeadline[n] = n;
+  nextEnd[n] = n;
+  for (let i = n - 1; i >= 0; i--) {
+    nextHeadline[i] = HEADLINE_LINE.test(lines[i]) ? i : nextHeadline[i + 1];
+    nextEnd[i] = DRAWER_END.test(lines[i]) ? i : nextEnd[i + 1];
+  }
+  return { nextHeadline, nextEnd };
+}
+
+// A `:NAME:` line opens a drawer only when a matching :END: line comes before
+// the next headline. Otherwise it is ordinary text.
+function opensDrawer(i, index) {
+  const end = index.nextEnd[i + 1];
+  return end < index.nextEnd.length - 1 && end < index.nextHeadline[i + 1];
+}
+
 // Classifies one line, given the state carried over from the lines before it.
-function scanLine(line, base, state, out) {
+// `i` is the line's index, and `index` the answers from `nextLineIndex`.
+function scanLine(line, base, state, out, i, index) {
   if (state.block !== null) {
     mark(out, base, 0, line.length);
     const end = /^[ \t]*#\+end_(\w+)/i.exec(line);
@@ -59,7 +84,7 @@ function scanLine(line, base, state, out) {
   }
   if (state.drawer) {
     mark(out, base, 0, line.length);
-    if (/^[ \t]*:end:[ \t]*$/i.test(line)) state.drawer = false;
+    if (DRAWER_END.test(line)) state.drawer = false;
     return;
   }
   if (state.math === null) {
@@ -95,9 +120,16 @@ function scanLine(line, base, state, out) {
     return;
   }
   if (/^[ \t]*:[\w-]+:[ \t]*$/.test(line)) {
-    mark(out, base, 0, line.length);
-    if (!/^[ \t]*:end:[ \t]*$/i.test(line)) state.drawer = true;
-    return;
+    if (DRAWER_END.test(line)) {
+      mark(out, base, 0, line.length);
+      return;
+    }
+    if (opensDrawer(i, index)) {
+      mark(out, base, 0, line.length);
+      state.drawer = true;
+      return;
+    }
+    // Otherwise the line is ordinary text, and falls through to the checks below.
   }
   if (/^[ \t]*(?:SCHEDULED|DEADLINE|CLOSED|CLOCK):/.test(line)) {
     mark(out, base, 0, line.length);

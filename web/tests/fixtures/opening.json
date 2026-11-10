@@ -189,6 +189,16 @@
       "opening": "README.md",
       "alone": ["README.md"],
       "includers": {}
+    },
+    {
+      "name": "Org include opens the including file",
+      "files": {
+        "paper.org": "#+TITLE: Paper\n#+INCLUDE: \"sections/intro.org::*Intro\"\n",
+        "sections/intro.org": "* Intro\nBody\n"
+      },
+      "opening": "paper.org",
+      "alone": ["paper.org"],
+      "includers": { "sections/intro.org": ["paper.org"] }
     }
   ]
 }
