@@ -144,7 +144,10 @@ function newHeadingEdit(state) {
 function continueListEdit(state) {
   const { main } = state.selection;
   if (!main.empty) return null;
-  const item = listItemOn(state, main.head);
+  // Found from the start of the line's bullet: an item's node ends before trailing blanks,
+  // so a caret after "- " would otherwise be outside it.
+  const caretLine = state.doc.lineAt(main.head);
+  const item = listItemOn(state, caretLine.from + (caretLine.text.length - caretLine.text.trimStart().length));
   if (!item) return null;
   const bullet = child(item, "ListBullet");
   const box = child(item, "Checkbox");
