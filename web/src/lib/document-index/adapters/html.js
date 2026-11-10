@@ -50,7 +50,7 @@ const BLOCK_TAGS = new Set([
 ]);
 const CODE_TAGS = new Set(["pre", "code"]);
 const RAW_TAGS = new Set(["script", "style"]);
-const SRC_TAGS = new Set(["img", "script", "source", "video", "audio", "iframe"]);
+const SRC_TAGS = new Set(["img", "script", "source", "video", "audio"]);
 // Tags matched to their end tags by name, so that nesting pairs correctly.
 const PAIRED_TAGS = new Set([...HEADING_TAGS, ...BLOCK_TAGS, ...CODE_TAGS, "figcaption"]);
 
@@ -110,7 +110,10 @@ export function htmlAdapter(text, _path) {
     return undefined;
   };
 
-  // Labels, references, assets and includes, read from the start tags.
+  // Figures, so that a label inside one can be told apart as a figure target.
+  const figures = tokens.filter((token) => !token.closing && token.name === "figure" && token.close);
+
+  // Labels, references, links, assets and includes, read from the start tags.
   for (const token of tokens) {
     if (token.closing) continue;
     for (const attr of token.attrs) {
@@ -118,12 +121,16 @@ export function htmlAdapter(text, _path) {
 
       if (attr.name === "id") {
         if (attr.value === "") continue;
+        const inFigure = figures.some(
+          (figure) => figure.from < token.from && token.from < figure.close.from,
+        );
         /** @type {IndexItem} */
         const label = {
           kind: "label",
           range: [attr.from, attr.to],
           name: attr.value,
           nameRange: [attr.valueFrom, attr.valueTo],
+          attrs: { target: labelTarget(token, inFigure) },
         };
         const title = labelTitle(token);
         if (title !== undefined) label.title = title;
@@ -144,10 +151,18 @@ export function htmlAdapter(text, _path) {
         continue;
       }
 
+      // A link to another page or to a URL is a link, not an embedding.
+      if (attr.name === "href" && token.name === "a") {
+        const link = linkItem(attr);
+        if (link) items.push(link);
+        continue;
+      }
+
       const asset =
         (attr.name === "src" && SRC_TAGS.has(token.name)) ||
         (attr.name === "href" && token.name === "link");
-      const include = attr.name === "href" && token.name === "a";
+      // An iframe embeds another page, so it is an include.
+      const include = attr.name === "src" && token.name === "iframe";
       if (!asset && !include) continue;
       const name = localPath(attr.value);
       if (name === null) continue;
@@ -159,6 +174,9 @@ export function htmlAdapter(text, _path) {
       });
     }
   }
+
+  // Document metadata: the title, author and description, and the language.
+  items.push(...metadataItems(text, tokens));
 
   // Code: pre and code run to their end tag, or to the end of the text when
   // unclosed. Script and style bodies were consumed whole by the scanner.
@@ -368,6 +386,152 @@ function plainText(html) {
     })
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/**
+ * The non-null attribute of a start tag by name, or undefined.
+ * @param {Token} token
+ * @param {string} name
+ * @returns {Attr | undefined}
+ */
+function attrOf(token, name) {
+  const attr = token.attrs.find((item) => item.name === name);
+  return attr && attr.value !== null ? attr : undefined;
+}
+
+/**
+ * The kind of target a label on this element names.
+ * @param {Token} token
+ * @param {boolean} inFigure whether the element sits inside a figure
+ * @returns {"section" | "figure" | "table" | "equation" | "listing" | "footnote" | "item" | "other"}
+ */
+function labelTarget(token, inFigure) {
+  const classes = (attrOf(token, "class")?.value ?? "").split(/\s+/);
+  const roles = (attrOf(token, "role")?.value ?? "").split(/\s+/);
+  if (HEADING_TAGS.has(token.name)) return "section";
+  if (token.name === "figure" || inFigure) return "figure";
+  if (token.name === "table") return "table";
+  if (CODE_TAGS.has(token.name)) return "listing";
+  if (token.name === "math" || classes.some((name) => /math|equation/i.test(name))) return "equation";
+  if (token.name === "li") return "item";
+  if (
+    (token.name === "aside" || token.name === "section") &&
+    (roles.includes("doc-footnote") || classes.includes("footnote"))
+  ) {
+    return "footnote";
+  }
+  return "other";
+}
+
+/**
+ * The link item of an href attribute: an external item for a URL with a
+ * scheme or protocol-relative, a file item for a relative path with any
+ * fragment kept in attrs.fragment, or null for an empty value, a bare
+ * fragment (a ref) or a value with no path.
+ * @param {Attr} attr
+ * @returns {IndexItem | null}
+ */
+function linkItem(attr) {
+  const value = attr.value ?? "";
+  if (value === "") return null;
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value) || value.startsWith("//")) {
+    return {
+      kind: "link",
+      range: [attr.from, attr.to],
+      name: value,
+      nameRange: [attr.valueFrom, attr.valueTo],
+      attrs: { external: "true" },
+    };
+  }
+  if (value.startsWith("#")) return null;
+  const name = value.split(/[?#]/, 1)[0];
+  if (name === "") return null;
+  const hash = value.indexOf("#");
+  const fragment = hash === -1 ? "" : value.slice(hash + 1);
+  /** @type {Record<string, string>} */
+  const attrs = { file: "true" };
+  if (fragment !== "") attrs.fragment = fragment;
+  return {
+    kind: "link",
+    range: [attr.from, attr.to],
+    name,
+    nameRange: [attr.valueFrom, attr.valueFrom + name.length],
+    attrs,
+  };
+}
+
+/** The meta names that carry metadata, mapped to their metadata names. */
+const META_NAMES = new Map([
+  ["author", "author"],
+  ["description", "abstract"],
+]);
+
+/**
+ * The metadata items of the head: the first title, each meta author and
+ * description, and the language of the html element.
+ * @param {string} text
+ * @param {Token[]} tokens
+ * @returns {IndexItem[]}
+ */
+function metadataItems(text, tokens) {
+  /** @type {IndexItem[]} */
+  const items = [];
+  let sawBody = false;
+  let sawTitle = false;
+  for (const token of tokens) {
+    if (token.closing) continue;
+    if (token.name === "body") sawBody = true;
+
+    if (token.name === "html") {
+      const lang = attrOf(token, "lang");
+      const value = lang?.value?.trim() ?? "";
+      if (lang && value !== "") {
+        items.push({
+          kind: "metadata",
+          name: "language",
+          title: value,
+          range: [lang.from, lang.to],
+          nameRange: [lang.valueFrom, lang.valueTo],
+        });
+      }
+    }
+
+    if (token.name === "meta") {
+      const key = attrOf(token, "name")?.value?.trim().toLowerCase();
+      const name = key === undefined ? undefined : META_NAMES.get(key);
+      const content = attrOf(token, "content");
+      const value = content ? plainText(content.value ?? "") : "";
+      if (name && content && value !== "") {
+        items.push({
+          kind: "metadata",
+          name,
+          title: value,
+          range: [content.from, content.to],
+          nameRange: [content.valueFrom, content.valueTo],
+        });
+      }
+    }
+
+    // The first title before the body: an svg title inside the body is not
+    // the document's.
+    if (token.name === "title" && !sawTitle && !sawBody) {
+      const rest = text.slice(token.end);
+      const close = /<\/title\s*>/i.exec(rest);
+      if (!close) continue;
+      const innerTo = token.end + close.index;
+      const value = plainText(text.slice(token.end, innerTo));
+      if (value === "") continue;
+      sawTitle = true;
+      items.push({
+        kind: "metadata",
+        name: "title",
+        title: value,
+        range: [token.from, innerTo + close[0].length],
+        nameRange: [token.end, innerTo],
+      });
+    }
+  }
+  return items;
 }
 
 /**

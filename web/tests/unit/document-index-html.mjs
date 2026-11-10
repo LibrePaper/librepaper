@@ -105,11 +105,93 @@ test("a realistic page yields its labels, titles, refs, assets and includes", ()
     ],
   );
   assert.deepEqual(ofKind(items, "ref").map((item) => item.name), ["fig-plot"]);
-  assert.deepEqual(ofKind(items, "include").map((item) => item.name), ["notes.html"]);
+  assert.deepEqual(
+    ofKind(items, "link").map((item) => [item.name, item.attrs]),
+    [
+      ["notes.html", { file: "true", fragment: "top" }],
+      ["https://example.org/a", { external: "true" }],
+    ],
+  );
+  assert.deepEqual(ofKind(items, "include"), []);
   assert.deepEqual(
     ofKind(items, "asset").map((item) => item.name),
     ["styles/site.css", "js/app.js", "images/plot.png"],
   );
+});
+
+test("each label carries its target kind", () => {
+  const text = [
+    '<h2 id="s">Title</h2>',
+    '<figure id="f"><img src="x.png" id="inside"></figure>',
+    '<table id="t"></table>',
+    '<pre id="p">code</pre>',
+    '<div class="MathJax" id="m">x</div>',
+    '<math id="mm"></math>',
+    '<ul><li id="i">item</li></ul>',
+    '<aside id="fn1" role="doc-footnote">note</aside>',
+    '<section id="fn2" class="footnote other">note</section>',
+    '<section id="sec">plain</section>',
+    '<div id="d">x</div>',
+  ].join("");
+  const labels = ofKind(htmlAdapter(text, "x.html"), "label");
+  assert.deepEqual(
+    labels.map((item) => [item.name, item.attrs.target]),
+    [
+      ["s", "section"],
+      ["f", "figure"],
+      ["inside", "figure"],
+      ["t", "table"],
+      ["p", "listing"],
+      ["m", "equation"],
+      ["mm", "equation"],
+      ["i", "item"],
+      ["fn1", "footnote"],
+      ["fn2", "footnote"],
+      ["sec", "other"],
+      ["d", "other"],
+    ],
+  );
+});
+
+test("a label on a code element inside no figure is a listing", () => {
+  const text = '<p><code id="c">x</code></p>';
+  const labels = ofKind(htmlAdapter(text, "x.html"), "label");
+  assert.deepEqual(labels.map((item) => item.attrs.target), ["listing"]);
+});
+
+test("the head gives the title, authors, description and language", () => {
+  const text = [
+    '<!doctype html>',
+    '<html lang="fr-CA">',
+    "<head>",
+    "<title>Notes &amp; <em>more</em></title>",
+    '<meta name="author" content="Ada Lovelace">',
+    '<meta name="Author" content="Alan &amp; Grace">',
+    '<meta name="description" content="A short summary.">',
+    '<meta name="date" content="2026-01-01">',
+    "</head>",
+    "<body><svg><title>icon</title></svg></body>",
+    "</html>",
+  ].join("\n");
+  const items = ofKind(htmlAdapter(text, "x.html"), "metadata");
+  assert.deepEqual(
+    items.map((item) => [item.name, item.title]),
+    [
+      ["language", "fr-CA"],
+      ["title", "Notes & more"],
+      ["author", "Ada Lovelace"],
+      ["author", "Alan & Grace"],
+      ["abstract", "A short summary."],
+    ],
+  );
+  const language = items.find((item) => item.name === "language");
+  assert.equal(span(text, language.nameRange), "fr-CA");
+  const title = items.find((item) => item.name === "title");
+  assert.equal(span(text, title.range), "<title>Notes &amp; <em>more</em></title>");
+});
+
+test("a page with no head metadata gives no metadata items", () => {
+  assert.deepEqual(ofKind(htmlAdapter("<p>x</p>", "x.html"), "metadata"), []);
 });
 
 test("ids are read in double, single and unquoted form", () => {
@@ -138,7 +220,7 @@ test("titles come from the heading on h1 to h6 and the figcaption of a figure", 
   );
 });
 
-test("href fragments are refs and other hrefs are includes", () => {
+test("href fragments are refs and other hrefs are links", () => {
   const text = `<a href="#x">a</a><a href='#y'>b</a><a href=#z>c</a><a href="#">d</a><a href="other.html#q">e</a>`;
   const items = htmlAdapter(text, "x.html");
   assert.deepEqual(
@@ -154,7 +236,36 @@ test("href fragments are refs and other hrefs are includes", () => {
       ["z", "label", "href=#z", "z"],
     ],
   );
-  assert.deepEqual(ofKind(items, "include").map((item) => item.name), ["other.html"]);
+  assert.deepEqual(ofKind(items, "include"), []);
+  assert.deepEqual(
+    ofKind(items, "link").map((item) => [item.name, item.attrs, span(text, item.range)]),
+    [
+      ["other.html", { file: "true", fragment: "q" }, 'href="other.html#q"'],
+    ],
+  );
+});
+
+test("a link to a URL or a file is a link item with its name and fragment", () => {
+  const text = [
+    '<a href="https://e.org/p?q=1">e</a>',
+    '<a href="mailto:a@b.c">m</a>',
+    '<a href="//cdn.example.org/x">p</a>',
+    '<a href="sections/a.html?x=1#top">f</a>',
+    '<a href="guide.pdf">g</a>',
+    '<a href="#sec">s</a>',
+    '<a href="">empty</a>',
+  ].join("");
+  const links = ofKind(htmlAdapter(text, "x.html"), "link");
+  assert.deepEqual(
+    links.map((item) => [item.name, item.attrs, span(text, item.nameRange)]),
+    [
+      ["https://e.org/p?q=1", { external: "true" }, "https://e.org/p?q=1"],
+      ["mailto:a@b.c", { external: "true" }, "mailto:a@b.c"],
+      ["//cdn.example.org/x", { external: "true" }, "//cdn.example.org/x"],
+      ["sections/a.html", { file: "true", fragment: "top" }, "sections/a.html"],
+      ["guide.pdf", { file: "true" }, "guide.pdf"],
+    ],
+  );
 });
 
 test("local files are assets or includes; URLs and data URIs are neither", () => {
@@ -167,18 +278,27 @@ test("local files are assets or includes; URLs and data URIs are neither", () =>
     '<source src="clip.mp4">',
     '<iframe src="#top"></iframe>',
     '<video src="v.mp4"></video>',
-    '<a href="notes.html#top">n</a>',
-    '<a href="https://e.org">e</a>',
-    '<a href="mailto:a@b.c">m</a>',
-    '<a href="#sec">s</a>',
     '<audio src="sound.ogg"></audio>',
     '<link rel="icon" href="data:,">',
+    '<iframe src="embed/map.html?z=2"></iframe>',
   ].join("");
   const items = htmlAdapter(text, "x.html");
   const assets = ofKind(items, "asset");
   assert.deepEqual(assets.map((item) => item.name), ["a.png", "s/site.css", "clip.mp4", "v.mp4", "sound.ogg"]);
   assert.deepEqual(assets.map((item) => span(text, item.nameRange)), assets.map((item) => item.name));
-  assert.deepEqual(ofKind(items, "include").map((item) => item.name), ["notes.html"]);
+  assert.deepEqual(ofKind(items, "include").map((item) => item.name), ["embed/map.html"]);
+  assert.deepEqual(ofKind(items, "link"), []);
+});
+
+test("a link to a missing project page is a missing-file diagnostic", () => {
+  const text = '<a href="gone.html#x">g</a>';
+  const project = createProjectIndex();
+  project.setFiles(["index.html"]);
+  project.update({ path: "index.html", format: "html", length: text.length, items: htmlAdapter(text, "index.html") });
+  assert.deepEqual(
+    diagnostics(project, "index.html").map((item) => [item.code, item.name]),
+    [["missing-file", "gone.html"]],
+  );
 });
 
 test("comments and script or style bodies are never read as markup", () => {
