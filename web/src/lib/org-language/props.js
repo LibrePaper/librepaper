@@ -6,11 +6,14 @@
 import { defineLanguageFacet, foldNodeProp, languageDataProp } from "@codemirror/language";
 import { styleTags, tags } from "@lezer/highlight";
 
-export const orgData = defineLanguageFacet({
+/** Org's language data. Also given to the editor before org.wasm loads, so comments and pairs work from the start. */
+export const ORG_LANGUAGE_DATA = {
   commentTokens: { line: "# " },
   // No apostrophe (prose), no markup characters (they collide with lists, headlines and paths).
   closeBrackets: { brackets: ["(", "[", "{", "\""] },
-});
+};
+
+export const orgData = defineLanguageFacet(ORG_LANGUAGE_DATA);
 
 const highlighting = styleTags({
   "Stars Title/...": tags.heading,
