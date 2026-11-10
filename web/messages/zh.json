@@ -779,6 +779,7 @@
   "common_pages": "页面",
   "common_paste": "粘贴",
   "common_preview": "预览",
+  "common_privacy_policy": "隐私政策",
   "common_programs": "程序",
   "common_project": "项目",
   "common_project_read_only": "此项目为只读。",
@@ -831,6 +832,7 @@
     }
   ],
   "common_templates": "模板",
+  "common_terms_of_service": "服务条款",
   "common_text": "文本",
   "common_theme": "主题",
   "common_this_computer": "这台电脑",
@@ -1761,6 +1763,7 @@
   "latexfilessettings_empty": "尚未下载任何文件。缓存的编译器文件可加快 PDF 编译。移除它们不会影响你的文档。",
   "latexfilessettings_measuring": "正在测量…缓存的编译器文件可加快 PDF 编译。移除它们不会影响你的文档。",
   "latexfilessettings_used": "已用存储空间：{size}。缓存的编译器文件可加快 PDF 编译。移除它们不会影响你的文档。",
+  "legalnotice_accept": "继续即表示您接受本服务器的政策：",
   "links_go_to_page": "转到第 {page} 页",
   "live_chat_history_read_failed": "无法读取聊天记录。正在重试。",
   "live_chat_older_failed": "无法读取更早的消息。",
