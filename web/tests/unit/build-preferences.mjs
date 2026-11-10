@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { defaults, read, update, readDefaultPreview, writeDefaultPreview } from "../../src/lib/build-preferences.js";
+import {
+  anonymousIdentity, buildPreferenceUser, defaults, read, update,
+  readDefaultPreview, writeDefaultPreview, readLivePatch, writeLivePatch,
+} from "../../src/lib/build-preferences.js";
 
 function store() {
   const values = new Map();
@@ -178,5 +181,32 @@ test("a stored default preview survives changing the engine and going automatic"
     assert.equal(tool.output, "pdf");
     const automatic = update(scope, "latex", { selection: "automatic" });
     assert.equal(automatic.output, "pdf");
+  } finally { globalThis.localStorage = previous; }
+});
+
+test("the build preference identity is the signed-in account or the anonymous identity", () => {
+  const previous = globalThis.localStorage;
+  globalThis.localStorage = store();
+  try {
+    assert.equal(buildPreferenceUser({ provider: "github", handle: "alice" }), "github:alice");
+    assert.equal(buildPreferenceUser({ id: "x", provider: "github" }), anonymousIdentity());
+    assert.equal(buildPreferenceUser({ handle: "alice" }), anonymousIdentity());
+    assert.equal(buildPreferenceUser({}), anonymousIdentity());
+    assert.equal(buildPreferenceUser(undefined), anonymousIdentity());
+  } finally { globalThis.localStorage = previous; }
+});
+
+test("a live-patch preference written for an account is read back with the same scope", () => {
+  const previous = globalThis.localStorage;
+  globalThis.localStorage = store();
+  try {
+    const scope = { origin: "https://a.test", user: buildPreferenceUser({ provider: "github", handle: "alice" }), document: "paper" };
+    assert.equal(readLivePatch(scope, "latex"), false);
+    assert.equal(writeLivePatch(scope, "latex", true), true);
+    assert.equal(readLivePatch(scope, "latex"), true);
+    // Another document of the same account and origin shares it.
+    assert.equal(readLivePatch({ ...scope, document: "other" }, "latex"), true);
+    // Another account does not.
+    assert.equal(readLivePatch({ ...scope, user: "github:bob" }, "latex"), false);
   } finally { globalThis.localStorage = previous; }
 });

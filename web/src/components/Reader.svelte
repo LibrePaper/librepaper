@@ -97,7 +97,7 @@
   import Grip from "./Grip.svelte";
   import DesktopOnly from "./DesktopOnly.svelte";
   import DesktopMismatch from "./DesktopMismatch.svelte";
-  import { anonymousIdentity, readLivePatch, update as updateBuildPreferences } from "../lib/build-preferences.js";
+  import { buildPreferenceUser, readLivePatch, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import { createLivePreview } from "../lib/live-preview/controller.js";
   import Avatar from "./Avatar.svelte";
   import { presenceJumpTarget } from "../lib/presence-jump.js";
@@ -2160,7 +2160,7 @@
   // Which tool builds this document is the build settings' to own; what the
   // page keeps is the consequence -- which output each format is producing,
   // and which preview mode it is in.
-  const buildUserId = $derived(me.provider && me.handle ? `${me.provider}:${me.handle}` : anonymousIdentity());
+  const buildUserId = $derived(buildPreferenceUser(me));
   const buildSettings = createBuildSettings({
     slug: SLUG,
     origin: location.origin,
