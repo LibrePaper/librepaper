@@ -203,7 +203,8 @@ test("org internal links become refs that resolve to labels, and broken ones are
     assert.ok(names.includes(name), `${name} is a label`);
   }
   const footnotes = labels.filter((item) => item.namespace === "footnote").map((item) => item.name);
-  assert.deepEqual(footnotes, ["x", "y"]);
+  // Document order: [fn:y:inline text] comes before the [fn:x] definition at the end.
+  assert.deepEqual(footnotes, ["y", "x"]);
   assert.ok(!footnotes.includes("hidden"));
 
   const project = createProjectIndex();

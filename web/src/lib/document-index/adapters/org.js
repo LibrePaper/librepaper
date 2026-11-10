@@ -507,7 +507,9 @@ export function orgAdapter(text, path) {
           // A file: link, or a bracketed path to a project file. A `::search`
           // after the name is kept as the fragment.
           const prefix = FILE_PREFIX.test(target) ? 5 : 0;
-          if (prefix || (bracketed && !SCHEME.test(target) && !/^[#*]/.test(target) && pathLike(target.replace(/::.*$/, "")))) {
+          // The scheme test reads the part before any `::search`: "notes.org::x" is a path, not a "notes.org:" URL.
+          const beforeSearch = target.replace(/::.*$/, "");
+          if (prefix || (bracketed && !SCHEME.test(beforeSearch) && !/^[#*]/.test(target) && pathLike(beforeSearch))) {
             const body = target.slice(prefix);
             const at = body.indexOf("::");
             const name = at < 0 ? body : body.slice(0, at);
