@@ -7,7 +7,7 @@ import { FORMAT_TOOLS, isToolActive } from "./format-tools.js";
 // formats are the ones the toolbar writes: LaTeX and Typst have visual layers
 // and language definitions, Markdown has neither and uses MARKDOWN below.
 
-const FORMATS = new Set(["latex", "typst", "markdown"]);
+const FORMATS = new Set(["latex", "typst", "markdown", "org"]);
 const MARKS = ["bold", "italic", "underline"];
 // Marks the tokens do not name, so they are read from the source.
 const SOURCE_MARKS = ["mono", "inlineMath"];
@@ -186,6 +186,7 @@ function enclosingMarkup(state, range, markers) {
 const TOKEN_NAMES = {
   latex: { bold: ["textbf"], italic: ["emph", "textit"], underline: ["underline"] },
   typst: { bold: ["strong"], italic: ["emph"], underline: ["underline"] },
+  org: { bold: ["strong"], italic: ["emph"], underline: ["span"] },
 };
 
 function markedInTokens(tokens, format, mark, range) {
@@ -259,6 +260,11 @@ function listKind(format, doc, line) {
     if (/^\+[ \t]/.test(body)) return "number";
     return null;
   }
+  // An Org star at the start of a line is a headline, not a bullet.
+  if (format === "org") {
+    if (/^[-+][ \t]/.test(body)) return "bullet";
+    return /^\d+[.)][ \t]/.test(body) ? "number" : null;
+  }
   if (/^[-*+][ \t]/.test(body)) return "bullet";
   if (/^\d+[.)][ \t]/.test(body)) return "number";
   return null;
@@ -268,6 +274,7 @@ function listKind(format, doc, line) {
 function stripList(format, body) {
   if (format === "latex") return body.replace(/^\\item(?:\[[^\]]*\])?[ \t]?/, "");
   if (format === "typst") return body.replace(/^[-+][ \t]/, "");
+  if (format === "org") return body.replace(/^(?:[-+]|\d+[.)])[ \t]/, "");
   return body.replace(/^(?:[-*+]|\d+[.)])[ \t]/, "");
 }
 
