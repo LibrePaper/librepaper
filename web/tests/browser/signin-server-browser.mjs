@@ -37,6 +37,11 @@ try {
     const url = new URL(request.url, "http://127.0.0.1");
     const path = url.pathname;
     if (path === "/" || path === "/desktop/") { response.setHeader("content-type", "text/html"); response.end(shell(path === "/desktop/")); return; }
+    if (path === "/__lp/shell/servers" && request.method === "GET") {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ current: "https://lab.example.org", servers: ["https://lab.example.org"] }));
+      return;
+    }
     if (path === "/__lp/shell/server" && request.method === "POST") {
       let raw = "";
       request.on("data", (chunk) => { raw += chunk; });
@@ -63,11 +68,11 @@ try {
   tab = await browser("chromium", join(temp, "profile"), port);
 
   const setField = (value) => tab.evaluate(`(() => {
-    const input = document.querySelector('.signin-server-form input');
+    const input = document.querySelector('form[data-switch-server] input.input');
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)});
     input.dispatchEvent(new Event('input', { bubbles: true }));
   })()`);
-  const submitForm = () => tab.evaluate("document.querySelector('.signin-server-form').requestSubmit()");
+  const submitForm = () => tab.evaluate("document.querySelector('form[data-switch-server]').requestSubmit()");
 
   // A browser shows the providers and no way to pick a server.
   await tab.navigate(`${origin}/`);
@@ -80,24 +85,30 @@ try {
   assert.equal(await tab.evaluate("Boolean(document.querySelectorAll('.signin-provider')[2].querySelector('svg'))"), true, "a custom provider gets the key icon");
   assert.equal(await tab.evaluate("Boolean(document.querySelector('.signin-server-change'))"), false, "a browser offers no server choice");
 
-  // The desktop app offers the choice and hands the address to the shell.
+  // The desktop app offers the choice in the switch dialog, which always lists
+  // app.librepaper.org beside the servers the shell knows.
   await tab.navigate(`${origin}/desktop/`);
   await until("server choice", () => tab.evaluate("Boolean(document.querySelector('.signin-server-change'))"));
   await tab.evaluate("document.querySelector('.signin-server-change').click()");
-  await until("server form", () => tab.evaluate("Boolean(document.querySelector('.signin-server-form'))"));
-  await setField("https://paper.example.org");
-  await submitForm();
-  await until("server request", () => bodies.some((body) => body.url === "https://paper.example.org"));
-  assert.deepEqual(bodies.find((body) => body.url === "https://paper.example.org"), { url: "https://paper.example.org" });
+  await until("server list", () => tab.evaluate("document.querySelectorAll('form[data-switch-server] input[type=radio]').length === 2"));
+  assert.deepEqual(await tab.evaluate("Array.from(document.querySelectorAll('form[data-switch-server] input[type=radio]'), (radio) => radio.value)"),
+    ["https://lab.example.org", "https://app.librepaper.org"], "the main server is listed after the known ones");
+  assert.equal(await tab.evaluate("document.querySelector('form[data-switch-server] input[type=radio]:checked').value"), "https://lab.example.org", "the current server is preselected");
 
-  // A bad address is refused by the shell and the reason is shown.
-  await until("submit button enabled", () => tab.evaluate("!document.querySelector('.signin-server-form button').disabled"));
+  // A bad address is refused by the shell, the reason is shown, and the dialog stays open.
   await setField("https://bad");
   await submitForm();
-  await until("refusal shown", () => tab.evaluate("(document.querySelector('.signin-server-error')?.textContent || '').includes('starting with https://')"));
+  await until("refusal shown", () => tab.evaluate("(document.querySelector('form[data-switch-server] [role=alert]')?.textContent || '').includes('starting with https://')"));
+
+  // Picking the main server from the list hands its address to the shell.
+  await setField("");
+  await tab.evaluate("document.querySelector('form[data-switch-server] input[value=\"https://app.librepaper.org\"]').click()");
+  await submitForm();
+  await until("server request", () => bodies.some((body) => body.url === "https://app.librepaper.org"));
+  assert.deepEqual(bodies.find((body) => body.url === "https://app.librepaper.org"), { url: "https://app.librepaper.org" });
 } finally {
   await tab?.close();
   server?.close();
   removeTemporary(temp);
 }
-console.log("signin-server-browser: the sign-in page lists the providers the server sends; the desktop sign-in page offers another server; a browser does not");
+console.log("signin-server-browser: the sign-in page lists the providers the server sends; the desktop sign-in page opens the server switcher, which lists app.librepaper.org; a browser does not");

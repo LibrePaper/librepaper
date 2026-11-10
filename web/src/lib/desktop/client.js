@@ -134,6 +134,41 @@ export async function desktopReport() {
   throw new Error(message || m.client_action_failed({ status: response.status }));
 }
 
+// The LibrePaper server the desktop app opens by default. It is always offered,
+// so nobody has to remember its address.
+export const DEFAULT_SERVER = "https://app.librepaper.org";
+
+function uniqueServers(list) {
+  return [...new Set(list.filter((server) => typeof server === "string" && server))];
+}
+
+// The servers the desktop app can switch its window to, and the one it is on.
+// An older desktop app has no such route, so any failure answers with this
+// page's own origin and DEFAULT_SERVER.
+export async function listServers() {
+  const shell = desktop();
+  if (!shell) throw named("DesktopOnly", DESKTOP_ONLY_MESSAGE);
+  const origin = deps.location()?.origin || "";
+  let answer = null;
+  try {
+    const response = await fetch(`${shell.base}shell/servers`);
+    if (response.ok) answer = await response.json();
+  } catch { /* an older desktop app, or no answer: fall back below */ }
+  if (!Array.isArray(answer?.servers)) {
+    return { current: origin, servers: uniqueServers([origin, DEFAULT_SERVER]) };
+  }
+  return {
+    current: typeof answer.current === "string" ? answer.current : null,
+    servers: uniqueServers([...answer.servers, DEFAULT_SERVER]),
+  };
+}
+
+// Points the desktop app's window at another server. The shell confirms with the
+// person and then navigates the window itself, so there is nothing more to do here.
+export async function switchServer(url) {
+  await shellAction("server", { url });
+}
+
 // Asks the shell how the person can update it. "updater" means the shell's own
 // dialog takes over, "package_manager" means the system's package manager does
 // it, and "download" means the page opens INSTALL_URL. Any failure is "download".
