@@ -152,18 +152,19 @@ function controlToken(input, stack) {
     return input.acceptToken(term, term === ControlSequence ? len : keyword);
   }
   if (word === "end") {
-    if (stack.canShift(EndKw)) {
-      // An \end that names an outer environment, not the innermost open one, ends the
-      // innermost (never closed) environment without being consumed by it.
-      const open = stack.context?.names ?? [];
-      const target = braceName(input, keyword)?.trim();
-      if (target !== undefined && open.length && target !== open[open.length - 1] && open.includes(target) &&
-          stack.canShift(ImplicitClose)) return input.acceptToken(ImplicitClose, 0);
-      return input.acceptToken(EndKw, keyword);
+    const open = stack.context?.names ?? [];
+    const target = braceName(input, keyword)?.trim();
+    if (target !== undefined && open.includes(target)) {
+      // An \end that names an open environment. It is that environment's own end when the innermost
+      // open construct is that environment; otherwise it first ends, one at a time, whatever was
+      // opened since and never closed (an inner environment, math, a group, an optional argument).
+      if (target === open[open.length - 1] && stack.canShift(EndKw)) return input.acceptToken(EndKw, keyword);
+      if (stack.canShift(ImplicitClose)) return input.acceptToken(ImplicitClose, 0);
     }
-    // An \end that belongs to an outer environment closes whatever is open
-    // here (unclosed inline math, say) without consuming it.
-    if (stack.canShift(ImplicitClose)) return input.acceptToken(ImplicitClose, 0);
+    if (stack.canShift(EndKw)) return input.acceptToken(EndKw, keyword);
+    // An \end that names nothing open closes unclosed math or an optional argument here, but a
+    // group keeps it as a plain control word.
+    if (!stack.canShift(CloseBrace) && stack.canShift(ImplicitClose)) return input.acceptToken(ImplicitClose, 0);
     return input.acceptToken(ControlSequence, len);
   }
   if (word === "verb" || word === "Verb") {

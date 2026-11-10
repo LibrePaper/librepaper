@@ -50,9 +50,10 @@ Command {
 // token from tokens.js) ends it there, or at a } that belongs to an enclosing group.
 OptionalArgument { OptOpen item* (OptClose | ImplicitClose) }
 
-Group { OpenBrace item* CloseBrace }
+// An unclosed group ends (ImplicitClose) at the \end of an environment that was opened outside it.
+Group { OpenBrace item* (CloseBrace | ImplicitClose) }
 
-MathGroup { OpenBrace mathItem* CloseBrace }
+MathGroup { OpenBrace mathItem* (CloseBrace | ImplicitClose) }
 
 BeginEnv { BeginKw OpenBrace EnvName CloseBrace }
 MathBeginEnv { MathBeginKw OpenBrace EnvName CloseBrace }
