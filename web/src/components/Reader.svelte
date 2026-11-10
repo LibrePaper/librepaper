@@ -615,8 +615,9 @@
   }
 
   // Scroll tracking for mobile bar hide/show: called by scroll listeners and
-  // frame scroll messages. Hide the bar when scrolling down past threshold,
-  // show it when scrolling up or at top.
+  // frame scroll messages. Hide the bars when scrolling down past threshold,
+  // show them when scrolling up or at top. The mode switch and the tab bar
+  // step aside together.
   function noteScroll(delta, top, bottom) {
     barHidden = compact ? barHiddenAfter(barHidden, delta, top, bottom) : false;
   }
@@ -4489,7 +4490,8 @@
           filesShown={tabs.some((tab) => tab.id === "files")} filesDisabled={Boolean(tabs.find((tab) => tab.id === "files")?.disabled)}
           commentsShown={tabs.some((tab) => tab.id === "collaboration")} commentsDot={Boolean(badges.collaboration?.dot)}
           {moreOpen} offlineNote={!connected && !DEMO ? connectionNote : ""}
-          ondocument={() => phone.showDocument()} onfiles={() => void openPanel("files")} oncomments={() => phone.showComments()} onmore={openMore} />
+          ondocument={() => phone.showDocument()} onfiles={() => void openPanel("files")} oncomments={() => phone.showComments()} onmore={openMore}
+          hidden={barHidden} onreveal={() => (barHidden = false)} />
 {/if}
 {#if compact && keyboardBarShown}
   <KeyboardBar onundo={() => void chooseEditCommand("undo")} onredo={() => void chooseEditCommand("redo")}
