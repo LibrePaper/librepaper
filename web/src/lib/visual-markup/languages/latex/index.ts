@@ -4,6 +4,7 @@ import { Token } from '../../core/tokens';
 import { COMMANDS, ENVIRONMENTS, type EnvironmentRender, type Render } from './catalog';
 import { ARGUMENT_COUNT, COMMAND_CLASSES, EDITABLE_COMMANDS, FIRST_ARGUMENT_COMMANDS, INCLUDE_COMMANDS, LIST_ENVIRONMENTS, REF_COMMANDS, VERBATIM_ENVIRONMENTS } from './commands';
 import { rules } from './rules';
+import { tokenizeLatex } from './tree';
 import { table } from './table';
 import { figure, latexImageStyle } from './figure';
 
@@ -223,6 +224,7 @@ export const latex: Language = {
   id: 'latex',
   name: 'LaTeX',
   rules,
+  tokenize: tokenizeLatex,
   style,
   commands,
   table,
