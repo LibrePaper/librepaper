@@ -7,7 +7,7 @@ import {
 import { EditorState, countColumn } from "@codemirror/state";
 import { styleTags, tags } from "@lezer/highlight";
 import { parser } from "./parser.js";
-import { latexFolding } from "../latex-folding.js";
+import { sectionFolding } from "./folding.js";
 
 const BEGIN_KEYWORDS = "BeginKw MathBeginKw VerbBeginKw ListingBeginKw EndKw";
 const MATH_DELIMITERS = "DollarOpen DollarClose DisplayDollar ParenOpen ParenClose BracketOpen BracketClose StrayDollar";
@@ -93,10 +93,6 @@ export const latexLanguage = LRLanguage.define({
     closeBrackets: { brackets: ["(", "[", "{", "$"] },
   },
 });
-
-// Sections are not tree nodes (a \section runs to the next one, not to a
-// closing token), so they keep folding through the line scanner.
-export const latexSectionFolding = latexFolding;
 
 const MATH_NODES = new Set(["InlineMath", "DisplayMath", "MathEnvironment"]);
 const OPAQUE_NODES = new Set(["Comment", "Verb", "VerbBody"]);
@@ -252,5 +248,5 @@ export function latexAssist(on) {
  * The \end insertion comes separately, from latexAssist().
  */
 export function latex() {
-  return new LanguageSupport(latexLanguage, [latexSectionFolding]);
+  return new LanguageSupport(latexLanguage, [sectionFolding]);
 }

@@ -1,0 +1,104 @@
+// Lezer grammar for BibTeX, written for the LibrePaper editor.
+//
+// BibTeX files are hand edited and often half broken, so the grammar is
+// shallow and forgiving. It finds entries, fields, values and comments and
+// leaves meaning (which fields are required, what a key refers to) to the
+// tools that read the file. Text outside entries is ignored by BibTeX, so
+// it becomes Junk here, and `%` starts a line comment in that same text.
+//
+// Entry types, field names and macro names are case-insensitive words. Each
+// special entry (@string, @preamble, @comment) is a keyword with the common
+// spellings listed. A word that is also a normal entry type stays valid as
+// one through @extend, so `@string` can still be a plain entry type.
+
+@top BibFile { item* }
+
+item { Entry | StringEntry | PreambleEntry | CommentEntry | LineComment | Junk }
+
+// The citation key is optional in the grammar so that a malformed entry still
+// parses its fields; the reader reports the missing key.
+Entry { At EntryType braced<EntryBody> }
+
+EntryBody { CitationKey? (Comma Field?)* }
+
+StringEntry[@dynamicPrecedence=1] { At StringKw braced<StringBody> }
+
+StringBody { (Field (Comma Field?)*)? }
+
+PreambleEntry { At PreambleKw braced<Value> }
+
+// The body of @comment is free text, so it can look like an entry body; the
+// dynamic precedence keeps the comment reading when both parse.
+CommentEntry[@dynamicPrecedence=1] { At CommentKw CommentBlock }
+
+
+Field { FieldName Equals Value }
+
+// Parts joined with # (a macro, a number, or a quoted or braced string).
+Value { valuePart (Hash valuePart)* }
+
+valuePart { BracedString | QuotedString | Number | Variable }
+
+
+
+EntryType { identifier }
+
+FieldName { identifier }
+
+Variable { identifier }
+
+braced<content> { OpenBrace content CloseBrace | OpenParen content CloseParen }
+
+// A special-entry keyword: the same word can also be an ordinary identifier.
+kw<term> { @extend<identifier, term> }
+
+StringKw { kw<"string"> | kw<"String"> | kw<"STRING"> }
+
+PreambleKw { kw<"preamble"> | kw<"Preamble"> | kw<"PREAMBLE"> }
+
+CommentKw { kw<"comment"> | kw<"Comment"> | kw<"COMMENT"> }
+
+@skip { space }
+
+// Inside braces and quotes whitespace is text, so nothing is skipped there.
+@skip {} {
+  CommentBlock { OpenBrace (CommentText | CommentBlock)* CloseBrace }
+
+  // A braced string nests: inner braces are balanced and may hold any text.
+  BracedString { OpenBrace (BraceText | BracedString)* CloseBrace }
+
+  // A quoted string may hold braced groups, which may hold quotes.
+  QuotedString { QuoteMark (QuotedText | BracedString)* QuoteMark }
+}
+
+@tokens {
+  space { $[ \t\r\n]+ }
+
+  LineComment { "%" ![\n]* }
+
+  // Anything outside an entry that is not a comment or the start of one.
+  Junk { ![@% \t\r\n]+ }
+
+  At { "@" }
+  OpenBrace { "{" }
+  CloseBrace { "}" }
+  OpenParen { "(" }
+  CloseParen { ")" }
+  Comma { "," }
+  Equals { "=" }
+  Hash { "#" }
+  QuoteMark { "\"" }
+
+  // An all-digit word is a Number (see @precedence below).
+  Number { $[0-9]+ }
+
+  identifier { $[a-zA-Z_:.\-0-9]+ }
+
+  CitationKey { ![ \t\r\n,{}()"#=@%]+ }
+
+  BraceText { ![{}]+ }
+  QuotedText { ![{}"]+ }
+  CommentText { ![{}]+ }
+
+  @precedence { Number, identifier }
+}

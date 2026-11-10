@@ -1,5 +1,5 @@
-import { Prec } from "@codemirror/state";
-import { keymap } from "@codemirror/view";
+import { Compartment, Prec } from "@codemirror/state";
+import { ViewPlugin, keymap } from "@codemirror/view";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { html } from "@codemirror/lang-html";
 import { json } from "@codemirror/lang-json";
@@ -12,6 +12,7 @@ import { pandocExtensions } from "./pandoc-markdown.js";
 import { quartoOptions } from "./quarto-options.js";
 import { latex } from "./latex-language/index.js";
 import { org } from "./org-language/index.js";
+import { bibtex } from "./bibtex-language/index.js";
 import { pipeTableAt, pipeTableKeymap } from "./pipe-table-keymap.js";
 
 /** Resolve an exact language name for a Markdown or Quarto code fence. */
@@ -84,8 +85,40 @@ export function sourceFormat(path, fallback = "") {
   return declared;
 }
 
+/** The file name at the end of a path, in its original case. */
+function fileNameOf(path) {
+  return typeof path === "string" ? path.slice(path.lastIndexOf("/") + 1) : "";
+}
+
+/**
+ * Language data for a named file the editor has no built-in mode for. A loaded
+ * language is returned as is; otherwise the support is loaded in the background
+ * and swapped in once it arrives, as typst() does.
+ */
+function describedLanguage(filename) {
+  if (!filename) return null;
+  const description = /\.csl$/i.test(filename)
+    ? LanguageDescription.matchLanguageName(languages, "xml", false)
+    : LanguageDescription.matchFilename(languages, filename);
+  if (!description) return null;
+  if (description.support) return description.support;
+  const compartment = new Compartment();
+  const upgrade = ViewPlugin.define((view) => {
+    let alive = true;
+    description.load().then((support) => {
+      if (alive) view.dispatch({ effects: compartment.reconfigure(support) });
+    });
+    return { destroy() { alive = false; } };
+  });
+  return [compartment.of([]), upgrade];
+}
+
 /** Select a CodeMirror language from a file path, falling back for unnamed text. */
 export function sourceLanguage(path, fallback = "") {
   const format = sourceFormat(path, fallback);
-  return format === "json" ? json() : byFormat(format);
+  if (format === "json") return json();
+  if (format) return byFormat(format);
+  const filename = fileNameOf(path);
+  if (/\.bib$/i.test(filename)) return bibtex();
+  return describedLanguage(filename) ?? [];
 }

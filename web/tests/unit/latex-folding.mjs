@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { EditorState } from "@codemirror/state";
-import { foldable } from "@codemirror/language";
-import { latexFolding } from "../../src/lib/latex-folding.js";
+import { ensureSyntaxTree, foldable } from "@codemirror/language";
+import { latex } from "../../src/lib/latex-language/index.js";
 
 // The text a fold would hide when the cursor is on lineNumber, or null.
+// Folds come from the syntax tree, so the tree is parsed in full first.
 function folded(doc, lineNumber) {
-  const state = EditorState.create({ doc, extensions: [latexFolding] });
+  const state = EditorState.create({ doc, extensions: [latex()] });
+  ensureSyntaxTree(state, state.doc.length, 5000);
   const line = state.doc.line(lineNumber);
   const range = foldable(state, line.from, line.to);
   return range ? doc.slice(range.from, range.to) : null;
@@ -63,8 +65,15 @@ test("a starred section still folds", () => {
 });
 
 test("the last section stops before \\end{document}", () => {
+  const doc = "\\begin{document}\n\\section{A}\ntext\n\\end{document}\n";
+  assert.equal(folded(doc, 2), "\ntext");
+});
+
+// Without its \begin, \end{document} is not an environment end in the tree,
+// just a command, so the section runs past it to the end of the file.
+test("an unmatched \\end{document} does not stop a section", () => {
   const doc = "\\section{A}\ntext\n\\end{document}\n";
-  assert.equal(folded(doc, 1), "\ntext");
+  assert.equal(folded(doc, 1), "\ntext\n\\end{document}\n");
 });
 
 test("a last section with no \\end{document} runs to the end of the document", () => {
@@ -85,4 +94,10 @@ test("a \\begin inside a Verbatim body gives no fold", () => {
   const doc = "\\begin{Verbatim}\n\\begin{itemize}\nx\n\\end{Verbatim}\n";
   assert.equal(folded(doc, 2), null);
   assert.equal(folded(doc, 1), "\n\\begin{itemize}\nx\n");
+});
+
+test("a \\section inside a verbatim body does not fold", () => {
+  const doc = "\\begin{verbatim}\n\\section{A}\ntext\n\\end{verbatim}\n";
+  assert.equal(folded(doc, 2), null);
+  assert.equal(folded(doc, 1), "\n\\section{A}\ntext\n");
 });
