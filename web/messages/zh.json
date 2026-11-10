@@ -2561,7 +2561,6 @@
   "submissions_not_confirmed_retry": "提交未确认。请重试以检查或发送。",
   "switchserverdialog_current": "当前",
   "switchserverdialog_loading": "正在加载服务器…",
-  "switchserverdialog_main": "LibrePaper 主服务器",
   "switchserverdialog_note": "切换服务器不会让你退出另一台服务器的登录。",
   "switchserverdialog_other": "或输入地址",
   "switchserverdialog_placeholder": "https://",

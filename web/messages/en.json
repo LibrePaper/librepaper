@@ -2576,7 +2576,6 @@
   "submissions_not_confirmed_retry": "Submission not confirmed. Retry to check or send it.",
   "switchserverdialog_current": "current",
   "switchserverdialog_loading": "Loading servers…",
-  "switchserverdialog_main": "Main LibrePaper server",
   "switchserverdialog_note": "Switching does not sign you out of the other server.",
   "switchserverdialog_other": "Or enter an address",
   "switchserverdialog_placeholder": "https://",

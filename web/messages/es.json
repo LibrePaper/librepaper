@@ -2576,7 +2576,6 @@
   "submissions_not_confirmed_retry": "Envío no confirmado. Reintente para comprobarlo o enviarlo.",
   "switchserverdialog_current": "actual",
   "switchserverdialog_loading": "Cargando servidores…",
-  "switchserverdialog_main": "Servidor principal de LibrePaper",
   "switchserverdialog_note": "Cambiar de servidor no cierra su sesión en el otro servidor.",
   "switchserverdialog_other": "O escriba una dirección",
   "switchserverdialog_placeholder": "https://",
