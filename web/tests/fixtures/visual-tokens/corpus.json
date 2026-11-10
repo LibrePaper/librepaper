@@ -1,0 +1,212 @@
+[
+  {
+    "name": "docs__examples__tutorial-latex__librepaper.tex",
+    "language": "latex",
+    "path": "docs/examples/tutorial-latex/librepaper.tex"
+  },
+  {
+    "name": "docs__examples__tutorial-latex__sections__rendering.tex",
+    "language": "latex",
+    "path": "docs/examples/tutorial-latex/sections/rendering.tex"
+  },
+  {
+    "name": "docs__examples__tutorial-quarto__librepaper.qmd",
+    "language": "markdown",
+    "path": "docs/examples/tutorial-quarto/librepaper.qmd"
+  },
+  {
+    "name": "docs__examples__tutorial-quarto__sections__rendering.qmd",
+    "language": "markdown",
+    "path": "docs/examples/tutorial-quarto/sections/rendering.qmd"
+  },
+  {
+    "name": "docs__examples__tutorial-typst__librepaper.typ",
+    "language": "typst",
+    "path": "docs/examples/tutorial-typst/librepaper.typ"
+  },
+  {
+    "name": "docs__examples__tutorial-typst__sections__rendering.typ",
+    "language": "typst",
+    "path": "docs/examples/tutorial-typst/sections/rendering.typ"
+  },
+  {
+    "name": "web__src__templates__article__latex__main.tex",
+    "language": "latex",
+    "path": "web/src/templates/article/latex/main.tex"
+  },
+  {
+    "name": "web__src__templates__article__quarto__main.qmd",
+    "language": "markdown",
+    "path": "web/src/templates/article/quarto/main.qmd"
+  },
+  {
+    "name": "web__src__templates__article__typst__main.typ",
+    "language": "typst",
+    "path": "web/src/templates/article/typst/main.typ"
+  },
+  {
+    "name": "web__src__templates__blank__latex__main.tex",
+    "language": "latex",
+    "path": "web/src/templates/blank/latex/main.tex"
+  },
+  {
+    "name": "web__src__templates__blank__quarto__main.qmd",
+    "language": "markdown",
+    "path": "web/src/templates/blank/quarto/main.qmd"
+  },
+  {
+    "name": "web__src__templates__blank__typst__main.typ",
+    "language": "typst",
+    "path": "web/src/templates/blank/typst/main.typ"
+  },
+  {
+    "name": "web__src__templates__book__latex__chapters__01-introduction.tex",
+    "language": "latex",
+    "path": "web/src/templates/book/latex/chapters/01-introduction.tex"
+  },
+  {
+    "name": "web__src__templates__book__latex__chapters__02-methods.tex",
+    "language": "latex",
+    "path": "web/src/templates/book/latex/chapters/02-methods.tex"
+  },
+  {
+    "name": "web__src__templates__book__latex__chapters__03-results.tex",
+    "language": "latex",
+    "path": "web/src/templates/book/latex/chapters/03-results.tex"
+  },
+  {
+    "name": "web__src__templates__book__latex__chapters__appendix.tex",
+    "language": "latex",
+    "path": "web/src/templates/book/latex/chapters/appendix.tex"
+  },
+  {
+    "name": "web__src__templates__book__latex__main.tex",
+    "language": "latex",
+    "path": "web/src/templates/book/latex/main.tex"
+  },
+  {
+    "name": "web__src__templates__book__typst__chapters__01-introduction.typ",
+    "language": "typst",
+    "path": "web/src/templates/book/typst/chapters/01-introduction.typ"
+  },
+  {
+    "name": "web__src__templates__book__typst__chapters__02-methods.typ",
+    "language": "typst",
+    "path": "web/src/templates/book/typst/chapters/02-methods.typ"
+  },
+  {
+    "name": "web__src__templates__book__typst__chapters__03-results.typ",
+    "language": "typst",
+    "path": "web/src/templates/book/typst/chapters/03-results.typ"
+  },
+  {
+    "name": "web__src__templates__book__typst__chapters__appendix.typ",
+    "language": "typst",
+    "path": "web/src/templates/book/typst/chapters/appendix.typ"
+  },
+  {
+    "name": "web__src__templates__book__typst__main.typ",
+    "language": "typst",
+    "path": "web/src/templates/book/typst/main.typ"
+  },
+  {
+    "name": "web__src__templates__cv__latex__main.tex",
+    "language": "latex",
+    "path": "web/src/templates/cv/latex/main.tex"
+  },
+  {
+    "name": "web__src__templates__cv__typst__main.typ",
+    "language": "typst",
+    "path": "web/src/templates/cv/typst/main.typ"
+  },
+  {
+    "name": "web__src__templates__handout__latex__main.tex",
+    "language": "latex",
+    "path": "web/src/templates/handout/latex/main.tex"
+  },
+  {
+    "name": "web__src__templates__handout__typst__main.typ",
+    "language": "typst",
+    "path": "web/src/templates/handout/typst/main.typ"
+  },
+  {
+    "name": "web__src__templates__homework__latex__main.tex",
+    "language": "latex",
+    "path": "web/src/templates/homework/latex/main.tex"
+  },
+  {
+    "name": "web__src__templates__homework__quarto__main.qmd",
+    "language": "markdown",
+    "path": "web/src/templates/homework/quarto/main.qmd"
+  },
+  {
+    "name": "web__src__templates__homework__typst__main.typ",
+    "language": "typst",
+    "path": "web/src/templates/homework/typst/main.typ"
+  },
+  {
+    "name": "web__src__templates__letter__latex__main.tex",
+    "language": "latex",
+    "path": "web/src/templates/letter/latex/main.tex"
+  },
+  {
+    "name": "web__src__templates__letter__typst__main.typ",
+    "language": "typst",
+    "path": "web/src/templates/letter/typst/main.typ"
+  },
+  {
+    "name": "web__src__templates__slides__latex__main.tex",
+    "language": "latex",
+    "path": "web/src/templates/slides/latex/main.tex"
+  },
+  {
+    "name": "web__src__templates__slides__typst__main.typ",
+    "language": "typst",
+    "path": "web/src/templates/slides/typst/main.typ"
+  },
+  {
+    "name": "web__src__templates__tufte__latex__main.tex",
+    "language": "latex",
+    "path": "web/src/templates/tufte/latex/main.tex"
+  },
+  {
+    "name": "web__src__templates__tufte__typst__main.typ",
+    "language": "typst",
+    "path": "web/src/templates/tufte/typst/main.typ"
+  },
+  {
+    "name": "web__tests__fixtures__quarto__r.qmd",
+    "language": "markdown",
+    "path": "web/tests/fixtures/quarto/r.qmd"
+  },
+  {
+    "name": "web__tests__fixtures__typst-corpus__paper.typ",
+    "language": "typst",
+    "path": "web/tests/fixtures/typst-corpus/paper.typ"
+  },
+  {
+    "name": "web__tests__fixtures__typst-corpus__lib.typ",
+    "language": "typst",
+    "path": "web/tests/fixtures/typst-corpus/lib.typ"
+  },
+  {
+    "name": "web__tests__fixtures__typst-corpus__broken.typ",
+    "language": "typst",
+    "path": "web/tests/fixtures/typst-corpus/broken.typ"
+  },
+  {
+    "name": "web__tests__fixtures__visual-tokens__edge__edge.tex",
+    "language": "latex",
+    "path": "web/tests/fixtures/visual-tokens/edge/edge.tex"
+  },
+  {
+    "name": "web__tests__fixtures__visual-tokens__edge__edge.typ",
+    "language": "typst",
+    "path": "web/tests/fixtures/visual-tokens/edge/edge.typ"
+  },
+  {
+    "name": "web__tests__fixtures__visual-tokens__edge__edge.md",
+    "language": "markdown",
+    "path": "web/tests/fixtures/visual-tokens/edge/edge.md"
+  }
+]

@@ -125,6 +125,9 @@ export interface Language {
   table?: TableAdapter;
   figure?: FigureAdapter;
   colorCommands?: string[];
+  // Builds the tokens from the shared syntax tree. Null when the tree is not available yet
+  // (Typst before typst-syntax.wasm loads); the caller then draws no tokens.
+  tokenize?(source: string): Token[] | null;
   imageSrc?(source: string, token: Token): string | null;
   imageStyle?(source: string, token: Token): string | null;
   // Summarises a run of fully hidden source lines. Returns a short chip label, or null

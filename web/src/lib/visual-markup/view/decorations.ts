@@ -1,7 +1,7 @@
 import { EditorState, Extension, Facet, Range as CMRange, RangeSet, StateField } from '@codemirror/state';
 import { Decoration, DecorationSet, EditorView, WidgetType } from '@codemirror/view';
 import { Language, TokenStyle } from '../core/language';
-import { Tokenizer } from '../core/tokenizer';
+import { tokenizeSource } from '../core/tokenize';
 import { Range, Token } from '../core/tokens';
 import { createWidget } from './widget-registry';
 import { PillWidget } from './widgets';
@@ -208,7 +208,7 @@ export function revealedLines(state: EditorState, language: Language, parsed: To
 
 export function buildDecorations(state: EditorState, options: BuildOptions, tokens?: Token[]): BuildResult {
   const source = state.doc.toString();
-  const parsed = tokens ?? new Tokenizer(options.language, { maxDepth: options.maxDepth }).tokenize(source);
+  const parsed = tokens ?? tokenizeSource(options.language, source, { maxDepth: options.maxDepth }) ?? [];
 
   const decorations: CMRange<Decoration>[] = [];
   const atomic: CMRange<Decoration>[] = [];
