@@ -9,9 +9,9 @@
 // is LaTeX source but has no document format, and it gets LaTeX markup the way
 // bold does: the caller decides the format, this file only spells it.
 
-/** @typedef {"latex"|"typst"|"markdown"|"quarto"|"html"} MarkupFormat */
+/** @typedef {"latex"|"typst"|"markdown"|"quarto"|"org"|"html"} MarkupFormat */
 
-const FAMILY = { latex: "latex", typst: "typst", markdown: "markdown", quarto: "markdown", html: "html" };
+const FAMILY = { latex: "latex", typst: "typst", markdown: "markdown", quarto: "markdown", org: "org", html: "html" };
 
 // The markup family a format writes in, or "" for a format with none.
 export const markupFamily = (format) => (Object.hasOwn(FAMILY, format) ? FAMILY[format] : "");
@@ -34,6 +34,8 @@ export const canHeading = (format, level) => {
 const LINK = {
   latex: (text) => ["\\href{", "}{" + text + "}"],
   markdown: (text) => ["[" + text + "](", ")"],
+  // An Org link's description ends at the first "]", so any "]" in the text is dropped.
+  org: (text) => ["[[", "][" + text.replace(/[\r\n]+/g, " ").replace(/]/g, "") + "]]"],
   typst: (text) => ['#link("', '")[' + text + "]"],
   html: (text) => ['<a href="', '">' + text + "</a>"],
 };
@@ -65,6 +67,9 @@ const LATEX_SECTIONS = ["section", "subsection", "subsubsection", "paragraph", "
 const LATEX_HEADING = /^(\\(?:part|chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?)(?:\[[^\]]*\])?\{/;
 const MARKDOWN_HEADING = /^#{1,6}(?=[ \t]|$)[ \t]*/;
 const TYPST_HEADING = /^=+(?=[ \t]|$)[ \t]*/;
+// An Org headline is stars and a space at column 0. The stars of a headline
+// already there are replaced, and the headline is moved to column 0.
+const ORG_HEADING = /^\*+[ \t]+/;
 // An HTML heading's opening tag, attributes and all, and its closing tag.
 const HTML_OPEN_HEADING = /^<h[1-6](?=[\s>])[^>]*>/i;
 const HTML_CLOSE_HEADING = /<\/h[1-6]>[ \t]*$/i;
@@ -128,6 +133,10 @@ export function headingEdit(state, format, level) {
         edits.push({ from: at, to: at, insert: `<h${level}>`, bias: "end" });
         edits.push({ from: line.to, to: line.to, insert: `</h${level}>`, bias: "start" });
       }
+    } else if (family === "org") {
+      // The edit starts at column 0, so an indented line becomes a true headline.
+      const old = ORG_HEADING.exec(body);
+      edits.push({ from: line.from, to: at + (old ? old[0].length : 0), insert: `${"*".repeat(level)} `, bias: "end" });
     } else {
       const old = (family === "typst" ? TYPST_HEADING : MARKDOWN_HEADING).exec(body);
       const mark = family === "typst" ? "=" : "#";
@@ -159,18 +168,23 @@ const WRAP_CLOSE = {
 const OPEN_TAG = { latex: (env) => `\\begin{${env}}`, html: (env) => `<${env}>` };
 const CLOSE_TAG = { latex: (env) => `\\end{${env}}`, html: (env) => `</${env}>` };
 // The marker a line already carries, whatever its kind, so it can be replaced.
+// Org's "*" is left out on purpose: at column 0 it is a headline, so a line
+// starting "* " is never read as a bullet.
 const ANY_MARKER = {
   markdown: /^(?:\d+[.)]|[-*+])[ \t]+/,
   typst: /^(?:\+|-)[ \t]+/,
+  org: /^(?:\d+[.)]|[-+])[ \t]+/,
 };
 // The marker a line carries for one kind, so that kind can be taken off.
 const KIND_MARKER = {
   markdown: { numbered: /^\d+[.)][ \t]+/, bulleted: /^[-*+][ \t]+/ },
   typst: { numbered: /^\+[ \t]+/, bulleted: /^-[ \t]+/ },
+  org: { numbered: /^\d+[.)][ \t]+/, bulleted: /^[-+][ \t]+/ },
 };
 const NEW_MARKER = {
   markdown: { numbered: (n) => `${n}. `, bulleted: () => "- " },
   typst: { numbered: () => "+ ", bulleted: () => "- " },
+  org: { numbered: (n) => `${n}. `, bulleted: () => "- " },
 };
 
 /// Toggles a numbered or bulleted list over the selected lines. Blank lines

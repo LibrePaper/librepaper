@@ -21,7 +21,7 @@ function applied(state, spec) {
 
 // Every format a file can be written in has links and lists; LaTeX has headings
 // to level five, which is as far as its sectioning commands go.
-for (const format of ["latex", "typst", "markdown", "quarto", "html"]) {
+for (const format of ["latex", "typst", "markdown", "quarto", "org", "html"]) {
   assert.ok(canLink(format), `${format} has links`);
   assert.ok(canList(format), `${format} has lists`);
 }
@@ -187,4 +187,41 @@ console.log("editing-shortcuts: links, headings and lists in each format's own m
   assert.equal(latexHeading("\\section{Title} % old", 2), "\\subsection{Title} % old");
   assert.equal(latexHeading("\\section{T}\\label{x} more", 2), "\\subsection{T}\\label{x} more");
   assert.equal(latexHeading("\\section*{A {b}}", 3), "\\subsubsection{A {b}}");
+}
+
+/* -------------------------------------------------------------------- org */
+
+// Links: the URL slot is selected, and a "]" in the description is dropped.
+{
+  const orgLink = (doc, from, to) => applied(stateOf(doc, from, to), linkEdit(stateOf(doc, from, to), "org"));
+  assert.equal(orgLink("see docs now", 4, 8).doc, "see [[url][docs]] now");
+  assert.equal(orgLink("see docs now", 4, 8).selected, "url", "the URL slot is selected");
+  assert.equal(orgLink("", 0, 0).doc, "[[url][text]]", "an empty selection gets the placeholder text");
+  assert.equal(orgLink("a]b", 0, 3).doc, "[[url][ab]]", "a bracket in the description is dropped");
+}
+
+// Headings: a level-two headline, changed back to level one. An indented line
+// becomes a headline at column zero.
+{
+  const orgHeading = (doc, pos, level) => applied(stateOf(doc, pos), headingEdit(stateOf(doc, pos), "org", level));
+  const result = orgHeading("Intro\nBody", 0, 2);
+  assert.equal(result.doc, "** Intro\nBody");
+  assert.equal(result.anchor, 3, "the caret is after the stars, at the start of the text");
+  assert.equal(orgHeading("** Intro", 3, 1).doc, "* Intro", "level two goes back to level one");
+  assert.equal(orgHeading("  Indented", 4, 1).doc, "* Indented", "the indentation goes, since a headline sits at column zero");
+  assert.equal(orgHeading("a\nb", 0, 3).doc, "*** a\nb", "only the line with the caret changes");
+  assert.equal(orgHeading("Intro", 0, 6).doc, "****** Intro", "level six is the deepest Org heading used here");
+}
+
+// Lists: "-" for bullets and "N." for numbers. An Org "*" at column zero is a
+// headline, so no bullet is ever written with it.
+{
+  const orgList = (doc, kind) => applied(stateOf(doc, 0, doc.length), listEdit(stateOf(doc, 0, doc.length), "org", kind)).doc;
+  assert.equal(orgList("a\nb", "numbered"), "1. a\n2. b");
+  assert.equal(orgList("a\nb", "bulleted"), "- a\n- b");
+  assert.equal(orgList("1. a\n2. b", "numbered"), "a\nb", "the same kind again takes the list off");
+  assert.equal(orgList("1. a\n2. b", "bulleted"), "- a\n- b", "a different kind changes it");
+  assert.equal(orgList("- a\n- b", "bulleted"), "a\nb", "a dash bullet is taken off");
+  assert.equal(orgList("a\n\nb", "bulleted"), "- a\n\n- b", "blank lines are not items");
+  assert.doesNotMatch(orgList("a\nb", "bulleted"), /^\*/m, "a bullet never starts with an Org star");
 }

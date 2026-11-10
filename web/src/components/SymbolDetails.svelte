@@ -7,7 +7,7 @@
   // The row under the grid that names the highlighted symbol, lists how it is
   // spelled in the open format, and holds the favorite toggle. The star is the
   // keyboard and touch route to favorites, since a tile itself only inserts.
-  /** @typedef {"html" | "quarto" | "markdown" | "latex" | "typst"} SymbolFormat */
+  /** @typedef {"html" | "quarto" | "markdown" | "org" | "latex" | "typst"} SymbolFormat */
   /** @type {{ entry: any, format?: SymbolFormat, favorite?: boolean, ontogglefavorite?: (entry: any) => void, available?: boolean }} */
   let { entry, format = "latex", favorite = false, ontogglefavorite = undefined, available = true } = $props();
 

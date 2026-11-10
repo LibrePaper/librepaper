@@ -99,4 +99,63 @@ assert.match(theoremNoAnchor.text,/\\begin\{theorem\}/);
 assert.deepEqual(theoremNoAnchor.additionalEdits,[]);
 assert.ok(theoremNoAnchor.notes.some(note=>note.includes('amsthm')));
 assert.ok(theoremNoAnchor.notes.some(note=>note.includes('\\newtheorem')));
+// Org: the same commands in Org markup. The file has a bibliography next to it.
+{
+  const orgContext = (text = '* Intro\n') => ({format:'org',path:'main.org',text,entryText:text,selection:{from:text.length,to:text.length,text:''},files:[{path:'refs.bib',text:'@article{smith2020,title={Rivers}}'}]});
+  const withSelection = text => ({...orgContext(), selection:{from:8,to:8,text}});
+  const org = orgContext();
+
+  assert.equal(buildInsertion('heading',{title:'Plain',level:1},org).text.trim(), '* Plain');
+  assert.match(buildInsertion('heading',{title:'Results',level:2,label:'sec-results'},org).text, /\*\* Results\n:PROPERTIES:\n:CUSTOM_ID: sec-results\n:END:/);
+  assert.equal(buildInsertion('link',{url:'https://example.org',title:'Docs'},org).text, '[[https://example.org][Docs]]');
+  assert.equal(
+    buildInsertion('figure',{src:'plot.png',caption:'Growth',label:'fig-growth',width:'80%'},org).text.trim(),
+    '#+CAPTION: Growth\n#+NAME: fig-growth\n#+ATTR_LATEX: :width 0.8\\linewidth\n#+ATTR_HTML: :width 80%\n[[file:plot.png]]',
+  );
+  assert.equal(
+    buildInsertion('table',{rows:2,columns:2,caption:'Results',label:'tbl-results'},org).text.trim(),
+    '#+CAPTION: Results\n#+NAME: tbl-results\n| Header 1 | Header 2 |\n|---+---|\n| Cell 2,1 | Cell 2,2 |',
+  );
+  const citation = buildInsertion('citation',{keys:['smith2020','jones2021']},org);
+  assert.equal(citation.text, '[cite:@smith2020;@jones2021]');
+  assert.equal(citation.additionalEdits[0].insert, '#+bibliography: refs.bib\n', 'the one .bib file is named in the file');
+  assert.equal(buildInsertion('citation',{keys:['smith2020'],style:'narrative',locator:'p. 3'},org).text, '[cite/t:@smith2020 p. 3]');
+  assert.equal(buildInsertion('bibliography',{file:'refs.bib'},org).text.trim(), '* References\n#+print_bibliography:');
+
+  // Cross references: a custom ID, a heading by title, a dedicated target, and a #+NAME label.
+  const targets = orgContext('* Intro\n:PROPERTIES:\n:CUSTOM_ID: sec-intro\n:END:\n* Methods\n<<spot>>\n#+NAME: tbl-a\n');
+  assert.equal(buildInsertion('cross-reference',{target:'sec-intro'},targets).text, '[[#sec-intro]]');
+  assert.equal(buildInsertion('cross-reference',{target:'Methods'},targets).text, '[[*Methods]]');
+  assert.equal(buildInsertion('cross-reference',{target:'spot'},targets).text, '[[spot]]');
+  assert.equal(buildInsertion('cross-reference',{target:'tbl-a'},targets).text, '[[tbl-a]]');
+  assert.equal(buildInsertion('label',{label:'spot-two'},org).text, '<<spot-two>>');
+
+  assert.equal(buildInsertion('inline-math',{},org).text, '\\(x = y\\)');
+  assert.ok(buildInsertion('display-math',{},org).text.includes('\\[\nx = y\n\\]'));
+  assert.equal(buildInsertion('footnote',{},org).text, '[fn::Note.]');
+  assert.equal(buildInsertion('bulleted-list',{},withSelection('one\ntwo')).text.trim(), '- one\n- two');
+  assert.equal(buildInsertion('numbered-list',{},withSelection('one\ntwo')).text.trim(), '1. one\n2. two');
+  assert.equal(buildInsertion('description-list',{},withSelection('term')).text.trim(), '- term :: Description.');
+  assert.equal(buildInsertion('quote',{},withSelection('Said.')).text.trim(), '#+BEGIN_QUOTE\nSaid.\n#+END_QUOTE');
+  assert.equal(buildInsertion('code-block',{language:'python'},withSelection('x = 1')).text.trim(), '#+BEGIN_SRC python\nx = 1\n#+END_SRC');
+  assert.equal(buildInsertion('horizontal-rule',{},org).text.trim(), '-----');
+  assert.equal(buildInsertion('theorem',{title:'Result',label:'thm-result'},org).text.trim(), '#+NAME: thm-result\n#+BEGIN_theorem\n*Theorem (Result).* Content.\n#+END_theorem');
+  assert.equal(buildInsertion('toc',{},org).text.trim(), '#+TOC: headlines 2');
+
+  // Availability: custom environments stay off for Org, as they do for Markdown.
+  assert.equal(insertionAvailability('heading', org).enabled, true);
+  assert.equal(insertionAvailability('custom-environment', org).enabled, false);
+  assert.equal(insertionAvailability('cross-reference', orgContext('Just prose.\n')).enabled, false, 'no target to point at yet');
+  const inBlock = orgContext('#+BEGIN_SRC python\nx = 1\n');
+  assert.equal(insertSyntaxContext(inBlock), 'code');
+  assert.equal(insertionAvailability('table', inBlock).enabled, false);
+  assert.equal(insertSyntaxContext({...orgContext('# a comment'), selection:{from:11,to:11,text:''}}), 'comment');
+
+  // Source blocks hold no headlines or labels that a cross reference could use.
+  assert.deepEqual(
+    gatherInsertTargets({format:'org',path:'main.org',text:'* Intro\n:PROPERTIES:\n:CUSTOM_ID: sec-intro\n:END:\n* Methods\n#+BEGIN_SRC org\n* not a heading\n#+END_SRC\n'}).map(t=>t.id),
+    ['sec-intro','Methods'],
+  );
+}
+
 console.log('insert: all format adapters, nondefault options, dependencies, validation, syntax contexts and target discovery passed');

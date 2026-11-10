@@ -438,7 +438,7 @@
   {:else if dialog === "cross-reference"}
     <label class="label">{m.insertmenu_reference()} <select class="select" bind:value={draft.target}><option value="">{m.insertmenu_reference_choose()}</option>{#each references as ref}{@const value = ref.id || ref.label}<option value={value}>{value}</option>{/each}</select></label>
   {:else if dialog === "display-math"}
-    <label class="flex items-center gap-2"><input type="checkbox" bind:checked={draft.numbered} disabled={captured?.format === "markdown"} /> {m.insertmenu_numbered()}</label>
+    <label class="flex items-center gap-2"><input type="checkbox" bind:checked={draft.numbered} disabled={captured?.format === "markdown" || captured?.format === "org"} /> {m.insertmenu_numbered()}</label>
     <label class="label">{m.common_label()} <input class="input" bind:value={draft.label} /></label>
   {:else if dialog === "code-block"}
     <label class="label">{m.insertmenu_language()} <input class="input" bind:value={draft.language} /></label>

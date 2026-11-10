@@ -8,7 +8,7 @@
   // tiles here, so a tile looks the same wherever it is shown. The large form
   // is a plain preview for the details row and is not interactive. Extra props
   // such as tabindex and pointer handlers go to the button.
-  /** @typedef {"html" | "quarto" | "markdown" | "latex" | "typst"} SymbolFormat */
+  /** @typedef {"html" | "quarto" | "markdown" | "org" | "latex" | "typst"} SymbolFormat */
   /** @type {{ symbol: any, format?: SymbolFormat, onclick?: (event: MouseEvent) => void, large?: boolean, [key: string]: any }} */
   let { symbol, format = "latex", onclick = undefined, large = false, ...rest } = $props();
 
