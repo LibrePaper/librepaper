@@ -1,12 +1,32 @@
-/* Visual mode sets the text in a serif face, as it reads on the page. Code,
-   verbatim and cell bodies ask for --font-mono, which here is the editor's own
-   font, so they stay monospaced. */
+/* Visual mode sets the text as a typeset article. The document tokens live here,
+   not in theme.css, because only visual mode reads them and they are not
+   palette colours. Sizes are em, so they follow the editor font size and the
+   zoom setting. Code, verbatim and cell bodies ask for --font-mono, which here
+   is the editor's own font, so they stay monospaced. */
 .cm-editor.cm-lp-visual {
   --font-mono: var(--editor-font-family, var(--font-editor));
+  --doc-font: ui-serif, "Iowan Old Style", "Source Serif 4", Georgia, Cambria, serif;
+  --doc-line-height: 1.55;
+  --doc-measure: 72ch;
+  --doc-title-size: 1.9em;
+  --doc-h1-size: 1.45em;
+  --doc-h2-size: 1.2em;
+  --doc-h3-size: 1.05em;
+  --doc-heading-weight: 600;
+  --doc-caption-size: 0.88em;
 }
 
+/* The page is a centred column of --doc-measure, measured in the body font,
+   plus the content padding. Basis 0 with grow lets it fill a narrow pane and
+   stop at the maximum; the auto margins then centre it, and the gutters stay at
+   the pane's left edge. */
 .cm-editor.cm-lp-visual .cm-content {
-  font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: calc(var(--doc-measure) + var(--spacing) * 6);
+  margin-inline: auto;
+  font-family: var(--doc-font);
+  line-height: var(--doc-line-height);
 }
 
 /* Until the caret first moves, visual mode draws the whole page: no caret and
@@ -85,7 +105,8 @@
 
 /* The number of a numbered heading, before its text: muted, with a space after it. */
 .cm-lp-headnum {
-  color: var(--lv-secondary);
+  color: var(--color-text-muted);
+  font-weight: 400;
   margin-right: calc(var(--spacing) * 2);
   white-space: nowrap;
 }
@@ -129,8 +150,8 @@
 }
 
 .cm-lp-title-main {
-  font-size: var(--text-2xl);
-  font-weight: 700;
+  font-size: var(--doc-title-size);
+  font-weight: var(--doc-heading-weight);
   line-height: 1.25;
   white-space: pre-line;
 }
@@ -193,7 +214,7 @@
 
 /* Text styles from the LaTeX catalog. Each follows the command it stands for, and
    sizes are em so they scale with the surrounding text. */
-.cm-lp-roman { font-family: ui-serif, Georgia, serif; }
+.cm-lp-roman { font-family: var(--doc-font); }
 .cm-lp-slanted { font-style: oblique; }
 .cm-lp-upright { font-style: normal; }
 .cm-lp-medium { font-weight: 500; }

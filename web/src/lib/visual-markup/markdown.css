@@ -113,7 +113,7 @@
 .cm-lp-md-caption {
   margin-top: calc(var(--spacing) * 1);
   color: var(--color-text-secondary);
-  font-size: var(--text-sm);
+  font-size: var(--doc-caption-size);
 }
 
 /* A footnote marker in the text, and the definition of a note. */
