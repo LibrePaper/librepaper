@@ -138,7 +138,7 @@ hasToken(bib, "title", "property", "BibTeX field name was not highlighted");
 hasToken(bib, "A ", "string", "BibTeX braced value was not highlighted as a string");
 hasToken(bib, "Nested", "string", "BibTeX nested braced group was not highlighted as a string");
 hasToken(bib, "Title", "string", "BibTeX braced value after a nested group was not highlighted");
-hasToken(bib, "\"Doe, J.\"", "string", "BibTeX quoted value was not highlighted as a string");
+hasToken(bib, "Doe, J.", "string", "BibTeX quoted value was not highlighted as a string");
 hasToken(bib, "note", "comment", "BibTeX % comment was not highlighted");
 const bibState = EditorState.create({ doc: bibSource, extensions: sourceLanguage("refs.bib") });
 ensureSyntaxTree(bibState, bibState.doc.length, 1000);

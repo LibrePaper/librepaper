@@ -22,10 +22,11 @@ export const bibtexLanguage = LRLanguage.define({
         "EntryType StringKw PreambleKw CommentKw": tags.keyword,
         CitationKey: tags.labelName,
         FieldName: tags.propertyName,
-        "BracedString QuotedString": tags.string,
+        // Tag the text tokens: a rule on BracedString would only reach text no child covers.
+        "BraceText QuotedText QuoteMark": tags.string,
         Number: tags.number,
         Variable: tags.variableName,
-        "LineComment Junk CommentText": tags.comment,
+        "LineComment Junk CommentText CommentBlock/...": tags.comment,
         "OpenBrace CloseBrace OpenParen CloseParen": tags.brace,
         "Equals Hash": tags.operator,
         Comma: tags.separator,

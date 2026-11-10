@@ -31,7 +31,6 @@ PreambleEntry { At PreambleKw braced<Value> }
 // dynamic precedence keeps the comment reading when both parse.
 CommentEntry[@dynamicPrecedence=1] { At CommentKw CommentBlock }
 
-CommentBlock { OpenBrace (CommentText | CommentBlock)* CloseBrace }
 
 Field { FieldName Equals Value }
 
@@ -40,11 +39,7 @@ Value { valuePart (Hash valuePart)* }
 
 valuePart { BracedString | QuotedString | Number | Variable }
 
-// A braced string nests: inner braces are balanced and may hold any text.
-BracedString { OpenBrace (BraceText | BracedString)* CloseBrace }
 
-// A quoted string may hold braced groups, which may hold quotes.
-QuotedString { QuoteMark (QuotedText | BracedString)* QuoteMark }
 
 EntryType { identifier }
 
@@ -55,7 +50,7 @@ Variable { identifier }
 braced<content> { OpenBrace content CloseBrace | OpenParen content CloseParen }
 
 // A special-entry keyword: the same word can also be an ordinary identifier.
-kw<term> { @extend[@name={term}]<identifier, term> }
+kw<term> { @extend<identifier, term> }
 
 StringKw { kw<"string"> | kw<"String"> | kw<"STRING"> }
 
@@ -64,6 +59,17 @@ PreambleKw { kw<"preamble"> | kw<"Preamble"> | kw<"PREAMBLE"> }
 CommentKw { kw<"comment"> | kw<"Comment"> | kw<"COMMENT"> }
 
 @skip { space }
+
+// Inside braces and quotes whitespace is text, so nothing is skipped there.
+@skip {} {
+  CommentBlock { OpenBrace (CommentText | CommentBlock)* CloseBrace }
+
+  // A braced string nests: inner braces are balanced and may hold any text.
+  BracedString { OpenBrace (BraceText | BracedString)* CloseBrace }
+
+  // A quoted string may hold braced groups, which may hold quotes.
+  QuotedString { QuoteMark (QuotedText | BracedString)* QuoteMark }
+}
 
 @tokens {
   space { $[ \t\r\n]+ }
@@ -83,7 +89,7 @@ CommentKw { kw<"comment"> | kw<"Comment"> | kw<"COMMENT"> }
   Hash { "#" }
   QuoteMark { "\"" }
 
-  // Defined before identifier, so an all-digit word is a Number.
+  // An all-digit word is a Number (see @precedence below).
   Number { $[0-9]+ }
 
   identifier { $[a-zA-Z_:.\-0-9]+ }
@@ -93,4 +99,6 @@ CommentKw { kw<"comment"> | kw<"Comment"> | kw<"COMMENT"> }
   BraceText { ![{}]+ }
   QuotedText { ![{}"]+ }
   CommentText { ![{}]+ }
+
+  @precedence { Number, identifier }
 }
