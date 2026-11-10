@@ -252,6 +252,7 @@ export async function render(tree, title, { manual = false, format: requestedFor
         configuration: configuration?.latex,
       });
     }
+    latex.ensureProject(project);
     const { pdf, synctex, diagnostics, seconds, log, attempts, provenance, failure, job, ok } = await latex.compile(tree, { manual });
     // Keep the output channels explicit. In particular, a failed LaTeX
     // compile has no HTML page; `undefined` would look like a page to callers

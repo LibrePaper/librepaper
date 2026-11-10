@@ -305,6 +305,16 @@ export function configure({ project, settings: nextSettings } = {}) {
   });
 }
 
+/// Gives a LaTeX session to a document that has none. Documents converted to
+/// LaTeX only for export (Org, for one) never call `configure`, so their PDF
+/// request would be rejected. An already configured project is left alone:
+/// `configure` with another project cancels the running compile.
+/** @param {string} project */
+export function ensureProject(project) {
+  if (currentProject || typeof project !== "string" || !project) return;
+  configure({ project, settings: currentSettings });
+}
+
 export function settings() {
   return currentSettings;
 }
