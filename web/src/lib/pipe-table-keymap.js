@@ -94,6 +94,15 @@ function newlineInTable(view, flavor, findTable) {
   const { rows, indent } = parsePipeTable(table.text);
   let next = here.row + 1;
   while (next < rows.length && rows[next].kind !== "cells") next++;
+  // Enter on an empty last row leaves the table: the row goes, and the cursor
+  // starts a new line below the table.
+  const row = rows[here.row];
+  const lastRow = next >= rows.length;
+  if (lastRow && row?.kind === "cells" && rows.length > 1 && row.cells.every((cell) => !cell.trim())) {
+    rows.splice(here.row, 1);
+    const text = formatPipeTable(rows, flavor, indent) + "\n";
+    return commit(view, table, text, text.length);
+  }
   if (next >= rows.length) {
     rows.push({ kind: "cells", cells: [] });
     next = rows.length - 1;
