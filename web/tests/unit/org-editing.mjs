@@ -6,7 +6,7 @@ import { ensureSyntaxTree, foldedRanges, foldState, getIndentation } from "@code
 import { EditorState } from "@codemirror/state";
 import { org } from "../../src/lib/org-language/index.js";
 import {
-  demoteHeading, demoteSubtree, foldCycle, moveDown, moveUp, newHeading, ORG_COMMANDS, orgKeymap,
+  continueList, demoteHeading, demoteSubtree, foldCycle, moveDown, moveUp, newHeading, ORG_COMMANDS, orgKeymap,
   promoteHeading, promoteSubtree, toggleCheckbox, todoNext, todoPrevious,
 } from "../../src/lib/org-editing.js";
 
@@ -202,11 +202,78 @@ function folds(state) {
   assert.equal(getIndentation(stateOf(block, block.indexOf("  more")), block.indexOf("  more")), 4, "a block body keeps the line before's indentation");
 }
 
+/* ------------------------------------------------------- list continuation */
+
+{
+  // Enter after an item's text starts the next item with the same bullet.
+  let r = run(continueList, stateOf("- a\n", 3));
+  assert.equal(r.applied, true);
+  assert.equal(r.doc, "- a\n- \n", "a dash item continues with a dash");
+  assert.equal(r.head, 6, "the caret is after the new bullet");
+  assert.equal(run(continueList, stateOf("+ a\n", 3)).doc, "+ a\n+ \n", "a plus item continues with a plus");
+  assert.equal(run(continueList, stateOf("1. one\n", 6)).doc, "1. one\n2. \n", "a number goes up by one");
+  assert.equal(run(continueList, stateOf("3) x\n", 4)).doc, "3) x\n4) \n", "a parenthesis number keeps its closer");
+}
+
+{
+  // A checkbox comes back empty, and the new item's text starts after it.
+  const box = "- [ ] task\n";
+  const r = run(continueList, stateOf(box, 10));
+  assert.equal(r.doc, "- [ ] task\n- [ ] \n", "an item with a box continues with an empty box");
+  assert.equal(r.head, 17);
+}
+
+{
+  // A nested item keeps its indentation.
+  const doc = "- a\n  - b\n";
+  const r = run(continueList, stateOf(doc, doc.indexOf("b") + 1));
+  assert.equal(r.doc, "- a\n  - b\n  - \n", "the new item is at the nested item's indentation");
+  assert.equal(r.head, 14);
+}
+
+{
+  // The text after the caret moves onto the new item, and the blanks at the split go.
+  const r = run(continueList, stateOf("- hello world\n", 7));
+  assert.equal(r.doc, "- hello\n- world\n", "the split text starts the new item");
+  assert.equal(r.head, 10);
+}
+
+{
+  // An item with no text ends the list: the bullet and checkbox go, the indentation stays.
+  let r = run(continueList, stateOf("- a\n- ", 6));
+  assert.equal(r.applied, true);
+  assert.equal(r.doc, "- a\n", "an empty item leaves an empty line");
+  assert.equal(r.head, 4);
+
+  r = run(continueList, stateOf("  - [ ]\nnext", 7));
+  assert.equal(r.doc, "  \nnext", "an empty box item keeps its indentation and loses its box");
+  assert.equal(r.head, 2);
+}
+
+{
+  // A description item continues with its bullet alone.
+  const doc = "- term :: text\n";
+  const r = run(continueList, stateOf(doc, 14));
+  assert.equal(r.doc, "- term :: text\n- \n", "a description item continues with just its bullet");
+  assert.equal(r.head, 17);
+}
+
+{
+  // Outside a list item, and before its bullet, Enter is left to the rest of the keymap.
+  assert.equal(run(continueList, stateOf("- a\n", 0)).applied, false, "the caret in the bullet is not in the text");
+  assert.equal(run(continueList, stateOf("* Heading\n", 4)).applied, false, "a headline is not a list item");
+  assert.equal(run(continueList, stateOf("text\n", 2)).applied, false, "a paragraph is not a list item");
+  assert.equal(run(continueList, stateOf("| a | b |\n", 3)).applied, false, "a table row is not a list item");
+  const src = "#+begin_src org\n- item\n#+end_src\n";
+  assert.equal(run(continueList, stateOf(src, src.indexOf("item") + 2)).applied, false, "a source block line is not a list item");
+  assert.equal(run(continueList, stateOf("- a\n", 3, 1)).applied, false, "a selection is left to the editor");
+}
+
 /* ------------------------------------------------------------- the keys */
 
 {
   const keys = orgKeymap.map((binding) => binding.key);
-  for (const key of ["Alt-ArrowLeft", "Alt-ArrowRight", "Alt-Shift-ArrowLeft", "Alt-Shift-ArrowRight", "Alt-ArrowUp", "Alt-ArrowDown", "Alt-Enter", "Shift-ArrowLeft", "Shift-ArrowRight", "Tab"]) {
+  for (const key of ["Alt-ArrowLeft", "Alt-ArrowRight", "Alt-Shift-ArrowLeft", "Alt-Shift-ArrowRight", "Alt-ArrowUp", "Alt-ArrowDown", "Alt-Enter", "Enter", "Shift-ArrowLeft", "Shift-ArrowRight", "Tab"]) {
     assert.ok(keys.includes(key), `${key} is bound`);
   }
   assert.equal(Object.keys(ORG_COMMANDS).length, 11, "every Org command has an id the palette can run");
