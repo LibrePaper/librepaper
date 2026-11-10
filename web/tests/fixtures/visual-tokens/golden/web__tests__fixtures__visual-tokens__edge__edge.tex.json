@@ -545,17 +545,24 @@
       {
         "from": 552,
         "kind": "text",
-        "to": 558
+        "to": 554
       },
       {
-        "args": [],
-        "from": 558,
-        "kind": "command",
-        "name": "le",
-        "to": 561
+        "body": {
+          "from": 556,
+          "to": 563
+        },
+        "display": false,
+        "from": 554,
+        "kind": "math",
+        "meta": {
+          "close": "\\)",
+          "open": "\\("
+        },
+        "to": 565
       },
       {
-        "from": 561,
+        "from": 565,
         "kind": "text",
         "to": 579
       },
@@ -576,91 +583,24 @@
       {
         "from": 597,
         "kind": "text",
-        "to": 602
-      },
-      {
-        "args": [],
-        "from": 602,
-        "kind": "command",
-        "name": "sum",
-        "to": 606
-      },
-      {
-        "from": 606,
-        "kind": "text",
-        "to": 607
+        "to": 599
       },
       {
         "body": {
-          "from": 608,
-          "to": 611
+          "from": 601,
+          "to": 638
         },
-        "children": [
-          {
-            "from": 608,
-            "kind": "text",
-            "to": 611
-          }
-        ],
-        "from": 607,
-        "kind": "group",
-        "to": 612
-      },
-      {
-        "from": 612,
-        "kind": "text",
-        "to": 613
-      },
-      {
-        "body": {
-          "from": 614,
-          "to": 615
+        "display": true,
+        "from": 599,
+        "kind": "math",
+        "meta": {
+          "close": "\\]",
+          "open": "\\["
         },
-        "children": [
-          {
-            "from": 614,
-            "kind": "text",
-            "to": 615
-          }
-        ],
-        "from": 613,
-        "kind": "group",
-        "to": 616
+        "to": 640
       },
       {
-        "from": 616,
-        "kind": "text",
-        "to": 621
-      },
-      {
-        "args": [
-          {
-            "from": 627,
-            "to": 633
-          },
-          {
-            "from": 635,
-            "to": 636
-          }
-        ],
-        "body": {
-          "from": 635,
-          "to": 636
-        },
-        "children": [
-          {
-            "from": 635,
-            "kind": "text",
-            "to": 636
-          }
-        ],
-        "from": 621,
-        "kind": "command",
-        "name": "frac",
-        "to": 637
-      },
-      {
-        "from": 637,
+        "from": 640,
         "kind": "text",
         "to": 641
       },

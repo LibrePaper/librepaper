@@ -1295,69 +1295,24 @@
           {
             "from": 1822,
             "kind": "text",
-            "to": 1854
+            "to": 1835
           },
           {
-            "args": [],
-            "from": 1854,
-            "kind": "command",
-            "name": "varepsilon",
-            "to": 1865
-          },
-          {
-            "from": 1865,
-            "kind": "text",
-            "to": 1866
-          },
-          {
-            "args": [],
-            "from": 1866,
-            "kind": "command",
-            "name": "quad",
-            "to": 1871
-          },
-          {
-            "from": 1871,
-            "kind": "text",
-            "to": 1872
-          },
-          {
-            "args": [
-              {
-                "from": 1878,
-                "to": 1886
-              }
-            ],
             "body": {
-              "from": 1878,
-              "to": 1886
+              "from": 1837,
+              "to": 1899
             },
-            "children": [
-              {
-                "from": 1878,
-                "kind": "text",
-                "to": 1886
-              }
-            ],
-            "from": 1872,
-            "kind": "command",
-            "name": "text",
-            "to": 1887
+            "display": true,
+            "from": 1835,
+            "kind": "math",
+            "meta": {
+              "close": "\\]",
+              "open": "\\["
+            },
+            "to": 1901
           },
           {
-            "from": 1887,
-            "kind": "text",
-            "to": 1890
-          },
-          {
-            "args": [],
-            "from": 1890,
-            "kind": "command",
-            "name": "ge",
-            "to": 1893
-          },
-          {
-            "from": 1893,
+            "from": 1901,
             "kind": "text",
             "to": 1902
           }
@@ -1552,88 +1507,24 @@
           {
             "from": 2201,
             "kind": "text",
-            "to": 2262
+            "to": 2243
           },
           {
-            "args": [],
-            "from": 2262,
-            "kind": "command",
-            "name": "left",
-            "to": 2267
-          },
-          {
-            "from": 2267,
-            "kind": "text",
-            "to": 2268
-          },
-          {
-            "args": [
-              {
-                "from": 2274,
-                "to": 2287
-              },
-              {
-                "from": 2289,
-                "to": 2292
-              }
-            ],
             "body": {
-              "from": 2289,
-              "to": 2292
+              "from": 2245,
+              "to": 2320
             },
-            "children": [
-              {
-                "from": 2289,
-                "kind": "text",
-                "to": 2292
-              }
-            ],
-            "from": 2268,
-            "kind": "command",
-            "name": "frac",
-            "to": 2293
-          },
-          {
-            "args": [],
-            "from": 2293,
-            "kind": "command",
-            "name": "right",
-            "to": 2299
-          },
-          {
-            "from": 2299,
-            "kind": "text",
-            "to": 2303
-          },
-          {
-            "args": [
-              {
-                "from": 2309,
-                "to": 2310
-              },
-              {
-                "from": 2312,
-                "to": 2315
-              }
-            ],
-            "body": {
-              "from": 2312,
-              "to": 2315
+            "display": true,
+            "from": 2243,
+            "kind": "math",
+            "meta": {
+              "close": "\\]",
+              "open": "\\["
             },
-            "children": [
-              {
-                "from": 2312,
-                "kind": "text",
-                "to": 2315
-              }
-            ],
-            "from": 2303,
-            "kind": "command",
-            "name": "frac",
-            "to": 2316
+            "to": 2322
           },
           {
-            "from": 2316,
+            "from": 2322,
             "kind": "text",
             "to": 2331
           },
