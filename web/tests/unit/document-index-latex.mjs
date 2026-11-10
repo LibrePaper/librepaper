@@ -458,3 +458,120 @@ test("a comment before a ref or include target is not part of its name", () => {
   assert.equal(text.slice(...ref.nameRange), "sec:a");
   assert.equal(kindOf(items, "include")[0].name, "intro");
 });
+
+/** The target kind of each label, by label name. */
+function targetsOf(items) {
+  return Object.fromEntries(kindOf(items, "label").map((label) => [label.name, label.attrs?.target]));
+}
+
+test("a label's target comes from the sectioning command or the innermost environment", () => {
+  const text = String.raw`\section{Intro}\label{sec:a}
+\begin{figure}
+\begin{subfigure}
+\label{fig:sub}
+\end{subfigure}
+\end{figure}
+\begin{table}
+\label{tab:a}
+\end{table}
+\begin{equation*}
+\label{eq:a}
+\end{equation*}
+\begin{algorithm}
+\label{alg:a}
+\end{algorithm}
+\newtheorem{thm}{Theorem}
+\begin{thm}
+\label{thm:a}
+\end{thm}
+\begin{proof}
+\label{pf:a}
+\end{proof}
+\begin{itemize}
+\item One \label{item:a}
+\end{itemize}
+\begin{itemize}
+\label{item:none}
+\end{itemize}
+\begin{center}
+\label{ctr:a}
+\end{center}
+`;
+  assert.deepEqual(targetsOf(latexAdapter(text, "main.tex")), {
+    "sec:a": "section",
+    "fig:sub": "figure",
+    "tab:a": "table",
+    "eq:a": "equation",
+    "alg:a": "listing",
+    "thm:a": "theorem",
+    "pf:a": "theorem",
+    "item:a": "item",
+    "item:none": "other",
+    "ctr:a": "other",
+  });
+});
+
+test("a label after a paragraph that follows a heading is not a section label", () => {
+  const text = "\\section{A}\nSome text.\\label{sec:b}\n";
+  assert.deepEqual(targetsOf(latexAdapter(text, "main.tex")), { "sec:b": "other" });
+});
+
+test("a label after a heading and a begin is not a section label", () => {
+  const text = "\\section{A}\\begin{figure}\\label{fig:c}\\end{figure}\n";
+  assert.deepEqual(targetsOf(latexAdapter(text, "main.tex")), { "fig:c": "figure" });
+});
+
+test("links: urls and hrefs with a scheme are external, relative paths are file links", () => {
+  const text = String.raw`\url{https://example.org/a}
+\href{mailto:me@example.org}{mail}
+\href{sections/a.pdf#page=2}{notes}
+\href{#sec:a}{self}
+\url{data/x.csv}
+`;
+  const links = kindOf(latexAdapter(text, "main.tex"), "link");
+  assert.deepEqual(links.map((link) => [link.name, link.attrs.external ?? null, link.attrs.file ?? null, link.attrs.fragment ?? null]), [
+    ["https://example.org/a", "true", null, null],
+    ["mailto:me@example.org", "true", null, null],
+    ["sections/a.pdf", null, "true", "page=2"],
+    ["data/x.csv", null, "true", null],
+  ]);
+  assert.equal(textOf(text, links[0].nameRange), "https://example.org/a");
+  assert.equal(textOf(text, links[2].nameRange), "sections/a.pdf");
+  assert.equal(textOf(text, links[2].range), String.raw`\href{sections/a.pdf#page=2}`);
+});
+
+test("metadata: title, one item per author, date and abstract", () => {
+  const text = String.raw`\title{A \emph{Study}\\ of Things}
+\author{Ada Lovelace\thanks{Corresponding} \and Alan Turing \and Grace\\Hopper}
+\date{March 2025}
+\begin{document}
+\begin{abstract}
+  We  study
+  things.
+\end{abstract}
+\end{document}
+`;
+  const items = latexAdapter(text, "main.tex");
+  const metadata = (name) => kindOf(items, "metadata").filter((item) => item.name === name).map((item) => item.title);
+  assert.deepEqual(metadata("title"), ["A Study of Things"]);
+  assert.deepEqual(metadata("author"), ["Ada Lovelace", "Alan Turing", "Grace Hopper"]);
+  assert.deepEqual(metadata("date"), ["March 2025"]);
+  assert.deepEqual(metadata("abstract"), ["We study things."]);
+  assert.deepEqual(metadata("language"), []);
+  const [author] = kindOf(items, "metadata").filter((item) => item.name === "author");
+  assert.equal(textOf(text, author.nameRange), String.raw`Ada Lovelace\thanks{Corresponding}`);
+});
+
+test("metadata language comes from babel's last option and from polyglossia", () => {
+  const language = (text) => kindOf(latexAdapter(text, "main.tex"), "metadata")
+    .filter((item) => item.name === "language")
+    .map((item) => item.title);
+  assert.deepEqual(language(String.raw`\usepackage[english,french]{babel}`), ["french"]);
+  assert.deepEqual(language(String.raw`\usepackage{polyglossia}
+\setmainlanguage[variant=british]{english}
+`), ["english"]);
+  assert.deepEqual(language(String.raw`\usepackage[french]{babel}
+\setdefaultlanguage{german}
+`), ["german"]);
+  assert.deepEqual(language(String.raw`\usepackage{amsmath}`), []);
+});

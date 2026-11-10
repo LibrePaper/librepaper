@@ -9,10 +9,13 @@
 import { latexTree } from "../../source-trees.js";
 import { extractOutline } from "../../outline.js";
 import { skipRanges } from "../../spellcheck/index.js";
+import { groupAfter, latexCommands, readArguments } from "../../latex-language/args.js";
+import { authorSegments, cleanTitle } from "../../visual-markup/metadata.js";
 
 /** @typedef {import("../schema.js").IndexItem} IndexItem */
 /** @typedef {{ name: string, from: number, to: number }} Piece */
 /** @typedef {{ name: string, from: number, to: number, beginTo: number, endFrom: number }} Span */
+/** @typedef {{ command: { from: number }, group: { from: number, to: number } }} Entry */
 
 const DEFINITION = /\\(?:newcommand|renewcommand|providecommand)\*?\s*(?:\{\s*\\([A-Za-z@]+)\s*\}|\\([A-Za-z@]+))/g;
 const OPERATOR = /\\DeclareMathOperator\*?\s*\{\s*\\([A-Za-z@]+)\s*\}/g;
@@ -26,6 +29,17 @@ const REFS = new Set([
 const INCLUDES = new Set(["\\input", "\\include", "\\subfile"]);
 const ENVIRONMENTS = new Set(["Environment", "MathEnvironment", "InnerEnvironment", "VerbatimEnvironment"]);
 const BEGIN_TAGS = new Set(["BeginEnv", "MathBeginEnv", "VerbBeginEnv", "ListingBeginEnv"]);
+const FIGURE = new Set(["figure", "subfigure", "wrapfigure"]);
+const TABLE = new Set(["table", "wraptable"]);
+const EQUATION = new Set(["equation", "align", "gather", "multline", "eqnarray", "flalign", "alignat", "displaymath"]);
+const LISTING = new Set(["lstlisting", "minted", "listing", "algorithm"]);
+const THEOREM = new Set(["theorem", "lemma", "proposition", "corollary", "definition", "proof", "example", "remark", "conjecture", "claim"]);
+const LIST = new Set(["enumerate", "itemize", "description"]);
+const LINK_COMMANDS = new Set(["\\url", "\\href"]);
+const PREAMBLE_COMMANDS = new Set([
+  "title", "author", "date", "newtheorem", "usepackage", "setdefaultlanguage", "setmainlanguage",
+]);
+const SCHEME = /^[a-zA-Z][a-zA-Z0-9+.-]+:/;
 
 /**
  * @param {number} from
@@ -194,6 +208,60 @@ function firstFrom(list, at) {
 }
 
 /**
+ * An environment name without its star, so figure* reads as figure.
+ * @param {string} name
+ * @returns {string}
+ */
+function baseName(name) {
+  return name.endsWith("*") ? name.slice(0, -1) : name;
+}
+
+/**
+ * The offsets of a span with its surrounding whitespace left out.
+ * @param {string} text
+ * @param {number} from
+ * @param {number} to
+ * @returns {[number, number]}
+ */
+function trimmedSpan(text, from, to) {
+  let start = from;
+  let end = to;
+  while (start < end && /\s/.test(text[start])) start++;
+  while (end > start && /\s/.test(text[end - 1])) end--;
+  return pair(start, end);
+}
+
+/**
+ * The target kind of a label: a sectioning command just before it, else the
+ * innermost enclosing environment that has a kind. A list counts only once an
+ * \item has been seen inside it.
+ * @param {boolean} section
+ * @param {Array<{ name: string, item: boolean }>} stack open environments, outermost first
+ * @param {Set<string>} theorems names declared with \newtheorem in this file
+ * @returns {string}
+ */
+function targetOf(section, stack, theorems) {
+  if (section) return "section";
+  for (let i = stack.length - 1; i >= 0; i--) {
+    const { name, item } = stack[i];
+    if (LIST.has(name)) {
+      if (item) return "item";
+    } else if (FIGURE.has(name)) {
+      return "figure";
+    } else if (TABLE.has(name)) {
+      return "table";
+    } else if (EQUATION.has(name)) {
+      return "equation";
+    } else if (LISTING.has(name)) {
+      return "listing";
+    } else if (THEOREM.has(name) || theorems.has(name)) {
+      return "theorem";
+    }
+  }
+  return "other";
+}
+
+/**
  * Items for one LaTeX source.
  * @param {string} text the file's text
  * @param {string} path the file's path, the key for reusing its last parse
@@ -212,8 +280,12 @@ export function latexAdapter(text, path) {
   const open = [];
   /** @type {Map<Span, string>} */
   const captionOf = new Map();
-  /** @type {Array<{ at: number, span: Span | null, item: IndexItem }>} */
+  /** @type {Array<{ at: number, span: Span | null, stack: Array<{ name: string, item: boolean }>, item: IndexItem }>} */
   const labels = [];
+  /** @type {Set<Span>} environments with an \item directly inside them so far */
+  const itemSpans = new Set();
+  /** @type {Span[]} */
+  const abstracts = [];
 
   for (const heading of headings) {
     items.push({
@@ -229,12 +301,50 @@ export function latexAdapter(text, path) {
   }
 
   /**
+   * A \url or \href target: an external link when it has a scheme, else a file
+   * link. A same-file anchor (#id) is not a link item. The argument is read
+   * from the raw text, because \url bodies are not commands.
+   * @param {import("@lezer/common").SyntaxNodeRef} ref
+   */
+  const link = (ref) => {
+    const group = groupAfter(text, ref.to);
+    if (!group) return;
+    const target = group.value.trim();
+    const nameRange = trimmedSpan(text, group.from + 1, group.to - 1);
+    const range = pair(ref.from, group.to);
+    if (SCHEME.test(target) || target.startsWith("//")) {
+      items.push({ kind: "link", name: target, range, nameRange, attrs: { external: "true" } });
+      return;
+    }
+    const hash = target.indexOf("#");
+    const file = hash < 0 ? target : target.slice(0, hash).trim();
+    if (!file) return;
+    /** @type {Record<string, string>} */
+    const attrs = { file: "true" };
+    if (hash >= 0) attrs.fragment = target.slice(hash + 1);
+    items.push({ kind: "link", name: file, range, nameRange: pair(nameRange[0], nameRange[0] + file.length), attrs });
+  };
+
+  /**
    * Handle one control word and the brace argument that follows it.
    * @param {import("@lezer/common").SyntaxNodeRef} ref
    */
   const command = (ref) => {
     if (ref.to - ref.from > 20) return;
     const word = text.slice(ref.from, ref.to);
+    if (word === "\\item") {
+      for (let i = open.length - 1; i >= 0; i--) {
+        if (LIST.has(baseName(open[i].name))) {
+          itemSpans.add(open[i]);
+          break;
+        }
+      }
+      return;
+    }
+    if (LINK_COMMANDS.has(word)) {
+      link(ref);
+      return;
+    }
     const isCite = CITE.test(word);
     if (!isCite && word !== "\\label" && word !== "\\caption" && !REFS.has(word) && !INCLUDES.has(word)
       && word !== "\\includegraphics" && word !== "\\bibliography" && word !== "\\addbibresource") return;
@@ -266,6 +376,7 @@ export function latexAdapter(text, path) {
       labels.push({
         at,
         span: open.at(-1) ?? null,
+        stack: open.map((span) => ({ name: baseName(span.name), item: itemSpans.has(span) })),
         item: { kind: "label", name: name.name, range, nameRange: pair(name.from, name.to) },
       });
     } else if (word === "\\caption") {
@@ -302,6 +413,7 @@ export function latexAdapter(text, path) {
       } else if (ENVIRONMENTS.has(name)) {
         const span = spanOf(ref.node, text);
         if (!span) return;
+        if (span.name === "abstract") abstracts.push(span);
         open.push(span);
         if (name === "MathEnvironment") items.push({ kind: "math", range: pair(span.from, span.to) });
         // A region is foldable only when its \end is on a later line than its \begin.
@@ -339,12 +451,121 @@ export function latexAdapter(text, path) {
     return crossed ? undefined : heading.title;
   };
 
-  for (const { at, span, item } of labels) {
-    const title = labelTitle(at, span);
-    items.push(title === undefined ? item : { ...item, title });
-  }
-
   const code = blank(text, inert);
+
+  /**
+   * Whether a label sits right after a sectioning command: on the heading's
+   * line, or below it with only blanks and other labels between, and no
+   * \begin or \end in between.
+   * @param {number} at
+   * @returns {boolean}
+   */
+  const sectionBefore = (at) => {
+    const before = firstFrom(headings, at) - 1;
+    if (before < 0) return false;
+    const heading = headings[before];
+    const next = tags[firstFrom(tags, heading.from + 1)];
+    if (next !== undefined && next.from < at) return false;
+    const end = lineEnd(text, heading.from);
+    return at <= end || /^(?:\s|\\label\s*\{[^{}]*\})*$/.test(code.slice(end, at));
+  };
+
+  // Front matter is read from the commands with comments blanked, so a % note never counts.
+  const { code: live, commands } = latexCommands(text, path);
+  /** @param {number} from @param {number} to */
+  const plain = (from, to) => cleanTitle(live.slice(from, to)).replace(/\s+/g, " ").trim();
+  /**
+   * @param {string} name
+   * @param {Entry | null} entry
+   */
+  const emit = (name, entry) => {
+    if (!entry) return;
+    const from = entry.group.from + 1;
+    const to = entry.group.to - 1;
+    const value = plain(from, to);
+    if (value) {
+      items.push({
+        kind: "metadata",
+        name,
+        title: value,
+        range: pair(entry.command.from, entry.group.to),
+        nameRange: trimmedSpan(live, from, to),
+      });
+    }
+  };
+
+  /** @type {Set<string>} */
+  const newTheorems = new Set();
+  /** @type {Entry | null} */
+  let titleEntry = null;
+  /** @type {Entry | null} */
+  let dateEntry = null;
+  /** @type {{ value: string, range: [number, number] } | null} */
+  let babel = null;
+  /** @type {{ value: string, range: [number, number] } | null} */
+  let polyglossia = null;
+  for (const command of commands) {
+    if (command.type !== "command" || !PREAMBLE_COMMANDS.has(command.name)) continue;
+    const args = readArguments(live, command.to);
+    const group = args.find((arg) => arg.kind === "group");
+    if (!group) continue;
+    const value = live.slice(group.from + 1, group.to - 1).trim();
+    const entry = { command, group };
+    if (command.name === "title") {
+      titleEntry = entry;
+    } else if (command.name === "date") {
+      dateEntry = entry;
+    } else if (command.name === "author") {
+      for (const piece of authorSegments(live, group.from + 1, group.to - 1)) {
+        const author = plain(piece.from, piece.to);
+        if (author) {
+          items.push({
+            kind: "metadata",
+            name: "author",
+            title: author,
+            range: pair(command.from, group.to),
+            nameRange: pair(piece.from, piece.to),
+          });
+        }
+      }
+    } else if (command.name === "newtheorem") {
+      if (value) newTheorems.add(value);
+    } else if (command.name === "usepackage") {
+      if (!value.split(",").map((name) => name.trim()).includes("babel")) continue;
+      // babel takes its main language as the last option, or as main=... .
+      const optional = args.find((arg) => arg.kind === "optional");
+      const options = optional ? optional.value.split(",").map((option) => option.trim()).filter(Boolean) : [];
+      const main = options.find((option) => option.startsWith("main="));
+      const last = options.filter((option) => !option.includes("=")).at(-1);
+      const language = main ? main.slice("main=".length).trim() : last;
+      if (language) babel = { value: language, range: pair(command.from, group.to) };
+    } else if (command.name === "setdefaultlanguage" || command.name === "setmainlanguage") {
+      if (value) polyglossia = { value, range: pair(command.from, group.to) };
+    }
+  }
+  emit("title", titleEntry);
+  emit("date", dateEntry);
+  for (const span of abstracts) {
+    const value = plain(span.beginTo, span.endFrom);
+    if (value) {
+      items.push({
+        kind: "metadata",
+        name: "abstract",
+        title: value,
+        range: pair(span.from, span.to),
+        nameRange: trimmedSpan(live, span.beginTo, span.endFrom),
+      });
+    }
+  }
+  // polyglossia's default language wins over babel's main option.
+  const language = polyglossia ?? babel;
+  if (language) items.push({ kind: "metadata", name: "language", title: language.value, range: language.range });
+
+  for (const { at, span, stack, item } of labels) {
+    const title = labelTitle(at, span);
+    const attrs = { target: targetOf(sectionBefore(at), stack, newTheorems) };
+    items.push(title === undefined ? { ...item, attrs } : { ...item, title, attrs });
+  }
   for (const match of code.matchAll(DEFINITION)) {
     const name = match[1] || match[2];
     if (!name) continue;
