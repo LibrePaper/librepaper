@@ -99,6 +99,21 @@ const STARTER: Starter = Starter {
                 "/examples/tutorial-quarto/sections/rendering.qmd"
             )),
         ),
+        // Org
+        (
+            "librepaper.org",
+            include_bytes!(concat!(
+                env!("LIBREPAPER_DOCS"),
+                "/examples/tutorial-org/librepaper.org"
+            )),
+        ),
+        (
+            "sections/rendering.org",
+            include_bytes!(concat!(
+                env!("LIBREPAPER_DOCS"),
+                "/examples/tutorial-org/sections/rendering.org"
+            )),
+        ),
         // Shared by every format. The copies in the other tutorial directories are identical.
         (
             "librepaper-icon.png",
