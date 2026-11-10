@@ -1807,6 +1807,8 @@
   "live_chat_history_read_failed": "Der Chatverlauf konnte nicht gelesen werden. Es wird erneut versucht.",
   "live_chat_older_failed": "Ältere Nachrichten konnten nicht gelesen werden.",
   "live_chat_older_failed_status": "Ältere Nachrichten konnten nicht gelesen werden ({status}).",
+  "livepatch_description": "Zeigt eine kleine LaTeX-Änderung sofort in der HTML-Vorschau, noch vor der Kompilierung, die sie bestätigt. Die Kompilierung ersetzt die Vorschau weiterhin. Gilt nur für diesen Browser.",
+  "livepatch_title": "Sofortige Vorschau-Aktualisierung",
   "machine_load_failed": "Die Einstellungen dieses Computers konnten nicht geladen werden.",
   "machine_request_failed": "Die Anfrage konnte nicht abgeschlossen werden.",
   "markdown_widgets_frontmatter_keys": [

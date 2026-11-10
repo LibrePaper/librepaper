@@ -97,7 +97,8 @@
   import Grip from "./Grip.svelte";
   import DesktopOnly from "./DesktopOnly.svelte";
   import DesktopMismatch from "./DesktopMismatch.svelte";
-  import { anonymousIdentity, update as updateBuildPreferences } from "../lib/build-preferences.js";
+  import { anonymousIdentity, readLivePatch, update as updateBuildPreferences } from "../lib/build-preferences.js";
+  import { createLivePreview } from "../lib/live-preview/controller.js";
   import Avatar from "./Avatar.svelte";
   import { presenceJumpTarget } from "../lib/presence-jump.js";
   import { extractOutline } from "../lib/outline.js";
@@ -428,6 +429,7 @@
     const next = format === "html" ? "html" : "pdf";
     if (latexOutput === next) return;
     buildSettings.state.latexOutput = next;
+    live.reset();
     setBuildPreferences(updateBuildPreferences(buildScope(), "latex", { output: next }));
     target.bump();
     renderers.cancelPreview({ keepWarm: true });
@@ -2292,6 +2294,7 @@
     setSource: (source) => (frameSrc = source),
     send: tell,
     onNavigate: () => {
+      live.reset();
       frameReady = false;
       frameHasPage = false;
       // A new frame has nothing drawn in it and no tool set; it says so once
@@ -2314,6 +2317,24 @@
     },
   });
 
+
+  // Instant preview updates: a small LaTeX edit is shown in the HTML preview
+  // before the compile that confirms it.
+  const live = createLivePreview({ send: (message) => tell(message) });
+  const liveActive = () => !readerDisposed && Boolean(session) && sourceFormat === "latex" && latexOutput === "html"
+    && readLivePatch(buildScope(), "latex");
+  // Every .tex text as the editor shows it now, by path. Only the sources are
+  // read: no figures, no assets.
+  function liveTexts() {
+    const out = Object.create(null);
+    for (const file of session.list()) {
+      if (file.kind !== "text" || !/\.tex$/i.test(file.path)) continue;
+      out[file.path] = file.path === openTextPath && editing && editor?.text?.(openFile) != null
+        ? String(editor.text(openFile))
+        : String(session.textOf(file.id)?.toString?.() ?? "");
+    }
+    return out;
+  }
 
   const navigateFrame = (force = false) => framePreview.navigate(force);
   const replayPreview = () => paintsTheFrame && framePreview.replay();
@@ -2389,6 +2410,8 @@
     rememberPreview: cachePage,
     onRendered: (identity, projectDigest) => {
       renderedIdentity = identity;
+      if (identity && liveActive()) live.compiled(liveTexts());
+      else live.reset();
       if (!mayEdit) renderedProjectDigest = projectDigest || "";
     },
     onEmpty: () => {
@@ -2455,6 +2478,8 @@
     }
     // The keystroke, which is what the diagnostic wait is measured from.
     diagnosticPainter.typed();
+    if (liveActive()) live.edited(liveTexts(), previewPath || treeNow().main);
+    else live.reset();
     schedule.changed();
   }
 

@@ -53,6 +53,22 @@ export function writeDefaultPreview(scope, format, value) {
   return read(scope, format);
 }
 
+// Instant preview updates: show a small LaTeX edit in the HTML preview at once,
+// before the compile that confirms it. Off unless this person turns it on.
+const livePatching = (format) => `live-patch:${format}`;
+
+export function readLivePatch(scope, format = "latex") {
+  try {
+    return JSON.parse(storage()?.getItem(key(scope, livePatching(format))) || "null") === true;
+  } catch { return false; }
+}
+
+export function writeLivePatch(scope, format, value) {
+  const on = value === true;
+  try { storage()?.setItem(key(scope, livePatching(format)), JSON.stringify(on)); } catch { /* private mode/quota */ }
+  return on;
+}
+
 export function read(scope, format = "") {
   const output = readDefaultPreview(scope, format);
   const fallback = { ...defaults(format), output };
