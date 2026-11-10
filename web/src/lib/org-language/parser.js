@@ -48,8 +48,11 @@
 //     KeywordValue                the value, trimmed. Inline nodes only for
 //                                 TITLE, SUBTITLE, AUTHOR, DATE, CAPTION; raw otherwise
 //   Block                         `#+begin_NAME` ... `#+end_NAME`:
-//                                 [BlockBegin, body?, BlockEnd]. Unclosed begin lines
-//                                 are not blocks (they read as Paragraph).
+//                                 [BlockBegin, body?, BlockEnd]. An unclosed begin line
+//                                 and a stray end line are not blocks: BlockBegin and
+//                                 BlockEnd then appear alone as elements (outside any
+//                                 Block), and the lines after an unclosed begin are
+//                                 ordinary elements.
 //     BlockBegin                  the begin line: [BlockName, BlockParameters?]
 //       BlockName                 NAME as written (compare case-insensitively)
 //       BlockParameters           the rest of the line, trimmed; for src and
@@ -433,6 +436,11 @@ class OrgParse {
   }
 
   block(i, hi, ln, kids) {
+    if (/^[ \t]*#\+end_\S+[ \t]*$/i.test(ln.text)) {
+      // A stray end line is an element of its own.
+      kids.push(node("BlockEnd", ln.from + ln.lead, ln.end));
+      return i + 1;
+    }
     const m = BEGIN.exec(ln.text);
     if (!m) return 0;
     const name = m[1];
@@ -440,7 +448,6 @@ class OrgParse {
     const endText = `#+end_${lower}`;
     const j = this.findLine(`block:${lower}`, i, hi, (l) => l.end - l.from === l.lead + endText.length
       && l.text.slice(l.lead, l.lead + endText.length).toLowerCase() === endText);
-    if (j < 0) return 0;
     const nameFrom = ln.from + m[0].length - name.length;
     const begin = node("BlockBegin", ln.from + ln.lead, ln.end, [node("BlockName", nameFrom, nameFrom + name.length)]);
     let p = m[0].length;
@@ -453,6 +460,11 @@ class OrgParse {
         params.kids.push(node("BlockLanguage", ln.from + p, ln.from + q));
       }
       begin.kids.push(params);
+    }
+    if (j < 0) {
+      // No end line: the begin line is an element of its own and what follows is ordinary.
+      kids.push(begin);
+      return i + 1;
     }
     const endLine = this.lines[j];
     const block = node("Block", begin.from, endLine.end, [begin]);

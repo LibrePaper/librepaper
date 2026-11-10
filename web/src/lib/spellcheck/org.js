@@ -23,11 +23,6 @@ const WHOLE = new Set([
 // Keyword values that are prose. Every other #+KEY: line is markup.
 const PROSE_KEYWORDS = new Set(["TITLE", "SUBTITLE", "CAPTION", "DESCRIPTION"]);
 
-// Blocks whose bodies are code or raw text. An unclosed begin line of one of
-// these is not a block in the tree, so its paragraph is skipped instead.
-const SKIP_BLOCKS = new Set(["SRC", "EXAMPLE", "EXPORT", "COMMENT"]);
-const BEGIN_LINE = /^#\+begin_(\w+)/i;
-
 /// Ranges of an Org source that are markup rather than prose, for the
 /// spellchecker to skip. Half-open [from, to) offsets into `text` (UTF-16).
 /// Any order; overlaps allowed.
@@ -86,17 +81,6 @@ export function orgSkips(text, key) {
           // The label node holds the label alone; the brackets are markup too.
           const label = ref.node.getChild("FootnoteLabel");
           if (label) skip(label.from - 4, label.to + 1);
-          return true;
-        }
-        case "Paragraph": {
-          const begin = BEGIN_LINE.exec(text.slice(from, Math.min(to, from + 64)));
-          if (!begin) return true;
-          if (SKIP_BLOCKS.has(begin[1].toUpperCase())) {
-            skip(from, to);
-            return false;
-          }
-          const eol = text.indexOf("\n", from);
-          skip(from, eol === -1 || eol > to ? to : eol);
           return true;
         }
         default:
