@@ -15,6 +15,7 @@ use librepaper_base::text::LineEnding;
 use librepaper_document::document::anchors::{self, FragmentRange, OperationFile};
 use librepaper_document::document::passage::{unique_occurrence, Occurrence};
 use librepaper_document::document::session;
+use librepaper_document::document::text_diff::minimal_edits;
 use librepaper_document::document::text_index::{Span, TextIndex, Utf16};
 use librepaper_document::document::track;
 use librepaper_engine::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
@@ -473,29 +474,20 @@ impl AgentTrackedCommand {
         match &self.input {
             TrackedInput::Edits(edits) => {
                 for edit in edits {
-                    if edit.exact == edit.replacement {
-                        return Err("a tracked change must change the passage".into());
-                    }
                     let text = super::comments::text_for_file_id(doc, &edit.file_id)
                         .ok_or_else(|| "file is absent".to_string())?;
                     let needle = format!("{}{}{}", edit.prefix, edit.exact, edit.suffix);
                     let first = locate_unique(&text, &needle)?;
                     let start = first + edit.prefix.len();
+                    let pieces = split_edit(&text, start, &edit.exact, &edit.replacement)?;
                     by_file
                         .entry(edit.file_id.clone())
                         .or_default()
-                        .push(session::Edit {
-                            at: text[..start].encode_utf16().count(),
-                            delete: edit.exact.encode_utf16().count(),
-                            insert: LineEnding::normalise(&edit.replacement).into_owned(),
-                        });
+                        .extend(pieces);
                 }
             }
             TrackedInput::Patches(patches) => {
                 for patch in patches {
-                    if patch.exact == patch.replacement {
-                        return Err("a tracked change must change the passage".into());
-                    }
                     let entry = head
                         .projection
                         .projection
@@ -513,14 +505,11 @@ impl AgentTrackedCommand {
                     if !matches {
                         return Err("the passage changed; read the document again".into());
                     }
+                    let pieces = split_edit(&text, patch.start, &patch.exact, &patch.replacement)?;
                     by_file
                         .entry(entry.id.clone())
                         .or_default()
-                        .push(session::Edit {
-                            at: text[..patch.start].encode_utf16().count(),
-                            delete: patch.exact.encode_utf16().count(),
-                            insert: LineEnding::normalise(&patch.replacement).into_owned(),
-                        });
+                        .extend(pieces);
                 }
             }
         }
@@ -537,6 +526,30 @@ impl AgentTrackedCommand {
         }
         Ok(planned)
     }
+}
+
+/// The edits that turn the passage `exact`, which starts at byte `start` of
+/// `text`, into `replacement`. An agent that sends back a whole file with a
+/// few changes would otherwise strike the whole file out and write it again,
+/// so the passage is cut down to the pieces that differ. Offsets are UTF-16.
+fn split_edit(
+    text: &str,
+    start: usize,
+    exact: &str,
+    replacement: &str,
+) -> Result<Vec<session::Edit>, String> {
+    let replacement = LineEnding::normalise(replacement);
+    if exact == replacement {
+        return Err("a tracked change must change the passage".into());
+    }
+    Ok(minimal_edits(exact, &replacement)
+        .into_iter()
+        .map(|(range, insert)| session::Edit {
+            at: text[..start + range.start].encode_utf16().count(),
+            delete: exact[range].encode_utf16().count(),
+            insert,
+        })
+        .collect())
 }
 
 /// The byte offset of the only occurrence of `needle` in `text`. Occurrences
@@ -672,6 +685,41 @@ mod tests {
             locate_unique("ab", ""),
             Err("the passage is ambiguous; read the document again")
         );
+    }
+
+    #[test]
+    fn a_whole_text_with_one_word_changed_is_one_small_edit() {
+        let text = "alpha\nbeta gamma\ndelta\n";
+        let edits = split_edit(text, 0, text, "alpha\nbeta GAMMA\ndelta\n").unwrap();
+        assert_eq!(
+            edits,
+            vec![session::Edit {
+                at: 11,
+                delete: 5,
+                insert: "GAMMA".into()
+            }]
+        );
+        // A passage inside the text shifts every offset by where it starts.
+        let edits = split_edit(text, 6, "beta gamma", "beta GAMMA").unwrap();
+        assert_eq!(edits[0].at, 11);
+    }
+
+    #[test]
+    fn split_edit_counts_utf16_units_not_bytes() {
+        let text = "\u{1f600} caf\u{e9} x\n\u{e9}t\u{e9}\n";
+        let after = "\u{1f600} caf\u{e9} y\n\u{e9}t\u{e8}\n";
+        let edits = split_edit(text, 0, text, after).unwrap();
+        // The emoji is two units and each accent one.
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].at, 2 + 1 + 4 + 1);
+        assert_eq!(edits[0].delete, "x\n\u{e9}t\u{e9}".encode_utf16().count());
+        assert_eq!(edits[0].insert, "y\n\u{e9}t\u{e8}");
+    }
+
+    #[test]
+    fn split_edit_refuses_a_change_of_line_endings_alone() {
+        assert!(split_edit("a\nb", 0, "a\nb", "a\r\nb").is_err());
+        assert!(split_edit("a\nb", 0, "a\nb", "a\nb").is_err());
     }
 
     fn tree_with_files<'a>(
