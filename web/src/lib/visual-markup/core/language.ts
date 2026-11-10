@@ -131,6 +131,9 @@ export interface Language {
   // to remove the run without a chip (it is then layout-only source).
   hiddenSummary?(text: string): string | null;
   toolbar?(scope: EditorScope): ToolbarEntry[];
+  // Builds the whole token tree itself, from a real parse, in place of the rules. Returns null
+  // when it cannot yet (its parser is still loading), and the rules then apply.
+  tokenize?(source: string): Token[] | null;
 }
 
 const registry = new Map<string, Language>();
