@@ -1,10 +1,10 @@
 //! Domain operations behind the five MCP tools. Transport ids never identify effects.
 use super::*;
 use librepaper_room::room::agent::{self, OperationKey};
-use librepaper_room::room::withdraw;
 use librepaper_room::room::source_change::{
     self, Origin, Patch, SourceChange, SourceFile, SourceTree,
 };
+use librepaper_room::room::withdraw;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(super) struct CandidateGrant {
@@ -1238,9 +1238,9 @@ impl Server {
             .ok_or_else(|| Failure::new("invalid_params", "change_ids must be an array"))?
             .iter()
             .map(|id| {
-                id.as_str().map(str::to_owned).ok_or_else(|| {
-                    Failure::new("invalid_params", "change_ids must be strings")
-                })
+                id.as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| Failure::new("invalid_params", "change_ids must be strings"))
             })
             .collect::<Result<_, _>>()?;
         let creator = self.mcp_display_name(headers, arrival, current, actor, slug);
@@ -1266,9 +1266,12 @@ impl Server {
             creator,
         )
         .map_err(|error| Failure::new("invalid_params", error))?;
-        let authority = current
-            .authority(self.ceiling_for(&current.id))
-            .map_err(|InvalidCredential| Failure::new("permission_changed", "your access changed"))?;
+        let authority =
+            current
+                .authority(self.ceiling_for(&current.id))
+                .map_err(|InvalidCredential| {
+                    Failure::new("permission_changed", "your access changed")
+                })?;
         let operation_receipt =
             self.mcp_operation_receipt(actor, key, digest, "document_withdraw", room.document_id)?;
         let operation = key.clone();

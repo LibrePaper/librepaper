@@ -1,8 +1,8 @@
 //! The edits that turn one LF text into another, as the byte-range patches a
 //! source change carries.
 
-use serde::Serialize;
 use librepaper_document::document::text_diff::minimal_edits;
+use serde::Serialize;
 
 /// A half-open byte range of the base text and what replaces it. `exact` is
 /// the base text in that range, so the server can tell when the file moved.

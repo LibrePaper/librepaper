@@ -506,10 +506,7 @@ impl AgentTrackedCommand {
                         return Err("the passage changed; read the document again".into());
                     }
                     let pieces = split_edit(&text, patch.start, &patch.exact, &patch.replacement)?;
-                    by_file
-                        .entry(entry.id.clone())
-                        .or_default()
-                        .extend(pieces);
+                    by_file.entry(entry.id.clone()).or_default().extend(pieces);
                 }
             }
         }

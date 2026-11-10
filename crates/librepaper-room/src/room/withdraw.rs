@@ -218,10 +218,7 @@ mod tests {
     fn own_pending_changes_pass_the_ownership_check() {
         let doc = new_doc();
         let id = tracked(&doc, "agent:Bot", "Bot", 7, 5);
-        assert_eq!(
-            check_ownership(&pending(&doc), &[id], "agent:Bot"),
-            Ok(())
-        );
+        assert_eq!(check_ownership(&pending(&doc), &[id], "agent:Bot"), Ok(()));
     }
 
     #[test]
@@ -248,7 +245,7 @@ mod tests {
             super::super::comments::text_for_file_id(&doc, "a.md").as_deref(),
             Some(TEXT)
         );
-        assert_eq!(track::reject_many(&doc, &[id.clone()]), 1);
+        assert_eq!(track::reject_many(&doc, std::slice::from_ref(&id)), 1);
         doc.commit();
         assert_eq!(
             super::super::comments::text_for_file_id(&doc, "a.md").as_deref(),

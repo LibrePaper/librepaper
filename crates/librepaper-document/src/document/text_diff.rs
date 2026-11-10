@@ -46,8 +46,7 @@ pub fn minimal_edits(before: &str, after: &str) -> Vec<(Range<usize>, String)> {
             let (head, tail) = common_edges(was, now);
             let exact = &was[head..was.len() - tail];
             let replacement = &now[head..now.len() - tail];
-            (exact != replacement)
-                .then(|| (start + head..end - tail, replacement.to_string()))
+            (exact != replacement).then(|| (start + head..end - tail, replacement.to_string()))
         })
         .collect()
 }
