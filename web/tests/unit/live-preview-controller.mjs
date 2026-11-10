@@ -144,7 +144,8 @@ assert.equal(sent.length, 0);
   assert.equal(sent.length, 0);
   const typed = enter.replace("line one\n\n", "line one\ncontinues here\n");
   live.edited({ ...files2, "main.tex": typed }, "main.tex");
-  assert.equal(sent.at(-1)?.patch.kind, "paragraph");
+  assert.equal(sent.at(-1)?.patch.kind, "prose");
+  assert.equal(sent.at(-1).patch.line, 3);
 }
 {
   const compiledPage = lines("\\begin{document}", "", "Alpha line one", "", "Beta line.", "", "\\end{document}");

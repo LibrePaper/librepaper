@@ -156,8 +156,16 @@ export function createLivePreview({ send }) {
           const newText = texts.get(path);
           const list = ops.get(path);
           patch = livePatch({ path, oldText, newText, isMain: path === main });
-          if (patch && list !== null) line = mapThrough(list ?? [], patch.line, { created: "nearest" });
-          if (line === null && list !== null) paragraph = newParagraph(path, oldText, newText, main, list ?? []);
+          if (list !== null) {
+            // A line the compile has seen is patched where it is. Otherwise the
+            // edit may be in a brand-new paragraph; failing that, a new line
+            // inside a paragraph is guessed to belong to the line above.
+            if (patch) line = mapThrough(list ?? [], patch.line);
+            if (line === null) {
+              paragraph = newParagraph(path, oldText, newText, main, list ?? []);
+              if (!paragraph && patch) line = mapThrough(list ?? [], patch.line, { created: "nearest" });
+            }
+          }
         }
       }
 
