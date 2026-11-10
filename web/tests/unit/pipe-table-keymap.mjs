@@ -93,3 +93,11 @@ test("Markdown: Tab realigns with the separator's alignment kept", () => {
   assert.equal(view.state.doc.toString(), expected);
   assert.equal(view.state.selection.main.head, expected.lastIndexOf("3"));
 });
+
+test("Enter on an empty last row leaves the table", () => {
+  const doc = "| a | b |\n|   |   |";
+  const view = editor(doc, doc.length - 3, org());
+  assert.equal(press(orgKeys, "Enter", view), true);
+  assert.equal(view.state.doc.toString(), "| a | b |\n");
+  assert.equal(view.state.selection.main.head, view.state.doc.length);
+});
