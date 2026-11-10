@@ -1,6 +1,7 @@
 //! Domain operations behind the five MCP tools. Transport ids never identify effects.
 use super::*;
 use librepaper_room::room::agent::{self, OperationKey};
+use librepaper_room::room::withdraw;
 use librepaper_room::room::source_change::{
     self, Origin, Patch, SourceChange, SourceFile, SourceTree,
 };
@@ -575,6 +576,10 @@ impl Server {
                     parent_request_id,
                 )
                 .await
+            }
+            "document_withdraw" => {
+                self.mcp_withdraw(slug, actor, &current, headers, arrival, args, &key, &digest)
+                    .await
             }
             "document_apply" => {
                 if !current.at_least(Role::Editor) {
@@ -1206,6 +1211,95 @@ impl Server {
         // already stored under the recheck at the top of `mcp_operation_inner`,
         // and the final recheck runs once more before the result is returned.
         Ok(result)
+    }
+
+    /// Rejects the caller's own pending tracked changes. The command checks
+    /// ownership against head, so a change by anyone else is refused there.
+    #[allow(clippy::too_many_arguments)]
+    async fn mcp_withdraw(
+        &self,
+        slug: &str,
+        actor: &str,
+        current: &Viewer,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        args: &Value,
+        key: &OperationKey,
+        digest: &str,
+    ) -> Result<Value, Failure> {
+        if !current.at_least(Role::Editor) {
+            return Err(Failure::new(
+                "permission_changed",
+                "editor access is required to withdraw tracked changes",
+            ));
+        }
+        let change_ids: Vec<String> = args["change_ids"]
+            .as_array()
+            .ok_or_else(|| Failure::new("invalid_params", "change_ids must be an array"))?
+            .iter()
+            .map(|id| {
+                id.as_str().map(str::to_owned).ok_or_else(|| {
+                    Failure::new("invalid_params", "change_ids must be strings")
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        let creator = self.mcp_display_name(headers, arrival, current, actor, slug);
+        let room = self
+            .rooms
+            .get(slug)
+            .await
+            .map_err(|e| Failure::new("unavailable", e.to_string()))?;
+        if let Some(why) = room.unreadable().await {
+            return Err(Failure::new("unavailable", why));
+        }
+        let request_id = super::comments::parse_uuid(
+            &super::comments::comment_uuid(&format!("withdraw\0{}", key.scoped_request_id(actor))),
+            "withdraw id",
+        )?;
+        let mut cmd = withdraw::AgentWithdrawCommand::new(
+            room.catalog().clone(),
+            room.document_id,
+            request_id,
+            change_ids,
+            format!("agent:{creator}"),
+            uuid::Uuid::parse_str(&current.id.id).ok(),
+            creator,
+        )
+        .map_err(|error| Failure::new("invalid_params", error))?;
+        let authority = current
+            .authority(self.ceiling_for(&current.id))
+            .map_err(|InvalidCredential| Failure::new("permission_changed", "your access changed"))?;
+        let operation_receipt =
+            self.mcp_operation_receipt(actor, key, digest, "document_withdraw", room.document_id)?;
+        let operation = key.clone();
+        let mut cmd = librepaper_engine::log::recorded::RecordedCommand::new(
+            &mut cmd,
+            operation_receipt,
+            move |outcome: &withdraw::WithdrawReceipt| {
+                let effects = outcome
+                    .withdrawn
+                    .iter()
+                    .map(|id| json!({"kind":"withdrawn","id":id}))
+                    .collect::<Vec<_>>();
+                json!({"tool":"document_withdraw","operation":operation,"status":"committed","effects":effects})
+            },
+        );
+        let (outcome, replay) = room
+            .command_reporting_replay(&authority, &mut cmd)
+            .await
+            .map_err(super::comments::command_failure)?;
+        let effects = outcome
+            .withdrawn
+            .iter()
+            .map(|id| json!({"kind":"withdrawn","id":id}))
+            .collect::<Vec<_>>();
+        Ok(json!({
+            "operation": key,
+            "status": "committed",
+            "effects": effects,
+            "replay": replay,
+            "next": "These tracked changes are gone from the document; the text they replaced is back."
+        }))
     }
 
     async fn mcp_result(
