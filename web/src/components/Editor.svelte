@@ -38,6 +38,9 @@
   // The visual layer is drawn only for LaTeX, Typst and Markdown, and its colours follow
   // the page's mode, so it is brought into line when a file or the mode changes.
   const visualCompartment = new Compartment();
+  // The line numbers, active-line highlight and fold gutter are source-code chrome. They are left
+  // off where the visual layer draws the file, so the page reads as a document rather than code.
+  const chromeCompartment = new Compartment();
   // The bracket keymap goes with auto-closing brackets. Its Backspace deletes an
   // empty pair even without closeBrackets, so leaving it in the main keymap
   // would leave the switch half off.
@@ -263,6 +266,7 @@
   import { isEnglishDocument } from "../lib/harper/language.js";
   import { untrack } from "svelte";
   import { visualMarkup, factsUpdate } from "../lib/visual-markup/index.js";
+  import { VISUAL_FORMATS } from "../lib/visual-markup/formats.js";
   import { applyFormat, formatState } from "../lib/visual-markup/formatting.js";
   import { documentFacts } from "../lib/visual-markup/facts.js";
   import { markdownFacts } from "../lib/visual-markup/markdown-facts.js";
@@ -1475,10 +1479,8 @@
         // default keymap does, or `j` inserts a letter instead of moving.
         vimCompartment.of(resolvedKeys(untrack(() => keys)) || []),
         themeCompartment.of(themeFor(mode() === "dark")),
-        lineNumbers(),
+        chromeCompartment.of(chromeOn(untrack(() => visual), path)),
         drawSelection(),
-        highlightActiveLine(),
-        highlightActiveLineGutter(),
         highlightSpecialChars(),
         dropCursor(),
         EditorState.allowMultipleSelections.of(true),
@@ -1486,7 +1488,6 @@
         bracketMatching(),
         bracketsCompartment.of(bracketsOn(untrack(() => brackets))),
         latexAssistCompartment.of(latexAssistOn(untrack(() => latexAssist), sourceFormat(path, format) === "latex")),
-        foldGutter(),
         indentOnInput(),
         highlightSelectionMatches(),
         sourceHighlighting,
@@ -1667,6 +1668,12 @@
   function visualOn(on, path) {
     return on ? visualMarkup(formatOf(path), { path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark", openInclude: (name) => openIncluded(path, name) }) : [];
   }
+  // The source-code chrome for a file. It is dropped only where the visual layer draws the file,
+  // the same test visualOn applies, so a .bib or .py file keeps its line numbers in visual mode.
+  function chromeOn(on, path) {
+    if (on && VISUAL_FORMATS.has(formatOf(path))) return [];
+    return [lineNumbers(), highlightActiveLine(), highlightActiveLineGutter(), foldGutter()];
+  }
   // Opens the project text an include names, for a click on it in the visual layer.
   function openIncluded(from, name) {
     const doc = session?.doc;
@@ -1679,7 +1686,12 @@
   function syncVisual(target, id = showing) {
     if (!target) return;
     const path = pathOfDoc(session.doc, id);
-    target.dispatch({ effects: visualCompartment.reconfigure(visualOn(untrack(() => visual), path)) });
+    target.dispatch({
+      effects: [
+        visualCompartment.reconfigure(visualOn(untrack(() => visual), path)),
+        chromeCompartment.reconfigure(chromeOn(untrack(() => visual), path)),
+      ],
+    });
     refreshFacts(target, id, true);
     reportFormat(target, path);
   }
