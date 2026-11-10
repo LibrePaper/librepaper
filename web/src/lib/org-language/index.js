@@ -4,13 +4,13 @@
 // reads. Until the module has loaded the editor shows plain text (the keymaps
 // work meanwhile); the view picks the language up when it arrives.
 import { indentService, Language, LanguageSupport } from "@codemirror/language";
-import { Compartment, countColumn, Prec } from "@codemirror/state";
+import { Compartment, countColumn, EditorState, Prec } from "@codemirror/state";
 import { keymap, ViewPlugin } from "@codemirror/view";
 import { Parser } from "@lezer/common";
 import { enclosing, orgKeymap } from "../org-editing.js";
 import { pipeTableAt, pipeTableKeymap } from "../pipe-table-keymap.js";
 import { loadOrgSyntax, orgSyntax } from "./module.js";
-import { orgData } from "./props.js";
+import { ORG_LANGUAGE_DATA, orgData } from "./props.js";
 
 class OrgParser extends Parser {
   constructor(api) {
@@ -102,5 +102,6 @@ export function org() {
     });
     return { destroy() { alive = false; } };
   });
-  return [compartment.of([]), editing(), upgrade];
+  // Until the language arrives, its data (comment marker, bracket pairs) stands in; the language replaces it.
+  return [compartment.of(EditorState.languageData.of(() => [ORG_LANGUAGE_DATA])), editing(), upgrade];
 }
