@@ -44,6 +44,20 @@ const texSample = [
 ].join("\n");
 const typstSample = "= Heading\nSome *bold* and $x^2 + y^2$ here.";
 const markdownSample = "# Readme\n\nSome *emphasis* and $x$ here.";
+// An Org file: keywords, a TODO heading with a priority and a tag, a scheduled
+// date, a property drawer, inline markup, math, an internal link and two tasks.
+const orgSample = [
+  "#+TITLE: Org sample",
+  "#+AUTHOR: A. Writer",
+  "* TODO [#A] Heading one :tag:",
+  "SCHEDULED: <2026-11-12 Thu>",
+  ":PROPERTIES:",
+  ":CUSTOM_ID: one",
+  ":END:",
+  "Some *bold*, /italic/ and $x^2 + y^2$ here, see [[#one]].",
+  "- [ ] a task",
+  "- [X] done task",
+].join("\n");
 // A Quarto paper: front matter, numbered sections, inline and block markup, a
 // code cell with a label, an image figure, a captioned table, display and inline
 // math, a callout, a theorem, citations, cross-references, a footnote and a
@@ -520,6 +534,24 @@ async function visualCheck() {
   await settle();
   const markdown = { marks: markCount(), text: visibleText() };
 
+  // Check 6o: an Org file. The caret goes to the end of the file, on the plain
+  // text of the last task, so the markup, the title block, the TODO chip, the
+  // collapsed property drawer and the link are all drawn.
+  component.$set({ file: ids.org, format: "org" });
+  await settle();
+  view().dispatch({ selection: { anchor: view().state.doc.length } });
+  await settle();
+  await poll(mathKatexCount);
+  const org = {
+    katex: mathKatexCount(),
+    marks: markCount(),
+    text: visibleText(),
+    headingLine: Array.from(document.querySelectorAll(".cm-editor .cm-line.cm-lv-heading")).some((node) => node.textContent.includes("Heading one")),
+    titleBlock: Array.from(document.querySelectorAll('.cm-editor [class*="org"]')).some((node) => node.textContent.includes("Org sample")),
+    todoChip: Array.from(document.querySelectorAll(".cm-editor .cm-content *")).some((node) => node.children.length === 0 && node.textContent.trim() === "TODO"),
+    checkboxes: document.querySelectorAll('.cm-editor [role="checkbox"]').length,
+  };
+
   // Check 6a: a Quarto paper. The front matter folds into a title block with the
   // caret on a plain line, and the markup, cells, figures, tables, math, callouts,
   // theorems, citations and cross-references are drawn. A click on the front
@@ -848,6 +880,7 @@ async function visualCheck() {
     sameView,
     typst,
     markdown,
+    org,
     quarto,
     full: { body: fullBody, preambleClick: fullPreambleClick, preamble: fullPreamble, end: fullEnd, display: fullDisplay, headings: fullHeadings },
     refs: refsCheck,
@@ -871,7 +904,7 @@ const source = [
   `import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};`,
   `import { LoroDoc } from "loro-crdt";`,
   `import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};`,
-  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, paper: paperSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample, sink: sinkSample, offset: offsetSample, title: titleSample, typstSink: typstSinkSample, vim: vimSample })};`,
+  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, org: orgSample, paper: paperSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample, sink: sinkSample, offset: offsetSample, title: titleSample, typstSink: typstSinkSample, vim: vimSample })};`,
   `globalThis.LIBREPAPER_MODULES = { "typst-syntax": "/typst-syntax.wasm" };`,
   `document.documentElement.dataset.theme = "librepaper";`,
   `document.documentElement.dataset.palette = "librepaper";`,
@@ -884,6 +917,7 @@ const source = [
   `  tex: session.addText("paper.tex", samples.tex),`,
   `  typ: session.addText("notes.typ", samples.typst),`,
   `  md: session.addText("readme.md", samples.markdown),`,
+  `  org: session.addText("notes.org", samples.org),`,
   `  paper: session.addText("paper.qmd", samples.paper),`,
   `  full: session.addText("full.tex", samples.full),`,
   `  big: session.addText("big.tex", samples.long),`,
@@ -1120,6 +1154,20 @@ try {
   assert.ok(result.markdown.text.includes("emphasis"), "the emphasis text was not visible in readme.md");
   assert.equal(result.markdown.text.includes("*emphasis*"), false, "the emphasis markers are still visible in readme.md");
   console.log("visual-markup-browser: Markdown is drawn and its emphasis markers are hidden");
+
+  // Check 6o: an Org file is drawn.
+  assert.ok(result.org.katex > 0, "the Org formula $x^2 + y^2$ was not drawn as KaTeX inside .cm-lv-math in notes.org");
+  assert.ok(result.org.marks > 0, "no visual markup decorations were drawn for notes.org");
+  assert.ok(result.org.text.includes("bold") && result.org.text.includes("italic"), `the bold and italic text is not visible in notes.org; visible text: ${result.org.text}`);
+  assert.equal(result.org.text.includes("*bold*"), false, "the *bold* markers are still visible in notes.org");
+  assert.equal(result.org.text.includes("/italic/"), false, "the /italic/ markers are still visible in notes.org");
+  assert.equal(result.org.headingLine, true, "no .cm-line.cm-lv-heading holds 'Heading one' in notes.org");
+  assert.equal(result.org.titleBlock, true, "no element with an org class holding 'Org sample' (the title block) was drawn in notes.org");
+  assert.equal(result.org.todoChip, true, "no TODO chip reading 'TODO' was drawn for the heading in notes.org");
+  assert.equal(result.org.text.includes(":CUSTOM_ID:"), false, "the property drawer is still visible in notes.org; it should be collapsed");
+  assert.equal(result.org.text.includes("[[#one]]"), false, "the raw [[#one]] link is still visible in notes.org");
+  assert.equal(result.org.checkboxes, 2, `expected two task checkboxes in notes.org, found ${result.org.checkboxes}`);
+  console.log("visual-markup-browser: Org is drawn: title block, TODO chip, collapsed drawer, markup, math, link and tasks");
 
   // Check 6a: a Quarto paper is drawn. Its front matter is a title block that shows
   // its YAML after a click, and the source of each construct is hidden with the
