@@ -13,6 +13,7 @@
 import { createMathTypesetter } from "../lib/math.js";
 import { shiftAnnotationRanges } from "../lib/shift-annotation-ranges.js";
 import { watchPinch } from "../lib/pinch.js";
+import { morphChildren } from "./morph.js";
 
 (() => {
   // Where this agent is allowed to speak. It is injected into a document on
@@ -354,13 +355,19 @@ import { watchPinch } from "../lib/pinch.js";
     return shiftAnnotationRanges(before, after, ranges);
   }
 
+  // Unwrap every highlight mark and rejoin the text nodes it split, which
+  // restores the pristine text-node structure.
+  function removeMarks() {
+    document
+      .querySelectorAll("mark[data-librepaper]")
+      .forEach((mark) => mark.replaceWith(...mark.childNodes));
+    document.body.normalize();
+  }
+
   function highlight(ranges) {
     lastRanges = ranges;
     quietly(() => {
-      document
-        .querySelectorAll("mark[data-librepaper]")
-        .forEach((mark) => mark.replaceWith(...mark.childNodes));
-      document.body.normalize(); // restore the pristine text-node structure
+      removeMarks();
     });
     scan();
 
@@ -595,8 +602,19 @@ import { watchPinch } from "../lib/pinch.js";
       // it is the same template on every keystroke, so it is replaced only
       // when it actually differs.
       adoptStyles(parsed, message.presentation);
+      // LaTeXML output is morphed in place, so unchanged paragraphs, images
+      // and equations are never recreated. Marks go first: they split text
+      // nodes, and the morph compares the page with the unmarked source. Other
+      // formats typeset their math in place, which a morph would undo on every
+      // keystroke, so they replace the body.
+      const isLatexml = !!parsed.querySelector(".ltx_page_main, .ltx_document");
       quietly(() => {
-        document.body.innerHTML = parsed.body.innerHTML;
+        if (isLatexml) {
+          removeMarks();
+          morphChildren(document.body, parsed.body);
+        } else {
+          document.body.innerHTML = parsed.body.innerHTML;
+        }
         // In the same breath when KaTeX is already here, so the text published
         // below is the typeset text. The first time it is not, and the
         // rendering lands as a mutation the observer republishes.
