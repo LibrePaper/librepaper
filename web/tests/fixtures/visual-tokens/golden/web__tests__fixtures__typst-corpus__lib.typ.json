@@ -1,0 +1,22 @@
+[
+  {
+    "body": {
+      "from": 20,
+      "to": 77
+    },
+    "from": 0,
+    "kind": "command",
+    "meta": {
+      "name": "section-note",
+      "params": "",
+      "statement": "true"
+    },
+    "name": "let",
+    "to": 77
+  },
+  {
+    "from": 77,
+    "kind": "text",
+    "to": 78
+  }
+]

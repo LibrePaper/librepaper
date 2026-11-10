@@ -1,0 +1,1921 @@
+[
+  {
+    "body": {
+      "from": 2,
+      "to": 69
+    },
+    "from": 0,
+    "kind": "comment",
+    "to": 69
+  },
+  {
+    "from": 69,
+    "kind": "text",
+    "to": 70
+  },
+  {
+    "body": {
+      "from": 72,
+      "to": 119
+    },
+    "from": 70,
+    "kind": "comment",
+    "to": 119
+  },
+  {
+    "from": 119,
+    "kind": "text",
+    "to": 120
+  },
+  {
+    "body": {
+      "from": 122,
+      "to": 167
+    },
+    "from": 120,
+    "kind": "comment",
+    "to": 167
+  },
+  {
+    "from": 167,
+    "kind": "text",
+    "to": 168
+  },
+  {
+    "args": [
+      {
+        "from": 177,
+        "to": 200
+      }
+    ],
+    "from": 168,
+    "kind": "command",
+    "meta": {
+      "path": "@preview/showybox:2.0.4",
+      "statement": "true"
+    },
+    "name": "import",
+    "to": 211
+  },
+  {
+    "from": 211,
+    "kind": "text",
+    "to": 213
+  },
+  {
+    "body": {
+      "from": 226,
+      "to": 237
+    },
+    "from": 213,
+    "kind": "command",
+    "meta": {
+      "name": "title",
+      "params": "",
+      "statement": "true"
+    },
+    "name": "let",
+    "to": 237
+  },
+  {
+    "from": 237,
+    "kind": "text",
+    "to": 238
+  },
+  {
+    "body": {
+      "from": 252,
+      "to": 264
+    },
+    "from": 238,
+    "kind": "command",
+    "meta": {
+      "name": "author",
+      "params": "",
+      "statement": "true"
+    },
+    "name": "let",
+    "to": 264
+  },
+  {
+    "from": 264,
+    "kind": "text",
+    "to": 265
+  },
+  {
+    "body": {
+      "from": 279,
+      "to": 303
+    },
+    "from": 265,
+    "kind": "command",
+    "meta": {
+      "name": "course",
+      "params": "",
+      "statement": "true"
+    },
+    "name": "let",
+    "to": 303
+  },
+  {
+    "from": 303,
+    "kind": "text",
+    "to": 304
+  },
+  {
+    "body": {
+      "from": 318,
+      "to": 377
+    },
+    "from": 304,
+    "kind": "command",
+    "meta": {
+      "name": "issued",
+      "params": "",
+      "statement": "true"
+    },
+    "name": "let",
+    "to": 377
+  },
+  {
+    "from": 377,
+    "kind": "text",
+    "to": 379
+  },
+  {
+    "body": {
+      "from": 391,
+      "to": 405
+    },
+    "from": 379,
+    "kind": "command",
+    "meta": {
+      "name": "navy",
+      "params": "",
+      "statement": "true"
+    },
+    "name": "let",
+    "to": 405
+  },
+  {
+    "from": 405,
+    "kind": "text",
+    "to": 406
+  },
+  {
+    "body": {
+      "from": 420,
+      "to": 434
+    },
+    "from": 406,
+    "kind": "command",
+    "meta": {
+      "name": "forest",
+      "params": "",
+      "statement": "true"
+    },
+    "name": "let",
+    "to": 434
+  },
+  {
+    "from": 434,
+    "kind": "text",
+    "to": 435
+  },
+  {
+    "body": {
+      "from": 447,
+      "to": 461
+    },
+    "from": 435,
+    "kind": "command",
+    "meta": {
+      "name": "plum",
+      "params": "",
+      "statement": "true"
+    },
+    "name": "let",
+    "to": 461
+  },
+  {
+    "from": 461,
+    "kind": "text",
+    "to": 462
+  },
+  {
+    "body": {
+      "from": 475,
+      "to": 489
+    },
+    "from": 462,
+    "kind": "command",
+    "meta": {
+      "name": "amber",
+      "params": "",
+      "statement": "true"
+    },
+    "name": "let",
+    "to": 489
+  },
+  {
+    "from": 489,
+    "kind": "text",
+    "to": 491
+  },
+  {
+    "from": 491,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "document"
+    },
+    "name": "set",
+    "to": 534
+  },
+  {
+    "from": 534,
+    "kind": "text",
+    "to": 535
+  },
+  {
+    "from": 535,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "page"
+    },
+    "name": "set",
+    "to": 695
+  },
+  {
+    "from": 695,
+    "kind": "text",
+    "to": 696
+  },
+  {
+    "from": 696,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "text"
+    },
+    "name": "set",
+    "to": 755
+  },
+  {
+    "from": 755,
+    "kind": "text",
+    "to": 756
+  },
+  {
+    "from": 756,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "par"
+    },
+    "name": "set",
+    "to": 796
+  },
+  {
+    "from": 796,
+    "kind": "text",
+    "to": 797
+  },
+  {
+    "from": 797,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "heading"
+    },
+    "name": "set",
+    "to": 827
+  },
+  {
+    "from": 827,
+    "kind": "text",
+    "to": 828
+  },
+  {
+    "from": 828,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "heading"
+    },
+    "name": "show",
+    "to": 880
+  },
+  {
+    "from": 880,
+    "kind": "text",
+    "to": 882
+  },
+  {
+    "body": {
+      "from": 884,
+      "to": 949
+    },
+    "from": 882,
+    "kind": "comment",
+    "to": 949
+  },
+  {
+    "from": 949,
+    "kind": "text",
+    "to": 950
+  },
+  {
+    "body": {
+      "from": 980,
+      "to": 1172
+    },
+    "from": 950,
+    "kind": "command",
+    "meta": {
+      "name": "definition",
+      "params": "name, body",
+      "statement": "true"
+    },
+    "name": "let",
+    "to": 1172
+  },
+  {
+    "from": 1172,
+    "kind": "text",
+    "to": 1174
+  },
+  {
+    "body": {
+      "from": 1201,
+      "to": 1396
+    },
+    "from": 1174,
+    "kind": "command",
+    "meta": {
+      "name": "example",
+      "params": "name, body",
+      "statement": "true"
+    },
+    "name": "let",
+    "to": 1396
+  },
+  {
+    "from": 1396,
+    "kind": "text",
+    "to": 1398
+  },
+  {
+    "body": {
+      "from": 1425,
+      "to": 1614
+    },
+    "from": 1398,
+    "kind": "command",
+    "meta": {
+      "name": "theorem",
+      "params": "name, body",
+      "statement": "true"
+    },
+    "name": "let",
+    "to": 1614
+  },
+  {
+    "from": 1614,
+    "kind": "text",
+    "to": 1616
+  },
+  {
+    "body": {
+      "from": 1637,
+      "to": 1820
+    },
+    "from": 1616,
+    "kind": "command",
+    "meta": {
+      "name": "summary",
+      "params": "body",
+      "statement": "true"
+    },
+    "name": "let",
+    "to": 1820
+  },
+  {
+    "from": 1820,
+    "kind": "text",
+    "to": 1822
+  },
+  {
+    "args": [
+      {
+        "from": 1829,
+        "to": 1835
+      }
+    ],
+    "body": {
+      "from": 1837,
+      "to": 1990
+    },
+    "children": [
+      {
+        "from": 1837,
+        "kind": "text",
+        "to": 1840
+      },
+      {
+        "args": [],
+        "body": {
+          "from": 1874,
+          "to": 1881
+        },
+        "children": [
+          {
+            "args": [
+              {
+                "from": 1869,
+                "to": 1871
+              }
+            ],
+            "body": {
+              "from": 1869,
+              "to": 1871
+            },
+            "children": [
+              {
+                "from": 1869,
+                "kind": "text",
+                "to": 1871
+              }
+            ],
+            "from": 1864,
+            "kind": "command",
+            "meta": {
+              "args": "code",
+              "raw": "true"
+            },
+            "name": "luma",
+            "to": 1872
+          },
+          {
+            "args": [],
+            "from": 1874,
+            "kind": "command",
+            "meta": {
+              "raw": "true"
+            },
+            "name": "course",
+            "to": 1881
+          }
+        ],
+        "from": 1840,
+        "kind": "command",
+        "meta": {
+          "arg:fill": "luma(90)",
+          "arg:size": "10pt",
+          "color": "luma(90)"
+        },
+        "name": "text",
+        "named": {
+          "fill": {
+            "from": 1864,
+            "to": 1872
+          },
+          "size": {
+            "from": 1852,
+            "to": 1856
+          }
+        },
+        "to": 1882
+      },
+      {
+        "from": 1882,
+        "kind": "text",
+        "to": 1885
+      },
+      {
+        "args": [
+          {
+            "from": 1888,
+            "to": 1893
+          }
+        ],
+        "body": {
+          "from": 1888,
+          "to": 1893
+        },
+        "children": [
+          {
+            "from": 1888,
+            "kind": "text",
+            "to": 1893
+          }
+        ],
+        "from": 1885,
+        "kind": "command",
+        "meta": {
+          "args": "code",
+          "raw": "true"
+        },
+        "name": "v",
+        "to": 1894
+      },
+      {
+        "from": 1894,
+        "kind": "text",
+        "to": 1897
+      },
+      {
+        "args": [],
+        "body": {
+          "from": 1931,
+          "to": 1937
+        },
+        "children": [
+          {
+            "args": [],
+            "from": 1931,
+            "kind": "command",
+            "meta": {
+              "raw": "true"
+            },
+            "name": "title",
+            "to": 1937
+          }
+        ],
+        "from": 1897,
+        "kind": "command",
+        "meta": {
+          "arg:size": "20pt",
+          "arg:weight": "\"bold\""
+        },
+        "name": "text",
+        "named": {
+          "size": {
+            "from": 1909,
+            "to": 1913
+          },
+          "weight": {
+            "from": 1923,
+            "to": 1929
+          }
+        },
+        "to": 1938
+      },
+      {
+        "from": 1938,
+        "kind": "text",
+        "to": 1941
+      },
+      {
+        "args": [
+          {
+            "from": 1944,
+            "to": 1949
+          }
+        ],
+        "body": {
+          "from": 1944,
+          "to": 1949
+        },
+        "children": [
+          {
+            "from": 1944,
+            "kind": "text",
+            "to": 1949
+          }
+        ],
+        "from": 1941,
+        "kind": "command",
+        "meta": {
+          "args": "code",
+          "raw": "true"
+        },
+        "name": "v",
+        "to": 1950
+      },
+      {
+        "from": 1950,
+        "kind": "text",
+        "to": 1953
+      },
+      {
+        "args": [],
+        "body": {
+          "from": 1971,
+          "to": 1988
+        },
+        "children": [
+          {
+            "args": [],
+            "from": 1971,
+            "kind": "command",
+            "meta": {
+              "raw": "true"
+            },
+            "name": "author",
+            "to": 1978
+          },
+          {
+            "from": 1978,
+            "kind": "text",
+            "to": 1981
+          },
+          {
+            "args": [],
+            "from": 1981,
+            "kind": "command",
+            "meta": {
+              "raw": "true"
+            },
+            "name": "issued",
+            "to": 1988
+          }
+        ],
+        "from": 1953,
+        "kind": "command",
+        "meta": {
+          "arg:size": "11pt"
+        },
+        "name": "text",
+        "named": {
+          "size": {
+            "from": 1965,
+            "to": 1969
+          }
+        },
+        "to": 1989
+      },
+      {
+        "from": 1989,
+        "kind": "text",
+        "to": 1990
+      }
+    ],
+    "from": 1822,
+    "kind": "command",
+    "meta": {},
+    "name": "align",
+    "to": 1991
+  },
+  {
+    "from": 1991,
+    "kind": "text",
+    "to": 1993
+  },
+  {
+    "args": [
+      {
+        "from": 1996,
+        "to": 2001
+      }
+    ],
+    "body": {
+      "from": 1996,
+      "to": 2001
+    },
+    "children": [
+      {
+        "from": 1996,
+        "kind": "text",
+        "to": 2001
+      }
+    ],
+    "from": 1993,
+    "kind": "command",
+    "meta": {
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "v",
+    "to": 2002
+  },
+  {
+    "from": 2002,
+    "kind": "text",
+    "to": 2004
+  },
+  {
+    "body": {
+      "from": 2006,
+      "to": 2020
+    },
+    "children": [
+      {
+        "from": 2006,
+        "kind": "text",
+        "to": 2020
+      }
+    ],
+    "from": 2004,
+    "kind": "heading",
+    "level": 1,
+    "to": 2020
+  },
+  {
+    "from": 2020,
+    "kind": "text",
+    "to": 2073
+  },
+  {
+    "from": 2073,
+    "kind": "item",
+    "name": "bullet",
+    "to": 2075
+  },
+  {
+    "from": 2075,
+    "kind": "text",
+    "to": 2122
+  },
+  {
+    "from": 2122,
+    "kind": "item",
+    "name": "bullet",
+    "to": 2124
+  },
+  {
+    "from": 2124,
+    "kind": "text",
+    "to": 2173
+  },
+  {
+    "body": {
+      "from": 2174,
+      "to": 2181
+    },
+    "display": false,
+    "from": 2173,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 2182
+  },
+  {
+    "from": 2182,
+    "kind": "text",
+    "to": 2183
+  },
+  {
+    "body": {
+      "from": 2184,
+      "to": 2185
+    },
+    "display": false,
+    "from": 2183,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 2186
+  },
+  {
+    "from": 2186,
+    "kind": "text",
+    "to": 2199
+  },
+  {
+    "from": 2199,
+    "kind": "item",
+    "name": "bullet",
+    "to": 2201
+  },
+  {
+    "from": 2201,
+    "kind": "text",
+    "to": 2252
+  },
+  {
+    "body": {
+      "from": 2254,
+      "to": 2269
+    },
+    "children": [
+      {
+        "from": 2254,
+        "kind": "text",
+        "to": 2269
+      }
+    ],
+    "from": 2252,
+    "kind": "heading",
+    "level": 1,
+    "to": 2269
+  },
+  {
+    "from": 2269,
+    "kind": "text",
+    "to": 2271
+  },
+  {
+    "args": [
+      {
+        "from": 2283,
+        "to": 2304
+      }
+    ],
+    "body": {
+      "from": 2306,
+      "to": 2453
+    },
+    "children": [
+      {
+        "from": 2306,
+        "kind": "text",
+        "to": 2320
+      },
+      {
+        "body": {
+          "from": 2321,
+          "to": 2326
+        },
+        "display": false,
+        "from": 2320,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2327
+      },
+      {
+        "from": 2327,
+        "kind": "text",
+        "to": 2341
+      },
+      {
+        "body": {
+          "from": 2342,
+          "to": 2343
+        },
+        "display": false,
+        "from": 2341,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2344
+      },
+      {
+        "from": 2344,
+        "kind": "text",
+        "to": 2361
+      },
+      {
+        "body": {
+          "from": 2362,
+          "to": 2373
+        },
+        "display": false,
+        "from": 2361,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2374
+      },
+      {
+        "from": 2374,
+        "kind": "text",
+        "to": 2390
+      },
+      {
+        "body": {
+          "from": 2391,
+          "to": 2392
+        },
+        "display": false,
+        "from": 2390,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2393
+      },
+      {
+        "from": 2393,
+        "kind": "text",
+        "to": 2406
+      },
+      {
+        "body": {
+          "from": 2407,
+          "to": 2451
+        },
+        "display": true,
+        "from": 2406,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2452
+      },
+      {
+        "from": 2452,
+        "kind": "text",
+        "to": 2453
+      }
+    ],
+    "from": 2271,
+    "kind": "command",
+    "meta": {},
+    "name": "definition",
+    "to": 2454
+  },
+  {
+    "from": 2454,
+    "kind": "text",
+    "to": 2456
+  },
+  {
+    "args": [
+      {
+        "from": 2468,
+        "to": 2486
+      }
+    ],
+    "body": {
+      "from": 2488,
+      "to": 2585
+    },
+    "children": [
+      {
+        "from": 2488,
+        "kind": "text",
+        "to": 2502
+      },
+      {
+        "body": {
+          "from": 2503,
+          "to": 2508
+        },
+        "display": false,
+        "from": 2502,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2509
+      },
+      {
+        "from": 2509,
+        "kind": "text",
+        "to": 2546
+      },
+      {
+        "body": {
+          "from": 2547,
+          "to": 2548
+        },
+        "display": false,
+        "from": 2546,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2549
+      },
+      {
+        "from": 2549,
+        "kind": "text",
+        "to": 2557
+      },
+      {
+        "body": {
+          "from": 2558,
+          "to": 2568
+        },
+        "display": false,
+        "from": 2557,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2569
+      },
+      {
+        "from": 2569,
+        "kind": "text",
+        "to": 2580
+      },
+      {
+        "body": {
+          "from": 2581,
+          "to": 2582
+        },
+        "display": false,
+        "from": 2580,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2583
+      },
+      {
+        "from": 2583,
+        "kind": "text",
+        "to": 2585
+      }
+    ],
+    "from": 2456,
+    "kind": "command",
+    "meta": {},
+    "name": "definition",
+    "to": 2586
+  },
+  {
+    "from": 2586,
+    "kind": "text",
+    "to": 2588
+  },
+  {
+    "body": {
+      "from": 2590,
+      "to": 2604
+    },
+    "children": [
+      {
+        "from": 2590,
+        "kind": "text",
+        "to": 2604
+      }
+    ],
+    "from": 2588,
+    "kind": "heading",
+    "level": 1,
+    "to": 2604
+  },
+  {
+    "from": 2604,
+    "kind": "text",
+    "to": 2606
+  },
+  {
+    "args": [
+      {
+        "from": 2615,
+        "to": 2636
+      }
+    ],
+    "body": {
+      "from": 2638,
+      "to": 2986
+    },
+    "children": [
+      {
+        "from": 2638,
+        "kind": "text",
+        "to": 2651
+      },
+      {
+        "body": {
+          "from": 2652,
+          "to": 2674
+        },
+        "display": false,
+        "from": 2651,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2675
+      },
+      {
+        "from": 2675,
+        "kind": "text",
+        "to": 2689
+      },
+      {
+        "body": {
+          "from": 2690,
+          "to": 2691
+        },
+        "display": false,
+        "from": 2689,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2692
+      },
+      {
+        "from": 2692,
+        "kind": "text",
+        "to": 2734
+      },
+      {
+        "body": {
+          "from": 2735,
+          "to": 2791
+        },
+        "display": true,
+        "from": 2734,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2792
+      },
+      {
+        "from": 2792,
+        "kind": "text",
+        "to": 2802
+      },
+      {
+        "body": {
+          "from": 2803,
+          "to": 2814
+        },
+        "display": false,
+        "from": 2802,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2815
+      },
+      {
+        "from": 2815,
+        "kind": "text",
+        "to": 2832
+      },
+      {
+        "body": {
+          "from": 2833,
+          "to": 2852
+        },
+        "display": false,
+        "from": 2832,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2853
+      },
+      {
+        "from": 2853,
+        "kind": "text",
+        "to": 2873
+      },
+      {
+        "body": {
+          "from": 2874,
+          "to": 2891
+        },
+        "display": false,
+        "from": 2873,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2892
+      },
+      {
+        "from": 2892,
+        "kind": "text",
+        "to": 2901
+      },
+      {
+        "body": {
+          "from": 2902,
+          "to": 2921
+        },
+        "display": false,
+        "from": 2901,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2922
+      },
+      {
+        "from": 2922,
+        "kind": "text",
+        "to": 2929
+      },
+      {
+        "body": {
+          "from": 2930,
+          "to": 2936
+        },
+        "display": false,
+        "from": 2929,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2937
+      },
+      {
+        "from": 2937,
+        "kind": "text",
+        "to": 2948
+      },
+      {
+        "body": {
+          "from": 2949,
+          "to": 2968
+        },
+        "display": false,
+        "from": 2948,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2969
+      },
+      {
+        "from": 2969,
+        "kind": "text",
+        "to": 2974
+      },
+      {
+        "body": {
+          "from": 2975,
+          "to": 2983
+        },
+        "display": false,
+        "from": 2974,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2984
+      },
+      {
+        "from": 2984,
+        "kind": "text",
+        "to": 2986
+      }
+    ],
+    "from": 2606,
+    "kind": "command",
+    "meta": {},
+    "name": "example",
+    "to": 2987
+  },
+  {
+    "from": 2987,
+    "kind": "text",
+    "to": 2989
+  },
+  {
+    "body": {
+      "from": 2991,
+      "to": 3011
+    },
+    "children": [
+      {
+        "from": 2991,
+        "kind": "text",
+        "to": 3011
+      }
+    ],
+    "from": 2989,
+    "kind": "heading",
+    "level": 1,
+    "to": 3011
+  },
+  {
+    "from": 3011,
+    "kind": "text",
+    "to": 3013
+  },
+  {
+    "args": [
+      {
+        "from": 3022,
+        "to": 3056
+      }
+    ],
+    "body": {
+      "from": 3058,
+      "to": 3108
+    },
+    "children": [
+      {
+        "from": 3058,
+        "kind": "text",
+        "to": 3064
+      },
+      {
+        "body": {
+          "from": 3065,
+          "to": 3070
+        },
+        "display": false,
+        "from": 3064,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 3071
+      },
+      {
+        "from": 3071,
+        "kind": "text",
+        "to": 3088
+      },
+      {
+        "body": {
+          "from": 3089,
+          "to": 3094
+        },
+        "display": false,
+        "from": 3088,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 3095
+      },
+      {
+        "from": 3095,
+        "kind": "text",
+        "to": 3108
+      }
+    ],
+    "from": 3013,
+    "kind": "command",
+    "meta": {},
+    "name": "theorem",
+    "to": 3109
+  },
+  {
+    "from": 3109,
+    "kind": "text",
+    "to": 3111
+  },
+  {
+    "body": {
+      "from": 3112,
+      "to": 3118
+    },
+    "children": [
+      {
+        "from": 3112,
+        "kind": "text",
+        "to": 3118
+      }
+    ],
+    "from": 3111,
+    "kind": "command",
+    "name": "emph",
+    "to": 3119
+  },
+  {
+    "from": 3119,
+    "kind": "text",
+    "to": 3124
+  },
+  {
+    "body": {
+      "from": 3125,
+      "to": 3126
+    },
+    "display": false,
+    "from": 3124,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 3127
+  },
+  {
+    "from": 3127,
+    "kind": "text",
+    "to": 3149
+  },
+  {
+    "body": {
+      "from": 3150,
+      "to": 3161
+    },
+    "display": false,
+    "from": 3149,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 3162
+  },
+  {
+    "from": 3162,
+    "kind": "text",
+    "to": 3196
+  },
+  {
+    "body": {
+      "from": 3197,
+      "to": 3198
+    },
+    "display": false,
+    "from": 3196,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 3199
+  },
+  {
+    "from": 3199,
+    "kind": "text",
+    "to": 3205
+  },
+  {
+    "body": {
+      "from": 3206,
+      "to": 3219
+    },
+    "display": false,
+    "from": 3205,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 3220
+  },
+  {
+    "from": 3220,
+    "kind": "text",
+    "to": 3229
+  },
+  {
+    "body": {
+      "from": 3230,
+      "to": 3236
+    },
+    "display": false,
+    "from": 3229,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 3237
+  },
+  {
+    "from": 3237,
+    "kind": "text",
+    "to": 3245
+  },
+  {
+    "body": {
+      "from": 3246,
+      "to": 3261
+    },
+    "display": false,
+    "from": 3245,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 3262
+  },
+  {
+    "from": 3262,
+    "kind": "text",
+    "to": 3273
+  },
+  {
+    "body": {
+      "from": 3274,
+      "to": 3275
+    },
+    "display": false,
+    "from": 3273,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 3276
+  },
+  {
+    "from": 3276,
+    "kind": "text",
+    "to": 3302
+  },
+  {
+    "body": {
+      "from": 3303,
+      "to": 3321
+    },
+    "display": false,
+    "from": 3302,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 3322
+  },
+  {
+    "from": 3322,
+    "kind": "text",
+    "to": 3375
+  },
+  {
+    "body": {
+      "from": 3376,
+      "to": 3377
+    },
+    "display": false,
+    "from": 3375,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 3378
+  },
+  {
+    "from": 3378,
+    "kind": "text",
+    "to": 3414
+  },
+  {
+    "body": {
+      "from": 3415,
+      "to": 3422
+    },
+    "display": false,
+    "from": 3414,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 3423
+  },
+  {
+    "from": 3423,
+    "kind": "text",
+    "to": 3451
+  },
+  {
+    "args": [
+      {
+        "from": 3454,
+        "to": 3457
+      }
+    ],
+    "body": {
+      "from": 3454,
+      "to": 3457
+    },
+    "children": [
+      {
+        "from": 3454,
+        "kind": "text",
+        "to": 3457
+      }
+    ],
+    "from": 3451,
+    "kind": "command",
+    "meta": {
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "h",
+    "to": 3458
+  },
+  {
+    "from": 3458,
+    "kind": "text",
+    "to": 3459
+  },
+  {
+    "body": {
+      "from": 3460,
+      "to": 3463
+    },
+    "children": [
+      {
+        "from": 3460,
+        "kind": "text",
+        "to": 3463
+      }
+    ],
+    "from": 3459,
+    "kind": "command",
+    "name": "emph",
+    "to": 3464
+  },
+  {
+    "from": 3464,
+    "kind": "text",
+    "to": 3466
+  },
+  {
+    "body": {
+      "from": 3468,
+      "to": 3477
+    },
+    "children": [
+      {
+        "from": 3468,
+        "kind": "text",
+        "to": 3477
+      }
+    ],
+    "from": 3466,
+    "kind": "heading",
+    "level": 1,
+    "to": 3477
+  },
+  {
+    "from": 3477,
+    "kind": "text",
+    "to": 3479
+  },
+  {
+    "from": 3479,
+    "kind": "item",
+    "name": "number",
+    "to": 3481
+  },
+  {
+    "from": 3481,
+    "kind": "text",
+    "to": 3491
+  },
+  {
+    "body": {
+      "from": 3492,
+      "to": 3495
+    },
+    "display": false,
+    "from": 3491,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 3496
+  },
+  {
+    "from": 3496,
+    "kind": "text",
+    "to": 3510
+  },
+  {
+    "body": {
+      "from": 3511,
+      "to": 3512
+    },
+    "display": false,
+    "from": 3510,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 3513
+  },
+  {
+    "from": 3513,
+    "kind": "text",
+    "to": 3515
+  },
+  {
+    "from": 3515,
+    "kind": "item",
+    "name": "number",
+    "to": 3517
+  },
+  {
+    "from": 3517,
+    "kind": "text",
+    "to": 3530
+  },
+  {
+    "body": {
+      "from": 3531,
+      "to": 3539
+    },
+    "display": false,
+    "from": 3530,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 3540
+  },
+  {
+    "from": 3540,
+    "kind": "text",
+    "to": 3545
+  },
+  {
+    "body": {
+      "from": 3546,
+      "to": 3554
+    },
+    "display": false,
+    "from": 3545,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 3555
+  },
+  {
+    "from": 3555,
+    "kind": "text",
+    "to": 3562
+  },
+  {
+    "body": {
+      "from": 3563,
+      "to": 3581
+    },
+    "display": false,
+    "from": 3562,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 3582
+  },
+  {
+    "from": 3582,
+    "kind": "text",
+    "to": 3584
+  },
+  {
+    "from": 3584,
+    "kind": "item",
+    "name": "number",
+    "to": 3586
+  },
+  {
+    "from": 3586,
+    "kind": "text",
+    "to": 3604
+  },
+  {
+    "body": {
+      "from": 3605,
+      "to": 3625
+    },
+    "display": false,
+    "from": 3604,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 3626
+  },
+  {
+    "from": 3626,
+    "kind": "text",
+    "to": 3653
+  },
+  {
+    "args": [],
+    "body": {
+      "from": 3662,
+      "to": 3955
+    },
+    "children": [
+      {
+        "from": 3662,
+        "kind": "text",
+        "to": 3665
+      },
+      {
+        "from": 3665,
+        "kind": "item",
+        "name": "bullet",
+        "to": 3667
+      },
+      {
+        "from": 3667,
+        "kind": "text",
+        "to": 3743
+      },
+      {
+        "body": {
+          "from": 3744,
+          "to": 3751
+        },
+        "display": false,
+        "from": 3743,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 3752
+      },
+      {
+        "from": 3752,
+        "kind": "text",
+        "to": 3769
+      },
+      {
+        "from": 3769,
+        "kind": "item",
+        "name": "bullet",
+        "to": 3771
+      },
+      {
+        "from": 3771,
+        "kind": "text",
+        "to": 3848
+      },
+      {
+        "from": 3848,
+        "kind": "item",
+        "name": "bullet",
+        "to": 3850
+      },
+      {
+        "from": 3850,
+        "kind": "text",
+        "to": 3913
+      },
+      {
+        "body": {
+          "from": 3914,
+          "to": 3921
+        },
+        "display": false,
+        "from": 3913,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 3922
+      },
+      {
+        "from": 3922,
+        "kind": "text",
+        "to": 3923
+      },
+      {
+        "body": {
+          "from": 3924,
+          "to": 3925
+        },
+        "display": false,
+        "from": 3923,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 3926
+      },
+      {
+        "from": 3926,
+        "kind": "text",
+        "to": 3955
+      }
+    ],
+    "from": 3653,
+    "kind": "command",
+    "meta": {},
+    "name": "summary",
+    "to": 3956
+  },
+  {
+    "from": 3956,
+    "kind": "text",
+    "to": 3957
+  }
+]

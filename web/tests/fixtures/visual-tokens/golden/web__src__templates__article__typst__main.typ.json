@@ -1,0 +1,1527 @@
+[
+  {
+    "args": [
+      {
+        "from": 9,
+        "to": 32
+      }
+    ],
+    "from": 0,
+    "kind": "command",
+    "meta": {
+      "path": "@preview/arkheion:0.1.2",
+      "statement": "true"
+    },
+    "name": "import",
+    "to": 43
+  },
+  {
+    "from": 43,
+    "kind": "text",
+    "to": 45
+  },
+  {
+    "body": {
+      "from": 47,
+      "to": 92
+    },
+    "from": 45,
+    "kind": "comment",
+    "to": 92
+  },
+  {
+    "from": 92,
+    "kind": "text",
+    "to": 93
+  },
+  {
+    "from": 93,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "",
+      "template": "arkheion"
+    },
+    "name": "show",
+    "to": 788
+  },
+  {
+    "from": 788,
+    "kind": "text",
+    "to": 790
+  },
+  {
+    "from": 790,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "cite"
+    },
+    "name": "set",
+    "to": 829
+  },
+  {
+    "from": 829,
+    "kind": "text",
+    "to": 831
+  },
+  {
+    "body": {
+      "from": 833,
+      "to": 864
+    },
+    "children": [
+      {
+        "from": 833,
+        "kind": "text",
+        "to": 846
+      },
+      {
+        "from": 846,
+        "kind": "command",
+        "meta": {
+          "key": "sec-introduction"
+        },
+        "name": "label",
+        "to": 864
+      }
+    ],
+    "from": 831,
+    "kind": "heading",
+    "level": 1,
+    "to": 864
+  },
+  {
+    "from": 864,
+    "kind": "text",
+    "to": 885
+  },
+  {
+    "from": 885,
+    "kind": "command",
+    "meta": {
+      "key": "shannon1948"
+    },
+    "name": "ref",
+    "to": 897
+  },
+  {
+    "from": 897,
+    "kind": "text",
+    "to": 913
+  },
+  {
+    "from": 913,
+    "kind": "command",
+    "meta": {
+      "key": "efron1979"
+    },
+    "name": "ref",
+    "to": 923
+  },
+  {
+    "from": 923,
+    "kind": "text",
+    "to": 1158
+  },
+  {
+    "args": [
+      {
+        "from": 1164,
+        "to": 1175
+      }
+    ],
+    "body": {
+      "from": 1164,
+      "to": 1190
+    },
+    "children": [
+      {
+        "from": 1164,
+        "kind": "text",
+        "to": 1175
+      },
+      {
+        "from": 1175,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1177
+      },
+      {
+        "from": 1177,
+        "kind": "raw",
+        "name": "argument",
+        "to": 1182
+      },
+      {
+        "from": 1182,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1183
+      },
+      {
+        "body": {
+          "from": 1184,
+          "to": 1189
+        },
+        "from": 1183,
+        "kind": "raw",
+        "name": "string",
+        "to": 1190
+      }
+    ],
+    "from": 1158,
+    "kind": "command",
+    "meta": {
+      "arg:form": "\"prose\"",
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "cite",
+    "named": {
+      "form": {
+        "from": 1183,
+        "to": 1190
+      }
+    },
+    "to": 1191
+  },
+  {
+    "from": 1191,
+    "kind": "text",
+    "to": 1216
+  },
+  {
+    "from": 1216,
+    "kind": "command",
+    "meta": {
+      "key": "breiman2001"
+    },
+    "name": "ref",
+    "to": 1228
+  },
+  {
+    "from": 1228,
+    "kind": "text",
+    "to": 1342
+  },
+  {
+    "from": 1342,
+    "kind": "command",
+    "meta": {
+      "key": "sec-model"
+    },
+    "name": "ref",
+    "to": 1352
+  },
+  {
+    "from": 1352,
+    "kind": "text",
+    "to": 1393
+  },
+  {
+    "from": 1393,
+    "kind": "command",
+    "meta": {
+      "key": "sec-results"
+    },
+    "name": "ref",
+    "to": 1405
+  },
+  {
+    "from": 1405,
+    "kind": "text",
+    "to": 1468
+  },
+  {
+    "from": 1468,
+    "kind": "command",
+    "meta": {
+      "key": "sec-conclusion"
+    },
+    "name": "ref",
+    "to": 1483
+  },
+  {
+    "from": 1483,
+    "kind": "text",
+    "to": 1486
+  },
+  {
+    "body": {
+      "from": 1488,
+      "to": 1514
+    },
+    "children": [
+      {
+        "from": 1488,
+        "kind": "text",
+        "to": 1501
+      },
+      {
+        "from": 1501,
+        "kind": "command",
+        "meta": {
+          "key": "sec-related"
+        },
+        "name": "label",
+        "to": 1514
+      }
+    ],
+    "from": 1486,
+    "kind": "heading",
+    "level": 1,
+    "to": 1514
+  },
+  {
+    "from": 1514,
+    "kind": "text",
+    "to": 1707
+  },
+  {
+    "from": 1707,
+    "kind": "command",
+    "meta": {
+      "key": "rubin1974"
+    },
+    "name": "ref",
+    "to": 1717
+  },
+  {
+    "from": 1717,
+    "kind": "text",
+    "to": 1791
+  },
+  {
+    "from": 1791,
+    "kind": "command",
+    "meta": {
+      "key": "efron1979"
+    },
+    "name": "ref",
+    "to": 1801
+  },
+  {
+    "from": 1801,
+    "kind": "text",
+    "to": 1865
+  },
+  {
+    "from": 1865,
+    "kind": "command",
+    "meta": {
+      "key": "breiman2001"
+    },
+    "name": "ref",
+    "to": 1877
+  },
+  {
+    "from": 1877,
+    "kind": "text",
+    "to": 1880
+  },
+  {
+    "body": {
+      "from": 1882,
+      "to": 1899
+    },
+    "children": [
+      {
+        "from": 1882,
+        "kind": "text",
+        "to": 1888
+      },
+      {
+        "from": 1888,
+        "kind": "command",
+        "meta": {
+          "key": "sec-model"
+        },
+        "name": "label",
+        "to": 1899
+      }
+    ],
+    "from": 1880,
+    "kind": "heading",
+    "level": 1,
+    "to": 1899
+  },
+  {
+    "from": 1899,
+    "kind": "text",
+    "to": 1905
+  },
+  {
+    "body": {
+      "from": 1906,
+      "to": 1909
+    },
+    "display": false,
+    "from": 1905,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 1910
+  },
+  {
+    "from": 1910,
+    "kind": "text",
+    "to": 1939
+  },
+  {
+    "body": {
+      "from": 1940,
+      "to": 1941
+    },
+    "display": false,
+    "from": 1939,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 1942
+  },
+  {
+    "from": 1942,
+    "kind": "text",
+    "to": 1951
+  },
+  {
+    "body": {
+      "from": 1952,
+      "to": 1965
+    },
+    "display": false,
+    "from": 1951,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 1966
+  },
+  {
+    "from": 1966,
+    "kind": "text",
+    "to": 2014
+  },
+  {
+    "body": {
+      "from": 2015,
+      "to": 2058
+    },
+    "display": true,
+    "from": 2014,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 2059
+  },
+  {
+    "from": 2059,
+    "kind": "text",
+    "to": 2060
+  },
+  {
+    "from": 2060,
+    "kind": "command",
+    "meta": {
+      "key": "eq-model"
+    },
+    "name": "label",
+    "to": 2070
+  },
+  {
+    "from": 2070,
+    "kind": "text",
+    "to": 2076
+  },
+  {
+    "body": {
+      "from": 2077,
+      "to": 2107
+    },
+    "display": false,
+    "from": 2076,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 2108
+  },
+  {
+    "from": 2108,
+    "kind": "text",
+    "to": 2116
+  },
+  {
+    "from": 2116,
+    "kind": "command",
+    "meta": {
+      "key": "eq-model"
+    },
+    "name": "ref",
+    "to": 2125
+  },
+  {
+    "from": 2125,
+    "kind": "text",
+    "to": 2218
+  },
+  {
+    "args": [],
+    "body": {
+      "from": 2275,
+      "to": 2478
+    },
+    "children": [
+      {
+        "from": 2275,
+        "kind": "text",
+        "to": 2278
+      },
+      {
+        "body": {
+          "from": 2279,
+          "to": 2288
+        },
+        "children": [
+          {
+            "from": 2279,
+            "kind": "text",
+            "to": 2288
+          }
+        ],
+        "from": 2278,
+        "kind": "command",
+        "name": "strong",
+        "to": 2289
+      },
+      {
+        "from": 2289,
+        "kind": "text",
+        "to": 2316
+      },
+      {
+        "from": 2316,
+        "kind": "command",
+        "meta": {
+          "key": "eq-model"
+        },
+        "name": "ref",
+        "to": 2325
+      },
+      {
+        "from": 2325,
+        "kind": "text",
+        "to": 2376
+      },
+      {
+        "body": {
+          "from": 2377,
+          "to": 2390
+        },
+        "display": false,
+        "from": 2376,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2391
+      },
+      {
+        "from": 2391,
+        "kind": "text",
+        "to": 2410
+      },
+      {
+        "body": {
+          "from": 2411,
+          "to": 2414
+        },
+        "display": false,
+        "from": 2410,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2415
+      },
+      {
+        "from": 2415,
+        "kind": "text",
+        "to": 2422
+      },
+      {
+        "body": {
+          "from": 2423,
+          "to": 2475
+        },
+        "display": false,
+        "from": 2422,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 2476
+      },
+      {
+        "from": 2476,
+        "kind": "text",
+        "to": 2478
+      }
+    ],
+    "from": 2218,
+    "kind": "command",
+    "meta": {
+      "arg:inset": "(left: 1em)",
+      "arg:stroke": "(left: 1.5pt + gray)"
+    },
+    "name": "block",
+    "named": {
+      "inset": {
+        "from": 2232,
+        "to": 2243
+      },
+      "stroke": {
+        "from": 2253,
+        "to": 2273
+      }
+    },
+    "to": 2479
+  },
+  {
+    "from": 2479,
+    "kind": "text",
+    "to": 2481
+  },
+  {
+    "body": {
+      "from": 2482,
+      "to": 2488
+    },
+    "children": [
+      {
+        "from": 2482,
+        "kind": "text",
+        "to": 2488
+      }
+    ],
+    "from": 2481,
+    "kind": "command",
+    "name": "emph",
+    "to": 2489
+  },
+  {
+    "from": 2489,
+    "kind": "text",
+    "to": 2523
+  },
+  {
+    "from": 2523,
+    "kind": "command",
+    "meta": {
+      "key": "eq-model"
+    },
+    "name": "ref",
+    "to": 2532
+  },
+  {
+    "from": 2532,
+    "kind": "text",
+    "to": 2539
+  },
+  {
+    "body": {
+      "from": 2540,
+      "to": 2543
+    },
+    "display": false,
+    "from": 2539,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 2544
+  },
+  {
+    "from": 2544,
+    "kind": "text",
+    "to": 2642
+  },
+  {
+    "body": {
+      "from": 2643,
+      "to": 2649
+    },
+    "display": false,
+    "from": 2642,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 2650
+  },
+  {
+    "from": 2650,
+    "kind": "text",
+    "to": 2652
+  },
+  {
+    "args": [
+      {
+        "from": 2655,
+        "to": 2658
+      }
+    ],
+    "body": {
+      "from": 2655,
+      "to": 2658
+    },
+    "children": [
+      {
+        "from": 2655,
+        "kind": "text",
+        "to": 2658
+      }
+    ],
+    "from": 2652,
+    "kind": "command",
+    "meta": {
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "h",
+    "to": 2659
+  },
+  {
+    "from": 2659,
+    "kind": "text",
+    "to": 2660
+  },
+  {
+    "body": {
+      "from": 2661,
+      "to": 2667
+    },
+    "display": false,
+    "from": 2660,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 2668
+  },
+  {
+    "from": 2668,
+    "kind": "text",
+    "to": 2670
+  },
+  {
+    "body": {
+      "from": 2672,
+      "to": 2693
+    },
+    "children": [
+      {
+        "from": 2672,
+        "kind": "text",
+        "to": 2680
+      },
+      {
+        "from": 2680,
+        "kind": "command",
+        "meta": {
+          "key": "sec-results"
+        },
+        "name": "label",
+        "to": 2693
+      }
+    ],
+    "from": 2670,
+    "kind": "heading",
+    "level": 1,
+    "to": 2693
+  },
+  {
+    "from": 2693,
+    "kind": "text",
+    "to": 2695
+  },
+  {
+    "from": 2695,
+    "kind": "command",
+    "meta": {
+      "key": "tab-results"
+    },
+    "name": "ref",
+    "to": 2707
+  },
+  {
+    "from": 2707,
+    "kind": "text",
+    "to": 2892
+  },
+  {
+    "args": [
+      {
+        "from": 2903,
+        "to": 3261
+      }
+    ],
+    "body": {
+      "from": 2900,
+      "to": 3350
+    },
+    "children": [
+      {
+        "from": 2900,
+        "kind": "raw",
+        "name": "separator",
+        "to": 2903
+      },
+      {
+        "args": [
+          {
+            "from": 2997,
+            "to": 3010
+          },
+          {
+            "from": 3016,
+            "to": 3065
+          },
+          {
+            "from": 3071,
+            "to": 3084
+          },
+          {
+            "from": 3090,
+            "to": 3111
+          },
+          {
+            "from": 3113,
+            "to": 3126
+          },
+          {
+            "from": 3128,
+            "to": 3134
+          },
+          {
+            "from": 3140,
+            "to": 3163
+          },
+          {
+            "from": 3165,
+            "to": 3178
+          },
+          {
+            "from": 3180,
+            "to": 3186
+          },
+          {
+            "from": 3192,
+            "to": 3214
+          },
+          {
+            "from": 3216,
+            "to": 3229
+          },
+          {
+            "from": 3231,
+            "to": 3237
+          },
+          {
+            "from": 3243,
+            "to": 3256
+          }
+        ],
+        "body": {
+          "from": 2909,
+          "to": 3260
+        },
+        "children": [
+          {
+            "from": 2909,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2914
+          },
+          {
+            "from": 2914,
+            "kind": "raw",
+            "name": "argument",
+            "to": 2922
+          },
+          {
+            "from": 2922,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2923
+          },
+          {
+            "from": 2923,
+            "kind": "text",
+            "to": 2927
+          },
+          {
+            "from": 2927,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2929
+          },
+          {
+            "from": 2929,
+            "kind": "text",
+            "to": 2933
+          },
+          {
+            "from": 2933,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2935
+          },
+          {
+            "from": 2935,
+            "kind": "text",
+            "to": 2940
+          },
+          {
+            "from": 2940,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2946
+          },
+          {
+            "from": 2946,
+            "kind": "raw",
+            "name": "argument",
+            "to": 2952
+          },
+          {
+            "from": 2952,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2953
+          },
+          {
+            "from": 2953,
+            "kind": "text",
+            "to": 2958
+          },
+          {
+            "from": 2958,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2960
+          },
+          {
+            "from": 2960,
+            "kind": "text",
+            "to": 2965
+          },
+          {
+            "from": 2965,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2967
+          },
+          {
+            "from": 2967,
+            "kind": "text",
+            "to": 2973
+          },
+          {
+            "from": 2973,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2979
+          },
+          {
+            "from": 2979,
+            "kind": "raw",
+            "name": "argument",
+            "to": 2986
+          },
+          {
+            "from": 2986,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2987
+          },
+          {
+            "from": 2987,
+            "kind": "text",
+            "to": 2991
+          },
+          {
+            "from": 2991,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2997
+          },
+          {
+            "args": [],
+            "body": {
+              "from": 3009,
+              "to": 3009
+            },
+            "from": 2997,
+            "kind": "command",
+            "meta": {
+              "args": "code",
+              "raw": "true"
+            },
+            "name": "table.hline",
+            "to": 3010
+          },
+          {
+            "from": 3010,
+            "kind": "raw",
+            "name": "separator",
+            "to": 3016
+          },
+          {
+            "args": [],
+            "body": {
+              "from": 3054,
+              "to": 3064
+            },
+            "children": [
+              {
+                "body": {
+                  "from": 3030,
+                  "to": 3039
+                },
+                "children": [
+                  {
+                    "from": 3030,
+                    "kind": "text",
+                    "to": 3039
+                  }
+                ],
+                "from": 3029,
+                "kind": "command",
+                "name": "strong",
+                "to": 3040
+              },
+              {
+                "body": {
+                  "from": 3043,
+                  "to": 3051
+                },
+                "children": [
+                  {
+                    "from": 3043,
+                    "kind": "text",
+                    "to": 3051
+                  }
+                ],
+                "from": 3042,
+                "kind": "command",
+                "name": "strong",
+                "to": 3052
+              },
+              {
+                "body": {
+                  "from": 3055,
+                  "to": 3063
+                },
+                "children": [
+                  {
+                    "from": 3055,
+                    "kind": "text",
+                    "to": 3063
+                  }
+                ],
+                "from": 3054,
+                "kind": "command",
+                "name": "strong",
+                "to": 3064
+              }
+            ],
+            "from": 3016,
+            "kind": "command",
+            "meta": {},
+            "name": "table.header",
+            "to": 3065
+          },
+          {
+            "from": 3065,
+            "kind": "raw",
+            "name": "separator",
+            "to": 3071
+          },
+          {
+            "args": [],
+            "body": {
+              "from": 3083,
+              "to": 3083
+            },
+            "from": 3071,
+            "kind": "command",
+            "meta": {
+              "args": "code",
+              "raw": "true"
+            },
+            "name": "table.hline",
+            "to": 3084
+          },
+          {
+            "from": 3084,
+            "kind": "raw",
+            "name": "separator",
+            "to": 3090
+          },
+          {
+            "body": {
+              "from": 3091,
+              "to": 3110
+            },
+            "children": [
+              {
+                "from": 3091,
+                "kind": "text",
+                "to": 3110
+              }
+            ],
+            "from": 3090,
+            "kind": "group",
+            "name": "content",
+            "to": 3111
+          },
+          {
+            "from": 3111,
+            "kind": "raw",
+            "name": "separator",
+            "to": 3113
+          },
+          {
+            "body": {
+              "from": 3114,
+              "to": 3125
+            },
+            "children": [
+              {
+                "from": 3114,
+                "kind": "text",
+                "to": 3125
+              }
+            ],
+            "from": 3113,
+            "kind": "group",
+            "name": "content",
+            "to": 3126
+          },
+          {
+            "from": 3126,
+            "kind": "raw",
+            "name": "separator",
+            "to": 3128
+          },
+          {
+            "body": {
+              "from": 3129,
+              "to": 3133
+            },
+            "children": [
+              {
+                "from": 3129,
+                "kind": "text",
+                "to": 3133
+              }
+            ],
+            "from": 3128,
+            "kind": "group",
+            "name": "content",
+            "to": 3134
+          },
+          {
+            "from": 3134,
+            "kind": "raw",
+            "name": "separator",
+            "to": 3140
+          },
+          {
+            "body": {
+              "from": 3141,
+              "to": 3162
+            },
+            "children": [
+              {
+                "from": 3141,
+                "kind": "text",
+                "to": 3162
+              }
+            ],
+            "from": 3140,
+            "kind": "group",
+            "name": "content",
+            "to": 3163
+          },
+          {
+            "from": 3163,
+            "kind": "raw",
+            "name": "separator",
+            "to": 3165
+          },
+          {
+            "body": {
+              "from": 3166,
+              "to": 3177
+            },
+            "children": [
+              {
+                "from": 3166,
+                "kind": "text",
+                "to": 3177
+              }
+            ],
+            "from": 3165,
+            "kind": "group",
+            "name": "content",
+            "to": 3178
+          },
+          {
+            "from": 3178,
+            "kind": "raw",
+            "name": "separator",
+            "to": 3180
+          },
+          {
+            "body": {
+              "from": 3181,
+              "to": 3185
+            },
+            "children": [
+              {
+                "from": 3181,
+                "kind": "text",
+                "to": 3185
+              }
+            ],
+            "from": 3180,
+            "kind": "group",
+            "name": "content",
+            "to": 3186
+          },
+          {
+            "from": 3186,
+            "kind": "raw",
+            "name": "separator",
+            "to": 3192
+          },
+          {
+            "body": {
+              "from": 3193,
+              "to": 3213
+            },
+            "children": [
+              {
+                "from": 3193,
+                "kind": "text",
+                "to": 3213
+              }
+            ],
+            "from": 3192,
+            "kind": "group",
+            "name": "content",
+            "to": 3214
+          },
+          {
+            "from": 3214,
+            "kind": "raw",
+            "name": "separator",
+            "to": 3216
+          },
+          {
+            "body": {
+              "from": 3217,
+              "to": 3228
+            },
+            "children": [
+              {
+                "from": 3217,
+                "kind": "text",
+                "to": 3228
+              }
+            ],
+            "from": 3216,
+            "kind": "group",
+            "name": "content",
+            "to": 3229
+          },
+          {
+            "from": 3229,
+            "kind": "raw",
+            "name": "separator",
+            "to": 3231
+          },
+          {
+            "body": {
+              "from": 3232,
+              "to": 3236
+            },
+            "children": [
+              {
+                "from": 3232,
+                "kind": "text",
+                "to": 3236
+              }
+            ],
+            "from": 3231,
+            "kind": "group",
+            "name": "content",
+            "to": 3237
+          },
+          {
+            "from": 3237,
+            "kind": "raw",
+            "name": "separator",
+            "to": 3243
+          },
+          {
+            "args": [],
+            "body": {
+              "from": 3255,
+              "to": 3255
+            },
+            "from": 3243,
+            "kind": "command",
+            "meta": {
+              "args": "code",
+              "raw": "true"
+            },
+            "name": "table.hline",
+            "to": 3256
+          },
+          {
+            "from": 3256,
+            "kind": "raw",
+            "name": "separator",
+            "to": 3260
+          }
+        ],
+        "from": 2903,
+        "kind": "table",
+        "meta": {
+          "arg:align": "(left, right, right)",
+          "arg:columns": "(1fr, auto, auto)",
+          "arg:stroke": "none",
+          "args": "code",
+          "raw": "true"
+        },
+        "name": "table",
+        "named": {
+          "align": {
+            "from": 2953,
+            "to": 2973
+          },
+          "columns": {
+            "from": 2923,
+            "to": 2940
+          },
+          "stroke": {
+            "from": 2987,
+            "to": 2991
+          }
+        },
+        "to": 3261
+      },
+      {
+        "from": 3261,
+        "kind": "raw",
+        "name": "separator",
+        "to": 3265
+      },
+      {
+        "from": 3265,
+        "kind": "raw",
+        "name": "argument",
+        "to": 3273
+      },
+      {
+        "from": 3273,
+        "kind": "raw",
+        "name": "separator",
+        "to": 3274
+      },
+      {
+        "body": {
+          "from": 3275,
+          "to": 3347
+        },
+        "children": [
+          {
+            "from": 3275,
+            "kind": "text",
+            "to": 3347
+          }
+        ],
+        "from": 3274,
+        "kind": "group",
+        "meta": {
+          "figureCaption": "true"
+        },
+        "name": "content",
+        "to": 3348
+      },
+      {
+        "from": 3348,
+        "kind": "raw",
+        "name": "separator",
+        "to": 3350
+      }
+    ],
+    "from": 2892,
+    "kind": "command",
+    "meta": {
+      "arg:caption": "[Estimated treatment effect by estimator. Standard errors in parentheses.]",
+      "args": "code",
+      "figure": "true",
+      "figureTable": "true",
+      "raw": "true"
+    },
+    "name": "figure",
+    "named": {
+      "caption": {
+        "from": 3274,
+        "to": 3348
+      }
+    },
+    "to": 3351
+  },
+  {
+    "from": 3351,
+    "kind": "text",
+    "to": 3352
+  },
+  {
+    "from": 3352,
+    "kind": "command",
+    "meta": {
+      "key": "tab-results"
+    },
+    "name": "label",
+    "to": 3365
+  },
+  {
+    "from": 3365,
+    "kind": "text",
+    "to": 3595
+  },
+  {
+    "body": {
+      "from": 3597,
+      "to": 3624
+    },
+    "children": [
+      {
+        "from": 3597,
+        "kind": "text",
+        "to": 3608
+      },
+      {
+        "from": 3608,
+        "kind": "command",
+        "meta": {
+          "key": "sec-conclusion"
+        },
+        "name": "label",
+        "to": 3624
+      }
+    ],
+    "from": 3595,
+    "kind": "heading",
+    "level": 1,
+    "to": 3624
+  },
+  {
+    "from": 3624,
+    "kind": "text",
+    "to": 3920
+  },
+  {
+    "args": [
+      {
+        "from": 3934,
+        "to": 3950
+      }
+    ],
+    "body": {
+      "from": 3934,
+      "to": 3980
+    },
+    "children": [
+      {
+        "body": {
+          "from": 3935,
+          "to": 3949
+        },
+        "from": 3934,
+        "kind": "raw",
+        "name": "string",
+        "to": 3950
+      },
+      {
+        "from": 3950,
+        "kind": "raw",
+        "name": "separator",
+        "to": 3952
+      },
+      {
+        "from": 3952,
+        "kind": "raw",
+        "name": "argument",
+        "to": 3958
+      },
+      {
+        "from": 3958,
+        "kind": "raw",
+        "name": "separator",
+        "to": 3959
+      },
+      {
+        "body": {
+          "from": 3960,
+          "to": 3979
+        },
+        "from": 3959,
+        "kind": "raw",
+        "name": "string",
+        "to": 3980
+      }
+    ],
+    "from": 3920,
+    "kind": "command",
+    "meta": {
+      "arg:style": "\"chicago-author-date\"",
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "bibliography",
+    "named": {
+      "style": {
+        "from": 3959,
+        "to": 3980
+      }
+    },
+    "to": 3981
+  },
+  {
+    "from": 3981,
+    "kind": "text",
+    "to": 3982
+  }
+]

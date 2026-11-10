@@ -1,0 +1,626 @@
+[
+  {
+    "args": [
+      {
+        "from": 9,
+        "to": 16
+      }
+    ],
+    "from": 0,
+    "kind": "command",
+    "meta": {
+      "path": "lib.typ",
+      "statement": "true"
+    },
+    "name": "import",
+    "to": 31
+  },
+  {
+    "from": 31,
+    "kind": "text",
+    "to": 33
+  },
+  {
+    "from": 33,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "page"
+    },
+    "name": "set",
+    "to": 186
+  },
+  {
+    "from": 186,
+    "kind": "text",
+    "to": 187
+  },
+  {
+    "from": 187,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "text"
+    },
+    "name": "set",
+    "to": 208
+  },
+  {
+    "from": 208,
+    "kind": "text",
+    "to": 210
+  },
+  {
+    "body": {
+      "from": 212,
+      "to": 232
+    },
+    "children": [
+      {
+        "from": 212,
+        "kind": "text",
+        "to": 232
+      }
+    ],
+    "from": 210,
+    "kind": "heading",
+    "level": 1,
+    "to": 232
+  },
+  {
+    "from": 232,
+    "kind": "text",
+    "to": 387
+  },
+  {
+    "args": [],
+    "from": 387,
+    "kind": "command",
+    "meta": {
+      "raw": "true"
+    },
+    "name": "section-note",
+    "to": 400
+  },
+  {
+    "from": 400,
+    "kind": "text",
+    "to": 402
+  },
+  {
+    "args": [
+      {
+        "from": 426,
+        "to": 435
+      },
+      {
+        "from": 437,
+        "to": 449
+      },
+      {
+        "from": 451,
+        "to": 460
+      },
+      {
+        "from": 464,
+        "to": 469
+      },
+      {
+        "from": 471,
+        "to": 477
+      },
+      {
+        "from": 479,
+        "to": 485
+      },
+      {
+        "from": 489,
+        "to": 494
+      },
+      {
+        "from": 496,
+        "to": 502
+      },
+      {
+        "from": 504,
+        "to": 510
+      }
+    ],
+    "body": {
+      "from": 409,
+      "to": 512
+    },
+    "children": [
+      {
+        "from": 409,
+        "kind": "raw",
+        "name": "separator",
+        "to": 412
+      },
+      {
+        "from": 412,
+        "kind": "raw",
+        "name": "argument",
+        "to": 420
+      },
+      {
+        "from": 420,
+        "kind": "raw",
+        "name": "separator",
+        "to": 421
+      },
+      {
+        "from": 421,
+        "kind": "text",
+        "to": 422
+      },
+      {
+        "from": 422,
+        "kind": "raw",
+        "name": "separator",
+        "to": 426
+      },
+      {
+        "body": {
+          "from": 427,
+          "to": 434
+        },
+        "children": [
+          {
+            "body": {
+              "from": 428,
+              "to": 433
+            },
+            "children": [
+              {
+                "from": 428,
+                "kind": "text",
+                "to": 433
+              }
+            ],
+            "from": 427,
+            "kind": "command",
+            "name": "strong",
+            "to": 434
+          }
+        ],
+        "from": 426,
+        "kind": "group",
+        "name": "content",
+        "to": 435
+      },
+      {
+        "from": 435,
+        "kind": "raw",
+        "name": "separator",
+        "to": 437
+      },
+      {
+        "body": {
+          "from": 438,
+          "to": 448
+        },
+        "children": [
+          {
+            "body": {
+              "from": 439,
+              "to": 447
+            },
+            "children": [
+              {
+                "from": 439,
+                "kind": "text",
+                "to": 447
+              }
+            ],
+            "from": 438,
+            "kind": "command",
+            "name": "strong",
+            "to": 448
+          }
+        ],
+        "from": 437,
+        "kind": "group",
+        "name": "content",
+        "to": 449
+      },
+      {
+        "from": 449,
+        "kind": "raw",
+        "name": "separator",
+        "to": 451
+      },
+      {
+        "body": {
+          "from": 452,
+          "to": 459
+        },
+        "children": [
+          {
+            "body": {
+              "from": 453,
+              "to": 458
+            },
+            "children": [
+              {
+                "from": 453,
+                "kind": "text",
+                "to": 458
+              }
+            ],
+            "from": 452,
+            "kind": "command",
+            "name": "strong",
+            "to": 459
+          }
+        ],
+        "from": 451,
+        "kind": "group",
+        "name": "content",
+        "to": 460
+      },
+      {
+        "from": 460,
+        "kind": "raw",
+        "name": "separator",
+        "to": 464
+      },
+      {
+        "body": {
+          "from": 465,
+          "to": 468
+        },
+        "children": [
+          {
+            "from": 465,
+            "kind": "text",
+            "to": 468
+          }
+        ],
+        "from": 464,
+        "kind": "group",
+        "name": "content",
+        "to": 469
+      },
+      {
+        "from": 469,
+        "kind": "raw",
+        "name": "separator",
+        "to": 471
+      },
+      {
+        "body": {
+          "from": 472,
+          "to": 476
+        },
+        "children": [
+          {
+            "from": 472,
+            "kind": "text",
+            "to": 476
+          }
+        ],
+        "from": 471,
+        "kind": "group",
+        "name": "content",
+        "to": 477
+      },
+      {
+        "from": 477,
+        "kind": "raw",
+        "name": "separator",
+        "to": 479
+      },
+      {
+        "body": {
+          "from": 480,
+          "to": 484
+        },
+        "children": [
+          {
+            "from": 480,
+            "kind": "text",
+            "to": 484
+          }
+        ],
+        "from": 479,
+        "kind": "group",
+        "name": "content",
+        "to": 485
+      },
+      {
+        "from": 485,
+        "kind": "raw",
+        "name": "separator",
+        "to": 489
+      },
+      {
+        "body": {
+          "from": 490,
+          "to": 493
+        },
+        "children": [
+          {
+            "from": 490,
+            "kind": "text",
+            "to": 493
+          }
+        ],
+        "from": 489,
+        "kind": "group",
+        "name": "content",
+        "to": 494
+      },
+      {
+        "from": 494,
+        "kind": "raw",
+        "name": "separator",
+        "to": 496
+      },
+      {
+        "body": {
+          "from": 497,
+          "to": 501
+        },
+        "children": [
+          {
+            "from": 497,
+            "kind": "text",
+            "to": 501
+          }
+        ],
+        "from": 496,
+        "kind": "group",
+        "name": "content",
+        "to": 502
+      },
+      {
+        "from": 502,
+        "kind": "raw",
+        "name": "separator",
+        "to": 504
+      },
+      {
+        "body": {
+          "from": 505,
+          "to": 509
+        },
+        "children": [
+          {
+            "from": 505,
+            "kind": "text",
+            "to": 509
+          }
+        ],
+        "from": 504,
+        "kind": "group",
+        "name": "content",
+        "to": 510
+      },
+      {
+        "from": 510,
+        "kind": "raw",
+        "name": "separator",
+        "to": 512
+      }
+    ],
+    "from": 402,
+    "kind": "table",
+    "meta": {
+      "arg:columns": "3",
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "table",
+    "named": {
+      "columns": {
+        "from": 421,
+        "to": 422
+      }
+    },
+    "to": 513
+  },
+  {
+    "from": 513,
+    "kind": "text",
+    "to": 515
+  },
+  {
+    "args": [
+      {
+        "from": 526,
+        "to": 557
+      }
+    ],
+    "body": {
+      "from": 523,
+      "to": 596
+    },
+    "children": [
+      {
+        "from": 523,
+        "kind": "raw",
+        "name": "separator",
+        "to": 526
+      },
+      {
+        "args": [
+          {
+            "from": 532,
+            "to": 543
+          }
+        ],
+        "body": {
+          "from": 532,
+          "to": 556
+        },
+        "children": [
+          {
+            "body": {
+              "from": 533,
+              "to": 542
+            },
+            "from": 532,
+            "kind": "raw",
+            "name": "string",
+            "to": 543
+          },
+          {
+            "from": 543,
+            "kind": "raw",
+            "name": "separator",
+            "to": 545
+          },
+          {
+            "from": 545,
+            "kind": "raw",
+            "name": "argument",
+            "to": 551
+          },
+          {
+            "from": 551,
+            "kind": "raw",
+            "name": "separator",
+            "to": 552
+          },
+          {
+            "from": 552,
+            "kind": "text",
+            "to": 556
+          }
+        ],
+        "from": 526,
+        "kind": "command",
+        "meta": {
+          "arg:width": "24pt",
+          "args": "code",
+          "raw": "true"
+        },
+        "name": "image",
+        "named": {
+          "width": {
+            "from": 552,
+            "to": 556
+          }
+        },
+        "to": 557
+      },
+      {
+        "from": 557,
+        "kind": "raw",
+        "name": "separator",
+        "to": 561
+      },
+      {
+        "from": 561,
+        "kind": "raw",
+        "name": "argument",
+        "to": 569
+      },
+      {
+        "from": 569,
+        "kind": "raw",
+        "name": "separator",
+        "to": 570
+      },
+      {
+        "body": {
+          "from": 571,
+          "to": 593
+        },
+        "children": [
+          {
+            "from": 571,
+            "kind": "text",
+            "to": 593
+          }
+        ],
+        "from": 570,
+        "kind": "group",
+        "meta": {
+          "figureCaption": "true"
+        },
+        "name": "content",
+        "to": 594
+      },
+      {
+        "from": 594,
+        "kind": "raw",
+        "name": "separator",
+        "to": 596
+      }
+    ],
+    "from": 515,
+    "kind": "command",
+    "meta": {
+      "arg:caption": "[An embedded SVG asset.]",
+      "args": "code",
+      "figure": "true",
+      "raw": "true"
+    },
+    "name": "figure",
+    "named": {
+      "caption": {
+        "from": 570,
+        "to": 594
+      }
+    },
+    "to": 597
+  },
+  {
+    "from": 597,
+    "kind": "text",
+    "to": 611
+  },
+  {
+    "from": 611,
+    "kind": "command",
+    "meta": {
+      "key": "doe2020"
+    },
+    "name": "ref",
+    "to": 619
+  },
+  {
+    "from": 619,
+    "kind": "text",
+    "to": 672
+  },
+  {
+    "args": [
+      {
+        "from": 686,
+        "to": 696
+      }
+    ],
+    "body": {
+      "from": 686,
+      "to": 696
+    },
+    "children": [
+      {
+        "body": {
+          "from": 687,
+          "to": 695
+        },
+        "from": 686,
+        "kind": "raw",
+        "name": "string",
+        "to": 696
+      }
+    ],
+    "from": 672,
+    "kind": "command",
+    "meta": {
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "bibliography",
+    "to": 697
+  },
+  {
+    "from": 697,
+    "kind": "text",
+    "to": 698
+  }
+]

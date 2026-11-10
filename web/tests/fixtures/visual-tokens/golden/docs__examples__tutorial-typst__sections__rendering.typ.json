@@ -1,0 +1,421 @@
+[
+  {
+    "args": [
+      {
+        "from": 24,
+        "to": 45
+      },
+      {
+        "from": 47,
+        "to": 55
+      },
+      {
+        "from": 57,
+        "to": 70
+      },
+      {
+        "from": 74,
+        "to": 90
+      },
+      {
+        "from": 92,
+        "to": 140
+      },
+      {
+        "from": 142,
+        "to": 186
+      },
+      {
+        "from": 190,
+        "to": 203
+      },
+      {
+        "from": 205,
+        "to": 250
+      },
+      {
+        "from": 252,
+        "to": 300
+      },
+      {
+        "from": 304,
+        "to": 312
+      },
+      {
+        "from": 314,
+        "to": 346
+      },
+      {
+        "from": 348,
+        "to": 425
+      }
+    ],
+    "body": {
+      "from": 7,
+      "to": 427
+    },
+    "children": [
+      {
+        "from": 7,
+        "kind": "raw",
+        "name": "separator",
+        "to": 10
+      },
+      {
+        "from": 10,
+        "kind": "raw",
+        "name": "argument",
+        "to": 18
+      },
+      {
+        "from": 18,
+        "kind": "raw",
+        "name": "separator",
+        "to": 19
+      },
+      {
+        "from": 19,
+        "kind": "text",
+        "to": 20
+      },
+      {
+        "from": 20,
+        "kind": "raw",
+        "name": "separator",
+        "to": 24
+      },
+      {
+        "body": {
+          "from": 25,
+          "to": 44
+        },
+        "children": [
+          {
+            "body": {
+              "from": 26,
+              "to": 43
+            },
+            "children": [
+              {
+                "from": 26,
+                "kind": "text",
+                "to": 43
+              }
+            ],
+            "from": 25,
+            "kind": "command",
+            "name": "strong",
+            "to": 44
+          }
+        ],
+        "from": 24,
+        "kind": "group",
+        "name": "content",
+        "to": 45
+      },
+      {
+        "from": 45,
+        "kind": "raw",
+        "name": "separator",
+        "to": 47
+      },
+      {
+        "body": {
+          "from": 48,
+          "to": 54
+        },
+        "children": [
+          {
+            "body": {
+              "from": 49,
+              "to": 53
+            },
+            "children": [
+              {
+                "from": 49,
+                "kind": "text",
+                "to": 53
+              }
+            ],
+            "from": 48,
+            "kind": "command",
+            "name": "strong",
+            "to": 54
+          }
+        ],
+        "from": 47,
+        "kind": "group",
+        "name": "content",
+        "to": 55
+      },
+      {
+        "from": 55,
+        "kind": "raw",
+        "name": "separator",
+        "to": 57
+      },
+      {
+        "body": {
+          "from": 58,
+          "to": 69
+        },
+        "children": [
+          {
+            "body": {
+              "from": 59,
+              "to": 68
+            },
+            "children": [
+              {
+                "from": 59,
+                "kind": "text",
+                "to": 68
+              }
+            ],
+            "from": 58,
+            "kind": "command",
+            "name": "strong",
+            "to": 69
+          }
+        ],
+        "from": 57,
+        "kind": "group",
+        "name": "content",
+        "to": 70
+      },
+      {
+        "from": 70,
+        "kind": "raw",
+        "name": "separator",
+        "to": 74
+      },
+      {
+        "body": {
+          "from": 75,
+          "to": 89
+        },
+        "children": [
+          {
+            "from": 75,
+            "kind": "text",
+            "to": 89
+          }
+        ],
+        "from": 74,
+        "kind": "group",
+        "name": "content",
+        "to": 90
+      },
+      {
+        "from": 90,
+        "kind": "raw",
+        "name": "separator",
+        "to": 92
+      },
+      {
+        "body": {
+          "from": 93,
+          "to": 139
+        },
+        "children": [
+          {
+            "from": 93,
+            "kind": "text",
+            "to": 139
+          }
+        ],
+        "from": 92,
+        "kind": "group",
+        "name": "content",
+        "to": 140
+      },
+      {
+        "from": 140,
+        "kind": "raw",
+        "name": "separator",
+        "to": 142
+      },
+      {
+        "body": {
+          "from": 143,
+          "to": 185
+        },
+        "children": [
+          {
+            "from": 143,
+            "kind": "text",
+            "to": 185
+          }
+        ],
+        "from": 142,
+        "kind": "group",
+        "name": "content",
+        "to": 186
+      },
+      {
+        "from": 186,
+        "kind": "raw",
+        "name": "separator",
+        "to": 190
+      },
+      {
+        "body": {
+          "from": 191,
+          "to": 202
+        },
+        "children": [
+          {
+            "from": 191,
+            "kind": "text",
+            "to": 202
+          }
+        ],
+        "from": 190,
+        "kind": "group",
+        "name": "content",
+        "to": 203
+      },
+      {
+        "from": 203,
+        "kind": "raw",
+        "name": "separator",
+        "to": 205
+      },
+      {
+        "body": {
+          "from": 206,
+          "to": 249
+        },
+        "children": [
+          {
+            "from": 206,
+            "kind": "text",
+            "to": 249
+          }
+        ],
+        "from": 205,
+        "kind": "group",
+        "name": "content",
+        "to": 250
+      },
+      {
+        "from": 250,
+        "kind": "raw",
+        "name": "separator",
+        "to": 252
+      },
+      {
+        "body": {
+          "from": 253,
+          "to": 299
+        },
+        "children": [
+          {
+            "from": 253,
+            "kind": "text",
+            "to": 299
+          }
+        ],
+        "from": 252,
+        "kind": "group",
+        "name": "content",
+        "to": 300
+      },
+      {
+        "from": 300,
+        "kind": "raw",
+        "name": "separator",
+        "to": 304
+      },
+      {
+        "body": {
+          "from": 305,
+          "to": 311
+        },
+        "children": [
+          {
+            "from": 305,
+            "kind": "text",
+            "to": 311
+          }
+        ],
+        "from": 304,
+        "kind": "group",
+        "name": "content",
+        "to": 312
+      },
+      {
+        "from": 312,
+        "kind": "raw",
+        "name": "separator",
+        "to": 314
+      },
+      {
+        "body": {
+          "from": 315,
+          "to": 345
+        },
+        "children": [
+          {
+            "from": 315,
+            "kind": "text",
+            "to": 345
+          }
+        ],
+        "from": 314,
+        "kind": "group",
+        "name": "content",
+        "to": 346
+      },
+      {
+        "from": 346,
+        "kind": "raw",
+        "name": "separator",
+        "to": 348
+      },
+      {
+        "body": {
+          "from": 349,
+          "to": 424
+        },
+        "children": [
+          {
+            "from": 349,
+            "kind": "text",
+            "to": 424
+          }
+        ],
+        "from": 348,
+        "kind": "group",
+        "name": "content",
+        "to": 425
+      },
+      {
+        "from": 425,
+        "kind": "raw",
+        "name": "separator",
+        "to": 427
+      }
+    ],
+    "from": 0,
+    "kind": "table",
+    "meta": {
+      "arg:columns": "3",
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "table",
+    "named": {
+      "columns": {
+        "from": 19,
+        "to": 20
+      }
+    },
+    "to": 428
+  },
+  {
+    "from": 428,
+    "kind": "text",
+    "to": 429
+  }
+]

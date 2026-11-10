@@ -1,0 +1,319 @@
+[
+  {
+    "body": {
+      "from": 4,
+      "to": 168
+    },
+    "from": 0,
+    "kind": "container",
+    "name": "frontmatter",
+    "to": 171
+  },
+  {
+    "from": 171,
+    "kind": "text",
+    "to": 173
+  },
+  {
+    "from": 173,
+    "kind": "command",
+    "meta": {
+      "alt": "The LibrePaper icon",
+      "attrs": "#fig-librepaper fig-alt=\"The LibrePaper icon\"",
+      "id": "fig-librepaper",
+      "src": "librepaper-icon.png"
+    },
+    "name": "mdfigure",
+    "to": 263
+  },
+  {
+    "from": 263,
+    "kind": "text",
+    "to": 430
+  },
+  {
+    "body": {
+      "from": 433,
+      "to": 451
+    },
+    "children": [
+      {
+        "from": 433,
+        "kind": "text",
+        "to": 451
+      }
+    ],
+    "from": 430,
+    "kind": "heading",
+    "level": 2,
+    "to": 451
+  },
+  {
+    "from": 451,
+    "kind": "text",
+    "to": 769
+  },
+  {
+    "body": {
+      "from": 772,
+      "to": 798
+    },
+    "children": [
+      {
+        "from": 772,
+        "kind": "text",
+        "to": 798
+      }
+    ],
+    "from": 769,
+    "kind": "heading",
+    "level": 2,
+    "to": 798
+  },
+  {
+    "from": 798,
+    "kind": "text",
+    "to": 821
+  },
+  {
+    "body": {
+      "from": 822,
+      "to": 823
+    },
+    "display": false,
+    "from": 821,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 824
+  },
+  {
+    "from": 824,
+    "kind": "text",
+    "to": 859
+  },
+  {
+    "body": {
+      "from": 861,
+      "to": 887
+    },
+    "display": true,
+    "from": 859,
+    "kind": "math",
+    "meta": {
+      "close": "$$",
+      "open": "$$"
+    },
+    "to": 889
+  },
+  {
+    "from": 889,
+    "kind": "text",
+    "to": 1040
+  },
+  {
+    "body": {
+      "from": 1041,
+      "to": 1054
+    },
+    "from": 1040,
+    "kind": "command",
+    "meta": {
+      "bracketed": "true",
+      "text": "@lovelace1843"
+    },
+    "name": "mdcite",
+    "to": 1055
+  },
+  {
+    "from": 1055,
+    "kind": "text",
+    "to": 1062
+  },
+  {
+    "body": {
+      "from": 1063,
+      "to": 1064
+    },
+    "from": 1062,
+    "kind": "command",
+    "name": "code",
+    "to": 1065
+  },
+  {
+    "from": 1065,
+    "kind": "text",
+    "to": 1107
+  },
+  {
+    "body": {
+      "from": 1108,
+      "to": 1122
+    },
+    "from": 1107,
+    "kind": "command",
+    "name": "code",
+    "to": 1123
+  },
+  {
+    "from": 1123,
+    "kind": "text",
+    "to": 1126
+  },
+  {
+    "from": 1126,
+    "kind": "command",
+    "meta": {
+      "alone": "true",
+      "args": "sections/rendering.qmd",
+      "name": "include"
+    },
+    "name": "shortcode",
+    "to": 1164
+  },
+  {
+    "from": 1164,
+    "kind": "text",
+    "to": 1178
+  },
+  {
+    "from": 1178,
+    "kind": "command",
+    "meta": {
+      "key": "fig-librepaper",
+      "prefix": "fig"
+    },
+    "name": "xref",
+    "to": 1193
+  },
+  {
+    "from": 1193,
+    "kind": "text",
+    "to": 1314
+  },
+  {
+    "body": {
+      "from": 1393,
+      "to": 1517
+    },
+    "from": 1314,
+    "kind": "container",
+    "meta": {
+      "caption": "A small summary computed by Quarto.",
+      "cell": "true",
+      "label": "tbl-summary",
+      "lang": "r"
+    },
+    "name": "codeblock",
+    "to": 1521
+  },
+  {
+    "from": 1521,
+    "kind": "text",
+    "to": 1523
+  },
+  {
+    "body": {
+      "from": 1526,
+      "to": 1542
+    },
+    "children": [
+      {
+        "from": 1526,
+        "kind": "text",
+        "to": 1542
+      }
+    ],
+    "from": 1523,
+    "kind": "heading",
+    "level": 2,
+    "to": 1542
+  },
+  {
+    "from": 1542,
+    "kind": "text",
+    "to": 1728
+  },
+  {
+    "body": {
+      "from": 1729,
+      "to": 1735
+    },
+    "from": 1728,
+    "kind": "command",
+    "name": "code",
+    "to": 1736
+  },
+  {
+    "from": 1736,
+    "kind": "text",
+    "to": 1777
+  },
+  {
+    "body": {
+      "from": 1780,
+      "to": 1806
+    },
+    "children": [
+      {
+        "from": 1780,
+        "kind": "text",
+        "to": 1806
+      }
+    ],
+    "from": 1777,
+    "kind": "heading",
+    "level": 2,
+    "to": 1806
+  },
+  {
+    "from": 1806,
+    "kind": "text",
+    "to": 2154
+  },
+  {
+    "body": {
+      "from": 2157,
+      "to": 2167
+    },
+    "children": [
+      {
+        "from": 2157,
+        "kind": "text",
+        "to": 2167
+      }
+    ],
+    "from": 2154,
+    "kind": "heading",
+    "level": 2,
+    "to": 2167
+  },
+  {
+    "from": 2167,
+    "kind": "text",
+    "to": 2169
+  },
+  {
+    "body": {
+      "from": 2181,
+      "to": 2181
+    },
+    "children": [],
+    "from": 2169,
+    "kind": "container",
+    "meta": {
+      "attrs": "#refs",
+      "classes": "",
+      "id": "refs"
+    },
+    "name": "div",
+    "to": 2184
+  },
+  {
+    "from": 2184,
+    "kind": "text",
+    "to": 2185
+  }
+]

@@ -1,0 +1,225 @@
+[
+  {
+    "body": {
+      "from": 9,
+      "to": 33
+    },
+    "children": [
+      {
+        "from": 9,
+        "kind": "text",
+        "to": 33
+      }
+    ],
+    "from": 0,
+    "kind": "heading",
+    "level": 1,
+    "name": "chapter",
+    "to": 34
+  },
+  {
+    "args": [
+      {
+        "from": 41,
+        "to": 55
+      }
+    ],
+    "body": {
+      "from": 41,
+      "to": 55
+    },
+    "children": [
+      {
+        "from": 41,
+        "kind": "text",
+        "to": 55
+      }
+    ],
+    "from": 34,
+    "kind": "command",
+    "name": "label",
+    "to": 56
+  },
+  {
+    "from": 56,
+    "kind": "text",
+    "to": 138
+  },
+  {
+    "args": [
+      {
+        "from": 144,
+        "to": 156
+      }
+    ],
+    "body": {
+      "from": 144,
+      "to": 156
+    },
+    "children": [
+      {
+        "from": 144,
+        "kind": "text",
+        "to": 156
+      }
+    ],
+    "from": 138,
+    "kind": "command",
+    "name": "cref",
+    "to": 157
+  },
+  {
+    "from": 157,
+    "kind": "text",
+    "to": 196
+  },
+  {
+    "args": [
+      {
+        "from": 202,
+        "to": 217
+      }
+    ],
+    "body": {
+      "from": 202,
+      "to": 217
+    },
+    "children": [
+      {
+        "from": 202,
+        "kind": "text",
+        "to": 217
+      }
+    ],
+    "from": 196,
+    "kind": "command",
+    "name": "cref",
+    "to": 218
+  },
+  {
+    "from": 218,
+    "kind": "text",
+    "to": 273
+  },
+  {
+    "body": {
+      "from": 274,
+      "to": 277
+    },
+    "display": false,
+    "from": 273,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 278
+  },
+  {
+    "from": 278,
+    "kind": "text",
+    "to": 283
+  },
+  {
+    "body": {
+      "from": 284,
+      "to": 287
+    },
+    "display": false,
+    "from": 283,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 288
+  },
+  {
+    "from": 288,
+    "kind": "text",
+    "to": 331
+  },
+  {
+    "args": [],
+    "body": {
+      "from": 347,
+      "to": 466
+    },
+    "display": true,
+    "from": 331,
+    "kind": "math",
+    "name": "equation",
+    "to": 480
+  },
+  {
+    "from": 480,
+    "kind": "text",
+    "to": 487
+  },
+  {
+    "body": {
+      "from": 488,
+      "to": 498
+    },
+    "display": false,
+    "from": 487,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 499
+  },
+  {
+    "from": 499,
+    "kind": "text",
+    "to": 531
+  },
+  {
+    "body": {
+      "from": 532,
+      "to": 545
+    },
+    "display": false,
+    "from": 531,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 546
+  },
+  {
+    "from": 546,
+    "kind": "text",
+    "to": 571
+  },
+  {
+    "args": [
+      {
+        "from": 577,
+        "to": 592
+      }
+    ],
+    "body": {
+      "from": 577,
+      "to": 592
+    },
+    "children": [
+      {
+        "from": 577,
+        "kind": "text",
+        "to": 592
+      }
+    ],
+    "from": 571,
+    "kind": "command",
+    "name": "cref",
+    "to": 593
+  },
+  {
+    "from": 593,
+    "kind": "text",
+    "to": 646
+  }
+]

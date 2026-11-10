@@ -1,0 +1,1311 @@
+[
+  {
+    "body": {
+      "from": 4,
+      "to": 97
+    },
+    "from": 0,
+    "kind": "container",
+    "name": "frontmatter",
+    "to": 100
+  },
+  {
+    "from": 100,
+    "kind": "text",
+    "to": 102
+  },
+  {
+    "body": {
+      "from": 106,
+      "to": 150
+    },
+    "from": 102,
+    "kind": "comment",
+    "to": 153
+  },
+  {
+    "from": 153,
+    "kind": "text",
+    "to": 155
+  },
+  {
+    "body": {
+      "from": 157,
+      "to": 168
+    },
+    "children": [
+      {
+        "from": 157,
+        "kind": "text",
+        "to": 168
+      }
+    ],
+    "from": 155,
+    "kind": "heading",
+    "level": 1,
+    "meta": {
+      "id": "sec-one"
+    },
+    "to": 179
+  },
+  {
+    "from": 179,
+    "kind": "text",
+    "to": 181
+  },
+  {
+    "body": {
+      "from": 181,
+      "to": 195
+    },
+    "children": [
+      {
+        "from": 181,
+        "kind": "text",
+        "to": 195
+      }
+    ],
+    "from": 181,
+    "kind": "heading",
+    "level": 1,
+    "to": 210
+  },
+  {
+    "from": 210,
+    "kind": "text",
+    "to": 212
+  },
+  {
+    "body": {
+      "from": 212,
+      "to": 225
+    },
+    "children": [
+      {
+        "from": 212,
+        "kind": "text",
+        "to": 225
+      }
+    ],
+    "from": 212,
+    "kind": "heading",
+    "level": 2,
+    "to": 239
+  },
+  {
+    "from": 239,
+    "kind": "text",
+    "to": 241
+  },
+  {
+    "body": {
+      "from": 245,
+      "to": 258
+    },
+    "children": [
+      {
+        "from": 245,
+        "kind": "text",
+        "to": 258
+      }
+    ],
+    "from": 241,
+    "kind": "heading",
+    "level": 3,
+    "to": 262
+  },
+  {
+    "from": 262,
+    "kind": "text",
+    "to": 270
+  },
+  {
+    "body": {
+      "from": 271,
+      "to": 279
+    },
+    "children": [
+      {
+        "from": 271,
+        "kind": "text",
+        "to": 279
+      }
+    ],
+    "from": 270,
+    "kind": "command",
+    "name": "emph",
+    "to": 280
+  },
+  {
+    "from": 280,
+    "kind": "text",
+    "to": 282
+  },
+  {
+    "body": {
+      "from": 283,
+      "to": 302
+    },
+    "children": [
+      {
+        "from": 283,
+        "kind": "text",
+        "to": 302
+      }
+    ],
+    "from": 282,
+    "kind": "command",
+    "name": "emph",
+    "to": 303
+  },
+  {
+    "from": 303,
+    "kind": "text",
+    "to": 305
+  },
+  {
+    "body": {
+      "from": 307,
+      "to": 313
+    },
+    "children": [
+      {
+        "from": 307,
+        "kind": "text",
+        "to": 313
+      }
+    ],
+    "from": 305,
+    "kind": "command",
+    "name": "strong",
+    "to": 315
+  },
+  {
+    "from": 315,
+    "kind": "text",
+    "to": 317
+  },
+  {
+    "body": {
+      "from": 319,
+      "to": 329
+    },
+    "children": [
+      {
+        "from": 319,
+        "kind": "text",
+        "to": 329
+      }
+    ],
+    "from": 317,
+    "kind": "command",
+    "name": "strong",
+    "to": 331
+  },
+  {
+    "from": 331,
+    "kind": "text",
+    "to": 333
+  },
+  {
+    "body": {
+      "from": 334,
+      "to": 342
+    },
+    "children": [
+      {
+        "body": {
+          "from": 336,
+          "to": 340
+        },
+        "children": [
+          {
+            "from": 336,
+            "kind": "text",
+            "to": 340
+          }
+        ],
+        "from": 334,
+        "kind": "command",
+        "name": "strong",
+        "to": 342
+      }
+    ],
+    "from": 333,
+    "kind": "command",
+    "name": "emph",
+    "to": 343
+  },
+  {
+    "from": 343,
+    "kind": "text",
+    "to": 345
+  },
+  {
+    "body": {
+      "from": 347,
+      "to": 353
+    },
+    "children": [
+      {
+        "from": 347,
+        "kind": "text",
+        "to": 353
+      }
+    ],
+    "from": 345,
+    "kind": "command",
+    "name": "strike",
+    "to": 355
+  },
+  {
+    "from": 355,
+    "kind": "text",
+    "to": 361
+  },
+  {
+    "body": {
+      "from": 362,
+      "to": 373
+    },
+    "from": 361,
+    "kind": "command",
+    "name": "code",
+    "to": 374
+  },
+  {
+    "from": 374,
+    "kind": "text",
+    "to": 385
+  },
+  {
+    "from": 385,
+    "kind": "raw",
+    "meta": {
+      "text": "*"
+    },
+    "name": "escape",
+    "to": 387
+  },
+  {
+    "from": 387,
+    "kind": "text",
+    "to": 394
+  },
+  {
+    "from": 394,
+    "kind": "raw",
+    "meta": {
+      "text": "_"
+    },
+    "name": "escape",
+    "to": 396
+  },
+  {
+    "from": 396,
+    "kind": "text",
+    "to": 404
+  },
+  {
+    "from": 404,
+    "kind": "raw",
+    "meta": {
+      "text": "#"
+    },
+    "name": "escape",
+    "to": 406
+  },
+  {
+    "from": 406,
+    "kind": "text",
+    "to": 413
+  },
+  {
+    "from": 413,
+    "kind": "raw",
+    "meta": {
+      "text": "$"
+    },
+    "name": "escape",
+    "to": 415
+  },
+  {
+    "from": 415,
+    "kind": "text",
+    "to": 424
+  },
+  {
+    "from": 424,
+    "kind": "raw",
+    "meta": {
+      "text": "@"
+    },
+    "name": "escape",
+    "to": 426
+  },
+  {
+    "from": 426,
+    "kind": "text",
+    "to": 431
+  },
+  {
+    "from": 431,
+    "kind": "raw",
+    "meta": {
+      "text": "\\"
+    },
+    "name": "escape",
+    "to": 433
+  },
+  {
+    "from": 433,
+    "kind": "text",
+    "to": 454
+  },
+  {
+    "body": {
+      "from": 455,
+      "to": 464
+    },
+    "display": false,
+    "from": 454,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 465
+  },
+  {
+    "from": 465,
+    "kind": "text",
+    "to": 470
+  },
+  {
+    "body": {
+      "from": 472,
+      "to": 489
+    },
+    "display": true,
+    "from": 470,
+    "kind": "math",
+    "meta": {
+      "close": "$$",
+      "open": "$$"
+    },
+    "to": 491
+  },
+  {
+    "from": 491,
+    "kind": "text",
+    "to": 502
+  },
+  {
+    "body": {
+      "from": 504,
+      "to": 541
+    },
+    "display": true,
+    "from": 502,
+    "kind": "math",
+    "meta": {
+      "close": "$$",
+      "open": "$$"
+    },
+    "to": 543
+  },
+  {
+    "from": 543,
+    "kind": "text",
+    "to": 545
+  },
+  {
+    "body": {
+      "from": 555,
+      "to": 624
+    },
+    "from": 545,
+    "kind": "container",
+    "meta": {
+      "lang": "python"
+    },
+    "name": "codeblock",
+    "to": 628
+  },
+  {
+    "from": 628,
+    "kind": "text",
+    "to": 630
+  },
+  {
+    "body": {
+      "from": 655,
+      "to": 675
+    },
+    "from": 630,
+    "kind": "container",
+    "meta": {
+      "cell": "true",
+      "lang": "r",
+      "options": "[[\"warning\",\"false\"]]"
+    },
+    "name": "codeblock",
+    "to": 679
+  },
+  {
+    "from": 679,
+    "kind": "text",
+    "to": 681
+  },
+  {
+    "body": {
+      "from": 685,
+      "to": 708
+    },
+    "from": 681,
+    "kind": "container",
+    "meta": {
+      "lang": ""
+    },
+    "name": "codeblock",
+    "to": 712
+  },
+  {
+    "from": 712,
+    "kind": "text",
+    "to": 714
+  },
+  {
+    "body": {
+      "from": 751,
+      "to": 784
+    },
+    "children": [
+      {
+        "from": 751,
+        "kind": "text",
+        "to": 766
+      },
+      {
+        "body": {
+          "from": 768,
+          "to": 774
+        },
+        "children": [
+          {
+            "from": 768,
+            "kind": "text",
+            "to": 774
+          }
+        ],
+        "from": 766,
+        "kind": "command",
+        "name": "strong",
+        "to": 776
+      },
+      {
+        "from": 776,
+        "kind": "text",
+        "to": 784
+      }
+    ],
+    "from": 714,
+    "kind": "container",
+    "meta": {
+      "attrs": ".callout-note title=\"Heads up\"",
+      "classes": "callout-note"
+    },
+    "name": "div",
+    "to": 788
+  },
+  {
+    "from": 788,
+    "kind": "text",
+    "to": 790
+  },
+  {
+    "body": {
+      "from": 806,
+      "to": 2186
+    },
+    "children": [
+      {
+        "body": {
+          "from": 832,
+          "to": 844
+        },
+        "children": [
+          {
+            "from": 832,
+            "kind": "text",
+            "to": 844
+          }
+        ],
+        "from": 806,
+        "kind": "container",
+        "meta": {
+          "attrs": ".column width=\"50%\"",
+          "classes": "column"
+        },
+        "name": "div",
+        "to": 848
+      },
+      {
+        "from": 848,
+        "kind": "text",
+        "to": 849
+      },
+      {
+        "body": {
+          "from": 875,
+          "to": 888
+        },
+        "children": [
+          {
+            "from": 875,
+            "kind": "text",
+            "to": 888
+          }
+        ],
+        "from": 849,
+        "kind": "container",
+        "meta": {
+          "attrs": ".column width=\"50%\"",
+          "classes": "column"
+        },
+        "name": "div",
+        "to": 892
+      },
+      {
+        "from": 892,
+        "kind": "text",
+        "to": 899
+      },
+      {
+        "body": {
+          "from": 926,
+          "to": 968
+        },
+        "children": [
+          {
+            "from": 926,
+            "kind": "text",
+            "to": 950
+          },
+          {
+            "body": {
+              "from": 951,
+              "to": 966
+            },
+            "display": false,
+            "from": 950,
+            "kind": "math",
+            "meta": {
+              "close": "$",
+              "open": "$"
+            },
+            "to": 967
+          },
+          {
+            "from": 967,
+            "kind": "text",
+            "to": 968
+          }
+        ],
+        "from": 899,
+        "kind": "container",
+        "meta": {
+          "attrs": "#thm-pythag .theorem",
+          "classes": "theorem",
+          "id": "thm-pythag"
+        },
+        "name": "div",
+        "to": 972
+      },
+      {
+        "from": 972,
+        "kind": "text",
+        "to": 974
+      },
+      {
+        "from": 974,
+        "kind": "container",
+        "meta": {
+          "caption": "A caption for the table.",
+          "id": "tbl-vals"
+        },
+        "name": "mdtable",
+        "to": 1130
+      },
+      {
+        "from": 1130,
+        "kind": "text",
+        "to": 1132
+      },
+      {
+        "children": [
+          {
+            "from": 1132,
+            "kind": "raw",
+            "name": "marker",
+            "to": 1134
+          },
+          {
+            "from": 1134,
+            "kind": "text",
+            "to": 1147
+          },
+          {
+            "from": 1148,
+            "kind": "raw",
+            "name": "marker",
+            "to": 1150
+          },
+          {
+            "from": 1150,
+            "kind": "text",
+            "to": 1164
+          },
+          {
+            "from": 1165,
+            "kind": "raw",
+            "name": "marker",
+            "to": 1166
+          },
+          {
+            "from": 1167,
+            "kind": "raw",
+            "name": "marker",
+            "to": 1169
+          },
+          {
+            "children": [
+              {
+                "from": 1169,
+                "kind": "raw",
+                "name": "marker",
+                "to": 1171
+              },
+              {
+                "from": 1171,
+                "kind": "text",
+                "to": 1183
+              }
+            ],
+            "from": 1169,
+            "kind": "container",
+            "name": "blockquote",
+            "to": 1183
+          }
+        ],
+        "from": 1132,
+        "kind": "container",
+        "name": "blockquote",
+        "to": 1183
+      },
+      {
+        "from": 1183,
+        "kind": "text",
+        "to": 1185
+      },
+      {
+        "from": 1185,
+        "kind": "item",
+        "meta": {
+          "marker": "-"
+        },
+        "name": "bullet",
+        "to": 1186
+      },
+      {
+        "from": 1186,
+        "kind": "text",
+        "to": 1198
+      },
+      {
+        "from": 1198,
+        "kind": "item",
+        "meta": {
+          "marker": "-"
+        },
+        "name": "bullet",
+        "to": 1199
+      },
+      {
+        "from": 1199,
+        "kind": "text",
+        "to": 1215
+      },
+      {
+        "from": 1215,
+        "kind": "item",
+        "meta": {
+          "marker": "-"
+        },
+        "name": "bullet",
+        "to": 1216
+      },
+      {
+        "from": 1216,
+        "kind": "text",
+        "to": 1239
+      },
+      {
+        "from": 1239,
+        "kind": "item",
+        "meta": {
+          "marker": "-"
+        },
+        "name": "bullet",
+        "to": 1240
+      },
+      {
+        "from": 1240,
+        "kind": "text",
+        "to": 1249
+      },
+      {
+        "from": 1249,
+        "kind": "item",
+        "meta": {
+          "marker": "1."
+        },
+        "name": "number",
+        "to": 1251
+      },
+      {
+        "from": 1251,
+        "kind": "text",
+        "to": 1282
+      },
+      {
+        "from": 1282,
+        "kind": "item",
+        "meta": {
+          "marker": "1."
+        },
+        "name": "number",
+        "to": 1284
+      },
+      {
+        "from": 1284,
+        "kind": "text",
+        "to": 1301
+      },
+      {
+        "from": 1301,
+        "kind": "item",
+        "meta": {
+          "box": " ",
+          "marker": "-",
+          "task": "todo"
+        },
+        "name": "bullet",
+        "to": 1306
+      },
+      {
+        "from": 1306,
+        "kind": "text",
+        "to": 1317
+      },
+      {
+        "from": 1317,
+        "kind": "item",
+        "meta": {
+          "box": "x",
+          "marker": "-",
+          "task": "done"
+        },
+        "name": "bullet",
+        "to": 1322
+      },
+      {
+        "from": 1322,
+        "kind": "text",
+        "to": 1333
+      },
+      {
+        "from": 1333,
+        "kind": "item",
+        "meta": {
+          "box": "/",
+          "marker": "-",
+          "task": "doing"
+        },
+        "name": "bullet",
+        "to": 1338
+      },
+      {
+        "from": 1338,
+        "kind": "text",
+        "to": 1350
+      },
+      {
+        "from": 1350,
+        "kind": "command",
+        "meta": {
+          "tag": "priority"
+        },
+        "name": "tasktag",
+        "to": 1359
+      },
+      {
+        "from": 1359,
+        "kind": "text",
+        "to": 1365
+      },
+      {
+        "from": 1365,
+        "kind": "command",
+        "meta": {
+          "bracketed": "false",
+          "text": "@due"
+        },
+        "name": "mdcite",
+        "to": 1369
+      },
+      {
+        "from": 1369,
+        "kind": "text",
+        "to": 1382
+      },
+      {
+        "from": 1382,
+        "kind": "item",
+        "meta": {
+          "box": "-",
+          "marker": "-",
+          "task": "cancelled"
+        },
+        "name": "bullet",
+        "to": 1387
+      },
+      {
+        "from": 1387,
+        "kind": "text",
+        "to": 1425
+      },
+      {
+        "from": 1425,
+        "kind": "command",
+        "meta": {
+          "label": "1"
+        },
+        "name": "fnref",
+        "to": 1429
+      },
+      {
+        "from": 1429,
+        "kind": "text",
+        "to": 1441
+      },
+      {
+        "from": 1441,
+        "kind": "command",
+        "meta": {
+          "label": "note"
+        },
+        "name": "fnref",
+        "to": 1448
+      },
+      {
+        "from": 1448,
+        "kind": "text",
+        "to": 1451
+      },
+      {
+        "body": {
+          "from": 1457,
+          "to": 1476
+        },
+        "children": [
+          {
+            "from": 1457,
+            "kind": "text",
+            "to": 1476
+          }
+        ],
+        "from": 1451,
+        "kind": "container",
+        "meta": {
+          "label": "1"
+        },
+        "name": "fndef",
+        "to": 1476
+      },
+      {
+        "from": 1476,
+        "kind": "text",
+        "to": 1477
+      },
+      {
+        "body": {
+          "from": 1486,
+          "to": 1529
+        },
+        "children": [
+          {
+            "from": 1486,
+            "kind": "text",
+            "to": 1529
+          }
+        ],
+        "from": 1477,
+        "kind": "container",
+        "meta": {
+          "label": "note"
+        },
+        "name": "fndef",
+        "to": 1529
+      },
+      {
+        "from": 1529,
+        "kind": "text",
+        "to": 1531
+      },
+      {
+        "args": [
+          {
+            "from": 1543,
+            "to": 1567
+          },
+          {
+            "from": 1532,
+            "to": 1541
+          }
+        ],
+        "body": {
+          "from": 1532,
+          "to": 1541
+        },
+        "children": [
+          {
+            "from": 1532,
+            "kind": "text",
+            "to": 1541
+          }
+        ],
+        "from": 1531,
+        "kind": "command",
+        "name": "href",
+        "to": 1576
+      },
+      {
+        "from": 1576,
+        "kind": "text",
+        "to": 1581
+      },
+      {
+        "args": [
+          {
+            "from": 1592,
+            "to": 1595
+          },
+          {
+            "from": 1582,
+            "to": 1590
+          }
+        ],
+        "body": {
+          "from": 1582,
+          "to": 1590
+        },
+        "children": [
+          {
+            "from": 1582,
+            "kind": "text",
+            "to": 1590
+          }
+        ],
+        "from": 1581,
+        "kind": "command",
+        "meta": {
+          "ref": "true"
+        },
+        "name": "href",
+        "to": 1596
+      },
+      {
+        "from": 1596,
+        "kind": "text",
+        "to": 1609
+      },
+      {
+        "from": 1609,
+        "kind": "raw",
+        "meta": {
+          "label": "ref"
+        },
+        "name": "linkdef",
+        "to": 1652
+      },
+      {
+        "from": 1652,
+        "kind": "text",
+        "to": 1653
+      },
+      {
+        "from": 1653,
+        "kind": "raw",
+        "meta": {
+          "label": "ref2"
+        },
+        "name": "linkdef",
+        "to": 1688
+      },
+      {
+        "from": 1688,
+        "kind": "text",
+        "to": 1701
+      },
+      {
+        "body": {
+          "from": 1702,
+          "to": 1708
+        },
+        "from": 1701,
+        "kind": "command",
+        "meta": {
+          "bracketed": "true",
+          "text": "@a; @b"
+        },
+        "name": "mdcite",
+        "to": 1709
+      },
+      {
+        "from": 1709,
+        "kind": "text",
+        "to": 1711
+      },
+      {
+        "body": {
+          "from": 1712,
+          "to": 1724
+        },
+        "from": 1711,
+        "kind": "command",
+        "meta": {
+          "bracketed": "true",
+          "text": "see @a, p. 3"
+        },
+        "name": "mdcite",
+        "to": 1725
+      },
+      {
+        "from": 1725,
+        "kind": "text",
+        "to": 1727
+      },
+      {
+        "from": 1727,
+        "kind": "command",
+        "meta": {
+          "bracketed": "false",
+          "text": "@a"
+        },
+        "name": "mdcite",
+        "to": 1729
+      },
+      {
+        "from": 1729,
+        "kind": "text",
+        "to": 1743
+      },
+      {
+        "from": 1743,
+        "kind": "command",
+        "meta": {
+          "bracketed": "false",
+          "text": "@doe2019"
+        },
+        "name": "mdcite",
+        "to": 1751
+      },
+      {
+        "from": 1751,
+        "kind": "text",
+        "to": 1752
+      },
+      {
+        "body": {
+          "from": 1753,
+          "to": 1762
+        },
+        "from": 1752,
+        "kind": "command",
+        "meta": {
+          "bracketed": "true",
+          "text": "-@roe2021"
+        },
+        "name": "mdcite",
+        "to": 1763
+      },
+      {
+        "from": 1763,
+        "kind": "text",
+        "to": 1785
+      },
+      {
+        "from": 1785,
+        "kind": "command",
+        "meta": {
+          "alt": "Alt text",
+          "attrs": "#fig-pic width=80% fig-align=\"center\"",
+          "id": "fig-pic",
+          "src": "img/pic.png"
+        },
+        "name": "mdimage",
+        "to": 1848
+      },
+      {
+        "from": 1848,
+        "kind": "text",
+        "to": 1853
+      },
+      {
+        "from": 1853,
+        "kind": "command",
+        "meta": {
+          "alt": "",
+          "attrs": "",
+          "src": "img/bare.png"
+        },
+        "name": "mdimage",
+        "to": 1870
+      },
+      {
+        "from": 1870,
+        "kind": "text",
+        "to": 1885
+      },
+      {
+        "from": 1885,
+        "kind": "command",
+        "meta": {
+          "alone": "false",
+          "args": "https://example.org/v.mp4",
+          "name": "video"
+        },
+        "name": "shortcode",
+        "to": 1924
+      },
+      {
+        "from": 1924,
+        "kind": "text",
+        "to": 1929
+      },
+      {
+        "from": 1929,
+        "kind": "command",
+        "meta": {
+          "alone": "false",
+          "args": "title",
+          "name": "meta"
+        },
+        "name": "shortcode",
+        "to": 1947
+      },
+      {
+        "from": 1947,
+        "kind": "text",
+        "to": 1960
+      },
+      {
+        "args": [
+          {
+            "from": 1961,
+            "to": 1985
+          }
+        ],
+        "body": {
+          "from": 1961,
+          "to": 1985
+        },
+        "from": 1960,
+        "kind": "command",
+        "name": "url",
+        "to": 1986
+      },
+      {
+        "from": 1986,
+        "kind": "text",
+        "to": 1996
+      },
+      {
+        "args": [
+          {
+            "from": 1996,
+            "to": 2020
+          }
+        ],
+        "body": {
+          "from": 1996,
+          "to": 2020
+        },
+        "from": 1996,
+        "kind": "command",
+        "name": "url",
+        "to": 2020
+      },
+      {
+        "from": 2020,
+        "kind": "text",
+        "to": 2078
+      },
+      {
+        "from": 2078,
+        "kind": "linebreak",
+        "to": 2079
+      },
+      {
+        "from": 2079,
+        "kind": "text",
+        "to": 2092
+      },
+      {
+        "from": 2092,
+        "kind": "command",
+        "name": "hr",
+        "to": 2095
+      },
+      {
+        "from": 2095,
+        "kind": "text",
+        "to": 2097
+      },
+      {
+        "from": 2097,
+        "kind": "command",
+        "name": "hr",
+        "to": 2100
+      },
+      {
+        "from": 2100,
+        "kind": "text",
+        "to": 2125
+      },
+      {
+        "from": 2125,
+        "kind": "command",
+        "meta": {
+          "label": "1"
+        },
+        "name": "fnref",
+        "to": 2129
+      },
+      {
+        "from": 2129,
+        "kind": "text",
+        "to": 2186
+      }
+    ],
+    "from": 790,
+    "kind": "container",
+    "meta": {
+      "attrs": ".columns",
+      "classes": "columns"
+    },
+    "name": "div",
+    "to": 2186
+  }
+]

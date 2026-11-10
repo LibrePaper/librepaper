@@ -1,0 +1,884 @@
+[
+  {
+    "args": [
+      {
+        "from": 21,
+        "to": 28
+      }
+    ],
+    "body": {
+      "from": 21,
+      "to": 28
+    },
+    "children": [
+      {
+        "from": 21,
+        "kind": "text",
+        "to": 28
+      }
+    ],
+    "from": 0,
+    "kind": "command",
+    "name": "documentclass",
+    "options": [
+      {
+        "from": 15,
+        "to": 19
+      }
+    ],
+    "to": 29
+  },
+  {
+    "from": 29,
+    "kind": "text",
+    "to": 30
+  },
+  {
+    "args": [
+      {
+        "from": 46,
+        "to": 53
+      }
+    ],
+    "body": {
+      "from": 46,
+      "to": 53
+    },
+    "children": [
+      {
+        "from": 46,
+        "kind": "text",
+        "to": 53
+      }
+    ],
+    "from": 30,
+    "kind": "command",
+    "name": "usepackage",
+    "options": [
+      {
+        "from": 42,
+        "to": 44
+      }
+    ],
+    "to": 54
+  },
+  {
+    "from": 54,
+    "kind": "text",
+    "to": 55
+  },
+  {
+    "args": [
+      {
+        "from": 67,
+        "to": 74
+      }
+    ],
+    "body": {
+      "from": 67,
+      "to": 74
+    },
+    "children": [
+      {
+        "from": 67,
+        "kind": "text",
+        "to": 74
+      }
+    ],
+    "from": 55,
+    "kind": "command",
+    "name": "usepackage",
+    "to": 75
+  },
+  {
+    "from": 75,
+    "kind": "text",
+    "to": 76
+  },
+  {
+    "args": [
+      {
+        "from": 88,
+        "to": 96
+      }
+    ],
+    "body": {
+      "from": 88,
+      "to": 96
+    },
+    "children": [
+      {
+        "from": 88,
+        "kind": "text",
+        "to": 96
+      }
+    ],
+    "from": 76,
+    "kind": "command",
+    "name": "usepackage",
+    "to": 97
+  },
+  {
+    "from": 97,
+    "kind": "text",
+    "to": 98
+  },
+  {
+    "args": [
+      {
+        "from": 110,
+        "to": 118
+      }
+    ],
+    "body": {
+      "from": 110,
+      "to": 118
+    },
+    "children": [
+      {
+        "from": 110,
+        "kind": "text",
+        "to": 118
+      }
+    ],
+    "from": 98,
+    "kind": "command",
+    "name": "usepackage",
+    "to": 119
+  },
+  {
+    "from": 119,
+    "kind": "text",
+    "to": 121
+  },
+  {
+    "args": [
+      {
+        "from": 128,
+        "to": 156
+      }
+    ],
+    "body": {
+      "from": 128,
+      "to": 156
+    },
+    "children": [
+      {
+        "from": 128,
+        "kind": "text",
+        "to": 150
+      },
+      {
+        "args": [],
+        "from": 150,
+        "kind": "command",
+        "name": "LaTeX",
+        "to": 156
+      }
+    ],
+    "from": 121,
+    "kind": "command",
+    "name": "title",
+    "to": 157
+  },
+  {
+    "from": 157,
+    "kind": "text",
+    "to": 158
+  },
+  {
+    "args": [
+      {
+        "from": 166,
+        "to": 176
+      }
+    ],
+    "body": {
+      "from": 166,
+      "to": 176
+    },
+    "children": [
+      {
+        "from": 166,
+        "kind": "text",
+        "to": 176
+      }
+    ],
+    "from": 158,
+    "kind": "command",
+    "name": "author",
+    "to": 177
+  },
+  {
+    "from": 177,
+    "kind": "text",
+    "to": 178
+  },
+  {
+    "args": [
+      {
+        "from": 184,
+        "to": 184
+      }
+    ],
+    "body": {
+      "from": 184,
+      "to": 184
+    },
+    "children": [],
+    "from": 178,
+    "kind": "command",
+    "name": "date",
+    "to": 185
+  },
+  {
+    "from": 185,
+    "kind": "text",
+    "to": 187
+  },
+  {
+    "args": [],
+    "body": {
+      "from": 203,
+      "to": 2199
+    },
+    "children": [
+      {
+        "from": 203,
+        "kind": "text",
+        "to": 204
+      },
+      {
+        "args": [],
+        "from": 204,
+        "kind": "command",
+        "name": "maketitle",
+        "to": 214
+      },
+      {
+        "from": 214,
+        "kind": "text",
+        "to": 216
+      },
+      {
+        "args": [],
+        "body": {
+          "from": 234,
+          "to": 368
+        },
+        "children": [
+          {
+            "from": 234,
+            "kind": "text",
+            "to": 237
+          },
+          {
+            "args": [],
+            "from": 237,
+            "kind": "command",
+            "name": "centering",
+            "to": 247
+          },
+          {
+            "from": 247,
+            "kind": "text",
+            "to": 250
+          },
+          {
+            "args": [
+              {
+                "from": 289,
+                "to": 308
+              }
+            ],
+            "body": {
+              "from": 289,
+              "to": 308
+            },
+            "children": [
+              {
+                "from": 289,
+                "kind": "text",
+                "to": 308
+              }
+            ],
+            "from": 250,
+            "kind": "command",
+            "name": "includegraphics",
+            "options": [
+              {
+                "from": 267,
+                "to": 287
+              }
+            ],
+            "to": 309
+          },
+          {
+            "from": 309,
+            "kind": "text",
+            "to": 312
+          },
+          {
+            "args": [
+              {
+                "from": 321,
+                "to": 366
+              }
+            ],
+            "body": {
+              "from": 321,
+              "to": 366
+            },
+            "children": [
+              {
+                "from": 321,
+                "kind": "text",
+                "to": 366
+              }
+            ],
+            "from": 312,
+            "kind": "command",
+            "name": "caption",
+            "to": 367
+          },
+          {
+            "from": 367,
+            "kind": "text",
+            "to": 368
+          }
+        ],
+        "from": 216,
+        "kind": "container",
+        "meta": {
+          "figure": "true"
+        },
+        "name": "figure",
+        "options": [
+          {
+            "from": 231,
+            "to": 233
+          }
+        ],
+        "to": 380
+      },
+      {
+        "from": 380,
+        "kind": "text",
+        "to": 474
+      },
+      {
+        "args": [],
+        "from": 474,
+        "kind": "command",
+        "name": "LaTeX",
+        "to": 480
+      },
+      {
+        "body": {
+          "from": 481,
+          "to": 481
+        },
+        "children": [],
+        "from": 480,
+        "kind": "group",
+        "to": 482
+      },
+      {
+        "from": 482,
+        "kind": "text",
+        "to": 551
+      },
+      {
+        "body": {
+          "from": 560,
+          "to": 578
+        },
+        "children": [
+          {
+            "from": 560,
+            "kind": "text",
+            "to": 578
+          }
+        ],
+        "from": 551,
+        "kind": "heading",
+        "level": 1,
+        "name": "section",
+        "to": 579
+      },
+      {
+        "from": 579,
+        "kind": "text",
+        "to": 594
+      },
+      {
+        "args": [],
+        "from": 594,
+        "kind": "command",
+        "name": "LaTeX",
+        "to": 600
+      },
+      {
+        "from": 600,
+        "kind": "text",
+        "to": 772
+      },
+      {
+        "body": {
+          "from": 781,
+          "to": 807
+        },
+        "children": [
+          {
+            "from": 781,
+            "kind": "text",
+            "to": 807
+          }
+        ],
+        "from": 772,
+        "kind": "heading",
+        "level": 1,
+        "name": "section",
+        "to": 808
+      },
+      {
+        "from": 808,
+        "kind": "text",
+        "to": 831
+      },
+      {
+        "body": {
+          "from": 832,
+          "to": 833
+        },
+        "display": false,
+        "from": 831,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 834
+      },
+      {
+        "from": 834,
+        "kind": "text",
+        "to": 868
+      },
+      {
+        "args": [],
+        "body": {
+          "from": 884,
+          "to": 940
+        },
+        "display": true,
+        "from": 868,
+        "kind": "math",
+        "name": "equation",
+        "to": 954
+      },
+      {
+        "from": 954,
+        "kind": "text",
+        "to": 1105
+      },
+      {
+        "args": [
+          {
+            "from": 1111,
+            "to": 1123
+          }
+        ],
+        "body": {
+          "from": 1111,
+          "to": 1123
+        },
+        "children": [
+          {
+            "from": 1111,
+            "kind": "text",
+            "to": 1123
+          }
+        ],
+        "from": 1105,
+        "kind": "command",
+        "name": "cite",
+        "to": 1124
+      },
+      {
+        "from": 1124,
+        "kind": "text",
+        "to": 1131
+      },
+      {
+        "args": [
+          {
+            "from": 1139,
+            "to": 1140
+          }
+        ],
+        "body": {
+          "from": 1139,
+          "to": 1140
+        },
+        "children": [
+          {
+            "from": 1139,
+            "kind": "text",
+            "to": 1140
+          }
+        ],
+        "from": 1131,
+        "kind": "command",
+        "name": "texttt",
+        "to": 1141
+      },
+      {
+        "from": 1141,
+        "kind": "text",
+        "to": 1183
+      },
+      {
+        "args": [
+          {
+            "from": 1191,
+            "to": 1205
+          }
+        ],
+        "body": {
+          "from": 1191,
+          "to": 1205
+        },
+        "children": [
+          {
+            "from": 1191,
+            "kind": "text",
+            "to": 1205
+          }
+        ],
+        "from": 1183,
+        "kind": "command",
+        "name": "texttt",
+        "to": 1206
+      },
+      {
+        "from": 1206,
+        "kind": "text",
+        "to": 1209
+      },
+      {
+        "args": [
+          {
+            "from": 1216,
+            "to": 1238
+          }
+        ],
+        "body": {
+          "from": 1216,
+          "to": 1238
+        },
+        "children": [
+          {
+            "from": 1216,
+            "kind": "text",
+            "to": 1238
+          }
+        ],
+        "from": 1209,
+        "kind": "command",
+        "name": "input",
+        "to": 1239
+      },
+      {
+        "from": 1239,
+        "kind": "text",
+        "to": 1249
+      },
+      {
+        "from": 1249,
+        "kind": "tie",
+        "to": 1250
+      },
+      {
+        "args": [
+          {
+            "from": 1255,
+            "to": 1272
+          }
+        ],
+        "body": {
+          "from": 1255,
+          "to": 1272
+        },
+        "children": [
+          {
+            "from": 1255,
+            "kind": "text",
+            "to": 1272
+          }
+        ],
+        "from": 1250,
+        "kind": "command",
+        "name": "ref",
+        "to": 1273
+      },
+      {
+        "from": 1273,
+        "kind": "text",
+        "to": 1455
+      },
+      {
+        "body": {
+          "from": 1464,
+          "to": 1482
+        },
+        "children": [
+          {
+            "from": 1464,
+            "kind": "text",
+            "to": 1469
+          },
+          {
+            "args": [],
+            "from": 1469,
+            "kind": "command",
+            "name": "LaTeX",
+            "to": 1475
+          },
+          {
+            "body": {
+              "from": 1476,
+              "to": 1476
+            },
+            "children": [],
+            "from": 1475,
+            "kind": "group",
+            "to": 1477
+          },
+          {
+            "from": 1477,
+            "kind": "text",
+            "to": 1482
+          }
+        ],
+        "from": 1455,
+        "kind": "heading",
+        "level": 1,
+        "name": "section",
+        "to": 1483
+      },
+      {
+        "from": 1483,
+        "kind": "text",
+        "to": 1511
+      },
+      {
+        "from": 1511,
+        "kind": "ligature",
+        "meta": {
+          "text": "’"
+        },
+        "to": 1512
+      },
+      {
+        "from": 1512,
+        "kind": "text",
+        "to": 1537
+      },
+      {
+        "args": [
+          {
+            "from": 1545,
+            "to": 1552
+          }
+        ],
+        "body": {
+          "from": 1545,
+          "to": 1552
+        },
+        "children": [
+          {
+            "from": 1545,
+            "kind": "text",
+            "to": 1552
+          }
+        ],
+        "from": 1537,
+        "kind": "command",
+        "name": "texttt",
+        "to": 1553
+      },
+      {
+        "from": 1553,
+        "kind": "text",
+        "to": 1589
+      },
+      {
+        "args": [
+          {
+            "from": 1597,
+            "to": 1605
+          }
+        ],
+        "body": {
+          "from": 1597,
+          "to": 1605
+        },
+        "children": [
+          {
+            "from": 1597,
+            "kind": "text",
+            "to": 1605
+          }
+        ],
+        "from": 1589,
+        "kind": "command",
+        "name": "texttt",
+        "to": 1606
+      },
+      {
+        "from": 1606,
+        "kind": "text",
+        "to": 1628
+      },
+      {
+        "args": [
+          {
+            "from": 1636,
+            "to": 1644
+          }
+        ],
+        "body": {
+          "from": 1636,
+          "to": 1644
+        },
+        "children": [
+          {
+            "from": 1636,
+            "kind": "text",
+            "to": 1644
+          }
+        ],
+        "from": 1628,
+        "kind": "command",
+        "name": "texttt",
+        "to": 1645
+      },
+      {
+        "from": 1645,
+        "kind": "text",
+        "to": 1744
+      },
+      {
+        "body": {
+          "from": 1753,
+          "to": 1779
+        },
+        "children": [
+          {
+            "from": 1753,
+            "kind": "text",
+            "to": 1779
+          }
+        ],
+        "from": 1744,
+        "kind": "heading",
+        "level": 1,
+        "name": "section",
+        "to": 1780
+      },
+      {
+        "from": 1780,
+        "kind": "text",
+        "to": 2125
+      },
+      {
+        "args": [],
+        "from": 2125,
+        "kind": "command",
+        "name": "LaTeX",
+        "to": 2131
+      },
+      {
+        "body": {
+          "from": 2132,
+          "to": 2132
+        },
+        "children": [],
+        "from": 2131,
+        "kind": "group",
+        "to": 2133
+      },
+      {
+        "from": 2133,
+        "kind": "text",
+        "to": 2146
+      },
+      {
+        "args": [
+          {
+            "from": 2165,
+            "to": 2170
+          }
+        ],
+        "body": {
+          "from": 2165,
+          "to": 2170
+        },
+        "children": [
+          {
+            "from": 2165,
+            "kind": "text",
+            "to": 2170
+          }
+        ],
+        "from": 2146,
+        "kind": "command",
+        "name": "bibliographystyle",
+        "to": 2171
+      },
+      {
+        "from": 2171,
+        "kind": "text",
+        "to": 2172
+      },
+      {
+        "args": [
+          {
+            "from": 2186,
+            "to": 2196
+          }
+        ],
+        "body": {
+          "from": 2186,
+          "to": 2196
+        },
+        "children": [
+          {
+            "from": 2186,
+            "kind": "text",
+            "to": 2196
+          }
+        ],
+        "from": 2172,
+        "kind": "command",
+        "name": "bibliography",
+        "to": 2197
+      },
+      {
+        "from": 2197,
+        "kind": "text",
+        "to": 2199
+      }
+    ],
+    "from": 187,
+    "kind": "container",
+    "name": "document",
+    "to": 2213
+  },
+  {
+    "from": 2213,
+    "kind": "text",
+    "to": 2214
+  }
+]

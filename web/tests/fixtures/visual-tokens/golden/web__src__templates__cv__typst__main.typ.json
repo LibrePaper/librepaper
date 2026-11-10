@@ -1,0 +1,1626 @@
+[
+  {
+    "body": {
+      "from": 2,
+      "to": 77
+    },
+    "from": 0,
+    "kind": "comment",
+    "to": 77
+  },
+  {
+    "from": 77,
+    "kind": "text",
+    "to": 78
+  },
+  {
+    "args": [
+      {
+        "from": 87,
+        "to": 115
+      }
+    ],
+    "from": 78,
+    "kind": "command",
+    "meta": {
+      "path": "@preview/basic-resume:0.2.10",
+      "statement": "true"
+    },
+    "name": "import",
+    "to": 119
+  },
+  {
+    "from": 119,
+    "kind": "text",
+    "to": 121
+  },
+  {
+    "from": 121,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "",
+      "template": "resume"
+    },
+    "name": "show",
+    "to": 461
+  },
+  {
+    "from": 461,
+    "kind": "text",
+    "to": 463
+  },
+  {
+    "body": {
+      "from": 465,
+      "to": 515
+    },
+    "from": 463,
+    "kind": "comment",
+    "to": 515
+  },
+  {
+    "from": 515,
+    "kind": "text",
+    "to": 516
+  },
+  {
+    "body": {
+      "from": 519,
+      "to": 528
+    },
+    "children": [
+      {
+        "from": 519,
+        "kind": "text",
+        "to": 528
+      }
+    ],
+    "from": 516,
+    "kind": "heading",
+    "level": 2,
+    "to": 528
+  },
+  {
+    "from": 528,
+    "kind": "text",
+    "to": 530
+  },
+  {
+    "args": [],
+    "body": {
+      "from": 535,
+      "to": 704
+    },
+    "children": [
+      {
+        "from": 535,
+        "kind": "raw",
+        "name": "separator",
+        "to": 538
+      },
+      {
+        "from": 538,
+        "kind": "raw",
+        "name": "argument",
+        "to": 550
+      },
+      {
+        "from": 550,
+        "kind": "raw",
+        "name": "separator",
+        "to": 551
+      },
+      {
+        "body": {
+          "from": 552,
+          "to": 573
+        },
+        "from": 551,
+        "kind": "raw",
+        "name": "string",
+        "to": 574
+      },
+      {
+        "from": 574,
+        "kind": "raw",
+        "name": "separator",
+        "to": 578
+      },
+      {
+        "from": 578,
+        "kind": "raw",
+        "name": "argument",
+        "to": 587
+      },
+      {
+        "from": 587,
+        "kind": "raw",
+        "name": "separator",
+        "to": 588
+      },
+      {
+        "body": {
+          "from": 589,
+          "to": 600
+        },
+        "from": 588,
+        "kind": "raw",
+        "name": "string",
+        "to": 601
+      },
+      {
+        "from": 601,
+        "kind": "raw",
+        "name": "separator",
+        "to": 605
+      },
+      {
+        "from": 605,
+        "kind": "raw",
+        "name": "argument",
+        "to": 611
+      },
+      {
+        "from": 611,
+        "kind": "raw",
+        "name": "separator",
+        "to": 612
+      },
+      {
+        "args": [],
+        "body": {
+          "from": 625,
+          "to": 669
+        },
+        "children": [
+          {
+            "from": 625,
+            "kind": "raw",
+            "name": "argument",
+            "to": 636
+          },
+          {
+            "from": 636,
+            "kind": "raw",
+            "name": "separator",
+            "to": 637
+          },
+          {
+            "body": {
+              "from": 638,
+              "to": 646
+            },
+            "from": 637,
+            "kind": "raw",
+            "name": "string",
+            "to": 647
+          },
+          {
+            "from": 647,
+            "kind": "raw",
+            "name": "separator",
+            "to": 649
+          },
+          {
+            "from": 649,
+            "kind": "raw",
+            "name": "argument",
+            "to": 658
+          },
+          {
+            "from": 658,
+            "kind": "raw",
+            "name": "separator",
+            "to": 659
+          },
+          {
+            "body": {
+              "from": 660,
+              "to": 668
+            },
+            "from": 659,
+            "kind": "raw",
+            "name": "string",
+            "to": 669
+          }
+        ],
+        "from": 612,
+        "kind": "command",
+        "meta": {
+          "arg:end-date": "\"Jun 2020\"",
+          "arg:start-date": "\"Sep 2016\"",
+          "args": "code",
+          "raw": "true"
+        },
+        "name": "dates-helper",
+        "named": {
+          "end-date": {
+            "from": 659,
+            "to": 669
+          },
+          "start-date": {
+            "from": 637,
+            "to": 647
+          }
+        },
+        "to": 670
+      },
+      {
+        "from": 670,
+        "kind": "raw",
+        "name": "separator",
+        "to": 674
+      },
+      {
+        "from": 674,
+        "kind": "raw",
+        "name": "argument",
+        "to": 681
+      },
+      {
+        "from": 681,
+        "kind": "raw",
+        "name": "separator",
+        "to": 682
+      },
+      {
+        "body": {
+          "from": 683,
+          "to": 701
+        },
+        "from": 682,
+        "kind": "raw",
+        "name": "string",
+        "to": 702
+      },
+      {
+        "from": 702,
+        "kind": "raw",
+        "name": "separator",
+        "to": 704
+      }
+    ],
+    "from": 530,
+    "kind": "command",
+    "meta": {
+      "arg:dates": "dates-helper(start-date: \"Sep 2016\", end-date: \"Jun 2020\")",
+      "arg:degree": "\"Ph.D. in Economics\"",
+      "arg:institution": "\"University of Example\"",
+      "arg:location": "\"Toronto, ON\"",
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "edu",
+    "named": {
+      "dates": {
+        "from": 612,
+        "to": 670
+      },
+      "degree": {
+        "from": 682,
+        "to": 702
+      },
+      "institution": {
+        "from": 551,
+        "to": 574
+      },
+      "location": {
+        "from": 588,
+        "to": 601
+      }
+    },
+    "to": 705
+  },
+  {
+    "from": 705,
+    "kind": "text",
+    "to": 706
+  },
+  {
+    "from": 706,
+    "kind": "item",
+    "name": "bullet",
+    "to": 708
+  },
+  {
+    "from": 708,
+    "kind": "text",
+    "to": 762
+  },
+  {
+    "args": [],
+    "body": {
+      "from": 767,
+      "to": 950
+    },
+    "children": [
+      {
+        "from": 767,
+        "kind": "raw",
+        "name": "separator",
+        "to": 770
+      },
+      {
+        "from": 770,
+        "kind": "raw",
+        "name": "argument",
+        "to": 782
+      },
+      {
+        "from": 782,
+        "kind": "raw",
+        "name": "separator",
+        "to": 783
+      },
+      {
+        "body": {
+          "from": 784,
+          "to": 805
+        },
+        "from": 783,
+        "kind": "raw",
+        "name": "string",
+        "to": 806
+      },
+      {
+        "from": 806,
+        "kind": "raw",
+        "name": "separator",
+        "to": 810
+      },
+      {
+        "from": 810,
+        "kind": "raw",
+        "name": "argument",
+        "to": 819
+      },
+      {
+        "from": 819,
+        "kind": "raw",
+        "name": "separator",
+        "to": 820
+      },
+      {
+        "body": {
+          "from": 821,
+          "to": 832
+        },
+        "from": 820,
+        "kind": "raw",
+        "name": "string",
+        "to": 833
+      },
+      {
+        "from": 833,
+        "kind": "raw",
+        "name": "separator",
+        "to": 837
+      },
+      {
+        "from": 837,
+        "kind": "raw",
+        "name": "argument",
+        "to": 843
+      },
+      {
+        "from": 843,
+        "kind": "raw",
+        "name": "separator",
+        "to": 844
+      },
+      {
+        "args": [],
+        "body": {
+          "from": 857,
+          "to": 901
+        },
+        "children": [
+          {
+            "from": 857,
+            "kind": "raw",
+            "name": "argument",
+            "to": 868
+          },
+          {
+            "from": 868,
+            "kind": "raw",
+            "name": "separator",
+            "to": 869
+          },
+          {
+            "body": {
+              "from": 870,
+              "to": 878
+            },
+            "from": 869,
+            "kind": "raw",
+            "name": "string",
+            "to": 879
+          },
+          {
+            "from": 879,
+            "kind": "raw",
+            "name": "separator",
+            "to": 881
+          },
+          {
+            "from": 881,
+            "kind": "raw",
+            "name": "argument",
+            "to": 890
+          },
+          {
+            "from": 890,
+            "kind": "raw",
+            "name": "separator",
+            "to": 891
+          },
+          {
+            "body": {
+              "from": 892,
+              "to": 900
+            },
+            "from": 891,
+            "kind": "raw",
+            "name": "string",
+            "to": 901
+          }
+        ],
+        "from": 844,
+        "kind": "command",
+        "meta": {
+          "arg:end-date": "\"Jun 2016\"",
+          "arg:start-date": "\"Sep 2014\"",
+          "args": "code",
+          "raw": "true"
+        },
+        "name": "dates-helper",
+        "named": {
+          "end-date": {
+            "from": 891,
+            "to": 901
+          },
+          "start-date": {
+            "from": 869,
+            "to": 879
+          }
+        },
+        "to": 902
+      },
+      {
+        "from": 902,
+        "kind": "raw",
+        "name": "separator",
+        "to": 906
+      },
+      {
+        "from": 906,
+        "kind": "raw",
+        "name": "argument",
+        "to": 913
+      },
+      {
+        "from": 913,
+        "kind": "raw",
+        "name": "separator",
+        "to": 914
+      },
+      {
+        "body": {
+          "from": 915,
+          "to": 947
+        },
+        "from": 914,
+        "kind": "raw",
+        "name": "string",
+        "to": 948
+      },
+      {
+        "from": 948,
+        "kind": "raw",
+        "name": "separator",
+        "to": 950
+      }
+    ],
+    "from": 762,
+    "kind": "command",
+    "meta": {
+      "arg:dates": "dates-helper(start-date: \"Sep 2014\", end-date: \"Jun 2016\")",
+      "arg:degree": "\"M.Sc. in Statistics, Distinction\"",
+      "arg:institution": "\"University of Example\"",
+      "arg:location": "\"Toronto, ON\"",
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "edu",
+    "named": {
+      "dates": {
+        "from": 844,
+        "to": 902
+      },
+      "degree": {
+        "from": 914,
+        "to": 948
+      },
+      "institution": {
+        "from": 783,
+        "to": 806
+      },
+      "location": {
+        "from": 820,
+        "to": 833
+      }
+    },
+    "to": 951
+  },
+  {
+    "from": 951,
+    "kind": "text",
+    "to": 953
+  },
+  {
+    "body": {
+      "from": 956,
+      "to": 966
+    },
+    "children": [
+      {
+        "from": 956,
+        "kind": "text",
+        "to": 966
+      }
+    ],
+    "from": 953,
+    "kind": "heading",
+    "level": 2,
+    "to": 966
+  },
+  {
+    "from": 966,
+    "kind": "text",
+    "to": 968
+  },
+  {
+    "args": [],
+    "body": {
+      "from": 974,
+      "to": 1138
+    },
+    "children": [
+      {
+        "from": 974,
+        "kind": "raw",
+        "name": "separator",
+        "to": 977
+      },
+      {
+        "from": 977,
+        "kind": "raw",
+        "name": "argument",
+        "to": 983
+      },
+      {
+        "from": 983,
+        "kind": "raw",
+        "name": "separator",
+        "to": 984
+      },
+      {
+        "body": {
+          "from": 985,
+          "to": 1006
+        },
+        "from": 984,
+        "kind": "raw",
+        "name": "string",
+        "to": 1007
+      },
+      {
+        "from": 1007,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1011
+      },
+      {
+        "from": 1011,
+        "kind": "raw",
+        "name": "argument",
+        "to": 1020
+      },
+      {
+        "from": 1020,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1021
+      },
+      {
+        "body": {
+          "from": 1022,
+          "to": 1033
+        },
+        "from": 1021,
+        "kind": "raw",
+        "name": "string",
+        "to": 1034
+      },
+      {
+        "from": 1034,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1038
+      },
+      {
+        "from": 1038,
+        "kind": "raw",
+        "name": "argument",
+        "to": 1046
+      },
+      {
+        "from": 1046,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1047
+      },
+      {
+        "body": {
+          "from": 1048,
+          "to": 1067
+        },
+        "from": 1047,
+        "kind": "raw",
+        "name": "string",
+        "to": 1068
+      },
+      {
+        "from": 1068,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1072
+      },
+      {
+        "from": 1072,
+        "kind": "raw",
+        "name": "argument",
+        "to": 1078
+      },
+      {
+        "from": 1078,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1079
+      },
+      {
+        "args": [],
+        "body": {
+          "from": 1092,
+          "to": 1135
+        },
+        "children": [
+          {
+            "from": 1092,
+            "kind": "raw",
+            "name": "argument",
+            "to": 1103
+          },
+          {
+            "from": 1103,
+            "kind": "raw",
+            "name": "separator",
+            "to": 1104
+          },
+          {
+            "body": {
+              "from": 1105,
+              "to": 1113
+            },
+            "from": 1104,
+            "kind": "raw",
+            "name": "string",
+            "to": 1114
+          },
+          {
+            "from": 1114,
+            "kind": "raw",
+            "name": "separator",
+            "to": 1116
+          },
+          {
+            "from": 1116,
+            "kind": "raw",
+            "name": "argument",
+            "to": 1125
+          },
+          {
+            "from": 1125,
+            "kind": "raw",
+            "name": "separator",
+            "to": 1126
+          },
+          {
+            "body": {
+              "from": 1127,
+              "to": 1134
+            },
+            "from": 1126,
+            "kind": "raw",
+            "name": "string",
+            "to": 1135
+          }
+        ],
+        "from": 1079,
+        "kind": "command",
+        "meta": {
+          "arg:end-date": "\"Present\"",
+          "arg:start-date": "\"Jul 2021\"",
+          "args": "code",
+          "raw": "true"
+        },
+        "name": "dates-helper",
+        "named": {
+          "end-date": {
+            "from": 1126,
+            "to": 1135
+          },
+          "start-date": {
+            "from": 1104,
+            "to": 1114
+          }
+        },
+        "to": 1136
+      },
+      {
+        "from": 1136,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1138
+      }
+    ],
+    "from": 968,
+    "kind": "command",
+    "meta": {
+      "arg:company": "\"Northwind Analytics\"",
+      "arg:dates": "dates-helper(start-date: \"Jul 2021\", end-date: \"Present\")",
+      "arg:location": "\"Toronto, ON\"",
+      "arg:title": "\"Senior Data Scientist\"",
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "work",
+    "named": {
+      "company": {
+        "from": 1047,
+        "to": 1068
+      },
+      "dates": {
+        "from": 1079,
+        "to": 1136
+      },
+      "location": {
+        "from": 1021,
+        "to": 1034
+      },
+      "title": {
+        "from": 984,
+        "to": 1007
+      }
+    },
+    "to": 1139
+  },
+  {
+    "from": 1139,
+    "kind": "text",
+    "to": 1140
+  },
+  {
+    "from": 1140,
+    "kind": "item",
+    "name": "bullet",
+    "to": 1142
+  },
+  {
+    "from": 1142,
+    "kind": "text",
+    "to": 1208
+  },
+  {
+    "from": 1208,
+    "kind": "item",
+    "name": "bullet",
+    "to": 1210
+  },
+  {
+    "from": 1210,
+    "kind": "text",
+    "to": 1280
+  },
+  {
+    "args": [],
+    "body": {
+      "from": 1286,
+      "to": 1447
+    },
+    "children": [
+      {
+        "from": 1286,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1289
+      },
+      {
+        "from": 1289,
+        "kind": "raw",
+        "name": "argument",
+        "to": 1295
+      },
+      {
+        "from": 1295,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1296
+      },
+      {
+        "body": {
+          "from": 1297,
+          "to": 1312
+        },
+        "from": 1296,
+        "kind": "raw",
+        "name": "string",
+        "to": 1313
+      },
+      {
+        "from": 1313,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1317
+      },
+      {
+        "from": 1317,
+        "kind": "raw",
+        "name": "argument",
+        "to": 1326
+      },
+      {
+        "from": 1326,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1327
+      },
+      {
+        "body": {
+          "from": 1328,
+          "to": 1339
+        },
+        "from": 1327,
+        "kind": "raw",
+        "name": "string",
+        "to": 1340
+      },
+      {
+        "from": 1340,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1344
+      },
+      {
+        "from": 1344,
+        "kind": "raw",
+        "name": "argument",
+        "to": 1352
+      },
+      {
+        "from": 1352,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1353
+      },
+      {
+        "body": {
+          "from": 1354,
+          "to": 1375
+        },
+        "from": 1353,
+        "kind": "raw",
+        "name": "string",
+        "to": 1376
+      },
+      {
+        "from": 1376,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1380
+      },
+      {
+        "from": 1380,
+        "kind": "raw",
+        "name": "argument",
+        "to": 1386
+      },
+      {
+        "from": 1386,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1387
+      },
+      {
+        "args": [],
+        "body": {
+          "from": 1400,
+          "to": 1444
+        },
+        "children": [
+          {
+            "from": 1400,
+            "kind": "raw",
+            "name": "argument",
+            "to": 1411
+          },
+          {
+            "from": 1411,
+            "kind": "raw",
+            "name": "separator",
+            "to": 1412
+          },
+          {
+            "body": {
+              "from": 1413,
+              "to": 1421
+            },
+            "from": 1412,
+            "kind": "raw",
+            "name": "string",
+            "to": 1422
+          },
+          {
+            "from": 1422,
+            "kind": "raw",
+            "name": "separator",
+            "to": 1424
+          },
+          {
+            "from": 1424,
+            "kind": "raw",
+            "name": "argument",
+            "to": 1433
+          },
+          {
+            "from": 1433,
+            "kind": "raw",
+            "name": "separator",
+            "to": 1434
+          },
+          {
+            "body": {
+              "from": 1435,
+              "to": 1443
+            },
+            "from": 1434,
+            "kind": "raw",
+            "name": "string",
+            "to": 1444
+          }
+        ],
+        "from": 1387,
+        "kind": "command",
+        "meta": {
+          "arg:end-date": "\"Jun 2021\"",
+          "arg:start-date": "\"Sep 2019\"",
+          "args": "code",
+          "raw": "true"
+        },
+        "name": "dates-helper",
+        "named": {
+          "end-date": {
+            "from": 1434,
+            "to": 1444
+          },
+          "start-date": {
+            "from": 1412,
+            "to": 1422
+          }
+        },
+        "to": 1445
+      },
+      {
+        "from": 1445,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1447
+      }
+    ],
+    "from": 1280,
+    "kind": "command",
+    "meta": {
+      "arg:company": "\"University of Example\"",
+      "arg:dates": "dates-helper(start-date: \"Sep 2019\", end-date: \"Jun 2021\")",
+      "arg:location": "\"Toronto, ON\"",
+      "arg:title": "\"Research Fellow\"",
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "work",
+    "named": {
+      "company": {
+        "from": 1353,
+        "to": 1376
+      },
+      "dates": {
+        "from": 1387,
+        "to": 1445
+      },
+      "location": {
+        "from": 1327,
+        "to": 1340
+      },
+      "title": {
+        "from": 1296,
+        "to": 1313
+      }
+    },
+    "to": 1448
+  },
+  {
+    "from": 1448,
+    "kind": "text",
+    "to": 1449
+  },
+  {
+    "from": 1449,
+    "kind": "item",
+    "name": "bullet",
+    "to": 1451
+  },
+  {
+    "from": 1451,
+    "kind": "text",
+    "to": 1519
+  },
+  {
+    "from": 1519,
+    "kind": "item",
+    "name": "bullet",
+    "to": 1521
+  },
+  {
+    "from": 1521,
+    "kind": "text",
+    "to": 1577
+  },
+  {
+    "body": {
+      "from": 1580,
+      "to": 1588
+    },
+    "children": [
+      {
+        "from": 1580,
+        "kind": "text",
+        "to": 1588
+      }
+    ],
+    "from": 1577,
+    "kind": "heading",
+    "level": 2,
+    "to": 1588
+  },
+  {
+    "from": 1588,
+    "kind": "text",
+    "to": 1590
+  },
+  {
+    "args": [],
+    "body": {
+      "from": 1599,
+      "to": 1751
+    },
+    "children": [
+      {
+        "from": 1599,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1602
+      },
+      {
+        "from": 1602,
+        "kind": "raw",
+        "name": "argument",
+        "to": 1607
+      },
+      {
+        "from": 1607,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1608
+      },
+      {
+        "body": {
+          "from": 1609,
+          "to": 1633
+        },
+        "from": 1608,
+        "kind": "raw",
+        "name": "string",
+        "to": 1634
+      },
+      {
+        "from": 1634,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1638
+      },
+      {
+        "from": 1638,
+        "kind": "raw",
+        "name": "argument",
+        "to": 1643
+      },
+      {
+        "from": 1643,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1644
+      },
+      {
+        "body": {
+          "from": 1645,
+          "to": 1655
+        },
+        "from": 1644,
+        "kind": "raw",
+        "name": "string",
+        "to": 1656
+      },
+      {
+        "from": 1656,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1660
+      },
+      {
+        "from": 1660,
+        "kind": "raw",
+        "name": "argument",
+        "to": 1664
+      },
+      {
+        "from": 1664,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1665
+      },
+      {
+        "body": {
+          "from": 1666,
+          "to": 1684
+        },
+        "from": 1665,
+        "kind": "raw",
+        "name": "string",
+        "to": 1685
+      },
+      {
+        "from": 1685,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1689
+      },
+      {
+        "from": 1689,
+        "kind": "raw",
+        "name": "argument",
+        "to": 1695
+      },
+      {
+        "from": 1695,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1696
+      },
+      {
+        "args": [],
+        "body": {
+          "from": 1709,
+          "to": 1748
+        },
+        "children": [
+          {
+            "from": 1709,
+            "kind": "raw",
+            "name": "argument",
+            "to": 1720
+          },
+          {
+            "from": 1720,
+            "kind": "raw",
+            "name": "separator",
+            "to": 1721
+          },
+          {
+            "body": {
+              "from": 1722,
+              "to": 1726
+            },
+            "from": 1721,
+            "kind": "raw",
+            "name": "string",
+            "to": 1727
+          },
+          {
+            "from": 1727,
+            "kind": "raw",
+            "name": "separator",
+            "to": 1729
+          },
+          {
+            "from": 1729,
+            "kind": "raw",
+            "name": "argument",
+            "to": 1738
+          },
+          {
+            "from": 1738,
+            "kind": "raw",
+            "name": "separator",
+            "to": 1739
+          },
+          {
+            "body": {
+              "from": 1740,
+              "to": 1747
+            },
+            "from": 1739,
+            "kind": "raw",
+            "name": "string",
+            "to": 1748
+          }
+        ],
+        "from": 1696,
+        "kind": "command",
+        "meta": {
+          "arg:end-date": "\"Present\"",
+          "arg:start-date": "\"2023\"",
+          "args": "code",
+          "raw": "true"
+        },
+        "name": "dates-helper",
+        "named": {
+          "end-date": {
+            "from": 1739,
+            "to": 1748
+          },
+          "start-date": {
+            "from": 1721,
+            "to": 1727
+          }
+        },
+        "to": 1749
+      },
+      {
+        "from": 1749,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1751
+      }
+    ],
+    "from": 1590,
+    "kind": "command",
+    "meta": {
+      "arg:dates": "dates-helper(start-date: \"2023\", end-date: \"Present\")",
+      "arg:name": "\"Causal inference toolkit\"",
+      "arg:role": "\"Maintainer\"",
+      "arg:url": "\"example.com/causal\"",
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "project",
+    "named": {
+      "dates": {
+        "from": 1696,
+        "to": 1749
+      },
+      "name": {
+        "from": 1608,
+        "to": 1634
+      },
+      "role": {
+        "from": 1644,
+        "to": 1656
+      },
+      "url": {
+        "from": 1665,
+        "to": 1685
+      }
+    },
+    "to": 1752
+  },
+  {
+    "from": 1752,
+    "kind": "text",
+    "to": 1753
+  },
+  {
+    "from": 1753,
+    "kind": "item",
+    "name": "bullet",
+    "to": 1755
+  },
+  {
+    "from": 1755,
+    "kind": "text",
+    "to": 1846
+  },
+  {
+    "body": {
+      "from": 1849,
+      "to": 1861
+    },
+    "children": [
+      {
+        "from": 1849,
+        "kind": "text",
+        "to": 1861
+      }
+    ],
+    "from": 1846,
+    "kind": "heading",
+    "level": 2,
+    "to": 1861
+  },
+  {
+    "from": 1861,
+    "kind": "text",
+    "to": 1863
+  },
+  {
+    "from": 1863,
+    "kind": "item",
+    "name": "bullet",
+    "to": 1865
+  },
+  {
+    "from": 1865,
+    "kind": "text",
+    "to": 1870
+  },
+  {
+    "from": 1870,
+    "kind": "ligature",
+    "meta": {
+      "text": "’"
+    },
+    "name": "quote",
+    "to": 1871
+  },
+  {
+    "from": 1871,
+    "kind": "text",
+    "to": 1931
+  },
+  {
+    "body": {
+      "from": 1932,
+      "to": 1968
+    },
+    "children": [
+      {
+        "from": 1932,
+        "kind": "text",
+        "to": 1968
+      }
+    ],
+    "from": 1931,
+    "kind": "command",
+    "name": "emph",
+    "to": 1969
+  },
+  {
+    "from": 1969,
+    "kind": "text",
+    "to": 1993
+  },
+  {
+    "from": 1993,
+    "kind": "item",
+    "name": "bullet",
+    "to": 1995
+  },
+  {
+    "from": 1995,
+    "kind": "text",
+    "to": 2000
+  },
+  {
+    "from": 2000,
+    "kind": "ligature",
+    "meta": {
+      "text": "’"
+    },
+    "name": "quote",
+    "to": 2001
+  },
+  {
+    "from": 2001,
+    "kind": "text",
+    "to": 2056
+  },
+  {
+    "body": {
+      "from": 2057,
+      "to": 2081
+    },
+    "children": [
+      {
+        "from": 2057,
+        "kind": "text",
+        "to": 2081
+      }
+    ],
+    "from": 2056,
+    "kind": "command",
+    "name": "emph",
+    "to": 2082
+  },
+  {
+    "from": 2082,
+    "kind": "text",
+    "to": 2104
+  },
+  {
+    "body": {
+      "from": 2107,
+      "to": 2113
+    },
+    "children": [
+      {
+        "from": 2107,
+        "kind": "text",
+        "to": 2113
+      }
+    ],
+    "from": 2104,
+    "kind": "heading",
+    "level": 2,
+    "to": 2113
+  },
+  {
+    "from": 2113,
+    "kind": "text",
+    "to": 2115
+  },
+  {
+    "from": 2115,
+    "kind": "item",
+    "name": "bullet",
+    "to": 2117
+  },
+  {
+    "body": {
+      "from": 2118,
+      "to": 2129
+    },
+    "children": [
+      {
+        "from": 2118,
+        "kind": "text",
+        "to": 2129
+      }
+    ],
+    "from": 2117,
+    "kind": "command",
+    "name": "strong",
+    "to": 2130
+  },
+  {
+    "from": 2130,
+    "kind": "text",
+    "to": 2153
+  },
+  {
+    "from": 2153,
+    "kind": "item",
+    "name": "bullet",
+    "to": 2155
+  },
+  {
+    "body": {
+      "from": 2156,
+      "to": 2161
+    },
+    "children": [
+      {
+        "from": 2156,
+        "kind": "text",
+        "to": 2161
+      }
+    ],
+    "from": 2155,
+    "kind": "command",
+    "name": "strong",
+    "to": 2162
+  },
+  {
+    "from": 2162,
+    "kind": "text",
+    "to": 2192
+  },
+  {
+    "body": {
+      "from": 2195,
+      "to": 2204
+    },
+    "children": [
+      {
+        "from": 2195,
+        "kind": "text",
+        "to": 2204
+      }
+    ],
+    "from": 2192,
+    "kind": "heading",
+    "level": 2,
+    "to": 2204
+  },
+  {
+    "from": 2204,
+    "kind": "text",
+    "to": 2206
+  },
+  {
+    "from": 2206,
+    "kind": "item",
+    "name": "bullet",
+    "to": 2208
+  },
+  {
+    "body": {
+      "from": 2209,
+      "to": 2216
+    },
+    "children": [
+      {
+        "from": 2209,
+        "kind": "text",
+        "to": 2216
+      }
+    ],
+    "from": 2208,
+    "kind": "command",
+    "name": "strong",
+    "to": 2217
+  },
+  {
+    "from": 2217,
+    "kind": "text",
+    "to": 2226
+  },
+  {
+    "from": 2226,
+    "kind": "item",
+    "name": "bullet",
+    "to": 2228
+  },
+  {
+    "body": {
+      "from": 2229,
+      "to": 2235
+    },
+    "children": [
+      {
+        "from": 2229,
+        "kind": "text",
+        "to": 2235
+      }
+    ],
+    "from": 2228,
+    "kind": "command",
+    "name": "strong",
+    "to": 2236
+  },
+  {
+    "from": 2236,
+    "kind": "text",
+    "to": 2271
+  }
+]

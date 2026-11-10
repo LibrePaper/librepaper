@@ -1,0 +1,389 @@
+[
+  {
+    "body": {
+      "from": 2,
+      "to": 24
+    },
+    "children": [
+      {
+        "from": 2,
+        "kind": "text",
+        "to": 10
+      },
+      {
+        "from": 10,
+        "kind": "command",
+        "meta": {
+          "key": "chap-methods"
+        },
+        "name": "label",
+        "to": 24
+      }
+    ],
+    "from": 0,
+    "kind": "heading",
+    "level": 1,
+    "to": 24
+  },
+  {
+    "from": 24,
+    "kind": "text",
+    "to": 147
+  },
+  {
+    "body": {
+      "from": 150,
+      "to": 177
+    },
+    "children": [
+      {
+        "from": 150,
+        "kind": "text",
+        "to": 161
+      },
+      {
+        "from": 161,
+        "kind": "command",
+        "meta": {
+          "key": "sec-estimators"
+        },
+        "name": "label",
+        "to": 177
+      }
+    ],
+    "from": 147,
+    "kind": "heading",
+    "level": 2,
+    "to": 177
+  },
+  {
+    "from": 177,
+    "kind": "text",
+    "to": 284
+  },
+  {
+    "from": 284,
+    "kind": "command",
+    "meta": {
+      "key": "efron1979"
+    },
+    "name": "ref",
+    "to": 294
+  },
+  {
+    "from": 294,
+    "kind": "text",
+    "to": 312
+  },
+  {
+    "body": {
+      "from": 313,
+      "to": 323
+    },
+    "display": false,
+    "from": 312,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 324
+  },
+  {
+    "from": 324,
+    "kind": "text",
+    "to": 337
+  },
+  {
+    "body": {
+      "from": 338,
+      "to": 339
+    },
+    "display": false,
+    "from": 337,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 340
+  },
+  {
+    "from": 340,
+    "kind": "text",
+    "to": 401
+  },
+  {
+    "body": {
+      "from": 402,
+      "to": 537
+    },
+    "display": true,
+    "from": 401,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 538
+  },
+  {
+    "from": 538,
+    "kind": "text",
+    "to": 539
+  },
+  {
+    "from": 539,
+    "kind": "command",
+    "meta": {
+      "key": "eq-bootstrap-se"
+    },
+    "name": "label",
+    "to": 556
+  },
+  {
+    "from": 556,
+    "kind": "text",
+    "to": 558
+  },
+  {
+    "from": 558,
+    "kind": "command",
+    "meta": {
+      "key": "eq-bootstrap-se"
+    },
+    "name": "ref",
+    "to": 574
+  },
+  {
+    "from": 574,
+    "kind": "text",
+    "to": 663
+  },
+  {
+    "body": {
+      "from": 666,
+      "to": 695
+    },
+    "children": [
+      {
+        "from": 666,
+        "kind": "text",
+        "to": 678
+      },
+      {
+        "from": 678,
+        "kind": "command",
+        "meta": {
+          "key": "sec-assumptions"
+        },
+        "name": "label",
+        "to": 695
+      }
+    ],
+    "from": 663,
+    "kind": "heading",
+    "level": 2,
+    "to": 695
+  },
+  {
+    "from": 695,
+    "kind": "text",
+    "to": 829
+  },
+  {
+    "from": 829,
+    "kind": "command",
+    "meta": {
+      "key": "sec-model-notation"
+    },
+    "name": "ref",
+    "to": 848
+  },
+  {
+    "from": 848,
+    "kind": "text",
+    "to": 921
+  },
+  {
+    "args": [
+      {
+        "from": 926,
+        "to": 945
+      }
+    ],
+    "body": {
+      "from": 926,
+      "to": 968
+    },
+    "children": [
+      {
+        "from": 926,
+        "kind": "text",
+        "to": 945
+      },
+      {
+        "from": 945,
+        "kind": "raw",
+        "name": "separator",
+        "to": 947
+      },
+      {
+        "from": 947,
+        "kind": "raw",
+        "name": "argument",
+        "to": 958
+      },
+      {
+        "from": 958,
+        "kind": "raw",
+        "name": "separator",
+        "to": 959
+      },
+      {
+        "body": {
+          "from": 960,
+          "to": 967
+        },
+        "children": [
+          {
+            "from": 960,
+            "kind": "text",
+            "to": 967
+          }
+        ],
+        "from": 959,
+        "kind": "group",
+        "name": "content",
+        "to": 968
+      }
+    ],
+    "from": 921,
+    "kind": "command",
+    "meta": {
+      "arg:supplement": "[Chapter]",
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "ref",
+    "named": {
+      "supplement": {
+        "from": 959,
+        "to": 968
+      }
+    },
+    "to": 969
+  },
+  {
+    "from": 969,
+    "kind": "text",
+    "to": 1014
+  },
+  {
+    "body": {
+      "from": 1017,
+      "to": 1052
+    },
+    "children": [
+      {
+        "from": 1017,
+        "kind": "text",
+        "to": 1032
+      },
+      {
+        "from": 1032,
+        "kind": "command",
+        "meta": {
+          "key": "sec-model-notation"
+        },
+        "name": "label",
+        "to": 1052
+      }
+    ],
+    "from": 1014,
+    "kind": "heading",
+    "level": 2,
+    "to": 1052
+  },
+  {
+    "from": 1052,
+    "kind": "text",
+    "to": 1058
+  },
+  {
+    "body": {
+      "from": 1059,
+      "to": 1062
+    },
+    "display": false,
+    "from": 1058,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 1063
+  },
+  {
+    "from": 1063,
+    "kind": "text",
+    "to": 1083
+  },
+  {
+    "body": {
+      "from": 1084,
+      "to": 1097
+    },
+    "display": false,
+    "from": 1083,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 1098
+  },
+  {
+    "from": 1098,
+    "kind": "text",
+    "to": 1122
+  },
+  {
+    "body": {
+      "from": 1123,
+      "to": 1124
+    },
+    "display": false,
+    "from": 1122,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 1125
+  },
+  {
+    "from": 1125,
+    "kind": "text",
+    "to": 1239
+  },
+  {
+    "body": {
+      "from": 1240,
+      "to": 1246
+    },
+    "display": false,
+    "from": 1239,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 1247
+  },
+  {
+    "from": 1247,
+    "kind": "text",
+    "to": 1249
+  }
+]

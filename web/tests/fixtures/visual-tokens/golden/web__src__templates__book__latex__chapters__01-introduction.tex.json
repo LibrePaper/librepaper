@@ -1,0 +1,280 @@
+[
+  {
+    "body": {
+      "from": 9,
+      "to": 21
+    },
+    "children": [
+      {
+        "from": 9,
+        "kind": "text",
+        "to": 21
+      }
+    ],
+    "from": 0,
+    "kind": "heading",
+    "level": 1,
+    "name": "chapter",
+    "to": 22
+  },
+  {
+    "args": [
+      {
+        "from": 29,
+        "to": 46
+      }
+    ],
+    "body": {
+      "from": 29,
+      "to": 46
+    },
+    "children": [
+      {
+        "from": 29,
+        "kind": "text",
+        "to": 46
+      }
+    ],
+    "from": 22,
+    "kind": "command",
+    "name": "label",
+    "to": 47
+  },
+  {
+    "from": 47,
+    "kind": "text",
+    "to": 217
+  },
+  {
+    "body": {
+      "from": 226,
+      "to": 236
+    },
+    "children": [
+      {
+        "from": 226,
+        "kind": "text",
+        "to": 236
+      }
+    ],
+    "from": 217,
+    "kind": "heading",
+    "level": 1,
+    "name": "section",
+    "to": 237
+  },
+  {
+    "args": [
+      {
+        "from": 244,
+        "to": 258
+      }
+    ],
+    "body": {
+      "from": 244,
+      "to": 258
+    },
+    "children": [
+      {
+        "from": 244,
+        "kind": "text",
+        "to": 258
+      }
+    ],
+    "from": 237,
+    "kind": "command",
+    "name": "label",
+    "to": 259
+  },
+  {
+    "from": 259,
+    "kind": "text",
+    "to": 375
+  },
+  {
+    "args": [
+      {
+        "from": 382,
+        "to": 393
+      }
+    ],
+    "body": {
+      "from": 382,
+      "to": 393
+    },
+    "children": [
+      {
+        "from": 382,
+        "kind": "text",
+        "to": 393
+      }
+    ],
+    "from": 375,
+    "kind": "command",
+    "name": "citep",
+    "to": 394
+  },
+  {
+    "from": 394,
+    "kind": "text",
+    "to": 460
+  },
+  {
+    "args": [
+      {
+        "from": 467,
+        "to": 476
+      }
+    ],
+    "body": {
+      "from": 467,
+      "to": 476
+    },
+    "children": [
+      {
+        "from": 467,
+        "kind": "text",
+        "to": 476
+      }
+    ],
+    "from": 460,
+    "kind": "command",
+    "name": "citep",
+    "to": 477
+  },
+  {
+    "from": 477,
+    "kind": "text",
+    "to": 556
+  },
+  {
+    "args": [
+      {
+        "from": 566,
+        "to": 633
+      }
+    ],
+    "body": {
+      "from": 566,
+      "to": 633
+    },
+    "children": [
+      {
+        "from": 566,
+        "kind": "text",
+        "to": 633
+      }
+    ],
+    "from": 556,
+    "kind": "command",
+    "name": "footnote",
+    "to": 634
+  },
+  {
+    "from": 634,
+    "kind": "text",
+    "to": 636
+  },
+  {
+    "body": {
+      "from": 645,
+      "to": 652
+    },
+    "children": [
+      {
+        "from": 645,
+        "kind": "text",
+        "to": 652
+      }
+    ],
+    "from": 636,
+    "kind": "heading",
+    "level": 1,
+    "name": "section",
+    "to": 653
+  },
+  {
+    "args": [
+      {
+        "from": 660,
+        "to": 671
+      }
+    ],
+    "body": {
+      "from": 660,
+      "to": 671
+    },
+    "children": [
+      {
+        "from": 660,
+        "kind": "text",
+        "to": 671
+      }
+    ],
+    "from": 653,
+    "kind": "command",
+    "name": "label",
+    "to": 672
+  },
+  {
+    "from": 672,
+    "kind": "text",
+    "to": 674
+  },
+  {
+    "args": [
+      {
+        "from": 680,
+        "to": 692
+      }
+    ],
+    "body": {
+      "from": 680,
+      "to": 692
+    },
+    "children": [
+      {
+        "from": 680,
+        "kind": "text",
+        "to": 692
+      }
+    ],
+    "from": 674,
+    "kind": "command",
+    "name": "cref",
+    "to": 693
+  },
+  {
+    "from": 693,
+    "kind": "text",
+    "to": 749
+  },
+  {
+    "args": [
+      {
+        "from": 755,
+        "to": 767
+      }
+    ],
+    "body": {
+      "from": 755,
+      "to": 767
+    },
+    "children": [
+      {
+        "from": 755,
+        "kind": "text",
+        "to": 767
+      }
+    ],
+    "from": 749,
+    "kind": "command",
+    "name": "cref",
+    "to": 768
+  },
+  {
+    "from": 768,
+    "kind": "text",
+    "to": 908
+  }
+]

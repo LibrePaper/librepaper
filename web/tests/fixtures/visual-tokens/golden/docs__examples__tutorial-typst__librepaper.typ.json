@@ -1,0 +1,503 @@
+[
+  {
+    "body": {
+      "from": 2,
+      "to": 29
+    },
+    "children": [
+      {
+        "from": 2,
+        "kind": "text",
+        "to": 29
+      }
+    ],
+    "from": 0,
+    "kind": "heading",
+    "level": 1,
+    "to": 29
+  },
+  {
+    "from": 29,
+    "kind": "text",
+    "to": 31
+  },
+  {
+    "args": [
+      {
+        "from": 39,
+        "to": 79
+      }
+    ],
+    "body": {
+      "from": 39,
+      "to": 148
+    },
+    "children": [
+      {
+        "args": [
+          {
+            "from": 45,
+            "to": 66
+          }
+        ],
+        "body": {
+          "from": 45,
+          "to": 78
+        },
+        "children": [
+          {
+            "body": {
+              "from": 46,
+              "to": 65
+            },
+            "from": 45,
+            "kind": "raw",
+            "name": "string",
+            "to": 66
+          },
+          {
+            "from": 66,
+            "kind": "raw",
+            "name": "separator",
+            "to": 68
+          },
+          {
+            "from": 68,
+            "kind": "raw",
+            "name": "argument",
+            "to": 74
+          },
+          {
+            "from": 74,
+            "kind": "raw",
+            "name": "separator",
+            "to": 75
+          },
+          {
+            "from": 75,
+            "kind": "text",
+            "to": 78
+          }
+        ],
+        "from": 39,
+        "kind": "command",
+        "meta": {
+          "arg:width": "24%",
+          "args": "code",
+          "raw": "true"
+        },
+        "name": "image",
+        "named": {
+          "width": {
+            "from": 75,
+            "to": 78
+          }
+        },
+        "to": 79
+      },
+      {
+        "from": 79,
+        "kind": "raw",
+        "name": "separator",
+        "to": 81
+      },
+      {
+        "from": 81,
+        "kind": "raw",
+        "name": "argument",
+        "to": 89
+      },
+      {
+        "from": 89,
+        "kind": "raw",
+        "name": "separator",
+        "to": 90
+      },
+      {
+        "body": {
+          "from": 91,
+          "to": 147
+        },
+        "children": [
+          {
+            "from": 91,
+            "kind": "text",
+            "to": 147
+          }
+        ],
+        "from": 90,
+        "kind": "group",
+        "meta": {
+          "figureCaption": "true"
+        },
+        "name": "content",
+        "to": 148
+      }
+    ],
+    "from": 31,
+    "kind": "command",
+    "meta": {
+      "arg:caption": "[The LibrePaper icon, loaded as a relative project asset.]",
+      "args": "code",
+      "figure": "true",
+      "raw": "true"
+    },
+    "name": "figure",
+    "named": {
+      "caption": {
+        "from": 90,
+        "to": 148
+      }
+    },
+    "to": 149
+  },
+  {
+    "from": 149,
+    "kind": "text",
+    "to": 317
+  },
+  {
+    "body": {
+      "from": 320,
+      "to": 338
+    },
+    "children": [
+      {
+        "from": 320,
+        "kind": "text",
+        "to": 338
+      }
+    ],
+    "from": 317,
+    "kind": "heading",
+    "level": 2,
+    "to": 338
+  },
+  {
+    "from": 338,
+    "kind": "text",
+    "to": 370
+  },
+  {
+    "from": 370,
+    "kind": "ligature",
+    "meta": {
+      "text": "’"
+    },
+    "name": "quote",
+    "to": 371
+  },
+  {
+    "from": 371,
+    "kind": "text",
+    "to": 625
+  },
+  {
+    "body": {
+      "from": 628,
+      "to": 654
+    },
+    "children": [
+      {
+        "from": 628,
+        "kind": "text",
+        "to": 654
+      }
+    ],
+    "from": 625,
+    "kind": "heading",
+    "level": 2,
+    "to": 654
+  },
+  {
+    "from": 654,
+    "kind": "text",
+    "to": 677
+  },
+  {
+    "body": {
+      "from": 678,
+      "to": 679
+    },
+    "display": false,
+    "from": 677,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 680
+  },
+  {
+    "from": 680,
+    "kind": "text",
+    "to": 715
+  },
+  {
+    "body": {
+      "from": 716,
+      "to": 736
+    },
+    "display": true,
+    "from": 715,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 737
+  },
+  {
+    "from": 737,
+    "kind": "text",
+    "to": 888
+  },
+  {
+    "from": 888,
+    "kind": "command",
+    "meta": {
+      "key": "lovelace1843"
+    },
+    "name": "ref",
+    "to": 901
+  },
+  {
+    "from": 901,
+    "kind": "text",
+    "to": 908
+  },
+  {
+    "body": {
+      "from": 909,
+      "to": 910
+    },
+    "from": 908,
+    "kind": "raw",
+    "name": "inline",
+    "to": 911
+  },
+  {
+    "from": 911,
+    "kind": "text",
+    "to": 953
+  },
+  {
+    "body": {
+      "from": 954,
+      "to": 968
+    },
+    "from": 953,
+    "kind": "raw",
+    "name": "inline",
+    "to": 969
+  },
+  {
+    "from": 969,
+    "kind": "text",
+    "to": 972
+  },
+  {
+    "args": [
+      {
+        "from": 982,
+        "to": 1004
+      }
+    ],
+    "from": 972,
+    "kind": "command",
+    "meta": {
+      "path": "sections/rendering.typ",
+      "statement": "true"
+    },
+    "name": "include",
+    "to": 1005
+  },
+  {
+    "from": 1005,
+    "kind": "text",
+    "to": 1154
+  },
+  {
+    "body": {
+      "from": 1157,
+      "to": 1172
+    },
+    "children": [
+      {
+        "from": 1157,
+        "kind": "text",
+        "to": 1172
+      }
+    ],
+    "from": 1154,
+    "kind": "heading",
+    "level": 2,
+    "to": 1172
+  },
+  {
+    "from": 1172,
+    "kind": "text",
+    "to": 1300
+  },
+  {
+    "body": {
+      "from": 1333,
+      "to": 1356
+    },
+    "from": 1300,
+    "kind": "command",
+    "meta": {
+      "name": "estimate",
+      "params": "value, unit: \"\"",
+      "statement": "true"
+    },
+    "name": "let",
+    "to": 1356
+  },
+  {
+    "from": 1356,
+    "kind": "text",
+    "to": 1358
+  },
+  {
+    "args": [
+      {
+        "from": 1368,
+        "to": 1372
+      }
+    ],
+    "body": {
+      "from": 1368,
+      "to": 1372
+    },
+    "children": [
+      {
+        "from": 1368,
+        "kind": "text",
+        "to": 1372
+      }
+    ],
+    "from": 1358,
+    "kind": "command",
+    "meta": {
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "estimate",
+    "to": 1373
+  },
+  {
+    "from": 1373,
+    "kind": "text",
+    "to": 1485
+  },
+  {
+    "body": {
+      "from": 1486,
+      "to": 1493
+    },
+    "from": 1485,
+    "kind": "raw",
+    "name": "inline",
+    "to": 1494
+  },
+  {
+    "from": 1494,
+    "kind": "text",
+    "to": 1603
+  },
+  {
+    "body": {
+      "from": 1606,
+      "to": 1632
+    },
+    "children": [
+      {
+        "from": 1606,
+        "kind": "text",
+        "to": 1632
+      }
+    ],
+    "from": 1603,
+    "kind": "heading",
+    "level": 2,
+    "to": 1632
+  },
+  {
+    "from": 1632,
+    "kind": "text",
+    "to": 2052
+  },
+  {
+    "args": [
+      {
+        "from": 2066,
+        "to": 2082
+      }
+    ],
+    "body": {
+      "from": 2066,
+      "to": 2127
+    },
+    "children": [
+      {
+        "body": {
+          "from": 2067,
+          "to": 2081
+        },
+        "from": 2066,
+        "kind": "raw",
+        "name": "string",
+        "to": 2082
+      },
+      {
+        "from": 2082,
+        "kind": "raw",
+        "name": "separator",
+        "to": 2084
+      },
+      {
+        "from": 2084,
+        "kind": "raw",
+        "name": "argument",
+        "to": 2090
+      },
+      {
+        "from": 2090,
+        "kind": "raw",
+        "name": "separator",
+        "to": 2091
+      },
+      {
+        "body": {
+          "from": 2092,
+          "to": 2126
+        },
+        "from": 2091,
+        "kind": "raw",
+        "name": "string",
+        "to": 2127
+      }
+    ],
+    "from": 2052,
+    "kind": "command",
+    "meta": {
+      "arg:style": "\"american-psychological-association\"",
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "bibliography",
+    "named": {
+      "style": {
+        "from": 2091,
+        "to": 2127
+      }
+    },
+    "to": 2128
+  },
+  {
+    "from": 2128,
+    "kind": "text",
+    "to": 2129
+  }
+]

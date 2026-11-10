@@ -1,0 +1,1180 @@
+[
+  {
+    "args": [
+      {
+        "from": 58,
+        "to": 65
+      }
+    ],
+    "body": {
+      "from": 58,
+      "to": 65
+    },
+    "children": [
+      {
+        "from": 58,
+        "kind": "text",
+        "to": 65
+      }
+    ],
+    "from": 0,
+    "kind": "command",
+    "name": "documentclass",
+    "options": [
+      {
+        "from": 15,
+        "to": 56
+      }
+    ],
+    "to": 66
+  },
+  {
+    "from": 66,
+    "kind": "text",
+    "to": 68
+  },
+  {
+    "body": {
+      "from": 69,
+      "to": 90
+    },
+    "from": 68,
+    "kind": "comment",
+    "to": 90
+  },
+  {
+    "from": 90,
+    "kind": "text",
+    "to": 91
+  },
+  {
+    "args": [
+      {
+        "from": 107,
+        "to": 114
+      }
+    ],
+    "body": {
+      "from": 107,
+      "to": 114
+    },
+    "children": [
+      {
+        "from": 107,
+        "kind": "text",
+        "to": 114
+      }
+    ],
+    "from": 91,
+    "kind": "command",
+    "name": "usepackage",
+    "options": [
+      {
+        "from": 103,
+        "to": 105
+      }
+    ],
+    "to": 115
+  },
+  {
+    "from": 115,
+    "kind": "text",
+    "to": 116
+  },
+  {
+    "args": [
+      {
+        "from": 128,
+        "to": 135
+      }
+    ],
+    "body": {
+      "from": 128,
+      "to": 135
+    },
+    "children": [
+      {
+        "from": 128,
+        "kind": "text",
+        "to": 135
+      }
+    ],
+    "from": 116,
+    "kind": "command",
+    "name": "usepackage",
+    "to": 136
+  },
+  {
+    "from": 136,
+    "kind": "text",
+    "to": 137
+  },
+  {
+    "args": [
+      {
+        "from": 149,
+        "to": 158
+      }
+    ],
+    "body": {
+      "from": 149,
+      "to": 158
+    },
+    "children": [
+      {
+        "from": 149,
+        "kind": "text",
+        "to": 158
+      }
+    ],
+    "from": 137,
+    "kind": "command",
+    "name": "usepackage",
+    "to": 159
+  },
+  {
+    "from": 159,
+    "kind": "text",
+    "to": 161
+  },
+  {
+    "body": {
+      "from": 162,
+      "to": 185
+    },
+    "from": 161,
+    "kind": "comment",
+    "to": 185
+  },
+  {
+    "from": 185,
+    "kind": "text",
+    "to": 186
+  },
+  {
+    "args": [
+      {
+        "from": 198,
+        "to": 213
+      }
+    ],
+    "body": {
+      "from": 198,
+      "to": 213
+    },
+    "children": [
+      {
+        "from": 198,
+        "kind": "text",
+        "to": 213
+      }
+    ],
+    "from": 186,
+    "kind": "command",
+    "name": "usepackage",
+    "to": 214
+  },
+  {
+    "from": 214,
+    "kind": "text",
+    "to": 215
+  },
+  {
+    "args": [
+      {
+        "from": 227,
+        "to": 235
+      }
+    ],
+    "body": {
+      "from": 227,
+      "to": 235
+    },
+    "children": [
+      {
+        "from": 227,
+        "kind": "text",
+        "to": 235
+      }
+    ],
+    "from": 215,
+    "kind": "command",
+    "name": "usepackage",
+    "to": 236
+  },
+  {
+    "from": 236,
+    "kind": "text",
+    "to": 238
+  },
+  {
+    "body": {
+      "from": 239,
+      "to": 316
+    },
+    "from": 238,
+    "kind": "comment",
+    "to": 316
+  },
+  {
+    "from": 316,
+    "kind": "text",
+    "to": 317
+  },
+  {
+    "args": [
+      {
+        "from": 347,
+        "to": 353
+      }
+    ],
+    "body": {
+      "from": 347,
+      "to": 353
+    },
+    "children": [
+      {
+        "from": 347,
+        "kind": "text",
+        "to": 353
+      }
+    ],
+    "from": 317,
+    "kind": "command",
+    "name": "usepackage",
+    "options": [
+      {
+        "from": 329,
+        "to": 345
+      }
+    ],
+    "to": 354
+  },
+  {
+    "from": 354,
+    "kind": "text",
+    "to": 356
+  },
+  {
+    "body": {
+      "from": 357,
+      "to": 422
+    },
+    "from": 356,
+    "kind": "comment",
+    "to": 422
+  },
+  {
+    "from": 422,
+    "kind": "text",
+    "to": 423
+  },
+  {
+    "args": [
+      {
+        "from": 435,
+        "to": 441
+      }
+    ],
+    "body": {
+      "from": 435,
+      "to": 441
+    },
+    "children": [
+      {
+        "from": 435,
+        "kind": "text",
+        "to": 441
+      }
+    ],
+    "from": 423,
+    "kind": "command",
+    "name": "usepackage",
+    "to": 442
+  },
+  {
+    "from": 442,
+    "kind": "text",
+    "to": 443
+  },
+  {
+    "args": [
+      {
+        "from": 544,
+        "to": 552
+      }
+    ],
+    "body": {
+      "from": 544,
+      "to": 552
+    },
+    "children": [
+      {
+        "from": 544,
+        "kind": "text",
+        "to": 552
+      }
+    ],
+    "from": 443,
+    "kind": "command",
+    "name": "usepackage",
+    "options": [
+      {
+        "from": 455,
+        "to": 542
+      }
+    ],
+    "to": 553
+  },
+  {
+    "from": 553,
+    "kind": "text",
+    "to": 554
+  },
+  {
+    "args": [
+      {
+        "from": 587,
+        "to": 595
+      }
+    ],
+    "body": {
+      "from": 587,
+      "to": 595
+    },
+    "children": [
+      {
+        "from": 587,
+        "kind": "text",
+        "to": 595
+      }
+    ],
+    "from": 554,
+    "kind": "command",
+    "name": "usepackage",
+    "options": [
+      {
+        "from": 566,
+        "to": 585
+      }
+    ],
+    "to": 596
+  },
+  {
+    "from": 596,
+    "kind": "text",
+    "to": 598
+  },
+  {
+    "body": {
+      "from": 599,
+      "to": 666
+    },
+    "from": 598,
+    "kind": "comment",
+    "to": 666
+  },
+  {
+    "from": 666,
+    "kind": "text",
+    "to": 667
+  },
+  {
+    "args": [
+      {
+        "from": 679,
+        "to": 695
+      }
+    ],
+    "body": {
+      "from": 679,
+      "to": 695
+    },
+    "children": [
+      {
+        "from": 679,
+        "kind": "text",
+        "to": 695
+      }
+    ],
+    "from": 667,
+    "kind": "command",
+    "name": "usepackage",
+    "to": 696
+  },
+  {
+    "from": 696,
+    "kind": "text",
+    "to": 697
+  },
+  {
+    "args": [
+      {
+        "from": 708,
+        "to": 719
+      }
+    ],
+    "body": {
+      "from": 708,
+      "to": 719
+    },
+    "children": [
+      {
+        "from": 708,
+        "kind": "text",
+        "to": 719
+      }
+    ],
+    "from": 697,
+    "kind": "command",
+    "name": "pagestyle",
+    "to": 720
+  },
+  {
+    "from": 720,
+    "kind": "text",
+    "to": 721
+  },
+  {
+    "args": [],
+    "from": 721,
+    "kind": "command",
+    "name": "clearpairofpagestyles",
+    "to": 743
+  },
+  {
+    "from": 743,
+    "kind": "text",
+    "to": 744
+  },
+  {
+    "args": [
+      {
+        "from": 751,
+        "to": 760
+      }
+    ],
+    "body": {
+      "from": 751,
+      "to": 760
+    },
+    "children": [
+      {
+        "args": [],
+        "from": 751,
+        "kind": "command",
+        "name": "headmark",
+        "to": 760
+      }
+    ],
+    "from": 744,
+    "kind": "command",
+    "name": "ihead",
+    "to": 761
+  },
+  {
+    "from": 761,
+    "kind": "text",
+    "to": 762
+  },
+  {
+    "args": [
+      {
+        "from": 769,
+        "to": 778
+      }
+    ],
+    "body": {
+      "from": 769,
+      "to": 778
+    },
+    "children": [
+      {
+        "args": [],
+        "from": 769,
+        "kind": "command",
+        "name": "pagemark",
+        "to": 778
+      }
+    ],
+    "from": 762,
+    "kind": "command",
+    "name": "ohead",
+    "to": 779
+  },
+  {
+    "from": 779,
+    "kind": "text",
+    "to": 781
+  },
+  {
+    "body": {
+      "from": 782,
+      "to": 809
+    },
+    "from": 781,
+    "kind": "comment",
+    "to": 809
+  },
+  {
+    "from": 809,
+    "kind": "text",
+    "to": 810
+  },
+  {
+    "args": [
+      {
+        "from": 817,
+        "to": 826
+      }
+    ],
+    "body": {
+      "from": 817,
+      "to": 826
+    },
+    "children": [
+      {
+        "body": {
+          "from": 818,
+          "to": 825
+        },
+        "children": [
+          {
+            "body": {
+              "from": 819,
+              "to": 824
+            },
+            "children": [
+              {
+                "from": 819,
+                "kind": "text",
+                "to": 824
+              }
+            ],
+            "from": 818,
+            "kind": "group",
+            "to": 825
+          }
+        ],
+        "from": 817,
+        "kind": "group",
+        "to": 826
+      }
+    ],
+    "from": 810,
+    "kind": "command",
+    "name": "title",
+    "to": 827
+  },
+  {
+    "from": 827,
+    "kind": "text",
+    "to": 828
+  },
+  {
+    "args": [
+      {
+        "from": 838,
+        "to": 869
+      }
+    ],
+    "body": {
+      "from": 838,
+      "to": 869
+    },
+    "children": [
+      {
+        "from": 838,
+        "kind": "text",
+        "to": 869
+      }
+    ],
+    "from": 828,
+    "kind": "command",
+    "name": "subtitle",
+    "to": 870
+  },
+  {
+    "from": 870,
+    "kind": "text",
+    "to": 871
+  },
+  {
+    "args": [
+      {
+        "from": 879,
+        "to": 889
+      }
+    ],
+    "body": {
+      "from": 879,
+      "to": 889
+    },
+    "children": [
+      {
+        "body": {
+          "from": 880,
+          "to": 888
+        },
+        "children": [
+          {
+            "body": {
+              "from": 881,
+              "to": 887
+            },
+            "children": [
+              {
+                "from": 881,
+                "kind": "text",
+                "to": 887
+              }
+            ],
+            "from": 880,
+            "kind": "group",
+            "to": 888
+          }
+        ],
+        "from": 879,
+        "kind": "group",
+        "to": 889
+      }
+    ],
+    "from": 871,
+    "kind": "command",
+    "name": "author",
+    "to": 890
+  },
+  {
+    "from": 890,
+    "kind": "text",
+    "to": 891
+  },
+  {
+    "args": [
+      {
+        "from": 903,
+        "to": 950
+      }
+    ],
+    "body": {
+      "from": 903,
+      "to": 950
+    },
+    "children": [
+      {
+        "from": 903,
+        "kind": "text",
+        "to": 950
+      }
+    ],
+    "from": 891,
+    "kind": "command",
+    "name": "publishers",
+    "to": 951
+  },
+  {
+    "from": 951,
+    "kind": "text",
+    "to": 952
+  },
+  {
+    "args": [
+      {
+        "from": 958,
+        "to": 964
+      }
+    ],
+    "body": {
+      "from": 958,
+      "to": 964
+    },
+    "children": [
+      {
+        "args": [],
+        "from": 958,
+        "kind": "command",
+        "name": "today",
+        "to": 964
+      }
+    ],
+    "from": 952,
+    "kind": "command",
+    "name": "date",
+    "to": 965
+  },
+  {
+    "from": 965,
+    "kind": "text",
+    "to": 967
+  },
+  {
+    "args": [],
+    "body": {
+      "from": 983,
+      "to": 1703
+    },
+    "children": [
+      {
+        "from": 983,
+        "kind": "text",
+        "to": 985
+      },
+      {
+        "args": [],
+        "from": 985,
+        "kind": "command",
+        "name": "frontmatter",
+        "to": 997
+      },
+      {
+        "from": 997,
+        "kind": "text",
+        "to": 998
+      },
+      {
+        "args": [],
+        "from": 998,
+        "kind": "command",
+        "name": "maketitle",
+        "to": 1008
+      },
+      {
+        "from": 1008,
+        "kind": "text",
+        "to": 1010
+      },
+      {
+        "args": [],
+        "from": 1010,
+        "kind": "command",
+        "name": "cleardoublepage",
+        "to": 1026
+      },
+      {
+        "from": 1026,
+        "kind": "text",
+        "to": 1027
+      },
+      {
+        "args": [
+          {
+            "from": 1042,
+            "to": 1047
+          }
+        ],
+        "body": {
+          "from": 1042,
+          "to": 1047
+        },
+        "children": [
+          {
+            "from": 1042,
+            "kind": "text",
+            "to": 1047
+          }
+        ],
+        "from": 1027,
+        "kind": "command",
+        "name": "thispagestyle",
+        "to": 1048
+      },
+      {
+        "from": 1048,
+        "kind": "text",
+        "to": 1049
+      },
+      {
+        "args": [
+          {
+            "from": 1058,
+            "to": 1063
+          }
+        ],
+        "body": {
+          "from": 1058,
+          "to": 1063
+        },
+        "children": [
+          {
+            "args": [],
+            "from": 1058,
+            "kind": "command",
+            "name": "fill",
+            "to": 1063
+          }
+        ],
+        "from": 1049,
+        "kind": "command",
+        "meta": {
+          "starred": "true"
+        },
+        "name": "vspace",
+        "star": true,
+        "to": 1064
+      },
+      {
+        "from": 1064,
+        "kind": "text",
+        "to": 1065
+      },
+      {
+        "args": [],
+        "body": {
+          "from": 1079,
+          "to": 1150
+        },
+        "children": [
+          {
+            "from": 1079,
+            "kind": "text",
+            "to": 1082
+          },
+          {
+            "args": [],
+            "from": 1082,
+            "kind": "command",
+            "name": "itshape",
+            "to": 1090
+          },
+          {
+            "from": 1090,
+            "kind": "text",
+            "to": 1150
+          }
+        ],
+        "from": 1065,
+        "kind": "container",
+        "name": "center",
+        "to": 1162
+      },
+      {
+        "from": 1162,
+        "kind": "text",
+        "to": 1163
+      },
+      {
+        "args": [
+          {
+            "from": 1171,
+            "to": 1176
+          }
+        ],
+        "body": {
+          "from": 1171,
+          "to": 1176
+        },
+        "children": [
+          {
+            "args": [],
+            "from": 1171,
+            "kind": "command",
+            "name": "fill",
+            "to": 1176
+          }
+        ],
+        "from": 1163,
+        "kind": "command",
+        "name": "vspace",
+        "to": 1177
+      },
+      {
+        "from": 1177,
+        "kind": "text",
+        "to": 1179
+      },
+      {
+        "args": [],
+        "from": 1179,
+        "kind": "command",
+        "name": "cleardoublepage",
+        "to": 1195
+      },
+      {
+        "from": 1195,
+        "kind": "text",
+        "to": 1196
+      },
+      {
+        "args": [],
+        "from": 1196,
+        "kind": "command",
+        "name": "tableofcontents",
+        "to": 1212
+      },
+      {
+        "from": 1212,
+        "kind": "text",
+        "to": 1214
+      },
+      {
+        "args": [
+          {
+            "from": 1223,
+            "to": 1230
+          }
+        ],
+        "body": {
+          "from": 1223,
+          "to": 1230
+        },
+        "children": [
+          {
+            "from": 1223,
+            "kind": "text",
+            "to": 1230
+          }
+        ],
+        "from": 1214,
+        "kind": "command",
+        "name": "addchap",
+        "to": 1231
+      },
+      {
+        "from": 1231,
+        "kind": "text",
+        "to": 1340
+      },
+      {
+        "args": [
+          {
+            "from": 1348,
+            "to": 1357
+          }
+        ],
+        "body": {
+          "from": 1348,
+          "to": 1357
+        },
+        "children": [
+          {
+            "from": 1348,
+            "kind": "text",
+            "to": 1357
+          }
+        ],
+        "from": 1340,
+        "kind": "command",
+        "name": "texttt",
+        "to": 1358
+      },
+      {
+        "from": 1358,
+        "kind": "text",
+        "to": 1486
+      },
+      {
+        "args": [],
+        "from": 1486,
+        "kind": "command",
+        "name": "mainmatter",
+        "to": 1497
+      },
+      {
+        "from": 1497,
+        "kind": "text",
+        "to": 1499
+      },
+      {
+        "args": [
+          {
+            "from": 1508,
+            "to": 1532
+          }
+        ],
+        "body": {
+          "from": 1508,
+          "to": 1532
+        },
+        "children": [
+          {
+            "from": 1508,
+            "kind": "text",
+            "to": 1532
+          }
+        ],
+        "from": 1499,
+        "kind": "command",
+        "name": "include",
+        "to": 1533
+      },
+      {
+        "from": 1533,
+        "kind": "text",
+        "to": 1534
+      },
+      {
+        "args": [
+          {
+            "from": 1543,
+            "to": 1562
+          }
+        ],
+        "body": {
+          "from": 1543,
+          "to": 1562
+        },
+        "children": [
+          {
+            "from": 1543,
+            "kind": "text",
+            "to": 1562
+          }
+        ],
+        "from": 1534,
+        "kind": "command",
+        "name": "include",
+        "to": 1563
+      },
+      {
+        "from": 1563,
+        "kind": "text",
+        "to": 1564
+      },
+      {
+        "args": [
+          {
+            "from": 1573,
+            "to": 1592
+          }
+        ],
+        "body": {
+          "from": 1573,
+          "to": 1592
+        },
+        "children": [
+          {
+            "from": 1573,
+            "kind": "text",
+            "to": 1592
+          }
+        ],
+        "from": 1564,
+        "kind": "command",
+        "name": "include",
+        "to": 1593
+      },
+      {
+        "from": 1593,
+        "kind": "text",
+        "to": 1595
+      },
+      {
+        "args": [],
+        "from": 1595,
+        "kind": "command",
+        "name": "appendix",
+        "to": 1604
+      },
+      {
+        "from": 1604,
+        "kind": "text",
+        "to": 1605
+      },
+      {
+        "args": [
+          {
+            "from": 1614,
+            "to": 1631
+          }
+        ],
+        "body": {
+          "from": 1614,
+          "to": 1631
+        },
+        "children": [
+          {
+            "from": 1614,
+            "kind": "text",
+            "to": 1631
+          }
+        ],
+        "from": 1605,
+        "kind": "command",
+        "name": "include",
+        "to": 1632
+      },
+      {
+        "from": 1632,
+        "kind": "text",
+        "to": 1634
+      },
+      {
+        "args": [],
+        "from": 1634,
+        "kind": "command",
+        "name": "backmatter",
+        "to": 1645
+      },
+      {
+        "from": 1645,
+        "kind": "text",
+        "to": 1647
+      },
+      {
+        "args": [
+          {
+            "from": 1666,
+            "to": 1674
+          }
+        ],
+        "body": {
+          "from": 1666,
+          "to": 1674
+        },
+        "children": [
+          {
+            "from": 1666,
+            "kind": "text",
+            "to": 1674
+          }
+        ],
+        "from": 1647,
+        "kind": "command",
+        "name": "bibliographystyle",
+        "to": 1675
+      },
+      {
+        "from": 1675,
+        "kind": "text",
+        "to": 1676
+      },
+      {
+        "args": [
+          {
+            "from": 1690,
+            "to": 1700
+          }
+        ],
+        "body": {
+          "from": 1690,
+          "to": 1700
+        },
+        "children": [
+          {
+            "from": 1690,
+            "kind": "text",
+            "to": 1700
+          }
+        ],
+        "from": 1676,
+        "kind": "command",
+        "name": "bibliography",
+        "to": 1701
+      },
+      {
+        "from": 1701,
+        "kind": "text",
+        "to": 1703
+      }
+    ],
+    "from": 967,
+    "kind": "container",
+    "name": "document",
+    "to": 1717
+  },
+  {
+    "from": 1717,
+    "kind": "text",
+    "to": 1718
+  }
+]
