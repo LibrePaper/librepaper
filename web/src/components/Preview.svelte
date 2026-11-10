@@ -31,7 +31,7 @@
   // A thin progress line along the top edge signals a render under way without
   // covering the document, and nothing shows for renders under the
   // steady-busy threshold.
-  let { src, docsOrigin, onmessage, onload, grabbing = false, away = false, controls, notice, cover, busy = false, progress = null } = $props();
+  let { src, docsOrigin, onmessage, onload, grabbing = false, away = false, controls, notice, cover, busy = false, progress = null, id = undefined, role = undefined, labelledby = undefined } = $props();
 
   let frame = $state(null);
   let viewport = $state(null);
@@ -120,7 +120,7 @@
 
 </script>
 
-<section class="viewport" class:away bind:this={viewport} inert={away}
+<section class="viewport" class:away bind:this={viewport} inert={away} id={id} role={role} aria-labelledby={labelledby}
          style:--held-width="{heldWidth}px" style:--held-height="{heldHeight}px">
   {#if busy}
     <div class="render-line" role="progressbar" aria-label={m.preview_rendering_label()} aria-valuemin="0" aria-valuemax={progress ? progress.total : undefined} aria-valuenow={progress ? progress.done : undefined}>

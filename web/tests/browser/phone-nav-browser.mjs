@@ -358,9 +358,9 @@ try {
   const top = await b.evaluate('document.querySelector(".cm-scroller").scrollTop');
   assert.ok(top > 0);
   await click('.mobile-mode-switch [data-mode="document"]');
-  assert.equal(await b.evaluate('document.querySelectorAll(".mobile-mode-switch [aria-pressed=true]").length'), 1);
+  assert.equal(await b.evaluate('document.querySelectorAll(".mobile-mode-switch [aria-selected=true]").length'), 1);
   await click('.mobile-mode-switch [data-mode="source"]');
-  assert.equal(await b.evaluate('document.querySelectorAll(".mobile-mode-switch [aria-pressed=true]").length'), 1);
+  assert.equal(await b.evaluate('document.querySelectorAll(".mobile-mode-switch [aria-selected=true]").length'), 1);
   assert.ok(Math.abs(await b.evaluate('document.querySelector(".cm-scroller").scrollTop') - top) < 2, 'the source keeps its scroll');
 
   // h. File, Edit, View and Insert are lists, not menus hanging from a trigger.
