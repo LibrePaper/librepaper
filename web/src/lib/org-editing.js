@@ -147,8 +147,11 @@ function continueListEdit(state) {
   // Found from the start of the line's bullet: an item's node ends before trailing blanks,
   // so a caret after "- " would otherwise be outside it.
   const caretLine = state.doc.lineAt(main.head);
-  const item = listItemOn(state, caretLine.from + (caretLine.text.length - caretLine.text.trimStart().length));
-  if (!item) return null;
+  const start = caretLine.from + (caretLine.text.length - caretLine.text.trimStart().length);
+  // Looking forward from there lands on the bullet, whose parent is this line's item (not an outer one).
+  let item = syntaxTree(state).resolveInner(start, 1);
+  while (item && item.name !== "ListItem") item = item.parent;
+  if (!item || item.from !== start) return null;
   const bullet = child(item, "ListBullet");
   const box = child(item, "Checkbox");
   const head = box ? box.to : bullet.to;
