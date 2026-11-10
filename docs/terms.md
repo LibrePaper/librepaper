@@ -52,7 +52,7 @@ To report a security problem, see [Contact](contact.html).
 - To assess whether a document breaks these terms, the operator may send it to a third party: a moderation or copyright specialist, or the provider of a large language model. This happens only for a document that was reported, or that the operator suspects of breaking these terms. See [what leaves librepaper.org](privacy.html#what-leaves-librepaperorg).
 - A hidden project keeps its files, but nobody can open it, its owner included. A blocked account is signed out and cannot sign in.
 - To report a document, email [admin@librepaper.org](mailto:admin@librepaper.org) with its link and the reason.
-- Copyright notices are handled under the notice-and-notice rules of the Canadian Copyright Act. A valid notice is forwarded to the account's owner when librepaper.org has an email address for the account, and records that identify the account are kept for six months.
+- Copyright notices are handled under the notice-and-notice rules of the Canadian Copyright Act. A valid notice is forwarded to the account's owner when librepaper.org has an email address for the account. When a notice cannot be forwarded, the operator tells the claimant why. Records that identify the account are kept for six months, or for one year when the Act requires it.
 - If you think a decision about your account or project was wrong, email [admin@librepaper.org](mailto:admin@librepaper.org).
 
 ## No warranty

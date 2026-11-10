@@ -92,6 +92,7 @@ The browser also keeps data of its own on your device.
 - **Share links** expire after seven days unless the owner picks a longer time or no expiry. The record of an expired or revoked link is removed when the project is purged.
 - **Agent tokens** stop working when they expire or are revoked. Their records, expired and revoked ones included, are removed when the project is purged.
 - **Moderation records** have no automatic expiry. They stay after the account or project they concern is gone. A banned handle stays listed until the ban is lifted or becomes an account block.
+- **Copyright notices:** records that identify an account named in a copyright notice are kept for six months, or one year when the Copyright Act requires it. The account is kept blocked, not erased, for that time. See the [terms of service](terms.html#moderation).
 - **Sessions** end after 30 days. Signing out clears this browser's cookie but does not cancel a copied one. Erasing the account ends every session.
 - **Operational numbers** are kept for 400 days and are not backed up.
 
