@@ -1033,7 +1033,7 @@ for (const latest of [
   const ctx = context({
     session: { paths: new Map(files.map(f => [f.id, f.path])) },
     files, openFile: 'refs.bib',
-    compact: false, layout: 'source', showMobileView: () => {},
+    compact: false, arrangement: { state: { layout: 'source' }, showMobileView: () => {} },
     viewing: null, editing: true,
     liveTreeNow: () => ({ texts, digests: {} }),
     SLUG: 'thesis',
@@ -1049,6 +1049,7 @@ for (const latest of [
     painted: () => painted,
   });
   vm.runInContext(`
+    Object.defineProperty(globalThis, 'layout', { get() { return arrangement.state.layout; } });
     Object.defineProperty(globalThis, 'previewPath', { get() { return target.state.path; } });
     Object.defineProperty(globalThis, 'aloneSet', { get() { return target.state.alone; } });
   `, ctx);
@@ -1061,7 +1062,7 @@ for (const latest of [
   vm.runInContext('lockPreview("appendix.tex")', ctx);
   assert.equal(ctx.openFile, 'refs.bib', 'locking does not open the file');
   assert.equal(ctx.target.state.lockedFile, 'appendix.tex');
-  assert.equal(ctx.layout, 'split', 'a source-only layout makes room for the preview');
+  assert.equal(ctx.arrangement.state.layout, 'split', 'a source-only layout makes room for the preview');
   assert.equal(treeMain(), 'appendix.tex', 'treeNow names the file the target draws');
 
   // The eye offers only the files that render alone, so neither an included

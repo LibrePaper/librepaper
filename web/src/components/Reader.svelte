@@ -34,6 +34,7 @@
   import { createProjectionSource } from "../lib/reader/projection-source.svelte.js";
   import { createPainted } from "../lib/reader/painted.svelte.js";
   import { createPreviewTarget } from "../lib/reader/preview-target.svelte.js";
+  import { createArrangement } from "../lib/reader/arrangement.svelte.js";
   import { createJumps, isBackChord } from "../lib/reader/jumps.svelte.js";
   import { createBuildSettings } from "../lib/reader/build-settings.svelte.js";
   import { createTimeline } from "../lib/reader/timeline.svelte.js";
@@ -64,7 +65,7 @@
     write,
   } from "../lib/storage.js";
   import { localDataForgotten } from "../lib/signed-out.js";
-  import { ACTIVITY_WIDTH, DOCUMENT_MIN, GRIP, PANES, clamp, measure, pixels, px, showing } from "../lib/panes.js";
+  import { ACTIVITY_WIDTH, PANES, clamp, measure, pixels, px } from "../lib/panes.js";
   import { slotId, tabsFor } from "../lib/panels.js";
   import { APPLE, availability, captured, commandFor, labelOf, menuKeys, writing } from "../lib/commands.js";
   // Aliased because this file has its own setSize for the pane sizes.
@@ -245,8 +246,8 @@
       // offered. A phone keeps the view it opened on.
       if (panel && !tabs.some((tab) => tab.id === panel)) {
         const view = mobileView;
-        showPanel(home);
-        mobileView = view;
+        arrangement.showPanel(home);
+        arrangement.state.mobileView = view;
       }
     },
     formatKnown: (format) => {
@@ -760,8 +761,8 @@
     if (agentNeedsDesktop()) return;
     assistantRequest = { id: crypto.randomUUID(), diagnostic: { ...item }, revision: item.revision || "",
       task: { kind: "fix", scope: item.file || item.path ? "file" : "document" } };
-    showPanel("agent");
-    if (width <= 760) showMobileView("sidebar");
+    arrangement.showPanel("agent");
+    if (width <= 760) arrangement.showMobileView("sidebar");
   }
 
   function askCommentAssistant(comment) {
@@ -793,8 +794,8 @@
       comment_id: String(comment.id),
       render_digest: renderDigest,
     };
-    showPanel("agent");
-    if (width <= 760) showMobileView("sidebar");
+    arrangement.showPanel("agent");
+    if (width <= 760) arrangement.showMobileView("sidebar");
   }
 
   // Candidate previews are rendered from the runner's immutable file snapshot
@@ -819,7 +820,7 @@
   async function reviewAssistantResults({ changes: ids = [] }) {
     const made = changeRows.find((row) => ids.includes(row.id));
     changesIds = ids.filter((id) => changeRows.some((row) => row.id === id));
-    await showPanel("changes");
+    await arrangement.showPanel("changes");
     if (made) await revealChange(made);
   }
 
@@ -831,7 +832,7 @@
     selectedAnnotation = String(comment.id);
     const plainHighlight = comment.motivation === "highlighting" && !comment.body && !comment.replies?.length;
     collaborationTab = plainHighlight ? "highlights" : "comments";
-    void showPanel("collaboration");
+    void arrangement.showPanel("collaboration");
     const targetPanel = panel;
     await tick();
     if (panel !== targetPanel) return;
@@ -849,7 +850,7 @@
     const row = changeRows.find((item) => String(item.id) === String(id));
     if (!row) return;
     selectedChange = row.id;
-    void showPanel("changes");
+    void arrangement.showPanel("changes");
   }
 
   // Remembers the editor's place before a jump to `file` at `offset`. Nothing
@@ -876,7 +877,7 @@
     if (!target || !fileExists(target.file)) return;
     rememberPlace(target.file, target.from);
     if (compact) {
-      showMobileView("source");
+      arrangement.showMobileView("source");
       await tick();
     }
     if (!editing || !editor) return;
@@ -897,11 +898,11 @@
   async function revealAnnotation(comment) {
     selectedAnnotation = String(comment.id);
     if (comment.start != null) {
-      showMobileView("document");
+      arrangement.showMobileView("document");
       await tick();
       tell({ type: "reveal", id: comment.id });
     } else if (comment.sourceStart != null && editing) {
-      showMobileView("source");
+      arrangement.showMobileView("source");
       await tick();
     }
     if (shown.source && comment.sourceStart != null && editing && editor) {
@@ -992,8 +993,8 @@
       pending,
     };
     collaborationTab = "comments";
-    if (panel !== "collaboration") void showPanel("collaboration");
-    if (compact) showMobileView("sidebar");
+    if (panel !== "collaboration") void arrangement.showPanel("collaboration");
+    if (compact) arrangement.showMobileView("sidebar");
   }
 
   // A verb chosen on the bar over the selection. Highlighting is the one that
@@ -1283,7 +1284,7 @@
     // A narrow window shows one pane at a time and the panel is covering it,
     // so the source comes forward. A wide window keeps the layout the reader
     // chose: with the preview alone, the preview goes to the change.
-    if (compact) showMobileView("source");
+    if (compact) arrangement.showMobileView("source");
     await tick();
     if (!editor) return;
     rememberPlace(row.file_id, row.position);
@@ -1667,8 +1668,8 @@
     const before = previousHistoryMode;
     previousHistoryMode = mode;
     if (!compact || mode === before) return;
-    if (before === "normal") untrack(() => showMobileView("sidebar"));
-    else if (mode === "normal" && historySource.newer) untrack(() => showMobileView("source"));
+    if (before === "normal") untrack(() => arrangement.showMobileView("sidebar"));
+    else if (mode === "normal" && historySource.newer) untrack(() => arrangement.showMobileView("source"));
   });
   // Which file the reader arrived asking for, when the landing page's search
   // found the project by one of its files. Honoured once the directory has
@@ -1717,7 +1718,7 @@
   function viewPoint(sha) {
     beginComparison("history");
     const pending = historySource.view(sha);
-    if (compact) showMobileView("source");
+    if (compact) arrangement.showMobileView("source");
     return pending;
   }
 
@@ -1750,9 +1751,9 @@
   async function restoreEditorArea(view) {
     // Editing does not end once it has begun, so a source pane that was closed
     // is closed by the arrangement and the face that hide it.
-    layout = view.editing ? view.layout : "document";
-    preferredPane = view.editing ? view.preferredPane : "document";
-    mobileView = view.mobileView === "source" && !view.editing ? "document" : view.mobileView;
+    arrangement.state.layout = view.editing ? view.layout : "document";
+    arrangement.state.preferredPane = view.editing ? view.preferredPane : "document";
+    arrangement.state.mobileView = view.mobileView === "source" && !view.editing ? "document" : view.mobileView;
     viewing = view.viewing;
     // A file deleted while the comparison was open is not put back: the
     // workspace has already chosen another, and the editor cannot show a file
@@ -2621,26 +2622,41 @@
   const prefs = preferences.state;
   // Visual mode starts from the Editor setting on every open. The top-bar switch changes it for this session only.
   let visual = $state(prefs.visual);
-  // Every project opens the same way: the files, the file it opens on and its
-  // preview, or the preview alone on a phone. Where the last visit ended is
-  // not kept.
-  let layout = $state("split");
-  let panel = $state("files");
-  let mobileView = $state("document");
-  let preferredPane = $state("document");
+  // Which panes and which panel are on screen, on a desktop and on a phone.
+  // `reader/arrangement.svelte.js` owns them and what they add up to.
+  const arrangement = createArrangement({
+    editing: () => editing,
+    comparing: () => comparing,
+    sourceSide: () => prefs.sourceSide,
+    sizes: () => prefs.sizes,
+    home: () => home,
+    blocked: (name) => DEMO && DEMO_OFF.includes(name),
+    leaving: (name) => { if (comparison.kind && comparison.kind !== name) endComparison(); },
+    loadHistory: () => loadHistory(),
+  });
+  const layout = $derived(arrangement.state.layout);
+  const panel = $derived(arrangement.state.panel);
+  const mobileView = $derived(arrangement.state.mobileView);
+  const preferredPane = $derived(arrangement.state.preferredPane);
+  const moreOpen = $derived(arrangement.state.moreOpen);
+  const mobileCommand = $derived(arrangement.state.mobileCommand);
+  const keyboardOpen = $derived(arrangement.state.keyboardOpen);
+  const width = $derived(arrangement.state.width);
+  const unit = $derived(arrangement.state.unit);
+  const compact = $derived(arrangement.compact);
+  const sourceOpen = $derived(arrangement.sourceOpen);
+  const activeMobileView = $derived(arrangement.activeMobileView);
+  const splitTight = $derived(arrangement.splitTight);
+  const adapted = $derived(arrangement.adapted);
+  const effectiveLayout = $derived(arrangement.effectiveLayout);
+  const panes = $derived(arrangement.panes);
+  const shown = $derived(arrangement.shown);
   let collaborationTab = $state("comments");
-  // The phone's overlays. The More sheet, and one of the command lists
-  // ("file", "edit", "view", "insert"), each open over the document; the
-  // keyboard is whether the on-screen keyboard is up. A panel is an overlay
-  // too, but it is `mobileView === "sidebar"` and is kept as it always was.
-  let moreOpen = $state(false);
   let moreOpener = null;
   function openMore(event) {
     moreOpener = event?.currentTarget ?? null;
-    moreOpen = true;
+    arrangement.state.moreOpen = true;
   }
-  let mobileCommand = $state("");
-  let keyboardOpen = $state(false);
   // The Insert list is read when it opens, because reading it takes the
   // editor's insertion context, which a derived value must not do.
   let insertGroups = $state.raw([]);
@@ -2728,24 +2744,6 @@
   $effect(() => {
     if (comparing === "history") lazy.historyWorkspace.load().catch(() => {});
   });
-  function showMobileView(view) {
-    if (view === "source" && !sourceOpen) view = "document";
-    mobileView = view;
-    if (view !== "sidebar") preferredPane = view;
-    if (!compact && view !== "sidebar" && layout !== "split") layout = view;
-    if (view === "sidebar" && !panel) showPanel(home);
-  }
-  function selectPanel(name) {
-    if (DEMO && DEMO_OFF.includes(name)) return;
-    const next = panel === name && (!compact || activeMobileView === "sidebar") ? "" : name;
-    showPanel(next);
-    if (compact) showMobileView(next ? "sidebar" : "document");
-  }
-  // The files panel, brought forward wherever it is drawn.
-  function openFilesPanel() {
-    void showPanel("files");
-    if (compact) showMobileView("sidebar");
-  }
   // The tabs this browser is offered. Which reader may see which panel is
   // written with the panels, in lib/panels.js; this only says who is asking.
   const tabs = $derived(
@@ -2810,78 +2808,12 @@
     return () => clearInterval(timer);
   });
 
-  // Showing a panel; "" closes the column. Opening the timeline is what
-  // fetches the manifest; leaving it drops the comparison, which is all the
-  // panel ever held -- the document pane shows the current document
-  // throughout.
-  function showPanel(name) {
-    if (DEMO && DEMO_OFF.includes(name)) return Promise.resolve();
-    // Leaving the panel a comparison belongs to ends the comparison.
-    if (comparison.kind && comparison.kind !== name) endComparison();
-    panel = name;
-    if (compact) mobileView = name ? "sidebar" : preferredPane;
-    if (name !== "history") return Promise.resolve();
-    return loadHistory();
-  }
-
   // The source and the document are kept as a share of what they have between
   // them; the comment column is kept in pixels. Two units because they are two
   // different kinds of pane: half a window stays half when the window changes,
   // and a comment card wants the same readable width whatever the screen is.
   let guide = $state({ shown: false, left: 0, held: false });
   let grabbing = $state(false);
-  // The width the panes are divided out of. Bound rather than read when
-  // something happens to ask: it is what every size below is measured against,
-  // and a measurement taken once is a layout that is right until the window
-  // moves.
-  let width = $state(innerWidth);
-  // And what a rem is worth, since every limit in panes.js is one. It moves
-  // when the reader changes their text size or zooms, which is a resize; it is
-  // held here rather than read where it is used so that what depends on it is
-  // worked out again when it does.
-  let unit = $state(measure());
-  const compact = $derived(width < 768);
-  // The source pane is open when the reader is editing, or a comparison is
-  // showing in its place.
-  const sourceOpen = $derived(editing || comparing !== "");
-  const activeMobileView = $derived(comparing === "history" && mobileView === "document" ? "source"
-    : mobileView === "source" && !sourceOpen ? "document"
-    : mobileView === "sidebar" && !panel ? "document" : mobileView);
-  const splitTight = $derived(width < px(ACTIVITY_WIDTH, unit) + px(PANES.editor.min, unit)
-    + px(DOCUMENT_MIN, unit) + px(GRIP, unit)
-    + (panel ? px(PANES.sidebar.min, unit) + px(GRIP, unit) : 0));
-  // A window that cannot hold the split it was asked for: the phone, and the
-  // tight split above it. Both show one pane at a time, so both need the
-  // switch between the two faces in the bar; only the phone loses the rail
-  // beside the column, and reaches the panels from the Menu in the top bar.
-  const adapted = $derived(compact || (splitTight && layout === "split"));
-  const effectiveLayout = $derived(!compact && comparing === "history"
-    ? "source"
-    : compact
-    ? (activeMobileView === "source" ? "source" : "document")
-    : layout === "split" && splitTight ? preferredPane : layout);
-
-  // What every measurement below is made against.
-  // The column holds one of three things -- the files, the comments or the
-  // timeline -- so what the layout needs to know is whether it is there, not
-  // which of them is in it.
-  const panes = $derived({
-    layout: effectiveLayout,
-    comments: Boolean(panel),
-    editing: sourceOpen,
-    sourceSide,
-    sizes,
-    width,
-    // Passed so that a change of text size reaches everything measured in rem,
-    // which is every limit there is: `px` holds the measurement itself, and
-    // what is never seen to read it is never worked out again.
-    unit,
-  });
-  const shown = $derived(compact ? {
-    source: sourceOpen && activeMobileView === "source",
-    document: activeMobileView === "document",
-    comments: activeMobileView === "sidebar",
-  } : showing(panes));
   $effect(() => { agentInView = panel === "agent" && shown.comments; });
 
   /* --------------------------------------------------------- the phone shell */
@@ -2898,8 +2830,8 @@
   $effect(() => {
     overlays = createOverlayHistory({
       onpop: (depth) => {
-        if (moreOpen) moreOpen = false;
-        else if (depth >= 1 && comparing) showMobileView("sidebar");
+        if (moreOpen) arrangement.state.moreOpen = false;
+        else if (depth >= 1 && comparing) arrangement.showMobileView("sidebar");
         else closeOverlays();
       },
     });
@@ -2909,15 +2841,15 @@
   // A resize to desktop must not leave a hidden overlay behind it.
   $effect(() => {
     if (compact) return;
-    moreOpen = false;
-    mobileCommand = "";
-    keyboardOpen = false;
+    arrangement.state.moreOpen = false;
+    arrangement.state.mobileCommand = "";
+    arrangement.state.keyboardOpen = false;
   });
   // The keyboard hides the mode switch and narrows the workspace. When it
   // comes up the caret is brought back into sight above it.
   $effect(() => compact
     ? watchKeyboard((open) => {
-        keyboardOpen = open;
+        arrangement.state.keyboardOpen = open;
         if (open) requestAnimationFrame(() => editor?.revealCaret?.());
       })
     : undefined);
@@ -2925,16 +2857,16 @@
   // Back out of the topmost layer, and leave `panel` set: panels stay mounted
   // so their scroll and drafts survive, and only a different panel replaces it.
   function closeOverlays() {
-    moreOpen = false;
-    mobileCommand = "";
+    arrangement.state.moreOpen = false;
+    arrangement.state.mobileCommand = "";
     settingsOpen = false;
     if (activeMobileView === "sidebar") {
       if (panel === "history" && comparing) endComparison();
-      showMobileView(preferredPane === "source" && sourceOpen ? "source" : "document");
+      arrangement.showMobileView(preferredPane === "source" && sourceOpen ? "source" : "document");
     }
   }
   function mobileBack() {
-    if (comparing && activeMobileView === "source") showMobileView("sidebar");
+    if (comparing && activeMobileView === "source") arrangement.showMobileView("sidebar");
     else closeOverlays();
   }
 
@@ -2966,8 +2898,8 @@
   function openCommand(kind) {
     if (kind === "edit") refreshEditAvailability();
     if (kind === "insert") insertGroups = insertMenu?.mobileGroups?.() || [];
-    moreOpen = false;
-    mobileCommand = kind;
+    arrangement.state.moreOpen = false;
+    arrangement.state.mobileCommand = kind;
   }
   // An Insert list left without a choice lets go of the context it took.
   let insertChosen = false;
@@ -3003,18 +2935,18 @@
   function chooseMobileCommand(id) {
     const kind = mobileCommand;
     if (kind === "insert") insertChosen = true;
-    mobileCommand = "";
+    arrangement.state.mobileCommand = "";
     if (kind === "file") return void chooseFileCommand(id);
     if (kind === "edit") return void chooseEditCommand(id);
     if (kind === "insert") {
-      showMobileView("source");
+      arrangement.showMobileView("source");
       insertMenu?.insertAction?.(id);
       return;
     }
     if (kind === "view") {
       if (id === "run-code") toggleLocalExecution();
       else chooseViewCommand(id);
-      if (STAYS_OPEN.includes(id)) mobileCommand = "view";
+      if (STAYS_OPEN.includes(id)) arrangement.state.mobileCommand = "view";
     }
   }
 
@@ -3090,8 +3022,8 @@
   // The bar hides while the keyboard is up; the keyboard bar takes its place.
   const tabBarShown = $derived(tabsShown && !keyboardOpen);
   function showPhoneDocument() {
-    mobileCommand = "";
-    showMobileView(preferredPane === "source" && sourceOpen ? "source" : "document");
+    arrangement.state.mobileCommand = "";
+    arrangement.showMobileView(preferredPane === "source" && sourceOpen ? "source" : "document");
   }
   function showComments() {
     collaborationTab = "comments";
@@ -3146,7 +3078,7 @@
 
   function chooseEditCommand(command) {
     if (command === "word-count") return openWordCount();
-    showMobileView("source");
+    arrangement.showMobileView("source");
     const target = editor;
     // Restore source focus after the menu finishes closing.
     setTimeout(async () => {
@@ -3157,8 +3089,8 @@
   }
 
   function cycleLayout() {
-    layout = ARRANGEMENTS[layout].next;
-    if (compact) showMobileView(layout === "source" ? "source" : "document");
+    arrangement.state.layout = ARRANGEMENTS[layout].next;
+    if (compact) arrangement.showMobileView(layout === "source" ? "source" : "document");
   }
 
   const putSourceOn = (side) => preferences.setSourceSide(side);
@@ -3175,7 +3107,7 @@
 
   // What ":q" in Vim mode asks for: the document alone, set directly rather
   // than reached by cycling.
-  const showDocumentAlone = () => { layout = "document"; };
+  const showDocumentAlone = () => { arrangement.state.layout = "document"; };
 
   // Everything the layout menu offers, named by what was chosen. The menu
   // reports the value of the line rather than each line calling back, so this
@@ -3190,8 +3122,8 @@
 
   function chose(what) {
     if (what.startsWith("layout-")) {
-      layout = what.slice(7);
-      if (compact) showMobileView(layout === "source" ? "source" : "document");
+      arrangement.state.layout = what.slice(7);
+      if (compact) arrangement.showMobileView(layout === "source" ? "source" : "document");
       return;
     }
     if (what === "side-left" || what === "side-right") return putSourceOn(what.slice(5));
@@ -3394,10 +3326,10 @@
     if (DEMO && DEMO_OFF.includes(name)) return Promise.resolve();
     if (!visitedPanels.includes(name)) visitedPanels = [...visitedPanels, name];
     // Only one thing is ever open over the document on a phone.
-    moreOpen = false;
-    mobileCommand = "";
-    const opening = showPanel(name);
-    if (compact) showMobileView("sidebar");
+    arrangement.state.moreOpen = false;
+    arrangement.state.mobileCommand = "";
+    const opening = arrangement.showPanel(name);
+    if (compact) arrangement.showMobileView("sidebar");
     return opening;
   }
 
@@ -3549,8 +3481,8 @@
   function lockPreviewOn(id) {
     viewing = false;
     target.lock(id);
-    if (!compact && layout === "source") layout = "split";
-    if (compact) showMobileView("document");
+    if (!compact && layout === "source") arrangement.state.layout = "split";
+    if (compact) arrangement.showMobileView("document");
   }
 
   function lockPreview(id) {
@@ -3634,7 +3566,7 @@
     workspace.show(file);
     const texts = projection.state.project?.texts || {};
     viewing = file.kind !== "text" || previewTarget({ open: file.path, locked: lockedPath, texts }).reason === "none";
-    if (compact) showMobileView("document");
+    if (compact) arrangement.showMobileView("document");
   }
 
   function backToPreview() {
@@ -3662,8 +3594,8 @@
     workspace.show(file);
     // Choosing a file is asking to see it, so an arrangement with no source
     // pane makes room for one.
-    if (mayEdit && !compact && layout === "document") layout = "split";
-    if (mayEdit) showMobileView(fromList && compact && previewsOnTap(file) ? "document" : "source");
+    if (mayEdit && !compact && layout === "document") arrangement.state.layout = "split";
+    if (mayEdit) arrangement.showMobileView(fromList && compact && previewsOnTap(file) ? "document" : "source");
   }
 
   // An outline entry is a source navigation command. It may be the first
@@ -3680,7 +3612,7 @@
     openTheFile(file);
     if (!editing) await startEditing();
     if (readerDisposed || id !== openFile) return;
-    showMobileView("source");
+    arrangement.showMobileView("source");
     await tick();
     if (readerDisposed || id !== openFile || revision !== outlineRevision || !editor
         || !outlineHeadings.some((item) => item.from === heading.from)) return;
@@ -3770,7 +3702,7 @@
     // The files panel is where a refusal is shown, so a drop on the comments
     // brings it forward first.
     if (panel !== "files") {
-      showPanel("files");
+      arrangement.showPanel("files");
       await tick();
     }
     fileList?.offer(chosen);
@@ -4082,7 +4014,7 @@
   // The preview, which on a narrow screen has to be the face that is showing
   // before it can be the thing that has the focus.
   function focusPreview() {
-    if (compact) showMobileView("document");
+    if (compact) arrangement.showMobileView("document");
     preview?.focus();
   }
 
@@ -4143,15 +4075,15 @@
   }));
 </script>
 
-<svelte:window bind:innerWidth={width} onresize={() => (unit = measure())} onkeydown={shortcut} onbeforeunload={beforeUnload} onpagehide={() => session?.leave()} />
+<svelte:window bind:innerWidth={arrangement.state.width} onresize={() => (arrangement.state.unit = measure())} onkeydown={shortcut} onbeforeunload={beforeUnload} onpagehide={() => session?.leave()} />
 
 {#snippet faceSwitch()}
   <div class="face-switch" role="group" aria-label={m.readerd_workspace_view()}>
     <IconButton icon="eye" label={m.common_preview()} pressed={shown.document}
-                onclick={() => showMobileView("document")} />
+                onclick={() => arrangement.showMobileView("document")} />
     {#if sourceOpen}
       <IconButton icon="writing-hand" label={m.common_editor()} pressed={shown.source}
-                  onclick={() => showMobileView("source")} />
+                  onclick={() => arrangement.showMobileView("source")} />
     {/if}
   </div>
 {/snippet}
@@ -4270,7 +4202,7 @@
 {/if}
 
 {#if compact && modeSwitchShown}
-  <ModeSwitch mode={shown.source ? "source" : "document"} collapsed={barHidden} onchange={showMobileView} />
+  <ModeSwitch mode={shown.source ? "source" : "document"} collapsed={barHidden} onchange={(view) => arrangement.showMobileView(view)} />
 {/if}
 
 {#if shareIntro}
@@ -4367,7 +4299,7 @@
   {#snippet sharePanel()}
     <Share open={panel === "share" && shown.comments} inline slug={SLUG}
       canShare={doc.role === "owner"}
-      onclose={() => showPanel("")} />
+      onclose={() => arrangement.showPanel("")} />
   {/snippet}
 
   {#snippet gitPanel()}
@@ -4437,7 +4369,7 @@
               collaboration: collaborationPanel, changes: changesPanel,
               share: sharePanel, git: gitPanel, diagnostics: diagnosticsPanel, history: historyPanel }}
     panes={panes} sidebarPane={PANES.sidebar}
-    onselectpanel={selectPanel} ondrop={dropped}
+    onselectpanel={(name) => arrangement.selectPanel(name)} ondrop={dropped}
     onsize={(size) => setSize(PANES.sidebar, size)} onguide={(where) => (guide = where)}
     ongrab={(on) => { grabbing = on; guide = { ...guide, shown: on }; }}
   >
@@ -4465,7 +4397,7 @@
            a PDF through the browser's own viewer, which shows the first page
            without this application carrying a PDF renderer of its own. -->
       {#if comparing}
-        <ComparisonBar says={comparisonSays} onclose={() => { endComparison(); if (compact) showMobileView("sidebar"); }} />
+        <ComparisonBar says={comparisonSays} onclose={() => { endComparison(); if (compact) arrangement.showMobileView("sidebar"); }} />
       {/if}
       {#if comparing === "history"}
         {#if lazy.historyWorkspace.component}
@@ -4560,7 +4492,7 @@
         </p>
         {#if mayEdit}
           <div class="notyet-actions">
-            <button class="btn btn-sm lp-control-tonal-brand" onclick={openFilesPanel}>{m.readerd_open_files()}</button>
+            <button class="btn btn-sm lp-control-tonal-brand" onclick={() => arrangement.openFilesPanel()}>{m.readerd_open_files()}</button>
           </div>
         {/if}
       </div>
@@ -4597,7 +4529,7 @@
           </p>
           <div class="notyet-actions">
             <button class="btn btn-sm lp-control-brand" onclick={() => void setLatexOutput("pdf")}>{m.readerd_show_pdf()}</button>
-            <button class="btn btn-sm lp-control-tonal-brand" onclick={() => showPanel("diagnostics")}>{m.readerd_open_diagnostics()}</button>
+            <button class="btn btn-sm lp-control-tonal-brand" onclick={() => arrangement.showPanel("diagnostics")}>{m.readerd_open_diagnostics()}</button>
           </div>
         {:else if renderState.failureReason}
           <p class="lp-text-secondary text-sm">
@@ -4708,7 +4640,7 @@
                oninsert={() => openCommand("insert")} onmore={() => openMore()} />
 {/if}
 {#if compact}
-  <MoreSheet bind:open={moreOpen} sections={moreSections} onchoose={chooseMoreRow} finalFocusEl={() => moreOpener} />
+  <MoreSheet bind:open={arrangement.state.moreOpen} sections={moreSections} onchoose={chooseMoreRow} finalFocusEl={() => moreOpener} />
 {/if}
 
 <!-- What can be done to the passage that is selected, over the passage that
