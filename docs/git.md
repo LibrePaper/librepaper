@@ -2,166 +2,95 @@
 title: "Git"
 ---
 
-Two commands in the `librepaper` CLI move files between a folder and a web project. `librepaper pull` brings the project's current version into the folder. `librepaper push` sends the folder's changes back. Git is yours. LibrePaper never merges text, and it never stores a credential for GitHub. A GitHub Action runs the two commands, so a repository and a web project stay in step with nobody's laptop involved.
+LibrePaper can keep a web project and a Git repository in step. Coauthors who prefer the browser keep writing there, and their named versions arrive in the repository as commits. Coauthors who prefer their own editor push commits, and each one appears in the project's History as a named version under their name.
 
-## In the app
+Git stays in charge of your repository. LibrePaper never merges text for you: when a file changed on both sides, Git's usual conflict tools take over. LibrePaper never stores a GitHub credential either.
 
-The **Git** panel is the guided way to do what the rest of this page describes by hand. It appears in a web project for its editors and owners.
+There are three ways to sync, and they all do the same two things: pull brings the latest version from the LibrePaper server into the repository, and push sends the repository's changes to the LibrePaper server.
 
-### In a web project
+| Way | Best for |
+| --- | --- |
+| [The Git panel](#the-git-panel) in the desktop app | Syncing by hand, with buttons |
+| [The `librepaper` command](#the-command-line) | Scripts, servers, and plain folders without Git |
+| [The GitHub Action](#github-action) | Syncing automatically, with nobody's laptop involved |
 
-The panel shows the **last push**, the newest version pushed from Git, such as "Last pushed by Alice, 2 hours ago: Reword the greeting", or "No push yet".
+## The Git panel
 
-In the desktop app, the panel also connects the project to a git repository. The panel shows the project, the repository and the branch.
+Open a project in the [desktop app](desktop-app.html) and choose the Git panel. Paste the repository's address and click Connect. On GitHub, use the SSH address (see [Credentials](#credentials)). You can also pick Use a local repository to work directly in a repository already on your computer.
 
-- **Connect** takes the repository's address. The desktop app keeps a copy of the repository on your computer, out of sight. On GitHub, use the SSH address, as described in [Credentials](#credentials).
-- **Get repository changes** imports the repository's changes into the project and its History.
-- **Send project changes** sends the project's files to the selected branch of the repository.
-- When a file changed in both the project and the repository, the panel lists it. Choose **Keep project's** or **Take repository's** for each file. Then choose **Get repository changes** or **Send project changes** again.
-- **Use a local repository** picks a git repository on this computer. The buttons then work in that folder directly, with no remote. Only committed files are sent, and uncommitted changes to tracked files stop the transfer. Conflicts are left in the repository for your own tools.
-- **Disconnect** forgets the link. The copy on your computer, or the local folder, and the project stay as they are.
+Two buttons do the work. Get repository changes imports new commits into the project and its History. Send project changes sends the project's files to the repository's branch. If a file changed on both sides, the panel lists it and you choose Keep project's or Take repository's for each one, then click the button again. With a local repository, conflicts are left in the repository for your own Git tools instead, and only committed files are sent.
 
-The connection belongs to this computer. A coauthor on another computer connects on their own.
+The connection belongs to your computer. A coauthor on another computer connects on their own. Disconnect removes the link but leaves the files on both sides as they are.
 
-In the browser, the panel says to open the project in the desktop app. Git signs in with your own credential helper or SSH key.
+In the browser, the panel shows who pushed last and when, and asks you to open the project in the desktop app to connect it to a repository.
 
 ### Credentials
 
-Git signs in to the remote with your own credential helper or SSH key. LibrePaper holds no credential for GitHub or any other host. When a pull or a push fails on sign-in, the panel shows the steps for your host and your system, and Try again repeats the command.
+Git signs in to GitHub, GitLab or any other host with your own SSH key or credential helper, just as it does on the command line. If sign-in fails, the panel shows the steps for your host and system.
 
-For GitHub, the GitHub CLI can set up the sign-in for you, and it can create and upload an SSH key.
+On GitHub, the simplest setup is the GitHub CLI, which can create and upload an SSH key for you:
 
 ```sh
-# Sign in to GitHub once. Choose SSH when gh asks for the Git protocol
-gh auth login
+gh auth login   # choose SSH when asked for the Git protocol
 ```
 
-- Connect the project with the repository's SSH address, such as `git@github.com:owner/repo.git`. In the desktop app, the `https://` address does not sign in through the GitHub CLI.
-- On GitHub, the SSH address is under Code, then SSH.
+Then connect with the SSH address, such as `git@github.com:owner/repo.git`, found on GitHub under Code → SSH. The `https://` address does not sign in through the GitHub CLI in the desktop app.
 
-## Requirements
+## The command line
 
-- The `librepaper` command. Install it with a desktop app package: Homebrew, Scoop, the Windows installer, the `.deb` or `.rpm` package, or Nix. See [Install the desktop app](desktop-app.html). The plain macOS `.dmg` does not put it on your PATH. On a server, [install the command alone](cli.html#install).
-- Git, if the folder is a repository. A plain folder needs no Git.
-- A token, or a login on this computer.
-  - A project token: open the project, then the Agent panel (the robot icon in the sidebar), then the Agent tab, then New; choose the Edit permission and an expiry of up to 1 year; click Create token; then open "Other connection methods" and click the copy icon next to Token. [Agent tokens](agents.html#agent-tokens) has the details. A project token works for a project that exists; publishing a new one needs `librepaper login`.
-  - `librepaper login` signs you in on this computer. The login lasts 90 days.
+The `librepaper` command comes with the desktop app's Homebrew, Scoop, Windows installer, `.deb`, `.rpm` and Nix packages (the plain macOS `.dmg` does not add it to your PATH). On a server, [install the command alone](cli.html#install).
 
-Give the token to the CLI with `--token`, or with the `LIBREPAPER_TOKEN` variable. After `librepaper login`, you need neither.
+### Sign in
+
+Run `librepaper login` once to sign in on this computer for 90 days. On a server or in CI, use a project token instead: in the project, open the Agent panel (the robot icon), then the Agent tab, then New. Choose the Edit permission, create the token, and copy it from "Other connection methods". See [Agent tokens](agents.html#agent-tokens).
+
+Pass the token with `--token`, or set it for the shell without leaving it in your history:
 
 ```sh
-# Paste the token once for this shell. Nothing is echoed or saved in shell history
 read -rs LIBREPAPER_TOKEN && export LIBREPAPER_TOKEN
 ```
 
-## The two commands
+A project token works only for its own project. Creating a new project with `push --title` needs `librepaper login`.
 
-The first `pull` takes the project's address. The folder remembers it, so later runs need no address.
+### Pull and push
+
+The first pull takes the project's address and the branch to sync. The repository remembers both, so later commands need neither.
 
 ```sh
-# First run in a repository: give the project's address and the branch to sync
 librepaper pull https://app.librepaper.org/docs/<slug> --branch main
-
-# Send this folder's changes to the project
-librepaper push --message "Tighten the abstract"
 ```
 
-### pull
+From then on, the everyday loop is:
 
 ```sh
-# In a repository: fetch the named versions and the current version, then merge
-librepaper pull
-
-# In a repository: fetch only. Merge with git later
-librepaper pull --no-merge
-
-# Outside a repository: keep your copy of a file that changed on both sides
-librepaper pull --mine intro.tex
-
-# Before the first pull: list what it would change. Writes nothing
-librepaper pull https://app.librepaper.org/docs/<slug> --preview
+librepaper pull     # bring web edits into your branch
+librepaper push     # send your commits to the project
 ```
 
-- In a repository, pull fetches each named version as a commit on `librepaper/main`. Then it adds the current project as one commit when its files differ. See [Versions and commits](#versions-and-commits).
-- Then pull merges `librepaper/main` into your branch.
-- If the merge conflicts, git leaves the conflict for you. Resolve it with your tools.
-- The first pull into a repository that shares no history with the project merges the two histories itself. Files that differ on both sides are left as conflicts.
-- In a repository, pull refuses to start with uncommitted changes. Commit first.
-- Outside a repository, pull writes the current project into the folder. A file that changed only on the web is written. A file that changed only in the folder is kept. A file deleted on the web goes to the trash.
-- A file that changed on both sides is not written. Pull lists it. Run pull again with `--mine PATH` to keep your copy, or `--theirs PATH` to take the web copy.
-- A file the folder itself excludes (ignored by `.gitignore`, hidden, or not a file the project can hold) is left alone even when the web has it. Pull lists those too.
-- A pull with nothing new makes one small request to the server and reads no files.
-- `--preview` lists what a first pull would do. It shows these paths:
-  - only in the project;
-  - only in the folder or repository;
-  - different on both sides;
-  - the same on both sides;
-  - excluded by the transfer rules;
-  - blocked, with the reason.
-- A preview writes no files, saves no link, and binds no branch. The real pull reads the project again, so its result can differ from the preview if the project changed.
+Pull fetches each named version as a commit on the `librepaper/main` branch, adds the project's current state as one more commit if it has unnamed edits, and merges the result into your branch. If the merge conflicts, resolve it the usual Git way and commit. Pull refuses to start if you have uncommitted changes. Use `--no-merge` to fetch without merging.
 
-### push
+Push sends every new, changed and deleted file in one request; the project accepts all of them or none. The version is named after your latest commit subject (followed by "and N more" if several commits went out together) and credited to its author. Override these with `--message` and `--author`. Push is refused if someone changed the same file on the web since your last pull. Pull, then push again.
 
-```sh
-# Send changes. In a repository, the message defaults to the latest commit subject
-librepaper push
+To create a project from an existing repository, run `librepaper push --title "Thesis draft"`. To see what a first pull would do without writing anything, add `--preview`.
 
-# Publish a folder that has no project yet, as a new project
-librepaper push --title "Thesis draft"
-```
+### One branch, one project
 
-- Push sends new, changed and deleted files in one request. The server applies all of them or none.
-- If a file you changed also changed on the web, push is refused. The CLI names the file and prints "Pull first." Pull, then push again.
-- If a file you changed has a pending suggestion, push is refused. Accept or reject the suggestion on the web, then push again.
+A repository syncs one branch with one project. The commands only run on that branch, and they never switch branches for you. Other branches are yours for experiments: merge them into the synced branch with Git when they are ready. A repository linked to one project cannot be pushed to another.
 
-Push takes these options. Pull takes `--dir` and `--token` too.
+### Plain folders
 
-- `--dir DIR` chooses the folder. It defaults to the current folder.
-- `--message TEXT` names the version. In a repository it defaults to the latest commit subject. If several commits came since the last sync, it adds "and N more". Outside a repository it is required.
-- `--author NAME` sets the author. In a repository it defaults to the author of the latest commit. Outside one, the author is your account.
-- `--title TEXT` publishes a folder with no project as a new project. This needs `librepaper login`, since a project token belongs to one existing project.
-- `--branch BRANCH` names the branch to send from. See [Branch binding](#branch-binding).
-- `--token TOKEN` gives the token for one run. `LIBREPAPER_TOKEN` works too.
+The commands also work in a folder that is not a Git repository. Pull then writes the project's files into the folder directly. Files that changed only on the web are updated, files that changed only in the folder are kept, and files deleted on the web go to the trash. When a file changed on both sides, pull lists it and leaves it alone. Run pull again with `--mine PATH` to keep your copy, or `--theirs PATH` to take the web's. In a plain folder, `push` needs `--message`.
 
-### Branch binding
+### If a push is interrupted
 
-A repository is bound to one branch and one project. The first real transfer needs `--branch`. After that, the CLI keeps the branch in the sync state.
-
-```sh
-# First real transfer: bind the repository to main
-librepaper pull https://app.librepaper.org/docs/<slug> --branch main
-
-# Later runs use the bound branch. Naming it again is allowed
-librepaper push --branch main
-```
-
-- The branch must be the one checked out. If you are on another branch, the command stops and names the bound branch. LibrePaper never switches branches for you. Check out the bound branch with `git switch`, then run the command again.
-- A detached HEAD is an error. Check out the branch first.
-- Other branches stay available for experiments. They are not synced. Merge changes into the bound branch with git, then transfer.
-- The sync state also records the project. A repository bound to one project is refused for another. Nothing is overwritten.
-- A plain folder has no branch. `--branch` is refused there.
-
-### Pending push
-
-A push saves a small pending request in the sync state before it sends it. If the command stops before the web project confirms the send, run `librepaper push` again. It sends the pending request first, then the new changes.
-
-```sh
-# A push stopped before it finished. Run it again to send the pending request
-librepaper push
-```
-
-- While a push is pending, `pull` refuses to start. Its error says to run `librepaper push` first. Pull, link and unlink stop in the same way.
-- Recovery works only with the same account, on the bound branch.
-- The request stays in the folder's state file, or in `refs/librepaper/state` for a repository. If that state is lost, so is the request.
-- The web project can forget the request after history is trimmed. Then a retry cannot tell whether the first send was applied. If the same change is accepted again, it is recorded again. Recovery is not exactly once.
-- A retry can still stop with "Pull first." if a file changed on the web. Pull, then push again.
+Just run `librepaper push` again. Push saves the request before it sends it, so the retry finishes the earlier send first and then sends anything new. Until it succeeds, `pull` refuses to start.
 
 ## GitHub Action
 
-The Action runs `pull` and `push` for a repository on GitHub. Nothing has to run on your laptop.
+The [`LibrePaper/sync-action`](https://github.com/LibrePaper/sync-action) runs pull and push on GitHub. Every push to your branch reaches the project at once, and web edits reach the repository on a schedule.
 
-1. Add a project token as a repository secret named `LIBREPAPER_TOKEN`. Use Settings, then Secrets and variables, then Actions. A token for one project keeps the Action away from every other project.
-2. Save this workflow as `.github/workflows/librepaper.yml`. Put your project's address in `project`.
+1. Create a project token, as described in [Sign in](#sign-in). In the repository, add it as a secret named `LIBREPAPER_TOKEN` (Settings → Secrets and variables → Actions).
+2. Save this workflow as `.github/workflows/librepaper.yml`, with your project's address:
 
 ```yaml
 on:
@@ -189,129 +118,40 @@ jobs:
           branch: main
 ```
 
-The Action takes three inputs.
+Keep `branch` equal to the `ref` that `actions/checkout` uses. The first run links the repository and the project, bringing each side's files to the other. If a file differs on both sides, that first run stops, and someone merges it once on a computer.
 
-- `project` is the project's address, `https://<site>/docs/<slug>`.
-- `token` is the secret. The workflow passes `LIBREPAPER_TOKEN` to it.
-- `branch` is the branch to sync. Keep it equal to the branch that `actions/checkout` checks out with `ref`. The Action stops if the checkout is on another branch.
+Hourly is a good default. A run with nothing new costs one small request. On a private repository, hourly uses about 730 of GitHub Free's 2,000 monthly minutes, while every 15 minutes would exceed them; public repositories run free. GitHub delays frequent schedules anyway, so intervals under 15 minutes gain nothing. To sync immediately, click Run workflow in the Actions tab. To sync only during working hours, use a cron line such as `"*/30 8-20 * * 1-5"` (times are UTC).
 
-GitHub gives each run its own `GITHUB_TOKEN`. The `permissions` line lets it write to the repository and open pull requests. You do not add it.
+The Action never merges text or force-pushes. When both sides changed a file, it commits the web's files to a `librepaper/sync` branch and opens a pull request titled "LibrePaper changed files you also changed". The run fails on purpose so it shows red. Merge the pull request, and the next push sends the result to the project.
 
-A push to `main` reaches the project right away. The schedule only sets how soon web edits reach the repository.
-
-- Hourly is the default. A run that finds nothing new costs the LibrePaper server one small request.
-- GitHub bills each run as at least one minute. Hourly is about 730 minutes a month, which fits the 2,000 free minutes a private repository gets on GitHub Free. Every 15 minutes is about 2,900, which does not. Public repositories run free.
-- GitHub delays frequent scheduled runs, so an interval under 15 minutes buys nothing.
-- A manual run, from the Actions tab with Run workflow, pulls at once.
-
-To sync only during working hours, change the cron line.
-
-```yaml
-schedule:
-  - cron: "*/30 8-20 * * 1-5"   # every 30 minutes, 8:00 to 20:59 UTC, Monday to Friday
-```
-
-On its first run, the Action links the repository to the project itself. It pulls the project's versions into the branch, pushes the branch, and pushes the repository's files that the project lacks. If a file differs on both sides, the run stops with an error. A person then merges it once on a computer.
-
-Each event moves files in one direction.
-
-| Event | Direction | What it does |
-| --- | --- | --- |
-| Push to `main` | Repository to project | Sends the pushed commit as one named version. Its subject names the version, and its author becomes the version's author. |
-| Schedule | Project to repository | Pulls the project and merges it into the branch. A clean merge is pushed to the branch. When nothing is new, the run ends with no commit. |
-| Manual run | Project to repository | Does the same as the schedule. |
-
-What else happens:
-
-- **When a push is refused**, the Action commits the web's files to a branch named `librepaper/sync` and opens one pull request titled "LibrePaper changed files you also changed". The run then fails on purpose, so it shows red. Merge the pull request in git. The next push to `main` sends the merged files.
-- **When a scheduled pull conflicts**, the Action aborts the merge and does the same.
-- **When a send is pending from an earlier run**, a scheduled or manual run stops with an error. Re-run the push workflow, or run `librepaper push` in a clone.
-- **When `main` moved during a scheduled run**, the push to `main` fails, the LibrePaper state is not published, and the next run repeats the pull from the same point.
-- **When an older push run is started again**, the Action sees that its checkout is no longer the tip of the branch and pushes nothing, so an old commit never rolls the project back.
-- **On every run that ends well**, the Action pushes the LibrePaper refs back to GitHub. The next run, on a new machine, starts from the same state.
-
-Anyone with push rights on the repository can change the project this way. Each change is a named version under the git author. You can see it and restore it in History. To stop the Action, open the project, then the Agent panel, then the Agent tab, and click the trash button on its token.
-
-The Action reports the repository and the project separately. A repository push that a protected branch rejects does not undo a web change that already went through. The Action never force-pushes the branch or bypasses branch protection.
-
-## Common workflows
-
-1. **Bob and Carol write on the web.** They edit and comment in the browser, and nothing changes for them. Their named versions become commits in the repository on the next hourly run.
-2. **Alice backs up a web project.** She pulls the project into a new repository with her token, pushes the repository to GitHub, and adds the token and the workflow. The first run does the rest. From then on, the Action adds each new named version as a commit. She can also go the other way. `librepaper push --title` in a repository that holds her paper creates the project.
-3. **Alice works in VS Code, and Bob works in the browser.** Alice adds a token and the workflow, and the first run does the rest. Without the Action, she can connect the repository in the web project's Git panel in the desktop app, and press **Get repository changes** and **Send project changes** herself. Her pushes reach Bob at once, as versions in his history under her name. Bob's named versions reach the repository on the next hourly run, and her next `git pull` brings them in as commits by Bob. If they both changed a file, the Action's push is refused. A pull request from `librepaper/sync` opens, and Alice merges it in git. Bob sees none of this.
-4. **Charlie works on GitHub only.** He works in the same repository, with the same Action. He has nothing new to learn.
+Anyone who can push to the repository can change the project this way. Each change is a named version under the Git author, visible and restorable in History. To stop the Action, delete its token in the Agent panel.
 
 ## What syncs
 
-These files sync.
+Files sync if the project accepts their extension: sources like `.tex`, `.typ`, `.qmd`, `.md`, `.bib` and `.csv`, and figures and fonts like `.png`, `.svg`, `.pdf` and `.woff2`. Text files must be UTF-8, and line endings are kept as they are.
 
-- Text files with an extension the project accepts, such as `.tex`, `.typ`, `.qmd`, `.md`, `.bib` and `.csv`.
-- Figures and fonts with an accepted extension, such as `.png`, `.jpg`, `.svg`, `.pdf` and `.woff2`.
-- The server sets the list. The Files panel names the allowed extensions when it skips an upload.
+These stay out:
 
-These files never sync.
+- files your `.gitignore` excludes, and hidden files such as `.gitignore` itself;
+- files you mark with the `-librepaper` attribute in `.gitattributes`, such as `notes.tex -librepaper`;
+- build outputs such as `.aux`, `.log`, and rendered PDFs;
+- comments, suggestions and chat, which live only in the web project. Pending suggestions are left out of pulled text.
 
-- Files that a `.gitignore` excludes. The CLI does not read them.
-- A tracked file with the Git attribute `-librepaper`. Add a line like this to `.gitattributes`.
+A project holds up to 200 files, and one push can carry up to 32 MiB, by default. Your server may set other limits.
 
-```text
-# .gitattributes: keep this file out of the web project
-notes.tex -librepaper
-```
+### Versions and commits
 
-- Names that start with a dot, such as `.gitignore`.
-- Paths with more than eight segments, and paths the server rejects.
-- Files in formats the project does not accept.
-- Anything outside the folder you chose.
+Each named version becomes one commit, authored by the person who saved it (as `handle@site`), dated when it was saved, and titled with the version's name. A `LibrePaper-Version` trailer records which version it was. Each push becomes one named version, and it is not turned back into a second commit when you pull. If the project's history was trimmed past your last pull, pull starts again from the current files as one new commit. The commits you already have stay as they are.
 
-These files and features stay where they are.
+## Troubleshooting
 
-- Comments, suggestions and chat. Pull leaves pending suggestions out of the text it writes.
-- Project history. Git receives the named versions and the current version as commits.
-- Build outputs, such as `.aux` and `.log`. They stay on your computer. A file a local render wrote into the folder, such as the PDF, is neither imported into the project nor synced.
-
-## Versions and commits
-
-- In a repository, each named version becomes one commit when you pull. The commit's author is the person who saved the version, shown as `handle@site`. Its date is when the version was saved. Its message is the version's name.
-- Each commit has a `LibrePaper-Version` trailer that names the version.
-- After the named versions, pull adds the current project as one commit named "Current version" when its files differ from the last commit it imported. This holds edits that were never named. Pending suggestions are left out, as before.
-- Renders stay out of the project, so they never become commits.
-- A push makes one named version in History. The name is the commit message. History shows it as pushed by the git author.
-- A version that a push from this folder created is not committed a second time. The commit you pushed stands in for it.
-- If someone trims the project's history past your last pull, pull says so. It takes the current files as a new starting point. In a repository, that is one commit. Commits you already have stay as they are.
-
-## Limits and troubleshooting
-
-Limits:
-
-- The size of one push is capped by the project's log quota, 32 MiB by default.
-- A project holds 200 files by default. A push over the limit is refused.
-- Text files must be UTF-8. A file that is not is reported and skipped.
-- The CLI keeps the line endings of each file it rewrites. New files get LF.
-
-### Pull refuses to start
-
-- The repository has uncommitted changes. Commit them, then pull again.
-- A push is pending. Run `librepaper push` first, then pull again.
-- The checkout is not the bound branch, or it is detached. Check out the bound branch with `git switch`.
-- The repository has no bound branch. Run pull once with `--branch BRANCH`.
-
-### Push says "Pull first."
-
-Someone changed a file on the web. Pull, resolve any conflict, then push again.
-
-### Push says a suggestion is pending
-
-Accept or reject the suggestion on the web. Then push again.
-
-### Push was interrupted
-
-Run `librepaper push` again. It sends the pending request first. See [Pending push](#pending-push).
-
-### The CLI or the Action cannot sign in
-
-The token has expired or was revoked. Create a new token in the Agent panel's Agent tab. Then replace the `LIBREPAPER_TOKEN` secret, or export the new value in your shell.
-
-### The Action stops with "run librepaper push"
-
-A send from an earlier run is pending. Re-run the push workflow for the failed commit, or run `librepaper push` in a clone of the repository.
+| Message or symptom | What to do |
+| --- | --- |
+| Pull refuses: uncommitted changes | Commit, then pull again. |
+| Pull refuses: a push is pending | Run `librepaper push` first. |
+| Wrong branch, or detached HEAD | `git switch` to the synced branch. |
+| No branch set | Run pull once with `--branch BRANCH`. |
+| Push says "Pull first." | Someone edited the same file on the web. Pull, resolve, push. |
+| Push says a suggestion is pending | Accept or reject the suggestion on the web, then push. |
+| Sign-in fails | The token expired or was revoked. Create a new one and update `LIBREPAPER_TOKEN`. |
+| The Action says "run librepaper push" | An earlier send is pending. Re-run the push workflow, or run `librepaper push` in a clone. |
