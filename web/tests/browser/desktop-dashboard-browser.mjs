@@ -259,8 +259,11 @@ try {
     [...row.querySelectorAll("button")].find((button) => button.textContent.trim() === "Remove").click();
   })()`);
   // Removing an agent asks first, in a dialog whose action is also Remove.
-  await until("remove agent asks first", () => b.evaluate(`Boolean([...document.querySelectorAll('[role="dialog"][data-state="open"] button')].find((button) => button.textContent.trim() === "Remove"))`), 5000);
-  await b.evaluate(`[...document.querySelectorAll('[role="dialog"][data-state="open"] button')].find((button) => button.textContent.trim() === "Remove").click()`);
+  // Settings is a dialog too, and its rows have Remove buttons of their own,
+  // so the question is looked for in the dialog on top: the last one opened.
+  const confirmRemove = `[...([...document.querySelectorAll('[role="dialog"][data-state="open"]')].at(-1)?.querySelectorAll("footer button") || [])].find((button) => button.textContent.trim() === "Remove")`;
+  await until("remove agent asks first", () => b.evaluate(`Boolean(${confirmRemove})`), 5000);
+  await b.evaluate(`${confirmRemove}.click()`);
   await until("custom agent removed through Settings", async () => {
     const response = await apiState();
     return response.ok && !(await response.json()).custom_agents.some((item) => item.id === agentId);

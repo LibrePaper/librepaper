@@ -113,14 +113,33 @@ async function main() {
   await comparisonOwner.navigate(new URL(`/docs/${slug}`, browserBase).href);
   await until("comparison owner editor", () => comparisonOwner.evaluate('!!document.querySelector(".cm-content")'));
   await comparisonOwner.evaluate('document.querySelector(".sidebar-activity [aria-label=History]")?.click()');
+  // Each saved version is a row of its own in the panel. The row is found by
+  // its name: its id is the row's, not the version id the save answered with.
   await until("owner history", () => comparisonOwner.evaluate('document.body.innerText.includes("Original draft")'));
-  await comparisonOwner.evaluate(`document.querySelector('li[data-sha=${JSON.stringify(first.sha)}] .timeline-point')?.click()`);
+  await comparisonOwner.evaluate(`([...document.querySelectorAll('li.hx-event[data-sha]')]
+    .find((row) => row.textContent.includes('Original draft'))?.querySelector('button.hx-single')?.click())`);
+  // A chosen version is compared with the one before it by default. Compare it
+  // with the live source instead, which is what the old panel showed.
+  await until("compare-with controls", () => comparisonOwner.evaluate(`!!document.querySelector('.history-compare-with')`));
+  await comparisonOwner.evaluate(`([...document.querySelectorAll('.history-compare-with button')]
+    .find((button) => button.textContent.trim() === 'Latest')?.click())`);
   await until("history source comparison", () => comparisonOwner.evaluate(`(() => {
     const oldText = document.querySelector('.cm-merge-a .cm-content')?.textContent || '';
     const newText = document.querySelector('.cm-merge-b .cm-content')?.textContent || '';
     return oldText.includes('red fox') && newText.includes('blue fox');
   })()`));
-  assert.match(await comparisonOwner.evaluate(`document.querySelector('[aria-label="History file"]')?.selectedOptions[0]?.textContent || ""`), /document\.md · changed/);
+  // The project has one file, so the panel names it in place of the file
+  // selector (which only appears when several files changed) and offers the
+  // change stepper, which exists only when that file differs. A project with
+  // several changed files would show "document.md · changed" in the selector.
+  const fileSummary = await comparisonOwner.evaluate(`(() => {
+    const select = document.querySelector('[aria-label="History file"]');
+    const name = select ? select.selectedOptions[0]?.textContent : document.querySelector('.history-source-name')?.textContent;
+    return { name: name || '', stepper: !!document.querySelector('.history-changes'),
+      none: document.querySelector('.history-workspace')?.textContent.includes('No differences') };
+  })()`);
+  assert.match(fileSummary.name, /document\.md/);
+  assert.ok(fileSummary.stepper && !fileSummary.none, "the comparison reports that document.md changed");
   await owner.insert(revised.replace("blue fox", "green fox"), true);
   await until("newer edit is durable", async () => {
     const snapshot = await request(`/api/documents/${slug}/snapshot`);
@@ -129,16 +148,16 @@ async function main() {
   await until("newer edit reached the comparison tab", async () => (await comparisonOwner.text()).includes("green fox"));
   assert.ok(await comparisonOwner.evaluate(`document.querySelector('.cm-merge-b .cm-content')?.textContent.includes('blue fox')`),
     "the selected comparison keeps its captured current source until refreshed");
-  await comparisonOwner.evaluate(`([...document.querySelectorAll('.history-source-actions button')]
-    .find((button) => button.textContent.trim() === 'Refresh')?.click())`);
+  // The old "Refresh" button is now the icon button "Reload the latest version".
+  await comparisonOwner.evaluate(`document.querySelector('.history-workspace [aria-label="Reload the latest version"]')?.click()`);
   await until("refreshed history comparison", () => comparisonOwner.evaluate(`(() => {
     const newText = document.querySelector('.cm-merge-b .cm-content')?.textContent || '';
     return newText.includes('green fox') && !newText.includes('blue fox');
   })()`));
   // Restoring an earlier label creates a new event and updates the live source.
-  await comparisonOwner.evaluate(`([...document.querySelectorAll('.history-workspace button')].find(button => button.textContent.trim() === 'Restore this version')?.click())`);
+  await comparisonOwner.evaluate(`document.querySelector('.history-workspace .history-restore')?.click()`);
   await until("restore confirmation", () => comparisonOwner.evaluate('document.body.innerText.includes("Restore this version?")'));
-  await comparisonOwner.evaluate(`([...document.querySelectorAll('button')].filter(button => button.textContent.trim() === 'Restore this version').at(-1)?.click())`);
+  await comparisonOwner.evaluate(`([...document.querySelectorAll('button')].filter(button => ['Restore this version', 'Restore anyway'].includes(button.textContent.trim())).at(-1)?.click())`);
   await until("restore label", async () => (await request(historyPath)).labels?.some((label) => label.reason === "restore"));
   const restored = (await request(historyPath)).labels.find((label) => label.reason === "restore");
   assert.ok(restored);
