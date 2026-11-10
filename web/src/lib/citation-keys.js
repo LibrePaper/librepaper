@@ -1,6 +1,6 @@
 // Citation keys in a source file, and the keys that have no bibliography entry.
 // Pure text helpers, so the editor and the check scripts share them.
-import { typstTree } from "./source-trees.js";
+import { orgTree, typstTree } from "./source-trees.js";
 
 const WORD = /[-\p{L}\p{N}_:.+]/u;
 const LATEX_CITE = /\\(?:(?:no|paren|text|auto|foot|smart|super|Paren|Text|Auto|Foot|Smart|Super)?[Cc]ite(?:p|t|author|year)?\*?)\s*(?:\[[^\]]*\]\s*)*\{([^}]*)\}/g;
@@ -76,8 +76,6 @@ const ORG_BLOCK_BEGIN = /^\s*#\+BEGIN_(SRC|EXAMPLE|EXPORT|COMMENT)\b/i;
 const ORG_BLOCK_END = /^\s*#\+END_(\w+)\b/i;
 const ORG_COMMENT = /^\s*#(?: |$)/;
 const ORG_VERBATIM = /(?<![\p{L}\p{N}])([~=])(?=\S)[^~=\n]*?\S\1(?![\p{L}\p{N}])/gu;
-const ORG_CITE = /\[cite(?:\/[a-z\/]+)?:([^\]\n]*)\]/g;
-const ORG_AT = /@[-\p{L}\p{N}_:.+\/]+/gu;
 
 /**
  * The Org source with the regions that are not citations blanked: the lines of
@@ -101,17 +99,15 @@ export function orgMasked(text) {
   }).join("\n");
 }
 
-// The keys of the [cite…:…] groups of an Org text. The @ is only read inside a group.
+// The keys of the citations of an Org tree: code, comments and verbatim text
+// are not parsed as citations.
 function orgKeys(text) {
-  const masked = orgMasked(text);
   const found = [];
-  for (const group of masked.matchAll(ORG_CITE)) {
-    const body = group[1];
-    const start = group.index + group[0].length - 1 - body.length;
-    for (const cite of atKeys(body, ORG_AT)) {
-      found.push({ key: cite.key, from: start + cite.from, to: start + cite.to });
-    }
-  }
+  orgTree(text).iterate({
+    enter(ref) {
+      if (ref.name === "CitationKey") found.push({ key: text.slice(ref.from, ref.to), from: ref.from, to: ref.to });
+    },
+  });
   return found;
 }
 

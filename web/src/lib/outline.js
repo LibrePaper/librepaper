@@ -1,4 +1,4 @@
-import { latexTree, markdownTree, typstTree } from "./source-trees.js";
+import { latexTree, markdownTree, orgTree, typstTree } from "./source-trees.js";
 
 /*
  * Extract a small, source-oriented outline without compiling or executing the
@@ -289,57 +289,23 @@ function extractLatex(source, starts) {
   return result;
 }
 
-const ORG_HEADLINE = /^(\*+)[ \t]+(.*)$/;
-const ORG_BLOCK_BEGIN = /^[ \t]*#\+begin_(\w+)/i;
-const ORG_BLOCK_END = /^[ \t]*#\+end_(\w+)\b/i;
-const ORG_DRAWER_OPEN = /^[ \t]*:([\w-]+):[ \t]*$/;
-const ORG_DRAWER_END = /^[ \t]*:END:[ \t]*$/i;
-
-/**
- * The headline title without its TODO keyword, priority cookie and trailing
- * tags, or null when the headline is a COMMENT.
- */
-function orgTitle(raw) {
-  if (/^COMMENT(?:[ \t]|$)/.test(raw)) return null;
-  return raw
-    .replace(/^(?:TODO|DONE)[ \t]+/, "")
-    .replace(/^\[#(?:[A-Za-z0-9]|[0-9]{2})\][ \t]*/, "")
-    .replace(/(?:^|[ \t]+):[\w@#%:]+:[ \t]*$/, "");
-}
-
-// Headlines outside #+BEGIN_xxx blocks and :NAME: drawers. A headline ends an
-// open drawer, as Org does, so an unclosed drawer hides nothing after it.
+// Headlines, as the Org tree reads them: the title is the Title node, without
+// the TODO keyword, priority cookie and tags, which are nodes of their own. A
+// COMMENT headline is not listed.
 function extractOrg(source, starts) {
-  const lines = source.split(/\r\n|\r|\n/);
+  const tree = orgTree(source);
   const result = [];
-  let block = "";
-  let drawer = false;
-  for (let i = 0; i < lines.length; i++) {
-    const text = lines[i];
-    if (block) {
-      const end = ORG_BLOCK_END.exec(text);
-      if (end && end[1].toLowerCase() === block) block = "";
-      continue;
-    }
-    const headline = ORG_HEADLINE.exec(text);
-    if (headline) drawer = false;
-    if (drawer) {
-      if (ORG_DRAWER_END.test(text)) drawer = false;
-      continue;
-    }
-    const begin = ORG_BLOCK_BEGIN.exec(text);
-    if (begin) {
-      block = begin[1].toLowerCase();
-      continue;
-    }
-    if (!headline) {
-      const open = ORG_DRAWER_OPEN.exec(text);
-      if (open && open[1].toUpperCase() !== "END") drawer = true;
-      continue;
-    }
-    const title = orgTitle(headline[2]);
-    if (title !== null) addHeading(result, starts, title, headline[1].length, starts[i]);
-  }
+  tree.iterate({
+    enter(ref) {
+      if (ref.name === "Section" || ref.name === "Document") return;
+      if (ref.name !== "Headline") return false;
+      const stars = ref.node.getChild("Stars");
+      const title = ref.node.getChild("Title");
+      const text = title ? source.slice(title.from, title.to) : "";
+      if (stars && !/^COMMENT(?:[ \t]|$)/.test(text)) addHeading(result, starts, text, stars.to - stars.from, ref.from);
+      return false;
+    },
+  });
   return result;
 }
 
