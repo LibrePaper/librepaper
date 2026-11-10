@@ -4,7 +4,7 @@ import { m } from "../paraglide/messages.js";
 // whatever the preview is doing before the first page is on the screen, and
 // this is the whole of how that line is chosen.
 
-const ENGINE_NAMES = { typst: "Typst", markdown: "Markdown", quarto: "Markdown" };
+const ENGINE_NAMES = { typst: "Typst", markdown: "Markdown", quarto: "Markdown", org: "Org" };
 
 /**
  * @param {{ pageDelivered?: boolean, latexPhase?: string, latexScope?: string, engineLoading?: string, compiling?: boolean }} state

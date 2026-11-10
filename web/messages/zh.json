@@ -1021,6 +1021,7 @@
   "exports_kind_not_exportable": "无法导出此类文件。",
   "exports_no_pandoc": "此部署不提供 Pandoc。",
   "exports_no_renderer": "此部署无法渲染 {name} 文档。",
+  "exports_org_no_pdf": "Org 文档没有 PDF 输出。",
   "exports_pdf_not_made": "无法生成 PDF。",
   "exports_pdf_not_made_reason": "无法生成 PDF：{message}",
   "extension_add_to_dictionary": "添加到词典",

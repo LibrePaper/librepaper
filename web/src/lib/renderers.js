@@ -65,12 +65,12 @@ export function available(format) {
 }
 
 // The source format and the output painted by the reader are separate
-// concerns. Both LaTeX and Typst produce a paged PDF; Markdown and authored
+// concerns. Both LaTeX and Typst produce a paged PDF; Markdown, Org and authored
 // HTML produce flow HTML. Keeping this mapping here prevents the reader from
 // accidentally using LaTeX's compiler chooser as a proxy for PDF support.
 export function outputKind(format) {
   if (format === "latex" || format === "typst") return "pdf";
-  if (format === "markdown" || format === "quarto" || format === "html" || format === "text") return "html";
+  if (format === "markdown" || format === "quarto" || format === "org" || format === "html" || format === "text") return "html";
   return "";
 }
 

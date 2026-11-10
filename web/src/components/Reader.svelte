@@ -4392,7 +4392,7 @@
         {:else}
           <p class="lp-text-secondary text-sm">
             {#if !compilesHere}
-              {m.readerd_browser_cannot_render_source({ format: sourceFormat === "latex" ? "LaTeX" : sourceFormat === "typst" ? "Typst" : sourceFormat === "quarto" ? "Quarto/Markdown" : "Markdown" })} {sourceFormat === "latex" ? m.readerd_configure_latex() : m.readerd_desktop_can_render()}
+              {m.readerd_browser_cannot_render_source({ format: sourceFormat === "latex" ? "LaTeX" : sourceFormat === "typst" ? "Typst" : sourceFormat === "quarto" ? "Quarto/Markdown" : sourceFormat === "org" ? "Org" : "Markdown" })} {sourceFormat === "latex" ? m.readerd_configure_latex() : m.readerd_desktop_can_render()}
             {:else}
               {m.readerd_fix_errors()}
             {/if}

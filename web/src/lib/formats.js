@@ -12,6 +12,7 @@ const SOURCE_EXTENSIONS = {
   typst: [".typ"],
   quarto: [".qmd"],
   markdown: [".md", ".markdown"],
+  org: [".org"],
   html: [".html", ".htm"],
 };
 
@@ -19,7 +20,7 @@ const SOURCE_EXTENSIONS = {
 /// the question highlighting and completion need: a `.sty` is LaTeX source.
 /// `formatOf` is the narrower question, which files are documents that render
 /// on their own; a `.sty` is LaTeX but never a document.
-/** @typedef {"latex"|"typst"|"quarto"|"markdown"|"html"} SourceFormat */
+/** @typedef {"latex"|"typst"|"quarto"|"markdown"|"org"|"html"} SourceFormat */
 /** @param {string} path @returns {SourceFormat | ""} */
 export function sourceFormatOf(path) {
   const lower = (path || "").toLowerCase();
