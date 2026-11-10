@@ -318,20 +318,25 @@ async fn answer(mut stream: TcpStream, data: Arc<Mutex<Data>>) {
     let mut parts = text.lines().next().unwrap_or("").split_whitespace();
     let method = parts.next().unwrap_or("GET").to_string();
     let target = parts.next().unwrap_or("/").to_string();
+    // Decided under the lock and acted on after it: a guard must not be held
+    // across the write.
     let answer = {
         let mut data = data.lock().unwrap();
         data.requests.push(target.clone());
         if data.oversize_asset && target.contains("/assets/") {
-            drop(data);
-            let head = format!(
-                "HTTP/1.1 200 X\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                librepaper_base::http::MAX_FILE_BYTES + 1
-            );
-            let _ = stream.write_all(head.as_bytes()).await;
-            let _ = stream.shutdown().await;
-            return;
+            None
+        } else {
+            Some(reply(&mut data, &method, &target, &request[end..]))
         }
-        reply(&mut data, &method, &target, &request[end..])
+    };
+    let Some(answer) = answer else {
+        let head = format!(
+            "HTTP/1.1 200 X\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            librepaper_base::http::MAX_FILE_BYTES + 1
+        );
+        let _ = stream.write_all(head.as_bytes()).await;
+        let _ = stream.shutdown().await;
+        return;
     };
     let Some((status, body)) = answer else {
         return;

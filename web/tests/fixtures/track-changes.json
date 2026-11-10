@@ -2199,11 +2199,11 @@
     "expect": {
       "changes": [
         { "id": "new-1", "who": "me", "from": 0, "to": 1 },
-        { "id": "new-2", "who": "me", "from": 4, "to": 5 }
+        { "id": "new-3", "who": "me", "from": 4, "to": 5 }
       ],
       "gaps": [
         { "at": 0, "fragments": [{ "change": "new-1", "text": "😀" }] },
-        { "at": 4, "fragments": [{ "change": "new-2", "text": "😀" }] }
+        { "at": 4, "fragments": [{ "change": "new-3", "text": "😀" }] }
       ]
     }
   },
