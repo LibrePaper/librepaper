@@ -35,7 +35,10 @@ live.compiled(lined);
 // Insert a new paragraph line near the top.
 const inserted = two("First paragraph here.\n\nNew inserted words.", "Second paragraph here.");
 live.edited({ ...lined, "main.tex": inserted }, "main.tex");
-assert.equal(sent.length, 0, "the insertion itself sends nothing");
+// A whole new plain paragraph is shown as a provisional paragraph after line 3.
+assert.equal(sent.length, 1, "the insertion sends one paragraph patch");
+assert.deepEqual(sent[0].patch, { kind: "paragraph", file: "main.tex", anchorLine: 3, text: "New inserted words." });
+sent.length = 0;
 // An edit on a later line is sent with its line shifted back by two.
 const later = inserted.replace("Second paragraph", "Seconds paragraph");
 live.edited({ ...lined, "main.tex": later }, "main.tex");
@@ -46,11 +49,12 @@ sent.length = 0;
 live.edited({ ...lined, "main.tex": later.replace("First paragraph", "Firsts paragraph") }, "main.tex");
 assert.equal(sent.length, 1);
 assert.equal(sent[0].patch.line, 3);
-// An edit on the inserted line sends nothing.
+// An edit on the inserted paragraph updates the provisional paragraph.
 sent.length = 0;
 const current = later.replace("First paragraph", "Firsts paragraph");
 live.edited({ ...lined, "main.tex": current.replace("inserted words", "inserted wordss") }, "main.tex");
-assert.equal(sent.length, 0);
+assert.equal(sent.length, 1);
+assert.deepEqual(sent[0].patch, { kind: "paragraph", file: "main.tex", anchorLine: 3, text: "New inserted wordss." });
 // After compiled(), numbers are direct again.
 sent.length = 0;
 live.compiled({ ...lined, "main.tex": current.replace("inserted words", "inserted wordss") });
@@ -80,11 +84,13 @@ for (const word of ["Gamma linex.", "Gamma linexy.", "Gamma linexyz.", "Gamma li
   assert.equal(sent.at(-1).patch.line, 7, "line 8 of the current text is line 7 of the compile");
 }
 
-// (b) The second half of the split line (line 4 now) sends nothing.
+// (b) The second half of the split line (line 4 now) is patched into the line
+// it came from, which the preview still shows whole.
 const beforeHalf = sent.length;
 typed = typed.replace("line.", "lin.");
 live.edited({ "main.tex": typed, "a.tex": other }, "main.tex");
-assert.equal(sent.length, beforeHalf, "an edit on the new half of a split line sends nothing");
+assert.equal(sent.length, beforeHalf + 1, "an edit on the new half of a split line is patched");
+assert.equal(sent.at(-1).patch.line, 3, "it goes to the line that was split");
 
 // (c) Edits above a split keep their number. Here the split is on line 5.
 live.compiled({ "main.tex": lines("\\begin{document}", "", "Top line.", "", "Alpha line.", "", "\\end{document}"), "a.tex": other });
