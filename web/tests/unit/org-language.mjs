@@ -1,6 +1,32 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { highlightTree, tagHighlighter, tags } from "@lezer/highlight";
 import { parseOrg } from "../../src/lib/org-language/parser.js";
+
+// The highlight classes the node props in props.js resolve to, named after their tags.
+const highlighter = tagHighlighter(
+  ["heading", "keyword", "atom", "tagName", "meta", "string", "monospace", "comment", "strong", "emphasis", "link"]
+    .map((name) => ({ tag: tags[name], class: name })),
+);
+
+/** For each UTF-16 offset of the text, the set of highlight classes covering it. */
+function classesAt(text) {
+  const per = new Array(text.length);
+  highlightTree(parseOrg(text), highlighter, (from, to, cls) => {
+    for (let i = from; i < to; i++) (per[i] ??= new Set()).add(cls);
+  });
+  return per;
+}
+
+/** Asserts that every character of the first occurrence of `piece` carries class `cls`. */
+function assertClass(text, piece, cls) {
+  const at = text.indexOf(piece);
+  assert.ok(at >= 0, `${JSON.stringify(piece)} is not in ${JSON.stringify(text)}`);
+  const per = classesAt(text);
+  for (let i = at; i < at + piece.length; i++) {
+    assert.ok(per[i]?.has(cls), `${JSON.stringify(piece)} should be ${cls}, got ${[...(per[i] ?? [])].join(",") || "nothing"}`);
+  }
+}
 
 /** The nodes of a parse as [name, text] pairs, in document order. */
 function nodes(text) {
@@ -72,4 +98,28 @@ test("a long line of markup characters terminates and every node stays in range"
   const line = "*/".repeat(2500);
   const tree = parseOrg(line);
   assert.equal(tree.length, line.length);
+});
+
+test("highlighting: headline parts", () => {
+  assertClass("* Ship it", "Ship it", "heading");
+  assertClass("* TODO Ship", "TODO", "keyword");
+  assertClass("* [#A] Ship", "[#A]", "atom");
+  assertClass("* Ship :work:", ":work:", "tagName");
+});
+
+test("highlighting: keyword lines, blocks and verbatim bodies", () => {
+  assertClass("#+TITLE: Paper", "TITLE", "meta");
+  assertClass("#+begin_src R\nx <- 1\n#+end_src", "x <- 1", "monospace");
+});
+
+test("highlighting: inline markup", () => {
+  assertClass("*bold*", "*bold*", "strong");
+  assertClass("/it/", "/it/", "emphasis");
+  assertClass("~code~", "~code~", "monospace");
+  assertClass("[[https://x.org][site]]", "https://x.org", "link");
+  assertClass("$x^2$,", "$x^2$", "string");
+});
+
+test("highlighting: comment lines", () => {
+  assertClass("# a comment\n", "a comment", "comment");
 });
