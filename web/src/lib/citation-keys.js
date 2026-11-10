@@ -72,9 +72,10 @@ function markdownMasked(text) {
   }).join("\n");
 }
 
-// The Org node types whose text is not citations: blocks (with their begin and
-// end lines), comment lines, =verbatim=, ~code~ and inline source.
-const ORG_MASKED_NODES = new Set(["Block", "Comment", "Verbatim", "Code", "InlineSrc"]);
+// The Org node types whose text is not citations: block begin and end lines,
+// the bodies of src, example, export and comment blocks, comment lines,
+// =verbatim=, ~code~ and inline source. Quote, center and verse bodies are prose.
+const ORG_MASKED_NODES = new Set(["BlockBegin", "BlockEnd", "VerbatimBody", "CommentBody", "Comment", "Verbatim", "Code", "InlineSrc"]);
 
 /**
  * The Org source with the regions that are not citations blanked: the blocks,
