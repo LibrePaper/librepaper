@@ -58,7 +58,7 @@ commenters = ["*"]
 # Every limit; commented lines are at their default.
 [limits]
 # Per account:
-publisher_storage_mib = 50         # storage per account, in MiB
+publisher_storage_mib = 100        # storage per account, in MiB
 publisher_uploads_per_hour = 30    # projects, forks and figure uploads per rolling hour
 # Whole server:
 deployment_storage_mib = 102400    # storage for all accounts together; uploads are refused when full

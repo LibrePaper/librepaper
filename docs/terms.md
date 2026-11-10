@@ -20,7 +20,7 @@ These terms cover librepaper.org only. Other servers that run LibrePaper have th
 
 - You sign in with GitHub or Google. You must be old enough to hold the account you sign in with.
 - You are responsible for what is done with your account, and with the share links and agent tokens you create. Anyone who holds a link or a token can use it until it expires or you revoke it.
-- Each account has a storage limit, currently 50 MiB. The limit can change.
+- Each account has a storage limit, currently 100 MiB. The limit can change.
 - An account that has not signed in for 365 days is erased with every document it owns, unless it is blocked. See [data retention](privacy.html#data-retention).
 - You can leave by [erasing your account](privacy.html#erasing-an-account) in Settings. If your account is blocked, email [admin@librepaper.org](mailto:admin@librepaper.org).
 

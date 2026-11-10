@@ -54,6 +54,6 @@ Very little. The key architectural decision in this software is that document co
 | Admin access | free |
 | **Total** | **about $25 to $40 a month** |
 
-- Each account can currently store 50 MB of files.
+- Each account can currently store 100 MB of files.
 - If LibrePaper gets very popular and costs get out of hand, I might accept donations, on a non-profit basis. No feature will ever be gated.
 - The software will always be open source and self-hostable.

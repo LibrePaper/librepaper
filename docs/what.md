@@ -15,7 +15,7 @@ The [feature table](index.html#features) lists what LibrePaper does in a web bro
 ## Free and open
 
 - Every feature is free.
-- The public service at librepaper.org gives each account 50 MB of storage and 30 uploads per hour.
+- The public service at librepaper.org gives each account 100 MB of storage and 30 uploads per hour.
 - You can self-host with one static binary and a PostgreSQL database, on a laptop or a small server. See [Simple deployment](host/simple.html).
 - The [command line](cli.html) exports project source and assets as ordinary files.
 - The desktop app can [back up](backups.html) every project in an account to local ZIP files.
