@@ -8,6 +8,8 @@ import { WidgetType } from "@codemirror/view";
 import "./tasks.css";
 import { registerWidget, revealOnMousedown } from "./markup.ts";
 import { iconElement } from "../icons.js";
+import { tokenizeOrEmpty } from "./core/tokenize.ts";
+import { org } from "./languages/org/index.ts";
 import { taskAt } from "../tasks/model.js";
 import { cycle } from "../tasks/edit.js";
 import { CYCLE, isOverdue, PRIORITIES, shortDate, STATE_OF, STATES, todayISO } from "../tasks/syntax.js";
@@ -61,17 +63,24 @@ function currentTask(view, element) {
   return taskAt(view.state.doc.toString(), pos);
 }
 
-// Org's click: an open or in-progress box becomes done, a done box becomes open. The
-// box is found on the widget's line, because the Markdown reader does not know Org.
+// Org's click: an open or in-progress box becomes done, a done box becomes open. Like
+// the Markdown path, it reads the task from the source as it is now, with the Org
+// tokenizer: the item token ends just after the box, so the box is at token.to - 2.
 function orgCycle(view, button) {
   const widget = button.closest(".cm-lv-widget");
   const pos = widget ? view.posAtDOM(widget) : -1;
   if (pos < 0) return [];
-  const line = view.state.doc.lineAt(pos);
-  const match = /^(\s*(?:[-+*]|\d+[.)])\s+\[)([ xX-])\]/.exec(line.text);
-  if (!match) return [];
-  const at = line.from + match[1].length;
-  return [{ from: at, to: at + 1, insert: match[2] === " " || match[2] === "-" ? "X" : " " }];
+  const doc = view.state.doc;
+  const line = doc.lineAt(pos);
+  const stack = [...tokenizeOrEmpty(org, doc.toString())];
+  while (stack.length) {
+    const token = stack.pop();
+    if (token.children) stack.push(...token.children);
+    if (token.kind !== "item" || !token.meta?.task || token.from < line.from || token.from > line.to) continue;
+    const at = token.to - 2;
+    return [{ from: at, to: at + 1, insert: token.meta.box === " " || token.meta.box === "-" ? "X" : " " }];
+  }
+  return [];
 }
 
 // Cycles the state of the task under the box and writes the change.
