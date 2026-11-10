@@ -24,6 +24,8 @@
 // Text and math are separate item sets so that the tokenizers can tell which
 // one they are in: a `$` inside a group inside \( ... \) is not math syntax.
 
+@context trackEnvironments from "./tokens.js"
+
 @top Document { item* }
 
 item {

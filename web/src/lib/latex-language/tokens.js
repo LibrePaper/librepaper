@@ -5,12 +5,12 @@
 // their own. That makes them "contextual" in Lezer's terms. Anything read from
 // the input through peek or advance is remembered as lookahead, so incremental
 // reparsing stays correct.
-import { ExternalTokenizer } from "@lezer/lr";
+import { ExternalTokenizer, ContextTracker } from "@lezer/lr";
 import {
   ControlSequence, ControlSymbol, SectionName, BeginKw, MathBeginKw, VerbBeginKw,
   ListingBeginKw, EndKw, Verb, ParenOpen, ParenClose, BracketOpen, BracketClose,
   DollarOpen, DollarClose, DisplayDollar, StrayDollar, OptOpen, OptClose, Text,
-  VerbBody, OpenBrace, CloseBrace, ImplicitClose, UrlArg, Ligature, Tie, OpenBracket, CloseBracket,
+  VerbBody, EnvName, Environment, MathEnvironment, InnerEnvironment, VerbatimEnvironment, OpenBrace, CloseBrace, ImplicitClose, UrlArg, Ligature, Tie, OpenBracket, CloseBracket,
 } from "./parser.terms.js";
 
 const BACKSLASH = 92, PERCENT = 37, DOLLAR = 36, LBRACE = 123, RBRACE = 125;
@@ -30,6 +30,43 @@ export const VERBATIM_ENVS = new Set([
   "verbatim", "comment", "CodeInput", "CodeOutput", "Sinput", "Soutput", "Scode", "filecontents",
 ]);
 export const LISTING_ENVS = new Set(["lstlisting", "minted", "Verbatim", "BVerbatim", "LVerbatim", "Highlighting"]);
+
+
+// The names of the environments that are open at the parser's position, innermost last, so that an
+// \end{name} can be told from the end of an outer environment. `mode` remembers whether the \begin or
+// \end keyword was just shifted, so the EnvName that follows is a push or not. An environment is popped
+// when its rule is reduced, however it was closed (EndEnv or ImplicitClose).
+const BEGIN_KEYWORDS = new Set([BeginKw, MathBeginKw, VerbBeginKw, ListingBeginKw]);
+const ENVIRONMENT_RULES = new Set([Environment, MathEnvironment, InnerEnvironment, VerbatimEnvironment]);
+const NO_ENVIRONMENTS = { names: [], mode: 0 };
+
+export const trackEnvironments = new ContextTracker({
+  start: NO_ENVIRONMENTS,
+  shift(context, term, stack, input) {
+    if (BEGIN_KEYWORDS.has(term)) return { names: context.names, mode: 1 };
+    if (term === EndKw) return { names: context.names, mode: 2 };
+    if (term === EnvName && context.mode) {
+      if (context.mode === 2) return { names: context.names, mode: 0 };
+      let name = "";
+      for (let i = 0; i < 60; i++) {
+        const ch = input.peek(i);
+        if (ch < 0 || ch === RBRACE || ch === LBRACE || ch === BACKSLASH || ch === NEWLINE || ch === PERCENT) break;
+        name += String.fromCharCode(ch);
+      }
+      return { names: [...context.names, name.trim()], mode: 0 };
+    }
+    return context;
+  },
+  reduce(context, term) {
+    return ENVIRONMENT_RULES.has(term) && context.names.length
+      ? { names: context.names.slice(0, -1), mode: 0 } : context;
+  },
+  hash(context) {
+    let h = context.mode;
+    for (const name of context.names) for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
+    return h * 31 + context.names.length;
+  },
+});
 
 const MATH_DELIMITERS = { 40: ParenOpen, 41: ParenClose, 91: BracketOpen, 93: BracketClose };
 
@@ -115,7 +152,15 @@ function controlToken(input, stack) {
     return input.acceptToken(term, term === ControlSequence ? len : keyword);
   }
   if (word === "end") {
-    if (stack.canShift(EndKw)) return input.acceptToken(EndKw, keyword);
+    if (stack.canShift(EndKw)) {
+      // An \end that names an outer environment, not the innermost open one, ends the
+      // innermost (never closed) environment without being consumed by it.
+      const open = stack.context?.names ?? [];
+      const target = braceName(input, keyword)?.trim();
+      if (target !== undefined && open.length && target !== open[open.length - 1] && open.includes(target) &&
+          stack.canShift(ImplicitClose)) return input.acceptToken(ImplicitClose, 0);
+      return input.acceptToken(EndKw, keyword);
+    }
     // An \end that belongs to an outer environment closes whatever is open
     // here (unclosed inline math, say) without consuming it.
     if (stack.canShift(ImplicitClose)) return input.acceptToken(ImplicitClose, 0);
