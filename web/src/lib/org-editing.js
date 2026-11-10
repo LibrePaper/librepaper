@@ -57,7 +57,8 @@ function headlinesIn(state, section) {
     from: section.from,
     to: section.to,
     enter(node) {
-      if (node.name === "Headline") heads.push(node);
+      // The ref is reused as the walk goes on; keep the node itself.
+      if (node.name === "Headline") heads.push(node.node);
     },
   });
   return heads;
