@@ -15,9 +15,6 @@ const page_html = `<!doctype html><body><script type="module">
 import { morphChildren } from "/morph.js";
 const para = (n, text, id) => '<p id="S1.p' + id + '" data-sourcepos="1:' + n + '">' + text + ' <a href="#S1.p' + id + '">ref</a></p>';
 const image = '<img id="S1.F1" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">';
-const build = (paras) => paras.map(([n, text], i) => para(n, text, i + 1)).join("") ;
-const base = [[1, "alpha"], [2, "beta"], [3, "gamma"], [4, "delta"], [5, "epsilon"]];
-const withImage = (paras) => build(paras.slice(0, 2)) + image + build(paras.slice(2).map((p, i) => p)).replace(/S1\\.p(\\d+)/g, (m, d) => "S1.p" + (Number(d) + 2));
 // Run one morph from a fresh target and report on identity and mutations.
 window.run = (before, after, tag) => {
   const target = document.createElement("div");
@@ -42,7 +39,7 @@ window.run = (before, after, tag) => {
   target.remove();
   return result;
 };
-window.inputs = { base, para, image, build };
+window.inputs = { para, image };
 window.ready = true;
 </script>`;
 
