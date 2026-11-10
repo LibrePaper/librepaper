@@ -142,9 +142,10 @@ const json = (response, value, status = 200) => {
 };
 try {
   await build({ configFile: false, define: KATEX_DEFINE, root: join(root, "web"), resolve: { alias: loroAlias }, plugins: [tailwindcss(), svelte(), {
-    name: "doc-rows-test-room", enforce: "pre", resolveId(id) {
+    name: "doc-rows-test-room", enforce: "pre", resolveId(id, importer) {
       if (id === "../lib/room.js" || id === "../room.js" || id.endsWith("/src/lib/room.js")) return room;
-      if (id === "../lib/collab.js") return collab;
+      // The opening module is what loads the CRDT now, with a dynamic import.
+      if (id === "../collab.js" && importer?.endsWith("/src/lib/reader/opening.svelte.js")) return collab;
     },
   }], build: { outDir: out, emptyOutDir: true, minify: false, lib: { entry, formats: ["es"], fileName: () => "check.js", cssFileName: "check" } }, logLevel: "error" });
   http = createServer((request, response) => {
