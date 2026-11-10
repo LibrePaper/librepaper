@@ -101,8 +101,9 @@ The browser also keeps data of its own on your device.
 - A backup runs every hour. It holds the database and every stored file.
 - Backups are encrypted and stored in Canada, away from the server.
 - Every backup from the last 48 hours is kept, plus the last backup of each of the last 14 days and of each of the last 11 weeks. The oldest backup is therefore about ten weeks old.
-- A deleted project is purged seven days after you delete it, so it can stay in backups for about eleven weeks. An erased account stays about as long.
-- Cleared or trimmed chat can stay in backups until those backups expire, about ten weeks after the change.
+- A second copy of the backups is kept with the same provider, also in Canada. When a backup is removed from the first copy, the second copy keeps it for up to 30 more days.
+- A deleted project is purged seven days after you delete it, so it can stay in backups for about fifteen weeks. An erased account stays about as long.
+- Cleared or trimmed chat can stay in backups until those backups expire, about fourteen weeks after the change.
 - If backups stop running for a while, the oldest ones are kept longer.
 
 ## Erasing an account
