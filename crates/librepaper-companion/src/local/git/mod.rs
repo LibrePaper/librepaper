@@ -18,6 +18,7 @@ use std::time::Duration;
 
 use tokio::process::Command;
 
+use librepaper_base::git_env;
 use librepaper_base::process::{supervise, Ending, Keep, Limits};
 
 pub(crate) mod remote;
@@ -36,32 +37,6 @@ const MAX_STDOUT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STDERR_BYTES: usize = 256 * 1024;
 /// The most stdout that is quoted when a failure is reported.
 const MAX_SAID_BYTES: usize = 64 * 1024;
-
-/// Environment variables that would send Git to another repository than the
-/// folder a command names, or inject identity or configuration the person did
-/// not set in the repository.
-pub(crate) const AMBIENT: &[&str] = &[
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_COMMON_DIR",
-    "GIT_NAMESPACE",
-    "GIT_PREFIX",
-    "GIT_CONFIG",
-    "GIT_CONFIG_PARAMETERS",
-    "GIT_CONFIG_COUNT",
-    "GIT_AUTHOR_NAME",
-    "GIT_AUTHOR_EMAIL",
-    "GIT_AUTHOR_DATE",
-    "GIT_COMMITTER_NAME",
-    "GIT_COMMITTER_EMAIL",
-    "GIT_COMMITTER_DATE",
-    "GIT_NO_REPLACE_OBJECTS",
-    "GIT_REPLACE_REF_BASE",
-    "GIT_QUARANTINE_PATH",
-];
 
 /// How long a command may run.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -170,10 +145,7 @@ pub(crate) async fn locate() -> Found {
 async fn probe(exe: &Path) -> Option<(String, bool)> {
     let mut command = Command::new(exe);
     command.arg("version");
-    for name in AMBIENT {
-        command.env_remove(name);
-    }
-    command.env("LC_ALL", "C");
+    git_env::scrub(command.as_std_mut(), false);
     let output = run_to_output(command, None, PROBE_TIMEOUT).await.ok()?;
     if output.code != 0 {
         return None;
@@ -200,13 +172,7 @@ fn plain(path: &Path) -> PathBuf {
 /// own `.git` is unusable never acts on the repository around it.
 fn build_command(exe: &Path, dir: &Path) -> Command {
     let mut command = Command::new(exe);
-    for name in AMBIENT {
-        command.env_remove(name);
-    }
-    command
-        .env("LC_ALL", "C")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_MERGE_AUTOEDIT", "no");
+    git_env::scrub(command.as_std_mut(), false);
     let dir = plain(dir);
     if let Some(parent) = dir.parent() {
         command.env("GIT_CEILING_DIRECTORIES", parent);

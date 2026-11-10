@@ -1467,3 +1467,24 @@ test("fuzz: a move that meets a concurrent edit follows the surviving text", { t
 test("fuzz: the index agrees with the cursors after an insertion at a deleted start", { todo: "foreign shift" }, () => {
   overlappingPeers(3437);
 });
+
+// ---------------------------------------------------------------------------
+// Astral characters at the edges of a passage (Kata nef2)
+
+// The emoji is typed as an edit of its own, into text that was already there:
+// that is the shape in which Loro answers no cursor at its first unit.
+for (const [label, base, at, from, to] of [
+  ["starts with an emoji", "see  smile here", 4, 4, 12],
+  ["ends with an emoji", "see smile  here", 10, 4, 12],
+  ["is a single emoji", "see  here", 4, 4, 6],
+]) {
+  test(`an anchor on a passage that ${label} resolves to that passage`, () => {
+    const doc = makeDoc(1, { f1: base });
+    doc.getMap("files").get("f1").insert(at, "😀");
+    doc.commit();
+    const body = doc.getMap("files").get("f1").toString();
+    assert.equal(createAnchor(doc, "f1", "c1", from, to, ctx(body, from, to)), true);
+    doc.commit();
+    assertAttached(doc, "c1", from, to, body.slice(from, to));
+  });
+}

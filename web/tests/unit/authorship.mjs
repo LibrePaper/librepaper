@@ -168,3 +168,22 @@ test("markSpans draws every run but the unknown ones", () => {
   assert.equal(spans[0].colour, rows[0].colour);
   assert.ok(spans[0].title.length > 0);
 });
+
+test("an emoji written by one peer is one run of that peer", () => {
+  const one = peerDoc("1");
+  one.getText("t").insert(0, "ab");
+  one.commit();
+  const two = peerDoc("2");
+  two.import(one.export({ mode: "snapshot" }));
+  two.getText("t").insert(1, "😀");
+  two.commit();
+  const runs = authorshipRuns(two, two.getText("t"));
+  assert.deepEqual(
+    runs.map(({ from, to, peer }) => ({ from, to, peer })),
+    [
+      { from: 0, to: 1, peer: "1" },
+      { from: 1, to: 3, peer: "2" },
+      { from: 3, to: 4, peer: "1" },
+    ],
+  );
+});

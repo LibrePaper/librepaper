@@ -13,7 +13,7 @@
 // against their oracles, and two peers editing at once must converge.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { LoroDoc, LoroMap, LoroText } from "loro-crdt";
+import { Cursor, LoroDoc, LoroMap, LoroText } from "loro-crdt";
 import {
   CHANGES,
   accept,
@@ -277,6 +277,48 @@ for (const f of fixtures.filter((x) => x.state.changes.length === 0 && x.state.g
   const second = all.find((c) => c.file === "f2");
   assert.deepEqual([second.inserted, second.deleted], ["!", ""]);
   assert.equal(resolveChanges(doc, "f1").length, 1);
+}
+
+// ---------------------------------------------------------------------------
+// An emoji typed in the browser (Kata nef2)
+//
+// An ASCII insertion of two units at 4 in "café ☕ naïve" records [4, 6]. The same
+// insertion of one emoji, which is two UTF-16 units too, was seen to leave no
+// change behind. Three stages, each checked on its own so that one failure
+// names the layer: the pure planner, the records writePlanned writes, and
+// the offsets those records resolve to.
+{
+  const original = "café ☕ naïve";
+  const inserts = [
+    ["a control of two ASCII units", "XY"],
+    ["one emoji", "😀"],
+  ];
+  for (const [label, insert] of inserts) {
+    const planned = planEdits(original, { changes: [], gaps: [] }, [{ from: 4, to: 4, insert }], ME, { now: 1, mintId: () => "new-1" });
+    const plannedSpans = planned.changes.filter((c) => c.state !== "removed").map(({ id, from, to }) => ({ id, from, to }));
+
+    const doc = makeDoc(original);
+    const ids = track(doc, 4, 4, insert);
+    const records = ids.map((id) => {
+      const record = doc.getMap(CHANGES).get(id);
+      const at = (key) => {
+        const bytes = record?.get(key);
+        return bytes instanceof Uint8Array ? doc.getCursorPos(Cursor.decode(bytes)).offset : null;
+      };
+      return { id, start: at("start"), end: at("end") };
+    });
+    const resolved = resolveFile(doc, "f1").changes.map(({ id, from, to }) => ({ id, from, to }));
+    const report = `${label}: text ${JSON.stringify(textOf(doc))}\n  planner: ${JSON.stringify(plannedSpans)}\n  written ids: ${JSON.stringify(ids)}, cursors it stored: ${JSON.stringify(records)}\n  resolveFile: ${JSON.stringify(resolved)}`;
+
+    assert.deepEqual(plannedSpans, [{ id: "new-1", from: 4, to: 4 + insert.length }], `planner layer wrong\n${report}`);
+    assert.equal(ids.length, 1, `writePlanned wrote no change record\n${report}`);
+    assert.equal(textOf(doc), "café" + insert + " ☕ naïve", `text wrong\n${report}`);
+    assert.deepEqual(
+      resolved.map(({ from, to }) => ({ from, to })),
+      [{ from: 4, to: 4 + insert.length }],
+      `cursor layer wrong (the planner was right if its line above shows the span)\n${report}`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -17,6 +17,7 @@
 // Offsets are UTF-16 everywhere, the same as CodeMirror and loro-crdt in JS.
 
 import { loroClasses } from "./loro-classes.js";
+import { cursorAt } from "./loro-cursor.js";
 
 export const CHANGES = "changes";
 
@@ -633,8 +634,9 @@ function writeChange(doc, text, fileId, c, heal = false) {
   let start = null;
   let end = null;
   if (c.to > c.from) {
-    start = text.getCursor(c.from, -1);
-    end = text.getCursor(lastCharStart(text.toString(), c.to), 1);
+    const body = text.toString();
+    start = cursorAt(text, c.from, -1, body);
+    end = cursorAt(text, lastCharStart(body, c.to), 1, body);
     if (!start || !end) return false;
   }
   const map = doc.getMap(CHANGES);
@@ -776,7 +778,7 @@ function writeFragment(doc, id, fileId, f, startBytes, at, rank, owner, heal = f
 // A fragment with no id gets a fresh one.
 // Returns false when no cursor can be made.
 function writeGap(doc, text, fileId, at, fragments, owners = new Map(), heal = false) {
-  const start = text.getCursor(at, -1);
+  const start = cursorAt(text, at, -1);
   if (!start) return false;
   const map = doc.getMap(CHANGES);
   const ranks = rankGap(fragments);
@@ -983,7 +985,7 @@ function rejectOne(doc, id, restored = null, edits = null) {
       let pending = [];
       const flush = (anchor) => {
         if (pending.length === 0) return;
-        const start = text.getCursor(anchor, -1);
+        const start = cursorAt(text, anchor, -1);
         if (start) for (const f of pending) writeFragment(doc, f.id, file, f, start.encode(), anchor, f.rank);
         pending = [];
       };

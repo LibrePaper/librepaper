@@ -1199,7 +1199,7 @@ mod tests {
                 "user.email=other@example.org",
             ])
             .args(args);
-        for name in git::AMBIENT {
+        for name in librepaper_base::git_env::ambient(false) {
             command.env_remove(name);
         }
         command
