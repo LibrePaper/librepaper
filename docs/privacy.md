@@ -127,7 +127,7 @@ The account stays in [backups](#backups) until they expire. If an administrator 
 - **Take it with you:** For a project you own or can edit, choose **Download project** to save its files. The desktop app can also keep [local backups](backups.html) of all your projects, including those shared with you.
 - **Delete it:** Delete a project, or [erase your account](#erasing-an-account).
 
-If you cannot do one of these yourself, or you think your data was handled badly, email [admin@librepaper.org](mailto:admin@librepaper.org).
+To withdraw your consent, erase your account. If you cannot do one of these yourself, or you think your data was handled badly, email [admin@librepaper.org](mailto:admin@librepaper.org). If that does not settle a concern, you can complain to the privacy authority where you live.
 
 ## Changes to this page
 
