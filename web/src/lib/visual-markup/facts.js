@@ -44,12 +44,14 @@ export function documentFacts(texts, main, open, entries = []) {
   const theorems = theoremDefinitions(texts);
   const environmentNumbers = new Map();
   const headingNumbers = new Map();
+  const captionNumbers = new Map();
   const order = new Map();
   const labels = numberLabels(texts, main, {
     theorems,
     open,
     environments: environmentNumbers,
     headings: headingNumbers,
+    captions: captionNumbers,
     cited: (key) => {
       if (!order.has(key)) order.set(key, order.size + 1);
     },
@@ -64,6 +66,7 @@ export function documentFacts(texts, main, open, entries = []) {
     theorems,
     environmentNumbers,
     headingNumbers,
+    captionNumbers,
     citeStyle: citeStyleOf(texts),
   };
 }

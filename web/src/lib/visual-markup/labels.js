@@ -127,13 +127,15 @@ export function theoremDefinitions(texts) {
 /// the number of each numbered theorem-like \begin in the open file, keyed by
 /// its offset in that file), `headings` (a Map that receives the number of each
 /// numbered sectioning command in the open file, keyed by the offset of its
-/// backslash), and `cited` (called with each citation key in reading order).
+/// backslash), `captions` (a Map that receives the number of each figure's
+/// \caption in the open file, keyed by the offset of its backslash), and `cited` (called with each citation key in reading order).
 export function numberLabels(texts, main, options = {}) {
   const root = normalize(main);
   const theorems = options.theorems ?? theoremDefinitions(texts);
   const focus = options.open == null ? null : normalize(options.open);
   const environments = options.environments;
   const headings = options.headings;
+  const captions = options.captions;
   const cited = options.cited;
   const state = {
     labels: new Map(),
@@ -300,11 +302,12 @@ export function numberLabels(texts, main, options = {}) {
     } else if (LISTS.has(environment) && state.lists.at(-1)?.env === environment) state.lists.pop();
   };
 
-  const caption = () => {
+  const caption = (at, path) => {
     if (!state.float || state.subfigures > 0) return;
     const float = state.float;
     const n = float.kind === "figure" ? ++state.figures : ++state.tables;
     float.current = { number: scoped(n), kind: float.kind };
+    if (float.kind === "figure" && path === focus) captions?.set(at, float.current.number);
   };
 
   // As in LaTeX, a \label in a float before its \caption takes the section, and
@@ -369,7 +372,7 @@ export function numberLabels(texts, main, options = {}) {
         } else if (name === "appendix") {
           appendix();
         } else if (name === "caption") {
-          caption();
+          caption(command.from, path);
         } else if (name === "label") {
           const key = groupAfter(code, command.to);
           if (key) label(key.value.trim());

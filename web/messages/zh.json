@@ -2051,38 +2051,39 @@
   "pendingannotations_section": "未确认的批注",
   "pendingannotations_text": "未确认的文本",
   "pendingannotations_waiting": "等待确认…",
+  "preamble_meta_class": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{documentClass} · {count} 个宏包",
+        "countPlural=*": "{documentClass} · {count} 个宏包"
+      }
+    }
+  ],
+  "preamble_meta_packages": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} 个宏包",
+        "countPlural=*": "{count} 个宏包"
+      }
+    }
+  ],
   "preamble_more": "更多导言区",
   "preamble_show": "显示导言区",
-  "preamble_summary_class": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "导言区：{documentClass}，{count} 个宏包",
-        "countPlural=*": "导言区：{documentClass}，{count} 个宏包"
-      }
-    }
-  ],
-  "preamble_summary_packages": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "导言区：{count} 个宏包",
-        "countPlural=*": "导言区：{count} 个宏包"
-      }
-    }
-  ],
+  "preamble_summary_label": "导言区",
   "preview_notes_shown_inside": "{name} 显示在 {path} 中。",
   "preview_render_could_not_render": "无法渲染",
   "preview_render_missing_figures": [
@@ -2577,7 +2578,6 @@
   "submissions_not_confirmed_retry": "提交未确认。请重试以检查或发送。",
   "switchserverdialog_current": "当前",
   "switchserverdialog_loading": "正在加载服务器…",
-  "switchserverdialog_main": "LibrePaper 主服务器",
   "switchserverdialog_note": "切换服务器不会让你退出另一台服务器的登录。",
   "switchserverdialog_other": "或输入地址",
   "switchserverdialog_placeholder": "https://",
@@ -2810,6 +2810,8 @@
   "widgets_click_edit_caption_source": "点击编辑图注源码",
   "widgets_edit_caption": "编辑图注",
   "widgets_edit_subcaption": "编辑子图注",
+  "widgets_figure_number": "图 {number}",
+  "widgets_image_missing": "未找到 {name}",
   "widgets_show_table_source": "显示表格源码",
   "wordcount_scope": "在 {name} 中",
   "wordcount_scope_included": [

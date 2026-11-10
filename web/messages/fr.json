@@ -2066,38 +2066,39 @@
   "pendingannotations_section": "Commentaires non confirmés",
   "pendingannotations_text": "Texte non confirmé",
   "pendingannotations_waiting": "En attente de confirmation…",
+  "preamble_meta_class": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{documentClass} · {count} paquet",
+        "countPlural=*": "{documentClass} · {count} paquets"
+      }
+    }
+  ],
+  "preamble_meta_packages": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} paquet",
+        "countPlural=*": "{count} paquets"
+      }
+    }
+  ],
   "preamble_more": "Suite du préambule",
   "preamble_show": "Afficher le préambule",
-  "preamble_summary_class": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "Préambule : {documentClass}, {count} paquet",
-        "countPlural=*": "Préambule : {documentClass}, {count} paquets"
-      }
-    }
-  ],
-  "preamble_summary_packages": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "Préambule : {count} paquet",
-        "countPlural=*": "Préambule : {count} paquets"
-      }
-    }
-  ],
+  "preamble_summary_label": "Préambule",
   "preview_notes_shown_inside": "{name} est affiché dans {path}.",
   "preview_render_could_not_render": "impossible de produire le rendu",
   "preview_render_missing_figures": [
@@ -2592,7 +2593,6 @@
   "submissions_not_confirmed_retry": "Envoi non confirmé. Réessayez pour vérifier ou envoyer.",
   "switchserverdialog_current": "actuel",
   "switchserverdialog_loading": "Chargement des serveurs…",
-  "switchserverdialog_main": "Serveur principal de LibrePaper",
   "switchserverdialog_note": "Changer de serveur ne vous déconnecte pas de l’autre serveur.",
   "switchserverdialog_other": "Ou saisir une adresse",
   "switchserverdialog_placeholder": "https://",
@@ -2825,6 +2825,8 @@
   "widgets_click_edit_caption_source": "Cliquez pour modifier la source de la légende",
   "widgets_edit_caption": "Modifier la légende",
   "widgets_edit_subcaption": "Modifier la sous-légende",
+  "widgets_figure_number": "Figure {number}.",
+  "widgets_image_missing": "{name} introuvable",
   "widgets_show_table_source": "Afficher la source du tableau",
   "wordcount_scope": "dans {name}",
   "wordcount_scope_included": [

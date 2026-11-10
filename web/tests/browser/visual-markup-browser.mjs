@@ -1204,7 +1204,7 @@ try {
   // preamble source shows with the caret in it.
   assert.equal(result.full.body.katexShown, true, "KaTeX did not typeset the math environments in full.tex within five seconds");
   assert.equal(result.full.body.preambleCount, 1, "the LaTeX preamble did not fold into exactly one .cm-lp-preamble block with the caret in the body");
-  assert.match(result.full.body.preambleText, /Preamble: article, 4 packages/, "the preamble block did not read as 'Preamble: article, 4 packages'");
+  assert.match(result.full.body.preambleText, /Preamble\s*article · 4 packages/, "the preamble disclosure did not read as 'Preamble' then 'article · 4 packages'");
   // The label keys show as tags now, so only the command names are hidden here.
   // The bibliography chip names its style and database, so "references" is not
   // checked as absent.
@@ -1273,7 +1273,8 @@ try {
   const refsClass = refsPreamble.match(/\\documentclass(?:\[[^\]]*\])?\{([^}]*)\}/)[1];
   const refsPackages = [...refsPreamble.matchAll(/\\usepackage(?:\[[^\]]*\])?\{([^}]*)\}/g)]
     .reduce((count, match) => count + match[1].split(",").length, 0);
-  const refsSummary = `Preamble: ${refsClass}, ${refsPackages} ${refsPackages === 1 ? "package" : "packages"}`;
+  // The disclosure leaves the count out when the preamble loads no package.
+  const refsSummary = refsPackages === 0 ? `Preamble${refsClass}` : `Preamble${refsClass} · ${refsPackages} ${refsPackages === 1 ? "package" : "packages"}`;
   const tb = result.titleBlock;
   assert.equal(tb.titleClick.head, refsSample.indexOf("\\title{") + 7, "a click on the title did not put the caret at the start of the \\title argument");
   assert.ok(tb.titleClick.text.includes("\\title{A Study}"), "a click on the title did not show \\title{A Study}");

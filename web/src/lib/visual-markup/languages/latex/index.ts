@@ -175,9 +175,12 @@ function style(token: Token): TokenStyle | null {
         const properties: string[] = [];
         if (color) properties.push(name === 'textcolor' ? `color:${color}` : `background-color:${color}`);
         if (border) properties.push(`box-shadow:inset 0 0 0 1px ${border}`);
+        // A figure's caption starts with its number, when the numbering pass has one. The
+        // caption class is matched before the catalog, so the number is added on this branch.
         return {
           class: known,
-          attributes: properties.length ? { style: properties.join(';') } : undefined
+          attributes: properties.length ? { style: properties.join(';') } : undefined,
+          ...(full === 'caption' ? { before: 'captionnum' } : {})
         };
       }
       const spec = COMMANDS.get(name);

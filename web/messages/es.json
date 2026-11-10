@@ -2066,38 +2066,39 @@
   "pendingannotations_section": "Comentarios sin confirmar",
   "pendingannotations_text": "Texto sin confirmar",
   "pendingannotations_waiting": "Esperando confirmación…",
+  "preamble_meta_class": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{documentClass} · {count} paquete",
+        "countPlural=*": "{documentClass} · {count} paquetes"
+      }
+    }
+  ],
+  "preamble_meta_packages": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} paquete",
+        "countPlural=*": "{count} paquetes"
+      }
+    }
+  ],
   "preamble_more": "Más preámbulo",
   "preamble_show": "Mostrar el preámbulo",
-  "preamble_summary_class": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "Preámbulo: {documentClass}, {count} paquete",
-        "countPlural=*": "Preámbulo: {documentClass}, {count} paquetes"
-      }
-    }
-  ],
-  "preamble_summary_packages": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "Preámbulo: {count} paquete",
-        "countPlural=*": "Preámbulo: {count} paquetes"
-      }
-    }
-  ],
+  "preamble_summary_label": "Preámbulo",
   "preview_notes_shown_inside": "{name} se muestra dentro de {path}.",
   "preview_render_could_not_render": "no se pudo compilar",
   "preview_render_missing_figures": [
@@ -2592,7 +2593,6 @@
   "submissions_not_confirmed_retry": "Envío no confirmado. Reintente para comprobarlo o enviarlo.",
   "switchserverdialog_current": "actual",
   "switchserverdialog_loading": "Cargando servidores…",
-  "switchserverdialog_main": "Servidor principal de LibrePaper",
   "switchserverdialog_note": "Cambiar de servidor no cierra su sesión en el otro servidor.",
   "switchserverdialog_other": "O escriba una dirección",
   "switchserverdialog_placeholder": "https://",
@@ -2825,6 +2825,8 @@
   "widgets_click_edit_caption_source": "Haga clic para editar el código fuente del pie de figura",
   "widgets_edit_caption": "Editar pie de figura",
   "widgets_edit_subcaption": "Editar subpie de figura",
+  "widgets_figure_number": "Figura {number}.",
+  "widgets_image_missing": "No se encontró {name}",
   "widgets_show_table_source": "Mostrar el código fuente de la tabla",
   "wordcount_scope": "en {name}",
   "wordcount_scope_included": [

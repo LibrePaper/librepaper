@@ -2066,38 +2066,39 @@
   "pendingannotations_section": "Unconfirmed comments",
   "pendingannotations_text": "Unconfirmed text",
   "pendingannotations_waiting": "Waiting for confirmation…",
+  "preamble_meta_class": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{documentClass} · {count} package",
+        "countPlural=*": "{documentClass} · {count} packages"
+      }
+    }
+  ],
+  "preamble_meta_packages": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} package",
+        "countPlural=*": "{count} packages"
+      }
+    }
+  ],
   "preamble_more": "More preamble",
   "preamble_show": "Show the preamble",
-  "preamble_summary_class": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "Preamble: {documentClass}, {count} package",
-        "countPlural=*": "Preamble: {documentClass}, {count} packages"
-      }
-    }
-  ],
-  "preamble_summary_packages": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "Preamble: {count} package",
-        "countPlural=*": "Preamble: {count} packages"
-      }
-    }
-  ],
+  "preamble_summary_label": "Preamble",
   "preview_notes_shown_inside": "{name} is shown inside {path}.",
   "preview_render_could_not_render": "could not render",
   "preview_render_missing_figures": [
@@ -2592,7 +2593,6 @@
   "submissions_not_confirmed_retry": "Submission not confirmed. Retry to check or send it.",
   "switchserverdialog_current": "current",
   "switchserverdialog_loading": "Loading servers…",
-  "switchserverdialog_main": "Main LibrePaper server",
   "switchserverdialog_note": "Switching does not sign you out of the other server.",
   "switchserverdialog_other": "Or enter an address",
   "switchserverdialog_placeholder": "https://",
@@ -2825,6 +2825,8 @@
   "widgets_click_edit_caption_source": "Click to edit caption source",
   "widgets_edit_caption": "Edit caption",
   "widgets_edit_subcaption": "Edit subcaption",
+  "widgets_figure_number": "Figure {number}.",
+  "widgets_image_missing": "{name} not found",
   "widgets_show_table_source": "Show the table source",
   "wordcount_scope": "in {name}",
   "wordcount_scope_included": [

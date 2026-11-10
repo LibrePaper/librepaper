@@ -1,12 +1,34 @@
-/* Visual mode sets the text in a serif face, as it reads on the page. Code,
-   verbatim and cell bodies ask for --font-mono, which here is the editor's own
-   font, so they stay monospaced. */
+/* Visual mode sets the text as a typeset article. The document tokens live here,
+   not in theme.css, because only visual mode reads them and they are not
+   palette colours. Sizes are em, so they follow the editor font size and the
+   zoom setting. Code, verbatim and cell bodies ask for --font-mono, which here
+   is the editor's own font, so they stay monospaced. */
 .cm-editor.cm-lp-visual {
   --font-mono: var(--editor-font-family, var(--font-editor));
+  --doc-font: ui-serif, "Iowan Old Style", "Source Serif 4", Georgia, Cambria, serif;
+  --doc-font-size: 1.125em;
+  --doc-line-height: 1.55;
+  --doc-measure: 72ch;
+  --doc-title-size: 1.9em;
+  --doc-h1-size: 1.45em;
+  --doc-h2-size: 1.2em;
+  --doc-h3-size: 1.05em;
+  --doc-heading-weight: 600;
+  --doc-caption-size: 0.88em;
 }
 
+/* The page is a centred column of --doc-measure, measured in the body font,
+   plus the content padding. Basis 0 with grow lets it fill a narrow pane and
+   stop at the maximum; the auto margins then centre it, and the gutters stay at
+   the pane's left edge. */
 .cm-editor.cm-lp-visual .cm-content {
-  font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: calc(var(--doc-measure) + var(--spacing) * 6);
+  margin-inline: auto;
+  font-family: var(--doc-font);
+  font-size: var(--doc-font-size);
+  line-height: var(--doc-line-height);
 }
 
 /* Until the caret first moves, visual mode draws the whole page: no caret and
@@ -31,6 +53,22 @@
   text-align: left;
   font-style: normal;
   font-weight: normal;
+}
+
+/* A blank source line is paragraph spacing, not a line of text. The height is
+   in em of the line's own font, so editor zoom scales it, and is set on the line
+   itself (CodeMirror does not measure margins). A revealed blank line carries no
+   class and keeps the full line height, so the caret can sit on it. */
+.cm-editor.cm-lp-visual .cm-line.cm-lv-blank {
+  height: 0.6em;
+  line-height: 0.6em;
+  overflow: hidden;
+}
+
+.cm-editor.cm-lp-visual .cm-line.cm-lv-blank.cm-lv-blank-extra,
+.cm-editor.cm-lp-visual .cm-line.cm-lv-blank.cm-lv-blank-tight {
+  height: 0;
+  line-height: 0;
 }
 
 .cm-lp-pill,
@@ -85,7 +123,8 @@
 
 /* The number of a numbered heading, before its text: muted, with a space after it. */
 .cm-lp-headnum {
-  color: var(--lv-secondary);
+  color: var(--color-text-muted);
+  font-weight: 400;
   margin-right: calc(var(--spacing) * 2);
   white-space: nowrap;
 }
@@ -129,8 +168,8 @@
 }
 
 .cm-lp-title-main {
-  font-size: var(--text-2xl);
-  font-weight: 700;
+  font-size: var(--doc-title-size);
+  font-weight: var(--doc-heading-weight);
   line-height: 1.25;
   white-space: pre-line;
 }
@@ -193,7 +232,7 @@
 
 /* Text styles from the LaTeX catalog. Each follows the command it stands for, and
    sizes are em so they scale with the surrounding text. */
-.cm-lp-roman { font-family: ui-serif, Georgia, serif; }
+.cm-lp-roman { font-family: var(--doc-font); }
 .cm-lp-slanted { font-style: oblique; }
 .cm-lp-upright { font-style: normal; }
 .cm-lp-medium { font-weight: 500; }
@@ -412,4 +451,152 @@
 .cm-lp-logo {
   font-variant: small-caps;
   letter-spacing: 0.02em;
+}
+
+/* The preamble, folded: a compact disclosure as wide as its content, left
+   aligned with the text. A chevron, the label, then muted metadata. The vertical
+   gap is the padding of the shared .cm-lp-pill-gap wrapper. */
+.cm-editor.cm-lp-visual .cm-lp-disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--spacing) * 1.5);
+  max-width: 100%;
+  padding: calc(var(--spacing) * 1) calc(var(--spacing) * 2.5) calc(var(--spacing) * 1) calc(var(--spacing) * 1.5);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-subtle);
+  color: var(--color-text-muted);
+  font-family: var(--typo-base--font-family);
+  font-size: var(--text-sm);
+  font-style: normal;
+  line-height: 1.4;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cm-editor.cm-lp-visual .cm-lp-disclosure:hover {
+  border-color: var(--color-text-muted);
+  background: var(--color-border);
+}
+
+.cm-editor.cm-lp-visual .cm-lp-disclosure:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+.cm-editor.cm-lp-visual .cm-lp-disclosure svg {
+  flex: none;
+  width: 1em;
+  height: 1em;
+}
+
+.cm-editor.cm-lp-visual .cm-lp-disclosure-label {
+  color: var(--color-text);
+  font-weight: 500;
+}
+
+.cm-editor.cm-lp-visual .cm-lp-disclosure-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--text-xs);
+}
+
+/* A figure: image and caption centred in the text column, with no panel around
+   a loaded image. The hover outline takes no room. Spacing is padding, because
+   CodeMirror does not measure margins. */
+.cm-editor.cm-lp-visual .cm-line.cm-lv-figure-simple {
+  align-items: center;
+  text-align: center;
+}
+
+.cm-editor.cm-lp-visual .cm-line.cm-lv-figure-simple.cm-lv-figure-left { align-items: flex-start; }
+.cm-editor.cm-lp-visual .cm-line.cm-lv-figure-simple.cm-lv-figure-right { align-items: flex-end; }
+
+.cm-editor.cm-lp-visual .cm-line.cm-lv-figure-simple:hover {
+  background: transparent;
+}
+
+.cm-editor.cm-lp-visual .cm-line.cm-lv-figure-simple .cm-lv-image {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  line-height: 0;
+}
+
+/* The image is a block, so auto margins centre it; a left or right figure keeps
+   its side. */
+.cm-editor.cm-lp-visual .cm-line.cm-lv-figure-simple.cm-lv-figure-left .cm-lv-image img { margin-left: 0; }
+.cm-editor.cm-lp-visual .cm-line.cm-lv-figure-simple.cm-lv-figure-right .cm-lv-image img { margin-right: 0; }
+
+/* CodeMirror adds a zero-width image beside each widget to hold the caret. In a
+   column flex line each one would take a row of its own, so it is taken out of
+   flow instead. It is not display:none, which would take away the caret's place. */
+.cm-editor.cm-lp-visual .cm-line.cm-lv-figure-simple > .cm-widgetBuffer {
+  position: absolute;
+}
+
+.cm-editor.cm-lp-visual .cm-line.cm-lv-figure-simple .cm-lv-image img {
+  margin: 0 auto;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+/* The caption's line is a block, not a column, so its "Figure N." number and its
+   text run on as one paragraph. The line carries the caption's size and spacing. */
+.cm-editor.cm-lp-visual .cm-line.cm-lv-figure-simple:has(> .cm-lv-caption) {
+  display: block;
+  padding: calc(var(--spacing) * 1.5) 0 calc(var(--spacing) * 4);
+  color: var(--color-text-muted);
+  font-size: var(--doc-caption-size);
+  line-height: 1.4;
+  text-align: center;
+}
+
+.cm-editor.cm-lp-visual .cm-line.cm-lv-figure-simple.cm-lv-figure-left:has(> .cm-lv-caption) { text-align: left; }
+.cm-editor.cm-lp-visual .cm-line.cm-lv-figure-simple.cm-lv-figure-right:has(> .cm-lv-caption) { text-align: right; }
+
+.cm-editor.cm-lp-visual .cm-line.cm-lv-figure-simple .cm-lv-caption {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  font-size: inherit;
+}
+
+.cm-editor.cm-lp-visual .cm-lp-captionnum {
+  margin-right: 0.4em;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* A picture the project does not have: one muted line naming the file, with a
+   small image-off icon, in the warning colours. */
+.cm-editor.cm-lp-visual .cm-lv-image-missing {
+  display: inline-block;
+  max-width: 100%;
+  line-height: 1.4;
+}
+
+.cm-editor.cm-lp-visual .cm-lv-image-note {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--spacing) * 1.5);
+  max-width: 100%;
+  padding: calc(var(--spacing) * 0.5) calc(var(--spacing) * 2);
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-base);
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+  font-family: var(--typo-base--font-family);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cm-editor.cm-lp-visual .cm-lv-image-note svg {
+  flex: none;
+  width: 1em;
+  height: 1em;
 }

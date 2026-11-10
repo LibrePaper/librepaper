@@ -77,20 +77,17 @@
 <Modal bind:open title={m.switchserverdialog_title()}
        confirm={{ form: formId, label: busy ? m.switchserverdialog_switching() : m.switchserverdialog_switch(), disabled: loading || busy }}>
   <form id={formId} data-switch-server class="flex flex-col gap-3" onsubmit={submit}>
-    <fieldset class="flex flex-col gap-2">
+    <fieldset class="flex flex-col gap-2 px-1">
       <legend class="lp-text-secondary text-sm">{m.switchserverdialog_servers()}</legend>
       {#if loading}
         <p class="lp-text-secondary text-sm">{m.switchserverdialog_loading()}</p>
       {:else}
         {#each servers as server (server)}
           <label class="flex flex-wrap items-center gap-2">
-            <input type="radio" name="server" value={server} bind:group={choice} disabled={busy} />
+            <input class="shrink-0" type="radio" name="server" value={server} bind:group={choice} disabled={busy} />
             <span>{hostOf(server)}</span>
             {#if server === current}
               <span class="lp-text-secondary rounded-md border border-[var(--color-border)] px-1.5 text-xs">{m.switchserverdialog_current()}</span>
-            {/if}
-            {#if server === DEFAULT_SERVER}
-              <span class="lp-text-secondary text-xs">{m.switchserverdialog_main()}</span>
             {/if}
           </label>
         {/each}
