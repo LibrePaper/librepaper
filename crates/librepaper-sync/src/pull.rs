@@ -535,7 +535,7 @@ async fn asset_bytes(
 }
 
 /// What git wrote to stdout and stderr, trimmed.
-fn said(output: &std::process::Output) -> String {
+fn said(output: &crate::git::Output) -> String {
     format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
