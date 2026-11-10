@@ -297,6 +297,10 @@ pub struct Server {
     /// has just signed out is a stranger again. Nothing here for a deployment
     /// that is its own front page.
     pub site: Option<String>,
+    /// The operator's terms and privacy links, or nothing. Reported by
+    /// `/api/me` under `legal`.
+    pub legal_terms_url: Option<String>,
+    pub legal_privacy_url: Option<String>,
     pub cost: Arc<cost::CostMeter>,
     /// Operational measurements exported only on the optional private listener.
     pub metrics: Arc<metrics::Metrics>,
@@ -854,6 +858,8 @@ impl Server {
             mcp_capacity,
             latex: None,
             site: None,
+            legal_terms_url: None,
+            legal_privacy_url: None,
             cost,
             metrics: Arc::new(metrics::Metrics::new()),
             metrics_listener_slots: Arc::new(tokio::sync::Semaphore::new(

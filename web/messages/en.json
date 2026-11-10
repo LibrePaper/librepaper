@@ -779,6 +779,7 @@
   "common_pages": "Pages",
   "common_paste": "Paste",
   "common_preview": "Preview",
+  "common_privacy_policy": "Privacy policy",
   "common_programs": "Programs",
   "common_project": "Project",
   "common_project_read_only": "This project is read-only.",
@@ -831,6 +832,7 @@
     }
   ],
   "common_templates": "Templates",
+  "common_terms_of_service": "Terms of service",
   "common_text": "Text",
   "common_theme": "Theme",
   "common_this_computer": "This computer",
@@ -1776,6 +1778,7 @@
   "latexfilessettings_empty": "Nothing downloaded yet. Cached compiler files speed up PDF builds. Removing them keeps your documents.",
   "latexfilessettings_measuring": "Measuring… Cached compiler files speed up PDF builds. Removing them keeps your documents.",
   "latexfilessettings_used": "Storage used: {size}. Cached compiler files speed up PDF builds. Removing them keeps your documents.",
+  "legalnotice_accept": "By continuing, you accept this server's policies:",
   "links_go_to_page": "Go to page {page}",
   "live_chat_history_read_failed": "Chat history could not be read. Trying again.",
   "live_chat_older_failed": "Older messages could not be read.",
