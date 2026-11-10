@@ -539,7 +539,14 @@ try {
 
   await scenario("2. pull into an empty repository", async () => {
     dirTwo = newRepository("two");
-    succeeds(await librepaper(dirTwo, ["pull", siteUrl()]), "the first pull");
+    // A repository chooses the branch it syncs on its first transfer; without
+    // --branch the pull is refused and the refusal names the checked-out branch.
+    const unbound = await librepaper(dirTwo, ["pull", siteUrl()]);
+    assert.equal(unbound.code, 1, `a first pull with no branch exits 1:\n${unbound.output}`);
+    assert.match(unbound.output, /no branch chosen for sync/, "the refusal says no branch is chosen");
+    assert.match(unbound.output, /--branch main/, "and names the checked-out branch");
+    assert.equal(refOf(dirTwo, "refs/librepaper/main"), null, "nothing was fetched");
+    succeeds(await librepaper(dirTwo, ["pull", siteUrl(), "--branch", "main"]), "the first pull");
 
     const project = await projectOf();
     assert.equal(commitsOn(dirTwo, "refs/librepaper/main").length, 1, "the web project arrives as one commit");
@@ -549,6 +556,7 @@ try {
     assert.equal(gitText(dirTwo, "status", "--porcelain"), "", "the working tree is clean");
     const state = stateOf(dirTwo);
     assert.equal(state.slug, slug);
+    assert.equal(state.branch, "main", "the state keeps the branch, so later runs need no flag");
     assert.equal(state.head, refOf(dirTwo, "refs/librepaper/main"), "the state remembers the pulled commit");
   });
 
@@ -682,7 +690,7 @@ try {
     proxy = await startCuttingProxy();
     const dir = newRepository("four");
     const url = `${proxy.url}/docs/${slug}`;
-    succeeds(await librepaper(dir, ["pull", url], { token: accountToken }), "the pull through the proxy");
+    succeeds(await librepaper(dir, ["pull", url, "--branch", "main"], { token: accountToken }), "the pull through the proxy");
 
     const subject = "Edit the chapter over a bad connection";
     const edited = `${ONE_WEB}A second paragraph.\n`;

@@ -200,7 +200,7 @@ try {
   const archiveNames = await readdir(archiveDirectory);
   const archiveName = archiveNames.find((name) => name.endsWith(".zip"));
   assert.ok(archiveName, "a ZIP archive is present in the scoped backup directory");
-  const archive = await exec("unzip", ["-p", join(archiveDirectory, archiveName), "main.md"]);
+  const archive = await exec("unzip", ["-p", join(archiveDirectory, archiveName), "document.md"]);
   assert.match(archive.stdout, /This project must appear in the real backup archive\./,
     "the ZIP contains the deployed project's source");
 

@@ -73,7 +73,8 @@ async function join(slug, name) {
   return {
     session,
     doc: session.doc,
-    text: () => session.text_(),
+    // The one file this test publishes: a Markdown source lands at document.md.
+    text: () => session.textOf(session.idOf("document.md"))?.toString(),
     changes: () => listChanges(session.doc),
     close: () => { session.leave(); socket.close(); },
   };
@@ -88,7 +89,8 @@ const sourceOf = async (slug) => {
 /// What the editor's tracking plugin writes for one replacement: the new text
 /// and the change record, in one commit.
 function trackedReplace(client, from, original, inserted) {
-  const fileId = client.session.mainId();
+  const fileId = client.session.idOf("document.md");
+  assert.ok(fileId, "document.md is in the project");
   const at = client.session.textOf(fileId).toString().indexOf(original);
   assert.notEqual(at, -1, `${original} is in the source`);
   const ids = trackedSplice(client.doc, fileId, at, at + original.length, inserted, { author: from.author, who: from.who }, { run: from.run ?? null });

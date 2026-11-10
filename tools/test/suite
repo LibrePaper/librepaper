@@ -18,6 +18,7 @@ usage: tools/test/suite <suite>
   browser     component tests in headless Chromium (needs chromium; set LIBREPAPER_CHROMIUM to override)
   smoke       drive the reader in headless Chromium against a real server (needs docker and chromium)
   e2e         smoke, history and track-changes deployment scenarios (needs docker and chromium)
+  integration the web integration tests that need a deployment (needs docker)
   external    Quarto/R/Python and real local-service integration tests
   windows-vm  the tools/dev/windows-vm wrapper against fake quickemu and quickget
   fuzz        every fuzz target for FUZZ_SECONDS (default 60) each
@@ -90,6 +91,28 @@ suite_smoke() {
 	if [[ -z "${LIBREPAPER_TEST_BINARY:-}" ]]; then make --no-print-directory "$BIN"; fi
 	with_disposable_postgres smoke
 	node web/tests/e2e/browser-smoke.mjs "$BIN"
+}
+
+# The web integration tests that drive a real deployment. `make test` runs
+# these files too, but without a binary and a database each one skips, so this
+# is the only place they are known to run. Every file runs, and the failures
+# are listed at the end.
+suite_integration() {
+	if [[ -z "${LIBREPAPER_TEST_BINARY:-}" ]]; then make --no-print-directory "$BIN"; fi
+	with_disposable_postgres integration
+	# The tests run from web/, so the binary is named from the root.
+	case "$LIBREPAPER_TEST_BINARY" in /*) ;; *) export LIBREPAPER_TEST_BINARY="$PWD/$LIBREPAPER_TEST_BINARY" ;; esac
+	local failed="" test
+	for test in $(grep -lE 'startDeployment|deploymentBinary|LIBREPAPER_TEST_BINARY' web/tests/integration/*.mjs); do
+		printf '%s: ' "$(basename "$test")"
+		if (cd web && timeout 600 node --experimental-transform-types --import ./tests/helpers/ts-resolve.mjs "../$test" >/dev/null 2>&1); then
+			echo ok
+		else
+			echo FAILED
+			failed="$failed $(basename "$test")"
+		fi
+	done
+	[ -z "$failed" ] || { echo "failed:$failed"; return 1; }
 }
 
 # Smoke plus the history and track-changes deployment scenarios.
@@ -213,6 +236,7 @@ case "${1:-help}" in
 	browser) suite_browser ;;
 	smoke) suite_smoke ;;
 	e2e) suite_e2e ;;
+	integration) suite_integration ;;
 	external) suite_external ;;
 	windows-vm) suite_windows_vm ;;
 	fuzz) suite_fuzz ;;
