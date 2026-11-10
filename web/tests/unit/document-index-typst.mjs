@@ -323,3 +323,114 @@ test("a label passed to any call is a reference, so rename and references find i
   assert.equal(edits.length, 4);
   for (const edit of edits) assert.equal(text.slice(edit.from, edit.to), "top");
 });
+
+/** The target of each label of one source, by label name. */
+function targetsOf(text) {
+  return Object.fromEntries(kindOf(typstAdapter(text, "a.typ"), "label").map((l) => [l.name, l.attrs?.target]));
+}
+
+test("a heading label targets a section", () => {
+  assert.deepEqual(targetsOf("= Intro <sec:intro>\n"), { "sec:intro": "section" });
+});
+
+test("a label after a figure targets the figure's kind, theorem-like kinds are theorems", () => {
+  const text = [
+    '#figure(image("a.png"), caption: [Plot]) <fig:a>',
+    "",
+    '#figure(table(columns: 2), caption: [Data]) <tbl:b>',
+    "",
+    '#figure(raw("x"), caption: [Code]) <lst:c>',
+    "",
+    '#figure(rect(), kind: "theorem") <thm:a>',
+    "",
+    '#figure(rect(), kind: "lemma") <lem:b>',
+    "",
+    '#figure(rect(), kind: "widget") <w:c>',
+    "",
+  ].join("\n");
+  assert.deepEqual(targetsOf(text), {
+    "fig:a": "figure",
+    "tbl:b": "table",
+    "lst:c": "listing",
+    "thm:a": "theorem",
+    "lem:b": "theorem",
+    "w:c": "other",
+  });
+});
+
+test("a label after a display equation targets an equation, after an inline one it does not", () => {
+  const text = "$ x^2 + y^2 = z^2 $ <eq:pyth>\n\nInline $x$ <eq:inline> here.\n";
+  assert.deepEqual(targetsOf(text), { "eq:pyth": "equation", "eq:inline": "other" });
+});
+
+test("a label after a footnote targets a footnote, an unlabelled footnote gives no label", () => {
+  const text = "Text#footnote[A note] <fn:a>\n\nUnlabelled#footnote[Plain]\n";
+  assert.deepEqual(targetsOf(text), { "fn:a": "footnote" });
+});
+
+test("a label on a list or enum item targets an item", () => {
+  const text = "- First item <item:a>\n+ Second item <item:b>\n";
+  assert.deepEqual(targetsOf(text), { "item:a": "item", "item:b": "item" });
+});
+
+test("a label on plain text targets other", () => {
+  assert.deepEqual(targetsOf("Plain <plain>\n"), { plain: "other" });
+});
+
+test("links: schemes are external, file paths are files with the fragment kept, same-file anchors are not links", () => {
+  const text = [
+    '#link("https://example.org/a")[Site] and #link("mailto:me@example.org")[mail].',
+    '#link("sections/rendering.typ#intro")[Rendering] and #link("#local")[same file].',
+    "Visit https://typst.app now.",
+    "",
+  ].join("\n");
+  const links = kindOf(typstAdapter(text, "a.typ"), "link");
+  assert.deepEqual(links.map((l) => l.name), [
+    "https://example.org/a",
+    "mailto:me@example.org",
+    "sections/rendering.typ",
+    "https://typst.app",
+  ]);
+  assert.deepEqual(links[0].attrs, { external: "true" });
+  assert.deepEqual(links[0].nameRange, at(text, "https://example.org/a"));
+  assert.deepEqual(links[1].attrs, { external: "true" });
+  assert.deepEqual(links[2].attrs, { file: "true", fragment: "intro" });
+  assert.deepEqual(links[2].nameRange, at(text, "sections/rendering.typ"));
+  assert.deepEqual(links[3].attrs, { external: "true" });
+  assert.deepEqual(links[3].nameRange, at(text, "https://typst.app"));
+});
+
+test("a link to a label stays a reference, not a link item", () => {
+  const text = "= Top <top>\n#link(<top>)[up]\n";
+  const items = typstAdapter(text, "a.typ");
+  assert.deepEqual(kindOf(items, "link"), []);
+  assert.deepEqual(kindOf(items, "ref").map((r) => r.name), ["top"]);
+});
+
+test("metadata: document title, authors and date, and the text language", () => {
+  const text = [
+    '#set document(title: [A *Study* of _things_], author: ("Ada Lovelace", [Charles Babbage]), date: "2024-05-01")',
+    '#set text(lang: "fr")',
+    "",
+  ].join("\n");
+  const meta = kindOf(typstAdapter(text, "a.typ"), "metadata");
+  assert.deepEqual(meta.map((m) => [m.name, m.title]), [
+    ["title", "A Study of things"],
+    ["author", "Ada Lovelace"],
+    ["author", "Charles Babbage"],
+    ["date", "2024-05-01"],
+    ["language", "fr"],
+  ]);
+  assert.deepEqual(meta[0].range, at(text, "[A *Study* of _things_]"));
+  assert.deepEqual(meta[1].nameRange, at(text, "author"));
+});
+
+test("metadata: a single author, escaped string quotes, and auto or other settings give no item", () => {
+  const text = String.raw`#set document(title: "Say \"hi\"", author: "Grace Hopper", date: auto)` + "\n" +
+    "#set text(size: 11pt)\n";
+  const meta = kindOf(typstAdapter(text, "a.typ"), "metadata");
+  assert.deepEqual(meta.map((m) => [m.name, m.title]), [
+    ["title", 'Say "hi"'],
+    ["author", "Grace Hopper"],
+  ]);
+});
