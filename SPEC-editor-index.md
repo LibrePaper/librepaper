@@ -176,6 +176,7 @@ Named after LSP's, so a language server can later answer them for a format.
 | `references(path, pos)` | every use of the name at `pos` |
 | `rename(path, pos, newName)` | a list of `{ path, from, to, insert }` edits over every `nameRange` |
 | `hover(path, pos)` | the target's `title`, its `kind` (`figure`, `footnote`, ...) and location |
+| `numbering()` | project-wide, not per path: a Map from `label:<name>` to the label's number (an integer) for figure, table, equation, listing and theorem labels. Implicit labels are skipped. Each root file (one no other indexed file includes) is walked in source order and each `include` is walked in place, so numbers continue through an included file and resume after it. Each kind counts on its own; theorems share one sequence. A file reached twice counts at its first inclusion; a cycle with no root is walked from its first file. A project with several roots numbers each root separately, and a name keeps the first root's number. Sections are not numbered: their numbers depend on the format |
 | `metadata(path)` | the file's metadata items, grouped by name |
 | `targetKind(item)` | a label's `attrs.target`, or null |
 | `symbols(path)` | headings, then labels, for the outline |

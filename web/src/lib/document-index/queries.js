@@ -17,6 +17,9 @@ const LOCATABLE = new Set(["label", "ref", "cite", "include", "asset", "link"]);
 /** Target kinds whose labels are numbered and listed, so an unreferenced one is worth a note. */
 const NUMBERED_TARGETS = new Set(["figure", "table", "equation", "listing"]);
 
+/** Target kinds that get a display number in `numbering`. Each kind counts on its own, except theorems, which share one sequence. */
+const COUNTED_TARGETS = new Set(["figure", "table", "equation", "listing", "theorem"]);
+
 /** Diagnostic codes at severity "info"; every other code is a "warning". */
 const INFO_CODES = new Set(["unused-footnote", "unused-target", "unused-bibliography"]);
 
@@ -309,6 +312,88 @@ export function hover(project, path, pos) {
     return entry;
   });
   return { name: target.name, namespace: target.namespace, targets };
+}
+
+/**
+ * Display numbers for the labels of figures, tables, equations, listings and
+ * theorems, project-wide. The map is keyed `label:<name>` and holds the number
+ * as an integer; hover formats it for the interface language.
+ *
+ * Reading order: each root file (an indexed file that no other indexed file
+ * includes) is walked in source order, and at each `include` the included file
+ * is walked at that point, so numbers continue through it and resume after it.
+ * Each file is walked once per root, so a cycle ends and a file included twice
+ * is counted at its first inclusion. Counters start at zero for each root. When
+ * no root exists (files that only include each other), the unreached files are
+ * walked as roots in path order. A label in a file shared by two roots keeps
+ * the number from the first root, and a name defined twice takes the first
+ * definition in that order. Implicit labels and labels of other targets are
+ * skipped. Labels that a root's walk does not reach are not numbered.
+ *
+ * Sections are not numbered here. Their numbers depend on the format (LaTeX's
+ * chapter and section depth, Typst's heading levels, the HTML outline), so
+ * each format's numbering belongs with its adapter.
+ *
+ * Not cached: the project index has no revision counter, and a walk is cheap
+ * next to a hover.
+ * @param {ProjectIndex} project
+ * @returns {Map<string, number>}
+ */
+export function numbering(project) {
+  const paths = project.paths();
+  const indexed = new Set(paths);
+  /** @type {Map<IndexItem, string>} include items that resolve to an indexed file */
+  const resolvedOf = new Map();
+  const included = new Set();
+  for (const path of paths) {
+    for (const item of project.file(path)?.items ?? []) {
+      if (item.kind !== "include" || item.name === undefined) continue;
+      const resolved = project.resolveFile(path, item.name, "include");
+      if (resolved === null || resolved === path || !indexed.has(resolved)) continue;
+      resolvedOf.set(item, resolved);
+      included.add(resolved);
+    }
+  }
+
+  /** @type {Map<string, number>} */
+  const numbers = new Map();
+  /** @type {Set<string>} files walked from any root */
+  const reached = new Set();
+
+  /**
+   * @param {string} path
+   * @param {{ visited: Set<string>, counters: Record<string, number> }} walk
+   */
+  const visit = (path, walk) => {
+    if (walk.visited.has(path)) return;
+    walk.visited.add(path);
+    reached.add(path);
+    const file = project.file(path);
+    if (!file) return;
+    for (const item of byStart(file.items)) {
+      const target = resolvedOf.get(item);
+      if (target !== undefined) {
+        visit(target, walk);
+        continue;
+      }
+      if (item.kind !== "label" || item.name === undefined || item.attrs?.implicit === "true") continue;
+      const kind = targetKind(item);
+      if (kind === null || !COUNTED_TARGETS.has(kind)) continue;
+      const count = (walk.counters[kind] ?? 0) + 1;
+      walk.counters[kind] = count;
+      const key = `label:${item.name}`;
+      if (!numbers.has(key)) numbers.set(key, count);
+    }
+  };
+
+  const walkRoot = (root) => visit(root, { visited: new Set(), counters: {} });
+  for (const path of paths) {
+    if (!included.has(path)) walkRoot(path);
+  }
+  for (const path of paths) {
+    if (!reached.has(path)) walkRoot(path);
+  }
+  return numbers;
 }
 
 /**

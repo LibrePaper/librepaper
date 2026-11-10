@@ -9,6 +9,7 @@ import {
   itemAt,
   levenshtein,
   metadata,
+  numbering,
   proseRanges,
   references,
   rename,
@@ -745,4 +746,135 @@ test("a bibliography in a project with no citations is an info diagnostic", () =
     items: [{ kind: "cite", range: [0, 6], nameRange: [0, 6], name: "smith" }],
   });
   assert.deepEqual(diagnostics(project, "main.tex"), []);
+});
+
+/** A label item for the numbering tests: `target` is its kind, `offset` its position. */
+function labelItem(name, target, offset, attrs = {}) {
+  return { kind: "label", range: [offset, offset + 1], nameRange: [offset, offset + 1], name, namespace: "label", attrs: { target, ...attrs } };
+}
+
+/** An include item naming `name` at `offset`. */
+function includeItem(name, offset) {
+  return { kind: "include", range: [offset, offset + 1], nameRange: [offset, offset + 1], name };
+}
+
+test("numbering counts each kind in reading order, and theorems share one sequence", () => {
+  const project = createProjectIndex();
+  project.update({
+    path: "paper.tex",
+    format: "latex",
+    length: 100,
+    items: [
+      labelItem("fig:a", "figure", 0),
+      labelItem("tab:a", "table", 10),
+      labelItem("eq:a", "equation", 20),
+      labelItem("lst:a", "listing", 30),
+      labelItem("thm:a", "theorem", 40),
+      labelItem("sec:a", "section", 50),
+      labelItem("fig:b", "figure", 60),
+      labelItem("thm:b", "theorem", 70),
+      labelItem("tab:b", "table", 80),
+    ],
+  });
+  assert.deepEqual(Object.fromEntries(numbering(project)), {
+    "label:fig:a": 1,
+    "label:tab:a": 1,
+    "label:eq:a": 1,
+    "label:lst:a": 1,
+    "label:thm:a": 1,
+    "label:fig:b": 2,
+    "label:thm:b": 2,
+    "label:tab:b": 2,
+  });
+});
+
+test("an include in the middle of a file continues the numbers, and the file resumes after it", () => {
+  const project = createProjectIndex();
+  project.setFiles(["main.tex", "chap.tex"]);
+  project.update({
+    path: "main.tex",
+    format: "latex",
+    length: 40,
+    items: [labelItem("fig:a", "figure", 0), includeItem("chap.tex", 10), labelItem("fig:c", "figure", 20), includeItem("gone.tex", 30)],
+  });
+  project.update({
+    path: "chap.tex",
+    format: "latex",
+    length: 20,
+    items: [labelItem("fig:b", "figure", 0), labelItem("tab:b", "table", 5), labelItem("fig:bb", "figure", 10)],
+  });
+  // chap.tex is included, so main.tex is the only root. A missing include adds nothing.
+  assert.deepEqual(Object.fromEntries(numbering(project)), {
+    "label:fig:a": 1,
+    "label:fig:b": 2,
+    "label:fig:bb": 3,
+    "label:fig:c": 4,
+    "label:tab:b": 1,
+  });
+});
+
+test("cycles end the walk, and a file included twice is counted at its first inclusion", () => {
+  const cycle = createProjectIndex();
+  cycle.setFiles(["a.tex", "b.tex"]);
+  cycle.update({
+    path: "a.tex",
+    format: "latex",
+    length: 30,
+    items: [labelItem("fig:a", "figure", 0), includeItem("b.tex", 10), includeItem("b.tex", 20)],
+  });
+  cycle.update({
+    path: "b.tex",
+    format: "latex",
+    length: 10,
+    items: [labelItem("fig:b", "figure", 0), includeItem("a.tex", 5)],
+  });
+  // Neither file is a root, so the first unreached file starts a walk; the second include of b.tex adds nothing.
+  assert.deepEqual(Object.fromEntries(numbering(cycle)), { "label:fig:a": 1, "label:fig:b": 2 });
+
+  const twice = createProjectIndex();
+  twice.setFiles(["main.tex", "part.tex"]);
+  twice.update({
+    path: "main.tex",
+    format: "latex",
+    length: 30,
+    items: [includeItem("part.tex", 0), includeItem("part.tex", 10), labelItem("fig:after", "figure", 20)],
+  });
+  twice.update({ path: "part.tex", format: "latex", length: 5, items: [labelItem("fig:p", "figure", 0)] });
+  assert.deepEqual(Object.fromEntries(numbering(twice)), { "label:fig:p": 1, "label:fig:after": 2 });
+});
+
+test("each root is numbered separately, and a shared file keeps the first root's number", () => {
+  const project = createProjectIndex();
+  project.setFiles(["r1.tex", "r2.tex", "shared.tex"]);
+  project.update({
+    path: "r1.tex",
+    format: "latex",
+    length: 20,
+    items: [labelItem("fig:x", "figure", 0), includeItem("shared.tex", 10)],
+  });
+  project.update({
+    path: "r2.tex",
+    format: "latex",
+    length: 20,
+    items: [includeItem("shared.tex", 0), labelItem("fig:y", "figure", 10)],
+  });
+  project.update({ path: "shared.tex", format: "latex", length: 5, items: [labelItem("fig:s", "figure", 0)] });
+  // fig:s is the second figure of r1 and keeps that number. r2 counts it first in its own
+  // walk, so fig:y is r2's second figure, the same number as fig:s.
+  assert.deepEqual(Object.fromEntries(numbering(project)), { "label:fig:x": 1, "label:fig:s": 2, "label:fig:y": 2 });
+});
+
+test("implicit labels and labels of other targets take no number", () => {
+  const project = createProjectIndex();
+  project.update({
+    path: "doc.md",
+    format: "markdown",
+    length: 30,
+    items: [
+      labelItem("fig-heading", "figure", 0, { implicit: "true" }),
+      labelItem("fig:e", "figure", 10),
+      labelItem("fn:x", "footnote", 20),
+    ],
+  });
+  assert.deepEqual(Object.fromEntries(numbering(project)), { "label:fig:e": 1 });
 });
