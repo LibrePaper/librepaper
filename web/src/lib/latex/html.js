@@ -276,6 +276,7 @@ export function createHtmlCompiler({
     }
     return {
       html: ok ? withoutFooter(result.html) : null,
+      sources: ok && Array.isArray(result.sources) ? result.sources : null,
       pdf: null,
       ok,
       seconds: (Date.now() - started) / 1000,

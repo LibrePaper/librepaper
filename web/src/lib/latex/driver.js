@@ -373,6 +373,8 @@ class EngineDriver {
       pdf: reply.pdf ? new Uint8Array(reply.pdf) : null,
       ...(this.kind === "latexml" ? {
         html: typeof reply.html === "string" ? reply.html : null,
+        // Indexed by the source tag in each `data-sourcepos` attribute.
+        sources: Array.isArray(reply.sources) ? reply.sources : null,
       } : {}),
       synctex: reply.synctex ? new Uint8Array(reply.synctex) : null,
       log: reply.log || "",

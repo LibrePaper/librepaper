@@ -3,10 +3,11 @@
 // available for the next navigation, while every transfer hands the frame a
 // fresh PDF buffer so replay cannot observe a detached one.
 
-/** @typedef {{ kind: "html", html: string, sha?: string, presentation?: "document" } | { kind: "pdf", sha: string | null, bytes: Uint8Array }} FramePreviewContent */
+/** `sources` maps each `data-sourcepos` source tag to a project-relative path, or null. It is optional and absent when the engine did not return it. */
+/** @typedef {{ kind: "html", html: string, sha?: string, presentation?: "document", sources?: Array<string | null> } | { kind: "pdf", sha: string | null, bytes: Uint8Array }} FramePreviewContent */
 /** @typedef {FramePreviewContent & { generation: number }} FramePreviewPayload */
-/** @typedef {{ kind: "html", html: string, sha?: string, presentation?: "document" } | { kind: "pdf", sha?: string | null, bytes: Uint8Array | ArrayBuffer }} FramePreviewInput */
-/** @typedef {{ type: "preview", html?: string, pdf?: ArrayBuffer, frameGeneration: number, presentation?: "document" }} FrameMessage */
+/** @typedef {{ kind: "html", html: string, sha?: string, presentation?: "document", sources?: Array<string | null> } | { kind: "pdf", sha?: string | null, bytes: Uint8Array | ArrayBuffer }} FramePreviewInput */
+/** @typedef {{ type: "preview", html?: string, pdf?: ArrayBuffer, frameGeneration: number, presentation?: "document", sources?: Array<string | null> }} FrameMessage */
 
 /** @param {{
  * slug: string, getDocsOrigin: () => string | null, framePath: () => string,
@@ -68,6 +69,7 @@ export function createFramePreview({
       kind: "html", html: payload.html,
       ...(payload.sha ? { sha: payload.sha } : {}),
       ...(payload.presentation === "document" ? { presentation: "document" } : {}),
+      ...(Array.isArray(payload.sources) ? { sources: payload.sources.slice() } : {}),
     };
     const bytes = payload.bytes instanceof Uint8Array ? payload.bytes : new Uint8Array(payload.bytes);
     return { kind: "pdf", sha: payload.sha || null, bytes: bytes.slice() };
@@ -87,6 +89,7 @@ export function createFramePreview({
       send({ type: "preview", html: payload.html,
         frameGeneration: payload.generation,
         ...(payload.presentation === "document" ? { presentation: "document" } : {}),
+        ...(payload.sources ? { sources: payload.sources } : {}),
       });
     }
     deliveredGeneration = payload.generation;
