@@ -46,7 +46,7 @@ function containerStyle(token: Token): TokenStyle | null {
     case 'orgheader':
       return { widget: 'orgheader', block: true };
     case 'orgplanning':
-      return { class: 'cm-lp-orgplanning', block: true };
+      return { class: 'cm-lp-org-planning', block: true };
     case 'orgdrawer':
       return { widget: 'orgdrawer', block: true };
     default:

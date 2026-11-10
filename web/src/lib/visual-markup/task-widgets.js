@@ -61,8 +61,26 @@ function currentTask(view, element) {
   return taskAt(view.state.doc.toString(), pos);
 }
 
+// Org's click: an open or in-progress box becomes done, a done box becomes open. The
+// box is found on the widget's line, because the Markdown reader does not know Org.
+function orgCycle(view, button) {
+  const widget = button.closest(".cm-lv-widget");
+  const pos = widget ? view.posAtDOM(widget) : -1;
+  if (pos < 0) return [];
+  const line = view.state.doc.lineAt(pos);
+  const match = /^(\s*(?:[-+*]|\d+[.)])\s+\[)([ xX-])\]/.exec(line.text);
+  if (!match) return [];
+  const at = line.from + match[1].length;
+  return [{ from: at, to: at + 1, insert: match[2] === " " || match[2] === "-" ? "X" : " " }];
+}
+
 // Cycles the state of the task under the box and writes the change.
-function cycleTask(view, button) {
+function cycleTask(view, button, org) {
+  if (org) {
+    const changes = orgCycle(view, button);
+    if (changes.length) view.dispatch({ changes });
+    return;
+  }
   const task = currentTask(view, button);
   if (!task) return;
   const changes = cycle(task);
@@ -72,25 +90,27 @@ function cycleTask(view, button) {
 // The checkbox and its progress. Every box is drawn alike: an outlined square with one
 // mark inside. The mark is text, so it is centred by the box and reads without the
 // stylesheet.
-function buildTaskBox(view, { task, progress }) {
+function buildTaskBox(view, { task, progress, org }) {
   const root = el("span", "cm-lv-widget cm-lp-taskbox");
   const button = el("button", "cm-lp-taskbox-button", MARK[task] ?? "");
+  // Org has two clicks to make: open or doing to done, and done to open.
+  const next = org ? (task === "done" ? "todo" : "done") : null;
   button.type = "button";
   button.setAttribute("role", "checkbox");
   button.setAttribute("aria-checked", CHECKED[task] ?? "false");
   button.setAttribute(
     "aria-label",
-    m.task_widgets_task_box_name({ state: STATE_LABEL[task].toLowerCase(), next: NEXT_LABEL[task].toLowerCase() }),
+    m.task_widgets_task_box_name({ state: STATE_LABEL[task].toLowerCase(), next: (next ? STATE_LABEL[next] : NEXT_LABEL[task]).toLowerCase() }),
   );
   // Presses stay inside the box. The editor's keymap and caret must not act on them.
   button.addEventListener("mousedown", (event) => event.stopPropagation());
   button.addEventListener("keydown", (event) => event.stopPropagation());
 
-  button.addEventListener("click", () => cycleTask(view, button));
+  button.addEventListener("click", () => cycleTask(view, button, org));
   button.addEventListener("keydown", (event) => {
     if (event.key === " " || event.key === "Enter") {
       event.preventDefault();
-      cycleTask(view, button);
+      cycleTask(view, button, org);
     }
   });
 
@@ -198,9 +218,9 @@ class TaskWidget extends WidgetType {
   }
 }
 
-registerWidget("taskbox", ({ token }) => {
+registerWidget("taskbox", ({ token, language }) => {
   const meta = token.meta ?? {};
-  return new TaskWidget("taskbox", { task: meta.task ?? "todo", progress: meta.progress ?? null });
+  return new TaskWidget("taskbox", { task: meta.task ?? "todo", progress: meta.progress ?? null, org: language?.id === "org" });
 });
 
 registerWidget("taskfield", ({ token }) => {

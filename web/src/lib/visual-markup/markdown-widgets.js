@@ -12,6 +12,7 @@ import "./markdown.css";
 import { imageResolver, isExternal, registerWidget, resolveImagePath, revealOnMousedown, textOf } from "./markup.ts";
 import { chipWidget, ElementWidget, factsOf, includeOpener, joinParts, nameList } from "./index.js";
 import { m } from "../paraglide/messages.js";
+import { orgTree } from "../source-trees.js";
 
 const own = (object, key) => Object.hasOwn(object, key);
 
@@ -492,8 +493,46 @@ function definitionText(source, label) {
   return match ? plainMarkup(match[1]) : "";
 }
 
+// Org: the number of a note is its place among the distinct labelled or anonymous
+// references before it. Definitions at column 0 are not references.
+function orgNoteNumber(source, from) {
+  const seen = new Set();
+  let anonymous = 0;
+  for (const match of source.slice(0, from).matchAll(/(^)?\[fn:([^\]\s:]*)(:)?/gm)) {
+    if (match[1]) continue;
+    if (match[2] && !match[3]) seen.add(match[2]);
+    else anonymous++;
+  }
+  return seen.size + anonymous + 1;
+}
+
+// The text of an Org note `[fn:label] text`, found in the syntax tree.
+function orgDefinitionText(source, label) {
+  let found = "";
+  orgTree(source).iterate({
+    enter(node) {
+      if (found || node.name !== "FootnoteDefinition") return;
+      const labelNode = node.node.getChild("FootnoteLabel");
+      if (!labelNode) return;
+      const name = source.slice(labelNode.from, labelNode.to).replace(/^\[fn:|\]$/g, "");
+      if (name === label) found = source.slice(labelNode.to, node.to).replace(/\s+/g, " ").trim();
+    },
+  });
+  return found;
+}
+
 registerWidget("mdnote", ({ token, source }) => {
   const label = token.meta?.label ?? "";
+  if (token.meta?.format === "org") {
+    const inline = token.meta?.inline === "true";
+    const note = inline ? plainMarkup(bodyText(token, source)) : orgDefinitionText(source, label);
+    return new ElementWidget({
+      className: "cm-lp-mdnote",
+      tag: "sup",
+      content: [String(orgNoteNumber(source, token.from))],
+      title: note,
+    });
+  }
   const note = label ? definitionText(source, label) : plainMarkup(bodyText(token, source));
   return new ElementWidget({
     className: "cm-lp-mdnote",

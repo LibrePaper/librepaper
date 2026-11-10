@@ -119,3 +119,16 @@
 .cm-lp-org-macro-args {
   opacity: 0.8;
 }
+
+/* A verse block: line breaks and indentation kept, set like a poem. */
+.cm-lp-quote-verse {
+  font-style: italic;
+  white-space: pre-wrap;
+}
+
+/* A center block. */
+.cm-lp-quote-center {
+  text-align: center;
+  border-left: 0;
+  padding-left: 0;
+}
