@@ -2422,8 +2422,8 @@ client_secret = { file = "missing-oauth-secret" }
     }
     #[test]
     fn legal_links_must_be_https() {
-        let error = load_text("[legal]\nterms_url = \"http://example.org/terms.html\"\n")
-            .unwrap_err();
+        let error =
+            load_text("[legal]\nterms_url = \"http://example.org/terms.html\"\n").unwrap_err();
         assert!(error.contains("legal.terms_url"), "{error}");
     }
     #[test]
