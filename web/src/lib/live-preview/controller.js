@@ -35,7 +35,7 @@ function changedSpan(a, b) {
  * it changed no newline.
  * @param {string} previous
  * @param {string} next
- * @returns {{ at: number, removed: number, added: number } | null}
+ * @returns {{ at: number, removed: number, added: number, lineStart: boolean } | null}
  */
 function lineOperation(previous, next) {
   const span = changedSpan(previous, next);
@@ -45,23 +45,32 @@ function lineOperation(previous, next) {
   const added = next.slice(from, newTo).split("\n").length - 1;
   if (removed === 0 && added === 0) return null;
   const at = previous.slice(0, from).split("\n").length;
-  return { at, removed, added };
+  // An edit that begins at the start of a line pushes that whole line down;
+  // one that begins inside it leaves the line's start where it was.
+  const lineStart = from === 0 || previous[from - 1] === "\n";
+  return { at, removed, added, lineStart };
 }
 
 /**
  * Maps a line of the text after the last operation back to the compiled text.
  * Operations are applied from last to first. Null when the line is one the
  * operations added, since the compile never had it.
- * @param {Array<{ at: number, removed: number, added: number }>} ops
+ * @param {Array<{ at: number, removed: number, added: number, lineStart: boolean }>} ops
  * @param {number} line 1-based
  * @returns {number | null}
  */
 function mapThrough(ops, line) {
   for (let i = ops.length - 1; i >= 0; i--) {
-    const { at, removed, added } = ops[i];
+    const { at, removed, added, lineStart } = ops[i];
     if (line < at) continue;
-    if (line === at) continue;
-    if (line <= at + added) return null;
+    if (lineStart) {
+      // Lines at .. at + added - 1 are new; the old line `at` is now at + added.
+      if (line < at + added) return null;
+    } else {
+      // Line `at` keeps its start; the lines after it up to at + added are new.
+      if (line === at) continue;
+      if (line <= at + added) return null;
+    }
     line = line - added + removed;
   }
   return line;
@@ -78,7 +87,7 @@ export function createLivePreview({ send }) {
   /**
    * Per path, the line operations since the last compile. A null entry marks a
    * path that was added or removed, whose lines can no longer be mapped.
-   * @type {Map<string, Array<{ at: number, removed: number, added: number }> | null>}
+   * @type {Map<string, Array<{ at: number, removed: number, added: number, lineStart: boolean }> | null>}
    */
   let ops = new Map();
 
