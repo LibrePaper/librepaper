@@ -195,7 +195,8 @@ try {
   const changes = listChanges(mirror);
   page.close();
   assert.equal(changes.length, 1, `one pending change: ${JSON.stringify(changes)}`);
-  assert.equal(changes[0].inserted, "The suggested paragraph");
+  // Only the words that differ are tracked: the shared " paragraph" is left alone.
+  assert.equal(changes[0].inserted, "The suggested");
 
   // The same edit token now stages privately, then applies. It edits the
   // second paragraph, since the first carries the pending suggestion.

@@ -169,8 +169,9 @@ try {
   for (const frame of frames.filter((item) => item.type === "doc-update")) mirror.import(base64(frame.update));
   const changes = listChanges(mirror);
   assert.equal(changes.length, 1, `the page holds one pending change: ${JSON.stringify(changes)}`);
-  assert.equal(changes[0].inserted, "The revised paragraph");
-  assert.ok(changes[0].deleted.includes("first paragraph"), "the change keeps the words it replaced");
+  // Only the words that differ are tracked: the shared " paragraph" is left alone.
+  assert.equal(changes[0].inserted, "The revised");
+  assert.equal(changes[0].deleted, "first", "the change keeps the words it replaced");
   assert.equal(changes[0].author, "Opus 5.5", "the change carries the model name");
   assert.match(changes[0].who, /^agent:/, "and an agent key, not an account");
   assert.ok(changes[0].run, "a pass tags its changes with a run");

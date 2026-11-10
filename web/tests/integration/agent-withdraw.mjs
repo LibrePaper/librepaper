@@ -173,6 +173,8 @@ try {
   // Another author's change is not yours to withdraw.
   const two = startBridge((await mint("Agent two")).token);
   await two.start();
+  // Every write needs a read first, which gives the bridge its epoch.
+  await two.call("document_read", { queries: [{ kind: "manifest" }] });
   const gammaStart = Buffer.byteLength(original.slice(0, original.indexOf("Gamma")));
   const gamma = await rangeOf(one, gammaStart, gammaStart + Buffer.byteLength("Gamma"));
   const small = await one.call("document_propose", {
