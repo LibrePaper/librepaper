@@ -4245,6 +4245,7 @@
   {#if sourceOpen}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <section id="reader-source" class="editorpane" class:away={!shown.source} class:comparing={comparing !== ""}
+             role={compact ? "tabpanel" : undefined} aria-labelledby={compact ? "mode-tab-source" : undefined}
              ondragover={(event) => event.preventDefault()} ondrop={dropped}>
       <!-- A figure has no editor. Choosing one shows it: an image as itself,
            a PDF through the browser's own viewer, which shows the first page
@@ -4461,7 +4462,9 @@
       <span class="notice-chip"><span>{m.readerd_shown_inside({ name: basename(toolbarPath), path: previewPath })}</span></span>
     {/if}
   {/snippet}
-  <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
+  <Preview bind:this={preview} id="reader-document" role={compact ? "tabpanel" : undefined}
+           labelledby={compact ? "mode-tab-document" : undefined}
+           src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
            controls={previewControls}
            notice={previewChip ? previewNotice : undefined}
            cover={painted.state.empty ? emptyCover : waitingUp ? waitingCover : undefined}

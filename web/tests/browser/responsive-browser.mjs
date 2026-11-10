@@ -489,10 +489,10 @@ try {
   const shell = await b.evaluate(`(() => {
     const sizes = selector => [...document.querySelectorAll(selector)].map(node => { const r = node.getBoundingClientRect(); return [r.width, r.height]; });
     const ids = (selector, key) => [...document.querySelectorAll(selector)].map(node => node.dataset[key]);
-    return { modes: ids('.mobile-mode-switch [data-mode]', 'mode'), pressed: [...document.querySelectorAll('.mobile-mode-switch [aria-pressed=true]')].map(node => node.dataset.mode),
+    return { modes: ids('.mobile-mode-switch [data-mode]', 'mode'), pressed: [...document.querySelectorAll('.mobile-mode-switch [aria-selected=true]')].map(node => node.dataset.mode),
       destinations: ids('.mobile-tab-bar [data-destination]', 'destination'),
       current: [...document.querySelectorAll('.mobile-tab-bar [aria-current=page]')].map(node => node.dataset.destination),
-      tabs: sizes('.mobile-tab-bar button'), modeButtons: sizes('.mobile-mode-switch button'),
+      tabs: sizes('.mobile-tab-bar button'), modeButtons: sizes('.mobile-mode-switch [role="tab"]'),
       title: document.querySelector('nav.phone-shell #docTitle')?.textContent.trim(), more: document.querySelectorAll('.mobile-more-trigger').length };
   })()`);
   assert.deepEqual(shell.modes,['document','source'],'both mobile workspace faces remain available');

@@ -1,32 +1,31 @@
 <script>
+  import { Tabs } from "@skeletonlabs/skeleton-svelte";
   import { m } from "../../lib/paraglide/messages.js";
 
-  // Preview or source, for the phone. It reads as the underline tab strip the
-  // side panels use: each button is a full-height tab, and the selected one
-  // gets a primary-coloured underline. When `collapsed`, the row slides out of
-  // view while nobody is using it, which gives the document back its room; it
-  // comes back the moment focus lands in it, so a keyboard or switch user is
-  // never left without it.
+  // Preview or source, for the phone. It is the same tab strip the side panels
+  // use (`.panel-tabs` in the stylesheet, on the same Skeleton Tabs), so the
+  // selected tab gets the same primary-coloured underline and nothing else, and
+  // the arrow keys move between the two. These tabs control the preview and
+  // the editor elsewhere on the page, so this renders no panels of its own; the
+  // ids below are what those panels are labelled and paired by. When
+  // `collapsed`, the row slides out of view while nobody is using it, which
+  // gives the document back its room; it comes back the moment focus lands in
+  // it, so a keyboard or switch user is never left without it.
   let { mode = "document", collapsed = false, onchange = () => {} } = $props();
 </script>
 
-<div class="mobile-mode-switch" class:collapsed role="group" aria-label={m.mobilenav_mode_switch()}>
-  <button
-    type="button"
-    data-mode="document"
-    aria-pressed={mode === "document"}
-    onclick={() => onchange("document")}
+<div class="mobile-mode-switch" class:collapsed>
+  <Tabs
+    class="mobile-mode-tabs"
+    value={mode}
+    onValueChange={(event) => onchange(event.value)}
+    ids={{ trigger: (one) => `mode-tab-${one}`, content: (one) => (one === "source" ? "reader-source" : "reader-document") }}
   >
-    {m.common_preview()}
-  </button>
-  <button
-    type="button"
-    data-mode="source"
-    aria-pressed={mode === "source"}
-    onclick={() => onchange("source")}
-  >
-    {m.common_source()}
-  </button>
+    <Tabs.List class="panel-tabs" aria-label={m.mobilenav_mode_switch()}>
+      <Tabs.Trigger value="document" data-mode="document">{m.common_preview()}</Tabs.Trigger>
+      <Tabs.Trigger value="source" data-mode="source">{m.common_source()}</Tabs.Trigger>
+    </Tabs.List>
+  </Tabs>
 </div>
 
 <style>
@@ -52,33 +51,21 @@
     }
   }
 
-  button {
-    flex: 1 1 0;
+  /* The root and the list fill the row, so each tab is the full 44px target. */
+  .mobile-mode-switch :global(.mobile-mode-tabs) {
+    height: 100%;
+    width: 100%;
+  }
+
+  .mobile-mode-switch :global(.panel-tabs) {
+    height: 100%;
+    width: 100%;
+  }
+
+  .mobile-mode-switch :global([role="tab"]) {
     display: flex;
     align-items: center;
     justify-content: center;
-    min-width: 0;
-    padding: 0;
-    border: 0;
-    border-bottom: 2px solid transparent;
-    background: none;
-    color: var(--color-text-secondary);
-    font: inherit;
     font-size: 0.875rem;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  /* These are tabs, so they keep the underline and skip the global pressed-toggle fill. */
-  .mobile-mode-switch button[aria-pressed="true"],
-  .mobile-mode-switch button[aria-pressed="true"]:hover:not(:disabled) {
-    background: none;
-    color: var(--color-link);
-    border-bottom-color: var(--color-link);
-  }
-
-  button:focus-visible {
-    outline: 2px solid var(--color-focus);
-    outline-offset: -2px;
   }
 </style>
