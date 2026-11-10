@@ -503,7 +503,9 @@ fn open(app: &AppHandle, target: Target, raw: &str) {
         show(app, target, url);
         return;
     }
-    shell_log::write(&format!("a link asks for {origin}, which is not a listed server"));
+    shell_log::write(&format!(
+        "a link asks for {origin}, which is not a listed server"
+    ));
     if ASKING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -567,13 +569,18 @@ async fn confirm_server(app: &AppHandle, root: &Url, intro: Option<&str>) -> boo
     if !allowed {
         return false;
     }
+    remember_default(app, root);
+    true
+}
+
+// Makes the server the default and saves it, so the app opens it from now on.
+fn remember_default(app: &AppHandle, root: &Url) {
     let shell = app.state::<Shell>();
     let mut servers = shell.servers.lock().expect("server list lock");
     servers.make_default(root);
     if let Err(err) = servers.save(app) {
         shell_log::write(&format!("could not save desktop.json: {err}"));
     }
-    true
 }
 
 // The dialog blocks, so it runs off the main thread.
@@ -927,6 +934,26 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
         return;
     }
 
+    // The servers the switch dialog lists, with the one the app opens first.
+    if request.method() == Method::GET && request.uri().path() == "/shell/servers" {
+        let body = {
+            let shell = app.state::<Shell>();
+            let servers = shell.servers.lock().expect("server list lock");
+            let current = servers
+                .first()
+                .map(|url| url.origin().ascii_serialization());
+            serde_json::json!({ "current": current, "servers": servers.listed() })
+                .to_string()
+                .into_bytes()
+        };
+        let res = Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .expect("the servers response is valid");
+        return responder.respond(with_origin(res, &origin));
+    }
+
     // Switches the app to another server, after a native confirmation.
     if request.method() == Method::POST && request.uri().path() == "/shell/server" {
         let Ok(choice) = serde_json::from_slice::<ServerChoice>(request.body()) else {
@@ -944,7 +971,10 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
         };
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            if !confirm_server(&app, &url, None).await {
+            if trusted(&app, &url.origin().ascii_serialization()) {
+                // A listed server was already trusted, so it is not asked about again.
+                remember_default(&app, &url);
+            } else if !confirm_server(&app, &url, None).await {
                 let res = json_error(StatusCode::FORBIDDEN, "The server was not changed.");
                 return responder.respond(with_origin(res, &origin));
             }
