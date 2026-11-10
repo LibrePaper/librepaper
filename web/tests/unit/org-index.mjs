@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { indexFile } from "../../src/lib/document-index/adapters/index.js";
+import { createProjectIndex } from "../../src/lib/document-index/project.js";
+import { definition, diagnostics } from "../../src/lib/document-index/queries.js";
 
 /** The items of one kind, in source order. */
 const ofKind = (items, kind) => items.filter((item) => item.kind === kind);
@@ -83,4 +85,82 @@ test("org index reports nothing from source blocks", () => {
   const index = indexFile("paper.org", PAPER);
   assert.ok(!index.items.some((item) => item.name === "hidden"));
   assert.ok(!index.items.some((item) => item.name === "not-a-label"));
+});
+
+const LINKS = [
+  "* Introduction",
+  ":PROPERTIES:",
+  ":CUSTOM_ID: intro",
+  ":END:",
+  "* TODO Methods",
+  "See [[#intro]], [[*Methods]] and [[*TODO Methods]].",
+  "Table [[tbl-results]], figure [[eq-one]] and broken [[#nope]].",
+  "Notes[fn:x] and [fn:y:inline text] and [fn::anon] and [fn:missing].",
+  "",
+  "#+NAME: tbl-results",
+  "| a |",
+  "",
+  "See <<eq-one>>.",
+  "",
+  "[fn:x] The first note.",
+  "",
+  "#+begin_src org",
+  "[[#hidden]] [fn:hidden]",
+  "#+end_src",
+  "",
+].join("\n");
+
+test("org internal links become refs that resolve to labels, and broken ones are reported", () => {
+  const index = indexFile("paper.org", LINKS);
+  const refs = ofKind(index.items, "ref");
+  assert.deepEqual(refs.map((item) => item.name), [
+    "intro",
+    "Methods",
+    "Methods",
+    "tbl-results",
+    "eq-one",
+    "nope",
+    "fn:x",
+    "fn:missing",
+  ]);
+  assert.deepEqual(refs.map((item) => span(LINKS, item.nameRange)), [
+    "intro",
+    "Methods",
+    "Methods",
+    "tbl-results",
+    "eq-one",
+    "nope",
+    "x",
+    "missing",
+  ]);
+  assert.ok(refs.every((item) => item.namespace === "label"));
+
+  const labels = ofKind(index.items, "label").map((item) => item.name);
+  for (const name of ["intro", "Methods", "tbl-results", "eq-one", "fn:x", "fn:y"]) {
+    assert.ok(labels.includes(name), `${name} is a label`);
+  }
+  assert.ok(!labels.includes("fn:hidden"));
+
+  const project = createProjectIndex();
+  project.update(index);
+  assert.deepEqual(
+    diagnostics(project, "paper.org").map((diagnostic) => `${diagnostic.code}:${diagnostic.name}`),
+    ["unknown-label:nope", "unknown-label:fn:missing"],
+  );
+
+  // `*Methods` (the second ref) goes to the headline "* TODO Methods".
+  const headline = definition(project, "paper.org", refs[1].nameRange[0]);
+  assert.deepEqual(headline.map((location) => location.from), [LINKS.indexOf("* TODO Methods")]);
+});
+
+test("org links to URLs, other files and other schemes are not refs", () => {
+  const text = [
+    "[[https://example.com]] [[file:notes.org]] [[./other.org]] [[../up.org]]",
+    "[[/abs.org]] [[~/home.org]] [[id:abc-123]] [[mailto:a@b.c]] [[notes.org::#intro]]",
+    "[[file:plot.png]]",
+    "",
+  ].join("\n");
+  const index = indexFile("links.org", text);
+  assert.deepEqual(ofKind(index.items, "ref"), []);
+  assert.equal(ofKind(index.items, "asset").length, 1);
 });
