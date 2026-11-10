@@ -1,6 +1,7 @@
 import { registerLanguage, Language, LanguageCommands, TokenStyle } from '../../core/language';
 import { Token } from '../../core/tokens';
 import { tokenizeOrg } from './tree';
+import { table } from './table';
 
 const commands: LanguageCommands = {
   wrap: {
@@ -146,6 +147,7 @@ export const org: Language = {
   tokenize: tokenizeOrg,
   style,
   commands,
+  table,
   imageSrc(_source: string, token: Token) {
     return token.meta?.src ?? null;
   },

@@ -1,4 +1,5 @@
 import type { SyntaxNode } from '@lezer/common';
+import { lineEndAt, startsLine } from '../../core/lines';
 
 // Small tables and functions that give meaning to nodes of the Pandoc Markdown tree. Each takes the
 // text of one node (or a few offsets); none searches the source for syntax.
@@ -11,21 +12,6 @@ export interface Attributes {
 const XREF_PREFIX = /^(fig|tbl|sec|eq|thm|lem|cor|prp|cnj|def|exm|exr|sol|rem|lst)-/i;
 const BRACKET_CITE = /^(-?)@([A-Za-z0-9_](?:[A-Za-z0-9_:.\-]*[A-Za-z0-9_])?)$/;
 const OPTION_LINE = /^[ \t]*#\|[ \t]*([\w-]+)[ \t]*:[ \t]*(.*?)[ \t]*$/;
-
-export function lineStartAt(source: string, pos: number): number {
-  return pos === 0 ? 0 : source.lastIndexOf('\n', pos - 1) + 1;
-}
-
-export function lineEndAt(source: string, pos: number): number {
-  const end = source.indexOf('\n', pos);
-  return end === -1 ? source.length : end;
-}
-
-// True when only white space precedes pos on its line. A block widget cannot start in the middle of
-// a line, so a block inside a quote or after a list marker is drawn as plain text.
-export function startsLine(source: string, pos: number): boolean {
-  return source.slice(lineStartAt(source, pos), pos).trim() === '';
-}
 
 // True when nothing but white space shares the line with the range.
 export function aloneOnLine(source: string, from: number, to: number): boolean {

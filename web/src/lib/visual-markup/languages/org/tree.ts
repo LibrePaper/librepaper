@@ -1,7 +1,7 @@
 import type { SyntaxNode, SyntaxNodeRef } from '@lezer/common';
 import { Range, Token } from '../../core/tokens';
 import { orgTree } from '../../../source-trees.js';
-import { lineEndAt, lineStartAt, startsLine } from '../markdown/shape';
+import { lineEndAt, lineStartAt, startsLine } from '../../core/lines';
 import { AFFILIATED, ENTITY_CHARS, HEADER_KEYS, IMAGE_PATH, MATH_ENVIRONMENTS, QUOTE_BLOCKS, TODO_KEYS } from './catalog';
 
 const SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;

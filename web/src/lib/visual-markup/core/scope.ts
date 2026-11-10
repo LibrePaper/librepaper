@@ -23,7 +23,8 @@ export function scopeAt(state: EditorState, pos: number, language: Language): Ed
     for (const token of list) {
       if (pos < token.from || pos > token.to) continue;
 
-      if (token.kind === 'table') {
+      // Org and Markdown pipe tables are `mdtable` containers; the rest are tables by kind.
+      if (token.kind === 'table' || token.name === 'mdtable') {
         scope.inTable = true;
         scope.table = token;
         scope.tableEditable = language.table?.editable?.(source, token) ?? true;

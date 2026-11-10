@@ -2,9 +2,10 @@ import type { SyntaxNode, SyntaxNodeRef } from '@lezer/common';
 import { Range, Token } from '../../core/tokens';
 import { FIELD, STATE_OF, validateField } from '../../../tasks/syntax.js';
 import { markdownTree } from '../../../source-trees.js';
+import { lineEndAt, lineStartAt, startsLine } from '../../core/lines';
 import {
   aloneOnLine, attributesOf, bareCitation, bareUrlText, bracketCitation, codeMeta,
-  lineEndAt, lineStartAt, optionLine, skipBlanks, startsLine, trimEnd, unangle
+  optionLine, skipBlanks, trimEnd, unangle
 } from './shape';
 
 const HEADING = /^ATXHeading[1-6]$/;
