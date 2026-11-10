@@ -1,17 +1,52 @@
-// Org-mode language support: the Lezer tree of ./parser.js, for highlighting
-// and folding. The parser reads the whole text at once, which is fast enough
-// for Org files, and the tree is also what the document index reads.
+// Org-mode language support: the Lezer tree of org.wasm, for highlighting and
+// folding. The module parses the whole text at once, reusing the top-level
+// sections an edit did not touch, and the tree is also what the document index
+// reads. Until the module has loaded the editor shows plain text (the keymaps
+// work meanwhile); the view picks the language up when it arrives.
 import { indentService, Language, LanguageSupport } from "@codemirror/language";
-import { countColumn, Prec } from "@codemirror/state";
-import { keymap } from "@codemirror/view";
+import { Compartment, countColumn, Prec } from "@codemirror/state";
+import { keymap, ViewPlugin } from "@codemirror/view";
+import { Parser } from "@lezer/common";
 import { enclosing, orgKeymap } from "../org-editing.js";
 import { pipeTableAt, pipeTableKeymap } from "../pipe-table-keymap.js";
-import { parser } from "./parser.js";
+import { loadOrgSyntax, orgSyntax } from "./module.js";
 import { orgData } from "./props.js";
 
-export { parseOrg } from "./parser.js";
+class OrgParser extends Parser {
+  constructor(api) {
+    super();
+    this.api = api;
+  }
 
-export const orgLanguage = new Language(orgData, parser, [], "org");
+  createParse(input, fragments) {
+    const api = this.api;
+    let done = false;
+    return {
+      parsedPos: 0,
+      stoppedAt: null,
+      stopAt() {},
+      advance() {
+        if (done) return null;
+        done = true;
+        const tree = api.parse(input.read(0, input.length), fragments);
+        this.parsedPos = input.length;
+        return tree;
+      },
+    };
+  }
+}
+
+const languages = new WeakMap();
+
+/** The Org language for a loaded module. */
+export function orgLanguageFor(api) {
+  let language = languages.get(api);
+  if (!language) {
+    language = new Language(orgData, new OrgParser(api), [], "org");
+    languages.set(api, language);
+  }
+  return language;
+}
 
 // The column where a list item's text starts, after its bullet and checkbox.
 function itemTextColumn(state, item) {
@@ -45,11 +80,27 @@ function orgIndent(context, pos) {
   return null;
 }
 
-/** The Org-mode language support. Table keys come first, so Tab in a table moves between cells. */
-export function org() {
-  return new LanguageSupport(orgLanguage, [
+/** The keys and indentation, which work with or without the tree. */
+function editing() {
+  return [
     Prec.high(keymap.of(pipeTableKeymap("org", pipeTableAt))),
     Prec.high(keymap.of(orgKeymap)),
     indentService.of(orgIndent),
-  ]);
+  ];
+}
+
+/** The Org-mode language support. Table keys come first, so Tab in a table moves between cells. */
+export function org() {
+  // Already loaded: no plain-text paint first.
+  const loaded = orgSyntax();
+  if (loaded) return new LanguageSupport(orgLanguageFor(loaded), editing());
+  const compartment = new Compartment();
+  const upgrade = ViewPlugin.define((view) => {
+    let alive = true;
+    loadOrgSyntax().then((api) => {
+      if (api && alive) view.dispatch({ effects: compartment.reconfigure(new LanguageSupport(orgLanguageFor(api))) });
+    });
+    return { destroy() { alive = false; } };
+  });
+  return [compartment.of([]), editing(), upgrade];
 }
