@@ -5,7 +5,7 @@
 
 import { TreeFragment } from "@lezer/common";
 import { parser as latexParser } from "./latex-language/parser.js";
-import { parseOrg } from "./org-language/parser.js";
+import { parser as orgParser } from "./org-language/parser.js";
 import { pandocMarkdownParser } from "./pandoc-markdown.js";
 import { loadTypstSyntax, typstSyntax } from "./typst-language/module.js";
 
@@ -98,12 +98,12 @@ class Recent {
 
 /** Results by parsed text, and the last parse per key for reuse. @type {{ latex: Recent<{ text: string, result: Tree }>, markdown: Recent<{ text: string, result: MarkdownTrees }>, org: Recent<{ text: string, result: Tree }> }} */
 const byText = { latex: new Recent(), markdown: new Recent(), org: new Recent() };
-/** @type {{ latex: Recent<{ text: string, tree: Tree }>, markdown: Recent<{ text: string, tree: Tree }> }} */
-const byKey = { latex: new Recent(), markdown: new Recent() };
+/** @type {{ latex: Recent<{ text: string, tree: Tree }>, markdown: Recent<{ text: string, tree: Tree }>, org: Recent<{ text: string, tree: Tree }> }} */
+const byKey = { latex: new Recent(), markdown: new Recent(), org: new Recent() };
 
 /**
  * Parses `text`, from the key's previous tree when it has one.
- * @param {"latex" | "markdown"} kind
+ * @param {"latex" | "markdown" | "org"} kind
  * @param {{ parse: (text: string, fragments?: readonly TreeFragment[]) => Tree }} parser
  * @param {string} text what the parser reads
  * @param {string | undefined} key
@@ -157,16 +157,16 @@ export function markdownTree(text, key) {
 }
 
 /**
- * The Org syntax tree of exactly `text`. The parser reads the whole text, so
- * an edit re-parses it; the result is remembered by text.
+ * The Org syntax tree of exactly `text`. An edit re-parses only the top-level
+ * sections it touches; the result is remembered by text.
  * @param {string} text
- * @param {string} [_key] usually the file path; unused, kept for symmetry with the other formats
+ * @param {string} [key] usually the file path; lets an edit reuse the old tree
  * @returns {Tree}
  */
-export function orgTree(text, _key) {
+export function orgTree(text, key) {
   const hit = byText.org.get(text);
   if (hit) return hit.result;
-  const tree = parseOrg(text);
+  const tree = parse("org", orgParser, text, key);
   byText.org.set(text, { text, result: tree });
   return tree;
 }

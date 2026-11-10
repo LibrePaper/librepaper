@@ -211,26 +211,32 @@ function splitLines(text) {
   }
 }
 
+const TODO_LINE = /^#\+(?:SEQ_|TYP_)?TODO:(.*)$/i;
+
 /** The words #+TODO / #+SEQ_TODO / #+TYP_TODO lines declare, plus TODO and DONE. */
-function todoWords(lines) {
+function todoWords(text) {
   const words = new Set(["TODO", "DONE"]);
-  for (const line of lines) {
-    if (line.text.charCodeAt(0) !== 35) continue;
-    const m = /^#\+(?:SEQ_|TYP_)?TODO:(.*)$/i.exec(line.text);
-    if (!m) continue;
+  const see = (from) => {
+    let to = text.indexOf("\n", from);
+    if (to < 0) to = text.length;
+    if (to > from && text.charCodeAt(to - 1) === 13) to--;
+    const m = TODO_LINE.exec(text.slice(from, to));
+    if (!m) return;
     for (const word of m[1].split(/\s+/)) {
       const name = word.replace(/\(.*$/, "");
       if (name && name !== "|") words.add(name);
     }
-  }
+  };
+  if (text.charCodeAt(0) === 35) see(0);
+  for (let i = text.indexOf("\n#"); i >= 0; i = text.indexOf("\n#", i + 1)) see(i + 1);
   return words;
 }
 
 class OrgParse {
-  constructor(text) {
+  constructor(text, todo) {
     this.text = text;
     this.lines = splitLines(text);
-    this.todo = todoWords(this.lines);
+    this.todo = todo;
     /** @type {Map<string, number>} searches that found nothing: key -> range end they covered */
     this.failed = new Map();
   }
@@ -1014,26 +1020,139 @@ function emit(n, buffer) {
   buffer.push(id, n.from, n.to, buffer.length + 4 - start);
 }
 
-/**
- * The syntax tree of an Org text.
- * @param {string} text
- * @returns {import("@lezer/common").Tree}
- */
-export function parseOrg(text) {
-  const doc = new OrgParse(text).parse();
+/** Write the children of `n`, and nothing else, into a Tree.build buffer. */
+function build(n, topID, length) {
   const buffer = [];
-  // The Document is the tree's own top node, so only its children go in the buffer.
-  let cursor = 0;
-  for (const kid of doc.kids) {
+  let cursor = n.from;
+  for (const kid of n.kids) {
     if (kid.from < cursor) continue;
     emit(kid, buffer);
     cursor = kid.to;
   }
-  return Tree.build({ buffer, nodeSet, topID: ID.get("Document"), length: text.length });
+  return Tree.build({ buffer, nodeSet, topID, length });
+}
+
+const SECTION = ID.get("Section");
+const DOCUMENT = ID.get("Document");
+const HEAD_AT = /\*+(?=[ \t])/y;
+
+/**
+ * Where the document's top-level sections start: every headline whose level is
+ * not deeper than the first headline of the section it would otherwise nest in.
+ * @param {string} text
+ * @returns {number[]}
+ */
+function sectionStarts(text) {
+  const starts = [];
+  let base = 0;
+  const see = (at) => {
+    HEAD_AT.lastIndex = at;
+    const m = HEAD_AT.exec(text);
+    if (m && (!starts.length || m[0].length <= base)) {
+      starts.push(at);
+      base = m[0].length;
+    }
+  };
+  if (text.charCodeAt(0) === 42) see(0);
+  for (let i = text.indexOf("\n*"); i >= 0; i = text.indexOf("\n*", i + 1)) see(i + 1);
+  return starts;
+}
+
+/**
+ * What a tree remembers so a later parse can reuse its pieces: the TODO words it
+ * was parsed with and its chunks (the text before the first headline, then each
+ * top-level section), each with the text span it was parsed from and the
+ * children it contributed to the Document, positioned relative to the span start.
+ * @typedef {{ from: number, to: number, children: readonly (Tree | import("@lezer/common").TreeBuffer)[], positions: readonly number[] }} Chunk
+ * @type {WeakMap<Tree, { todo: Set<string>, chunks: Chunk[] }>}
+ */
+const memory = new WeakMap();
+
+/** How the last parse went: chunks parsed fresh or taken from the previous tree. */
+export const parseStats = { chunks: 0, reused: 0 };
+
+const sameSet = (a, b) => a.size === b.size && [...a].every((w) => b.has(w));
+
+/**
+ * The syntax tree of an Org text. A section whose text is unchanged inside one
+ * of `fragments` (and parsed with the same TODO words) is taken from the tree
+ * the fragment came from instead of being parsed again.
+ * @param {string} text
+ * @param {readonly import("@lezer/common").TreeFragment[]} [fragments]
+ * @returns {import("@lezer/common").Tree}
+ */
+export function parseOrg(text, fragments = []) {
+  const todo = todoWords(text);
+  const starts = sectionStarts(text);
+  /** @type {Array<[number, number]>} */
+  const spans = [];
+  if (!starts.length) spans.push([0, text.length]);
+  else {
+    if (starts[0] > 0) spans.push([0, starts[0]]);
+    starts.forEach((from, k) => spans.push([from, k + 1 < starts.length ? starts[k + 1] : text.length]));
+  }
+  const usable = new Map();
+  const old = (fragment) => {
+    let meta = usable.get(fragment.tree);
+    if (meta === undefined) {
+      meta = memory.get(fragment.tree);
+      if (meta && !sameSet(meta.todo, todo)) meta = null;
+      usable.set(fragment.tree, meta ?? null);
+    }
+    return meta;
+  };
+  const children = [];
+  const positions = [];
+  /** @type {Chunk[]} */
+  const chunks = [];
+  let fi = 0;
+  let reused = 0;
+  for (const [from, to] of spans) {
+    let chunk = null;
+    while (fi < fragments.length && fragments[fi].to < to) fi++;
+    const fragment = fragments[fi];
+    const meta = fragment && fragment.from <= from ? old(fragment) : null;
+    if (meta) {
+      const start = from + fragment.offset;
+      let lo = 0;
+      let hi = meta.chunks.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (meta.chunks[mid].from < start) lo = mid + 1;
+        else hi = mid;
+      }
+      const hit = meta.chunks[lo];
+      if (hit && hit.from === start && hit.to === to + fragment.offset) {
+        chunk = { from, to, children: hit.children, positions: hit.positions };
+        reused++;
+      }
+    }
+    if (!chunk) {
+      // A chunk ends just before a headline line, so its last character is a line break.
+      const part = new OrgParse(to < text.length ? text.slice(from, to - 1) : text.slice(from, to), todo).parse();
+      if (part.kids.length === 1 && part.kids[0].name === "Section") {
+        const section = build(part.kids[0], SECTION, part.kids[0].to);
+        chunk = { from, to, children: [section], positions: [0] };
+      } else {
+        const tree = build(part, DOCUMENT, part.to);
+        chunk = { from, to, children: tree.children, positions: tree.positions };
+      }
+    }
+    chunks.push(chunk);
+    chunk.children.forEach((child, i) => {
+      children.push(child);
+      positions.push(from + chunk.positions[i]);
+    });
+  }
+  parseStats.chunks = spans.length;
+  parseStats.reused = reused;
+  const tree = new Tree(nodeSet.types[DOCUMENT], children, positions, text.length);
+  memory.set(tree, { todo, chunks });
+  return tree;
 }
 
 class OrgParser extends Parser {
-  createParse(input) {
+  createParse(input, fragments) {
     let done = false;
     return {
       parsedPos: 0,
@@ -1042,7 +1161,7 @@ class OrgParser extends Parser {
       advance() {
         if (done) return null;
         done = true;
-        const tree = parseOrg(input.read(0, input.length));
+        const tree = parseOrg(input.read(0, input.length), fragments);
         this.parsedPos = input.length;
         return tree;
       },
@@ -1050,5 +1169,5 @@ class OrgParser extends Parser {
   }
 }
 
-/** The Org parser: `parser.parse(text)` returns the Lezer tree. */
+/** The Org parser: `parser.parse(text, fragments)` returns the Lezer tree. */
 export const parser = new OrgParser();
