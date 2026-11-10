@@ -15,10 +15,10 @@ const temporary = mkdtempSync(join(tmpdir(), "librepaper-live-patch-"));
 
 const page_html = `<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/katex.min.css">
 <body><main id="root">
-<p class="ltx_p" id="p1" data-sourcepos="0:12:1-0:14:20">We have <math class="ltx_Math" alttext="x^{2}" display="inline" data-sourcepos="0:12:9-0:12:15"><mi>x</mi></math> and more text<span class="ltx_note"><span class="ltx_note_outer"><span class="ltx_note_content">A footnote mentioning zebra crossing here.</span></span></span> and some unique wording.</p>
-<table class="ltx_equation" data-sourcepos="0:15:1-0:15:30"><tbody><tr><td><math class="ltx_Math" alttext="E = mc^{2}" display="block"><mi>E</mi></math></td></tr></tbody></table>
-<p class="ltx_p" id="p2" data-sourcepos="0:16:1-0:17:20">Repeated phrase here. Another Repeated phrase here.</p>
-<p class="ltx_p" id="p3" data-sourcepos="0:20:1-0:20:40">Twin <math class="ltx_Math" alttext="y" display="inline"><mi>y</mi></math> and <math class="ltx_Math" alttext="y" display="inline"><mi>y</mi></math> here.</p>
+<p class="ltx_p" id="p1" data-sourcepos="0:12:2-0:12:2">We have <math class="ltx_Math" alttext="x^{2}" display="inline" data-sourcepos="0:12:9-0:12:9"><mi>x</mi></math> and more text<span class="ltx_note"><span class="ltx_note_outer"><span class="ltx_note_content">A footnote mentioning zebra crossing here.</span></span></span> and some unique wording.</p>
+<table class="ltx_equation" data-sourcepos="0:15:1-0:15:1"><tbody><tr><td><math class="ltx_Math" alttext="E = mc^{2}" display="block"><mi>E</mi></math></td></tr></tbody></table>
+<p class="ltx_p" id="p2" data-sourcepos="0:16:2-0:16:2">Repeated phrase here. Another Repeated phrase here.</p>
+<p class="ltx_p" id="p3" data-sourcepos="0:20:2-0:20:2">Twin <math class="ltx_Math" alttext="y" display="inline"><mi>y</mi></math> and <math class="ltx_Math" alttext="y" display="inline"><mi>y</mi></math> here.</p>
 </main>
 <script src="/katex.min.js"></script>
 <script type="module">
@@ -55,7 +55,8 @@ try {
   const changed = async () => JSON.parse(await page.evaluate("JSON.stringify(window.changed())"));
   const html = () => page.evaluate("document.getElementById('root').innerHTML");
   const prose = (over) => ({ kind: "prose", file: "main.tex", line: 14, before: "", deleted: "", inserted: "", after: "", ...over });
-  const math = (over) => ({ kind: "math", file: "main.tex", line: 12, oldTex: "x^{2}", tex: "x^{3}", display: false, ...over });
+  // Alttext is normalized TeX, so the patch's oldTex is written the way the source is.
+  const math = (over) => ({ kind: "math", file: "main.tex", line: 12, oldTex: "x^2", tex: "x^{3}", display: false, ...over });
   const rejected = async (label, patch) => {
     const before = await html();
     assert.equal(await call(patch), false, `${label}: returns false`);
@@ -81,22 +82,32 @@ try {
   await rejected("math content only", prose({ line: 12, before: "have x", inserted: "q", after: " and" }));
   await rejected("wrong file", prose({ file: "other.tex", before: "some special", inserted: "x", after: " wording" }));
   await rejected("unknown file", prose({ file: "nope.tex", before: "some special", inserted: "x", after: " wording" }));
-  await rejected("line outside element", prose({ line: 30, before: "some special", inserted: "x", after: " wording" }));
+  await rejected("line past the last element", prose({ line: 30, before: "some special", inserted: "x", after: " wording" }));
   await rejected("deleted spans text nodes", prose({ line: 12, before: "more ", deleted: "text and", inserted: "z", after: " some" }));
   await rejected("no context match", prose({ before: "absent phrase", inserted: "x", after: " nowhere" }));
   await rejected("empty edit", prose({ before: "some special", after: " wording" }));
+
+  // Second line of a multi-line paragraph (p1 spans lines 12-14; it starts at 12).
+  assert.equal(await call(prose({ line: 13, before: "special! wo", deleted: "rding", inserted: "rd", after: "." })), true);
+  assert.deepEqual(await changed(), [" and some special! word."]);
+  // First line of the next paragraph (p2 starts at 16): the edit on line 17 is
+  // looked up in p2, not in p1.
+  assert.equal(await call(prose({ line: 17, before: "Another ", deleted: "Repeated", inserted: "New", after: " phrase" })), true);
+  assert.deepEqual(await changed(), [" and some special! word.", "Repeated phrase here. Another New phrase here."]);
 
   // Math.
   assert.equal(await call(math()), true);
   assert.equal(await page.evaluate("document.querySelectorAll('#p1 math[alttext]').length"), 0, "old math gone");
   const span = JSON.parse(await page.evaluate(`JSON.stringify((() => { const s = document.querySelector('#p1 .lp-live-math'); return s && { tex: s.dataset.lpTex, prov: s.hasAttribute('data-lp-provisional'), pos: s.getAttribute('data-sourcepos'), katex: !!s.querySelector('.katex'), block: s.style.display }; })())`));
-  assert.deepEqual(span, { tex: "x^{3}", prov: true, pos: "0:12:9-0:12:15", katex: true, block: "" });
-  // A second patch finds the live span through data-lp-tex.
-  assert.equal(await call(math({ oldTex: "x ^ {3}", tex: "x^{4}" })), true);
+  assert.deepEqual(span, { tex: "x^{3}", prov: true, pos: "0:12:9-0:12:9", katex: true, block: "" });
+  // A second patch, on a line after the math starts, finds the live span through data-lp-tex.
+  assert.equal(await call(math({ line: 13, oldTex: "x ^ {3}", tex: "x^{4}" })), true);
   assert.equal(await page.evaluate("document.querySelectorAll('#p1 .lp-live-math').length"), 1);
   assert.equal(await page.evaluate("document.querySelector('#p1 .lp-live-math').dataset.lpTex"), "x^{4}");
-  // Display equation.
-  assert.equal(await call(math({ line: 15, oldTex: "E=mc^{2}", tex: "E=mc^{3}", display: true })), true);
+  // Display equation starts at line 15; the patch may name the line before or the line itself.
+  await rejected("display equation too early", math({ line: 11, oldTex: "E=mc^2", tex: "E=mc^{3}", display: true }));
+  await rejected("display equation too late", math({ line: 19, oldTex: "E=mc^2", tex: "E=mc^{3}", display: true }));
+  assert.equal(await call(math({ line: 14, oldTex: "E=mc^2", tex: "E=mc^{3}", display: true })), true);
   assert.equal(await page.evaluate("document.querySelector('.ltx_equation .lp-live-math').style.display"), "block");
   assert.equal(await page.evaluate("document.querySelector('.ltx_equation .lp-live-math').style.textAlign"), "center");
 

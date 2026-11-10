@@ -1,11 +1,19 @@
 // Applies one live patch to the rendered page inside the document frame.
 // Dependency-free. Conservative by design: on any ambiguity nothing changes
 // and the function returns false.
+//
+// The engine's data-sourcepos attributes carry only where a construct starts
+// ("T:L:C-T:L:C" with the same start and end, e.g. "0:12:2-0:12:2" for a
+// paragraph spanning lines 12-14). So a prose element is taken to own every
+// line from its start line up to the next element that starts. Math alttext is
+// normalized TeX (`h_t` becomes `h_{t}`, `x^2` becomes `x^{2}`), so math is
+// compared with whitespace and braces removed.
 
+// Elements inside these are not prose: math, its renderings, footnotes, scripts.
 const SKIP = "math, .ltx_Math, .ltx_equation, .katex, [data-lp-tex], .ltx_note_outer, .ltx_note_content, script, style";
 
 // "T:L:C-T:L:C" or "T:L:C" -> { tag, startLine, endLine }; the start and end
-// tags must match.
+// tags must match. endLine equals startLine when only the start is given.
 export function parseSourcepos(value) {
   if (typeof value !== "string") return null;
   const match = /^(\d+):(\d+):(\d+)(?:-(\d+):(\d+):(\d+))?$/.exec(value.trim());
@@ -17,8 +25,11 @@ export function parseSourcepos(value) {
   return { tag, startLine, endLine: Number(match[5]) };
 }
 
-const covers = (position, tag, line) => position && position.tag === tag
-  && position.startLine <= line && line <= position.endLine;
+// The patch line is where the math node starts in the source, but LaTeXML may
+// point a display environment at its content line, so allow a little slack
+// before and after.
+const startsNear = (position, tag, line) => position && position.tag === tag
+  && line - 1 <= position.startLine && position.startLine <= line + 3;
 
 const isWhitespace = (character) => character === " " || character === "\t" || character === "\n" || character === "\r";
 
@@ -78,11 +89,24 @@ function applyProse(document, sources, patch) {
   if (tag < 0) return false;
   if (deleted === "" && inserted === "") return false;
 
-  let candidates = [];
+  // The owning element is the one that starts closest above the patch line.
+  const reachable = [];
+  let latest = -1;
   for (const element of document.querySelectorAll("[data-sourcepos]")) {
     if (element.closest(SKIP)) continue;
-    if (covers(parseSourcepos(element.getAttribute("data-sourcepos")), tag, line)) candidates.push(element);
+    const position = parseSourcepos(element.getAttribute("data-sourcepos"));
+    if (!position || position.tag !== tag || position.startLine > line) continue;
+    if (position.endLine > position.startLine && line > position.endLine) continue;
+    reachable.push({ element, startLine: position.startLine });
+    latest = Math.max(latest, position.startLine);
   }
+  // An inline element (an \emph span, a citation) can start later on the
+  // paragraph's lines than the paragraph itself; the edit may be in the plain
+  // text around it, so search its enclosing block.
+  const BLOCK = "p, h1, h2, h3, h4, h5, h6, li, td, th, figcaption, dt, dd";
+  let candidates = [...new Set(reachable.filter((entry) => entry.startLine === latest)
+    .map((entry) => entry.element.closest(BLOCK) || entry.element))];
+  // Keep the deepest of those, so a nested wrapper with the same start loses.
   candidates = candidates.filter((element) => !candidates.some((other) => other !== element && element.contains(other)));
 
   const needle = normalize(before + deleted + after);
@@ -123,7 +147,8 @@ function applyProse(document, sources, patch) {
   return true;
 }
 
-const squash = (text) => String(text).replace(/\s+/g, "");
+// Alttext is normalized TeX, so whitespace and braces are not significant.
+const comparableTex = (text) => String(text).replace(/[\s{}]/g, "");
 
 function applyMath(document, sources, katex, patch) {
   const { file, line, oldTex, tex, display } = patch;
@@ -132,16 +157,16 @@ function applyMath(document, sources, katex, patch) {
   const tag = Array.isArray(sources) ? sources.indexOf(file) : -1;
   if (tag < 0) return false;
 
-  const wanted = squash(oldTex);
+  const wanted = comparableTex(oldTex);
   const matches = [];
   for (const element of document.querySelectorAll("math, [data-lp-tex]")) {
     // A KaTeX rendering inside a live span is part of that span.
     if (element.parentElement && element.parentElement.closest("[data-lp-tex]")) continue;
     let positioned = element.hasAttribute("data-sourcepos") ? element : element.closest("[data-sourcepos]");
     if (!positioned) continue;
-    if (!covers(parseSourcepos(positioned.getAttribute("data-sourcepos")), tag, line)) continue;
+    if (!startsNear(parseSourcepos(positioned.getAttribute("data-sourcepos")), tag, line)) continue;
     const source = element.hasAttribute("data-lp-tex") ? element.getAttribute("data-lp-tex") : element.getAttribute("alttext");
-    if (source === null || squash(source) !== wanted) continue;
+    if (source === null || comparableTex(source) !== wanted) continue;
     matches.push(element);
   }
   if (matches.length !== 1) return false;
