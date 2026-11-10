@@ -7,6 +7,7 @@ import { typst2tex } from 'tex2typst';
 import { loadKatex } from '../../katex.js';
 import { registerWidget, replaceRange, WidgetContext } from './widget-registry';
 import { m } from "../../paraglide/messages.js";
+import { iconElement } from '../../icons.js';
 
 export class MathWidget extends WidgetType {
   private text: string;
@@ -102,8 +103,24 @@ export class ImageWidget extends WidgetType {
     if (this.style) image.setAttribute('style', this.style);
     container.appendChild(image);
 
-    if (!this.src) {
+    // A picture that cannot be found is one muted line naming the file, never a
+    // broken image with its alt text wrapped around it.
+    const missing = () => {
+      if (this.destroyed || container.classList.contains('cm-lv-image-missing')) return;
       container.classList.add('cm-lv-image-missing');
+      const note = document.createElement('span');
+      note.className = 'cm-lv-image-note';
+      note.title = this.src;
+      note.append(iconElement('image-off'));
+      note.append(m.widgets_image_missing({ name: this.alt || this.src }));
+      container.replaceChildren(note);
+      view.requestMeasure();
+    };
+    image.addEventListener('load', () => view.requestMeasure());
+    image.addEventListener('error', missing);
+
+    if (!this.src) {
+      missing();
       return container;
     }
 
@@ -117,7 +134,7 @@ export class ImageWidget extends WidgetType {
     Promise.resolve(this.resolver.resolve(path, this.src)).then(url => {
       if (this.destroyed) return;
       if (url) image.src = url;
-      else container.classList.add('cm-lv-image-missing');
+      else missing();
     });
 
     return container;
@@ -398,6 +415,60 @@ export class PillWidget extends WidgetType {
     box.textContent = this.text;
     gap.append(box);
     revealOnMousedown(view, gap);
+    return gap;
+  }
+
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+
+// A compact inline disclosure standing in for folded source, such as the
+// preamble: a chevron, a label and muted metadata, as wide as its content. A
+// click or Enter/Space moves the caret into the folded range, which shows the
+// source as ordinary text and removes the widget, so it is always collapsed.
+export class DisclosureWidget extends WidgetType {
+  constructor(
+    readonly label: string,
+    readonly meta: string,
+    readonly title: string,
+    private kind = ''
+  ) {
+    super();
+  }
+
+  eq(other: WidgetType): boolean {
+    return other instanceof DisclosureWidget && other.label === this.label && other.meta === this.meta && other.title === this.title && other.kind === this.kind;
+  }
+
+  toDOM(view: EditorView): HTMLElement {
+    const gap = document.createElement('div');
+    gap.className = 'cm-lp-pill-gap';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = this.kind ? `cm-lp-disclosure ${this.kind}` : 'cm-lp-disclosure';
+    button.title = this.title;
+    button.setAttribute('aria-label', this.title);
+    button.setAttribute('aria-expanded', 'false');
+    button.append(iconElement('chevron-right'));
+    const label = document.createElement('span');
+    label.className = 'cm-lp-disclosure-label';
+    label.textContent = this.label;
+    button.append(label);
+    if (this.meta) {
+      const meta = document.createElement('span');
+      meta.className = 'cm-lp-disclosure-meta';
+      meta.textContent = this.meta;
+      button.append(meta);
+    }
+    gap.append(button);
+    revealOnMousedown(view, gap);
+    // A keyboard activation fires click with no pointer (detail 0).
+    button.addEventListener('click', event => {
+      if (event.detail !== 0) return;
+      view.dispatch({ selection: { anchor: view.posAtDOM(gap) } });
+      view.focus();
+    });
     return gap;
   }
 

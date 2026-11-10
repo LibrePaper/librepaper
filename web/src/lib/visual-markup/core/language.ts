@@ -24,6 +24,8 @@ export type WidgetKind =
   | 'typref' | 'typlabel' | 'typinclude' | 'typtitle' | 'swatch' | 'typchip'
   // The number of a numbered heading, drawn before its text.
   | 'headnum'
+  // "Figure 3." before a figure's caption text.
+  | 'captionnum'
   // A table drawn as a box naming it.
   | 'tablebox'
   // A task's checkbox, and its metadata chips: a field and a tag.

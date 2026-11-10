@@ -46,6 +46,7 @@ function emptyFacts() {
     theorems: new Map(),
     environmentNumbers: new Map(),
     headingNumbers: new Map(),
+    captionNumbers: new Map(),
     citeStyle: "author-year",
   };
 }
@@ -325,6 +326,35 @@ class HeadNumWidget extends WidgetType {
 registerWidget("headnum", ({ token, state }) => {
   const number = factsOf(state).headingNumbers.get(token.from);
   return number ? new HeadNumWidget(number) : null;
+});
+
+// "Figure 3." before the text of a figure's \caption, drawn only when the numbering
+// pass gave that caption a number. Nothing is invented for a caption without one.
+class CaptionNumWidget extends WidgetType {
+  constructor(text) {
+    super();
+    this.text = text;
+  }
+
+  eq(other) {
+    return other instanceof CaptionNumWidget && other.text === this.text;
+  }
+
+  toDOM() {
+    const element = document.createElement("span");
+    element.className = "cm-lp-captionnum";
+    element.textContent = this.text;
+    return element;
+  }
+
+  ignoreEvent() {
+    return false;
+  }
+}
+
+registerWidget("captionnum", ({ token, state }) => {
+  const number = factsOf(state).captionNumbers?.get(token.from);
+  return number ? new CaptionNumWidget(m.widgets_figure_number({ number })) : null;
 });
 
 // An \input, \include or \subfile, shown as a chip with the file's name.

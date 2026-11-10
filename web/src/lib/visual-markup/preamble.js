@@ -1,6 +1,6 @@
 import { StateField } from "@codemirror/state";
 import { Decoration, EditorView } from "@codemirror/view";
-import { PillWidget, revealingSelection } from "./markup.ts";
+import { DisclosureWidget, PillWidget, revealingSelection } from "./markup.ts";
 import { latexCommands, readArguments } from "../latex-language/args.js";
 import { findMetadata } from "./metadata.js";
 import { m } from "../paraglide/messages.js";
@@ -62,15 +62,23 @@ function foldAround(revealed, from, to, summary) {
   }
   if (start <= to) pieces.push([start, to]);
 
-  // The summary names the document's class and packages; the other folds say so.
+  // The first fold is the disclosure that names the document's class and
+  // packages; the other folds say there is more.
   return Decoration.set(
     pieces.map(([pieceFrom, pieceTo], index) =>
-      widgetFor(pieceFrom, pieceTo, index === 0 ? summary : m.preamble_more()),
+      index === 0 ? widgetFor(pieceFrom, pieceTo, summary) : pillFor(pieceFrom, pieceTo, m.preamble_more()),
     ),
   );
 }
 
-function widgetFor(from, to, text) {
+function widgetFor(from, to, meta) {
+  return Decoration.replace({
+    widget: new DisclosureWidget(m.preamble_summary_label(), meta, m.preamble_show(), "cm-lp-preamble"),
+    block: true,
+  }).range(from, to);
+}
+
+function pillFor(from, to, text) {
   return Decoration.replace({ widget: new PillWidget(text, m.preamble_show(), "cm-lp-preamble"), block: true }).range(from, to);
 }
 
@@ -126,8 +134,10 @@ function summarise(code, commands) {
     }
   }
 
+  // The metadata beside the "Preamble" label: the class when known, the package
+  // count when not zero, and nothing when neither is known.
   if (documentClass !== null && documentClass.trim() !== "") {
-    return m.preamble_summary_class({ documentClass: documentClass.trim(), count: packages });
+    return packages > 0 ? m.preamble_meta_class({ documentClass: documentClass.trim(), count: packages }) : documentClass.trim();
   }
-  return m.preamble_summary_packages({ count: packages });
+  return packages > 0 ? m.preamble_meta_packages({ count: packages }) : "";
 }
