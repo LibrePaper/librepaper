@@ -21,15 +21,15 @@ These terms cover librepaper.org only. Other servers that run LibrePaper have th
 - You sign in with GitHub or Google. You must be old enough to hold the account you sign in with.
 - You are responsible for what is done with your account, and with the share links and agent tokens you create. Anyone who holds a link or a token can use it until it expires or you revoke it.
 - Each account has a storage limit, currently 50 MiB. The limit can change.
-- An account that has not signed in for 365 days is erased with every document it owns. See [data retention](privacy.html#data-retention).
-- You can leave at any time by [erasing your account](privacy.html#erasing-an-account).
+- An account that has not signed in for 365 days is erased with every document it owns, unless it is blocked. See [data retention](privacy.html#data-retention).
+- You can leave by [erasing your account](privacy.html#erasing-an-account) in Settings. If your account is blocked, email [admin@librepaper.org](mailto:admin@librepaper.org).
 
 ## Your content
 
 - What you write and upload stays yours. librepaper.org claims no ownership of it.
-- You allow librepaper.org to store your content, back it up, process it, show it to the people you share it with, and have it assessed as described under [Moderation](#moderation). That permission exists only to run the service, and it ends when the content is deleted and the backups that hold it expire.
+- You allow librepaper.org to store, back up and process your content, and to show it to the people you share it with. You also allow the review described under [Moderation](#moderation). That permission exists only to run the service, and it ends when the content is deleted and the backups that hold it expire.
 - You are responsible for your content. Upload only what you have the right to store and share.
-- Documents are not end-to-end encrypted, and administrators are able to read them. Do not store private or highly sensitive data on librepaper.org.
+- Documents are not end-to-end encrypted, and administrators are able to read them. Do not upload confidential information or highly sensitive personal data.
 
 ## Acceptable use
 
