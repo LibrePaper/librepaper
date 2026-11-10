@@ -14,7 +14,7 @@ const DIV_OPEN = /^(:{3,})[ \t]*(.*?)[ \t]*$/;
 const DIV_CLOSE = /^(:{3,})$/;
 const DIV_NESTED = /^:{3,}[ \t]*\S/;
 const ORDERED = /(\d{1,9})([.)])(?=[ \t\n]|$)/y;
-const TASK = /[ \t]+\[([ xX\/-])\](?=[ \t\n]|$)/y;
+export const TASK = /[ \t]+\[([ xX\/-])\](?=[ \t\n]|$)/y;
 const FOOTNOTE_DEF = /\[\^([^\]\s^]+)\]:[ \t]*/y;
 const LINK_DEF = /\[([^\]\n]+)\]:[ \t]*\S/y;
 // A line that starts another block, so it cannot be the text line of a setext heading.
@@ -429,7 +429,7 @@ export const list: Rule = (source, pos) => {
 // "done/total" over the task descendants of the item at pos, or null when it has none. Following
 // lines belong to the item while they are blank or indented past its marker. Cancelled tasks are
 // left out of both numbers.
-function taskProgress(source: string, pos: number): string | null {
+export function taskProgress(source: string, pos: number): string | null {
   const column = pos - lineStartAt(source, pos);
   let done = 0;
   let total = 0;

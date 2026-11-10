@@ -120,6 +120,7 @@ export interface Language {
   id: string;
   name: string;
   rules: Rule[];
+  tokenize?(source: string): Token[] | null;
   style(token: Token): TokenStyle | null;
   commands: LanguageCommands;
   table?: TableAdapter;

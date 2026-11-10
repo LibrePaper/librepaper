@@ -1,6 +1,7 @@
 import { registerLanguage, Language, LanguageCommands, TokenStyle } from '../../core/language';
 import { Token } from '../../core/tokens';
 import { rules } from './rules';
+import { tokenizeMarkdown } from './tree';
 
 const commands: LanguageCommands = {
   wrap: {
@@ -165,6 +166,7 @@ export const markdown: Language = {
   id: 'markdown',
   name: 'Markdown',
   rules,
+  tokenize: tokenizeMarkdown,
   style,
   commands,
   // A widget reads the source through the image resolver, which takes the path from meta.
