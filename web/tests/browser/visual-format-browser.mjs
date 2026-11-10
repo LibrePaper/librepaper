@@ -1,5 +1,5 @@
 // A browser-level check for the visual mode formatting toolbar: bold, italic,
-// underline, headings and lists, in each of the three markup formats.
+// underline, headings and lists, in each of the four markup formats.
 //
 // A plain CodeMirror view is mounted with the visual layer on, and the
 // formatting actions are applied to it through applyFormat and read back with
@@ -73,6 +73,19 @@ const formats = {
       inlineMath: [(text) => `$${text}$`],
     },
     heading: (level, text) => `${"#".repeat(level)} ${text}`,
+    bullet: /^- (.+)$/,
+    number: /^\d+\. (.+)$/,
+    environment: {},
+  },
+  org: {
+    wrap: {
+      bold: [(text) => `*${text}*`],
+      italic: [(text) => `/${text}/`],
+      underline: [(text) => `_${text}_`],
+      mono: [(text) => `~${text}~`],
+      inlineMath: [(text) => `\\(${text}\\)`],
+    },
+    heading: (level, text) => `${"*".repeat(level)} ${text}`,
     bullet: /^- (.+)$/,
     number: /^\d+\. (.+)$/,
     environment: {},
