@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "grammar:bibtex": "node tools/bibtex-grammar.mjs",
     "grammar:latex": "node tools/latex-grammar.mjs",
     "i18n": "paraglide-js compile --project ./project.inlang --silent",
     "build": "paraglide-js compile --project ./project.inlang --silent && node tests/unit/vocabulary.js && vite build && vite build --config vite.frame.config.js && node tools/vendor-katex.mjs && node tools/compress-shell.mjs",
@@ -63,7 +64,6 @@
     "@codemirror/lang-yaml": "^6.1.2",
     "@codemirror/language": "^6.11.3",
     "@codemirror/language-data": "^6.5.2",
-    "@codemirror/legacy-modes": "^6.5.1",
     "@codemirror/lint": "^6.9.7",
     "@codemirror/merge": "^6.8.0",
     "@codemirror/search": "^6.5.11",
