@@ -122,6 +122,8 @@ impl From<CatalogError> for WriteError {
             CatalogError::Invalid(why) => Self::Invalid(why),
             CatalogError::Conflict(why) => Self::Conflict(why),
             CatalogError::Quota(scope) => Self::Quota(scope),
+            // A momentary refusal, the same kind as the memory budget's.
+            CatalogError::Busy => Self::Busy,
             CatalogError::RateLimited => Self::RateLimited,
             CatalogError::Duplicate(of) => Self::Duplicate(of),
             CatalogError::Ownership(why) => Self::Storage(why),

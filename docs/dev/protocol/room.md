@@ -142,6 +142,7 @@ send or receive source CRDT updates. Source synchronization is editor-only.
   | `log_quota` | yes | Document log awaits compaction; counts toward socket closure. |
   | `document_buffer` | yes | Unsaved document buffer is full; pressure exemption. |
   | `pending_budget` | yes | Deployment pending-work budget is full; pressure exemption. |
+  | `storage_busy` | yes | The server could not reserve quota for the update in time because storage accounting was busy; pressure exemption. |
   | `refused` | no | Non-retryable ceiling; counts toward socket closure. |
 
 Other room frames include `doc-label`, annotation action results, and

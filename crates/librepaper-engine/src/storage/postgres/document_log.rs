@@ -24,6 +24,19 @@ use super::usage::{lock_storage_usage, usage_bytes, Sources, UsageScope};
 use super::write_tx::{Fence, Lock};
 use super::{Error, PostgresCatalog, Result};
 
+/// How long a log reservation waits for its row locks (the document row and
+/// the deployment-wide storage-usage row) before it gives up and the update
+/// is refused as `storage_busy`. Long enough for an ordinary flush in another
+/// document to finish and release the storage-usage lock, so that normal
+/// contention never refuses anything. Short enough that a keystroke does not
+/// hang when a flush is stalled behind a slow database: clients keep a
+/// refused retryable update and resend it, so a refusal costs a delay, not
+/// the edit.
+pub const LOG_RESERVATION_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// SQLSTATE `lock_not_available`: PostgreSQL gave up waiting for a lock.
+const LOCK_NOT_AVAILABLE: &str = "55P03";
+
 /// One row of the log.
 #[derive(Clone, Debug)]
 pub struct LogRow {
@@ -520,8 +533,23 @@ impl PostgresCatalog {
         wanted: i64,
         minimum: i64,
     ) -> Result<i64> {
-        self.reserve_chat_bytes(document_id, reservation_key, wanted, minimum)
-            .await
+        // A wait that runs out is `Busy`; any other failure is unchanged.
+        self.reserve_bytes_waiting(
+            document_id,
+            reservation_key,
+            wanted,
+            minimum,
+            Some(LOG_RESERVATION_LOCK_WAIT),
+        )
+        .await
+        .map_err(|error| match error {
+            Error::Database(sqlx::Error::Database(database))
+                if database.code().as_deref() == Some(LOCK_NOT_AVAILABLE) =>
+            {
+                Error::Busy
+            }
+            other => other,
+        })
     }
 
     /// Deletes the log reservation row `reservation_key`. A missing row is

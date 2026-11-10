@@ -132,6 +132,12 @@ impl Refusal {
             }
             CatalogError::NotFound => Self::not_written(Kind::NotFound, not_found),
             CatalogError::Quota(scope) => Self::not_written(Kind::Quota(scope), scope.to_string()),
+            // Busy waiting for a lock wrote nothing; the same request is
+            // worth sending again shortly.
+            CatalogError::Busy => Self::not_written(
+                Kind::Unavailable,
+                "the server is busy; try again in a moment",
+            ),
             CatalogError::RateLimited => {
                 Self::not_written(Kind::RateLimited, CatalogError::RateLimited.to_string())
             }

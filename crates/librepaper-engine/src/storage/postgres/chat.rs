@@ -208,13 +208,28 @@ impl PostgresCatalog {
         wanted: i64,
         minimum: i64,
     ) -> Result<i64> {
+        self.reserve_bytes_waiting(document_id, key, wanted, minimum, None)
+            .await
+    }
+
+    /// The reservation both public entry points share. With `lock_wait` set,
+    /// the transaction waits at most that long for its row locks.
+    pub(super) async fn reserve_bytes_waiting(
+        &self,
+        document_id: Uuid,
+        key: Uuid,
+        wanted: i64,
+        minimum: i64,
+        lock_wait: Option<std::time::Duration>,
+    ) -> Result<i64> {
         if wanted <= 0 || minimum <= 0 || minimum > wanted {
             return Err(Error::Invalid("invalid chat reservation".into()));
         }
         let mut tx = self
-            .begin_write(
+            .begin_write_waiting(
                 Fence::Required,
                 &[Lock::Document(document_id), Lock::StorageUsage],
+                lock_wait,
             )
             .await?;
         let owner_id: Option<Uuid> = sqlx::query_scalar(

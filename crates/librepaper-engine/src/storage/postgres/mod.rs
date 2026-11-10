@@ -368,6 +368,12 @@ pub enum Error {
     Conflict(String),
     #[error("{0}")]
     Quota(QuotaScope),
+    /// A write gave up waiting for a row lock another transaction held
+    /// (SQLSTATE `55P03`, `lock_not_available`). Nothing was written. This
+    /// is a temporary condition, not a quota problem and not a fault: the
+    /// same write is worth trying again shortly.
+    #[error("storage is busy; try again shortly")]
+    Busy,
     #[error("account upload rate exceeded")]
     RateLimited,
     #[error("{0}")]

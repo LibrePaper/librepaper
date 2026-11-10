@@ -1367,6 +1367,20 @@ impl Sequencer {
                 .await
             {
                 Ok(total) => inner.reserved = total,
+                // The reservation could not get its locks in time, which
+                // happens while a flush elsewhere is stalled behind a slow
+                // database. Nothing was reserved or accepted; the client
+                // keeps the edit and resends it. It is back pressure from
+                // the deployment, not misbehaviour, so it is exempt from the
+                // consecutive-refusal close (`pressure`).
+                Err(postgres::Error::Busy) => {
+                    return retryable(
+                        &inner,
+                        "the server is busy saving; this edit will be sent again",
+                        "storage_busy",
+                        true,
+                    );
+                }
                 Err(_) => {
                     return retryable(
                         &inner,

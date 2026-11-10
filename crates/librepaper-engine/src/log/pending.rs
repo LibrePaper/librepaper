@@ -111,7 +111,9 @@ impl PendingBudget {
 
     /// Takes room for a payload that is about to be held in a document
     /// buffer. Non-blocking by design: this runs on the typing path, and a
-    /// keystroke must not queue behind a database recovery.
+    /// keystroke must not queue behind a database recovery. The durable quota
+    /// reservation that follows is bounded the same way: it waits about a
+    /// second for its locks, then refuses the update with `storage_busy`.
     pub fn try_retain(self: &Arc<Self>, bytes: u64) -> Result<Reservation, Pressure> {
         match self.retained.try_take(bytes) {
             true => Ok(Reservation {

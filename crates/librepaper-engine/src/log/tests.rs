@@ -154,6 +154,9 @@ struct FakeCatalog {
     /// The durable quota still unreserved. `reserve_log_bytes` grants what
     /// fits, as the real catalog does, so a test can run the quota down.
     reserve_room: AtomicI64,
+    /// When set, `reserve_log_bytes` fails before it reserves anything:
+    /// `RESERVE_BUSY` with `Error::Busy`, `RESERVE_OTHER` with another error.
+    reserve_failure: std::sync::atomic::AtomicU8,
     /// What the (single) reservation row holds.
     reserved_row: AtomicI64,
     /// How many times a reservation transaction was asked for.
@@ -182,6 +185,7 @@ impl FakeCatalog {
             fail_release: std::sync::atomic::AtomicBool::new(false),
             fail_every_flush: std::sync::atomic::AtomicBool::new(false),
             reserve_room: AtomicI64::new(i64::MAX),
+            reserve_failure: std::sync::atomic::AtomicU8::new(0),
             reserved_row: AtomicI64::new(0),
             reserve_calls: AtomicI64::new(0),
             reserve_asks: Mutex::new(Vec::new()),
@@ -189,6 +193,9 @@ impl FakeCatalog {
         }
     }
 }
+
+const RESERVE_BUSY: u8 = 1;
+const RESERVE_OTHER: u8 = 2;
 
 impl LogCatalog for FakeCatalog {
     fn log_coverage(
@@ -289,6 +296,13 @@ impl LogCatalog for FakeCatalog {
     ) -> BoxFuture<'a, postgres::Result<i64>> {
         self.reserve_calls.fetch_add(1, Ordering::SeqCst);
         self.reserve_asks.lock().unwrap().push((wanted, minimum));
+        match self.reserve_failure.load(Ordering::SeqCst) {
+            RESERVE_BUSY => return Box::pin(async { Err(postgres::Error::Busy) }),
+            RESERVE_OTHER => {
+                return Box::pin(async { Err(postgres::Error::NotFound) });
+            }
+            _ => {}
+        }
         if minimum > wanted {
             return Box::pin(async {
                 Err(postgres::Error::Invalid("invalid chat reservation".into()))
@@ -2701,6 +2715,65 @@ async fn a_refused_update_leaves_no_reservation_behind() {
         sequencer.log_state().await.buffered_charge as u64,
         "the pool holds exactly what the buffer holds",
     );
+}
+
+/// A reservation that cannot get its locks in time refuses the update as
+/// retryable `storage_busy`, takes nothing, and the same update is accepted
+/// once the database is no longer busy.
+#[tokio::test]
+async fn a_busy_reservation_refuses_retryably_and_the_resend_is_accepted() {
+    let catalog = Arc::new(FakeCatalog::empty());
+    let sequencer = bare_sequencer(catalog.clone());
+    let mut outbox = Outbox::new();
+    let edit = outbox.edit();
+
+    catalog
+        .reserve_failure
+        .store(RESERVE_BUSY, Ordering::SeqCst);
+    let refused = sequencer
+        .ingest(1, "account:w", "account:w", 1, edit.clone())
+        .await;
+    match &refused {
+        Ingested::Retryable(retry) => {
+            assert_eq!(retry.reason, "storage_busy");
+            assert!(retry.pressure, "busy storage is back pressure");
+        }
+        other => panic!("expected a retryable refusal, got {other:?}"),
+    }
+    assert_eq!(catalog.reserved_row.load(Ordering::SeqCst), 0);
+    let state = sequencer.log_state().await;
+    assert_eq!(state.buffered, 0, "a refused update was buffered");
+    assert_eq!(state.buffered_charge, 0, "a refused update left a charge");
+
+    catalog.reserve_failure.store(0, Ordering::SeqCst);
+    assert!(matches!(
+        sequencer.ingest(1, "account:w", "account:w", 1, edit).await,
+        Ingested::Accepted
+    ));
+    assert!(catalog.reserved_row.load(Ordering::SeqCst) > 0);
+    assert!(sequencer.log_state().await.buffered > 0);
+}
+
+/// Only a busy reservation is `storage_busy`; any other failure keeps the
+/// quota answer it always had.
+#[tokio::test]
+async fn a_failed_reservation_that_is_not_busy_still_answers_storage_quota() {
+    let catalog = Arc::new(FakeCatalog::empty());
+    let sequencer = bare_sequencer(catalog.clone());
+    let mut outbox = Outbox::new();
+    catalog
+        .reserve_failure
+        .store(RESERVE_OTHER, Ordering::SeqCst);
+    let refused = sequencer
+        .ingest(1, "account:w", "account:w", 1, outbox.edit())
+        .await;
+    match &refused {
+        Ingested::Retryable(retry) => {
+            assert_eq!(retry.reason, "storage_quota");
+            assert!(!retry.pressure);
+        }
+        other => panic!("expected a retryable refusal, got {other:?}"),
+    }
 }
 
 /// Racing documents must not oversubscribe the shared allowance. Every task

@@ -630,3 +630,94 @@ async fn usage_bytes_matches_the_sums_it_replaced() {
         77
     );
 }
+
+/// A reservation that cannot get the storage-usage lock gives up after a
+/// bounded wait with `Busy`, leaves no row, and does not leave its lock
+/// timeout on the pooled connection. Once the lock is free the same call
+/// succeeds.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_log_reservation_blocked_on_storage_usage_is_busy_and_then_succeeds() {
+    use sqlx::Connection;
+
+    let catalog = catalog().await;
+    crate::testing::reset(&catalog).await;
+    let _writer = catalog.claim_writer().await.unwrap();
+    let tag = Uuid::now_v7();
+    let account = catalog
+        .create_account(NewAccount {
+            kind: "anonymous".into(),
+            provider: None,
+            provider_subject: None,
+            handle: format!("busy-{tag}"),
+            display_name: "Busy test".into(),
+            email: None,
+        })
+        .await
+        .unwrap();
+    let document = catalog
+        .create_document(NewDocument {
+            slug: format!("busy-{tag}"),
+            owner_id: account.id,
+            owner_session_generation: None,
+            ownership_mode: "owned".into(),
+            title: "Busy test".into(),
+            source_format: "markdown".into(),
+        })
+        .await
+        .unwrap();
+    let reservation_key = Uuid::now_v7();
+
+    let before: String = sqlx::query_scalar("SHOW lock_timeout")
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+
+    // A second connection holds the deployment-wide accounting lock, as a
+    // stalled flush would.
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").unwrap();
+    let mut holder = sqlx::PgConnection::connect(&url).await.unwrap();
+    sqlx::query("BEGIN").execute(&mut holder).await.unwrap();
+    sqlx::query("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
+        .fetch_one(&mut holder)
+        .await
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    let refused = catalog
+        .reserve_pending_log_bytes(document.id, reservation_key, 64, 64)
+        .await;
+    let waited = started.elapsed();
+    assert!(
+        matches!(refused, Err(super::super::Error::Busy)),
+        "expected Busy, got {refused:?}"
+    );
+    assert!(
+        waited < std::time::Duration::from_secs(5),
+        "the wait was not bounded: {waited:?}"
+    );
+
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM pending_log_reservations WHERE document_id=$1")
+            .bind(document.id)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+    assert_eq!(rows, 0, "a busy refusal left a reservation row");
+
+    // SET LOCAL ended with the transaction: the pool keeps the default.
+    let after: String = sqlx::query_scalar("SHOW lock_timeout")
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+    assert_eq!(after, before, "the pooled connection kept the lock timeout");
+
+    sqlx::query("ROLLBACK").execute(&mut holder).await.unwrap();
+    assert_eq!(
+        catalog
+            .reserve_pending_log_bytes(document.id, reservation_key, 64, 64)
+            .await
+            .unwrap(),
+        64
+    );
+}
