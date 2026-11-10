@@ -10,7 +10,6 @@ import { m } from "../../paraglide/messages.js";
 export interface BuildOptions {
   language: Language;
   showCommands: boolean;
-  maxDepth?: number;
 }
 
 export interface BuildResult {
@@ -208,7 +207,7 @@ export function revealedLines(state: EditorState, language: Language, parsed: To
 
 export function buildDecorations(state: EditorState, options: BuildOptions, tokens?: Token[]): BuildResult {
   const source = state.doc.toString();
-  const parsed = tokens ?? tokenizeSource(options.language, source, { maxDepth: options.maxDepth }) ?? [];
+  const parsed = tokens ?? tokenizeSource(options.language, source) ?? [];
 
   const decorations: CMRange<Decoration>[] = [];
   const atomic: CMRange<Decoration>[] = [];

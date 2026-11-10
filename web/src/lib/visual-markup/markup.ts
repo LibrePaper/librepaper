@@ -37,8 +37,7 @@ export type { ToolbarEntry, ToolbarItem, ToolbarSpace, ToolbarSplit } from './co
 export { EMPTY_SCOPE, scopeAt } from './core/scope';
 export type { EditorScope } from './core/scope';
 
-export { Tokenizer } from './core/tokenizer';
-export type { TokenizeOptions } from './core/tokenizer';
+export { tokenizeSource } from './core/tokenize';
 export { textOf, tokenAt, walk } from './core/tokens';
 export type { Range, Token, TokenKind } from './core/tokens';
 

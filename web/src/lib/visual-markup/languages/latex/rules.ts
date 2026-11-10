@@ -1,21 +1,13 @@
 import { Rule, RuleContext } from '../../core/language';
 import { Range, Token } from '../../core/tokens';
-import { inner, isEscaped, matchDelimited, matchFenced, matchLine, skipSpace } from '../../core/scanner';
+import { inner, isEscaped, matchDelimited, skipSpace } from '../../core/scanner';
 import { ARGUMENT_COUNT, ESCAPABLE, FIRST_ARGUMENT_COMMANDS, HEADING_LEVELS, LITERAL_ARGUMENT_COMMANDS, MATH_ENVIRONMENTS, TABLE_ENVIRONMENT_ARGS, TABLE_ENVIRONMENTS, VERBATIM_ENVIRONMENTS } from './commands';
 import { COMMANDS, ENVIRONMENTS } from './catalog';
 import { FIGURE_ENVIRONMENTS, isCompositeFigure, latexDimension } from './figure';
 
-const MATH_DELIMITERS: Array<[string, string, boolean]> = [
-  ['$$', '$$', true],
-  ['\\[', '\\]', true],
-  ['\\(', '\\)', false],
-  ['$', '$', false]
-];
-
 // Sticky patterns match at `lastIndex` only, so a rule never copies the rest of the source.
 const COMMAND_NAME = /\\([a-zA-Z]+)/y;
 const HEADING_NAME = /\\([a-zA-Z]+)(\*?)/y;
-const BEGIN_HEADER = /\\begin\{([^}\n]+)\}/y;
 const VERB_COMMAND = /\\(verb|Verb|lstinline|mintinline)(?![a-zA-Z])/y;
 const OPTIONAL_ARGUMENT = /\[[^\]\n]*\]/y;
 // Accents written with a symbol (\'e) or with a letter followed by a space or braces (\v{s}, \c c).
@@ -44,44 +36,11 @@ interface Arguments {
   to: number;
 }
 
-export const comment: Rule = (source, pos) => {
-  if (source[pos] !== '%' || isEscaped(source, pos)) return null;
-  const line = matchLine(source, pos);
-  return { kind: 'comment', from: pos, to: line.to, body: { from: pos + 1, to: line.to } };
-};
-
 export const escape: Rule = (source, pos) => {
   if (source[pos] !== '\\') return null;
   const next = source[pos + 1];
   if (!next || !ESCAPABLE.has(next)) return null;
   return { kind: 'raw', from: pos, to: pos + 2 };
-};
-
-export const math: Rule = (source, pos, ctx) => {
-  for (const [open, close, display] of MATH_DELIMITERS) {
-    if (!source.startsWith(open, pos)) continue;
-    if (open === '$' && source.startsWith('$$', pos)) continue;
-    const range = matchFenced(source, pos, open, close);
-    if (!range) continue;
-    const body = inner(range, open.length, close.length);
-    if (body.to <= body.from) continue;
-    if (/\n[ \t]*\n/.test(source.slice(body.from, body.to))) continue;
-    return { kind: 'math', from: range.from, to: range.to, display, body, meta: { open, close } };
-  }
-  return null;
-};
-
-export const environment: Rule = (source, pos, ctx) => {
-  if (!source.startsWith('\\begin{', pos)) return null;
-
-  BEGIN_HEADER.lastIndex = pos;
-  const header = BEGIN_HEADER.exec(source);
-  if (!header) return null;
-
-  const name = header[1];
-  const end = findMatchingEnd(source, pos + header[0].length, name);
-  if (end === -1) return null;
-  return environmentToken(source, pos, name, end, ctx);
 };
 
 // Builds the token of `\begin{name}` at pos whose `\end{name}` starts at `end`. Shared by the rule and the tree walker.
@@ -348,9 +307,6 @@ export const tie: Rule = (source, pos) => {
   if (source[pos] !== '~' || isEscaped(source, pos)) return null;
   return { kind: 'tie', from: pos, to: pos + 1 };
 };
-
-// Order differs from the plan in one place: linebreak precedes escape, because escape would otherwise take `\\` as a raw token.
-export const rules: Rule[] = [comment, math, environment, heading, item, verb, accent, linebreak, escape, command, group, ligature, tie];
 
 // Reads an xparse-style signature: `s` an immediate star, `o` an optional [..], `m` a mandatory {..}.
 // Stops at the first missing mandatory argument, as LaTeX does.

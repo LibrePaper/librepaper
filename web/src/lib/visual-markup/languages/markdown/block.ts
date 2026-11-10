@@ -1,7 +1,7 @@
 import { Rule } from '../../core/language';
 import { Token } from '../../core/tokens';
 import { STATE_OF, TASK_LINE } from '../../../tasks/syntax.js';
-import { atBlockStart, atLineHead, lineEndAt, lineStartAt, parseAttributes, previousNonBlank } from './scan';
+import { atBlockStart, atLineHead, lineEndAt, lineStartAt, parseAttributes } from './scan';
 
 const CAPTION = /^[ \t]*(?:Table:|:)[ \t]+(.*?)[ \t]*$/;
 const DELIMITER_ROW = /^[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/;
@@ -10,17 +10,9 @@ const GRID_ROW = /^[ \t]*[|+]/;
 const FENCE_OPEN = /^(`{3,}|~{3,})(.*)$/;
 const FENCE_CLOSE = /^[ \t]*(`{3,}|~{3,})[ \t]*$/;
 const OPTION_LINE = /^[ \t]*#\|[ \t]*([\w-]+)[ \t]*:[ \t]*(.*?)[ \t]*$/;
-const DIV_OPEN = /^(:{3,})[ \t]*(.*?)[ \t]*$/;
-const DIV_CLOSE = /^(:{3,})$/;
-const DIV_NESTED = /^:{3,}[ \t]*\S/;
-const ORDERED = /(\d{1,9})([.)])(?=[ \t\n]|$)/y;
 export const TASK = /[ \t]+\[([ xX\/-])\](?=[ \t\n]|$)/y;
 const FOOTNOTE_DEF = /\[\^([^\]\s^]+)\]:[ \t]*/y;
 const LINK_DEF = /\[([^\]\n]+)\]:[ \t]*\S/y;
-// A line that starts another block, so it cannot be the text line of a setext heading.
-const BLOCK_STARTER = /^[ \t]*(?:#|>|[-*+](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|`{3}|~{3}|:{3}|\$\$|<!--|\[\^|\|)/;
-const UNDERLINE = /^[ \t]{0,3}(=+|-+)[ \t]*$/;
-
 function unquote(value: string): string {
   return value.replace(/^"(.*)"$/, '$1');
 }
@@ -29,67 +21,6 @@ function unquote(value: string): string {
 function nextLineStart(source: string, end: number): number {
   return Math.min(end + 1, source.length);
 }
-
-// The front matter: `---` on the first line, closed by `---` or `...`. Only at the start.
-export const frontmatter: Rule = (source, pos) => {
-  if (pos !== 0) return null;
-  const first = lineEndAt(source, 0);
-  if (source.slice(0, first).trimEnd() !== '---') return null;
-  const bodyFrom = nextLineStart(source, first);
-  let start = bodyFrom;
-  while (start < source.length) {
-    const end = lineEndAt(source, start);
-    const line = source.slice(start, end).trimEnd();
-    if (line === '---' || line === '...') {
-      return {
-        kind: 'container',
-        name: 'frontmatter',
-        from: 0,
-        to: end,
-        body: { from: bodyFrom, to: start }
-      };
-    }
-    start = end + 1;
-  }
-  return null;
-};
-
-// Indented code: four spaces (or a tab) at a line start after a blank line. It cannot
-// interrupt a paragraph, and a list item's continuation is not code.
-export const indentedCode: Rule = (source, pos) => {
-  if (source[pos] !== ' ' && source[pos] !== '\t') return null;
-  if (pos > 0 && source[pos - 1] !== '\n') return null;
-
-  let width = 0;
-  for (let index = pos; index < source.length && (source[index] === ' ' || source[index] === '\t'); index++) {
-    width += source[index] === '\t' ? 4 : 1;
-  }
-  if (width < 4) return null;
-
-  if (pos > 0) {
-    const previousEnd = pos - 1;
-    const previousStart = lineStartAt(source, previousEnd);
-    if (source.slice(previousStart, previousEnd).trim() !== '') return null;
-    const prior = previousNonBlank(source, previousStart);
-    if (prior !== null && (/^\s*([-*+]|\d{1,9}[.)])[ \t]/.test(prior) || /^( {2}|\t)/.test(prior))) return null;
-  }
-
-  let end = lineEndAt(source, pos);
-  let cursor = end;
-  while (cursor < source.length) {
-    const next = cursor + 1;
-    const nextEnd = lineEndAt(source, next);
-    const text = source.slice(next, nextEnd);
-    if (text.trim() === '') {
-      cursor = nextEnd;
-      continue;
-    }
-    if (!/^( {4}|\t)/.test(text)) break;
-    end = nextEnd;
-    cursor = nextEnd;
-  }
-  return { kind: 'container', name: 'codeblock', from: pos, to: end };
-};
 
 // Fenced code. Quarto executable cells (```{r}) take their options from `#|` lines,
 // which the header widget replaces together with the opening fence.
@@ -172,61 +103,6 @@ export const fence: Rule = (source, pos) => {
     from: pos,
     to: closed ? closeEnd : source.length,
     body: { from: contentFrom, to: bodyTo },
-    meta
-  };
-};
-
-// Pandoc and Quarto fenced divs: `::: {.callout-note #id}` or `::: name`, closed by a
-// line of colons. Nested divs are counted, so the closer is the one that matches.
-export const div: Rule = (source, pos, ctx) => {
-  if (source[pos] !== ':' || !atBlockStart(source, pos)) return null;
-  const headEnd = lineEndAt(source, pos);
-  const open = DIV_OPEN.exec(source.slice(pos, headEnd));
-  if (!open || open[2] === '') return null;
-  const colons = open[1].length;
-
-  let attrText: string;
-  if (open[2].startsWith('{')) {
-    if (!open[2].endsWith('}')) return null;
-    attrText = open[2].slice(1, -1);
-  } else {
-    attrText = `.${open[2].split(/\s+/)[0]}`;
-  }
-  const attributes = parseAttributes(attrText);
-
-  let depth = 1;
-  let closeStart = -1;
-  let closeEnd = -1;
-  let cursor = headEnd;
-  while (cursor < source.length) {
-    const lineStart = cursor + 1;
-    const lineEnd = lineEndAt(source, lineStart);
-    const line = source.slice(lineStart, lineEnd).trim();
-    const close = DIV_CLOSE.exec(line);
-    if (close) {
-      if (close[1].length >= colons && --depth === 0) {
-        closeStart = lineStart;
-        closeEnd = lineEnd;
-        break;
-      }
-    } else if (DIV_NESTED.test(line)) {
-      depth++;
-    }
-    cursor = lineEnd;
-  }
-
-  const closed = closeStart !== -1;
-  const bodyFrom = nextLineStart(source, headEnd);
-  const bodyTo = !closed ? source.length : closeStart - 1 >= bodyFrom ? closeStart - 1 : bodyFrom;
-  const meta: Record<string, string> = { attrs: attrText, classes: attributes.classes.join(' ') };
-  if (attributes.id !== undefined) meta.id = attributes.id;
-  return {
-    kind: 'container',
-    name: 'div',
-    from: pos,
-    to: closed ? closeEnd : source.length,
-    body: { from: bodyFrom, to: bodyTo },
-    children: ctx.parse(bodyFrom, bodyTo),
     meta
   };
 };
@@ -320,27 +196,6 @@ export const table: Rule = (source, pos) => {
   return tableToken(pos, end);
 };
 
-// Block quote: every line starts with `>`. The markers are children, hidden by their own
-// rule, and the content of each line is parsed after its marker.
-export const quote: Rule = (source, pos, ctx) => {
-  if (source[pos] !== '>' || !atBlockStart(source, pos)) return null;
-  const children: Token[] = [];
-  let end = pos;
-  let cursor = pos;
-  while (cursor < source.length) {
-    const lineEnd = lineEndAt(source, cursor);
-    const match = /^[ \t]*>[ \t]?/.exec(source.slice(cursor, lineEnd));
-    if (!match) break;
-    const markerFrom = cursor + match[0].indexOf('>');
-    const markerTo = cursor + match[0].length;
-    children.push({ kind: 'raw', name: 'marker', from: markerFrom, to: markerTo });
-    if (markerTo < lineEnd) children.push(...ctx.parse(markerTo, lineEnd));
-    end = lineEnd;
-    cursor = lineEnd + 1;
-  }
-  return { kind: 'container', name: 'blockquote', from: pos, to: end, children };
-};
-
 // ATX heading. A trailing `{#id .class}` is hidden by the default concealment (it sits
 // after the body) and read into meta.
 export const heading: Rule = (source, pos, ctx) => {
@@ -390,42 +245,6 @@ export const hr: Rule = (source, pos) => {
   return { kind: 'command', name: 'hr', from: pos, to: lineEndAt(source, pos) };
 };
 
-// List item marker. Only the marker is the token: its content is ordinary text that the
-// inline rules read on later positions. Bullets, numbers and task boxes are replaced.
-export const list: Rule = (source, pos) => {
-  if (!atBlockStart(source, pos)) return null;
-  const char = source[pos];
-  let markerEnd: number;
-  let number = false;
-
-  if (char === '-' || char === '*' || char === '+') {
-    const after = source[pos + 1];
-    if (after !== undefined && after !== ' ' && after !== '\t' && after !== '\n') return null;
-    markerEnd = pos + 1;
-  } else {
-    ORDERED.lastIndex = pos;
-    const match = ORDERED.exec(source);
-    if (!match) return null;
-    // Only "1." may interrupt a paragraph, as in CommonMark; other numbers need a blank line above.
-    if (match[1] !== '1' && !blankAbove(source, pos)) return null;
-    number = true;
-    markerEnd = pos + match[0].length;
-  }
-
-  const meta: Record<string, string> = { marker: source.slice(pos, markerEnd) };
-  let to = markerEnd;
-  TASK.lastIndex = markerEnd;
-  const task = TASK.exec(source);
-  if (task) {
-    meta.task = (STATE_OF as Record<string, string>)[task[1]];
-    meta.box = task[1];
-    const progress = taskProgress(source, pos);
-    if (progress) meta.progress = progress;
-    to = markerEnd + task[0].length;
-  }
-  return { kind: 'item', name: number ? 'number' : 'bullet', from: pos, to, meta };
-};
-
 // "done/total" over the task descendants of the item at pos, or null when it has none. Following
 // lines belong to the item while they are blank or indented past its marker. Cancelled tasks are
 // left out of both numbers.
@@ -454,13 +273,6 @@ export function taskProgress(source: string, pos: number): string | null {
     lineFrom = lineTo + 1;
   }
   return total > 0 ? `${done}/${total}` : null;
-}
-
-function blankAbove(source: string, pos: number): boolean {
-  const start = lineStartAt(source, pos);
-  if (start === 0) return true;
-  const previousStart = lineStartAt(source, start - 1);
-  return source.slice(previousStart, start - 1).trim() === '';
 }
 
 // Footnote definition `[^1]: text`, with indented continuation lines.
@@ -504,28 +316,4 @@ export const linkDefinition: Rule = (source, pos) => {
   const match = LINK_DEF.exec(source);
   if (!match) return null;
   return { kind: 'raw', name: 'linkdef', from: pos, to: lineEndAt(source, pos), meta: { label: match[1] } };
-};
-
-// Setext heading: a text line over a line of = or -. Multi-line setext headings are not
-// recognised: only the last text line is a heading.
-export const setext: Rule = (source, pos, ctx) => {
-  if (!atBlockStart(source, pos) || /\s/.test(source[pos] ?? ' ')) return null;
-  const lineEnd = lineEndAt(source, pos);
-  if (lineEnd >= source.length) return null;
-  const text = source.slice(pos, lineEnd);
-  if (text.trim() === '' || BLOCK_STARTER.test(text)) return null;
-
-  const underStart = lineEnd + 1;
-  const underEnd = lineEndAt(source, underStart);
-  const underline = UNDERLINE.exec(source.slice(underStart, underEnd));
-  if (!underline) return null;
-
-  return {
-    kind: 'heading',
-    level: underline[1][0] === '=' ? 1 : 2,
-    from: pos,
-    to: underEnd,
-    body: { from: pos, to: lineEnd },
-    children: ctx.parse(pos, lineEnd)
-  };
 };

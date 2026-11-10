@@ -1,6 +1,5 @@
 import { registerLanguage, Language, LanguageCommands, TokenStyle } from '../../core/language';
 import { Token } from '../../core/tokens';
-import { rules } from './rules';
 import { tokenizeMarkdown } from './tree';
 
 const commands: LanguageCommands = {
@@ -165,7 +164,6 @@ function hiddenSummary(text: string): string | null {
 export const markdown: Language = {
   id: 'markdown',
   name: 'Markdown',
-  rules,
   tokenize: tokenizeMarkdown,
   style,
   commands,
@@ -175,7 +173,5 @@ export const markdown: Language = {
   },
   hiddenSummary
 };
-
-export { rules } from './rules';
 
 registerLanguage(markdown);

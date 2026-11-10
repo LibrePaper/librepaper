@@ -1,13 +1,10 @@
 import { Language } from './language';
-import { Tokenizer, TokenizeOptions } from './tokenizer';
 import { Token } from './tokens';
 
-// The tokens of a source. A language that defines tokenize() reads the shared
-// syntax tree; the rule tokenizer is the fallback for the rest. maxDepth only
-// applies to the fallback. Null means the language's tree is not ready yet.
-export function tokenizeSource(language: Language, source: string, options: TokenizeOptions = {}): Token[] | null {
-  if (language.tokenize) return language.tokenize(source);
-  return new Tokenizer(language, options).tokenize(source);
+// The tokens of a source, built from the language's shared syntax tree. Null means the
+// tree is not ready yet (Typst before typst-syntax.wasm loads); the caller draws no tokens.
+export function tokenizeSource(language: Language, source: string): Token[] | null {
+  return language.tokenize(source);
 }
 
 export function tokenizeOrEmpty(language: Language, source: string): Token[] {

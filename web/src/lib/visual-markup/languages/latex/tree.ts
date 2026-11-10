@@ -8,7 +8,7 @@ import { accent, command, environmentToken, findMatchingEnd, group, heading, ite
 // The grammar is shallow: it knows where comments, math, verbatim text, \verb spans and environments
 // are, but not what a command's arguments are. So the tree decides those structural facts, and the
 // signature logic of rules.ts (catalog, user macros, ligatures, accents, ties) fills in the rest. The
-// scan order, the depth limit and the text tokens between matches are those of core/tokenizer.ts.
+// scan order and the text tokens between matches are the tree walker's own (see run below).
 
 const MAX_DEPTH = 12;
 const RULES = [heading, item, verb, accent, linebreak, escape, command, group, ligature, tie];
@@ -102,7 +102,7 @@ function run(source: string, hits: Map<number, Hit>, from: number, to: number, d
   return tokens;
 }
 
-// The first candidate that fits in the range, as core/tokenizer.ts does: one that is empty or runs past `limit` is skipped.
+// The first candidate that fits in the range: one that is empty or runs past `limit` is skipped.
 function matchAt(source: string, hits: Map<number, Hit>, pos: number, limit: number, ctx: RuleContext): Token | null {
   const fits = (token: Token | null): token is Token => !!token && token.to > token.from && token.to <= limit;
   const hit = hits.get(pos);
@@ -155,7 +155,7 @@ function verbToken(source: string, pos: number, to: number): Token | null {
 }
 
 // The tree pairs \begin with \end structurally. It is used when it closed the environment cleanly
-// with the same name; a broken or mismatched pair falls back to the name search of the old rules.
+// with the same name; a broken or mismatched pair falls back to the name search (findMatchingEnd in rules.ts).
 function environment(source: string, pos: number, hit: Extract<Hit, { type: 'environment' }>, ctx: RuleContext): Token | null {
   const header = /^\\begin\{([^}\n]+)\}/.exec(source.slice(pos, pos + 200));
   if (!header) return null;

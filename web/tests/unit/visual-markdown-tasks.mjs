@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { Tokenizer } from "../../src/lib/visual-markup/core/tokenizer.ts";
+import { tokenizeSource } from "../../src/lib/visual-markup/core/tokenize.ts";
 import { walk } from "../../src/lib/visual-markup/core/tokens.ts";
 import { markdown } from "../../src/lib/visual-markup/languages/markdown/index.ts";
 
 // Every token of a source, nested children included, in tokenizer order.
 function tokensOf(source) {
   const found = [];
-  walk(new Tokenizer(markdown).tokenize(source), token => found.push(token));
+  walk(tokenizeSource(markdown, source), token => found.push(token));
   return found;
 }
 

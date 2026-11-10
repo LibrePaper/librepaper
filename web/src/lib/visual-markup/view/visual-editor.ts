@@ -20,7 +20,6 @@ interface VisualState {
   enabled: boolean;
   showCommands: boolean;
   language: string;
-  maxDepth: number;
 }
 
 export const setVisualState = StateEffect.define<Partial<VisualState>>();
@@ -48,7 +47,6 @@ const visualState = StateField.define<VisualState>({
     enabled: false,
     showCommands: DEFAULT_CONFIG.showCommands,
     language: DEFAULT_CONFIG.language,
-    maxDepth: DEFAULT_CONFIG.maxDepth,
     ...state.facet(visualDefaults)
   }),
   update(value, tr) {
@@ -110,8 +108,7 @@ function compute(state: EditorState, tokens?: Token[]): VisualDecorations {
     state,
     {
       language: getLanguage(options.language),
-      showCommands: options.showCommands,
-      maxDepth: options.maxDepth
+      showCommands: options.showCommands
     },
     tokens
   );
@@ -381,8 +378,7 @@ export class VisualCodeMirrorEditor {
         setVisualState.of({
           enabled: this.enabled,
           showCommands: config.showCommands,
-          language: config.language,
-          maxDepth: config.maxDepth
+          language: config.language
         }),
         this.themeCompartment.reconfigure(createTheme(config))
       ]

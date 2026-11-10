@@ -17,7 +17,6 @@ export interface EditorConfig {
   language: string;
   showCommands: boolean;
   showToolbar: boolean;
-  maxDepth: number;
   theme: 'light' | 'dark';
   styles: {
     colors: ThemeColors;
@@ -61,7 +60,6 @@ export const DEFAULT_CONFIG: EditorConfig = {
   language: 'latex',
   showCommands: false,
   showToolbar: true,
-  maxDepth: 12,
   theme: 'light',
   styles: {
     colors: LIGHT_THEME_COLORS,

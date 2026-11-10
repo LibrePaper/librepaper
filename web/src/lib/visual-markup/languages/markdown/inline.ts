@@ -2,7 +2,7 @@ import { Rule, RuleContext } from '../../core/language';
 import { Range, Token } from '../../core/tokens';
 import { FIELD, STATE_OF, TAG, TASK_LINE, validateField } from '../../../tasks/syntax.js';
 import {
-  closingRun, delimiterAt, findBacktickRun, lineEndAt, lineStartAt, matchClose,
+  closingRun, delimiterAt, lineEndAt, lineStartAt, matchClose,
   paragraphEnd, parseAttributes, runLength
 } from './scan';
 
@@ -48,81 +48,6 @@ export const escape: Rule = (source, pos) => {
   if (!next || !ESCAPABLE.test(next)) return null;
   return { kind: 'raw', name: 'escape', from: pos, to: pos + 2, meta: { text: next } };
 };
-
-// Code span. It is matched before anything inside it, so its text is never parsed.
-// A backtick run is claimed at its first character only.
-export const code: Rule = (source, pos) => {
-  if (source[pos] !== '`' || source[pos - 1] === '`') return null;
-  const end = paragraphEnd(source, pos);
-  const count = runLength(source, pos, '`', end);
-  const close = findBacktickRun(source, pos + count, count, end);
-  if (close === -1) return null;
-
-  let from = pos + count;
-  let to = close;
-  const content = source.slice(from, to);
-  // One space is stripped from each side when both are present, so `` ` x ` `` shows x.
-  if (content.length >= 2 && content[0] === ' ' && content[content.length - 1] === ' ' && content.trim() !== '') {
-    from++;
-    to--;
-  }
-  return { kind: 'command', name: 'code', from: pos, to: close + count, body: { from, to } };
-};
-
-// Display math `$$ ... $$` (may span lines within the paragraph) with an optional {#eq-x},
-// and inline math `$...$` following Pandoc: no space inside the delimiters, and the
-// closing dollar is not followed by a digit, so prices stay text.
-export const math: Rule = (source, pos) => {
-  if (source[pos] !== '$') return null;
-  return source[pos + 1] === '$' ? displayMath(source, pos) : inlineMath(source, pos);
-};
-
-function displayMath(source: string, pos: number): Token | null {
-  const end = paragraphEnd(source, pos, false);
-  const close = source.slice(pos + 2, end).indexOf('$$');
-  if (close === -1 || close === 0) return null;
-  const bodyTo = pos + 2 + close;
-  let to = bodyTo + 2;
-  const meta: Record<string, string> = { open: '$$', close: '$$' };
-
-  let cursor = to;
-  while (source[cursor] === ' ' || source[cursor] === '\t') cursor++;
-  ATTRIBUTE_BLOCK.lastIndex = cursor;
-  const attr = ATTRIBUTE_BLOCK.exec(source);
-  if (attr) {
-    const attributes = parseAttributes(attr[1]);
-    if (attributes.id !== undefined) {
-      meta.id = attributes.id;
-      to = ATTRIBUTE_BLOCK.lastIndex;
-    }
-  }
-  return { kind: 'math', from: pos, to, display: true, body: { from: pos + 2, to: bodyTo }, meta };
-}
-
-function inlineMath(source: string, pos: number): Token | null {
-  const next = source[pos + 1];
-  if (next === undefined || /\s/.test(next)) return null;
-  const end = paragraphEnd(source, pos);
-  for (let index = pos + 1; index < end; index++) {
-    const char = source[index];
-    if (char === '\\') {
-      index++;
-      continue;
-    }
-    if (char !== '$') continue;
-    if (/\s/.test(source[index - 1])) continue;
-    if (/[0-9]/.test(source[index + 1] ?? '')) continue;
-    return {
-      kind: 'math',
-      from: pos,
-      to: index + 1,
-      display: false,
-      body: { from: pos + 1, to: index },
-      meta: { open: '$', close: '$' }
-    };
-  }
-  return null;
-}
 
 // HTML comment. The markers are concealed, the text is drawn as a comment.
 export const comment: Rule = (source, pos) => {

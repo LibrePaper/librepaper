@@ -1,7 +1,8 @@
 // Golden test for the visual layer's tokens: tokenizeSource() on every corpus
-// file must match the golden written from the old regex tokenizer. Regenerate
-// the goldens with tools/visual-golden.mjs only when the old rules are meant
-// to change. VISUAL_TOKENS_ONLY=latex|typst|markdown limits the run.
+// file must match its golden, the reviewed snapshot of the tree-based tokens.
+// After an intended change to the tokens, regenerate the goldens with
+// tools/visual-golden.mjs and review the diff. VISUAL_TOKENS_ONLY=latex|typst|markdown
+// limits the run.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";

@@ -5,11 +5,10 @@ import type { Range, Token } from '../../core/tokens';
 import { isSpace, isWord, lineEnd, shapeCall, statementToken, type CallParts } from './rules';
 
 // The Token tree of a Typst source from Typst's own parse (typst-syntax), shaped like the tokens
-// the regex rules in rules.ts produce, so every consumer of the tokens is unchanged. The tree
-// replaces the scanning only: markup is walked like the 'markup' rules, and the arguments of a
-// call like the 'code' rules.
+// the consumers have always read, so every consumer of the tokens is unchanged. The tree
+// replaces the scanning only: markup is walked as markup, and the arguments of a call as code.
 
-// Same bound as the Tokenizer: a run deeper than this has no tokens.
+// Nesting bound: a run deeper than this has no tokens.
 const MAX_DEPTH = 12;
 
 const SEGMENTS = /^[a-zA-Z][\w-]*(?:\.[a-zA-Z][\w-]*)*$/;
