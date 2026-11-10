@@ -8,11 +8,13 @@ import {
   hover,
   itemAt,
   levenshtein,
+  metadata,
   proseRanges,
   references,
   rename,
   renameProblem,
   symbols,
+  targetKind,
 } from "../../src/lib/document-index/queries.js";
 
 /** Range of the first `needle` at or after `from`. */
@@ -499,4 +501,248 @@ test("label lookups follow updates and removals", () => {
   assert.equal(project.definitions("label", "three").length, 1);
   project.remove("b.tex");
   assert.deepEqual(project.names("label"), ["three"]);
+});
+
+// Footnotes, links, metadata, target kinds and the diagnostics added with them.
+
+const fnText = "Note[^x] and {#x} and @x.\n\n[^x]: The body.\n";
+const fnRef = at(fnText, "[^x]");
+const fnRefName = at(fnText, "x", fnRef[0]);
+const fnLabel = at(fnText, "{#x}");
+const fnLabelName = at(fnText, "x", fnLabel[0]);
+const fnLabelRef = at(fnText, "@x");
+const fnLabelRefName = at(fnText, "x", fnLabelRef[0]);
+const fnDef = at(fnText, "[^x]: The body.");
+const fnDefName = at(fnText, "x", fnDef[0]);
+
+const fnItems = [
+  { kind: "ref", range: fnRef, nameRange: fnRefName, name: "x", namespace: "footnote" },
+  { kind: "label", range: fnLabel, nameRange: fnLabelName, name: "x", namespace: "label" },
+  { kind: "ref", range: fnLabelRef, nameRange: fnLabelRefName, name: "x", namespace: "label" },
+  { kind: "label", range: fnDef, nameRange: fnDefName, name: "x", namespace: "footnote", attrs: { target: "footnote" } },
+];
+
+/** A Markdown notes file with one footnote and one label, both named x. */
+function notesProject() {
+  const project = createProjectIndex();
+  project.setFiles(["notes.md", "other.md"]);
+  project.update({ path: "notes.md", format: "markdown", length: fnText.length, items: fnItems });
+  return project;
+}
+
+test("footnotes and labels with the same name stay in separate namespaces", () => {
+  const project = notesProject();
+  assert.equal(project.namespaceOf(fnItems[0], "notes.md"), "footnote");
+  assert.equal(project.namespaceOf(fnItems[1], "notes.md"), "label");
+  assert.equal(project.namespaceOf(fnItems[2], "notes.md"), "label");
+  assert.equal(project.namespaceOf(fnItems[3], "notes.md"), "footnote");
+  assert.deepEqual(project.names("footnote"), ["x"]);
+  assert.deepEqual(project.names("label"), ["x"]);
+  assert.deepEqual(project.definitions("footnote", "x").map(({ item }) => item), [fnItems[3]]);
+  assert.deepEqual(project.definitions("label", "x").map(({ item }) => item), [fnItems[1]]);
+  assert.deepEqual(project.references("footnote", "x").map(({ item }) => item), [fnItems[0]]);
+  assert.deepEqual(project.references("label", "x").map(({ item }) => item), [fnItems[2]]);
+  assert.deepEqual(project.definitions("cite", "x"), []);
+});
+
+test("a footnote ref goes to its footnote and a label ref to its label", () => {
+  const project = notesProject();
+  assert.deepEqual(definition(project, "notes.md", fnRefName[0]), [
+    { path: "notes.md", from: fnDefName[0], to: fnDefName[1] },
+  ]);
+  assert.deepEqual(definition(project, "notes.md", fnLabelRefName[0]), [
+    { path: "notes.md", from: fnLabelName[0], to: fnLabelName[1] },
+  ]);
+  assert.deepEqual(references(project, "notes.md", fnDefName[0]), [
+    { path: "notes.md", from: fnRefName[0], to: fnRefName[1] },
+    { path: "notes.md", from: fnDefName[0], to: fnDefName[1] },
+  ]);
+});
+
+test("footnotes resolve only within their own file", () => {
+  const project = notesProject();
+  project.update({
+    path: "other.md",
+    format: "markdown",
+    length: 4,
+    items: [{ kind: "ref", range: [0, 4], nameRange: [2, 3], name: "x", namespace: "footnote" }],
+  });
+  assert.deepEqual(project.definitions("footnote", "x", "other.md"), []);
+  assert.deepEqual(definition(project, "other.md", 2), []);
+  assert.deepEqual(project.definitions("footnote", "x").map(({ path }) => path), ["notes.md"]);
+  assert.deepEqual(project.names("footnote", "other.md"), []);
+  assert.deepEqual(diagnostics(project, "other.md").map((d) => [d.code, d.name, d.severity]), [
+    ["unknown-footnote", "x", "warning"],
+  ]);
+  assert.deepEqual(diagnostics(project, "notes.md"), []);
+});
+
+test("rename of a footnote rewrites only the bare name at each site", () => {
+  const project = notesProject();
+  assert.equal(renameProblem(project, "notes.md", fnRefName[0], "note"), null);
+  assert.equal(renameProblem(project, "notes.md", fnDefName[0], "note"), null);
+  assert.equal(renameProblem(project, "notes.md", fnRefName[0], "a b"), "invalid");
+  assert.deepEqual(rename(project, "notes.md", fnRefName[0], "note"), [
+    { path: "notes.md", from: fnRefName[0], to: fnRefName[1], insert: "note" },
+    { path: "notes.md", from: fnDefName[0], to: fnDefName[1], insert: "note" },
+  ]);
+  // Renaming the label leaves the footnote's name alone.
+  assert.deepEqual(rename(project, "notes.md", fnLabelRefName[0], "y"), [
+    { path: "notes.md", from: fnLabelName[0], to: fnLabelName[1], insert: "y" },
+    { path: "notes.md", from: fnLabelRefName[0], to: fnLabelRefName[1], insert: "y" },
+  ]);
+});
+
+test("an Org headline label cannot be renamed, but a footnote labelled form footnote can", () => {
+  const project = createProjectIndex();
+  const text = "* Intro\n[fn:a]\n";
+  project.update({
+    path: "org.org",
+    format: "org",
+    length: text.length,
+    items: [
+      { kind: "label", range: [0, 7], nameRange: [2, 7], name: "Intro", attrs: { form: "heading", implicit: "true" } },
+      { kind: "label", range: [8, 14], nameRange: [10, 11], name: "a", namespace: "footnote", attrs: { target: "footnote", form: "footnote" } },
+    ],
+  });
+  assert.equal(renameProblem(project, "org.org", 3, "Other"), "invalid");
+  assert.equal(renameProblem(project, "org.org", 10, "b"), null);
+});
+
+test("hover gives the target kind, and the footnote a ref points to", () => {
+  const project = notesProject();
+  assert.deepEqual(hover(project, "notes.md", fnRefName[0]), {
+    name: "x",
+    namespace: "footnote",
+    targets: [{ path: "notes.md", from: fnDefName[0], to: fnDefName[1], kind: "footnote" }],
+  });
+  assert.deepEqual(hover(project, "notes.md", fnLabelRefName[0]), {
+    name: "x",
+    namespace: "label",
+    targets: [{ path: "notes.md", from: fnLabelName[0], to: fnLabelName[1] }],
+  });
+
+  const figs = createProjectIndex();
+  const figText = "{#fig-a}\n@fig-a\n";
+  figs.update({
+    path: "figs.md",
+    format: "markdown",
+    length: figText.length,
+    items: [
+      { kind: "label", range: [0, 8], nameRange: [2, 7], name: "fig-a", namespace: "label", attrs: { target: "figure" }, title: "A plot" },
+      { kind: "ref", range: [9, 15], nameRange: [10, 15], name: "fig-a", namespace: "label" },
+    ],
+  });
+  assert.deepEqual(hover(figs, "figs.md", 10), {
+    name: "fig-a",
+    namespace: "label",
+    targets: [{ path: "figs.md", from: 2, to: 7, title: "A plot", kind: "figure" }],
+  });
+});
+
+test("targetKind reads a label's target, and metadata groups values by name", () => {
+  assert.equal(targetKind({ kind: "label", range: [0, 1], attrs: { target: "table" } }), "table");
+  assert.equal(targetKind({ kind: "label", range: [0, 1] }), null);
+
+  const project = createProjectIndex();
+  const title = { kind: "metadata", range: [0, 10], name: "title", title: "Essay" };
+  const author1 = { kind: "metadata", range: [11, 20], name: "author", title: "Ada" };
+  const author2 = { kind: "metadata", range: [21, 30], name: "author", title: "Grace" };
+  project.update({ path: "doc.md", format: "markdown", length: 30, items: [author2, title, author1, { kind: "heading", range: [0, 1], level: 1, title: "X" }] });
+  assert.deepEqual(metadata(project, "doc.md"), { title: [title], author: [author1, author2] });
+  assert.deepEqual(metadata(project, "missing.md"), {});
+});
+
+test("file links resolve like includes, and external links stay out of definitions and diagnostics", () => {
+  const project = createProjectIndex();
+  project.setFiles(["notes/a.md", "notes/b.md", "img/x.png"]);
+  const text = "[b](b.md#sec) [site](https://e.org) [gone](gone.md)";
+  const fileLink = at(text, "b.md#sec");
+  const siteLink = at(text, "https://e.org");
+  const goneLink = at(text, "gone.md");
+  project.update({
+    path: "notes/a.md",
+    format: "markdown",
+    length: text.length,
+    items: [
+      { kind: "link", range: fileLink, nameRange: [fileLink[0], fileLink[0] + 4], name: "b.md", attrs: { file: "true", fragment: "sec" } },
+      { kind: "link", range: siteLink, nameRange: siteLink, name: "https://e.org", attrs: { external: "true" } },
+      { kind: "link", range: goneLink, nameRange: goneLink, name: "gone.md", attrs: { file: "true" } },
+    ],
+  });
+  assert.equal(project.resolveFile("notes/a.md", "b.md", "link"), "notes/b.md");
+  assert.equal(project.resolveFile("notes/a.md", "b", "link"), "notes/b.md");
+  assert.equal(project.resolveFile("notes/a.md", "../img/x.png", "link"), "img/x.png");
+  assert.deepEqual(definition(project, "notes/a.md", fileLink[0]), [{ path: "notes/b.md", from: 0, to: 0 }]);
+  assert.deepEqual(definition(project, "notes/a.md", siteLink[0]), []);
+  assert.deepEqual(diagnostics(project, "notes/a.md").map((d) => [d.code, d.name, d.severity]), [
+    ["missing-file", "gone.md", "warning"],
+  ]);
+});
+
+test("symbols list labels but not footnotes", () => {
+  const project = notesProject();
+  assert.deepEqual(symbols(project, "notes.md").labels.map((item) => item.name), ["x"]);
+  assert.equal(symbols(project, "notes.md").labels[0], fnItems[1]);
+});
+
+test("duplicate labels are reported in each file, but implicit labels and footnotes in other files are not", () => {
+  const project = createProjectIndex();
+  const label = (text) => ({ kind: "label", range: [0, text.length], nameRange: [7, 12], name: "fig:a" });
+  project.update({ path: "a.tex", format: "latex", length: 14, items: [label("\\label{fig:a}")] });
+  project.update({ path: "b.tex", format: "latex", length: 14, items: [label("\\label{fig:a}")] });
+  project.update({ path: "c.tex", format: "latex", length: 4, items: [{ kind: "label", range: [0, 4], nameRange: [0, 4], name: "top", attrs: { implicit: "true" } }] });
+  project.update({ path: "d.tex", format: "latex", length: 4, items: [{ kind: "label", range: [0, 4], nameRange: [0, 4], name: "top" }] });
+  project.update({ path: "n.md", format: "markdown", length: 10, items: [{ kind: "label", range: [0, 5], nameRange: [2, 3], name: "k", namespace: "footnote" }] });
+  project.update({ path: "m.md", format: "markdown", length: 10, items: [{ kind: "label", range: [0, 5], nameRange: [2, 3], name: "k", namespace: "footnote" }] });
+  assert.deepEqual(diagnostics(project, "a.tex").map((d) => [d.code, d.severity, d.name]), [["duplicate-label", "warning", "fig:a"]]);
+  assert.deepEqual(diagnostics(project, "b.tex").map((d) => d.code), ["duplicate-label"]);
+  assert.deepEqual(diagnostics(project, "c.tex"), []);
+  assert.deepEqual(diagnostics(project, "d.tex"), []);
+  assert.deepEqual(diagnostics(project, "n.md").map((d) => d.code), ["unused-footnote"]);
+});
+
+test("unused notes and unused figure-like targets are info diagnostics", () => {
+  const text = "{#a}\n{#b}\n{#c}\n{#d}\n@b\n";
+  const nameA = at(text, "a");
+  const nameB = at(text, "b");
+  const nameC = at(text, "c");
+  const nameD = at(text, "d");
+  const refB = at(text, "@b");
+  const project = createProjectIndex();
+  project.update({
+    path: "t.md",
+    format: "markdown",
+    length: text.length,
+    items: [
+      { kind: "label", range: [0, 4], nameRange: nameA, name: "a", attrs: { target: "figure" } },
+      { kind: "label", range: [5, 9], nameRange: nameB, name: "b", attrs: { target: "table" } },
+      { kind: "label", range: [10, 14], nameRange: nameC, name: "c", attrs: { target: "section" } },
+      { kind: "label", range: [15, 19], nameRange: nameD, name: "d", attrs: { target: "equation", implicit: "true" } },
+      { kind: "ref", range: refB, nameRange: [refB[0] + 1, refB[1]], name: "b", namespace: "label" },
+    ],
+  });
+  assert.deepEqual(diagnostics(project, "t.md"), [
+    { path: "t.md", from: nameA[0], to: nameA[1], severity: "info", code: "unused-target", name: "a", suggestions: [] },
+  ]);
+});
+
+test("a bibliography in a project with no citations is an info diagnostic", () => {
+  const text = "\\bibliography{refs}\n";
+  const bib = at(text, "refs");
+  const project = createProjectIndex();
+  project.update({
+    path: "main.tex",
+    format: "latex",
+    length: text.length,
+    items: [{ kind: "bibliography", range: [0, text.length], nameRange: bib, name: "refs" }],
+  });
+  assert.deepEqual(diagnostics(project, "main.tex").map((d) => [d.code, d.severity]), [["unused-bibliography", "info"]]);
+  project.update({
+    path: "intro.tex",
+    format: "latex",
+    length: 6,
+    items: [{ kind: "cite", range: [0, 6], nameRange: [0, 6], name: "smith" }],
+  });
+  assert.deepEqual(diagnostics(project, "main.tex"), []);
 });

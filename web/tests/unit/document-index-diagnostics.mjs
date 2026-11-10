@@ -142,3 +142,116 @@ test("applying an action dispatches a replacement of the range", () => {
     { changes: { from: nameInclude[0], to: nameInclude[1], insert: "intro" } },
   ]);
 });
+
+/** A lint context for `path` in `project`, as the editor supplies it. */
+function contextAt(project, path) {
+  return { project: () => project, path: () => path, open() {}, applyEdits() {} };
+}
+
+test("an unknown footnote is a warning, with the nearest footnote as a quick fix", () => {
+  const text = "A[^nte] and B[^note].\n\n[^note]: body\n";
+  const nte = at(text, "nte");
+  const noteRef = at(text, "[^note]");
+  const defRange = at(text, "[^note]: body");
+  const noteDef = at(text, "note", defRange[0]);
+  const project = createProjectIndex();
+  project.setFiles(["fn.md"]);
+  project.update({
+    path: "fn.md",
+    format: "markdown",
+    length: text.length,
+    items: [
+      { kind: "ref", range: at(text, "[^nte]"), nameRange: nte, name: "nte", namespace: "footnote" },
+      { kind: "ref", range: noteRef, nameRange: at(text, "note", noteRef[0]), name: "note", namespace: "footnote" },
+      { kind: "label", range: defRange, nameRange: noteDef, name: "note", namespace: "footnote", attrs: { target: "footnote" } },
+    ],
+  });
+  const found = indexDiagnosticsFor(contextAt(project, "fn.md"));
+  assert.equal(found.length, 1);
+  const [diagnostic] = found;
+  assert.equal(diagnostic.from, nte[0]);
+  assert.equal(diagnostic.to, nte[1]);
+  assert.equal(diagnostic.severity, "warning");
+  assert.ok(diagnostic.message.includes("nte"));
+  assert.equal(diagnostic.actions.length, 1);
+  assert.ok(diagnostic.actions[0].name.includes("note"));
+  const calls = [];
+  diagnostic.actions[0].apply({ dispatch: (spec) => calls.push(spec) }, diagnostic.from, diagnostic.to);
+  assert.deepEqual(calls, [{ changes: { from: nte[0], to: nte[1], insert: "note" } }]);
+});
+
+test("a duplicate label is reported as a warning on each copy", () => {
+  const text = "\\label{fig:a}\n";
+  const name = at(text, "fig:a");
+  const project = createProjectIndex();
+  project.update({ path: "a.tex", format: "latex", length: text.length, items: [{ kind: "label", range: [0, 14], nameRange: name, name: "fig:a" }] });
+  project.update({ path: "b.tex", format: "latex", length: text.length, items: [{ kind: "label", range: [0, 14], nameRange: name, name: "fig:a" }] });
+  const [diagnostic] = indexDiagnosticsFor(contextAt(project, "b.tex"));
+  assert.equal(diagnostic.severity, "warning");
+  assert.equal(diagnostic.from, name[0]);
+  assert.ok(diagnostic.message.includes("fig:a"));
+  assert.deepEqual(diagnostic.actions, []);
+});
+
+test("unused footnotes, unused figure targets and unused bibliographies are info, with no quick fix", () => {
+  const footText = "[^lone]: never used\n";
+  const footName = at(footText, "lone");
+  const labelText = "{#fig}\n";
+  const labelName = at(labelText, "fig");
+  const bibText = "\\bibliography{refs}\n";
+  const bibName = at(bibText, "refs");
+  const project = createProjectIndex();
+  project.update({
+    path: "foot.md",
+    format: "markdown",
+    length: footText.length,
+    items: [{ kind: "label", range: [0, 20], nameRange: footName, name: "lone", namespace: "footnote", attrs: { target: "footnote" } }],
+  });
+  project.update({
+    path: "fig.md",
+    format: "markdown",
+    length: labelText.length,
+    items: [{ kind: "label", range: [0, 7], nameRange: labelName, name: "fig", attrs: { target: "figure" } }],
+  });
+  project.update({
+    path: "main.tex",
+    format: "latex",
+    length: bibText.length,
+    items: [{ kind: "bibliography", range: [0, bibText.length], nameRange: bibName, name: "refs" }],
+  });
+
+  const footnote = indexDiagnosticsFor(contextAt(project, "foot.md"));
+  assert.equal(footnote.length, 1);
+  assert.equal(footnote[0].severity, "info");
+  assert.equal(footnote[0].source, "librepaper-index");
+  assert.ok(footnote[0].message.includes("lone"));
+  assert.deepEqual(footnote[0].actions, []);
+
+  const target = indexDiagnosticsFor(contextAt(project, "fig.md"));
+  assert.equal(target.length, 1);
+  assert.equal(target[0].severity, "info");
+  assert.equal(target[0].from, labelName[0]);
+  assert.ok(target[0].message.includes("fig"));
+
+  const bibliography = indexDiagnosticsFor(contextAt(project, "main.tex"));
+  assert.equal(bibliography.length, 1);
+  assert.equal(bibliography[0].severity, "info");
+  assert.ok(bibliography[0].message.length > 0);
+});
+
+test("a link to a missing project file is a warning with the nearest file as a quick fix", () => {
+  const text = "[x](b.mdd)\n";
+  const name = at(text, "b.mdd");
+  const project = createProjectIndex();
+  project.setFiles(["notes/a.md", "notes/b.md"]);
+  project.update({
+    path: "notes/a.md",
+    format: "markdown",
+    length: text.length,
+    items: [{ kind: "link", range: [4, 9], nameRange: name, name: "b.mdd", attrs: { file: "true" } }],
+  });
+  const [diagnostic] = indexDiagnosticsFor(contextAt(project, "notes/a.md"));
+  assert.equal(diagnostic.severity, "warning");
+  assert.ok(diagnostic.message.includes("b.mdd"));
+  assert.ok(diagnostic.actions.some((action) => action.name.includes("b.md")));
+});

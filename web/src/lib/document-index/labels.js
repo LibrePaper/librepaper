@@ -102,7 +102,7 @@ export function labelList(project, texts, { first = "", formats = null } = {}) {
     const file = project.file(path);
     if (!file || !isDocumentSource(path) || (formats && !formats.has(file.format))) continue;
     const labels = file.items
-      .filter((item) => item.kind === "label" && item.name !== undefined)
+      .filter((item) => item.kind === "label" && item.name !== undefined && project.namespaceOf(item, path) === "label")
       .sort((a, b) => a.range[0] - b.range[0]);
     for (const item of labels) {
       const id = /** @type {string} */ (item.name);

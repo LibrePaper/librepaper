@@ -1,7 +1,8 @@
-// Lint diagnostics from the document index: references to labels that are not
-// defined, and includes or assets that name no project file. Each comes with
-// one quick fix per suggestion. Unknown citations and unknown references are
-// left to citation-keys-extension.js, which already underlines them.
+// Lint diagnostics from the document index: references to labels or footnotes
+// that are not defined, duplicate labels, includes, assets and file links that
+// name no project file, and the unused notes (info). Each comes with one quick
+// fix per suggestion. Unknown citations and unknown references are left to
+// citation-keys-extension.js, which already underlines them.
 
 import { linter } from "@codemirror/lint";
 import { diagnostics } from "../document-index/queries.js";
@@ -12,7 +13,39 @@ import { m } from "../paraglide/messages.js";
 /** @typedef {import("@codemirror/lint").Diagnostic} LintDiagnostic */
 
 /** The codes this extension reports. */
-const REPORTED = new Set(["unknown-label", "missing-file"]);
+const REPORTED = new Set([
+  "unknown-label",
+  "unknown-footnote",
+  "duplicate-label",
+  "missing-file",
+  "unused-footnote",
+  "unused-target",
+  "unused-bibliography",
+]);
+
+/**
+ * The message for a diagnostic, through Paraglide.
+ * @param {import("../document-index/schema.js").Diagnostic} diagnostic
+ * @returns {string}
+ */
+function messageOf({ code, name }) {
+  switch (code) {
+    case "unknown-label":
+      return m.index_diagnostics_unknown_label({ name });
+    case "unknown-footnote":
+      return m.index_diagnostics_unknown_footnote({ name });
+    case "duplicate-label":
+      return m.index_diagnostics_duplicate_label({ name });
+    case "unused-footnote":
+      return m.index_diagnostics_unused_footnote({ name });
+    case "unused-target":
+      return m.index_diagnostics_unused_target({ name });
+    case "unused-bibliography":
+      return m.index_diagnostics_unused_bibliography();
+    default:
+      return m.index_diagnostics_missing_file({ name });
+  }
+}
 
 /**
  * Lint diagnostics for the file on screen.
@@ -32,15 +65,13 @@ export function indexDiagnosticsFor(context, docLength) {
       if (from >= docLength) continue;
       to = Math.min(to, docLength);
     }
-    const { name, code, suggestions } = diagnostic;
+    const { suggestions } = diagnostic;
     out.push({
       from,
       to,
-      severity: "warning",
+      severity: diagnostic.severity === "info" ? "info" : "warning",
       source: "librepaper-index",
-      message: code === "unknown-label"
-        ? m.index_diagnostics_unknown_label({ name })
-        : m.index_diagnostics_missing_file({ name }),
+      message: messageOf(diagnostic),
       actions: suggestions.map((suggestion) => ({
         name: m.index_diagnostics_replace({ name: suggestion }),
         apply(view, from, to) {
