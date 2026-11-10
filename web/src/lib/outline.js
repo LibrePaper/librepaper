@@ -289,6 +289,60 @@ function extractLatex(source, starts) {
   return result;
 }
 
+const ORG_HEADLINE = /^(\*+)[ \t]+(.*)$/;
+const ORG_BLOCK_BEGIN = /^[ \t]*#\+begin_(\w+)/i;
+const ORG_BLOCK_END = /^[ \t]*#\+end_(\w+)\b/i;
+const ORG_DRAWER_OPEN = /^[ \t]*:([\w-]+):[ \t]*$/;
+const ORG_DRAWER_END = /^[ \t]*:END:[ \t]*$/i;
+
+/**
+ * The headline title without its TODO keyword, priority cookie and trailing
+ * tags, or null when the headline is a COMMENT.
+ */
+function orgTitle(raw) {
+  if (/^COMMENT(?:[ \t]|$)/.test(raw)) return null;
+  return raw
+    .replace(/^(?:TODO|DONE)[ \t]+/, "")
+    .replace(/^\[#(?:[A-Za-z0-9]|[0-9]{2})\][ \t]*/, "")
+    .replace(/(?:^|[ \t]+):[\w@#%:]+:[ \t]*$/, "");
+}
+
+// Headlines outside #+BEGIN_xxx blocks and :NAME: drawers. A headline ends an
+// open drawer, as Org does, so an unclosed drawer hides nothing after it.
+function extractOrg(source, starts) {
+  const lines = source.split(/\r\n|\r|\n/);
+  const result = [];
+  let block = "";
+  let drawer = false;
+  for (let i = 0; i < lines.length; i++) {
+    const text = lines[i];
+    if (block) {
+      const end = ORG_BLOCK_END.exec(text);
+      if (end && end[1].toLowerCase() === block) block = "";
+      continue;
+    }
+    const headline = ORG_HEADLINE.exec(text);
+    if (headline) drawer = false;
+    if (drawer) {
+      if (ORG_DRAWER_END.test(text)) drawer = false;
+      continue;
+    }
+    const begin = ORG_BLOCK_BEGIN.exec(text);
+    if (begin) {
+      block = begin[1].toLowerCase();
+      continue;
+    }
+    if (!headline) {
+      const open = ORG_DRAWER_OPEN.exec(text);
+      if (open && open[1].toUpperCase() !== "END") drawer = true;
+      continue;
+    }
+    const title = orgTitle(headline[2]);
+    if (title !== null) addHeading(result, starts, title, headline[1].length, starts[i]);
+  }
+  return result;
+}
+
 /**
  * Return headings in source order for one of the supported source formats.
  * Unsupported formats intentionally return an empty outline.
@@ -311,6 +365,8 @@ export function extractOutline(source, format) {
     case "latex":
     case "tex":
       return extractLatex(source, starts);
+    case "org":
+      return extractOrg(source, starts);
     default:
       return [];
   }

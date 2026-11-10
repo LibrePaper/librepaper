@@ -5,6 +5,7 @@ import { sourceFormatOf } from "../../formats.js";
 import { htmlAdapter } from "./html.js";
 import { latexAdapter } from "./latex.js";
 import { markdownAdapter } from "./markdown.js";
+import { orgAdapter } from "./org.js";
 import { typstAdapter } from "./typst.js";
 
 /** @typedef {import("../schema.js").IndexItem} IndexItem */
@@ -18,6 +19,7 @@ const ADAPTERS = {
   markdown: markdownAdapter,
   quarto: markdownAdapter,
   html: htmlAdapter,
+  org: orgAdapter,
 };
 
 /**
