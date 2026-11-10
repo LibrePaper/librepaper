@@ -69,7 +69,10 @@
     cursor: pointer;
   }
 
-  button[aria-pressed="true"] {
+  /* These are tabs, so they keep the underline and skip the global pressed-toggle fill. */
+  .mobile-mode-switch button[aria-pressed="true"],
+  .mobile-mode-switch button[aria-pressed="true"]:hover:not(:disabled) {
+    background: none;
     color: var(--color-link);
     border-bottom-color: var(--color-link);
   }
