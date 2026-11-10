@@ -120,8 +120,6 @@ export interface Language {
   id: string;
   name: string;
   rules: Rule[];
-  // Builds the whole token tree itself (from a parse tree) instead of running `rules`; null falls back to the rules.
-  tokenize?(source: string): Token[] | null;
   style(token: Token): TokenStyle | null;
   commands: LanguageCommands;
   table?: TableAdapter;

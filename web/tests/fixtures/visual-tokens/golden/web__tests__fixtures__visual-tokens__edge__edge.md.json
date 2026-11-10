@@ -526,7 +526,7 @@
   {
     "body": {
       "from": 806,
-      "to": 2186
+      "to": 892
     },
     "children": [
       {
@@ -575,728 +575,6 @@
         },
         "name": "div",
         "to": 892
-      },
-      {
-        "from": 892,
-        "kind": "text",
-        "to": 899
-      },
-      {
-        "body": {
-          "from": 926,
-          "to": 968
-        },
-        "children": [
-          {
-            "from": 926,
-            "kind": "text",
-            "to": 950
-          },
-          {
-            "body": {
-              "from": 951,
-              "to": 966
-            },
-            "display": false,
-            "from": 950,
-            "kind": "math",
-            "meta": {
-              "close": "$",
-              "open": "$"
-            },
-            "to": 967
-          },
-          {
-            "from": 967,
-            "kind": "text",
-            "to": 968
-          }
-        ],
-        "from": 899,
-        "kind": "container",
-        "meta": {
-          "attrs": "#thm-pythag .theorem",
-          "classes": "theorem",
-          "id": "thm-pythag"
-        },
-        "name": "div",
-        "to": 972
-      },
-      {
-        "from": 972,
-        "kind": "text",
-        "to": 974
-      },
-      {
-        "from": 974,
-        "kind": "container",
-        "meta": {
-          "caption": "A caption for the table.",
-          "id": "tbl-vals"
-        },
-        "name": "mdtable",
-        "to": 1130
-      },
-      {
-        "from": 1130,
-        "kind": "text",
-        "to": 1132
-      },
-      {
-        "children": [
-          {
-            "from": 1132,
-            "kind": "raw",
-            "name": "marker",
-            "to": 1134
-          },
-          {
-            "from": 1134,
-            "kind": "text",
-            "to": 1147
-          },
-          {
-            "from": 1148,
-            "kind": "raw",
-            "name": "marker",
-            "to": 1150
-          },
-          {
-            "from": 1150,
-            "kind": "text",
-            "to": 1164
-          },
-          {
-            "from": 1165,
-            "kind": "raw",
-            "name": "marker",
-            "to": 1166
-          },
-          {
-            "from": 1167,
-            "kind": "raw",
-            "name": "marker",
-            "to": 1169
-          },
-          {
-            "children": [
-              {
-                "from": 1169,
-                "kind": "raw",
-                "name": "marker",
-                "to": 1171
-              },
-              {
-                "from": 1171,
-                "kind": "text",
-                "to": 1183
-              }
-            ],
-            "from": 1169,
-            "kind": "container",
-            "name": "blockquote",
-            "to": 1183
-          }
-        ],
-        "from": 1132,
-        "kind": "container",
-        "name": "blockquote",
-        "to": 1183
-      },
-      {
-        "from": 1183,
-        "kind": "text",
-        "to": 1185
-      },
-      {
-        "from": 1185,
-        "kind": "item",
-        "meta": {
-          "marker": "-"
-        },
-        "name": "bullet",
-        "to": 1186
-      },
-      {
-        "from": 1186,
-        "kind": "text",
-        "to": 1198
-      },
-      {
-        "from": 1198,
-        "kind": "item",
-        "meta": {
-          "marker": "-"
-        },
-        "name": "bullet",
-        "to": 1199
-      },
-      {
-        "from": 1199,
-        "kind": "text",
-        "to": 1215
-      },
-      {
-        "from": 1215,
-        "kind": "item",
-        "meta": {
-          "marker": "-"
-        },
-        "name": "bullet",
-        "to": 1216
-      },
-      {
-        "from": 1216,
-        "kind": "text",
-        "to": 1239
-      },
-      {
-        "from": 1239,
-        "kind": "item",
-        "meta": {
-          "marker": "-"
-        },
-        "name": "bullet",
-        "to": 1240
-      },
-      {
-        "from": 1240,
-        "kind": "text",
-        "to": 1249
-      },
-      {
-        "from": 1249,
-        "kind": "item",
-        "meta": {
-          "marker": "1."
-        },
-        "name": "number",
-        "to": 1251
-      },
-      {
-        "from": 1251,
-        "kind": "text",
-        "to": 1282
-      },
-      {
-        "from": 1282,
-        "kind": "item",
-        "meta": {
-          "marker": "1."
-        },
-        "name": "number",
-        "to": 1284
-      },
-      {
-        "from": 1284,
-        "kind": "text",
-        "to": 1301
-      },
-      {
-        "from": 1301,
-        "kind": "item",
-        "meta": {
-          "box": " ",
-          "marker": "-",
-          "task": "todo"
-        },
-        "name": "bullet",
-        "to": 1306
-      },
-      {
-        "from": 1306,
-        "kind": "text",
-        "to": 1317
-      },
-      {
-        "from": 1317,
-        "kind": "item",
-        "meta": {
-          "box": "x",
-          "marker": "-",
-          "task": "done"
-        },
-        "name": "bullet",
-        "to": 1322
-      },
-      {
-        "from": 1322,
-        "kind": "text",
-        "to": 1333
-      },
-      {
-        "from": 1333,
-        "kind": "item",
-        "meta": {
-          "box": "/",
-          "marker": "-",
-          "task": "doing"
-        },
-        "name": "bullet",
-        "to": 1338
-      },
-      {
-        "from": 1338,
-        "kind": "text",
-        "to": 1350
-      },
-      {
-        "from": 1350,
-        "kind": "command",
-        "meta": {
-          "tag": "priority"
-        },
-        "name": "tasktag",
-        "to": 1359
-      },
-      {
-        "from": 1359,
-        "kind": "text",
-        "to": 1365
-      },
-      {
-        "from": 1365,
-        "kind": "command",
-        "meta": {
-          "bracketed": "false",
-          "text": "@due"
-        },
-        "name": "mdcite",
-        "to": 1369
-      },
-      {
-        "from": 1369,
-        "kind": "text",
-        "to": 1382
-      },
-      {
-        "from": 1382,
-        "kind": "item",
-        "meta": {
-          "box": "-",
-          "marker": "-",
-          "task": "cancelled"
-        },
-        "name": "bullet",
-        "to": 1387
-      },
-      {
-        "from": 1387,
-        "kind": "text",
-        "to": 1425
-      },
-      {
-        "from": 1425,
-        "kind": "command",
-        "meta": {
-          "label": "1"
-        },
-        "name": "fnref",
-        "to": 1429
-      },
-      {
-        "from": 1429,
-        "kind": "text",
-        "to": 1441
-      },
-      {
-        "from": 1441,
-        "kind": "command",
-        "meta": {
-          "label": "note"
-        },
-        "name": "fnref",
-        "to": 1448
-      },
-      {
-        "from": 1448,
-        "kind": "text",
-        "to": 1451
-      },
-      {
-        "body": {
-          "from": 1457,
-          "to": 1476
-        },
-        "children": [
-          {
-            "from": 1457,
-            "kind": "text",
-            "to": 1476
-          }
-        ],
-        "from": 1451,
-        "kind": "container",
-        "meta": {
-          "label": "1"
-        },
-        "name": "fndef",
-        "to": 1476
-      },
-      {
-        "from": 1476,
-        "kind": "text",
-        "to": 1477
-      },
-      {
-        "body": {
-          "from": 1486,
-          "to": 1529
-        },
-        "children": [
-          {
-            "from": 1486,
-            "kind": "text",
-            "to": 1529
-          }
-        ],
-        "from": 1477,
-        "kind": "container",
-        "meta": {
-          "label": "note"
-        },
-        "name": "fndef",
-        "to": 1529
-      },
-      {
-        "from": 1529,
-        "kind": "text",
-        "to": 1531
-      },
-      {
-        "args": [
-          {
-            "from": 1543,
-            "to": 1567
-          },
-          {
-            "from": 1532,
-            "to": 1541
-          }
-        ],
-        "body": {
-          "from": 1532,
-          "to": 1541
-        },
-        "children": [
-          {
-            "from": 1532,
-            "kind": "text",
-            "to": 1541
-          }
-        ],
-        "from": 1531,
-        "kind": "command",
-        "name": "href",
-        "to": 1576
-      },
-      {
-        "from": 1576,
-        "kind": "text",
-        "to": 1581
-      },
-      {
-        "args": [
-          {
-            "from": 1592,
-            "to": 1595
-          },
-          {
-            "from": 1582,
-            "to": 1590
-          }
-        ],
-        "body": {
-          "from": 1582,
-          "to": 1590
-        },
-        "children": [
-          {
-            "from": 1582,
-            "kind": "text",
-            "to": 1590
-          }
-        ],
-        "from": 1581,
-        "kind": "command",
-        "meta": {
-          "ref": "true"
-        },
-        "name": "href",
-        "to": 1596
-      },
-      {
-        "from": 1596,
-        "kind": "text",
-        "to": 1609
-      },
-      {
-        "from": 1609,
-        "kind": "raw",
-        "meta": {
-          "label": "ref"
-        },
-        "name": "linkdef",
-        "to": 1652
-      },
-      {
-        "from": 1652,
-        "kind": "text",
-        "to": 1653
-      },
-      {
-        "from": 1653,
-        "kind": "raw",
-        "meta": {
-          "label": "ref2"
-        },
-        "name": "linkdef",
-        "to": 1688
-      },
-      {
-        "from": 1688,
-        "kind": "text",
-        "to": 1701
-      },
-      {
-        "body": {
-          "from": 1702,
-          "to": 1708
-        },
-        "from": 1701,
-        "kind": "command",
-        "meta": {
-          "bracketed": "true",
-          "text": "@a; @b"
-        },
-        "name": "mdcite",
-        "to": 1709
-      },
-      {
-        "from": 1709,
-        "kind": "text",
-        "to": 1711
-      },
-      {
-        "body": {
-          "from": 1712,
-          "to": 1724
-        },
-        "from": 1711,
-        "kind": "command",
-        "meta": {
-          "bracketed": "true",
-          "text": "see @a, p. 3"
-        },
-        "name": "mdcite",
-        "to": 1725
-      },
-      {
-        "from": 1725,
-        "kind": "text",
-        "to": 1727
-      },
-      {
-        "from": 1727,
-        "kind": "command",
-        "meta": {
-          "bracketed": "false",
-          "text": "@a"
-        },
-        "name": "mdcite",
-        "to": 1729
-      },
-      {
-        "from": 1729,
-        "kind": "text",
-        "to": 1743
-      },
-      {
-        "from": 1743,
-        "kind": "command",
-        "meta": {
-          "bracketed": "false",
-          "text": "@doe2019"
-        },
-        "name": "mdcite",
-        "to": 1751
-      },
-      {
-        "from": 1751,
-        "kind": "text",
-        "to": 1752
-      },
-      {
-        "body": {
-          "from": 1753,
-          "to": 1762
-        },
-        "from": 1752,
-        "kind": "command",
-        "meta": {
-          "bracketed": "true",
-          "text": "-@roe2021"
-        },
-        "name": "mdcite",
-        "to": 1763
-      },
-      {
-        "from": 1763,
-        "kind": "text",
-        "to": 1785
-      },
-      {
-        "from": 1785,
-        "kind": "command",
-        "meta": {
-          "alt": "Alt text",
-          "attrs": "#fig-pic width=80% fig-align=\"center\"",
-          "id": "fig-pic",
-          "src": "img/pic.png"
-        },
-        "name": "mdimage",
-        "to": 1848
-      },
-      {
-        "from": 1848,
-        "kind": "text",
-        "to": 1853
-      },
-      {
-        "from": 1853,
-        "kind": "command",
-        "meta": {
-          "alt": "",
-          "attrs": "",
-          "src": "img/bare.png"
-        },
-        "name": "mdimage",
-        "to": 1870
-      },
-      {
-        "from": 1870,
-        "kind": "text",
-        "to": 1885
-      },
-      {
-        "from": 1885,
-        "kind": "command",
-        "meta": {
-          "alone": "false",
-          "args": "https://example.org/v.mp4",
-          "name": "video"
-        },
-        "name": "shortcode",
-        "to": 1924
-      },
-      {
-        "from": 1924,
-        "kind": "text",
-        "to": 1929
-      },
-      {
-        "from": 1929,
-        "kind": "command",
-        "meta": {
-          "alone": "false",
-          "args": "title",
-          "name": "meta"
-        },
-        "name": "shortcode",
-        "to": 1947
-      },
-      {
-        "from": 1947,
-        "kind": "text",
-        "to": 1960
-      },
-      {
-        "args": [
-          {
-            "from": 1961,
-            "to": 1985
-          }
-        ],
-        "body": {
-          "from": 1961,
-          "to": 1985
-        },
-        "from": 1960,
-        "kind": "command",
-        "name": "url",
-        "to": 1986
-      },
-      {
-        "from": 1986,
-        "kind": "text",
-        "to": 1996
-      },
-      {
-        "args": [
-          {
-            "from": 1996,
-            "to": 2020
-          }
-        ],
-        "body": {
-          "from": 1996,
-          "to": 2020
-        },
-        "from": 1996,
-        "kind": "command",
-        "name": "url",
-        "to": 2020
-      },
-      {
-        "from": 2020,
-        "kind": "text",
-        "to": 2078
-      },
-      {
-        "from": 2078,
-        "kind": "linebreak",
-        "to": 2079
-      },
-      {
-        "from": 2079,
-        "kind": "text",
-        "to": 2092
-      },
-      {
-        "from": 2092,
-        "kind": "command",
-        "name": "hr",
-        "to": 2095
-      },
-      {
-        "from": 2095,
-        "kind": "text",
-        "to": 2097
-      },
-      {
-        "from": 2097,
-        "kind": "command",
-        "name": "hr",
-        "to": 2100
-      },
-      {
-        "from": 2100,
-        "kind": "text",
-        "to": 2125
-      },
-      {
-        "from": 2125,
-        "kind": "command",
-        "meta": {
-          "label": "1"
-        },
-        "name": "fnref",
-        "to": 2129
-      },
-      {
-        "from": 2129,
-        "kind": "text",
-        "to": 2186
       }
     ],
     "from": 790,
@@ -1306,6 +584,742 @@
       "classes": "columns"
     },
     "name": "div",
+    "to": 897
+  },
+  {
+    "from": 897,
+    "kind": "text",
+    "to": 899
+  },
+  {
+    "body": {
+      "from": 926,
+      "to": 968
+    },
+    "children": [
+      {
+        "from": 926,
+        "kind": "text",
+        "to": 950
+      },
+      {
+        "body": {
+          "from": 951,
+          "to": 966
+        },
+        "display": false,
+        "from": 950,
+        "kind": "math",
+        "meta": {
+          "close": "$",
+          "open": "$"
+        },
+        "to": 967
+      },
+      {
+        "from": 967,
+        "kind": "text",
+        "to": 968
+      }
+    ],
+    "from": 899,
+    "kind": "container",
+    "meta": {
+      "attrs": "#thm-pythag .theorem",
+      "classes": "theorem",
+      "id": "thm-pythag"
+    },
+    "name": "div",
+    "to": 972
+  },
+  {
+    "from": 972,
+    "kind": "text",
+    "to": 974
+  },
+  {
+    "from": 974,
+    "kind": "container",
+    "meta": {
+      "caption": "A caption for the table.",
+      "id": "tbl-vals"
+    },
+    "name": "mdtable",
+    "to": 1130
+  },
+  {
+    "from": 1130,
+    "kind": "text",
+    "to": 1132
+  },
+  {
+    "children": [
+      {
+        "from": 1132,
+        "kind": "raw",
+        "name": "marker",
+        "to": 1134
+      },
+      {
+        "from": 1134,
+        "kind": "text",
+        "to": 1147
+      },
+      {
+        "from": 1148,
+        "kind": "raw",
+        "name": "marker",
+        "to": 1150
+      },
+      {
+        "from": 1150,
+        "kind": "text",
+        "to": 1164
+      },
+      {
+        "from": 1165,
+        "kind": "raw",
+        "name": "marker",
+        "to": 1166
+      },
+      {
+        "from": 1167,
+        "kind": "raw",
+        "name": "marker",
+        "to": 1169
+      },
+      {
+        "children": [
+          {
+            "from": 1169,
+            "kind": "raw",
+            "name": "marker",
+            "to": 1171
+          },
+          {
+            "from": 1171,
+            "kind": "text",
+            "to": 1183
+          }
+        ],
+        "from": 1169,
+        "kind": "container",
+        "name": "blockquote",
+        "to": 1183
+      }
+    ],
+    "from": 1132,
+    "kind": "container",
+    "name": "blockquote",
+    "to": 1183
+  },
+  {
+    "from": 1183,
+    "kind": "text",
+    "to": 1185
+  },
+  {
+    "from": 1185,
+    "kind": "item",
+    "meta": {
+      "marker": "-"
+    },
+    "name": "bullet",
+    "to": 1186
+  },
+  {
+    "from": 1186,
+    "kind": "text",
+    "to": 1198
+  },
+  {
+    "from": 1198,
+    "kind": "item",
+    "meta": {
+      "marker": "-"
+    },
+    "name": "bullet",
+    "to": 1199
+  },
+  {
+    "from": 1199,
+    "kind": "text",
+    "to": 1215
+  },
+  {
+    "from": 1215,
+    "kind": "item",
+    "meta": {
+      "marker": "-"
+    },
+    "name": "bullet",
+    "to": 1216
+  },
+  {
+    "from": 1216,
+    "kind": "text",
+    "to": 1239
+  },
+  {
+    "from": 1239,
+    "kind": "item",
+    "meta": {
+      "marker": "-"
+    },
+    "name": "bullet",
+    "to": 1240
+  },
+  {
+    "from": 1240,
+    "kind": "text",
+    "to": 1249
+  },
+  {
+    "from": 1249,
+    "kind": "item",
+    "meta": {
+      "marker": "1."
+    },
+    "name": "number",
+    "to": 1251
+  },
+  {
+    "from": 1251,
+    "kind": "text",
+    "to": 1264
+  },
+  {
+    "from": 1264,
+    "kind": "item",
+    "meta": {
+      "marker": "2."
+    },
+    "name": "number",
+    "to": 1266
+  },
+  {
+    "from": 1266,
+    "kind": "text",
+    "to": 1282
+  },
+  {
+    "from": 1282,
+    "kind": "item",
+    "meta": {
+      "marker": "1."
+    },
+    "name": "number",
+    "to": 1284
+  },
+  {
+    "from": 1284,
+    "kind": "text",
+    "to": 1301
+  },
+  {
+    "from": 1301,
+    "kind": "item",
+    "meta": {
+      "box": " ",
+      "marker": "-",
+      "task": "todo"
+    },
+    "name": "bullet",
+    "to": 1306
+  },
+  {
+    "from": 1306,
+    "kind": "text",
+    "to": 1317
+  },
+  {
+    "from": 1317,
+    "kind": "item",
+    "meta": {
+      "box": "x",
+      "marker": "-",
+      "task": "done"
+    },
+    "name": "bullet",
+    "to": 1322
+  },
+  {
+    "from": 1322,
+    "kind": "text",
+    "to": 1333
+  },
+  {
+    "from": 1333,
+    "kind": "item",
+    "meta": {
+      "box": "/",
+      "marker": "-",
+      "task": "doing"
+    },
+    "name": "bullet",
+    "to": 1338
+  },
+  {
+    "from": 1338,
+    "kind": "text",
+    "to": 1350
+  },
+  {
+    "from": 1350,
+    "kind": "command",
+    "meta": {
+      "tag": "priority"
+    },
+    "name": "tasktag",
+    "to": 1359
+  },
+  {
+    "from": 1359,
+    "kind": "text",
+    "to": 1365
+  },
+  {
+    "from": 1365,
+    "kind": "command",
+    "meta": {
+      "bracketed": "false",
+      "text": "@due"
+    },
+    "name": "mdcite",
+    "to": 1369
+  },
+  {
+    "from": 1369,
+    "kind": "text",
+    "to": 1382
+  },
+  {
+    "from": 1382,
+    "kind": "item",
+    "meta": {
+      "box": "-",
+      "marker": "-",
+      "task": "cancelled"
+    },
+    "name": "bullet",
+    "to": 1387
+  },
+  {
+    "from": 1387,
+    "kind": "text",
+    "to": 1425
+  },
+  {
+    "from": 1425,
+    "kind": "command",
+    "meta": {
+      "label": "1"
+    },
+    "name": "fnref",
+    "to": 1429
+  },
+  {
+    "from": 1429,
+    "kind": "text",
+    "to": 1441
+  },
+  {
+    "from": 1441,
+    "kind": "command",
+    "meta": {
+      "label": "note"
+    },
+    "name": "fnref",
+    "to": 1448
+  },
+  {
+    "from": 1448,
+    "kind": "text",
+    "to": 1451
+  },
+  {
+    "body": {
+      "from": 1457,
+      "to": 1476
+    },
+    "children": [
+      {
+        "from": 1457,
+        "kind": "text",
+        "to": 1476
+      }
+    ],
+    "from": 1451,
+    "kind": "container",
+    "meta": {
+      "label": "1"
+    },
+    "name": "fndef",
+    "to": 1476
+  },
+  {
+    "from": 1476,
+    "kind": "text",
+    "to": 1477
+  },
+  {
+    "body": {
+      "from": 1486,
+      "to": 1529
+    },
+    "children": [
+      {
+        "from": 1486,
+        "kind": "text",
+        "to": 1529
+      }
+    ],
+    "from": 1477,
+    "kind": "container",
+    "meta": {
+      "label": "note"
+    },
+    "name": "fndef",
+    "to": 1529
+  },
+  {
+    "from": 1529,
+    "kind": "text",
+    "to": 1531
+  },
+  {
+    "args": [
+      {
+        "from": 1543,
+        "to": 1567
+      },
+      {
+        "from": 1532,
+        "to": 1541
+      }
+    ],
+    "body": {
+      "from": 1532,
+      "to": 1541
+    },
+    "children": [
+      {
+        "from": 1532,
+        "kind": "text",
+        "to": 1541
+      }
+    ],
+    "from": 1531,
+    "kind": "command",
+    "name": "href",
+    "to": 1576
+  },
+  {
+    "from": 1576,
+    "kind": "text",
+    "to": 1581
+  },
+  {
+    "args": [
+      {
+        "from": 1592,
+        "to": 1595
+      },
+      {
+        "from": 1582,
+        "to": 1590
+      }
+    ],
+    "body": {
+      "from": 1582,
+      "to": 1590
+    },
+    "children": [
+      {
+        "from": 1582,
+        "kind": "text",
+        "to": 1590
+      }
+    ],
+    "from": 1581,
+    "kind": "command",
+    "meta": {
+      "ref": "true"
+    },
+    "name": "href",
+    "to": 1596
+  },
+  {
+    "from": 1596,
+    "kind": "text",
+    "to": 1609
+  },
+  {
+    "from": 1609,
+    "kind": "raw",
+    "meta": {
+      "label": "ref"
+    },
+    "name": "linkdef",
+    "to": 1652
+  },
+  {
+    "from": 1652,
+    "kind": "text",
+    "to": 1653
+  },
+  {
+    "from": 1653,
+    "kind": "raw",
+    "meta": {
+      "label": "ref2"
+    },
+    "name": "linkdef",
+    "to": 1688
+  },
+  {
+    "from": 1688,
+    "kind": "text",
+    "to": 1701
+  },
+  {
+    "body": {
+      "from": 1702,
+      "to": 1708
+    },
+    "from": 1701,
+    "kind": "command",
+    "meta": {
+      "bracketed": "true",
+      "text": "@a; @b"
+    },
+    "name": "mdcite",
+    "to": 1709
+  },
+  {
+    "from": 1709,
+    "kind": "text",
+    "to": 1711
+  },
+  {
+    "body": {
+      "from": 1712,
+      "to": 1724
+    },
+    "from": 1711,
+    "kind": "command",
+    "meta": {
+      "bracketed": "true",
+      "text": "see @a, p. 3"
+    },
+    "name": "mdcite",
+    "to": 1725
+  },
+  {
+    "from": 1725,
+    "kind": "text",
+    "to": 1727
+  },
+  {
+    "from": 1727,
+    "kind": "command",
+    "meta": {
+      "bracketed": "false",
+      "text": "@a"
+    },
+    "name": "mdcite",
+    "to": 1729
+  },
+  {
+    "from": 1729,
+    "kind": "text",
+    "to": 1743
+  },
+  {
+    "from": 1743,
+    "kind": "command",
+    "meta": {
+      "bracketed": "false",
+      "text": "@doe2019"
+    },
+    "name": "mdcite",
+    "to": 1751
+  },
+  {
+    "from": 1751,
+    "kind": "text",
+    "to": 1752
+  },
+  {
+    "body": {
+      "from": 1753,
+      "to": 1762
+    },
+    "from": 1752,
+    "kind": "command",
+    "meta": {
+      "bracketed": "true",
+      "text": "-@roe2021"
+    },
+    "name": "mdcite",
+    "to": 1763
+  },
+  {
+    "from": 1763,
+    "kind": "text",
+    "to": 1785
+  },
+  {
+    "from": 1785,
+    "kind": "command",
+    "meta": {
+      "alt": "Alt text",
+      "attrs": "#fig-pic width=80% fig-align=\"center\"",
+      "id": "fig-pic",
+      "src": "img/pic.png"
+    },
+    "name": "mdimage",
+    "to": 1848
+  },
+  {
+    "from": 1848,
+    "kind": "text",
+    "to": 1853
+  },
+  {
+    "from": 1853,
+    "kind": "command",
+    "meta": {
+      "alt": "",
+      "attrs": "",
+      "src": "img/bare.png"
+    },
+    "name": "mdimage",
+    "to": 1870
+  },
+  {
+    "from": 1870,
+    "kind": "text",
+    "to": 1885
+  },
+  {
+    "from": 1885,
+    "kind": "command",
+    "meta": {
+      "alone": "false",
+      "args": "https://example.org/v.mp4",
+      "name": "video"
+    },
+    "name": "shortcode",
+    "to": 1924
+  },
+  {
+    "from": 1924,
+    "kind": "text",
+    "to": 1929
+  },
+  {
+    "from": 1929,
+    "kind": "command",
+    "meta": {
+      "alone": "false",
+      "args": "title",
+      "name": "meta"
+    },
+    "name": "shortcode",
+    "to": 1947
+  },
+  {
+    "from": 1947,
+    "kind": "text",
+    "to": 1960
+  },
+  {
+    "args": [
+      {
+        "from": 1961,
+        "to": 1985
+      }
+    ],
+    "body": {
+      "from": 1961,
+      "to": 1985
+    },
+    "from": 1960,
+    "kind": "command",
+    "name": "url",
+    "to": 1986
+  },
+  {
+    "from": 1986,
+    "kind": "text",
+    "to": 1996
+  },
+  {
+    "args": [
+      {
+        "from": 1996,
+        "to": 2020
+      }
+    ],
+    "body": {
+      "from": 1996,
+      "to": 2020
+    },
+    "from": 1996,
+    "kind": "command",
+    "name": "url",
+    "to": 2020
+  },
+  {
+    "from": 2020,
+    "kind": "text",
+    "to": 2078
+  },
+  {
+    "from": 2078,
+    "kind": "linebreak",
+    "to": 2079
+  },
+  {
+    "from": 2079,
+    "kind": "text",
+    "to": 2092
+  },
+  {
+    "from": 2092,
+    "kind": "command",
+    "name": "hr",
+    "to": 2095
+  },
+  {
+    "from": 2095,
+    "kind": "text",
+    "to": 2097
+  },
+  {
+    "from": 2097,
+    "kind": "command",
+    "name": "hr",
+    "to": 2100
+  },
+  {
+    "from": 2100,
+    "kind": "text",
+    "to": 2125
+  },
+  {
+    "from": 2125,
+    "kind": "command",
+    "meta": {
+      "label": "1"
+    },
+    "name": "fnref",
+    "to": 2129
+  },
+  {
+    "from": 2129,
+    "kind": "text",
     "to": 2186
   }
 ]
