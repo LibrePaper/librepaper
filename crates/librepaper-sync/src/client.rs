@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use librepaper_base::digest::Digest;
-use librepaper_base::http::{decode, detail_of, post_json_as, send, Credentials};
+use librepaper_base::http::{
+    decode, detail_of, post_json_as, send, send_bounded, Credentials, MAX_FILE_BYTES,
+    MAX_RESPONSE_BYTES,
+};
 use librepaper_base::retry::RetryPolicy;
 use librepaper_base::site::SiteUrl;
 use librepaper_base::text::LineEnding;
@@ -163,15 +166,36 @@ impl Client {
         body: Option<Vec<u8>>,
         timeout: Duration,
     ) -> Result<(u16, Vec<u8>), Error> {
+        self.call_bounded(method, path, extra, body, timeout, MAX_RESPONSE_BYTES)
+            .await
+    }
+
+    /// `call`, refusing a reply longer than `limit` bytes.
+    async fn call_bounded(
+        &self,
+        method: Method,
+        path: &str,
+        extra: &[(&str, &str)],
+        body: Option<Vec<u8>>,
+        timeout: Duration,
+        limit: usize,
+    ) -> Result<(u16, Vec<u8>), Error> {
         let owned = self.credentials.headers();
         let mut headers: Vec<(&str, &str)> = owned
             .iter()
             .map(|(name, value)| (*name, value.as_str()))
             .collect();
         headers.extend_from_slice(extra);
-        send(method, &self.base()?.join(path), &headers, body, timeout)
-            .await
-            .map_err(Error::Network)
+        send_bounded(
+            method,
+            &self.base()?.join(path),
+            &headers,
+            body,
+            timeout,
+            limit,
+        )
+        .await
+        .map_err(Error::Network)
     }
 
     /// A GET that must answer with JSON.
@@ -310,7 +334,9 @@ impl Client {
     /// An asset's bytes, checked against its digest.
     pub(crate) async fn asset(&self, slug: &str, digest: &str) -> Result<Vec<u8>, Error> {
         let path = format!("/api/documents/{slug}/assets/{digest}");
-        let (status, raw) = self.call(Method::GET, &path, &[], None, BULK).await?;
+        let (status, raw) = self
+            .call_bounded(Method::GET, &path, &[], None, BULK, MAX_FILE_BYTES)
+            .await?;
         if status != 200 {
             return Err(refusal(status, &decode(&raw)));
         }
@@ -462,6 +488,19 @@ enum Unanswered {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn an_asset_longer_than_the_limit_is_refused_by_its_length() {
+        let fake = crate::fake::Fake::start().await;
+        fake.set_oversize_asset(true);
+        let error = fake.client().asset("paper", &"a".repeat(64)).await.unwrap_err();
+        match error {
+            Error::Network(message) => {
+                assert!(message.contains("larger than the limit of 128 MiB"), "{message}")
+            }
+            other => panic!("expected a network error, got {other}"),
+        }
+    }
 
     #[test]
     fn a_source_change_waits_two_then_four_seconds_and_tries_three_times() {

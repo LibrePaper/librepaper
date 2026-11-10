@@ -89,6 +89,54 @@ pub async fn read_capped(mut response: reqwest::Response) -> Result<(u16, Vec<u8
     Ok((status, body))
 }
 
+/// The most one file (an asset, a text) may weigh when a client downloads it.
+pub const MAX_FILE_BYTES: usize = 128 * 1024 * 1024;
+/// The most one reply may weigh: a file, or a snapshot that carries the texts
+/// of a whole project.
+pub const MAX_RESPONSE_BYTES: usize = 160 * 1024 * 1024;
+/// The most one project may weigh in all.
+pub const MAX_PROJECT_BYTES: usize = 512 * 1024 * 1024;
+
+/// A byte count in the largest unit that is exact, such as "128 MiB".
+pub fn human_bytes(bytes: usize) -> String {
+    const UNITS: [(&str, usize); 3] = [("GiB", 1 << 30), ("MiB", 1 << 20), ("KiB", 1 << 10)];
+    for (name, size) in UNITS {
+        if bytes >= size && bytes % size == 0 {
+            return format!("{} {name}", bytes / size);
+        }
+    }
+    format!("{bytes} bytes")
+}
+
+/// Reads a reply body, refusing one longer than `limit` bytes. A
+/// `Content-Length` over the limit is refused before any of the body is read;
+/// the header can be absent or wrong, so the length is enforced again while
+/// the body streams in.
+pub async fn read_bounded(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>, String> {
+    let too_long = || format!("the reply is larger than the limit of {}", human_bytes(limit));
+    if response
+        .content_length()
+        .is_some_and(|size| size > limit as u64)
+    {
+        return Err(too_long());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|err| format!("could not read the reply: {err}"))?
+    {
+        if body.len().saturating_add(chunk.len()) > limit {
+            return Err(too_long());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
 /// One round trip, returning (status, body) rather than an error on a 4xx:
 /// the deployment puts its error detail in the response body. It goes through
 /// `credentialed_client`, so a redirect is not followed; it is reported as an
@@ -99,6 +147,20 @@ pub async fn send(
     headers: &[(&str, &str)],
     body: Option<Vec<u8>>,
     timeout: Duration,
+) -> Result<(u16, Vec<u8>), String> {
+    send_bounded(method, target, headers, body, timeout, MAX_RESPONSE_BYTES).await
+}
+
+/// `send`, with the reply refused when it is longer than `limit` bytes. Use it
+/// with `MAX_FILE_BYTES` for an asset; `send` itself allows
+/// `MAX_RESPONSE_BYTES`.
+pub async fn send_bounded(
+    method: reqwest::Method,
+    target: &str,
+    headers: &[(&str, &str)],
+    body: Option<Vec<u8>>,
+    timeout: Duration,
+    limit: usize,
 ) -> Result<(u16, Vec<u8>), String> {
     let mut request = credentialed_client()
         .request(method.clone(), target)
@@ -125,17 +187,23 @@ pub async fn send(
              use that address as the server instead"
         ));
     }
-    let raw = response
-        .bytes()
+    let raw = read_bounded(response, limit)
         .await
         .map_err(|err| format!("{method} {target}: {err}"))?;
-    Ok((status, raw.to_vec()))
+    Ok((status, raw))
 }
 
 /// The header a share link's key travels in. The browser puts the key in the
 /// URL fragment and sends it this way too; the command line has no fragment
 /// and sends it only this way.
 pub const KEY_HEADER: &str = "x-librepaper-key";
+
+/// The header every non-browser client sends so the server does not treat a
+/// request as a cookie-authenticated browser call. The server reads only
+/// whether it is present, not its value.
+pub const CLIENT_HEADER: &str = "x-librepaper-client";
+/// The value the command line, sync and the desktop backup send.
+pub const CLIENT_MARKER: &str = "cli";
 
 /// Who is asking, as the two things a request can carry: a deployment's
 /// bearer token, which names an account, and a share link's key, which
@@ -170,7 +238,7 @@ impl Credentials {
     /// rule A, so the CLI carries the same marker header the browser shell
     /// does; a bearer-carrying call skips those checks regardless.
     pub fn headers(&self) -> Vec<(&'static str, String)> {
-        let mut headers = vec![("x-librepaper-client", "cli".to_string())];
+        let mut headers = vec![(CLIENT_HEADER, CLIENT_MARKER.to_string())];
         if !self.token.is_empty() {
             headers.push(("authorization", format!("Bearer {}", self.token)));
         }
@@ -267,4 +335,79 @@ pub fn truncate(text: &str, limit: usize) -> String {
         end -= 1;
     }
     text[..end].to_string()
+}
+
+#[cfg(test)]
+mod bounded_tests {
+    use super::*;
+    use axum::routing::get;
+    use axum::Router;
+
+    async fn serve() -> String {
+        let app = Router::new().route("/small", get(|| async { vec![7u8; 10] }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{address}")
+    }
+
+    /// A raw server whose reply is chunked, so it states no length.
+    async fn serve_chunked() -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 1024];
+                let _ = socket.read(&mut request).await;
+                let mut reply = b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n".to_vec();
+                for _ in 0..4 {
+                    reply.extend_from_slice(b"a\r\n0123456789\r\n");
+                }
+                reply.extend_from_slice(b"0\r\n\r\n");
+                let _ = socket.write_all(&reply).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        format!("http://{address}")
+    }
+
+    async fn fetch(url: String, limit: usize) -> Result<Vec<u8>, String> {
+        let response = credentialed_client().get(url).send().await.unwrap();
+        read_bounded(response, limit).await
+    }
+
+    #[tokio::test]
+    async fn a_body_that_fits_is_returned() {
+        let base = serve().await;
+        assert_eq!(fetch(format!("{base}/small"), 10).await.unwrap(), vec![7u8; 10]);
+    }
+
+    #[tokio::test]
+    async fn a_content_length_over_the_limit_is_refused() {
+        let base = serve().await;
+        let error = fetch(format!("{base}/small"), 9).await.unwrap_err();
+        assert!(error.contains("larger than the limit of 9 bytes"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_chunked_body_over_the_limit_is_refused_while_streaming() {
+        let url = serve_chunked().await;
+        let response = credentialed_client().get(&url).send().await.unwrap();
+        assert!(response.content_length().is_none());
+        let error = read_bounded(response, 25).await.unwrap_err();
+        assert!(error.contains("larger than the limit of 25 bytes"), "{error}");
+        assert_eq!(fetch(url, 40).await.unwrap().len(), 40);
+    }
+
+    #[test]
+    fn limits_read_in_human_units() {
+        assert_eq!(human_bytes(MAX_FILE_BYTES), "128 MiB");
+        assert_eq!(human_bytes(MAX_PROJECT_BYTES), "512 MiB");
+        assert_eq!(human_bytes(1 << 30), "1 GiB");
+        assert_eq!(human_bytes(9), "9 bytes");
+    }
 }
