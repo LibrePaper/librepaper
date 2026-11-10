@@ -2,6 +2,8 @@
 // the plain text of their arguments. Nothing here imports CodeMirror, so the
 // rules can be read and reasoned about on their own.
 
+import { blankedComments, latexCommands, readArguments } from "../latex-language/args.js";
+
 /// The commands that set the title block, or that the preamble fold reveals as a line.
 export const METADATA_COMMANDS = [
   "title",
@@ -19,31 +21,26 @@ export const METADATA_COMMANDS = [
 // The commands whose argument is drawn as a line under the authors.
 const AFFIL_COMMANDS = new Set(["affil", "affiliation", "address", "institute", "email"]);
 
-// A metadata command, its optional arguments, and the opening brace of its mandatory one.
-const METADATA_PATTERN = new RegExp(
-  `\\\\(${METADATA_COMMANDS.join("|")})\\*?(?![a-zA-Z])\\s*(?:\\[[^\\]]*\\]\\s*)*\\{`,
-  "g",
-);
+const METADATA_NAMES = new Set(METADATA_COMMANDS);
 
-// The same comments as labels.js stripComments, blanked instead of removed, so
-// that an offset into the blanked text is an offset into the source.
-/// Blanks each % comment with spaces, keeping every offset where it was.
+/// Blanks each % comment with spaces, keeping every offset where it was. The
+/// comments come from the LaTeX parse, so a % inside \url{...} or \verb stays.
 export function blankComments(text) {
-  return text.replace(/((?:^|[^\\])(?:\\\\)*)%[^\n]*/gm, (match, kept) => kept + " ".repeat(match.length - kept.length));
+  return blankedComments(text);
 }
 
 /// The metadata commands in a source, in source order, that start before `before`.
 /// Each is { name, from, to, argFrom, argTo }: `from` and `to` cover the whole
 /// command, optional arguments included; `argFrom` and `argTo` are inside the braces.
 export function findMetadata(source, before = source.length) {
-  const blanked = blankComments(source);
+  const { code, commands } = latexCommands(source);
   const found = [];
-  for (const match of blanked.matchAll(METADATA_PATTERN)) {
-    if (match.index >= before) break;
-    const argFrom = match.index + match[0].length;
-    const argTo = closingBrace(blanked, argFrom);
-    if (argTo === -1) continue;
-    found.push({ name: match[1], from: match.index, to: argTo + 1, argFrom, argTo });
+  for (const command of commands) {
+    if (command.from >= before) break;
+    if (command.type !== "command" || !METADATA_NAMES.has(command.name)) continue;
+    const argument = readArguments(code, command.to).find((arg) => arg.kind === "group");
+    if (!argument) continue;
+    found.push({ name: command.name, from: command.from, to: argument.to, argFrom: argument.from + 1, argTo: argument.to - 1 });
   }
   return found;
 }

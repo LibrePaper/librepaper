@@ -1,6 +1,7 @@
 import { StateField } from "@codemirror/state";
 import { Decoration, EditorView } from "@codemirror/view";
 import { PillWidget, revealingSelection } from "./markup.ts";
+import { latexCommands, readArguments } from "../latex-language/args.js";
 import { findMetadata } from "./metadata.js";
 import { m } from "../paraglide/messages.js";
 
@@ -104,27 +105,29 @@ function findPreamble(doc) {
 
     if (number === 1) return null;
     const to = doc.line(number - 1).to;
-    const text = withoutComments(doc.sliceString(0, to));
-    if (!/\\documentclass\b/.test(text)) return null;
-    return { from: 0, to, summary: summarise(text) };
+    const { code, commands } = latexCommands(doc.sliceString(0, to));
+    if (!commands.some((command) => command.type === "command" && command.name === "documentclass")) return null;
+    return { from: 0, to, summary: summarise(code, commands) };
   }
   return null;
 }
 
-function summarise(text) {
-  const documentClass = /\\documentclass\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}/.exec(text);
+function summarise(code, commands) {
+  let documentClass = null;
   let packages = 0;
-  for (const match of text.matchAll(/\\usepackage\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}/g)) {
-    packages += match[1].split(",").filter((name) => name.trim() !== "").length;
+  for (const command of commands) {
+    if (command.type !== "command" || (command.name !== "documentclass" && command.name !== "usepackage")) continue;
+    const args = readArguments(code, command.to);
+    const named = args.find((arg) => arg.kind === "group");
+    if (command.name === "documentclass" && documentClass === null) {
+      documentClass = named ? named.value : "";
+    } else if (command.name === "usepackage" && named) {
+      packages += named.value.split(",").filter((name) => name.trim() !== "").length;
+    }
   }
 
-  if (documentClass && documentClass[1].trim() !== "") {
-    return m.preamble_summary_class({ documentClass: documentClass[1].trim(), count: packages });
+  if (documentClass !== null && documentClass.trim() !== "") {
+    return m.preamble_summary_class({ documentClass: documentClass.trim(), count: packages });
   }
   return m.preamble_summary_packages({ count: packages });
-}
-
-// Drops the text of each % comment, so a commented-out package is not counted.
-function withoutComments(text) {
-  return text.replace(/(^|[^\\])%.*$/gm, "$1");
 }
