@@ -2505,7 +2505,7 @@
     // stripping .tex comments out of it would blank the wrong runs.
     const openPath = session?.paths?.get(openFile) || "";
     const format = openPath ? renderers.formatOf(openPath) : sourceFormat;
-    if (format === "latex" && typeof painted.synctex !== "undefined" && painted.synctex) {
+    if (format === "latex" && painted.synctex) {
       const path = session?.paths?.get(openFile) || "";
       const precise = painted.synctex.forward(path, synctexLineAt(editor.text(), editor.caret()));
       if (precise) {
@@ -2545,7 +2545,7 @@
 
   function followPdfClick(pdfPoint) {
     if (!linked || !editing || !editor || sourceFormat !== "latex" ||
-        typeof painted.synctex === "undefined" || !painted.synctex || !pdfPoint) return false;
+        !painted.synctex || !pdfPoint) return false;
     const precise = painted.synctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y));
     const id = precise && session.idOf(precise.path);
     if (!id) return false;
@@ -4596,19 +4596,22 @@
 
 <SaveTemplateDialog bind:this={saveTemplateDialog} slug={SLUG} title={doc.title} />
 
-<Modal bind:open={timeline.state.restoring} title={m.readerd_restore_version_title()}
-  description={restoreMoved
-    ? m.readerd_restore_moved({ name: restoreName })
-    : m.readerd_restore_description({ name: restoreName })}
-  confirm={{
-    label: restoreBusy ? m.readerd_restoring() : restoreMoved ? m.readerd_restore_anyway() : m.readerd_restore_version(),
-    disabled: restoreBusy || !mayEdit,
-    onclick: confirmRestore,
-  }}>
-  {#if historyProblem}
-    <p class="lp-text-error text-sm" role="alert">{historyProblem}</p>
-  {/if}
-</Modal>
+<!-- Restoring is an editor's action, so a reader is given no dialog for it. -->
+{#if mayEdit}
+  <Modal bind:open={timeline.state.restoring} title={m.readerd_restore_version_title()}
+    description={restoreMoved
+      ? m.readerd_restore_moved({ name: restoreName })
+      : m.readerd_restore_description({ name: restoreName })}
+    confirm={{
+      label: restoreBusy ? m.readerd_restoring() : restoreMoved ? m.readerd_restore_anyway() : m.readerd_restore_version(),
+      disabled: restoreBusy || !mayEdit,
+      onclick: confirmRestore,
+    }}>
+    {#if historyProblem}
+      <p class="lp-text-error text-sm" role="alert">{historyProblem}</p>
+    {/if}
+  </Modal>
+{/if}
 
 <DeleteCommentsDialog bind:this={deleteCommentsDialog} ondelete={(comment) => annotations.delete(comment)} />
 
