@@ -28,6 +28,36 @@ const NOT_ARGUMENT = new Set([
   "BlockComment",
   "Named",
 ]);
+const TRIVIA = new Set(["Space", "LineComment", "BlockComment"]);
+
+// Counter kinds of #figure: the names the figure's kind argument maps to.
+const KIND_NAMES = new Map([
+  ["image", "figure"],
+  ["table", "table"],
+  ["raw", "listing"],
+]);
+// Custom figure kinds that label a theorem-like environment.
+const THEOREM_KINDS = new Set([
+  "theorem",
+  "lemma",
+  "proposition",
+  "corollary",
+  "definition",
+  "proof",
+  "example",
+  "remark",
+  "claim",
+  "conjecture",
+  "exercise",
+]);
+// A URL scheme such as https:, mailto: or doi:.
+const SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+// The text fields of #set document(...).
+const DOCUMENT_FIELDS = ["title", "author", "date"];
+// Leaves of a content block that are its plain text, and the containers to
+// read them from.
+const TEXT_LEAVES = new Set(["Text", "Space", "Escape", "SmartQuote"]);
+const TEXT_CONTAINERS = new Set(["Markup", "Strong", "Emph", "ContentBlock"]);
 
 /**
  * The items of one typst source. Items are not sorted.
@@ -74,6 +104,19 @@ export function typstAdapter(text, path) {
           });
           return;
         }
+        case "Link":
+          // A bare URL in markup, which Typst links by itself.
+          items.push({
+            kind: "link",
+            range: [node.from, node.to],
+            name: source.slice(node.from, node.to),
+            nameRange: [node.from, node.to],
+            attrs: { external: "true" },
+          });
+          return;
+        case "SetRule":
+          items.push(...metadataItems(source, node));
+          return;
         case "FuncCall":
           items.push(...callItems(source, node));
           return;
@@ -252,6 +295,12 @@ function callItems(source, node) {
     }
     case "bibliography":
       return positionalStrings(args).map((str) => quotedItem("bibliography", str.from, str, source));
+    case "link": {
+      // A label argument is a reference, handled where the label is read.
+      if (first?.name !== "Str") return [];
+      const item = linkItem(source, node, first);
+      return item ? [item] : [];
+    }
     default:
       return [];
   }
@@ -298,7 +347,12 @@ function definitionItem(source, node) {
  */
 function labelItem(source, headings, node) {
   /** @type {IndexItem} */
-  const item = { kind: "label", range: [node.from, node.to], ...innerOf(source, node) };
+  const item = {
+    kind: "label",
+    range: [node.from, node.to],
+    ...innerOf(source, node),
+    attrs: { target: labelTarget(source, node) },
+  };
   const title = labelTitle(source, headings, node);
   if (title) item.title = title;
   return item;
@@ -356,4 +410,256 @@ function captionOf(source, call) {
  */
 function collapse(text) {
   return text.replace(/\s+/g, " ").trim() || null;
+}
+
+/**
+ * What a label names, from the element before it on its line or the list item
+ * it ends: a section, figure, table, listing, theorem, equation, footnote,
+ * item, or other.
+ * @param {string} source
+ * @param {SyntaxNode} label
+ * @returns {string}
+ */
+function labelTarget(source, label) {
+  const before = elementBefore(label);
+  if (label.parent?.name === "Heading") return "section";
+  if (before?.name === "Heading" && !source.slice(before.to, label.from).includes("\n")) return "section";
+  if (before?.name === "FuncCall") {
+    const name = calleeName(source, before);
+    if (name === "figure") return figureTarget(source, before);
+    if (name === "footnote") return "footnote";
+  }
+  if (before?.name === "Equation" && isDisplay(source, before)) return "equation";
+  const list = label.parent?.name === "Markup" ? label.parent.parent : null;
+  if (list?.name === "ListItem" || list?.name === "EnumItem") return "item";
+  return "other";
+}
+
+/**
+ * The element before a node, skipping spaces, or null.
+ * @param {SyntaxNode} node
+ * @returns {SyntaxNode | null}
+ */
+function elementBefore(node) {
+  let before = node.prevSibling;
+  while (before?.name === "Space") before = before.prevSibling;
+  return before ?? null;
+}
+
+/**
+ * The target of a label after a figure call: its kind, or theorem for a
+ * theorem-like custom kind, else other.
+ * @param {string} source
+ * @param {SyntaxNode} call
+ * @returns {string}
+ */
+function figureTarget(source, call) {
+  const args = call.getChild("Args");
+  if (!args) return "other";
+  const kind = figureKind(source, args);
+  if (kind === "figure" || kind === "table" || kind === "listing") return kind;
+  return THEOREM_KINDS.has(kind) ? "theorem" : "other";
+}
+
+/**
+ * The kind of a figure: a `kind:` argument wins, then the shape of its content
+ * (the first argument, then the first content block). Custom kinds are kept as
+ * written.
+ * @param {string} source
+ * @param {SyntaxNode} args
+ * @returns {string}
+ */
+function figureKind(source, args) {
+  const named = namedArg(source, args, "kind")?.value;
+  if (named?.name === "Str") {
+    const kind = innerOf(source, named).name;
+    return KIND_NAMES.get(kind) ?? kind;
+  }
+  if (named?.name === "Ident") {
+    const kind = source.slice(named.from, named.to);
+    return KIND_NAMES.get(kind) ?? kind;
+  }
+  const first = firstArgument(args);
+  let kind = first ? kindOfArgument(source, first) : null;
+  if (!kind) {
+    const block = args.getChild("ContentBlock");
+    kind = block ? kindOfArgument(source, block) : null;
+  }
+  return KIND_NAMES.get(kind) ?? "figure";
+}
+
+/**
+ * The kind a call or raw node shows: an image, a table or raw text, else null.
+ * @param {string} source
+ * @param {SyntaxNode} node
+ * @returns {string | null}
+ */
+function kindOfNode(source, node) {
+  if (node?.name === "Raw") return "raw";
+  if (node?.name !== "FuncCall") return null;
+  switch (calleeName(source, node)) {
+    case "image": return "image";
+    case "table":
+    case "grid": return "table";
+    case "raw": return "raw";
+    default: return null;
+  }
+}
+
+/**
+ * The kind shown by an argument: itself, or the first thing of a content block.
+ * @param {string} source
+ * @param {SyntaxNode} node
+ * @returns {string | null}
+ */
+function kindOfArgument(source, node) {
+  if (node.name !== "ContentBlock") return kindOfNode(source, node);
+  let first = node.getChild("Markup")?.firstChild ?? null;
+  while (first && TRIVIA.has(first.name)) first = first.nextSibling;
+  if (first?.name === "Hash") return kindOfNode(source, first.nextSibling);
+  return kindOfNode(source, first);
+}
+
+/**
+ * The value of the named argument `name`: its key and value node. The value is
+ * null when the argument has none. Null when the argument is absent.
+ * @param {string} source
+ * @param {SyntaxNode} args
+ * @param {string} name
+ * @returns {{ key: SyntaxNode, value: SyntaxNode | null } | null}
+ */
+function namedArg(source, args, name) {
+  for (let child = args?.firstChild; child; child = child.nextSibling) {
+    if (child.name !== "Named") continue;
+    const key = child.firstChild;
+    if (key?.name !== "Ident" || source.slice(key.from, key.to) !== name) continue;
+    let value = child.lastChild;
+    while (value && TRIVIA.has(value.name)) value = value.prevSibling;
+    return { key, value: value && value !== key && value.name !== "Colon" ? value : null };
+  }
+  return null;
+}
+
+/**
+ * Whether a math node is display math: its content starts and ends with
+ * whitespace.
+ * @param {string} source
+ * @param {SyntaxNode} node
+ * @returns {boolean}
+ */
+function isDisplay(source, node) {
+  const last = node.lastChild;
+  const content = source.slice(node.from + 1, node.to - 1);
+  return Boolean(
+    last && last !== node.firstChild && last.name === "Dollar" &&
+      content.length > 1 && /^\s/.test(content) && /\s$/.test(content),
+  );
+}
+
+/**
+ * A link item for a call with a string target. A scheme makes it external; a
+ * path makes it a file link, with the fragment kept in attrs. A bare fragment
+ * is a same-file anchor, not a link item.
+ * @param {string} source
+ * @param {SyntaxNode} call
+ * @param {SyntaxNode} str
+ * @returns {IndexItem | null}
+ */
+function linkItem(source, call, str) {
+  const { name, nameRange } = innerOf(source, str);
+  const range = /** @type {[number, number]} */ ([(hashBefore(call) ?? call).from, call.to]);
+  if (SCHEME.test(name)) return { kind: "link", range, name, nameRange, attrs: { external: "true" } };
+  const hash = name.indexOf("#");
+  const path = hash === -1 ? name : name.slice(0, hash);
+  if (!path) return null;
+  const attrs = { file: "true" };
+  if (hash !== -1) attrs.fragment = name.slice(hash + 1);
+  return { kind: "link", range, name: path, nameRange: [nameRange[0], nameRange[0] + path.length], attrs };
+}
+
+/**
+ * The metadata items of a `#set document(...)` or `#set text(lang: ...)` rule.
+ * @param {string} source
+ * @param {SyntaxNode} node
+ * @returns {IndexItem[]}
+ */
+function metadataItems(source, node) {
+  const args = node.getChild("Args");
+  if (!args) return [];
+  let target = node.firstChild?.nextSibling ?? null;
+  while (target && TRIVIA.has(target.name)) target = target.nextSibling;
+  const setting = target ? source.slice(target.from, target.to) : "";
+
+  /** @type {(IndexItem | null)[]} */
+  const items = [];
+  if (setting === "document") {
+    for (const field of DOCUMENT_FIELDS) {
+      const named = namedArg(source, args, field);
+      if (!named?.value) continue;
+      for (const value of textValues(named.value)) items.push(metadataItem(source, field, value, named.key));
+    }
+  } else if (setting === "text") {
+    const named = namedArg(source, args, "lang");
+    if (named?.value?.name === "Str") items.push(metadataItem(source, "language", named.value, named.key));
+  }
+  return items.filter((item) => item !== null);
+}
+
+/**
+ * One metadata item: the plain text of a value, or null when it is empty.
+ * @param {string} source
+ * @param {string} name
+ * @param {SyntaxNode} value
+ * @param {SyntaxNode} key
+ * @returns {IndexItem | null}
+ */
+function metadataItem(source, name, value, key) {
+  const title = plainText(source, value);
+  if (!title) return null;
+  return { kind: "metadata", name, title, range: [value.from, value.to], nameRange: [key.from, key.to] };
+}
+
+/**
+ * The string and content values of an argument: the node itself, or the
+ * elements of an array or parenthesized value. Other values give none.
+ * @param {SyntaxNode} node
+ * @param {SyntaxNode[]} [out]
+ * @returns {SyntaxNode[]}
+ */
+function textValues(node, out = []) {
+  if (node.name === "Str" || node.name === "ContentBlock") out.push(node);
+  else if (node.name === "Array" || node.name === "Parenthesized") {
+    for (let child = node.firstChild; child; child = child.nextSibling) textValues(child, out);
+  }
+  return out;
+}
+
+/**
+ * The plain text of a string or content value, markup removed.
+ * @param {string} source
+ * @param {SyntaxNode} node
+ * @returns {string | null}
+ */
+function plainText(source, node) {
+  if (node.name === "Str") return collapse(innerOf(source, node).name.replace(/\\(.)/g, "$1"));
+  const parts = [];
+  collectText(source, node, parts);
+  return collapse(parts.join(""));
+}
+
+/**
+ * Appends the text leaves under a content node, descending only into markup
+ * containers, so that code inside brackets is not read as text.
+ * @param {string} source
+ * @param {SyntaxNode} node
+ * @param {string[]} parts
+ */
+function collectText(source, node, parts) {
+  for (let child = node.firstChild; child; child = child.nextSibling) {
+    if (TEXT_LEAVES.has(child.name)) {
+      parts.push(child.name === "Escape" ? source.slice(child.from + 1, child.to) : source.slice(child.from, child.to));
+    } else if (TEXT_CONTAINERS.has(child.name)) {
+      collectText(source, child, parts);
+    }
+  }
 }
