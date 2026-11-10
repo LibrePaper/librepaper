@@ -101,3 +101,33 @@ assert.equal(seventh.kind, "prose");
 assert.equal(seventh.line, 7);
 
 console.log("live-preview-patch: ok");
+
+// The 32-character window can reach a blank line: no leading or trailing space.
+{
+  const para = "Welcome to the first paragraph of this text, eee fff.";
+  const starts = [
+    (body) => `\\begin{document}\n\n\\end{figure}\n\n${body}\n\n\\end{document}\n`,
+    (body) => `\n${body}\n\n`,
+  ];
+  for (const wrap of starts) {
+    const isMain = wrap === starts[0];
+    for (let n = 1; n <= 26; n++) {
+      const oldBody = para.slice(0, n) + para.slice(n + 1);
+      const newBody = para;
+      const patch = livePatch({ path: isMain ? "main.tex" : "a.tex", oldText: wrap(oldBody), newText: wrap(newBody), isMain });
+      if (!patch) continue;
+      assert.ok(!/^\s/.test(patch.before), `before has no leading space at ${n}`);
+      assert.ok(!/\s$/.test(patch.after), `after has no trailing space at ${n}`);
+      assert.equal(patch.before, para.slice(0, n), "before is the paragraph text before the caret");
+    }
+  }
+  // The window after the edit reaches the following blank line.
+  const short = "abc defg hij klmn";
+  const patch = livePatch({
+    path: "a.tex", isMain: false,
+    oldText: `\n${short.slice(0, -1)}\n\nNext.\n`, newText: `\n${short}\n\nNext.\n`,
+  });
+  assert.ok(patch);
+  assert.equal(patch.after, "");
+  assert.equal(patch.before, short.slice(0, -1));
+}

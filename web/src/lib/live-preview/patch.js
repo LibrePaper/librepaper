@@ -215,8 +215,10 @@ function prosePatch({ path, oldText, newText, isMain }, { from, oldTo, newTo }) 
     if (!neighborsOk(tree, from) || !neighborsOk(tree, end)) return null;
     if (!inRunningText(tree, text, from, isMain) || !inRunningText(tree, text, end, isMain)) return null;
   }
-  const rawBefore = plainRun(oldText, from, true);
-  const rawAfter = plainRun(oldText, oldTo, false);
+  // The window can end inside the blank line next to a paragraph; the
+  // paragraph's own text has no space there.
+  const rawBefore = plainRun(oldText, from, true).replace(/^\s+/, "");
+  const rawAfter = plainRun(oldText, oldTo, false).replace(/\s+$/, "");
   // A ligature split by the edit boundary shows up only in the joined string.
   const ligature = /--|``|''|[!?]`/;
   if (ligature.test(rawBefore + deleted + rawAfter) || ligature.test(rawBefore + inserted + rawAfter)) return null;

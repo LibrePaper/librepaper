@@ -3,13 +3,36 @@
 // patched preview a moment later.
 //
 // The rendered page's `data-sourcepos` lines describe the text of the last
-// compile. A patch addresses a line, so it is only sent while the edited
-// file still has the line count that compile saw.
+// compile. A patch addresses a line of the text before the edit, so its line
+// is mapped to the compiled text first. A line in text the compile has not
+// seen gets no patch.
 
 import { livePatch } from "./patch.js";
 
 const isTex = (path) => /\.tex$/i.test(path);
-const lineCount = (text) => String(text).split("\n").length;
+
+/**
+ * The line of `compiled` that line `line` of `current` corresponds to, or null
+ * when it lies in text the compile did not have. Uses the common run of lines
+ * at the start and at the end of the two texts. When both have the same number
+ * of lines the changed lines are edits in place and keep their number.
+ * @param {string} compiled
+ * @param {string} current
+ * @param {number} line 1-based
+ * @returns {number | null}
+ */
+function mapLine(compiled, current, line) {
+  const a = compiled.split("\n");
+  const b = current.split("\n");
+  const max = Math.min(a.length, b.length);
+  let head = 0;
+  while (head < max && a[head] === b[head]) head++;
+  let tail = 0;
+  while (tail < max - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+  if (line <= head) return line;
+  if (line > b.length - tail) return line - (b.length - a.length);
+  return a.length === b.length ? line : null;
+}
 
 /**
  * @param {{ send: (message: { type: "preview-patch", patch: object }) => void }} options
@@ -17,10 +40,8 @@ const lineCount = (text) => String(text).split("\n").length;
 export function createLivePreview({ send }) {
   /** @type {Map<string, string>} */
   let texts = new Map();
-  /** @type {Map<string, number>} line counts as of the last compile */
-  let compiledLines = new Map();
-  /** @type {Set<string>} paths whose line count has left the compiled one */
-  let shifted = new Set();
+  /** @type {Map<string, string>} the texts as of the last compile */
+  let compiledTexts = new Map();
 
   const remember = (next) => new Map(Object.entries(next));
 
@@ -35,29 +56,25 @@ export function createLivePreview({ send }) {
       const changed = [];
       for (const [path, text] of texts) if (previous.get(path) !== text) changed.push(path);
       for (const path of previous.keys()) if (!texts.has(path)) changed.push(path);
-      for (const path of changed) {
-        if (!isTex(path) || !compiledLines.has(path)) continue;
-        if (lineCount(texts.get(path) ?? "") !== compiledLines.get(path)) shifted.add(path);
-      }
       if (changed.length !== 1) return;
       const [path] = changed;
-      if (!isTex(path) || !compiledLines.has(path) || shifted.has(path)) return;
+      if (!isTex(path) || !compiledTexts.has(path)) return;
       if (!previous.has(path) || !texts.has(path)) return;
       const patch = livePatch({ path, oldText: previous.get(path), newText: texts.get(path), isMain: path === main });
-      if (patch) send({ type: "preview-patch", patch });
+      if (!patch) return;
+      const line = mapLine(compiledTexts.get(path), previous.get(path), patch.line);
+      if (line !== null) send({ type: "preview-patch", patch: { ...patch, line } });
     },
 
     /** @param {Record<string, string>} next the texts that were compiled */
     compiled(next) {
       texts = remember(next);
-      compiledLines = new Map([...texts].map(([path, text]) => [path, lineCount(text)]));
-      shifted = new Set();
+      compiledTexts = new Map(texts);
     },
 
     reset() {
       texts = new Map();
-      compiledLines = new Map();
-      shifted = new Set();
+      compiledTexts = new Map();
     },
   };
 }
