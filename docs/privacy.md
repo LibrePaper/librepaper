@@ -38,7 +38,7 @@ librepaper.org, your files and the backups are hosted in Canada by OVHcloud. Con
 - **Moderation records** are written when an administrator blocks or erases an account, bans a handle, or hides a project. Each one keeps the administrator's login, the action, the date, the reason, and the sign-in provider and handle of the account or the project it concerns.
 - **Operational numbers** count requests, response times, memory, disk and CPU once a minute. They carry no user, document or network identifiers. Only the administrators can see them.
 
-librepaper.org keeps no access log and does not store IP addresses. The server holds your IP address in memory for up to an hour, to limit how many sign-ins and comments one address can send. It is never written to the database or to a log. Server logs record errors and administrator sign-ins.
+librepaper.org keeps no access log and does not store IP addresses. The server uses your IP address, in memory only, to limit how many requests and connections one address can make. It is never written to the database or to a log. Server logs record errors and administrator sign-ins.
 
 ## Who sees what
 
