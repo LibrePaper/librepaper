@@ -187,7 +187,7 @@ fn decide(server: &Server, parts: &Parts) -> Decision {
         // account.
         let url = format!(
             "{}&prompt=select_account",
-            server.app.authorize_url(&callback, &state, &verifier)
+            server.app.authorize_url(&callback, &state, &verifier, "")
         );
         set(&mut response, "location", &url);
         append_cookie(

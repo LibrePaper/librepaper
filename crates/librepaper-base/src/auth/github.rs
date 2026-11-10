@@ -13,6 +13,7 @@ use crate::secret::Secret;
 pub const GITHUB_AUTHORIZE: &str = "https://github.com/login/oauth/authorize";
 pub const GITHUB_TOKEN: &str = "https://github.com/login/oauth/access_token";
 pub const GITHUB_USER: &str = "https://api.github.com/user";
+pub const GITHUB_EMAILS: &str = "https://api.github.com/user/emails";
 pub const GITHUB_CHECK: &str = "https://api.github.com/applications/{id}/token";
 
 #[derive(Clone, Debug)]
@@ -28,6 +29,9 @@ pub struct GithubApp {
     pub token_url: String,
     /// Where the token's account is read. A test stands in for GitHub here.
     pub user_url: String,
+    /// Where the token's email addresses are read. A test stands in for GitHub
+    /// here.
+    pub emails_url: String,
 }
 
 impl Default for GithubApp {
@@ -38,6 +42,7 @@ impl Default for GithubApp {
             check_url: GITHUB_CHECK.to_string(),
             token_url: GITHUB_TOKEN.to_string(),
             user_url: GITHUB_USER.to_string(),
+            emails_url: GITHUB_EMAILS.to_string(),
         }
     }
 }
@@ -53,21 +58,28 @@ impl GithubApp {
         !self.client_id.is_empty()
     }
 
-    /// Where a browser is sent to sign in. No scopes are asked for: the default
-    /// gives the account's public profile, which is the login name, and
-    /// nothing else. The PKCE challenge binds the code exchange to this
-    /// redirect, as it does for the OpenID Connect providers.
+    /// Where a browser is sent to sign in. The caller chooses the scope: the
+    /// app's sign-in asks for `user:email`, which adds read-only access to the
+    /// account's email addresses to the public profile; the admin console asks
+    /// for none. The PKCE challenge binds the code exchange to this redirect,
+    /// as it does for the OpenID Connect providers.
     ///
     /// The account picker is always shown, so that someone who just signed out
     /// can choose another GitHub account. Without it, GitHub hands back the
     /// account it still remembers.
-    pub fn authorize_url(&self, redirect: &str, state: &str, verifier: &str) -> String {
+    pub fn authorize_url(
+        &self,
+        redirect: &str,
+        state: &str,
+        verifier: &str,
+        scope: &str,
+    ) -> String {
         let mut target = url::Url::parse(GITHUB_AUTHORIZE).expect("a constant URL");
         target
             .query_pairs_mut()
             .append_pair("client_id", &self.client_id)
             .append_pair("redirect_uri", redirect)
-            .append_pair("scope", "")
+            .append_pair("scope", scope)
             .append_pair("state", state)
             .append_pair("code_challenge", &crate::auth::pkce_challenge(verifier))
             .append_pair("code_challenge_method", "S256")
@@ -255,12 +267,53 @@ impl GithubApp {
         }
         Ok(Identity::github(&user.login, &user.id.to_string()))
     }
+
+    /// The address GitHub would write to this account at: its primary address,
+    /// and only once GitHub has verified it. Needs a token carrying the
+    /// `user:email` scope. `None` for any failure, for an account with no such
+    /// address, and for a `users.noreply.github.com` address, which accepts no
+    /// mail. It is contact data only: nothing matches or authorizes on it, so
+    /// a sign-in goes ahead without it.
+    pub async fn contact_email(&self, token: &str) -> Option<String> {
+        #[derive(Deserialize)]
+        struct Entry {
+            #[serde(default)]
+            email: String,
+            #[serde(default)]
+            primary: bool,
+            #[serde(default)]
+            verified: bool,
+        }
+        let _permit = crate::auth::try_provider_request()?;
+        let response = provider_client()
+            .get(&self.emails_url)
+            .timeout(PROVIDER_HTTP_TIMEOUT)
+            .header("user-agent", USER_AGENT)
+            .header("authorization", format!("Bearer {token}"))
+            .header("accept", "application/vnd.github+json")
+            .send()
+            .await
+            .ok()?;
+        if response.status().as_u16() != 200 {
+            return None;
+        }
+        let (_, body) = read_capped(response).await.ok()?;
+        let entries: Vec<Entry> = serde_json::from_slice(&body).ok()?;
+        let entry = entries
+            .into_iter()
+            .find(|entry| entry.primary && entry.verified)?;
+        let email = super::oidc::normalized_email(&entry.email)?;
+        if email.ends_with("@users.noreply.github.com") {
+            return None;
+        }
+        Some(email)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
-    use axum::routing::post;
+    use axum::routing::{get, post};
     use axum::{Json, Router};
     use serde_json::json;
 
@@ -282,20 +335,88 @@ mod tests {
         format!("http://{address}")
     }
 
+    async fn emails_stand_in(status: StatusCode, body: serde_json::Value) -> String {
+        let router = Router::new().route(
+            "/emails",
+            get(move || async move { (status, Json(body.clone())) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a free port");
+        let address = listener.local_addr().expect("an address");
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.expect("serve stand-in");
+        });
+        format!("http://{address}")
+    }
+
     #[test]
     fn the_authorize_url_asks_github_for_its_account_picker() {
         let app = GithubApp {
             client_id: "client".into(),
             ..GithubApp::default()
         };
-        let authorize =
-            app.authorize_url("https://example.test/auth/callback", "state", "verifier");
+        let authorize = app.authorize_url(
+            "https://example.test/auth/callback",
+            "state",
+            "verifier",
+            "user:email",
+        );
         let url = url::Url::parse(&authorize).expect("a URL");
         let prompt = url
             .query_pairs()
             .find(|(k, _)| k == "prompt")
             .map(|(_, v)| v.into_owned());
         assert_eq!(prompt, Some("select_account".to_string()));
+        let scope = url
+            .query_pairs()
+            .find(|(k, _)| k == "scope")
+            .map(|(_, v)| v.into_owned());
+        assert_eq!(scope, Some("user:email".to_string()));
+    }
+
+    #[tokio::test]
+    async fn contact_email_is_the_primary_verified_address_and_never_a_noreply_one() {
+        let primary = json!([
+            {"email": "old@example.org", "primary": false, "verified": true},
+            {"email": "Alice@Example.org", "primary": true, "verified": true}
+        ]);
+        let base = emails_stand_in(StatusCode::OK, primary).await;
+        let app = GithubApp {
+            emails_url: format!("{base}/emails"),
+            ..GithubApp::default()
+        };
+        assert_eq!(
+            app.contact_email("token").await,
+            Some("alice@example.org".to_string())
+        );
+
+        let unverified = json!([
+            {"email": "alice@example.org", "primary": true, "verified": false}
+        ]);
+        let base = emails_stand_in(StatusCode::OK, unverified).await;
+        let app = GithubApp {
+            emails_url: format!("{base}/emails"),
+            ..GithubApp::default()
+        };
+        assert_eq!(app.contact_email("token").await, None);
+
+        let noreply = json!([
+            {"email": "123+alice@users.noreply.github.com", "primary": true, "verified": true}
+        ]);
+        let base = emails_stand_in(StatusCode::OK, noreply).await;
+        let app = GithubApp {
+            emails_url: format!("{base}/emails"),
+            ..GithubApp::default()
+        };
+        assert_eq!(app.contact_email("token").await, None);
+
+        let base = emails_stand_in(StatusCode::NOT_FOUND, json!({})).await;
+        let app = GithubApp {
+            emails_url: format!("{base}/emails"),
+            ..GithubApp::default()
+        };
+        assert_eq!(app.contact_email("token").await, None);
     }
 
     #[tokio::test]

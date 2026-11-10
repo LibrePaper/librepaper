@@ -84,9 +84,10 @@ github_ids = [@LIBREPAPER_ADMIN_GITHUB_IDS@]
 [proxy]
 trusted_networks = ["172.29.0.0/16"]
 
-# Accounts with no sign-in for a year are erased with their documents.
+# The privacy policy says accounts with no sign-in for a year are erased with
+# their documents. The sweep is switched off for now: uncomment to enforce it.
 [retention]
-erase_inactive_after = "365d"
+# erase_inactive_after = "365d"
 # expire_after = "30d"
 # expire_from = "updated"            # or "created"
 

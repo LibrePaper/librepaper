@@ -208,7 +208,7 @@ commenters = ["*"]
 
 A browser session lasts 30 days. Set `session_lifetime` in `[auth]`, from `1h` to `30d`, to make it shorter. Sessions do not renew on use, and a CLI token never lasts longer than the browser session that approved it.
 
-**GitHub.** LibrePaper requests no scopes and receives the account's public login name.
+**GitHub.** LibrePaper requests the `user:email` scope. It receives the account's public login name and reads its primary verified email address, which is stored as a contact address and never used to grant access. The admin console requests no scopes.
 
 - See [Creating an OAuth app](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app). On GitHub, the path is Settings, Developer settings, OAuth Apps, New OAuth App.
 - Homepage URL: `https://paper.example`
