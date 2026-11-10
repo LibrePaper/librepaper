@@ -40,6 +40,7 @@ const POSITION_LEAF_OK = new Set(["Text", "Ligature", "Tie", "CloseBrace"]);
 const MATH_NODES = new Set(["InlineMath", "DisplayMath", "MathEnvironment"]);
 const MATH_ENVIRONMENTS = new Set(["equation", "equation*", "displaymath"]);
 /// [open, close, display]; `$$` must be tried before `$`.
+/** @type {Array<[string, string, boolean]>} */
 const MATH_DELIMITERS = [
   ["$$", "$$", true], ["$", "$", false], ["\\(", "\\)", false], ["\\[", "\\]", true],
 ];
@@ -205,6 +206,7 @@ function prosePatch({ path, oldText, newText, isMain }, { from, oldTo, newTo }) 
   if (!isPlain(deleted) || !isPlain(inserted)) return null;
   const oldTree = latexTree(oldText, path);
   const newTree = latexTree(newText, path);
+  /** @type {Array<[Tree, string, number]>} */
   const sides = [
     [oldTree, oldText, oldTo],
     [newTree, newText, newTo],

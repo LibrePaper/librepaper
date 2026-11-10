@@ -659,7 +659,7 @@ import { applyLivePatch } from "./live-patch.js";
         publish(true);
       };
       if (patch.kind === "math") loadKatex().then(apply, () => {});
-      else apply(window.katex);
+      else apply(/** @type {any} */ (window).katex);
       return;
     }
 

@@ -166,6 +166,11 @@ function applyMath(document, sources, katex, patch) {
 }
 
 // Returns true only if the page was changed.
+/**
+ * @param {Document} document
+ * @param {{ sources?: Array<string | null> | null, katex?: any }} context
+ * @param {any} patch
+ */
 export function applyLivePatch(document, { sources, katex } = {}, patch) {
   try {
     if (!document || !patch || typeof patch !== "object") return false;

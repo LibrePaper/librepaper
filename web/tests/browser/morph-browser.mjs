@@ -64,7 +64,7 @@ try {
   const doc = (texts, ids, withImg = true) => `(() => {
     const { para, image } = window.inputs;
     const texts = ${JSON.stringify(texts)}, ids = ${JSON.stringify(ids)};
-    return texts.map((t, i) => para(i + 1, t, ids[i]) + (withImg && i === 1 ? image : "")).join("");
+    return texts.map((t, i) => para(i + 1, t, ids[i]) + (${withImg} && i === 1 ? image : "")).join("");
   })()`;
   const run = (before, after) => page.evaluate(`window.run(${before}, ${after})`);
   const five = ["alpha", "beta", "gamma", "delta", "epsilon"];
@@ -83,17 +83,17 @@ try {
   result = await run(doc(five, ids), doc(["new", ...five], [1, 2, 3, 4, 5, 6]));
   assert.equal(result.equal, true);
   assert.equal(result.imgSame, true, "the image is never recreated on insertion with renumbered ids");
-  assert.equal(result.survivors.filter((s) => s !== undefined).length, 6, "old nodes are reused despite renumbering");
+  assert.equal(result.survivors.filter((s) => s != null).length, 6, "old nodes are reused despite renumbering");
 
   result = await run(doc(five, ids), doc(["alpha", "beta", "delta", "epsilon"], ids));
   assert.equal(result.equal, true);
   assert.equal(result.imgSame, true);
-  assert.equal(result.survivors.filter((s) => s !== undefined).length, 5, "deletion keeps the rest");
+  assert.equal(result.survivors.filter((s) => s != null).length, 5, "deletion keeps the rest");
 
   result = await run(doc(five, ids), doc(["alpha", "delta", "beta", "gamma", "epsilon"], ids));
   assert.equal(result.equal, true);
   assert.equal(result.imgSame, true);
-  assert.equal(result.survivors.filter((s) => s !== undefined).length, 6, "reordering moves nodes rather than recreating them");
+  assert.equal(result.survivors.filter((s) => s != null).length, 6, "reordering moves nodes rather than recreating them");
 
   console.log("morph-browser: identical source, word change, renumbering insert, delete and reorder passed");
 } finally {

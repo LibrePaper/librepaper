@@ -636,6 +636,8 @@ for (const invalidate of [null, "navigation", "main"]) {
     diagnosticPainter: { typed: () => {} },
     refreshReview: () => { reviewed += 1; },
     bundle: { keepCurrent: () => { rescheduled += 1; } },
+    liveActive: () => false,
+    live: { reset: () => {} },
   });
   vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   vm.runInContext("sourceChanged()", ctx);
@@ -696,6 +698,8 @@ for (const invalidate of [null, "navigation", "main"]) {
     } },
     diagnosticPainter: { typed: () => {} }, diagnosticContext,
     editing: true, pdfOutput: false,
+    liveActive: () => false,
+    live: { reset: () => {} },
   });
   vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   vm.runInContext("sourceChanged()", ctx);
