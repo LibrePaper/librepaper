@@ -4,31 +4,19 @@
 // the numbers match the order a reader meets the things in.
 
 import { citationFacts } from "./facts.js";
+import { markdownTree } from "../source-trees.js";
 
 const CROSS_REFERENCE = /^(?:fig|tbl|sec|eq|thm|lem|cor|prp|cnj|def|exm|exr|sol|rem|lst)-/i;
 const THEOREMS = new Set(["thm", "lem", "cor", "prp", "cnj", "def", "exm", "exr", "sol", "rem"]);
 const NUMERIC_CSL = /^(?:ieee|nature|vancouver|numeric)/i;
 
-const FRONT_MATTER = /^---[ \t]*\n[\s\S]*?\n(?:---|\.\.\.)[ \t]*(?=\n|$)/;
-const INLINE_CODE = /(`+)(?!`)[\s\S]*?[^`]\1(?!`)/g;
-const DISPLAY_MATH = /\$\$[\s\S]*?\$\$(?:[ \t]*\{([^{}\n]*)\})?/g;
-const INLINE_MATH = /(?<![\\$])\$(?![\s$])[^$\n]*?[^\s\\$]\$(?!\d)/g;
-const HEADING = /^(#{1,6})[ \t]+(.+?)[ \t]*$/gm;
-// A setext heading: a text line over a line of = or -. A line that starts another
-// block (a list item, a quote, an ATX heading) is not one.
-const SETEXT = /^(?![ \t]*(?:[-+*>#]|\d+[.)])[ \t])(.*\S.*)\n {0,3}(=+|-+)[ \t]*$/gm;
-const IMAGE = /!\[[^\]\n]*\]\([^)\n]*\)(?:[ \t]*\{([^{}\n]*)\})?/g;
-const DIV = /^:{3,}[ \t]*\{([^{}\n]*)\}/gm;
-const CAPTION = /^:[ \t]+(.*)$/gm;
-const CITATION = /(?<![\w\\])@([A-Za-z0-9_][A-Za-z0-9_:.#$%&+?<>~\/-]*)/g;
+// The `#| label:` option line of an executable cell, which the grammar leaves as code.
+const CELL_LABEL = /^#\|[ \t]*label:[ \t]*["']?([^\s"']+)/;
+// Quarto's include shortcode, which the grammar leaves as text.
 const INCLUDE = /\{\{<\s*include\s+"?([^"\s>]+)"?\s*>\}\}/g;
-
-// Replaces a span by spaces, keeping its line breaks so that offsets still
-// point into the source.
-const blank = (text) => text.replace(/[^\n]/g, " ");
-
-// The id of an attribute list such as "#fig-x width=50%", or null.
-const idOf = (attributes) => /(?:^|\s)#([^\s"'}]+)/.exec(attributes ?? "")?.[1] ?? null;
+// Nodes whose text is never prose: no include shortcode in them is an include.
+const CODE = new Set(["FencedCode", "CodeBlock", "InlineCode", "InlineMath", "DisplayMath", "Comment", "CommentBlock"]);
+const HEADING_NODE = /^(ATX|Setext)Heading([1-6])$/;
 
 // Joins and resolves . and .. so that paths compare as project paths.
 function normalize(path) {
@@ -41,62 +29,104 @@ function normalize(path) {
   return parts.join("/");
 }
 
-// Blanks the fenced code, keeping the executable cells' `#| label:` options.
-// Each fence line is blanked too.
-function maskCode(source) {
-  const labels = [];
-  let fence = null;
+// `text` with the sorted, non-overlapping ranges blanked, keeping line breaks
+// so that offsets still point into the source.
+function blankRanges(text, ranges) {
+  let out = "";
   let at = 0;
-  const lines = source.split("\n").map((line) => {
-    const start = at;
-    at += line.length + 1;
-    if (fence) {
-      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
-      if (close && close[1][0] === fence.mark && close[1].length >= fence.length) fence = null;
-      else if (fence.cell) {
-        const option = /^#\|[ \t]*label:[ \t]*["']?([^\s"']+)/.exec(line);
-        if (option) labels.push({ label: option[1], at: start });
-      }
-      return blank(line);
-    }
-    const open = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-    if (open && !(open[1][0] === "`" && open[2].includes("`"))) {
-      fence = { mark: open[1][0], length: open[1].length, cell: open[2].trimStart().startsWith("{") };
-      return blank(line);
-    }
-    return line;
-  });
-  return { masked: lines.join("\n"), labels };
+  for (const [from, to] of ranges) {
+    if (from < at) continue;
+    out += text.slice(at, from) + text.slice(from, to).replace(/[^\n]/g, " ");
+    at = to;
+  }
+  return out + text.slice(at);
 }
 
-// The things the scan reacts to, in the order they occur in the masked text.
-// Display math is read before it is blanked, so that its label counts; code
-// and math are blanked, so that no @ inside them is a citation.
-function eventsOf(source) {
-  const { masked, labels } = maskCode(source);
-  const noCode = masked.replace(INLINE_CODE, blank);
-  /** @type {Array<{ at: number, type: string, id?: string, level?: number, attributes?: string, key?: string, name?: string }>} */
-  const events = labels.map(({ label, at }) => ({ at, type: "label", id: label }));
-  for (const match of noCode.matchAll(DISPLAY_MATH)) {
-    events.push({ at: match.index, type: "label", id: idOf(match[1]) });
+// The id of an Attributes node, or null.
+const idOfAttributes = (body, attributes) => {
+  const id = attributes.getChild("AttributeId");
+  return id ? body.slice(id.from + 1, id.to) : null;
+};
+
+// Whether an Attributes node labels an element that Quarto numbers: a fenced
+// div, display math, an image, or a table caption (a line that starts with ": ").
+function labelsElement(body, attributes) {
+  const parent = attributes.parent;
+  if (parent?.name === "FencedDiv" || parent?.name === "DisplayMath") return true;
+  const before = attributes.prevSibling?.name;
+  if (before === "Image" || before === "DisplayMath") return true;
+  if (parent?.name !== "Paragraph") return false;
+  const line = body.lastIndexOf("\n", attributes.from - 1) + 1;
+  return body[line] === ":" && (body[line + 1] === " " || body[line + 1] === "\t");
+}
+
+// The things the scan reacts to, in the order they occur in the tree: headings,
+// labels of numbered elements, citations and includes. Code, math and comments
+// are nodes of the tree, so no @ inside them is a citation.
+function eventsOf(source, path) {
+  const { tree, body } = markdownTree(source, path);
+  /** @type {Array<{ at: number, type: string, id?: string | null, level?: number, unnumbered?: boolean, key?: string, name?: string }>} */
+  const events = [];
+  /** @type {Array<[number, number]>} */
+  const code = [];
+  tree.iterate({
+    enter(ref) {
+      const node = ref.node;
+      const name = node.name;
+      if (CODE.has(name)) code.push([node.from, node.to]);
+      if (name === "FencedCode") {
+        // Only executable cells, whose info string starts with a brace, have options.
+        const info = node.getChild("CodeInfo");
+        if (info && body.slice(info.from, info.to).trimStart().startsWith("{")) {
+          for (let at = node.from; at < node.to; ) {
+            const eol = body.indexOf("\n", at);
+            const end = eol < 0 || eol > node.to ? node.to : eol;
+            const option = CELL_LABEL.exec(body.slice(at, end));
+            if (option) events.push({ at, type: "label", id: option[1] });
+            at = end + 1;
+          }
+        }
+        return false;
+      }
+      if (name === "CodeBlock" || name === "InlineCode" || name === "InlineMath" || name === "Comment" || name === "CommentBlock") return false;
+      const heading = HEADING_NODE.exec(name);
+      if (heading) {
+        let last = node.lastChild;
+        while (last && last.name === "HeaderMark") last = last.prevSibling;
+        const attributes = last?.name === "Attributes" ? last : null;
+        let at = node.from;
+        if (heading[1] === "Setext") {
+          // The text line over the underline, from its first character.
+          const mark = node.lastChild?.name === "HeaderMark" ? node.lastChild.from : node.to;
+          const text = body.slice(node.from, mark).replace(/\s+$/u, "");
+          const line = text.slice(text.lastIndexOf("\n") + 1);
+          at = node.from + text.length - line.length + (line.length - line.trimStart().length);
+        }
+        events.push({
+          at,
+          type: "heading",
+          level: Number(heading[2]),
+          id: attributes ? idOfAttributes(body, attributes) : null,
+          unnumbered: attributes?.getChildren("AttributeClass").some((cls) => body.slice(cls.from, cls.to) === ".unnumbered") ?? false,
+        });
+        // A citation in the title still counts.
+        return;
+      }
+      if (name === "Attributes") {
+        if (labelsElement(body, node)) events.push({ at: node.from, type: "label", id: idOfAttributes(body, node) });
+        return false;
+      }
+      if (name === "CitationKey") {
+        const key = body.slice(node.from + 1, node.to);
+        if (!CROSS_REFERENCE.test(key)) events.push({ at: node.from, type: "cite", key });
+        return false;
+      }
+    },
+  });
+  // Includes are shortcodes in plain text, so they are read from the text that is not code.
+  for (const match of blankRanges(body, code).matchAll(INCLUDE)) {
+    events.push({ at: match.index, type: "include", name: match[1] });
   }
-  const text = noCode.replace(DISPLAY_MATH, blank).replace(INLINE_MATH, blank);
-  for (const match of text.matchAll(HEADING)) {
-    events.push({ at: match.index, type: "heading", level: match[1].length, attributes: /\{([^{}\n]*)\}[ \t]*$/.exec(match[2])?.[1] ?? "" });
-  }
-  for (const match of text.matchAll(SETEXT)) {
-    events.push({ at: match.index, type: "heading", level: match[2][0] === "=" ? 1 : 2, attributes: "" });
-  }
-  for (const match of text.matchAll(IMAGE)) events.push({ at: match.index, type: "label", id: idOf(match[1]) });
-  for (const match of text.matchAll(DIV)) events.push({ at: match.index, type: "label", id: idOf(match[1]) });
-  for (const match of text.matchAll(CAPTION)) {
-    events.push({ at: match.index, type: "label", id: idOf(/\{([^{}\n]*)\}[ \t]*$/.exec(match[1])?.[1]) });
-  }
-  for (const match of text.matchAll(CITATION)) {
-    const key = match[1].replace(/[.:]+$/, "");
-    if (!CROSS_REFERENCE.test(key)) events.push({ at: match.index, type: "cite", key });
-  }
-  for (const match of text.matchAll(INCLUDE)) events.push({ at: match.index, type: "include", name: match[1] });
   return events.sort((a, b) => a.at - b.at);
 }
 
@@ -117,11 +147,9 @@ function resolveInclude(name, from, texts) {
 // it includes, in reading order. `stack` holds the files being read, which
 // guards against an include cycle.
 function scanFile(path, source, state, stack) {
-  for (const event of eventsOf(source.replace(FRONT_MATTER, blank))) {
+  for (const event of eventsOf(source, path)) {
     if (event.type === "heading") {
-      const { attributes, level } = event;
-      const id = idOf(attributes);
-      const unnumbered = /\.unnumbered\b/.test(attributes);
+      const { id, level, unnumbered } = event;
       if (!unnumbered) {
         state.sections[level - 1] += 1;
         state.sections.fill(0, level);
@@ -154,7 +182,8 @@ function scanFile(path, source, state, stack) {
 
 // The lines of the YAML front matter of a file, without the fences.
 function frontMatter(text) {
-  return /^---[ \t]*\n([\s\S]*?)\n(?:---|\.\.\.)[ \t]*(?:\n|$)/.exec(text)?.[1] ?? "";
+  const range = markdownTree(text).frontMatter;
+  return range ? text.slice(0, range[1]).split(/\r?\n/).slice(1, -1).join("\n") : "";
 }
 
 // The value of a top-level YAML key, without quotes. Nested values are not read.

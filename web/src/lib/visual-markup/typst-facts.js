@@ -1,44 +1,31 @@
 // The facts of a Typst project that the visual layer reads, in the shape of
 // documentFacts (facts.js): the numbers of headings, figures and display
 // equations, the labels bound to them, the citations and the citation style.
-// It is one pass over each file in include order. The pass reads a copy of each
-// source in which comments, raw text and math are blanked, so offsets still
-// point into the source.
+// It is one pass over each file in include order, over the typst-syntax parse
+// tree of the file (typstTree in source-trees.js). Comments, raw text and math
+// are nodes of that tree, so nothing in them reads as a label or a citation.
+// While typst-syntax.wasm is not loaded there is no tree, and the facts are
+// those of an empty project: the product has no regex fallback for Typst.
 
 import { roman } from "./labels.js";
 import { rankEntries } from "../bibliography.js";
 import { citationFacts } from "./facts.js";
-
-const NAME = String.raw`[\p{L}\p{N}_][\p{L}\p{N}_:.-]*`;
-
-// A label definition, <name>, that is not the argument of a cite or a ref.
-const LABEL_DEFINITION = new RegExp(String.raw`(?<!#(?:cite|ref)\(\s*)<(${NAME})>`, "gu");
-// A label at the end of a heading line, and a label right after an element.
-const LABEL_END = new RegExp(String.raw`<(${NAME})>\s*$`, "u");
-const LABEL_AT = new RegExp(String.raw`<(${NAME})>`, "uy");
-
-const HEADING_LINE = /^[ \t]*(=+)[ \t]+(.*)$/gm;
-const HEADING_CALL = /#heading(?![\w.-])/g;
-const FIGURE_CALL = /#figure(?![\w.-])/g;
-const SET_RULE = /#set\s+(heading|figure|math\.equation|cite)(?![\w.-])\s*\(/g;
-const BIBLIOGRAPHY = /#bibliography(?![\w.-])\s*\(/g;
-const CITE = new RegExp(String.raw`#cite\(\s*<(${NAME})>`, "gu");
-// A reference @key, but not one inside a word, an e-mail address or a URL.
-const AT_KEY = new RegExp(String.raw`(?<![\p{L}\p{N}_@/])@([\p{L}\p{N}_](?:[\p{L}\p{N}_:-]|\.(?=[\p{L}\p{N}_]))*)`, "gu");
-const INCLUDE = /#include\s*"([^"]*)"/g;
-
-const TICK_RUN = /`+/g;
-const TICK_START = /`+/y;
+import { typstRefInWord } from "../citation-keys.js";
+import { typstTree } from "../source-trees.js";
 
 // Counting symbols of a numbering pattern. Other characters are literal.
 const SYMBOLS = "1aAiI";
 const TRIM = /^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu;
-const NAMED_KIND = /(?<![\w.-])kind\s*:\s*(?:"([^"]*)"|([\p{L}_][\p{L}\p{N}_.-]*))/u;
 const KIND_NAMES = new Map([
   ["image", "figure"],
   ["table", "table"],
   ["raw", "listing"],
 ]);
+const SET_TARGETS = new Set(["heading", "figure", "math.equation", "cite"]);
+const TRIVIA = new Set(["Space", "LineComment", "BlockComment"]);
+const NOT_ARGUMENT = new Set(["LeftParen", "RightParen", "Comma", ...TRIVIA]);
+const BLANK_GAP = /^[ \t]*$/;
+const REST_OF_LINE = /[ \t]*(?:\r?\n|$)/y;
 
 // Styles that cite as author and year. The others, the numeric ones, are the
 // default, as Typst's own default style (IEEE) is numeric.
@@ -59,223 +46,233 @@ function folderOf(path) {
   return path.slice(0, path.lastIndexOf("/") + 1);
 }
 
-// Blanks comments, raw text and math, keeping newlines and offsets. Display
-// math (its content starts and ends with whitespace) is also listed, with the
-// offsets of its dollar signs, so that a label after it can bind to it.
-function maskTypst(source) {
-  const chars = source.split("");
-  const maths = [];
-  const blank = (from, to) => {
-    for (let k = from; k < to; k++) if (chars[k] !== "\n") chars[k] = " ";
-  };
-  let i = 0;
-  while (i < source.length) {
-    const c = source[i];
-    if (c === "\\") {
-      i += 2;
-    } else if (c === "/" && source[i + 1] === "/" && source[i - 1] !== ":") {
-      // A // after a colon is the // of a URL, not a comment.
-      const eol = source.indexOf("\n", i);
-      const end = eol === -1 ? source.length : eol;
-      blank(i, end);
-      i = end;
-    } else if (c === "/" && source[i + 1] === "*") {
-      let depth = 0;
-      let j = i;
-      while (j < source.length) {
-        if (source.startsWith("/*", j)) {
-          depth += 1;
-          j += 2;
-        } else if (source.startsWith("*/", j)) {
-          depth -= 1;
-          j += 2;
-          if (depth === 0) break;
-        } else {
-          j += 1;
-        }
-      }
-      blank(i, j);
-      i = j;
-    } else if (c === "`") {
-      TICK_START.lastIndex = i;
-      const run = TICK_START.exec(source)[0].length;
-      let end = -1;
-      TICK_RUN.lastIndex = i + run;
-      for (let match; (match = TICK_RUN.exec(source)); ) {
-        if (match[0].length === run) {
-          end = match.index + run;
-          break;
-        }
-      }
-      if (end === -1) {
-        i += run;
-      } else {
-        blank(i, end);
-        i = end;
-      }
-    } else if (c === "$") {
-      let j = i + 1;
-      while (j < source.length && source[j] !== "$") j += source[j] === "\\" ? 2 : 1;
-      if (j >= source.length) {
-        i += 1;
-      } else {
-        const content = source.slice(i + 1, j);
-        maths.push({
-          start: i,
-          end: j + 1,
-          display: content.length > 1 && /^\s/.test(content) && /\s$/.test(content),
-        });
-        blank(i, j + 1);
-        i = j + 1;
-      }
-    } else {
-      i += 1;
-    }
-  }
-  return { text: chars.join(""), maths };
+// The `#` directly before a markup-level node, or null.
+function hashBefore(node) {
+  const previous = node.prevSibling;
+  return previous?.name === "Hash" ? previous : null;
 }
 
-// The index after the bracket that closes the one at `open`, or -1. A string
-// is skipped whole, so a bracket inside it does not count.
-function closeOf(text, open) {
-  let depth = 0;
-  for (let i = open; i < text.length; i++) {
-    const c = text[i];
-    if (c === '"') {
-      i += 1;
-      while (i < text.length && text[i] !== '"') i += text[i] === "\\" ? 2 : 1;
-    } else if ("([{".includes(c)) {
-      depth += 1;
-    } else if (")]}".includes(c) && --depth === 0) {
-      return i + 1;
-    }
-  }
-  return -1;
+// The name of a call whose callee is a plain identifier, or null.
+function calleeName(source, call) {
+  const callee = call.firstChild;
+  return callee?.name === "Ident" ? source.slice(callee.from, callee.to) : null;
 }
 
-// The parenthesized arguments at `at` (null when there are none) and the
-// content blocks that follow them directly, with the index after the last one.
-function parseCall(text, at) {
-  let i = at;
-  let args = null;
-  if (text[i] === "(") {
-    const close = closeOf(text, i);
-    if (close < 0) return null;
-    args = text.slice(i + 1, close - 1);
-    i = close;
+// The text between the delimiters of a label or string literal.
+const innerOf = (source, node) => source.slice(node.from + 1, node.to - 1);
+
+// The first child of an argument list that is an argument, or null.
+function firstArgument(args) {
+  for (let child = args.firstChild; child; child = child.nextSibling) {
+    if (!NOT_ARGUMENT.has(child.name)) return child;
   }
-  const bodies = [];
-  while (text[i] === "[") {
-    const close = closeOf(text, i);
-    if (close < 0) break;
-    bodies.push(text.slice(i + 1, close - 1));
-    i = close;
-  }
-  return { args, bodies, end: i };
+  return null;
 }
 
-function isCall(call) {
-  return call !== null && (call.args !== null || call.bodies.length > 0);
-}
-
-// A label that follows `at` after spaces or tabs only, as in "#figure(...) <fig>".
-function labelAfter(text, at) {
-  let i = at;
-  while (text[i] === " " || text[i] === "\t") i += 1;
-  LABEL_AT.lastIndex = i;
-  return LABEL_AT.exec(text)?.[1] ?? null;
+// The value node of the named argument `name` of an argument list. Undefined
+// when the argument is absent, null when it has no value node.
+function namedArg(source, args, name) {
+  for (let child = args?.firstChild; child; child = child.nextSibling) {
+    if (child.name !== "Named") continue;
+    const key = child.firstChild;
+    if (key?.name !== "Ident" || source.slice(key.from, key.to) !== name) continue;
+    let value = child.lastChild;
+    while (value && TRIVIA.has(value.name)) value = value.prevSibling;
+    return value && value !== key && value.name !== "Colon" ? value : null;
+  }
+  return undefined;
 }
 
 // The value of `numbering:` in an argument list. Undefined when the argument is
 // absent, null for `none` or for a function (which is not read), else the pattern.
-function numberingArg(args) {
-  const match = /(?<![\w.-])numbering\s*:\s*("([^"]*)"|[^,)]*)/.exec(args ?? "");
-  if (!match) return undefined;
-  return match[2] ?? null;
+function numberingArg(source, args) {
+  const value = namedArg(source, args, "numbering");
+  if (value === undefined) return undefined;
+  return value?.name === "Str" ? innerOf(source, value) : null;
 }
 
-function styleArg(args) {
-  return /(?<![\w.-])style\s*:\s*"([^"]*)"/.exec(args ?? "")?.[1] ?? null;
+function styleArg(source, args) {
+  const value = namedArg(source, args, "style");
+  return value?.name === "Str" ? innerOf(source, value) : null;
 }
 
-function levelArg(args) {
-  const match = /(?<![\w.-])level\s*:\s*(\d+)/.exec(args ?? "");
-  return match ? Math.min(6, Math.max(1, Number(match[1]))) : 1;
+function levelArg(source, args) {
+  const value = namedArg(source, args, "level");
+  if (value?.name !== "Int") return 1;
+  return Math.min(6, Math.max(1, Number(source.slice(value.from, value.to))));
 }
 
-// The kind a figure takes from its first argument or its body: an image, a
-// table or raw text. Null when neither shows one of these.
-function autoKind(source) {
-  const head = source.trimStart();
-  if (/^image\s*\(/.test(head)) return "image";
-  if (/^(?:table|grid)\s*\(/.test(head)) return "table";
-  if (/^raw\s*\(/.test(head) || /^\[?\s*`/.test(head)) return "raw";
-  return null;
+// The kind a call or raw node shows: an image, a table or raw text, else null.
+function kindOfNode(source, node) {
+  if (node?.name === "Raw") return "raw";
+  if (node?.name !== "FuncCall") return null;
+  switch (calleeName(source, node)) {
+    case "image": return "image";
+    case "table":
+    case "grid": return "table";
+    case "raw": return "raw";
+    default: return null;
+  }
 }
 
-// The kind of a figure: a `kind:` argument wins, then the shape of its content.
-function figureKind(call) {
-  const named = NAMED_KIND.exec(call.args ?? "");
-  if (named) {
-    const value = named[1] ?? named[2];
+// The kind shown by an argument: itself, or the first thing of a content block.
+function kindOfArgument(source, node) {
+  if (node.name !== "ContentBlock") return kindOfNode(source, node);
+  let first = node.getChild("Markup")?.firstChild ?? null;
+  while (first && TRIVIA.has(first.name)) first = first.nextSibling;
+  if (first?.name === "Hash") return kindOfNode(source, first.nextSibling);
+  return kindOfNode(source, first);
+}
+
+// The kind of a figure: a `kind:` argument wins, then the shape of its content
+// (the first argument, then the first content block).
+function figureKind(source, args) {
+  const named = namedArg(source, args, "kind");
+  if (named?.name === "Str") return KIND_NAMES.get(innerOf(source, named)) ?? innerOf(source, named);
+  if (named?.name === "Ident") {
+    const value = source.slice(named.from, named.to);
     return KIND_NAMES.get(value) ?? value;
   }
-  const kind = autoKind(call.args ?? "") ?? autoKind(call.bodies[0] ?? "");
+  const first = firstArgument(args);
+  let kind = first && first.name !== "Named" ? kindOfArgument(source, first) : null;
+  if (!kind) {
+    const block = args.getChild("ContentBlock");
+    kind = block ? kindOfArgument(source, block) : null;
+  }
   return KIND_NAMES.get(kind) ?? "figure";
 }
 
+// The label node that follows `node` after spaces or tabs only, as in
+// "#figure(...) <fig>", or null.
+function labelNodeAfter(source, node) {
+  let next = node.nextSibling;
+  while (next?.name === "Space") next = next.nextSibling;
+  return next?.name === "Label" && BLANK_GAP.test(source.slice(node.to, next.from)) ? next : null;
+}
+
+function labelAfter(source, node) {
+  const label = labelNodeAfter(source, node);
+  return label ? innerOf(source, label) : null;
+}
+
+// Whether only blanks follow `at` on its line.
+function endsLine(source, at) {
+  REST_OF_LINE.lastIndex = at;
+  return REST_OF_LINE.test(source);
+}
+
+// The label at the end of a heading line: inside the heading's markup, or right
+// after the heading node on the same line.
+function headingLabel(source, heading) {
+  let last = heading.lastChild;
+  while (last) {
+    while (last && TRIVIA.has(last.name)) last = last.prevSibling;
+    if (last?.name !== "Markup") break;
+    last = last.lastChild;
+  }
+  const label = last?.name === "Label" ? last : labelNodeAfter(source, heading);
+  return label && endsLine(source, label.to) ? innerOf(source, label) : null;
+}
+
 // The elements of one file that the numbering and the citations read, in
-// document order. Labels of headings, figures and equations are bound here.
-function eventsOf(text, maths) {
+// document order, and the names of the labels it defines. Labels of headings,
+// figures and equations are bound here.
+function scanTree(tree, source) {
   const events = [];
-  for (const match of text.matchAll(HEADING_LINE)) {
-    events.push({
-      // The offset of the = marker, which is what the editor's token starts at.
-      at: match.index + match[0].indexOf("="),
-      type: "heading",
-      level: Math.min(match[1].length, 6),
-      numbering: undefined,
-      label: LABEL_END.exec(match[2])?.[1] ?? null,
-    });
-  }
-  for (const match of text.matchAll(HEADING_CALL)) {
-    const call = parseCall(text, match.index + match[0].length);
-    if (!isCall(call)) continue;
-    events.push({
-      at: match.index,
-      type: "heading",
-      level: levelArg(call.args),
-      numbering: numberingArg(call.args),
-      label: labelAfter(text, call.end),
-    });
-  }
-  for (const match of text.matchAll(FIGURE_CALL)) {
-    const call = parseCall(text, match.index + match[0].length);
-    if (!isCall(call)) continue;
-    events.push({
-      at: match.index,
-      type: "figure",
-      kind: figureKind(call),
-      numbering: numberingArg(call.args),
-      label: labelAfter(text, call.end),
-    });
-  }
-  for (const match of text.matchAll(SET_RULE)) {
-    const call = parseCall(text, match.index + match[0].length - 1);
-    events.push({ at: match.index, type: "set", target: match[1], args: call?.args ?? "" });
-  }
-  for (const match of text.matchAll(BIBLIOGRAPHY)) {
-    const call = parseCall(text, match.index + match[0].length - 1);
-    events.push({ at: match.index, type: "bibliography", args: call?.args ?? "" });
-  }
-  for (const match of text.matchAll(CITE)) events.push({ at: match.index, type: "cite", key: match[1] });
-  for (const match of text.matchAll(AT_KEY)) events.push({ at: match.index, type: "ref", key: match[1] });
-  for (const match of text.matchAll(INCLUDE)) events.push({ at: match.index, type: "include", path: match[1] });
-  for (const math of maths) {
-    if (math.display) events.push({ at: math.start, type: "equation", label: labelAfter(text, math.end) });
-  }
-  events.sort((a, b) => a.at - b.at);
-  return events;
+  const labelNames = [];
+  tree.iterate({
+    enter(ref) {
+      const node = ref.node;
+      switch (node.name) {
+        case "Raw":
+          return false;
+        case "Equation": {
+          const last = node.lastChild;
+          const content = source.slice(node.from + 1, node.to - 1);
+          // Display math: its content starts and ends with whitespace.
+          if (last && last !== node.firstChild && last.name === "Dollar" && content.length > 1 && /^\s/.test(content) && /\s$/.test(content)) {
+            events.push({ at: node.from, type: "equation", label: labelAfter(source, node) });
+          }
+          return false;
+        }
+        case "Label":
+          // A label passed to a call is a reference, not a definition.
+          if (node.parent?.name !== "Args") labelNames.push(innerOf(source, node));
+          return;
+        case "Heading": {
+          const marker = node.firstChild;
+          events.push({
+            // The offset of the = marker, which is what the editor's token starts at.
+            at: node.from,
+            type: "heading",
+            level: Math.min(Math.max(marker ? marker.to - marker.from : 1, 1), 6),
+            numbering: undefined,
+            label: headingLabel(source, node),
+          });
+          return;
+        }
+        case "Ref": {
+          const marker = node.getChild("RefMarker");
+          if (marker && !typstRefInWord(source, marker.from)) {
+            events.push({ at: marker.from, type: "ref", key: source.slice(marker.from + 1, marker.to) });
+          }
+          return;
+        }
+        case "ModuleInclude": {
+          const path = node.getChild("Str");
+          if (path) events.push({ at: (hashBefore(node) ?? node).from, type: "include", path: innerOf(source, path) });
+          return;
+        }
+        case "SetRule": {
+          const hash = hashBefore(node);
+          const args = node.getChild("Args");
+          let target = node.firstChild?.nextSibling ?? null;
+          while (target && TRIVIA.has(target.name)) target = target.nextSibling;
+          const name = target ? source.slice(target.from, target.to) : "";
+          if (!hash || !args || !SET_TARGETS.has(name)) return;
+          events.push({
+            at: hash.from,
+            type: "set",
+            target: name,
+            numbering: numberingArg(source, args),
+            style: styleArg(source, args),
+          });
+          return;
+        }
+        case "FuncCall": {
+          const name = calleeName(source, node);
+          const hash = hashBefore(node);
+          const args = node.getChild("Args");
+          if (!name || !hash || !args) return;
+          if (name === "heading") {
+            events.push({
+              at: hash.from,
+              type: "heading",
+              level: levelArg(source, args),
+              numbering: numberingArg(source, args),
+              label: labelAfter(source, node),
+            });
+          } else if (name === "figure") {
+            events.push({
+              at: hash.from,
+              type: "figure",
+              kind: figureKind(source, args),
+              numbering: numberingArg(source, args),
+              label: labelAfter(source, node),
+            });
+          } else if (name === "bibliography") {
+            events.push({ at: hash.from, type: "bibliography", style: styleArg(source, args) });
+          } else if (name === "cite") {
+            const first = firstArgument(args);
+            if (first?.name === "Label") events.push({ at: hash.from, type: "cite", key: innerOf(source, first) });
+          }
+          return;
+        }
+        default:
+      }
+    },
+  });
+  return { events, labelNames };
 }
 
 function symbolCount(pattern) {
@@ -333,12 +330,20 @@ function bump(map, key) {
 export function typstFacts(texts, main, open, entries = []) {
   const focus = open == null ? null : normalize(open);
   const headingNumbers = new Map();
-  const masks = new Map();
-  for (const path of Object.keys(texts)) masks.set(path, maskTypst(texts[path] ?? ""));
-  const labelNames = new Set();
-  for (const { text } of masks.values()) {
-    for (const match of text.matchAll(LABEL_DEFINITION)) labelNames.add(match[1]);
+  // The scan of each file. Without the parser there is no tree for any file,
+  // and the project reads as empty.
+  const scans = new Map();
+  for (const path of Object.keys(texts)) {
+    const source = texts[path] ?? "";
+    const tree = typstTree(source, path);
+    if (!tree) {
+      scans.clear();
+      break;
+    }
+    scans.set(path, scanTree(tree, source));
   }
+  const labelNames = new Set();
+  for (const { labelNames: names } of scans.values()) for (const name of names) labelNames.add(name);
   const entryKeys = new Set(rankEntries(entries).map((entry) => entry.key));
 
   const labels = new Map();
@@ -362,12 +367,11 @@ export function typstFacts(texts, main, open, entries = []) {
   const resolve = (name, from) => {
     const target = name.trim();
     const path = normalize(target.startsWith("/") ? target : folderOf(from) + target);
-    return masks.has(path) ? path : null;
+    return scans.has(path) ? path : null;
   };
 
   const scanFile = (path, stack) => {
-    const { text, maths } = masks.get(path);
-    for (const event of eventsOf(text, maths)) {
+    for (const event of scans.get(path).events) {
       switch (event.type) {
         case "heading": {
           const pattern = event.numbering !== undefined ? event.numbering : headingPattern;
@@ -400,10 +404,10 @@ export function typstFacts(texts, main, open, entries = []) {
         }
         case "set": {
           if (event.target === "cite") {
-            setStyle = styleArg(event.args) ?? setStyle;
+            setStyle = event.style ?? setStyle;
             break;
           }
-          const value = numberingArg(event.args);
+          const value = event.numbering;
           if (value === undefined) break;
           if (event.target === "heading") headingPattern = value;
           else if (event.target === "figure") figurePattern = value;
@@ -411,7 +415,7 @@ export function typstFacts(texts, main, open, entries = []) {
           break;
         }
         case "bibliography":
-          bibliographyStyle = styleArg(event.args) ?? bibliographyStyle;
+          bibliographyStyle = event.style ?? bibliographyStyle;
           break;
         case "cite":
           if (entryKeys.has(event.key)) cited(event.key);
@@ -429,7 +433,7 @@ export function typstFacts(texts, main, open, entries = []) {
   };
 
   const root = normalize(main);
-  if (masks.has(root)) scanFile(root, [root]);
+  if (scans.has(root)) scanFile(root, [root]);
 
   const style = bibliographyStyle ?? setStyle;
   return {
