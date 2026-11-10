@@ -35,6 +35,7 @@
   import { createPainted } from "../lib/reader/painted.svelte.js";
   import { createPreviewTarget } from "../lib/reader/preview-target.svelte.js";
   import { createArrangement } from "../lib/reader/arrangement.svelte.js";
+  import { createPhone } from "../lib/reader/phone.svelte.js";
   import { createJumps, isBackChord } from "../lib/reader/jumps.svelte.js";
   import { createBuildSettings } from "../lib/reader/build-settings.svelte.js";
   import { createTimeline } from "../lib/reader/timeline.svelte.js";
@@ -128,7 +129,6 @@
   import Presence from "./mobile/Presence.svelte";
   import { createOverlayHistory } from "../lib/mobile/overlay-history.js";
   import { watchKeyboard } from "../lib/mobile/keyboard.js";
-  import { fileCommands, editCommands, viewCommands } from "../lib/mobile/commands.js";
   import Files from "./reader/Files.svelte";
   import Outline from "./reader/Outline.svelte";
   import WordCount from "./reader/WordCount.svelte";
@@ -2657,9 +2657,6 @@
     moreOpener = event?.currentTarget ?? null;
     arrangement.state.moreOpen = true;
   }
-  // The Insert list is read when it opens, because reading it takes the
-  // editor's insertion context, which a derived value must not do.
-  let insertGroups = $state.raw([]);
   // The selected comment lasts only while the comment panel is open.
   $effect(() => { if (panel !== "collaboration") selectedAnnotation = ""; });
   // A click outside a comment card or a mark clears the selection. Clicks in
@@ -2818,22 +2815,59 @@
 
   /* --------------------------------------------------------- the phone shell */
 
-  // How many layers are open over the document, for the browser's Back
-  // button: a panel, a command list or the settings is one; the document being
-  // compared inside a version is a second; the More sheet is one more on top
-  // of whichever of those is open. Back closes only the top layer.
-  const overlayView = $derived(compact && (Boolean(mobileCommand) || settingsOpen || activeMobileView === "sidebar"
-    || (comparing !== "" && activeMobileView === "source")));
-  const overlayDepth = $derived(!compact ? 0
-    : (comparing !== "" && activeMobileView === "source" ? 2 : overlayView ? 1 : 0) + (moreOpen ? 1 : 0));
+  // The layers the phone opens over the document, its header and its bars.
+  // `reader/phone.svelte.js` owns what they add up to and what each row does;
+  // the effects that tie them to the browser stay here.
+  const phone = createPhone({
+    arrangement,
+    comparing: () => comparing,
+    comparisonSays: () => comparisonSays,
+    settingsOpen: () => settingsOpen,
+    closeSettings: () => { settingsOpen = false; },
+    endComparison: () => endComparison(),
+    barHidden: () => barHidden,
+    tabs: () => tabs,
+    badges: () => badges,
+    participants: () => participants,
+    role: () => ({ mayEdit, mayChat, me }),
+    title: () => doc.title,
+    source: () => ({ format: sourceFormat, compilesHere, toolbarPath, editing, editorReady: Boolean(editor), figureShown: Boolean(shownFigure) }),
+    demo: () => ({ on: DEMO, hint: DEMO_HINT }),
+    hasDesktop: () => hasDesktop,
+    exportable: () => exportable,
+    canExportComments: () => canExportComments,
+    can: () => can,
+    editGroups: () => editGroups,
+    outputs: () => ({ displayedFormat, latexOutput, typstOutput, markdownOutput }),
+    view: () => ({ linked, visual, runCodeOffered, localExecution }),
+    insertMenu: () => insertMenu,
+    refreshEditAvailability: () => refreshEditAvailability(),
+    chooseFileCommand: (id) => chooseFileCommand(id),
+    chooseEditCommand: (id) => chooseEditCommand(id),
+    chooseViewCommand: (id) => chooseViewCommand(id),
+    toggleLocalExecution: () => toggleLocalExecution(),
+    openSettings: () => openSettings(),
+    runCommand: (id) => runCommand(id),
+    signOut: () => signOut(),
+    signInHref: () => signInHref(),
+    openPanel: (name) => openPanel(name),
+    setCollaborationTab: (tab) => { collaborationTab = tab; },
+  });
+  const overlayView = $derived(phone.overlayView);
+  const overlayDepth = $derived(phone.overlayDepth);
+  const mobileTitle = $derived(phone.mobileTitle);
+  const modeSwitchShown = $derived(phone.modeSwitchShown);
+  const keyboardBarShown = $derived(phone.keyboardBarShown);
+  const phoneChrome = $derived(phone.chrome);
+  const mobileCommandGroups = $derived(phone.commandGroups);
+  const moreSections = $derived(phone.moreSections);
+  const tabsShown = $derived(phone.tabsShown);
+  const tabActive = $derived(phone.tabActive);
+  const tabBarShown = $derived(phone.tabBarShown);
   let overlays = null;
   $effect(() => {
     overlays = createOverlayHistory({
-      onpop: (depth) => {
-        if (moreOpen) arrangement.state.moreOpen = false;
-        else if (depth >= 1 && comparing) arrangement.showMobileView("sidebar");
-        else closeOverlays();
-      },
+      onpop: (depth) => phone.popped(depth),
     });
     return () => { overlays?.dispose(); overlays = null; };
   });
@@ -2853,188 +2887,10 @@
         if (open) requestAnimationFrame(() => editor?.revealCaret?.());
       })
     : undefined);
-
-  // Back out of the topmost layer, and leave `panel` set: panels stay mounted
-  // so their scroll and drafts survive, and only a different panel replaces it.
-  function closeOverlays() {
-    arrangement.state.moreOpen = false;
-    arrangement.state.mobileCommand = "";
-    settingsOpen = false;
-    if (activeMobileView === "sidebar") {
-      if (panel === "history" && comparing) endComparison();
-      arrangement.showMobileView(preferredPane === "source" && sourceOpen ? "source" : "document");
-    }
-  }
-  function mobileBack() {
-    if (comparing && activeMobileView === "source") arrangement.showMobileView("sidebar");
-    else closeOverlays();
-  }
-
-  const mobileCommandTitles = $derived({
-    file: m.common_file(), edit: m.mobilenav_edit(), view: m.mobilenav_view(), insert: m.common_insert(),
-  });
-  // What the header calls the place the reader is in.
-  const mobileTitle = $derived.by(() => (
-    mobileCommand ? mobileCommandTitles[mobileCommand]
-    : activeMobileView === "sidebar" ? (panel === "collaboration" ? m.common_comments() : tabs.find((tab) => tab.id === panel)?.says || "")
-    : comparing ? comparisonSays
-    : toolbarPath ? basename(toolbarPath) : doc.title || "LibrePaper"
-  ));
-
-  // The Source / Document switch is for a project with a source to switch to,
-  // and is not offered over a panel or a command list.
-  const modeSwitchShown = $derived(sourceOpen && !comparing && !mobileCommand && !keyboardOpen && activeMobileView !== "sidebar");
-  const keyboardBarShown = $derived(keyboardOpen && shown.source && mayEdit && !comparing && !mobileCommand);
-  // Everything the phone adds around the workspace, summed for its height.
-  const phoneChrome = $derived.by(() => (compact ? [
-    tabsShown ? "env(safe-area-inset-top)" : "",
-    modeSwitchShown && !barHidden ? "2.75rem" : "",
-    tabBarShown ? "3.5rem + env(safe-area-inset-bottom)" : "",
-    !tabBarShown && !keyboardOpen ? "env(safe-area-inset-bottom)" : "",
-    keyboardBarShown ? "2.75rem" : "",
-    keyboardOpen ? "var(--librepaper-keyboard, 0px)" : "",
-  ].filter(Boolean).join(" + ") || "0px" : "0px"));
-
-  function openCommand(kind) {
-    if (kind === "edit") refreshEditAvailability();
-    if (kind === "insert") insertGroups = insertMenu?.mobileGroups?.() || [];
-    arrangement.state.moreOpen = false;
-    arrangement.state.mobileCommand = kind;
-  }
-  // An Insert list left without a choice lets go of the context it took.
-  let insertChosen = false;
-  let lastCommand = "";
   $effect(() => {
     const now = mobileCommand;
-    untrack(() => {
-      if (lastCommand === "insert" && now !== "insert" && !insertChosen) insertMenu?.releaseMobile?.();
-      insertChosen = false;
-      lastCommand = now;
-    });
+    untrack(() => phone.commandChanged(now));
   });
-
-  const outputFormat = $derived(displayedFormat === "latex" ? latexOutput : displayedFormat === "typst" ? typstOutput
-    : ["markdown", "quarto"].includes(displayedFormat) ? markdownOutput : "html");
-  const outputSelectable = $derived(["latex", "typst", "markdown", "quarto"].includes(displayedFormat));
-  const mobileCommandGroups = $derived.by(() => (
-    mobileCommand === "file" ? fileCommands({
-      mayEdit, demo: DEMO, demoHint: DEMO_HINT, signedIn: Boolean(me?.id),
-      sourceFormatLatex: sourceFormat === "latex", compilesHere, desktop: hasDesktop,
-      exportable, canExportComments: canExportComments && !DEMO, hasOpenFile: Boolean(toolbarPath),
-    })
-    : mobileCommand === "edit" ? editCommands(editGroups, can)
-    : mobileCommand === "view" ? viewCommands({
-      can, selectedFormat: outputFormat, selectableFormat: outputSelectable, linked, visual,
-      runCodeOffered, localExecution,
-    })
-    : mobileCommand === "insert" ? insertGroups
-    : []
-  ));
-  // The toggles stay on screen after a press, so the reader sees the tick move.
-  const STAYS_OPEN = ["linked", "visual-markup", "run-code", "format-html", "format-pdf", "text-bigger", "text-smaller", "text-reset"];
-  function chooseMobileCommand(id) {
-    const kind = mobileCommand;
-    if (kind === "insert") insertChosen = true;
-    arrangement.state.mobileCommand = "";
-    if (kind === "file") return void chooseFileCommand(id);
-    if (kind === "edit") return void chooseEditCommand(id);
-    if (kind === "insert") {
-      arrangement.showMobileView("source");
-      insertMenu?.insertAction?.(id);
-      return;
-    }
-    if (kind === "view") {
-      if (id === "run-code") toggleLocalExecution();
-      else chooseViewCommand(id);
-      if (STAYS_OPEN.includes(id)) arrangement.state.mobileCommand = "view";
-    }
-  }
-
-  // The More sheet: everything the tab bar has no room for. A panel
-  // is listed only where the reader is offered it, so a link holder's sheet is
-  // as short as their rail was.
-  const PANEL_ICONS = { files: "folder", outline: "list-tree", history: "history", changes: "file-pen-line",
-    agent: "bot", git: "git-branch", diagnostics: "triangle-alert", share: "users" };
-  function panelRow(id) {
-    const tab = tabs.find((item) => item.id === id);
-    if (!tab) return null;
-    const total = (badges[id]?.counts || []).reduce((sum, item) => sum + item.of, 0);
-    return {
-      id, icon: PANEL_ICONS[id] || tab.icon,
-      label: tab.disabled ? m.common_demo_unavailable({ says: tab.says }) : tab.says,
-      disabled: tab.disabled || undefined, dot: badges[id]?.dot || undefined, count: total || undefined,
-    };
-  }
-  // The More sheet has three sections, as the desktop does: the menus (File,
-  // Edit, View, Insert, as on the menubar), then the panels in rail order
-  // with Collaborators last, then the application rows (settings, projects,
-  // help, sign in or out, as in the account menu). Sections have no headings;
-  // a thin divider separates them.
-  const moreSections = $derived.by(() => {
-    // Files and Comments are header tabs, not panels, so they are not listed here.
-    const panelRows = tabs
-      .filter((tab) => tab.id !== "files" && tab.id !== "collaboration")
-      .map((tab) => panelRow(tab.id))
-      .filter(Boolean);
-    const menuRows = [
-      { id: "command:file", icon: "file", label: m.common_file(), submenu: true },
-      ...(editing && mayEdit ? [
-        { id: "command:edit", icon: "pencil", label: m.mobilenav_edit(), disabled: !editor || !!shownFigure || undefined, submenu: true },
-      ] : []),
-      ...(editing ? [{ id: "command:view", icon: "eye", label: m.mobilenav_view(), submenu: true }] : []),
-      ...(editing && mayEdit ? [
-        { id: "command:insert", icon: "plus", label: m.common_insert(), disabled: !editor || undefined, submenu: true },
-      ] : []),
-    ];
-    const collaborationRows = tabs.some((tab) => tab.id === "collaboration") ? [
-      { id: "collaborators", icon: "users", label: m.mobilenav_collaborators(), count: participants.length > 1 ? participants.length : undefined },
-    ] : [];
-    return [
-      { rows: menuRows },
-      { rows: [...panelRows, ...collaborationRows] },
-      { rows: [
-        { id: "settings", icon: "settings", label: m.common_settings() },
-        { id: "palette", icon: "search", label: m.common_command_palette() },
-        { id: "home", icon: "house", label: m.common_projects(), href: "/" },
-        { id: "help", icon: "circle-help", label: m.mobilenav_help(), href: DOCUMENTATION_URL, external: true },
-        ...(me.name ? [{ id: "signout", icon: "log-out", label: m.common_sign_out() }]
-          : me.providers?.length ? [{ id: "signin", icon: "log-in", label: m.common_sign_in(), href: signInHref() }] : []),
-      ] },
-    ].filter((section) => section.rows.length);
-  });
-  function chooseMoreRow(id) {
-    // The sheet has finished closing by the time the settings dialog, which
-    // traps focus too, is opened.
-    if (id === "settings") setTimeout(() => openSettings(), 0);
-    else if (id === "palette") setTimeout(() => void runCommand("palette"), 0);
-    else if (id === "signout") void signOut();
-    else if (id === "home" || id === "help" || id === "signin") return;
-    else if (id === "collaborators") showCollaborators();
-    else if (id.startsWith("command:")) openCommand(id.slice("command:".length));
-    else void openPanel(id);
-  }
-
-  // The bottom tab bar: Document, Files and Comments (and More).
-  const tabsShown = $derived(compact && !mobileCommand && !comparing
-    && (activeMobileView !== "sidebar" || panel === "files" || panel === "collaboration"));
-  const tabActive = $derived(activeMobileView === "sidebar" && panel === "files" ? "files"
-    : activeMobileView === "sidebar" && panel === "collaboration" ? "comments" : "document");
-  // The bar hides while the keyboard is up; the keyboard bar takes its place.
-  const tabBarShown = $derived(tabsShown && !keyboardOpen);
-  function showPhoneDocument() {
-    arrangement.state.mobileCommand = "";
-    arrangement.showMobileView(preferredPane === "source" && sourceOpen ? "source" : "document");
-  }
-  function showComments() {
-    collaborationTab = "comments";
-    void openPanel("collaboration");
-  }
-  // The header's Collaborators button: the live conversation where the reader
-  // may take part in it, the comments otherwise.
-  function showCollaborators() {
-    collaborationTab = mayChat ? "chat" : "comments";
-    void openPanel("collaboration");
-  }
 
   // What the reader asked for is kept; what fits is worked out again every
   // time it is needed. Writing the fitted size back would make a narrow window
@@ -4176,7 +4032,7 @@
     {#if compact}
       <!-- The header only shows over a view that is not a tab (a panel, a
            command list, a comparison): Back closes it, and the title names it. -->
-      <button type="button" class="mobile-header-button" aria-label={m.common_back()} onclick={mobileBack}>
+      <button type="button" class="mobile-header-button" aria-label={m.common_back()} onclick={() => phone.back()}>
         <Icon name="arrow-left" size={20} />
       </button>
     {/if}
@@ -4624,7 +4480,7 @@
   <!-- The File, Edit, View and Insert commands as a list over the workspace.
        Everything under it stays mounted, the editor included. -->
   {#if compact && mobileCommand}
-    <CommandView groups={mobileCommandGroups} onchoose={chooseMobileCommand} />
+    <CommandView groups={mobileCommandGroups} onchoose={(id) => phone.chooseCommand(id)} />
   {/if}
 </main>
 
@@ -4633,14 +4489,14 @@
           filesShown={tabs.some((tab) => tab.id === "files")} filesDisabled={Boolean(tabs.find((tab) => tab.id === "files")?.disabled)}
           commentsShown={tabs.some((tab) => tab.id === "collaboration")} commentsDot={Boolean(badges.collaboration?.dot)}
           {moreOpen} offlineNote={!connected && !DEMO ? connectionNote : ""}
-          ondocument={showPhoneDocument} onfiles={() => void openPanel("files")} oncomments={showComments} onmore={openMore} />
+          ondocument={() => phone.showDocument()} onfiles={() => void openPanel("files")} oncomments={() => phone.showComments()} onmore={openMore} />
 {/if}
 {#if compact && keyboardBarShown}
   <KeyboardBar onundo={() => void chooseEditCommand("undo")} onredo={() => void chooseEditCommand("redo")}
-               oninsert={() => openCommand("insert")} onmore={() => openMore()} />
+               oninsert={() => phone.openCommand("insert")} onmore={() => openMore()} />
 {/if}
 {#if compact}
-  <MoreSheet bind:open={arrangement.state.moreOpen} sections={moreSections} onchoose={chooseMoreRow} finalFocusEl={() => moreOpener} />
+  <MoreSheet bind:open={arrangement.state.moreOpen} sections={moreSections} onchoose={(id) => phone.chooseMoreRow(id)} finalFocusEl={() => moreOpener} />
 {/if}
 
 <!-- What can be done to the passage that is selected, over the passage that
