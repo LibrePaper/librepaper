@@ -717,31 +717,11 @@
         "args": [],
         "from": 962,
         "kind": "command",
-        "meta": {
-          "starred": "true"
-        },
         "name": "verb",
-        "star": true,
-        "to": 968
+        "to": 967
       },
       {
-        "body": {
-          "from": 969,
-          "to": 972
-        },
-        "children": [
-          {
-            "from": 969,
-            "kind": "text",
-            "to": 972
-          }
-        ],
-        "from": 968,
-        "kind": "group",
-        "to": 973
-      },
-      {
-        "from": 973,
+        "from": 967,
         "kind": "text",
         "to": 976
       },
