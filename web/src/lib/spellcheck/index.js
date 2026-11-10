@@ -8,6 +8,7 @@ import { latexSkips } from "./latex.js";
 import { typstSkips } from "./typst.js";
 import { markdownSkips } from "./markdown.js";
 import { htmlSkips } from "./html.js";
+import { orgSkips } from "./org.js";
 
 /** @type {Map<string, (text: string, key?: string) => Array<[number, number]>>} */
 const SCANNERS = new Map([
@@ -16,13 +17,14 @@ const SCANNERS = new Map([
   ["markdown", markdownSkips],
   ["quarto", markdownSkips],
   ["html", htmlSkips],
+  ["org", orgSkips],
 ]);
 
 /**
  * The parts of a source the spellchecker should skip: sorted, merged,
  * non-empty [from, to) ranges.
  * @param {string} text
- * @param {string} format  "latex" | "typst" | "markdown" | "quarto" | "html" | anything else
+ * @param {string} format  "latex" | "typst" | "markdown" | "quarto" | "html" | "org" | anything else
  * @param {string} [key]  names the document, so an edit re-parses from its previous tree
  * @returns {Array<[number, number]>}
  */
