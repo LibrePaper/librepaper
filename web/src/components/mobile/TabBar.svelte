@@ -5,6 +5,7 @@
   // Where a phone reader can be: the document, the files, and the comments,
   // and More for everything else. Files and Comments are left out where the
   // reader is not offered them (a read link has no comments).
+  /** @type {{active?: string, filesShown?: boolean, filesDisabled?: boolean, commentsShown?: boolean, commentsDot?: boolean, moreOpen?: boolean, offlineNote?: string, ondocument?: (event: MouseEvent) => void, onfiles?: (event: MouseEvent) => void, oncomments?: (event: MouseEvent) => void, onmore?: (event: MouseEvent) => void, hidden?: boolean, onreveal?: () => void}} */
   let {
     active = "",
     filesShown = true,
