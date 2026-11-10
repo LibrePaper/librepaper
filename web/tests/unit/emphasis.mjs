@@ -42,6 +42,8 @@ const WRAPPED = [
   ["quarto", "italic", "a *word* b", [3, 7]],
   ["html", "bold", "a <strong>word</strong> b", [10, 14]],
   ["html", "italic", "a <em>word</em> b", [6, 10]],
+  ["org", "bold", "a *word* b", [3, 7]],
+  ["org", "italic", "a /word/ b", [3, 7]],
 ];
 
 for (const [format, kind, doc, range] of WRAPPED) {
@@ -140,3 +142,20 @@ const locked = {
   },
 };
 assert.equal(emphasisCommand("bold", () => "markdown")(locked), false);
+
+/* ------------------------------------------------------------------- org */
+
+// Org bold is one star and italic is a slash, so the markers are unwrapped
+// when they sit around the word or around the whole "*word*".
+assert.deepEqual(MARKUP.org.bold, ["*", "*"]);
+assert.deepEqual(MARKUP.org.italic, ["/", "/"]);
+assert.deepEqual(toggle("*word*", [[0, 6]], "bold", "org"), { doc: "word", ranges: [[0, 4]] });
+assert.deepEqual(toggle("*word*", [[1, 5]], "bold", "org"), { doc: "word", ranges: [[0, 4]] });
+assert.deepEqual(toggle("/word/", [[1, 5]], "italic", "org"), { doc: "word", ranges: [[0, 4]] });
+
+// Italic on bold text wraps it in slashes, and does not remove the stars.
+assert.deepEqual(toggle("*x*", [[1, 2]], "italic", "org"), { doc: "*/x/*", ranges: [[2, 3]] });
+
+// An empty cursor gets the pair, and a second toggle removes it.
+assert.deepEqual(toggle("", [[0, 0]], "bold", "org"), { doc: "**", ranges: [[1, 1]] });
+assert.deepEqual(toggle("**", [[1, 1]], "bold", "org"), { doc: "", ranges: [[0, 0]] });
