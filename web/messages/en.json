@@ -1807,6 +1807,8 @@
   "live_chat_history_read_failed": "Chat history could not be read. Trying again.",
   "live_chat_older_failed": "Older messages could not be read.",
   "live_chat_older_failed_status": "Older messages could not be read ({status}).",
+  "livepatch_description": "Show a small LaTeX edit in the HTML preview at once, before the compile that confirms it. The compile still replaces the preview. Applies to this browser only.",
+  "livepatch_title": "Instant preview updates",
   "machine_load_failed": "Could not load this computer's settings.",
   "machine_request_failed": "The request could not be completed.",
   "markdown_widgets_frontmatter_keys": [

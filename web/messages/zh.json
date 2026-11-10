@@ -1792,6 +1792,8 @@
   "live_chat_history_read_failed": "无法读取聊天记录。正在重试。",
   "live_chat_older_failed": "无法读取更早的消息。",
   "live_chat_older_failed_status": "无法读取更早的消息（{status}）。",
+  "livepatch_description": "对 LaTeX 的小改动会立即显示在 HTML 预览中，无需等待确认它的编译。编译完成后仍会替换预览。仅适用于此浏览器。",
+  "livepatch_title": "即时更新预览",
   "machine_load_failed": "无法加载这台电脑的设置。",
   "machine_request_failed": "无法完成请求。",
   "markdown_widgets_frontmatter_keys": [

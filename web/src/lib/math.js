@@ -99,9 +99,7 @@ export function createKatexLoader({ base, document, window }) {
  * rendering lands once the script has loaded, which is a mutation the
  * agent's observer republishes like any other.
  */
-export function createMathTypesetter({ base, document, window }) {
-  const load = createKatexLoader({ base, document, window });
-
+export function createMathTypesetter({ base, document, window, load = createKatexLoader({ base, document, window }) }) {
   return function typesetMath() {
     prepareQuartoMath(document.body);
     const spans = untypeset(document.body);
