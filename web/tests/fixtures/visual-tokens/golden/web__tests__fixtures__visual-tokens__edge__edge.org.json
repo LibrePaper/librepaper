@@ -1353,6 +1353,25 @@
   {
     "from": 2022,
     "kind": "text",
+    "to": 2024
+  },
+  {
+    "body": {
+      "from": 2026,
+      "to": 2033
+    },
+    "display": true,
+    "from": 2024,
+    "kind": "math",
+    "meta": {
+      "close": "\\]",
+      "open": "\\["
+    },
+    "to": 2035
+  },
+  {
+    "from": 2035,
+    "kind": "text",
     "to": 2037
   },
   {

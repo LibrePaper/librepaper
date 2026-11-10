@@ -3,6 +3,9 @@ import { tokenizeSource } from "../../src/lib/visual-markup/core/tokenize.ts";
 import { walk } from "../../src/lib/visual-markup/core/tokens.ts";
 import { markdown } from "../../src/lib/visual-markup/languages/markdown/index.ts";
 import { org } from "../../src/lib/visual-markup/languages/org/index.ts";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+await loadOrgSyntaxForTests();
 
 // The pipe-table tokens of a source, in tokenizer order.
 function tablesOf(language, source) {

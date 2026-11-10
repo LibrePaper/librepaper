@@ -228,7 +228,7 @@
 
   import { sourceFormat, sourceLanguage } from "../lib/source-language.js";
   import { latexAssist as latexAssistExtensions } from "../lib/latex-language/index.js";
-  import { onTypstSyntax } from "../lib/source-trees.js";
+  import { onOrgSyntax, onTypstSyntax } from "../lib/source-trees.js";
   import { emphasisCommand } from "../lib/emphasis.js";
   import { canHeading, canLink, canList, headingEdit, linkEdit, listEdit } from "../lib/editing-shortcuts.js";
   import { ORG_COMMANDS } from "../lib/org-editing.js";
@@ -2065,6 +2065,12 @@
   // itself for the outline.
   $effect(() => onTypstSyntax(() => {
     liveIndex.invalidate((path) => path.endsWith(".typ"));
+    indexDirty = true;
+    refreshIndex();
+  }));
+  // The same for org.wasm and the Org files.
+  $effect(() => onOrgSyntax(() => {
+    liveIndex.invalidate((path) => path.endsWith(".org"));
     indexDirty = true;
     refreshIndex();
   }));

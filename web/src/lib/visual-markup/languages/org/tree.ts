@@ -19,6 +19,7 @@ interface Affiliated {
 // time and never searches across the source.
 export function tokenizeOrg(source: string): Token[] {
   const tree = orgTree(source);
+  if (!tree) return [];
   const text = (node: { from: number; to: number }): string => source.slice(node.from, node.to);
   const keyOf = (keyword: SyntaxNode): string => {
     const key = keyword.getChild('KeywordKey');

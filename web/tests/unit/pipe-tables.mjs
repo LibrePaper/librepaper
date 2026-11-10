@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { cellAt, cellOffset, displayWidth, formatPipeTable, parsePipeTable, pipeBlock } from "../../src/lib/pipe-tables.js";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+await loadOrgSyntaxForTests();
 
 test("parse reads trimmed cells, Org rules and Markdown alignment", () => {
   assert.deepEqual(parsePipeTable("| a | b |\n|---+---|\n| c | d |"), {

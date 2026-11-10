@@ -8,6 +8,9 @@ import { latex } from "../../src/lib/visual-markup/languages/latex/index.ts";
 import { typst } from "../../src/lib/visual-markup/languages/typst/index.ts";
 import { markdown } from "../../src/lib/visual-markup/languages/markdown/index.ts";
 import { org } from "../../src/lib/visual-markup/languages/org/index.ts";
+import { loadOrgSyntaxForTests } from "./org-syntax.mjs";
+
+await loadOrgSyntaxForTests();
 
 /** The repository root, which corpus paths are relative to. */
 export const REPO_ROOT = resolve(fileURLToPath(new URL("../../../", import.meta.url)));

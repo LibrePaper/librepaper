@@ -36,7 +36,10 @@ export function orgSkips(text, key) {
   const skip = (from, to) => {
     if (to > from) out.push([from, to]);
   };
-  orgTree(text, key).iterate({
+  const tree = orgTree(text, key);
+  // Until org.wasm loads, the whole text is skipped; the editor scans again on arrival.
+  if (!tree) return [[0, text.length]];
+  tree.iterate({
     enter(ref) {
       const { name, from, to } = ref;
       if (WHOLE.has(name)) {

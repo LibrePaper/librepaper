@@ -3,6 +3,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { expandOrgIncludes } from "../../src/lib/org-include.js";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+await loadOrgSyntaxForTests();
 
 const expand = (main, texts) => expandOrgIncludes({ main, texts, assets: {} }).texts[main];
 

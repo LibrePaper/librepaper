@@ -20,6 +20,7 @@ const BLOCKS = new Set(["src", "example", "export"]);
 
 /** Every node below `node`, in document order. @param {any} node */
 function* descendants(node) {
+  if (!node) return;
   for (let child = node.firstChild; child; child = child.nextSibling) {
     yield child;
     yield* descendants(child);
@@ -65,7 +66,7 @@ function resolvePath(from, target) {
  */
 function includeKeywords(text) {
   const found = [];
-  for (const node of descendants(orgTree(text).topNode)) {
+  for (const node of descendants(orgTree(text)?.topNode)) {
     if (node.name !== "Keyword" || inRaw(node)) continue;
     const key = node.getChild("KeywordKey");
     if (!key) continue;
@@ -164,7 +165,7 @@ function wrapBlock(block, text) {
 function shiftHeadlines(text, level) {
   /** @type {{ from: number, stars: number }[]} */
   const headlines = [];
-  for (const node of descendants(orgTree(text).topNode)) {
+  for (const node of descendants(orgTree(text)?.topNode)) {
     if (node.name !== "Headline" || inRaw(node)) continue;
     const stars = /^\*+/.exec(text.slice(node.from, node.to));
     if (stars) headlines.push({ from: node.from, stars: stars[0].length });

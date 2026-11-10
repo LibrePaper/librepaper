@@ -4,6 +4,9 @@ import assert from "node:assert/strict";
 import { EditorState } from "@codemirror/state";
 import { CompletionContext } from "@codemirror/autocomplete";
 import { orgCompletion, orgLabels } from "../../src/lib/completion/org.js";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+await loadOrgSyntaxForTests();
 
 const BLOCKS = ["SRC", "QUOTE", "EXAMPLE", "VERSE", "CENTER", "COMMENT", "EXPORT"];
 

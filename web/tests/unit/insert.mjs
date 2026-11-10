@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { INSERT_ACTIONS, insertionAvailability, buildInsertion, gatherInsertTargets, gatherInsertEnvironments, insertSyntaxContext } from '../../src/lib/insert.js';
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+await loadOrgSyntaxForTests();
 const latex='\\documentclass{article}\n\\bibliography{refs}\n\\begin{document}\n\nContent\n\\end{document}';
 const contexts=Object.fromEntries(['latex','typst','markdown','quarto'].map(format=>{
   const text=format==='latex'?latex:format==='typst'?'#bibliography("refs.bib")\n= Intro <intro>\n':'# Intro\n';

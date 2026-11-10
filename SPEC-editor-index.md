@@ -67,9 +67,10 @@ the catalog decides it, in the walker.
    spellcheck skips.
 4. Add corpus files to the golden set.
 
-Org mode already has its grammar and parser in `web/src/lib/org-language/`
-(`parser.js`), wired in through `orgTree` in `source-trees.js`, and its index
-adapter (`adapters/org.js`) walks that tree. Steps 1 and 2 are therefore done
+Org mode already has its grammar in `org.wasm` (built from wasm-orgmode), loaded
+by `web/src/lib/org-language/module.js` and wired in through `orgTree` in
+`source-trees.js`. Its node vocabulary is in `web/src/lib/org-language/README.md`,
+and its index adapter (`adapters/org.js`) walks that tree. Steps 1 and 2 are therefore done
 for Org; it reads the same way the other adapters do.
 
 ## The index

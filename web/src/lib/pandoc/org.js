@@ -74,6 +74,7 @@ function headingId(title, taken) {
  */
 export function orgForPandoc(text, { to = "typst" } = {}) {
   const tree = orgTree(text);
+  if (!tree) return { text, numberSections: true, variables: {} };
   const all = [...descendants(tree.topNode)];
   const of = (name) => all.filter((node) => node.name === name);
   const source = (node) => text.slice(node.from, node.to);

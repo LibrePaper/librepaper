@@ -9,6 +9,9 @@ import {
   continueList, demoteHeading, demoteSubtree, foldCycle, moveDown, moveUp, newHeading, ORG_COMMANDS, orgKeymap,
   promoteHeading, promoteSubtree, toggleCheckbox, todoNext, todoPrevious,
 } from "../../src/lib/org-editing.js";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+await loadOrgSyntaxForTests();
 
 /* ------------------------------------------------------------- the helpers */
 

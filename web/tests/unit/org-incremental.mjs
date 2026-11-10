@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { TreeFragment } from "@lezer/common";
-import { parseOrg, parseStats, parser } from "../../src/lib/org-language/parser.js";
+import { parseStats } from "../../src/lib/org-language/module.js";
 import { orgTree } from "../../src/lib/source-trees.js";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+const api = await loadOrgSyntaxForTests();
 
 /** About 200 KB: level-1 sections with nested ones, a src block, a table, inline markup. */
 function makeDocument(sections = 400) {
@@ -29,7 +32,7 @@ function shape(tree) {
 /** Parse `after` incrementally from the tree of `before`, one changed range. */
 function incremental(before, tree, after, change) {
   const fragments = TreeFragment.applyChanges(TreeFragment.addTree(tree), [change]);
-  return parser.parse(after, fragments);
+  return api.parse(after, fragments);
 }
 
 const at = (text, needle, from = 0) => {
@@ -68,30 +71,30 @@ const edits = [
 for (const [name, edit] of edits) {
   test(`incremental parse equals a fresh parse: ${name}`, () => {
     const before = base;
-    const tree = parseOrg(before);
+    const tree = api.parse(before);
     const { pos, remove, insert } = edit(before);
     const after = before.slice(0, pos) + insert + before.slice(pos + remove);
     const change = { fromA: pos, toA: pos + remove, fromB: pos, toB: pos + insert.length };
     const fast = incremental(before, tree, after, change);
-    assert.equal(shape(fast), shape(parseOrg(after)));
+    assert.equal(shape(fast), shape(api.parse(after)));
     assert.equal(fast.length, after.length);
   });
 }
 
 test("a chain of edits stays equal to fresh parses", () => {
   let text = base;
-  let tree = parseOrg(text);
+  let tree = api.parse(text);
   for (const [name, edit] of edits) {
     const { pos, remove, insert } = edit(text);
     const next = text.slice(0, pos) + insert + text.slice(pos + remove);
     tree = incremental(text, tree, next, { fromA: pos, toA: pos + remove, fromB: pos, toB: pos + insert.length });
     text = next;
-    assert.equal(shape(tree), shape(parseOrg(text)), name);
+    assert.equal(shape(tree), shape(api.parse(text)), name);
   }
 });
 
 test("a one-character edit in the middle reuses almost every section", () => {
-  const tree = parseOrg(base);
+  const tree = api.parse(base);
   const pos = at(base, "Paragraph 200") + 5;
   const after = base.slice(0, pos) + "x" + base.slice(pos);
   incremental(base, tree, after, { fromA: pos, toA: pos, fromB: pos, toB: pos + 1 });
@@ -100,7 +103,7 @@ test("a one-character edit in the middle reuses almost every section", () => {
 });
 
 test("changing the TODO words parses everything again", () => {
-  const tree = parseOrg(base);
+  const tree = api.parse(base);
   const pos = at(base, "NEXT |");
   const after = base.slice(0, pos) + "WAIT" + base.slice(pos + 4);
   incremental(base, tree, after, { fromA: pos, toA: pos + 4, fromB: pos, toB: pos + 4 });
@@ -114,6 +117,6 @@ test("orgTree reuses the previous tree per key", () => {
   const second = orgTree(after, "inc.org");
   assert.notEqual(first, second);
   assert.ok(parseStats.chunks - parseStats.reused <= 3);
-  assert.equal(shape(second), shape(parseOrg(after)));
+  assert.equal(shape(second), shape(api.parse(after)));
   assert.equal(orgTree(after, "other.org"), second);
 });

@@ -5,7 +5,7 @@
 
 import { TreeFragment } from "@lezer/common";
 import { parser as latexParser } from "./latex-language/parser.js";
-import { parser as orgParser } from "./org-language/parser.js";
+import { loadOrgSyntax, orgSyntax } from "./org-language/module.js";
 import { pandocMarkdownParser } from "./pandoc-markdown.js";
 import { loadTypstSyntax, typstSyntax } from "./typst-language/module.js";
 
@@ -157,18 +157,80 @@ export function markdownTree(text, key) {
 }
 
 /**
- * The Org syntax tree of exactly `text`. An edit re-parses only the top-level
+ * The Org syntax tree of exactly `text`, or null while org.wasm is not loaded
+ * (the first call starts loading it). An edit re-parses only the top-level
  * sections it touches; the result is remembered by text.
  * @param {string} text
  * @param {string} [key] usually the file path; lets an edit reuse the old tree
- * @returns {Tree}
+ * @returns {Tree | null}
  */
 export function orgTree(text, key) {
+  const api = orgSyntax();
+  if (!api) {
+    startOrgSyntax();
+    return null;
+  }
   const hit = byText.org.get(text);
   if (hit) return hit.result;
-  const tree = parse("org", orgParser, text, key);
+  const tree = parse("org", api, text, key);
   byText.org.set(text, { text, result: tree });
   return tree;
+}
+
+/**
+ * The Org syntax tree of `text`, once org.wasm has loaded. For paths that must
+ * not skip, such as an export. Null when the module cannot be loaded.
+ * @param {string} text
+ * @param {string} [key]
+ * @returns {Promise<Tree | null>}
+ */
+export async function orgTreeReady(text, key) {
+  startOrgSyntax();
+  await loadOrgSyntax();
+  return orgSyntax() ? orgTree(text, key) : null;
+}
+
+/** @type {Promise<void> | null} the one load of org.wasm, started by the first request */
+let orgLoading = null;
+/** @type {Set<() => void>} */
+const orgListeners = new Set();
+
+/** Starts loading org.wasm, once. The listeners run when it arrives. */
+function startOrgSyntax() {
+  if (orgLoading) return;
+  // A load that fails or finds no module is forgotten, so a later call retries.
+  orgLoading = loadOrgSyntax().then((api) => {
+    if (!api) {
+      orgLoading = null;
+      return;
+    }
+    const listeners = [...orgListeners];
+    orgListeners.clear();
+    for (const listener of listeners) {
+      try {
+        listener();
+      } catch {
+        // One listener's failure must not stop the others.
+      }
+    }
+  }, () => {
+    orgLoading = null;
+  });
+}
+
+/**
+ * Calls `listener()` once org.wasm has loaded, if it is not loaded yet.
+ * Subscribing does not start the load: the first `orgTree` call does. Returns
+ * a function that unsubscribes.
+ * @param {() => void} listener
+ * @returns {() => void}
+ */
+export function onOrgSyntax(listener) {
+  if (orgSyntax()) return () => {};
+  orgListeners.add(listener);
+  return () => {
+    orgListeners.delete(listener);
+  };
 }
 
 /** @type {Promise<void> | null} the one load of typst-syntax.wasm, started by the first request */

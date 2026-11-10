@@ -49,7 +49,7 @@ export function orgLabels(texts = {}, first = "") {
     };
     const slice = (node) => text.slice(node.from, node.to);
     let title = "";
-    orgTree(text).iterate({
+    orgTree(text)?.iterate({
       enter(ref) {
         const node = ref.node;
         if (ref.name === "Headline") {

@@ -1,5 +1,5 @@
 // The adapter for Org-mode sources. It walks the Org syntax tree
-// (org-language/parser.js), so nothing inside a source, example, export or
+// (org-language/module.js), so nothing inside a source, example, export or
 // comment block is reported, and no regex searches the source for syntax.
 // Headings come from the outline. Labels (<<targets>>, :CUSTOM_ID: properties,
 // #+NAME keywords, headline titles), footnotes, internal, file and external
@@ -263,6 +263,7 @@ function namedElement(text, last) {
 export function orgAdapter(text, path) {
   const source = String(text ?? "");
   const tree = orgTree(source, path);
+  if (!tree) return [];
   /** @type {IndexItem[]} */
   const items = [];
 

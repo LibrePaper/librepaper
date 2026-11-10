@@ -87,7 +87,7 @@ const ORG_MASKED_NODES = new Set(["BlockBegin", "BlockEnd", "VerbatimBody", "Com
 export function orgMasked(text) {
   text = String(text ?? "");
   const ranges = [];
-  orgTree(text).iterate({
+  orgTree(text)?.iterate({
     enter(ref) {
       if (!ORG_MASKED_NODES.has(ref.name)) return;
       ranges.push([ref.from, ref.to]);
@@ -108,7 +108,7 @@ export function orgMasked(text) {
 // are not parsed as citations.
 function orgKeys(text) {
   const found = [];
-  orgTree(text).iterate({
+  orgTree(text)?.iterate({
     enter(ref) {
       if (ref.name === "CitationKey") found.push({ key: text.slice(ref.from, ref.to), from: ref.from, to: ref.to });
     },

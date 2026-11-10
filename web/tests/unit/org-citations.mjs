@@ -3,6 +3,9 @@
 import assert from "node:assert/strict";
 import { citedKeys } from "../../src/lib/citation-keys.js";
 import { citationContext, insertCitation, selectedBibliographyFiles, bibliographyRegistration } from "../../src/lib/bibliography.js";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+await loadOrgSyntaxForTests();
 
 const apply = (text, edit) => text.slice(0, edit.from) + edit.insert + text.slice(edit.to);
 
