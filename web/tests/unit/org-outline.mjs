@@ -46,3 +46,61 @@ test("org outline leaves a plain heading-like line alone", () => {
   assert.deepEqual(headings("*bold* text\n*\n** Real"), [{ title: "Real", level: 2 }]);
   assert.deepEqual(extractOutline("", "org"), []);
 });
+
+const fields = (heading) => {
+  const { title, todo, done, priority, tags } = heading;
+  return { title, todo, done, priority, tags };
+};
+
+test("org outline reports the TODO state, priority and tags of a headline", () => {
+  const source = "* TODO [#A] Write :work:home:\n* DONE Ship\n* Plain :work:\n* Bare\n";
+  assert.deepEqual(extractOutline(source, "org").map(fields), [
+    { title: "Write", todo: "TODO", done: false, priority: "A", tags: ["work", "home"] },
+    { title: "Ship", todo: "DONE", done: true, priority: undefined, tags: undefined },
+    { title: "Plain", todo: undefined, done: undefined, priority: undefined, tags: ["work"] },
+    { title: "Bare", todo: undefined, done: undefined, priority: undefined, tags: undefined },
+  ]);
+});
+
+test("org outline adds only the fields a headline has", () => {
+  const [bare] = extractOutline("* Bare\n", "org");
+  assert.deepEqual(Object.keys(bare).sort(), ["from", "level", "line", "title"]);
+});
+
+test("org outline reads done states declared by TODO keyword lines", () => {
+  const source = [
+    "#+TODO: NEXT(n) | FINISHED(f) CANCELED",
+    "#+SEQ_TODO: A B C",
+    "* NEXT one",
+    "* FINISHED two",
+    "* CANCELED three",
+    "* TODO four",
+    "* DONE five",
+    "* A six",
+    "* C seven",
+    "",
+  ].join("\n");
+  assert.deepEqual(extractOutline(source, "org").map(({ todo, done }) => ({ todo, done })), [
+    { todo: "NEXT", done: false },
+    { todo: "FINISHED", done: true },
+    { todo: "CANCELED", done: true },
+    { todo: "TODO", done: false },
+    { todo: "DONE", done: true },
+    { todo: "A", done: false },
+    { todo: "C", done: true },
+  ]);
+});
+
+test("other formats do not report Org fields", () => {
+  const sources = {
+    markdown: "# TODO [#A] Plan :work:\n",
+    typst: "= TODO Plan :work:\n",
+    html: "<h1>TODO Plan</h1>\n",
+    latex: "\\section{TODO Plan}\n",
+  };
+  for (const [format, source] of Object.entries(sources)) {
+    const [heading] = extractOutline(source, format);
+    assert.ok(heading, format);
+    assert.deepEqual(Object.keys(heading).sort(), ["from", "level", "line", "title"], format);
+  }
+});

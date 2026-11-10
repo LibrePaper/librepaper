@@ -2041,6 +2041,11 @@
     }
   ],
   "outline_document": "Dokumentgliederung",
+  "outline_filter_all": "Alle Überschriften",
+  "outline_filter_label": "Überschriften anzeigen",
+  "outline_filter_no_match": "Keine Überschriften entsprechen diesem Filter.",
+  "outline_filter_open_todos": "Offene TODOs",
+  "outline_filter_tag": "Tag: {tag}",
   "outline_no_headings": "Keine Überschriften in dieser Datei.",
   "panels_git": "Git",
   "panels_shared": "Mit mir geteilt",

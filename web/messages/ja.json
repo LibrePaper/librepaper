@@ -2026,6 +2026,11 @@
     }
   ],
   "outline_document": "ドキュメントのアウトライン",
+  "outline_filter_all": "すべての見出し",
+  "outline_filter_label": "表示する見出し",
+  "outline_filter_no_match": "このフィルターに一致する見出しはありません。",
+  "outline_filter_open_todos": "未完了のTODO",
+  "outline_filter_tag": "タグ: {tag}",
   "outline_no_headings": "このファイルに見出しはありません。",
   "panels_git": "Git",
   "panels_shared": "共有されたもの",

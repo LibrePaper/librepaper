@@ -44,10 +44,12 @@ function normalizeTitle(value) {
   return value.replace(/\s+/gu, " ").trim();
 }
 
-function addHeading(result, starts, title, level, from) {
+// `extra` holds format-specific fields (Org TODO state, priority, tags); it is
+// spread in only when given, so other formats keep their exact shape.
+function addHeading(result, starts, title, level, from, extra) {
   const clean = normalizeTitle(title);
   if (!clean || !Number.isInteger(level) || level < 1) return;
-  result.push({ title: clean, level, from, line: lineFor(starts, from) });
+  result.push({ title: clean, level, from, line: lineFor(starts, from), ...extra });
 }
 
 function markRange(mask, start, end) {
@@ -289,11 +291,53 @@ function extractLatex(source, starts) {
   return result;
 }
 
+// The keywords whose #+TODO: lines declare TODO states (as in the Org tree).
+const ORG_TODO_KEYS = new Set(["TODO", "SEQ_TODO", "TYP_TODO"]);
+
+// The states that end a sequence: DONE, and the words after `|` in each TODO
+// keyword line (the last word when a line has no bar). Same rule as the
+// visual Org markup, which colours these states.
+function orgDoneStates(tree, source) {
+  const done = new Set(["DONE"]);
+  for (let child = tree.topNode.firstChild; child; child = child.nextSibling) {
+    if (child.name !== "Keyword") continue;
+    const key = child.getChild("KeywordKey");
+    if (!key || !ORG_TODO_KEYS.has(source.slice(key.from, key.to).replace(/\[.*$/s, "").toUpperCase())) continue;
+    const value = child.getChild("KeywordValue");
+    const words = value ? source.slice(value.from, value.to).split(/\s+/).filter(Boolean) : [];
+    const bar = words.indexOf("|");
+    const ending = bar < 0 ? words.slice(-1) : words.slice(bar + 1);
+    for (const word of ending) done.add(word.replace(/\(.*\)$/, ""));
+  }
+  return done;
+}
+
+// The optional fields of one Org headline. Each is present only when the
+// headline has it: `todo` and `done` for a TODO keyword, `priority` for a
+// cookie like [#A], `tags` for a non-empty tag list.
+function orgHeadlineFields(node, source, done) {
+  const fields = {};
+  const todo = node.getChild("TodoKeyword");
+  if (todo) {
+    fields.todo = source.slice(todo.from, todo.to);
+    fields.done = done.has(fields.todo);
+  }
+  const priority = node.getChild("Priority");
+  if (priority) fields.priority = source.slice(priority.from, priority.to).slice(2, -1);
+  const tags = [];
+  for (let tag = node.getChild("Tags")?.firstChild; tag; tag = tag.nextSibling) {
+    if (tag.name === "Tag") tags.push(source.slice(tag.from, tag.to));
+  }
+  if (tags.length) fields.tags = tags;
+  return fields;
+}
+
 // Headlines, as the Org tree reads them: the title is the Title node, without
-// the TODO keyword, priority cookie and tags, which are nodes of their own. A
-// COMMENT headline is not listed.
+// the TODO keyword, priority cookie and tags, which are reported as their own
+// fields. A COMMENT headline is not listed.
 function extractOrg(source, starts) {
   const tree = orgTree(source);
+  const done = orgDoneStates(tree, source);
   const result = [];
   tree.iterate({
     enter(ref) {
@@ -302,7 +346,9 @@ function extractOrg(source, starts) {
       const stars = ref.node.getChild("Stars");
       const title = ref.node.getChild("Title");
       const text = title ? source.slice(title.from, title.to) : "";
-      if (stars && !/^COMMENT(?:[ \t]|$)/.test(text)) addHeading(result, starts, text, stars.to - stars.from, ref.from);
+      if (stars && !/^COMMENT(?:[ \t]|$)/.test(text)) {
+        addHeading(result, starts, text, stars.to - stars.from, ref.from, orgHeadlineFields(ref.node, source, done));
+      }
       return false;
     },
   });

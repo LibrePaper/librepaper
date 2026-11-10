@@ -2041,6 +2041,11 @@
     }
   ],
   "outline_document": "Esquema del documento",
+  "outline_filter_all": "Todos los encabezados",
+  "outline_filter_label": "Mostrar encabezados",
+  "outline_filter_no_match": "Ningún encabezado coincide con este filtro.",
+  "outline_filter_open_todos": "TODO abiertos",
+  "outline_filter_tag": "Etiqueta: {tag}",
   "outline_no_headings": "No hay encabezados en este archivo.",
   "panels_git": "Git",
   "panels_shared": "Compartidos conmigo",
