@@ -551,7 +551,7 @@
   "commands_focus_preview": "Focus Preview",
   "commands_go_to_definition": "Go to definition",
   "commands_heading_level": "Heading {level}",
-  "commands_layout_cycle":"Toggle editor / preview / split",
+  "commands_layout_cycle": "Toggle editor / preview / split",
   "commands_layout_document": "Show preview only",
   "commands_layout_source": "Show editor only",
   "commands_layout_split": "Show editor and preview",
@@ -2024,6 +2024,22 @@
   "offline_projects_forgotten": "This browser's copies were cleared at sign-out.",
   "offline_projects_unsupported": "This browser does not provide offline storage.",
   "offline_projects_wait_saving": "Wait for the project to finish saving on this device.",
+  "org_widgets_drawer": "{name}: {count}",
+  "org_widgets_properties": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Properties: {count}",
+        "countPlural=*": "Properties: {count}"
+      }
+    }
+  ],
   "outline_document": "Document outline",
   "outline_no_headings": "No headings in this file.",
   "panels_git": "Git",
@@ -2215,7 +2231,7 @@
   "readerb_backup_failing": "Backups are on but failing: {error}. Open Settings, then Backups.",
   "readerb_backup_lost_access": "Backups are on but the desktop app lost access to this account. Open Settings, then Backups, to reconnect.",
   "readerb_agent_waiting": "Agent is waiting for your permission",
-  "readerb_backup_no_destination":"Backups are on but have no destination. Open Settings, then Backups.",
+  "readerb_backup_no_destination": "Backups are on but have no destination. Open Settings, then Backups.",
   "readerb_build_failed": "The build failed without reporting why.",
   "readerb_clipboard_refused": "The browser refused clipboard access. Use the keyboard shortcut instead.",
   "readerb_collaboration_unread": "Collaboration: unread messages",

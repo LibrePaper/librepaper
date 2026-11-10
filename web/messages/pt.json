@@ -551,7 +551,7 @@
   "commands_focus_preview": "Focar em Pré-visualização",
   "commands_go_to_definition": "Ir para a definição",
   "commands_heading_level": "Título {level}",
-  "commands_layout_cycle":"Alternar editor / pré-visualização / dividido",
+  "commands_layout_cycle": "Alternar editor / pré-visualização / dividido",
   "commands_layout_document": "Mostrar somente a pré-visualização",
   "commands_layout_source": "Mostrar somente o editor",
   "commands_layout_split": "Mostrar editor e pré-visualização",
@@ -929,7 +929,7 @@
   "editor_cut_changed": "O código-fonte mudou antes de Recortar terminar. Selecione o texto novamente.",
   "editor_parser_not_loaded": "não foi possível carregar o analisador",
   "editor_paste_blocked": "O navegador não permite que o LibrePaper leia a área de transferência aqui.",
-  "editor_paste_changed":"O código-fonte mudou antes de Colar terminar. Tente novamente.",
+  "editor_paste_changed": "O código-fonte mudou antes de Colar terminar. Tente novamente.",
   "editor_problems_both": [
     {
       "declarations": [
@@ -2024,6 +2024,22 @@
   "offline_projects_forgotten": "As cópias deste navegador foram apagadas ao sair.",
   "offline_projects_unsupported": "Este navegador não oferece armazenamento offline.",
   "offline_projects_wait_saving": "Aguarde o projeto terminar de ser salvo neste dispositivo.",
+  "org_widgets_drawer": "{name}: {count}",
+  "org_widgets_properties": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Propriedades: {count}",
+        "countPlural=*": "Propriedades: {count}"
+      }
+    }
+  ],
   "outline_document": "Estrutura de tópicos do documento",
   "outline_no_headings": "Nenhum título neste arquivo.",
   "panels_git": "Git",
@@ -2215,7 +2231,7 @@
   "readerb_backup_failing": "Os backups estão ativados, mas estão falhando: {error}. Abra Configurações e depois Backups.",
   "readerb_backup_lost_access": "Os backups estão ativados, mas o aplicativo de desktop perdeu o acesso a esta conta. Abra Configurações e depois Backups para reconectar.",
   "readerb_agent_waiting": "O agente está aguardando sua permissão",
-  "readerb_backup_no_destination":"Os backups estão ativados, mas não têm destino. Abra Configurações e depois Backups.",
+  "readerb_backup_no_destination": "Os backups estão ativados, mas não têm destino. Abra Configurações e depois Backups.",
   "readerb_build_failed": "A compilação falhou sem informar o motivo.",
   "readerb_clipboard_refused": "O navegador recusou o acesso à área de transferência. Use o atalho de teclado.",
   "readerb_collaboration_unread": "Colaboração: mensagens não lidas",

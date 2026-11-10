@@ -551,7 +551,7 @@
   "commands_focus_preview": "Aller à l’aperçu",
   "commands_go_to_definition": "Aller à la définition",
   "commands_heading_level": "Titre {level}",
-  "commands_layout_cycle":"Alterner entre éditeur, aperçu et côte à côte",
+  "commands_layout_cycle": "Alterner entre éditeur, aperçu et côte à côte",
   "commands_layout_document": "Afficher seulement l’aperçu",
   "commands_layout_source": "Afficher seulement l’éditeur",
   "commands_layout_split": "Afficher l’éditeur et l’aperçu",
@@ -929,7 +929,7 @@
   "editor_cut_changed": "La source a changé avant la fin de l’action « Couper ». Sélectionnez à nouveau le texte.",
   "editor_parser_not_loaded": "l’analyseur n’a pas pu être chargé",
   "editor_paste_blocked": "Le navigateur n’autorise pas LibrePaper à lire le presse-papiers ici.",
-  "editor_paste_changed":"La source a changé avant la fin de l’action « Coller ». Réessayez.",
+  "editor_paste_changed": "La source a changé avant la fin de l’action « Coller ». Réessayez.",
   "editor_problems_both": [
     {
       "declarations": [
@@ -2024,6 +2024,22 @@
   "offline_projects_forgotten": "Les copies de ce navigateur ont été effacées à la déconnexion.",
   "offline_projects_unsupported": "Ce navigateur ne fournit pas de stockage hors ligne.",
   "offline_projects_wait_saving": "Attendez la fin de l’enregistrement du projet sur cet appareil.",
+  "org_widgets_drawer": "{name} : {count}",
+  "org_widgets_properties": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Propriétés : {count}",
+        "countPlural=*": "Propriétés : {count}"
+      }
+    }
+  ],
   "outline_document": "Plan du document",
   "outline_no_headings": "Aucun titre dans ce fichier.",
   "panels_git": "Git",
@@ -2215,7 +2231,7 @@
   "readerb_backup_failing": "Les sauvegardes sont activées, mais échouent : {error}. Ouvrez Paramètres > Sauvegardes.",
   "readerb_backup_lost_access": "Les sauvegardes sont activées, mais l’application de bureau a perdu l’accès à ce compte. Ouvrez Paramètres > Sauvegardes pour vous reconnecter.",
   "readerb_agent_waiting": "L’agent attend votre autorisation",
-  "readerb_backup_no_destination":"Les sauvegardes sont activées, mais aucune destination n’est définie. Ouvrez Paramètres > Sauvegardes.",
+  "readerb_backup_no_destination": "Les sauvegardes sont activées, mais aucune destination n’est définie. Ouvrez Paramètres > Sauvegardes.",
   "readerb_build_failed": "La compilation a échoué sans indiquer la raison.",
   "readerb_clipboard_refused": "Le navigateur a refusé l’accès au presse-papiers. Utilisez plutôt le raccourci clavier.",
   "readerb_collaboration_unread": "Collaboration : messages non lus",

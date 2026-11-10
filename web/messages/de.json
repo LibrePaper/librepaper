@@ -551,7 +551,7 @@
   "commands_focus_preview": "Fokus auf Vorschau",
   "commands_go_to_definition": "Zur Definition springen",
   "commands_heading_level": "Überschrift {level}",
-  "commands_layout_cycle":"Zwischen Editor, Vorschau und geteilter Ansicht wechseln",
+  "commands_layout_cycle": "Zwischen Editor, Vorschau und geteilter Ansicht wechseln",
   "commands_layout_document": "Nur Vorschau anzeigen",
   "commands_layout_source": "Nur Editor anzeigen",
   "commands_layout_split": "Editor und Vorschau anzeigen",
@@ -929,7 +929,7 @@
   "editor_cut_changed": "Der Quelltext hat sich geändert, bevor das Ausschneiden abgeschlossen war. Wählen Sie den Text erneut aus.",
   "editor_parser_not_loaded": "der Parser konnte nicht geladen werden",
   "editor_paste_blocked": "Der Browser erlaubt LibrePaper hier nicht, die Zwischenablage zu lesen.",
-  "editor_paste_changed":"Der Quelltext hat sich geändert, bevor das Einfügen abgeschlossen war. Versuchen Sie es erneut.",
+  "editor_paste_changed": "Der Quelltext hat sich geändert, bevor das Einfügen abgeschlossen war. Versuchen Sie es erneut.",
   "editor_problems_both": [
     {
       "declarations": [
@@ -2024,6 +2024,22 @@
   "offline_projects_forgotten": "Die Kopien dieses Browsers wurden beim Abmelden gelöscht.",
   "offline_projects_unsupported": "Dieser Browser bietet keinen Offline-Speicher.",
   "offline_projects_wait_saving": "Warten Sie, bis das Projekt auf diesem Gerät gespeichert ist.",
+  "org_widgets_drawer": "{name}: {count}",
+  "org_widgets_properties": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Eigenschaften: {count}",
+        "countPlural=*": "Eigenschaften: {count}"
+      }
+    }
+  ],
   "outline_document": "Dokumentgliederung",
   "outline_no_headings": "Keine Überschriften in dieser Datei.",
   "panels_git": "Git",
@@ -2215,7 +2231,7 @@
   "readerb_backup_failing": "Backups sind aktiviert, schlagen aber fehl: {error}. Öffnen Sie Einstellungen > Backups.",
   "readerb_backup_lost_access": "Backups sind aktiviert, aber die Desktop-App hat den Zugriff auf dieses Konto verloren. Öffnen Sie Einstellungen > Backups, um die Verbindung wiederherzustellen.",
   "readerb_agent_waiting": "Der Agent wartet auf Ihre Berechtigung",
-  "readerb_backup_no_destination":"Backups sind aktiviert, haben aber kein Ziel. Öffnen Sie Einstellungen > Backups.",
+  "readerb_backup_no_destination": "Backups sind aktiviert, haben aber kein Ziel. Öffnen Sie Einstellungen > Backups.",
   "readerb_build_failed": "Der Build ist fehlgeschlagen, ohne einen Grund zu melden.",
   "readerb_clipboard_refused": "Der Browser hat den Zugriff auf die Zwischenablage verweigert. Verwenden Sie stattdessen das Tastenkürzel.",
   "readerb_collaboration_unread": "Zusammenarbeit: ungelesene Nachrichten",

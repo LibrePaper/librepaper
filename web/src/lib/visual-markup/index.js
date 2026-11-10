@@ -28,6 +28,7 @@ import { m } from "../paraglide/messages.js";
 import "./markdown-widgets.js";
 import "./task-widgets.js";
 import "./typst-widgets.js";
+import "./org-widgets.js";
 
 export { VISUAL_FORMATS } from "./formats.js";
 

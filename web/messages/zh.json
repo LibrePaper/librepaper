@@ -551,7 +551,7 @@
   "commands_focus_preview": "聚焦预览",
   "commands_go_to_definition": "转到定义",
   "commands_heading_level": "标题 {level}",
-  "commands_layout_cycle":"切换编辑器 / 预览 / 分栏",
+  "commands_layout_cycle": "切换编辑器 / 预览 / 分栏",
   "commands_layout_document": "仅显示预览",
   "commands_layout_source": "仅显示编辑器",
   "commands_layout_split": "显示编辑器和预览",
@@ -929,7 +929,7 @@
   "editor_cut_changed": "源码在剪切完成前发生了变化。请重新选择文本。",
   "editor_parser_not_loaded": "无法加载解析器",
   "editor_paste_blocked": "浏览器不允许 LibrePaper 在此读取剪贴板。",
-  "editor_paste_changed":"源码在粘贴完成前发生了变化。请重试。",
+  "editor_paste_changed": "源码在粘贴完成前发生了变化。请重试。",
   "editor_problems_both": [
     {
       "declarations": [
@@ -2009,6 +2009,22 @@
   "offline_projects_forgotten": "此浏览器中的副本已在退出登录时清除。",
   "offline_projects_unsupported": "此浏览器不支持离线存储。",
   "offline_projects_wait_saving": "请等待项目在此设备上保存完成。",
+  "org_widgets_drawer": "{name}：{count}",
+  "org_widgets_properties": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "属性：{count}",
+        "countPlural=*": "属性：{count}"
+      }
+    }
+  ],
   "outline_document": "文档大纲",
   "outline_no_headings": "此文件中没有标题。",
   "panels_git": "Git",
@@ -2200,7 +2216,7 @@
   "readerb_backup_failing": "备份已开启但失败：{error}。请前往 设置 > 备份。",
   "readerb_backup_lost_access": "备份已开启，但桌面应用失去了对此账户的访问权限。要重新连接，请前往 设置 > 备份。",
   "readerb_agent_waiting": "智能体正在等待你的授权",
-  "readerb_backup_no_destination":"备份已开启，但没有目标位置。请前往 设置 > 备份。",
+  "readerb_backup_no_destination": "备份已开启，但没有目标位置。请前往 设置 > 备份。",
   "readerb_build_failed": "构建失败，且未说明原因。",
   "readerb_clipboard_refused": "浏览器拒绝了剪贴板访问。请改用快捷键。",
   "readerb_collaboration_unread": "协作：有未读消息",

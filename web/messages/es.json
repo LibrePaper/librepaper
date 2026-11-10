@@ -551,7 +551,7 @@
   "commands_focus_preview": "Ir a Vista previa",
   "commands_go_to_definition": "Ir a la definición",
   "commands_heading_level": "Encabezado {level}",
-  "commands_layout_cycle":"Alternar editor / vista previa / dividido",
+  "commands_layout_cycle": "Alternar editor / vista previa / dividido",
   "commands_layout_document": "Mostrar solo la vista previa",
   "commands_layout_source": "Mostrar solo el editor",
   "commands_layout_split": "Mostrar editor y vista previa",
@@ -929,7 +929,7 @@
   "editor_cut_changed": "El código fuente cambió antes de terminar «Cortar». Seleccione el texto de nuevo.",
   "editor_parser_not_loaded": "no se pudo cargar el analizador",
   "editor_paste_blocked": "El navegador no permite que LibrePaper lea el portapapeles aquí.",
-  "editor_paste_changed":"El código fuente cambió antes de terminar «Pegar». Inténtelo de nuevo.",
+  "editor_paste_changed": "El código fuente cambió antes de terminar «Pegar». Inténtelo de nuevo.",
   "editor_problems_both": [
     {
       "declarations": [
@@ -2024,6 +2024,22 @@
   "offline_projects_forgotten": "Las copias de este navegador se borraron al cerrar sesión.",
   "offline_projects_unsupported": "Este navegador no ofrece almacenamiento sin conexión.",
   "offline_projects_wait_saving": "Espere a que el proyecto termine de guardarse en este dispositivo.",
+  "org_widgets_drawer": "{name}: {count}",
+  "org_widgets_properties": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Propiedades: {count}",
+        "countPlural=*": "Propiedades: {count}"
+      }
+    }
+  ],
   "outline_document": "Esquema del documento",
   "outline_no_headings": "No hay encabezados en este archivo.",
   "panels_git": "Git",
@@ -2215,7 +2231,7 @@
   "readerb_backup_failing": "Las copias de seguridad están activadas pero fallan: {error}. Abra Configuración y luego Copias de seguridad.",
   "readerb_backup_lost_access": "Las copias de seguridad están activadas pero la aplicación de escritorio perdió el acceso a esta cuenta. Abra Configuración y luego Copias de seguridad para reconectar.",
   "readerb_agent_waiting": "El agente está esperando su permiso",
-  "readerb_backup_no_destination":"Las copias de seguridad están activadas pero no tienen destino. Abra Configuración y luego Copias de seguridad.",
+  "readerb_backup_no_destination": "Las copias de seguridad están activadas pero no tienen destino. Abra Configuración y luego Copias de seguridad.",
   "readerb_build_failed": "La compilación falló sin indicar el motivo.",
   "readerb_clipboard_refused": "El navegador rechazó el acceso al portapapeles. Use el atajo de teclado en su lugar.",
   "readerb_collaboration_unread": "Colaboración: mensajes sin leer",

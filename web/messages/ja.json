@@ -551,7 +551,7 @@
   "commands_focus_preview": "プレビューにフォーカス",
   "commands_go_to_definition": "定義へ移動",
   "commands_heading_level": "見出し {level}",
-  "commands_layout_cycle":"エディター / プレビュー / 分割を切り替え",
+  "commands_layout_cycle": "エディター / プレビュー / 分割を切り替え",
   "commands_layout_document": "プレビューのみ表示",
   "commands_layout_source": "エディターのみ表示",
   "commands_layout_split": "エディターとプレビューを表示",
@@ -929,7 +929,7 @@
   "editor_cut_changed": "切り取りが完了する前にソースが変更されました。もう一度テキストを選択してください。",
   "editor_parser_not_loaded": "パーサーを読み込めませんでした",
   "editor_paste_blocked": "このブラウザーでは、LibrePaperがここでクリップボードを読み取ることはできません。",
-  "editor_paste_changed":"貼り付けが完了する前にソースが変更されました。もう一度お試しください。",
+  "editor_paste_changed": "貼り付けが完了する前にソースが変更されました。もう一度お試しください。",
   "editor_problems_both": [
     {
       "declarations": [
@@ -2009,6 +2009,22 @@
   "offline_projects_forgotten": "このブラウザーのコピーはサインアウト時に消去されました。",
   "offline_projects_unsupported": "このブラウザーはオフラインストレージに対応していません。",
   "offline_projects_wait_saving": "このデバイスへのプロジェクトの保存が終わるまでお待ちください。",
+  "org_widgets_drawer": "{name}：{count}",
+  "org_widgets_properties": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "プロパティ：{count}",
+        "countPlural=*": "プロパティ：{count}"
+      }
+    }
+  ],
   "outline_document": "ドキュメントのアウトライン",
   "outline_no_headings": "このファイルに見出しはありません。",
   "panels_git": "Git",
@@ -2200,7 +2216,7 @@
   "readerb_backup_failing": "バックアップはオンですが、失敗しています：{error}。設定 > バックアップを開いてください。",
   "readerb_backup_lost_access": "バックアップはオンですが、デスクトップアプリがこのアカウントへのアクセスを失いました。設定 > バックアップを開いて再接続してください。",
   "readerb_agent_waiting": "エージェントがあなたの許可を待っています",
-  "readerb_backup_no_destination":"バックアップはオンですが、保存先がありません。設定 > バックアップを開いてください。",
+  "readerb_backup_no_destination": "バックアップはオンですが、保存先がありません。設定 > バックアップを開いてください。",
   "readerb_build_failed": "ビルドが失敗しましたが、理由は報告されませんでした。",
   "readerb_clipboard_refused": "ブラウザーがクリップボードへのアクセスを拒否しました。代わりにキーボードショートカットを使ってください。",
   "readerb_collaboration_unread": "共同編集：未読のメッセージ",
