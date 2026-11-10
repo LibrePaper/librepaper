@@ -30,7 +30,9 @@ export function renameTarget(state, context) {
   const item = itemAt(project, context.path(), state.selection.main.head);
   if (!item || item.name === undefined) return null;
   if (item.kind === "label") return item;
-  if (item.kind === "ref" && project.namespaceOf(item, context.path()) === "label") return item;
+  // Label and footnote refs are renamed with their definitions; a ref that is a citation is not.
+  const namespace = item.kind === "ref" ? project.namespaceOf(item, context.path()) : null;
+  if (namespace === "label" || namespace === "footnote") return item;
   return null;
 }
 
