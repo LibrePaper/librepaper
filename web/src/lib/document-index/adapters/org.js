@@ -1,9 +1,10 @@
 // The adapter for Org-mode sources. It walks the Org syntax tree
 // (org-language/parser.js), so nothing inside a source, example, export or
 // comment block is reported, and no regex searches the source for syntax.
-// Headings come from the outline, labels (<<targets>>, :CUSTOM_ID: properties
-// and #+NAME keywords), image links, citations, bibliography files and
-// includes from the tree. A regex below only reads the text of one node.
+// Headings come from the outline, labels (<<targets>>, :CUSTOM_ID: properties,
+// #+NAME keywords, headline titles and footnotes), internal links and footnote
+// references, image links, citations, bibliography files and includes from the
+// tree. A regex below only reads the text of one node.
 // Pure: same text, same items. No DOM, no project access, so it runs in Node as
 // well as the browser.
 
@@ -77,6 +78,42 @@ function imageLink(text, link) {
   if (!IMAGE_EXTENSION.test(name)) return null;
   const nameFrom = targetNode.from + (target.length - raw.length);
   return { name, nameFrom, nameTo: nameFrom + name.length };
+}
+
+/**
+ * Whitespace collapsed to single spaces and trimmed: how a headline title reads
+ * in a `*Title` link.
+ * @param {string} text
+ * @returns {string}
+ */
+function collapse(text) {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The label an internal link target names, or null. Internal means `#id`,
+ * `*Title` (a TODO keyword before the title is dropped) or a bare name, which
+ * Org resolves to a #+NAME, a target or a headline title. URLs, other schemes,
+ * file paths and `::` searches into another file are not internal.
+ * @param {string} target the raw link target
+ * @param {number} from absolute offset of target[0]
+ * @param {Set<string>} todoWords the TODO keywords this file uses
+ * @returns {{ name: string, from: number, to: number, heading: boolean } | null}
+ */
+function internalTarget(target, from, todoWords) {
+  if (target.includes("::")) return null;
+  if (/^[A-Za-z][\w+.-]*:/.test(target) || /^(?:\.\.?\/|\/|~)/.test(target)) return null;
+  const to = from + target.length;
+  if (target.startsWith("#")) {
+    return target.length > 1 ? { name: target.slice(1), from: from + 1, to, heading: false } : null;
+  }
+  if (target.startsWith("*")) {
+    const words = collapse(target.slice(1)).split(" ");
+    if (words.length > 1 && todoWords.has(words[0])) words.shift();
+    const name = words.join(" ");
+    return name ? { name, from: from + 1, to, heading: true } : null;
+  }
+  return collapse(target) ? { name: target, from, to, heading: false } : null;
 }
 
 /**
@@ -169,6 +206,22 @@ export function orgAdapter(text, path) {
   const titleAt = new Map(extractOutline(source, "org").map((heading) => [heading.from, heading.title]));
   let title;
 
+  // The TODO keywords this file uses, so a `*TODO Title` link names the title.
+  const todoWords = new Set();
+  tree.iterate({
+    enter(ref) {
+      if (ref.name === "TodoKeyword") todoWords.add(source.slice(ref.from, ref.to));
+    },
+  });
+
+  // Label names are one namespace, the one Org's internal links resolve in.
+  // A :CUSTOM_ID: is named without its `#` (a `#id` link strips it), a #+NAME
+  // and a <<target>> by their text, and a footnote as `fn:<label>`. A headline
+  // is named by its title as a `*Title` link spells it, so a bare name that is
+  // a headline title also resolves to it. org-facts.js spells the same targets
+  // as #<id>, *<Title>, <name> and <target>. A headline is marked `form:
+  // "heading"`: its title is not a rename site.
+
   tree.iterate({
     enter(ref) {
       const node = ref.node;
@@ -183,6 +236,18 @@ export function orgAdapter(text, path) {
               level: stars ? stars.to - stars.from : 1,
               title,
             });
+            // A COMMENT headline is not a link target.
+            const titleNode = node.getChild("Title");
+            const headline = titleNode ? collapse(source.slice(titleNode.from, titleNode.to)) : "";
+            if (headline && !/^COMMENT(?:\s|$)/.test(headline)) {
+              items.push({
+                kind: "label",
+                name: headline,
+                range: [lineStart(source, ref.from), ref.to],
+                title: headline,
+                attrs: { form: "heading" },
+              });
+            }
           }
           // The title holds targets, links and citations.
           return;
@@ -264,15 +329,44 @@ export function orgAdapter(text, path) {
           // A caption holds inline nodes, so it is walked for targets.
           return name === "CAPTION" ? undefined : false;
         }
-        case "Target": {
-          const target = source.slice(ref.from + 2, ref.to - 2);
+        case "Target":
+        case "RadioTarget": {
+          // <<x>> and <<<x>>>: the delimiters differ in length only.
+          const open = ref.name === "RadioTarget" ? 3 : 2;
+          const target = source.slice(ref.from + open, ref.to - open);
           if (!target.trim()) return;
           items.push({
             kind: "label",
             name: target,
-            nameRange: [ref.from + 2, ref.to - 2],
+            nameRange: [ref.from + open, ref.to - open],
             range: [ref.from, ref.to],
           });
+          return;
+        }
+        case "FootnoteDefinition": {
+          const label = node.getChild("FootnoteLabel");
+          if (label && label.to > label.from) {
+            items.push({
+              kind: "label",
+              name: `fn:${source.slice(label.from, label.to)}`,
+              nameRange: [label.from, label.to],
+              range: [ref.from, ref.to],
+            });
+          }
+          return;
+        }
+        case "FootnoteReference": {
+          const label = node.getChild("FootnoteLabel");
+          // [fn::text] has no label. [fn:x:text] defines x, and [fn:x] refers to it.
+          if (!label || label.to === label.from) return;
+          const name = `fn:${source.slice(label.from, label.to)}`;
+          const nameRange = [label.from, label.to];
+          const range = [ref.from, ref.to];
+          items.push(
+            source[label.to] === ":"
+              ? { kind: "label", name, nameRange, range }
+              : { kind: "ref", name, namespace: "label", nameRange, range },
+          );
           return;
         }
         case "Link": {
@@ -283,6 +377,20 @@ export function orgAdapter(text, path) {
               name: image.name,
               range: [ref.from, ref.to],
               nameRange: [image.nameFrom, image.nameTo],
+            });
+            return;
+          }
+          const targetNode = node.getChild("LinkTarget");
+          if (!targetNode || !source.startsWith("[[", ref.from)) return;
+          const link = internalTarget(source.slice(targetNode.from, targetNode.to), targetNode.from, todoWords);
+          if (link) {
+            items.push({
+              kind: "ref",
+              name: link.name,
+              namespace: "label",
+              range: [ref.from, ref.to],
+              nameRange: [link.from, link.to],
+              ...(link.heading ? { attrs: { form: "heading" } } : {}),
             });
           }
           return;
