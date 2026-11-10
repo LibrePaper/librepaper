@@ -12,7 +12,47 @@ import { labelNameAllowed } from "./label-names.js";
 /** @typedef {import("./project.js").ProjectIndex} ProjectIndex */
 /** @typedef {{ namespace: Namespace, name: string, path?: string }} Target `path` is the file the symbol was named in, which scopes its labels */
 
-const LOCATABLE = new Set(["label", "ref", "cite", "include", "asset"]);
+const LOCATABLE = new Set(["label", "ref", "cite", "include", "asset", "link"]);
+
+/** Target kinds whose labels are numbered and listed, so an unreferenced one is worth a note. */
+const NUMBERED_TARGETS = new Set(["figure", "table", "equation", "listing"]);
+
+/** Diagnostic codes at severity "info"; every other code is a "warning". */
+const INFO_CODES = new Set(["unused-footnote", "unused-target", "unused-bibliography"]);
+
+/**
+ * The kind a label names, from its `attrs.target`, or null when it has none.
+ * @param {IndexItem} item
+ * @returns {string | null}
+ */
+export function targetKind(item) {
+  return item.attrs?.target ?? null;
+}
+
+/**
+ * A link to a project file, as opposed to a URL.
+ * @param {IndexItem} item
+ * @returns {boolean}
+ */
+const isFileLink = (item) => item.kind === "link" && item.attrs?.file === "true";
+
+/**
+ * The file's metadata items grouped by name ("title", "author", ...), in source order.
+ * @param {ProjectIndex} project
+ * @param {string} path
+ * @returns {Record<string, IndexItem[]>}
+ */
+export function metadata(project, path) {
+  const file = project.file(path);
+  /** @type {Record<string, IndexItem[]>} */
+  const out = {};
+  if (!file) return out;
+  for (const item of byStart(file.items)) {
+    if (item.kind !== "metadata" || item.name === undefined) continue;
+    (out[item.name] ??= []).push(item);
+  }
+  return out;
+}
 
 /** @param {string} a @param {string} b @returns {number} */
 const byText = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
@@ -116,8 +156,7 @@ export function itemAt(project, path, pos) {
  */
 function targetOf(project, item, path) {
   if (item.name === undefined) return null;
-  if (item.kind === "label") return { namespace: "label", name: item.name, path };
-  if (item.kind === "ref" || item.kind === "cite") {
+  if (item.kind === "label" || item.kind === "ref" || item.kind === "cite") {
     const namespace = project.namespaceOf(item, path);
     return namespace ? { namespace, name: item.name, path } : null;
   }
@@ -125,8 +164,8 @@ function targetOf(project, item, path) {
 }
 
 /**
- * Where a ref or cite at pos points to (labels only), or where an include or
- * asset at pos resolves to.
+ * Where a ref or cite at pos points to (labels and footnotes only), or where an
+ * include, asset or file link at pos resolves to.
  * @param {ProjectIndex} project
  * @param {string} path
  * @param {number} pos
@@ -136,10 +175,11 @@ export function definition(project, path, pos) {
   const item = itemAt(project, path, pos);
   if (!item || item.name === undefined) return [];
   if (item.kind === "ref" || item.kind === "cite") {
-    if (project.namespaceOf(item, path) !== "label") return [];
-    return project.definitions("label", item.name, path).map(({ path: defPath, item: def }) => toLocation(defPath, def));
+    const namespace = project.namespaceOf(item, path);
+    if (namespace !== "label" && namespace !== "footnote") return [];
+    return project.definitions(namespace, item.name, path).map(({ path: defPath, item: def }) => toLocation(defPath, def));
   }
-  if (item.kind === "include" || item.kind === "asset") {
+  if (item.kind === "include" || item.kind === "asset" || isFileLink(item)) {
     const resolved = project.resolveFile(path, item.name, item.kind);
     return resolved === null ? [] : [{ path: resolved, from: 0, to: 0 }];
   }
@@ -203,25 +243,26 @@ export function references(project, path, pos, { includeDeclaration = true } = {
 export function renameProblem(project, path, pos, newName) {
   const item = itemAt(project, path, pos);
   if (!item || item.name === undefined) return "invalid";
-  const isLabel = item.kind === "label" || (item.kind === "ref" && project.namespaceOf(item, path) === "label");
-  if (!isLabel) return "invalid";
+  const namespace = item.kind === "label" || item.kind === "ref" ? project.namespaceOf(item, path) : null;
+  if (namespace !== "label" && namespace !== "footnote") return "invalid";
   if (typeof newName !== "string" || newName === "" || /\s/.test(newName) || newName === item.name) return "invalid";
-  // An Org headline is named by its title, which rename does not rewrite, and
-  // an Org footnote's name carries an `fn:` prefix its name range leaves out,
-  // so neither can be renamed without breaking its links.
-  const fixed = (form) => form === "heading" || form === "footnote";
+  // An Org headline is named by its title, which rename does not rewrite, so
+  // a headline's label cannot be renamed without breaking its links.
+  const fixed = (form) => form === "heading";
   const unrenameable =
     fixed(item.attrs?.form) ||
-    project.definitions("label", item.name, path).some(({ item: def }) => fixed(def.attrs?.form));
+    project.definitions(namespace, item.name, path).some(({ item: def }) => fixed(def.attrs?.form));
   if (unrenameable) return "invalid";
   const format = project.file(path)?.format ?? "";
   if (!labelNameAllowed(format, item.name, newName)) return "chars";
-  if (project.definitions("label", newName, path).length > 0) return "exists";
+  if (project.definitions(namespace, newName, path).length > 0) return "exists";
   return null;
 }
 
 /**
- * Rename a label: its definitions and every reference that resolves to it.
+ * Rename a label or footnote: its definitions and every reference that
+ * resolves to it. Only the bare name is rewritten, so a footnote's `[^` and
+ * `]` stay where they are.
  * @param {ProjectIndex} project
  * @param {string} path
  * @param {number} pos
@@ -232,9 +273,10 @@ export function rename(project, path, pos, newName) {
   if (renameProblem(project, path, pos, newName) !== null) return null;
   const item = /** @type {IndexItem} */ (itemAt(project, path, pos));
   const name = /** @type {string} */ (item.name);
+  const namespace = /** @type {Namespace} */ (project.namespaceOf(item, path));
   const sites = [
-    ...project.definitions("label", name, path),
-    ...project.references("label", name, path),
+    ...project.definitions(namespace, name, path),
+    ...project.references(namespace, name, path),
   ];
   /** @type {Edit[]} */
   const edits = [];
@@ -246,11 +288,12 @@ export function rename(project, path, pos, newName) {
 }
 
 /**
- * The target of a ref or cite at pos, with label titles.
+ * The target of a ref or cite at pos, with label titles and target kinds
+ * ("figure", "footnote", ...) where the definition has them.
  * @param {ProjectIndex} project
  * @param {string} path
  * @param {number} pos
- * @returns {{ name: string, namespace: Namespace, targets: Array<Location & { title?: string }> } | null}
+ * @returns {{ name: string, namespace: Namespace, targets: Array<Location & { title?: string, kind?: string }> } | null}
  */
 export function hover(project, path, pos) {
   const item = itemAt(project, path, pos);
@@ -258,8 +301,12 @@ export function hover(project, path, pos) {
   const target = targetOf(project, item, path);
   if (!target) return null;
   const targets = project.definitions(target.namespace, target.name, target.path).map(({ path: defPath, item: def }) => {
-    const location = toLocation(defPath, def);
-    return def.title === undefined ? location : { ...location, title: def.title };
+    /** @type {Location & { title?: string, kind?: string }} */
+    const entry = toLocation(defPath, def);
+    if (def.title !== undefined) entry.title = def.title;
+    const kind = targetKind(def);
+    if (kind !== null) entry.kind = kind;
+    return entry;
   });
   return { name: target.name, namespace: target.namespace, targets };
 }
@@ -275,7 +322,7 @@ export function symbols(project, path) {
   if (!file) return { headings: [], labels: [] };
   return {
     headings: byStart(file.items.filter((item) => item.kind === "heading")),
-    labels: byStart(file.items.filter((item) => item.kind === "label")),
+    labels: byStart(file.items.filter((item) => item.kind === "label" && project.namespaceOf(item, path) === "label")),
   };
 }
 
@@ -305,9 +352,12 @@ export function foldingRanges(project, path) {
 }
 
 /**
- * Unknown labels, citations and references, and missing includes and assets.
- * Citation checks are skipped while the bibliography is unknown; include and
- * asset checks are skipped while the file list is unknown.
+ * Unknown labels, citations, references and footnotes, duplicate labels,
+ * missing files (includes, assets and file links), and notes nothing uses: a
+ * footnote with no reference, a figure, table, equation or listing nothing
+ * refers to, and a bibliography in a project that cites nothing. Citation
+ * checks are skipped while the bibliography is unknown; file checks while the
+ * file list is unknown. The unused notes are "info"; the rest are "warning".
  * @param {ProjectIndex} project
  * @param {string} path
  * @returns {Diagnostic[]}
@@ -326,14 +376,45 @@ export function diagnostics(project, path) {
    */
   const report = (item, code, suggestions) => {
     const [from, to] = spanOf(item);
-    out.push({ path, from, to, severity: "warning", code, name: item.name ?? "", suggestions });
+    const severity = INFO_CODES.has(code) ? "info" : "warning";
+    out.push({ path, from, to, severity, code, name: item.name ?? "", suggestions });
   };
 
+  /** @returns {boolean} whether any file of the project cites a key */
+  const citedAnywhere = () =>
+    project.paths().some((other) =>
+      (project.file(other)?.items ?? []).some(
+        (item) => item.kind === "cite" || (item.kind === "ref" && project.namespaceOf(item, other) === "cite"),
+      ),
+    );
+
   for (const item of byStart(file.items)) {
+    if (item.kind === "bibliography") {
+      if (!citedAnywhere()) report(item, "unused-bibliography", []);
+      continue;
+    }
     if (item.name === undefined) continue;
     const name = item.name;
 
-    if (item.kind === "include" || item.kind === "asset") {
+    if (item.kind === "label") {
+      if (item.attrs?.implicit === "true") continue;
+      const namespace = /** @type {Namespace} */ (project.namespaceOf(item, path));
+      const duplicated = project
+        .definitions(namespace, name, path)
+        .some(({ item: def }) => def !== item && def.attrs?.implicit !== "true");
+      if (duplicated) report(item, "duplicate-label", []);
+      if (namespace === "footnote") {
+        if (project.references("footnote", name, path).length === 0) report(item, "unused-footnote", []);
+      } else {
+        const kind = targetKind(item);
+        if (kind !== null && NUMBERED_TARGETS.has(kind) && project.references("label", name, path).length === 0) {
+          report(item, "unused-target", []);
+        }
+      }
+      continue;
+    }
+
+    if (item.kind === "include" || item.kind === "asset" || isFileLink(item)) {
       if (known === null || project.resolveFile(path, name, item.kind) !== null) continue;
       // LaTeX names read from the project root, so suggest them from there.
       const fromRoot = file.format === "latex";
@@ -350,6 +431,10 @@ export function diagnostics(project, path) {
       if (namespace === "label" && item.namespace === "label") {
         if (project.definitions("label", name, path).length === 0) {
           report(item, "unknown-label", closest(name, project.names("label", path)));
+        }
+      } else if (namespace === "footnote") {
+        if (project.definitions("footnote", name, path).length === 0) {
+          report(item, "unknown-footnote", closest(name, project.names("footnote", path)));
         }
       } else if (namespace === "cite" && item.namespace === "either") {
         if (project.hasCitation(name) === false) {

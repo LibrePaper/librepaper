@@ -67,9 +67,10 @@ the catalog decides it, in the walker.
    spellcheck skips.
 4. Add corpus files to the golden set.
 
-Org mode is next. It has an index adapter (`adapters/org.js`) and a
-highlighter (`web/src/lib/org-language.js`) but no grammar, so it starts at
-step 1.
+Org mode already has its grammar and parser in `web/src/lib/org-language/`
+(`parser.js`), wired in through `orgTree` in `source-trees.js`, and its index
+adapter (`adapters/org.js`) walks that tree. Steps 1 and 2 are therefore done
+for Org; it reads the same way the other adapters do.
 
 ## The index
 
@@ -80,14 +81,15 @@ computed on demand, never stored.
 ```js
 /** @typedef {{
  *   kind: "heading" | "label" | "ref" | "cite" | "include" | "asset"
- *       | "block" | "math" | "code" | "definition" | "bibliography",
+ *       | "link" | "metadata" | "block" | "math" | "code" | "definition"
+ *       | "bibliography" | "markup",
  *   range: [number, number],      // the whole construct
- *   name?: string,                // label id, key, path, macro or block name
+ *   name?: string,                // label id, key, path, macro, block name, or metadata name
  *   nameRange?: [number, number], // just the name, for navigation and rename
  *   level?: number,               // heading depth, 1 = top
- *   title?: string,               // heading or caption text, plain
- *   namespace?: "label" | "cite" | "either", // for ref and cite
- *   attrs?: Record<string, string>,          // format extras, e.g. block kind
+ *   title?: string,               // heading, caption or metadata text, plain
+ *   namespace?: "label" | "cite" | "either" | "footnote", // for ref, and for a footnote label
+ *   attrs?: Record<string, string>, // format extras, e.g. block kind, target kind
  * }} IndexItem */
 
 /** @typedef {{ path: string, format: string, items: IndexItem[] }} FileIndex */
@@ -95,20 +97,35 @@ computed on demand, never stored.
 
 Kinds:
 
-| Kind | Meaning | LaTeX | Typst | Markdown / Quarto |
-|---|---|---|---|---|
-| `heading` | a section, with `level` and `title` | `\section{}` … | `= …` | `# …` |
-| `label` | a name something can refer to | `\label{x}` | `<x>` | `{#x}`, `#\| label: x`, heading ids |
-| `ref` | a use of a label | `\ref{x}`, `\cref{x}` | `@x` | `@fig-x` |
-| `cite` | a use of a bibliography key | `\cite{k}` | `#cite(<k>)` | `[@k]` |
-| `include` | another source file pulled in | `\input`, `\include` | `#include` | `{{< include >}}` |
-| `asset` | a non-source file used | `\includegraphics` | `image()` | `![](…)` |
-| `block` | a foldable structured region, `name` = env or kind | `\begin…\end` | `#figure[…]` | `:::`, code cells |
-| `math` | a math region | `$…$`, `equation` | `$…$` | `$…$` |
-| `code` | code or verbatim, not prose | `verbatim` | raw | fences |
-| `definition` | a user definition | `\newcommand` | `#let` | — |
-| `bibliography` | a bibliography file in use | `\addbibresource` | `#bibliography` | `bibliography:` |
-| `markup` | syntax that is not prose, with `attrs.prose = "skip"` | commands | `#` calls | attributes, front matter |
+| Kind | Meaning | LaTeX | Typst | Markdown / Quarto | Org | HTML |
+|---|---|---|---|---|---|---|
+| `heading` | a section, with `level` and `title` | `\section{}` … | `= …` | `# …` | `* …` | `<h1>`…`<h6>` |
+| `label` | a name something can refer to. `attrs.target` is its kind: `section`, `figure`, `table`, `equation`, `listing`, `footnote`, `theorem`, `item` or `other`. `attrs.implicit = "true"` when the author did not write it | `\label{x}` | `<x>` | `{#x}`, `#\| label: x`, heading ids | `<<x>>`, `:CUSTOM_ID:`, `#+NAME:`, headline titles (implicit) | `id="x"` |
+| `ref` | a use of a label, or of a footnote (`namespace: "footnote"`) | `\ref{x}`, `\cref{x}` | `@x` | `@fig-x`, `[^x]` | `[[#x]]`, `[fn:x]` | `<a href="#x">` |
+| `cite` | a use of a bibliography key | `\cite{k}` | `#cite(<k>)` | `[@k]` | `[cite:@k]` | — |
+| `include` | another source file pulled in | `\input`, `\include` | `#include` | `{{< include >}}` | `#+INCLUDE:` | — |
+| `asset` | a non-source file used | `\includegraphics` | `image()` | `![](…)` | image links | `<img src>`, `<link href>` |
+| `link` | a URL (`attrs.external`), or a project file by relative path (`attrs.file`, with any `#fragment` in `attrs.fragment`) | `\href{…}` | `#link(…)` | `[text](…)` | `[[https://…]]`, `[[file:…]]` | `<a href="…">` |
+| `metadata` | one value of a document property. `name` is `title`, `subtitle`, `author`, `date`, `language` or `abstract`, and `title` is its plain text. Several authors give several items | `\title`, `\author`, `\date`, abstract, `babel` language | `#set document(…)`, `#set text(lang:)` | YAML front matter | `#+TITLE:`, `#+AUTHOR:`, `#+DATE:`, `#+LANGUAGE:`, abstract block | `<title>`, `<meta name="author">`, `<html lang>` |
+| `block` | a foldable structured region, `name` = env or kind | `\begin…\end` | `#figure[…]` | `:::`, code cells | `#+BEGIN_…` blocks | multi-line block tags |
+| `math` | a math region | `$…$`, `equation` | `$…$` | `$…$` | `$…$`, `\[…\]` | — |
+| `code` | code or verbatim, not prose | `verbatim` | raw | fences | `#+BEGIN_SRC`, `#+BEGIN_EXAMPLE` | `<script>`, `<style>` bodies |
+| `definition` | a user definition | `\newcommand` | `#let` | — | — | — |
+| `bibliography` | a bibliography file in use | `\addbibresource` | `#bibliography` | `bibliography:` | `#+BIBLIOGRAPHY:` | — |
+| `markup` | syntax that is not prose, with `attrs.prose = "skip"` | commands | `#` calls | attributes, front matter | keywords, property drawers | tags |
+
+**Footnotes.** A footnote with a label is a `label` in the `footnote`
+namespace (`attrs.target = "footnote"`), and each use of it is a `ref` in that
+namespace. Both carry the bare label as `name`, so rename rewrites only the
+label. Footnote names resolve within their own file. An inline footnote with no
+label emits nothing. A Typst footnote with a `<label>` is an ordinary `label`
+with `attrs.target = "footnote"`, in the `label` namespace, and Typst refers
+to it with `@x`.
+
+**Links.** A `link` to a project file names the file as written, with any
+`#fragment` removed. It resolves like an include, from the directory of the
+linking file. A link to an anchor in the same file (`#id`) stays a `ref`, as
+the adapter already emits it. Images stay `asset`; includes stay `include`.
 
 **Ambiguous `@x`.** In Typst and Markdown, `@x` can be a label reference or a
 citation. The adapter emits `ref` with `namespace: "either"`; the project
@@ -130,7 +147,7 @@ source.
 - Per file, so results are cached by file and text identity.
 - May be asynchronous, so the Typst adapter can ask the renderer worker.
 - One adapter per format: `latex`, `typst`, `markdown` (Quarto is Markdown
-  plus Quarto items, in the same adapter), `html`.
+  plus Quarto items, in the same adapter), `org`, `html`.
 
 The first adapters wrap today's scanners. Better parsers (the Markdown tree
 with Pandoc extensions, our own LaTeX grammar, Typst's parser in the worker)
@@ -140,7 +157,8 @@ later replace an adapter's inside without touching any feature.
 
 Holds the latest `FileIndex` per path and answers lookups:
 
-- `definitions(namespace, name)` → items, across files
+- `definitions(namespace, name)` → items, across files. `namespace` is
+  `label` or `footnote`; footnotes are local to their own file
 - `references(namespace, name)` → items, across files
 - `file(path)` → `FileIndex`
 - `names(namespace)` → every defined name, for completion
@@ -154,13 +172,20 @@ Named after LSP's, so a language server can later answer them for a format.
 
 | Query | Answer |
 |---|---|
-| `definition(path, pos)` | the label, file or definition a ref, cite, include or asset at `pos` points to |
+| `definition(path, pos)` | the label or footnote a ref points to, or the file an include, asset or file link resolves to |
 | `references(path, pos)` | every use of the name at `pos` |
 | `rename(path, pos, newName)` | a list of `{ path, from, to, insert }` edits over every `nameRange` |
-| `hover(path, pos)` | the target's `title` (heading or caption) and location |
+| `hover(path, pos)` | the target's `title`, its `kind` (`figure`, `footnote`, ...) and location |
+| `metadata(path)` | the file's metadata items, grouped by name |
+| `targetKind(item)` | a label's `attrs.target`, or null |
 | `symbols(path)` | headings, then labels, for the outline |
 | `foldingRanges(path)` | `block` and heading spans |
-| `diagnostics(path)` | refs with no label, includes and assets with no file, cites with no entry |
+| `diagnostics(path)` | refs with no label or footnote, includes, assets and file links with no file, cites with no entry, labels defined twice, and unused notes (info): a footnote never referenced, a figure, table, equation or listing nothing refers to, a bibliography in a project that cites nothing |
+
+Diagnostic codes: `unknown-label`, `unknown-footnote`, `unknown-citation`,
+`unknown-reference`, `missing-file`, `duplicate-label` (warnings), and
+`unused-footnote`, `unused-target`, `unused-bibliography` (info). An info
+diagnostic is shown as an info mark in the editor.
 | `proseRanges(path)` | ranges for spellcheck, Harper and word count |
 
 Format-specific writing stays with each format, as small functions:
@@ -192,10 +217,10 @@ web/src/lib/document-index/
   schema.js          typedefs above
   project.js         the project index and its lookups
   queries.js         the queries
-  adapters/latex.js  adapters/typst.js  adapters/markdown.js  adapters/html.js
+  adapters/latex.js  adapters/typst.js  adapters/markdown.js  adapters/org.js  adapters/html.js
   writers.js         writeRef, writeCite, writeLabel per format
 web/src/lib/document-index-extensions/
-  navigation.js  rename.js  diagnostics.js  hover.js
+  navigation.js  rename.js  index-diagnostics.js  hover.js
 web/src/lib/source-trees.js                          parsed tree per format, read by every view
 web/src/lib/latex-language/                          our LaTeX grammar (Lezer) and its parser
 web/src/lib/typst-language/                          Typst language support

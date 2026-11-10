@@ -19,6 +19,14 @@ const byText = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 /** @param {IndexItem[]} items @returns {IndexItem[]} */
 const byStart = (items) => [...items].sort((a, b) => a.range[0] - b.range[0]);
 
+/**
+ * The namespace a label definition belongs to: "footnote" for a footnote
+ * definition, "label" for every other label.
+ * @param {IndexItem} item
+ * @returns {"label" | "footnote"}
+ */
+const labelNamespaceOf = (item) => (item.namespace === "footnote" ? "footnote" : "label");
+
 /** @param {string} path @returns {string} */
 function extensionOf(path) {
   const match = /\.([^./]+)$/.exec(path.slice(path.lastIndexOf("/") + 1));
@@ -56,25 +64,30 @@ export function createProjectIndex(options = {}) {
   const sortedEntries = () => [...files.entries()].sort(([a], [b]) => byText(a, b));
 
   /**
-   * Label definitions by name, in path then item order. Built on first use and
-   * dropped whenever a file changes.
-   * @type {Map<string, Array<{ path: string, item: IndexItem }>> | null}
+   * Definitions by namespace and name, in path then item order. Labels and
+   * footnotes are kept apart, so a footnote never answers to a label of the
+   * same name. Built on first use and dropped whenever a file changes.
+   * @type {Map<"label" | "footnote", Map<string, Array<{ path: string, item: IndexItem }>>> | null}
    */
-  let labelIndex = null;
+  let definitionIndex = null;
 
-  /** @returns {Map<string, Array<{ path: string, item: IndexItem }>>} */
-  function labelDefinitions() {
-    if (labelIndex) return labelIndex;
-    labelIndex = new Map();
+  /** @returns {Map<"label" | "footnote", Map<string, Array<{ path: string, item: IndexItem }>>>} */
+  function definitionsByName() {
+    if (definitionIndex) return definitionIndex;
+    definitionIndex = new Map([
+      ["label", new Map()],
+      ["footnote", new Map()],
+    ]);
     for (const [path, file] of sortedEntries()) {
       for (const item of file.items) {
         if (item.kind !== "label" || item.name === undefined) continue;
-        const list = labelIndex.get(item.name);
+        const byName = definitionIndex.get(labelNamespaceOf(item));
+        const list = byName?.get(item.name);
         if (list) list.push({ path, item });
-        else labelIndex.set(item.name, [{ path, item }]);
+        else byName?.set(item.name, [{ path, item }]);
       }
     }
-    return labelIndex;
+    return definitionIndex;
   }
 
   /**
@@ -88,12 +101,27 @@ export function createProjectIndex(options = {}) {
     fromPath === undefined || labelScope(files.get(defPath)?.format ?? "", defPath) === labelScope(files.get(fromPath)?.format ?? "", fromPath);
 
   /**
+   * Whether a definition or use at `path` belongs to `fromPath` in `namespace`.
+   * Labels follow `sameScope`. Footnotes are local to their document, so only
+   * the same file sees them. Citations are not defined here, so none are scoped.
+   * @param {Namespace} namespace
+   * @param {string} path
+   * @param {string | undefined} fromPath
+   * @returns {boolean}
+   */
+  function inScope(namespace, path, fromPath) {
+    if (namespace === "label") return sameScope(path, fromPath);
+    if (namespace === "footnote") return fromPath === undefined || path === fromPath;
+    return true;
+  }
+
+  /**
    * @param {string} name
    * @param {string} [fromPath]
    * @returns {boolean}
    */
   function labelExists(name, fromPath) {
-    return (labelDefinitions().get(name) ?? []).some(({ path }) => sameScope(path, fromPath));
+    return (definitionsByName().get("label")?.get(name) ?? []).some(({ path }) => sameScope(path, fromPath));
   }
 
   /**
@@ -109,7 +137,7 @@ export function createProjectIndex(options = {}) {
       return item.namespace ?? "label";
     }
     if (item.kind === "cite") return "cite";
-    if (item.kind === "label") return "label";
+    if (item.kind === "label") return labelNamespaceOf(item);
     return null;
   }
 
@@ -119,7 +147,10 @@ export function createProjectIndex(options = {}) {
    * extensions for an asset or the extension of `fromPath` for anything else.
    * LaTeX reads \input and \includegraphics names from the project root (the
    * folder the main file compiles in), so there the root-relative path is tried
-   * first and the path beside `fromPath` second, as opening.js does.
+   * first and the path beside `fromPath` second, as opening.js does. A file
+   * `link` (kind "link") resolves like an include: the same directory rules,
+   * and the extension of `fromPath` when the name has none, but no image
+   * extensions and no search of other folders.
    * @type {ResolveFile}
    */
   function resolveFileDefault(fromPath, name, kind) {
@@ -155,7 +186,7 @@ export function createProjectIndex(options = {}) {
      */
     update(fileIndex) {
       files.set(fileIndex.path, fileIndex);
-      labelIndex = null;
+      definitionIndex = null;
     },
 
     /**
@@ -164,7 +195,7 @@ export function createProjectIndex(options = {}) {
      */
     remove(path) {
       files.delete(path);
-      labelIndex = null;
+      definitionIndex = null;
     },
 
     /**
@@ -213,8 +244,8 @@ export function createProjectIndex(options = {}) {
      * @returns {Array<{ path: string, item: IndexItem }>}
      */
     definitions(namespace, name, fromPath) {
-      if (namespace !== "label") return [];
-      return (labelDefinitions().get(name) ?? []).filter(({ path }) => sameScope(path, fromPath));
+      if (namespace !== "label" && namespace !== "footnote") return [];
+      return (definitionsByName().get(namespace)?.get(name) ?? []).filter(({ path }) => inScope(namespace, path, fromPath));
     },
 
     /**
@@ -242,7 +273,7 @@ export function createProjectIndex(options = {}) {
             (item.kind === "ref" || item.kind === "cite") &&
             item.name === name &&
             namespaceOf(item, path) === namespace &&
-            (namespace !== "label" || sameScope(path, fromPath))
+            inScope(namespace, path, fromPath)
           ) {
             out.push({ path, item });
           }
@@ -259,11 +290,11 @@ export function createProjectIndex(options = {}) {
      */
     names(namespace, fromPath) {
       if (namespace === "cite") return bibliography === null ? [] : [...bibliography].sort(byText);
-      if (namespace === "label") {
-        const set = [...labelDefinitions()]
-          .filter(([, defs]) => defs.some(({ path }) => sameScope(path, fromPath)))
-          .map(([label]) => label);
-        return set.sort(byText);
+      if (namespace === "label" || namespace === "footnote") {
+        return [...(definitionsByName().get(namespace)?.entries() ?? [])]
+          .filter(([, defs]) => defs.some(({ path }) => inScope(namespace, path, fromPath)))
+          .map(([name]) => name)
+          .sort(byText);
       }
       return [];
     },
