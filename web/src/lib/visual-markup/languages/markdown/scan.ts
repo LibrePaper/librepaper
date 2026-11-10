@@ -1,7 +1,7 @@
 // Lookahead for a closing delimiter. A span never crosses a blank line, and the search
 // stops after this many characters, so each opener costs a constant amount of work and
 // the whole document is tokenized in time linear in its length.
-export const LOOKAHEAD = 2000;
+const LOOKAHEAD = 2000;
 
 // The tokenizer hands every rule the same source string, so the blank-line index is
 // computed once per source and reused for every position.
@@ -66,18 +66,6 @@ export function atLineHead(source: string, pos: number): boolean {
   return true;
 }
 
-// Text of the nearest non-blank line before `start` (a line start), or null.
-export function previousNonBlank(source: string, start: number): string | null {
-  let end = start - 1;
-  while (end > 0) {
-    const from = source.lastIndexOf('\n', end - 1) + 1;
-    const text = source.slice(from, end);
-    if (text.trim() !== '') return text;
-    end = from - 1;
-  }
-  return null;
-}
-
 export function runLength(source: string, pos: number, char: string, end = source.length): number {
   let index = pos;
   while (index < end && source[index] === char) index++;
@@ -106,7 +94,7 @@ export function delimiterAt(source: string, start: number, end: number, undersco
 }
 
 // Start of the next backtick run of exactly `count` characters, or -1.
-export function findBacktickRun(source: string, from: number, count: number, end: number): number {
+function findBacktickRun(source: string, from: number, count: number, end: number): number {
   let index = from;
   while (index < end) {
     if (source[index] === '`') {
