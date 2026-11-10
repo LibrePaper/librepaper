@@ -87,6 +87,8 @@ const BLANK_LINE = /\n[ \t]*\n/g;
 const WHOLE_NODES = new Set([
   "Comment", "DisplayMath", "MathEnvironment", "Verb", "EndEnv",
 ]);
+// The nodes of plain prose that can sit between a "[" and its "]".
+const PLAIN_NODES = new Set(["Text", "Ligature", "Tie", "CloseBracket"]);
 // The braced nodes that can be the argument of a command.
 const GROUPS = new Set(["Group", "MathGroup", "UrlArg"]);
 
@@ -181,10 +183,11 @@ export function latexSkips(text, key) {
 
   // Index just past the [...] group that opens at `open`, or -1 when none does.
   // Directly after a command or \begin tag the grammar made it an optional
-  // argument. After blanks or a star it is plain text, and then the "]" must be
-  // in the same text node. A "[" with no closing "]" is prose. With `loose`
-  // (a definition's default value, which may hold commands that split the
-  // text), a "]" later on the same line closes it.
+  // argument. After blanks, a star or a group it is an OpenBracket node, and
+  // then a CloseBracket must follow with only text, ligatures and ties between
+  // them. A "[" with no closing "]" is prose. With `loose` (a definition's
+  // default value, which may hold commands that split the text), a "]" later
+  // on the same line closes it.
   function optionEnd(open, at, loose = false) {
     if (text[open] !== "[") return -1;
     const node = at(open);
@@ -192,8 +195,10 @@ export function latexSkips(text, key) {
     if (node.name === "OptionalArgument") {
       return node.from === open && closedBy(node, "OptClose") ? node.to : -1;
     }
-    if (node.name !== "Text") return -1;
-    for (let k = open + 1; k < node.to; k++) if (text[k] === "]") return k + 1;
+    if (node.name !== "OpenBracket") return -1;
+    for (let next = node.nextSibling; next && PLAIN_NODES.has(next.name); next = next.nextSibling) {
+      if (next.name === "CloseBracket") return next.to;
+    }
     if (!loose) return -1;
     const close = text.indexOf("]", open + 1);
     return close >= 0 && close < lineEnd(open) ? close + 1 : -1;

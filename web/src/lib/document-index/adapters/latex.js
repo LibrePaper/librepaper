@@ -108,7 +108,13 @@ function argumentOf(anchor, text) {
   for (let node = anchor.nextSibling; node; node = node.nextSibling) {
     if (node.from - anchor.to > 200) return null;
     if (node.name === "Comment") continue;
-    if (node.name === "Text") {
+    // Text mode makes the square brackets nodes of their own.
+    if (node.name === "OpenBracket") {
+      depth++;
+    } else if (node.name === "CloseBracket") {
+      if (depth === 0) return null;
+      depth--;
+    } else if (node.name === "Text") {
       const chunk = text.slice(node.from, node.to);
       if (depth > 0 && /\n\s*\n/.test(chunk)) return null;
       for (const char of chunk) {
