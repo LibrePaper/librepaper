@@ -42,6 +42,7 @@ const context = (values) => vm.createContext({ m,
   // A loaded listing warms the document page. No case here is about that.
   warmReader: () => {},
   readDefaultPreview: () => "html",
+  buildPreferenceUser: () => "anonymous",
   location: { origin: "https://example.test" },
   me: {},
   ...values,

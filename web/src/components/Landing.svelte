@@ -45,7 +45,7 @@
   import { provide } from "../lib/support/providers.js";
   import * as localBridge from "../lib/desktop/client.js";
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
-  import { readDefaultPreview } from "../lib/build-preferences.js";
+  import { buildPreferenceUser, readDefaultPreview } from "../lib/build-preferences.js";
   import { warmReader } from "../lib/warm-reader.js";
   import { m } from "../lib/paraglide/messages.js";
 
@@ -742,7 +742,7 @@
   function warmDocuments() {
     void warmReader({
       formats: [...new Set(documents.map((doc) => doc?.source_format).filter(Boolean))],
-      latexOutput: readDefaultPreview({ origin: location.origin, user: me.id }, "latex"),
+      latexOutput: readDefaultPreview({ origin: location.origin, user: buildPreferenceUser(me) }, "latex"),
     });
   }
 
@@ -1682,6 +1682,7 @@
 {/if}
 
 <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory} account={me}
+                userId={buildPreferenceUser(me)}
                 keys={preferences.state.keys} onkeys={preferences.setKeys}
                 completion={preferences.state.completion} oncompletion={preferences.setCompletion}
                 brackets={preferences.state.brackets} onbrackets={preferences.setBrackets}

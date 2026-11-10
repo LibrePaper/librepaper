@@ -20,6 +20,19 @@ export function anonymousIdentity() {
     return (anonymousId = value);
   } catch { return (anonymousId = "anonymous"); }
 }
+/**
+ * The identity build preferences are kept under: the signed-in account's
+ * `provider:handle`, or this browser's anonymous identity when nobody is
+ * signed in. Every reader and writer of build preferences uses this one
+ * function, so the editor, the dashboard and the settings dialog agree on
+ * whose preferences they are.
+ * @param {{provider?: string, handle?: string} | null | undefined} account
+ * @returns {string}
+ */
+export function buildPreferenceUser(account) {
+  return account?.provider && account?.handle ? `${account.provider}:${account.handle}` : anonymousIdentity();
+}
+
 function key({ origin = globalThis.location?.origin || "", user = "anonymous" } = {}, what = "") {
   return `${PREFIX}:${JSON.stringify([String(origin), String(user || "anonymous"), String(what)])}`;
 }
