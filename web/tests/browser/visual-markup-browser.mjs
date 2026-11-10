@@ -28,6 +28,8 @@ const root = dirname(dirname(dirname(here)));
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-visual-markup-check-"));
 const output = join(temporary, "build");
 const profile = join(temporary, "chrome");
+// The Typst visual layer draws from typst-syntax.wasm's tree, so the page is offered the module.
+const syntaxWasm = process.env.LIBREPAPER_TYPST_SYNTAX_WASM || join(root, "web/wasm/typst-syntax.wasm");
 const entry = join(temporary, "entry.js");
 const katexDist = join(root, "web/node_modules/katex/dist");
 const port = 19000 + Math.floor(Math.random() * 1000);
@@ -870,6 +872,7 @@ const source = [
   `import { LoroDoc } from "loro-crdt";`,
   `import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};`,
   `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, paper: paperSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample, sink: sinkSample, offset: offsetSample, title: titleSample, typstSink: typstSinkSample, vim: vimSample })};`,
+  `globalThis.LIBREPAPER_MODULES = { "typst-syntax": "/typst-syntax.wasm" };`,
   `document.documentElement.dataset.theme = "librepaper";`,
   `document.documentElement.dataset.palette = "librepaper";`,
   `document.documentElement.dataset.mode = "light";`,
@@ -935,6 +938,11 @@ try {
   // `/katex/katex.min.css`, and the stylesheet's fonts/ paths resolve below it.
   server = createServer((request, response) => {
     const path = decodeURIComponent(request.url.split("?")[0]);
+    if (path === "/typst-syntax.wasm") {
+      response.setHeader("Content-Type", "application/wasm");
+      response.end(readFileSync(syntaxWasm));
+      return;
+    }
     if (path.startsWith("/katex/")) {
       const file = join(katexDist, path.slice("/katex/".length));
       if (file.startsWith(katexDist + sep) && existsSync(file)) {

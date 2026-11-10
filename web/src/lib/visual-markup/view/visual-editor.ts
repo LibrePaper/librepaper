@@ -285,9 +285,29 @@ const stepIntoBlocks = ViewPlugin.fromClass(
   }
 );
 
+// Typst tokens come from typst-syntax.wasm, which loads on the first parse. Until
+// then a Typst file draws nothing; when it arrives, the layer is rebuilt from the tree.
+const typstArrival = ViewPlugin.fromClass(
+  class {
+    private stop: (() => void) | null = null;
+
+    constructor(view: EditorView) {
+      if (view.state.field(visualState).language !== 'typst') return;
+      this.stop = onTypstSyntax(() => {
+        this.stop = null;
+        view.dispatch({ effects: refreshVisual.of(null) });
+      });
+    }
+
+    destroy(): void {
+      this.stop?.();
+    }
+  }
+);
+
 export function visualExtension(): Extension {
   // caretParked comes first: the decoration field reads it when it is created.
-  return [caretParked, visualState, decorationField, rebuildAfterPause, arrowKeymap, stepIntoBlocks];
+  return [caretParked, visualState, decorationField, rebuildAfterPause, arrowKeymap, stepIntoBlocks, typstArrival];
 }
 
 // The tokens of the parse the visual layer last drew, or null when there is no
@@ -303,8 +323,6 @@ export class VisualCodeMirrorEditor {
   private enabled = false;
   private themeCompartment = new Compartment();
   private unsubscribe: () => void;
-  // Waits for the Typst tree to load, so the decorations can be rebuilt from it.
-  private stopTypstWatch: (() => void) | null = null;
 
   constructor(view: EditorView, options: VisualEditorOptions = {}) {
     this.view = view;
@@ -330,7 +348,6 @@ export class VisualCodeMirrorEditor {
     if (this.enabled === enabled) return;
     this.enabled = enabled;
     this.view.dispatch({ effects: setVisualState.of({ enabled }) });
-    this.watchTypstTree();
     this.options.onModeChange?.(enabled ? 'visual' : 'source');
   }
 
@@ -357,19 +374,6 @@ export class VisualCodeMirrorEditor {
 
   destroy(): void {
     this.unsubscribe();
-    this.stopTypstWatch?.();
-  }
-
-  // Typst tokens come from typst-syntax.wasm, which loads after the first call. Once it is
-  // loaded, the visual layer is rebuilt so the decorations follow the tree. Only Typst watches.
-  private watchTypstTree(): void {
-    this.stopTypstWatch?.();
-    this.stopTypstWatch = null;
-    if (!this.enabled || this.configService.get().language !== 'typst') return;
-    this.stopTypstWatch = onTypstSyntax(() => {
-      this.stopTypstWatch = null;
-      this.view.dispatch({ effects: refreshVisual.of(null) });
-    });
   }
 
   private sync(config: EditorConfig): void {
@@ -383,6 +387,5 @@ export class VisualCodeMirrorEditor {
         this.themeCompartment.reconfigure(createTheme(config))
       ]
     });
-    this.watchTypstTree();
   }
 }
