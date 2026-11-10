@@ -55,6 +55,14 @@ Propose replacements for captured ranges. Required: `view_id`, `operation`, `pat
 - `validation`: `"source"` or `"compile"` (with `path` of the file to render).
 - `dependencies`: extra `range_id`s the patch relies on.
 
+## document_withdraw
+
+Withdraw your own pending tracked changes. Edit role. Required: `operation`, `change_ids`.
+
+- `change_ids[]`: the ids that `document_propose` returned in `effects` as `[{"kind":"change","id":"..."}]`.
+- Only your own pending changes. Changes by others, or already accepted or rejected, are refused.
+- Result: `effects: [{"kind":"withdrawn","id":...}]`. CLI: `lp withdraw <change_id> [<change_id> ...]`.
+
 ## document_apply
 
 Apply a private candidate as a direct, untracked edit. Only when the user explicitly asked for direct edits and the role is Edit. Required: `candidate_id`, `operation`. Optional `view_id`, `consistency: "exact_tree" | "unchanged_dependencies"` (default exact tree; never loosen it to dodge a conflict). Refuses changed source.

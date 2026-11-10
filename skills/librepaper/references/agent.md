@@ -24,6 +24,7 @@ lp comment main.tex --on 'exact text' --body 'Your comment'
 lp suggest main.tex --find 'exact old text' --replace 'new text'
 lp insert main.tex --after 'exact anchor text' --text 'new text'
 lp create notes/summary.md --text 'file text'
+lp withdraw 3f9c… 7a1e…
 ```
 
 | Request | Command | Role needed |
@@ -38,8 +39,10 @@ lp create notes/summary.md --text 'file text'
 - The text given to `--on`, `--find`, `--after` or `--before` must match the source exactly and appear once. If it does not, the helper says so, lists the lines and changes nothing. Retry with a longer excerpt.
 - `insert` uses the text verbatim, so include any blank lines the text needs.
 - For long text, pass `--text-file -`, `--replace-file -` or `--body-file -` to read it from stdin, or give a path.
-- `suggest` and `insert` are tracked changes. You cannot accept or reject them; that is the editor's act. A request to proofread or rewrite is not permission for untracked edits.
+- `suggest` and `insert` are tracked changes. You cannot accept tracked changes or reject anyone else's; that is the editor's act. You can withdraw your own pending changes with `lp withdraw <change_id> ...` (or `document_withdraw`), using the ids that `suggest` or `insert` returned in `effects`. A request to proofread or rewrite is not permission for untracked edits.
 - Keep each change minimal and inside what the user asked. Preserve math, references, code and markup. Do not rewrite passages nobody asked about.
+- When updating an existing document, propose targeted patches over the passages that change. Never replace a whole file or section to change part of it; keep the rest of the author's text.
+- Keep the change ids that each write returns. If a pass went wrong, withdraw it with those ids before proposing again. Do not try to "restore" text by proposing the old text over your own pending change.
 - With Comment access you cannot change text. Say so and suggest the owner issue an Edit token.
 - If several projects are connected, a command without `--project` is refused and the helper lists them. Pick the project the user means and add `--project <slug>`. The helper never guesses.
 - A write that fails with a network error makes the helper print the `lp result` command to check it. Run that. Never resend the write.
@@ -114,8 +117,10 @@ Start with one `document_read` that combines queries: `{"kind":"manifest"}` to l
 
 - A request to proofread or rewrite is not permission for untracked edits. Default to tracked suggestions.
 - With Comment access you cannot change text. Say so and suggest the owner issue an Edit token.
-- You cannot accept or reject tracked changes. That is the editor's act.
+- You cannot accept tracked changes or reject anyone else's; that is the editor's act. You can withdraw your own pending changes with `document_withdraw` (or `lp withdraw`).
 - Keep replacements minimal and inside the asked scope. Preserve math, references, code and markup.
+- When updating an existing document, propose targeted patches over the passages that change. Never replace a whole file or section to change part of it; keep the rest of the author's text.
+- Keep the change ids that `document_propose` returns in `effects`. If a pass went wrong, withdraw it with those ids before proposing again. Do not try to "restore" text by proposing the old text over your own pending change.
 - Use `validation: "compile"` when the change must still build, and only claim it compiles from a matching render result.
 
 ### Step 4: Writes and recovery
