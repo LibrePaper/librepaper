@@ -38,8 +38,8 @@ import { m } from "../paraglide/messages.js";
  * snapshotDigest: (tree: PreviewTree) => Promise<string>,
  * diagnosticContext: (item: NonNullable<PreviewResult["diagnostics"]>[number] | {severity: string, message: string}, tree: PreviewTree, identity: string) => NonNullable<PreviewResult["diagnostics"]>[number],
  * parseSynctex?: (data: Uint8Array | string, files: string[]) => Promise<unknown>,
- * rememberPreview?: (path: string, page: { kind: "html", html: string } | { kind: "pdf", sha: string, bytes: Uint8Array }, identity: string) => void,
- * lastPage?: (path: string) => Promise<{ kind: string, identity?: string, bytes?: Uint8Array, html?: string } | null>,
+ * rememberPreview?: (path: string, page: { kind: "html", html: string, sources?: Array<string | null> } | { kind: "pdf", sha: string, bytes: Uint8Array }, identity: string) => void,
+ * lastPage?: (path: string) => Promise<{ kind: string, identity?: string, bytes?: Uint8Array, html?: string, sources?: Array<string | null> } | null>,
  * onRendered?: (identity: string, projectDigest: string) => void, onEmpty?: () => void,
  * facts: () => PreviewFacts, tree: () => PreviewTree,
  * gather: (digests: Record<string, string>) => Promise<{ held: { assets: Record<string, Uint8Array>, urls: Record<string, string> }, missing: string[] }>,
@@ -221,7 +221,7 @@ export function createPreviewRenderer({
             if (!record || at.disposed || capturedNavigation !== at.navigation || at.everPainted || !at.paintsTheFrame) return;
             framePreview.publish(record.kind === "pdf"
               ? { kind: "pdf", sha: record.identity, bytes: new Uint8Array(record.bytes).slice() }
-              : { kind: "html", html: record.html });
+              : { kind: "html", html: record.html, ...(Array.isArray(record.sources) ? { sources: record.sources } : {}) });
           }, () => {});
         }
       }
@@ -281,7 +281,7 @@ export function createPreviewRenderer({
       // or Typst run on this computer can show its whole log. Each render replaces the last one,
       // including with "" when this one produced none.
       else status.recordLog(rendered?.log || "");
-      const { html, pdf, artifact, artifactKind, synctex, diagnostics: said, log } = rendered;
+      const { html, pdf, artifact, artifactKind, synctex, diagnostics: said, log, sources } = rendered;
       const contextual = (said || []).map((item) => diagnosticContext(item, source, identity));
       // An in-flight preview may finish after another keystroke: HTML and
       // Typst may show that intermediate progress while the queued render
@@ -320,7 +320,7 @@ export function createPreviewRenderer({
           key: keyOf(identity),
           page: pdf
             ? { kind: /** @type {const} */ ("pdf"), sha: identity, bytes: new Uint8Array(buffer.slice(0)) }
-            : { kind: /** @type {const} */ ("html"), html },
+            : { kind: /** @type {const} */ ("html"), html, ...(Array.isArray(sources) ? { sources } : {}) },
           diagnostics: contextual,
           latex: format === "latex" && !htmlPreview ? rendered : null,
           log: rendered?.log || "",

@@ -360,6 +360,39 @@ const preview = (values = {}) => {
   assert.equal(harness.published.at(-1)?.kind, "html", "and a flow page is what reaches the frame");
 }
 
+// The engine's source map rides along with the flow page, and is absent when
+// the engine did not return one.
+{
+  const harness = preview({
+    facts: { format: "latex", latexOutput: "html" },
+    tree: () => ({ main: "paper.tex", texts: { "paper.tex": "x" }, digests: {} }),
+    heading: async () => "",
+    renderers: {
+      formatOf: () => "latex",
+      previewFormatOf: () => "latex",
+      producesPdf: () => true,
+      render: () => Promise.resolve({ html: "<p>page</p>", sources: ["paper.tex", null], diagnostics: [] }),
+    },
+  });
+  await harness.paint();
+  assert.deepEqual(harness.published.at(-1)?.sources, ["paper.tex", null]);
+}
+{
+  const harness = preview({
+    facts: { format: "latex", latexOutput: "html" },
+    tree: () => ({ main: "paper.tex", texts: { "paper.tex": "x" }, digests: {} }),
+    heading: async () => "",
+    renderers: {
+      formatOf: () => "latex",
+      previewFormatOf: () => "latex",
+      producesPdf: () => true,
+      render: () => Promise.resolve({ html: "<p>page</p>", diagnostics: [] }),
+    },
+  });
+  await harness.paint();
+  assert.equal("sources" in harness.published.at(-1), false);
+}
+
 // A frame showing something this render does not own is refreshed rather than
 // painted over.
 {

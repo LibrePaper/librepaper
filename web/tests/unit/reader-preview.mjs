@@ -28,6 +28,26 @@ assert.equal(quartoPdf.publish({ kind: "pdf", bytes: new Uint8Array([1, 2, 3]) }
 assert.equal(messages.at(-1).type, "preview");
 quartoPdf.dispose();
 
+// The engine's source map reaches the preview message, and is absent from it
+// when the engine did not return one.
+{
+  const htmlMessages = [];
+  const htmlPreview = createFramePreview({
+    slug: "paper",
+    getDocsOrigin: () => "https://docs.example",
+    framePath: () => "raw",
+    setSource: () => {},
+    send: message => htmlMessages.push(message),
+  });
+  htmlPreview.navigate();
+  htmlPreview.markReady();
+  htmlPreview.publish({ kind: "html", html: "<p>a</p>", sources: ["paper.tex", null] });
+  assert.deepEqual(htmlMessages.at(-1).sources, ["paper.tex", null]);
+  htmlPreview.publish({ kind: "html", html: "<p>b</p>" });
+  assert.equal("sources" in htmlMessages.at(-1), false);
+  htmlPreview.dispose();
+}
+
 const readerSource = englishSource(await readFile(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8"));
 const menusSource = englishSource(await readFile(new URL("../../src/components/reader/Menus.svelte", import.meta.url), "utf8"));
 const previewSource = englishSource(await readFile(new URL("../../src/lib/reader/preview-render.js", import.meta.url), "utf8"));
