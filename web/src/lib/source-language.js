@@ -9,6 +9,7 @@ import { sourceFormatOf } from "./formats.js";
 import { pandocExtensions } from "./pandoc-markdown.js";
 import { quartoOptions } from "./quarto-options.js";
 import { latex } from "./latex-language/index.js";
+import { org } from "./org-language.js";
 
 /** Resolve an exact language name for a Markdown or Quarto code fence. */
 export function codeLanguage(info) {
@@ -46,6 +47,7 @@ function byFormat(format) {
     case "latex":
     case "tex": return latex();
     case "typst": return typst();
+    case "org": return org();
     case "html": return html();
     case "quarto": return [markdownSupport(), quartoOptions];
     case "markdown":
