@@ -2033,38 +2033,39 @@
   "pendingannotations_section": "未確認のコメント",
   "pendingannotations_text": "未確認のテキスト",
   "pendingannotations_waiting": "確認待ち…",
+  "preamble_meta_class": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{documentClass} · {count}個のパッケージ",
+        "countPlural=*": "{documentClass} · {count}個のパッケージ"
+      }
+    }
+  ],
+  "preamble_meta_packages": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count}個のパッケージ",
+        "countPlural=*": "{count}個のパッケージ"
+      }
+    }
+  ],
   "preamble_more": "プリアンブルをさらに表示",
   "preamble_show": "プリアンブルを表示",
-  "preamble_summary_class": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "プリアンブル：{documentClass}、{count}個のパッケージ",
-        "countPlural=*": "プリアンブル：{documentClass}、{count}個のパッケージ"
-      }
-    }
-  ],
-  "preamble_summary_packages": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "プリアンブル：{count}個のパッケージ",
-        "countPlural=*": "プリアンブル：{count}個のパッケージ"
-      }
-    }
-  ],
+  "preamble_summary_label": "プリアンブル",
   "preview_notes_shown_inside": "{name}は{path}の中に表示されます。",
   "preview_render_could_not_render": "レンダリングできませんでした",
   "preview_render_missing_figures": [
@@ -2786,6 +2787,8 @@
   "widgets_click_edit_caption_source": "クリックしてキャプションのソースを編集",
   "widgets_edit_caption": "キャプションを編集",
   "widgets_edit_subcaption": "サブキャプションを編集",
+  "widgets_figure_number": "図 {number}",
+  "widgets_image_missing": "{name} が見つかりません",
   "widgets_show_table_source": "表のソースを表示",
   "wordcount_scope": "{name}内",
   "wordcount_scope_included": [

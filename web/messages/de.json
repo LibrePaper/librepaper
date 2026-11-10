@@ -2048,38 +2048,39 @@
   "pendingannotations_section": "Unbestätigte Kommentare",
   "pendingannotations_text": "Unbestätigter Text",
   "pendingannotations_waiting": "Wartet auf Bestätigung…",
+  "preamble_meta_class": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{documentClass} · {count} Paket",
+        "countPlural=*": "{documentClass} · {count} Pakete"
+      }
+    }
+  ],
+  "preamble_meta_packages": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} Paket",
+        "countPlural=*": "{count} Pakete"
+      }
+    }
+  ],
   "preamble_more": "Weitere Präambel",
   "preamble_show": "Präambel anzeigen",
-  "preamble_summary_class": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "Präambel: {documentClass}, {count} Paket",
-        "countPlural=*": "Präambel: {documentClass}, {count} Pakete"
-      }
-    }
-  ],
-  "preamble_summary_packages": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "Präambel: {count} Paket",
-        "countPlural=*": "Präambel: {count} Pakete"
-      }
-    }
-  ],
+  "preamble_summary_label": "Präambel",
   "preview_notes_shown_inside": "{name} wird in {path} angezeigt.",
   "preview_render_could_not_render": "konnte nicht gerendert werden",
   "preview_render_missing_figures": [
@@ -2801,6 +2802,8 @@
   "widgets_click_edit_caption_source": "Klicken, um den Quelltext der Beschriftung zu bearbeiten",
   "widgets_edit_caption": "Beschriftung bearbeiten",
   "widgets_edit_subcaption": "Unterbeschriftung bearbeiten",
+  "widgets_figure_number": "Abbildung {number}.",
+  "widgets_image_missing": "{name} nicht gefunden",
   "widgets_show_table_source": "Tabellenquelltext anzeigen",
   "wordcount_scope": "in {name}",
   "wordcount_scope_included": [

@@ -181,7 +181,11 @@ function style(token: Token): TokenStyle | null {
         };
       }
       const spec = COMMANDS.get(name);
-      if (spec) return commandStyle(spec.render);
+      if (spec) {
+        const style = commandStyle(spec.render);
+        // A figure's caption starts with its number, when the numbering pass has one.
+        return name === 'caption' && !token.star ? { ...style, before: 'captionnum' } : style;
+      }
       if (EDITABLE_COMMANDS.has(full)) return { class: 'cm-lv-cmd' };
       // A user macro is known only from the document: the widget expands it, or
       // draws nothing and the command shows as source.
