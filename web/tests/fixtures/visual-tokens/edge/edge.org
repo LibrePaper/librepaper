@@ -1,0 +1,167 @@
+#+TITLE: Edge cases for *Org*
+#+SUBTITLE: Every construct once
+#+AUTHOR: Ada Lovelace
+#+DATE: <2026-11-10 Tue>
+#+EMAIL: ada@example.org
+#+TODO: TODO NEXT WAIT | DONE CANCELED
+#+OPTIONS: toc:nil
+#+BIBLIOGRAPHY: refs.bib
+
+* TODO [#A] Intro with /style/ and =verb= :alpha:beta:
+SCHEDULED: <2026-11-11 Wed> DEADLINE: <2026-11-20 Fri>
+:PROPERTIES:
+:CUSTOM_ID: sec-intro
+:EXPORT_FILE_NAME: intro
+:END:
+
+Plain paragraph with *bold*, /italic/, _underline_, +strike+, =verbatim=, ~code~,
+and src_python[:results value]{1 + 1} inline source.
+Unclosed *bold and /italic stay text, as does a lone ~tilde.
+A line break follows\\
+the next line. Entities: \alpha \to \times \unknownthing.
+
+** NEXT Second level
+*** DONE Third level :done:
+**** WAIT Fourth level
+* CANCELED Cancelled thing
+CLOSED: [2026-11-01 Sun 09:00]
+:LOGBOOK:
+CLOCK: [2026-11-01 Sun 08:00]--[2026-11-01 Sun 09:00] =>  1:00
+:END:
+CLOCK: [2026-11-02 Mon 08:00]--[2026-11-02 Mon 09:30] =>  1:30
+
+* Links and references
+Web [[https://librepaper.org][LibrePaper]], bare https://librepaper.org/docs, angle <https://example.org/a>,
+mail [[mailto:ada@example.org][write]], doi [[doi:10.1000/182]], file [[file:notes.org][notes]].
+Internal: [[#sec-intro]], [[*Links and references]], [[fig-a]], and with text [[#sec-intro][the intro]].
+Targets <<anchor>> and <<<radio target>>> with a macro {{{version(1.2)}}} and {{{plain}}}.
+Timestamps <2026-11-10 Tue 10:00>, [2026-11-10 Tue], <2026-11-10 Tue>--<2026-11-12 Thu>.
+Footnotes[fn:1], inline[fn:2:an *inline* note], anonymous[fn::anon note].
+Citations [cite:@smith2020;@jones2021 p. 3] and [cite/t:@lamport94].
+
+[fn:1] The first note.
+
+[fn:long] A note
+  with a second line.
+
+* Figures
+#+NAME: fig-a
+#+CAPTION: A captioned figure
+#+ATTR_HTML: :width 50%
+[[file:images/plot.png]]
+
+An inline image [[./images/small.jpg]] in a sentence.
+
+[[https://example.org/remote.svg]]
+
+[[file:images/plain.png]]
+
+#+NAME: orphan
+Text after a dangling name.
+
+* Math
+Inline $a^2 + b^2$ and \(c = d\), display $$E = mc^2$$ and
+\[ \int_0^1 x\,dx \]
+
+\[
+x = y
+\]
+
+\begin{equation}
+a = b
+\end{equation}
+
+\begin{align*}
+a &= b \\
+c &= d
+\end{align*}
+
+\begin{tikzpicture}
+\draw (0,0) -- (1,1);
+\end{tikzpicture}
+
+\begin{equation}
+unclosed environment
+
+* Lists
+- bullet one
+- [ ] open task
+- [X] done task
+- [-] partial task
+  - nested bullet
+    1. numbered in nested
+    2) second style
+  + plus bullet
+- term :: description of the term
+1. first
+2. second
+   - mixed child
+
+* Tables
+#+CAPTION: Results table
+#+NAME: tbl-results
+| Name  | Value |
+|-------+-------|
+| alpha |     1 |
+| beta  |     2 |
+#+TBLFM: $2=$2*2
+
+| bare | table |
+| no   | rule  |
+
+* Blocks
+#+NAME: code-a
+#+CAPTION: Hello world
+#+begin_src python :tangle yes :results output
+print("hi")
+#+end_src
+
+#+begin_src
+no language
+#+end_src
+
+#+begin_example
+example text
+#+end_example
+
+#+begin_export html
+<div>raw</div>
+#+end_export
+
+#+begin_quote
+A *quoted* paragraph.
+
+- with a list
+#+end_quote
+
+#+begin_verse
+Roses are red
+  Violets are blue
+#+end_verse
+
+#+begin_center
+Centered text
+#+end_center
+
+#+begin_comment
+Hidden comment block
+#+end_comment
+
+#+begin_aside
+custom block
+#+end_aside
+
+# A comment line
+: fixed width line
+: second fixed line
+
+-----
+
+#+begin_src emacs-lisp
+(unclosed src block)
+
+* Last section
+Final paragraph with an unclosed quote block below.
+
+#+begin_quote
+never closed

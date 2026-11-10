@@ -27,7 +27,11 @@ export type WidgetKind =
   // A table drawn as a box naming it.
   | 'tablebox'
   // A task's checkbox, and its metadata chips: a field and a tag.
-  | 'taskbox' | 'taskfield' | 'tasktag';
+  | 'taskbox' | 'taskfield' | 'tasktag'
+  // Org: document header, keyword chip, TODO state, priority, tags, timestamp, drawer,
+  // link target, macro call and internal link.
+  | 'orgheader' | 'orgkeyword' | 'orgtodo' | 'orgpriority' | 'orgtags' | 'orgstamp' | 'orgdrawer'
+  | 'orgtarget' | 'orgmacro' | 'orgref';
 
 export interface TokenStyle {
   class?: string;

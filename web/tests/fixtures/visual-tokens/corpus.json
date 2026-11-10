@@ -208,5 +208,15 @@
     "name": "web__tests__fixtures__visual-tokens__edge__edge.md",
     "language": "markdown",
     "path": "web/tests/fixtures/visual-tokens/edge/edge.md"
+  },
+  {
+    "name": "web__src__templates__blank__org__main.org",
+    "language": "org",
+    "path": "web/src/templates/blank/org/main.org"
+  },
+  {
+    "name": "web__tests__fixtures__visual-tokens__edge__edge.org",
+    "language": "org",
+    "path": "web/tests/fixtures/visual-tokens/edge/edge.org"
   }
 ]

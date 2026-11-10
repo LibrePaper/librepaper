@@ -7,13 +7,14 @@ import { fileURLToPath } from "node:url";
 import { latex } from "../../src/lib/visual-markup/languages/latex/index.ts";
 import { typst } from "../../src/lib/visual-markup/languages/typst/index.ts";
 import { markdown } from "../../src/lib/visual-markup/languages/markdown/index.ts";
+import { org } from "../../src/lib/visual-markup/languages/org/index.ts";
 
 /** The repository root, which corpus paths are relative to. */
 export const REPO_ROOT = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
 export const CORPUS_FILE = fileURLToPath(new URL("../fixtures/visual-tokens/corpus.json", import.meta.url));
 export const GOLDEN_DIR = fileURLToPath(new URL("../fixtures/visual-tokens/golden/", import.meta.url));
 
-export const LANGUAGES = { latex, typst, markdown };
+export const LANGUAGES = { latex, typst, markdown, org };
 
 /** Corpus entries: { name, language, path }. Names must be unique and filesystem safe. */
 export function loadCorpus() {
