@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { highlightTree, tagHighlighter, tags } from "@lezer/highlight";
-import { parseOrg } from "../../src/lib/org-language/parser.js";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+const api = await loadOrgSyntaxForTests();
 
 // The highlight classes the node props in props.js resolve to, named after their tags.
 const highlighter = tagHighlighter(
@@ -12,7 +14,7 @@ const highlighter = tagHighlighter(
 /** For each UTF-16 offset of the text, the set of highlight classes covering it. */
 function classesAt(text) {
   const per = new Array(text.length);
-  highlightTree(parseOrg(text), highlighter, (from, to, cls) => {
+  highlightTree(api.parse(text), highlighter, (from, to, cls) => {
     for (let i = from; i < to; i++) (per[i] ??= new Set()).add(cls);
   });
   return per;
@@ -31,7 +33,7 @@ function assertClass(text, piece, cls) {
 /** The nodes of a parse as [name, text] pairs, in document order. */
 function nodes(text) {
   const out = [];
-  parseOrg(text).iterate({
+  api.parse(text).iterate({
     enter(node) {
       out.push([node.name, text.slice(node.from, node.to)]);
     },
@@ -96,7 +98,7 @@ test("citations list their keys", () => {
 
 test("a long line of markup characters terminates and every node stays in range", () => {
   const line = "*/".repeat(2500);
-  const tree = parseOrg(line);
+  const tree = api.parse(line);
   assert.equal(tree.length, line.length);
 });
 

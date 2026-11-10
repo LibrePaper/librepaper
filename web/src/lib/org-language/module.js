@@ -2,11 +2,11 @@
 // (it exports a Lezer tree beside the renderer). Strings go in as UTF-8 written
 // into its memory; a tree comes out as a Lezer buffer of u32s in postorder, four
 // per node: [kind, from, to, size]. Offsets are UTF-16, relative to the parsed
-// chunk. The vocabulary is the one documented at the top of parser.js.
+// chunk. The node vocabulary (the contract every consumer reads) is documented
+// in README.md beside this file.
 //
-// Like the JS parser it replaces, a parse splits the text at top-level
-// headlines, takes unchanged chunks from the previous tree and has the module
-// parse only the chunks that changed.
+// A parse splits the text at top-level headlines, takes unchanged chunks from
+// the previous tree and has the module parse only the chunks that changed.
 //
 // Usable from the main thread and from Node. Never throws: a module that cannot
 // load is null, and a parse that traps gives an empty tree.
@@ -14,6 +14,9 @@ import { NodeSet, NodeType, Tree } from "@lezer/common";
 import { nodeProps } from "./props.js";
 
 const MEMO = 16;
+
+/** How the last parse went: chunks parsed fresh or taken from the previous tree. */
+export const parseStats = { chunks: 0, reused: 0 };
 const TODO_LINE = /^#\+(?:SEQ_|TYP_)?TODO:(.*)$/i;
 const HEAD_AT = /\*+(?=[ \t])/y;
 
@@ -149,6 +152,7 @@ function build(exports) {
     const positions = [];
     /** @type {Chunk[]} */
     const chunks = [];
+    let reused = 0;
     let fi = 0;
     for (const [from, to] of spans) {
       let chunk = null;
@@ -167,6 +171,7 @@ function build(exports) {
         const hit = meta.chunks[lo];
         if (hit && hit.from === start && hit.to === to + fragment.offset) {
           chunk = { from, to, children: hit.children, positions: hit.positions };
+          reused++;
         }
       }
       if (!chunk) {
@@ -180,6 +185,8 @@ function build(exports) {
         positions.push(from + chunk.positions[i]);
       });
     }
+    parseStats.chunks = spans.length;
+    parseStats.reused = reused;
     const tree = new Tree(nodeSet.types[topID], children, positions, text.length);
     memory.set(tree, { todo, chunks });
     return tree;
@@ -210,8 +217,12 @@ function build(exports) {
         // Not remembered, so a later call tries the module again.
         return emptyTree(text.length);
       }
-      memo.set(text, tree);
-      if (memo.size > MEMO) memo.delete(memo.keys().next().value);
+      // Only a parse without fragments is remembered, so a call without
+      // fragments after an incremental one is still a fresh parse.
+      if (!fragments.length) {
+        memo.set(text, tree);
+        if (memo.size > MEMO) memo.delete(memo.keys().next().value);
+      }
       return tree;
     },
   };

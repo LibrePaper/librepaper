@@ -1,8 +1,9 @@
-// The tree from org.wasm against the JS parser's, and the section reuse of its loader.
+// The Org tree from org.wasm: a parse that reuses sections equals a fresh parse,
+// and a change to the TODO words reparses every section.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { TreeFragment } from "@lezer/common";
-import { parseOrg } from "../../src/lib/org-language/parser.js";
+import { parseStats } from "../../src/lib/org-language/module.js";
 import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
 
 const api = await loadOrgSyntaxForTests();
@@ -22,8 +23,10 @@ const documents = {
 };
 
 for (const [name, text] of Object.entries(documents)) {
-  test(`same tree as the JS parser: ${name}`, () => {
-    assert.equal(shape(api.parse(text)), shape(parseOrg(text)));
+  test(`a parse that reuses every section equals a fresh parse: ${name}`, () => {
+    const tree = api.parse(text);
+    const again = api.parse(text, TreeFragment.addTree(tree));
+    assert.equal(shape(again), shape(api.parse(text)));
   });
 }
 
@@ -41,7 +44,6 @@ test("an edit reparsed with fragments equals a fresh parse", () => {
   const fragments = TreeFragment.applyChanges(TreeFragment.addTree(tree), [{ fromA: at, toA: at, fromB: at, toB: at + 1 }]);
   const fast = api.parse(after, fragments);
   assert.equal(shape(fast), shape(api.parse(after)));
-  assert.equal(shape(fast), shape(parseOrg(after)));
 });
 
 test("a change to the TODO words reparses every section", () => {
@@ -50,7 +52,9 @@ test("a change to the TODO words reparses every section", () => {
   const after = before.replace("#+TODO: TODO NEXT | DONE", "#+TODO: TODO Section | DONE");
   const change = { fromA: 8, toA: 22, fromB: 8, toB: 28 };
   const fragments = TreeFragment.applyChanges(TreeFragment.addTree(tree), [change]);
-  assert.equal(shape(api.parse(after, fragments)), shape(api.parse(after)));
+  const fast = api.parse(after, fragments);
+  assert.equal(parseStats.reused, 0);
+  assert.equal(shape(fast), shape(api.parse(after)));
 });
 
 test("an empty text gives an empty document", () => {
