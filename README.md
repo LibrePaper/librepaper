@@ -46,6 +46,7 @@ document.
 - [The desktop app](https://librepaper.org/desktop-app.html)
 - [Self-hosting](https://librepaper.org/host/simple.html)
 - [Privacy](https://librepaper.org/privacy.html)
+- [Terms of service](https://librepaper.org/terms.html)
 - [Building from source](https://librepaper.org/architecture/building.html)
 
 ## Credits

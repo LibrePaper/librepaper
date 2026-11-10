@@ -14,7 +14,7 @@ title: "Privacy and data retention"
 
 librepaper.org is operated by Vincent Arel-Bundock, in Montréal, Canada. The operator is responsible for the data described on this page. Write to [admin@librepaper.org](mailto:admin@librepaper.org) about anything here.
 
-This page covers librepaper.org only. Other servers that run LibrePaper have their own administrators and their own rules.
+This page covers librepaper.org only. Other servers that run LibrePaper have their own administrators and their own rules. The [terms of service](terms.html) set the rules for using librepaper.org.
 
 ## What your data is used for
 
