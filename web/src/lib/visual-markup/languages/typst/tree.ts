@@ -286,20 +286,42 @@ export function tokenizeTypst(source: string): Token[] | null {
     return { kind: 'ligature', name: 'quote', from: pos, to: pos + 1, meta: { text: glyph } };
   };
 
+  let headingEnd: SyntaxNode | null = null;
   const headingToken = (node: SyntaxNode, depth: number): Token | null => {
     const marker = node.firstChild;
     if (!marker || marker.name !== 'HeadingMarker' || !atLineStart(source, node.from)) return null;
     let from = marker.to;
     while (source[from] === ' ' || source[from] === '\t') from++;
     if (from === marker.to) return null;
-    const to = Math.max(node.to, from);
+    // Labels after the heading text on the same line belong to the heading.
+    const labels: SyntaxNode[] = [];
+    let end = Math.max(node.to, from);
+    let last: SyntaxNode = node;
+    for (let next = node.nextSibling; next; next = next.nextSibling) {
+      if (next.name === 'Space' && !text(next).includes('\n') && next.nextSibling?.name === 'Label') continue;
+      if (next.name !== 'Label' || /\n/.test(source.slice(end, next.from))) break;
+      labels.push(next);
+      end = next.to;
+      last = next;
+    }
+    headingEnd = last;
+    const to = end;
+    let children: Token[] = [];
+    if (depth + 1 <= MAX_DEPTH && from < to) {
+      const out: Token[] = [];
+      emitMarkup(node, out, depth + 1);
+      for (const label of labels) {
+        out.push({ kind: 'command', name: 'label', from: label.from, to: label.to, meta: { key: source.slice(label.from + 1, label.to - 1) } });
+      }
+      children = fill(out, from, to);
+    }
     return {
       kind: 'heading',
       level: marker.to - marker.from,
       from: node.from,
       to,
       body: { from, to },
-      children: markup(child(node, 'Markup'), from, to, depth + 1)
+      children
     };
   };
 
@@ -346,7 +368,13 @@ export function tokenizeTypst(source: string): Token[] | null {
           token = escapeToken(c);
           break;
         case 'Heading':
+          headingEnd = null;
           token = headingToken(c, depth);
+          if (token && headingEnd) {
+            out.push(token);
+            c = headingEnd;
+            continue;
+          }
           break;
         case 'Strong':
         case 'Emph':
