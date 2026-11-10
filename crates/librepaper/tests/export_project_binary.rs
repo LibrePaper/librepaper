@@ -210,7 +210,10 @@ async fn project_export_refuses_an_asset_longer_than_the_limit() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("larger than the limit of 128 MiB"), "{stderr}");
+    assert!(
+        stderr.contains("larger than the limit of 128 MiB"),
+        "{stderr}"
+    );
     assert!(!destination.exists());
     let leftovers: Vec<_> = std::fs::read_dir(root.path()).unwrap().collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");

@@ -1401,7 +1401,10 @@ mod tests {
         assert!(!identities.is_empty());
         for (agent, marker) in identities {
             assert_eq!(agent.as_deref(), Some(librepaper_base::http::USER_AGENT));
-            assert_eq!(marker.as_deref(), Some(librepaper_base::http::CLIENT_MARKER));
+            assert_eq!(
+                marker.as_deref(),
+                Some(librepaper_base::http::CLIENT_MARKER)
+            );
         }
         task.abort();
     }

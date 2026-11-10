@@ -493,10 +493,17 @@ mod tests {
     async fn an_asset_longer_than_the_limit_is_refused_by_its_length() {
         let fake = crate::fake::Fake::start().await;
         fake.set_oversize_asset(true);
-        let error = fake.client().asset("paper", &"a".repeat(64)).await.unwrap_err();
+        let error = fake
+            .client()
+            .asset("paper", &"a".repeat(64))
+            .await
+            .unwrap_err();
         match error {
             Error::Network(message) => {
-                assert!(message.contains("larger than the limit of 128 MiB"), "{message}")
+                assert!(
+                    message.contains("larger than the limit of 128 MiB"),
+                    "{message}"
+                )
             }
             other => panic!("expected a network error, got {other}"),
         }

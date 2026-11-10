@@ -497,8 +497,13 @@ mod tests {
         assert_eq!(output.stdout, b"out");
         assert_eq!(output.stderr, b"err");
 
-        let output = supervised(sh("cat"), &["hash-object"], Some(b"in"), bounds(10_000, 1024))
-            .unwrap();
+        let output = supervised(
+            sh("cat"),
+            &["hash-object"],
+            Some(b"in"),
+            bounds(10_000, 1024),
+        )
+        .unwrap();
         assert!(output.status.success());
         assert_eq!(output.stdout, b"in");
     }

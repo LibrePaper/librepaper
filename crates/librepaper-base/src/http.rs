@@ -101,7 +101,7 @@ pub const MAX_PROJECT_BYTES: usize = 512 * 1024 * 1024;
 pub fn human_bytes(bytes: usize) -> String {
     const UNITS: [(&str, usize); 3] = [("GiB", 1 << 30), ("MiB", 1 << 20), ("KiB", 1 << 10)];
     for (name, size) in UNITS {
-        if bytes >= size && bytes % size == 0 {
+        if bytes >= size && bytes.is_multiple_of(size) {
             return format!("{} {name}", bytes / size);
         }
     }
@@ -116,7 +116,12 @@ pub async fn read_bounded(
     mut response: reqwest::Response,
     limit: usize,
 ) -> Result<Vec<u8>, String> {
-    let too_long = || format!("the reply is larger than the limit of {}", human_bytes(limit));
+    let too_long = || {
+        format!(
+            "the reply is larger than the limit of {}",
+            human_bytes(limit)
+        )
+    };
     if response
         .content_length()
         .is_some_and(|size| size > limit as u64)
@@ -383,14 +388,20 @@ mod bounded_tests {
     #[tokio::test]
     async fn a_body_that_fits_is_returned() {
         let base = serve().await;
-        assert_eq!(fetch(format!("{base}/small"), 10).await.unwrap(), vec![7u8; 10]);
+        assert_eq!(
+            fetch(format!("{base}/small"), 10).await.unwrap(),
+            vec![7u8; 10]
+        );
     }
 
     #[tokio::test]
     async fn a_content_length_over_the_limit_is_refused() {
         let base = serve().await;
         let error = fetch(format!("{base}/small"), 9).await.unwrap_err();
-        assert!(error.contains("larger than the limit of 9 bytes"), "{error}");
+        assert!(
+            error.contains("larger than the limit of 9 bytes"),
+            "{error}"
+        );
     }
 
     #[tokio::test]
@@ -399,7 +410,10 @@ mod bounded_tests {
         let response = credentialed_client().get(&url).send().await.unwrap();
         assert!(response.content_length().is_none());
         let error = read_bounded(response, 25).await.unwrap_err();
-        assert!(error.contains("larger than the limit of 25 bytes"), "{error}");
+        assert!(
+            error.contains("larger than the limit of 25 bytes"),
+            "{error}"
+        );
         assert_eq!(fetch(url, 40).await.unwrap().len(), 40);
     }
 
