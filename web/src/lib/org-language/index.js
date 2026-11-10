@@ -25,10 +25,11 @@ function itemTextColumn(state, item) {
 
 /**
  * The indentation of a new line in Org. Inside a list item, the text column of the item.
- * Inside a block or drawer body, the indentation of the line before. Otherwise none.
+ * Inside a block or drawer body, the indentation of the line before. Anywhere else, null,
+ * so the editor keeps its usual behaviour.
  * @param {import("@codemirror/language").IndentContext} context
  * @param {number} pos
- * @returns {number}
+ * @returns {number | null}
  */
 function orgIndent(context, pos) {
   const { state } = context;
@@ -40,7 +41,7 @@ function orgIndent(context, pos) {
     const before = pos === line.from && line.number > 1 ? state.doc.line(line.number - 1) : context.lineAt(pos, -1);
     return countColumn(/^[ \t]*/.exec(before.text)[0], state.tabSize);
   }
-  return 0;
+  return null;
 }
 
 /** The Org-mode language support. */

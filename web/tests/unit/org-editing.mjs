@@ -196,7 +196,7 @@ function folds(state) {
 {
   assert.equal(getIndentation(stateOf("- [ ] one\n", 6), 6), 6, "Enter in an item indents to its text, after the box");
   assert.equal(getIndentation(stateOf("- a\n  - b\n", 8), 8), 4, "a nested item's text column counts its indentation");
-  assert.equal(getIndentation(stateOf("text\n  more\n", 5), 5), 0, "a paragraph indents to nothing");
+  assert.equal(getIndentation(stateOf("text\n  more\n", 5), 5), null, "a paragraph leaves indentation to the editor");
 
   const block = "#+begin_quote\n    deep\n  more\n#+end_quote\n";
   assert.equal(getIndentation(stateOf(block, block.indexOf("  more")), block.indexOf("  more")), 4, "a block body keeps the line before's indentation");
