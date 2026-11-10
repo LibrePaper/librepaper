@@ -5,6 +5,7 @@ import type { Render } from '../latex/catalog';
 import { TYPST_FUNCTIONS } from './catalog';
 import { TYPST_EMOJI, TYPST_SYMBOLS } from './symbols';
 import { rules } from './rules';
+import { tokenizeTypst } from './tree';
 import { table } from './table';
 import { figure, typstImageStyle } from './figure';
 
@@ -286,7 +287,8 @@ export const typst: Language = {
     return match ? match[1] : null;
   },
   imageStyle: typstImageStyle,
-  hiddenSummary
+  hiddenSummary,
+  tokenize: tokenizeTypst
 };
 
 export { rules } from './rules';

@@ -41,15 +41,15 @@ function sticky(pattern: RegExp, source: string, pos: number): RegExpExecArray |
   return pattern.exec(source);
 }
 
-function isWord(char: string | undefined): boolean {
+export function isWord(char: string | undefined): boolean {
   return char !== undefined && /\w/.test(char);
 }
 
-function isSpace(char: string | undefined): boolean {
+export function isSpace(char: string | undefined): boolean {
   return char !== undefined && /\s/.test(char);
 }
 
-function lineEnd(source: string, pos: number, limit: number): number {
+export function lineEnd(source: string, pos: number, limit: number): number {
   const end = source.indexOf('\n', pos);
   return Math.min(end === -1 ? source.length : end, limit);
 }
@@ -60,7 +60,7 @@ function skipWs(source: string, pos: number, limit: number): number {
   return i;
 }
 
-function trimRange(source: string, from: number, to: number): Range {
+export function trimRange(source: string, from: number, to: number): Range {
   let a = from;
   let b = to;
   while (a < b && isSpace(source[a])) a++;
@@ -291,9 +291,10 @@ function trimmedEnd(source: string, start: number, end: number): number {
   return to;
 }
 
-function statementToken(source: string, pos: number, keyword: string): Token {
+// `end` is the end of the statement when a parse tree gives it; otherwise the line scan finds it.
+export function statementToken(source: string, pos: number, keyword: string, end?: number): Token {
   const start = pos + 1 + keyword.length;
-  const to = trimmedEnd(source, start, statementEnd(source, start));
+  const to = end ?? trimmedEnd(source, start, statementEnd(source, start));
   const meta: Record<string, string> = { statement: 'true' };
   const token: Token = { kind: 'command', name: keyword, from: pos, to, meta };
   const at = skipWs(source, start, to);
@@ -410,6 +411,33 @@ function callToken(source: string, pos: number, ctx: RuleContext, prefix: number
     }
   }
 
+  const argTokens = parens.flatMap(group => {
+    const body = inner(group, 1, 1);
+    return ctx.parse(body.from, body.to, 'code');
+  });
+  const trailingTokens = trailing.flatMap(block => {
+    const content = inner(block, 1, 1);
+    return ctx.parse(content.from, content.to, 'markup');
+  });
+  return shapeCall(source, { name, from: pos, to: cursor, parens, trailing, args, named }, argTokens, trailingTokens);
+}
+
+export interface CallParts {
+  name: string;
+  from: number;
+  to: number;
+  // `( ... )` groups and trailing `[ ... ]` blocks, brackets included.
+  parens: Range[];
+  trailing: Range[];
+  // Positional and named arguments of the paren groups.
+  args: Range[];
+  named: Record<string, Range>;
+}
+
+// The token of a call from its parts and the tokens of its paren interiors (parsed as code) and
+// trailing blocks (parsed as markup).
+export function shapeCall(source: string, parts: CallParts, argTokens: Token[], trailingTokens: Token[]): Token {
+  const { name, parens, trailing, args, named } = parts;
   const meta: Record<string, string> = {};
   for (const [key, value] of Object.entries(named)) {
     const text = source.slice(value.from, value.to);
@@ -430,8 +458,8 @@ function callToken(source: string, pos: number, ctx: RuleContext, prefix: number
   const token: Token = {
     kind: name === 'table' || name === 'grid' ? 'table' : 'command',
     name,
-    from: pos,
-    to: cursor,
+    from: parts.from,
+    to: parts.to,
     args,
     body,
     meta
@@ -440,17 +468,10 @@ function callToken(source: string, pos: number, ctx: RuleContext, prefix: number
 
   // Arguments are parsed as code. With a trailing content block only the content-bearing
   // arguments are kept, so strings and argument names do not inherit the text styling.
-  const argTokens = parens.flatMap(group => {
-    const body = inner(group, 1, 1);
-    return ctx.parse(body.from, body.to, 'code');
-  });
   const children = trailing.length
     ? [
         ...argTokens.filter(child => child.kind === 'group' || child.kind === 'command' || child.kind === 'table'),
-        ...trailing.flatMap(block => {
-          const content = inner(block, 1, 1);
-          return ctx.parse(content.from, content.to, 'markup');
-        })
+        ...trailingTokens
       ]
     : argTokens;
   if (children.length) token.children = children;
