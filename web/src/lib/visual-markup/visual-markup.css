@@ -33,6 +33,22 @@
   font-weight: normal;
 }
 
+/* A blank source line is paragraph spacing, not a line of text. The height is
+   in em of the line's own font, so editor zoom scales it, and is set on the line
+   itself (CodeMirror does not measure margins). A revealed blank line carries no
+   class and keeps the full line height, so the caret can sit on it. */
+.cm-editor.cm-lp-visual .cm-line.cm-lv-blank {
+  height: 0.6em;
+  line-height: 0.6em;
+  overflow: hidden;
+}
+
+.cm-editor.cm-lp-visual .cm-line.cm-lv-blank.cm-lv-blank-extra,
+.cm-editor.cm-lp-visual .cm-line.cm-lv-blank.cm-lv-blank-tight {
+  height: 0;
+  line-height: 0;
+}
+
 .cm-lp-pill,
 .cm-lp-chip {
   padding: calc(var(--spacing) * 1) calc(var(--spacing) * 3);
