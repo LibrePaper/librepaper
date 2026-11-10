@@ -235,6 +235,15 @@ function collectMetrics() {
         height: Math.round(rect.height * 100) / 100,
         classes: Array.from(node.classList),
         text: (node.textContent || "").trim().slice(0, 40),
+        // Figure lines are where hidden source and widgets share a line, so their
+        // markup and computed box are kept for debugging the layout.
+        ...(node.classList.contains("cm-lv-figure")
+          ? {
+              html: node.outerHTML.slice(0, 2000),
+              style: (({ display, lineHeight, paddingTop, paddingBottom, flexDirection, alignItems }) => ({ display, lineHeight, paddingTop, paddingBottom, flexDirection, alignItems }))(getComputedStyle(node)),
+              children: Array.from(node.children).map((child) => ({ tag: child.tagName, classes: child.className, height: Math.round(child.getBoundingClientRect().height), left: Math.round(child.getBoundingClientRect().left), width: Math.round(child.getBoundingClientRect().width), display: getComputedStyle(child).display })),
+            }
+          : {}),
       };
     });
   return { contentHeight: Math.round(content.getBoundingClientRect().height * 100) / 100, items };
