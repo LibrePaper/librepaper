@@ -27,7 +27,7 @@ These terms cover librepaper.org only. Other servers that run LibrePaper have th
 ## Your content
 
 - What you write and upload stays yours. librepaper.org claims no ownership of it.
-- You allow librepaper.org to store your content, back it up, process it, and show it to the people you share it with. That permission exists only to run the service, and it ends when the content is deleted and the backups that hold it expire.
+- You allow librepaper.org to store your content, back it up, process it, show it to the people you share it with, and have it assessed as described under [Moderation](#moderation). That permission exists only to run the service, and it ends when the content is deleted and the backups that hold it expire.
 - You are responsible for your content. Upload only what you have the right to store and share.
 - Documents are not end-to-end encrypted, and administrators are able to read them. Do not store private or highly sensitive data on librepaper.org.
 
@@ -49,6 +49,7 @@ To report a security problem, see [Contact](contact.html).
 ## Moderation
 
 - The operator can hide a project, block an account or erase an account that breaks these terms, or when the law requires it. This can happen without notice.
+- To assess whether a document breaks these terms, the operator may send it to a third party: a moderation or copyright specialist, or the provider of a large language model. This happens only for a document that was reported, or that the operator suspects of breaking these terms. See [what leaves librepaper.org](privacy.html#what-leaves-librepaperorg).
 - A hidden project keeps its files, but nobody can open it, its owner included. A blocked account is signed out and cannot sign in.
 - To report a document, email [admin@librepaper.org](mailto:admin@librepaper.org) with its link and the reason.
 - Copyright notices are handled under the notice-and-notice rules of the Canadian Copyright Act. A valid notice is forwarded to the account's owner when librepaper.org has an email address for the account, and records that identify the account are kept for six months.

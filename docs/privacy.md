@@ -22,7 +22,7 @@ librepaper.org uses your data to run the service: to sign you in, to store and t
 
 - There is no advertising, and there are no analytics or tracking scripts.
 - Your data is not sold, and it is not shared with anyone for marketing.
-- librepaper.org does not use your documents to train AI models. A [writing assistant](#what-leaves-librepaperorg) you start yourself sends what it reads to the AI service you chose, under that service's own terms.
+- librepaper.org does not use your documents to train AI models. A document that is reported or suspected of breaking the [terms of service](terms.html) may be sent to a large language model for a first assessment, as described under [what leaves librepaper.org](#what-leaves-librepaperorg). A [writing assistant](#what-leaves-librepaperorg) you start yourself sends what it reads to the AI service you chose, under that service's own terms.
 
 ## What librepaper.org stores
 
@@ -49,7 +49,7 @@ librepaper.org keeps no access log and does not store IP addresses. The server u
 - While you have a document open, other people viewing it see that you are there and where your cursor is.
 - Edit and comment links require sign-in. Read links work for anyone who has them.
 - Project chat is visible to people with a comment or edit link, and to the owner. Read links never show it.
-- Administrators are able to read every account and document. They open a document only to act on an abuse report, to meet a legal obligation, to fix a fault, or when its owner asks for help.
+- Administrators are able to read every account and document. They open a document only to act on an abuse report or a suspected breach of the [terms of service](terms.html), to meet a legal obligation, to fix a fault, or when its owner asks for help.
 
 ## What leaves librepaper.org
 
@@ -59,6 +59,7 @@ librepaper.org keeps no access log and does not store IP addresses. The server u
 - **Desktop app:** The [desktop app](desktop-app.html) runs on your computer. It sends local feature requests for your browser, and the browser never contacts your computer directly.
 - **Writing assistant:** An assistant you start runs on your computer through the desktop app. Its access covers one document and expires after five minutes. The browser renews it while the page is open. The AI service behind the assistant sees what the assistant reads.
 - **Local backups:** The desktop app downloads your projects, including those shared with you, and writes ZIP files to a folder you choose. The browser never learns where that folder is. The ZIP files stay on your computer when you turn backups off or delete a project. See [local backups](backups.html).
+- **Moderation review:** When a document is reported, or the operator suspects that it breaks the [terms of service](terms.html), the operator may send its files to a third party for a first assessment. That third party is a moderation or copyright specialist, or the provider of a large language model. It sees the document, and it handles it under its own terms. Documents are not sent for any other reason.
 - **Email:** A message you send to admin@librepaper.org is ordinary email. It is kept in the administrator's mailbox, not on librepaper.org.
 - **Embedded resources:** A document can load images, fonts, scripts or data from other websites. Those sites see your IP address, your browser and when you opened the document, so an author can learn who read it. Authors can avoid this with PDFs or `embed-resources: true` in Quarto.
 
