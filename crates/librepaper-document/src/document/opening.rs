@@ -358,7 +358,10 @@ mod tests {
                 "paper.org".to_string(),
                 "#+TITLE: Paper\n#+INCLUDE: \"sections/intro.org::*Intro\"\n".to_string(),
             ),
-            ("sections/intro.org".to_string(), "* Intro\nBody\n".to_string()),
+            (
+                "sections/intro.org".to_string(),
+                "* Intro\nBody\n".to_string(),
+            ),
         ]
         .into_iter()
         .collect();

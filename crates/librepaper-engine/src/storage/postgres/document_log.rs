@@ -420,7 +420,10 @@ impl PostgresCatalog {
             return Err(Error::Invalid("a flush row holds no batches".into()));
         }
         if row.source_format.is_some_and(|format| {
-            !matches!(format, "markdown" | "html" | "typst" | "latex" | "quarto" | "org")
+            !matches!(
+                format,
+                "markdown" | "html" | "typst" | "latex" | "quarto" | "org"
+            )
         }) {
             return Err(Error::Invalid("source identity is invalid".into()));
         }

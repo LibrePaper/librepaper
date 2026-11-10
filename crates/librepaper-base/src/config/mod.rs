@@ -399,9 +399,18 @@ impl Default for Configuration {
             // own is a document like any other -- one that reaches its
             // figures and its bibliography only if it came with them, which
             // is what `publish <directory>` is for.
-            extensions: [".html", ".htm", ".md", ".markdown", ".qmd", ".org", ".typ", ".tex"]
-                .map(String::from)
-                .to_vec(),
+            extensions: [
+                ".html",
+                ".htm",
+                ".md",
+                ".markdown",
+                ".qmd",
+                ".org",
+                ".typ",
+                ".tex",
+            ]
+            .map(String::from)
+            .to_vec(),
             // HTML is a source format like the other two, and its renderer is
             // the identity: there is no longer a document without a source.
             // LaTeX is one with no renderer on this side at all -- the store

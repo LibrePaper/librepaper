@@ -409,7 +409,10 @@ mod tests {
 
     #[test]
     fn org_title_from_keyword() {
-        assert_eq!(title_from_org("#+TITLE: My Title\n* Heading\nBody"), "My Title");
+        assert_eq!(
+            title_from_org("#+TITLE: My Title\n* Heading\nBody"),
+            "My Title"
+        );
     }
 
     #[test]
@@ -419,7 +422,10 @@ mod tests {
 
     #[test]
     fn org_title_falls_back_to_headline_without_todo_priority_or_tags() {
-        assert_eq!(title_from_org("Intro\n* TODO [#A] My Title   :work:draft:\nBody"), "My Title");
+        assert_eq!(
+            title_from_org("Intro\n* TODO [#A] My Title   :work:draft:\nBody"),
+            "My Title"
+        );
     }
 
     #[test]
