@@ -51,6 +51,8 @@ struct Data {
     script: VecDeque<Answer>,
     /// The body of every source change that came in.
     posted: Vec<Value>,
+    /// Whether an asset reply announces more bytes than any client accepts.
+    oversize_asset: bool,
 }
 
 impl Default for Data {
@@ -64,6 +66,7 @@ impl Default for Data {
             after_push: Files::new(),
             script: VecDeque::new(),
             posted: Vec::new(),
+            oversize_asset: false,
         }
     }
 }
@@ -138,6 +141,11 @@ impl Fake {
     /// not have it, which answers 404.
     pub(crate) fn set_head_check(&self, answers: bool) {
         self.data.lock().unwrap().head_check = answers;
+    }
+
+    /// Makes every asset reply announce a body far past the download limit.
+    pub(crate) fn set_oversize_asset(&self, oversize: bool) {
+        self.data.lock().unwrap().oversize_asset = oversize;
     }
 
     /// How many requests whose path ends with `suffix` came in.
@@ -313,6 +321,16 @@ async fn answer(mut stream: TcpStream, data: Arc<Mutex<Data>>) {
     let answer = {
         let mut data = data.lock().unwrap();
         data.requests.push(target.clone());
+        if data.oversize_asset && target.contains("/assets/") {
+            drop(data);
+            let head = format!(
+                "HTTP/1.1 200 X\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                librepaper_base::http::MAX_FILE_BYTES + 1
+            );
+            let _ = stream.write_all(head.as_bytes()).await;
+            let _ = stream.shutdown().await;
+            return;
+        }
         reply(&mut data, &method, &target, &request[end..])
     };
     let Some((status, body)) = answer else {
