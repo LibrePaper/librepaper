@@ -19,7 +19,7 @@ A web page cannot run your code. The [LibrePaper desktop app](../desktop-app.htm
 
 - The output Quarto makes stays on your computer. LibrePaper does not upload it.
 - The source files in the project are stored on the server. Anyone you share the project with can read them, even readers.
-- Keep private data out of the project. Leave it on your computer and use a project folder (below).
+- Keep private data out of the project. Leave it on your computer and use a Run directory (below).
 
 ## Safety
 
@@ -34,7 +34,7 @@ When you upload a project folder or zip, LibrePaper keeps the source and leaves 
 - Kept: `.qmd`, `.md`, `.bib`, `.csl`, `.yml`, `.css`, images, and `.lua` filters.
 - Left out: rendered output, `_freeze`, `_site`, `_book`, `*_files` and `*_cache` folders, and `renv` or `venv` environments.
 - Left out: data files such as `.csv`.
-- Left out: `.R`, `.py` and `.jl` scripts. Keep your code with your data, on your computer. Scripts already in a project stay there until the project is copied or republished, which leaves them out.
+- Left out: `.R`, `.py` and `.jl` scripts. LibrePaper does not keep them. Keep your code in your Run directory (below).
 
 To share a data file anyway, list it in `.librepaper-share.json` at the top of the project:
 
@@ -42,19 +42,26 @@ To share a data file anyway, list it in `.librepaper-share.json` at the top of t
 {"include": ["data/public.csv"]}
 ```
 
-## Use a folder on your computer
+## Run directory
 
-You can render with a folder on your computer. This is how you use private data, packages and caches without uploading them.
+Your paper lives in LibrePaper. Your code and data live in a folder on your computer: the Run directory.
 
-- Open the desktop app.
-- Choose **File → Project folder…**.
-- Check the name of the file you preview.
-- Click **Choose folder…** and approve.
+- The first time you turn on **Run code** for a Quarto document, LibrePaper asks for that folder. Choose your own (for example the folder Dropbox or Git keeps in sync), or use the suggested `~/LibrePaper/<project>`.
+- Each person chooses their own Run directory on their own computer. LibrePaper remembers it for this project on this computer and never uploads it.
+- Next to **Run code**, the editor shows where your code runs, with **Open folder** and **Change…**.
+- Your code runs in the Run directory. `read.csv("data/x.csv")` and `source("R/helpers.R")` look there.
+- Markdown sees both. `![](figures/fig.png)` and `{{< include ... >}}` find files in LibrePaper and in your Run directory.
+- If a file is in both places, Markdown uses LibrePaper's copy and code reads the one in your Run directory. LibrePaper tells you when this happens.
+- LibrePaper never writes into your Run directory. Files your own code writes land there, as they would in RStudio.
+- Not shared with Quarto: hidden files and folders, `_quarto.yml`, and folders Quarto makes itself (`*_files`, `*_cache`, `_freeze`).
+- In code, refer to files in your Run directory. An image stored only in LibrePaper works in Markdown (`![](img/logo.png)`) but not in `knitr::include_graphics()`.
+- A file a code chunk writes cannot be included in the same render. Quarto reads includes before code runs.
+- On Windows, a Run directory on a network drive cannot be linked. Your code runs there, but Markdown does not see its files.
 
-Before each render, LibrePaper writes the project's files into that folder. The folder always matches the editor.
+### Paths for coauthors
 
-- LibrePaper never touches other files there, such as data or environments.
-- LibrePaper never deletes anything.
-- If you changed one of the project's files in that folder yourself, LibrePaper keeps your version as `<name>.local` before it writes. For example, `paper.qmd.local`.
+Instead of writing each person's folder into shared code, use relative paths. Let anyone whose data lives elsewhere override one path with an environment variable set in their own `~/.Renviron`:
 
-LibrePaper never uploads the folder and never learns its path.
+```r
+harvest_root <- Sys.getenv("HARVEST_ROOT", "data/harvest_abstracts")
+```
