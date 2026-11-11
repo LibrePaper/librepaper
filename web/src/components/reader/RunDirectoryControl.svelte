@@ -89,10 +89,10 @@
   });
 </script>
 
-<svelte:window onpointerdown={outside} />
+<svelte:window onpointerdown={outside} {onkeydown} />
 
 {#if loaded}
-  <div class="run-directory" role="group" aria-label={m.rundirectorycontrol_label()} {onkeydown}>
+  <div class="run-directory" role="group" aria-label={m.rundirectorycontrol_label()}>
     {#if status}
       <button
         type="button"
