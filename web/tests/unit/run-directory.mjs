@@ -1,7 +1,7 @@
 // The Run directory notices become warnings, and a missing file gets a hint.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { belongsInRunDirectory, homeOf, leaf, logMissesAFile, noticeDiagnostics, pageVariant, runDirectoryDiagnostics, shorten } from "../../src/lib/reader/run-directory.js";
+import { belongsInRunDirectory, homeOf, leaf, logMissesAFile, missingProjectFiles, noticeDiagnostics, pageVariant, runDirectoryDiagnostics, shorten } from "../../src/lib/reader/run-directory.js";
 
 test("a clash and an unlinked entry become warnings", () => {
   const items = noticeDiagnostics([{ kind: "clash", path: "data/x.csv" }, { kind: "not-linked", path: "big" }, { kind: "later", path: "z" }, { kind: "clash", path: "" }]);
@@ -13,11 +13,34 @@ test("a clash and an unlinked entry become warnings", () => {
 });
 
 test("the missing-file hint reads R, Python and shell messages", () => {
-  for (const log of ["cannot open file 'data.csv': No such file", "FileNotFoundError: [Errno 2]", "Cannot find the file x", "x: No such file or directory"]) {
+  for (const log of ["cannot open file 'data.csv': No such file", "FileNotFoundError: [Errno 2]", "Cannot find the file x", "x: No such file or directory", "'data/x.csv' does not exist in current working directory ('/home/me/study')."]) {
     assert.equal(logMissesAFile(log), true, log);
   }
   assert.equal(logMissesAFile("Error: object 'x' not found"), false);
   assert.equal(logMissesAFile(undefined), false);
+});
+
+test("missingProjectFiles names the project files a log says are missing", () => {
+  const paths = ["data/x.csv", "refs.bib", "img/logo.png"];
+  assert.deepEqual(missingProjectFiles("  cannot open file 'data/x.csv': No such file or directory", paths), ["data/x.csv"]);
+  assert.deepEqual(missingProjectFiles("FileNotFoundError: [Errno 2] No such file or directory: 'img/logo.png'", paths), ["img/logo.png"]);
+  assert.deepEqual(missingProjectFiles('SystemError: opening file "./data/x.csv": No such file or directory', paths), ["data/x.csv"]);
+  assert.deepEqual(missingProjectFiles("cannot open file 'data\\x.csv': No such file or directory", paths), ["data/x.csv"]);
+  assert.deepEqual(missingProjectFiles("cannot open file 'other.csv': No such file or directory", paths), []);
+  assert.deepEqual(missingProjectFiles("Reading 'data/x.csv'", paths), []);
+  assert.deepEqual(missingProjectFiles("cannot open file 'data/x.csv': No such file\ncannot open file 'data/x.csv': No such file", paths), ["data/x.csv"]);
+  assert.deepEqual(missingProjectFiles(undefined, paths), []);
+  assert.deepEqual(missingProjectFiles("cannot open file 'data/x.csv': No such file", undefined), []);
+  assert.deepEqual(missingProjectFiles("cannot open file 'data/x.csv': No such file", []), []);
+});
+
+test("a missing file that is in the project gets a LibrePaper warning first", () => {
+  const log = "cannot open file 'data/x.csv': No such file or directory";
+  const items = runDirectoryDiagnostics({ format: "quarto", ok: false, log, notices: [] }, "/home/me/study", ["data/x.csv"]);
+  assert.equal(items.length, 2);
+  assert.match(items[0].message, /data\/x\.csv is in LibrePaper/);
+  assert.match(items[1].message, /Code looks for files in your Run directory: \/home\/me\/study\./);
+  assert.equal(runDirectoryDiagnostics({ format: "quarto", ok: false, log, notices: [] }, "/home/me/study", []).length, 1);
 });
 
 test("only a failed Quarto render with a known folder gets the hint", () => {
