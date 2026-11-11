@@ -157,7 +157,7 @@
   .rd-icon { display: inline-flex; flex: none; }
   .rd-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rd-popover {
-    position: absolute; top: calc(100% + var(--spacing)); left: 0; z-index: 30;
+    position: absolute; top: calc(100% + var(--spacing)); right: 0; z-index: 30;
     box-sizing: border-box; width: max-content; max-width: min(22rem, calc(100vw - 2rem));
     display: flex; flex-direction: column; gap: calc(var(--spacing) * 2);
     padding: calc(var(--spacing) * 3);
