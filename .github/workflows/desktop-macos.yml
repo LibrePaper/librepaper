@@ -3,8 +3,10 @@
 # It builds a universal macOS app (Apple Silicon and Intel) and a DMG. The app is compiled without secrets.
 # The signing and notarization secrets reach only the tauri bundle step, which runs no build scripts.
 # Tauri signs the bundled librepaper and the app with the hardened runtime, notarizes the app and staples it.
-# This workflow then notarizes and staples the DMG.
-# Stapling fetches the ticket from Apple and fails now and then on the runner's network, so both staples are retried.
+# This workflow then notarizes the DMG and staples it on the macOS runner.
+# Stapling fetches the ticket from Apple and fails now and then on the runner's network, so the staples are retried.
+# If the DMG still cannot be stapled there, the staple-dmg job staples it from Linux with rcodesign.
+# That job reaches Apple's ticket server by another network path and needs no credentials.
 name: macOS desktop app
 
 on:
@@ -23,6 +25,8 @@ jobs:
     permissions:
       contents: read
     timeout-minutes: 150
+    outputs:
+      dmg-stapled: ${{ steps.staple.outputs.stapled }}
     steps:
       - name: Check the Apple settings
         shell: bash
@@ -162,6 +166,7 @@ jobs:
           exit 1
 
       - name: Notarize and staple the DMG
+        id: staple
         shell: bash
         env:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
@@ -181,14 +186,15 @@ jobs:
           fi
           for n in 1 2 3 4 5; do
             if xcrun stapler staple "$dmg" && xcrun stapler validate "$dmg"; then
+              echo "stapled=true" >> "$GITHUB_OUTPUT"
               break
             fi
             if [ "$n" -lt 5 ]; then
               echo "Stapling the DMG failed (attempt $n of 5); retrying in 60 seconds."
               sleep 60
             else
-              echo "::error::Could not staple the DMG after 5 attempts. Apple accepted it, so this is usually Apple's network: rerun the failed job."
-              exit 1
+              echo "::warning::Could not staple the DMG on the macOS runner after 5 attempts; Apple accepted it, so the Linux job staples it instead."
+              echo "stapled=false" >> "$GITHUB_OUTPUT"
             fi
           done
 
@@ -201,6 +207,7 @@ jobs:
         shell: bash
         env:
           BUNDLE_DIR: ${{ steps.build.outputs.bundle-dir }}
+          DMG_STAPLED: ${{ steps.staple.outputs.stapled }}
         run: |
           set -euo pipefail
           # stapler validate asks Apple's ticket server, which drops connections
@@ -224,19 +231,26 @@ jobs:
           spctl --assess --type execute --verbose=4 "$app"
           validate "$app"
           spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
-          validate "$dmg"
+          if [ "$DMG_STAPLED" = "true" ]; then validate "$dmg"; fi
 
       - name: Collect the DMG and the update
         shell: bash
         env:
           BUNDLE_DIR: ${{ steps.build.outputs.bundle-dir }}
           VERSION: ${{ steps.version.outputs.version }}
+          DMG_STAPLED: ${{ steps.staple.outputs.stapled }}
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/desktop-release"
           mkdir -p "$out"
           name="LibrePaper_${VERSION}_universal.dmg"
-          cp "$(ls "$BUNDLE_DIR"/dmg/*.dmg)" "$out/$name"
+          if [ "$DMG_STAPLED" = "true" ]; then
+            cp "$(ls "$BUNDLE_DIR"/dmg/*.dmg)" "$out/$name"
+          else
+            # The staple-dmg job staples this copy and publishes it.
+            mkdir -p "$RUNNER_TEMP/desktop-dmg-unstapled"
+            cp "$(ls "$BUNDLE_DIR"/dmg/*.dmg)" "$RUNNER_TEMP/desktop-dmg-unstapled/$name"
+          fi
           # The desktop updater reads this archive and its signature through latest.json.
           update="LibrePaper_${VERSION}_universal.app.tar.gz"
           test -f "$BUNDLE_DIR/macos/LibrePaper.app.tar.gz"
@@ -244,7 +258,11 @@ jobs:
           cp "$BUNDLE_DIR/macos/LibrePaper.app.tar.gz" "$out/$update"
           cp "$BUNDLE_DIR/macos/LibrePaper.app.tar.gz.sig" "$out/$update.sig"
           cd "$out"
-          for asset in "$name" "$update" "$update.sig"; do
+          assets=("$update" "$update.sig")
+          if [ "$DMG_STAPLED" = "true" ]; then
+            assets+=("$name")
+          fi
+          for asset in "${assets[@]}"; do
             shasum -a 256 "$asset" | awk '{print $1 " *" $2}' > "$asset.sha256"
           done
           ls -l
@@ -253,5 +271,69 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: artifacts-desktop-macos
+          path: ${{ runner.temp }}/desktop-release/*
+          if-no-files-found: error
+
+      # Not artifacts-*: the host job must not attach an unstapled DMG. The staple-dmg job staples it.
+      - if: steps.staple.outputs.stapled != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-macos-dmg-unstapled
+          path: ${{ runner.temp }}/desktop-dmg-unstapled/*
+          if-no-files-found: error
+
+  staple-dmg:
+    name: Staple the DMG from Linux
+    needs: build
+    if: needs.build.outputs.dmg-stapled == 'false'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: desktop-macos-dmg-unstapled
+          path: ${{ runner.temp }}/desktop-release
+
+      - name: Install rcodesign
+        shell: bash
+        env:
+          RCODESIGN_VERSION: 0.29.0
+          RCODESIGN_SHA256: dbe85cedd8ee4217b64e9a0e4c2aef92ab8bcaaa41f20bde99781ff02e600002
+        run: |
+          set -euo pipefail
+          name="apple-codesign-${RCODESIGN_VERSION}-x86_64-unknown-linux-musl"
+          archive="$RUNNER_TEMP/$name.tar.gz"
+          curl -fsSL --retry 3 -o "$archive" "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F${RCODESIGN_VERSION}/$name.tar.gz"
+          echo "$RCODESIGN_SHA256  $archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
+
+      - name: Staple the DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/desktop-release"
+          dmg="$(ls -- *.dmg)"
+          for n in 1 2 3 4 5; do
+            if rcodesign staple "$dmg"; then
+              break
+            fi
+            if [ "$n" -lt 5 ]; then
+              echo "Stapling the DMG failed (attempt $n of 5); retrying in 60 seconds."
+              sleep 60
+            else
+              echo "::error::Could not staple the DMG from Linux either after 5 attempts. Apple accepted it: rerun the failed jobs."
+              exit 1
+            fi
+          done
+          sha256sum "$dmg" | awk '{print $1 " *" $2}' > "$dmg.sha256"
+          ls -l
+
+      # Names starting with artifacts- are attached to the GitHub Release by the host job.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-desktop-macos-dmg
           path: ${{ runner.temp }}/desktop-release/*
           if-no-files-found: error
