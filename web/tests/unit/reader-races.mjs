@@ -409,9 +409,12 @@ const preview = (values = {}) => {
 // default, shown when the page compiles continuously.
 for (const continuous of [false, true]) {
   const rendered = deferred();
+  // The text really changes, so the result is for older text and not a
+  // bookkeeping-only commit of the same tree.
+  let text = "x";
   const harness = preview({
     facts: { format: "latex", latexOutput: "html", latexContinuous: continuous },
-    tree: () => ({ main: "paper.tex", texts: { "paper.tex": "x" }, digests: {} }),
+    tree: () => ({ main: "paper.tex", texts: { "paper.tex": text }, digests: {} }),
     heading: async () => "",
     renderers: {
       formatOf: () => "latex",
@@ -421,6 +424,7 @@ for (const continuous of [false, true]) {
     },
   });
   const pending = harness.paint();
+  text = "xy";
   harness.facts.source += 1;
   rendered.resolve({ html: "<p>page</p>", diagnostics: [] });
   await pending;
