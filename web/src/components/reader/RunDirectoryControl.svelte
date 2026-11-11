@@ -7,7 +7,7 @@
   // The folder a Quarto document's code runs in on this computer. It is shown
   // beside the Run code switch while that is on, and it tells the page whether
   // a render may start: `onchange(path)` with the folder once one that exists is set, or "" when none is.
-  let { project, onchange = () => {} } = $props();
+  let { project, onchange = () => {}, align = "end" } = $props();
 
   let status = $state(null);
   let busy = $state("");
@@ -110,7 +110,7 @@
         <span class="rd-name">{status.path ? leaf(status.path) : m.rundirectorycontrol_choose_chip()}</span>
       </button>
       {#if open}
-        <div class="rd-popover" role="dialog" aria-label={m.rundirectorycontrol_label()} bind:this={popover}>
+        <div class="rd-popover" class:rd-start={align === "start"} role="dialog" aria-label={m.rundirectorycontrol_label()} bind:this={popover}>
           {#if usable}
             <p class="rd-text">{m.rundirectorycontrol_runs_in({ path: shorten(status.path) })}</p>
             <div class="rd-actions">
@@ -156,6 +156,7 @@
   .rd-chip.rd-missing { color: var(--color-warning-text); border-color: var(--color-warning-solid); }
   .rd-icon { display: inline-flex; flex: none; }
   .rd-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rd-popover.rd-start { left: 0; right: auto; }
   .rd-popover {
     position: absolute; top: calc(100% + var(--spacing)); right: 0; z-index: 30;
     box-sizing: border-box; width: max-content; max-width: min(22rem, calc(100vw - 2rem));
@@ -165,6 +166,7 @@
     border: 1px solid var(--color-divider); border-radius: 4px;
   }
   .rd-text { margin: 0; overflow-wrap: anywhere; }
-  .rd-actions { display: flex; flex-wrap: wrap; gap: calc(var(--spacing) * 2); }
+  .rd-actions { display: flex; flex-direction: column; align-items: stretch; gap: calc(var(--spacing) * 2); }
+  .rd-actions :global(.btn) { width: 100%; justify-content: flex-start; text-align: left; }
   .rd-error { margin: 0; color: var(--color-danger, var(--color-text)); }
 </style>

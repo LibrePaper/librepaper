@@ -4019,7 +4019,7 @@
 <!-- The phone has no tools in its header, so the Run directory is asked for
      here while Run code is on. -->
 {#if compact && runCodeOffered && localExecution && sourceFormat === "quarto"}
-  <div class="run-directory-strip"><RunDirectoryControl project={SLUG} onchange={setRunDirectory} /></div>
+  <div class="run-directory-strip"><RunDirectoryControl align="start" project={SLUG} onchange={setRunDirectory} /></div>
 {/if}
 
 <Nav {me} phoneMenu phoneShell={compact} phoneBare={tabsShown} hidden={barHidden && !compact}>
