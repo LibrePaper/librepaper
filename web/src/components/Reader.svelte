@@ -1854,10 +1854,6 @@
   // and a document belongs on the documents origin, not in this page. The
   // agent republishes its text from there, which re-anchors every comment
   // against what was just typed.
-  // Compile the LaTeX HTML preview while typing: opted in, and only while the
-  // last compile was quick enough to keep up.
-  const latexContinuous = () => !readerDisposed && sourceFormat === "latex" && latexOutput === "html"
-    && readLiveCompile(buildScope(), "latex") && (renderers.latexHtmlLastSeconds() ?? 0) <= 3;
   const schedule = createSourceSchedule({
     editing: () => editing,
     format: () => sourceFormat,
@@ -2176,6 +2172,14 @@
   const runCodeOffered = $derived(mayEdit && hasDesktop && buildPreferences.backend === "local");
   const latexOutput = $derived(buildSettings.state.latexOutput);
   const typstOutput = $derived(buildSettings.state.typstOutput);
+  // Compile the LaTeX HTML preview while typing: opted in, and only while the
+  // last compile was quick enough to keep up. A source change can arrive while
+  // the page is still being set up, before there is a session; that is never
+  // a reason to compile continuously.
+  function latexContinuous() {
+    return !readerDisposed && Boolean(session) && sourceFormat === "latex" && latexOutput === "html"
+      && readLiveCompile(buildScope(), "latex") && (renderers.latexHtmlLastSeconds() ?? 0) <= 3;
+  }
   const markdownOutput = $derived(buildPreferences.output === "pdf" ? "pdf" : "html");
   const buildScope = () => buildSettings.scopeFor(buildUserId);
   $effect(() => {
