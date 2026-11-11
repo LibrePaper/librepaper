@@ -203,6 +203,16 @@ jobs:
           BUNDLE_DIR: ${{ steps.build.outputs.bundle-dir }}
         run: |
           set -euo pipefail
+          # stapler validate asks Apple's ticket server, which drops connections
+          # (error 68) even when the ticket is stapled. Retry before failing.
+          validate() {
+            for n in 1 2 3 4 5; do
+              if xcrun stapler validate "$1"; then return 0; fi
+              if [ "$n" -lt 5 ]; then echo "stapler validate failed for $1 (attempt $n of 5); retrying in 60 seconds."; sleep 60; fi
+            done
+            echo "::error::stapler validate failed 5 times for $1. Apple accepted it, so this is usually Apple's network: rerun the failed job."
+            return 1
+          }
           app="$BUNDLE_DIR/macos/LibrePaper.app"
           dmg="$(ls "$BUNDLE_DIR"/dmg/*.dmg)"
           codesign --verify --deep --strict --verbose=2 "$app"
@@ -212,9 +222,9 @@ jobs:
           lipo -archs "$app/Contents/MacOS/librepaper"
           lipo -archs "$app/Contents/MacOS/librepaper-desktop"
           spctl --assess --type execute --verbose=4 "$app"
-          xcrun stapler validate "$app"
+          validate "$app"
           spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
-          xcrun stapler validate "$dmg"
+          validate "$dmg"
 
       - name: Collect the DMG and the update
         shell: bash
