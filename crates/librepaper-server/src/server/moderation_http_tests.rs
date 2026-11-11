@@ -914,7 +914,10 @@ async fn an_anonymous_comment_link_admits_a_visitor_only_while_link_and_switch_a
         .await
         .unwrap();
     assert_eq!(cleared.status().as_u16(), 200);
-    assert_eq!(post(Some(render_digest)).await.unwrap().status().as_u16(), 401);
+    assert_eq!(
+        post(Some(render_digest)).await.unwrap().status().as_u16(),
+        401
+    );
 
     let _ = stop.send(());
     close_deployment(deployment).await;
