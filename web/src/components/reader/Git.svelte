@@ -5,8 +5,9 @@
   // desktop app, connects the project to a git repository kept on this computer
   // (git/GitWeb.svelte). The state belongs to a controller in lib/reader; this
   // lays the panel out.
-  import PanelHeader from "../PanelHeader.svelte";
+  import PanelTabs from "../PanelTabs.svelte";
   import GitWeb from "./git/GitWeb.svelte";
+  import { m } from "../../lib/paraglide/messages.js";
 
   let {
     open = false,
@@ -22,7 +23,15 @@
   } = $props();
 </script>
 
-<section class="panel git-panel" aria-label="Git">
-  <PanelHeader title="Git" />
-  <GitWeb {web} {slug} {linkKey} {open} {desktop} {connection} {onhistory} />
+<section class="panel panel-tabbed git-panel" aria-label={m.panels_git()}>
+  <PanelTabs id="git" title={m.panels_git()}>
+    <div class="git-body">
+      <GitWeb {web} {slug} {linkKey} {open} {desktop} {connection} {onhistory} />
+    </div>
+  </PanelTabs>
 </section>
+
+<style>
+  /* The pane does not scroll; this body does. */
+  .git-body { flex: 1 1 0; min-height: 0; overflow-y: auto; }
+</style>
