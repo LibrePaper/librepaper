@@ -12,6 +12,8 @@
   const expiries = $derived(kind === "token" ? EXPIRIES.filter(([value]) => value !== "never") : EXPIRIES);
   // Only the roles this user may grant are offered.
   const offered = $derived(ROLES.filter((role) => allowed(role.id)));
+  // A role that is not on offer is never the one the form submits.
+  $effect(() => { if (offered.length && !offered.some((role) => role.id === draft.role)) draft.role = offered[0].id; });
   const spends = $derived(draft.role !== "reader");
   // A link can let anyone in without a sign-in, if the deployment allows it for
   // its role. Where it does not, the choice falls to signing in.
@@ -49,11 +51,16 @@
     {/if}
     <label class="share-field">
       <span class="share-label">{m.shareform_permission()}</span>
+      {#if offered.length === 1}
+        <!-- One role on offer: say it rather than offer a choice of one. -->
+        <span class="share-text">{offered[0].label}</span>
+      {:else}
       <select class="select share-select" bind:this={permission} bind:value={draft.role} disabled={busy} onchange={(event) => { if (kind === "token" && event.currentTarget.value === "editor" && draft.until === "7d") draft.until = "1d"; if (kind === "link") draft.anonymous = event.currentTarget.value === "reader"; }}>
         {#each offered as role (role.id)}
           <option value={role.id}>{role.label}</option>
         {/each}
       </select>
+      {/if}
       {#if kind === "link"}<span class="share-note">{reach[draft.role]}</span>{/if}
     </label>
     {#if kind === "link"}
