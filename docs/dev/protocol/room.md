@@ -9,7 +9,9 @@ Automation sends its document credential in `X-LibrePaper-Key` and may send
 `X-LibrePaper-Automation: 1`. Link-bounded requests must include the
 automation marker when a browser session is also present. Document access is
 rechecked for socket operations. Signed-in comments use account attribution;
-anonymous link users receive a stable link pseudonym.
+anonymous link users exist only when the link's owner chose "Anyone with the
+link" and the deployment's `[access]` switch for the link's role is on. They
+receive a stable link pseudonym and never edit or suggest.
 
 ## Snapshot and annotation reads
 

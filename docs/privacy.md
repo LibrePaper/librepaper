@@ -52,7 +52,7 @@ librepaper.org keeps no access log and no IP addresses in its database. The serv
 
 - Your handle is your GitHub login or your Google email. Other people see your display name, not your handle. Administrators can see both. If GitHub or Google gives no name, your display name is your handle, without the part after the `@`.
 - While you have a document open, other people viewing it see that you are there and where your cursor is.
-- Edit and comment links require sign-in. Read links work for anyone who has them.
+- Edit and suggest links always require sign-in. Read and comment links require it too, unless the owner chose "Anyone with the link" for that link and the host allows it. Someone who is not signed in can never edit or suggest.
 - Project chat is visible to people with a comment or edit link, and to the owner. Read links never show it.
 - Administrators are able to read every account and document. They open a document only to act on an abuse report or a suspected breach of the [terms of service](terms.html), to meet a legal obligation, to fix a fault, or when its owner asks for help.
 

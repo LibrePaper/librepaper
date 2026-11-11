@@ -23,12 +23,23 @@ An agent can help you run the server. The [agent skill](../agents.html#agent-ski
 
 Providers, `publishers`, `commenters` and session length are set up in [Sign-in](simple.html#sign-in).
 
-Anonymous comments need no sign-in. Turn them on in `[access]`:
+### Anonymous access
+
+By default every link needs a sign-in. The four switches in `[access]` let some links work without one. Each switch is off by default.
 
 ```toml
 [access]
-anonymous_comments = true
+anonymous_reads    = false  # read links may be opened without signing in
+anonymous_comments = false  # comment links may be used without signing in
+anonymous_suggests = false  # reserved: suggest links always need sign-in for now
+anonymous_edits    = false  # reserved: edit links always need sign-in for now
 ```
+
+A link works without sign-in only when its owner chose "Anyone with the link" and the switch for the link's role is on. Turning a switch off makes those links require sign-in again. Existing links keep requiring sign-in.
+
+Someone who is not signed in can never edit or suggest. With an anonymous comment link they can comment. Otherwise they can only read.
+
+**Upgrading from an earlier release.** `anonymous_comments = true` used to be described as letting people comment without signing in on every comment link. In practice every link still required sign-in. Now the switch only lets owners mark individual comment links "Anyone with the link". Nothing changes for existing links.
 
 ### Identity providers
 
