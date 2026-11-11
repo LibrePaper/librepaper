@@ -307,9 +307,9 @@ export const COMMANDS = [
 
   // The project. None of these is bound to anything: they are here so the
   // palette can offer them by name and so the one list stays the one list.
-  { id: "new-file", label: m.readerd_new_file(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
-  { id: "new-folder", label: m.readerd_new_folder(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
-  { id: "upload", label: m.readerd_upload_files(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
+  { id: "new-file", label: m.readerd_new_file(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit && !c.suggestOnly) },
+  { id: "new-folder", label: m.readerd_new_folder(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit && !c.suggestOnly) },
+  { id: "upload", label: m.readerd_upload_files(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit && !c.suggestOnly) },
   { id: "download-pdf", label: m.common_download_pdf(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.pdf) },
   { id: "download-html", label: m.commands_download_html(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.html) },
   { id: "download-docx", label: m.commands_download_docx(), category: m.common_project(), scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.docx) },

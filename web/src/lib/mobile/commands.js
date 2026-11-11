@@ -19,7 +19,7 @@ function exportItem(id, label, state) {
 export function fileCommands(c) {
   const demoLabel = (label) => (c.demo ? `${label} ${c.demoHint}` : label);
 
-  const create = c.mayEdit
+  const create = c.mayEdit && !c.suggestOnly
     ? [
         { id: "new-file", label: labelOf("new-file") },
         { id: "new-folder", label: labelOf("new-folder") },
@@ -40,7 +40,7 @@ export function fileCommands(c) {
   }
 
   const save = [];
-  if (c.signedIn || c.demo) save.push({ id: "save-template", label: demoLabel(m.readerd_save_as_template_item()), disabled: c.demo });
+  if ((c.signedIn && !c.suggestOnly) || c.demo) save.push({ id: "save-template", label: demoLabel(m.readerd_save_as_template_item()), disabled: c.demo });
   if (c.mayEdit && c.sourceFormatLatex && c.compilesHere) save.push({ id: "compile", label: labelOf("compile") });
 
   const quit = c.desktop ? [{ id: "quit", label: m.readerd_quit() }] : [];
