@@ -141,7 +141,7 @@ for (const testCase of corpus.cases) {
   add("aaa", "scripts.R/readme.md", "placed");
   add("bbb", "scripts.R", "retained");
   const result = await project(doc, retainRules);
-  assert.ok("scripts.R/readme.md" in result.files);
+  assert.ok(result.files.has("scripts.R/readme.md"));
   assert.deepEqual(result.retained, { "scripts (2).R": "retained" });
 }
 
