@@ -144,10 +144,10 @@ pub(super) async fn handle_open(
         Ok(body) => body,
         Err(response) => return response,
     };
-    answer(open(inner, origin, &body.project))
+    answer(open(inner, origin, &body.project).await)
 }
 
-fn open(inner: &Inner, origin: Option<&str>, project: &str) -> Result<Value, Failure> {
+async fn open(inner: &Inner, origin: Option<&str>, project: &str) -> Result<Value, Failure> {
     let project = project_of(project)?;
     let status = inner
         .bindings
@@ -162,12 +162,58 @@ fn open(inner: &Inner, origin: Option<&str>, project: &str) -> Result<Value, Fai
         }
     };
     show_in_file_manager(&folder)
+        .await
         .map_err(|error| refuse(500, &format!("could not open the folder: {error}")))?;
     Ok(status_of(inner, origin, &project))
 }
 
+/// Percent-encodes `path` into a `file://` URI.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn file_uri(path: &Path) -> String {
+    use std::fmt::Write;
+    let text = path.to_string_lossy();
+    let mut uri = String::from("file://");
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/') {
+            uri.push(byte as char);
+        } else {
+            let _ = write!(uri, "%{byte:02X}");
+        }
+    }
+    uri
+}
+
+/// Asks the desktop's file manager to show `folder`, so the folder does not
+/// open in whatever app is the default for `inode/directory`.
+#[cfg(target_os = "linux")]
+async fn show_folder_over_dbus(folder: &Path) -> Result<(), String> {
+    let call = async {
+        let connection = ashpd::zbus::Connection::session()
+            .await
+            .map_err(|error| error.to_string())?;
+        connection
+            .call_method(
+                Some("org.freedesktop.FileManager1"),
+                "/org/freedesktop/FileManager1",
+                Some("org.freedesktop.FileManager1"),
+                "ShowFolders",
+                &(vec![file_uri(folder)], ""),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(3), call)
+        .await
+        .map_err(|_| "the file manager did not answer in time".to_string())?
+}
+
 /// Opens `folder` in the system file manager without waiting for it.
-fn show_in_file_manager(folder: &Path) -> std::io::Result<()> {
+async fn show_in_file_manager(folder: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    if show_folder_over_dbus(folder).await.is_ok() {
+        return Ok(());
+    }
     let program = if cfg!(target_os = "macos") {
         "open"
     } else if cfg!(target_os = "windows") {
@@ -192,6 +238,15 @@ fn show_in_file_manager(folder: &Path) -> std::io::Result<()> {
 mod tests {
     use super::super::test_support::{bearer, inner as build_inner};
     use super::*;
+
+    #[test]
+    fn file_uri_percent_encodes_reserved_bytes() {
+        assert_eq!(
+            file_uri(Path::new("/home/me/My Run#1")),
+            "file:///home/me/My%20Run%231"
+        );
+        assert_eq!(file_uri(Path::new("/a/100%/é")), "file:///a/100%25/%C3%A9");
+    }
 
     const ORIGIN: &str = "https://paper.example";
 
