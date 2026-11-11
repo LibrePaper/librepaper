@@ -112,7 +112,7 @@ fn use_default(inner: &Inner, origin: Option<&str>, project: &str) -> Result<Val
 
 /// Creates `folder` if needed and stores it as the project's Run directory.
 fn place(inner: &Inner, origin: Option<&str>, project: &str, folder: &Path) -> Result<Value, Failure> {
-    std::fs::create_dir_all(&folder)
+    std::fs::create_dir_all(folder)
         .map_err(|error| refuse(500, &format!("could not create the folder: {error}")))?;
     inner
         .bindings

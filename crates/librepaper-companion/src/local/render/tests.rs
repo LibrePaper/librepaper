@@ -138,7 +138,9 @@ async fn only_a_pdf_run_reads_synctex() {
         "echo '<html></html>' > paper.html; echo sync > paper.synctex",
         "{stem}.html",
     );
-    let outcome = run_fixture(&fixture, false).await;
+    let run_dir = tempfile::tempdir().unwrap();
+    let run_path = std::fs::canonicalize(run_dir.path()).unwrap();
+    let outcome = run_fixture_in(&fixture, Some(run_path)).await;
     assert_eq!(
         outcome.status.status,
         JobState::Done,
@@ -381,7 +383,7 @@ async fn quarto_gets_execute_dir_and_the_run_directory_linked_in() {
     // appended flag shows up in the result.
     script(
         "quarto.html",
-        "echo \"$@\" > paper.html; cat data.csv >> paper.html",
+        "echo \"$0 $@\" > paper.html; cat data.csv >> paper.html",
         "{stem}.html",
     );
     let outcome = run_fixture_in(&fixture, Some(run_path.clone())).await;

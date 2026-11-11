@@ -169,12 +169,13 @@ impl BindingStore {
         let root = self.hosted.join(deployment).join(project);
         std::fs::create_dir_all(&root).ok()?;
         let root = std::fs::canonicalize(&root).ok()?;
+        let run_dir = self.live_run_dir(&origin, project);
         Some(ProjectBinding {
             id: HOSTED_BINDING.to_string(),
             origin,
             project: project.to_string(),
             root,
-            run_dir: self.live_run_dir(&origin, project),
+            run_dir,
         })
     }
 
