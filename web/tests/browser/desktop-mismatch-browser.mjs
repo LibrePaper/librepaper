@@ -56,7 +56,7 @@ await build({
   // The real client imports the compiled messages; compile them the same way
   // web/vite.config.js does.
   plugins: [
-    paraglideVitePlugin({ project: join(root, "web/project.inlang"), outdir: join(root, "web/src/lib/paraglide") }),
+    paraglideVitePlugin({ project: join(root, "web/project.inlang"), outdir: join(root, "web/src/lib/paraglide"), outputStructure: "message-modules" }),
     svelte(),
     tailwindcss(),
   ],

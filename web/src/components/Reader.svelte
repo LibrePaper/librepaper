@@ -2685,14 +2685,17 @@
   // point opens the same dialog on the category it is about.
   let settingsOpen = $state(untrack(() => initialSettings === "tools"));
   let settingsCategory = $state(untrack(() => initialSettings || "general"));
+  // An entry to scroll to once Settings shows, such as a section's id.
+  let settingsEntry = $state("");
   let saveTemplateDialog = $state(null);
 
-  async function openSettings(category = "general") {
+  async function openSettings(category = "general", entry = "") {
     // The editor category carries the shortcut table, and the table greys what
     // the source cannot currently do, so the editor is asked before the page
     // that shows the answer is drawn.
     refreshEditAvailability();
     settingsCategory = category;
+    settingsEntry = entry;
     try { await lazy.settings.load(); } catch { lazyFailed(); return; }
     settingsOpen = true;
   }
@@ -3771,6 +3774,12 @@
   // this and the keyboard refuses a chord by this, so a greyed item and a dead
   // key are the same answer rather than two rules that can disagree in public.
   const can = $derived(availability(commandContext));
+  // What the preview band offers to save: the File menu's exports, in its order.
+  const previewDownloads = $derived([
+    can["download-pdf"] && { format: "pdf", label: m.common_download_pdf() },
+    can["download-html"] && { format: "html", label: m.commands_download_html() },
+    can["download-docx"] && { format: "docx", label: m.commands_download_docx() },
+  ].filter(Boolean));
 
   // Whether a selection can be cut, whether there is anything to undo: the
   // editor is asked, because only it knows, and it is asked when something is
@@ -3785,6 +3794,7 @@
   // thing the menu already calls, so a command cannot drift from the menu item
   // that names it. Nothing new is implemented in this function.
   async function runCommand(id) {
+    if (id === "report-problem") return openSettings("general", "diagnostics-report");
     if (id === "word-count") return openWordCount();
     if (EDIT_COMMANDS.includes(id)) return chooseEditCommand(id);
     if (id === "palette") { refreshEditAvailability(); try { await lazy.commandPalette.load(); } catch { lazyFailed(); return; } commandPalette = true; return; }
@@ -4434,7 +4444,7 @@
   <!-- Kept mounted whatever the arrangement: taking the frame out of the tree
        would reload the document and lose the reader's place in it. -->
   {#snippet previewControls()}
-    {#if viewerView}
+    {#if viewerView || previewDownloads.length}
       <PreviewControls view={viewerView} tool={viewerTool} busy={previewBusy} dark={darkNow} {findAsk}
         onpresent={() => preview?.present()}
         send={(message) => {
@@ -4455,7 +4465,8 @@
           viewerTool = next;
           tell({ type: "viewer-tool", tool: next });
         }}
-        ondownload={can["download-pdf"] ? () => void downloadAs("pdf") : null} />
+        downloads={previewDownloads}
+        ondownload={(format) => void downloadAs(format)} />
     {/if}
   {/snippet}
   {#snippet waitingCover()}
@@ -4607,7 +4618,7 @@
 <!-- The preferences dialog is shared by the navbar menu and sidebar button. -->
 {#if lazy.settings.component}
   {@const SettingsDialog = lazy.settings.component}
-  <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory}
+  <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory} bind:entry={settingsEntry}
                   remoteConnected={connected} remoteNote={connectionNote}
                   {keys} onkeys={setKeys}
                   {completion} oncompletion={setCompletion} {brackets} onbrackets={setBrackets} {latexAssist} onlatexassist={setLatexAssist} {proofing} onproofing={setProofing} {dialect} ondialect={setDialect} {check} oncheck={setCheck}
