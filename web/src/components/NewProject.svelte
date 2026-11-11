@@ -19,6 +19,7 @@
   import { BUILT_IN, templateFiles } from "../lib/templates.js";
   import { droppedFiles } from "../lib/file-manager.js";
   import { expandArchives } from "../lib/project-upload.js";
+  import { belongsInRunDirectory } from "../lib/reader/run-directory.js";
   import { unzip } from "../lib/zip.js";
   import {
     catalog, browse, formatSummary, pickFormat, uniqueName,
@@ -158,6 +159,8 @@
   let unsupported = $state.raw([]);
   let problems = $state.raw([]);
   let notes = $state.raw([]);
+  // Set when an archive held a script or data file, which belongs in the Run directory.
+  let archiveLocal = $state(false);
   let reading = $state(false);
   let strip = $state(true);
   let progress = $state({ loaded: 0, total: 0 });
@@ -169,6 +172,7 @@
   const wrapper = $derived(wrapperOf(staged));
   const paths = $derived(finalPaths(staged, strip && wrapper !== ""));
   const hasDocument = $derived(paths.some((path) => (rules?.extensions || []).some((ext) => path.toLowerCase().endsWith(ext.toLowerCase()))));
+  const localHint = $derived(archiveLocal || unsupported.some(belongsInRunDirectory));
   const totalSize = $derived(staged.reduce((sum, entry) => sum + entry.file.size, 0));
   const stagedTree = $derived(tree(staged.map((entry, index) => ({ path: paths[index], size: entry.file.size }))));
   const stagedPath = $derived(new Map(paths.map((path, index) => [path, staged[index].path])));
@@ -182,6 +186,7 @@
     unsupported = [];
     problems = [];
     notes = [];
+    archiveLocal = false;
     strip = true;
   }
 
@@ -206,6 +211,7 @@
           if (opened.skipped?.length) {
             const count = opened.skipped.length;
             fresh.notes.push(m.newproject_skipped_files({ count, source }));
+            if (opened.skipped.some(belongsInRunDirectory)) archiveLocal = true;
           }
           for (const root of opened.roots ?? []) {
             if (root) fresh.notes.push(m.newproject_archive_root_removed({ root }));
@@ -609,6 +615,7 @@
   {#if unsupported.length}
     <p class="np-muted">{m.newproject_unsupported({ names: unsupported.join(", ") })}</p>
   {/if}
+  {#if localHint}<p class="np-muted">{m.common_scripts_stay_local()}</p>{/if}
   {#each notes as note}<p class="np-muted">{note}</p>{/each}
   {#each problems as one}<p class="new-project-error lp-text-error text-sm" role="alert">{one}</p>{/each}
 
