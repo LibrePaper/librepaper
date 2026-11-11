@@ -2935,6 +2935,9 @@
     arrangement.state.moreOpen = false;
     arrangement.state.mobileCommand = "";
     arrangement.state.keyboardOpen = false;
+    // Nor the phone's face: a panel the narrow window was showing stays open in
+    // the column, and the window no longer remembers being on it.
+    if (untrack(() => arrangement.state.mobileView) === "sidebar") arrangement.state.mobileView = untrack(() => arrangement.state.preferredPane);
   });
   // The keyboard hides the mode switch and narrows the workspace. When it
   // comes up the caret is brought back into sight above it.
@@ -3953,6 +3956,9 @@
       const typing = event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable='true']");
       // An Escape a dialog or a menu already took is theirs, not the comparison's.
       if (comparing && !typing && !event.defaultPrevented && !captured(event.target)) endComparison();
+      // In a narrow window Escape leaves a panel, a command list or Settings
+      // the way the header's Back does.
+      else if (compact && overlayView && !typing && !event.defaultPrevented && !captured(event.target)) phone.back();
       return;
     }
     // Back is not in the registry: its chord is Ctrl+Minus on a Mac, which the

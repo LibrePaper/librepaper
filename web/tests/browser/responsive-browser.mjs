@@ -503,6 +503,23 @@ try {
   assert.ok(shell.tabs.every(([width,height]) => height >= 44),'tab bar buttons are at least 44px tall: ' + JSON.stringify(shell));
   assert.ok(shell.modeButtons.every(([width,height]) => width >= 44 && height >= 44),'mode switch buttons are at least 44px: ' + JSON.stringify(shell));
   assert.equal(await visible('nav.phone-shell'),false,'the document screen has no header');
+  // Widening the window forgets the phone's face: a panel the narrow window
+  // was on is the column's, and no narrow-only state is left on the page.
+  await click('.mobile-tab-bar [data-destination="files"]'); await flush();
+  await b.resize(1188,710); await flush();
+  assert.equal(await b.evaluate(`document.querySelector('main.reader').classList.contains('mobile-sidebar')`), false, 'no phone face is left on a wide window');
+  await b.resize(390,844); await flush();
+  // Escape leaves a panel in a narrow window, the way Back does.
+  await nav('Changes');
+  await until('Changes panel shown', async () => (await b.evaluate(`document.querySelector('main.reader').classList.contains('mobile-sidebar')`)), 3000);
+  await b.evaluate('document.activeElement?.blur?.()');
+  await key('Escape', 'Escape', 27);
+  await until('Escape left the panel', async () => !(await b.evaluate(`document.querySelector('main.reader').classList.contains('mobile-sidebar')`)), 3000);
+  await click('.mobile-tab-bar [data-destination="files"]'); await flush();
+  await b.evaluate('document.activeElement?.blur?.()');
+  await key('Escape', 'Escape', 27);
+  await until('Escape left the files', async () => !(await b.evaluate(`document.querySelector('main.reader').classList.contains('mobile-sidebar')`)), 3000);
+  await toMode('Preview');
   // Everything the tab bar has no room for lives in the More sheet.
   await openMore();
   const rowIds = await b.evaluate(`[...document.querySelectorAll('.mobile-sheet [data-row]')].map(node => node.dataset.row)`);
