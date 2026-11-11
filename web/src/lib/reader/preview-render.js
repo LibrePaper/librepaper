@@ -156,6 +156,13 @@ export function createPreviewRenderer({
     // Rendering that placeholder used to call the renderer registry with an
     // empty format and permanently consume the initial paint.
     if (!source.main || !format) return;
+    // A Quarto document that runs its code on this computer needs a Run
+    // directory first. Until one is chosen the control beside Run code asks
+    // for it and nothing is rendered; choosing one paints again.
+    if (format === "quarto" && start.localExecution && start.buildPreferences?.backend === "local" && start.runDirectoryReady === false) {
+      coordinator.commit(ticket);
+      return;
+    }
     // A known main path distinguishes an intentionally empty document from
     // the pre-hydration placeholder above. Never leave the previous document
     // or its downloadable artifact on screen after select-all/delete.
