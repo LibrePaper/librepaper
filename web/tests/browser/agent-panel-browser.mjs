@@ -227,7 +227,7 @@ window.agentPanelCheck = async () => {
   const expiries = [...form.querySelectorAll("select")[1].options].map((node) => node.textContent).join("|");
   check(expiries === "1 day|7 days|30 days|6 months|1 year", "a token can last up to a year: " + expiries);
   const permissions = [...roleSelect.options].map((node) => node.textContent).join("|");
-  check(permissions === "Read|Comment|Edit", "the token permissions: " + permissions);
+  check(permissions === "Read|Comment|Suggest|Edit", "the token permissions: " + permissions);
   check(!text().includes("Edit can suggest tracked changes and change the project directly."), "no warning until Edit is chosen");
   await type(roleSelect, "editor");
   check(text().includes("Edit can suggest tracked changes and change the project directly."), "choosing Edit shows the warning");

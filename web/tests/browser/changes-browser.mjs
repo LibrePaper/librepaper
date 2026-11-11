@@ -420,9 +420,8 @@ try {
     return {
       scrollWidth: panel.scrollWidth,
       clientWidth: panel.clientWidth,
-      titleHeight: box('.changes-title-row').height,
+      titleHeight: box('.changes-panel .panel-tabs-row').height,
       toolbarHeight: box('.changes-toolbar').height,
-      titleLeft: box('.panel-section-title').left,
       scopeLeft: box('.scope-trigger').left,
       rowLeft: box('.change-row .row-main').left,
       toggleRight: box('.tracking-toggle').right,
@@ -431,9 +430,8 @@ try {
   })()`);
   await ev("document.body.style.width = ''");
   assert.ok(narrow.scrollWidth <= narrow.clientWidth, `the panel does not scroll sideways (${narrow.scrollWidth} against ${narrow.clientWidth})`);
-  assert.ok(narrow.titleHeight < 48, `the title row is one line (${narrow.titleHeight}px)`);
+  assert.ok(narrow.titleHeight < 48, `the title strip is one line (${narrow.titleHeight}px)`);
   assert.ok(narrow.toolbarHeight < 48, `the toolbar is one line (${narrow.toolbarHeight}px)`);
-  assert.ok(Math.abs(narrow.titleLeft - narrow.scopeLeft) <= 1, "the title and the scope trigger share a left edge");
   assert.ok(Math.abs(narrow.scopeLeft - narrow.rowLeft) <= 1, "the scope trigger and the rows share a left edge");
   assert.ok(Math.abs(narrow.toggleRight - narrow.endRight) <= 1, "the tracking switch and the count end on one right edge");
 

@@ -1,5 +1,5 @@
 <script>
-  import PanelHeader from "../PanelHeader.svelte";
+  import PanelTabs from "../PanelTabs.svelte";
   import IconButton from "../IconButton.svelte";
   import { m } from "../../lib/paraglide/messages.js";
   import { provenanceSentence } from "../../lib/latex/status-text.js";
@@ -69,8 +69,9 @@
   }
 </script>
 
-<section class="panel" aria-label={m.diagnostics_section_label()}>
-  <PanelHeader title={m.common_diagnostics()} />
+<section class="panel panel-tabbed" aria-label={m.diagnostics_section_label()}>
+  <PanelTabs id="diagnostics" title={m.common_diagnostics()}>
+  <div class="diagnostics-body">
   {#if provenance}
     <details class="mb-4">
       <summary class="panel-section-title">{m.diagnostics_compiled_with()}</summary>
@@ -155,9 +156,13 @@
       </ul>
     </details>
   {/if}
+  </div>
+  </PanelTabs>
 </section>
 
 <style>
+  /* The pane does not scroll; this body does. */
+  .diagnostics-body { flex: 1 1 0; min-height: 0; overflow-y: auto; }
   .diagnostic-head :global(.icon-control) { box-sizing: border-box; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
   .diagnostic-head :global(.icon-control svg) { width: 16px; height: 16px; }
   /* Phones: the location link, the actions and the disclosure summaries are

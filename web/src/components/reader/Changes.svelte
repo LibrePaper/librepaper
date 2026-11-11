@@ -4,6 +4,7 @@
   import { m } from "../../lib/paraglide/messages.js";
   import ExplorerMenu from "../ExplorerMenu.svelte";
   import Icon from "../Icon.svelte";
+  import PanelTabs from "../PanelTabs.svelte";
 
   // The pending changes of the document, one row each:
   // `{id, file_id, path, author, who, run, at, position, line, before, after}`.
@@ -273,116 +274,117 @@
   </button>
 {/snippet}
 
+{#snippet trackingSwitch()}
+  <!-- A real switch rather than a checkbox with a switch painted over it:
+       the state is the control's own, so the name no longer has to carry
+       "On" or "Off" for a screen reader to read it out. -->
+  <Switch class="tracking-toggle" checked={tracking} disabled={!canTrack || suggestOnly}
+    title={suggestOnly ? m.changes_suggest_locked() : canTrack ? m.changes_track_title() : m.changes_editing_unavailable()}
+    onCheckedChange={({ checked }) => ontracking?.(checked)}>
+    <Switch.Label>{m.changes_track()}</Switch.Label>
+    <Switch.Control class="switch"><Switch.Thumb class="switch-thumb" /></Switch.Control>
+    <Switch.HiddenInput />
+  </Switch>
+{/snippet}
+
 <!-- A focusable review context keeps shortcuts out of source and discussion fields. -->
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div class="panel changes-panel" role="application" tabindex="0" onkeydown={keydown} aria-label={m.changes_review_label()} aria-keyshortcuts="ArrowDown ArrowUp J K A R">
-  <!-- The header is the title row, then one bar: the scope menu with the count,
-       or the selection or confirmation bar while either is open. Nothing else
-       sits above the queue, so the first reviewable change is near the top. -->
-  <header class="changes-header">
-    <div class="changes-title-row">
-      <h2 class="panel-section-title">{m.common_changes()}</h2>
-      <!-- A real switch rather than a checkbox with a switch painted over it:
-           the state is the control's own, so the name no longer has to carry
-           "On" or "Off" for a screen reader to read it out. -->
-      {#if canReview}
-      <Switch class="tracking-toggle" checked={tracking} disabled={!canTrack || suggestOnly}
-        title={suggestOnly ? m.changes_suggest_locked() : canTrack ? m.changes_track_title() : m.changes_editing_unavailable()}
-        onCheckedChange={({ checked }) => ontracking?.(checked)}>
-        <Switch.Label>{m.changes_track()}</Switch.Label>
-        <Switch.Control class="switch"><Switch.Thumb class="switch-thumb" /></Switch.Control>
-        <Switch.HiddenInput />
-      </Switch>
-      {/if}
-    </div>
-    {#if confirming}<div class="confirm-bar" role="alertdialog" aria-labelledby="changes-confirm-text">
-      <p class="confirm-text" id="changes-confirm-text">{confirmText(confirming)}</p>
-      <div class="bar-buttons">
-        <button type="button" class="bar-action cancel" onclick={() => confirming = null}>{m.common_cancel()}</button>
-        <button type="button" class="bar-action confirm {confirming.action}" disabled={busy} onclick={() => bulk(confirming.action, confirming.rows)}>{confirmLabel(confirming)}</button>
-      </div>
-    </div>
-    {:else if selecting}<div class="select-bar" role="toolbar" aria-label={m.changes_selected_label()}>
-      <div class="bar-row">
-        <span class="select-count" aria-live="polite">{m.changes_selected_count({ count: checked.size })}</span>
-        <div class="bar-end">
-          <button type="button" class="text-action select-all" disabled={filteredRows.filter(answerable).every((item) => checked.has(item.id))} onclick={() => checked = new Set(filteredRows.filter(answerable).map((item) => item.id))}>{m.common_select_all()}</button>
-          <button type="button" class="text-action cancel" onclick={stopSelecting}>{m.common_cancel()}</button>
+<div class="panel panel-tabbed changes-panel" role="application" tabindex="0" onkeydown={keydown} aria-label={m.changes_review_label()} aria-keyshortcuts="ArrowDown ArrowUp J K A R">
+  <PanelTabs id="changes" title={m.common_changes()} actions={canReview ? trackingSwitch : undefined}>
+    <!-- The header is one bar: the scope menu with the count, or the selection
+         or confirmation bar while either is open. Nothing else sits above the
+         queue, so the first reviewable change is near the top. -->
+    <header class="changes-header">
+      {#if confirming}<div class="confirm-bar" role="alertdialog" aria-labelledby="changes-confirm-text">
+        <p class="confirm-text" id="changes-confirm-text">{confirmText(confirming)}</p>
+        <div class="bar-buttons">
+          <button type="button" class="bar-action cancel" onclick={() => confirming = null}>{m.common_cancel()}</button>
+          <button type="button" class="bar-action confirm {confirming.action}" disabled={busy} onclick={() => bulk(confirming.action, confirming.rows)}>{confirmLabel(confirming)}</button>
         </div>
       </div>
-      <div class="bar-buttons">
-        <button type="button" class="bar-action reject" disabled={!selectedRows.length || busy} onclick={() => answerSelected("reject")}>{allChosen ? m.changes_reject_all() : m.common_reject()}</button>
-        {#if !suggestOnly}<button type="button" class="bar-action accept" disabled={!selectedRows.length || busy} onclick={() => answerSelected("accept")}>{allChosen ? m.changes_accept_all() : m.changes_accept()}</button>{/if}
+      {:else if selecting}<div class="select-bar" role="toolbar" aria-label={m.changes_selected_label()}>
+        <div class="bar-row">
+          <span class="select-count" aria-live="polite">{m.changes_selected_count({ count: checked.size })}</span>
+          <div class="bar-end">
+            <button type="button" class="text-action select-all" disabled={filteredRows.filter(answerable).every((item) => checked.has(item.id))} onclick={() => checked = new Set(filteredRows.filter(answerable).map((item) => item.id))}>{m.common_select_all()}</button>
+            <button type="button" class="text-action cancel" onclick={stopSelecting}>{m.common_cancel()}</button>
+          </div>
+        </div>
+        <div class="bar-buttons">
+          <button type="button" class="bar-action reject" disabled={!selectedRows.length || busy} onclick={() => answerSelected("reject")}>{allChosen ? m.changes_reject_all() : m.common_reject()}</button>
+          {#if !suggestOnly}<button type="button" class="bar-action accept" disabled={!selectedRows.length || busy} onclick={() => answerSelected("accept")}>{allChosen ? m.changes_accept_all() : m.changes_accept()}</button>{/if}
+        </div>
       </div>
-    </div>
-    {:else if changes.length}<div class="changes-toolbar">
-      {#if scopes.length > 1}<Menu onSelect={(chosen) => chooseScope(chosen.value)}>
-        <Menu.Trigger>
-          {#snippet element(attributes)}
-            <button {...attributes} type="button" class="scope-trigger" aria-label={m.changes_which_show({ name: scopeName })}><span class="scope-label">{scopeName}</span><Icon name="chevron-down" size="12px" /></button>
-          {/snippet}
-        </Menu.Trigger>
-        <ExplorerMenu>
-          {#each scopes.filter((option) => !option.group) as option (option.value)}
-            <Menu.Item value={option.value} class="menuitem"><span class="menuitem-check">{scope === option.value ? "✓" : ""}</span>{option.label}</Menu.Item>
-          {/each}
-          {#each ["Author", "File", "Run"] as group}
-            {#if scopes.some((option) => option.group === group)}
-              <hr class="hr my-1" />
-              <div class="changes-menu-label">{groupLabels[group]}</div>
-              {#each scopes.filter((option) => option.group === group) as option (option.value)}
-                <Menu.Item value={option.value} class="menuitem"><span class="menuitem-check">{scope === option.value ? "✓" : ""}</span>{option.label}</Menu.Item>
-              {/each}
-            {/if}
-          {/each}
-        </ExplorerMenu>
-      </Menu>{:else}<span class="scope-label scope-static">{m.changes_all_changes()}</span>{/if}
-      <div class="toolbar-end">
-        <span class="changes-count">{m.changes_pending_count({ count: filteredRows.length })}</span>
-        {#if canReview && filteredRows.length}<button type="button" class="text-action select-start" onclick={startSelecting}>{m.changes_select()}</button>{/if}
-      </div>
+      {:else if changes.length}<div class="changes-toolbar">
+        {#if scopes.length > 1}<Menu onSelect={(chosen) => chooseScope(chosen.value)}>
+          <Menu.Trigger>
+            {#snippet element(attributes)}
+              <button {...attributes} type="button" class="scope-trigger" aria-label={m.changes_which_show({ name: scopeName })}><span class="scope-label">{scopeName}</span><Icon name="chevron-down" size="12px" /></button>
+            {/snippet}
+          </Menu.Trigger>
+          <ExplorerMenu>
+            {#each scopes.filter((option) => !option.group) as option (option.value)}
+              <Menu.Item value={option.value} class="menuitem"><span class="menuitem-check">{scope === option.value ? "✓" : ""}</span>{option.label}</Menu.Item>
+            {/each}
+            {#each ["Author", "File", "Run"] as group}
+              {#if scopes.some((option) => option.group === group)}
+                <hr class="hr my-1" />
+                <div class="changes-menu-label">{groupLabels[group]}</div>
+                {#each scopes.filter((option) => option.group === group) as option (option.value)}
+                  <Menu.Item value={option.value} class="menuitem"><span class="menuitem-check">{scope === option.value ? "✓" : ""}</span>{option.label}</Menu.Item>
+                {/each}
+              {/if}
+            {/each}
+          </ExplorerMenu>
+        </Menu>{:else}<span class="scope-label scope-static">{m.changes_all_changes()}</span>{/if}
+        <div class="toolbar-end">
+          <span class="changes-count">{m.changes_pending_count({ count: filteredRows.length })}</span>
+          {#if canReview && filteredRows.length}<button type="button" class="text-action select-start" onclick={startSelecting}>{m.changes_select()}</button>{/if}
+        </div>
+      </div>{/if}
+      <span class="changes-live sr-only" aria-live="polite">{m.changes_pending_count({ count: filteredRows.length })}</span>
+    </header>
+    {#if feedback}<p class="panel-status" role="status" aria-live="polite">{feedback}</p>{/if}
+    {#if !filteredRows.length}<div class="changes-empty" role="status">
+      {#if changes.length}
+        <p class="changes-empty-title">{emptyTitle}</p>
+        <p class="changes-empty-note">{m.changes_empty_note_count({ count: changes.length })}</p>
+      {:else}
+        <p class="changes-empty-title">{m.changes_empty_none()}</p>
+        <p class="changes-empty-note">{m.changes_empty_hint()}</p>
+      {/if}
     </div>{/if}
-    <span class="changes-live sr-only" aria-live="polite">{m.changes_pending_count({ count: filteredRows.length })}</span>
-  </header>
-  {#if feedback}<p class="panel-status" role="status" aria-live="polite">{feedback}</p>{/if}
-  {#if !filteredRows.length}<div class="changes-empty" role="status">
-    {#if changes.length}
-      <p class="changes-empty-title">{emptyTitle}</p>
-      <p class="changes-empty-note">{m.changes_empty_note_count({ count: changes.length })}</p>
-    {:else}
-      <p class="changes-empty-title">{m.changes_empty_none()}</p>
-      <p class="changes-empty-note">{m.changes_empty_hint()}</p>
-    {/if}
-  </div>{/if}
-  <div class="changes-list" role="list" aria-label={m.changes_queue_label()}>
-    {#each filteredRows as item (item.id)}
-      {@const isActive = active === item.id}
-      <article class="change-row" class:lp-selected={isActive || checked.has(item.id)} aria-current={isActive ? "true" : undefined} role="listitem">
-        {#if selecting && answerable(item)}<div class="row-head"><label class="row-pick-hit"><input type="checkbox" class="row-pick" checked={checked.has(item.id)} aria-label={selectKind(item)} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} /></label>{@render rowMain(item, isActive)}</div>{:else}{@render rowMain(item, isActive)}{/if}
-        {#if isLong(item)}<button type="button" class="row-more" aria-expanded={expandedText.has(item.id)} onclick={() => toggleText(item)}>{expandedText.has(item.id) ? m.changes_show_less() : m.changes_show_more()}</button>{/if}
-        <!-- Every change offers its answer, so a reviewer can act on any row
-             without first selecting it. -->
-        {#if canReview && !selecting && answerable(item)}<div class="row-actions">
-          <button type="button" class="row-action reject" aria-label={rejectKind(item)} title={m.changes_reject_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "reject")}><Icon name="x" size="14px" />{deciding.has(item.id) ? m.changes_rejecting() : m.common_reject()}</button>
-          {#if !suggestOnly}<button type="button" class="row-action accept" aria-label={acceptKind(item)} title={m.changes_accept_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "accept")}><Icon name="check" size="14px" />{deciding.has(item.id) ? m.changes_accepting() : m.changes_accept()}</button>{/if}
-        </div>{/if}
-      </article>
-    {/each}
-  </div>
-  <!-- The shortcuts, said once and quietly, rather than a panel of
-       documentation standing where changes could be. -->
-  {#if filteredRows.length}<footer class="changes-hint">{m.changes_hint()}</footer>{/if}
+    <div class="changes-list" role="list" aria-label={m.changes_queue_label()}>
+      {#each filteredRows as item (item.id)}
+        {@const isActive = active === item.id}
+        <article class="change-row" class:lp-selected={isActive || checked.has(item.id)} aria-current={isActive ? "true" : undefined} role="listitem">
+          {#if selecting && answerable(item)}<div class="row-head"><label class="row-pick-hit"><input type="checkbox" class="row-pick" checked={checked.has(item.id)} aria-label={selectKind(item)} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} /></label>{@render rowMain(item, isActive)}</div>{:else}{@render rowMain(item, isActive)}{/if}
+          {#if isLong(item)}<button type="button" class="row-more" aria-expanded={expandedText.has(item.id)} onclick={() => toggleText(item)}>{expandedText.has(item.id) ? m.changes_show_less() : m.changes_show_more()}</button>{/if}
+          <!-- Every change offers its answer, so a reviewer can act on any row
+               without first selecting it. -->
+          {#if canReview && !selecting && answerable(item)}<div class="row-actions">
+            <button type="button" class="row-action reject" aria-label={rejectKind(item)} title={m.changes_reject_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "reject")}><Icon name="x" size="14px" />{deciding.has(item.id) ? m.changes_rejecting() : m.common_reject()}</button>
+            {#if !suggestOnly}<button type="button" class="row-action accept" aria-label={acceptKind(item)} title={m.changes_accept_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "accept")}><Icon name="check" size="14px" />{deciding.has(item.id) ? m.changes_accepting() : m.changes_accept()}</button>{/if}
+          </div>{/if}
+        </article>
+      {/each}
+    </div>
+    <!-- The shortcuts, said once and quietly, rather than a panel of
+         documentation standing where changes could be. -->
+    {#if filteredRows.length}<footer class="changes-hint">{m.changes_hint()}</footer>{/if}
+  </PanelTabs>
 </div>
 
 <style>
-  .changes-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 0; outline: none; container-type: inline-size; }
-  /* The header holds the title and the tracking switch, then one bar. It stays
-     put while the queue scrolls beneath, and its side padding is the panel's
-     gutter, so the title, the bars and the rows share one left edge. */
-  .changes-header { position: sticky; top: 0; z-index: 2; flex: 0 0 auto; display: flex; flex-direction: column; gap: .25rem; padding: 0 var(--panel-padding) .75rem; border-bottom: 1px solid var(--color-divider); background: var(--color-sidebar); }
-  .changes-title-row { display: flex; align-items: center; justify-content: space-between; gap: .5rem; min-height: 2.5rem; }
-  h2 { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .changes-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; outline: none; container-type: inline-size; }
+  /* The header is one bar. Like the queue, it bleeds to the panel's edges so
+     its divider runs full width, and takes the gutter back as padding, so the
+     bars share the left edge with the rows. */
+  .changes-header { flex: 0 0 auto; display: flex; flex-direction: column; gap: .25rem; margin-inline: calc(var(--panel-padding) * -1); padding: 0 var(--panel-padding) .75rem; border-bottom: 1px solid var(--color-divider); }
+  /* The switch on the title strip ends on the same right edge as the count
+     beneath it. */
+  .changes-panel :global(.panel-tabs-actions) { padding-inline-end: var(--panel-padding); }
   /* The track and thumb are `.switch` in librepaper.css, worn here and in the
      settings dialog alike; this is only where the word sits beside them. */
   .changes-panel :global(.tracking-toggle) { display: inline-flex; align-items: center; gap: .5rem; flex: none; min-height: 2rem; color: var(--panel-muted); font-size: var(--panel-font-size); white-space: nowrap; cursor: pointer; }
@@ -416,8 +418,11 @@
   /* Touch needs room for a thumb; a mouse does not. */
   @media (pointer: coarse) { .scope-trigger, .text-action, .bar-action, .row-action { min-height: 2.25rem; } }
   .changes-menu-label { padding: .35rem .65rem .2rem; color: var(--panel-muted); font-size: var(--panel-meta-size); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
-  .panel-status { margin: 0; padding: .5rem var(--panel-padding) 0; color: var(--panel-muted); font-size: var(--panel-meta-size); }
-  .changes-list { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+  .panel-status { margin: 0; padding: .5rem 0 0; color: var(--panel-muted); font-size: var(--panel-meta-size); }
+  /* The queue is the pane's scroller. It bleeds to the panel's edges so the
+     scrollbar and the row hairlines run full width; each row keeps its own
+     gutter. */
+  .changes-list { flex: 1 1 0; min-height: 0; margin-inline: calc(var(--panel-padding) * -1); overflow-y: auto; overscroll-behavior: contain; }
   /* A row is the change and a line saying whose it is. No card, no border but
      the hairline between one change and the next. */
   .change-row { position: relative; content-visibility: auto; contain-intrinsic-size: 0 3.4rem; padding: .75rem var(--panel-padding); border-bottom: 1px solid var(--color-divider); }
@@ -445,10 +450,10 @@
   .row-diff.clamped .insertion, .row-diff.clamped .deletion { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; line-clamp: 6; overflow: hidden; }
   .row-more { margin-top: .2rem; padding: .1rem 0; border: 0; background: none; color: var(--color-link, var(--color-brand)); font-size: var(--panel-meta-size); cursor: pointer; }
   .row-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .5rem; }
-  .changes-empty { padding: 2rem var(--panel-padding); text-align: center; text-wrap: balance; }
+  .changes-empty { padding: 2rem 0; text-align: center; text-wrap: balance; }
   .changes-empty-title { margin: 0; font-weight: 500; font-size: var(--panel-font-size); }
   .changes-empty-note { margin: .2rem 0 0; color: var(--panel-muted); font-size: var(--panel-meta-size); }
-  .changes-hint { flex: 0 0 auto; padding: .5rem var(--panel-padding); border-top: 1px solid var(--color-divider); color: var(--panel-muted); font-size: var(--panel-meta-size); text-align: center; }
+  .changes-hint { flex: 0 0 auto; margin: 0 calc(var(--panel-padding) * -1) calc(var(--panel-padding) * -1); padding: .5rem var(--panel-padding); border-top: 1px solid var(--color-divider); color: var(--panel-muted); font-size: var(--panel-meta-size); text-align: center; }
   /* Phones: every control in a change is a finger's height, and an insertion
      is underlined as well as signed and tinted, so it does not rely on colour. */
   @media (max-width: 767px) {

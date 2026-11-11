@@ -1,6 +1,7 @@
 <script>
   import { m } from "../../lib/paraglide/messages.js";
   import { locale } from "../../lib/locale.js";
+  import PanelTabs from "../PanelTabs.svelte";
   import {
     OUTLINE_FILTER_ALL,
     OUTLINE_FILTER_OPEN,
@@ -46,8 +47,8 @@
   }
 </script>
 
-<nav class="outline" aria-label={m.outline_document()}>
-  <h2 class="sr-only">{m.outline_document()}</h2>
+<nav class="outline panel-tabbed" aria-label={m.outline_document()}>
+  <PanelTabs id="outline" title={m.common_outline()}>
   {#if headings.length}
     {#if filterable}
       <div class="outline-filter">
@@ -91,13 +92,15 @@
   {:else}
     <p class="outline-empty">{m.outline_no_headings()}</p>
   {/if}
+  </PanelTabs>
 </nav>
 
 <style>
   .outline { display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column; overflow: hidden; }
-  .outline-filter { padding: calc(var(--spacing) * 2) var(--spacing) 0; }
+  .outline-filter { padding-bottom: calc(var(--spacing) * 2); }
   .outline-filter .select { width: 100%; font-size: var(--text-sm); }
-  .outline-list { overflow: auto; padding: calc(var(--spacing) * 2) var(--spacing); }
+  /* The pane supplies the padding; the list only scrolls. */
+  .outline-list { flex: 1 1 0; min-height: 0; overflow: auto; padding: 0; }
   .outline-heading {
     display: flex;
     width: 100%;
