@@ -84,9 +84,9 @@ assert.match(previewSource, /const failed = hasError[\s\S]*?severity: "error"[\s
 // stored. The switch is the consent, and it is given again each time.
 assert.match(readerSource, /let localExecution = \$state\(false\)/);
 assert.doesNotMatch(readerSource, /granted\(|local-execution\.js|localExecutionConsent/);
-// Turning the switch changes who renders, so what was in flight stops and the
-// pane is drawn again.
-assert.match(readerSource, /function toggleLocalExecution\(\) \{\s*localExecution = !localExecution;\s*stopRendering\(\);\s*void paintPreview\(\);/);
+// Turning the switch changes who renders, so a chosen Run directory is
+// forgotten, what was in flight stops and the pane is drawn again.
+assert.match(readerSource, /function toggleLocalExecution\(\) \{\s*localExecution = !localExecution;\s*if \(localExecution\) runDirectory = "";\s*stopRendering\(\);\s*void paintPreview\(\);/);
 // Nothing resets a stored choice of this computer when a document opens, and
 // there is no live preview left to start or stop.
 assert.doesNotMatch(readerSource, /setQuartoPreviewMode|setTypstPreviewMode|startLocalExecution|stopLocalExecution|createLocalPreview/);
@@ -94,9 +94,9 @@ assert.doesNotMatch(readerSource, /livePreviewOwnsPane|liveServing|liveTargets|l
 assert.doesNotMatch(previewSource, /livePreviewOwnsPane|calepin/i);
 // The switch sits in the top bar and the View menu, and it is the consent.
 assert.match(readerSource, /\{#snippet localExecutionControl\(\)\}[\s\S]*?\{#if runCodeOffered\}[\s\S]*?role="switch"[\s\S]*?aria-checked=\{localExecution\}[\s\S]*?onclick=\{toggleLocalExecution\}/);
-// The switch is offered in the desktop app, for every editable document whose
-// format is set to this computer.
-assert.match(readerSource, /const runCodeOffered = \$derived\(mayEdit && hasDesktop && buildPreferences\.backend === "local"\)/);
+// The switch is offered in the desktop app, for every document this person may
+// edit outright (not only suggest) whose format is set to this computer.
+assert.match(readerSource, /const runCodeOffered = \$derived\(mayEdit && !suggestOnly && hasDesktop && buildPreferences\.backend === "local"\)/);
 // There is no confirmation dialog any more.
 assert.doesNotMatch(readerSource, /Run code on this computer/);
 // The browser makes Markdown and Quarto PDFs itself, so no card sends the
@@ -118,7 +118,7 @@ assert.match(readerSource, /tell\(\{ type: "viewer-scale", mode \}\)/);
 assert.match(readerSource, /tell\(\{ type: "viewer-tool", tool: next \}\)/);
 // No PDF in the frame, no paged controls in the header: that is what keeps
 // the row honest for a flowing document, which has none of them.
-assert.match(readerSource, /\{#snippet previewControls\(\)\}\s*\{#if viewerView\}/);
+assert.match(readerSource, /\{#snippet previewControls\(\)\}\s*\{#if viewerView \|\| previewDownloads\.length\}/);
 const viewerSource = englishSource(await readFile(new URL("../../src/entries/viewer.js", import.meta.url), "utf8"));
 // Nothing of the frame's own is drawn over the page any more.
 assert.doesNotMatch(viewerSource, /createToolbar/);
@@ -137,7 +137,7 @@ assert.match(previewSource, /framePreview\.clear\?\.\(\);[\s\S]*?onEmpty\(\);/);
 // cover of the Reader's, which works over the PDF viewer too, since that frame
 // ignores an html message.
 assert.match(readerSource, /!failedBeforeRender && !painted\.state\.empty/);
-assert.match(readerSource, /cover=\{painted\.state\.empty \? emptyCover : waitingUp \? waitingCover : undefined\}/);
+assert.match(readerSource, /cover=\{runDirectoryPage \? runDirectoryCover : painted\.state\.empty \? emptyCover : waitingUp \? waitingCover : undefined\}/);
 assert.match(readerSource, /onEmpty: \(\) => \{\s*painted\.reset\(\{ empty: true \}\);\s*renderStatus\.resetFailure\(\);\s*\}/);
 assert.doesNotMatch(previewSource, /This document is empty/);
 assert.doesNotMatch(readerSource, /project-folder|ProjectFolderSetting/);

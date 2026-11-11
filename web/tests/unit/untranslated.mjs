@@ -34,6 +34,7 @@ const files = (dir) => readdirSync(dir).flatMap((name) => {
 // is not one of the shared words.
 const needsMessage = (text) => {
   if (/^https?:\/\/\S+$/.test(text)) return false;
+  if (/^git@\S+$/.test(text)) return false; // an SSH remote address
   let rest = text;
   for (const word of [...SAME_EVERYWHERE].sort((a, b) => b.length - a.length)) rest = rest.split(word).join(" ");
   return /\p{L}{2,}/u.test(rest);
