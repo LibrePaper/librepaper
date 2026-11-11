@@ -166,6 +166,32 @@ try {
   }
   await until("the word count dialog", () => b.evaluate(`document.querySelector(".word-total")?.textContent.trim() === "4 words"`), 5000);
   assert.equal(await b.evaluate(`document.querySelector(".word-scope")?.textContent.trim()`), "in main.md");
+  await key("Escape", "Escape", 27);
+  await until("the word count dialog to close", () => b.evaluate(`!document.querySelector(".word-total")`), 5000);
+
+  // Help > Report a problem opens Settings with the diagnostics in view: the
+  // desktop app's macOS menu no longer carries them. A short window puts them
+  // below the fold, so only the scroll brings them into view.
+  await b.resize(1400, 420);
+  await flush();
+  await press("help");
+  const report = await b.evaluate(`(() => {
+    const trigger = document.querySelector("[data-menubar=help]");
+    const panel = document.getElementById(trigger.getAttribute("aria-controls"));
+    const node = [...panel.querySelectorAll(".menuitem")].find(node => node.textContent.includes("Report a problem"));
+    const r = node?.getBoundingClientRect();
+    return r ? {x: r.left + r.width/2, y: r.top + r.height/2} : null;
+  })()`);
+  assert.ok(report, "the Help menu offers Report a problem");
+  for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+    await b.command("Input.dispatchMouseEvent", { type, x: report.x, y: report.y, button: "left", clickCount: 1, buttons: type === "mousePressed" ? 1 : 0 });
+  }
+  await until("the diagnostics in view", () => b.evaluate(`(() => {
+    const node = document.getElementById("diagnostics-report");
+    if (!node) return false;
+    const r = node.getBoundingClientRect();
+    return node.closest(".settings-body").scrollTop > 0 && r.top >= 0 && r.top < innerHeight;
+  })()`), 5000);
 
   assert.deepEqual(await b.evaluate("window.testErrors"), []);
   console.log("menubar-browser: one bar, hover to switch, arrows across the row, shortcuts and a single name column passed");

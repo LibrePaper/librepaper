@@ -178,10 +178,13 @@
   </MenubarMenu>
 {/if}
 <!-- Help is the registry's two entries that are about the workspace itself;
-     runCommand runs them as it runs the palette and the keyboard. -->
+     runCommand runs them as it runs the palette and the keyboard. Report a
+     problem opens Settings at the diagnostics. -->
 <MenubarMenu id="help" label={m.mobilenav_help()} onselect={onhelp}>
   <Menu.Item value="palette" class="menuitem"><span class="menuitem-label">{m.common_command_palette()}</span>{#if keys.palette}<span class="menuitem-keys">{keys.palette}</span>{/if}</Menu.Item>
   <Menu.Item value="shortcuts" class="menuitem"><span class="menuitem-label">{m.common_keyboard_shortcuts()}</span>{#if keys.shortcuts}<span class="menuitem-keys">{keys.shortcuts}</span>{/if}</Menu.Item>
+  <hr class="hr my-1" />
+  <Menu.Item value="report-problem" class="menuitem"><span class="menuitem-label">{m.menus_report_problem()}</span></Menu.Item>
 </MenubarMenu>
 
 <style>

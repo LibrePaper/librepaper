@@ -25,6 +25,8 @@
   let {
     open = $bindable(false),
     category = $bindable("general"),
+    // An entry to scroll to once the dialog shows, cleared after.
+    entry = $bindable(""),
     // The editor.
     keys = "default",
     onkeys = undefined,
@@ -72,12 +74,20 @@
   const entriesOf = (id) => found?.find((match) => match.category.id === id)?.entries || [];
 
   let body = $state(null);
-  async function go(id, entry = "") {
+  async function go(id, target = "") {
     category = id;
-    if (!entry) return;
+    if (!target) return;
     await tick();
-    body?.querySelector(`#${entry}`)?.scrollIntoView({ block: "start", behavior: "smooth" });
+    body?.querySelector(`#${target}`)?.scrollIntoView({ block: "start", behavior: "smooth" });
   }
+  // A caller that names an entry before the dialog opens gets it scrolled to
+  // once the body exists, then the request is cleared.
+  $effect(() => {
+    if (!open || !entry || !body) return;
+    const target = entry;
+    entry = "";
+    void go(category, target);
+  });
 </script>
 
 <Modal bind:open title={m.common_settings()} page>
