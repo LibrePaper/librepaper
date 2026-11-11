@@ -957,11 +957,13 @@ impl Worker {
         .map_err(|error| error.to_string())?;
 
         // Keyed by the projection digest, so a label naming a document
-        // another label already archived names the same object.
-        let key = format!(
-            "documents/{}/labels/{}.tar.zst",
+        // another label already archived names the same object. Retained
+        // texts are in the archive but not in that digest, so they change the
+        // key too.
+        let key = label_archive_key(
             label.document_id,
-            projected.projection.digest().to_hex()
+            &projected.projection.digest(),
+            &projected.retained,
         );
         // Serialize adoption with the orphan sweep. The lock is session-owned
         // on a direct connection, so neither cancellation nor a small pool
@@ -1199,6 +1201,26 @@ impl Worker {
     }
 }
 
+/// The object key of a label's archive. Without retained texts it is the
+/// projection digest alone, as it has always been. With them it is a digest of
+/// the projection digest and the retained texts under a distinct `r-` name, so
+/// an archive built before retained texts existed is never adopted for them.
+fn label_archive_key(
+    document_id: Uuid,
+    projection: &librepaper_base::digest::Digest,
+    retained: &std::collections::BTreeMap<String, String>,
+) -> String {
+    let name = match librepaper_document::document::projection::retained_digest(retained) {
+        None => projection.to_hex(),
+        Some(extra) => {
+            let mut bytes = projection.as_bytes().to_vec();
+            bytes.extend_from_slice(extra.as_bytes());
+            format!("r-{}", librepaper_base::digest::Digest::of(&bytes).to_hex())
+        }
+    };
+    format!("documents/{document_id}/labels/{name}.tar.zst")
+}
+
 /// Write a new immutable archive or adopt bytes left by a worker that crashed
 /// after its object put and before its catalogue transaction committed. The
 /// caller holds the per-key lock across this operation and label attachment.
@@ -1297,6 +1319,24 @@ pub fn prove_coverage(
 mod tests {
     use super::*;
     use crate::storage::blob::FsStore;
+
+    #[test]
+    fn the_archive_key_follows_the_retained_texts() {
+        let id = Uuid::nil();
+        let digest = librepaper_base::digest::Digest::of(b"tree");
+        let plain = label_archive_key(id, &digest, &Default::default());
+        assert_eq!(
+            plain,
+            format!("documents/{id}/labels/{}.tar.zst", digest.to_hex())
+        );
+        let with = |body: &str| {
+            let retained = std::collections::BTreeMap::from([("a.R".to_string(), body.to_string())]);
+            label_archive_key(id, &digest, &retained)
+        };
+        assert_ne!(with("x"), plain);
+        assert_ne!(with("x"), with("y"));
+        assert_eq!(with("x"), with("x"));
+    }
 
     #[tokio::test]
     async fn a_full_queue_keeps_one_rescan_bit_without_waiting_senders() {

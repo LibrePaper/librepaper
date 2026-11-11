@@ -100,14 +100,26 @@ fn reader_changes(
 /// a reject, which only deletes a record, would otherwise never reach a
 /// reader, and a rename would answer 304 with the old title. `project_digest`
 /// itself stays the projection digest, because the render and the
-/// stale-selection check are keyed on text alone.
-fn reader_identity(project_digest: &str, title: &str, format: &str, changes: &[Value]) -> String {
+/// stale-selection check are keyed on text alone. The retained texts are in
+/// the response but not in the projection digest, so when there are any their
+/// digest is mixed in; with none the etag is what it always was.
+fn reader_identity(
+    project_digest: &str,
+    title: &str,
+    format: &str,
+    changes: &[Value],
+    retained: Option<librepaper_base::digest::Digest>,
+) -> String {
     let mut hash = Sha256::new();
     for part in [project_digest, title, format] {
         hash.update(part.as_bytes());
         hash.update(b"\n");
     }
     hash.update(Value::Array(changes.to_vec()).to_string().as_bytes());
+    if let Some(retained) = retained {
+        hash.update(b"\nretained\n");
+        hash.update(retained.as_bytes());
+    }
     hex::encode(hash.finalize())
 }
 
@@ -1192,7 +1204,13 @@ impl Server {
         let identity = projected.projection.digest().to_hex();
         let etag = format!(
             "\"{}{}\"",
-            reader_identity(&identity, &entry.title, &format, &changes),
+            reader_identity(
+                &identity,
+                &entry.title,
+                &format,
+                &changes,
+                librepaper_document::document::projection::retained_digest(&projected.retained)
+            ),
             if unsuggested { "-u" } else { "" }
         );
         if header_of(headers, "if-none-match").is_some_and(|value| {
@@ -2236,6 +2254,7 @@ mod reader_changes_tests {
             "Paper",
             "markdown",
             &changes,
+            None,
         );
         assert_ne!(
             before,
@@ -2243,7 +2262,8 @@ mod reader_changes_tests {
                 &projected.projection.digest().to_hex(),
                 "Renamed",
                 "markdown",
-                &changes
+                &changes,
+                None
             ),
             "a rename must not answer 304 with the old title"
         );
@@ -2257,8 +2277,32 @@ mod reader_changes_tests {
             "Paper",
             "markdown",
             &changes,
+            None,
         );
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn a_retained_text_moves_the_reader_etag() {
+        use librepaper_document::document::projection::retained_digest;
+        let digest = "abc";
+        let retained = |body: &str| {
+            retained_digest(&std::collections::BTreeMap::from([(
+                "a.R".to_string(),
+                body.to_string(),
+            )]))
+        };
+        let plain = reader_identity(digest, "Paper", "markdown", &[], None);
+        let one = reader_identity(digest, "Paper", "markdown", &[], retained("x"));
+        assert_ne!(plain, one);
+        assert_ne!(
+            one,
+            reader_identity(digest, "Paper", "markdown", &[], retained("y"))
+        );
+        assert_eq!(
+            one,
+            reader_identity(digest, "Paper", "markdown", &[], retained("x"))
+        );
     }
 }
 
