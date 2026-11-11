@@ -61,6 +61,7 @@ pub(crate) fn normalized_server(raw: &str) -> Result<String, String> {
 mod connection;
 mod git;
 mod jobs;
+mod run_dir;
 mod sync;
 #[cfg(test)]
 mod wire_tests;
@@ -154,9 +155,9 @@ pub struct NativeRunner {
 impl NativeRunner {
     /// A runner that executes every document in a hosted workspace under
     /// `base`.
-    pub fn with_hosted_workspaces(base: PathBuf) -> Self {
+    pub fn with_hosted_workspaces(base: PathBuf, run_dirs: PathBuf) -> Self {
         Self {
-            binding_store: BindingStore::new(base),
+            binding_store: BindingStore::with_run_dirs(base, run_dirs),
         }
     }
 }
@@ -422,7 +423,7 @@ impl LocalService {
         // than replaying it. See `SessionRegistry::recover_at_startup`.
         crate::assistant::registry::SessionRegistry::recover_at_startup(state_home);
         super::render::records::init(state_home);
-        let bindings = BindingStore::new(base);
+        let bindings = BindingStore::with_run_dirs(base, BindingStore::run_dirs_home(state_home));
         let inner = Arc::new(Inner {
             state_home: state_home.to_path_buf(),
             folder_dialog: Mutex::new(()),
@@ -689,6 +690,18 @@ async fn dispatch(
         }
         ["zotero", "items", key] if *method == Method::GET => {
             handle_zotero_item(inner, headers, origin, key).await
+        }
+        ["run-directory"] if *method == Method::GET => {
+            run_dir::handle_status(inner, headers, origin, request).await
+        }
+        ["run-directory", "choose"] if *method == Method::POST => {
+            run_dir::handle_choose(inner, headers, origin, request).await
+        }
+        ["run-directory", "default"] if *method == Method::POST => {
+            run_dir::handle_default(inner, headers, origin, request).await
+        }
+        ["run-directory", "open"] if *method == Method::POST => {
+            run_dir::handle_open(inner, headers, origin, request).await
         }
         ["connections"] if *method == Method::GET => {
             connection::handle_status(inner, headers, origin, request).await
