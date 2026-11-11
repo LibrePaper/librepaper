@@ -34,7 +34,7 @@ When you upload a project folder or zip, LibrePaper keeps the source and leaves 
 - Kept: `.qmd`, `.md`, `.bib`, `.csl`, `.yml`, `.css`, images, and `.lua` filters.
 - Left out: rendered output, `_freeze`, `_site`, `_book`, `*_files` and `*_cache` folders, and `renv` or `venv` environments.
 - Left out: data files such as `.csv`.
-- Left out: `.R`, `.py` and `.jl` scripts. Keep your code with your data, on your computer. Scripts uploaded before this change stay in the project.
+- Left out: `.R`, `.py` and `.jl` scripts. Keep your code with your data, on your computer. Scripts already in a project stay there until the project is copied or republished, which leaves them out.
 
 To share a data file anyway, list it in `.librepaper-share.json` at the top of the project:
 
