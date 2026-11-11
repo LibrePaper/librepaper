@@ -22,5 +22,4 @@ The [feature table](index.html#features) lists what LibrePaper does in a web bro
 
 ## Chat and history
 
-- Project chat is kept with the project. The owner can clear it from the chat menu or the command palette.
-- Owners can permanently trim older history. An owner's trim also deletes chat.
+Project chat is kept with the project, and the owner can clear it from the chat menu or the command palette. Owners can permanently trim older history, and an owner's trim also deletes chat.

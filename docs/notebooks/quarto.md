@@ -136,6 +136,4 @@ harvest_root <- Sys.getenv("HARVEST_ROOT", "data/harvest_abstracts")
 
 ## Safety
 
-- Quarto runs as you. It can read your files, use your packages and reach the internet. LibrePaper does not limit it.
-- Code runs only while **Run code** is on. LibrePaper never remembers this setting.
-- Every editor can change the code. Turn on **Run code** only for documents whose editors you trust.
+Quarto runs as you. It can read your files, use your packages and reach the internet. LibrePaper does not limit it. Code runs only while **Run code** is on, and LibrePaper never remembers this setting. Every editor can change the code, so turn on **Run code** only for documents whose editors you trust.

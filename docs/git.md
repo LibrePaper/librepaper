@@ -16,7 +16,7 @@ There are three ways to sync, and they all do the same two things: pull brings t
 
 ## The Git panel
 
-Open a project in the [desktop app](desktop-app.html) and choose the Git panel. Type the repository's address into the **Repository URL or local path** field and click Connect. On GitHub, use the SSH address (see [Credentials](#credentials)). To work directly in a repository already on your computer, click **Browse…** and choose its folder, then click Connect. A local path you type is confirmed in the folder chooser before it connects.
+Open a project in the [desktop app](desktop-app.html) and choose the Git panel. Type the repository's address into the **Repository URL, SSH, or local path** field and click Connect. On GitHub, use the SSH address (see [Credentials](#credentials)). To work directly in a repository already on your computer, click **Browse…** and choose its folder, then click Connect. A local path you type is confirmed in the folder chooser before it connects.
 
 Two buttons do the work. Get repository changes imports new commits into the project and its History. Send project changes sends the project's files to the repository's branch. If a file changed on both sides, the panel lists it and you choose Keep project's or Take repository's for each one, then click the button again. With a local repository, conflicts are left in the repository for your own Git tools instead, and only committed files are sent.
 
@@ -42,7 +42,14 @@ The `librepaper` command comes with the desktop app's Homebrew, Scoop, Windows i
 
 ### Sign in
 
-Run `librepaper login` once to sign in on this computer for 90 days. On a server or in CI, use a project token instead: in the project, open the Agent panel (the robot icon), then the Agent tab, then New. Choose the Edit permission, create the token, and copy it from "Other connection methods". See [Agent tokens](agents.html#agent-tokens).
+Run `librepaper login` once to sign in on this computer for 90 days. On a server or in CI, use a project token instead:
+
+1. In the project, open the Agent panel (the robot icon).
+2. Open the Agent tab, then click New.
+3. Choose the Edit permission and create the token.
+4. Copy it from "Other connection methods".
+
+See [Agent tokens](agents.html#agent-tokens).
 
 Pass the token with `--token`, or set it for the shell without leaving it in your history:
 

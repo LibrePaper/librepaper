@@ -50,11 +50,11 @@ librepaper.org keeps no access log and no IP addresses in its database. The serv
 > **Warning** Anyone who can read a document can also read its source files in
 > the browser. Keep confidential inputs out of the project.
 
-- Your handle is your GitHub login or your Google email. Other people see your display name, not your handle. Administrators can see both. If GitHub or Google gives no name, your display name is your handle, without the part after the `@`.
-- While you have a document open, other people viewing it see that you are there and where your cursor is.
-- Edit and suggest links always require sign-in. Read and comment links require it too, unless the owner chose "Anyone with the link" for that link and the host allows it. Someone who is not signed in can never edit or suggest.
-- Project chat is visible to people with a comment or edit link, and to the owner. Read links never show it.
-- Administrators are able to read every account and document. They open a document only to act on an abuse report or a suspected breach of the [terms of service](terms.html), to meet a legal obligation, to fix a fault, or when its owner asks for help.
+Your handle is your GitHub login or your Google email. Other people see your display name, not your handle, and administrators can see both. If GitHub or Google gives no name, your display name is your handle, without the part after the `@`. While you have a document open, other people viewing it see that you are there and where your cursor is.
+
+Edit and suggest links always require sign-in. Read and comment links require it too, unless the owner chose "Anyone with the link" for that link and the host allows it. Someone who is not signed in can never edit or suggest. Project chat is visible to people with a comment or edit link, and to the owner. Read links never show it.
+
+Administrators are able to read every account and document. They open a document only to act on an abuse report or a suspected breach of the [terms of service](terms.html), to meet a legal obligation, to fix a fault, or when its owner asks for help.
 
 ## What leaves librepaper.org
 
@@ -98,13 +98,9 @@ The browser also keeps data of its own on your device.
 
 ## Backups
 
-- A backup runs every hour. It holds the database and every stored file.
-- Backups are encrypted and stored in Canada, away from the server.
-- Every backup from the last 48 hours is kept, plus the last backup of each of the last 14 days and of each of the last 11 weeks. The oldest backup is therefore about ten weeks old.
-- A second copy of the backups is kept with the same provider, also in Canada. When a backup is removed from the first copy, the second copy keeps it for up to 30 more days.
-- A deleted project is purged seven days after you delete it, so it can stay in backups for about fifteen weeks. An erased account stays about as long.
-- Cleared or trimmed chat can stay in backups until those backups expire, about fourteen weeks after the change.
-- If backups stop running for a while, the oldest ones are kept longer.
+A backup runs every hour. Each one holds the database and every stored file. Backups are encrypted and stored in Canada, away from the server. Every backup from the last 48 hours is kept, plus the last backup of each of the last 14 days and of each of the last 11 weeks. The oldest backup is therefore about ten weeks old. A second copy of the backups is kept with the same provider, also in Canada. When a backup is removed from the first copy, the second copy keeps it for up to 30 more days.
+
+A deleted project is purged seven days after you delete it, so it can stay in backups for about fifteen weeks. An erased account stays about as long. Cleared or trimmed chat can stay in backups until those backups expire, about fourteen weeks after the change. If backups stop running for a while, the oldest ones are kept longer.
 
 ## Erasing an account
 

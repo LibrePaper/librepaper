@@ -199,7 +199,7 @@
   <form class="git-form" onsubmit={connect}>
     <label class="panel-meta" for="git-web-address">{m.gitweb_address_label()}</label>
     <div class="git-field-row">
-      <input id="git-web-address" class="input git-input" type="text" placeholder="https://github.com/owner/repo.git" autocomplete="off" spellcheck="false"
+      <input id="git-web-address" class="input git-input" type="text" placeholder="git@github.com:owner/repo.git" autocomplete="off" spellcheck="false"
              bind:value={address} disabled={busy} oninput={() => { failure = ""; }} />
       <button type="button" class="btn btn-sm lp-control-tonal-brand git-browse" disabled={busy} onclick={browse}>
         <Icon name="folder" size={14} />
@@ -212,7 +212,6 @@
         {link.busy === "connect" || link.busy === "connect-local" ? m.common_connecting() : m.gitweb_connect()}
       </button>
     </div>
-    <p class="panel-meta git-note">{m.gitweb_credentials_note()}</p>
   </form>
 {/snippet}
 
@@ -411,7 +410,6 @@
   .git-status { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1.5); font-weight: 500; }
   .git-ok { color: var(--color-success-text); }
   .git-lead { margin: calc(var(--spacing) * 1.5) 0 0; overflow-wrap: anywhere; }
-  .git-note { margin: calc(var(--spacing) * 1.5) 0 0; overflow-wrap: anywhere; }
   .git-identity { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: calc(var(--spacing) * 3); margin-top: calc(var(--spacing) * 2); }
   .git-identity-text { min-width: 0; }
   .git-name-row { display: flex; align-items: center; gap: calc(var(--spacing) * 1); min-width: 0; }
