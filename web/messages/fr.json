@@ -2930,6 +2930,7 @@
   "rundirectorycontrol_change": "Modifier…",
   "rundirectorycontrol_choose_prompt": "Choisissez le dossier dans lequel votre code s’exécute.",
   "rundirectorycontrol_missing": "Votre dossier d’exécution {path} est introuvable.",
+  "rundirectorycontrol_choose_chip": "Choisir un dossier",
   "rundirectorycontrol_use_suggested": "Utiliser {suggested}",
   "preview_render_run_directory_clash": "{path} se trouve dans LibrePaper et dans votre dossier d’exécution. Markdown utilise la copie de LibrePaper; le code lit celle de votre dossier d’exécution.",
   "preview_render_run_directory_not_linked": "{path} dans votre dossier d’exécution n’a pas pu être rendu accessible à Quarto.",

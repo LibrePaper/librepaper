@@ -2930,6 +2930,7 @@
   "rundirectorycontrol_change": "Change…",
   "rundirectorycontrol_choose_prompt": "Choose the folder your code runs in.",
   "rundirectorycontrol_missing": "Your Run directory {path} is missing.",
+  "rundirectorycontrol_choose_chip": "Choose folder",
   "rundirectorycontrol_use_suggested": "Use {suggested}",
   "preview_render_run_directory_clash": "{path} is in LibrePaper and in your Run directory. Markdown uses the LibrePaper copy; code reads the one in your Run directory.",
   "preview_render_run_directory_not_linked": "{path} in your Run directory could not be made available to Quarto.",
