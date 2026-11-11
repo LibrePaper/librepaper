@@ -44,7 +44,7 @@ setLoroClasses({ Cursor, LoroMap });
 /** @typedef {{ hydrated: () => void, writing: (count?: number) => void, persisted: () => void, failed: (error: Error) => void }} PersistenceEvents */
 /** @typedef {{ id: string, path: string, kind: "text" | "asset", sha?: string }} ProjectFile */
 /** @typedef {ProjectFile | { kind: "folder", id: string, path: string }} ProjectEntry */
-/** @typedef {{ texts: Record<string, string>, digests: Record<string, string>, files: Record<string, {kind: "text", id: string} | {kind: "asset", sha: string}> }} ProjectTree */
+/** @typedef {{ texts: Record<string, string>, retained?: Record<string, string>, digests: Record<string, string>, files: Record<string, {kind: "text", id: string} | {kind: "asset", sha: string}> }} ProjectTree */
 /** @typedef {{ text_extensions?: string[], asset_extensions?: string[], derived_extensions?: string[], max_path?: number, [key: string]: unknown }} ProjectRules */
 /** @typedef {import("loro-crdt").LoroEvent} ProjectEvent */
 
@@ -925,13 +925,14 @@ export function createProjectSession({
               entries[path] = { kind: "asset", sha: file.digest };
             }
           }
-          return { texts, digests, files: entries };
+          return { texts, digests, files: entries, retained: projection.retained };
         };
         treeCache = { version, rules: projectionRules, tree: build() };
       }
       // Callers get their own top-level maps, so none can change the cache.
-      const { texts, digests, files } = treeCache.tree;
+      const { texts, digests, files, retained } = treeCache.tree;
       return {
+        retained: { ...retained },
         texts: Object.assign(Object.create(null), texts),
         digests: Object.assign(Object.create(null), digests),
         files: Object.assign(Object.create(null), files),

@@ -12,7 +12,7 @@
 // does not use is absent from the projection and says so in a diagnostic.
 
 import { LoroText } from "loro-crdt";
-import { collisionKey, checkPath, normalisePath, suffixed } from "./paths.js";
+import { collisionKey, checkDirectoryPath, checkPath, normalisePath, suffixed } from "./paths.js";
 import { sha256HexOfText } from "./digest.js";
 import { canonicalBytes, compareUtf8 } from "./projection-digest.js";
 
@@ -70,9 +70,13 @@ function free(taken, path) {
 /// The steps of §4.4, in order. `doc` is a `LoroDoc`; `rules` is the
 /// deployment's path rules as `/api/config` serves them.
 ///
-/// Returns `{ files, diagnostics, texts }`, where `files` maps
+/// Returns `{ files, diagnostics, texts, retained }`, where `files` maps
 /// a path to `{ kind, id, digest, bytes }` in UTF-8 path order and `texts`
-/// maps a path to its body.
+/// maps a path to its body. `retained` maps a path to the body of a text that
+/// is structurally sound but whose extension the allow list refuses (the list
+/// constrains upload, creation and rename, not what a download holds). It is
+/// in neither `files` nor the digest, and the `invalid-path` diagnostic is
+/// unchanged; only downloads read it. Ordered by path.
 export function projectDirectory(doc, rules, { bodies = true } = {}) {
   const diagnostics = [];
   const candidates = [];
@@ -137,6 +141,7 @@ export function projectDirectory(doc, rules, { bodies = true } = {}) {
 
   // 2. Validate paths.
   const valid = [];
+  const retainedCandidates = [];
   for (const candidate of candidates) {
     const wanted = candidate.asset ? "asset" : "text";
     // A session can receive its first state before `/api/config` resolves.
@@ -151,6 +156,10 @@ export function projectDirectory(doc, rules, { bodies = true } = {}) {
         path: candidate.requested,
         why: outcome.error,
       });
+      // Only the extension refused it: keep the text for downloads.
+      if (!candidate.asset && candidate.text !== null && !checkDirectoryPath(rules, candidate.requested)) {
+        retainedCandidates.push(candidate);
+      }
       continue;
     }
     if (outcome.kind !== wanted) {
@@ -226,7 +235,20 @@ export function projectDirectory(doc, rules, { bodies = true } = {}) {
 
   diagnostics.sort((left, right) => compareKeys(diagnosticSortKey(left), diagnosticSortKey(right)));
 
-  return { files, diagnostics, texts };
+  // A retained path that collides with a placed entry is dropped. The first
+  // candidate (by id) wins a path of its own.
+  const retainedList = [];
+  const seen = new Set();
+  for (const candidate of retainedCandidates) {
+    const path = normalisePath(candidate.requested);
+    if (taken.has(collisionKey(path)) || seen.has(path)) continue;
+    seen.add(path);
+    retainedList.push([path, candidate.text]);
+  }
+  retainedList.sort((left, right) => compareUtf8(left[0], right[0]));
+  const retained = Object.fromEntries(retainedList);
+
+  return { files, diagnostics, texts, retained };
 }
 
 /// The same path <-> id layout as `projectDirectory`, without reading any

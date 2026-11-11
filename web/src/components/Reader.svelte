@@ -1821,7 +1821,7 @@
       for (const [path, file] of Object.entries(point.files || {})) {
         if (file?.kind !== "text" && file?.digest) digests[path] = file.digest;
       }
-      const files = await projectFiles({ tree: { texts: point.texts || {}, digests }, folders: [], gather: gatherFigures });
+      const files = await projectFiles({ tree: { texts: point.texts || {}, retained: point.retained || {}, digests }, folders: [], gather: gatherFigures });
       if (downloadingSha !== sha) return; // superseded by a later request
       saveBlob(await archive(files), `${SLUG}-${versionStamp(point.at, sha)}.zip`);
     } catch (error) {
