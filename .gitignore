@@ -72,3 +72,5 @@ web/vendor
 desktop/gen/
 # The librepaper sidecar that `make desktop` copies in for tauri-build to bundle.
 desktop/binaries/
+# Paraglide 3 caches the loaded catalogue here and no longer ignores it itself.
+web/project.inlang/cache/
