@@ -2206,7 +2206,9 @@
   const runDirectoryPage = $derived(runDirectoryBlocked || runDirPageOpen);
   function openRunDirPage() {
     runDirPageOpen = true;
+    // The page is drawn over the preview, so the preview is brought into view.
     if (compact) arrangement.showMobileView("document");
+    else if (arrangement.state.layout === "source") arrangement.state.layout = "split";
   }
   const latexOutput = $derived(buildSettings.state.latexOutput);
   const typstOutput = $derived(buildSettings.state.typstOutput);
