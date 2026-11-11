@@ -478,6 +478,22 @@ fn make_link(target: &Path, link: &Path, is_dir: bool) -> std::io::Result<LinkKi
     }
 }
 
+/// True when both paths are regular files (the workspace side is not a link)
+/// with identical bytes. Anything unreadable counts as different.
+fn same_regular_file(workspace: &Path, run: &Path) -> bool {
+    let Ok(a) = std::fs::symlink_metadata(workspace) else {
+        return false;
+    };
+    let Ok(b) = std::fs::symlink_metadata(run) else {
+        return false;
+    };
+    if !a.is_file() || !b.is_file() || a.len() != b.len() {
+        return false;
+    }
+    let read = |path: &Path| read_file_bounded_to(path, "compare", MAX_UPLOAD_BYTES);
+    matches!((read(workspace), read(run)), (Ok(x), Ok(y)) if x == y)
+}
+
 struct Overlay<'a> {
     root: &'a Path,
     run_dir: &'a Path,
@@ -536,8 +552,11 @@ impl Overlay<'_> {
                 {
                     self.walk(&rel)?;
                 }
-                _ => {
-                    if is_or_holds_manifest_path(self.manifest_paths, &rel) {
+                other => {
+                    let same_file = self.manifest_paths.contains(&rel)
+                        && other.as_ref().is_ok_and(|m| m.is_file())
+                        && same_regular_file(&link, &target);
+                    if !same_file && is_or_holds_manifest_path(self.manifest_paths, &rel) {
                         self.notices.push(Notice {
                             kind: "clash".into(),
                             path: rel,
@@ -769,6 +788,17 @@ mod run_directory_tests {
         assert!(!is_link(&s.root.join("notes.txt")));
         assert_eq!(std::fs::read_to_string(s.root.join("notes.txt")).unwrap(), "mine");
         assert_eq!(std::fs::read_to_string(s.run.join("notes.txt")).unwrap(), "theirs");
+    }
+
+    #[test]
+    fn an_identical_file_on_both_sides_is_not_a_clash_but_a_different_one_is() {
+        let project = [("paper.qmd", "same"), ("refs.bib", "mine")];
+        let s = setup(&project, &[("paper.qmd", "same"), ("refs.bib", "theirs")]);
+        let notices = cycle(&s, &project);
+        assert_eq!(
+            notices,
+            vec![Notice { kind: "clash".into(), path: "refs.bib".into() }]
+        );
     }
 
     #[test]
