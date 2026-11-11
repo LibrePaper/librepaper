@@ -21,9 +21,7 @@ When you run code, Quarto sees both. Your code runs inside the Run directory.
 4. Put your data and scripts there. Use relative paths, such as `read.csv("data/survey.csv")` and `source("R/helpers.R")`.
 5. Edit. The preview renders on your computer. Next to **Run code**, you see where your code runs, with **Open folder** and **Change…**.
 
-- Your output stays on your computer.
-- You can preview HTML, RevealJS slides or PDF. Word (DOCX) is download only.
-- LibrePaper previews one document. It does not render whole websites or books.
+Your output stays on your computer. You can preview HTML, RevealJS slides or PDF; Word (DOCX) is download only. LibrePaper previews one document, not whole websites or books.
 
 ## Common hurdles
 
