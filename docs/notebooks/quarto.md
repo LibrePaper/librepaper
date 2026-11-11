@@ -39,7 +39,7 @@ Your output stays on your computer. You can preview HTML, RevealJS slides or PDF
 harvest_root <- Sys.getenv("HARVEST_ROOT", "data/harvest_abstracts")
 ```
 
-**Scripts (`.R`, `.py`, `.jl`) cannot be uploaded.** LibrePaper keeps the paper, not the code. Put scripts in your Run directory. Scripts uploaded before this rule are not shown in the project, but downloading the project still includes them.
+**Scripts (`.R`, `.py`, `.jl`) cannot be uploaded.** LibrePaper keeps the paper, not the code. Put scripts in your Run directory. Scripts uploaded before this rule are not shown in the project, but downloading the project (**File → Download**) still includes them.
 
 **What uploading a folder or zip keeps.** Kept: `.qmd`, `.md`, `.bib`, `.csl`, `.yml`, `.css`, images and `.lua` filters. Left out: rendered output, `_freeze`, `_site`, `_book`, `*_files`, `*_cache`, `renv` and `venv` folders, data files such as `.csv`, and scripts. To share one data file anyway, list it in `.librepaper-share.json` at the top of the project:
 
