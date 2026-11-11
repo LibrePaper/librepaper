@@ -139,7 +139,7 @@ These stay out:
 
 A project holds up to 200 files, and one push can carry up to 32 MiB, by default. Your server may set other limits.
 
-For a Quarto project, the repository can also be the [Run directory](notebooks/quarto.html#your-own-editor) your code runs in. Scripts such as `.R` and `.py` files stay in the repository and are not sent to the project.
+For a Quarto project, the repository can also be the [Run directory](notebooks/quarto.html#git-tutorial) your code runs in. Scripts such as `.R` and `.py` files stay in the repository and are not sent to the project.
 
 ### Versions and commits
 
