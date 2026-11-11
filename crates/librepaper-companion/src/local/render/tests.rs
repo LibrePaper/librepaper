@@ -457,6 +457,90 @@ async fn real_quarto_renders_html_with_its_default_command() {
     assert!(String::from_utf8_lossy(&outcome.files["artifact"]).contains("Body."));
 }
 
+/// Whether `program` runs and, when `args` are given, exits successfully.
+fn tool_works(program: &str, args: &[&str]) -> bool {
+    std::process::Command::new(program)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Every path under `dir`, relative to it, sorted.
+fn listing(dir: &Path) -> Vec<String> {
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            out.push(path.strip_prefix(base).unwrap().display().to_string());
+            if path.is_dir() {
+                walk(base, &path, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
+    out.sort();
+    out
+}
+
+#[tokio::test]
+#[ignore = "requires installed Quarto, R, knitr and rmarkdown"]
+#[allow(clippy::await_holding_lock)]
+async fn real_quarto_runs_code_in_the_run_directory() {
+    let packages = r#"quit(status = !all(sapply(c("knitr","rmarkdown"), requireNamespace, quietly = TRUE)))"#;
+    if !tool_works("quarto", &["--version"])
+        || !tool_works("Rscript", &["--version"])
+        || !tool_works("Rscript", &["-e", packages])
+    {
+        eprintln!("skipped: needs quarto, Rscript, knitr and rmarkdown");
+        return;
+    }
+    let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // A 1x1 PNG.
+    const DOT: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8,
+        0xcf, 0xc0, 0xf0, 0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99, 0x3d, 0x1d, 0x00, 0x00,
+        0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+    let source = "---\ntitle: Run\n---\n\n```{r}\nsource(\"R/helpers.R\"); d <- read.csv(\"data/d.csv\"); cat(\"rows\", nrow(d), helper())\n```\n\n![fig](figures/dot.png)\n";
+    let fixture = fixture("quarto", "html", "paper.qmd");
+    std::fs::write(fixture.staged.path().join("paper.qmd"), source).unwrap();
+    let mut fixture = fixture;
+    fixture.request.manifest[0].sha256 =
+        librepaper_base::digest::Digest::of(source.as_bytes()).to_hex();
+    fixture.request.manifest[0].size = source.len() as u64;
+    let run_dir = tempfile::tempdir().unwrap();
+    let run_path = std::fs::canonicalize(run_dir.path()).unwrap();
+    for dir in ["R", "data", "figures"] {
+        std::fs::create_dir(run_path.join(dir)).unwrap();
+    }
+    std::fs::write(
+        run_path.join("R/helpers.R"),
+        "helper <- function() \"from-run-dir\"\n",
+    )
+    .unwrap();
+    std::fs::write(run_path.join("data/d.csv"), "a,b\n1,2\n3,4\n5,6\n").unwrap();
+    std::fs::write(run_path.join("figures/dot.png"), DOT).unwrap();
+    let before = listing(&run_path);
+
+    let outcome = run_fixture_in(&fixture, Some(run_path.clone())).await;
+
+    assert_eq!(
+        outcome.status.status,
+        JobState::Done,
+        "{}",
+        outcome.status.log_tail
+    );
+    let html = String::from_utf8_lossy(&outcome.files["artifact"]).into_owned();
+    assert!(html.contains("rows 3"), "{html}");
+    assert!(html.contains("from-run-dir"), "{html}");
+    assert!(html.contains("data:image/png"), "{html}");
+    assert_eq!(listing(&run_path), before);
+}
+
 #[tokio::test]
 #[ignore = "requires installed Typst"]
 #[allow(clippy::await_holding_lock)]
