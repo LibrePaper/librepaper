@@ -1207,13 +1207,7 @@ impl Server {
             privacy_headers(&mut response);
             return response;
         }
-        let mut body =
-            serde_json::to_value(librepaper_document::document::projection::HeadSnapshot {
-                project_digest: identity,
-                tree: projected.projection,
-                texts: projected.texts,
-            })
-            .expect("a snapshot serializes");
+        let mut body = head_snapshot_wire(identity, projected);
         body["schema"] = json!(1);
         body["slug"] = json!(entry.slug);
         body["title"] = json!(entry.title);
@@ -2265,5 +2259,49 @@ mod reader_changes_tests {
             &changes,
         );
         assert_ne!(before, after);
+    }
+}
+
+/// The files part of the `/project` response: the digest, tree and texts,
+/// plus the retained texts when there are any.
+fn head_snapshot_wire(
+    project_digest: String,
+    projected: librepaper_document::document::projection::Projected,
+) -> serde_json::Value {
+    serde_json::to_value(librepaper_document::document::projection::HeadSnapshot {
+        project_digest,
+        tree: projected.projection,
+        texts: projected.texts,
+        retained: projected.retained,
+    })
+    .expect("a snapshot serializes")
+}
+
+#[cfg(test)]
+mod head_snapshot_wire_tests {
+    use super::*;
+
+    fn projected(
+        retained: &[(&str, &str)],
+    ) -> librepaper_document::document::projection::Projected {
+        librepaper_document::document::projection::Projected {
+            retained: retained
+                .iter()
+                .map(|(path, body)| (path.to_string(), body.to_string()))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_project_response_carries_retained_texts() {
+        let body = head_snapshot_wire("d".into(), projected(&[("analysis.R", "x <- 1")]));
+        assert_eq!(body["retained"]["analysis.R"], "x <- 1");
+    }
+
+    #[test]
+    fn the_project_response_omits_retained_when_there_are_none() {
+        let body = head_snapshot_wire("d".into(), projected(&[]));
+        assert!(body.get("retained").is_none());
     }
 }

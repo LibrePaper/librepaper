@@ -16,7 +16,7 @@ import { authHeaders } from "../api.js";
 import { m } from "../paraglide/messages.js";
 
 /**
- * @typedef {{ project_digest?: string, texts?: Record<string, string>, changes?: unknown, tree?: { files?: Record<string, { kind: string, id?: string, digest?: string }>, settings?: unknown } }} Projection
+ * @typedef {{ project_digest?: string, texts?: Record<string, string>, retained?: Record<string, string>, changes?: unknown, tree?: { files?: Record<string, { kind: string, id?: string, digest?: string }>, settings?: unknown } }} Projection
  */
 
 /**
@@ -148,6 +148,7 @@ export function createProjectionSource({
     return {
       main: "",
       texts: { ...(project.texts || {}) },
+      retained: { ...(project.retained || {}) },
       digests,
       settings: project.tree?.settings || null,
     };

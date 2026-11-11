@@ -282,6 +282,7 @@ fn reply(data: &mut Data, method: &str, target: &str, sent: &[u8]) -> Option<(u1
             project_digest: tree.digest().to_hex(),
             tree,
             texts: data.current.clone(),
+            retained: Default::default(),
         };
         return Some((200, serde_json::to_value(head).expect("serializes")));
     }

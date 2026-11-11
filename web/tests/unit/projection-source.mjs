@@ -216,9 +216,19 @@ function harness(options = {}) {
   assert.deepEqual(h.source.tree(), {
     main: "",
     texts: { "main.tex": "hello" },
+    retained: {},
     digests: { "fig.png": "d1" },
     settings: { x: 1 },
   });
+  h.replies.push(Promise.resolve(response({
+    body: project("v2", {
+      texts: { "main.tex": "hello" },
+      retained: { "analysis.R": "x <- 1" },
+      tree: { files: { "main.tex": { kind: "text", id: "t1" } } },
+    }),
+  })));
+  await h.source.refresh();
+  assert.deepEqual(h.source.tree().retained, { "analysis.R": "x <- 1" });
 }
 
 // A 503 with no body text falls back to the generic load failure, since the

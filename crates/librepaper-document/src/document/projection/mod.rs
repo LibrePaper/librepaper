@@ -234,6 +234,10 @@ pub struct HeadSnapshot {
     pub tree: Projection,
     #[serde(default)]
     pub texts: BTreeMap<String, String>,
+    /// Texts kept for a download only: well-formed paths whose extension the
+    /// rules refuse. Absent when there are none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub retained: BTreeMap<String, String>,
 }
 
 impl HeadSnapshot {
@@ -843,6 +847,7 @@ mod tests {
             project_digest: digest.clone(),
             tree: projected.projection.clone(),
             texts: projected.texts.clone(),
+            retained: Default::default(),
         };
         let old = serde_json::json!({
             "project_digest": digest,
