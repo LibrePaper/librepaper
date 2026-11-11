@@ -2913,7 +2913,7 @@
   "rundirectorycontrol_missing": "実行フォルダー {path} が見つかりません。",
   "rundirectorycontrol_choose_chip": "実行フォルダーを選択",
   "rundirectorycontrol_prompt_title": "実行フォルダーを選択",
-  "rundirectorycontrol_prompt_text": "Quarto がコードを実行するにはローカルフォルダーが必要です。",
+  "rundirectorycontrol_prompt_text": "このコンピューター上にある、スクリプトとデータ用のフォルダーです。アップロードされることはありません。",
   "rundirectorycontrol_change_aria": "実行フォルダーを変更",
   "rundirectorycontrol_suggested_caption": "推奨フォルダー",
   "rundirectorycontrol_current_caption": "現在のフォルダー",
@@ -2922,5 +2922,10 @@
   "rundirectorycontrol_choose_a_folder": "フォルダーを選択",
   "preview_render_run_directory_clash": "{path} は LibrePaper と実行フォルダーの両方にあります。Markdown は LibrePaper のコピーを使い、コードは実行フォルダーのものを読み込みます。",
   "preview_render_run_directory_not_linked": "実行フォルダー内の {path} を Quarto で利用できるようにできませんでした。",
-  "preview_render_run_directory_missing_file": "コードは実行フォルダー内のファイルを探しています: {path}。"
+  "preview_render_run_directory_missing_file": "コードは実行フォルダー内のファイルを探しています: {path}。",
+  "common_scripts_stay_local": "スクリプトとデータはお使いのコンピューターに残ります。Quartoは実行フォルダーからそれらを実行します。",
+  "rundirectoryrow_caption": "このコンピューター",
+  "rundirectoryrow_open": "フォルダーを開く",
+  "rundirectoryrow_choose_with_run_code": "スクリプトとデータはお使いのコンピューターに残り、「コードを実行」で選んだ実行フォルダーに置かれます。",
+  "rundirectoryrow_needs_desktop": "スクリプトとデータはお使いのコンピューターに残ります。デスクトップアプリがそれらを実行します。"
 }

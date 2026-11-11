@@ -2928,7 +2928,7 @@
   "rundirectorycontrol_missing": "Votre dossier d’exécution {path} est introuvable.",
   "rundirectorycontrol_choose_chip": "Choisir un dossier d’exécution",
   "rundirectorycontrol_prompt_title": "Choisissez un dossier d’exécution",
-  "rundirectorycontrol_prompt_text": "Quarto a besoin d’un dossier local pour exécuter votre code.",
+  "rundirectorycontrol_prompt_text": "Le dossier de cet ordinateur pour vos scripts et vos données. Il n’est jamais téléversé.",
   "rundirectorycontrol_change_aria": "Changer le dossier d’exécution",
   "rundirectorycontrol_suggested_caption": "Dossier suggéré",
   "rundirectorycontrol_current_caption": "Dossier actuel",
@@ -2937,5 +2937,10 @@
   "rundirectorycontrol_choose_a_folder": "Choisir un dossier",
   "preview_render_run_directory_clash": "{path} se trouve dans LibrePaper et dans votre dossier d’exécution. Markdown utilise la copie de LibrePaper; le code lit celle de votre dossier d’exécution.",
   "preview_render_run_directory_not_linked": "{path} dans votre dossier d’exécution n’a pas pu être rendu accessible à Quarto.",
-  "preview_render_run_directory_missing_file": "Le code cherche des fichiers dans votre dossier d’exécution : {path}."
+  "preview_render_run_directory_missing_file": "Le code cherche des fichiers dans votre dossier d’exécution : {path}.",
+  "common_scripts_stay_local": "Vos scripts et données restent sur votre ordinateur. Quarto les exécute depuis votre dossier d’exécution.",
+  "rundirectoryrow_caption": "Sur cet ordinateur",
+  "rundirectoryrow_open": "Ouvrir le dossier",
+  "rundirectoryrow_choose_with_run_code": "Vos scripts et données restent sur votre ordinateur, dans le dossier d’exécution que vous choisissez avec « Exécuter le code ».",
+  "rundirectoryrow_needs_desktop": "Vos scripts et données restent sur votre ordinateur. L’application de bureau les exécute."
 }
