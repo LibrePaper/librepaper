@@ -1905,6 +1905,7 @@
   "mergeeditor_sides": " · {baseline} à gauche, {target} à droite",
   "mergeeditor_source_only": " · source : {baseline}",
   "mergeeditor_target_default": "Document en direct",
+  "menus_report_problem": "Signaler un problème…",
   "mobilenav_navigation": "Navigation dans le document",
   "mobilenav_collaborators": "Collaborateurs",
   "mobilenav_more": "Plus",
