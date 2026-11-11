@@ -97,7 +97,7 @@
 
 <style>
   .outline { display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column; overflow: hidden; }
-  .outline-filter { padding: calc(var(--spacing) * 2) var(--spacing) 0; }
+  .outline-filter { padding-bottom: calc(var(--spacing) * 2); }
   .outline-filter .select { width: 100%; font-size: var(--text-sm); }
   /* The pane supplies the padding; the list only scrolls. */
   .outline-list { flex: 1 1 0; min-height: 0; overflow: auto; padding: 0; }

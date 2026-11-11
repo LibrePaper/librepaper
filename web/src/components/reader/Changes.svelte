@@ -378,10 +378,13 @@
 
 <style>
   .changes-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; outline: none; container-type: inline-size; }
-  /* The header is one bar. The pane around it supplies the panel's gutter, so
-     the bars take no side padding of their own and share the left edge with
-     the rows. */
-  .changes-header { flex: 0 0 auto; display: flex; flex-direction: column; gap: .25rem; padding: 0 0 .75rem; border-bottom: 1px solid var(--color-divider); }
+  /* The header is one bar. Like the queue, it bleeds to the panel's edges so
+     its divider runs full width, and takes the gutter back as padding, so the
+     bars share the left edge with the rows. */
+  .changes-header { flex: 0 0 auto; display: flex; flex-direction: column; gap: .25rem; margin-inline: calc(var(--panel-padding) * -1); padding: 0 var(--panel-padding) .75rem; border-bottom: 1px solid var(--color-divider); }
+  /* The switch on the title strip ends on the same right edge as the count
+     beneath it. */
+  .changes-panel :global(.panel-tabs-actions) { padding-inline-end: var(--panel-padding); }
   /* The track and thumb are `.switch` in librepaper.css, worn here and in the
      settings dialog alike; this is only where the word sits beside them. */
   .changes-panel :global(.tracking-toggle) { display: inline-flex; align-items: center; gap: .5rem; flex: none; min-height: 2rem; color: var(--panel-muted); font-size: var(--panel-font-size); white-space: nowrap; cursor: pointer; }
@@ -450,7 +453,7 @@
   .changes-empty { padding: 2rem 0; text-align: center; text-wrap: balance; }
   .changes-empty-title { margin: 0; font-weight: 500; font-size: var(--panel-font-size); }
   .changes-empty-note { margin: .2rem 0 0; color: var(--panel-muted); font-size: var(--panel-meta-size); }
-  .changes-hint { flex: 0 0 auto; padding: .5rem 0; border-top: 1px solid var(--color-divider); color: var(--panel-muted); font-size: var(--panel-meta-size); text-align: center; }
+  .changes-hint { flex: 0 0 auto; margin: 0 calc(var(--panel-padding) * -1) calc(var(--panel-padding) * -1); padding: .5rem var(--panel-padding); border-top: 1px solid var(--color-divider); color: var(--panel-muted); font-size: var(--panel-meta-size); text-align: center; }
   /* Phones: every control in a change is a finger's height, and an insertion
      is underlined as well as signed and tinted, so it does not rely on colour. */
   @media (max-width: 767px) {
