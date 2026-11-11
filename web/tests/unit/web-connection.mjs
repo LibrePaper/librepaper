@@ -17,7 +17,7 @@ const project = "https://app.example/docs/paper";
 function routes(answers) {
   const calls = [];
   const api = {};
-  for (const name of ["connectionStatus", "connectRepository", "connectLocalRepository", "pullConnection", "pushConnection", "resolveConnection", "retryConnection", "loginConnection", "loginConnectionComplete", "disconnectConnection"]) {
+  for (const name of ["connectionStatus", "connectRepository", "connectLocalRepository", "chooseLocalRepository", "pullConnection", "pushConnection", "resolveConnection", "retryConnection", "loginConnection", "loginConnectionComplete", "disconnectConnection"]) {
     api[name] = async (...args) => {
       calls.push([name, ...args]);
       const answer = typeof answers[name] === "function" ? answers[name](...args) : answers[name];
@@ -67,9 +67,64 @@ const merging = { ...connected, merging: { side: "repository", conflicts: ["a.te
   const { api, calls } = routes({ connectLocalRepository: local });
   const web = createWebConnection({ api, project });
   await web.connectLocal();
-  assert.deepEqual(calls, [["connectLocalRepository", project]]);
+  assert.deepEqual(calls, [["connectLocalRepository", project, ""]]);
   assert.deepEqual(web.state.status, local);
   assert.equal(web.state.problem, "");
+  assert.equal(web.state.busy, "");
+}
+
+// A folder chosen in the desktop app's chooser is connected at its path, which
+// also names the remote in sign-in help.
+{
+  const local = { connected: true, local: true, signed_in: true, path: "/x", branch: "main", merging: null };
+  const { api, calls } = routes({ connectLocalRepository: local });
+  const web = createWebConnection({ api, project });
+  await web.connectLocal("/x");
+  assert.deepEqual(calls, [["connectLocalRepository", project, "/x"]]);
+  assert.deepEqual(web.state.status, local);
+  assert.equal(web.state.busy, "");
+}
+
+// Choosing a folder answers the path while the panel is busy with "choose", and
+// changes neither the status nor the refusal.
+{
+  let web;
+  let busyDuringChoice = "";
+  const { api } = routes({
+    connectionStatus: connected,
+    chooseLocalRepository: () => {
+      busyDuringChoice = web.state.busy;
+      return { path: "/home/me/My Papers" };
+    },
+  });
+  web = createWebConnection({ api, project });
+  await web.refresh();
+  const before = web.state.status;
+  assert.equal(await web.choose(), "/home/me/My Papers");
+  assert.equal(busyDuringChoice, "choose");
+  assert.equal(web.state.busy, "");
+  assert.equal(web.state.status, before);
+  assert.equal(web.state.result, null);
+  assert.equal(web.state.refusal, null);
+  assert.equal(web.state.problem, "");
+}
+
+// A cancelled chooser answers "" and leaves the panel as it was.
+{
+  const { api } = routes({ chooseLocalRepository: { cancelled: true } });
+  const web = createWebConnection({ api, project });
+  assert.equal(await web.choose(), "");
+  assert.equal(web.state.busy, "");
+  assert.equal(web.state.problem, "");
+  assert.equal(web.state.status, null);
+}
+
+// A chooser that fails says so through the panel, and answers "".
+{
+  const { api } = routes({ chooseLocalRepository: refused(500, {}, "The folder chooser could not open.") });
+  const web = createWebConnection({ api, project });
+  assert.equal(await web.choose(), "");
+  assert.equal(web.state.problem, "The folder chooser could not open.");
   assert.equal(web.state.busy, "");
 }
 

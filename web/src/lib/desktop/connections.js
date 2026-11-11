@@ -35,12 +35,25 @@ export async function connectRepository(project, url) {
   return response.json();
 }
 
-/** Connects the project to a git repository already on this computer: the
- * desktop app shows the folder dialog and works in the chosen folder. A
- * cancelled dialog answers the status as it was.
- * @param {string} project */
-export async function connectLocalRepository(project) {
-  const response = await send("POST", route("local"), { jsonBody: { project } });
+/** Connects the project to a git repository already on this computer. With a
+ * `path`, the desktop app connects that folder: a folder just chosen with
+ * `chooseLocalRepository` connects directly, and any other folder is confirmed
+ * in the native folder chooser opened at it. Without one, the desktop app
+ * shows the folder chooser itself and works in the chosen folder. A cancelled
+ * chooser answers the status as it was.
+ * @param {string} project @param {string} [path] */
+export async function connectLocalRepository(project, path = "") {
+  const body = path ? { project, path } : { project };
+  const response = await send("POST", route("local"), { jsonBody: body });
+  return response.json();
+}
+
+/** Opens the desktop app's folder chooser for a git repository on this
+ * computer. The folder picked is then connected with `connectLocalRepository`.
+ * @param {string} project
+ * @returns {Promise<{ path: string } | { cancelled: true }>} */
+export async function chooseLocalRepository(project) {
+  const response = await send("POST", route("local/choose"), { jsonBody: { project } });
   return response.json();
 }
 

@@ -83,7 +83,7 @@ That is all a team needs when the paper is written in LibrePaper. The steps belo
 
 To write the `.qmd` in RStudio, Positron or VS Code, connect the project to the same repository.
 
-1. In the desktop app, open the [Git panel](../git.html#the-git-panel) and pick **Use a local repository**. Choose your clone.
+1. In the desktop app, open the [Git panel](../git.html#the-git-panel), click **Browse…** and choose your clone, then click **Connect**.
 2. Click **Send project changes**. The `.qmd`, the bibliography and the images arrive in the repository.
 3. Edit the `.qmd` in your editor and commit. Click **Get repository changes**, and your commits appear in the project as named versions under your name.
 4. Click **Send project changes** again whenever you want your coauthors' web edits in the repository.

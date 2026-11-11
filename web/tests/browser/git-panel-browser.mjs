@@ -51,10 +51,14 @@ const connectionApi = {
     scene().connection = structuredClone(scene().afterConnect);
     return structuredClone(scene().connection);
   },
-  connectLocalRepository: async () => {
-    record("connectLocalRepository");
+  chooseLocalRepository: async () => {
+    record("chooseLocalRepository");
+    if (scene().cancelLocal) return { cancelled: true };
+    return { path: "/home/you/paper" };
+  },
+  connectLocalRepository: async (project, path) => {
+    record("connectLocalRepository", path);
     if (scene().localFails) throw refusal({ message: "Choose the top folder of a git repository.", status: 400, body: { reason: "not-repository" } });
-    if (scene().cancelLocal) return structuredClone(scene().connection);
     scene().connection = structuredClone(scene().afterLocal);
     return structuredClone(scene().connection);
   },
@@ -133,7 +137,7 @@ const panel = () => document.querySelector(".git-panel");
 const button = (label, where = base()) => [...where.querySelectorAll("button")].find((node) => node.textContent.trim() === label) ?? null;
 const press = async (label, where = base()) => { const node = button(label, where); check(node, "missing button " + label + ": " + text(where)); node.click(); await flush(); };
 const type = async (node, value) => { check(node, "missing field"); node.value = value; node.dispatchEvent(new Event("input", { bubbles: true })); await flush(); };
-const field = (label, where = base()) => [...where.querySelectorAll("label")].find((node) => node.textContent.trim().startsWith(label))?.querySelector("input") ?? null;
+const field = (label, where = base()) => [...where.querySelectorAll("label")].find((node) => node.textContent.trim().startsWith(label))?.control ?? null;
 const calls = (name) => window.scene.calls.filter((call) => call[0] === name);
 const overflows = () => panel().scrollWidth > panel().clientWidth + 1;
 const widths = async (what) => {
@@ -158,10 +162,10 @@ window.gitPanelCheck = async () => {
   ] }] });
   await flush();
   check(panel().getAttribute("aria-label") === "Git", "the web panel is called Git too");
-  check(headings() === "Repository", "one section in the browser: " + headings());
+  check(headings() === "Git repository", "one section in the browser: " + headings());
   check(text().includes("Last sent from a repository by Alice, 20 min ago: Reword the greeting"), "it names the last push: " + text());
   check(calls("history").length === 1 && calls("history")[0][1] === "paper", "from the history");
-  check(text().includes("To send and get changes with git, open this project in the LibrePaper desktop app.") && text().includes("keep a GitHub repository in sync with this project through a GitHub Action"), "the browser says where to connect: " + text());
+  check(text().includes("To send and get changes with git, open this project in the LibrePaper desktop app.") && text().includes("The docs also show a GitHub Action that keeps a repository in step without this computer."), "the browser says where to connect: " + text());
   check(!panel().querySelector("pre") && !button("Connect"), "the browser shows no commands and no connect form");
   const docs = [...panel().querySelectorAll("a")].find((node) => node.getAttribute("href") === "https://librepaper.org/git.html");
   check(docs && docs.textContent.trim() === "Read the Git docs" && docs.target === "_blank" && docs.rel.includes("noopener"), "the docs are one link away");
@@ -169,10 +173,10 @@ window.gitPanelCheck = async () => {
   check(action && action.textContent.trim() === "GitHub Action", "and the GitHub Action is in the docs: " + text());
   await widths("in a web project");
 
-  // No push yet, and a history that cannot be read.
+  // No push yet: no line about pushes is shown, loading or none. A history that cannot be read is said.
   await mountWeb();
   await flush();
-  check(text().includes("No changes sent from a repository yet."), "a project nobody pushed to says so: " + text());
+  check(!text().includes("No changes sent from a repository yet.") && !text().includes("Checking for changes sent"), "a project nobody pushed to shows no push line: " + text());
   await mountWeb({ historyFails: true });
   await flush();
   check(text().includes("The last change sent from a repository could not be read."), "a history that cannot be read is said: " + text());
@@ -181,46 +185,57 @@ window.gitPanelCheck = async () => {
   const connectedStatus = { connected: true, signed_in: true, url: "https://github.com/you/paper.git", branch: "main", merging: null };
   await mountWeb({ connection: { connected: false, signed_in: true }, afterConnect: connectedStatus }, { desktop: true });
   await flush();
-  check(headings() === "Repository|Connect a repository", "the desktop app adds the connect section: " + headings());
-  check(text().includes("Connect this project to a git repository. Git uses your own sign-in."), "and says what it does: " + text());
-  check(field("Repository address")?.placeholder === "https://github.com/owner/repo.git", "an address field with an example");
+  check(headings() === "Git repository", "the desktop app shows one section: " + headings());
+  check(text().includes("Connect this project to a local or remote Git repository."), "and says what it does: " + text());
+  check(!button("Browse…")?.disabled && button("Connect")?.disabled, "Connect is disabled while the field is empty");
+  check(field("Repository URL or local path")?.placeholder === "https://github.com/owner/repo.git", "an address field with an example");
+  check(button("Browse…") && text().includes("Git uses your existing credentials."), "a Browse button and the credentials note: " + text());
   await widths("with the connect form");
 
-  await type(field("Repository address"), "https://user:secret@github.com/you/paper.git");
+  await type(field("Repository URL or local path"), "https://user:secret@github.com/you/paper.git");
   await press("Connect");
   check(alert().includes("That address contains a password") && calls("connectRepository").length === 0, "an address with a password is refused here, and not sent: " + alert());
 
-  await type(field("Repository address"), "   https://github.com/you/paper.git  ");
+  await type(field("Repository URL or local path"), "repo");
+  await press("Connect");
+  check(alert().length > 0 && calls("connectRepository").length === 0 && calls("connectLocalRepository").length === 0, "an unrecognized input shows its error and calls nothing: " + alert());
+
+  await type(field("Repository URL or local path"), "   https://github.com/you/paper.git  ");
+  check(!alert() && !button("Connect").disabled, "editing the field clears the error, and Connect is enabled");
   await press("Connect");
   check(calls("connectRepository").length === 1 && calls("connectRepository")[0][1] === "https://github.com/you/paper.git", "the trimmed address is connected: " + JSON.stringify(calls("connectRepository")));
-  check(headings() === "Repository|Repository on this computer" && text().includes("https://github.com/you/paper.git, branch main"), "and the connected repository is shown: " + text());
+  check(headings() === "Git repository" && text().includes("https://github.com/you/paper.git, branch main"), "and the connected repository is shown: " + text());
 
   // A connect the desktop app refuses says why, and the form stays.
   await mountWeb({ connection: { connected: false, signed_in: true }, connectFails: true }, { desktop: true });
   await flush();
-  await type(field("Repository address"), "https://github.com/you/paper.git");
+  await type(field("Repository URL or local path"), "https://github.com/you/paper.git");
   await press("Connect");
   check(alert() === "this repository is linked to another LibrePaper project" && button("Connect") && !button("Connecting…"), "a refused connect shows its message: " + alert());
   await widths("with a refusal shown");
 
-  // A local repository: the dialog is cancelled, then refused, then chosen.
-  const localStatus = { connected: true, local: true, signed_in: true, path: "/home/me/paper", branch: "main", merging: null };
+  // Browse: a cancelled chooser changes nothing; a chosen folder fills the field, and Connect connects it.
+  const localStatus = { connected: true, local: true, signed_in: true, path: "/home/you/paper", branch: "main", merging: null };
   await mountWeb({ connection: { connected: false, signed_in: true }, afterLocal: localStatus, cancelLocal: true }, { desktop: true });
   await flush();
-  check(button("Use a local repository…") && text().includes("A git repository on this computer. LibrePaper works in it directly."), "the form offers a local repository: " + text());
+  await press("Browse…");
+  check(calls("chooseLocalRepository").length === 1 && field("Repository URL or local path").value === "" && !alert() && calls("connectLocalRepository").length === 0, "a cancelled chooser changes nothing: " + text());
   await widths("with the local choice");
-  await press("Use a local repository…");
-  check(calls("connectLocalRepository").length === 1 && !alert() && headings() === "Repository|Connect a repository", "a cancelled dialog changes nothing: " + text());
 
   await mountWeb({ connection: { connected: false, signed_in: true }, localFails: true }, { desktop: true });
   await flush();
-  await press("Use a local repository…");
-  check(alert() === "Choose the top folder of a git repository." && button("Use a local repository…"), "a refused folder shows its message: " + alert());
+  await press("Browse…");
+  check(field("Repository URL or local path").value === "/home/you/paper", "a chosen folder shows its path in the field");
+  await press("Connect");
+  check(calls("connectLocalRepository").length === 1 && calls("connectLocalRepository")[0][1] === "/home/you/paper", "Connect connects the chosen folder by its path: " + JSON.stringify(calls("connectLocalRepository")));
+  check(alert() === "Choose the top folder of a git repository." && button("Connect"), "a refused folder shows its message: " + alert());
 
   await mountWeb({ connection: { connected: false, signed_in: true }, afterLocal: localStatus }, { desktop: true });
   await flush();
-  await press("Use a local repository…");
-  check(headings() === "Repository|Repository on this computer" && text().includes("Repository /home/me/paper, branch main"), "a chosen folder is shown by its path: " + text());
+  await press("Browse…");
+  check(field("Repository URL or local path").value === "/home/you/paper", "the chosen path is in the field before connecting");
+  await press("Connect");
+  check(headings() === "Git repository" && text().includes("Repository /home/you/paper, branch main") && field("Repository URL or local path") === null, "a connected folder is shown by its path: " + text());
   check(button("Get repository changes") && button("Send project changes") && text().includes("Disconnecting forgets the link. The folder and the project stay as they are."), "with the same two buttons and a Disconnect note about the folder: " + text());
   await widths("with a local repository");
 
@@ -240,7 +255,7 @@ window.gitPanelCheck = async () => {
   // Connected and signed in: getting changes imports what came in, and sending changes sends the project's changes.
   await mountWeb({ connection: connectedStatus, afterConnect: connectedStatus, pullAnswer: { status: connectedStatus, pushed: { files: 2 } }, pushAnswer: { status: connectedStatus, pushed: "pushed" } }, { desktop: true });
   await flush();
-  check(headings() === "Repository|Repository on this computer", "a connected project shows its repository: " + headings());
+  check(headings() === "Git repository", "a connected project shows its repository: " + headings());
   check(text().includes("Get repository changes imports the repository's commits into this project. Send project changes sends this project's changes to the repository branch above."), "and says what the two actions do: " + text());
   await widths("with a connected repository");
 
@@ -265,7 +280,7 @@ window.gitPanelCheck = async () => {
   check(calls("flush").length === 2 && calls("pushConnection").length === 1 && text().includes("Sent to repository branch main."), "each transfer settles the editor first; a push, then sends and says so: " + text());
 
   await press("Disconnect");
-  check(calls("disconnectConnection").length === 1 && headings() === "Repository|Connect a repository", "Disconnect forgets the copy and shows the connect form: " + headings());
+  check(calls("disconnectConnection").length === 1 && headings() === "Git repository" && field("Repository URL or local path") !== null, "Disconnect forgets the copy and shows the connect form: " + headings());
 
   // Merging: the two files are settled one at a time, and Pull and Push wait until the merge is done.
   const merging = { ...connectedStatus, merging: { side: "repository", conflicts: ["intro.tex", "chapters/outline.tex"] } };

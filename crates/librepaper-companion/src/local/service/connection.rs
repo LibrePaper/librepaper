@@ -541,9 +541,112 @@ async fn clone_for(inner: &Inner, connection: &Connection, url: &str) -> Result<
 /// What the folder chooser says on a local connection.
 const LOCAL_TITLE: &str = "Choose the git repository for this project";
 
+/// The title of the chooser that confirms a typed path. It opens at that path,
+/// so the person sees the folder they typed and confirms it or picks another.
+const CONFIRM_TITLE: &str = "Confirm the git repository for this project";
+
 /// Asks for a repository on this computer, then connects the project to it. A
-/// cancelled chooser changes nothing and answers the status.
+/// typed `path` is connected at once when the person chose that folder through
+/// Browse, and otherwise confirmed in the chooser, opened at it. A cancelled
+/// chooser changes nothing and answers the status.
 pub(super) async fn handle_connect_local(
+    inner: &Arc<Inner>,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
+    let body = match read_json_body::<LocalBody>(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    answer(choose_and_connect(inner, origin, &body.project, body.path.as_deref()).await)
+}
+
+/// The body of a local connection: the project, and optionally the path of
+/// its repository as the person typed it.
+#[derive(serde::Deserialize)]
+struct LocalBody {
+    project: String,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+async fn choose_and_connect(
+    inner: &Inner,
+    origin: Option<&str>,
+    project: &str,
+    typed: Option<&str>,
+) -> Result<Value, Failure> {
+    let connection = open_connection(inner, origin, project)?;
+    match typed.map(str::trim).filter(|path| !path.is_empty()) {
+        Some(typed) => connect_typed(inner, &connection, typed).await,
+        None => {
+            // Refused before the chooser opens, and again once the folder is chosen.
+            refuse_if_connected(&connection)?;
+            let Some(chosen) = pick_folder(inner, LOCAL_TITLE, None).await? else {
+                return status_of(inner, &connection).await;
+            };
+            connect_local(inner, &connection, &chosen).await
+        }
+    }
+}
+
+/// Connects the project to the repository at a path the person typed. The
+/// path must name an existing absolute folder. A folder the person picked
+/// through Browse for this project is connected without a second dialog;
+/// any other is confirmed in the chooser, which opens at it.
+async fn connect_typed(
+    inner: &Inner,
+    connection: &Connection,
+    typed: &str,
+) -> Result<Value, Failure> {
+    let typed = expand_home(typed);
+    if !typed.is_absolute() {
+        return Err(refuse_because(
+            400,
+            "not-absolute",
+            "Enter the full path to the folder.",
+        ));
+    }
+    let missing = || {
+        refuse_because(
+            400,
+            "missing",
+            "That folder does not exist on this computer.",
+        )
+    };
+    if !typed.is_dir() {
+        return Err(missing());
+    }
+    let canonical = plain_path(&typed.canonicalize().map_err(|_| missing())?);
+    refuse_if_connected(connection)?;
+
+    let browsed = {
+        let mut picked = inner.picked.lock().await;
+        if picked.get(&connection.key) == Some(&canonical) {
+            picked.remove(&connection.key);
+            true
+        } else {
+            false
+        }
+    };
+    if browsed {
+        return connect_local(inner, connection, &canonical).await;
+    }
+    let Some(chosen) = pick_folder(inner, CONFIRM_TITLE, Some(canonical.as_path())).await? else {
+        return status_of(inner, connection).await;
+    };
+    connect_local(inner, connection, &chosen).await
+}
+
+/// Asks for a repository on this computer without connecting to it, and
+/// answers the folder chosen. The folder is kept for the project, so a typed
+/// path to it connects without a second dialog. A cancelled chooser answers
+/// `cancelled`.
+pub(super) async fn handle_choose_local(
     inner: &Arc<Inner>,
     headers: &HeaderMap,
     origin: Option<&str>,
@@ -556,31 +659,68 @@ pub(super) async fn handle_connect_local(
         Ok(body) => body,
         Err(response) => return response,
     };
-    answer(choose_and_connect(inner, origin, &body.project).await)
+    answer(browse_local(inner, origin, &body.project).await)
 }
 
-async fn choose_and_connect(
+async fn browse_local(
     inner: &Inner,
     origin: Option<&str>,
     project: &str,
 ) -> Result<Value, Failure> {
     let connection = open_connection(inner, origin, project)?;
-    // Refused before the chooser opens, and again once the folder is chosen.
     refuse_if_connected(&connection)?;
+    let Some(chosen) = pick_folder(inner, LOCAL_TITLE, None).await? else {
+        return Ok(json!({"cancelled": true}));
+    };
+    let canonical = plain_path(
+        &chosen
+            .canonicalize()
+            .map_err(|_| refuse(400, "Select an existing project folder."))?,
+    );
+    inner
+        .picked
+        .lock()
+        .await
+        .insert(connection.key.clone(), canonical.clone());
+    Ok(json!({"path": canonical.to_string_lossy().into_owned()}))
+}
+
+/// Opens the native folder chooser with `title`, at `start` when given, and
+/// answers the folder chosen, or None when the person cancels. Only one chooser
+/// is open at a time.
+async fn pick_folder(
+    inner: &Inner,
+    title: &str,
+    start: Option<&Path>,
+) -> Result<Option<PathBuf>, Failure> {
     let Ok(_dialog) = inner.folder_dialog.try_lock() else {
         return Err((
             409,
             json!({"error": "A folder chooser is already open on this computer."}),
         ));
     };
-    let chosen = match crate::local::folder::choose_directory_with_title(LOCAL_TITLE).await {
-        Ok(chosen) => chosen,
-        Err(why) if why == crate::local::folder::CANCELLED => {
-            return status_of(inner, &connection).await;
-        }
-        Err(why) => return Err(refuse(400, &why)),
+    match crate::local::folder::choose_directory_at(title, start).await {
+        Ok(chosen) => Ok(Some(chosen)),
+        Err(why) if why == crate::local::folder::CANCELLED => Ok(None),
+        Err(why) => Err(refuse(400, &why)),
+    }
+}
+
+/// `path` with a leading `~` replaced by the home folder. Only a `~` on its own
+/// or followed by a separator is replaced.
+fn expand_home(path: &str) -> PathBuf {
+    let separators: &[char] = if cfg!(windows) { &['/', '\\'] } else { &['/'] };
+    let Some(rest) = path.strip_prefix('~') else {
+        return PathBuf::from(path);
     };
-    connect_local(inner, &connection, &chosen).await
+    if !(rest.is_empty() || rest.starts_with(separators)) {
+        return PathBuf::from(path);
+    }
+    let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    match std::env::var_os(home) {
+        Some(home) => PathBuf::from(home).join(rest.trim_start_matches(separators)),
+        None => PathBuf::from(path),
+    }
 }
 
 fn refuse_if_connected(connection: &Connection) -> Result<(), Failure> {
@@ -1604,6 +1744,7 @@ mod tests {
         for path in [
             "connections",
             "connections/local",
+            "connections/local/choose",
             "connections/login",
             "connections/login/complete",
         ] {
@@ -1981,6 +2122,93 @@ mod tests {
             .unwrap_err();
         refused("detached", 409)(failure);
         assert!(!connection.connected());
+    }
+
+    #[tokio::test]
+    async fn a_typed_path_must_be_absolute_and_an_existing_folder() {
+        let fixture = Fixture::new().await;
+        let scratch = fixture.scratch.path();
+        let connection = fixture.connection(PROJECT);
+
+        let (status, body) = fixture
+            .send(
+                Method::POST,
+                "connections/local",
+                Some(json!({"project": PROJECT, "path": "relative/folder"})),
+            )
+            .await;
+        assert_eq!(
+            (status, &body["reason"]),
+            (400, &json!("not-absolute")),
+            "{body}"
+        );
+
+        let (status, body) = fixture
+            .send(
+                Method::POST,
+                "connections/local",
+                Some(json!({"project": PROJECT, "path": text(&scratch.join("nowhere"))})),
+            )
+            .await;
+        assert_eq!((status, &body["reason"]), (400, &json!("missing")), "{body}");
+        assert!(!connection.connected());
+    }
+
+    #[tokio::test]
+    async fn a_picked_folder_that_is_not_a_repository_is_refused_without_a_dialog() {
+        let fixture = Fixture::new().await;
+        let plain = fixture.scratch.path().join("plain");
+        std::fs::create_dir(&plain).unwrap();
+        let plain = plain.canonicalize().unwrap();
+        let connection = fixture.connection(PROJECT);
+        fixture
+            .inner
+            .picked
+            .lock()
+            .await
+            .insert(connection.key.clone(), plain.clone());
+
+        let (status, body) = fixture
+            .send(
+                Method::POST,
+                "connections/local",
+                Some(json!({"project": PROJECT, "path": text(&plain)})),
+            )
+            .await;
+        assert_eq!(
+            (status, &body["reason"]),
+            (400, &json!("not-repository")),
+            "{body}"
+        );
+        assert!(!connection.connected());
+        assert!(!fixture.inner.picked.lock().await.contains_key(&connection.key));
+    }
+
+    #[tokio::test]
+    async fn a_picked_repository_connects_by_its_typed_path() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let repo = local_repository(fixture.scratch.path());
+        let connection = fixture.connection(PROJECT);
+        fixture
+            .inner
+            .picked
+            .lock()
+            .await
+            .insert(connection.key.clone(), repo.clone());
+
+        let (status, body) = fixture
+            .send(
+                Method::POST,
+                "connections/local",
+                Some(json!({"project": PROJECT, "path": text(&repo)})),
+            )
+            .await;
+        assert_eq!((status, &body["connected"]), (200, &json!(true)), "{body}");
+        assert_eq!(connection.repo(), repo);
+        assert!(!fixture.inner.picked.lock().await.contains_key(&connection.key));
     }
 
     #[tokio::test]

@@ -3,7 +3,7 @@
 // refusal arrives.
 import assert from "node:assert/strict";
 import * as client from "../../src/lib/desktop/client.js";
-import { connectionStatus, connectLocalRepository, connectRepository, disconnectConnection, loginConnection, loginConnectionComplete, pullConnection, pushConnection, resolveConnection, retryConnection } from "../../src/lib/desktop/connections.js";
+import { chooseLocalRepository, connectionStatus, connectLocalRepository, connectRepository, disconnectConnection, loginConnection, loginConnectionComplete, pullConnection, pushConnection, resolveConnection, retryConnection } from "../../src/lib/desktop/connections.js";
 
 globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
 client._testing.reset();
@@ -56,6 +56,22 @@ assert.deepEqual(await connectLocalRepository(project), { connected: false, sign
 // A folder that is not a repository is refused with its reason.
 answer = () => response(400, { reason: "not-repository", error: "Choose the top folder of a git repository." });
 await assert.rejects(connectLocalRepository(project), (error) => error.status === 400 && error.body.reason === "not-repository");
+
+// A folder picked in the chooser is connected by its path, with the project.
+answer = () => response(200, local);
+assert.deepEqual(await connectLocalRepository(project, "/home/me/paper"), local);
+assert.equal(last().method, "POST");
+assert.ok(last().url.endsWith("librepaper/local/connections/local"));
+assert.deepEqual(last().body, { project, path: "/home/me/paper" });
+
+// Choosing a folder asks the desktop app's chooser and answers the path, or a cancel.
+answer = () => response(200, { path: "/home/me/paper" });
+assert.deepEqual(await chooseLocalRepository(project), { path: "/home/me/paper" });
+assert.equal(last().method, "POST");
+assert.ok(last().url.endsWith("librepaper/local/connections/local/choose"));
+assert.deepEqual(last().body, { project });
+answer = () => response(200, { cancelled: true });
+assert.deepEqual(await chooseLocalRepository(project), { cancelled: true });
 
 // Pull sends the project alone and answers what it wrote, or the conflicts it stopped at.
 answer = () => response(200, { status: connected, pushed: { files: 3 } });

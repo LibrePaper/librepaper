@@ -39,3 +39,19 @@ export function remoteUrlProblem(raw) {
   }
   return "";
 }
+
+/// Reads the Git panel's one field: a remote address or a folder on this computer.
+/** @param {string} raw @returns {{ kind: "remote" | "local", value: string, problem: string }} */
+export function repositoryInput(raw) {
+  const value = String(raw ?? "").trim();
+  if (!value) return { kind: "remote", value, problem: m.git_url_empty_input() };
+  if (/^file:\/\//i.test(value)) return { kind: "local", value, problem: m.git_url_file_scheme() };
+  if (value.startsWith("/") || value.startsWith("~") || value.startsWith("\\\\") || /^[A-Za-z]:[\\/]/.test(value)) {
+    if (value.length > 4096) return { kind: "local", value, problem: m.git_url_path_too_long() };
+    if (/[\u0000-\u001f\u007f]/.test(value)) return { kind: "local", value, problem: m.git_url_path_control() };
+    return { kind: "local", value, problem: "" };
+  }
+  if (/^\.\.?(?:[\\/]|$)/.test(value)) return { kind: "local", value, problem: m.git_url_relative_path() };
+  if (value.includes("://") || value.includes("@")) return { kind: "remote", value, problem: remoteUrlProblem(value) };
+  return { kind: "remote", value, problem: m.git_url_unrecognized() };
+}
