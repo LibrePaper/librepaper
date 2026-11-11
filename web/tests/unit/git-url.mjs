@@ -1,7 +1,7 @@
 // Which git addresses the page will send to the desktop app: https, ssh and
 // scp-like, with no password in them.
 import assert from "node:assert/strict";
-import { remoteUrlProblem, repositoryInput } from "../../src/lib/git-url.js";
+import { remoteUrlProblem, repositoryIdentity, repositoryInput } from "../../src/lib/git-url.js";
 
 for (const good of [
   "https://github.com/you/paper.git",
@@ -78,3 +78,64 @@ assert.match(repositoryInput("repo").problem, /https:\/\/ or ssh:\/\//);
 assert.match(repositoryInput("github.com/x/y").problem, /full path to a folder/);
 
 console.log("git-url: the forms accepted, and a password or anything else refused");
+
+// What the Git panel names the connected repository: a remote's path, host and
+// web page, or a folder's name and path.
+const remoteOf = (url) => ({ connected: true, url, branch: "main" });
+const localOf = (path) => ({ connected: true, local: true, path, branch: "main" });
+
+assert.deepEqual(repositoryIdentity(remoteOf("https://github.com/me/paper.git")), {
+  name: "me/paper",
+  detail: "github.com",
+  full: "https://github.com/me/paper.git",
+  href: "https://github.com/me/paper",
+  icon: "github",
+  local: false,
+});
+assert.deepEqual(repositoryIdentity(remoteOf("git@github.com:me/paper.git")), {
+  name: "me/paper",
+  detail: "github.com",
+  full: "git@github.com:me/paper.git",
+  href: "https://github.com/me/paper",
+  icon: "github",
+  local: false,
+});
+assert.deepEqual(repositoryIdentity(remoteOf("ssh://git@gitlab.example.org:2222/team/paper.git")), {
+  name: "team/paper",
+  detail: "gitlab.example.org",
+  full: "ssh://git@gitlab.example.org:2222/team/paper.git",
+  href: "https://gitlab.example.org/team/paper",
+  icon: "git-fork",
+  local: false,
+});
+// An SSH alias names no web page, so there is no link.
+assert.deepEqual(repositoryIdentity(remoteOf("git@github-work:me/paper.git")), {
+  name: "me/paper",
+  detail: "github-work",
+  full: "git@github-work:me/paper.git",
+  href: "",
+  icon: "git-fork",
+  local: false,
+});
+// A token in an https address never reaches the link or the host.
+const tokened = repositoryIdentity(remoteOf("https://token@github.com/me/paper.git"));
+assert.equal(tokened.href, "https://github.com/me/paper");
+assert.equal(tokened.detail, "github.com");
+
+// A folder is named by its last segment, whatever the separator.
+assert.deepEqual(repositoryIdentity(localOf("/home/me/paper/")), {
+  name: "paper",
+  detail: "/home/me/paper/",
+  full: "/home/me/paper/",
+  href: "",
+  icon: "folder",
+  local: true,
+});
+assert.equal(repositoryIdentity(localOf("C:\\Users\\me\\paper")).name, "paper");
+
+// Anything unreadable is its own name, with nothing else.
+const unreadable = repositoryIdentity(remoteOf("not an address"));
+assert.equal(unreadable.name, "not an address");
+assert.equal(unreadable.detail, "");
+assert.equal(unreadable.href, "");
+assert.equal(repositoryIdentity(null).local, false);

@@ -1151,6 +1151,22 @@
   "gitweb_a_file": "un fichier",
   "gitweb_action_pull": "l’obtention des modifications du dépôt",
   "gitweb_action_push": "l’envoi des modifications du projet",
+  "gitweb_activity_more_commits": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} commit de plus",
+        "countPlural=*": "{count} commits de plus"
+      }
+    }
+  ],
+  "gitweb_activity_untitled": "Modifications d’un dépôt",
   "gitweb_address_label": "Adresse du dépôt ou chemin local",
   "gitweb_browse": "Parcourir…",
   "gitweb_changed_files": "Le projet a modifié ces fichiers depuis la dernière lecture du dépôt :",
@@ -1160,40 +1176,63 @@
   "gitweb_conflict_resolve_local": "Résolvez ces fichiers dans votre éditeur, puis créez le commit de la fusion. Choisissez ensuite « Obtenir les modifications du dépôt » ou « Envoyer les modifications du projet » à nouveau.",
   "gitweb_connect": "Connecter",
   "gitweb_connect_lead": "Connectez ce projet à un dépôt git local ou distant. Ensuite, envoyez les modifications du projet vers le dépôt, ou obtenez les modifications du dépôt dans le projet, selon votre choix.",
+  "gitweb_copy_address": "Copier l’adresse du dépôt",
+  "gitweb_copy_path": "Copier le chemin du dossier",
   "gitweb_credentials_note": "Git utilise vos identifiants existants.",
   "gitweb_disconnect": "Déconnecter",
-  "gitweb_disconnect_local_note": "La déconnexion oublie le lien. Le dossier et le projet restent tels qu’ils sont.",
-  "gitweb_disconnect_note": "La déconnexion oublie la copie sur cet ordinateur. Le dépôt et le projet restent tels qu’ils sont.",
+  "gitweb_disconnect_local_body": "LibrePaper cessera de connecter ce projet à ce dossier. Le dossier, son dépôt et le projet restent tels qu’ils sont.",
+  "gitweb_disconnect_remote_body": "LibrePaper cessera de connecter ce projet au dépôt et supprimera sa copie du dépôt sur cet ordinateur. Le dépôt et le projet restent tels qu’ils sont.",
+  "gitweb_disconnect_title": "Déconnecter le dépôt Git?",
   "gitweb_disconnecting": "Déconnexion…",
-  "gitweb_docs_keeps_repo": "qui garde un dépôt à jour sans cet ordinateur.",
-  "gitweb_docs_show_action": "La documentation montre aussi une",
   "gitweb_folder_gone": "Le dossier du dépôt a disparu.",
   "gitweb_get_changes": "Obtenir les modifications du dépôt",
   "gitweb_get_changes_again": "Obtenez à nouveau les modifications du dépôt.",
   "gitweb_get_changes_busy": "Obtention des modifications du dépôt…",
+  "gitweb_get_tip": "Importer dans ce projet les modifications du dépôt Git.",
+  "gitweb_git_documentation": "Documentation de Git",
   "gitweb_interrupted_wait": "L’obtention et l’envoi attendent que tout soit réglé.",
   "gitweb_keep_project": "Garder la version du projet",
+  "gitweb_last_activity": "Dernière activité",
   "gitweb_merge_wait_local": "Une fusion attend son commit. Créez-le dans le dépôt, puis choisissez « Obtenir les modifications du dépôt » ou « Envoyer les modifications du projet » à nouveau.",
   "gitweb_merge_wait_remote": "Les fichiers sont réglés, mais le commit de la fusion n’a pas pu être créé. Choisissez « Obtenir les modifications du dépôt » ou « Envoyer les modifications du projet » pour réessayer.",
   "gitweb_open_desktop": "Pour envoyer et obtenir des modifications avec git, ouvrez ce projet dans l’application de bureau LibrePaper.",
   "gitweb_push_problem": "La dernière modification envoyée depuis un dépôt n’a pas pu être lue.",
-  "gitweb_push_sent": "Dernier envoi depuis un dépôt {when}",
-  "gitweb_push_sent_by": "Dernier envoi depuis un dépôt par {by}, {when}",
-  "gitweb_push_sent_by_label": "Dernier envoi depuis un dépôt par {by}, {when} : {label}",
-  "gitweb_push_sent_label": "Dernier envoi depuis un dépôt {when} : {label}",
-  "gitweb_read_git_docs": "Consultez la documentation de Git",
-  "gitweb_repo_branch": "Dépôt {location}, branche {branch}",
-  "gitweb_repo_path": "Dépôt {path}",
   "gitweb_repository_heading": "Dépôt git",
   "gitweb_retry_busy": "Nouvelle tentative…",
   "gitweb_retry_transfer": "Réessayer le transfert interrompu",
   "gitweb_send_changes": "Envoyer les modifications du projet",
   "gitweb_send_changes_busy": "Envoi des modifications du projet…",
+  "gitweb_send_tip": "Envoyer les modifications de ce projet au dépôt Git.",
   "gitweb_sign_in_busy": "Connexion…",
   "gitweb_signin_lead": "Connectez-vous pour que l’application de bureau puisse accéder à ce projet.",
+  "gitweb_status_missing": "Dossier introuvable",
+  "gitweb_status_sign_in": "Connexion requise",
   "gitweb_suggestion_refusal": "Une suggestion en attente dans {path} bloque {action}. Acceptez-la ou refusez-la, puis réessayez.",
+  "gitweb_summary_failed": "Le transfert a échoué",
+  "gitweb_summary_get_failed": "L’obtention des modifications du dépôt a échoué",
+  "gitweb_summary_get_files": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Obtenu {count} fichier du dépôt · {when}",
+        "countPlural=*": "Obtenu {count} fichiers du dépôt · {when}"
+      }
+    }
+  ],
+  "gitweb_summary_get_nothing": "Aucune nouvelle modification du dépôt · {when}",
+  "gitweb_summary_retry": "Transfert interrompu terminé · {when}",
+  "gitweb_summary_send": "Modifications du projet envoyées à {branch} · {when}",
+  "gitweb_summary_send_failed": "L’envoi des modifications du projet a échoué",
+  "gitweb_summary_send_nothing": "Aucune modification du projet à envoyer · {when}",
+  "gitweb_summary_send_plain": "Modifications du projet envoyées · {when}",
   "gitweb_take_repository": "Prendre la version du dépôt",
-  "gitweb_transfer_note": "« Obtenir les modifications du dépôt » importe les commits du dépôt dans ce projet. « Envoyer les modifications du projet » envoie les modifications de ce projet à la branche du dépôt ci-dessus.",
+  "gitweb_view_history": "Voir l’historique",
   "history_all_short": "Tout",
   "history_authors": "Auteurs",
   "history_authors_agent": "Agent : {name}",

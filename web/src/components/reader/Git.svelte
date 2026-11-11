@@ -17,10 +17,12 @@
     // The desktop app connects a repository: its connection.
     desktop = false,
     connection = null,
+    // Opens the history panel.
+    onhistory = null,
   } = $props();
 </script>
 
 <section class="panel git-panel" aria-label="Git">
   <PanelHeader title="Git" />
-  <GitWeb {web} {slug} {linkKey} {open} {desktop} {connection} />
+  <GitWeb {web} {slug} {linkKey} {open} {desktop} {connection} {onhistory} />
 </section>

@@ -419,4 +419,113 @@ for (const [pulled, line] of [[true, "Sent to repository branch main."], [false,
   assert.match(clean.state.result, /nothing was left to send to the project/);
 }
 
+// The last operation, for the summary line: everything but its time.
+const summary = (/** @type {any} */ last) => {
+  assert.equal(typeof last.at, "number");
+  const { at, ...rest } = last;
+  return rest;
+};
+
+// A pull that brings files records how many, on the branch.
+{
+  const { api } = routes({ connectionStatus: connected, pullConnection: { status: connected, pushed: { files: 3 } } });
+  const web = createWebConnection({ api, project });
+  await web.refresh();
+  assert.equal(web.state.last, null);
+  await web.pull();
+  assert.deepEqual(summary(web.state.last), { action: "get", ok: true, files: 3, nothing: false, branch: "main", detail: "" });
+}
+
+// A pull with nothing new records that nothing came in.
+{
+  const { api } = routes({ connectionStatus: connected, pullConnection: { status: connected, pushed: { nothing: true } } });
+  const web = createWebConnection({ api, project });
+  await web.refresh();
+  await web.pull();
+  assert.deepEqual(summary(web.state.last), { action: "get", ok: true, files: 0, nothing: true, branch: "main", detail: "" });
+}
+
+// A push records a send, and a push with nothing to send records nothing.
+{
+  const { api } = routes({ connectionStatus: connected, pushConnection: { status: connected, pushed: "pushed" } });
+  const web = createWebConnection({ api, project });
+  await web.refresh();
+  await web.push();
+  assert.deepEqual(summary(web.state.last), { action: "send", ok: true, files: 0, nothing: false, branch: "main", detail: "" });
+
+  const idle = routes({ connectionStatus: connected, pushConnection: { status: connected, pushed: "up-to-date" } });
+  const quiet = createWebConnection({ api: idle.api, project });
+  await quiet.refresh();
+  await quiet.push();
+  assert.equal(quiet.state.last.nothing, true);
+  assert.equal(quiet.state.last.ok, true);
+}
+
+// A failed push records the failure with the message the panel shows.
+{
+  const { api } = routes({ connectionStatus: connected, pushConnection: refused(500, {}, "The push failed.") });
+  const web = createWebConnection({ api, project });
+  await web.refresh();
+  await web.push();
+  assert.equal(web.state.problem, "The push failed.");
+  assert.deepEqual(summary(web.state.last), { action: "send", ok: false, files: 0, nothing: false, branch: "main", detail: "The push failed." });
+}
+
+// A push the repository is ahead of records the same refusal the panel shows.
+{
+  const { api } = routes({ connectionStatus: connected, pushConnection: refused(409, { reason: "behind" }) });
+  const web = createWebConnection({ api, project });
+  await web.refresh();
+  await web.push();
+  assert.equal(web.state.last.ok, false);
+  assert.equal(web.state.last.action, "send");
+  assert.equal(web.state.last.detail, web.state.problem);
+  assert.match(web.state.last.detail, /Get repository changes first/);
+}
+
+// A pull refused over changed files is a box, not a summary: the last operation is cleared.
+{
+  const scene = { pull: { status: connected, pushed: { files: 1 } } };
+  const { api } = routes({ connectionStatus: connected, pullConnection: () => scene.pull });
+  const web = createWebConnection({ api, project });
+  await web.refresh();
+  await web.pull();
+  assert.equal(web.state.last.ok, true);
+  scene.pull = refused(409, { reason: "changed", paths: ["intro.tex"] });
+  await web.pull();
+  assert.deepEqual(web.state.refusal, { reason: "changed", paths: ["intro.tex"] });
+  assert.equal(web.state.last, null);
+}
+
+// A busy transfer keeps the previous summary visible until its own answer comes.
+{
+  let web;
+  let seenDuringPull = null;
+  const { api } = routes({
+    connectionStatus: connected,
+    pushConnection: { status: connected, pushed: "pushed" },
+    pullConnection: () => {
+      seenDuringPull = web.state.last;
+      return { status: connected, pushed: { files: 2 } };
+    },
+  });
+  web = createWebConnection({ api, project });
+  await web.refresh();
+  await web.push();
+  await web.pull();
+  assert.equal(seenDuringPull.action, "send");
+  assert.equal(web.state.last.action, "get");
+}
+
+// Connecting forgets the last operation, whatever repository it is.
+{
+  const { api } = routes({ connectionStatus: connected, pullConnection: { status: connected, pushed: { files: 1 } }, connectRepository: connected });
+  const web = createWebConnection({ api, project });
+  await web.refresh();
+  await web.pull();
+  assert.notEqual(web.state.last, null);
+  await web.connect("https://github.com/you/paper.git");
+  assert.equal(web.state.last, null);
+}
+
 console.log("web-connection: connect, pull, push, conflicts, refusals, interrupted sends, sign-in and disconnect");
