@@ -257,7 +257,11 @@
     background: var(--color-raised);
   }
 
-  @media (prefers-reduced-motion: no-preference) {
+  /* The sheet rises only under a finger, where it is a gesture's answer. In a
+     narrow window on a desktop it simply appears: the desktop app's webview
+     painted the rows in place for a frame before the rise began, which read
+     as the menu flickering. */
+  @media (prefers-reduced-motion: no-preference) and (pointer: coarse) {
     :global(.mobile-sheet) {
       animation: mobile-sheet-up 200ms ease-out;
     }

@@ -566,6 +566,8 @@ try {
       await until('a wheel gesture scrolls the sheet rows', async () => (await b.evaluate('document.querySelector(".mobile-sheet-list").scrollTop>0')), 3000);
       await b.evaluate('document.querySelector(".mobile-sheet-list").scrollTop=0');
       await b.command('Emulation.setTouchEmulationEnabled',{enabled:true,maxTouchPoints:1});
+      // A touch screen is a coarse pointer, where the sheet rises: let it finish rising.
+      await until('the sheet settled under touch', () => b.evaluate('document.querySelector(".mobile-sheet").getAnimations().length === 0'), 3000);
       await b.command('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:point.x,y:point.y}]});
       await b.command('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:point.x,y:point.y-180}]});
       await b.command('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
