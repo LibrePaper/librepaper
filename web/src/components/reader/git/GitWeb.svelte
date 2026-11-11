@@ -199,7 +199,7 @@
   <form class="git-form" onsubmit={connect}>
     <label class="panel-meta" for="git-web-address">{m.gitweb_address_label()}</label>
     <div class="git-field-row">
-      <input id="git-web-address" class="input git-input" type="text" placeholder="https://github.com/owner/repo.git" autocomplete="off" spellcheck="false"
+      <input id="git-web-address" class="input git-input" type="text" placeholder="git@github.com:owner/repo.git" autocomplete="off" spellcheck="false"
              bind:value={address} disabled={busy} oninput={() => { failure = ""; }} />
       <button type="button" class="btn btn-sm lp-control-tonal-brand git-browse" disabled={busy} onclick={browse}>
         <Icon name="folder" size={14} />

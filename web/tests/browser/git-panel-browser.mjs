@@ -188,7 +188,7 @@ window.gitPanelCheck = async () => {
   check(text().includes("Link this project to a Git repository online or on this computer"), "and says what it does: " + text());
   check(text().includes("Git documentation") && !button("Disconnect") && !text().includes("Read the Git docs"), "the disconnected footer has the docs link and no Disconnect: " + text());
   check(!button("Browse…")?.disabled && button("Connect")?.disabled, "Connect is disabled while the field is empty");
-  check(field("Repository URL, SSH, or local path")?.placeholder === "https://github.com/owner/repo.git", "an address field with an example");
+  check(field("Repository URL, SSH, or local path")?.placeholder === "git@github.com:owner/repo.git", "an address field with an example");
   check(button("Browse…") && text().includes("LibrePaper never asks for your password") && !text().includes("existing credentials"), "a Browse button and one intro that explains sign-in: " + text());
   await widths("with the connect form");
 
