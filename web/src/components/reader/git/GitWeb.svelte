@@ -155,7 +155,7 @@
       {@render signIn()}
     {:else}
       <div class="git-row">
-        <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy || merging} onclick={() => connection.pull()}>
+        <button type="button" class="btn btn-sm lp-control-brand" disabled={busy || merging} onclick={() => connection.pull()}>
           {link.busy === "pull" ? m.gitweb_get_changes_busy() : m.gitweb_get_changes()}
         </button>
         <button type="button" class="btn btn-sm lp-control-brand" disabled={busy || merging} onclick={() => connection.push()}>
