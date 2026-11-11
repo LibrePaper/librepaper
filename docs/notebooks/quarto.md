@@ -8,7 +8,7 @@ title: "Quarto"
 
 | Place | What is in it | Who sees it |
 |---|---|---|
-| **The LibrePaper project** | Your `.qmd`, `.bib`, images and `_quarto.yml`. | Stored on the server. Everyone you invite can read it, even readers. Your code cannot read local files from here: it has no access to your computer. |
+| **The LibrePaper project** | Your `.qmd`, `.bib`, images and `_quarto.yml`. | Stored on the server. Everyone you invite can read it, even readers. It has no access to your computer. |
 | **The Run directory** | A folder on your computer with your data, scripts and anything private. | Never uploaded. Each person picks their own, on their own computer. |
 
 When you run code, Quarto sees both. Your code runs inside the Run directory.
