@@ -4,13 +4,17 @@
   import { EXPIRIES, ROLES } from "./shared.js";
 
   // The form for a new link or token.
-  let { kind, draft = $bindable(), busy = false, allowed = () => true, onsubmit, oncancel } = $props();
+  let { kind, draft = $bindable(), busy = false, allowed = () => true, anonymousAllowed = () => false, onsubmit, oncancel } = $props();
   let nameInput;
   let permission;
   // A token starts on its permission; a link starts on its name.
   onMount(() => (kind === "token" ? permission : nameInput)?.focus());
   const expiries = $derived(kind === "token" ? EXPIRIES.filter(([value]) => value !== "never") : EXPIRIES);
   const spends = $derived(draft.role !== "reader");
+  // A link can let anyone in without a sign-in, if the deployment allows it for
+  // its role. Where it does not, the choice falls to signing in.
+  const canAnyone = $derived(anonymousAllowed(draft.role));
+  const anyone = $derived(draft.anonymous && canAnyone);
   const reach = {
     reader: m.shareform_reach_reader(),
     commenter: m.shareform_reach_commenter(),
@@ -40,13 +44,26 @@
     {@render nameField()}
   {/if}
   <label class="share-field panel-meta">{m.shareform_permission()}
-    <select class="select share-select" bind:this={permission} bind:value={draft.role} disabled={busy} onchange={(event) => { if (kind === "token" && event.currentTarget.value === "editor" && draft.until === "7d") draft.until = "1d"; }}>
+    <select class="select share-select" bind:this={permission} bind:value={draft.role} disabled={busy} onchange={(event) => { if (kind === "token" && event.currentTarget.value === "editor" && draft.until === "7d") draft.until = "1d"; if (kind === "link") draft.anonymous = event.currentTarget.value === "reader"; }}>
       {#each ROLES as role (role.id)}
         <option value={role.id} disabled={!allowed(role.id)}>{allowed(role.id) ? role.label : m.shareform_role_not_allowed({ role: role.label })}</option>
       {/each}
     </select>
     {#if kind === "link"}<span class="share-note">{reach[draft.role]}</span>{/if}
   </label>
+  {#if kind === "link"}
+    <fieldset class="share-field share-choices" disabled={busy}>
+      <legend class="panel-meta">{m.shareform_who_label()}</legend>
+      <label class="share-choice panel-meta">
+        <input type="radio" name="share-who" value="anyone" checked={anyone} disabled={!canAnyone} onchange={() => (draft.anonymous = true)} />
+        <span>{canAnyone ? m.shareform_who_anyone() : m.shareform_who_anyone_not_allowed()}</span>
+      </label>
+      <label class="share-choice panel-meta">
+        <input type="radio" name="share-who" value="signin" checked={!anyone} onchange={() => (draft.anonymous = false)} />
+        <span>{m.shareform_who_signin()}</span>
+      </label>
+    </fieldset>
+  {/if}
   {#if kind === "token" && draft.role === "editor"}
     <p class="share-note panel-meta">{m.shareform_edit_note()}</p>
   {/if}
@@ -73,6 +90,9 @@
   .share-field { display: grid; gap: var(--spacing); }
   .share-field > span, .share-note { font-size: 11px; }
   .share-note { margin: 0; }
+  .share-choices { min-width: 0; margin: 0; padding: 0; border: 0; }
+  .share-choice { display: flex; align-items: center; gap: calc(var(--spacing) * 1.5); }
+  .share-choice:has(input:disabled) { color: var(--panel-muted); }
   .share-input, .share-select { width: 100%; min-width: 0; max-width: 100%; }
   .share-select { border: 0; background-color: var(--color-row-hover); font: inherit; border-radius: var(--radius-base); }
   .share-input::placeholder { color: var(--panel-muted); }

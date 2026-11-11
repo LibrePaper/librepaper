@@ -15,6 +15,11 @@ export const EXPIRIES = [["1d", m.shared_expiry_1d()], ["7d", m.shared_expiry_7d
 export const allows = (sharing, role) => role === "reader" || (role === "commenter"
   ? sharing?.commenters_policy !== "nobody" : sharing?.publishers !== "nobody");
 
+// Whether the deployment lets a link of this role work without a sign-in. The
+// server reports it per role as `anonymous`; anything missing counts as no.
+const anonymousRole = { reader: "reads", commenter: "comments", suggester: "suggests", editor: "edits" };
+export const anonymousAllowed = (sharing, role) => sharing?.anonymous?.[anonymousRole[role]] === true;
+
 // The one block an agent is given, shared by the reveal and each token row. It
 // holds both the install and connect instructions, so one paste installs the
 // skill if it is missing and connects with the token. It stays English because
@@ -52,5 +57,6 @@ export const displayName = (kind, item) => item.name || (kind === "link" ? (link
 // The second line of a row.
 export const metaOf = (kind, item) => {
   const role = roleLabel(item.role);
-  return `${role} · ${item.until ? dateOf(item.until) : m.shared_no_expiry()}`;
+  const expiry = item.until ? dateOf(item.until) : m.shared_no_expiry();
+  return kind === "link" && item.anonymous ? `${role} · ${expiry} · ${m.shared_no_sign_in()}` : `${role} · ${expiry}`;
 };
