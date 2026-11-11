@@ -2674,6 +2674,11 @@
   const width = $derived(arrangement.state.width);
   const unit = $derived(arrangement.state.unit);
   const compact = $derived(arrangement.compact);
+  // The phone's strip with the Run directory chip stands above the workspace,
+  // so its height comes off the workspace's, as the demo banner's does.
+  const runStripShown = $derived(compact && runCodeOffered && localExecution && sourceFormat === "quarto");
+  let runStripMeasured = $state(0);
+  const runStripHeight = $derived(runStripShown ? runStripMeasured : 0);
   const sourceOpen = $derived(arrangement.sourceOpen);
   const activeMobileView = $derived(arrangement.activeMobileView);
   const splitTight = $derived(arrangement.splitTight);
@@ -4032,8 +4037,8 @@
 
 <!-- The phone has no tools in its header, so the Run directory is asked for
      here while Run code is on. -->
-{#if compact && runCodeOffered && localExecution && sourceFormat === "quarto"}
-  <div class="run-directory-strip"><RunDirectoryControl align="start" directory={runDir} /></div>
+{#if runStripShown}
+  <div class="run-directory-strip" bind:offsetHeight={runStripMeasured}><RunDirectoryControl align="start" directory={runDir} /></div>
 {/if}
 
 <Nav {me} phoneMenu phoneShell={compact} phoneBare={tabsShown} hidden={barHidden && !compact}>
@@ -4127,7 +4132,7 @@
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact} class:phone-tabs={tabsShown} class:bar-hidden={barHidden && !compact}
-      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - {demoBannerHeight + shareIntroOffset}px - var(--librepaper-phone-chrome, 0px));{compact ? ` --librepaper-phone-chrome: calc(${phoneChrome});` : ''} --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
+      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - {demoBannerHeight + shareIntroOffset + runStripHeight}px - var(--librepaper-phone-chrome, 0px));{compact ? ` --librepaper-phone-chrome: calc(${phoneChrome});` : ''} --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- What this page is. The title is in the bar, where it is a span beside
        the menus rather than a heading, so the one heading a screen reader
        looks for first is here instead: said once, seen by nobody. -->
