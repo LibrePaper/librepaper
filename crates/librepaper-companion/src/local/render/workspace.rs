@@ -448,9 +448,20 @@ fn make_link(target: &Path, link: &Path, _is_dir: bool) -> std::io::Result<LinkK
     std::os::unix::fs::symlink(target, link).map(|()| LinkKind::Symlink)
 }
 
+/// True when the path is UTF-8 and holds no character `cmd` would interpret.
+/// `Command::arg` does not escape these, so such paths are never passed to it.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn cmd_safe(path: &Path) -> bool {
+    path.to_str()
+        .is_some_and(|s| !s.contains(['&', '%', '^', '|', '<', '>', '"', '!']))
+}
+
 #[cfg(windows)]
 fn make_link(target: &Path, link: &Path, is_dir: bool) -> std::io::Result<LinkKind> {
     if is_dir {
+        if !cmd_safe(link) || !cmd_safe(target) {
+            return Err(std::io::Error::other("path unsafe for cmd"));
+        }
         let status = std::process::Command::new("cmd")
             .arg("/C")
             .arg("mklink")
@@ -498,6 +509,12 @@ struct Overlay<'a> {
     root: &'a Path,
     run_dir: &'a Path,
     manifest_paths: &'a BTreeSet<String>,
+    /// Workspace-relative directory of the entrypoint ("" for the root). It is
+    /// always a real directory: the entrypoint is a project file, so it is
+    /// never linked as part of a folder.
+    entry_dir: String,
+    /// Entrypoint file name without its extension; empty disables the filter.
+    entry_stem: String,
     notices: Vec<Notice>,
     links: Vec<LinkRecord>,
 }
@@ -521,6 +538,15 @@ impl Overlay<'_> {
         names.sort();
         for name in names {
             if skipped_run_entry(&name) {
+                continue;
+            }
+            // The render's own outputs (paper.html, paper_files, ...) must
+            // never be linked, or Quarto would overwrite the user's copies.
+            if relative == self.entry_dir
+                && !self.entry_stem.is_empty()
+                && (name.starts_with(&format!("{}.", self.entry_stem))
+                    || name.starts_with(&format!("{}_", self.entry_stem)))
+            {
                 continue;
             }
             let rel = if relative.is_empty() {
@@ -575,11 +601,25 @@ pub(crate) fn link_run_directory(
     root: &Path,
     run_dir: &Path,
     manifest_paths: &BTreeSet<String>,
+    entrypoint: &str,
 ) -> Result<Vec<Notice>, String> {
+    let entry_path = Path::new(entrypoint);
+    let entry_dir = entry_path
+        .parent()
+        .and_then(|p| p.to_str())
+        .unwrap_or("")
+        .replace('\\', "/");
+    let entry_stem = entry_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
     let mut overlay = Overlay {
         root,
         run_dir,
         manifest_paths,
+        entry_dir,
+        entry_stem,
         notices: Vec::new(),
         links: Vec::new(),
     };
@@ -732,7 +772,7 @@ mod run_directory_tests {
         unlink_run_directory(&setup.root).unwrap();
         sync_hosted_workspace(&setup.staged, &setup.root, &manifest).unwrap();
         let paths = manifest.iter().map(|e| e.path.clone()).collect();
-        link_run_directory(&setup.root, &setup.run, &paths).unwrap()
+        link_run_directory(&setup.root, &setup.run, &paths, "paper.qmd").unwrap()
     }
 
     fn is_link(path: &Path) -> bool {
@@ -885,6 +925,29 @@ mod run_directory_tests {
     }
 
     #[test]
+    fn the_renders_own_outputs_are_not_linked_but_other_files_are() {
+        let project = [("paper.qmd", "t")];
+        let s = setup(
+            &project,
+            &[
+                ("paper.html", "user"),
+                ("paper_files/x.png", "png"),
+                ("notes.html", "n"),
+            ],
+        );
+        cycle(&s, &project);
+        assert!(std::fs::symlink_metadata(s.root.join("paper.html")).is_err());
+        assert!(std::fs::symlink_metadata(s.root.join("paper_files")).is_err());
+        assert!(is_link(&s.root.join("notes.html")));
+        // A render writing its output in the workspace leaves the user's copy.
+        std::fs::write(s.root.join("paper.html"), "rendered").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(s.run.join("paper.html")).unwrap(),
+            "user"
+        );
+    }
+
+    #[test]
     fn project_files_are_never_written_through_a_link() {
         let first = [("paper.qmd", "t")];
         let s = setup(&first, &[("figures/old.png", "png")]);
@@ -904,5 +967,18 @@ mod run_directory_tests {
             std::fs::read_to_string(s.root.join("figures/new.png")).unwrap(),
             "new"
         );
+    }
+}
+
+#[cfg(test)]
+mod cmd_safe_tests {
+    use super::*;
+
+    #[test]
+    fn cmd_metacharacters_make_a_path_unsafe() {
+        assert!(cmd_safe(Path::new("C:\\Users\\me\\My Run dir")));
+        for bad in ["a&b", "a%b", "a^b", "a|b", "a<b", "a>b", "a\"b", "a!b"] {
+            assert!(!cmd_safe(Path::new(bad)), "{bad}");
+        }
     }
 }
