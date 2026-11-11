@@ -90,7 +90,6 @@
         {#if creating}
           <ShareForm kind="link" bind:draft busy={sharing.busy} {allowed} anonymousAllowed={anonymous} onsubmit={commit} oncancel={cancelForm} />
         {/if}
-        <p class="panel-meta">{m.share_links_scope_note()}</p>
         {#if links.length === 0}
           <p class="panel-meta">{m.share_no_links()}</p>
         {:else}
