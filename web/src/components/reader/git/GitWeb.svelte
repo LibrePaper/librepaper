@@ -2,19 +2,19 @@
   // A web project's Git panel. The project cannot run git, so this panel runs
   // nothing on the project itself. What the server knows (the last push) belongs
   // to the controller (lib/reader/web-git.svelte.js). In the desktop app the
-  // panel also connects the project to a git repository: the desktop app keeps
-  // a clone on this computer, or works in a repository folder the person
-  // chose, and Get repository changes and Send project changes move changes
-  // between that repository and the project. That state belongs
-  // to lib/reader/web-connection.svelte.js;
-  // this draws it. The GitHub Action that keeps a repository in step is
-  // described in the docs.
+  // panel also connects the project to a git repository, either a folder on this
+  // computer that the person chose or a remote address. Get repository changes
+  // and Send project changes move changes between that repository and the
+  // project. That state belongs to lib/reader/web-connection.svelte.js; this
+  // draws it. The GitHub Action that keeps a repository in step is described in
+  // the docs.
   import { untrack } from "svelte";
   import { since } from "../../../lib/dates.js";
   import { locale } from "../../../lib/locale.js";
   import { m } from "../../../lib/paraglide/messages.js";
-  import { remoteUrlProblem } from "../../../lib/git-url.js";
+  import { repositoryInput } from "../../../lib/git-url.js";
   import { GIT_DOCS_URL as DOCS } from "../../../lib/site-links.js";
+  import Icon from "../../Icon.svelte";
   import GitSignInHelp from "./GitSignInHelp.svelte";
 
   let {
@@ -41,7 +41,7 @@
   const local = $derived(Boolean(status?.local));
   const missing = $derived(Boolean(status?.missing));
 
-  // The address that is typed, and the problem with it.
+  // The typed repository address or local path, and the problem with it.
   let address = $state("");
   let failure = $state("");
 
@@ -68,11 +68,11 @@
     return () => clearInterval(timer);
   });
 
-  // The project's last change from a repository, which the server records as a push.
-  const pushText = $derived.by(() => {
-    if (!view.loaded) return m.gitweb_push_loading();
+  // The project's last change from a repository, which the server records as a
+  // push. Nothing is shown while it loads or when there was none.
+  const pushLine = $derived.by(() => {
     if (view.pushProblem) return m.gitweb_push_problem();
-    if (!view.push) return m.gitweb_push_none();
+    if (!view.push) return "";
     const when = since(view.push.at);
     const by = view.push.by;
     const label = view.push.label;
@@ -84,16 +84,20 @@
   async function connect(event) {
     event.preventDefault();
     if (busy) return;
-    failure = remoteUrlProblem(address);
+    const input = repositoryInput(address);
+    failure = input.problem;
     if (failure) return;
-    await connection.connect(address);
+    if (input.kind === "local") await connection.connectLocal(input.value);
+    else await connection.connect(input.value);
     if (connection.state.status?.connected) address = "";
   }
 
-  async function connectLocal() {
+  // The folder chooser fills the field; the person still presses Connect.
+  async function browse() {
     if (busy) return;
     failure = "";
-    await connection.connectLocal();
+    const path = await connection.choose();
+    if (path) address = path;
   }
 </script>
 
@@ -106,24 +110,29 @@
   </div>
 {/snippet}
 
+{#snippet problemLine()}
+  {#if failure || link.problem}<p class="lp-text-error git-error" role="alert">{failure || link.problem}</p>{/if}
+{/snippet}
+
 {#snippet connectForm()}
   <form class="git-form" onsubmit={connect}>
-    <label class="git-field panel-meta">{m.gitweb_address_label()}
-      <input class="input git-input" type="text" placeholder="https://github.com/owner/repo.git" autocomplete="off" spellcheck="false"
-             bind:value={address} disabled={busy} />
-    </label>
-    <div class="git-row">
-      <button type="submit" class="btn btn-sm lp-control-tonal-brand" disabled={busy}>
-        {link.busy === "connect" ? m.common_connecting() : m.gitweb_connect()}
+    <label class="panel-meta" for="git-web-address">{m.gitweb_address_label()}</label>
+    <div class="git-field-row">
+      <input id="git-web-address" class="input git-input" type="text" placeholder="https://github.com/owner/repo.git" autocomplete="off" spellcheck="false"
+             bind:value={address} disabled={busy} oninput={() => { failure = ""; }} />
+      <button type="button" class="btn btn-sm lp-control-tonal-brand git-browse" disabled={busy} onclick={browse}>
+        <Icon name="folder" size={14} />
+        {link.busy === "choose" ? m.common_choosing() : m.gitweb_browse()}
       </button>
     </div>
+    {@render problemLine()}
+    <div class="git-row">
+      <button type="submit" class="btn btn-sm lp-control-brand" disabled={busy || !address.trim()}>
+        {link.busy === "connect" || link.busy === "connect-local" ? m.common_connecting() : m.gitweb_connect()}
+      </button>
+    </div>
+    <p class="panel-meta git-note">{m.gitweb_credentials_note()}</p>
   </form>
-  <div class="git-row">
-    <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={connectLocal}>
-      {link.busy === "connect-local" ? m.common_choosing() : m.gitweb_use_local()}
-    </button>
-  </div>
-  <p class="panel-meta git-note">{m.gitweb_local_note()}</p>
 {/snippet}
 
 {#snippet disconnectFoot()}
@@ -212,52 +221,46 @@
 {/snippet}
 
 <div class="git-web">
-  <section class="git-block" aria-labelledby="git-web-repository">
+  <section aria-labelledby="git-web-repository">
     <h3 id="git-web-repository" class="panel-section-title">{m.gitweb_repository_heading()}</h3>
-    <p class="git-push" role="status" title={pushTitle}>{pushText}</p>
+    {#if pushLine}<p class="git-push" role="status" title={pushTitle}>{pushLine}</p>{/if}
     {#if !desktop}
       <p class="git-lead">{m.gitweb_open_desktop()}</p>
-      <p class="git-lead">{m.gitweb_sync_intro()} <a href="{DOCS}#github-action" target="_blank" rel="noopener noreferrer">GitHub Action</a>, {m.gitweb_sync_no_desktop()} <a href={DOCS} target="_blank" rel="noopener noreferrer">{m.gitweb_read_git_docs()}</a> {m.gitweb_setup_text()}</p>
-    {/if}
-  </section>
-
-  {#if desktop && connection}
-    <section class="git-block" aria-labelledby="git-web-connect">
-      <h3 id="git-web-connect" class="panel-section-title">{status?.connected ? m.gitweb_connected_heading() : m.gitweb_connect_heading()}</h3>
+    {:else if connection}
       {#if !link.loaded}
         <p class="panel-muted" role="status">{m.common_loading()}</p>
       {:else if status?.connected}
         {@render connected()}
+        {@render problemLine()}
       {:else if status}
         <p class="git-lead">{m.gitweb_connect_lead()}</p>
         {#if !status.signed_in}{@render signIn()}{/if}
         {@render connectForm()}
+      {:else}
+        {@render problemLine()}
       {/if}
-      {#if failure || link.problem}<p class="lp-text-error git-error" role="alert">{failure || link.problem}</p>{/if}
       {#if link.signInHelp}
         <GitSignInHelp remote={link.signInHelp.remote} detail={link.signInHelp.detail} {busy}
                        onretry={() => connection.retry()} ondismiss={() => connection.dismiss()} />
       {/if}
-    </section>
-  {/if}
+    {/if}
+  </section>
 
-  {#if desktop}
-    <p class="panel-meta git-note"><a href={DOCS} target="_blank" rel="noopener noreferrer">{m.gitweb_read_git_docs()}</a>. {m.gitweb_docs_show_action()} <a href="{DOCS}#github-action" target="_blank" rel="noopener noreferrer">GitHub Action</a> {m.gitweb_docs_keeps_repo()}</p>
-  {/if}
+  <p class="panel-meta git-foot-note"><a href={DOCS} target="_blank" rel="noopener noreferrer">{m.gitweb_read_git_docs()}</a>. {m.gitweb_docs_show_action()} <a href="{DOCS}#github-action" target="_blank" rel="noopener noreferrer">GitHub Action</a> {m.gitweb_docs_keeps_repo()}</p>
 </div>
 
 <style>
   .git-web { display: grid; grid-template-columns: minmax(0, 1fr); gap: calc(var(--spacing) * 5); }
-  .git-block + .git-block { padding-top: calc(var(--spacing) * 4); border-top: 1px solid var(--color-divider); }
   .git-lead { margin: calc(var(--spacing) * 1.5) 0 0; overflow-wrap: anywhere; }
   .git-note { margin: calc(var(--spacing) * 1.5) 0 0; overflow-wrap: anywhere; }
   .git-push { margin: calc(var(--spacing) * 2) 0 0; font-weight: 500; overflow-wrap: anywhere; }
   .git-remote { margin: calc(var(--spacing) * 1.5) 0 0; font-weight: 500; overflow-wrap: anywhere; }
   .git-line { margin: calc(var(--spacing) * 3) 0 0; overflow-wrap: anywhere; }
   .git-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: calc(var(--spacing) * 2); margin-top: calc(var(--spacing) * 2); }
+  .git-field-row { display: flex; gap: calc(var(--spacing) * 2); align-items: center; }
   .git-row { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 2); margin-top: calc(var(--spacing) * 2); }
-  .git-field { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--spacing); }
-  .git-input { width: 100%; min-width: 0; }
+  .git-input { flex: 1 1 auto; min-width: 0; }
+  .git-browse { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1.5); flex: none; }
   .git-box { margin-top: calc(var(--spacing) * 3); padding: calc(var(--spacing) * 2); border-radius: var(--radius-base); background: var(--color-row-hover); overflow-wrap: anywhere; }
   .git-box p { margin: 0 0 calc(var(--spacing) * 1.5); }
   .git-box p:last-child { margin-bottom: 0; }
@@ -272,6 +275,7 @@
   .git-foot { margin-top: calc(var(--spacing) * 6); padding-top: calc(var(--spacing) * 3); border-top: 1px solid var(--color-divider); }
   .git-foot .git-action { margin-inline-start: calc(var(--spacing) * -1.5); }
   .git-foot p { margin: calc(var(--spacing) * 1) 0 0; }
+  .git-foot-note { margin: 0; overflow-wrap: anywhere; }
   .git-error { margin: calc(var(--spacing) * 2) 0 0; overflow-wrap: anywhere; }
   .git-web a { color: var(--color-link); }
   /* Phones: the connect field keeps 16px so iOS does not zoom, and the text

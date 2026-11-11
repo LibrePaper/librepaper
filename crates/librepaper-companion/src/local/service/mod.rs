@@ -362,6 +362,10 @@ fn cancel_running_in_workspace(
 pub(super) struct Inner {
     pub(super) state_home: PathBuf,
     folder_dialog: Mutex<()>,
+    /// The folder most recently chosen through the Browse button, by the
+    /// connection key it was chosen for. A local connection to that folder
+    /// needs no second dialog.
+    picked: Mutex<HashMap<String, PathBuf>>,
     backups: Arc<backups::BackupManager>,
     instance: String,
     port: u16,
@@ -427,6 +431,7 @@ impl LocalService {
         let inner = Arc::new(Inner {
             state_home: state_home.to_path_buf(),
             folder_dialog: Mutex::new(()),
+            picked: Mutex::new(HashMap::new()),
             backups: Arc::new(backups::BackupManager::new(state_home)),
             instance,
             port,
@@ -711,6 +716,9 @@ async fn dispatch(
         }
         ["connections", "local"] if *method == Method::POST => {
             connection::handle_connect_local(inner, headers, origin, request).await
+        }
+        ["connections", "local", "choose"] if *method == Method::POST => {
+            connection::handle_choose_local(inner, headers, origin, request).await
         }
         ["connections", "pull"] if *method == Method::POST => {
             connection::handle_pull(inner, headers, origin, request).await
@@ -1221,6 +1229,7 @@ pub(super) mod test_support {
         Arc::new(Inner {
             state_home: state_home.to_path_buf(),
             folder_dialog: Mutex::new(()),
+            picked: Mutex::new(HashMap::new()),
             backups: Arc::new(backups::BackupManager::new(state_home)),
             control: control::ControlAuth::create(state_home, &instance).unwrap(),
             instance,

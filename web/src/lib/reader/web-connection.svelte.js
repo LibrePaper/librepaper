@@ -6,6 +6,10 @@
 // desktop app, and says what the answer means.
 //
 // This module owns that state; the panel only reads it and calls the actions.
+// A local repository is picked in two steps: `choose` asks the desktop app's
+// folder chooser for a path and changes nothing else, then `connectLocal` with
+// that path connects it. `connectLocal` with no path lets the desktop app open
+// its own chooser.
 //
 // Signing in is two calls to the desktop app with the page between them. When the page has a session on the server, `approve`
 // approves the code there. Otherwise the page opens the server's approval page
@@ -38,7 +42,7 @@ const isPending = (/** @type {any} */ error) => error?.status === 400 && error?.
 
 const paths = (/** @type {unknown} */ value) => (Array.isArray(value) ? value.map(String) : []);
 
-/** @typedef {{ loaded: boolean, status: any, busy: "" | "connect" | "connect-local" | "pull" | "push" | "retry" | "resolve" | "login" | "disconnect", result: string | null, refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string, action: "pull" | "push" } | null, problem: string, signInHelp: { remote: string, detail: string } | null, interrupted: string }} WebConnectionState */
+/** @typedef {{ loaded: boolean, status: any, busy: "" | "connect" | "connect-local" | "choose" | "pull" | "push" | "retry" | "resolve" | "login" | "disconnect", result: string | null, refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string, action: "pull" | "push" } | null, problem: string, signInHelp: { remote: string, detail: string } | null, interrupted: string }} WebConnectionState */
 
 /** `flush` settles the editor's own edits on the server before a transfer reads
  * the project. `signedIn` is asked each time Sign in is pressed: whether this
@@ -154,13 +158,29 @@ export function createWebConnection({ api = routes, project, flush = async () =>
     });
   };
 
-  /// Connects the project to a git repository on this computer, which the
-  /// person chooses in the desktop app's folder dialog. A cancelled dialog
-  /// answers the status as it was, so the panel stays as it was.
-  const connectLocal = () => run("connect-local", async () => {
-    const status = await api.connectLocalRepository(project);
-    set({ status, result: null, refusal: null });
-  });
+  /// Connects the project to a git repository on this computer, at the folder
+  /// `choose` picked, or in the desktop app's own folder dialog when no path is
+  /// given. A cancelled dialog answers the status as it was, so the panel stays
+  /// as it was.
+  const connectLocal = (/** @type {string} */ path = "") => {
+    address = path;
+    return run("connect-local", async () => {
+      const status = await api.connectLocalRepository(project, path);
+      set({ status, result: null, refusal: null });
+    });
+  };
+
+  /// Asks the desktop app's folder chooser for a repository folder and resolves
+  /// to the path picked, or "" when the chooser was cancelled or failed. A
+  /// choice changes neither the status, the result nor the refusal.
+  const choose = async () => {
+    let chosen = "";
+    await run("choose", async () => {
+      const answer = /** @type {any} */ (await api.chooseLocalRepository(project));
+      chosen = answer?.cancelled ? "" : String(answer?.path ?? "");
+    });
+    return chosen;
+  };
 
   /// Imports the repository's changes into the project. Stops at a conflict,
   /// which the merge section then settles one file at a time. The merge reads
@@ -297,6 +317,7 @@ export function createWebConnection({ api = routes, project, flush = async () =>
     refresh,
     connect,
     connectLocal,
+    choose,
     pull,
     push,
     retryTransfer,

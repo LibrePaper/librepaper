@@ -16,7 +16,7 @@ There are three ways to sync, and they all do the same two things: pull brings t
 
 ## The Git panel
 
-Open a project in the [desktop app](desktop-app.html) and choose the Git panel. Paste the repository's address and click Connect. On GitHub, use the SSH address (see [Credentials](#credentials)). You can also pick Use a local repository to work directly in a repository already on your computer.
+Open a project in the [desktop app](desktop-app.html) and choose the Git panel. Type the repository's address into the **Repository URL or local path** field and click Connect. On GitHub, use the SSH address (see [Credentials](#credentials)). To work directly in a repository already on your computer, click **Browse…** and choose its folder, then click Connect. A local path you type is confirmed in the folder chooser before it connects.
 
 Two buttons do the work. Get repository changes imports new commits into the project and its History. Send project changes sends the project's files to the repository's branch. If a file changed on both sides, the panel lists it and you choose Keep project's or Take repository's for each one, then click the button again. With a local repository, conflicts are left in the repository for your own Git tools instead, and only committed files are sent.
 
