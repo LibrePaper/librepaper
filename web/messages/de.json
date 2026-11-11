@@ -165,7 +165,7 @@
   "agent_task_outline": "Erstellen Sie eine Gliederung dieses LibrePaper-Projekts: Listen Sie die Überschriften auf und beschreiben Sie, was jeder Abschnitt leistet. Ändern Sie das Projekt nicht.",
   "agent_task_summarize": "Fassen Sie dieses LibrePaper-Projekt zusammen. Ändern Sie das Projekt nicht.",
   "agent_task_needs_context": "Diese Aufgabe benötigt den passenden Zugriff und Kontext. Wählen Sie eine andere Aufgabe oder hängen Sie eine Textstelle an.",
-  "agent_task_tracked_grant": "Diese Aufgabe nimmt nachverfolgte Änderungen vor. Setzen Sie den Zugriff des Agenten oben auf „Bearbeiten“.",
+  "agent_task_tracked_grant": "Diese Aufgabe nimmt nachverfolgte Änderungen vor. Setzen Sie den Zugriff des Agenten oben auf „Vorschlagen“ oder „Bearbeiten“.",
   "agent_task_tracked_no_access": "Diese Aufgabe nimmt nachverfolgte Änderungen vor. Zum Ausführen benötigen Sie Bearbeitungszugriff.",
   "agent_the_agent": "Der Agent",
   "agent_view": "Anzeigen",

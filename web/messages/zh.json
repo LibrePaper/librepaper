@@ -165,7 +165,7 @@
   "agent_task_outline": "概括此 LibrePaper 项目：列出标题，并说明每个章节的作用。不要修改项目。",
   "agent_task_summarize": "总结此 LibrePaper 项目。不要修改项目。",
   "agent_task_needs_context": "此任务需要相应的访问权限和上下文。请选择其他任务或附加一段内容。",
-  "agent_task_tracked_grant": "此任务会产生修订。请在上方将智能体的访问权限设为“编辑”。",
+  "agent_task_tracked_grant": "此任务会产生修订。请在上方将智能体的访问权限设为“建议”或“编辑”。",
   "agent_task_tracked_no_access": "此任务会产生修订。你需要编辑权限才能运行。",
   "agent_the_agent": "智能体",
   "agent_view": "查看",

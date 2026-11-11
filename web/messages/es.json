@@ -165,7 +165,7 @@
   "agent_task_outline": "Haga un esquema de este proyecto de LibrePaper: enumere los encabezados y diga qué hace cada sección. No cambie el proyecto.",
   "agent_task_summarize": "Resuma este proyecto de LibrePaper. No cambie el proyecto.",
   "agent_task_needs_context": "Esta tarea necesita el acceso y el contexto adecuados. Elija otra tarea o adjunte un fragmento.",
-  "agent_task_tracked_grant": "Esta tarea hace cambios con control de cambios. Cambie arriba el acceso del agente a Editar.",
+  "agent_task_tracked_grant": "Esta tarea hace cambios con control de cambios. Cambie arriba el acceso del agente a Sugerir o Editar.",
   "agent_task_tracked_no_access": "Esta tarea hace cambios con control de cambios. Se necesita acceso de edición para ejecutarla.",
   "agent_the_agent": "El agente",
   "agent_view": "Ver",

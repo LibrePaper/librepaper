@@ -4156,7 +4156,7 @@
 
 {#if shareIntro}
   <div class="share-intro" role="status" bind:clientHeight={shareIntroHeight}>
-    <span class="share-intro-text">{shareIntro === "edit" ? m.readerd_share_intro_edit() : shareIntro === "comment" ? m.readerd_share_intro_comment() : m.readerd_share_intro_view_ask()}</span>
+    <span class="share-intro-text">{shareIntro === "edit" ? m.readerd_share_intro_edit() : shareIntro === "suggest" ? m.readerd_share_intro_suggest() : shareIntro === "comment" ? m.readerd_share_intro_comment() : m.readerd_share_intro_view_ask()}</span>
     <LegalNotice legal={shareIntroLegal} />
     <button type="button" class="btn btn-sm lp-control-neutral" onclick={() => (shareIntroDismissed = true)}>{m.toasts_dismiss()}</button>
   </div>

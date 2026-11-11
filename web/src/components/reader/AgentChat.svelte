@@ -156,7 +156,7 @@
   const blocker = $derived(chosen ? taskBlocker(caps, { kind: chosen.kind, scope }, {
     attached: attachment || null, path: contextPath, deferAccess: canStart,
   }) : "");
-  // Tracked-change tasks need the agent to hold Edit, whatever the reader holds.
+  // Tracked-change tasks need the agent to hold Suggest or Edit, whatever the reader holds.
   const accessGap = $derived(Boolean(chosen) && ["tighten", "rewrite", "proofread", "fix"].includes(chosen.kind) && !["editor", "suggester"].includes(offeredAccess()));
   const canGrantEdit = $derived(roleOffered({ id: "editor" }));
   const agentReady = $derived(runnerReady || canStart);

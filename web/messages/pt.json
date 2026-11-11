@@ -165,7 +165,7 @@
   "agent_task_outline": "Faça um esboço deste projeto LibrePaper: liste os títulos e diga o que cada seção faz. Não altere o projeto.",
   "agent_task_summarize": "Resuma este projeto LibrePaper. Não altere o projeto.",
   "agent_task_needs_context": "Esta tarefa precisa do acesso e do contexto adequados. Escolha outra tarefa ou anexe um trecho.",
-  "agent_task_tracked_grant": "Esta tarefa faz alterações controladas. Defina o acesso do agente como “Editar” acima.",
+  "agent_task_tracked_grant": "Esta tarefa faz alterações controladas. Defina o acesso do agente como “Sugerir” ou “Editar” acima.",
   "agent_task_tracked_no_access": "Esta tarefa faz alterações controladas. Você precisa de acesso de edição para executá-la.",
   "agent_the_agent": "O agente",
   "agent_view": "Exibir",

@@ -165,7 +165,7 @@
   "agent_task_outline": "Dressez le plan de ce projet LibrePaper : listez les titres et indiquez ce que fait chaque section. Ne modifiez pas le projet.",
   "agent_task_summarize": "Résumez ce projet LibrePaper. Ne modifiez pas le projet.",
   "agent_task_needs_context": "Cette tâche exige l’accès et le contexte appropriés. Choisissez une autre tâche ou joignez un passage.",
-  "agent_task_tracked_grant": "Cette tâche apporte des modifications suivies. Définissez l’accès de l’agent à « Modifier » ci-dessus.",
+  "agent_task_tracked_grant": "Cette tâche apporte des modifications suivies. Définissez l’accès de l’agent à « Suggérer » ou « Modifier » ci-dessus.",
   "agent_task_tracked_no_access": "Cette tâche apporte des modifications suivies. Vous avez besoin d’un accès en modification pour l’exécuter.",
   "agent_the_agent": "L’agent",
   "agent_view": "Afficher",

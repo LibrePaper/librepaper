@@ -50,7 +50,7 @@
   {#if kind === "token" && draft.role === "editor"}
     <p class="share-note panel-meta">{m.shareform_edit_note()}</p>
   {/if}
-  {#if draft.role === "suggester"}
+  {#if kind !== "token" && draft.role === "suggester"}
     <p class="share-note panel-meta">{m.share_suggest_warning()}</p>
   {/if}
   <label class="share-field panel-meta">{m.shareform_expires()}
