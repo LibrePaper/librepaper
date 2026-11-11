@@ -1151,6 +1151,22 @@
   "gitweb_a_file": "un archivo",
   "gitweb_action_pull": "obtener los cambios del repositorio",
   "gitweb_action_push": "enviar los cambios del proyecto",
+  "gitweb_activity_more_commits": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} commit más",
+        "countPlural=*": "{count} commits más"
+      }
+    }
+  ],
+  "gitweb_activity_untitled": "Cambios de un repositorio",
   "gitweb_address_label": "Dirección del repositorio o ruta local",
   "gitweb_browse": "Examinar…",
   "gitweb_changed_files": "El proyecto modificó estos archivos desde la última lectura del repositorio:",
@@ -1160,40 +1176,63 @@
   "gitweb_conflict_resolve_local": "Resuelva estos archivos en su editor y haga commit de la fusión. Después elija de nuevo «Obtener cambios del repositorio» o «Enviar cambios del proyecto».",
   "gitweb_connect": "Conectar",
   "gitweb_connect_lead": "Conecte este proyecto a un repositorio de Git local o remoto. Luego, envíe los cambios del proyecto al repositorio, u obtenga los cambios del repositorio en el proyecto, cuando lo decida.",
+  "gitweb_copy_address": "Copiar la dirección del repositorio",
+  "gitweb_copy_path": "Copiar la ruta de la carpeta",
   "gitweb_credentials_note": "Git usa sus credenciales existentes.",
   "gitweb_disconnect": "Desconectar",
-  "gitweb_disconnect_local_note": "Al desconectar se olvida el vínculo. La carpeta y el proyecto se quedan como están.",
-  "gitweb_disconnect_note": "Al desconectar se olvida la copia en este equipo. El repositorio y el proyecto se quedan como están.",
+  "gitweb_disconnect_local_body": "LibrePaper dejará de conectar este proyecto con esta carpeta. La carpeta, su repositorio y el proyecto se quedan como están.",
+  "gitweb_disconnect_remote_body": "LibrePaper dejará de conectar este proyecto con el repositorio y borrará su copia del repositorio en este equipo. El repositorio y el proyecto se quedan como están.",
+  "gitweb_disconnect_title": "¿Desconectar el repositorio de Git?",
   "gitweb_disconnecting": "Desconectando…",
-  "gitweb_docs_keeps_repo": "que mantiene un repositorio sincronizado sin este equipo.",
-  "gitweb_docs_show_action": "La documentación también muestra una",
   "gitweb_folder_gone": "La carpeta del repositorio ya no existe.",
   "gitweb_get_changes": "Obtener cambios del repositorio",
   "gitweb_get_changes_again": "Obtener de nuevo los cambios del repositorio.",
   "gitweb_get_changes_busy": "Obteniendo cambios del repositorio…",
+  "gitweb_get_tip": "Traer a este proyecto los cambios del repositorio de Git.",
+  "gitweb_git_documentation": "Documentación de Git",
   "gitweb_interrupted_wait": "Obtener y enviar quedan en espera hasta que se resuelva.",
   "gitweb_keep_project": "Conservar el del proyecto",
+  "gitweb_last_activity": "Última actividad",
   "gitweb_merge_wait_local": "Una fusión está esperando su commit. Haga commit en el repositorio y luego elija de nuevo «Obtener cambios del repositorio» o «Enviar cambios del proyecto».",
   "gitweb_merge_wait_remote": "Los archivos están resueltos, pero no se pudo hacer commit de la fusión. Elija «Obtener cambios del repositorio» o «Enviar cambios del proyecto» para reintentarlo.",
   "gitweb_open_desktop": "Para enviar y obtener cambios con git, abra este proyecto en la aplicación de escritorio de LibrePaper.",
   "gitweb_push_problem": "No se pudo leer el último cambio enviado desde un repositorio.",
-  "gitweb_push_sent": "Último envío desde un repositorio {when}",
-  "gitweb_push_sent_by": "Último envío desde un repositorio por {by}, {when}",
-  "gitweb_push_sent_by_label": "Último envío desde un repositorio por {by}, {when}: {label}",
-  "gitweb_push_sent_label": "Último envío desde un repositorio {when}: {label}",
-  "gitweb_read_git_docs": "Lea la documentación de Git",
-  "gitweb_repo_branch": "Repositorio {location}, rama {branch}",
-  "gitweb_repo_path": "Repositorio {path}",
   "gitweb_repository_heading": "Repositorio de Git",
   "gitweb_retry_busy": "Reintentando…",
   "gitweb_retry_transfer": "Reintentar la transferencia interrumpida",
   "gitweb_send_changes": "Enviar cambios del proyecto",
   "gitweb_send_changes_busy": "Enviando cambios del proyecto…",
+  "gitweb_send_tip": "Enviar los cambios de este proyecto al repositorio de Git.",
   "gitweb_sign_in_busy": "Iniciando sesión…",
   "gitweb_signin_lead": "Inicie sesión para que la aplicación de escritorio pueda acceder a este proyecto.",
+  "gitweb_status_missing": "Falta la carpeta",
+  "gitweb_status_sign_in": "Hace falta iniciar sesión",
   "gitweb_suggestion_refusal": "Una sugerencia pendiente en {path} impide {action}. Acéptela o recházela y vuelva a intentarlo.",
+  "gitweb_summary_failed": "La transferencia falló",
+  "gitweb_summary_get_failed": "Falló la obtención de cambios del repositorio",
+  "gitweb_summary_get_files": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Se obtuvo {count} archivo del repositorio · {when}",
+        "countPlural=*": "Se obtuvieron {count} archivos del repositorio · {when}"
+      }
+    }
+  ],
+  "gitweb_summary_get_nothing": "No hay cambios nuevos del repositorio · {when}",
+  "gitweb_summary_retry": "Se terminó la transferencia interrumpida · {when}",
+  "gitweb_summary_send": "Cambios del proyecto enviados a {branch} · {when}",
+  "gitweb_summary_send_failed": "Falló el envío de cambios del proyecto",
+  "gitweb_summary_send_nothing": "No hay cambios del proyecto que enviar · {when}",
+  "gitweb_summary_send_plain": "Cambios del proyecto enviados · {when}",
   "gitweb_take_repository": "Tomar el del repositorio",
-  "gitweb_transfer_note": "«Obtener cambios del repositorio» importa los commits del repositorio a este proyecto. «Enviar cambios del proyecto» envía los cambios de este proyecto a la rama del repositorio indicada arriba.",
+  "gitweb_view_history": "Ver historial",
   "history_all_short": "Todo",
   "history_authors": "Autores",
   "history_authors_agent": "Agente: {name}",

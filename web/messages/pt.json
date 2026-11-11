@@ -1151,6 +1151,22 @@
   "gitweb_a_file": "um arquivo",
   "gitweb_action_pull": "a obtenção das alterações do repositório",
   "gitweb_action_push": "o envio das alterações do projeto",
+  "gitweb_activity_more_commits": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} commit a mais",
+        "countPlural=*": "{count} commits a mais"
+      }
+    }
+  ],
+  "gitweb_activity_untitled": "Alterações de um repositório",
   "gitweb_address_label": "Endereço do repositório ou caminho local",
   "gitweb_browse": "Procurar…",
   "gitweb_changed_files": "O projeto alterou estes arquivos desde a última leitura do repositório:",
@@ -1160,40 +1176,63 @@
   "gitweb_conflict_resolve_local": "Resolva estes arquivos no seu editor e faça commit da mesclagem. Depois, escolha Obter alterações do repositório ou Enviar alterações do projeto novamente.",
   "gitweb_connect": "Conectar",
   "gitweb_connect_lead": "Conecte este projeto a um repositório Git local ou remoto. Depois, envie as alterações do projeto para o repositório, ou obtenha as alterações do repositório para o projeto, quando quiser.",
+  "gitweb_copy_address": "Copiar endereço do repositório",
+  "gitweb_copy_path": "Copiar caminho da pasta",
   "gitweb_credentials_note": "O Git usa as suas credenciais existentes.",
   "gitweb_disconnect": "Desconectar",
-  "gitweb_disconnect_local_note": "Desconectar esquece o vínculo. A pasta e o projeto permanecem como estão.",
-  "gitweb_disconnect_note": "Desconectar esquece a cópia neste computador. O repositório e o projeto permanecem como estão.",
+  "gitweb_disconnect_local_body": "O LibrePaper vai parar de conectar este projeto a esta pasta. A pasta, o repositório e o projeto permanecem como estão.",
+  "gitweb_disconnect_remote_body": "O LibrePaper vai parar de conectar este projeto ao repositório e vai apagar a cópia do repositório neste computador. O repositório e o projeto permanecem como estão.",
+  "gitweb_disconnect_title": "Desconectar o repositório Git?",
   "gitweb_disconnecting": "Desconectando…",
-  "gitweb_docs_keeps_repo": "que mantém um repositório sincronizado sem este computador.",
-  "gitweb_docs_show_action": "A documentação também mostra uma",
   "gitweb_folder_gone": "A pasta do repositório não existe mais.",
   "gitweb_get_changes": "Obter alterações do repositório",
   "gitweb_get_changes_again": "Obter alterações do repositório novamente.",
   "gitweb_get_changes_busy": "Obtendo alterações do repositório…",
+  "gitweb_get_tip": "Trazer para este projeto as alterações do repositório Git.",
+  "gitweb_git_documentation": "Documentação do Git",
   "gitweb_interrupted_wait": "Obter e enviar aguardam até que isso seja resolvido.",
   "gitweb_keep_project": "Manter a do projeto",
+  "gitweb_last_activity": "Última atividade",
   "gitweb_merge_wait_local": "Uma mesclagem está aguardando o commit. Faça o commit no repositório e escolha Obter alterações do repositório ou Enviar alterações do projeto novamente.",
   "gitweb_merge_wait_remote": "Os arquivos foram resolvidos, mas não foi possível fazer o commit da mesclagem. Obtenha as alterações do repositório ou envie as alterações do projeto para tentar novamente.",
   "gitweb_open_desktop": "Para enviar e obter alterações com o Git, abra este projeto no aplicativo de desktop do LibrePaper.",
   "gitweb_push_problem": "Não foi possível ler a última alteração enviada de um repositório.",
-  "gitweb_push_sent": "Último envio de um repositório {when}",
-  "gitweb_push_sent_by": "Último envio de um repositório por {by}, {when}",
-  "gitweb_push_sent_by_label": "Último envio de um repositório por {by}, {when}: {label}",
-  "gitweb_push_sent_label": "Último envio de um repositório {when}: {label}",
-  "gitweb_read_git_docs": "Leia a documentação do Git",
-  "gitweb_repo_branch": "Repositório {location}, branch {branch}",
-  "gitweb_repo_path": "Repositório {path}",
   "gitweb_repository_heading": "Repositório Git",
   "gitweb_retry_busy": "Tentando novamente…",
   "gitweb_retry_transfer": "Tentar novamente a transferência interrompida",
   "gitweb_send_changes": "Enviar alterações do projeto",
   "gitweb_send_changes_busy": "Enviando alterações do projeto…",
+  "gitweb_send_tip": "Enviar as alterações deste projeto para o repositório Git.",
   "gitweb_sign_in_busy": "Entrando…",
   "gitweb_signin_lead": "Entre para que o aplicativo de desktop possa acessar este projeto.",
+  "gitweb_status_missing": "Pasta não encontrada",
+  "gitweb_status_sign_in": "É preciso entrar",
   "gitweb_suggestion_refusal": "Uma sugestão pendente em {path} impede {action}. Aceite ou rejeite a sugestão e tente novamente.",
+  "gitweb_summary_failed": "A transferência falhou",
+  "gitweb_summary_get_failed": "Falha ao obter alterações do repositório",
+  "gitweb_summary_get_files": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Obtido {count} arquivo do repositório · {when}",
+        "countPlural=*": "Obtidos {count} arquivos do repositório · {when}"
+      }
+    }
+  ],
+  "gitweb_summary_get_nothing": "Nenhuma alteração nova do repositório · {when}",
+  "gitweb_summary_retry": "Transferência interrompida concluída · {when}",
+  "gitweb_summary_send": "Alterações do projeto enviadas para {branch} · {when}",
+  "gitweb_summary_send_failed": "Falha ao enviar alterações do projeto",
+  "gitweb_summary_send_nothing": "Nenhuma alteração do projeto para enviar · {when}",
+  "gitweb_summary_send_plain": "Alterações do projeto enviadas · {when}",
   "gitweb_take_repository": "Usar a do repositório",
-  "gitweb_transfer_note": "Obter alterações do repositório importa os commits do repositório para este projeto. Enviar alterações do projeto envia as alterações deste projeto para o branch do repositório acima.",
+  "gitweb_view_history": "Ver histórico",
   "history_all_short": "Tudo",
   "history_authors": "Autores",
   "history_authors_agent": "Agente: {name}",

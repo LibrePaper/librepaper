@@ -4261,7 +4261,7 @@
     {@const Git = lazy.git.component}
     <Git open={panel === "git" && shown.comments}
       web={webGit} slug={SLUG} linkKey={KEY} desktop={hasDesktop}
-      connection={webConnection} />
+      connection={webConnection} onhistory={() => void openPanel("history")} />
     {/if}
   {/snippet}
 

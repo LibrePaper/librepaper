@@ -1151,6 +1151,22 @@
   "gitweb_a_file": "ファイル",
   "gitweb_action_pull": "リポジトリの変更の取得",
   "gitweb_action_push": "プロジェクトの変更の送信",
+  "gitweb_activity_more_commits": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "さらに{count}件のコミット",
+        "countPlural=*": "さらに{count}件のコミット"
+      }
+    }
+  ],
+  "gitweb_activity_untitled": "リポジトリからの変更",
   "gitweb_address_label": "リポジトリのURLまたはローカルパス",
   "gitweb_browse": "参照…",
   "gitweb_changed_files": "リポジトリを最後に読み取った後に、プロジェクトで次のファイルが変更されました：",
@@ -1160,40 +1176,63 @@
   "gitweb_conflict_resolve_local": "エディターでこれらのファイルを解決し、マージをコミットしてください。その後、「リポジトリの変更を取得」または「プロジェクトの変更を送信」をもう一度選択します。",
   "gitweb_connect": "接続",
   "gitweb_connect_lead": "このプロジェクトを、ローカルまたはリモートのGitリポジトリに接続します。その後、必要なときに、プロジェクトの変更をリポジトリに送信したり、リポジトリの変更をプロジェクトに取得したりできます。",
+  "gitweb_copy_address": "リポジトリのアドレスをコピー",
+  "gitweb_copy_path": "フォルダーのパスをコピー",
   "gitweb_credentials_note": "Gitは既存の認証情報を使用します。",
   "gitweb_disconnect": "接続を解除",
-  "gitweb_disconnect_local_note": "接続を解除すると、リンクが削除されます。フォルダーとプロジェクトはそのまま残ります。",
-  "gitweb_disconnect_note": "接続を解除すると、このコンピューター上のコピーが削除されます。リポジトリとプロジェクトはそのまま残ります。",
+  "gitweb_disconnect_local_body": "LibrePaperは、このプロジェクトとこのフォルダーの接続を解除します。フォルダー、そのリポジトリ、プロジェクトはそのまま残ります。",
+  "gitweb_disconnect_remote_body": "LibrePaperは、このプロジェクトとリポジトリの接続を解除し、このコンピューター上のリポジトリのコピーを削除します。リポジトリとプロジェクトはそのまま残ります。",
+  "gitweb_disconnect_title": "Gitリポジトリの接続を解除しますか？",
   "gitweb_disconnecting": "接続を解除中…",
-  "gitweb_docs_keeps_repo": "を使って、このコンピューターがなくてもリポジトリの同期を保つ方法も説明しています。",
-  "gitweb_docs_show_action": "ドキュメントでは、",
   "gitweb_folder_gone": "リポジトリのフォルダーが見つかりません。",
   "gitweb_get_changes": "リポジトリの変更を取得",
   "gitweb_get_changes_again": "リポジトリの変更をもう一度取得してください。",
   "gitweb_get_changes_busy": "リポジトリの変更を取得中…",
+  "gitweb_get_tip": "Gitリポジトリの変更をこのプロジェクトに取得します。",
+  "gitweb_git_documentation": "Gitのドキュメント",
   "gitweb_interrupted_wait": "取得と送信は、状態が落ち着くまで待機します。",
   "gitweb_keep_project": "プロジェクトを保持",
+  "gitweb_last_activity": "最近のアクティビティ",
   "gitweb_merge_wait_local": "マージのコミットが待機中です。リポジトリでコミットしてから、「リポジトリの変更を取得」または「プロジェクトの変更を送信」をもう一度選択してください。",
   "gitweb_merge_wait_remote": "ファイルは確定しましたが、マージをコミットできませんでした。もう一度試すには、リポジトリの変更を取得するか、プロジェクトの変更を送信してください。",
   "gitweb_open_desktop": "Gitで変更を送信・取得するには、このプロジェクトをLibrePaperデスクトップアプリで開いてください。",
   "gitweb_push_problem": "リポジトリから最後に送信された変更を読み取れませんでした。",
-  "gitweb_push_sent": "リポジトリからの最終送信：{when}",
-  "gitweb_push_sent_by": "リポジトリからの最終送信：{by}、{when}",
-  "gitweb_push_sent_by_label": "リポジトリからの最終送信：{by}、{when}：{label}",
-  "gitweb_push_sent_label": "リポジトリからの最終送信：{when}：{label}",
-  "gitweb_read_git_docs": "Gitのドキュメントを読む",
-  "gitweb_repo_branch": "リポジトリ{location}、ブランチ{branch}",
-  "gitweb_repo_path": "リポジトリ{path}",
   "gitweb_repository_heading": "Gitリポジトリ",
   "gitweb_retry_busy": "再試行中…",
   "gitweb_retry_transfer": "中断した転送を再試行",
   "gitweb_send_changes": "プロジェクトの変更を送信",
   "gitweb_send_changes_busy": "プロジェクトの変更を送信中…",
+  "gitweb_send_tip": "このプロジェクトの変更をGitリポジトリに送信します。",
   "gitweb_sign_in_busy": "サインイン中…",
   "gitweb_signin_lead": "デスクトップアプリがこのプロジェクトにアクセスできるように、サインインしてください。",
+  "gitweb_status_missing": "フォルダーが見つかりません",
+  "gitweb_status_sign_in": "サインインが必要です",
   "gitweb_suggestion_refusal": "{path}に保留中の提案があるため、{action}ができません。承諾または却下してから、もう一度お試しください。",
+  "gitweb_summary_failed": "転送に失敗しました",
+  "gitweb_summary_get_failed": "リポジトリの変更の取得に失敗しました",
+  "gitweb_summary_get_files": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "リポジトリから{count}個のファイルを取得しました · {when}",
+        "countPlural=*": "リポジトリから{count}個のファイルを取得しました · {when}"
+      }
+    }
+  ],
+  "gitweb_summary_get_nothing": "リポジトリに新しい変更はありません · {when}",
+  "gitweb_summary_retry": "中断した転送を完了しました · {when}",
+  "gitweb_summary_send": "プロジェクトの変更を{branch}に送信しました · {when}",
+  "gitweb_summary_send_failed": "プロジェクトの変更の送信に失敗しました",
+  "gitweb_summary_send_nothing": "送信するプロジェクトの変更はありません · {when}",
+  "gitweb_summary_send_plain": "プロジェクトの変更を送信しました · {when}",
   "gitweb_take_repository": "リポジトリを採用",
-  "gitweb_transfer_note": "「リポジトリの変更を取得」は、リポジトリのコミットをこのプロジェクトにインポートします。「プロジェクトの変更を送信」は、このプロジェクトの変更を上記のリポジトリのブランチに送信します。",
+  "gitweb_view_history": "履歴を表示",
   "history_all_short": "すべて",
   "history_authors": "作成者",
   "history_authors_agent": "エージェント：{name}",

@@ -42,7 +42,10 @@ const isPending = (/** @type {any} */ error) => error?.status === 400 && error?.
 
 const paths = (/** @type {unknown} */ value) => (Array.isArray(value) ? value.map(String) : []);
 
-/** @typedef {{ loaded: boolean, status: any, busy: "" | "connect" | "connect-local" | "choose" | "pull" | "push" | "retry" | "resolve" | "login" | "disconnect", result: string | null, refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string, action: "pull" | "push" } | null, problem: string, signInHelp: { remote: string, detail: string } | null, interrupted: string }} WebConnectionState */
+/** The result of the most recent transfer in this session, for the panel's summary line. */
+/** @typedef {{ action: "get" | "send" | "retry" | "merge", ok: boolean, files: number, nothing: boolean, branch: string, at: number, detail: string }} LastOperation */
+
+/** @typedef {{ loaded: boolean, status: any, busy: "" | "connect" | "connect-local" | "choose" | "pull" | "push" | "retry" | "resolve" | "login" | "disconnect", result: string | null, last: LastOperation | null, refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string, action: "pull" | "push" } | null, problem: string, signInHelp: { remote: string, detail: string } | null, interrupted: string }} WebConnectionState */
 
 /** `flush` settles the editor's own edits on the server before a transfer reads
  * the project. `signedIn` is asked each time Sign in is pressed: whether this
@@ -52,7 +55,7 @@ const paths = (/** @type {unknown} */ value) => (Array.isArray(value) ? value.ma
  * @param {{ api?: typeof routes, project: string, flush?: () => Promise<void>, signedIn?: () => boolean | Promise<boolean>, approve?: (userCode: string) => Promise<void>, open?: (url: string) => void, origin?: string, wait?: (ms: number) => Promise<void> }} options */
 export function createWebConnection({ api = routes, project, flush = async () => {}, signedIn = () => true, approve = async () => {}, open = realOpen, origin = globalThis.location?.origin ?? "", wait = realWait }) {
   /** @type {WebConnectionState} */
-  let current = $state.raw({ loaded: false, status: null, busy: "", result: null, refusal: null, problem: "", signInHelp: null, interrupted: "" });
+  let current = $state.raw({ loaded: false, status: null, busy: "", result: null, last: null, refusal: null, problem: "", signInHelp: null, interrupted: "" });
   let generation = 0;
   let closed = false;
   // The address last typed into Connect, which names the remote until the
@@ -81,26 +84,37 @@ export function createWebConnection({ api = routes, project, flush = async () =>
 
   /// Runs one action while the panel is busy. A 401 means the sign-in is gone,
   /// so the panel asks for it again. A git failure to sign in fills
-  /// `signInHelp`; any other failure is said as the desktop app said it.
-  async function run(/** @type {WebConnectionState["busy"]} */ name, /** @type {() => Promise<void>} */ work) {
+  /// `signInHelp`; any other failure is said as the desktop app said it. An
+  /// action that moves files also gives its `last` label, so its failure is
+  /// kept for the summary line.
+  async function run(/** @type {WebConnectionState["busy"]} */ name, /** @type {() => Promise<void>} */ work, /** @type {LastOperation["action"] | null} */ action = null) {
     if (current.busy || closed) return;
-    again = () => run(name, work);
+    again = () => run(name, work, action);
     generation += 1;
     set({ busy: name, problem: "", signInHelp: null });
     try {
       await work();
     } catch (error) {
+      let detail = "";
       if (error?.status === 401) {
-        set({ problem: m.web_connection_sign_in_again(), status: { ...current.status, signed_in: false } });
+        detail = m.web_connection_sign_in_again();
+        set({ problem: detail, status: { ...current.status, signed_in: false } });
       } else if (error?.body?.reason === "auth") {
-        set({ signInHelp: { remote: current.status?.url || address, detail: String(error.body.detail ?? "") } });
+        detail = String(error.body.detail ?? "");
+        set({ signInHelp: { remote: current.status?.url || address, detail } });
       } else {
-        set({ problem: error?.message || m.common_desktop_app_failed() });
+        detail = error?.message || m.common_desktop_app_failed();
+        set({ problem: detail });
       }
+      if (action) set({ last: failure(action, detail) });
     } finally {
       set({ busy: "" });
     }
   }
+
+  /// The summary of a transfer that did not finish, on the branch the panel
+  /// knows.
+  const failure = (/** @type {LastOperation["action"]} */ action, /** @type {string} */ detail) => /** @type {LastOperation} */ ({ action, ok: false, files: 0, nothing: false, branch: current.status?.branch || "", at: Date.now(), detail });
 
   /// A pull or a push that stops at a file the project changed, or at a
   /// suggestion still waiting, is an answer for the panel to show, not a
@@ -135,26 +149,37 @@ export function createWebConnection({ api = routes, project, flush = async () =>
   /// Names the repository branch an answer is about, when the status knows it.
   const branchOf = (/** @type {any} */ answer) => statusOf(answer)?.branch || "";
 
+  /// Whether a pull brought files in, and how many.
+  const filesOf = (/** @type {any} */ answer) => Number(answer.pushed?.files) || 0;
+
+  /// Whether a push sent anything. A local repository answers `pulled`, which
+  /// is the same thing seen from the other side.
+  const sentOf = (/** @type {any} */ answer) => (typeof answer.pulled === "boolean" ? answer.pulled : answer.pushed === "pushed");
+
   const importedLine = (/** @type {any} */ answer) => {
-    const files = Number(answer.pushed?.files) || 0;
+    const files = filesOf(answer);
     const branch = branchOf(answer);
     if (files) return branch ? m.web_connection_imported_files_branch({ count: files, branch }) : m.web_connection_imported_files({ count: files });
     return branch ? m.web_connection_imported_nothing_branch({ branch }) : m.web_connection_imported_nothing();
   };
 
   const sentLine = (/** @type {any} */ answer) => {
-    const sent = typeof answer.pulled === "boolean" ? answer.pulled : answer.pushed === "pushed";
+    const sent = sentOf(answer);
     const branch = branchOf(answer);
     if (sent) return branch ? m.web_connection_sent_branch({ branch }) : m.web_connection_sent();
     return branch ? m.web_connection_nothing_to_send_branch({ branch }) : m.web_connection_nothing_to_send();
   };
+
+  /// The summary of a transfer that finished, from its answer.
+  const finished = (/** @type {LastOperation["action"]} */ action, /** @type {any} */ answer, /** @type {number} */ files, /** @type {boolean} */ nothing) =>
+    /** @type {LastOperation} */ ({ action, ok: true, files, nothing, branch: branchOf(answer), at: Date.now(), detail: "" });
 
   /// Connects the project to a repository the desktop app clones.
   const connect = (/** @type {string} */ url) => {
     address = url.trim();
     return run("connect", async () => {
       const status = await api.connectRepository(project, address);
-      set({ status, result: null, refusal: null });
+      set({ status, result: null, last: null, refusal: null });
     });
   };
 
@@ -166,7 +191,7 @@ export function createWebConnection({ api = routes, project, flush = async () =>
     address = path;
     return run("connect-local", async () => {
       const status = await api.connectLocalRepository(project, path);
-      set({ status, result: null, refusal: null });
+      set({ status, result: null, last: null, refusal: null });
     });
   };
 
@@ -192,11 +217,19 @@ export function createWebConnection({ api = routes, project, flush = async () =>
     try {
       answer = await api.pullConnection(project);
     } catch (error) {
-      if (refused(error, "pull") || interruptedSend(error)) return;
+      if (refused(error, "pull") || interruptedSend(error)) {
+        set({ last: null });
+        return;
+      }
       throw error;
     }
-    set({ status: statusOf(answer), result: answer.stopped ? null : importedLine(answer) });
-  });
+    if (answer.stopped) {
+      set({ status: statusOf(answer), result: null, last: null });
+      return;
+    }
+    const files = filesOf(answer);
+    set({ status: statusOf(answer), result: importedLine(answer), last: finished("get", answer, files, files === 0) });
+  }, "get");
 
   /// Sends the project's changes to the repository. The editor's own edits are
   /// settled first, so the project the server holds is the one sent.
@@ -207,15 +240,22 @@ export function createWebConnection({ api = routes, project, flush = async () =>
     try {
       answer = await api.pushConnection(project);
     } catch (error) {
-      if (refused(error, "push") || interruptedSend(error)) return;
+      if (refused(error, "push") || interruptedSend(error)) {
+        set({ last: null });
+        return;
+      }
       if (error?.body?.reason === "behind") {
-        set({ problem: BEHIND });
+        set({ problem: BEHIND, last: failure("send", BEHIND) });
         return;
       }
       throw error;
     }
-    set({ status: statusOf(answer), result: answer.stopped ? null : sentLine(answer) });
-  });
+    if (answer.stopped) {
+      set({ status: statusOf(answer), result: null, last: null });
+      return;
+    }
+    set({ status: statusOf(answer), result: sentLine(answer), last: finished("send", answer, 0, !sentOf(answer)) });
+  }, "send");
 
   /// Settles the interrupted send to the project and nothing else. It does not
   /// restart the pull or push that was stopped, because that one is refused
@@ -227,19 +267,26 @@ export function createWebConnection({ api = routes, project, flush = async () =>
     try {
       answer = await api.retryConnection(project);
     } catch (error) {
-      if (refused(error, "push")) return;
+      if (refused(error, "push")) {
+        set({ last: null });
+        return;
+      }
       throw error;
     }
-    const files = Number(answer.pushed?.files) || 0;
-    set({ status: statusOf(answer), interrupted: "", result: files ? m.web_connection_retry_files({ count: files }) : m.web_connection_retry_nothing() });
-  });
+    const files = filesOf(answer);
+    set({ status: statusOf(answer), interrupted: "", result: files ? m.web_connection_retry_files({ count: files }) : m.web_connection_retry_nothing(), last: finished("retry", answer, files, files === 0) });
+  }, "retry");
 
   /// Keeps one side of a file that changed on both sides during a merge. The
   /// merge is done when the last file is settled.
   const resolve = (/** @type {string} */ path, /** @type {"project" | "repository"} */ keep) => run("resolve", async () => {
     const status = await api.resolveConnection(project, path, keep);
-    set({ status, result: status?.merging ? null : MERGED });
-  });
+    if (status?.merging) {
+      set({ status, result: null });
+      return;
+    }
+    set({ status, result: MERGED, last: { action: "merge", ok: true, files: 0, nothing: false, branch: status?.branch || "", at: Date.now(), detail: "" } });
+  }, "merge");
 
   /// Finishes the sign-in. The page approves the code itself when it has a
   /// session on the server; otherwise it waits for the approval in another tab.
@@ -299,7 +346,7 @@ export function createWebConnection({ api = routes, project, flush = async () =>
   /// the project stay as they are.
   const disconnect = () => run("disconnect", async () => {
     const status = await api.disconnectConnection(project);
-    set({ status, result: null, refusal: null });
+    set({ status, result: null, last: null, refusal: null });
   });
 
   /// Repeats the action that failed, after the sign-in help has been read.

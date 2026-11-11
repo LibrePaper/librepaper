@@ -55,3 +55,55 @@ export function repositoryInput(raw) {
   if (value.includes("://") || value.includes("@")) return { kind: "remote", value, problem: remoteUrlProblem(value) };
   return { kind: "remote", value, problem: m.git_url_unrecognized() };
 }
+
+/// Names the repository the desktop app is connected to, for the Git panel: a
+/// folder's name and path, or a remote's path, host and, when the host has one,
+/// a web page. Never throws; an address it cannot read is its own name.
+/** @typedef {{ name: string, detail: string, full: string, href: string, icon: "github" | "git-fork" | "folder", local: boolean }} RepositoryIdentity */
+/** @param {any} status @returns {RepositoryIdentity} */
+export function repositoryIdentity(status) {
+  const local = Boolean(status?.local);
+  const text = String(local ? (status?.path ?? "") : (status?.url ?? ""));
+  try {
+    return local ? localIdentity(text) : remoteIdentity(text);
+  } catch {
+    return { name: text, detail: "", full: text, href: "", icon: /** @type {RepositoryIdentity["icon"]} */ (local ? "folder" : "git-fork"), local };
+  }
+}
+
+/** @param {string} path @returns {RepositoryIdentity} */
+function localIdentity(path) {
+  const segments = path.split(/[\\/]+/).filter(Boolean);
+  return { name: segments.length ? segments[segments.length - 1] : path, detail: path, full: path, href: "", icon: "folder", local: true };
+}
+
+/** @param {string} url @returns {RepositoryIdentity} */
+function remoteIdentity(url) {
+  let host = "";
+  let webHost = "";
+  let path = "";
+  let https = false;
+  if (url.includes("://")) {
+    const parsed = new URL(url);
+    https = parsed.protocol === "https:";
+    host = parsed.hostname.toLowerCase();
+    webHost = parsed.host.toLowerCase();
+    path = parsed.pathname;
+  } else {
+    // scp-like: user@host:path, where the user is optional here.
+    const rest = url.slice(url.indexOf("@") + 1);
+    const colon = rest.indexOf(":");
+    if (colon < 0) throw new Error("not an address");
+    host = rest.slice(0, colon).toLowerCase();
+    webHost = host;
+    path = rest.slice(colon + 1);
+  }
+  const clean = path.replace(/\/+$/, "").replace(/\.git$/, "").replace(/^\/+/, "");
+  // An SSH alias such as github-work names no web page, so only a dotted host
+  // gets a link; https always names its page.
+  let href = "";
+  if (clean && https) href = `https://${webHost}/${clean}`;
+  else if (clean && host.includes(".")) href = `https://${host}/${clean}`;
+  const github = host === "github.com" || host.endsWith(".github.com");
+  return { name: clean || url, detail: host, full: url, href, icon: github ? "github" : "git-fork", local: false };
+}
