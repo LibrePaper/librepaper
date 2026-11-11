@@ -165,7 +165,11 @@ impl DocumentService {
             )
         })
     }
+}
 
+// On `Server` rather than `DocumentService`, because the anonymous switches
+// are deployment policy, which the server holds.
+impl Server {
     /// Apply the complete read policy to an already-resolved caller.
     fn may_read(&self, entry: &IndexEntry, who: &Viewer) -> bool {
         may_read(entry, who, self.anonymous)
