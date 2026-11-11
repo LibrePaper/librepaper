@@ -824,6 +824,104 @@ async fn any_commenter_policy_rejects_anonymous_comments_and_accepts_a_signed_in
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_anonymous_comment_link_admits_a_visitor_only_while_link_and_switch_allow_it() {
+    let Some(mut deployment) = open_deployment("moderation-anonymous-link-http").await else {
+        return;
+    };
+    // `anonymous_comments = true` turns on both the access switch and the
+    // public commenter policy.
+    {
+        let server = Arc::get_mut(&mut deployment.server).expect("server is not shared yet");
+        server.anonymous.comments = true;
+        server.commenters.public = true;
+    }
+    let (base, _address, stop) = serve(deployment.server.clone()).await;
+    let client = reqwest::Client::new();
+    let visitor_cookie = visitor_cookie();
+    let post = |render_digest: Option<String>| {
+        client
+            .post(format!("{base}/api/documents/{}/comments", deployment.slug))
+            .header("host", "paper.example")
+            .header("origin", READER)
+            .header("sec-fetch-site", "same-origin")
+            .header("x-librepaper-client", "web")
+            .header("x-librepaper-key", &deployment.commenter_link_key)
+            .header("cookie", &visitor_cookie)
+            .json(&comment_body(render_digest.as_deref()))
+            .send()
+    };
+    let share = |body: serde_json::Value| {
+        client
+            .post(format!("{base}/api/documents/{}/share", deployment.slug))
+            .header("host", "paper.example")
+            .header("authorization", format!("Bearer {}", bearer(&deployment)))
+            .json(&body)
+            .send()
+    };
+
+    // The switches are on, but the link is not marked: still refused.
+    assert_eq!(post(None).await.unwrap().status().as_u16(), 401);
+
+    let listed: serde_json::Value = client
+        .get(format!("{base}/api/documents/{}/share", deployment.slug))
+        .header("host", "paper.example")
+        .header("authorization", format!("Bearer {}", bearer(&deployment)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let link_id = listed["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|link| link["name"] == "moderation HTTP commenter")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let marked = share(json!({"update": {"id": link_id, "anonymous": true}}))
+        .await
+        .unwrap();
+    assert_eq!(marked.status().as_u16(), 200);
+
+    let project = client
+        .get(format!("{base}/api/documents/{}/project", deployment.slug))
+        .header("host", "paper.example")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
+        .header("x-librepaper-key", &deployment.commenter_link_key)
+        .header("cookie", &visitor_cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(project.status().as_u16(), 200);
+    let project: serde_json::Value = project.json().await.unwrap();
+    let render_digest = project["project_digest"].as_str().unwrap().to_string();
+
+    let admitted = post(Some(render_digest.clone())).await.unwrap();
+    let admitted_status = admitted.status().as_u16();
+    let admitted_body = admitted.text().await.unwrap();
+    assert_eq!(
+        admitted_status, 200,
+        "anonymous comment on a marked link: {admitted_body}"
+    );
+
+    let cleared = share(json!({"update": {"id": link_id, "anonymous": false}}))
+        .await
+        .unwrap();
+    assert_eq!(cleared.status().as_u16(), 200);
+    assert_eq!(post(Some(render_digest)).await.unwrap().status().as_u16(), 401);
+
+    let _ = stop.send(());
+    close_deployment(deployment).await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn quota_rejected_replacement_keeps_its_hourly_upload_admission() {
     // The fixture's existing project fits; the replacement's 16 KiB figure
     // does not. Its immutable blob is staged before the catalogue refuses it.
