@@ -1,6 +1,6 @@
 <script>
   import { tick } from "svelte";
-  import PanelHeader from "../PanelHeader.svelte";
+  import PanelTabs from "../PanelTabs.svelte";
   import Modal from "../Modal.svelte";
   import Icon from "../Icon.svelte";
   import ShareRow from "./share/ShareRow.svelte";
@@ -114,8 +114,9 @@
 <div bind:this={root} class="share-root">
   {#if inline}
     <section class="panel panel-tabbed share-sidebar" aria-label={m.common_share()}>
-      <PanelHeader title={m.common_share()} />
-      {@render content()}
+      <PanelTabs id="share" title={m.common_share()}>
+        {@render content()}
+      </PanelTabs>
     </section>
   {:else}
     <Modal bind:open title={m.common_share()} onclose={onclose}
@@ -137,6 +138,11 @@
 <style>
   .share-root { display: contents; }
   .share-sidebar :global(select) { max-width: 100%; }
+  /* The sidebar's pane already carries the panel's padding, so the content's
+     own padding comes off here. The modal keeps it. The pad is a block in a
+     clipped flex column, so it takes the pane's room and scrolls within it. */
+  .share-sidebar :global(.share-pane) { padding: 0; }
+  .share-sidebar :global(.share-pad) { flex: 1 1 0; min-height: 0; padding: 0; }
   .share-modal-body { height: min(30rem, 60vh); min-width: 0; }
   .share-pane { display: flex; flex: 1 1 0; min-height: 0; flex-direction: column; padding: var(--panel-padding); }
   .share-pad { padding: var(--panel-padding); overflow-y: auto; }
