@@ -201,7 +201,9 @@ fn needs_sign_in(entry: &IndexEntry, who: &Viewer, anonymous: AnonymousAccess) -
         return false;
     }
     let now = librepaper_base::util::now_unix();
-    if !who.id.is_signed_in() && !who.automation && entry.admits_anonymously(&who.link, now, anonymous)
+    if !who.id.is_signed_in()
+        && !who.automation
+        && entry.admits_anonymously(&who.link, now, anonymous)
     {
         return false;
     }
@@ -1437,8 +1439,9 @@ impl Server {
         let comment_budget = link.and_then(|grant| grant.budget);
         let link = link.map(|grant| grant.hash.clone()).unwrap_or_default();
         let auth_failed = !id.is_signed_in() && self.auth_credential_supplied(headers, arrival);
-        let anonymous_ok =
-            !id.is_signed_in() && !automation && entry.admits_anonymously(&link, now, self.anonymous);
+        let anonymous_ok = !id.is_signed_in()
+            && !automation
+            && entry.admits_anonymously(&link, now, self.anonymous);
         Viewer {
             id,
             key,
@@ -2420,11 +2423,17 @@ mod automation_authority_tests {
             edit: false,
         };
         assert!(entry.admits_anonymously("commenter-hash", now, switches(false, true)));
-        assert_eq!(entry.role_of("", "commenter-hash", open, now), Role::Commenter);
+        assert_eq!(
+            entry.role_of("", "commenter-hash", open, now),
+            Role::Commenter
+        );
         // The editor link can never give an anonymous caller more than that.
         assert_eq!(entry.role_of("", "editor-hash", open, now), Role::Commenter);
         let closed = Ceiling::default();
-        assert_eq!(entry.role_of("", "commenter-hash", closed, now), Role::Reader);
+        assert_eq!(
+            entry.role_of("", "commenter-hash", closed, now),
+            Role::Reader
+        );
 
         let mut anonymous = viewer("", "", "commenter-hash");
         anonymous.role = Role::Commenter;

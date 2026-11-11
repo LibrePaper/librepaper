@@ -2532,6 +2532,7 @@ mod tests {
                     None,
                     "agent".into(),
                     "3".into(),
+                    false,
                 )],
             )
             .await

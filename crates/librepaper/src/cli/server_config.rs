@@ -763,21 +763,13 @@ pub(crate) fn load_with_postgres_env(
         raw.access.anonymous_comments,
         false,
     )?;
-    let anonymous_reads = r.value(
-        "access.anonymous_reads",
-        raw.access.anonymous_reads,
-        false,
-    )?;
+    let anonymous_reads = r.value("access.anonymous_reads", raw.access.anonymous_reads, false)?;
     let anonymous_suggests = r.value(
         "access.anonymous_suggests",
         raw.access.anonymous_suggests,
         false,
     )?;
-    let anonymous_edits = r.value(
-        "access.anonymous_edits",
-        raw.access.anonymous_edits,
-        false,
-    )?;
+    let anonymous_edits = r.value("access.anonymous_edits", raw.access.anonymous_edits, false)?;
     let expire_after = r.optional("retention.expire_after", raw.retention.expire_after)?;
     let erase_inactive_after = r.optional(
         "retention.erase_inactive_after",
@@ -2593,7 +2585,10 @@ client_secret = { file = "missing-oauth-secret" }
     #[test]
     fn anonymous_switches_parse_default_false_and_round_trip() {
         let loaded = load_text("").unwrap();
-        assert_eq!(loaded.anonymous, librepaper_base::role::AnonymousAccess::default());
+        assert_eq!(
+            loaded.anonymous,
+            librepaper_base::role::AnonymousAccess::default()
+        );
         let loaded = load_text(
             "[access]\nanonymous_reads = true\nanonymous_comments = true\nanonymous_suggests = true\nanonymous_edits = true\n",
         )

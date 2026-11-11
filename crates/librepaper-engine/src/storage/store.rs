@@ -295,7 +295,12 @@ impl IndexEntry {
     /// Whether a caller who has not signed in may hold this link: the row is
     /// live, the owner marked it anonymous, and the deployment's switch for
     /// its role is on.
-    pub fn admits_anonymously(&self, link_hash: &str, now: i64, anonymous: AnonymousAccess) -> bool {
+    pub fn admits_anonymously(
+        &self,
+        link_hash: &str,
+        now: i64,
+        anonymous: AnonymousAccess,
+    ) -> bool {
         self.live_link(link_hash, now)
             .is_some_and(|link| link.anonymous && anonymous.allows(link.granted()))
     }
