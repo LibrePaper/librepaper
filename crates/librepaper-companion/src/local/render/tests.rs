@@ -438,7 +438,10 @@ async fn render_with_the_default_command(
     fixture.request.manifest[0].sha256 =
         librepaper_base::digest::Digest::of(source.as_bytes()).to_hex();
     fixture.request.manifest[0].size = source.len() as u64;
-    run_fixture(&fixture, false).await
+    // Quarto needs a Run directory; the other tools ignore it.
+    let run_dir = tempfile::tempdir().unwrap();
+    let run_path = std::fs::canonicalize(run_dir.path()).unwrap();
+    run_fixture_in(&fixture, Some(run_path)).await
 }
 
 #[tokio::test]
