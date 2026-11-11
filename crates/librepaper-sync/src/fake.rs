@@ -269,6 +269,7 @@ fn reply(data: &mut Data, method: &str, target: &str, sent: &[u8]) -> Option<(u1
                     source_format: String::new(),
                     files: tree.files,
                     texts: files.clone(),
+                retained: Default::default(),
                 };
                 Some((200, serde_json::to_value(version).expect("serializes")))
             }

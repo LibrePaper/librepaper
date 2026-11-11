@@ -1840,6 +1840,7 @@ mod tests {
                         source_format: String::new(),
                         files: tree.files,
                         texts: files.clone(),
+                    retained: Default::default(),
                     };
                     found(serde_json::to_value(version).unwrap())
                 }

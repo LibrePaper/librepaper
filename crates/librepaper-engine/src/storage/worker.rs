@@ -931,6 +931,14 @@ impl Worker {
                 super::source_archive::SourceFile::Asset { .. } => None,
             })
             .collect();
+        // Texts the allow list would refuse today still belong in the archive.
+        // They come after `texts` is taken so they never pick the format.
+        for (path, body) in &projected.retained {
+            files.push(super::source_archive::SourceFile::Inline {
+                path: path.clone(),
+                bytes: body.clone().into_bytes(),
+            });
+        }
         let format = librepaper_document::document::opening::opening_file(&texts)
             .and_then(|path| librepaper_document::document::render::document_format(&path))
             .map(str::to_string)

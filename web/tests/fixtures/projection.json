@@ -582,7 +582,11 @@
             "path": "notes.xyz"
           }
         ],
-        "digest": "fbcbdcb50c4596a7e96f54c73d838b7c1ecba50a559a43c1609a03405a3937e1"
+        "digest": "fbcbdcb50c4596a7e96f54c73d838b7c1ecba50a559a43c1609a03405a3937e1",
+        "retained": {
+          "notes.xyz": "binary-ish",
+          "paper.log": "log output"
+        }
       },
       "files": [
         {
@@ -724,6 +728,50 @@
         {
           "id": "0004",
           "path": "bad.typ"
+        }
+      ]
+    },
+    {
+      "assets": [],
+      "expect": {
+        "files": [],
+        "diagnostics": [
+          {
+            "kind": "invalid-path",
+            "id": "aaa",
+            "path": "analysis.R"
+          },
+          {
+            "kind": "invalid-path",
+            "id": "bbb",
+            "path": "../x.R"
+          }
+        ],
+        "digest": "4b1a5d15da93509b096d6c5e11e1e26bf7fd44b6a9ba30c005a0b19b1dfb47bc",
+        "retained": {
+          "analysis.R": "x <- 1"
+        }
+      },
+      "files": [
+        {
+          "id": "aaa",
+          "text": "x <- 1"
+        },
+        {
+          "id": "bbb",
+          "text": "climbs"
+        }
+      ],
+      "meta": [],
+      "name": "a text the allow list refuses is retained, a structural refusal is not",
+      "paths": [
+        {
+          "id": "aaa",
+          "path": "analysis.R"
+        },
+        {
+          "id": "bbb",
+          "path": "../x.R"
         }
       ]
     }

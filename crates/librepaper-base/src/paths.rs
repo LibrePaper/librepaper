@@ -239,6 +239,13 @@ pub fn collision_key(path: &str) -> String {
 /// The error is the sentence shown to whoever offered the path, so it says
 /// what is wrong with this path rather than restating the rules.
 pub fn admit(rules: &Rules, path: &str) -> Result<Kind, String> {
+    let path = admit_shape(rules, path)?;
+    kind_of(rules, &path)
+}
+
+/// The structural half of `admit`: everything about a path except which
+/// extensions the rules allow. Returns the normalised path.
+pub fn admit_shape(rules: &Rules, path: &str) -> Result<String, String> {
     let path = normalise(path);
     if path.is_empty() {
         return Err("a file needs a name".into());
@@ -281,7 +288,7 @@ pub fn admit(rules: &Rules, path: &str) -> Result<Kind, String> {
             return Err(format!("{path}: a dotfile is not part of a document"));
         }
     }
-    kind_of(rules, &path)
+    Ok(path)
 }
 
 /// The kind an extension names, or the reason there is none. Split out
@@ -334,6 +341,19 @@ mod tests {
             max_path: 200,
             max_segments: MAX_SEGMENTS,
         }
+    }
+
+    #[test]
+    fn admit_shape_ignores_the_extension_and_admit_adds_it() {
+        let text = strings(&[".tex"]);
+        let asset = strings(&[".png"]);
+        let rules = rules(&text, &asset);
+        assert_eq!(admit_shape(&rules, "src/a.R"), Ok("src/a.R".to_owned()));
+        assert!(admit(&rules, "src/a.R").is_err());
+        assert!(admit_shape(&rules, "../a.R").is_err());
+        assert!(admit_shape(&rules, "a\\b.R").is_err());
+        assert!(admit_shape(&rules, "").is_err());
+        assert_eq!(admit(&rules, "a.tex"), Ok(Kind::Text));
     }
 
     #[test]

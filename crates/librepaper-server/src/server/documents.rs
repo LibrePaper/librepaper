@@ -1292,6 +1292,7 @@ impl Server {
             sha: tree_sha,
             tree: projected.projection.clone(),
             texts: projected.texts.clone(),
+            retained: projected.retained.clone(),
         };
         let response = SnapshotResponse {
             version: 1,

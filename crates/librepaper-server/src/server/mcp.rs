@@ -1153,6 +1153,7 @@ mod selection_tests {
             projected: std::sync::Arc::new(librepaper_document::document::projection::Projected {
                 projection,
                 texts: [(path.to_string(), text.to_string())].into_iter().collect(),
+                retained: Default::default(),
             }),
             ..QuerySnapshot::default()
         };
