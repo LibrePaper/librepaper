@@ -33,8 +33,9 @@ const port = 19000 + Math.floor(Math.random() * 1000);
 
 const source = `
 import ${JSON.stringify(join(root, "web/src/styles/app.css"))};
-import { tick, createRawSnippet } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
+import { tick, createRawSnippet, mount } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import Files from ${JSON.stringify(join(root, "web/src/components/reader/Files.svelte"))};
+import RunDirectoryRow from ${JSON.stringify(join(root, "web/src/components/reader/RunDirectoryRow.svelte"))};
 import Collaboration from ${JSON.stringify(join(root, "web/src/components/reader/Collaboration.svelte"))};
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/reader/Diagnostics.svelte"))};
 import Share from ${JSON.stringify(join(root, "web/src/components/reader/Share.svelte"))};
@@ -48,8 +49,10 @@ const rules = { extensions: [".tex", ".md", ".qmd"], text_extensions: [".tex", "
 const main = session.addText("main.tex", "main");
 const child = session.addText("chapters/one.tex", "chapter");
 session.addFolder("empty", rules);
+const runDir = { usable: true, status: { path: '/home/ada/Dropbox/harvest' }, busy: '', error: '', opened: 0, open() { this.opened += 1; } };
+const footer = createRawSnippet(() => ({ render: () => '<div class="footer-host"></div>', setup: (node) => { mount(RunDirectoryRow, { target: node, props: { directory: runDir, offered: true } }); } }));
 const component = createClassComponent({ component: Files, target: document.body, props: {
-  files: session.list(), folders: session.folders(), rules, mayEdit: true, open: main, preview: "main.tex", locked: "",
+  files: session.list(), folders: session.folders(), rules, mayEdit: true, open: main, preview: "main.tex", locked: "", footer,
   onadd: (path) => session.addText(path), onmkdir: (path) => session.addFolder(path, rules),
   onrelocate: (...args) => session.relocate(args[0], args[1], rules, args[2]),
   ondelete: (entries) => session.removeEntries(entries),
@@ -109,6 +112,15 @@ window.filesCheck = async () => {
   }
   check(!button('Rename selected item') && !button('Move selected items'), 'no redundant selection toolbar');
   check(!document.querySelector('[aria-label="Main file"]'), 'no favorite-looking star');
+  // The footer under the tree names the Run directory and opens it.
+  const footerBox = document.querySelector('.explorer-footer');
+  check(footerBox, 'the footer is mounted under the tree');
+  check(footerBox.textContent.includes('On this computer') && footerBox.textContent.includes('harvest'), 'the footer names the Run directory');
+  check(footerBox.getBoundingClientRect().top >= document.querySelector('.explorer-scroll').getBoundingClientRect().bottom, 'the footer sits under the file tree');
+  const openFolder = [...footerBox.querySelectorAll('button')].find((node) => node.textContent.trim() === 'Open folder');
+  check(openFolder, 'the footer offers Open folder');
+  openFolder.click(); await flush();
+  check(runDir.opened === 1, 'Open folder calls the Run directory');
   row('main.tex').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); await flush();
   await name('Rename main.tex', 'renamed-main.tex');
   check(session.paths.get(main) === 'renamed-main.tex', 'double click renames a file');
@@ -206,6 +218,13 @@ window.filesCheck = async () => {
   check(warning?.textContent.includes('snowflake.log') && warning.textContent.includes('.tex') && warning.textContent.includes('.png'),
     'unsupported upload warning names the file and allowed extensions');
   check(warning.classList.contains('upload-warning'), 'unsupported upload warning uses warning tone');
+  check(![...document.querySelectorAll('.upload-warning')].some((node) => node.textContent.includes('Scripts and data stay')), 'a skipped log file gets no scripts hint');
+  const scriptUpload = new DataTransfer();
+  scriptUpload.items.add(new File(['x <- 1'], 'analysis.R', { type: 'text/plain' }));
+  row('empty').dispatchEvent(new DragEvent('drop', { dataTransfer: scriptUpload, bubbles: true, cancelable: true }));
+  await flush();
+  check([...document.querySelectorAll('.upload-warning')].some((node) => node.textContent.includes('Scripts and data stay on your computer')), 'a skipped script says where scripts belong');
+  check(!session.list().some((file) => file.path.endsWith('analysis.R')), 'the script is not uploaded');
   row('empty').dispatchEvent(new DragEvent('drop', { dataTransfer: upload, bubbles: true, cancelable: true }));
   await flush();
   const both = [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Keep both' && button.getClientRects().length);
