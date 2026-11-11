@@ -63,6 +63,11 @@ pub(super) struct CreateRequest {
     /// ordinary comment limit.
     #[serde(default)]
     pub(super) budget: Option<i64>,
+    /// Whether the link may be held without signing in. Absent is false. Only
+    /// a link can say true, and only for a role the deployment's `[access]`
+    /// switches allow.
+    #[serde(default)]
+    pub(super) anonymous: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -79,6 +84,9 @@ pub(super) struct UpdateRequest {
     /// comment limit, a number sets it.
     #[serde(default, deserialize_with = "double_option")]
     pub(super) budget: Option<Option<i64>>,
+    /// Absent keeps the setting; see `CreateRequest::anonymous`.
+    #[serde(default)]
+    pub(super) anonymous: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -333,7 +341,7 @@ impl Server {
                                 &json!({"error": "nothing is shared under that id"}),
                             );
                         };
-                        if let Err(message) = check_update(existing.kind, &wanted) {
+                        if let Err(message) = check_update(existing, &wanted, self.anonymous) {
                             return write_json(400, &json!({"error": message}));
                         }
                         change = Some((wanted.id.clone(), wanted));
@@ -378,6 +386,7 @@ impl Server {
                     else {
                         return write_json(401, &json!({"error": "invalid account"}));
                     };
+                    let anonymous = self.anonymous;
                     let updated = self
                         .store
                         .modify_as_owner(slug, &mutation_actor, |entry| {
@@ -397,7 +406,7 @@ impl Server {
                                     return Err("nothing is shared under that id".to_string());
                                 };
                                 let mut link = existing.clone();
-                                apply_update(&mut link, wanted)?;
+                                apply_update(&mut link, wanted, anonymous)?;
                                 entry.replace_link(id, link);
                             }
                             if let Some(id) = &remove {
@@ -476,6 +485,10 @@ impl Server {
                     .parse::<Role>()
                     .map_err(|_| "a link is 'reader', 'commenter', 'suggester' or 'editor'")?;
                 grant.role = role.as_str().to_string();
+                if wanted.anonymous == Some(true) {
+                    allow_anonymous(role, self.anonymous)?;
+                    grant.anonymous = true;
+                }
                 grant.until = link_expiry(&wanted.until)?;
                 grant.sealed = seal_link_key(&self.key, key.expose());
                 json!({"id": grant.id(), "kind": "link", "url": format!("/docs/{slug}/{}", key.expose())})
@@ -487,6 +500,9 @@ impl Server {
                     .map_err(|_| "a token is 'read', 'comment', 'suggest' or 'edit'")?;
                 if name.is_empty() {
                     return Err("a token needs a name".to_string());
+                }
+                if wanted.anonymous == Some(true) {
+                    return Err("a token cannot be used without signing in".to_string());
                 }
                 grant.role = role.as_str().to_string();
                 grant.until = token_expiry(&wanted.until)?;
@@ -573,6 +589,7 @@ impl Server {
                         "since": row.since,
                         "until": row.until,
                         "budget": row.budget,
+                        "anonymous": row.anonymous,
                     }));
                 }
                 LinkKind::Agent => {
@@ -630,25 +647,48 @@ impl Server {
             // the choices that would actually be accepted.
             "publishers": self.publishers.public_description(),
             "commenters_policy": self.commenters.public_description(),
+            // Which link roles may be marked anonymous, so the dialog offers
+            // the switch only where it would be accepted.
+            "anonymous": {
+                "reads": self.anonymous.reads,
+                "comments": self.anonymous.comments,
+                "suggests": self.anonymous.suggests,
+                "edits": self.anonymous.edits,
+            },
         })
     }
 }
 
 /// Checks an `update` against the row it names, so a bad duration or a bad
 /// token field is answered with its reason before anything is written.
-fn check_update(kind: LinkKind, wanted: &UpdateRequest) -> Result<(), String> {
-    apply_update(
-        &mut LinkGrant {
-            kind,
-            ..Default::default()
-        },
-        wanted,
-    )
+fn check_update(
+    existing: &LinkGrant,
+    wanted: &UpdateRequest,
+    anonymous: AnonymousAccess,
+) -> Result<(), String> {
+    apply_update(&mut existing.clone(), wanted, anonymous)
+}
+
+/// Refuses to mark a link of this role anonymous when the deployment's switch
+/// for that role is off.
+fn allow_anonymous(role: Role, anonymous: AnonymousAccess) -> Result<(), String> {
+    if anonymous.allows(role) {
+        Ok(())
+    } else {
+        Err(format!(
+            "this deployment does not allow {} links without sign-in",
+            role.as_str()
+        ))
+    }
 }
 
 /// Applies an `update` to a row: only the fields it sends change, and the
 /// key never does.
-fn apply_update(link: &mut LinkGrant, wanted: &UpdateRequest) -> Result<(), String> {
+fn apply_update(
+    link: &mut LinkGrant,
+    wanted: &UpdateRequest,
+    anonymous: AnonymousAccess,
+) -> Result<(), String> {
     if matches!(wanted.budget, Some(Some(budget)) if budget < 0) {
         return Err("a budget is a non-negative number of comments per hour".to_string());
     }
@@ -671,6 +711,15 @@ fn apply_update(link: &mut LinkGrant, wanted: &UpdateRequest) -> Result<(), Stri
     }
     if let Some(budget) = wanted.budget {
         link.budget = budget;
+    }
+    if let Some(wanted_anonymous) = wanted.anonymous {
+        if wanted_anonymous {
+            if link.kind == LinkKind::Agent {
+                return Err("a token cannot be used without signing in".to_string());
+            }
+            allow_anonymous(link.granted(), anonymous)?;
+        }
+        link.anonymous = wanted_anonymous;
     }
     Ok(())
 }
@@ -810,15 +859,65 @@ mod request_shape_tests {
             name: Some(" ".into()),
             ..Default::default()
         };
-        assert!(apply_update(&mut token, &blank).is_err());
+        assert!(apply_update(&mut token, &blank, Default::default()).is_err());
         let forever = UpdateRequest {
             id: "a".into(),
             until: Some("never".into()),
             ..Default::default()
         };
-        assert!(apply_update(&mut token, &forever).is_err());
+        assert!(apply_update(&mut token, &forever, Default::default()).is_err());
         let mut link = LinkGrant::default();
-        assert!(apply_update(&mut link, &forever).is_ok());
+        assert!(apply_update(&mut link, &forever, Default::default()).is_ok());
         assert!(link.until.is_empty());
+    }
+
+    #[test]
+    fn an_update_marks_a_link_anonymous_only_where_the_switch_allows() {
+        let on = UpdateRequest {
+            id: "a".into(),
+            anonymous: Some(true),
+            ..Default::default()
+        };
+        let mut link = LinkGrant {
+            role: "commenter".into(),
+            ..Default::default()
+        };
+        let error = apply_update(&mut link, &on, Default::default()).unwrap_err();
+        assert_eq!(
+            error,
+            "this deployment does not allow commenter links without sign-in"
+        );
+        assert!(!link.anonymous);
+        let comments = AnonymousAccess {
+            comments: true,
+            ..Default::default()
+        };
+        assert!(apply_update(&mut link, &on, comments).is_ok());
+        assert!(link.anonymous);
+        let absent = UpdateRequest {
+            id: "a".into(),
+            ..Default::default()
+        };
+        apply_update(&mut link, &absent, Default::default()).unwrap();
+        assert!(link.anonymous, "absent leaves the flag where it is");
+        let off = UpdateRequest {
+            id: "a".into(),
+            anonymous: Some(false),
+            ..Default::default()
+        };
+        apply_update(&mut link, &off, Default::default()).unwrap();
+        assert!(!link.anonymous);
+        let mut token = LinkGrant {
+            kind: LinkKind::Agent,
+            role: "reader".into(),
+            ..Default::default()
+        };
+        let all = AnonymousAccess {
+            reads: true,
+            comments: true,
+            suggests: true,
+            edits: true,
+        };
+        assert!(apply_update(&mut token, &on, all).is_err());
     }
 }

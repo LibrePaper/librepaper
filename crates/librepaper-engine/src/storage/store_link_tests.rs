@@ -88,3 +88,70 @@ fn guests_of_a_dropped_link_are_pruned_and_agents_never_hold_guests() {
     assert_eq!(entry.guests.len(), 1);
     assert_eq!(entry.guests[0].id, "2");
 }
+
+#[test]
+fn a_link_admits_a_caller_who_has_not_signed_in_only_when_flag_and_switch_agree() {
+    use librepaper_base::role::AnonymousAccess;
+    let roles = [
+        ("reader", Role::Reader),
+        ("commenter", Role::Commenter),
+        ("suggester", Role::Suggester),
+        ("editor", Role::Editor),
+    ];
+    for (word, role) in roles {
+        for flagged in [false, true] {
+            for switch_on in [false, true] {
+                let mut link = grant('a', word, LinkKind::Link);
+                link.anonymous = flagged;
+                let mut entry = IndexEntry::default();
+                entry.add_link(link);
+                let hash = "a".repeat(64);
+                // Only the switch for this row's own role is turned on.
+                let mut access = AnonymousAccess::default();
+                match role {
+                    Role::Reader => access.reads = switch_on,
+                    Role::Commenter => access.comments = switch_on,
+                    Role::Suggester => access.suggests = switch_on,
+                    _ => access.edits = switch_on,
+                }
+                assert_eq!(
+                    entry.admits_anonymously(&hash, 0, access),
+                    flagged && switch_on,
+                    "{word} flagged={flagged} switch={switch_on}"
+                );
+                // The other rungs' switches do not admit this one.
+                let others = AnonymousAccess {
+                    reads: role != Role::Reader,
+                    comments: role != Role::Commenter,
+                    suggests: role != Role::Suggester,
+                    edits: role != Role::Editor,
+                };
+                assert!(!entry.admits_anonymously(&hash, 0, others));
+            }
+        }
+    }
+}
+
+#[test]
+fn an_expired_or_unknown_link_never_admits_anonymously() {
+    use librepaper_base::role::AnonymousAccess;
+    let every = AnonymousAccess {
+        reads: true,
+        comments: true,
+        suggests: true,
+        edits: true,
+    };
+    let mut expired = grant('a', "reader", LinkKind::Link);
+    expired.anonymous = true;
+    expired.until = "2000-01-01T00:00:00Z".into();
+    let mut agent = grant('b', "reader", LinkKind::Agent);
+    agent.anonymous = true;
+    let mut entry = IndexEntry::default();
+    entry.add_link(expired);
+    entry.add_link(agent);
+    let now = librepaper_base::util::now_unix();
+    assert!(!entry.admits_anonymously(&"a".repeat(64), now, every));
+    assert!(!entry.admits_anonymously(&"b".repeat(64), now, every));
+    assert!(!entry.admits_anonymously(&"c".repeat(64), now, every));
+    assert!(!entry.admits_anonymously("", now, every));
+}
