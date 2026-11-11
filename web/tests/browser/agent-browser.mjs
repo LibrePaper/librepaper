@@ -230,7 +230,7 @@ try {
   // The built-in tab is the default: the agent, access and start controls live
   // in its header.
   assert.equal(await page.evaluate('document.querySelector("#agent-pane-builtin").hidden'), false);
-  assert.deepEqual(await page.evaluate(`Array.from(document.querySelectorAll("#agent-pane-builtin select[aria-label=Access] option")).map(o=>o.textContent.split(":")[0])`), ["Comment", "Edit"]);
+  assert.deepEqual(await page.evaluate(`Array.from(document.querySelectorAll("#agent-pane-builtin select[aria-label=Access] option")).map(o=>o.textContent.split(":")[0])`), ["Comment", "Suggest", "Edit"]);
   // The agent and access line heads the built-in pane.
   assert.equal(await page.evaluate("Boolean(document.querySelector('#agent-pane-builtin .pane-header > .agent-settings select[aria-label=Access]'))"), true);
   // The agent settings are always visible when paired.

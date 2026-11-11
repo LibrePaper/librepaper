@@ -380,7 +380,7 @@ window.shareSidebarCheck = async () => {
 window.panelTypographyCheck = async () => {
   const samples = [];
   const mounted = [];
-  for (const [component, props] of [[Files, {}], [Diagnostics, {}]]) {
+  for (const [component, props] of [[Files, {}]]) {
     const host = document.createElement('div');
     host.style.cssText = 'display:flex;flex-direction:column;width:360px;height:500px';
     document.body.append(host);
@@ -402,7 +402,7 @@ window.panelTypographyCheck = async () => {
   // so that the strip is flush to the top of the panel and runs its full
   // width. The reader must not be able to tell the two arrangements apart:
   // what a pane holds has to sit exactly where a plain panel's contents sit.
-  for (const [component, props] of [[Collaboration, {}], [Agent, { open: true, slug: 'paper', canShare: true }]]) {
+  for (const [component, props] of [[Collaboration, {}], [Diagnostics, {}], [Agent, { open: true, slug: 'paper', canShare: true }]]) {
     const host = document.createElement('div');
     host.style.cssText = 'display:flex;flex-direction:column;width:360px;height:500px';
     document.body.append(host);

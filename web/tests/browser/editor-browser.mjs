@@ -876,7 +876,8 @@ window.diagnosticsCheck = async () => {
   } });
   await tick();
   const text = host.textContent;
-  const links = host.querySelectorAll("button");
+  // The panel's one tab is a button too; the links live in its body.
+  const links = host.querySelectorAll(".diagnostics-body button");
   const link = links[0]?.textContent.trim();
   links[0]?.click();
   component.$set({ diagnostics: [] });
