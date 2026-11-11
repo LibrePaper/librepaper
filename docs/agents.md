@@ -9,7 +9,7 @@ There are two ways to connect an agent:
 - **The built-in agent, in the desktop app.** It is an agent installed on your computer, and it chats with you next to the document. See [Built-in agent](#built-in-agent).
 - **An external agent, with a token.** You paste one block of instructions into the agent you already use, and it connects to one project. This works from the browser or the desktop app, and the agent can run anywhere. See [Connect your agent](#connect-your-agent).
 
-> **Warning:** A shared document holds text from everyone with edit access. An agent that reads it may follow instructions hidden in that text.
+> **Warning:** A shared document holds text from everyone with suggest or edit access. An agent that reads it may follow instructions hidden in that text.
 
 ## Connect your agent
 
@@ -128,7 +128,8 @@ When you click **New token**, you pick a permission and an expiry. You can also 
 |---|---|
 | Read | Read the project. |
 | Comment | Read and comment. |
-| Edit | Everything Comment allows, plus tracked suggestions, direct edits, and creating or deleting text files. Tracked suggestions need Edit; Comment cannot change text. Edit tokens expire after one day by default. |
+| Suggest | Everything Comment allows, plus tracked suggestions. A Suggest token cannot apply edits directly; the server enforces this. |
+| Edit | Everything Suggest allows, plus direct edits, and creating or deleting text files. Comment cannot change text, and Suggest only as tracked suggestions. Edit tokens expire after one day by default. |
 
 ### What a token cannot do
 
