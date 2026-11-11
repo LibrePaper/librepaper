@@ -747,7 +747,12 @@ main.reader.source-right .editorpane {
 [data-mode="dark"] .cm-editor .cm-searchMatch {
   background: color-mix(in srgb, var(--color-editor-tint) 28%, transparent);
 }
+/* CodeMirror raises its panels to z-index 300 against nothing that contains
+ * it, so the Vim status line and the search bar were drawn over the settings
+ * page and every other dialog. They only have to clear the scroller beside
+ * them, which stacks at 0. */
 .cm-editor .cm-panels {
+  z-index: 1;
   background: var(--color-subtle);
   color: var(--color-text);
   border-color: var(--color-border);
