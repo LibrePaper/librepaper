@@ -11,7 +11,7 @@ fn assistant_capabilities(role: Role) -> Value {
         "can_delete": caps.comment,
         "can_resolve": caps.comment,
         "can_label": caps.edit,
-        "can_suggest": caps.edit,
+        "can_suggest": caps.suggest,
         "can_reply": caps.comment,
     })
 }
@@ -86,10 +86,11 @@ mod capability_tests {
     use super::*;
 
     #[test]
-    fn suggesting_requires_editor_permission_while_comments_allow_commenters() {
+    fn suggesting_requires_suggester_permission_while_comments_allow_commenters() {
         for (role, can_suggest, can_edit, can_comment) in [
             (Role::Reader, false, false, false),
             (Role::Commenter, false, false, true),
+            (Role::Suggester, true, false, true),
             (Role::Editor, true, true, true),
             (Role::Owner, true, true, true),
         ] {

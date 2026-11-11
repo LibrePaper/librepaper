@@ -30,7 +30,9 @@ pub(super) fn tools() -> &'static Vec<Value> {
 }
 
 /// The tools that only an Editor may call. The server refuses each of them
-/// for a Commenter, so a Commenter is not offered them.
+/// for a Commenter, so a Commenter is not offered them. `document_propose` is
+/// listed here too: a Suggester may propose, but only as tracked changes, so
+/// `SUGGESTER_TOOLS` adds it back for that rung.
 const EDITOR_TOOLS: [&str; 4] = [
     "document_propose",
     "document_withdraw",
@@ -38,14 +40,20 @@ const EDITOR_TOOLS: [&str; 4] = [
     "document_files",
 ];
 
+/// The Editor-only tools a Suggester may also call. The server publishes a
+/// suggester's proposal only as tracked changes, and refuses direct apply,
+/// file writes and withdrawal below Editor.
+const SUGGESTER_TOOLS: [&str; 1] = ["document_propose"];
+
 /// The tools a Reader may call: read the source and fetch a result. Every
 /// other tool needs Commenter or better.
 const READER_TOOLS: [&str; 2] = ["document_read", "document_result"];
 
 /// The tools a caller may be offered for its role. An Editor gets every
-/// served tool. A Commenter gets read, comment and result, and the comment
-/// tool without the `label` action, which the server also refuses below
-/// Editor. A Reader gets `READER_TOOLS` only.
+/// served tool. A Suggester gets what a Commenter gets plus `document_propose`,
+/// which it may use only to publish tracked changes. A Commenter gets read,
+/// comment and result, and the comment tool without the `label` action, which
+/// the server also refuses below Editor. A Reader gets `READER_TOOLS` only.
 pub(super) fn served_tools(role: Role) -> Vec<Value> {
     for_role(role, all_served_tools())
 }
@@ -61,6 +69,7 @@ pub(super) fn served_tools_full(role: Role) -> Vec<Value> {
 /// so the role rules live in one place.
 fn for_role(role: Role, tools: &[Value]) -> Vec<Value> {
     let editor = role.at_least(Role::Editor);
+    let suggester = role.at_least(Role::Suggester);
     tools
         .iter()
         .filter(|tool| {
@@ -68,17 +77,31 @@ fn for_role(role: Role, tools: &[Value]) -> Vec<Value> {
             if !role.at_least(Role::Commenter) {
                 READER_TOOLS.contains(&name)
             } else {
-                editor || !EDITOR_TOOLS.contains(&name)
+                editor
+                    || !EDITOR_TOOLS.contains(&name)
+                    || (suggester && SUGGESTER_TOOLS.contains(&name))
             }
         })
         .map(|tool| {
             if editor {
                 tool.clone()
+            } else if suggester && tool["name"] == "document_propose" {
+                suggester_view(tool)
             } else {
                 commenter_view(tool)
             }
         })
         .collect()
+}
+
+/// A Suggester's copy of `document_propose`. The publish choice is still
+/// offered, but the description says what a suggester's proposal can become.
+fn suggester_view(tool: &Value) -> Value {
+    let mut tool = tool.clone();
+    tool["description"] = Value::from(
+        "Propose replacements for captured source ranges. You may publish a proposal only as tracked changes (publish: \"suggestions\"), which an editor accepts or rejects, or keep it private (publish: \"private\"). Direct apply is not available to you.",
+    );
+    tool
 }
 
 /// A Commenter's copy of a tool. Only `document_comment` differs: its
@@ -406,6 +429,56 @@ mod tests {
             .filter_map(|tool| tool["name"].as_str())
             .collect();
         assert_eq!(names, ["document_read", "document_result"]);
+    }
+
+    /// A Suggester is offered what a Commenter is offered plus propose, whose
+    /// description says it can only publish tracked changes. Apply, files and
+    /// withdraw stay Editor-only.
+    #[test]
+    fn suggesters_are_offered_propose_but_no_direct_apply() {
+        let suggester_tools = served_tools(Role::Suggester);
+        let names: Vec<&str> = suggester_tools
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "document_read",
+                "document_propose",
+                "document_comment",
+                "document_result"
+            ]
+        );
+        let propose = suggester_tools
+            .iter()
+            .find(|t| t["name"] == "document_propose")
+            .expect("document_propose");
+        let description = propose["description"].as_str().expect("description");
+        assert!(description.contains("publish: \"suggestions\""), "{description}");
+        assert!(description.contains("Direct apply is not available"), "{description}");
+        let comment = suggester_tools
+            .iter()
+            .find(|t| t["name"] == "document_comment")
+            .expect("document_comment");
+        let actions = comment["inputSchema"]["properties"]["action"]["enum"]
+            .as_array()
+            .expect("suggester action enum");
+        assert!(!actions.contains(&json!("label")));
+        // The direct HTTP caller's list follows the same rule.
+        let full: Vec<String> = served_tools_full(Role::Suggester)
+            .iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+            .collect();
+        assert_eq!(
+            full,
+            [
+                "document_read",
+                "document_propose",
+                "document_comment",
+                "document_result"
+            ]
+        );
     }
 
     /// A Commenter is offered only the tools it can use; an Editor is offered
