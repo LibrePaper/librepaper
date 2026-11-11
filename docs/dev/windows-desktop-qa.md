@@ -40,7 +40,7 @@ tools/dev/windows-vm bootstrap local   # run install-local.ps1 in the VM
 
 1. Run `tools/dev/windows-vm bootstrap`, or run the released installer by hand in PowerShell: `powershell -ExecutionPolicy Bypass -c "irm https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.ps1 | iex"`. Open a new terminal and confirm `librepaper --version`. Record any SmartScreen or Defender warning.
 2. Open the desktop app and confirm it loads app.librepaper.org.
-3. Open a Quarto document, turn on **Run code**, and use the suggested folder. Confirm the line "Runs in …" appears and **Open folder** opens it. Click **Change…**, pick another folder, and cancel; the previous folder should remain. Put `data/x.csv` in the Run directory and confirm a chunk reading it renders. Link a Run directory folder and a top-level file (junction or hard link) and confirm both render. Set a Run directory on a network drive and confirm it renders with a notice.
+3. Open a Quarto document, turn on **Run code**, and use the suggested folder. Confirm the line "Runs in …" appears and **Open folder** opens it. Click **Change…**, pick another folder, and cancel; the previous folder should remain. Put `data/x.csv` in the Run directory and confirm a chunk reading it renders. Put a folder (`figures/`) and a top-level file (`notes.md`) in the Run directory, reference both from Markdown, and confirm they render (LibrePaper links them with a junction and a hard link). Set a Run directory on a network drive and confirm it renders with a notice.
 4. Restore the clean snapshot and repeat step 1 with Scoop: `scoop bucket add vincentarelbundock https://github.com/vincentarelbundock/scoop-bucket` then `scoop install librepaper`.
 
 ## Desktop app console flicker regression
