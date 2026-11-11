@@ -235,15 +235,28 @@ export function projectDirectory(doc, rules, { bodies = true } = {}) {
 
   diagnostics.sort((left, right) => compareKeys(diagnosticSortKey(left), diagnosticSortKey(right)));
 
-  // A retained path that collides with a placed entry is dropped. The first
-  // candidate (by id) wins a path of its own.
+  // Retained texts follow the placed entries, in id order. One whose path is
+  // taken (by a placed file or an earlier retained text) is suffixed like a
+  // placed file; if no suffix up to 100 is free it is dropped.
   const retainedList = [];
-  const seen = new Set();
-  for (const candidate of retainedCandidates) {
+  const byId = [...retainedCandidates].sort((left, right) => compareUtf8(left.key, right.key));
+  for (const candidate of byId) {
     const path = normalisePath(candidate.requested);
-    if (taken.has(collisionKey(path)) || seen.has(path)) continue;
-    seen.add(path);
-    retainedList.push([path, candidate.text]);
+    let chosen = null;
+    if (!taken.has(collisionKey(path))) {
+      chosen = path;
+    } else {
+      for (let nth = 2; nth <= 100; nth += 1) {
+        const attempt = suffixed(path, nth);
+        if (!taken.has(collisionKey(attempt))) {
+          chosen = attempt;
+          break;
+        }
+      }
+    }
+    if (chosen === null) continue;
+    taken.add(collisionKey(chosen));
+    retainedList.push([chosen, candidate.text]);
   }
   retainedList.sort((left, right) => compareUtf8(left[0], right[0]));
   const retained = Object.fromEntries(retainedList);

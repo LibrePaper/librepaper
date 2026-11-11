@@ -103,6 +103,30 @@ for (const testCase of corpus.cases) {
   }
 }
 
+// Retained texts that collide are suffixed in id order.
+{
+  const retainRules = { ...rules, text_extensions: [".md"], asset_extensions: [], derived_extensions: [] };
+  const doc = new LoroDoc();
+  const files = doc.getMap("files");
+  const paths = doc.getMap("paths");
+  const add = (id, path, body) => {
+    const text = files.setContainer(id, new LoroText());
+    text.insert(0, body);
+    paths.set(id, path);
+  };
+  add("aaa", "a.R", "first");
+  add("bbb", "a.R", "second");
+  add("ccc", "Notes.py", "upper");
+  add("ddd", "notes.py", "lower");
+  const result = await project(doc, retainRules);
+  assert.deepEqual(result.retained, {
+    "a.R": "first",
+    "a (2).R": "second",
+    "Notes.py": "upper",
+    "notes (2).py": "lower",
+  });
+}
+
 // Retained texts: structurally sound, extension refused. Downloads only.
 {
   const retainRules = { ...rules, text_extensions: [".md"], asset_extensions: [], derived_extensions: [] };

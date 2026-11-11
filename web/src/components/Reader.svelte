@@ -426,11 +426,16 @@
   let localExecution = $state(false);
   // A Quarto document needs a folder to run its code in. Nothing renders on
   // this computer until the control beside Run code says one is set.
-  let runDirectoryReady = $state(false);
-  function setRunDirectoryReady(ready) {
-    if (ready === runDirectoryReady) return;
-    runDirectoryReady = ready;
-    if (ready && localExecution && !readerDisposed) void paintPreview();
+  let runDirectory = $state("");
+  const runDirectoryReady = $derived(runDirectory !== "");
+  function setRunDirectory(path) {
+    const next = path || "";
+    if (next === runDirectory) return;
+    runDirectory = next;
+    if (next && localExecution && !readerDisposed) {
+      stopRendering();
+      void paintPreview();
+    }
   }
 
   async function setLatexOutput(format) {
@@ -455,7 +460,7 @@
   // because the renderer that draws it changes hands.
   function toggleLocalExecution() {
     localExecution = !localExecution;
-    if (localExecution) runDirectoryReady = false;
+    if (localExecution) runDirectory = "";
     stopRendering();
     void paintPreview();
   }
@@ -2427,6 +2432,7 @@
       buildPreferences,
       localExecution,
       runDirectoryReady: sourceFormat === "quarto" ? runDirectoryReady : true,
+      runDirectory,
       latexContinuous: latexContinuous(),
       projectDigest: mayEdit ? "" : projection.state.project?.project_digest || "",
     }),
@@ -3991,7 +3997,7 @@
       <span class="bar-toggle-label">{m.readerd_run_code()}</span>
     </label>
     {#if localExecution && sourceFormat === "quarto"}
-      <RunDirectoryControl project={SLUG} onchange={setRunDirectoryReady} />
+      <RunDirectoryControl project={SLUG} onchange={setRunDirectory} />
     {/if}
   {/if}
 {/snippet}
@@ -4013,7 +4019,7 @@
 <!-- The phone has no tools in its header, so the Run directory is asked for
      here while Run code is on. -->
 {#if compact && runCodeOffered && localExecution && sourceFormat === "quarto"}
-  <div class="run-directory-strip"><RunDirectoryControl project={SLUG} onchange={setRunDirectoryReady} /></div>
+  <div class="run-directory-strip"><RunDirectoryControl project={SLUG} onchange={setRunDirectory} /></div>
 {/if}
 
 <Nav {me} phoneMenu phoneShell={compact} phoneBare={tabsShown} hidden={barHidden && !compact}>
