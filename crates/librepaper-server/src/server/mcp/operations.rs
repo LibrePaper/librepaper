@@ -848,10 +848,10 @@ impl Server {
         parent_request_id: &str,
     ) -> Result<Value, Failure> {
         let publish = args["publish"].as_str().unwrap_or("suggestions");
-        if publish == "suggestions" && !who.at_least(Role::Editor) {
+        if publish == "suggestions" && !who.at_least(Role::Suggester) {
             return Err(Failure::new(
                 "permission_changed",
-                "editor access is required to publish tracked changes",
+                "suggester access is required to publish tracked changes",
             ));
         }
         let view_id = args["view_id"].as_str().unwrap_or_default();
@@ -1094,10 +1094,10 @@ impl Server {
             result["render"] = json!(render);
         }
         if candidate.publish == "suggestions" {
-            if !who.at_least(Role::Editor) {
+            if !who.at_least(Role::Suggester) {
                 return Err(Failure::new(
                     "permission_changed",
-                    "editor access required to finish this proposal",
+                    "suggester access is required to finish this proposal",
                 ));
             }
             let creator = self.mcp_display_name(headers, arrival, who, actor, slug);

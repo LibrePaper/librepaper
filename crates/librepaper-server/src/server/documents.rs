@@ -1320,6 +1320,7 @@ impl Server {
             capabilities: json!({
                 "read": true,
                 "comment": who.at_least(Role::Commenter),
+                "suggest": who.at_least(Role::Suggester),
                 "edit": who.at_least(Role::Editor),
             }),
         };
