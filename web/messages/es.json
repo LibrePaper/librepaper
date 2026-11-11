@@ -2932,8 +2932,8 @@
   "rundirectorycontrol_missing": "Falta su carpeta de ejecución {path}.",
   "rundirectorycontrol_choose_chip": "Elegir carpeta",
   "rundirectorycontrol_use_suggested": "Usar {suggested}",
-  "rundirectorycontrol_prompt_title": "Elige dónde se ejecuta tu código",
-  "rundirectorycontrol_prompt_text": "Quarto ejecuta el código de este documento en una carpeta de este ordenador. Coloca ahí tus datos y scripts y refiérete a ellos con rutas relativas.",
+  "rundirectorycontrol_prompt_title": "Elige una carpeta de ejecución",
+  "rundirectorycontrol_prompt_text": "Quarto ejecuta tu código allí.",
   "preview_render_run_directory_clash": "{path} está en LibrePaper y en su carpeta de ejecución. Markdown usa la copia de LibrePaper; el código lee la de su carpeta de ejecución.",
   "preview_render_run_directory_not_linked": "No se pudo poner {path} de su carpeta de ejecución a disposición de Quarto.",
   "preview_render_run_directory_missing_file": "El código busca archivos en su carpeta de ejecución: {path}."

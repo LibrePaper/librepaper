@@ -2932,8 +2932,8 @@
   "rundirectorycontrol_missing": "Votre dossier d’exécution {path} est introuvable.",
   "rundirectorycontrol_choose_chip": "Choisir un dossier",
   "rundirectorycontrol_use_suggested": "Utiliser {suggested}",
-  "rundirectorycontrol_prompt_title": "Choisissez où votre code s’exécute",
-  "rundirectorycontrol_prompt_text": "Quarto exécute le code de ce document dans un dossier de cet ordinateur. Placez-y vos données et vos scripts, et référencez-les avec des chemins relatifs.",
+  "rundirectorycontrol_prompt_title": "Choisissez un dossier d’exécution",
+  "rundirectorycontrol_prompt_text": "Quarto y exécute votre code.",
   "preview_render_run_directory_clash": "{path} se trouve dans LibrePaper et dans votre dossier d’exécution. Markdown utilise la copie de LibrePaper; le code lit celle de votre dossier d’exécution.",
   "preview_render_run_directory_not_linked": "{path} dans votre dossier d’exécution n’a pas pu être rendu accessible à Quarto.",
   "preview_render_run_directory_missing_file": "Le code cherche des fichiers dans votre dossier d’exécution : {path}."

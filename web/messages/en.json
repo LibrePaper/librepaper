@@ -2932,8 +2932,8 @@
   "rundirectorycontrol_missing": "Your Run directory {path} is missing.",
   "rundirectorycontrol_choose_chip": "Choose folder",
   "rundirectorycontrol_use_suggested": "Use {suggested}",
-  "rundirectorycontrol_prompt_title": "Choose where your code runs",
-  "rundirectorycontrol_prompt_text": "Quarto runs this document's code in a folder on this computer. Put your data and scripts there and refer to them with relative paths.",
+  "rundirectorycontrol_prompt_title": "Choose a Run directory",
+  "rundirectorycontrol_prompt_text": "Quarto runs your code there.",
   "preview_render_run_directory_clash": "{path} is in LibrePaper and in your Run directory. Markdown uses the LibrePaper copy; code reads the one in your Run directory.",
   "preview_render_run_directory_not_linked": "{path} in your Run directory could not be made available to Quarto.",
   "preview_render_run_directory_missing_file": "Code looks for files in your Run directory: {path}."
