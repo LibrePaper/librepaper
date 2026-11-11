@@ -243,12 +243,12 @@ export function projectDirectory(doc, rules, { bodies = true } = {}) {
   for (const candidate of byId) {
     const path = normalisePath(candidate.requested);
     let chosen = null;
-    if (!taken.has(collisionKey(path))) {
+    if (free(taken, path)) {
       chosen = path;
     } else {
       for (let nth = 2; nth <= 100; nth += 1) {
         const attempt = suffixed(path, nth);
-        if (!taken.has(collisionKey(attempt))) {
+        if (free(taken, attempt)) {
           chosen = attempt;
           break;
         }

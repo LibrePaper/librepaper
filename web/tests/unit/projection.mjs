@@ -127,6 +127,24 @@ for (const testCase of corpus.cases) {
   });
 }
 
+// A retained text never takes a path a placed file needs as a directory.
+{
+  const retainRules = { ...rules, text_extensions: [".md"], asset_extensions: [], derived_extensions: [] };
+  const doc = new LoroDoc();
+  const files = doc.getMap("files");
+  const paths = doc.getMap("paths");
+  const add = (id, path, body) => {
+    const text = files.setContainer(id, new LoroText());
+    text.insert(0, body);
+    paths.set(id, path);
+  };
+  add("aaa", "scripts.R/readme.md", "placed");
+  add("bbb", "scripts.R", "retained");
+  const result = await project(doc, retainRules);
+  assert.ok("scripts.R/readme.md" in result.files);
+  assert.deepEqual(result.retained, { "scripts (2).R": "retained" });
+}
+
 // Retained texts: structurally sound, extension refused. Downloads only.
 {
   const retainRules = { ...rules, text_extensions: [".md"], asset_extensions: [], derived_extensions: [] };

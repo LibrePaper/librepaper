@@ -570,7 +570,7 @@ pub fn project(doc: &LoroDoc, rules: &Rules) -> Projected {
         // the text to `name (2).ext`, `name (3).ext`, ... up to 100.
         let chosen = std::iter::once(path.clone())
             .chain((2..=100).map(|nth| crate::document::paths::suffixed(&path, nth)))
-            .find(|candidate| !taken.contains_key(&paths::collision_key(candidate)));
+            .find(|candidate| free(&taken, candidate));
         if let Some(chosen) = chosen {
             taken.insert(paths::collision_key(&chosen), chosen.clone());
             retained.insert(chosen, body);
@@ -969,6 +969,17 @@ mod tests {
         assert_eq!(projected.retained["Notes.py"], "upper");
         assert_eq!(projected.retained["notes (2).py"], "lower");
         assert_eq!(projected.retained.len(), 4);
+    }
+
+    #[test]
+    fn a_retained_text_cannot_be_a_file_where_a_placed_path_needs_a_directory() {
+        let doc = self::doc();
+        put(&doc, "aaa", "scripts.R/readme.md", "placed");
+        put(&doc, "bbb", "scripts.R", "retained");
+        let projected = project(&doc, &rules());
+        assert!(projected.projection.files.contains_key("scripts.R/readme.md"));
+        assert_eq!(projected.retained["scripts (2).R"], "retained");
+        assert_eq!(projected.retained.len(), 1);
     }
 
     #[test]
