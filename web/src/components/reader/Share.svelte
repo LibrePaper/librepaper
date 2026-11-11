@@ -5,7 +5,7 @@
   import Icon from "../Icon.svelte";
   import ShareRow from "./share/ShareRow.svelte";
   import ShareForm from "./share/ShareForm.svelte";
-  import { allows, budgetOf } from "./share/shared.js";
+  import { allows, anonymousAllowed, budgetOf } from "./share/shared.js";
   import { createSharing } from "../../lib/sharing.svelte.js";
   import { m } from "../../lib/paraglide/messages.js";
 
@@ -14,12 +14,13 @@
   let root = $state(null);
   // Whether the create form is open. It stands in for the toolbar.
   let creating = $state(false);
-  let draft = $state({ name: "", role: "reader", until: "7d", budget: "" });
+  let draft = $state({ name: "", role: "reader", until: "7d", budget: "", anonymous: true });
   // The link waiting to be revoked, or null. It stops a link somebody may
   // already be holding.
   let confirming = $state(null);
 
   const allowed = (role) => allows(sharing.sharing, role);
+  const anonymous = (role) => anonymousAllowed(sharing.sharing, role);
   const links = $derived(sharing.sharing?.links ?? []);
 
   $effect(() => {
@@ -35,7 +36,7 @@
   }
 
   function startCreate() {
-    draft = { name: "", role: "reader", until: "7d", budget: "" };
+    draft = { name: "", role: "reader", until: "7d", budget: "", anonymous: true };
     creating = true;
   }
 
@@ -46,7 +47,7 @@
 
   async function commit() {
     if (!creating) return;
-    const answer = await sharing.change({ create: { kind: "link", role: draft.role, name: draft.name.trim(), until: draft.until, budget: budgetOf(draft.budget) } });
+    const answer = await sharing.change({ create: { kind: "link", role: draft.role, name: draft.name.trim(), until: draft.until, budget: budgetOf(draft.budget), anonymous: draft.anonymous && anonymous(draft.role) } });
     if (!answer) return;
     creating = false;
     focusBack();
@@ -87,7 +88,7 @@
       <div class="share-scroll">
         <!-- Inside the scroller, so a short panel still reaches the form's buttons. -->
         {#if creating}
-          <ShareForm kind="link" bind:draft busy={sharing.busy} {allowed} onsubmit={commit} oncancel={cancelForm} />
+          <ShareForm kind="link" bind:draft busy={sharing.busy} {allowed} anonymousAllowed={anonymous} onsubmit={commit} oncancel={cancelForm} />
         {/if}
         <p class="panel-meta">{m.share_links_scope_note()}</p>
         {#if links.length === 0}
