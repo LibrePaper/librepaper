@@ -6,13 +6,15 @@ use std::str::FromStr;
 
 /// What a caller may do to a document, as a ladder: each role includes the
 /// ones beneath it. Reading has never had a switch, so `Reader` is what
-/// everybody who can reach a document holds; `Editor` sits between commenting
-/// and owning and is held today by the owner alone, until a document can name
-/// somebody.
+/// everybody who can reach a document holds. `Suggester` sits between
+/// commenting and editing: it may write only as tracked changes, which a
+/// reviewer can accept or reject. `Editor` sits above it and is held today by
+/// the owner alone, until a document can name somebody.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Role {
     Reader,
     Commenter,
+    Suggester,
     Editor,
     Owner,
 }
@@ -28,18 +30,21 @@ impl Role {
         match self {
             Role::Reader => "reader",
             Role::Commenter => "commenter",
+            Role::Suggester => "suggester",
             Role::Editor => "editor",
             Role::Owner => "owner",
         }
     }
 
     /// The byte an agent grant carries. A grant is a ceiling for an agent and
-    /// never names an owner, so `Owner` shares the editor byte.
+    /// never names an owner, so `Owner` shares the editor byte. The suggester
+    /// byte is 4: bytes 1 to 3 are already stored in tokens and never change.
     pub fn wire(self) -> u8 {
         match self {
             Role::Reader => 1,
             Role::Commenter => 2,
             Role::Editor | Role::Owner => 3,
+            Role::Suggester => 4,
         }
     }
 }
@@ -59,12 +64,13 @@ impl std::error::Error for UnknownRole {}
 impl TryFrom<u8> for Role {
     type Error = UnknownRole;
 
-    /// The inverse of `wire`, for the three bytes a grant may carry.
+    /// The inverse of `wire`, for the four bytes a grant may carry.
     fn try_from(byte: u8) -> Result<Role, UnknownRole> {
         match byte {
             1 => Ok(Role::Reader),
             2 => Ok(Role::Commenter),
             3 => Ok(Role::Editor),
+            4 => Ok(Role::Suggester),
             _ => Err(UnknownRole),
         }
     }
@@ -75,12 +81,13 @@ impl FromStr for Role {
 
     /// The role a grant or a link names. The long forms are what is stored,
     /// and the panel and the command line also offer the short verbs
-    /// `read`, `comment` and `edit`. Nobody is granted `owner`, since the
-    /// owner is one account, so that word is not accepted.
+    /// `read`, `comment`, `suggest` and `edit`. Nobody is granted `owner`,
+    /// since the owner is one account, so that word is not accepted.
     fn from_str(value: &str) -> Result<Role, UnknownRole> {
         match value.trim().to_ascii_lowercase().as_str() {
             "read" | "reader" => Ok(Role::Reader),
             "comment" | "commenter" => Ok(Role::Commenter),
+            "suggest" | "suggester" => Ok(Role::Suggester),
             "edit" | "editor" => Ok(Role::Editor),
             _ => Err(UnknownRole),
         }
@@ -92,6 +99,8 @@ impl FromStr for Role {
 pub struct Capabilities {
     pub read: bool,
     pub comment: bool,
+    /// Writing text as tracked changes, which the suggester rung and above hold.
+    pub suggest: bool,
     pub edit: bool,
     pub share: bool,
     /// Deleting anyone's comment, which the editor rung holds.
@@ -103,6 +112,7 @@ impl From<Role> for Capabilities {
         Capabilities {
             read: true,
             comment: role.at_least(Role::Commenter),
+            suggest: role.at_least(Role::Suggester),
             edit: role.at_least(Role::Editor),
             share: role.at_least(Role::Owner),
             moderate: role.at_least(Role::Editor),
@@ -127,13 +137,15 @@ pub struct Ceiling {
 
 impl Ceiling {
     /// What a granted role comes to under the switches, for a caller bounded
-    /// by a row alone: an editor row edits under the publish switch,
-    /// comments under the comment switch and otherwise reads. An owner is
+    /// by a row alone: an editor row edits under the publish switch, a
+    /// suggester row suggests under that same switch, and both fall back to
+    /// commenting under the comment switch and otherwise read. An owner is
     /// never granted, so that rung reads.
     pub fn clamp(&self, granted: Role) -> Role {
         match granted {
             Role::Editor if self.edit => Role::Editor,
-            Role::Editor | Role::Commenter if self.comment => Role::Commenter,
+            Role::Suggester if self.edit => Role::Suggester,
+            Role::Editor | Role::Suggester | Role::Commenter if self.comment => Role::Commenter,
             _ => Role::Reader,
         }
     }
@@ -143,7 +155,13 @@ impl Ceiling {
 mod tests {
     use super::*;
 
-    const LADDER: [Role; 4] = [Role::Reader, Role::Commenter, Role::Editor, Role::Owner];
+    const LADDER: [Role; 5] = [
+        Role::Reader,
+        Role::Commenter,
+        Role::Suggester,
+        Role::Editor,
+        Role::Owner,
+    ];
 
     #[test]
     fn ladder_is_ordered() {
@@ -161,6 +179,8 @@ mod tests {
             ("reader", Role::Reader),
             ("comment", Role::Commenter),
             ("commenter", Role::Commenter),
+            ("suggest", Role::Suggester),
+            ("suggester", Role::Suggester),
             ("edit", Role::Editor),
             ("editor", Role::Editor),
             (" Editor ", Role::Editor),
@@ -175,18 +195,23 @@ mod tests {
 
     #[test]
     fn spelling_round_trips() {
-        for role in [Role::Reader, Role::Commenter, Role::Editor] {
+        for role in [
+            Role::Reader,
+            Role::Commenter,
+            Role::Suggester,
+            Role::Editor,
+        ] {
             assert_eq!(role.as_str().parse::<Role>(), Ok(role));
         }
     }
 
     #[test]
     fn wire_bytes() {
-        for byte in 1..=3u8 {
+        for byte in 1..=4u8 {
             assert_eq!(Role::try_from(byte).unwrap().wire(), byte);
         }
         assert_eq!(Role::Owner.wire(), 3);
-        for byte in [0u8, 4, 5, 255] {
+        for byte in [0u8, 5, 6, 255] {
             assert_eq!(Role::try_from(byte), Err(UnknownRole));
         }
     }
@@ -196,7 +221,11 @@ mod tests {
         let caps = |role| Capabilities::from(role);
         assert!(caps(Role::Reader).read && !caps(Role::Reader).comment);
         assert!(caps(Role::Commenter).comment && !caps(Role::Commenter).edit);
-        assert!(caps(Role::Editor).edit && caps(Role::Editor).moderate);
+        assert!(caps(Role::Suggester).comment && caps(Role::Suggester).suggest);
+        assert!(!caps(Role::Suggester).edit && !caps(Role::Suggester).moderate);
+        assert!(!caps(Role::Commenter).suggest);
+        assert!(caps(Role::Editor).suggest && caps(Role::Editor).edit);
+        assert!(caps(Role::Editor).moderate);
         assert!(!caps(Role::Editor).share);
         assert!(caps(Role::Owner).share);
     }
@@ -204,22 +233,47 @@ mod tests {
     #[test]
     fn clamp_matrix() {
         let rows = [
-            // (edit, comment), then the result for reader, commenter, editor, owner.
+            // (edit, comment), then the result for reader, commenter,
+            // suggester, editor, owner.
             (
                 (false, false),
-                [Role::Reader, Role::Reader, Role::Reader, Role::Reader],
+                [
+                    Role::Reader,
+                    Role::Reader,
+                    Role::Reader,
+                    Role::Reader,
+                    Role::Reader,
+                ],
             ),
             (
                 (false, true),
-                [Role::Reader, Role::Commenter, Role::Commenter, Role::Reader],
+                [
+                    Role::Reader,
+                    Role::Commenter,
+                    Role::Commenter,
+                    Role::Commenter,
+                    Role::Reader,
+                ],
             ),
             (
                 (true, false),
-                [Role::Reader, Role::Reader, Role::Editor, Role::Reader],
+                [
+                    Role::Reader,
+                    Role::Reader,
+                    Role::Suggester,
+                    Role::Editor,
+                    Role::Reader,
+                ],
             ),
             (
                 (true, true),
-                [Role::Reader, Role::Commenter, Role::Editor, Role::Reader],
+                [
+                    Role::Reader,
+                    Role::Commenter,
+                    Role::Suggester,
+                    Role::Editor,
+                    Role::Reader,
+                ],
             ),
         ];
         for ((edit, comment), expected) in rows {
