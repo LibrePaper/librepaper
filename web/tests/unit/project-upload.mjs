@@ -36,6 +36,8 @@ assert.throws(() => project({ "main.md": "a", "MAIN.md": "b" }), /share one name
 const quarto = project({ "main.qmd": "# Source", "main.html": "Generated", "main.md": "Generated", "refs.bib": "References", "data.csv": "private", "_freeze/result.json": "cache", "_site/index.html": "generated", "figure.png": new Uint8Array([3,4]) });
 assert.equal(quarto.opening, "main.qmd");
 assert.deepEqual(select(quarto).files.map((file) => file.path), ["main.qmd", "refs.bib", "figure.png"]);
+const scripts = project({ "main.qmd": "# Source", "analysis.R": "fit()", "model.py": "fit()", "fit.jl": "fit()" });
+assert.deepEqual(select(scripts).files.map((file) => file.path), ["main.qmd"], "scripts stay out of an uploaded Quarto project");
 const siblings = project({ "paper.qmd": "# Source", "paper.html": "Generated", "notes.typ": "Typst", "appendix.tex": "LaTeX", "page.html": "Page", "_freeze/x.json": "cache", "data.docx": "binary" });
 assert.deepEqual(select(siblings, "paper.qmd").files.map((file) => file.path), ["paper.qmd", "notes.typ", "appendix.tex", "page.html"]);
 const explicit = project({ "main.qmd": "# Source", "data.csv": "shared", ".librepaper-share.json": '{"include":["data.csv"]}' });

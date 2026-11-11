@@ -31,9 +31,10 @@ A web page cannot run your code. The [LibrePaper desktop app](../desktop-app.htm
 
 When you upload a project folder or zip, LibrePaper keeps the source and leaves out the rest:
 
-- Kept: `.qmd`, `.md`, `.bib`, `.csl`, `.yml`, `.css`, images, and `.R`, `.py`, `.jl` and `.lua` scripts.
+- Kept: `.qmd`, `.md`, `.bib`, `.csl`, `.yml`, `.css`, images, and `.lua` filters.
 - Left out: rendered output, `_freeze`, `_site`, `_book`, `*_files` and `*_cache` folders, and `renv` or `venv` environments.
 - Left out: data files such as `.csv`.
+- Left out: `.R`, `.py` and `.jl` scripts. Keep your code with your data, on your computer. Scripts uploaded before this change stay in the project.
 
 To share a data file anyway, list it in `.librepaper-share.json` at the top of the project:
 
