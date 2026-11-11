@@ -351,6 +351,9 @@
   // reader is shown commenting as. A Google account's handle is its email and
   // belongs on neither.
   let identity = $derived(me.name || "");
+  // A suggester has a live editing session, but every change to the text is a
+  // tracked change: nothing else about the project is theirs to change.
+  let suggestOnly = $derived(doc.role === "suggester");
   let canModerate = $derived(Boolean(doc.can_moderate) && !suggestOnly);
   // Whether this tab is the one in front of the reader. Only background work
   // consults it; nothing about the document depends on being looked at.
@@ -370,9 +373,6 @@
   // which is most of the point of a blind review.
   let canSeeSharing = $derived(Boolean(doc.can_see_sharing));
   let canPublish = $derived(["editor", "owner"].includes(doc.role));
-  // A suggester has a live editing session, but every change to the text is a
-  // tracked change: nothing else about the project is theirs to change.
-  let suggestOnly = $derived(doc.role === "suggester");
   // The key a change is recorded under by this browser (see `trackingMe`),
   // which a suggester may reject by. Empty when nobody has named them, so an
   // anonymous change is never taken for their own.
