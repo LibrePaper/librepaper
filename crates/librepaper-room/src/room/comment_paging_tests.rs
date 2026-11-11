@@ -1242,7 +1242,10 @@ async fn a_reader_page_never_decodes_the_document() {
     let room = deployment.room().await;
     add_anchored_comment(&deployment, &room).await;
     room.log().drop_cache().await;
-    let (views, _) = room.comment_page(None, 50, "someone", false, false).await.unwrap();
+    let (views, _) = room
+        .comment_page(None, 50, "someone", false, false)
+        .await
+        .unwrap();
     assert_eq!(views.len(), 1);
     assert!(views
         .iter()
@@ -1265,7 +1268,10 @@ async fn an_editor_page_with_an_anchored_comment_decodes() {
     let room = deployment.room().await;
     add_anchored_comment(&deployment, &room).await;
     room.log().drop_cache().await;
-    let (views, _) = room.comment_page(None, 50, "someone", true, true).await.unwrap();
+    let (views, _) = room
+        .comment_page(None, 50, "someone", true, true)
+        .await
+        .unwrap();
     assert_eq!(views.len(), 1);
     assert!(views[0].comment.attachment.is_some());
     assert!(room.log().is_warm().await);
@@ -1283,7 +1289,10 @@ async fn an_editor_page_of_document_level_comments_never_decodes() {
     let room = deployment.room().await;
     deployment.seed_comments(room.document_id, 3).await;
     room.log().drop_cache().await;
-    let (views, _) = room.comment_page(None, 50, "someone", true, true).await.unwrap();
+    let (views, _) = room
+        .comment_page(None, 50, "someone", true, true)
+        .await
+        .unwrap();
     assert_eq!(views.len(), 3);
     assert!(views.iter().all(|view| view.comment.attachment.is_none()));
     assert!(

@@ -458,8 +458,14 @@ mod tests {
             .find(|t| t["name"] == "document_propose")
             .expect("document_propose");
         let description = propose["description"].as_str().expect("description");
-        assert!(description.contains("publish: \"suggestions\""), "{description}");
-        assert!(description.contains("Direct apply is not available"), "{description}");
+        assert!(
+            description.contains("publish: \"suggestions\""),
+            "{description}"
+        );
+        assert!(
+            description.contains("Direct apply is not available"),
+            "{description}"
+        );
         let comment = suggester_tools
             .iter()
             .find(|t| t["name"] == "document_comment")

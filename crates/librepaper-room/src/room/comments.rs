@@ -265,7 +265,11 @@ impl CommentEvent {
     /// the row already read: a second caller asking for their own view costs
     /// no query.
     pub fn view_for(&self, author: &str, sees_source: bool, moderates: bool) -> Value {
-        let comment = if sees_source { &self.editor } else { &self.reader };
+        let comment = if sees_source {
+            &self.editor
+        } else {
+            &self.reader
+        };
         let mut event = match (self.carries_comment, comment) {
             (true, Some(comment)) => {
                 let mut event = self.payload.clone();
@@ -1949,7 +1953,7 @@ impl Room {
     /// The same, for a caller that has already prepared the event because it
     /// also wants a view of its own.
     pub async fn broadcast_prepared(&self, skip: Option<u64>, event: &CommentEvent) {
-        self.broadcast_editors_except(skip, &event.view_for("", true, true))
+        self.broadcast_editors_except(skip, &event.view_for("", true, false))
             .await;
         self.broadcast_readers_except(skip, &event.view_for("", false, false))
             .await;
@@ -2015,7 +2019,9 @@ mod moderation_tests {
 
     #[test]
     fn a_suggester_sees_the_source_fields_but_cannot_delete_others_comments() {
-        use librepaper_engine::storage::annotation::{AnchorStatus, DerivedAttachment, OriginalAnchor};
+        use librepaper_engine::storage::annotation::{
+            AnchorStatus, DerivedAttachment, OriginalAnchor,
+        };
         let comment = Comment {
             author: "account:a".into(),
             original_anchor: Some(OriginalAnchor::default()),

@@ -413,14 +413,8 @@ impl Server {
 
         match *request.method() {
             Method::GET => {
-                self.comment_page_reply(
-                    &room,
-                    query.as_deref(),
-                    &author,
-                    sees_source,
-                    moderates,
-                )
-                .await
+                self.comment_page_reply(&room, query.as_deref(), &author, sees_source, moderates)
+                    .await
             }
             Method::POST => {
                 if cross_site_refused(&headers, arrival) {

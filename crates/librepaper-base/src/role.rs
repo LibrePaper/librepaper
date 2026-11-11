@@ -195,12 +195,7 @@ mod tests {
 
     #[test]
     fn spelling_round_trips() {
-        for role in [
-            Role::Reader,
-            Role::Commenter,
-            Role::Suggester,
-            Role::Editor,
-        ] {
+        for role in [Role::Reader, Role::Commenter, Role::Suggester, Role::Editor] {
             assert_eq!(role.as_str().parse::<Role>(), Ok(role));
         }
     }

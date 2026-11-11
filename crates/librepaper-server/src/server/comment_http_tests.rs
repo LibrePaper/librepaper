@@ -688,7 +688,10 @@ async fn only_the_author_edits_a_comment_or_a_reply() {
     assert_eq!(edited_reply["body"], "better reply");
 
     // A later page shows both, with the stamp, and the reply is the viewer's.
-    let (page, _) = room.comment_page(None, 50, &author, false, false).await.unwrap();
+    let (page, _) = room
+        .comment_page(None, 50, &author, false, false)
+        .await
+        .unwrap();
     let found = page
         .iter()
         .find(|c| c.comment.id == comment_id)
@@ -752,7 +755,10 @@ async fn only_the_author_edits_a_comment_or_a_reply() {
     )
     .await;
     assert!(!ok, "{refused}");
-    let (page, _) = room.comment_page(None, 50, &author, false, false).await.unwrap();
+    let (page, _) = room
+        .comment_page(None, 50, &author, false, false)
+        .await
+        .unwrap();
     let found = page.iter().find(|c| c.comment.id == comment_id).unwrap();
     assert_eq!(found.comment.body, "better words");
     // The fixture holds the writer lease on a pooled connection, and
