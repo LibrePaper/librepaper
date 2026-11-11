@@ -2927,5 +2927,6 @@
   "rundirectoryrow_caption": "在这台电脑上",
   "rundirectoryrow_open": "打开文件夹",
   "rundirectoryrow_choose_with_run_code": "脚本和数据保存在你的电脑上，位于你用“运行代码”选择的运行文件夹中。",
-  "rundirectoryrow_needs_desktop": "脚本和数据保存在你的电脑上。桌面应用负责运行它们。"
+  "rundirectoryrow_needs_desktop": "脚本和数据保存在你的电脑上。桌面应用负责运行它们。",
+  "preview_render_run_directory_project_only": "{path} 在 LibrePaper 中，但代码从你的运行文件夹读取文件。请将它复制到运行文件夹。"
 }

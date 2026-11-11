@@ -4,11 +4,30 @@ import { m } from "../paraglide/messages.js";
 
 // The wording R, Python, Julia and the shell use when a file is not where the
 // code looked for it.
-const MISSING_FILE = /cannot open file|No such file or directory|Cannot find the file|FileNotFoundError/i;
+const MISSING_FILE = /cannot open file|No such file or directory|Cannot find the file|FileNotFoundError|does not exist in current working directory/i;
 
 /** Whether a Quarto log says some file could not be found. @param {string} [log] */
 export function logMissesAFile(log) {
   return MISSING_FILE.test(String(log || ""));
+}
+
+/** The project files a log says could not be found: the quoted names on
+ * its missing-file lines that are paths in the project. Code runs in the
+ * Run directory, so a file that is only in LibrePaper is not there.
+ * @param {string} [log] @param {Iterable<string>} [projectPaths]
+ * @returns {string[]} */
+export function missingProjectFiles(log, projectPaths) {
+  const known = new Set(projectPaths || []);
+  const found = [];
+  if (!known.size) return found;
+  for (const line of String(log || "").split(/\r?\n/)) {
+    if (!MISSING_FILE.test(line)) continue;
+    for (const match of line.matchAll(/'([^']+)'|"([^"]+)"/g)) {
+      const path = (match[1] ?? match[2]).replace(/\\/g, "/").replace(/^\.\//, "");
+      if (known.has(path) && !found.includes(path)) found.push(path);
+    }
+  }
+  return found;
 }
 
 /** The warnings a job's notices become.
@@ -27,11 +46,15 @@ export function noticeDiagnostics(notices) {
 
 /** Every Run directory diagnostic for one local render.
  * @param {{ format: string, ok?: boolean, log?: string, notices?: { kind?: string, path?: string }[] }} result
- * @param {string | null} [runDirectoryPath] The Run directory, when it is known. */
-export function runDirectoryDiagnostics(result, runDirectoryPath = null) {
+ * @param {string | null} [runDirectoryPath] The Run directory, when it is known.
+ * @param {string[]} [projectPaths] The paths of the project's files. */
+export function runDirectoryDiagnostics(result, runDirectoryPath = null, projectPaths = []) {
   if (result.format !== "quarto") return [];
   const items = noticeDiagnostics(result.notices);
   if (result.ok === false && runDirectoryPath && logMissesAFile(result.log)) {
+    for (const path of missingProjectFiles(result.log, projectPaths)) {
+      items.push({ severity: "warning", message: m.preview_render_run_directory_project_only({ path }), source: "local-app" });
+    }
     items.push({ severity: "warning", message: m.preview_render_run_directory_missing_file({ path: runDirectoryPath }), source: "local-app" });
   }
   return items;

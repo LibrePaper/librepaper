@@ -225,7 +225,7 @@ export async function render(tree, title, { manual = false, format: requestedFor
       synctex: result.synctex,
       diagnostics: [
         ...localDiagnostics(format, result, tree),
-        ...runDirectoryDiagnostics({ format, ok: result.ok, log: result.log, notices: result.notices }, runDirectoryPath),
+        ...runDirectoryDiagnostics({ format, ok: result.ok, log: result.log, notices: result.notices }, runDirectoryPath, [...Object.keys(tree.texts || {}), ...Object.keys(tree.assets || {})]),
       ],
       log: result.log,
       provenance: result.provenance,

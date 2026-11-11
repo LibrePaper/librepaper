@@ -2942,5 +2942,6 @@
   "rundirectoryrow_caption": "En este equipo",
   "rundirectoryrow_open": "Abrir carpeta",
   "rundirectoryrow_choose_with_run_code": "Los scripts y los datos se quedan en su equipo, en la carpeta de ejecución que elija con «Ejecutar código».",
-  "rundirectoryrow_needs_desktop": "Los scripts y los datos se quedan en su equipo. La aplicación de escritorio los ejecuta."
+  "rundirectoryrow_needs_desktop": "Los scripts y los datos se quedan en su equipo. La aplicación de escritorio los ejecuta.",
+  "preview_render_run_directory_project_only": "{path} está en LibrePaper, pero el código lee los archivos de su carpeta de ejecución. Cópielo en su carpeta de ejecución."
 }

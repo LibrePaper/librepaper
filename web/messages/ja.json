@@ -2927,5 +2927,6 @@
   "rundirectoryrow_caption": "このコンピューター",
   "rundirectoryrow_open": "フォルダーを開く",
   "rundirectoryrow_choose_with_run_code": "スクリプトとデータはお使いのコンピューターに残り、「コードを実行」で選んだ実行フォルダーに置かれます。",
-  "rundirectoryrow_needs_desktop": "スクリプトとデータはお使いのコンピューターに残ります。デスクトップアプリがそれらを実行します。"
+  "rundirectoryrow_needs_desktop": "スクリプトとデータはお使いのコンピューターに残ります。デスクトップアプリがそれらを実行します。",
+  "preview_render_run_directory_project_only": "{path}はLibrePaperにありますが、コードは実行フォルダーのファイルを読み込みます。実行フォルダーにコピーしてください。"
 }

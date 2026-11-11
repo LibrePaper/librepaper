@@ -2942,5 +2942,6 @@
   "rundirectoryrow_caption": "Auf diesem Computer",
   "rundirectoryrow_open": "Ordner öffnen",
   "rundirectoryrow_choose_with_run_code": "Skripte und Daten bleiben auf Ihrem Computer, im Ausführungsordner, den Sie mit „Code ausführen“ wählen.",
-  "rundirectoryrow_needs_desktop": "Skripte und Daten bleiben auf Ihrem Computer. Die Desktop-App führt sie aus."
+  "rundirectoryrow_needs_desktop": "Skripte und Daten bleiben auf Ihrem Computer. Die Desktop-App führt sie aus.",
+  "preview_render_run_directory_project_only": "{path} liegt in LibrePaper, aber Code liest Dateien aus Ihrem Ausführungsordner. Kopieren Sie sie in Ihren Ausführungsordner."
 }
