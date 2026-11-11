@@ -70,6 +70,18 @@ const gathering = (assets, missing = []) => async () => ({ held: { assets }, mis
   assert(!files["project/new-folder/"]);
 }
 
+// Retained texts (refused by the extension allow list) join the archive but
+// never replace a real file.
+{
+  const files = await projectFiles({
+    tree: { ...live, retained: { "project/old.py": "print(1)", "project/current.md": "stale" } },
+    folders: [],
+    gather: gathering({ "project/fig.png": Uint8Array.of(7) }),
+  });
+  assert.equal(files["project/old.py"], "print(1)");
+  assert.equal(files["project/current.md"], "live", "a retained text never overwrites a real file");
+}
+
 // A project archive tolerates no hole: a figure the server does not have
 // fails the download rather than producing a zip found to be incomplete later.
 await assert.rejects(

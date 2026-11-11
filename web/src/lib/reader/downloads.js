@@ -64,6 +64,11 @@ export function saveBlob(blob, name) {
 /// rather than producing a zip somebody discovers is incomplete later.
 export async function projectFiles({ tree, folders, gather }) {
   const files = { ...tree.texts };
+  // Texts the extension allow list refuses stay in a download. They are not
+  // in `texts`, so nothing else in the app sees them.
+  for (const [path, body] of Object.entries(tree.retained || {})) {
+    if (!(path in files)) files[path] = body;
+  }
   for (const path of folders) files[`${path}/`] = new Uint8Array();
   if (Object.keys(tree.digests || {}).length) {
     const { held, missing } = await gather(tree.digests);

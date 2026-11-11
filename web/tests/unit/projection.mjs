@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { LoroDoc, LoroText } from "loro-crdt";
 
-import { project, canonicalBytes } from "../../src/lib/projection.js";
+import { project, canonicalBytes, compareUtf8 } from "../../src/lib/projection.js";
 import { sha256Hex } from "../../src/lib/digest.js";
 
 const corpus = JSON.parse(
@@ -80,6 +80,12 @@ for (const testCase of corpus.cases) {
   const actual = normalise(actualOf(projection, digest));
   const expected = normalise(testCase.expect);
   assert.deepEqual(
+    normalise(projection.retained),
+    normalise(testCase.expect.retained || {}),
+    `${testCase.name}: the browser retains different texts from the server`,
+  );
+  delete expected.retained;
+  assert.deepEqual(
     actual,
     expected,
     `${testCase.name}: the browser projects this differently from the server`,
@@ -95,4 +101,41 @@ for (const testCase of corpus.cases) {
       );
     }
   }
+}
+
+// Retained texts: structurally sound, extension refused. Downloads only.
+{
+  const retainRules = { ...rules, text_extensions: [".md"], asset_extensions: [], derived_extensions: [] };
+  const doc = new LoroDoc();
+  const files = doc.getMap("files");
+  const paths = doc.getMap("paths");
+  const add = (id, path, body) => {
+    const text = files.setContainer(id, new LoroText());
+    if (body) text.insert(0, body);
+    paths.set(id, path);
+  };
+  add("a", "main.md", "# hi");
+  add("b", "analysis.py", "print(1)");
+  add("c", "../escape.py", "no");
+  add("d", "MAIN.MD.py", "x");
+  add("e", "Notes.PY", "n");
+  add("f", "notes.py", "m");
+  const withRule = await project(doc, retainRules);
+  assert.deepEqual([...withRule.files.keys()], ["main.md"]);
+  assert.equal(withRule.retained["analysis.py"], "print(1)");
+  assert.ok(!("../escape.py" in withRule.retained), "a structural refusal is not retained");
+  assert.deepEqual(Object.keys(withRule.retained), Object.keys(withRule.retained).slice().sort(compareUtf8));
+  assert.equal(withRule.diagnostics.filter((d) => d.kind === "invalid-path").length, 5);
+
+  // Same digest as a document without the retained texts.
+  const plain = new LoroDoc();
+  const plainText = plain.getMap("files").setContainer("a", new LoroText());
+  plainText.insert(0, "# hi");
+  plain.getMap("paths").set("a", "main.md");
+  const bare = await project(plain, retainRules);
+  assert.equal(
+    await sha256Hex(canonicalBytes(withRule)),
+    await sha256Hex(canonicalBytes(bare)),
+    "retained texts do not move the digest",
+  );
 }

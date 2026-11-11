@@ -63,6 +63,10 @@ export async function loadPage(slug, headers = {}, { after = null, limit = 200, 
 /// tree, and the text of every file in it. The figures are named by digest and
 /// fetched from where figures always come from, so this is texts alone.
 ///
+/// The response may also carry `retained` (path -> text, omitted when empty):
+/// texts the extension allow list refuses, kept only so the version's archive
+/// holds them. They are not in `files` or `texts`.
+///
 /// A file entry on the wire is `librepaper_document_core::projection::Entry`,
 /// whose digest field is spelled `digest`. The rest of this codebase's own
 /// trees -- what `session.tree()` hands the comparison as the live side --
