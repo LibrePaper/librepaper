@@ -104,6 +104,24 @@ impl Diagnostic {
     }
 }
 
+/// A digest of the retained texts, or `None` when there are none. Sorted path,
+/// a NUL, the text length as eight little-endian bytes, then the text, so no
+/// two different maps share an encoding. The projection digest ignores
+/// retained texts; whatever is derived from both must mix this in.
+pub fn retained_digest(retained: &BTreeMap<String, String>) -> Option<Digest> {
+    if retained.is_empty() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    for (path, body) in retained {
+        bytes.extend_from_slice(path.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(&(body.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(body.as_bytes());
+    }
+    Some(Digest::of(&bytes))
+}
+
 /// One file in the projected directory.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
@@ -548,8 +566,14 @@ pub fn project(doc: &LoroDoc, rules: &Rules) -> Projected {
     kept_aside.sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
     let mut retained = BTreeMap::new();
     for (_, path, body) in kept_aside {
-        if !taken.contains_key(&paths::collision_key(&path)) {
-            retained.entry(path).or_insert(body);
+        // A taken spelling (a placed file or an earlier retained text) moves
+        // the text to `name (2).ext`, `name (3).ext`, ... up to 100.
+        let chosen = std::iter::once(path.clone())
+            .chain((2..=100).map(|nth| crate::document::paths::suffixed(&path, nth)))
+            .find(|candidate| !taken.contains_key(&paths::collision_key(candidate)));
+        if let Some(chosen) = chosen {
+            taken.insert(paths::collision_key(&chosen), chosen.clone());
+            retained.insert(chosen, body);
         }
     }
 
@@ -930,6 +954,31 @@ mod tests {
             d,
             Diagnostic::InvalidPath { path, .. } if path == "analysis.R"
         )));
+    }
+
+    #[test]
+    fn retained_texts_with_a_taken_path_get_a_numbered_spelling() {
+        let doc = self::doc();
+        put(&doc, "aaa", "a.R", "first");
+        put(&doc, "bbb", "a.R", "second");
+        put(&doc, "ccc", "Notes.py", "upper");
+        put(&doc, "ddd", "notes.py", "lower");
+        let projected = project(&doc, &rules());
+        assert_eq!(projected.retained["a.R"], "first");
+        assert_eq!(projected.retained["a (2).R"], "second");
+        assert_eq!(projected.retained["Notes.py"], "upper");
+        assert_eq!(projected.retained["notes (2).py"], "lower");
+        assert_eq!(projected.retained.len(), 4);
+    }
+
+    #[test]
+    fn the_retained_digest_follows_the_texts() {
+        let one = BTreeMap::from([("a.R".to_string(), "x".to_string())]);
+        let same = one.clone();
+        let other = BTreeMap::from([("a.R".to_string(), "y".to_string())]);
+        assert_eq!(retained_digest(&BTreeMap::new()), None);
+        assert_eq!(retained_digest(&one), retained_digest(&same));
+        assert_ne!(retained_digest(&one), retained_digest(&other));
     }
 
     #[test]

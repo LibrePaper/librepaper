@@ -774,6 +774,79 @@
           "path": "../x.R"
         }
       ]
+    },
+    {
+      "assets": [],
+      "expect": {
+        "files": [],
+        "diagnostics": [
+          {
+            "kind": "invalid-path",
+            "id": "aaa",
+            "path": "a.R"
+          },
+          {
+            "kind": "invalid-path",
+            "id": "bbb",
+            "path": "a.R"
+          },
+          {
+            "kind": "invalid-path",
+            "id": "ccc",
+            "path": "Notes.py"
+          },
+          {
+            "kind": "invalid-path",
+            "id": "ddd",
+            "path": "notes.py"
+          }
+        ],
+        "digest": "4b1a5d15da93509b096d6c5e11e1e26bf7fd44b6a9ba30c005a0b19b1dfb47bc",
+        "retained": {
+          "Notes.py": "upper",
+          "a (2).R": "second",
+          "a.R": "first",
+          "notes (2).py": "lower"
+        }
+      },
+      "files": [
+        {
+          "id": "aaa",
+          "text": "first"
+        },
+        {
+          "id": "bbb",
+          "text": "second"
+        },
+        {
+          "id": "ccc",
+          "text": "upper"
+        },
+        {
+          "id": "ddd",
+          "text": "lower"
+        }
+      ],
+      "meta": [],
+      "name": "retained texts that collide take a numbered spelling",
+      "paths": [
+        {
+          "id": "aaa",
+          "path": "a.R"
+        },
+        {
+          "id": "bbb",
+          "path": "a.R"
+        },
+        {
+          "id": "ccc",
+          "path": "Notes.py"
+        },
+        {
+          "id": "ddd",
+          "path": "notes.py"
+        }
+      ]
     }
   ],
   "rules": {
