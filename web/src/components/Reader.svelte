@@ -98,6 +98,8 @@
   import DesktopOnly from "./DesktopOnly.svelte";
   import DesktopMismatch from "./DesktopMismatch.svelte";
   import RunDirectoryControl from "./reader/RunDirectoryControl.svelte";
+  import RunDirectoryPrompt from "./reader/RunDirectoryPrompt.svelte";
+  import { createRunDirectory } from "../lib/reader/run-directory-state.svelte.js";
   import { buildPreferenceUser, readLiveCompile, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import Avatar from "./Avatar.svelte";
   import { presenceJumpTarget } from "../lib/presence-jump.js";
@@ -437,6 +439,18 @@
       void paintPreview();
     }
   }
+  // The chip beside Run code and the prompt in the preview share this state.
+  const runDir = createRunDirectory(SLUG, setRunDirectory);
+  // The Run directory is read while a Quarto document's code may run here.
+  $effect(() => {
+    if (localExecution && sourceFormat === "quarto" && runCodeOffered) untrack(() => runDir.load());
+    else untrack(() => runDir.reset());
+  });
+  // A render is waiting for a Run directory: none is set, or the one that was
+  // set no longer exists.
+  const runDirectoryBlocked = $derived(
+    sourceFormat === "quarto" && localExecution && runCodeOffered && runDir.loaded && !runDir.usable,
+  );
 
   async function setLatexOutput(format) {
     const next = format === "html" ? "html" : "pdf";
@@ -3997,7 +4011,7 @@
       <span class="bar-toggle-label">{m.readerd_run_code()}</span>
     </label>
     {#if localExecution && sourceFormat === "quarto"}
-      <RunDirectoryControl project={SLUG} onchange={setRunDirectory} />
+      <RunDirectoryControl state={runDir} />
     {/if}
   {/if}
 {/snippet}
@@ -4019,7 +4033,7 @@
 <!-- The phone has no tools in its header, so the Run directory is asked for
      here while Run code is on. -->
 {#if compact && runCodeOffered && localExecution && sourceFormat === "quarto"}
-  <div class="run-directory-strip"><RunDirectoryControl align="start" project={SLUG} onchange={setRunDirectory} /></div>
+  <div class="run-directory-strip"><RunDirectoryControl align="start" state={runDir} /></div>
 {/if}
 
 <Nav {me} phoneMenu phoneShell={compact} phoneBare={tabsShown} hidden={barHidden && !compact}>
@@ -4498,6 +4512,9 @@
   {#snippet waitingCover()}
     <PreviewWaiting stage={waitStage} progress={waitProgress} />
   {/snippet}
+  {#snippet runDirectoryCover()}
+    <RunDirectoryPrompt state={runDir} />
+  {/snippet}
   {#snippet emptyCover()}
     <p class="lp-text-secondary text-sm">{m.readerd_document_empty()}</p>
   {/snippet}
@@ -4516,10 +4533,10 @@
            src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
            controls={previewControls}
            notice={previewChip ? previewNotice : undefined}
-           cover={painted.state.empty ? emptyCover : waitingUp ? waitingCover : undefined}
+           cover={runDirectoryBlocked ? runDirectoryCover : painted.state.empty ? emptyCover : waitingUp ? waitingCover : undefined}
            busy={previewBusy && !waitingUp}
            progress={!waitingUp ? waitProgress : null}
-           away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || noCompiler || failedBeforeRender || Boolean(projection.state.unreadable) || Boolean(previewCard)} />
+           away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || (!runDirectoryBlocked && (noCompiler || failedBeforeRender)) || Boolean(projection.state.unreadable) || Boolean(previewCard)} />
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
        so the split can be seen moving without the iframe reflowing on every

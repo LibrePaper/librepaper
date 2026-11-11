@@ -1,38 +1,18 @@
 <script>
-  import { untrack } from "svelte";
-  import * as desktopClient from "../../lib/desktop/client.js";
+  import { leaf } from "../../lib/reader/run-directory.js";
   import { m } from "../../lib/paraglide/messages.js";
   import Icon from "../Icon.svelte";
 
-  // The folder a Quarto document's code runs in on this computer. It is shown
-  // beside the Run code switch while that is on, and it tells the page whether
-  // a render may start: `onchange(path)` with the folder once one that exists is set, or "" when none is.
-  let { project, onchange = () => {}, align = "end" } = $props();
+  // The folder a Quarto document's code runs in on this computer, shown beside
+  // the Run code switch while that is on. The state is shared with the prompt
+  // in the preview; see run-directory.js.
+  let { state: rd, align = "end" } = $props();
 
-  let status = $state(null);
-  let busy = $state("");
-  let error = $state("");
-  let loaded = $state(false);
-
-  const usable = $derived(Boolean(status?.path) && status.exists !== false);
-
-  function apply(next) {
-    status = next;
-    onchange(next?.path && next.exists !== false ? next.path : "");
-  }
-
-  // The path as shown: the home directory is `~`. The home is what is left of
-  // the suggested folder, which is <home>/LibrePaper/<project>.
-  const home = $derived.by(() => {
-    const found = /^(.*)[\\/]LibrePaper[\\/][^\\/]+[\\/]?$/.exec(status?.suggested || "");
-    return found?.[1] || "";
-  });
-  const shorten = (path) => {
-    if (!home || !path) return path || "";
-    if (path === home) return "~";
-    return path.startsWith(home) && /[\\/]/.test(path[home.length]) ? "~" + path.slice(home.length) : path;
-  };
-  const leaf = (path) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
+  const status = $derived(rd.status);
+  const usable = $derived(rd.usable);
+  const busy = $derived(rd.busy);
+  const error = $derived(rd.error);
+  const shorten = (path) => rd.shorten(path);
 
   let open = $state(false);
   let chip = $state(null);
@@ -61,37 +41,17 @@
     if (open && !chip?.contains(event.target) && !popover?.contains(event.target)) open = false;
   }
 
-  async function act(name, call) {
-    if (busy) return;
-    busy = name;
-    error = "";
-    try {
-      apply(await call(project));
+  async function act(call) {
+    if (await call()) {
       open = false;
       chip?.focus();
-    } catch (cause) {
-      error = cause?.message || "";
-    } finally {
-      busy = "";
     }
   }
-
-  $effect(() => {
-    const slug = project;
-    let current = true;
-    loaded = false;
-    untrack(() => onchange(""));
-    desktopClient.runDirectory(slug).then(
-      (next) => { if (current) { loaded = true; apply(next); } },
-      (cause) => { if (current) { loaded = true; error = cause?.message || ""; } },
-    );
-    return () => { current = false; };
-  });
 </script>
 
 <svelte:window onpointerdown={outside} {onkeydown} />
 
-{#if loaded}
+{#if rd.loaded}
   <div class="run-directory" role="group" aria-label={m.rundirectorycontrol_label()}>
     {#if status}
       <button
@@ -114,8 +74,8 @@
           {#if usable}
             <p class="rd-text">{m.rundirectorycontrol_runs_in({ path: shorten(status.path) })}</p>
             <div class="rd-actions">
-              <button type="button" class="btn btn-sm lp-control-neutral" disabled={Boolean(busy)} onclick={() => act("open", desktopClient.openRunDirectory)}><Icon name="folder-open" size="14" />{m.rundirectorycontrol_open_folder()}</button>
-              <button type="button" class="btn btn-sm lp-control-neutral" disabled={Boolean(busy)} onclick={() => act("choose", desktopClient.chooseRunDirectory)}>
+              <button type="button" class="btn btn-sm lp-control-neutral" disabled={Boolean(busy)} onclick={() => act(rd.open)}><Icon name="folder-open" size="14" />{m.rundirectorycontrol_open_folder()}</button>
+              <button type="button" class="btn btn-sm lp-control-neutral" disabled={Boolean(busy)} onclick={() => act(rd.choose)}>
                 {busy === "choose" ? m.common_choosing() : m.rundirectorycontrol_change()}
               </button>
             </div>
@@ -124,10 +84,10 @@
               {status.path ? m.rundirectorycontrol_missing({ path: shorten(status.path) }) : m.rundirectorycontrol_choose_prompt()}
             </p>
             <div class="rd-actions">
-              <button type="button" class="btn btn-sm lp-control-brand" disabled={Boolean(busy)} title={status.suggested} onclick={() => act("default", desktopClient.useDefaultRunDirectory)}>
+              <button type="button" class="btn btn-sm lp-control-brand" disabled={Boolean(busy)} title={status.suggested} onclick={() => act(rd.useDefault)}>
                 {m.rundirectorycontrol_use_suggested({ suggested: shorten(status.suggested) })}
               </button>
-              <button type="button" class="btn btn-sm lp-control-neutral" disabled={Boolean(busy)} onclick={() => act("choose", desktopClient.chooseRunDirectory)}>
+              <button type="button" class="btn btn-sm lp-control-neutral" disabled={Boolean(busy)} onclick={() => act(rd.choose)}>
                 {busy === "choose" ? m.common_choosing() : m.backupssettings_choose_folder()}
               </button>
             </div>
@@ -152,7 +112,8 @@
   }
   .rd-chip:hover { background: var(--color-subtle); }
   .rd-chip:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 1px; }
-  .rd-chip.rd-none { color: var(--color-brand); border-color: var(--color-brand); }
+  .rd-chip.rd-none { color: var(--color-on-brand); background: var(--color-brand); border-color: var(--color-brand); }
+  .rd-chip.rd-none:hover { background: var(--color-brand-hover); }
   .rd-chip.rd-missing { color: var(--color-warning-text); border-color: var(--color-warning-solid); }
   .rd-icon { display: inline-flex; flex: none; }
   .rd-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

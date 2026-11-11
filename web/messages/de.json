@@ -2932,6 +2932,8 @@
   "rundirectorycontrol_missing": "Ihr Ausführungsordner {path} fehlt.",
   "rundirectorycontrol_choose_chip": "Ordner auswählen",
   "rundirectorycontrol_use_suggested": "{suggested} verwenden",
+  "rundirectorycontrol_prompt_title": "Wählen Sie, wo Ihr Code ausgeführt wird",
+  "rundirectorycontrol_prompt_text": "Quarto führt den Code dieses Dokuments in einem Ordner auf diesem Computer aus. Legen Sie Ihre Daten und Skripte dort ab und verweisen Sie mit relativen Pfaden darauf.",
   "preview_render_run_directory_clash": "{path} liegt in LibrePaper und in Ihrem Ausführungsordner. Markdown verwendet die Kopie aus LibrePaper; Code liest die Datei aus Ihrem Ausführungsordner.",
   "preview_render_run_directory_not_linked": "{path} aus Ihrem Ausführungsordner konnte Quarto nicht bereitgestellt werden.",
   "preview_render_run_directory_missing_file": "Der Code sucht Dateien in Ihrem Ausführungsordner: {path}."

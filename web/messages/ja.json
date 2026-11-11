@@ -2917,6 +2917,8 @@
   "rundirectorycontrol_missing": "実行フォルダー {path} が見つかりません。",
   "rundirectorycontrol_choose_chip": "フォルダーを選択",
   "rundirectorycontrol_use_suggested": "{suggested} を使用",
+  "rundirectorycontrol_prompt_title": "コードを実行する場所を選択",
+  "rundirectorycontrol_prompt_text": "Quarto はこのドキュメントのコードをこのコンピューター上のフォルダーで実行します。データとスクリプトをそこに置き、相対パスで参照してください。",
   "preview_render_run_directory_clash": "{path} は LibrePaper と実行フォルダーの両方にあります。Markdown は LibrePaper のコピーを使い、コードは実行フォルダーのものを読み込みます。",
   "preview_render_run_directory_not_linked": "実行フォルダー内の {path} を Quarto で利用できるようにできませんでした。",
   "preview_render_run_directory_missing_file": "コードは実行フォルダー内のファイルを探しています: {path}。"
