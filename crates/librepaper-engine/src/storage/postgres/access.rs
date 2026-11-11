@@ -42,6 +42,9 @@ pub struct ShareLinkRecord {
     pub kind: String,
     /// For an agent token, the owner's session generation at mint.
     pub owner_generation: String,
+    /// Whether a caller who has not signed in may hold this link, when the
+    /// deployment's switch for its role is on.
+    pub anonymous: bool,
 }
 
 impl PostgresCatalog {
@@ -106,6 +109,7 @@ impl PostgresCatalog {
             Option<i64>,
             String,
             String,
+            bool,
         )],
     ) -> Result<()> {
         let mut tx = self.begin_document_admin(document_id).await?;
@@ -130,6 +134,7 @@ impl PostgresCatalog {
             Option<i64>,
             String,
             String,
+            bool,
         )],
     ) -> Result<()> {
         let found = sqlx::query_scalar!(
@@ -153,7 +158,7 @@ impl PostgresCatalog {
         )
         .execute(&mut **tx)
         .await?;
-        for (role, hash, sealed, label, expires, budget, kind, generation) in links {
+        for (role, hash, sealed, label, expires, budget, kind, generation, anonymous) in links {
             // Scoped to this document, so a token that somehow belongs to
             // another one is not quietly moved: nothing is updated, and the
             // insert below refuses it by the unique constraint.
@@ -165,7 +170,7 @@ impl PostgresCatalog {
             // cost the owner the URL of a link that is working.
             let kept = sqlx::query!(
                 "UPDATE share_links SET role=$3,label=$5,expires_at=$6,comment_budget=$7,
-                        kind=$8,owner_generation=$9,
+                        kind=$8,owner_generation=$9,anonymous=$10,
                         sealed_token=COALESCE(NULLIF($4,''::bytea),sealed_token),
                         revoked_at=NULL
                  WHERE document_id=$1 AND token_hash=$2",
@@ -178,14 +183,15 @@ impl PostgresCatalog {
                 *budget,
                 kind,
                 generation,
+                *anonymous,
             )
             .execute(&mut **tx)
             .await?
             .rows_affected();
             if kept == 0 {
                 sqlx::query!(
-                    "INSERT INTO share_links(id,document_id,role,token_hash,sealed_token,label,expires_at,comment_budget,kind,owner_generation)
-                     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+                    "INSERT INTO share_links(id,document_id,role,token_hash,sealed_token,label,expires_at,comment_budget,kind,owner_generation,anonymous)
+                     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
                     new_id(),
                     document_id,
                     role,
@@ -196,6 +202,7 @@ impl PostgresCatalog {
                     *budget,
                     kind,
                     generation,
+                    *anonymous,
                 )
                 .execute(&mut **tx)
                 .await?;
@@ -363,7 +370,7 @@ impl PostgresCatalog {
             "INSERT INTO share_links(id,document_id,role,token_hash,label,expires_at,comment_budget)
              VALUES($1,$2,$3,$4,$5,$6,$7)
              RETURNING id,document_id,role,token_hash,sealed_token,label,comment_budget,
-                       created_at,expires_at,revoked_at,kind,owner_generation",
+                       created_at,expires_at,revoked_at,kind,owner_generation,anonymous",
             new_id(),
             document_id,
             role,
@@ -390,7 +397,7 @@ impl PostgresCatalog {
         sqlx::query_as!(
             ShareLinkRecord,
             "SELECT id,document_id,role,token_hash,sealed_token,label,comment_budget,
-                    created_at,expires_at,revoked_at,kind,owner_generation
+                    created_at,expires_at,revoked_at,kind,owner_generation,anonymous
              FROM share_links WHERE document_id=ANY($1) AND revoked_at IS NULL
              ORDER BY document_id,created_at,id",
             document_ids,
@@ -404,7 +411,7 @@ impl PostgresCatalog {
         sqlx::query_as!(
             ShareLinkRecord,
             "SELECT id,document_id,role,token_hash,sealed_token,label,comment_budget,
-                    created_at,expires_at,revoked_at,kind,owner_generation
+                    created_at,expires_at,revoked_at,kind,owner_generation,anonymous
              FROM share_links WHERE document_id=$1 AND revoked_at IS NULL ORDER BY created_at,id",
             document_id,
         )

@@ -685,6 +685,7 @@ mod tests {
                     None,
                     "link".into(),
                     String::new(),
+                    false,
                 )],
             )
             .await
@@ -743,6 +744,7 @@ mod tests {
                     None,
                     "link".into(),
                     String::new(),
+                    false,
                 )],
             )
             .await
@@ -2412,6 +2414,7 @@ mod tests {
                 None,
                 "link".into(),
                 String::new(),
+                false,
             )
         };
 

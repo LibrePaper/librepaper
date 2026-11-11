@@ -496,6 +496,7 @@ fn serve_options(
         session_lifetime: resolved.session_lifetime,
         publishers: resolved.publishers,
         commenters: resolved.commenters,
+        anonymous: resolved.anonymous,
         simulate_activity: resolved.simulate_activity,
         app_origin: resolved.app_origin,
         docs_origin: resolved.docs_origin,

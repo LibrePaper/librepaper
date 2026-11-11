@@ -133,6 +133,7 @@ mod capability_tests {
             bearer: false,
             auth_failed: false,
             token: None,
+            anonymous_ok: false,
         };
         let ceiling = librepaper_base::role::Ceiling {
             comment: true,

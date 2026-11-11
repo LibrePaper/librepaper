@@ -36,7 +36,7 @@ use librepaper_base::auth::{
 };
 use librepaper_base::config::Configuration;
 use librepaper_base::ids::{self, LinkKey};
-use librepaper_base::role::{Capabilities, Ceiling, Role};
+use librepaper_base::role::{AnonymousAccess, Capabilities, Ceiling, Role};
 use librepaper_base::shell::{renderers, ShellFile};
 use librepaper_base::util::{clean, token, Encoding};
 use librepaper_document::document::render::{title_from_html, title_from_markdown};
@@ -168,21 +168,23 @@ impl DocumentService {
 
     /// Apply the complete read policy to an already-resolved caller.
     fn may_read(&self, entry: &IndexEntry, who: &Viewer) -> bool {
-        may_read(entry, who)
+        may_read(entry, who, self.anonymous)
     }
 
     pub(super) fn needs_sign_in(&self, entry: &IndexEntry, who: &Viewer) -> bool {
-        needs_sign_in(entry, who)
+        needs_sign_in(entry, who, self.anonymous)
     }
 }
 
-fn may_read(entry: &IndexEntry, who: &Viewer) -> bool {
+fn may_read(entry: &IndexEntry, who: &Viewer, anonymous: AnonymousAccess) -> bool {
     // A browser session is never inherited by a local agent, and a share
-    // link alone is no longer enough to read. Automation still uses the
-    // account bearer for identity while this branch keeps its authority
-    // bounded by the presented link.
+    // link alone is not enough to read: the caller signs in, unless the
+    // owner marked the link anonymous and the deployment's switch for its
+    // role is on. Automation still uses the account bearer for identity
+    // while this branch keeps its authority bounded by the presented link.
     if !who.id.is_signed_in() {
-        return false;
+        return !who.automation
+            && entry.admits_anonymously(&who.link, librepaper_base::util::now_unix(), anonymous);
     }
     if who.automation {
         let now = librepaper_base::util::now_unix();
@@ -194,14 +196,17 @@ fn may_read(entry: &IndexEntry, who: &Viewer) -> bool {
     entry.readable_by(&who.id.id, &who.link, librepaper_base::util::now_unix())
 }
 
-fn needs_sign_in(entry: &IndexEntry, who: &Viewer) -> bool {
+fn needs_sign_in(entry: &IndexEntry, who: &Viewer, anonymous: AnonymousAccess) -> bool {
     if who.auth_failed {
         return false;
     }
+    let now = librepaper_base::util::now_unix();
+    if !who.id.is_signed_in() && !who.automation && entry.admits_anonymously(&who.link, now, anonymous)
+    {
+        return false;
+    }
     (!who.id.is_signed_in() || (who.automation && !who.bearer))
-        && entry
-            .link_role(&who.link, librepaper_base::util::now_unix())
-            .is_some()
+        && entry.link_role(&who.link, now).is_some()
 }
 
 /// Whether a delegated grant applies to this document and this request. The
@@ -274,6 +279,9 @@ pub struct Server {
     pub graphs: Option<Arc<graphs::Graphs>>,
     pub publishers: Policy,
     pub commenters: Policy,
+    /// Which link roles an anonymous caller may hold, per the `[access]`
+    /// switches. Everything is off until `serve` installs the operator's.
+    pub anonymous: librepaper_base::role::AnonymousAccess,
     /// Days of invented history to write for the starter project a new
     /// account is given, or nothing. A demonstration deployment asks for one;
     /// every other deployment keeps the honest history of a document
@@ -501,6 +509,10 @@ pub struct Viewer {
     pub auth_failed: bool,
     /// Set when the request authenticated with an `lpt_` token.
     pub token: Option<AgentToken>,
+    /// A caller who has not signed in, holding a live link the owner marked
+    /// anonymous under a deployment switch that is on. Only this lets an
+    /// unnamed caller act at the role the link carries.
+    pub anonymous_ok: bool,
 }
 
 /// A request's account id, session generation or link digest was not in
@@ -546,7 +558,9 @@ fn parse_credentials(
 
 impl Viewer {
     pub fn at_least(&self, wanted: Role) -> bool {
-        self.id.is_signed_in() && (!self.automation || self.bearer) && self.role.at_least(wanted)
+        (self.id.is_signed_in() || self.anonymous_ok)
+            && (!self.automation || self.bearer)
+            && self.role.at_least(wanted)
     }
 
     /// The role this viewer may act at, which is `role` only when `at_least`
@@ -852,6 +866,7 @@ impl Server {
             graphs: None,
             publishers,
             commenters,
+            anonymous: Default::default(),
             simulate_activity: None,
             pending: PendingCodes::new(),
             chat: chat::Hub::default(),
@@ -1422,6 +1437,8 @@ impl Server {
         let comment_budget = link.and_then(|grant| grant.budget);
         let link = link.map(|grant| grant.hash.clone()).unwrap_or_default();
         let auth_failed = !id.is_signed_in() && self.auth_credential_supplied(headers, arrival);
+        let anonymous_ok =
+            !id.is_signed_in() && !automation && entry.admits_anonymously(&link, now, self.anonymous);
         Viewer {
             id,
             key,
@@ -1432,6 +1449,7 @@ impl Server {
             bearer: header_of(headers, "authorization").is_some(),
             auth_failed,
             token: None,
+            anonymous_ok,
         }
     }
 
@@ -1464,6 +1482,7 @@ impl Server {
                 bearer: true,
                 auth_failed: true,
                 token: None,
+                anonymous_ok: false,
             };
         };
         let ceiling = self.ceiling_for(&id);
@@ -1480,6 +1499,7 @@ impl Server {
             automation: true,
             bearer: true,
             auth_failed: false,
+            anonymous_ok: false,
             id,
         }
     }
@@ -2165,6 +2185,7 @@ mod automation_authority_tests {
             bearer: false,
             auth_failed: false,
             token: None,
+            anonymous_ok: false,
         }
     }
 
@@ -2314,37 +2335,112 @@ mod automation_authority_tests {
         }
     }
 
+    /// `shared_document` with the reader link and a commenter link marked
+    /// anonymous.
+    fn anonymous_document() -> IndexEntry {
+        let mut entry = shared_document();
+        for link in &mut entry.links {
+            link.anonymous = true;
+        }
+        entry.links.push(LinkGrant {
+            hash: "commenter-hash".into(),
+            role: Role::Commenter.as_str().into(),
+            anonymous: true,
+            ..Default::default()
+        });
+        entry
+    }
+
+    fn switches(reads: bool, comments: bool) -> AnonymousAccess {
+        AnonymousAccess {
+            reads,
+            comments,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn a_live_link_needs_a_human_login_and_an_agent_bearer() {
         let entry = shared_document();
+        let off = AnonymousAccess::default();
+        // The links are not marked anonymous, so even every switch on changes
+        // nothing for a caller who has not signed in.
+        let every = AnonymousAccess {
+            reads: true,
+            comments: true,
+            suggests: true,
+            edits: true,
+        };
         let anonymous = viewer("", "", "reader-hash");
-        assert!(needs_sign_in(&entry, &anonymous));
-        assert!(!may_read(&entry, &anonymous));
+        for access in [off, every] {
+            assert!(needs_sign_in(&entry, &anonymous, access));
+            assert!(!may_read(&entry, &anonymous, access));
+        }
         assert!(!anonymous.at_least(Role::Reader));
 
         let mut agent = viewer("github:alice", "alice", "reader-hash");
         agent.automation = true;
         assert!(
-            needs_sign_in(&entry, &agent),
+            needs_sign_in(&entry, &agent, off),
             "a browser identity is not an agent bearer"
         );
-        assert!(!may_read(&entry, &agent));
+        assert!(!may_read(&entry, &agent, off));
         assert!(!agent.at_least(Role::Reader));
         agent.bearer = true;
-        assert!(!needs_sign_in(&entry, &agent));
+        assert!(!needs_sign_in(&entry, &agent, off));
         assert!(
-            may_read(&entry, &agent),
+            may_read(&entry, &agent, off),
             "a signed-in agent remains link-bounded"
         );
         assert!(agent.at_least(Role::Reader));
     }
 
     #[test]
+    fn an_anonymous_link_admits_a_caller_who_has_not_signed_in_while_its_switch_is_on() {
+        let entry = anonymous_document();
+        let anonymous = viewer("", "", "reader-hash");
+        assert!(needs_sign_in(&entry, &anonymous, switches(false, true)));
+        assert!(!may_read(&entry, &anonymous, switches(false, true)));
+        assert!(!needs_sign_in(&entry, &anonymous, switches(true, false)));
+        assert!(may_read(&entry, &anonymous, switches(true, false)));
+
+        // An agent presenting the same link still needs its bearer.
+        let mut agent = viewer("", "", "reader-hash");
+        agent.automation = true;
+        assert!(needs_sign_in(&entry, &agent, switches(true, true)));
+        assert!(!may_read(&entry, &agent, switches(true, true)));
+    }
+
+    #[test]
+    fn an_anonymous_commenter_link_gives_commenter_only_when_comments_are_on() {
+        let entry = anonymous_document();
+        let now = librepaper_base::util::now_unix();
+        let open = Ceiling {
+            comment: true,
+            edit: false,
+        };
+        assert!(entry.admits_anonymously("commenter-hash", now, switches(false, true)));
+        assert_eq!(entry.role_of("", "commenter-hash", open, now), Role::Commenter);
+        // The editor link can never give an anonymous caller more than that.
+        assert_eq!(entry.role_of("", "editor-hash", open, now), Role::Commenter);
+        let closed = Ceiling::default();
+        assert_eq!(entry.role_of("", "commenter-hash", closed, now), Role::Reader);
+
+        let mut anonymous = viewer("", "", "commenter-hash");
+        anonymous.role = Role::Commenter;
+        assert!(!anonymous.at_least(Role::Commenter));
+        anonymous.anonymous_ok = true;
+        assert!(anonymous.at_least(Role::Commenter));
+        assert!(!anonymous.at_least(Role::Suggester));
+    }
+
+    #[test]
     fn an_anonymous_request_without_a_live_link_stays_unlisted() {
-        let entry = shared_document();
+        let entry = anonymous_document();
         let stranger = viewer("", "", "missing-link");
-        assert!(!needs_sign_in(&entry, &stranger));
-        assert!(!may_read(&entry, &stranger));
+        let every = switches(true, true);
+        assert!(!needs_sign_in(&entry, &stranger, every));
+        assert!(!may_read(&entry, &stranger, every));
     }
 
     #[test]

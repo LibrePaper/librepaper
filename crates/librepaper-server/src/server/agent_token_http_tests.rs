@@ -44,6 +44,15 @@ struct Served {
 /// A served deployment whose owner is a GitHub account that both switches
 /// admit, so a token acting for the owner is not clamped by the ceilings.
 async fn serve(slug: &str) -> Option<Served> {
+    serve_with(slug, Default::default()).await
+}
+
+/// The same, with the deployment's `[access]` switches for links held without
+/// signing in.
+async fn serve_with(
+    slug: &str,
+    anonymous: librepaper_base::role::AnonymousAccess,
+) -> Option<Served> {
     let mut deployment = http_deployment(
         DocumentInput {
             slug: slug.into(),
@@ -67,6 +76,7 @@ async fn serve(slug: &str) -> Option<Served> {
         .unwrap()
         .to_owned();
     deployment.server.origins = Origins::configure(READER, Some(DOCS)).unwrap();
+    deployment.server.anonymous = anonymous;
     let Deployment {
         server,
         catalog,
@@ -343,6 +353,115 @@ async fn the_share_route_creates_updates_replaces_and_revokes_by_id() {
     assert_eq!(status, 400, "two actions in one request are refused");
     let (status, _) = served.share(json!({"link": {"role": "reader"}})).await;
     assert_eq!(status, 400, "the old request shape is refused");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_link_is_anonymous_only_where_the_deployment_allows_it() {
+    let Some(served) = serve_with(
+        "anonymous-links",
+        librepaper_base::role::AnonymousAccess {
+            reads: true,
+            ..Default::default()
+        },
+    )
+    .await
+    else {
+        return;
+    };
+    let (status, created) = served
+        .share(json!({"create": {"kind": "link", "role": "reader", "anonymous": true}}))
+        .await;
+    assert_eq!(status, 200, "{created}");
+    assert_eq!(created["anonymous"]["reads"], true);
+    assert_eq!(created["anonymous"]["comments"], false);
+    let id = created["created"]["id"].as_str().unwrap().to_string();
+    let listed = served.sharing().await;
+    let row = listed["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|link| link["id"] == id.as_str())
+        .unwrap();
+    assert_eq!(row["anonymous"], true);
+
+    // A link made without the field is not anonymous.
+    let (_, plain) = served
+        .share(json!({"create": {"kind": "link", "role": "reader"}}))
+        .await;
+    let plain_id = plain["created"]["id"].as_str().unwrap();
+    let plain_row = plain["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|link| link["id"] == plain_id)
+        .unwrap();
+    assert_eq!(plain_row["anonymous"], false);
+
+    // The switch for a role that is off refuses, on create and on update.
+    let (status, refused) = served
+        .share(json!({"create": {"kind": "link", "role": "commenter", "anonymous": true}}))
+        .await;
+    assert_eq!(status, 400, "{refused}");
+    assert_eq!(
+        refused["error"],
+        "this deployment does not allow commenter links without sign-in"
+    );
+    let (status, _) = served
+        .share(json!({"create": {"kind": "link", "role": "commenter"}}))
+        .await;
+    assert_eq!(status, 200);
+    // A token never goes without sign-in.
+    let (status, _) = served
+        .share(json!({"create": {
+            "kind": "token", "role": "read", "name": "bot", "until": "1d", "anonymous": true
+        }}))
+        .await;
+    assert_eq!(status, 400);
+
+    // Updating keeps the flag unless it is named, and can clear it.
+    let (status, renamed) = served
+        .share(json!({"update": {"id": id, "name": "renamed"}}))
+        .await;
+    assert_eq!(status, 200, "{renamed}");
+    let row = renamed["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|link| link["id"] == id.as_str())
+        .unwrap();
+    assert_eq!(row["anonymous"], true);
+    let (status, cleared) = served
+        .share(json!({"update": {"id": id, "anonymous": false}}))
+        .await;
+    assert_eq!(status, 200, "{cleared}");
+    let row = cleared["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|link| link["id"] == id.as_str())
+        .unwrap();
+    assert_eq!(row["anonymous"], false);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn no_link_is_anonymous_when_every_switch_is_off() {
+    let Some(served) = serve("anonymous-links-off").await else {
+        return;
+    };
+    let (status, refused) = served
+        .share(json!({"create": {"kind": "link", "role": "reader", "anonymous": true}}))
+        .await;
+    assert_eq!(status, 400, "{refused}");
+    assert_eq!(
+        refused["error"],
+        "this deployment does not allow reader links without sign-in"
+    );
+    let (status, _) = served
+        .share(json!({"create": {"kind": "link", "role": "reader", "anonymous": false}}))
+        .await;
+    assert_eq!(status, 200);
 }
 
 #[tokio::test]

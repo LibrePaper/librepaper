@@ -51,6 +51,8 @@ pub struct ServeOptions {
     /// by the configuration loader.
     pub publishers: Policy,
     pub commenters: Policy,
+    /// Which link roles may be held without signing in.
+    pub anonymous: librepaper_base::role::AnonymousAccess,
     /// Write each new account's starter project as though it had been
     /// typed over this many days, so the history panel has something in it on a
     /// demonstration deployment. The operations are real; only the clock is
@@ -603,6 +605,7 @@ pub async fn serve(options: ServeOptions) {
     instance.install_writer(writer);
     instance.oidc = options.oidc;
     instance.bound_sessions(options.session_lifetime);
+    instance.anonymous = options.anonymous;
     instance.simulate_activity = options.simulate_activity;
     instance.origins = origins.clone();
     instance.paths = Some(deployment_paths.clone());

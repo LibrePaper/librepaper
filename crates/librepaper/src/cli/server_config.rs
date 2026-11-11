@@ -74,6 +74,8 @@ pub(crate) struct ResolvedConfig {
     session_lifetime_text: Option<String>,
     pub(crate) publishers: Policy,
     pub(crate) commenters: Policy,
+    /// Which link roles may be held without signing in.
+    pub(crate) anonymous: librepaper_base::role::AnonymousAccess,
     pub(crate) simulate_activity: Option<u32>,
     pub(crate) expire_after: Option<String>,
     pub(crate) expire_from: Option<String>,
@@ -121,6 +123,7 @@ impl fmt::Debug for ResolvedConfig {
             .field("session_lifetime", &self.session_lifetime)
             .field("publishers", &self.publishers)
             .field("commenters", &self.commenters)
+            .field("anonymous", &self.anonymous)
             .field("simulate_activity", &self.simulate_activity)
             .field("expire_after", &self.expire_after)
             .field("expire_from", &self.expire_from)
@@ -252,7 +255,10 @@ struct Custom {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Access {
+    anonymous_reads: Option<Input<bool>>,
     anonymous_comments: Option<Input<bool>>,
+    anonymous_suggests: Option<Input<bool>>,
+    anonymous_edits: Option<Input<bool>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -561,7 +567,16 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
             }
         }
     }
-    section(v, "access", &["anonymous_comments"])?;
+    section(
+        v,
+        "access",
+        &[
+            "anonymous_reads",
+            "anonymous_comments",
+            "anonymous_suggests",
+            "anonymous_edits",
+        ],
+    )?;
     section(
         v,
         "limits",
@@ -748,6 +763,21 @@ pub(crate) fn load_with_postgres_env(
         raw.access.anonymous_comments,
         false,
     )?;
+    let anonymous_reads = r.value(
+        "access.anonymous_reads",
+        raw.access.anonymous_reads,
+        false,
+    )?;
+    let anonymous_suggests = r.value(
+        "access.anonymous_suggests",
+        raw.access.anonymous_suggests,
+        false,
+    )?;
+    let anonymous_edits = r.value(
+        "access.anonymous_edits",
+        raw.access.anonymous_edits,
+        false,
+    )?;
     let expire_after = r.optional("retention.expire_after", raw.retention.expire_after)?;
     let erase_inactive_after = r.optional(
         "retention.erase_inactive_after",
@@ -911,6 +941,12 @@ pub(crate) fn load_with_postgres_env(
         commenters: Policy {
             public: anonymous_comments,
             ..lists.commenters
+        },
+        anonymous: librepaper_base::role::AnonymousAccess {
+            reads: anonymous_reads,
+            comments: anonymous_comments,
+            suggests: anonymous_suggests,
+            edits: anonymous_edits,
         },
         simulate_activity,
         expire_after,
@@ -1696,9 +1732,30 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
     value(
         &mut out,
         &c.sources,
+        "access.anonymous_reads",
+        "anonymous_reads",
+        &c.anonymous.reads.to_string(),
+    );
+    value(
+        &mut out,
+        &c.sources,
         "access.anonymous_comments",
         "anonymous_comments",
         &c.commenters.public.to_string(),
+    );
+    value(
+        &mut out,
+        &c.sources,
+        "access.anonymous_suggests",
+        "anonymous_suggests",
+        &c.anonymous.suggests.to_string(),
+    );
+    value(
+        &mut out,
+        &c.sources,
+        "access.anonymous_edits",
+        "anonymous_edits",
+        &c.anonymous.edits.to_string(),
     );
     section(&mut out, "limits");
     value(
@@ -2531,6 +2588,28 @@ client_secret = { file = "missing-oauth-secret" }
         let loaded = load_text("[access]\nanonymous_comments = true\n").unwrap();
         assert!(loaded.commenters.public);
         assert!(!load_text("").unwrap().commenters.public);
+    }
+
+    #[test]
+    fn anonymous_switches_parse_default_false_and_round_trip() {
+        let loaded = load_text("").unwrap();
+        assert_eq!(loaded.anonymous, librepaper_base::role::AnonymousAccess::default());
+        let loaded = load_text(
+            "[access]\nanonymous_reads = true\nanonymous_comments = true\nanonymous_suggests = true\nanonymous_edits = true\n",
+        )
+        .unwrap();
+        assert!(loaded.anonymous.reads && loaded.anonymous.comments);
+        assert!(loaded.anonymous.suggests && loaded.anonymous.edits);
+        let shown = show_resolved(&loaded);
+        for key in [
+            "anonymous_reads = true",
+            "anonymous_comments = true",
+            "anonymous_suggests = true",
+            "anonymous_edits = true",
+        ] {
+            assert!(shown.contains(key), "{shown}");
+        }
+        assert!(load_text("[access]\nanonymous_writes = true\n").is_err());
     }
 
     fn oidc_ids(loaded: &ResolvedConfig) -> Vec<&str> {

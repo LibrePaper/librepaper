@@ -151,9 +151,64 @@ impl Ceiling {
     }
 }
 
+/// Which rungs a link may hand to a caller who has not signed in. Each switch
+/// is the deployment's own; a link marked anonymous is admitted only when the
+/// switch for its role is on, and the role it then holds is still bounded by
+/// the `Ceiling`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AnonymousAccess {
+    pub reads: bool,
+    pub comments: bool,
+    pub suggests: bool,
+    pub edits: bool,
+}
+
+impl AnonymousAccess {
+    /// Whether a link of this role may be held without signing in. An owner
+    /// is never granted by a link.
+    pub fn allows(&self, role: Role) -> bool {
+        match role {
+            Role::Reader => self.reads,
+            Role::Commenter => self.comments,
+            Role::Suggester => self.suggests,
+            Role::Editor => self.edits,
+            Role::Owner => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anonymous_access_maps_each_switch_to_its_role() {
+        let none = AnonymousAccess::default();
+        for role in [
+            Role::Reader,
+            Role::Commenter,
+            Role::Suggester,
+            Role::Editor,
+            Role::Owner,
+        ] {
+            assert!(!none.allows(role));
+        }
+        let all = AnonymousAccess {
+            reads: true,
+            comments: true,
+            suggests: true,
+            edits: true,
+        };
+        assert!(all.allows(Role::Reader) && all.allows(Role::Editor));
+        assert!(!all.allows(Role::Owner));
+        let comments = AnonymousAccess {
+            comments: true,
+            ..none
+        };
+        assert!(comments.allows(Role::Commenter));
+        assert!(!comments.allows(Role::Reader));
+        assert!(!comments.allows(Role::Suggester));
+    }
 
     const LADDER: [Role; 5] = [
         Role::Reader,

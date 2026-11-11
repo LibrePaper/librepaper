@@ -179,6 +179,7 @@ fn viewer(account_id: Uuid, handle: &str, session_generation: &str, role: Role) 
         bearer: false,
         auth_failed: false,
         token: None,
+        anonymous_ok: false,
     }
 }
 

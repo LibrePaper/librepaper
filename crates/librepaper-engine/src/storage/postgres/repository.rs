@@ -353,6 +353,7 @@ impl PostgresCatalog {
             Option<i64>,
             String,
             String,
+            bool,
         )],
         live_hashes: &[Vec<u8>],
     ) -> Result<()> {
