@@ -416,7 +416,7 @@ async fn a_non_quarto_run_needs_no_run_directory_and_removes_old_links() {
     let run_dir = tempfile::tempdir().unwrap();
     std::fs::write(run_dir.path().join("x.csv"), "x").unwrap();
     let manifest_paths = ["main.tex".to_string()].into_iter().collect();
-    workspace::link_run_directory(&root, run_dir.path(), &manifest_paths).unwrap();
+    workspace::link_run_directory(&root, run_dir.path(), &manifest_paths, "main.tex").unwrap();
     assert!(root.join("x.csv").exists());
     let outcome = run_fixture_in(&fixture, None).await;
     assert_eq!(outcome.status.status, JobState::Done);

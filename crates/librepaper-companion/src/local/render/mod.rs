@@ -190,7 +190,7 @@ async fn run_with(
     let mut notices = Vec::new();
     if let (true, Some(run_dir)) = (quarto, run_dir.as_ref()) {
         let manifest_paths = request.manifest.iter().map(|e| e.path.clone()).collect();
-        match workspace::link_run_directory(&root, run_dir, &manifest_paths) {
+        match workspace::link_run_directory(&root, run_dir, &manifest_paths, &request.entrypoint) {
             Ok(found) => notices = found,
             Err(error) => return failed(&request, &error),
         }
