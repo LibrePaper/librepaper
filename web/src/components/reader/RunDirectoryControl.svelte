@@ -5,7 +5,7 @@
 
   // The folder a Quarto document's code runs in on this computer. It is shown
   // beside the Run code switch while that is on, and it tells the page whether
-  // a render may start: `onchange(true)` once a folder that exists is set.
+  // a render may start: `onchange(path)` with the folder once one that exists is set, or "" when none is.
   let { project, onchange = () => {} } = $props();
 
   let status = $state(null);
@@ -17,7 +17,7 @@
 
   function apply(next) {
     status = next;
-    onchange(Boolean(next?.path) && next.exists !== false);
+    onchange(next?.path && next.exists !== false ? next.path : "");
   }
 
   async function act(name, call) {
@@ -37,7 +37,7 @@
     const slug = project;
     let current = true;
     loaded = false;
-    untrack(() => onchange(false));
+    untrack(() => onchange(""));
     desktopClient.runDirectory(slug).then(
       (next) => { if (current) { loaded = true; apply(next); } },
       (cause) => { if (current) { loaded = true; error = cause?.message || ""; } },

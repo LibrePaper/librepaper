@@ -24,7 +24,7 @@ import { m } from "../paraglide/messages.js";
 // arguments now, and the guards are gone with them.
 
 /** @typedef {ReturnType<ReturnType<typeof import("../project-session.js").createProjectSession>["tree"]> & { main?: string, assets?: Record<string, Uint8Array>, urls?: Record<string, string> }} PreviewTree */
-/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, runDirectoryReady?: boolean, latexContinuous?: boolean, projectDigest?: string }} PreviewFacts */
+/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, runDirectoryReady?: boolean, runDirectory?: string, latexContinuous?: boolean, projectDigest?: string }} PreviewFacts */
 /** @typedef {Awaited<ReturnType<typeof import("../renderers.js").render>>} PreviewResult */
 /** @typedef {ReturnType<typeof import("./render-status.svelte.js").createRenderStatus>} PreviewStatus */
 /** @typedef {ReturnType<typeof import("./render-coordinator.js").createRenderCoordinator>} PreviewCoordinator */
@@ -201,7 +201,7 @@ export function createPreviewRenderer({
       // the shortcut below. It is only looked at here; the compile takes it.
       const manualWaiting = manualPending();
       /** @param {string} id */
-      const keyOf = (id) => JSON.stringify([id, format, htmlPreview, markdownPdf, start.buildPreferences, start.localExecution]);
+      const keyOf = (id) => JSON.stringify([id, format, htmlPreview, markdownPdf, start.buildPreferences, start.localExecution, start.runDirectory ?? ""]);
       const held = finished.get(source.main);
       if (held && !manualWaiting) {
         // The identity depends on the texts, their digests and the main path,
