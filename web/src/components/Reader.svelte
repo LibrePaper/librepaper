@@ -99,6 +99,7 @@
   import DesktopMismatch from "./DesktopMismatch.svelte";
   import RunDirectoryControl from "./reader/RunDirectoryControl.svelte";
   import RunDirectoryPrompt from "./reader/RunDirectoryPrompt.svelte";
+  import RunDirectoryRow from "./reader/RunDirectoryRow.svelte";
   import { createRunDirectory } from "../lib/reader/run-directory-state.svelte.js";
   import { buildPreferenceUser, readLiveCompile, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import Avatar from "./Avatar.svelte";
@@ -4156,12 +4157,16 @@
        the menus rather than a heading, so the one heading a screen reader
        looks for first is here instead: said once, seen by nobody. -->
   <h1 class="sr-only">{doc.title || m.readerd_untitled_document()}</h1>
+  <!-- Under the file tree of a Quarto project: where its scripts and data live. -->
+  {#snippet runDirectoryRow()}
+    <RunDirectoryRow directory={runDir} offered={runCodeOffered} />
+  {/snippet}
   <!-- Each panel, wired where its state lives. The column renders whichever
        of these its rail has selected; none of it travels through the column
        as props, so a panel can grow a field without the column hearing of it. -->
   {#snippet filesPanel()}
     <Files bind:this={fileList} {files} {folders} open={openFile} preview={previewPath} locked={lockedPath}
-      {mayEdit} {rules} onopen={(file) => openTheFile(file, { fromList: true })} onadd={addFile}
+      {mayEdit} {rules} footer={sourceFormat === "quarto" && mayEdit ? runDirectoryRow : undefined} onopen={(file) => openTheFile(file, { fromList: true })} onadd={addFile}
       onmkdir={(path) => workspace.addFolder(path)} onrelocate={relocateFiles}
       ondelete={deleteFiles} onduplicate={(entry, path) => workspace.duplicate(entry, path)}
       onfigure={addFigure} ontext={addDroppedText} demo={DEMO}

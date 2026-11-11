@@ -1,7 +1,7 @@
 // The Run directory notices become warnings, and a missing file gets a hint.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { homeOf, leaf, logMissesAFile, noticeDiagnostics, pageVariant, runDirectoryDiagnostics, shorten } from "../../src/lib/reader/run-directory.js";
+import { belongsInRunDirectory, homeOf, leaf, logMissesAFile, noticeDiagnostics, pageVariant, runDirectoryDiagnostics, shorten } from "../../src/lib/reader/run-directory.js";
 
 test("a clash and an unlinked entry become warnings", () => {
   const items = noticeDiagnostics([{ kind: "clash", path: "data/x.csv" }, { kind: "not-linked", path: "big" }, { kind: "later", path: "z" }, { kind: "clash", path: "" }]);
@@ -53,4 +53,9 @@ test("pageVariant picks the version of the page to show", () => {
   assert.equal(pageVariant({ path: "", suggested: "/h/s" }, false), "suggested");
   assert.equal(pageVariant({ path: "", suggested: "" }, false), "none");
   assert.equal(pageVariant(null, false), "none");
+});
+
+test("scripts and data files belong in the Run directory, documents do not", () => {
+  for (const path of ["analysis.R", "code/clean.py", "data/survey.CSV", "model.rds"]) assert.equal(belongsInRunDirectory(path), true, path);
+  for (const path of ["paper.qmd", "refs.bib", "img/plot.png", "README", ".R/notes.md", "", undefined]) assert.equal(belongsInRunDirectory(path), false, String(path));
 });

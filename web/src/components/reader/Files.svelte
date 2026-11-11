@@ -11,6 +11,7 @@
   import { labelOf } from "../../lib/commands.js";
   import { basename, parentPath, inside, nodeKey, fileTree, folderPaths, topEntries, checkPlacement, copyPath, droppedFiles } from "../../lib/file-manager.js";
   import { expandArchives } from "../../lib/project-upload.js";
+  import { belongsInRunDirectory } from "../../lib/reader/run-directory.js";
   import { unzip } from "../../lib/zip.js";
   import { retargetElementAttributes } from "../element-attributes.js";
 
@@ -18,7 +19,9 @@
     onopen, onadd, onmkdir, onrelocate, ondelete, onduplicate, onfigure, ontext, ondownload, ondownloaditem,
     previewable = () => false, onlock = undefined, onunlock = undefined,
     // The demo cannot store files on the server, so uploads are greyed out.
-    demo = false } = $props();
+    demo = false,
+    // What sits under the tree, such as where a Quarto project's scripts live.
+    footer = undefined } = $props();
 
   let selected = $state([]);
   let expanded = $state([]);
@@ -27,6 +30,8 @@
   let draft = $state("");
   let refusal = $state("");
   let uploadWarning = $state("");
+  // Set when a skipped file is a script or data file, which belongs in the Run directory.
+  let localHint = $state(false);
   let chooser = $state(null);
   let uploadTarget = "";
   let busy = $state(false);
@@ -78,7 +83,7 @@
   function entryOf(node) { return node.kind === "folder" ? { kind: "folder", id: node.path, path: node.path } : files.find((file) => file.id === node.fileId && file.kind === node.kind); }
   function selectionFor(node) { return selected.includes(node.id) ? topEntries(chosen) : [entryOf(node)].filter(Boolean); }
   function expand(path) { if (path) expanded = [...new Set([...expanded, `folder:${path}`])]; }
-  function reset() { editing = null; draft = ""; refusal = ""; uploadWarning = ""; }
+  function reset() { editing = null; draft = ""; refusal = ""; uploadWarning = ""; localHint = false; }
   // Naming is an inline dialog, so it follows the rule of the modal dialogs:
   // when it ends, focus goes back to what had it when it began, or to the
   // editor when that has gone, and never to the body.
@@ -180,8 +185,10 @@
     busy = true;
     refusal = "";
     uploadWarning = "";
+    localHint = false;
     const errors = [];
     const skipped = [];
+    const archiveSkipped = [];
     try {
       // A ZIP is the files inside it. Expanding before anything is written
       // means a broken archive refuses the whole import rather than leaving
@@ -189,6 +196,7 @@
       if (items.some((item) => /\.zip$/i.test(item.path))) {
         const opened = await expandArchives(items, rules, unzip);
         items = opened.files;
+        archiveSkipped.push(...opened.skipped);
         incomingFolders = [...incomingFolders, ...opened.folders];
       }
       for (const folder of incomingFolders) {
@@ -225,6 +233,7 @@
       if (skipped.length) {
         uploadWarning = m.files_skipped({ count: skipped.length, names: skipped.join(", "), extensions: allowedExtensions.join(", ") || m.common_none_inline() });
       }
+      localHint = [...skipped, ...archiveSkipped].some(belongsInRunDirectory);
     }
   }
   export function offer(chosenFiles) {
@@ -308,6 +317,7 @@
     {/if}
     {#if busy}<p role="status">{m.files_uploading()}</p>{/if}
     {#if uploadWarning}<p class="upload-warning" role="status">{uploadWarning}</p>{/if}
+    {#if localHint}<p class="upload-warning" role="status">{m.common_scripts_stay_local()}</p>{/if}
     {#if refusal && !dialog}<p class="refusal" role="alert">{refusal}</p>{/if}
     {#if editing && editing.type !== "rename"}
       <div class="space-y-1">
@@ -338,6 +348,7 @@
     </TreeView.Tree>
   </TreeView>
   </div>
+  {#if footer}<div class="explorer-footer">{@render footer()}</div>{/if}
 </div>
 
 <!-- A row is the same shape whether it opens or not, but a folder's chevron
@@ -475,6 +486,7 @@
      sections, and it reads here as a hole above the first file. */
   .filelist > :global(.panel-actions) { margin-bottom: calc(var(--spacing) * 1.5); }
   .explorer-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  .explorer-footer { flex: none; padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3); border-top: 1px solid var(--color-border); }
   /* Pushed to the far end by the name, which takes the free width. */
   .explorer-preview { display: flex; flex: none; align-items: center; justify-content: center; width: calc(var(--spacing) * 7); height: calc(var(--spacing) * 7); margin-inline-end: calc(var(--spacing) * -1.5); padding: 0; border: 0; border-radius: var(--radius-base); background: none; color: var(--color-text-secondary); }
   button.explorer-preview { color: var(--color-text-muted); opacity: 0.45; cursor: pointer; }

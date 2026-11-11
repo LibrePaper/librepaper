@@ -68,3 +68,14 @@ export function pageVariant(status, usable) {
   if (status?.path) return "missing";
   return status?.suggested ? "suggested" : "none";
 }
+
+// What a Run directory holds and a project does not: scripts and data files.
+const LOCAL_ONLY = new Set([".r", ".py", ".jl", ".ipynb", ".csv", ".tsv", ".rds", ".rda", ".rdata", ".parquet", ".feather", ".xlsx", ".xls", ".dta", ".sav"]);
+
+/** Whether a path names a script or data file, which belongs in the Run directory.
+ * @param {string} [path] */
+export function belongsInRunDirectory(path) {
+  const name = String(path || "");
+  const dot = name.lastIndexOf(".");
+  return dot > name.lastIndexOf("/") && LOCAL_ONLY.has(name.slice(dot).toLowerCase());
+}
