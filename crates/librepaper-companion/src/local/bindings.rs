@@ -29,6 +29,7 @@ pub struct ProjectBinding {
     pub origin: String,
     pub project: String,
     pub root: PathBuf,
+    pub run_dir: Option<PathBuf>,
 }
 
 /// The one binding id a job may name: a document the serving deployment
@@ -67,6 +68,7 @@ impl BindingStore {
             origin,
             project: project.to_string(),
             root,
+            run_dir: None,
         })
     }
 

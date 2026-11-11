@@ -111,11 +111,24 @@ pub async fn run(
     cancel: Shutdown,
     progress: mpsc::UnboundedSender<JobStatus>,
 ) -> JobOutcome {
+    run_with(request, staged, bindings, cancel, progress, None).await
+}
+
+/// `run`, with the Run directory optionally given instead of read from the
+/// binding. Only tests pass one.
+async fn run_with(
+    request: JobRequest,
+    staged: PathBuf,
+    bindings: &BindingStore,
+    cancel: Shutdown,
+    progress: mpsc::UnboundedSender<JobStatus>,
+    run_dir_override: Option<PathBuf>,
+) -> JobOutcome {
     let key = match Key::parse_parts(&request.format, &request.output) {
         Ok(key) => key,
         Err(error) => return failed(&request, &error),
     };
-    let expanded = match records::get(key).record.expand(&request.entrypoint) {
+    let mut expanded = match records::get(key).record.expand(&request.entrypoint) {
         Ok(expanded) => expanded,
         Err(error) => return failed(&request, &error),
     };
@@ -157,9 +170,29 @@ pub async fn run(
             )
         }
     };
+    let quarto = key.format == Format::Quarto;
+    let run_dir = run_dir_override.or_else(|| binding.run_dir.clone());
+    if quarto && run_dir.is_none() {
+        return failed(&request, "Choose a Run directory before running Quarto code.");
+    }
+    // Links from an earlier render go first, so no project file is written
+    // under one.
+    if let Err(error) = workspace::unlink_run_directory(&root) {
+        return failed(&request, &error);
+    }
     // The editor is the source of truth for the files the manifest names.
     if let Err(error) = workspace::sync_hosted_workspace(&staged, &root, &request.manifest) {
         return failed(&request, &error);
+    }
+    let mut notices = Vec::new();
+    if let (true, Some(run_dir)) = (quarto, run_dir.as_ref()) {
+        let manifest_paths = request.manifest.iter().map(|e| e.path.clone()).collect();
+        match workspace::link_run_directory(&root, run_dir, &manifest_paths) {
+            Ok(found) => notices = found,
+            Err(error) => return failed(&request, &error),
+        }
+        expanded.command.push("--execute-dir".into());
+        expanded.command.push(run_dir.to_string_lossy().into_owned());
     }
     // The check that the entry file exists comes after the uploads are in place.
     if let Err(error) = BindingStore::require_entrypoint_file(&root, &request.entrypoint) {
@@ -209,6 +242,7 @@ pub async fn run(
         generation: request.generation,
         log_tail: String::from_utf8_lossy(&output).into_owned(),
         provenance: provenance(&request),
+        notices,
         ..Default::default()
     };
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();

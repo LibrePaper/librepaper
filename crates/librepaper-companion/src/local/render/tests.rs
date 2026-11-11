@@ -331,6 +331,97 @@ fn a_result_that_resolves_outside_the_workspace_is_refused() {
     }
 }
 
+async fn run_fixture_in(fixture: &Fixture, run_dir: Option<PathBuf>) -> JobOutcome {
+    let (progress, _updates) = mpsc::unbounded_channel();
+    run_with(
+        fixture.request.clone(),
+        fixture.staged.path().to_path_buf(),
+        &fixture.bindings,
+        Shutdown::new(),
+        progress,
+        run_dir,
+    )
+    .await
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn quarto_without_a_run_directory_is_refused_before_anything_runs() {
+    let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let fixture = fixture("quarto", "html", "paper.qmd");
+    script(
+        "quarto.html",
+        "touch ran; echo '<html></html>' > paper.html",
+        "{stem}.html",
+    );
+    let outcome = run_fixture_in(&fixture, None).await;
+    assert_eq!(outcome.status.status, JobState::Failed);
+    assert_eq!(
+        outcome.status.error.as_deref(),
+        Some("Choose a Run directory before running Quarto code.")
+    );
+    let root = fixture
+        .bindings
+        .get_scoped("hosted", ORIGIN, "paper")
+        .unwrap()
+        .root;
+    assert!(!root.join("ran").exists());
+    assert!(!root.join("paper.qmd").exists());
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn quarto_gets_execute_dir_and_the_run_directory_linked_in() {
+    let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let fixture = fixture("quarto", "html", "paper.qmd");
+    let run_dir = tempfile::tempdir().unwrap();
+    let run_path = std::fs::canonicalize(run_dir.path()).unwrap();
+    std::fs::write(run_path.join("data.csv"), "1,2").unwrap();
+    // The script prints its own arguments (after `sh -c body sh`), so the
+    // appended flag shows up in the result.
+    script(
+        "quarto.html",
+        "echo \"$@\" > paper.html; cat data.csv >> paper.html",
+        "{stem}.html",
+    );
+    let outcome = run_fixture_in(&fixture, Some(run_path.clone())).await;
+    assert_eq!(
+        outcome.status.status,
+        JobState::Done,
+        "{:?}",
+        outcome.status.error
+    );
+    let html = String::from_utf8_lossy(&outcome.files["artifact"]).into_owned();
+    assert!(
+        html.contains(&format!("--execute-dir {}", run_path.display())),
+        "{html}"
+    );
+    assert!(html.contains("1,2"), "{html}");
+    assert!(outcome.status.notices.is_empty());
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn a_non_quarto_run_needs_no_run_directory_and_removes_old_links() {
+    let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let fixture = fixture("latex", "pdf", "main.tex");
+    script("latex.pdf", "echo ok > main.pdf", "{stem}.pdf");
+    let root = fixture
+        .bindings
+        .get_scoped("hosted", ORIGIN, "paper")
+        .unwrap()
+        .root;
+    let run_dir = tempfile::tempdir().unwrap();
+    std::fs::write(run_dir.path().join("x.csv"), "x").unwrap();
+    let manifest_paths = ["main.tex".to_string()].into_iter().collect();
+    workspace::link_run_directory(&root, run_dir.path(), &manifest_paths).unwrap();
+    assert!(root.join("x.csv").exists());
+    let outcome = run_fixture_in(&fixture, None).await;
+    assert_eq!(outcome.status.status, JobState::Done);
+    assert!(std::fs::symlink_metadata(root.join("x.csv")).is_err());
+    assert!(run_dir.path().join("x.csv").exists());
+}
+
 /// The default commands against the real tools. Run with `--ignored` on a
 /// machine that has them (`tools/test/suite external`).
 async fn render_with_the_default_command(

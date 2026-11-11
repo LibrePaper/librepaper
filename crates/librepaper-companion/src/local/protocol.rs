@@ -235,6 +235,19 @@ pub struct JobStatus {
     pub outputs: BTreeMap<String, OutputEntry>,
     #[serde(default)]
     pub provenance: Provenance,
+    /// Things the user should know about the Run directory overlay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<Notice>,
+}
+
+/// One thing worth telling the user about a render. `kind` is `clash` (the
+/// path is both a project file and in the Run directory; the project's copy
+/// is used) or `not-linked` (a Run directory entry could not be made
+/// available). `path` is workspace-relative with forward slashes.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Notice {
+    pub kind: String,
+    pub path: String,
 }
 
 /// What the pipeline hands back to the service for one job: the status
