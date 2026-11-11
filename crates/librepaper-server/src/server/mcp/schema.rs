@@ -41,9 +41,10 @@ const EDITOR_TOOLS: [&str; 4] = [
 ];
 
 /// The Editor-only tools a Suggester may also call. The server publishes a
-/// suggester's proposal only as tracked changes, and refuses direct apply,
-/// file writes and withdrawal below Editor.
-const SUGGESTER_TOOLS: [&str; 1] = ["document_propose"];
+/// suggester's proposal only as tracked changes, refuses direct apply and file
+/// writes below Editor, and lets a suggester withdraw only its own tracked
+/// changes.
+const SUGGESTER_TOOLS: [&str; 2] = ["document_propose", "document_withdraw"];
 
 /// The tools a Reader may call: read the source and fetch a result. Every
 /// other tool needs Commenter or better.
@@ -446,10 +447,12 @@ mod tests {
             [
                 "document_read",
                 "document_propose",
+                "document_withdraw",
                 "document_comment",
                 "document_result"
             ]
         );
+        assert!(!names.contains(&"document_apply"));
         let propose = suggester_tools
             .iter()
             .find(|t| t["name"] == "document_propose")
@@ -475,6 +478,7 @@ mod tests {
             [
                 "document_read",
                 "document_propose",
+                "document_withdraw",
                 "document_comment",
                 "document_result"
             ]

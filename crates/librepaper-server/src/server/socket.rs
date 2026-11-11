@@ -422,6 +422,7 @@ impl Server {
                     None,
                     librepaper_room::room::comments::COMMENT_PAGE_DEFAULT,
                     &author,
+                    may_write,
                     may_moderate,
                 )
                 .await
@@ -1114,7 +1115,7 @@ impl Server {
                     // who sends one is refused rather than given it anchored.
                     if access::source_comment_forbidden(&who, &incoming) {
                         let _ = send_outgoing(&tx, Outgoing::Text(
-                            refused_frame(Kind::Forbidden, "only editors can comment on the source", &incoming),
+                            refused_frame(Kind::Forbidden, "only suggesters and editors can comment on the source", &incoming),
                         )).await;
                         continue 'reader;
                     }
@@ -1132,7 +1133,7 @@ impl Server {
                     // while preserving the sender's optimistic-row echo.
                     let event = room.prepare_comment_event(&result).await;
                     room.broadcast_prepared(Some(socket_id), &event).await;
-                    let targeted = event.view_for(&author, may_moderate);
+                    let targeted = event.view_for(&author, may_write, may_moderate);
                     if send_outgoing(&tx, Outgoing::Text(targeted.to_string())).await.is_err() {
                         break 'reader;
                     }
