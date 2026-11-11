@@ -271,37 +271,37 @@
   {
     "from": 1806,
     "kind": "text",
-    "to": 2154
+    "to": 2123
   },
   {
     "body": {
-      "from": 2157,
-      "to": 2167
+      "from": 2126,
+      "to": 2136
     },
     "children": [
       {
-        "from": 2157,
+        "from": 2126,
         "kind": "text",
-        "to": 2167
+        "to": 2136
       }
     ],
-    "from": 2154,
+    "from": 2123,
     "kind": "heading",
     "level": 2,
-    "to": 2167
+    "to": 2136
   },
   {
-    "from": 2167,
+    "from": 2136,
     "kind": "text",
-    "to": 2169
+    "to": 2138
   },
   {
     "body": {
-      "from": 2181,
-      "to": 2181
+      "from": 2150,
+      "to": 2150
     },
     "children": [],
-    "from": 2169,
+    "from": 2138,
     "kind": "container",
     "meta": {
       "attrs": "#refs",
@@ -309,11 +309,11 @@
       "id": "refs"
     },
     "name": "div",
-    "to": 2184
+    "to": 2153
   },
   {
-    "from": 2184,
+    "from": 2153,
     "kind": "text",
-    "to": 2185
+    "to": 2154
   }
 ]
