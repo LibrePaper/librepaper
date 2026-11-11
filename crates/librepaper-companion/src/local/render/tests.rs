@@ -488,7 +488,8 @@ fn listing(dir: &Path) -> Vec<String> {
 #[ignore = "requires installed Quarto, R, knitr and rmarkdown"]
 #[allow(clippy::await_holding_lock)]
 async fn real_quarto_runs_code_in_the_run_directory() {
-    let packages = r#"quit(status = !all(sapply(c("knitr","rmarkdown"), requireNamespace, quietly = TRUE)))"#;
+    let packages =
+        r#"quit(status = !all(sapply(c("knitr","rmarkdown"), requireNamespace, quietly = TRUE)))"#;
     if !tool_works("quarto", &["--version"])
         || !tool_works("Rscript", &["--version"])
         || !tool_works("Rscript", &["-e", packages])

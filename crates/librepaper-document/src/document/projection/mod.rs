@@ -454,9 +454,10 @@ pub fn project(doc: &LoroDoc, rules: &Rules) -> Projected {
             }
             Err(why) => {
                 if !candidate.asset {
-                    if let (Ok(shaped), Some(body)) =
-                        (paths::admit_shape(rules, &candidate.requested), &candidate.text)
-                    {
+                    if let (Ok(shaped), Some(body)) = (
+                        paths::admit_shape(rules, &candidate.requested),
+                        &candidate.text,
+                    ) {
                         kept_aside.push((candidate.key.clone(), shaped, body.clone()));
                     }
                 }
