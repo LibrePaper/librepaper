@@ -969,9 +969,7 @@
   function belowTheBar() {
     const declared = getComputedStyle(document.documentElement).getPropertyValue("--librepaper-bar").trim();
     const height = declared.endsWith("px") ? Number.parseFloat(declared) : (Number.parseFloat(declared) || 3.5) * unit;
-    // The formatting row, when it is showing, sits under the top bar too.
-    const format = /** @type {HTMLElement | null} */ (document.querySelector(".format-bar"))?.offsetHeight ?? 0;
-    return Math.round(height) + format + 9;
+    return Math.round(height) + 9;
   }
 
   // How wide the bar is is only knowable once it is drawn, so the placing
@@ -3299,10 +3297,12 @@
   // The visual layer draws only the formats in VISUAL_FORMATS, so the toggle is offered for those alone.
   // The visual layer reads Quarto as Markdown.
   const visualAvailable = $derived(VISUAL_FORMATS.has(editorFormat === "quarto" ? "markdown" : editorFormat));
-  // The formatting row under the top bar: only while the source is open and editable in visual mode.
+  // The formatting row over the source: only while the source is open and editable in visual mode.
   const formatBarShown = $derived(visual && sourceOpen && mayEdit && visualAvailable);
-  // At compact the bar is drawn only while the keyboard is open, so its height is taken off the workspace only then.
+  // At compact the bar is drawn only while the keyboard is open.
   const formatBarVisible = $derived(formatBarShown && (!compact || keyboardOpen));
+  // The row stands at the top of the source pane, above the editor it formats: not over a comparison or a figure.
+  const formatBarInPane = $derived(formatBarVisible && !comparing && !shownFigure && Boolean(Editor) && sourceBound);
   // Why the pane shows what it shows, when it is not simply the open file.
   const previewChip = $derived(Boolean(previewPath) && (previewReason === "locked" || (previewReason === "inside" && toolbarPath)));
   // What the card says when the open file has nothing the preview could draw.
@@ -4092,10 +4092,6 @@
   <div class="sr-only" role="status" aria-live="polite">{mobileTitle}</div>
 {/if}
 
-{#if formatBarVisible}
-  <FormatToolbar active={formatActive} hidden={barHidden && !compact} {modalEditor} available={can} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} oncommand={(id) => void runCommand(id)} />
-{/if}
-
 {#if compact && tabsShown}
   <!-- No header on a tab screen: this keeps the top safe area painted. -->
   <div class="phone-safe-top" aria-hidden="true"></div>
@@ -4117,7 +4113,7 @@
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact} class:phone-tabs={tabsShown} class:bar-hidden={barHidden && !compact}
-      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - var(--librepaper-format-used, 0px) - {demoBannerHeight + shareIntroOffset}px - var(--librepaper-phone-chrome, 0px));{compact ? ` --librepaper-phone-chrome: calc(${phoneChrome});` : ''} --librepaper-format-used: {formatBarVisible ? 'var(--librepaper-format-bar)' : '0px'}; --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
+      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - {demoBannerHeight + shareIntroOffset}px - var(--librepaper-phone-chrome, 0px));{compact ? ` --librepaper-phone-chrome: calc(${phoneChrome});` : ''} --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- What this page is. The title is in the bar, where it is a span beside
        the menus rather than a heading, so the one heading a screen reader
        looks for first is here instead: said once, seen by nobody. -->
@@ -4292,7 +4288,7 @@
 
   {#if sourceOpen}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <section id="reader-source" class="editorpane" class:away={!shown.source} class:comparing={comparing !== ""}
+    <section id="reader-source" class="editorpane" class:away={!shown.source} class:comparing={comparing !== ""} class:with-format-bar={formatBarInPane}
              role={compact && modeSwitchShown ? "tabpanel" : undefined} aria-labelledby={compact && modeSwitchShown ? "mode-tab-source" : undefined}
              ondragover={(event) => event.preventDefault()} ondrop={dropped}>
       <!-- A figure has no editor. Choosing one shows it: an image as itself,
@@ -4311,6 +4307,10 @@
       {:else if shownFigure}
         {@render figureBody()}
       {:else if Editor && sourceBound}
+        {#if formatBarInPane}
+          <FormatToolbar active={formatActive} {modalEditor} available={can} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} oncommand={(id) => void runCommand(id)}
+                         onmenuselect={() => setTimeout(() => editor?.focus?.(), 60)} />
+        {/if}
         <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
@@ -4685,7 +4685,7 @@
 <style>
   .demo-banner, .share-intro { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--spacing) calc(var(--spacing) * 3); padding: calc(var(--spacing) * 1.5) var(--panel-padding, calc(var(--spacing) * 4)); border-bottom: 1px solid var(--color-pane-edge); background: var(--color-subtle); color: var(--color-text); font-size: var(--text-sm); }
   .demo-banner-actions { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 2); }
-  .editorpane.comparing { grid-template-rows: auto minmax(0, 1fr); }
+  .editorpane.comparing, .editorpane.with-format-bar { grid-template-rows: auto minmax(0, 1fr); }
   .bar-toggle { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1.5); cursor: pointer; font-size: var(--text-sm); white-space: nowrap; }
   .nav-document {
     display: block;

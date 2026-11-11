@@ -76,6 +76,9 @@ export const ICONS = {
   book: [["path", "M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"]],
   "panel-left": [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }], ["path", "M9 3v18"]],
   "panel-right": [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }], ["path", "M15 3v18"]],
+  // Lucide's book-open, for the preview's two-pages-side-by-side toggle, and contrast, for inverting the pages.
+  "book-open": [["path", "M12 7v14"], ["path", "M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"]],
+  contrast: [["circle", { cx: 12, cy: 12, r: 10 }], ["path", "M12 18a6 6 0 0 0 0-12v12z"]],
   "columns-2": [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }], ["path", "M12 3v18"]],
   // Lucide's panel-left-open, for the column at the left of the window. Not
   // panel-left, which is the "source only" arrangement's and would say the
