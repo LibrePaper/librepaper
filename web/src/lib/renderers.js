@@ -24,6 +24,7 @@ import * as latex from "./latex.js";
 import * as latexHtml from "./latex/html.js";
 import * as quarto from "./engines/quarto.js";
 import * as localBridge from "./desktop/client.js";
+import { logMissesAFile, runDirectoryDiagnostics } from "./reader/run-directory.js";
 import { snapshotDigest } from "./projection-digest.js";
 
 import { rendererRequest } from "./renderer-client.js";
@@ -210,13 +211,22 @@ export async function render(tree, title, { manual = false, format: requestedFor
     const abort = new AbortController();
     activeLocalAbort = abort;
     const result = await localBridge.runRender({ job, tree, format, output, entrypoint: tree.main }, { signal: abort.signal });
+    // A Quarto run that could not find a file is told where its code looks.
+    const missesAFile = format === "quarto" && !result.ok && logMissesAFile(result.log);
+    const runDirectoryPath = missesAFile
+      ? await localBridge.runDirectory(project).then((status) => status?.path || null, () => null)
+      : null;
     return {
+      notices: result.notices || [],
       artifact: result.artifact,
       artifactKind: output,
       html: output === "html" && result.artifact ? new TextDecoder().decode(result.artifact) : null,
       pdf: output === "pdf" ? result.artifact : null,
       synctex: result.synctex,
-      diagnostics: localDiagnostics(format, result, tree),
+      diagnostics: [
+        ...localDiagnostics(format, result, tree),
+        ...runDirectoryDiagnostics({ format, ok: result.ok, log: result.log, notices: result.notices }, runDirectoryPath),
+      ],
       log: result.log,
       provenance: result.provenance,
       ok: result.ok,

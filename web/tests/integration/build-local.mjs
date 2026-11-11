@@ -37,6 +37,7 @@ assert.equal(result.ok, true);
 assert.deepEqual([...result.artifact], [...artifact]);
 assert.deepEqual([...result.synctex], [...synctex]);
 assert.equal(result.log, "This is latexmk");
+assert.deepEqual(result.notices, [], "a status without notices gives an empty list");
 assert.deepEqual(result.provenance, { backend: "local", format: "latex", output: "pdf" });
 assert.deepEqual(progress.map((entry) => entry.done), [0, 1]);
 
@@ -76,6 +77,15 @@ assert.equal(failed.artifact, null);
 assert.equal(failed.synctex, null);
 assert.equal(failed.error, "typst failed");
 assert.equal(failed.log, "This is latexmk");
+
+// A job status carries the Run directory notices back with the result.
+client._testing.inject({ fetch: async (url, init = {}) => {
+  if (url.endsWith("/jobs") && init.method === "POST") return response(202, { id: "notice-1" });
+  if (url.endsWith("/jobs/notice-1")) return response(200, { id: "notice-1", status: "done", exit: 0, outputs: {}, notices: [{ kind: "clash", path: "data/x.csv" }, { kind: "not-linked", path: "big" }] });
+  throw new Error(`unexpected notice-job request ${url}`);
+} });
+const noticed = await client.runRender({ job: {}, tree, format: "quarto", output: "html" });
+assert.deepEqual(noticed.notices, [{ kind: "clash", path: "data/x.csv" }, { kind: "not-linked", path: "big" }]);
 
 // A success that returned no result file is not a success.
 client._testing.inject({ fetch: async (url, init = {}) => {

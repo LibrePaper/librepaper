@@ -1,0 +1,32 @@
+// The Run directory notices become warnings, and a missing file gets a hint.
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { logMissesAFile, noticeDiagnostics, runDirectoryDiagnostics } from "../../src/lib/reader/run-directory.js";
+
+test("a clash and an unlinked entry become warnings", () => {
+  const items = noticeDiagnostics([{ kind: "clash", path: "data/x.csv" }, { kind: "not-linked", path: "big" }, { kind: "later", path: "z" }, { kind: "clash", path: "" }]);
+  assert.equal(items.length, 2);
+  assert.ok(items.every((item) => item.severity === "warning" && item.source === "local-app"));
+  assert.match(items[0].message, /data\/x\.csv is in LibrePaper and in your Run directory/);
+  assert.match(items[1].message, /big in your Run directory could not be made available to Quarto/);
+  assert.deepEqual(noticeDiagnostics(undefined), []);
+});
+
+test("the missing-file hint reads R, Python and shell messages", () => {
+  for (const log of ["cannot open file 'data.csv': No such file", "FileNotFoundError: [Errno 2]", "Cannot find the file x", "x: No such file or directory"]) {
+    assert.equal(logMissesAFile(log), true, log);
+  }
+  assert.equal(logMissesAFile("Error: object 'x' not found"), false);
+  assert.equal(logMissesAFile(undefined), false);
+});
+
+test("only a failed Quarto render with a known folder gets the hint", () => {
+  const log = "cannot open file 'data/x.csv'";
+  const hinted = runDirectoryDiagnostics({ format: "quarto", ok: false, log, notices: [] }, "/home/me/study");
+  assert.equal(hinted.length, 1);
+  assert.match(hinted[0].message, /Code looks for files in your Run directory: \/home\/me\/study\./);
+  assert.deepEqual(runDirectoryDiagnostics({ format: "quarto", ok: false, log, notices: [] }, null), []);
+  assert.deepEqual(runDirectoryDiagnostics({ format: "quarto", ok: true, log, notices: [] }, "/p"), []);
+  assert.deepEqual(runDirectoryDiagnostics({ format: "typst", ok: false, log, notices: [{ kind: "clash", path: "a" }] }, "/p"), []);
+  assert.equal(runDirectoryDiagnostics({ format: "quarto", ok: true, notices: [{ kind: "clash", path: "a" }] }).length, 1);
+});

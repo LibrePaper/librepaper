@@ -2923,5 +2923,15 @@
   "zip_too_many_files": "L’archive contient plus de {max} fichiers.",
   "zip_unsupported_compression": "Cette archive utilise une compression non prise en charge pour {name}.",
   "zip_utf8_names": "Les noms de fichiers ZIP doivent utiliser UTF-8. Exportez de nouveau l’archive avec des noms UTF-8.",
-  "zip_zip64_unsupported": "Les archives ZIP64 ne sont pas prises en charge."
+  "zip_zip64_unsupported": "Les archives ZIP64 ne sont pas prises en charge.",
+  "rundirectorycontrol_label": "Dossier d’exécution",
+  "rundirectorycontrol_runs_in": "Exécution dans {path}",
+  "rundirectorycontrol_open_folder": "Ouvrir le dossier",
+  "rundirectorycontrol_change": "Modifier…",
+  "rundirectorycontrol_choose_prompt": "Choisissez le dossier dans lequel votre code s’exécute.",
+  "rundirectorycontrol_missing": "Votre dossier d’exécution {path} est introuvable.",
+  "rundirectorycontrol_use_suggested": "Utiliser {suggested}",
+  "preview_render_run_directory_clash": "{path} se trouve dans LibrePaper et dans votre dossier d’exécution. Markdown utilise la copie de LibrePaper; le code lit celle de votre dossier d’exécution.",
+  "preview_render_run_directory_not_linked": "{path} dans votre dossier d’exécution n’a pas pu être rendu accessible à Quarto.",
+  "preview_render_run_directory_missing_file": "Le code cherche des fichiers dans votre dossier d’exécution : {path}."
 }

@@ -2923,5 +2923,15 @@
   "zip_too_many_files": "O ZIP contém mais de {max} arquivos.",
   "zip_unsupported_compression": "Este ZIP usa compactação não suportada para {name}.",
   "zip_utf8_names": "Os nomes de arquivo em ZIP devem usar UTF-8. Exporte o ZIP novamente com nomes em UTF-8.",
-  "zip_zip64_unsupported": "Arquivos ZIP64 não são suportados."
+  "zip_zip64_unsupported": "Arquivos ZIP64 não são suportados.",
+  "rundirectorycontrol_label": "Pasta de execução",
+  "rundirectorycontrol_runs_in": "Executa em {path}",
+  "rundirectorycontrol_open_folder": "Abrir pasta",
+  "rundirectorycontrol_change": "Alterar…",
+  "rundirectorycontrol_choose_prompt": "Escolha a pasta em que o seu código é executado.",
+  "rundirectorycontrol_missing": "A sua pasta de execução {path} não foi encontrada.",
+  "rundirectorycontrol_use_suggested": "Usar {suggested}",
+  "preview_render_run_directory_clash": "{path} está no LibrePaper e na sua pasta de execução. O Markdown usa a cópia do LibrePaper; o código lê a da sua pasta de execução.",
+  "preview_render_run_directory_not_linked": "Não foi possível disponibilizar {path}, da sua pasta de execução, ao Quarto.",
+  "preview_render_run_directory_missing_file": "O código procura arquivos na sua pasta de execução: {path}."
 }

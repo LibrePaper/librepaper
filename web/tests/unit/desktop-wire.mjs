@@ -16,7 +16,7 @@ const PARAGLIDE = join(SRC, "lib", "paraglide");
 const PROTOCOL_HEADER = "x-librepaper-protocol";
 
 const BASE = "lp-local://localhost/";
-const CURRENT = { base: BASE, version: "3.1.0", protocol: { oldest: 3, current: "3.1.0" } };
+const CURRENT = { base: BASE, version: "3.2.0", protocol: { oldest: 3, current: "3.2.0" } };
 const LEGACY = { base: BASE, version: "3.0.0" };
 const TREE = { main: "chapters/paper.tex", texts: { "chapters/paper.tex": "\\documentclass{article}" } };
 
@@ -164,6 +164,31 @@ test("renderer bodies match their fixtures, with the set fixture as both minimum
   assert.equal(sent.length, 2);
   assert.deepEqual([...missingKeys(sent[0], set), ...extraKeys(sent[0], set)], []);
   assert.deepEqual([...missingKeys(sent[1], reset), ...extraKeys(sent[1], reset)], []);
+});
+
+test("the Run directory calls use their method, path, body and since", async () => {
+  const status = { project: "paper", path: "/home/me/data", exists: true, suggested: "/home/me/LibrePaper/paper" };
+  const sent = [];
+  useDesktop(CURRENT, async (url, init = {}) => {
+    sent.push({ url, method: init.method, body: init.body ? JSON.parse(init.body) : undefined });
+    return response(200, status);
+  });
+  assert.deepEqual(await client.runDirectory("paper"), status);
+  await client.chooseRunDirectory("paper");
+  await client.useDefaultRunDirectory("paper");
+  await client.openRunDirectory("paper");
+  assert.deepEqual(sent.map((entry) => [entry.method, entry.url.slice(BASE.length), entry.body]), [
+    ["GET", "librepaper/local/run-directory?project=paper", undefined],
+    ["POST", "librepaper/local/run-directory/choose", { project: "paper" }],
+    ["POST", "librepaper/local/run-directory/default", { project: "paper" }],
+    ["POST", "librepaper/local/run-directory/open", { project: "paper" }],
+  ]);
+  // An app older than 3.2.0 is refused before anything is sent.
+  const older = { base: BASE, version: "3.1.0", protocol: { oldest: 3, current: "3.1.0" } };
+  let requests = 0;
+  useDesktop(older, async () => { requests += 1; return response(200, status); });
+  await assert.rejects(client.runDirectory("paper"), (error) => error.name === "DesktopFeatureOutdated");
+  assert.equal(requests, 0);
 });
 
 test("a job status the page does not know keeps polling until done", async () => {

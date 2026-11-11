@@ -545,9 +545,38 @@ export async function runRender({ job = {}, tree, format, output, entrypoint = "
     log: log ? new TextDecoder().decode(log) : "",
     exit: status.exit,
     error: status.error,
+    notices: Array.isArray(status.notices) ? status.notices : [],
     provenance: { backend: "local", format, output },
   };
 }
+
+/* -------------------------------------------- Run directory */
+
+// The folder a Quarto document's code runs in, kept by the desktop app for
+// each project on this computer and never uploaded. Each call answers with
+// `{ project, path, exists, suggested }`; `path` is null until one is chosen.
+const RUN_DIRECTORY_SINCE = "3.2.0";
+
+/** @param {string} method @param {string} path @param {string} project */
+async function runDirectoryCall(method, path, project) {
+  const slug = String(project || "");
+  const response = method === "GET"
+    ? await send("GET", `${path}?${new URLSearchParams({ project: slug })}`, { since: RUN_DIRECTORY_SINCE })
+    : await send("POST", path, { jsonBody: { project: slug }, since: RUN_DIRECTORY_SINCE });
+  return response.json();
+}
+
+/** Where this project's code runs on this computer. @param {string} project */
+export const runDirectory = (project) => runDirectoryCall("GET", "run-directory", project);
+
+/** Ask the desktop app to open its native folder chooser. @param {string} project */
+export const chooseRunDirectory = (project) => runDirectoryCall("POST", "run-directory/choose", project);
+
+/** Use the folder the desktop app suggests, creating it. @param {string} project */
+export const useDefaultRunDirectory = (project) => runDirectoryCall("POST", "run-directory/default", project);
+
+/** Show the Run directory in the system file manager. @param {string} project */
+export const openRunDirectory = (project) => runDirectoryCall("POST", "run-directory/open", project);
 
 /** Change the command that renders one output. The desktop app shows the
  * whole command in its own dialog and refuses with 403 when the person

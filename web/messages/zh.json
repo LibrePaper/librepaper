@@ -2908,5 +2908,15 @@
   "zip_too_many_files": "压缩包包含超过 {max} 个文件。",
   "zip_unsupported_compression": "此压缩包对 {name} 使用了不受支持的压缩方式。",
   "zip_utf8_names": "ZIP 文件名必须使用 UTF-8。请使用 UTF-8 文件名重新导出压缩包。",
-  "zip_zip64_unsupported": "不支持 ZIP64 压缩包。"
+  "zip_zip64_unsupported": "不支持 ZIP64 压缩包。",
+  "rundirectorycontrol_label": "运行文件夹",
+  "rundirectorycontrol_runs_in": "在 {path} 中运行",
+  "rundirectorycontrol_open_folder": "打开文件夹",
+  "rundirectorycontrol_change": "更改…",
+  "rundirectorycontrol_choose_prompt": "选择代码运行所在的文件夹。",
+  "rundirectorycontrol_missing": "找不到您的运行文件夹 {path}。",
+  "rundirectorycontrol_use_suggested": "使用 {suggested}",
+  "preview_render_run_directory_clash": "{path} 同时存在于 LibrePaper 和您的运行文件夹中。Markdown 使用 LibrePaper 中的副本；代码读取运行文件夹中的副本。",
+  "preview_render_run_directory_not_linked": "运行文件夹中的 {path} 无法提供给 Quarto。",
+  "preview_render_run_directory_missing_file": "代码会在您的运行文件夹中查找文件：{path}。"
 }

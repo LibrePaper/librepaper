@@ -97,6 +97,7 @@
   import Grip from "./Grip.svelte";
   import DesktopOnly from "./DesktopOnly.svelte";
   import DesktopMismatch from "./DesktopMismatch.svelte";
+  import RunDirectoryControl from "./reader/RunDirectoryControl.svelte";
   import { buildPreferenceUser, readLiveCompile, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import Avatar from "./Avatar.svelte";
   import { presenceJumpTarget } from "../lib/presence-jump.js";
@@ -423,6 +424,14 @@
   // code runs is not a preference and is never stored: it is off each time a
   // document opens.
   let localExecution = $state(false);
+  // A Quarto document needs a folder to run its code in. Nothing renders on
+  // this computer until the control beside Run code says one is set.
+  let runDirectoryReady = $state(false);
+  function setRunDirectoryReady(ready) {
+    if (ready === runDirectoryReady) return;
+    runDirectoryReady = ready;
+    if (ready && localExecution && !readerDisposed) void paintPreview();
+  }
 
   async function setLatexOutput(format) {
     const next = format === "html" ? "html" : "pdf";
@@ -446,6 +455,7 @@
   // because the renderer that draws it changes hands.
   function toggleLocalExecution() {
     localExecution = !localExecution;
+    if (localExecution) runDirectoryReady = false;
     stopRendering();
     void paintPreview();
   }
@@ -2416,6 +2426,7 @@
       typstOutput,
       buildPreferences,
       localExecution,
+      runDirectoryReady: sourceFormat === "quarto" ? runDirectoryReady : true,
       latexContinuous: latexContinuous(),
       projectDigest: mayEdit ? "" : projection.state.project?.project_digest || "",
     }),
@@ -3979,6 +3990,9 @@
       </button>
       <span class="bar-toggle-label">{m.readerd_run_code()}</span>
     </label>
+    {#if localExecution && sourceFormat === "quarto"}
+      <RunDirectoryControl project={SLUG} onchange={setRunDirectoryReady} />
+    {/if}
   {/if}
 {/snippet}
 
@@ -3995,6 +4009,12 @@
 <!-- The top of the page, above the top bar. Renders nothing unless the
      desktop app and this page disagree. -->
 <DesktopMismatch />
+
+<!-- The phone has no tools in its header, so the Run directory is asked for
+     here while Run code is on. -->
+{#if compact && runCodeOffered && localExecution && sourceFormat === "quarto"}
+  <div class="run-directory-strip"><RunDirectoryControl project={SLUG} onchange={setRunDirectoryReady} /></div>
+{/if}
 
 <Nav {me} phoneMenu phoneShell={compact} phoneBare={tabsShown} hidden={barHidden && !compact}>
   {#snippet tools()}
@@ -4716,5 +4736,6 @@
   .color-swatch.selected { border-color:var(--color-text); box-shadow:0 0 0 1px var(--color-brand); }
   .custom-color { display:grid; place-items:center; width:1.5rem; height:1.5rem; }
   .custom-color input { width:1.5rem; height:1.5rem; padding:0; border:0; background:transparent; }
+  .run-directory-strip { padding: 0.25rem 0.75rem; border-bottom: 1px solid var(--color-border); background: var(--color-subtle); }
   .pending-recovery { flex-shrink: 0; max-height: 35%; overflow-y: auto; border-top: 1px solid var(--color-border); background: var(--color-subtle); }
 </style>
