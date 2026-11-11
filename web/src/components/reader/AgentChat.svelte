@@ -74,9 +74,10 @@
   // for tracked changes.
   const roles = [
     { id: "commenter", label: m.common_comment(), help: m.agent_role_comment_help() },
+    { id: "suggester", label: m.common_suggest(), help: m.agent_role_suggest_help() },
     { id: "editor", label: m.common_edit(), help: m.agent_role_edit_help(), warn: true },
   ];
-  const currentRole = $derived.by(() => !caps.verified ? "" : caps.can_edit ? "editor" : caps.can_comment ? "commenter" : caps.can_read ? "reader" : "");
+  const currentRole = $derived.by(() => !caps.verified ? "" : caps.can_edit ? "editor" : caps.can_suggest ? "suggester" : caps.can_comment ? "commenter" : caps.can_read ? "reader" : "");
   // Without sharing rights the panel can only hand out the access the reader
   // already holds, so the other rows are visible but not selectable.
   const roleOffered = (entry) => canShare || currentRole === entry.id;
@@ -156,7 +157,7 @@
     attached: attachment || null, path: contextPath, deferAccess: canStart,
   }) : "");
   // Tracked-change tasks need the agent to hold Edit, whatever the reader holds.
-  const accessGap = $derived(Boolean(chosen) && ["tighten", "rewrite", "proofread", "fix"].includes(chosen.kind) && offeredAccess() !== "editor");
+  const accessGap = $derived(Boolean(chosen) && ["tighten", "rewrite", "proofread", "fix"].includes(chosen.kind) && !["editor", "suggester"].includes(offeredAccess()));
   const canGrantEdit = $derived(roleOffered({ id: "editor" }));
   const agentReady = $derived(runnerReady || canStart);
   const commentTarget = $derived(COMMENT_TASKS.includes(chosenTaskId) && commentContext
@@ -275,7 +276,7 @@
     if (!validDocumentLink()) throw new Error(m.agent_link_wrong_document());
     await checkCapabilities(agentLink, { strict: true });
     if (currentRole !== mode) {
-      const role = mode === "editor" ? m.agent_role_word_edit() : mode === "commenter" ? m.agent_role_word_comment() : m.agent_role_word_read();
+      const role = mode === "editor" ? m.agent_role_word_edit() : mode === "suggester" ? m.agent_role_word_suggest() : mode === "commenter" ? m.agent_role_word_comment() : m.agent_role_word_read();
       throw new Error(m.agent_link_no_grant({ role }));
     }
   }
