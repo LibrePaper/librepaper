@@ -990,17 +990,21 @@ async fn stored_roles(served: &Served) -> Vec<(String, String)> {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn the_share_api_accepts_read_comment_and_edit_and_refuses_suggest() {
+async fn the_share_api_accepts_every_role_and_a_suggest_token_cannot_apply() {
     let Some(served) = serve("token-edit-roles").await else {
         return;
     };
     served.mint_token("edit", "editing").await;
     served.mint_token("read", "reading").await;
     served.mint_token("comment", "commenting").await;
-    let (status, refused) = served
-        .share(json!({"create": {"kind": "token", "role": "suggest", "name": "suggesting", "until": "1d"}}))
-        .await;
-    assert_eq!(status, 400, "{refused}");
+    let (suggest, _) = served.mint_token("suggest", "suggesting").await;
+    let (_, tools) = served.tools(&suggest).await;
+    assert!(tools.contains(&"document_propose".to_string()), "{tools:?}");
+    assert!(
+        tools.contains(&"document_withdraw".to_string()),
+        "{tools:?}"
+    );
+    assert!(!tools.contains(&"document_apply".to_string()), "{tools:?}");
     let listing = served.sharing().await;
     let role_of = |name: &str| {
         listing["tokens"]
@@ -1014,12 +1018,14 @@ async fn the_share_api_accepts_read_comment_and_edit_and_refuses_suggest() {
     assert_eq!(role_of("editing"), "editor");
     assert_eq!(role_of("reading"), "reader");
     assert_eq!(role_of("commenting"), "commenter");
+    assert_eq!(role_of("suggesting"), "suggester");
     assert_eq!(
         stored_roles(&served).await,
         [
             ("commenting".to_string(), "commenter".to_string()),
             ("editing".to_string(), "editor".to_string()),
             ("reading".to_string(), "reader".to_string()),
+            ("suggesting".to_string(), "suggester".to_string()),
         ]
     );
 }
