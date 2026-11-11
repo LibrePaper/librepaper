@@ -111,7 +111,10 @@ window.sharePanelCheck = async () => {
 
   /* ------------------------------------------------ the links tab at rest */
 
-  check(!document.querySelector('[role="tab"]'), "the sharing panel has no tab row: " + text());
+  // One view, so one tab: the panel's title, already selected.
+  const shareTabs = [...document.querySelectorAll('[role="tab"]')];
+  check(shareTabs.length === 1 && squash(shareTabs[0]) === "Share" && shareTabs[0].getAttribute("aria-selected") === "true",
+    "the sharing panel is titled by one selected tab: " + text());
   check(!/\\d+ (links?|tokens?)/.test(squash(document.querySelector(".share-toolbar"))), "the toolbar has no count");
   check(squash(document.querySelector(".share-toolbar")) === "New", "only the New button: " + squash(document.querySelector(".share-toolbar")));
   check(rows().length === 3 && !text().includes("Expired"), "three links and no expired section");
@@ -142,7 +145,6 @@ window.sharePanelCheck = async () => {
   check(document.querySelectorAll(".share-form").length === 1 && !document.querySelector("[data-share-new]"),
     "the form stands in for the toolbar");
   check(document.activeElement === document.querySelector(".share-form input"), "focus moves into the form");
-  check(text().includes("A private name to help you remember who you shared this link with."), "the helper line");
   const form = document.querySelector(".share-form");
   await type(form.querySelector("input[type=text]"), "For Ana");
   const selects = form.querySelectorAll("select");

@@ -31,8 +31,8 @@
     // `{ id, label, dot }`. A dot is the small unread mark, and its value is
     // what it says to a screen reader.
     tabs = [],
-    value,
-    onchange,
+    value = undefined,
+    onchange = undefined,
     listClass = "",
     children = undefined,
     // Trailing controls on the same row. They act on the open tab only.

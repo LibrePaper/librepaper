@@ -6,7 +6,7 @@
   // The form for a new link or token.
   let { kind, draft = $bindable(), busy = false, allowed = () => true, anonymousAllowed = () => false, onsubmit, oncancel } = $props();
   let nameInput;
-  let permission;
+  let permission = $state();
   // A token starts on its permission; a link starts on its name.
   onMount(() => (kind === "token" ? permission : nameInput)?.focus());
   const expiries = $derived(kind === "token" ? EXPIRIES.filter(([value]) => value !== "never") : EXPIRIES);
