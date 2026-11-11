@@ -697,7 +697,8 @@ impl Server {
             }
         };
         let author = self.mcp_author(headers, arrival, who, actor);
-        let editor = who.at_least(Role::Editor);
+        let sees_source = who.at_least(Role::Suggester);
+        let moderates = who.at_least(Role::Editor);
         for query in wanted {
             let fingerprint = librepaper_room::room::agent_query::query_fingerprint(query);
             // Where this query continues, if it is a continuation. The
@@ -721,11 +722,18 @@ impl Server {
             };
             let window = match thread {
                 Some(comment_id) => room
-                    .thread_reply_window(comment_id, &author, editor, after, AGENT_THREAD_WINDOW)
+                    .thread_reply_window(
+                        comment_id,
+                        &author,
+                        sees_source,
+                        moderates,
+                        after,
+                        AGENT_THREAD_WINDOW,
+                    )
                     .await
                     .map_err(operations::failure)?,
                 None => room
-                    .thread_query_page(&author, editor, after, AGENT_THREAD_WINDOW)
+                    .thread_query_page(&author, sees_source, moderates, after, AGENT_THREAD_WINDOW)
                     .await
                     .map_err(operations::failure)?,
             };

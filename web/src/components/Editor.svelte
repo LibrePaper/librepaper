@@ -291,6 +291,8 @@
   let { session, format = "", file = "", keys = "default", editable = true,
     completion = true, brackets = true, latexAssist = true, proofing = "browser", dialect = "american", check = true,
     tracking = false, me = { who: "", author: "" }, selectedChange = null,
+    // A suggester's typing is always tracked: tracking starts on and cannot be stopped.
+    suggestOnly = false,
     visual = false, imageUrl = null,
     analyze = analyzeBibliography,
     onchange, oncaret, onfilechange, onbibliography, onsave, onquit, oncomment, onchangeselect,
@@ -311,7 +313,7 @@
     // open file wherever the project as a whole is read.
     entry = "" } = $props();
 
-  let tracked = $state(untrack(() => tracking));
+  let tracked = $state(untrack(() => tracking || suggestOnly));
 
   // One field instance for the component, because it is one editor: a state
   // field is identified by the object, so building a fresh one per file would
@@ -623,7 +625,9 @@
   }
 
   /// Stop recording. The changes already made stay pending in the document.
+  /// A suggester's edits are always recorded, so this does nothing for them.
   export function stopTracking() {
+    if (untrack(() => suggestOnly)) return;
     tracked = false;
   }
 

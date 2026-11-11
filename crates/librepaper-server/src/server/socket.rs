@@ -215,9 +215,12 @@ impl Server {
         } else {
             self.comment_author(&headers, arrival, &id)
         };
-        // What this caller may do here, asked once: the `y-*` gate and the
-        // moderation of anyone else's comment are both the editor rung.
-        let may_edit = who.at_least(Role::Editor);
+        // What this caller may do here, asked once. Writing the live document
+        // (the `y-*` gate) is the suggester rung: a suggester's text arrives
+        // as tracked changes, which the browser enforces. Moderating anyone
+        // else's comment and the other editor-only actions are the editor rung.
+        let may_write = who.at_least(Role::Suggester);
+        let may_moderate = who.at_least(Role::Editor);
         let link_expires = entry
             .live_link(&who.link, librepaper_base::util::now_unix())
             .and_then(|link| librepaper_base::util::parse_timestamp(&link.until));
@@ -225,7 +228,7 @@ impl Server {
         let identity = librepaper_base::config::socket_budget::SocketIdentity {
             principal: who.id.id.clone(),
             document: slug.to_string(),
-            role: Some(if may_edit {
+            role: Some(if may_write {
                 librepaper_base::config::socket_budget::SocketRole::Editor
             } else if who.at_least(Role::Commenter) {
                 librepaper_base::config::socket_budget::SocketRole::Commenter
@@ -266,7 +269,8 @@ impl Server {
                         address,
                         who,
                         author,
-                        may_edit,
+                        may_write,
+                        may_moderate,
                         headers,
                         arrival,
                         query,
@@ -286,7 +290,8 @@ impl Server {
         address: String,
         who: Viewer,
         author: String,
-        may_edit: bool,
+        may_write: bool,
+        may_moderate: bool,
         headers: HeaderMap,
         arrival: Arrival,
         query: Option<String>,
@@ -386,12 +391,12 @@ impl Server {
 
         // A reader has no vector to reconcile and never sends `doc-open`, so
         // it is registered as a subscriber right away -- otherwise it would
-        // never see a comment, a chat message or `source-changed`. An editor
-        // is registered inside its own `doc-open` handler instead (§6.2),
-        // where registration and the join reply happen in the one call the
-        // client is waiting on; joining it here too, with no vector, would
-        // only spend a coverage read on a reply nobody uses.
-        let joined = if may_edit {
+        // never see a comment, a chat message or `source-changed`. A writer (an
+        // editor or a suggester) is registered inside its own `doc-open`
+        // handler instead (§6.2), where registration and the join reply happen
+        // in the one call the client is waiting on; joining it here too, with
+        // no vector, would only spend a coverage read on a reply nobody uses.
+        let joined = if may_write {
             Ok(())
         } else {
             room.join(socket_id, who.rung(), &peer_key, tx.clone(), None)
@@ -417,7 +422,8 @@ impl Server {
                     None,
                     librepaper_room::room::comments::COMMENT_PAGE_DEFAULT,
                     &author,
-                    may_edit,
+                    may_write,
+                    may_moderate,
                 )
                 .await
             {
@@ -471,7 +477,7 @@ impl Server {
         // `doc-update` before that point is refused: the protocol string is
         // required before any update is accepted, and there is no `after`
         // fallback to fall back to (§6.1). Meaningless for a reader, which
-        // can never send one anyway (the `may_edit` gate below refuses it).
+        // can never send one anyway (the `may_write` gate below refuses it).
         let mut editor_joined = false;
         // Consecutive ingest refusals on this socket (§5 step 2).
         let mut refusals: u32 = 0;
@@ -636,7 +642,7 @@ impl Server {
                         incoming.kind(),
                         "doc-update-start" | "doc-update-chunk" | "doc-update-end"
                     ) {
-                        if !may_edit {
+                        if !may_write {
                             let _ = tx
                                 .send(Outgoing::Text(refused_frame(
                                     Kind::Forbidden,
@@ -666,8 +672,9 @@ impl Server {
                     // there before it is relayed, and what is relayed is what
                     // was applied. Reading it is open to anyone who may read
                     // the document -- that is how a reader renders the
-                    // current text -- and writing it is the editor rung, the
-                    // same gate the source has always been under.
+                    // current text -- and writing it is the suggester rung: an
+                    // editor writes directly, a suggester's text arrives as
+                    // tracked changes, enforced by the browser.
                     if incoming.kind().starts_with("doc-") {
                         match incoming.kind() {
                             // §6.2: one sequencer call registers this socket
@@ -677,10 +684,10 @@ impl Server {
                             // client that cannot present this protocol string
                             // is closed before it can send an update (§6.1).
                             "doc-open" => {
-                                if !may_edit {
+                                if !may_write {
                                     let _ = send_outgoing(&tx, Outgoing::Text(refused_frame(
                                         Kind::Forbidden,
-                                        "source synchronization is restricted to editors",
+                                        "source synchronization is restricted to editors and suggesters",
                                         &incoming,
                                     ))).await;
                                     continue 'reader;
@@ -698,6 +705,10 @@ impl Server {
                                 }
                                 let vector =
                                     decode_update(incoming.vector()).filter(|raw| !raw.is_empty());
+                                // The room classes a subscriber as an editor
+                                // peer by the Editor rung. A suggester writes
+                                // through the same peer class, so it joins as
+                                // Editor here; reads and writes were gated above.
                                 let joined = match room
                                     .join(socket_id, Role::Editor, &peer_key, tx.clone(), vector.as_deref())
                                     .await
@@ -822,7 +833,7 @@ impl Server {
                             // now, so it is worth nothing to whoever arrives next, and
                             // a session that kept it would be keeping a list of ghosts.
                             "doc-presence" => {
-                                if !may_edit || incoming.update().is_empty() {
+                                if !may_write || incoming.update().is_empty() {
                                     continue 'reader;
                                 }
                                 room.broadcast_editors_except(
@@ -832,7 +843,7 @@ impl Server {
                                 .await;
                             }
                             "doc-update" => {
-                                if !may_edit {
+                                if !may_write {
                                     let _ = send_outgoing(&tx, Outgoing::Text(refused_frame(
                                         Kind::Forbidden,
                                         "editing is not permitted",
@@ -1002,11 +1013,12 @@ impl Server {
                                     }
                                 }
                             }
-                            // A deliberate act by the author, and so a mark in the
-                            // timeline. The requester is told which label it
-                            // became, so peers can report the accepted revision.
+                            // Editor-only: a label and a restore are history
+                            // acts, which a suggester may not take. A deliberate act by the author,
+                            // and so a mark in the timeline. The requester is told which label
+                            // it became, so peers can report the accepted revision.
                             "doc-label" => {
-                                if !may_edit {
+                                if !may_moderate {
                                     let payload =
                                         refused_frame(Kind::Forbidden, "editing is not permitted", &incoming);
                                     if send_outgoing(&tx, Outgoing::Text(payload)).await.is_err() {
@@ -1103,7 +1115,7 @@ impl Server {
                     // who sends one is refused rather than given it anchored.
                     if access::source_comment_forbidden(&who, &incoming) {
                         let _ = send_outgoing(&tx, Outgoing::Text(
-                            refused_frame(Kind::Forbidden, "only editors can comment on the source", &incoming),
+                            refused_frame(Kind::Forbidden, "only suggesters and editors can comment on the source", &incoming),
                         )).await;
                         continue 'reader;
                     }
@@ -1121,7 +1133,7 @@ impl Server {
                     // while preserving the sender's optimistic-row echo.
                     let event = room.prepare_comment_event(&result).await;
                     room.broadcast_prepared(Some(socket_id), &event).await;
-                    let targeted = event.view_for(&author, may_edit);
+                    let targeted = event.view_for(&author, may_write, may_moderate);
                     if send_outgoing(&tx, Outgoing::Text(targeted.to_string())).await.is_err() {
                         break 'reader;
                     }
@@ -1428,14 +1440,15 @@ impl Server {
     /// or whose editor rung no longer matches what it was handed at the
     /// handshake. This is what makes revoking or rotating a link take effect
     /// on a connection that is already open. Without it, `who`, `author` and
-    /// `may_edit` are resolved once and never again, so the room keeps relaying the text
-    /// and accepting writes from someone the index no longer names.
+    /// `may_write` and `may_moderate` are resolved once and never again, so
+    /// the room keeps relaying the text and accepting writes from someone the
+    /// index no longer names.
     ///
     /// A socket that is still allowed but whose rung changed is closed rather
     /// than adjusted in place -- a downgraded editor simply reconnects and
     /// gets the reduced rights straight from the handshake, which is simpler
-    /// and safer than mutating a room's notion of `may_edit` out from under a
-    /// running loop.
+    /// and safer than mutating a room's notion of `may_write` or
+    /// `may_moderate` out from under a running loop.
     pub async fn reauthorize(&self, slug: &str) {
         // A change made in this process must not wait out the moderation
         // cache. Dropping the entry makes the next frame read the catalogue.

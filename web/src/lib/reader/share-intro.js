@@ -8,6 +8,8 @@ export function shareIntroKind(role) {
       return "view";
     case "commenter":
       return "comment";
+    case "suggester":
+      return "suggest";
     case "editor":
       return "edit";
     default:

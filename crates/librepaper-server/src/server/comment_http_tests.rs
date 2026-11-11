@@ -283,7 +283,7 @@ async fn a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_rea
     // is the one that derives it: a page below editor is stripped of anchors
     // and attachments, so it does not derive them.
     let (reloaded, _) = room
-        .comment_page(None, 50, "account:not-the-author", true)
+        .comment_page(None, 50, "account:not-the-author", true, true)
         .await
         .unwrap();
     let found = reloaded
@@ -308,7 +308,7 @@ async fn a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_rea
         )
         .await;
     assert!(ok, "{resolved}");
-    let event = room.comment_event_for(&resolved, "", false).await;
+    let event = room.comment_event_for(&resolved, "", false, false).await;
     assert_eq!(event["state"]["total"], 1);
     assert_eq!(event["state"]["open"], 0);
 
@@ -688,7 +688,10 @@ async fn only_the_author_edits_a_comment_or_a_reply() {
     assert_eq!(edited_reply["body"], "better reply");
 
     // A later page shows both, with the stamp, and the reply is the viewer's.
-    let (page, _) = room.comment_page(None, 50, &author, false).await.unwrap();
+    let (page, _) = room
+        .comment_page(None, 50, &author, false, false)
+        .await
+        .unwrap();
     let found = page
         .iter()
         .find(|c| c.comment.id == comment_id)
@@ -752,7 +755,10 @@ async fn only_the_author_edits_a_comment_or_a_reply() {
     )
     .await;
     assert!(!ok, "{refused}");
-    let (page, _) = room.comment_page(None, 50, &author, false).await.unwrap();
+    let (page, _) = room
+        .comment_page(None, 50, &author, false, false)
+        .await
+        .unwrap();
     let found = page.iter().find(|c| c.comment.id == comment_id).unwrap();
     assert_eq!(found.comment.body, "better words");
     // The fixture holds the writer lease on a pooled connection, and

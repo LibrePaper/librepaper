@@ -18,6 +18,9 @@
     ids = [],
     ontracking, onaccept, onreject, onrejectmany, onreveal,
     identity = "",
+    // A suggester may not accept any change, and may reject only the changes
+    // whose `who` is their own key. Tracking is on and cannot be turned off.
+    suggestOnly = false, ownKey = "",
   } = $props();
 
   let expanded = $state("");
@@ -40,6 +43,11 @@
   let confirming = $state(null);
 
   const authorOf = (item) => item.author || m.changes_unknown_author();
+  // Whether a row is the viewer's own change, by its stable key.
+  const mine = (item) => Boolean(ownKey) && item.who === ownKey;
+  // Whether this viewer may answer a row with this verb.
+  const canAnswer = (item, action) => canReview && !(suggestOnly && (action === "accept" || !mine(item)));
+  const answerable = (item) => canAnswer(item, "reject");
   const pathOf = (item) => item.path || m.common_untitled();
   const authorLabel = (item) => (identity && item.author === identity ? m.changes_author_you({ author: item.author }) : authorOf(item));
   // A row names its own author as "You" so the reviewer sees at once whose
@@ -175,7 +183,7 @@
   function nextAfter(ids, oldIndex) { return [...ids.slice(oldIndex + 1), ...ids.slice(0, oldIndex).reverse()].map(rowFor).find(Boolean); }
 
   async function decide(item, action) {
-    if (!canReview || deciding.has(item.id)) return;
+    if (!canAnswer(item, action) || deciding.has(item.id)) return;
     addBusy(item.id); feedback = "";
     const ids = filteredRows.map((row) => row.id); const oldIndex = ids.indexOf(item.id);
     try {
@@ -201,7 +209,7 @@
     // Take the rows before sending anything: the ticks are cleared and the
     // queue re-sorts as answers arrive, so this is a list and not a filter
     // that keeps being asked.
-    const captured = [...rows]; if (!captured.length) return;
+    const captured = [...rows].filter((item) => canAnswer(item, action)); if (!captured.length) return;
     captured.forEach((item) => addBusy(item.id)); stopSelecting(); confirming = null;
     try {
       // A bulk reject goes through one call, because rejecting a change that
@@ -279,8 +287,8 @@
            the state is the control's own, so the name no longer has to carry
            "On" or "Off" for a screen reader to read it out. -->
       {#if canReview}
-      <Switch class="tracking-toggle" checked={tracking} disabled={!canTrack}
-        title={canTrack ? m.changes_track_title() : m.changes_editing_unavailable()}
+      <Switch class="tracking-toggle" checked={tracking} disabled={!canTrack || suggestOnly}
+        title={suggestOnly ? m.changes_suggest_locked() : canTrack ? m.changes_track_title() : m.changes_editing_unavailable()}
         onCheckedChange={({ checked }) => ontracking?.(checked)}>
         <Switch.Label>{m.changes_track()}</Switch.Label>
         <Switch.Control class="switch"><Switch.Thumb class="switch-thumb" /></Switch.Control>
@@ -299,13 +307,13 @@
       <div class="bar-row">
         <span class="select-count" aria-live="polite">{m.changes_selected_count({ count: checked.size })}</span>
         <div class="bar-end">
-          <button type="button" class="text-action select-all" disabled={filteredRows.every((item) => checked.has(item.id))} onclick={() => checked = new Set(filteredRows.map((item) => item.id))}>{m.common_select_all()}</button>
+          <button type="button" class="text-action select-all" disabled={filteredRows.filter(answerable).every((item) => checked.has(item.id))} onclick={() => checked = new Set(filteredRows.filter(answerable).map((item) => item.id))}>{m.common_select_all()}</button>
           <button type="button" class="text-action cancel" onclick={stopSelecting}>{m.common_cancel()}</button>
         </div>
       </div>
       <div class="bar-buttons">
         <button type="button" class="bar-action reject" disabled={!selectedRows.length || busy} onclick={() => answerSelected("reject")}>{allChosen ? m.changes_reject_all() : m.common_reject()}</button>
-        <button type="button" class="bar-action accept" disabled={!selectedRows.length || busy} onclick={() => answerSelected("accept")}>{allChosen ? m.changes_accept_all() : m.changes_accept()}</button>
+        {#if !suggestOnly}<button type="button" class="bar-action accept" disabled={!selectedRows.length || busy} onclick={() => answerSelected("accept")}>{allChosen ? m.changes_accept_all() : m.changes_accept()}</button>{/if}
       </div>
     </div>
     {:else if changes.length}<div class="changes-toolbar">
@@ -351,13 +359,13 @@
     {#each filteredRows as item (item.id)}
       {@const isActive = active === item.id}
       <article class="change-row" class:lp-selected={isActive || checked.has(item.id)} aria-current={isActive ? "true" : undefined} role="listitem">
-        {#if selecting}<div class="row-head"><label class="row-pick-hit"><input type="checkbox" class="row-pick" checked={checked.has(item.id)} aria-label={selectKind(item)} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} /></label>{@render rowMain(item, isActive)}</div>{:else}{@render rowMain(item, isActive)}{/if}
+        {#if selecting && answerable(item)}<div class="row-head"><label class="row-pick-hit"><input type="checkbox" class="row-pick" checked={checked.has(item.id)} aria-label={selectKind(item)} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} /></label>{@render rowMain(item, isActive)}</div>{:else}{@render rowMain(item, isActive)}{/if}
         {#if isLong(item)}<button type="button" class="row-more" aria-expanded={expandedText.has(item.id)} onclick={() => toggleText(item)}>{expandedText.has(item.id) ? m.changes_show_less() : m.changes_show_more()}</button>{/if}
         <!-- Every change offers its answer, so a reviewer can act on any row
              without first selecting it. -->
-        {#if canReview && !selecting}<div class="row-actions">
+        {#if canReview && !selecting && answerable(item)}<div class="row-actions">
           <button type="button" class="row-action reject" aria-label={rejectKind(item)} title={m.changes_reject_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "reject")}><Icon name="x" size="14px" />{deciding.has(item.id) ? m.changes_rejecting() : m.common_reject()}</button>
-          <button type="button" class="row-action accept" aria-label={acceptKind(item)} title={m.changes_accept_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "accept")}><Icon name="check" size="14px" />{deciding.has(item.id) ? m.changes_accepting() : m.changes_accept()}</button>
+          {#if !suggestOnly}<button type="button" class="row-action accept" aria-label={acceptKind(item)} title={m.changes_accept_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "accept")}><Icon name="check" size="14px" />{deciding.has(item.id) ? m.changes_accepting() : m.changes_accept()}</button>{/if}
         </div>{/if}
       </article>
     {/each}

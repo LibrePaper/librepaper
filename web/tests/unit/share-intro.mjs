@@ -5,6 +5,7 @@ import { shareIntroKind } from "../../src/lib/reader/share-intro.js";
 test("each share role gets the line for what it can do", () => {
   assert.equal(shareIntroKind("reader"), "view");
   assert.equal(shareIntroKind("commenter"), "comment");
+  assert.equal(shareIntroKind("suggester"), "suggest");
   assert.equal(shareIntroKind("editor"), "edit");
 });
 

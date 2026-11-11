@@ -14,6 +14,7 @@
   const reach = {
     reader: m.shareform_reach_reader(),
     commenter: m.shareform_reach_commenter(),
+    suggester: m.shareform_reach_suggester(),
     editor: m.shareform_reach_editor(),
   };
 </script>
@@ -48,6 +49,9 @@
   </label>
   {#if kind === "token" && draft.role === "editor"}
     <p class="share-note panel-meta">{m.shareform_edit_note()}</p>
+  {/if}
+  {#if kind !== "token" && draft.role === "suggester"}
+    <p class="share-note panel-meta">{m.share_suggest_warning()}</p>
   {/if}
   <label class="share-field panel-meta">{m.shareform_expires()}
     <select class="select share-select" bind:value={draft.until} disabled={busy}>

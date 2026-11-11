@@ -52,7 +52,7 @@ fn agent_grants_are_short_lived_document_link_scoped_credentials() {
     expired.expires_at = now_unix();
     assert!(sign_agent_grant(&key, &expired).is_none());
     let mut invalid_role = grant.clone();
-    invalid_role.role = 4;
+    invalid_role.role = 5;
     assert!(sign_agent_grant(&key, &invalid_role).is_none());
     let mut invalid_link = grant;
     invalid_link.link_hash = "not-a-digest".into();

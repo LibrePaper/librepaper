@@ -1,6 +1,6 @@
 # Acting on a project with an agent token
 
-An **agent token** gives one agent access to one project on one server, at the role the owner picked: Read, Comment or Edit.
+An **agent token** gives one agent access to one project on one server, at the role the owner picked: Read, Comment, Suggest or Edit.
 
 ## Start here if the user pasted a token
 
@@ -31,8 +31,8 @@ lp withdraw 3f9c… 7a1e…
 |---|---|---|
 | Explain, summarize, outline, answer a question | `read`, then answer in chat | Read |
 | Review | `comment` | Comment |
-| Proofread, tighten, rewrite | `suggest` (tracked change) | Edit |
-| Add text | `insert` (tracked insertion) | Edit |
+| Proofread, tighten, rewrite | `suggest` (tracked change) | Suggest |
+| Add text | `insert` (tracked insertion) | Suggest |
 | New file, when the user asks for it | `create` (untracked) | Edit |
 
 - Use `lp read <path> [--lines A-B]` to get exact source. Then do the write.
@@ -43,7 +43,7 @@ lp withdraw 3f9c… 7a1e…
 - Keep each change minimal and inside what the user asked. Preserve math, references, code and markup. Do not rewrite passages nobody asked about.
 - When updating an existing document, propose targeted patches over the passages that change. Never replace a whole file or section to change part of it; keep the rest of the author's text.
 - Keep the change ids that each write returns. If a pass went wrong, withdraw it with those ids before proposing again. Do not try to "restore" text by proposing the old text over your own pending change.
-- With Comment access you cannot change text. Say so and suggest the owner issue an Edit token.
+- With Comment access you cannot change text. With Suggest access you can only propose tracked changes. Say so and suggest the owner issue a Suggest token, or an Edit token for direct edits.
 - If several projects are connected, a command without `--project` is refused and the helper lists them. Pick the project the user means and add `--project <slug>`. The helper never guesses.
 - A write that fails with a network error makes the helper print the `lp result` command to check it. Run that. Never resend the write.
 - For replies, resolving threads, direct edits and compile validation, use [The tools directly](#the-tools-directly).
@@ -111,12 +111,12 @@ Start with one `document_read` that combines queries: `{"kind":"manifest"}` to l
 |---|---|---|
 | Explain, summarize, outline | Answer in chat; no document effect | Read |
 | Review, respond to a thread | `document_comment` create or reply on a `range_id` | Comment |
-| Proofread, tighten, rewrite | `document_propose` with `publish: "suggestions"`: tracked changes an editor accepts or rejects | Edit |
+| Proofread, tighten, rewrite | `document_propose` with `publish: "suggestions"`: tracked changes an editor accepts or rejects | Suggest |
 | Direct edit, no tracking | `document_propose` with `publish: "private"`, then `document_apply` on the candidate | Edit, and the user said "edit directly" |
 | New or deleted text file | `document_files` (untracked) | Edit, and the user asked for it |
 
 - A request to proofread or rewrite is not permission for untracked edits. Default to tracked suggestions.
-- With Comment access you cannot change text. Say so and suggest the owner issue an Edit token.
+- With Comment access you cannot change text. With Suggest access you can only propose tracked changes. Say so and suggest the owner issue a Suggest token, or an Edit token for direct edits.
 - You cannot accept tracked changes or reject anyone else's; that is the editor's act. You can withdraw your own pending changes with `document_withdraw` (or `lp withdraw`).
 - Keep replacements minimal and inside the asked scope. Preserve math, references, code and markup.
 - When updating an existing document, propose targeted patches over the passages that change. Never replace a whole file or section to change part of it; keep the rest of the author's text.

@@ -241,8 +241,8 @@
       renderers.offerLatex(offeredRenderers.includes("latex"));
       // The workspace guards its own writes, so it is told once, here, where
       // the permission is settled.
-      ws.canEdit = mayEdit;
-      timeline.state.canEdit = mayEdit;
+      ws.canEdit = mayEdit && !suggestOnly;
+      timeline.state.canEdit = mayEdit && !suggestOnly;
       // Access was reduced, so this browser should stop offering an editable copy
       // of a project it may no longer edit. A copy opened from this browser has no
       // server answer behind its role, so it is kept as it is.
@@ -351,7 +351,10 @@
   // reader is shown commenting as. A Google account's handle is its email and
   // belongs on neither.
   let identity = $derived(me.name || "");
-  let canModerate = $derived(Boolean(doc.can_moderate));
+  // A suggester has a live editing session, but every change to the text is a
+  // tracked change: nothing else about the project is theirs to change.
+  let suggestOnly = $derived(doc.role === "suggester");
+  let canModerate = $derived(Boolean(doc.can_moderate) && !suggestOnly);
   // Whether this tab is the one in front of the reader. Only background work
   // consults it; nothing about the document depends on being looked at.
   let hidden = $state(typeof document !== "undefined" && document.visibilityState === "hidden");
@@ -364,12 +367,16 @@
   // Whether the Agent panel is in view; set below, once `panel` and `shown` exist.
   let agentInView = $state(false);
   let pendingChat;
-  let mayChat = $derived(["commenter", "editor", "owner"].includes(doc.role));
+  let mayChat = $derived(["commenter", "suggester", "editor", "owner"].includes(doc.role));
   // Sharing is the owner's; seeing who else is in the room is anyone's who is
   // named on the document. A reader who arrived by link is offered neither,
   // which is most of the point of a blind review.
   let canSeeSharing = $derived(Boolean(doc.can_see_sharing));
   let canPublish = $derived(["editor", "owner"].includes(doc.role));
+  // The key a change is recorded under by this browser (see `trackingMe`),
+  // which a suggester may reject by. Empty when nobody has named them, so an
+  // anonymous change is never taken for their own.
+  let ownWho = $derived(me.id || identity || doc.commenting_as || "");
 
   /* --------------------------------------------------------------- anchoring */
 
@@ -1309,7 +1316,7 @@
   /// answer from the server. They return a resolved promise so the panel can
   /// advance the same way it would after a round trip.
   function acceptChange(row) {
-    if (mayEdit && row?.id && accept(session.doc, row.id)) settleAnchors([row.file_id]);
+    if (mayEdit && !suggestOnly && row?.id && accept(session.doc, row.id)) settleAnchors([row.file_id]);
     return Promise.resolve();
   }
 
@@ -1338,8 +1345,14 @@
     return ok;
   }
 
+  // Whether this browser may reject a change: any change for an editor, and
+  // for a suggester only their own.
+  function mayReject(row) {
+    return mayEdit && Boolean(row?.id) && (!suggestOnly || (Boolean(ownWho) && row.who === ownWho));
+  }
+
   function rejectChange(row) {
-    if (mayEdit && row?.id) rejectSettled(row);
+    if (mayReject(row)) rejectSettled(row);
     return Promise.resolve();
   }
 
@@ -1348,7 +1361,7 @@
   /// the next one looks at. Resolves to the number rejected.
   function rejectChanges(rows) {
     let count = 0;
-    if (mayEdit) for (const row of rows) if (row?.id && rejectSettled(row)) count += 1;
+    for (const row of rows) if (mayReject(row) && rejectSettled(row)) count += 1;
     return Promise.resolve(count);
   }
 
@@ -1927,7 +1940,7 @@
   // after this script runs.
   let webConnection = $state(null);
   $effect(() => {
-    if (!hasDesktop || !mayEdit) return;
+    if (!hasDesktop || !mayEdit || suggestOnly) return;
     const connection = createWebConnection({
       project: `${location.origin}/docs/${SLUG}`,
       flush: async () => {
@@ -2140,7 +2153,7 @@
   // except the build log, which the user opts into.
   $effect(() => {
     const undo = [
-      provide("document", () => ({ id: doc.document_id, format: sourceFormat, role: doc.role, mayEdit })),
+      provide("document", () => ({ id: doc.document_id, format: sourceFormat, role: doc.role, mayEdit, suggestOnly })),
       provide("account", () => ({ id: me.id, signedIn: Boolean(me.provider) })),
       provide("sync", () => ({
         connected,
@@ -2187,7 +2200,7 @@
   const buildPreferences = $derived(buildSettings.state.preferences);
   // Where the toggle is offered: in the desktop app, for every editable
   // document whose format is set to this computer.
-  const runCodeOffered = $derived(mayEdit && hasDesktop && buildPreferences.backend === "local");
+  const runCodeOffered = $derived(mayEdit && !suggestOnly && hasDesktop && buildPreferences.backend === "local");
   // The Run directory is read while a Quarto document's code may run here.
   $effect(() => {
     if (localExecution && sourceFormat === "quarto" && runCodeOffered) untrack(() => runDir.load());
@@ -2274,7 +2287,7 @@
 
   // A Quarto document is drawn as the Markdown it is until Run code is on,
   // so the desktop app says what turns the real render on.
-  const quartoNeedsRunCode = $derived(sourceFormat === "quarto" && hasDesktop && mayEdit && !localExecution);
+  const quartoNeedsRunCode = $derived(sourceFormat === "quarto" && hasDesktop && mayEdit && !suggestOnly && !localExecution);
 
   const localAppDiagnostics = $derived([
     quartoNeedsRunCode ? { severity: "warning", message: m.readerb_run_code_for_render() } : null,
@@ -2796,7 +2809,7 @@
   // The tabs this browser is offered. Which reader may see which panel is
   // written with the panels, in lib/panels.js; this only says who is asking.
   const tabs = $derived(
-    tabsFor({ role: doc.role, mayEdit, editing, canSeeSharing: DEMO || canSeeSharing, canPublish, desktop: hasDesktop })
+    tabsFor({ role: doc.role, mayEdit, suggestOnly, editing, canSeeSharing: DEMO || canSeeSharing, canPublish, desktop: hasDesktop })
       .map((tab) => (DEMO && DEMO_OFF.includes(tab.id) ? { ...tab, disabled: true } : tab)),
   );
   // The robot buttons hand work to the agent. The agent runs only in the
@@ -2887,7 +2900,7 @@
     tabs: () => tabs,
     badges: () => badges,
     participants: () => participants,
-    role: () => ({ mayEdit, mayChat, me }),
+    role: () => ({ mayEdit, suggestOnly, mayChat, me }),
     title: () => doc.title,
     source: () => ({ format: sourceFormat, compilesHere, toolbarPath, editing, editorReady: Boolean(editor), figureShown: Boolean(shownFigure) }),
     demo: () => ({ on: DEMO, hint: DEMO_HINT }),
@@ -3098,7 +3111,7 @@
   // Whether the desktop app builds exports with the command for this format:
   // the same facts the preview routes a job by, so the menu offers what the
   // export makes. The browser route is taken for any file it has no command for.
-  const exportsLocally = $derived(localExecution && hasDesktop && mayEdit && buildPreferences.backend === "local");
+  const exportsLocally = $derived(localExecution && hasDesktop && mayEdit && !suggestOnly && buildPreferences.backend === "local");
 
   // Which exports the File menu can honour, for the file being previewed.
   const exportable = $derived({
@@ -3568,6 +3581,7 @@
     return true;
   }
   async function uploadInsertAsset(file) {
+    if (suggestOnly) throw new Error(m.common_project_suggest_only());
     return await addFigure(file);
   }
   const previewInsertAsset = (path) => workspace.assetUrl(path);
@@ -3615,7 +3629,7 @@
   // refused by the same rules.
   let fileList = $state(null);
   async function dropped(event) {
-    if (!mayEdit) return;
+    if (!mayEdit || suggestOnly) return;
     event.preventDefault();
     const chosen = [...(event.dataTransfer?.files || [])];
     if (!chosen.length) return;
@@ -3803,7 +3817,7 @@
   const canExportComments = $derived(tabs.some((tab) => tab.id === "collaboration"));
 
   const commandContext = $derived({
-    mayEdit, editing, compact,
+    mayEdit, suggestOnly, editing, compact,
     panels: tabs.filter((tab) => !tab.disabled).map((tab) => tab.id),
     preview: shown.document,
     compilable: mayEdit && sourceFormat === "latex" && compilesHere,
@@ -4095,7 +4109,7 @@
     {/if}
   {/snippet}
   {#snippet menus()}
-    <Menus role={{ mayEdit, me, canSeeSharing, canPublish, canExportComments }} demo={DEMO} demoHint={DEMO_HINT} {tabs} {hasDesktop}
+    <Menus role={{ mayEdit, suggestOnly, me, canSeeSharing, canPublish, canExportComments }} demo={DEMO} demoHint={DEMO_HINT} {tabs} {hasDesktop}
       source={{ format: sourceFormat, compilesHere, toolbarPath, editing, editorReady: Boolean(editor), figureShown: Boolean(shownFigure) }}
       {exportable}
       view={{ compact, activeMobileView, layout, sourceSide, editorShare: sizes[PANES.editor.key], linked, visual }}
@@ -4107,7 +4121,7 @@
       onview={chooseViewCommand}
       onhelp={(id) => void runCommand(id)}>
       {#snippet insert()}
-        <InsertMenu bind:this={insertMenu} getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpalette={(id) => void openPalette(id)} keys={{ symbols: MENU_KEYS.symbols, math: MENU_KEYS.math }} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} onzoterosearch={localQuarto.desktop() ? (query) => editor?.zoteroSearch?.(query) : null} onzoteroimport={(items) => editor?.importZoteroItems?.(items)} disabled={!mayEdit || !editor} demo={DEMO} />
+        <InsertMenu bind:this={insertMenu} getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpalette={(id) => void openPalette(id)} keys={{ symbols: MENU_KEYS.symbols, math: MENU_KEYS.math }} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} onzoterosearch={localQuarto.desktop() && !suggestOnly ? (query) => editor?.zoteroSearch?.(query) : null} onzoteroimport={suggestOnly ? undefined : (items) => editor?.importZoteroItems?.(items)} disabled={!mayEdit || !editor} demo={DEMO} />
       {/snippet}
     </Menus>
   {/snippet}
@@ -4142,7 +4156,7 @@
 
 {#if shareIntro}
   <div class="share-intro" role="status" bind:clientHeight={shareIntroHeight}>
-    <span class="share-intro-text">{shareIntro === "edit" ? m.readerd_share_intro_edit() : shareIntro === "comment" ? m.readerd_share_intro_comment() : m.readerd_share_intro_view_ask()}</span>
+    <span class="share-intro-text">{shareIntro === "edit" ? m.readerd_share_intro_edit() : shareIntro === "suggest" ? m.readerd_share_intro_suggest() : shareIntro === "comment" ? m.readerd_share_intro_comment() : m.readerd_share_intro_view_ask()}</span>
     <LegalNotice legal={shareIntroLegal} />
     <button type="button" class="btn btn-sm lp-control-neutral" onclick={() => (shareIntroDismissed = true)}>{m.toasts_dismiss()}</button>
   </div>
@@ -4166,7 +4180,7 @@
        as props, so a panel can grow a field without the column hearing of it. -->
   {#snippet filesPanel()}
     <Files bind:this={fileList} {files} {folders} open={openFile} preview={previewPath} locked={lockedPath}
-      {mayEdit} {rules} footer={sourceFormat === "quarto" && mayEdit ? runDirectoryRow : undefined} onopen={(file) => openTheFile(file, { fromList: true })} onadd={addFile}
+      mayEdit={mayEdit && !suggestOnly} {rules} footer={sourceFormat === "quarto" && mayEdit && !suggestOnly ? runDirectoryRow : undefined} onopen={(file) => openTheFile(file, { fromList: true })} onadd={addFile}
       onmkdir={(path) => workspace.addFolder(path)} onrelocate={relocateFiles}
       ondelete={deleteFiles} onduplicate={(entry, path) => workspace.duplicate(entry, path)}
       onfigure={addFigure} ontext={addDroppedText} demo={DEMO}
@@ -4230,8 +4244,8 @@
   {/snippet}
 
   {#snippet changesPanel()}
-    <Changes changes={changeRows} {files} {identity} {tracking} canTrack={mayEdit && editing}
-      canReview={mayEdit} selected={selectedChange} ids={changesIds}
+    <Changes changes={changeRows} {files} {identity} tracking={tracking || suggestOnly} canTrack={mayEdit && editing}
+      canReview={mayEdit} {suggestOnly} ownKey={ownWho} selected={selectedChange} ids={changesIds}
       ontracking={setTracking} onaccept={acceptChange} onreject={rejectChange} onrejectmany={rejectChanges} onreveal={revealChange} />
     {@render pendingRecovery("changes")}
   {/snippet}
@@ -4265,7 +4279,7 @@
   {#snippet historyPanel()}
     {#if lazy.history.component}
     {@const History = lazy.history.component}
-    <History {labels} viewing={historySelectedSha} older={historySource.older} newer={historySource.newer} canEdit={mayEdit}
+    <History {labels} viewing={historySelectedSha} older={historySource.older} newer={historySource.newer} canEdit={mayEdit && !suggestOnly}
       problem={historyProblem} loaded={timeline.state.loaded} complete={timeline.state.complete}
       loadingMore={timeline.state.loadingMore} moreProblem={timeline.state.moreProblem}
       saved={timeline.state.saved} savedLoaded={timeline.state.savedLoaded}
@@ -4343,7 +4357,7 @@
       {#if comparing === "history"}
         {#if lazy.historyWorkspace.component}
           {@const HistoryWorkspace = lazy.historyWorkspace.component}
-          <HistoryWorkspace source={historySource} versions={labels} canEdit={mayEdit} onrestore={restoreLabel}
+          <HistoryWorkspace source={historySource} versions={labels} canEdit={mayEdit && !suggestOnly} onrestore={restoreLabel}
             ondownload={downloadArchive}
             downloading={downloadingSha} downloadProblem={downloadProblem} />
         {/if}
@@ -4354,7 +4368,7 @@
           <FormatToolbar active={formatActive} {modalEditor} available={can} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} oncommand={(id) => void runCommand(id)}
                          onmenuselect={() => setTimeout(() => editor?.focus?.(), 60)} />
         {/if}
-        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
+        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} {rules} tracking={tracking || suggestOnly} {suggestOnly} me={trackingMe} {selectedChange} editable={mayEdit}
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   oncomment={(id) => focusAnnotation(comments.find((item) => String(item.id) === String(id))?.id, { focus: false })}
@@ -4433,9 +4447,9 @@
         <h2 class="h4">{m.readerd_nothing_to_preview()}</h2>
         <p class="lp-text-secondary text-sm">
           {m.readerd_project_no_files()}
-          {#if mayEdit}{m.readerd_add_one_from_files()}{/if}
+          {#if mayEdit && !suggestOnly}{m.readerd_add_one_from_files()}{/if}
         </p>
-        {#if mayEdit}
+        {#if mayEdit && !suggestOnly}
           <div class="notyet-actions">
             <button class="btn btn-sm lp-control-tonal-brand" onclick={() => arrangement.openFilesPanel()}>{m.readerd_open_files()}</button>
           </div>
@@ -4703,8 +4717,8 @@
 
 <SaveTemplateDialog bind:this={saveTemplateDialog} slug={SLUG} title={doc.title} />
 
-<!-- Restoring is an editor's action, so a reader is given no dialog for it. -->
-{#if mayEdit}
+<!-- Restoring is an editor's action, so a reader or suggester is given no dialog for it. -->
+{#if mayEdit && !suggestOnly}
   <Modal bind:open={timeline.state.restoring} title={m.readerd_restore_version_title()}
     description={restoreMoved
       ? m.readerd_restore_moved({ name: restoreName })

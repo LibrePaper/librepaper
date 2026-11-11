@@ -357,34 +357,35 @@ impl Room {
     ///
     /// There is no resident list to read from and no whole-document load
     /// behind this: it is three bounded statements (see
-    /// `room::comments::page`) plus, for an editor, one read of the head. `editor`
-    /// is the caller's editor right. It is `CommentView::for_viewer`'s
-    /// `is_owner`, which is what takes the source anchors out of a reader's
-    /// copy.
+    /// `room::comments::page`) plus, for a viewer who sees the source, one read
+    /// of the head. `sees_source` and `moderates` are the caller's rungs,
+    /// passed to `CommentView::for_viewer`: `sees_source` is what takes the
+    /// source anchors out of a reader's copy, and `moderates` sets `deletable`.
     ///
     /// Where each passage is now is derived here, from its anchor record. A
     /// derivation failure (the sequencer could not build a projection) leaves
     /// those comments with no attachment rather than failing the read: a caller
     /// already reads a missing attachment as "not yet known".
     ///
-    /// Only an editor's page is derived: `for_viewer` strips anchors and
-    /// attachments below editor, so deriving them for anyone else would decode
-    /// the document for nothing.
+    /// Only a page for a viewer who sees the source is derived: `for_viewer`
+    /// strips anchors and attachments below that rung, so deriving them for
+    /// anyone else would decode the document for nothing.
     pub async fn comment_page(
         &self,
         after: Option<comments::Position>,
         limit: usize,
         author: &str,
-        editor: bool,
+        sees_source: bool,
+        moderates: bool,
     ) -> Result<(Vec<CommentView>, comments::CommentPage), WriteError> {
         let mut page = comments::page(&self.catalog, self.document_id, after, limit).await?;
-        if editor {
+        if sees_source {
             self.derive(&mut page.comments).await;
         }
         let views = page
             .comments
             .iter()
-            .map(|item| CommentView::for_viewer(item, author, editor))
+            .map(|item| CommentView::for_viewer(item, author, sees_source, moderates))
             .collect();
         Ok((views, page))
     }

@@ -209,6 +209,7 @@ commenters = ["*"]
   - An email address the provider has verified, or `"@example.org"` for a whole domain. This applies to Google, Entra and custom OpenID Connect providers.
   - An ORCID iD, such as `"0000-0002-1825-0097"`. This applies to ORCID.
 - `commenters` takes the same values and defaults to `["*"]`, which admits any account of that provider.
+- `publishers` also decides who may hold suggest or edit access through a link or an agent token. Any other account gets comment access instead.
 - An email or `@domain` entry admits whoever that provider verifies as owning the address. Turning on a provider means trusting its administrators with every address in its list, so prefer `@domain` entries for domains the provider owns.
 
 A browser session lasts 30 days. Set `session_lifetime` in `[auth]`, from `1h` to `30d`, to make it shorter. Sessions do not renew on use, and a CLI token never lasts longer than the browser session that approved it.

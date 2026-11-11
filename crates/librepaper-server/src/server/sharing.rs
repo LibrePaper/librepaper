@@ -474,7 +474,7 @@ impl Server {
                 let role = wanted
                     .role
                     .parse::<Role>()
-                    .map_err(|_| "a link is 'reader', 'commenter' or 'editor'")?;
+                    .map_err(|_| "a link is 'reader', 'commenter', 'suggester' or 'editor'")?;
                 grant.role = role.as_str().to_string();
                 grant.until = link_expiry(&wanted.until)?;
                 grant.sealed = seal_link_key(&self.key, key.expose());
@@ -484,7 +484,7 @@ impl Server {
                 let role = wanted
                     .role
                     .parse::<Role>()
-                    .map_err(|_| "a token is 'read', 'comment' or 'edit'")?;
+                    .map_err(|_| "a token is 'read', 'comment', 'suggest' or 'edit'")?;
                 if name.is_empty() {
                     return Err("a token needs a name".to_string());
                 }

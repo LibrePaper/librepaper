@@ -217,7 +217,7 @@ fn grant_matches_scope(
 }
 
 /// The rung a grant's byte caps a caller at. A grant is verified to carry
-/// 1, 2 or 3 before it gets here, so an unknown byte reads as the lowest rung.
+/// 1 through 4 before it gets here, so an unknown byte reads as the lowest rung.
 fn grant_role_ceiling(role: u8) -> Role {
     Role::try_from(role).unwrap_or(Role::Reader)
 }
@@ -2368,6 +2368,7 @@ mod automation_authority_tests {
         assert_eq!(grant_role_ceiling(1), Role::Reader);
         assert_eq!(grant_role_ceiling(2), Role::Commenter);
         assert_eq!(grant_role_ceiling(3), Role::Editor);
+        assert_eq!(grant_role_ceiling(4), Role::Suggester);
     }
 
     #[test]

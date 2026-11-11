@@ -67,14 +67,14 @@
 {/snippet}
 
 {#snippet fileItems()}
-  {#if role.mayEdit}
+  {#if role.mayEdit && !role.suggestOnly}
     <Menu.Item value="new-file" class="menuitem">{labelOf("new-file")}</Menu.Item>
     <Menu.Item value="new-folder" class="menuitem">{labelOf("new-folder")}</Menu.Item>
     <Menu.Item value="upload" class="menuitem" disabled={demo}>{labelOf("upload")}{demo ? ` ${demoHint}` : ""}</Menu.Item>
     <hr class="hr my-1" />
   {/if}
   {@render downloadMenu()}
-  {#if role.me?.id || demo}<Menu.Item value="save-template" class="menuitem" disabled={demo}>{m.readerd_save_as_template_item()}{demo ? ` ${demoHint}` : ""}</Menu.Item>{/if}
+  {#if (role.me?.id && !role.suggestOnly) || demo}<Menu.Item value="save-template" class="menuitem" disabled={demo}>{m.readerd_save_as_template_item()}{demo ? ` ${demoHint}` : ""}</Menu.Item>{/if}
   <hr class="hr my-1" />
   {#if tabs.some((tab) => tab.id === "git")}<Menu.Item value="git" class="menuitem" disabled={demo}>{m.readerd_git_item()}{demo ? ` ${demoHint}` : ""}</Menu.Item>{/if}
   {#if demo || role.canSeeSharing || role.canPublish}<Menu.Item value="share" class="menuitem" disabled={demo}>{labelOf("share")}{demo ? ` ${demoHint}` : ""}</Menu.Item>{/if}

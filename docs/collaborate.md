@@ -2,16 +2,19 @@
 title: "Collaborate"
 ---
 
-Share with links, not people. The owner mints a read, comment or edit link in the Share panel. Every link opens the whole project: each file, its preview and the comments. Each role includes the ones beneath it.
+Share with links, not people. The owner mints a read, comment, suggest or edit link in the Share panel. Every link opens the whole project: each file, its preview and the comments. Each role includes the ones beneath it.
 
 | Role | May |
 | --- | --- |
 | reader | open every file and its preview, and read the comments |
 | commenter | comment, reply, resolve; delete their own comments |
-| editor | edit the source; delete any comment |
+| suggester | change the text only as tracked changes, which they can withdraw; no accepting, no file or settings changes |
+| editor | edit the source; accept or reject suggestions; delete any comment |
 | owner | share, destroy |
 
-- Every link needs a sign-in. A reader, commenter or editor signs in with GitHub or Google the first time they open the link, and the browser keeps the key after that.
+- Every link needs a sign-in. A reader, commenter, suggester or editor signs in with GitHub or Google the first time they open the link, and the browser keeps the key after that.
+- A suggest or edit link works only for accounts that the deployment's `publishers` setting admits. For any other account it acts as a comment link. See [Sign-in](host/simple.html#sign-in).
+- In a suggest link, track changes is always on and cannot be switched off. The editor enforces this, not the server, so someone with a modified browser could edit directly. Every edit is still attributed to its author and can be restored from History. The Share panel shows this warning.
 - The key is in the link's fragment, so it reaches no server log and no `Referer` header.
 - A document can have several links for each role. Give each a name. Only the owner sees the names.
 - The Links tab lists every live link. Copy puts its URL on the clipboard. The trash button revokes it after you confirm, and the link stops working at once. Expired links are not listed.
