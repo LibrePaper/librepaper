@@ -2150,7 +2150,11 @@ mod tests {
                 Some(json!({"project": PROJECT, "path": text(&scratch.join("nowhere"))})),
             )
             .await;
-        assert_eq!((status, &body["reason"]), (400, &json!("missing")), "{body}");
+        assert_eq!(
+            (status, &body["reason"]),
+            (400, &json!("missing")),
+            "{body}"
+        );
         assert!(!connection.connected());
     }
 
@@ -2181,7 +2185,12 @@ mod tests {
             "{body}"
         );
         assert!(!connection.connected());
-        assert!(!fixture.inner.picked.lock().await.contains_key(&connection.key));
+        assert!(!fixture
+            .inner
+            .picked
+            .lock()
+            .await
+            .contains_key(&connection.key));
     }
 
     #[tokio::test]
@@ -2208,7 +2217,12 @@ mod tests {
             .await;
         assert_eq!((status, &body["connected"]), (200, &json!(true)), "{body}");
         assert_eq!(connection.repo(), repo);
-        assert!(!fixture.inner.picked.lock().await.contains_key(&connection.key));
+        assert!(!fixture
+            .inner
+            .picked
+            .lock()
+            .await
+            .contains_key(&connection.key));
     }
 
     #[tokio::test]
