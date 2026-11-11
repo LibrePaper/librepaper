@@ -977,7 +977,10 @@ mod tests {
         put(&doc, "aaa", "scripts.R/readme.md", "placed");
         put(&doc, "bbb", "scripts.R", "retained");
         let projected = project(&doc, &rules());
-        assert!(projected.projection.files.contains_key("scripts.R/readme.md"));
+        assert!(projected
+            .projection
+            .files
+            .contains_key("scripts.R/readme.md"));
         assert_eq!(projected.retained["scripts (2).R"], "retained");
         assert_eq!(projected.retained.len(), 1);
     }

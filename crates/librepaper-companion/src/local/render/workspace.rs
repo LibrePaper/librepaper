@@ -876,14 +876,9 @@ mod run_directory_tests {
         unlink_run_directory(&s.root).unwrap();
         sync_hosted_workspace(&s.staged, &s.root, &manifest).unwrap();
         let paths = manifest.iter().map(|e| e.path.clone()).collect();
-        let notices = link_run_directory(
-            &s.root,
-            &s.run,
-            &paths,
-            "paper.qmd",
-            "rendered/paper.html",
-        )
-        .unwrap();
+        let notices =
+            link_run_directory(&s.root, &s.run, &paths, "paper.qmd", "rendered/paper.html")
+                .unwrap();
         assert!(notices.is_empty());
         assert!(std::fs::symlink_metadata(s.root.join("rendered")).is_err());
         assert_eq!(
