@@ -54,6 +54,28 @@ function fakeClock() {
   assert.equal(paints, 2);
 }
 
+// Continuous LaTeX: an editing change takes the frame path, not the debounce.
+{
+  const clock = fakeClock();
+  let paints = 0;
+  let on = true;
+  const schedule = createSourceSchedule({
+    ...clock, editing: () => true, format: () => "latex", latexDebounce: () => 2000,
+    continuous: () => on, paint: () => paints++, hidden: () => false,
+  });
+  schedule.changed();
+  schedule.changed();
+  assert.equal(clock.frames.size, 1, "continuous LaTeX requests one paint frame");
+  assert.equal(clock.timers.size, 0, "and does not wait on the debounce");
+  clock.fireFrames();
+  assert.equal(paints, 1);
+  on = false;
+  schedule.changed();
+  assert.equal(clock.frames.size, 0, "without the preference LaTeX waits for a quiet source");
+  assert.equal(clock.timers.size, 1);
+  assert.equal([...clock.timers.values()][0].ms, 2000);
+}
+
 // A hidden page does not run frames, so a zero timer stands in for one.
 {
   const clock = fakeClock();

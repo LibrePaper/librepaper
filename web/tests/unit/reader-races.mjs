@@ -405,6 +405,32 @@ const preview = (values = {}) => {
   assert.deepEqual(harness.published, []);
 }
 
+// A LaTeX HTML compile that finishes after the source moved on: dropped by
+// default, shown when the page compiles continuously.
+for (const continuous of [false, true]) {
+  const rendered = deferred();
+  const harness = preview({
+    facts: { format: "latex", latexOutput: "html", latexContinuous: continuous },
+    tree: () => ({ main: "paper.tex", texts: { "paper.tex": "x" }, digests: {} }),
+    heading: async () => "",
+    renderers: {
+      formatOf: () => "latex",
+      previewFormatOf: () => "latex",
+      producesPdf: () => true,
+      render: () => rendered.promise,
+    },
+  });
+  const pending = harness.paint();
+  harness.facts.source += 1;
+  rendered.resolve({ html: "<p>page</p>", diagnostics: [] });
+  await pending;
+  assert.equal(
+    harness.published.some((payload) => payload.kind === "html"),
+    continuous,
+    continuous ? "a continuous compile shows its result after an edit" : "a result for older text is dropped",
+  );
+}
+
 console.log("reader-races: all checks passed");
 
 // A nested edit schedules the preview without rebuilding the directory.
@@ -636,8 +662,6 @@ for (const invalidate of [null, "navigation", "main"]) {
     diagnosticPainter: { typed: () => {} },
     refreshReview: () => { reviewed += 1; },
     bundle: { keepCurrent: () => { rescheduled += 1; } },
-    liveActive: () => false,
-    live: { reset: () => {} },
   });
   vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   vm.runInContext("sourceChanged()", ctx);
@@ -698,8 +722,6 @@ for (const invalidate of [null, "navigation", "main"]) {
     } },
     diagnosticPainter: { typed: () => {} }, diagnosticContext,
     editing: true, pdfOutput: false,
-    liveActive: () => false,
-    live: { reset: () => {} },
   });
   vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   vm.runInContext("sourceChanged()", ctx);

@@ -66,19 +66,19 @@ export function writeDefaultPreview(scope, format, value) {
   return read(scope, format);
 }
 
-// Instant preview updates: show a small LaTeX edit in the HTML preview at once,
-// before the compile that confirms it. Off unless this person turns it on.
-const livePatching = (format) => `live-patch:${format}`;
+// Continuous compile: recompile the LaTeX HTML preview while typing instead of
+// after a pause. Off unless this person turns it on.
+const liveCompiling = (format) => `live-compile:${format}`;
 
-export function readLivePatch(scope, format = "latex") {
+export function readLiveCompile(scope, format = "latex") {
   try {
-    return JSON.parse(storage()?.getItem(key(scope, livePatching(format))) || "null") === true;
+    return JSON.parse(storage()?.getItem(key(scope, liveCompiling(format))) || "null") === true;
   } catch { return false; }
 }
 
-export function writeLivePatch(scope, format, value) {
+export function writeLiveCompile(scope, format, value) {
   const on = value === true;
-  try { storage()?.setItem(key(scope, livePatching(format)), JSON.stringify(on)); } catch { /* private mode/quota */ }
+  try { storage()?.setItem(key(scope, liveCompiling(format)), JSON.stringify(on)); } catch { /* private mode/quota */ }
   return on;
 }
 

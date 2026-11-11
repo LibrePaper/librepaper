@@ -1792,8 +1792,8 @@
   "live_chat_history_read_failed": "チャット履歴を読み込めませんでした。再試行しています。",
   "live_chat_older_failed": "以前のメッセージを読み込めませんでした。",
   "live_chat_older_failed_status": "以前のメッセージを読み込めませんでした（{status}）。",
-  "livepatch_description": "小さな LaTeX の編集を、確定するコンパイルの前に HTML プレビューへすぐに反映します。コンパイルが完了すると、プレビューはその結果に置き換わります。このブラウザーにのみ適用されます。",
-  "livepatch_title": "プレビューの即時更新",
+  "livecompile_description": "一時停止を待たずに、入力中も HTML プレビューを継続的にコンパイルします。変更が早く表示されますが、入力中はプロセッサのコア 1 つが使われ続けます。長い文書では引き続き一時停止を待ちます。",
+  "livecompile_title": "入力中にプレビューを更新",
   "machine_load_failed": "このコンピューターの設定を読み込めませんでした。",
   "machine_request_failed": "リクエストを完了できませんでした。",
   "markdown_widgets_frontmatter_keys": [

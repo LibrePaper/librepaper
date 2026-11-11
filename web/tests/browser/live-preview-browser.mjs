@@ -1,7 +1,7 @@
-// Instant preview updates against the real LaTeXML engine: a small edit shows
-// in the preview frame at once, before the compile, and the compile then
-// confirms it without recreating the page's nodes. Setup follows
-// latex-html-browser.mjs; skips when no engine build is present.
+// Continuous compile against the real LaTeXML engine: with the preference on
+// the HTML preview updates while typing, without layout shift; with it off the
+// preview waits for a pause. Setup follows latex-html-browser.mjs; skips when
+// no engine build is present.
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -102,8 +102,6 @@ function appSession(accountId) {
   return { value: `v2.${payload}.${signature}`, generation };
 }
 
-const PATCH_LIMIT = 400; // ms for prose; the first math patch also loads KaTeX
-const MATH_LIMIT = 800;
 const COMPILE_LIMIT = 245000;
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 
@@ -158,8 +156,8 @@ Last paragraph closes the document.
   })()`));
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const { slug } = created.body;
-  const livePatchKey = `librepaper-build-v3:${JSON.stringify([appBase, "github:browser-test", "live-patch:latex"])}`;
-  const setPreference = (on) => tab.evaluate(`localStorage.setItem(${JSON.stringify(livePatchKey)}, ${JSON.stringify(JSON.stringify(on))})`);
+  const liveCompileKey = `librepaper-build-v3:${JSON.stringify([appBase, "github:browser-test", "live-compile:latex"])}`;
+  const setPreference = (on) => tab.evaluate(`localStorage.setItem(${JSON.stringify(liveCompileKey)}, ${JSON.stringify(JSON.stringify(on))})`);
   await setPreference(true);
   await tab.resize(1300, 900);
   await tab.navigate(`${appBase}/docs/${slug}`);
@@ -212,24 +210,8 @@ Last paragraph closes the document.
     return tab.evaluate(`document.execCommand('insertText', false, ${JSON.stringify(text)})`);
   };
 
-  // A mark the compile removes: the morph restores a paragraph's id from the
-  // new page, so an id that is no longer the mark means a compile landed.
-  const probe = () => frame(`(() => { const ps = document.querySelectorAll('p'); const last = ps[ps.length - 1]; window.__lpProbe = last; last.setAttribute('id', 'lp-probe'); return true; })()`);
-  const compileLanded = async () => frame(`window.__lpProbe?.getAttribute('id') !== 'lp-probe'`);
-
-  // (a) Watch the frame and tag the nodes that must survive.
+  // Layout shift is summed over the frame's life; typing must not add to it.
   await frame(`(() => {
-    window.__lpTagged = [...document.querySelectorAll('p, img, math')];
-    window.__lpTagged.forEach((element, index) => { element.__lpTag = index; });
-    window.__lpMutations = [];
-    new MutationObserver((records) => {
-      for (const record of records) {
-        const node = record.target.nodeType === 3 ? record.target.parentElement : record.target;
-        const paragraphs = [...document.querySelectorAll('p')];
-        const owner = paragraphs.findIndex((p) => p === node || p.contains(node));
-        window.__lpMutations.push({ type: record.type, owner });
-      }
-    }).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
     window.__lpShift = 0;
     new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) if (!entry.hadRecentInput) window.__lpShift += entry.value;
@@ -237,61 +219,57 @@ Last paragraph closes the document.
     return true;
   })()`);
   await pause(400); // buffered shifts from the page load arrive first
-  await probe();
-  await frame(`(() => { window.__lpMutations.length = 0; window.__lpShift = 0; return true; })()`);
-  const taggedCount = await frame("window.__lpTagged.length");
-  assert.ok(taggedCount >= 4, `expected paragraphs and math in the page, found ${taggedCount} tagged nodes`);
-  const secondParagraph = await frame(`[...document.querySelectorAll('p')].findIndex((p) => p.textContent.includes('Second paragraph'))`);
-  assert.ok(secondParagraph >= 0);
+  await frame(`(() => { window.__lpShift = 0; return true; })()`);
 
-  // (b) A word in the middle of the second paragraph.
-  const wordAt = "Second paragraph has several";
-  assert.ok(await typeAt(wordAt, wordAt.length, wordAt.length, " banana"), "the word was typed");
-  const typedAt = Date.now();
-  const toPatch = await elapsedUntil("patched word", async () => /several\s+banana\s+middle/.test(await frameText()), PATCH_LIMIT);
-  const mutations = await frame("JSON.stringify(window.__lpMutations)").then(JSON.parse);
-  assert.ok(mutations.length > 0, "the patch changed the frame");
-  assert.deepEqual(
-    mutations.filter((record) => record.type !== "characterData" || record.owner !== secondParagraph),
-    [], `before the compile only text in the second paragraph changed: ${JSON.stringify(mutations)}`);
-  console.log(`live-preview-browser: word patched in ${Date.now() - typedAt} ms (polled ${toPatch} ms)`);
+  // One character every 150 ms for 8 s into the middle of a paragraph, noting
+  // each distinct preview text seen while typing.
+  const typeFor = async (marker, letters) => {
+    const at = marker.length;
+    assert.ok(await typeAt(marker, at, at, letters[0]), "the first character was typed");
+    const started = Date.now();
+    const seen = [await frameText()];
+    const times = [];
+    let index = 1;
+    let next = started + 150;
+    while (Date.now() - started < 8000) {
+      if (Date.now() >= next) {
+        await tab.evaluate(`document.execCommand('insertText', false, ${JSON.stringify(letters[index % letters.length])})`);
+        index += 1;
+        next += 150;
+      }
+      const text = await frameText();
+      if (text !== seen.at(-1)) { seen.push(text); times.push(Date.now() - started); }
+      await pause(20);
+    }
+    return { seen, times, typed: index, started };
+  };
+  const marker = "Second paragraph has several";
+  const alphabet = "abcdefghijklmnopqrstuvwxyz";
 
-  // (c) The compile lands and confirms it without recreating anything.
-  const toCompile = await elapsedUntil("compile", compileLanded, COMPILE_LIMIT);
-  assert.match(await frameText(), /several\s+banana\s+middle/, "the compiled page has the word");
-  const intact = JSON.parse(await frame(`JSON.stringify({
-    count: document.querySelectorAll('p, img, math').length,
-    kept: window.__lpTagged.every((element, index) => element.__lpTag === index && element.isConnected),
-    shift: window.__lpShift,
-  })`));
-  assert.equal(intact.count, taggedCount, "no paragraph, image or equation was added or lost");
-  assert.equal(intact.kept, true, "every paragraph, image and equation is still the same element");
-  assert.ok(intact.shift < 0.01, `layout shift ${intact.shift}`);
-  console.log(`live-preview-browser: compile landed ${Date.now() - typedAt} ms after typing (${toCompile} ms after the patch); layout shift ${intact.shift.toFixed(4)}`);
+  // (a) Preference on: the preview changes while typing.
+  const on = await typeFor(marker, alphabet);
+  const updates = on.seen.length - 1;
+  console.log(`live-preview-browser: preference on, ${updates} preview updates during ${on.typed} keystrokes, at ${JSON.stringify(on.times)} ms`);
+  assert.ok(updates >= 2, `expected at least 2 preview updates while typing, saw ${updates}`);
+  const shift = Number(await frame("window.__lpShift"));
+  console.log(`live-preview-browser: layout shift while typing ${shift.toFixed(4)}`);
+  assert.ok(shift < 0.01, `layout shift ${shift}`);
+  // Let the last compile settle before the second half.
+  await elapsedUntil("settled preview", async () => (await frameText()).includes(alphabet.slice(0, 3)), COMPILE_LIMIT);
 
-  // (d) Edit inside $x^2$: a placeholder at once, a compiled <math> later.
-  const mathAt = "inline math $x^";
-  await probe();
-  assert.ok(await typeAt(mathAt, mathAt.length, mathAt.length + 1, "3"), "the exponent was typed");
-  const mathTyped = Date.now();
-  await elapsedUntil("live math", () => frame(`document.querySelector('.lp-live-math') !== null`), MATH_LIMIT);
-  const mathPatchMs = Date.now() - mathTyped;
-  await elapsedUntil("compiled math", async () => await compileLanded()
-    && await frame(`document.querySelector('.lp-live-math') === null
-      && [...document.querySelectorAll('math')].some((math) => (math.getAttribute('alttext') || '').includes('3'))`), COMPILE_LIMIT);
-  console.log(`live-preview-browser: math patched in ${mathPatchMs} ms, compiled math ${Date.now() - mathTyped} ms after typing`);
-
-  // (e) With the preference off nothing changes until the compile lands.
+  // (b) Preference off: nothing changes while typing, the text arrives after.
   await setPreference(false);
-  await probe();
-  const offAt = "First paragraph has";
-  assert.ok(await typeAt(offAt, offAt.length, offAt.length, " kiwi"), "the word was typed");
-  const offTyped = Date.now();
-  await pause(1500);
-  assert.doesNotMatch(await frameText(), /kiwi/, "preference off: the frame waits for the compile");
-  assert.equal(await compileLanded(), false, "the compile cannot have landed yet");
-  await elapsedUntil("compile with the preference off", async () => /has\s+kiwi\s+some/.test(await frameText()), COMPILE_LIMIT);
-  console.log(`live-preview-browser: preference off, text appeared ${Date.now() - offTyped} ms after typing (compile only)`);
+  await tab.navigate(`${appBase}/docs/${slug}`);
+  await until("HTML frame again", () => tab.evaluate(`document.querySelector('iframe')?.src.includes('/raw/')`));
+  await until("compile again", async () => (await tab.text()).includes("Second paragraph"), COMPILE_LIMIT);
+  await until("editor again", () => tab.evaluate(`Boolean(document.querySelector('.cm-content'))`));
+  await pause(500);
+  const off = await typeFor("First paragraph has", "QWERTYUIOP");
+  console.log(`live-preview-browser: preference off, ${off.seen.length - 1} preview updates during ${off.typed} keystrokes`);
+  assert.equal(off.seen.length, 1, `preference off: the preview must not change while typing, saw ${off.seen.length - 1} changes`);
+  const stopped = Date.now();
+  await elapsedUntil("update after typing stops", async () => (await frameText()) !== off.seen[0], 10000);
+  console.log(`live-preview-browser: preference off, preview updated ${Date.now() - stopped} ms after typing stopped`);
 } catch (error) {
   if (appLog) console.error("Application log:\n", appLog);
   if (tab) {

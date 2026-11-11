@@ -24,7 +24,7 @@ import { m } from "../paraglide/messages.js";
 // arguments now, and the guards are gone with them.
 
 /** @typedef {ReturnType<ReturnType<typeof import("../project-session.js").createProjectSession>["tree"]> & { main?: string, assets?: Record<string, Uint8Array>, urls?: Record<string, string> }} PreviewTree */
-/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, projectDigest?: string }} PreviewFacts */
+/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, latexContinuous?: boolean, projectDigest?: string }} PreviewFacts */
 /** @typedef {Awaited<ReturnType<typeof import("../renderers.js").render>>} PreviewResult */
 /** @typedef {ReturnType<typeof import("./render-status.svelte.js").createRenderStatus>} PreviewStatus */
 /** @typedef {ReturnType<typeof import("./render-coordinator.js").createRenderCoordinator>} PreviewCoordinator */
@@ -177,6 +177,8 @@ export function createPreviewRenderer({
     const markdownPdf = ["markdown", "quarto"].includes(format) && start.buildPreferences.output === "pdf";
     const paged = (renderers.producesPdf(format) && !htmlPreview) || markdownPdf;
     const slow = format === "latex";
+    // Compiling while typing: a result for older text is still worth showing.
+    const continuousHtml = htmlPreview && format === "latex" && Boolean(start.latexContinuous);
     // Shared by both guard points so asset fetching and compilation reject
     // against the same captured navigation, source policy, and main path.
     const capturedMain = source.main;
@@ -184,7 +186,7 @@ export function createPreviewRenderer({
       ticket,
       capturedNavigation,
       capturedSource,
-      strictSource: slow || format === "quarto",
+      strictSource: (slow && !continuousHtml) || format === "quarto",
       capturedMain: source.main,
     };
     try {
@@ -384,7 +386,7 @@ export function createPreviewRenderer({
       // fetched, which is this page's problem rather than the author's.
       const at = facts();
       const stillCurrent = capturedNavigation === at.navigation
-        && (!(paged || slow) || capturedSource === at.source);
+        && (!(paged || slow) || continuousHtml || capturedSource === at.source);
       if (coordinator.isNewer(ticket) && stillCurrent && error.name !== "Superseded") {
         // The same string the status is set to, said once: what the reader is
         // told and what the diagnostics record must not be able to differ.

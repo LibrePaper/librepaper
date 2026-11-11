@@ -128,6 +128,8 @@ export function createHtmlCompiler({
 } = {}) {
   let engine = null;
   let engineKey = null;
+  /** @type {number|null} */
+  let lastSeconds = null;
   /** @type {LatexRelease|null} */
   let pinned = null;
   let pinnedBase = null;
@@ -274,12 +276,14 @@ export function createHtmlCompiler({
       const tail = String(result.log ?? "").split("\n").filter((line) => line.trim()).slice(-12).join("\n");
       diagnostics.push(diagnostic(tail || m.html_conversion_failed(), [], tree.main));
     }
+    const seconds = (Date.now() - started) / 1000;
+    if (ok) lastSeconds = seconds;
     return {
       html: ok ? withoutFooter(result.html) : null,
       sources: ok && Array.isArray(result.sources) ? result.sources : null,
       pdf: null,
       ok,
-      seconds: (Date.now() - started) / 1000,
+      seconds,
       log: result.log,
       diagnostics,
       timings: {
@@ -356,7 +360,10 @@ export function createHtmlCompiler({
     } catch { /* best effort: a compile fetches what it needs */ }
   }
 
-  return { compile, cancel, configuration, warm };
+  /** Seconds the last completed compile took, or null before one has. */
+  const lastCompileSeconds = () => lastSeconds;
+
+  return { compile, cancel, configuration, warm, lastCompileSeconds };
 }
 
 const compiler = createHtmlCompiler();
@@ -364,3 +371,4 @@ export const compile = compiler.compile;
 export const cancel = compiler.cancel;
 export const configuration = compiler.configuration;
 export const warm = compiler.warm;
+export const lastCompileSeconds = compiler.lastCompileSeconds;

@@ -1807,8 +1807,8 @@
   "live_chat_history_read_failed": "No se pudo leer el historial del chat. Reintentando.",
   "live_chat_older_failed": "No se pudieron leer los mensajes anteriores.",
   "live_chat_older_failed_status": "No se pudieron leer los mensajes anteriores ({status}).",
-  "livepatch_description": "Muestra una pequeña edición de LaTeX en la vista previa HTML al instante, antes de la compilación que la confirma. La compilación sigue reemplazando la vista previa. Solo se aplica a este navegador.",
-  "livepatch_title": "Actualizaciones instantáneas de la vista previa",
+  "livecompile_description": "Compila la vista previa HTML de forma continua mientras escribe, en lugar de esperar una pausa. Los cambios aparecen antes, pero un núcleo del procesador permanece ocupado mientras escribe. Los documentos largos siguen esperando una pausa.",
+  "livecompile_title": "Actualizar la vista previa mientras se escribe",
   "machine_load_failed": "No se pudo cargar la configuración de este equipo.",
   "machine_request_failed": "No se pudo completar la solicitud.",
   "markdown_widgets_frontmatter_keys": [

@@ -12,6 +12,7 @@
  *   editing?: () => boolean,
  *   format?: () => string,
  *   latexDebounce?: () => number,
+ *   continuous?: () => boolean,
  *   paint?: () => unknown,
  *   retarget?: () => unknown,
  *   hidden?: () => boolean,
@@ -30,6 +31,9 @@ export function createSourceSchedule({
   format = () => "",
   // `latex.debounce()`: how long a LaTeX compile waits for a quiet source.
   latexDebounce = () => 0,
+  // True when LaTeX should compile while typing, on the fast formats' cadence,
+  // instead of waiting for a quiet source.
+  continuous = () => false,
   // Paints the preview.
   paint = () => {},
   // Works out the preview target again.
@@ -70,7 +74,13 @@ export function createSourceSchedule({
     // Fast formats use a short bounded preview cadence. Only LaTeX owns its
     // longer compiler debounce; postponing this timer for every Typst
     // keystroke would starve the preview indefinitely.
-    if (editing() && format() !== "latex") {
+    if (editing() && (format() !== "latex" || continuous())) {
+      // A debounce timer left over from before continuous mode began is
+      // finished with; it must not hold the frame path shut.
+      if (format() === "latex" && previewTimer !== null) {
+        clearTimer(previewTimer);
+        previewTimer = null;
+      }
       if (previewFrame !== null || previewTimer !== null) return;
       previewFrame = requestPreviewFrame(() => {
         previewFrame = null;

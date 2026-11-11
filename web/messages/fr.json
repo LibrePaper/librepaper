@@ -1807,8 +1807,8 @@
   "live_chat_history_read_failed": "L’historique du clavardage n’a pas pu être lu. Nouvelle tentative.",
   "live_chat_older_failed": "Les messages plus anciens n’ont pas pu être lus.",
   "live_chat_older_failed_status": "Les messages plus anciens n’ont pas pu être lus ({status}).",
-  "livepatch_description": "Affiche une petite modification LaTeX dans l’aperçu HTML immédiatement, avant la compilation qui la confirme. La compilation remplace toujours l’aperçu. S’applique à ce navigateur uniquement.",
-  "livepatch_title": "Mises à jour instantanées de l’aperçu",
+  "livecompile_description": "Compile l’aperçu HTML en continu pendant que vous tapez, au lieu d’attendre une pause. Les modifications apparaissent plus tôt, mais un cœur du processeur reste occupé pendant la saisie. Les longs documents continuent d’attendre une pause.",
+  "livecompile_title": "Mettre à jour l’aperçu pendant la saisie",
   "machine_load_failed": "Impossible de charger les paramètres de cet ordinateur.",
   "machine_request_failed": "La requête n’a pas pu être effectuée.",
   "markdown_widgets_frontmatter_keys": [

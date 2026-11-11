@@ -15,7 +15,7 @@
   import BuildSettings from "./BuildSettings.svelte";
   import RendererSettings from "./RendererSettings.svelte";
   import DefaultPreviewSetting from "./DefaultPreviewSetting.svelte";
-  import LivePatchSetting from "./LivePatchSetting.svelte";
+  import LiveCompileSetting from "./LiveCompileSetting.svelte";
   import AccountSettings from "./AccountSettings.svelte";
   import RemoteSettings from "./RemoteSettings.svelte";
   import BackupsSettings from "./BackupsSettings.svelte";
@@ -113,7 +113,7 @@
             <div class="settings-section-title"><h4 class="settings-subhead">LaTeX</h4></div>
             <p class="settings-section-note">{m.renderersettings_description({ name: "LaTeX" })}</p>
             <DefaultPreviewSetting format="latex" {userId} onpreferences={onbuildpreferences} />
-            <LivePatchSetting {userId} />
+            <LiveCompileSetting {userId} />
             <BuildSettings format="latex" {userId} onpreferences={onbuildpreferences} />
             <RendererSettings format="latex" {userId} onpreferences={onbuildpreferences} />
             <LatexFilesSettings />

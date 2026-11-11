@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   anonymousIdentity, buildPreferenceUser, defaults, read, update,
-  readDefaultPreview, writeDefaultPreview, readLivePatch, writeLivePatch,
+  readDefaultPreview, writeDefaultPreview, readLiveCompile, writeLiveCompile,
 } from "../../src/lib/build-preferences.js";
 
 function store() {
@@ -196,17 +196,17 @@ test("the build preference identity is the signed-in account or the anonymous id
   } finally { globalThis.localStorage = previous; }
 });
 
-test("a live-patch preference written for an account is read back with the same scope", () => {
+test("a live-compile preference written for an account is read back with the same scope", () => {
   const previous = globalThis.localStorage;
   globalThis.localStorage = store();
   try {
     const scope = { origin: "https://a.test", user: buildPreferenceUser({ provider: "github", handle: "alice" }), document: "paper" };
-    assert.equal(readLivePatch(scope, "latex"), false);
-    assert.equal(writeLivePatch(scope, "latex", true), true);
-    assert.equal(readLivePatch(scope, "latex"), true);
+    assert.equal(readLiveCompile(scope, "latex"), false);
+    assert.equal(writeLiveCompile(scope, "latex", true), true);
+    assert.equal(readLiveCompile(scope, "latex"), true);
     // Another document of the same account and origin shares it.
-    assert.equal(readLivePatch({ ...scope, document: "other" }, "latex"), true);
+    assert.equal(readLiveCompile({ ...scope, document: "other" }, "latex"), true);
     // Another account does not.
-    assert.equal(readLivePatch({ ...scope, user: "github:bob" }, "latex"), false);
+    assert.equal(readLiveCompile({ ...scope, user: "github:bob" }, "latex"), false);
   } finally { globalThis.localStorage = previous; }
 });

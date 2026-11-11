@@ -14,7 +14,6 @@ import { createKatexLoader, createMathTypesetter } from "../lib/math.js";
 import { shiftAnnotationRanges } from "../lib/shift-annotation-ranges.js";
 import { watchPinch } from "../lib/pinch.js";
 import { morphChildren } from "./morph.js";
-import { applyLivePatch } from "./live-patch.js";
 
 (() => {
   // Where this agent is allowed to speak. It is injected into a document on
@@ -130,10 +129,6 @@ import { applyLivePatch } from "./live-patch.js";
   // written in at build time, beside the copy of KaTeX the build made.
   const loadKatex = createKatexLoader({ base: __KATEX__, document, window });
   const typesetMath = createMathTypesetter({ base: __KATEX__, document, window, load: loadKatex });
-  // What the page on screen came from: the source tags of the last preview,
-  // and whether it is LaTeXML output. A live patch addresses lines through them.
-  let previewSources = null;
-  let previewIsLatexml = false;
 
   // The one mark this file draws that is not the document's: the ring around
   // whichever annotation the sidebar has singled out. Installed once, up
@@ -614,8 +609,6 @@ import { applyLivePatch } from "./live-patch.js";
       // formats typeset their math in place, which a morph would undo on every
       // keystroke, so they replace the body.
       const isLatexml = !!parsed.querySelector(".ltx_page_main, .ltx_document");
-      previewIsLatexml = isLatexml;
-      previewSources = Array.isArray(message.sources) ? message.sources : null;
       quietly(() => {
         if (isLatexml) {
           removeMarks();
@@ -642,25 +635,6 @@ import { applyLivePatch } from "./live-patch.js";
       // Directly, not through the observer: the observer waits a quarter of a
       // second before republishing, and a preview should keep up with typing.
       publish(true);
-    }
-
-    // A small edit the reader shows before its compile lands. Only a LaTeXML
-    // page that arrived with its source table can be patched; anything else
-    // waits for the compile. The patch is applied quietly and the text is
-    // published straight away, as for a preview.
-    if (message.type === "preview-patch") {
-      if (!previewIsLatexml || !previewSources || !message.patch) return;
-      const patch = message.patch;
-      const apply = (katex) => {
-        let applied = false;
-        quietly(() => { applied = applyLivePatch(document, { sources: previewSources, katex }, patch); });
-        if (!applied) return;
-        if (lastRanges.length) highlight(shiftRanges(lastRanges));
-        publish(true);
-      };
-      if (patch.kind === "math") loadKatex().then(apply, () => {});
-      else apply(/** @type {any} */ (window).katex);
-      return;
     }
 
     // Show the reader where a place in the text is. The offset is into the

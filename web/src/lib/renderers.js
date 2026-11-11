@@ -118,6 +118,11 @@ export function resolveHtmlAssetUrls(source, tree) {
     (whole, attribute, quote, reference) => `${attribute}=${quote}${resolve(reference)}${quote}`);
 }
 
+/// Seconds the last completed LaTeX HTML compile took, or null before one has.
+export function latexHtmlLastSeconds() {
+  return latexHtml.lastCompileSeconds();
+}
+
 export function cancelPreview(options) {
   latexHtml.cancel(options);
   activeLocalAbort?.abort();
