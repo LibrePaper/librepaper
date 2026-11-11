@@ -9,11 +9,11 @@
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{Read as _, Write as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::local::protocol::{self, MAX_UPLOAD_BYTES};
+use crate::local::protocol::{self, Notice, MAX_UPLOAD_BYTES};
 
 /// The record of which paths the last sync wrote into a hosted workspace, so
 /// a file the document no longer holds is removed rather than left to be
@@ -26,7 +26,31 @@ const HOSTED_TRACKED: &str = ".librepaper-hosted.json";
 struct HostedTracked {
     #[serde(default)]
     files: Vec<String>,
+    /// Links into the Run directory made by the last render, removed before
+    /// the next sync so project files are never written under a link.
+    #[serde(default)]
+    links: Vec<LinkRecord>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(unix, allow(dead_code))]
+enum LinkKind {
+    Symlink,
+    Junction,
+    HardLink,
+    Copy,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct LinkRecord {
+    path: String,
+    kind: LinkKind,
+}
+
+/// Largest file copied when a Windows hard link is not possible.
+#[cfg(windows)]
+const MAX_COPY_BYTES: u64 = 64 * 1024 * 1024;
 
 fn read_hosted_input(path: &Path) -> Option<Vec<u8>> {
     let expected = std::fs::symlink_metadata(path).ok()?;
@@ -301,12 +325,277 @@ pub(crate) fn sync_hosted_workspace(
             let _ = std::fs::remove_file(root.join(stale));
         }
     }
-    let record = serde_json::to_vec_pretty(&HostedTracked { files: written })
+    let record = serde_json::to_vec_pretty(&HostedTracked {
+        files: written,
+        links: Vec::new(),
+    })
         .map_err(|error| format!("record hosted workspace: {error}"))?;
     if read_hosted_input(&tracked_path).as_deref() != Some(record.as_slice()) {
         write_hosted_tracking(&tracked_path, &record)?;
     }
     Ok(())
+}
+
+/// True when every directory between `root` and `relative`'s file name exists
+/// and is a real directory, not a link.
+fn parents_are_real(root: &Path, relative: &str) -> bool {
+    let parent = Path::new(relative)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    let mut current = root.to_path_buf();
+    for component in parent.components() {
+        let std::path::Component::Normal(name) = component else {
+            return false;
+        };
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Removes every link the last render made into the Run directory, deepest
+/// first, and forgets them. A link is never followed: only the link itself is
+/// removed, never what it points at. Run this before `sync_hosted_workspace`.
+pub(crate) fn unlink_run_directory(root: &Path) -> Result<(), String> {
+    let tracked_path = root.join(HOSTED_TRACKED);
+    let mut tracked = read_hosted_tracking(&tracked_path)?;
+    if tracked.links.is_empty() {
+        return Ok(());
+    }
+    let mut links = std::mem::take(&mut tracked.links);
+    links.sort_by(|a, b| {
+        let depth = |path: &str| path.matches('/').count();
+        depth(&b.path)
+            .cmp(&depth(&a.path))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    for link in links {
+        if !librepaper_base::paths::RelPath::is_local(&link.path)
+            || !parents_are_real(root, &link.path)
+        {
+            continue;
+        }
+        let path = root.join(&link.path);
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("inspect run directory link {}: {error}", link.path)),
+        };
+        let removed = match link.kind {
+            LinkKind::Symlink => {
+                if !metadata.file_type().is_symlink() {
+                    continue;
+                }
+                std::fs::remove_file(&path).or_else(|first| {
+                    if cfg!(windows) {
+                        std::fs::remove_dir(&path)
+                    } else {
+                        Err(first)
+                    }
+                })
+            }
+            LinkKind::Junction => {
+                if !(metadata.file_type().is_symlink() || metadata.is_dir()) {
+                    continue;
+                }
+                std::fs::remove_dir(&path)
+            }
+            LinkKind::HardLink | LinkKind::Copy => {
+                if !metadata.is_file() {
+                    continue;
+                }
+                std::fs::remove_file(&path)
+            }
+        };
+        removed.map_err(|error| format!("remove run directory link {}: {error}", link.path))?;
+    }
+    let record = serde_json::to_vec_pretty(&tracked)
+        .map_err(|error| format!("record hosted workspace: {error}"))?;
+    write_hosted_tracking(&tracked_path, &record)
+}
+
+/// Names Quarto reads as project configuration. A linked one would turn the
+/// render into a whole-project render.
+fn is_quarto_config(name: &str) -> bool {
+    matches!(name, "_quarto.yml" | "_quarto.yaml")
+        || (name.starts_with("_quarto-") && (name.ends_with(".yml") || name.ends_with(".yaml")))
+}
+
+/// Run directory entries that are never linked: hidden names, Quarto
+/// configuration, and what Quarto generates and may delete.
+fn skipped_run_entry(name: &str) -> bool {
+    name.starts_with('.')
+        || is_quarto_config(name)
+        || name.ends_with("_files")
+        || name.ends_with("_cache")
+        || matches!(name, "_freeze" | "_site" | "_book" | "site_libs")
+}
+
+fn is_or_holds_manifest_path(manifest_paths: &BTreeSet<String>, relative: &str) -> bool {
+    let prefix = format!("{relative}/");
+    manifest_paths.contains(relative)
+        || manifest_paths
+            .range(prefix.clone()..)
+            .next()
+            .is_some_and(|path| path.starts_with(&prefix))
+}
+
+#[cfg(unix)]
+fn make_link(target: &Path, link: &Path, _is_dir: bool) -> std::io::Result<LinkKind> {
+    std::os::unix::fs::symlink(target, link).map(|()| LinkKind::Symlink)
+}
+
+#[cfg(windows)]
+fn make_link(target: &Path, link: &Path, is_dir: bool) -> std::io::Result<LinkKind> {
+    if is_dir {
+        let status = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(link)
+            .arg(target)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()?;
+        return if status.success() {
+            Ok(LinkKind::Junction)
+        } else {
+            Err(std::io::Error::other("mklink /J failed"))
+        };
+    }
+    match std::fs::hard_link(target, link) {
+        Ok(()) => Ok(LinkKind::HardLink),
+        Err(_) => {
+            let size = std::fs::metadata(target)?.len();
+            if size > MAX_COPY_BYTES {
+                return Err(std::io::Error::other("file too large to copy"));
+            }
+            std::fs::copy(target, link).map(|_| LinkKind::Copy)
+        }
+    }
+}
+
+/// True when both paths are regular files (the workspace side is not a link)
+/// with identical bytes. Anything unreadable counts as different.
+fn same_regular_file(workspace: &Path, run: &Path) -> bool {
+    let Ok(a) = std::fs::symlink_metadata(workspace) else {
+        return false;
+    };
+    let Ok(b) = std::fs::symlink_metadata(run) else {
+        return false;
+    };
+    if !a.is_file() || !b.is_file() || a.len() != b.len() {
+        return false;
+    }
+    let read = |path: &Path| read_file_bounded_to(path, "compare", MAX_UPLOAD_BYTES);
+    matches!((read(workspace), read(run)), (Ok(x), Ok(y)) if x == y)
+}
+
+struct Overlay<'a> {
+    root: &'a Path,
+    run_dir: &'a Path,
+    manifest_paths: &'a BTreeSet<String>,
+    notices: Vec<Notice>,
+    links: Vec<LinkRecord>,
+}
+
+impl Overlay<'_> {
+    fn walk(&mut self, relative: &str) -> Result<(), String> {
+        let source = if relative.is_empty() {
+            self.run_dir.to_path_buf()
+        } else {
+            self.run_dir.join(relative)
+        };
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(&source)
+            .map_err(|error| format!("read the Run directory: {error}"))?
+        {
+            let entry = entry.map_err(|error| format!("read the Run directory: {error}"))?;
+            if let Some(name) = entry.file_name().to_str() {
+                names.push(name.to_string());
+            }
+        }
+        names.sort();
+        for name in names {
+            if skipped_run_entry(&name) {
+                continue;
+            }
+            let rel = if relative.is_empty() {
+                name.clone()
+            } else {
+                format!("{relative}/{name}")
+            };
+            let target = self.run_dir.join(&rel);
+            let link: PathBuf = self.root.join(&rel);
+            let target_is_dir = std::fs::metadata(&target).is_ok_and(|m| m.is_dir());
+            match std::fs::symlink_metadata(&link) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    assert!(
+                        parents_are_real(self.root, &rel),
+                        "a run directory link must not be created under a link"
+                    );
+                    match make_link(&target, &link, target_is_dir) {
+                        Ok(kind) => self.links.push(LinkRecord { path: rel, kind }),
+                        Err(_) => self.notices.push(Notice {
+                            kind: "not-linked".into(),
+                            path: rel,
+                        }),
+                    }
+                }
+                Ok(metadata)
+                    if metadata.is_dir()
+                        && !metadata.file_type().is_symlink()
+                        && target_is_dir =>
+                {
+                    self.walk(&rel)?;
+                }
+                other => {
+                    let same_file = self.manifest_paths.contains(&rel)
+                        && other.as_ref().is_ok_and(|m| m.is_file())
+                        && same_regular_file(&link, &target);
+                    if !same_file && is_or_holds_manifest_path(self.manifest_paths, &rel) {
+                        self.notices.push(Notice {
+                            kind: "clash".into(),
+                            path: rel,
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Links the Run directory's entries into the workspace, after the project
+/// files are written. The project's own files win: a path that exists in the
+/// workspace is kept, and reported when it is a project file. Directories
+/// present on both sides are merged one level at a time.
+pub(crate) fn link_run_directory(
+    root: &Path,
+    run_dir: &Path,
+    manifest_paths: &BTreeSet<String>,
+) -> Result<Vec<Notice>, String> {
+    let mut overlay = Overlay {
+        root,
+        run_dir,
+        manifest_paths,
+        notices: Vec::new(),
+        links: Vec::new(),
+    };
+    let walked = overlay.walk("");
+    // Record what was made even when the walk failed part way, so the next
+    // render can remove it.
+    let tracked_path = root.join(HOSTED_TRACKED);
+    let mut tracked = read_hosted_tracking(&tracked_path)?;
+    tracked.links = overlay.links;
+    let record = serde_json::to_vec_pretty(&tracked)
+        .map_err(|error| format!("record hosted workspace: {error}"))?;
+    write_hosted_tracking(&tracked_path, &record)?;
+    walked?;
+    Ok(overlay.notices)
 }
 
 pub(crate) fn read_file_bounded_to(
@@ -385,5 +674,203 @@ mod tests {
             .map(|bytes| bytes.len())
             .expect_err("a read past the supplied limit must be refused");
         assert!(error.contains("exceeds its size limit"), "{error}");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod run_directory_tests {
+    use super::*;
+    use crate::local::protocol::ManifestEntry;
+    use tempfile::tempdir;
+
+    struct Setup {
+        _staged: tempfile::TempDir,
+        _work: tempfile::TempDir,
+        staged: PathBuf,
+        root: PathBuf,
+        run: PathBuf,
+    }
+
+    fn setup(project: &[(&str, &str)], run: &[(&str, &str)]) -> Setup {
+        let staged = tempdir().unwrap();
+        let work = tempdir().unwrap();
+        let root = std::fs::canonicalize(work.path()).unwrap().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let run_dir = std::fs::canonicalize(work.path()).unwrap().join("run");
+        std::fs::create_dir(&run_dir).unwrap();
+        let setup = Setup {
+            staged: staged.path().to_path_buf(),
+            _staged: staged,
+            _work: work,
+            root,
+            run: run_dir,
+        };
+        put(&setup.staged, project);
+        put(&setup.run, run);
+        setup
+    }
+
+    fn put(base: &Path, files: &[(&str, &str)]) {
+        for (path, body) in files {
+            let full = base.join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, body).unwrap();
+        }
+    }
+
+    fn manifest(project: &[(&str, &str)]) -> Vec<ManifestEntry> {
+        project
+            .iter()
+            .map(|(path, body)| ManifestEntry {
+                path: (*path).into(),
+                sha256: librepaper_base::digest::Digest::of(body.as_bytes()).to_hex(),
+                size: body.len() as u64,
+            })
+            .collect()
+    }
+
+    fn cycle(setup: &Setup, project: &[(&str, &str)]) -> Vec<Notice> {
+        let manifest = manifest(project);
+        unlink_run_directory(&setup.root).unwrap();
+        sync_hosted_workspace(&setup.staged, &setup.root, &manifest).unwrap();
+        let paths = manifest.iter().map(|e| e.path.clone()).collect();
+        link_run_directory(&setup.root, &setup.run, &paths).unwrap()
+    }
+
+    fn is_link(path: &Path) -> bool {
+        std::fs::symlink_metadata(path)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    }
+
+    fn listing(dir: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(current) = stack.pop() {
+            for entry in std::fs::read_dir(current).unwrap() {
+                let path = entry.unwrap().path();
+                let meta = std::fs::symlink_metadata(&path).unwrap();
+                out.push(path.strip_prefix(dir).unwrap().display().to_string());
+                if meta.is_dir() {
+                    stack.push(path);
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn run_directory_entries_appear_as_links_and_survive_a_second_cycle() {
+        let project = [("paper.qmd", "text")];
+        let s = setup(&project, &[("data.csv", "1,2"), ("R/helpers.R", "f <- 1")]);
+        assert!(cycle(&s, &project).is_empty());
+        assert!(is_link(&s.root.join("data.csv")));
+        assert!(is_link(&s.root.join("R")));
+        assert_eq!(std::fs::read_to_string(s.root.join("R/helpers.R")).unwrap(), "f <- 1");
+        assert!(!is_link(&s.root.join("paper.qmd")));
+        // A second cycle removes and recreates the links without error.
+        assert!(cycle(&s, &project).is_empty());
+        assert!(is_link(&s.root.join("data.csv")));
+        assert_eq!(std::fs::read_to_string(s.run.join("data.csv")).unwrap(), "1,2");
+    }
+
+    #[test]
+    fn a_project_file_wins_over_a_run_directory_file_and_is_reported() {
+        let project = [("paper.qmd", "mine"), ("notes.txt", "mine")];
+        let s = setup(&project, &[("notes.txt", "theirs"), ("other.txt", "x")]);
+        let notices = cycle(&s, &project);
+        assert_eq!(
+            notices,
+            vec![Notice { kind: "clash".into(), path: "notes.txt".into() }]
+        );
+        assert!(!is_link(&s.root.join("notes.txt")));
+        assert_eq!(std::fs::read_to_string(s.root.join("notes.txt")).unwrap(), "mine");
+        assert_eq!(std::fs::read_to_string(s.run.join("notes.txt")).unwrap(), "theirs");
+    }
+
+    #[test]
+    fn an_identical_file_on_both_sides_is_not_a_clash_but_a_different_one_is() {
+        let project = [("paper.qmd", "same"), ("refs.bib", "mine")];
+        let s = setup(&project, &[("paper.qmd", "same"), ("refs.bib", "theirs")]);
+        let notices = cycle(&s, &project);
+        assert_eq!(
+            notices,
+            vec![Notice { kind: "clash".into(), path: "refs.bib".into() }]
+        );
+    }
+
+    #[test]
+    fn a_folder_on_both_sides_is_merged() {
+        let project = [("paper.qmd", "t"), ("data/a.csv", "a")];
+        let s = setup(&project, &[("data/b.csv", "b")]);
+        assert!(cycle(&s, &project).is_empty());
+        assert!(!is_link(&s.root.join("data")));
+        assert!(!is_link(&s.root.join("data/a.csv")));
+        assert!(is_link(&s.root.join("data/b.csv")));
+    }
+
+    #[test]
+    fn a_folder_that_holds_a_project_file_but_not_a_directory_clashes() {
+        let project = [("paper.qmd", "t"), ("data/a.csv", "a")];
+        let s = setup(&project, &[("data", "i am a file")]);
+        let notices = cycle(&s, &project);
+        assert_eq!(
+            notices,
+            vec![Notice { kind: "clash".into(), path: "data".into() }]
+        );
+    }
+
+    #[test]
+    fn generated_and_hidden_names_are_skipped_silently() {
+        let project = [("paper.qmd", "t")];
+        let s = setup(
+            &project,
+            &[
+                (".git/config", "x"),
+                ("_quarto.yml", "x"),
+                ("_quarto-profile.yaml", "x"),
+                ("paper_files/a.png", "x"),
+                ("paper_cache/a", "x"),
+                ("_freeze/a", "x"),
+                ("kept.csv", "x"),
+            ],
+        );
+        assert!(cycle(&s, &project).is_empty());
+        for name in [".git", "_quarto.yml", "_quarto-profile.yaml", "paper_files", "paper_cache", "_freeze"] {
+            assert!(std::fs::symlink_metadata(s.root.join(name)).is_err(), "{name}");
+        }
+        assert!(is_link(&s.root.join("kept.csv")));
+    }
+
+    #[test]
+    fn a_dangling_link_is_gone_after_the_next_cycle() {
+        let project = [("paper.qmd", "t")];
+        let s = setup(&project, &[("a.csv", "a"), ("b.csv", "b")]);
+        cycle(&s, &project);
+        std::fs::remove_file(s.run.join("a.csv")).unwrap();
+        cycle(&s, &project);
+        assert!(std::fs::symlink_metadata(s.root.join("a.csv")).is_err());
+        assert!(is_link(&s.root.join("b.csv")));
+    }
+
+    #[test]
+    fn project_files_are_never_written_through_a_link() {
+        let first = [("paper.qmd", "t")];
+        let s = setup(&first, &[("figures/old.png", "png")]);
+        cycle(&s, &first);
+        assert!(is_link(&s.root.join("figures")));
+        let before = listing(&s.run);
+        // The project now holds a file under the previously linked folder.
+        let second = [("paper.qmd", "t"), ("figures/new.png", "new")];
+        put(&s.staged, &second);
+        let notices = cycle(&s, &second);
+        assert!(notices.is_empty());
+        assert!(!is_link(&s.root.join("figures")));
+        assert!(!is_link(&s.root.join("figures/new.png")));
+        assert!(is_link(&s.root.join("figures/old.png")));
+        assert_eq!(listing(&s.run), before);
+        assert_eq!(std::fs::read_to_string(s.root.join("figures/new.png")).unwrap(), "new");
     }
 }
