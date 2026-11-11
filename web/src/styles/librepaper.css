@@ -490,12 +490,16 @@ main.reader.no-preview:not(.editing) .sidebar {
 }
 .viewport.away {
   /* Keep the frame's viewport intact while it is out of the layout. Giving
-     an iframe zero dimensions can reset its document scroll position. */
+     an iframe zero dimensions can reset its document scroll position.
+     It is held off the screen as well as hidden: at the top left it lay over
+     the bar, and a frame painted before the hiding applied flashed its
+     controls there on a narrow window's switch to the source. */
   position: fixed;
   visibility: hidden;
   pointer-events: none;
   top: 0;
   left: 0;
+  translate: -100% 0;
   width: var(--held-width);
   height: var(--held-height);
 }
