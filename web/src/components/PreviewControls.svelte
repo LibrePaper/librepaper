@@ -6,8 +6,9 @@
   // system's own button colours, which made the paged preview look like a
   // different application from the flowing one an inch to its left. They are
   // ordinary controls in a slim band across the top of the preview pane now,
-  // above the frame rather than over it, so they never cover a page. A format
-  // with no controls renders nothing here and the band costs it no height.
+  // above the frame rather than over it, so they never cover a page. The band
+  // always offers the save buttons, so a flowing (HTML) preview has one too;
+  // a band with nothing in it renders nothing and costs the format no height.
   //
   // Nothing is decided here: the frame owns the page it is on, the scale it
   // actually drew at and every other fact in `view`, and says so over the
@@ -19,13 +20,14 @@
   import IconButton from "./IconButton.svelte";
   import { m } from "../lib/paraglide/messages.js";
 
-  // `view` is the whole validated viewer-state. `send` puts a message on the
-  // channel to the frame. `ondownload` is null when there is nothing to save
-  // yet, which hides the item rather than greying it: the band has no room to
-  // explain why. `findAsk` counts the times the frame asked for the search
-  // row (Ctrl or Cmd+F pressed inside it), so a second press focuses the field
-  // again even though the row is already open.
-  let { view, tool = "select", busy = false, dark = false, findAsk = 0, send, onmode, ontool, ondownload = null, onpresent } = $props();
+  // `view` is the whole validated viewer-state, or null when the format has no
+  // paged viewer (the PDF controls are then left out). `send` puts a message on
+  // the channel to the frame. `downloads` lists the formats that can be saved
+  // now, as `{ format, label }`; one entry is a plain button, several a menu.
+  // `ondownload(format)` saves one of them. `findAsk` counts the times the frame
+  // asked for the search row (Ctrl or Cmd+F pressed inside it), so a second
+  // press focuses the field again even though the row is already open.
+  let { view = null, tool = "select", busy = false, dark = false, findAsk = 0, send, onmode, ontool, downloads = [], ondownload, onpresent } = $props();
 
   // pdf.js's own steps, and its own ceiling and floor. A zoom button moves by
   // a tenth of the *drawn* scale rather than by a step of this list: the list
@@ -38,8 +40,8 @@
   // The scale the frame reports is in PDF points; the percentages a reader
   // reads are CSS pixels, and 100% is 96/72 of a point. `viewerScale` does the
   // same conversion on the way in.
-  const percent = $derived(view.scale ? Math.round(view.scale * 100) : null);
-  const at = $derived(view.scale ?? 1);
+  const percent = $derived(view?.scale ? Math.round(view.scale * 100) : null);
+  const at = $derived(view?.scale ?? 1);
   const step = (factor) =>
     onmode(String(Math.max(MIN, Math.min(MAX, Number((at * factor).toFixed(2))))));
 
@@ -49,7 +51,7 @@
   let pageText = $state("");
   let editingPage = false;
   $effect(() => {
-    const page = view.page;
+    const page = view?.page;
     if (!editingPage) pageText = page ? String(page) : "";
   });
   function jump(event) {
@@ -115,19 +117,20 @@
     }
   }
   const found = $derived(
-    !query ? "" : view.find && view.find.total > 0 ? m.previewcontrols_find_count({ current: view.find.current, total: view.find.total }) : view.find ? m.previewcontrols_find_none() : "",
+    !query ? "" : view?.find && view.find.total > 0 ? m.previewcontrols_find_count({ current: view.find.current, total: view.find.total }) : view?.find ? m.previewcontrols_find_none() : "",
   );
 
   function chosen(item) {
     if (item.value === "spread") send({ type: "viewer-spread", spread: !view.spread });
     else if (item.value === "invert") send({ type: "viewer-invert", invert: !view.invert });
     else if (item.value === "present") onpresent?.();
-    else if (item.value === "download") ondownload?.();
   }
 </script>
 
+{#if view || downloads.length}
 <div class="preview-band">
   <div class="preview-controls" role="group" aria-label={m.previewcontrols_page_view()}>
+    {#if view}
     <IconButton icon="panel-left" label={m.common_pages()} tone="plain" size="btn-icon-sm"
                 pressed={view.sidebar} onclick={() => send({ type: "viewer-sidebar", open: !view.sidebar })} />
     <IconButton icon="search" label={m.previewcontrols_search()} tone="plain" size="btn-icon-sm"
@@ -164,8 +167,26 @@
       <IconButton icon="hand" label={m.previewcontrols_move_page()} size="btn-icon-sm"
                   pressed={tool === "hand"} onclick={() => ontool("hand")} />
     </div>
+    {/if}
     <span class="preview-spacer"></span>
     {#if busy}<span class="preview-busy" role="status" aria-label={m.common_compiling()}><span class="spinner"></span></span>{/if}
+    {#if downloads.length === 1}
+      <IconButton icon="download" label={downloads[0].label} tone="plain" size="btn-icon-sm"
+                  onclick={() => ondownload(downloads[0].format)} />
+    {:else if downloads.length > 1}
+      <Menu onSelect={(item) => ondownload(item.value)} positioning={{ placement: "bottom-end" }}>
+        <MenuIconButton icon="download" label={m.common_download()} size="1rem" />
+        <ExplorerMenu>
+          {#each downloads as d (d.format)}
+            <Menu.Item value={d.format} class="menuitem">
+              <span class="menuitem-check" aria-hidden="true"></span>
+              <span class="menuitem-label">{d.label}</span>
+            </Menu.Item>
+          {/each}
+        </ExplorerMenu>
+      </Menu>
+    {/if}
+    {#if view}
     <Menu onSelect={chosen} positioning={{ placement: "bottom-end" }}>
       <MenuIconButton icon="more-horizontal" label={m.previewcontrols_more()} size="1rem" />
       <ExplorerMenu>
@@ -183,15 +204,9 @@
           <span class="menuitem-check" aria-hidden="true"></span>
           <span class="menuitem-label">{m.previewcontrols_present()}</span>
         </Menu.Item>
-        {#if ondownload}
-          <hr class="hr my-1" />
-          <Menu.Item value="download" class="menuitem">
-            <span class="menuitem-check" aria-hidden="true"></span>
-            <span class="menuitem-label">{m.common_download_pdf()}</span>
-          </Menu.Item>
-        {/if}
       </ExplorerMenu>
     </Menu>
+    {/if}
   </div>
   {#if searching}
     <div class="preview-find" role="search" aria-label={m.previewcontrols_search_document()}>
@@ -207,3 +222,4 @@
     </div>
   {/if}
 </div>
+{/if}

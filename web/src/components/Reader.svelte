@@ -3786,6 +3786,12 @@
   // this and the keyboard refuses a chord by this, so a greyed item and a dead
   // key are the same answer rather than two rules that can disagree in public.
   const can = $derived(availability(commandContext));
+  // What the preview band offers to save: the File menu's exports, in its order.
+  const previewDownloads = $derived([
+    can["download-pdf"] && { format: "pdf", label: m.common_download_pdf() },
+    can["download-html"] && { format: "html", label: m.commands_download_html() },
+    can["download-docx"] && { format: "docx", label: m.commands_download_docx() },
+  ].filter(Boolean));
 
   // Whether a selection can be cut, whether there is anything to undo: the
   // editor is asked, because only it knows, and it is asked when something is
@@ -4449,7 +4455,7 @@
   <!-- Kept mounted whatever the arrangement: taking the frame out of the tree
        would reload the document and lose the reader's place in it. -->
   {#snippet previewControls()}
-    {#if viewerView}
+    {#if viewerView || previewDownloads.length}
       <PreviewControls view={viewerView} tool={viewerTool} busy={previewBusy} dark={darkNow} {findAsk}
         onpresent={() => preview?.present()}
         send={(message) => {
@@ -4470,7 +4476,8 @@
           viewerTool = next;
           tell({ type: "viewer-tool", tool: next });
         }}
-        ondownload={can["download-pdf"] ? () => void downloadAs("pdf") : null} />
+        downloads={previewDownloads}
+        ondownload={(format) => void downloadAs(format)} />
     {/if}
   {/snippet}
   {#snippet waitingCover()}
