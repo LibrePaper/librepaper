@@ -2930,6 +2930,7 @@
   "rundirectorycontrol_change": "Ändern…",
   "rundirectorycontrol_choose_prompt": "Wählen Sie den Ordner, in dem Ihr Code ausgeführt wird.",
   "rundirectorycontrol_missing": "Ihr Ausführungsordner {path} fehlt.",
+  "rundirectorycontrol_choose_chip": "Ordner auswählen",
   "rundirectorycontrol_use_suggested": "{suggested} verwenden",
   "preview_render_run_directory_clash": "{path} liegt in LibrePaper und in Ihrem Ausführungsordner. Markdown verwendet die Kopie aus LibrePaper; Code liest die Datei aus Ihrem Ausführungsordner.",
   "preview_render_run_directory_not_linked": "{path} aus Ihrem Ausführungsordner konnte Quarto nicht bereitgestellt werden.",
