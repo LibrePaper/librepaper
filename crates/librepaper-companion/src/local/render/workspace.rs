@@ -515,6 +515,9 @@ struct Overlay<'a> {
     entry_dir: String,
     /// Entrypoint file name without its extension; empty disables the filter.
     entry_stem: String,
+    /// Workspace-relative path of the render result. It and its parent
+    /// directories are never linked, so the render writes into the workspace.
+    result: String,
     notices: Vec<Notice>,
     links: Vec<LinkRecord>,
 }
@@ -554,6 +557,9 @@ impl Overlay<'_> {
             } else {
                 format!("{relative}/{name}")
             };
+            if self.result == rel || self.result.starts_with(&format!("{rel}/")) {
+                continue;
+            }
             let target = self.run_dir.join(&rel);
             let link: PathBuf = self.root.join(&rel);
             let target_is_dir = std::fs::metadata(&target).is_ok_and(|m| m.is_dir());
@@ -602,6 +608,7 @@ pub(crate) fn link_run_directory(
     run_dir: &Path,
     manifest_paths: &BTreeSet<String>,
     entrypoint: &str,
+    result: &str,
 ) -> Result<Vec<Notice>, String> {
     let entry_path = Path::new(entrypoint);
     let entry_dir = entry_path
@@ -620,6 +627,7 @@ pub(crate) fn link_run_directory(
         manifest_paths,
         entry_dir,
         entry_stem,
+        result: result.replace('\\', "/"),
         notices: Vec::new(),
         links: Vec::new(),
     };
@@ -772,7 +780,7 @@ mod run_directory_tests {
         unlink_run_directory(&setup.root).unwrap();
         sync_hosted_workspace(&setup.staged, &setup.root, &manifest).unwrap();
         let paths = manifest.iter().map(|e| e.path.clone()).collect();
-        link_run_directory(&setup.root, &setup.run, &paths, "paper.qmd").unwrap()
+        link_run_directory(&setup.root, &setup.run, &paths, "paper.qmd", "paper.html").unwrap()
     }
 
     fn is_link(path: &Path) -> bool {
@@ -854,6 +862,37 @@ mod run_directory_tests {
                 kind: "clash".into(),
                 path: "refs.bib".into()
             }]
+        );
+    }
+
+    #[test]
+    fn the_result_path_and_its_parents_are_never_linked() {
+        let project = [("paper.qmd", "t")];
+        let s = setup(
+            &project,
+            &[("rendered/old.html", "o"), ("rendered/keep.txt", "k")],
+        );
+        let manifest = manifest(&project);
+        unlink_run_directory(&s.root).unwrap();
+        sync_hosted_workspace(&s.staged, &s.root, &manifest).unwrap();
+        let paths = manifest.iter().map(|e| e.path.clone()).collect();
+        let notices = link_run_directory(
+            &s.root,
+            &s.run,
+            &paths,
+            "paper.qmd",
+            "rendered/paper.html",
+        )
+        .unwrap();
+        assert!(notices.is_empty());
+        assert!(std::fs::symlink_metadata(s.root.join("rendered")).is_err());
+        assert_eq!(
+            std::fs::read_to_string(s.run.join("rendered/old.html")).unwrap(),
+            "o"
+        );
+        assert_eq!(
+            std::fs::read_to_string(s.run.join("rendered/keep.txt")).unwrap(),
+            "k"
         );
     }
 
