@@ -193,7 +193,8 @@ impl Server {
         room: &Arc<librepaper_room::room::Room>,
         query: Option<&str>,
         author: &str,
-        may_edit: bool,
+        sees_source: bool,
+        moderates: bool,
     ) -> Reply {
         let values: HashMap<String, String> = query
             .map(|raw| {
@@ -222,7 +223,10 @@ impl Server {
             Ok(state) => state,
             Err(error) => return refused("read comment state", &error),
         };
-        match room.comment_page(after, limit, author, may_edit).await {
+        match room
+            .comment_page(after, limit, author, sees_source, moderates)
+            .await
+        {
             Ok((views, page)) => write_json(
                 200,
                 &json!({
@@ -404,12 +408,19 @@ impl Server {
             Err(error) => return refused("open the room", &error),
         };
         let author = self.comment_author(&headers, arrival, &auth.viewer.id);
-        let may_edit = auth.viewer.at_least(Role::Editor);
+        let sees_source = auth.viewer.at_least(Role::Suggester);
+        let moderates = auth.viewer.at_least(Role::Editor);
 
         match *request.method() {
             Method::GET => {
-                self.comment_page_reply(&room, query.as_deref(), &author, may_edit)
-                    .await
+                self.comment_page_reply(
+                    &room,
+                    query.as_deref(),
+                    &author,
+                    sees_source,
+                    moderates,
+                )
+                .await
             }
             Method::POST => {
                 if cross_site_refused(&headers, arrival) {
@@ -440,12 +451,12 @@ impl Server {
                         if access::needs_render_digest(&current_who, &incoming) {
                             return None;
                         }
-                        // Only an editor can see the source, so only an editor
-                        // can name a range in it. Checked against the fresh
+                        // Only a suggester or editor can see the source, so only
+                        // they can name a range in it. Checked against the fresh
                         // viewer, as the rest of the write is.
                         if access::source_comment_forbidden(&current_who, &incoming) {
                             return Some((
-                                json!({"status": 403, "error": "only editors can comment on the source"}),
+                                json!({"status": 403, "error": "only suggesters and editors can comment on the source"}),
                                 false,
                             ));
                         }
@@ -478,7 +489,7 @@ impl Server {
                     // itself.
                     let event = room.prepare_comment_event(&result).await;
                     room.broadcast_prepared(None, &event).await;
-                    return write_json(200, &event.view_for(&author, may_edit));
+                    return write_json(200, &event.view_for(&author, sees_source, moderates));
                 }
                 // The status is the refusal table's, put there by
                 // `command_refusal_value`. Only the shapes that carry no
@@ -1259,7 +1270,8 @@ impl Server {
             return write_json(403, &cross_site_refusal());
         }
         let author = self.comment_author(headers, arrival, &who.id);
-        let may_edit = who.at_least(Role::Editor);
+        let sees_source = who.at_least(Role::Suggester);
+        let moderates = who.at_least(Role::Editor);
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
@@ -1286,7 +1298,8 @@ impl Server {
                 None,
                 librepaper_room::room::comments::COMMENT_PAGE_DEFAULT,
                 &author,
-                may_edit,
+                sees_source,
+                moderates,
             )
             .await
         {

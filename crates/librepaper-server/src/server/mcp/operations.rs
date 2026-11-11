@@ -1227,10 +1227,10 @@ impl Server {
         key: &OperationKey,
         digest: &str,
     ) -> Result<Value, Failure> {
-        if !current.at_least(Role::Editor) {
+        if !current.at_least(Role::Suggester) {
             return Err(Failure::new(
                 "permission_changed",
-                "editor access is required to withdraw tracked changes",
+                "suggester access is required to withdraw tracked changes",
             ));
         }
         let change_ids: Vec<String> = args["change_ids"]

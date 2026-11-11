@@ -264,22 +264,25 @@ impl CommentEvent {
     /// `author` decides only `mine` and `deletable`, which are derived from
     /// the row already read: a second caller asking for their own view costs
     /// no query.
-    pub fn view_for(&self, author: &str, is_owner: bool) -> Value {
-        let comment = if is_owner { &self.editor } else { &self.reader };
+    pub fn view_for(&self, author: &str, sees_source: bool, moderates: bool) -> Value {
+        let comment = if sees_source { &self.editor } else { &self.reader };
         let mut event = match (self.carries_comment, comment) {
             (true, Some(comment)) => {
                 let mut event = self.payload.clone();
-                if let Ok(value) =
-                    serde_json::to_value(CommentView::for_viewer(comment, author, is_owner))
-                {
+                if let Ok(value) = serde_json::to_value(CommentView::for_viewer(
+                    comment,
+                    author,
+                    sees_source,
+                    moderates,
+                )) {
                     event["comment"] = value;
                 }
                 event
             }
             // A row this audience may not see, or one that is no longer
-            // there. An editor still gets the event; a reader is told only
-            // that the annotation channel moved.
-            (true, None) if !is_owner => json!({"type": "annotation-redacted"}),
+            // there. A viewer who sees the source still gets the event; a
+            // reader is told only that the annotation channel moved.
+            (true, None) if !sees_source => json!({"type": "annotation-redacted"}),
             _ => self.payload.clone(),
         };
         if !author.is_empty() && self.reply_author == author {
@@ -305,21 +308,29 @@ pub struct CommentView {
 }
 
 impl CommentView {
-    pub fn for_viewer(comment: &Comment, author: &str, is_owner: bool) -> CommentView {
+    /// `sees_source` gates the source-level fields (anchor, attachment,
+    /// presentation). `moderates` decides `deletable`. The two are separate
+    /// rungs: a suggester reads the source but may not moderate.
+    pub fn for_viewer(
+        comment: &Comment,
+        author: &str,
+        sees_source: bool,
+        moderates: bool,
+    ) -> CommentView {
         let mine = !author.is_empty() && comment.author == author;
         let deletable = Moderation::may(
             CommentAction::Delete,
             comment,
             &Moderator {
                 key: author,
-                editor: is_owner,
+                editor: moderates,
             },
         );
         let mut comment = comment.clone();
         for reply in &mut comment.replies {
             reply.mine = !author.is_empty() && reply.author == author;
         }
-        if !is_owner {
+        if !sees_source {
             comment.original_anchor = None;
             comment.attachment = None;
             if comment.render_digest.is_empty() {
@@ -1838,10 +1849,16 @@ impl Room {
     /// document, which is the whole-collection dependency this path had no
     /// need of: a `reply` event names its thread and a `comment` event
     /// names itself.
-    pub async fn comment_event_for(&self, payload: &Value, author: &str, is_owner: bool) -> Value {
+    pub async fn comment_event_for(
+        &self,
+        payload: &Value,
+        author: &str,
+        sees_source: bool,
+        moderates: bool,
+    ) -> Value {
         self.prepare_comment_event(payload)
             .await
-            .view_for(author, is_owner)
+            .view_for(author, sees_source, moderates)
     }
 
     /// Everything one comment mutation has to be told with, read once.
@@ -1885,7 +1902,7 @@ impl Room {
             event.reader = event
                 .editor
                 .as_ref()
-                .map(|comment| CommentView::for_viewer(comment, "", false).comment);
+                .map(|comment| CommentView::for_viewer(comment, "", false, false).comment);
         }
         // Counts describe the whole collection, including rows outside a
         // client's loaded prefix. Never derived from a client delta, and
@@ -1932,9 +1949,9 @@ impl Room {
     /// The same, for a caller that has already prepared the event because it
     /// also wants a view of its own.
     pub async fn broadcast_prepared(&self, skip: Option<u64>, event: &CommentEvent) {
-        self.broadcast_editors_except(skip, &event.view_for("", true))
+        self.broadcast_editors_except(skip, &event.view_for("", true, true))
             .await;
-        self.broadcast_readers_except(skip, &event.view_for("", false))
+        self.broadcast_readers_except(skip, &event.view_for("", false, false))
             .await;
     }
 
@@ -1995,6 +2012,28 @@ mod moderation_tests {
     }
 
     const BOTH: [CommentAction; 2] = [CommentAction::Delete, CommentAction::Resolve];
+
+    #[test]
+    fn a_suggester_sees_the_source_fields_but_cannot_delete_others_comments() {
+        use librepaper_engine::storage::annotation::{AnchorStatus, DerivedAttachment, OriginalAnchor};
+        let comment = Comment {
+            author: "account:a".into(),
+            original_anchor: Some(OriginalAnchor::default()),
+            attachment: Some(DerivedAttachment {
+                tree_digest: String::new(),
+                status: AnchorStatus::Exact,
+                resolved_file_id: None,
+                resolved_range_utf16: None,
+                diagnostic: None,
+            }),
+            ..Comment::default()
+        };
+        let view = CommentView::for_viewer(&comment, "account:suggester", true, false);
+        assert!(view.comment.original_anchor.is_some());
+        assert!(view.comment.attachment.is_some());
+        assert!(!view.mine);
+        assert!(!view.deletable);
+    }
 
     #[test]
     fn an_editor_deletes_and_resolves_anyone_elses_comment() {

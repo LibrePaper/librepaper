@@ -52,13 +52,14 @@ impl Room {
     pub async fn thread_query_page(
         &self,
         author: &str,
-        editor: bool,
+        sees_source: bool,
+        moderates: bool,
         after: Option<comments::Position>,
         limit: usize,
     ) -> Result<crate::room::agent_query::ThreadWindow, crate::room::source_change::AgentError>
     {
         let (views, page) = self
-            .comment_page(after, limit, author, editor)
+            .comment_page(after, limit, author, sees_source, moderates)
             .await
             .map_err(crate::room::source_change::AgentError::from)?;
         let items = views
@@ -87,7 +88,8 @@ impl Room {
         &self,
         comment_id: Uuid,
         author: &str,
-        editor: bool,
+        sees_source: bool,
+        moderates: bool,
         after: Option<comments::Position>,
         limit: usize,
     ) -> Result<crate::room::agent_query::ThreadWindow, crate::room::source_change::AgentError>
@@ -111,8 +113,13 @@ impl Room {
         else {
             return Ok(missing);
         };
-        let mut thread = serde_json::to_value(CommentView::for_viewer(&comment, author, editor))
-            .unwrap_or(Value::Null);
+        let mut thread = serde_json::to_value(CommentView::for_viewer(
+            &comment,
+            author,
+            sees_source,
+            moderates,
+        ))
+        .unwrap_or(Value::Null);
         thread["comment_version"] = json!(comment.version());
         let items = page
             .replies
