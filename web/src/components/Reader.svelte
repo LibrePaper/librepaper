@@ -441,16 +441,6 @@
   }
   // The chip beside Run code and the prompt in the preview share this state.
   const runDir = createRunDirectory(SLUG, setRunDirectory);
-  // The Run directory is read while a Quarto document's code may run here.
-  $effect(() => {
-    if (localExecution && sourceFormat === "quarto" && runCodeOffered) untrack(() => runDir.load());
-    else untrack(() => runDir.reset());
-  });
-  // A render is waiting for a Run directory: none is set, or the one that was
-  // set no longer exists.
-  const runDirectoryBlocked = $derived(
-    sourceFormat === "quarto" && localExecution && runCodeOffered && runDir.loaded && !runDir.usable,
-  );
 
   async function setLatexOutput(format) {
     const next = format === "html" ? "html" : "pdf";
@@ -2197,6 +2187,16 @@
   // Where the toggle is offered: in the desktop app, for every editable
   // document whose format is set to this computer.
   const runCodeOffered = $derived(mayEdit && hasDesktop && buildPreferences.backend === "local");
+  // The Run directory is read while a Quarto document's code may run here.
+  $effect(() => {
+    if (localExecution && sourceFormat === "quarto" && runCodeOffered) untrack(() => runDir.load());
+    else untrack(() => runDir.reset());
+  });
+  // A render is waiting for a Run directory: none is set, or the one that was
+  // set no longer exists.
+  const runDirectoryBlocked = $derived(
+    sourceFormat === "quarto" && localExecution && runCodeOffered && runDir.loaded && !runDir.usable,
+  );
   const latexOutput = $derived(buildSettings.state.latexOutput);
   const typstOutput = $derived(buildSettings.state.typstOutput);
   // Compile the LaTeX HTML preview while typing: opted in, and only while the
@@ -4011,7 +4011,7 @@
       <span class="bar-toggle-label">{m.readerd_run_code()}</span>
     </label>
     {#if localExecution && sourceFormat === "quarto"}
-      <RunDirectoryControl state={runDir} />
+      <RunDirectoryControl directory={runDir} />
     {/if}
   {/if}
 {/snippet}
@@ -4033,7 +4033,7 @@
 <!-- The phone has no tools in its header, so the Run directory is asked for
      here while Run code is on. -->
 {#if compact && runCodeOffered && localExecution && sourceFormat === "quarto"}
-  <div class="run-directory-strip"><RunDirectoryControl align="start" state={runDir} /></div>
+  <div class="run-directory-strip"><RunDirectoryControl align="start" directory={runDir} /></div>
 {/if}
 
 <Nav {me} phoneMenu phoneShell={compact} phoneBare={tabsShown} hidden={barHidden && !compact}>
@@ -4513,7 +4513,7 @@
     <PreviewWaiting stage={waitStage} progress={waitProgress} />
   {/snippet}
   {#snippet runDirectoryCover()}
-    <RunDirectoryPrompt state={runDir} />
+    <RunDirectoryPrompt directory={runDir} />
   {/snippet}
   {#snippet emptyCover()}
     <p class="lp-text-secondary text-sm">{m.readerd_document_empty()}</p>

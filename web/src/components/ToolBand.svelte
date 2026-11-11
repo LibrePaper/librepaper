@@ -23,7 +23,7 @@
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import MenuIconButton from "./MenuIconButton.svelte";
-  import Icon from "./Icon.svelte";
+  import IconButton from "./IconButton.svelte";
   import { fitBand } from "../lib/band-fit.js";
   import { m } from "../lib/paraglide/messages.js";
 
@@ -142,7 +142,7 @@
     <span class="band-divider" data-divider></span>
     <!-- Drawn as the menu trigger is drawn, but as a plain button: a trigger
          outside its Menu has no menu to belong to and throws. -->
-    <span class="band-measured" data-more><button type="button" class="btn-icon icon-control icon-standard icon-plain" tabindex="-1"><Icon name="more-horizontal" size="1rem" /></button></span>
+    <span class="band-measured" data-more><IconButton icon="more-horizontal" label={m.previewcontrols_more()} tone="plain" /></span>
   </div>
 </div>
 

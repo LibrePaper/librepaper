@@ -6,7 +6,7 @@
   // The folder a Quarto document's code runs in on this computer, shown beside
   // the Run code switch while that is on. The state is shared with the prompt
   // in the preview; see run-directory.js.
-  let { state: rd, align = "end" } = $props();
+  let { directory: rd, align = "end" } = $props();
 
   const status = $derived(rd.status);
   const usable = $derived(rd.usable);

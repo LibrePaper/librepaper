@@ -5,7 +5,7 @@
   // Shown over the preview while a Quarto document that runs its code on this
   // computer has no usable Run directory, so nothing can render yet. It reads
   // and acts through the same state as the chip beside Run code.
-  let { state: rd } = $props();
+  let { directory: rd } = $props();
 
   const status = $derived(rd.status);
   const missing = $derived(Boolean(status?.path) && !rd.usable);
