@@ -1856,6 +1856,7 @@ mod tests {
                 project_digest: tree.digest().to_hex(),
                 tree,
                 texts: data.current.clone(),
+                retained: Default::default(),
             };
             return found(serde_json::to_value(head).unwrap());
         }
