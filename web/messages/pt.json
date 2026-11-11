@@ -2928,7 +2928,7 @@
   "rundirectorycontrol_missing": "A sua pasta de execução {path} não foi encontrada.",
   "rundirectorycontrol_choose_chip": "Escolher pasta de execução",
   "rundirectorycontrol_prompt_title": "Escolha uma pasta de execução",
-  "rundirectorycontrol_prompt_text": "O Quarto precisa de uma pasta local para executar o seu código.",
+  "rundirectorycontrol_prompt_text": "A pasta deste computador para os seus scripts e dados. Ela nunca é enviada.",
   "rundirectorycontrol_change_aria": "Alterar a pasta de execução",
   "rundirectorycontrol_suggested_caption": "Pasta sugerida",
   "rundirectorycontrol_current_caption": "Pasta atual",
@@ -2937,5 +2937,11 @@
   "rundirectorycontrol_choose_a_folder": "Escolher uma pasta",
   "preview_render_run_directory_clash": "{path} está no LibrePaper e na sua pasta de execução. O Markdown usa a cópia do LibrePaper; o código lê a da sua pasta de execução.",
   "preview_render_run_directory_not_linked": "Não foi possível disponibilizar {path}, da sua pasta de execução, ao Quarto.",
-  "preview_render_run_directory_missing_file": "O código procura arquivos na sua pasta de execução: {path}."
+  "preview_render_run_directory_missing_file": "O código procura arquivos na sua pasta de execução: {path}.",
+  "common_scripts_stay_local": "Os scripts e os dados ficam no seu computador. O Quarto os executa a partir da sua pasta de execução.",
+  "rundirectoryrow_caption": "Neste computador",
+  "rundirectoryrow_open": "Abrir pasta",
+  "rundirectoryrow_choose_with_run_code": "Os scripts e os dados ficam no seu computador, na pasta de execução escolhida com “Executar código”.",
+  "rundirectoryrow_needs_desktop": "Os scripts e os dados ficam no seu computador. O aplicativo de desktop os executa.",
+  "preview_render_run_directory_project_only": "{path} está no LibrePaper, mas o código lê os arquivos da sua pasta de execução. Copie-o para a sua pasta de execução."
 }

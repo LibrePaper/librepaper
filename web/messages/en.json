@@ -2928,7 +2928,7 @@
   "rundirectorycontrol_missing": "Your Run directory {path} is missing.",
   "rundirectorycontrol_choose_chip": "Select Run directory",
   "rundirectorycontrol_prompt_title": "Choose a Run directory",
-  "rundirectorycontrol_prompt_text": "Quarto needs a local folder to run your code.",
+  "rundirectorycontrol_prompt_text": "The folder on this computer for your scripts and data. It is never uploaded.",
   "rundirectorycontrol_change_aria": "Change Run directory",
   "rundirectorycontrol_suggested_caption": "Suggested folder",
   "rundirectorycontrol_current_caption": "Current folder",
@@ -2937,5 +2937,11 @@
   "rundirectorycontrol_choose_a_folder": "Choose a folder",
   "preview_render_run_directory_clash": "{path} is in LibrePaper and in your Run directory. Markdown uses the LibrePaper copy; code reads the one in your Run directory.",
   "preview_render_run_directory_not_linked": "{path} in your Run directory could not be made available to Quarto.",
-  "preview_render_run_directory_missing_file": "Code looks for files in your Run directory: {path}."
+  "preview_render_run_directory_missing_file": "Code looks for files in your Run directory: {path}.",
+  "common_scripts_stay_local": "Scripts and data stay on your computer. Quarto runs them from your Run directory.",
+  "rundirectoryrow_caption": "On this computer",
+  "rundirectoryrow_open": "Open folder",
+  "rundirectoryrow_choose_with_run_code": "Scripts and data stay on your computer, in the Run directory you choose with Run code.",
+  "rundirectoryrow_needs_desktop": "Scripts and data stay on your computer. The desktop app runs them.",
+  "preview_render_run_directory_project_only": "{path} is in LibrePaper, but code reads files from your Run directory. Copy it there."
 }

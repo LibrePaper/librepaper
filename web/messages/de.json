@@ -2928,7 +2928,7 @@
   "rundirectorycontrol_missing": "Ihr Ausführungsordner {path} fehlt.",
   "rundirectorycontrol_choose_chip": "Ausführungsordner auswählen",
   "rundirectorycontrol_prompt_title": "Wählen Sie einen Ausführungsordner",
-  "rundirectorycontrol_prompt_text": "Quarto benötigt einen lokalen Ordner, um Ihren Code auszuführen.",
+  "rundirectorycontrol_prompt_text": "Der Ordner auf diesem Computer für Ihre Skripte und Daten. Er wird niemals hochgeladen.",
   "rundirectorycontrol_change_aria": "Ausführungsordner ändern",
   "rundirectorycontrol_suggested_caption": "Vorgeschlagener Ordner",
   "rundirectorycontrol_current_caption": "Aktueller Ordner",
@@ -2937,5 +2937,11 @@
   "rundirectorycontrol_choose_a_folder": "Ordner auswählen",
   "preview_render_run_directory_clash": "{path} liegt in LibrePaper und in Ihrem Ausführungsordner. Markdown verwendet die Kopie aus LibrePaper; Code liest die Datei aus Ihrem Ausführungsordner.",
   "preview_render_run_directory_not_linked": "{path} aus Ihrem Ausführungsordner konnte Quarto nicht bereitgestellt werden.",
-  "preview_render_run_directory_missing_file": "Der Code sucht Dateien in Ihrem Ausführungsordner: {path}."
+  "preview_render_run_directory_missing_file": "Der Code sucht Dateien in Ihrem Ausführungsordner: {path}.",
+  "common_scripts_stay_local": "Skripte und Daten bleiben auf Ihrem Computer. Quarto führt sie aus Ihrem Ausführungsordner aus.",
+  "rundirectoryrow_caption": "Auf diesem Computer",
+  "rundirectoryrow_open": "Ordner öffnen",
+  "rundirectoryrow_choose_with_run_code": "Skripte und Daten bleiben auf Ihrem Computer, im Ausführungsordner, den Sie mit „Code ausführen“ wählen.",
+  "rundirectoryrow_needs_desktop": "Skripte und Daten bleiben auf Ihrem Computer. Die Desktop-App führt sie aus.",
+  "preview_render_run_directory_project_only": "{path} liegt in LibrePaper, aber Code liest Dateien aus Ihrem Ausführungsordner. Kopieren Sie sie in Ihren Ausführungsordner."
 }

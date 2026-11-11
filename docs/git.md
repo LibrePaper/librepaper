@@ -139,6 +139,8 @@ These stay out:
 
 A project holds up to 200 files, and one push can carry up to 32 MiB, by default. Your server may set other limits.
 
+For a Quarto project, the repository can also be the [Run directory](notebooks/quarto.html#git-tutorial) your code runs in. Scripts such as `.R` and `.py` files stay in the repository and are not sent to the project.
+
 ### Versions and commits
 
 Each named version becomes one commit, authored by the person who saved it (as `handle@site`), dated when it was saved, and titled with the version's name. A `LibrePaper-Version` trailer records which version it was. Each push becomes one named version, and it is not turned back into a second commit when you pull. If the project's history was trimmed past your last pull, pull starts again from the current files as one new commit. The commits you already have stay as they are.
