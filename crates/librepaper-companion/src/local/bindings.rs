@@ -99,8 +99,7 @@ impl BindingStore {
     /// The stored Run directory of a project, if it still canonicalizes to a
     /// directory.
     fn live_run_dir(&self, origin: &str, project: &str) -> Option<PathBuf> {
-        let record: RunDirRecord =
-            super::store::read_json(&self.run_dir_record(origin, project))?;
+        let record: RunDirRecord = super::store::read_json(&self.run_dir_record(origin, project))?;
         let root = std::fs::canonicalize(record.root).ok()?;
         root.is_dir().then_some(root)
     }
@@ -329,10 +328,19 @@ mod validation_tests {
         store
             .set_run_dir("https://one.test", "paper", folder.path())
             .unwrap();
-        assert!(store.run_dir_status("https://one.test", "paper").path.is_some());
-        assert!(store.run_dir_status("https://two.test", "paper").path.is_none());
+        assert!(store
+            .run_dir_status("https://one.test", "paper")
+            .path
+            .is_some());
+        assert!(store
+            .run_dir_status("https://two.test", "paper")
+            .path
+            .is_none());
         // Two spellings of one origin share a record.
-        assert!(store.run_dir_status("HTTPS://One.test/", "paper").path.is_some());
+        assert!(store
+            .run_dir_status("HTTPS://One.test/", "paper")
+            .path
+            .is_some());
     }
 
     #[test]
@@ -349,6 +357,8 @@ mod validation_tests {
             .is_err());
         let file = folder.path().join("a.txt");
         std::fs::write(&file, "x").unwrap();
-        assert!(store.set_run_dir("https://example.test", "paper", &file).is_err());
+        assert!(store
+            .set_run_dir("https://example.test", "paper", &file)
+            .is_err());
     }
 }

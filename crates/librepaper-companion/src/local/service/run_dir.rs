@@ -107,11 +107,21 @@ pub(super) async fn handle_default(
 
 fn use_default(inner: &Inner, origin: Option<&str>, project: &str) -> Result<Value, Failure> {
     let project = project_of(project)?;
-    place(inner, origin, &project, &BindingStore::default_run_dir(&project))
+    place(
+        inner,
+        origin,
+        &project,
+        &BindingStore::default_run_dir(&project),
+    )
 }
 
 /// Creates `folder` if needed and stores it as the project's Run directory.
-fn place(inner: &Inner, origin: Option<&str>, project: &str, folder: &Path) -> Result<Value, Failure> {
+fn place(
+    inner: &Inner,
+    origin: Option<&str>,
+    project: &str,
+    folder: &Path,
+) -> Result<Value, Failure> {
     std::fs::create_dir_all(folder)
         .map_err(|error| refuse(500, &format!("could not create the folder: {error}")))?;
     inner
@@ -144,7 +154,12 @@ fn open(inner: &Inner, origin: Option<&str>, project: &str) -> Result<Value, Fai
         .run_dir_status(origin.unwrap_or_default(), &project);
     let folder = match status.path {
         Some(path) if status.exists => path,
-        _ => return Err(refuse(404, "this project has no run directory on this computer")),
+        _ => {
+            return Err(refuse(
+                404,
+                "this project has no run directory on this computer",
+            ))
+        }
     };
     show_in_file_manager(&folder)
         .map_err(|error| refuse(500, &format!("could not open the folder: {error}")))?;
@@ -220,10 +235,7 @@ mod tests {
         assert_eq!(body["project"], "paper-abc");
         assert!(body["path"].is_null(), "{body}");
         assert_eq!(body["exists"], false);
-        assert!(body["suggested"]
-            .as_str()
-            .unwrap()
-            .ends_with("paper-abc"));
+        assert!(body["suggested"].as_str().unwrap().ends_with("paper-abc"));
     }
 
     #[tokio::test]

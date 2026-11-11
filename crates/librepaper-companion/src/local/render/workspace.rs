@@ -329,7 +329,7 @@ pub(crate) fn sync_hosted_workspace(
         files: written,
         links: Vec::new(),
     })
-        .map_err(|error| format!("record hosted workspace: {error}"))?;
+    .map_err(|error| format!("record hosted workspace: {error}"))?;
     if read_hosted_input(&tracked_path).as_deref() != Some(record.as_slice()) {
         write_hosted_tracking(&tracked_path, &record)?;
     }
@@ -546,9 +546,7 @@ impl Overlay<'_> {
                     }
                 }
                 Ok(metadata)
-                    if metadata.is_dir()
-                        && !metadata.file_type().is_symlink()
-                        && target_is_dir =>
+                    if metadata.is_dir() && !metadata.file_type().is_symlink() && target_is_dir =>
                 {
                     self.walk(&rel)?;
                 }
@@ -768,12 +766,18 @@ mod run_directory_tests {
         assert!(cycle(&s, &project).is_empty());
         assert!(is_link(&s.root.join("data.csv")));
         assert!(is_link(&s.root.join("R")));
-        assert_eq!(std::fs::read_to_string(s.root.join("R/helpers.R")).unwrap(), "f <- 1");
+        assert_eq!(
+            std::fs::read_to_string(s.root.join("R/helpers.R")).unwrap(),
+            "f <- 1"
+        );
         assert!(!is_link(&s.root.join("paper.qmd")));
         // A second cycle removes and recreates the links without error.
         assert!(cycle(&s, &project).is_empty());
         assert!(is_link(&s.root.join("data.csv")));
-        assert_eq!(std::fs::read_to_string(s.run.join("data.csv")).unwrap(), "1,2");
+        assert_eq!(
+            std::fs::read_to_string(s.run.join("data.csv")).unwrap(),
+            "1,2"
+        );
     }
 
     #[test]
@@ -783,11 +787,20 @@ mod run_directory_tests {
         let notices = cycle(&s, &project);
         assert_eq!(
             notices,
-            vec![Notice { kind: "clash".into(), path: "notes.txt".into() }]
+            vec![Notice {
+                kind: "clash".into(),
+                path: "notes.txt".into()
+            }]
         );
         assert!(!is_link(&s.root.join("notes.txt")));
-        assert_eq!(std::fs::read_to_string(s.root.join("notes.txt")).unwrap(), "mine");
-        assert_eq!(std::fs::read_to_string(s.run.join("notes.txt")).unwrap(), "theirs");
+        assert_eq!(
+            std::fs::read_to_string(s.root.join("notes.txt")).unwrap(),
+            "mine"
+        );
+        assert_eq!(
+            std::fs::read_to_string(s.run.join("notes.txt")).unwrap(),
+            "theirs"
+        );
     }
 
     #[test]
@@ -797,7 +810,10 @@ mod run_directory_tests {
         let notices = cycle(&s, &project);
         assert_eq!(
             notices,
-            vec![Notice { kind: "clash".into(), path: "refs.bib".into() }]
+            vec![Notice {
+                kind: "clash".into(),
+                path: "refs.bib".into()
+            }]
         );
     }
 
@@ -818,7 +834,10 @@ mod run_directory_tests {
         let notices = cycle(&s, &project);
         assert_eq!(
             notices,
-            vec![Notice { kind: "clash".into(), path: "data".into() }]
+            vec![Notice {
+                kind: "clash".into(),
+                path: "data".into()
+            }]
         );
     }
 
@@ -838,8 +857,18 @@ mod run_directory_tests {
             ],
         );
         assert!(cycle(&s, &project).is_empty());
-        for name in [".git", "_quarto.yml", "_quarto-profile.yaml", "paper_files", "paper_cache", "_freeze"] {
-            assert!(std::fs::symlink_metadata(s.root.join(name)).is_err(), "{name}");
+        for name in [
+            ".git",
+            "_quarto.yml",
+            "_quarto-profile.yaml",
+            "paper_files",
+            "paper_cache",
+            "_freeze",
+        ] {
+            assert!(
+                std::fs::symlink_metadata(s.root.join(name)).is_err(),
+                "{name}"
+            );
         }
         assert!(is_link(&s.root.join("kept.csv")));
     }
@@ -871,6 +900,9 @@ mod run_directory_tests {
         assert!(!is_link(&s.root.join("figures/new.png")));
         assert!(is_link(&s.root.join("figures/old.png")));
         assert_eq!(listing(&s.run), before);
-        assert_eq!(std::fs::read_to_string(s.root.join("figures/new.png")).unwrap(), "new");
+        assert_eq!(
+            std::fs::read_to_string(s.root.join("figures/new.png")).unwrap(),
+            "new"
+        );
     }
 }

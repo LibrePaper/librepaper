@@ -173,7 +173,10 @@ async fn run_with(
     let quarto = key.format == Format::Quarto;
     let run_dir = run_dir_override.or_else(|| binding.run_dir.clone());
     if quarto && run_dir.is_none() {
-        return failed(&request, "Choose a Run directory before running Quarto code.");
+        return failed(
+            &request,
+            "Choose a Run directory before running Quarto code.",
+        );
     }
     // Links from an earlier render go first, so no project file is written
     // under one.
@@ -192,7 +195,9 @@ async fn run_with(
             Err(error) => return failed(&request, &error),
         }
         expanded.command.push("--execute-dir".into());
-        expanded.command.push(run_dir.to_string_lossy().into_owned());
+        expanded
+            .command
+            .push(run_dir.to_string_lossy().into_owned());
     }
     // The check that the entry file exists comes after the uploads are in place.
     if let Err(error) = BindingStore::require_entrypoint_file(&root, &request.entrypoint) {
