@@ -15,13 +15,19 @@
   //
   // The panes themselves stay with the panel that owns them: what a tab
   // contains is the panel's business, and only the strip was ever shared.
+  //
+  // A panel with a single view still wears the strip, so every panel in the
+  // column is headed the same way: pass `title` instead of `tabs`, and the
+  // strip shows that one tab, already selected, with the children as its pane.
   import { Tabs } from "@skeletonlabs/skeleton-svelte";
 
   let {
     // Names the strip's ids: `<id>-tab-<value>` and `<id>-pane-<value>`, which
     // is how the rest of the reader reaches a particular tab.
     id,
-    label,
+    label = undefined,
+    // A panel with one view: its name, shown as the only tab.
+    title = "",
     // `{ id, label, dot }`. A dot is the small unread mark, and its value is
     // what it says to a screen reader.
     tabs = [],
@@ -32,17 +38,21 @@
     // Trailing controls on the same row. They act on the open tab only.
     actions = undefined,
   } = $props();
+
+  const SOLE = "main";
+  const shownTabs = $derived(title ? [{ id: SOLE, label: title }] : tabs);
+  const shownValue = $derived(title ? SOLE : value);
 </script>
 
 <Tabs
   class="panel-tabs-root"
-  {value}
-  onValueChange={(event) => onchange?.(event.value)}
+  value={shownValue}
+  onValueChange={(event) => { if (!title) onchange?.(event.value); }}
   ids={{ trigger: (one) => `${id}-tab-${one}`, content: (one) => `${id}-pane-${one}` }}
 >
   <div class="panel-tabs-row">
-    <Tabs.List class="panel-tabs {listClass}" aria-label={label}>
-      {#each tabs as tab (tab.id)}
+    <Tabs.List class="panel-tabs {listClass}" aria-label={label ?? title}>
+      {#each shownTabs as tab (tab.id)}
         <Tabs.Trigger value={tab.id} title={tab.label}>
           {tab.label}{#if tab.dot}<span class="unread" aria-label={tab.dot}></span>{/if}
         </Tabs.Trigger>
@@ -50,7 +60,11 @@
     </Tabs.List>
     {#if actions}<div class="panel-tabs-actions">{@render actions()}</div>{/if}
   </div>
-  {@render children?.()}
+  {#if title}
+    <Tabs.Content value={SOLE}>{@render children?.()}</Tabs.Content>
+  {:else}
+    {@render children?.()}
+  {/if}
 </Tabs>
 
 <style>
