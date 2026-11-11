@@ -26,6 +26,7 @@ import { createReaderCollaboration } from "./collaboration.js";
  * @typedef {{ pending: number, local: boolean, localPending: number, localError: string, joined: boolean }} PersistenceState
  * @typedef {{
  *   mayEdit: boolean,
+ *   suggestOnly: boolean,
  *   connected: boolean,
  *   persistence: PersistenceState,
  *   peers: number,
@@ -111,6 +112,8 @@ export function createOpening({
   const state = $state({
     // What this browser may do with the document: the role endpoint's answer.
     mayEdit: false,
+    // Whether this browser may only suggest: its edits are tracked changes.
+    suggestOnly: false,
     // Whether the socket is up.
     connected: false,
     // Whether this browser's work is safe, which is a different question from
@@ -188,6 +191,7 @@ export function createOpening({
         // Only a signed-in person has an account; the id is empty for anybody else.
         getAccountId,
         getCanEdit: () => state.mayEdit,
+        getSuggestOnly: () => state.suggestOnly,
         sourceSync,
         standalone,
         onMessage,
@@ -206,13 +210,14 @@ export function createOpening({
     /// at all.
     async prepare(document_) {
       // The role endpoint answer is authoritative for every affordance.
-      const ROLES = ["reader", "commenter", "editor", "owner"];
-      const allowed = ROLES.indexOf(document_.role) >= ROLES.indexOf("editor");
+      const ROLES = ["reader", "commenter", "suggester", "editor", "owner"];
+      const allowed = ROLES.indexOf(document_.role) >= ROLES.indexOf("suggester");
       // The desktop app must see the resolved permission on its first
       // configuration. In particular, account examples arrive as editable
       // Quarto documents; configuring before this assignment leaves the
       // desktop app inactive and the pane stuck on its Markdown fallback.
       state.mayEdit = Boolean(allowed);
+      state.suggestOnly = document_.role === "suggester";
       state.openedLocally = Boolean(document_.local_copy);
       roleKnown(document_);
       // Reader and commenter links receive an allowlisted projection of the

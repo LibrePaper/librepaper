@@ -170,7 +170,8 @@ export function uniquePresences(states, { localClient = null, localTab = "" } = 
 /// answer to "is this browser's work safe" changes.
 ///
 /// `mayEdit` is false for a reader, who joins to receive the text and never to
-/// change it.
+/// change it. `suggestOnly` is true for a suggester, who may change the text
+/// only as tracked changes and may not change which files exist.
 /** @param {{
  * send: (message: SessionMessage) => unknown,
  * onPeers?: (count: number) => void,
@@ -178,6 +179,7 @@ export function uniquePresences(states, { localClient = null, localTab = "" } = 
  * name?: string,
  * accountId?: string,
  * mayEdit?: boolean,
+ * suggestOnly?: boolean,
  * standalone?: boolean,
  * persistence?: { open?: (doc: LoroDoc, events: PersistenceEvents) => { hydration?: unknown, flush?: () => Promise<unknown>, close?: () => void } | null },
  * fetchReference?: (reference: string) => Promise<Uint8Array>,
@@ -196,6 +198,7 @@ export function createProjectSession({
   name,
   accountId = "",
   mayEdit = true,
+  suggestOnly = false,
   // A standalone session has no server. It is joined once its persistence has
   // hydrated, sends nothing, and its `pending` follows the persistence adapter
   // instead of a server acknowledgement.
@@ -832,6 +835,7 @@ export function createProjectSession({
 
     addFolder(path, rules) {
       if (!mayEdit) throw new Error(m.common_project_read_only());
+      if (suggestOnly) throw new Error(m.common_project_suggest_only());
       path = checkPlacement(rules, { kind: "folder", path }, this.list(), this.folders());
       meta.set(`folder:${path}`, true);
       doc.commit({ origin: DIRECTORY_ORIGIN });
@@ -840,6 +844,7 @@ export function createProjectSession({
 
     relocate(entries, destination, rules, rename = false) {
       if (!mayEdit) throw new Error(m.common_project_read_only());
+      if (suggestOnly) throw new Error(m.common_project_suggest_only());
       const plan = relocation(this.list(), this.folders(), entries, destination, rules, rename);
       // Remove asset keys first, so a batch move never overwrites a source.
       for (const file of plan.files) if (file.kind === "asset") assets.delete(file.id);
@@ -856,6 +861,7 @@ export function createProjectSession({
     /** @param {ProjectEntry[]} entries */
     removeEntries(entries) {
       if (!mayEdit) throw new Error(m.common_project_read_only());
+      if (suggestOnly) throw new Error(m.common_project_suggest_only());
       const roots = topEntries(entries);
       const current = this.list();
       const folders = folderPaths(current, this.folders());
@@ -880,6 +886,7 @@ export function createProjectSession({
     /** @param {ProjectFile} entry @param {string} path @param {ProjectRules} rules */
     duplicateEntry(entry, path, rules) {
       if (!mayEdit) throw new Error(m.common_project_read_only());
+      if (suggestOnly) throw new Error(m.common_project_suggest_only());
       const file = this.list().find((file) => file.kind === entry.kind && file.id === entry.id && file.path === entry.path);
       if (!file) throw new Error(m.project_session_file_changed());
       path = checkPlacement(rules, { ...file, path }, this.list(), this.folders());
@@ -958,6 +965,7 @@ export function createProjectSession({
     /** @param {string} path @param {string} [body] */
     addText(path, body = "") {
       if (!mayEdit) throw new Error(m.common_project_read_only());
+      if (suggestOnly) throw new Error(m.common_project_suggest_only());
       body = toLf(body);
       const id = mintId();
       const text = new LoroText();
@@ -976,6 +984,7 @@ export function createProjectSession({
     /** @param {string} id @param {string} path @param {"text" | "asset"} [kind] */
     renameFile(id, path, kind) {
       if (!mayEdit) throw new Error(m.common_project_read_only());
+      if (suggestOnly) throw new Error(m.common_project_suggest_only());
       const asset = assets.get(id);
       if (kind === "asset" || (kind === undefined && asset !== undefined)) {
         if (asset === undefined) return;
@@ -996,6 +1005,7 @@ export function createProjectSession({
     /** @param {string} id */
     removeFile(id) {
       if (!mayEdit) throw new Error(m.common_project_read_only());
+      if (suggestOnly) throw new Error(m.common_project_suggest_only());
       files.delete(id);
       paths.delete(id);
       doc.commit({ origin: DIRECTORY_ORIGIN });
@@ -1003,12 +1013,14 @@ export function createProjectSession({
 
     /** @param {string} path */
     removeAsset(path) {
+      if (suggestOnly) throw new Error(m.common_project_suggest_only());
       assets.delete(path);
       doc.commit({ origin: DIRECTORY_ORIGIN });
     },
 
     /** @param {string} path @param {string} sha */
     putAsset(path, sha) {
+      if (suggestOnly) throw new Error(m.common_project_suggest_only());
       assets.set(path, sha);
       doc.commit({ origin: DIRECTORY_ORIGIN });
     },

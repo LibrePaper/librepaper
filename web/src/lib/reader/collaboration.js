@@ -54,6 +54,7 @@ const capability = (document_) => JSON.stringify([
  * openRoom?: typeof defaultOpenRoom,
  * collab?: CollaborationModule | null,
  * getIdentity?: () => string, getAccountId?: () => string, getCanEdit?: () => boolean,
+ * getSuggestOnly?: () => boolean,
  * onMessage?: (message: RoomMessage) => void, onConnected?: (up: boolean) => void,
  * onPeers?: (count: number) => void, onState?: (state: CollaborationState) => void,
  * onSession?: (session: ReaderSession) => void,
@@ -72,6 +73,7 @@ export function createReaderCollaboration({
   getIdentity = () => "",
   getAccountId = () => "",
   getCanEdit = () => false,
+  getSuggestOnly = () => false,
   onMessage = () => {},
   onConnected = () => {},
   onPeers = () => {},
@@ -158,6 +160,8 @@ export function createReaderCollaboration({
       createdAt: nextDocument.created_at,
       key,
       mayEdit: canEdit,
+      // A suggester's session takes the text as tracked changes only.
+      suggestOnly: canEdit && Boolean(getSuggestOnly()),
       // Only a standalone session opts out of IndexedDB; `undefined` keeps the default.
       ...(standalone ? { standalone: true, persistence: null } : {}),
     });

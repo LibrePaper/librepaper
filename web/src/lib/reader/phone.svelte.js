@@ -38,7 +38,7 @@ const PANEL_ICONS = { files: "folder", outline: "list-tree", history: "history",
  *   tabs?: () => any[],
  *   badges?: () => Record<string, any>,
  *   participants?: () => any[],
- *   role?: () => { mayEdit: boolean, mayChat: boolean, me: any },
+ *   role?: () => { mayEdit: boolean, suggestOnly: boolean, mayChat: boolean, me: any },
  *   title?: () => string,
  *   source?: () => { format: string, compilesHere: boolean, toolbarPath: string, editing: boolean, editorReady: boolean, figureShown: boolean },
  *   demo?: () => { on: boolean, hint: string },
@@ -83,7 +83,7 @@ export function createPhone({
   badges = () => ({}),
   participants = () => [],
   // What the reader may do, and who they are.
-  role = () => ({ mayEdit: false, mayChat: false, me: {} }),
+  role = () => ({ mayEdit: false, suggestOnly: false, mayChat: false, me: {} }),
   // The document's title.
   title = () => "",
   // The source: its format, whether it compiles here, the open file's path,
@@ -200,7 +200,7 @@ export function createPhone({
   const outputSelectable = $derived(["latex", "typst", "markdown", "quarto"].includes(outputs().displayedFormat));
   const mobileCommandGroups = $derived.by(() => (
     arrangement.state.mobileCommand === "file" ? fileCommands({
-      mayEdit: role().mayEdit, demo: demo().on, demoHint: demo().hint, signedIn: Boolean(role().me?.id),
+      mayEdit: role().mayEdit, suggestOnly: role().suggestOnly, demo: demo().on, demoHint: demo().hint, signedIn: Boolean(role().me?.id),
       sourceFormatLatex: source().format === "latex", compilesHere: source().compilesHere, desktop: hasDesktop(),
       exportable: exportable(), canExportComments: canExportComments() && !demo().on, hasOpenFile: Boolean(source().toolbarPath),
     })
