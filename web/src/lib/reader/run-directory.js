@@ -56,3 +56,15 @@ export function shorten(path, home = "") {
 export function leaf(path) {
   return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
 }
+
+/** Which version of the Run directory page to show: the folder in use
+ * ("current"), a stored folder that is gone ("missing"), a suggestion to
+ * accept ("suggested"), or nothing to offer but the picker ("none").
+ * @param {{ path?: string, exists?: boolean, suggested?: string } | null | undefined} status
+ * @param {boolean} usable
+ * @returns {"current" | "missing" | "suggested" | "none"} */
+export function pageVariant(status, usable) {
+  if (usable && status?.path) return "current";
+  if (status?.path) return "missing";
+  return status?.suggested ? "suggested" : "none";
+}

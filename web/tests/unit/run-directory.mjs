@@ -1,7 +1,7 @@
 // The Run directory notices become warnings, and a missing file gets a hint.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { homeOf, leaf, logMissesAFile, noticeDiagnostics, runDirectoryDiagnostics, shorten } from "../../src/lib/reader/run-directory.js";
+import { homeOf, leaf, logMissesAFile, noticeDiagnostics, pageVariant, runDirectoryDiagnostics, shorten } from "../../src/lib/reader/run-directory.js";
 
 test("a clash and an unlinked entry become warnings", () => {
   const items = noticeDiagnostics([{ kind: "clash", path: "data/x.csv" }, { kind: "not-linked", path: "big" }, { kind: "later", path: "z" }, { kind: "clash", path: "" }]);
@@ -45,4 +45,12 @@ test("shorten replaces the home directory with ~", () => {
 test("leaf is the last path segment", () => {
   assert.equal(leaf("/a/b/c/"), "c");
   assert.equal(leaf("C:\\a\\b"), "b");
+});
+
+test("pageVariant picks the version of the page to show", () => {
+  assert.equal(pageVariant({ path: "/h/a", exists: true, suggested: "/h/s" }, true), "current");
+  assert.equal(pageVariant({ path: "/h/a", exists: false, suggested: "/h/s" }, false), "missing");
+  assert.equal(pageVariant({ path: "", suggested: "/h/s" }, false), "suggested");
+  assert.equal(pageVariant({ path: "", suggested: "" }, false), "none");
+  assert.equal(pageVariant(null, false), "none");
 });

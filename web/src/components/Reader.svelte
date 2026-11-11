@@ -2197,6 +2197,17 @@
   const runDirectoryBlocked = $derived(
     sourceFormat === "quarto" && localExecution && runCodeOffered && runDir.loaded && !runDir.usable,
   );
+  // The Run directory page, opened from the button beside Run code. It also
+  // shows by itself while a render is blocked.
+  let runDirPageOpen = $state(false);
+  $effect(() => {
+    if (!(sourceFormat === "quarto" && localExecution && runCodeOffered)) runDirPageOpen = false;
+  });
+  const runDirectoryPage = $derived(runDirectoryBlocked || runDirPageOpen);
+  function openRunDirPage() {
+    runDirPageOpen = true;
+    if (compact) arrangement.showMobileView("document");
+  }
   const latexOutput = $derived(buildSettings.state.latexOutput);
   const typstOutput = $derived(buildSettings.state.typstOutput);
   // Compile the LaTeX HTML preview while typing: opted in, and only while the
@@ -4016,7 +4027,7 @@
       <span class="bar-toggle-label">{m.readerd_run_code()}</span>
     </label>
     {#if localExecution && sourceFormat === "quarto"}
-      <RunDirectoryControl directory={runDir} />
+      <RunDirectoryControl directory={runDir} onopen={openRunDirPage} />
     {/if}
   {/if}
 {/snippet}
@@ -4038,7 +4049,7 @@
 <!-- The phone has no tools in its header, so the Run directory is asked for
      here while Run code is on. -->
 {#if runStripShown}
-  <div class="run-directory-strip" bind:offsetHeight={runStripMeasured}><RunDirectoryControl align="start" directory={runDir} /></div>
+  <div class="run-directory-strip" bind:offsetHeight={runStripMeasured}><RunDirectoryControl directory={runDir} onopen={openRunDirPage} /></div>
 {/if}
 
 <Nav {me} phoneMenu phoneShell={compact} phoneBare={tabsShown} hidden={barHidden && !compact}>
@@ -4518,7 +4529,7 @@
     <PreviewWaiting stage={waitStage} progress={waitProgress} />
   {/snippet}
   {#snippet runDirectoryCover()}
-    <RunDirectoryPrompt directory={runDir} />
+    <RunDirectoryPrompt directory={runDir} title={doc.title} blocking={runDirectoryBlocked} onclose={() => runDirPageOpen = false} />
   {/snippet}
   {#snippet emptyCover()}
     <p class="lp-text-secondary text-sm">{m.readerd_document_empty()}</p>
@@ -4538,10 +4549,10 @@
            src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
            controls={previewControls}
            notice={previewChip ? previewNotice : undefined}
-           cover={runDirectoryBlocked ? runDirectoryCover : painted.state.empty ? emptyCover : waitingUp ? waitingCover : undefined}
+           cover={runDirectoryPage ? runDirectoryCover : painted.state.empty ? emptyCover : waitingUp ? waitingCover : undefined}
            busy={previewBusy && !waitingUp}
            progress={!waitingUp ? waitProgress : null}
-           away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || (!runDirectoryBlocked && (noCompiler || failedBeforeRender)) || Boolean(projection.state.unreadable) || Boolean(previewCard)} />
+           away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || (!runDirectoryPage && (noCompiler || failedBeforeRender)) || Boolean(projection.state.unreadable) || Boolean(previewCard)} />
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
        so the split can be seen moving without the iframe reflowing on every
