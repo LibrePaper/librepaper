@@ -15,14 +15,15 @@ Every account that controls part of the deployment is a way in.
 
 ## Mail and certificates
 
-- If you publish a contact address on your domain, publish an SPF record that ends in `-all`, and sign outgoing mail with DKIM.
-- Publish a DMARC record. Start with `p=quarantine` and a `rua` address, read the reports for a week or two, then move to `p=reject`.
+If you publish a contact address on your domain, publish an SPF record that ends in `-all`, and sign outgoing mail with DKIM.
+
+Publish a DMARC record. Start with `p=quarantine` and a `rua` address, read the reports for a week or two, then move to `p=reject`.
 
 ```
 _dmarc.paper.example TXT "v=DMARC1; p=quarantine; rua=mailto:admin@paper.example"
 ```
 
-- If your DNS host supports CAA records, limit who may issue certificates. Caddy uses Let's Encrypt and falls back to ZeroSSL, which issues through Sectigo. Publish these records:
+If your DNS host supports CAA records, limit who may issue certificates. Caddy uses Let's Encrypt and falls back to ZeroSSL, which issues through Sectigo. Publish these records:
 
 ```
 paper.example. CAA 0 issue "letsencrypt.org"
@@ -30,15 +31,15 @@ paper.example. CAA 0 issue "sectigo.com"
 paper.example. CAA 0 issuewild ";"
 ```
 
-- If your DNS host does not support CAA records, watch Certificate Transparency logs for your domain and its subdomains with a service such as Cert Spotter.
-- The kit already sends `Strict-Transport-Security` with `includeSubDomains`. After a few weeks without problems, add `preload` and submit the domain to hstspreload.org.
-- With `preload`, every subdomain must stay on HTTPS.
+If your DNS host does not support CAA records, watch Certificate Transparency logs for your domain and its subdomains with a service such as Cert Spotter.
+
+The kit already sends `Strict-Transport-Security` with `includeSubDomains`. After a few weeks without problems, add `preload` and submit the domain to hstspreload.org. With `preload`, every subdomain must stay on HTTPS.
 
 ## The server
 
 ### SSH
 
-- Allow key logins only. Some cloud images turn on password logins through cloud-init, so set the value explicitly in a file that sorts first. sshd keeps the first value it reads.
+Allow key logins only. Some cloud images turn on password logins through cloud-init, so set the value explicitly in a file that sorts first. sshd keeps the first value it reads.
 
 ```sh
 # /etc/ssh/sshd_config.d/00-local.conf sorts before 50-cloud-init.conf
@@ -47,7 +48,7 @@ sudo sshd -t && sudo systemctl restart ssh
 sudo sshd -T | grep -E 'passwordauthentication|kbdinteractiveauthentication'   # both "no"
 ```
 
-- Repeat this on every new or rebuilt server.
+Repeat this on every new or rebuilt server.
 
 ### Network firewall
 
@@ -65,13 +66,9 @@ Docker publishes ports past ufw and other host firewalls, so filter at your prov
 | 7 | Allow | UDP | | 41641 | |
 | last | Deny | IPv4 | | | |
 
-- A stateless firewall does not track connections. Rule 1 admits replies to connections that the server opens, such as backups, image pulls and certificate renewals.
-- Rule 1 matches only packets with the ACK or RST flag, so it never admits a new connection.
-- Rules 5 and 6 match the source port. They admit DNS and NTP replies.
-- Rule 7 is for Tailscale. Leave it out if you do not use Tailscale.
-- Drop rule 2 once SSH runs over Tailscale, as described in [Private access with Tailscale](#private-access-with-tailscale).
-- Many provider firewalls filter IPv4 only. Check what listens on the server's IPv6 address.
-- Test with a listener, not a port scan. A closed port can look the same with and without the firewall.
+A stateless firewall does not track connections. Rule 1 admits replies to connections that the server opens, such as backups, image pulls and certificate renewals. It matches only packets with the ACK or RST flag, so it never admits a new connection. Rules 5 and 6 match the source port, which admits DNS and NTP replies. Rule 7 is for Tailscale, so leave it out if you do not use Tailscale. Drop rule 2 once SSH runs over Tailscale, as described in [Private access with Tailscale](#private-access-with-tailscale). Many provider firewalls filter IPv4 only, so check what listens on the server's IPv6 address.
+
+Test with a listener, not a port scan. A closed port can look the same with and without the firewall.
 
 ```sh
 # on the server
@@ -80,8 +77,7 @@ timeout 30 python3 -m http.server 18080 --bind 0.0.0.0
 nc -z -w5 203.0.113.10 18080
 ```
 
-- A change can take several minutes to apply.
-- Run other apps on the same server without publishing host ports. Put them behind the kit's Caddy instead, as described in [Other apps on the same server](advanced.html#other-apps-on-the-same-server).
+A change can take several minutes to apply. Run other apps on the same server without publishing host ports. Put them behind the kit's Caddy instead, as described in [Other apps on the same server](advanced.html#other-apps-on-the-same-server).
 
 ### Private access with Tailscale
 
@@ -92,8 +88,7 @@ Only you need SSH and the admin console, so they do not have to be open to the w
 
 [Tailscale](https://tailscale.com) solves this. It is a hosted service that joins your devices into a private network, called a tailnet, over encrypted WireGuard connections. Each device keeps the same private address in `100.64.0.0/10` on any network. The server joins as one more device. SSH and the admin console then answer only tailnet addresses, while the app and documents stay public.
 
-- Traffic between devices is end-to-end encrypted. Tailscale's coordination servers decide which devices belong to your tailnet, so you trust them with that.
-- The free plan covers personal use. [Headscale](https://github.com/juanfont/headscale) is a self-hosted replacement for the coordination server.
+Traffic between devices is end-to-end encrypted. Tailscale's coordination servers decide which devices belong to your tailnet, so you trust them with that. The free plan covers personal use. [Headscale](https://github.com/juanfont/headscale) is a self-hosted replacement for the coordination server.
 
 The setup takes seven steps.
 
