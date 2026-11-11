@@ -1330,7 +1330,8 @@ mod tests {
             format!("documents/{id}/labels/{}.tar.zst", digest.to_hex())
         );
         let with = |body: &str| {
-            let retained = std::collections::BTreeMap::from([("a.R".to_string(), body.to_string())]);
+            let retained =
+                std::collections::BTreeMap::from([("a.R".to_string(), body.to_string())]);
             label_archive_key(id, &digest, &retained)
         };
         assert_ne!(with("x"), plain);
