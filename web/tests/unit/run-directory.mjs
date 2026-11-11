@@ -1,7 +1,7 @@
 // The Run directory notices become warnings, and a missing file gets a hint.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { logMissesAFile, noticeDiagnostics, runDirectoryDiagnostics } from "../../src/lib/reader/run-directory.js";
+import { homeOf, leaf, logMissesAFile, noticeDiagnostics, runDirectoryDiagnostics, shorten } from "../../src/lib/reader/run-directory.js";
 
 test("a clash and an unlinked entry become warnings", () => {
   const items = noticeDiagnostics([{ kind: "clash", path: "data/x.csv" }, { kind: "not-linked", path: "big" }, { kind: "later", path: "z" }, { kind: "clash", path: "" }]);
@@ -29,4 +29,20 @@ test("only a failed Quarto render with a known folder gets the hint", () => {
   assert.deepEqual(runDirectoryDiagnostics({ format: "quarto", ok: true, log, notices: [] }, "/p"), []);
   assert.deepEqual(runDirectoryDiagnostics({ format: "typst", ok: false, log, notices: [{ kind: "clash", path: "a" }] }, "/p"), []);
   assert.equal(runDirectoryDiagnostics({ format: "quarto", ok: true, notices: [{ kind: "clash", path: "a" }] }).length, 1);
+});
+
+test("shorten replaces the home directory with ~", () => {
+  const home = homeOf("/home/ana/LibrePaper/thesis");
+  assert.equal(home, "/home/ana");
+  assert.equal(shorten("/home/ana/LibrePaper/thesis", home), "~/LibrePaper/thesis");
+  assert.equal(shorten("/home/ana", home), "~");
+  assert.equal(shorten("/home/anabel/x", home), "/home/anabel/x");
+  assert.equal(shorten("/data/x", ""), "/data/x");
+  assert.equal(homeOf("C:\\Users\\ana\\LibrePaper\\thesis"), "C:\\Users\\ana");
+  assert.equal(homeOf("/tmp/other"), "");
+});
+
+test("leaf is the last path segment", () => {
+  assert.equal(leaf("/a/b/c/"), "c");
+  assert.equal(leaf("C:\\a\\b"), "b");
 });

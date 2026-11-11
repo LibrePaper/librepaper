@@ -36,3 +36,23 @@ export function runDirectoryDiagnostics(result, runDirectoryPath = null) {
   }
   return items;
 }
+
+/** The home directory, read off the suggested folder, which is <home>/LibrePaper/<project>.
+ * @param {string} [suggested] */
+export function homeOf(suggested) {
+  const found = /^(.*)[\\/]LibrePaper[\\/][^\\/]+[\\/]?$/.exec(suggested || "");
+  return found?.[1] || "";
+}
+
+/** A path as shown: the home directory is `~`.
+ * @param {string} [path] @param {string} [home] */
+export function shorten(path, home = "") {
+  if (!home || !path) return path || "";
+  if (path === home) return "~";
+  return path.startsWith(home) && /[\\/]/.test(path[home.length]) ? "~" + path.slice(home.length) : path;
+}
+
+/** The last segment of a path. @param {string} path */
+export function leaf(path) {
+  return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
+}

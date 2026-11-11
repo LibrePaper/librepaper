@@ -184,6 +184,10 @@ export function createPreviewRenderer({
     const markdownPdf = ["markdown", "quarto"].includes(format) && start.buildPreferences.output === "pdf";
     const paged = (renderers.producesPdf(format) && !htmlPreview) || markdownPdf;
     const slow = format === "latex";
+    // A render on this computer runs the document's code, which can take a
+    // minute, and gives no sign of its own: it says it is running whatever
+    // the output, the way a paged compile does.
+    const announced = paged || htmlPreview || (start.localExecution && start.buildPreferences?.backend === "local");
     // Compiling while typing: a result for older text is still worth showing.
     const continuousHtml = htmlPreview && format === "latex" && Boolean(start.latexContinuous);
     // Shared by both guard points so asset fetching and compilation reject
@@ -240,7 +244,7 @@ export function createPreviewRenderer({
       // difference between this and a pane that blanks for four seconds.
       // The spinner starts before the figures are fetched, because fetching
       // them is part of the wait.
-      if (paged || htmlPreview) status.begin({ clearFailure: !facts().everPainted });
+      if (announced) status.begin({ clearFailure: !facts().everPainted });
       // The figures, if this document has any. A figure not yet here is
       // awaited before the first compile that needs it, and the page that is
       // already up stays up meanwhile: rendering without them would produce a
@@ -410,7 +414,7 @@ export function createPreviewRenderer({
       // afterwards must not turn it off under a newer one. This render may
       // have committed its own ticket by now, so the test is "nothing newer
       // committed", not "not yet committed".
-      if ((paged || htmlPreview) && coordinator.atLeastCommitted(ticket)) status.finish();
+      if (announced && coordinator.atLeastCommitted(ticket)) status.finish();
     }
   }
   return render;

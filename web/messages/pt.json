@@ -2932,6 +2932,8 @@
   "rundirectorycontrol_missing": "A sua pasta de execução {path} não foi encontrada.",
   "rundirectorycontrol_choose_chip": "Escolher pasta",
   "rundirectorycontrol_use_suggested": "Usar {suggested}",
+  "rundirectorycontrol_prompt_title": "Escolha onde o seu código é executado",
+  "rundirectorycontrol_prompt_text": "O Quarto executa o código deste documento numa pasta deste computador. Coloque lá os seus dados e scripts e refira-se a eles com caminhos relativos.",
   "preview_render_run_directory_clash": "{path} está no LibrePaper e na sua pasta de execução. O Markdown usa a cópia do LibrePaper; o código lê a da sua pasta de execução.",
   "preview_render_run_directory_not_linked": "Não foi possível disponibilizar {path}, da sua pasta de execução, ao Quarto.",
   "preview_render_run_directory_missing_file": "O código procura arquivos na sua pasta de execução: {path}."

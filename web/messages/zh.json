@@ -2917,6 +2917,8 @@
   "rundirectorycontrol_missing": "找不到您的运行文件夹 {path}。",
   "rundirectorycontrol_choose_chip": "选择文件夹",
   "rundirectorycontrol_use_suggested": "使用 {suggested}",
+  "rundirectorycontrol_prompt_title": "选择代码的运行位置",
+  "rundirectorycontrol_prompt_text": "Quarto 会在这台电脑上的一个文件夹中运行本文档的代码。请把数据和脚本放在该文件夹中，并使用相对路径引用它们。",
   "preview_render_run_directory_clash": "{path} 同时存在于 LibrePaper 和您的运行文件夹中。Markdown 使用 LibrePaper 中的副本；代码读取运行文件夹中的副本。",
   "preview_render_run_directory_not_linked": "运行文件夹中的 {path} 无法提供给 Quarto。",
   "preview_render_run_directory_missing_file": "代码会在您的运行文件夹中查找文件：{path}。"
