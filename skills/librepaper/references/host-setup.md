@@ -24,6 +24,7 @@ docker compose up -d
 
 - **`docs` must be a different host from `app`.** A published document runs its own scripts, and only a separate host keeps them away from a reader's sign-in. The server refuses a configuration where they share a host.
 - **Leave the files readable (0644).** The containers read them through bind mounts, and the 700 directory keeps them private. `chmod 600 librepaper.toml` breaks the containers.
+- **Anonymous access is off by default.** Four switches in `[access]` (`anonymous_reads`, `anonymous_comments`, `anonymous_suggests`, `anonymous_edits`) let a link work without sign-in, only when its owner chose "Anyone with the link". The suggest and edit switches have no effect yet. `docs/host/advanced.md` (Anonymous access) covers them and the upgrade change to `anonymous_comments`.
 - **A provider table without `publishers` lets nobody from that provider publish.** Sign-in then works but nobody can create a project, and suggest or edit access from that provider acts as comment access. `commenters` defaults to `["*"]`.
 - **`publishers` entries depend on the provider.** GitHub takes logins. Google, Entra and OpenID Connect take verified addresses or `"@domain"`. ORCID takes iDs. `"*"` admits every account of that provider. An address entry trusts the provider's administrators with that address, so prefer `@domain` entries for domains the provider owns.
 - **Callback URLs must match exactly:**

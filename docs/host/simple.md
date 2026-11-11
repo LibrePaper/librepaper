@@ -136,9 +136,13 @@ directory = "/var/lib/librepaper"
 database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepaper"
 # database_connections = 20         # PostgreSQL connection pool size
 
-# Optional. Set true to let people comment without signing in.
+# Optional. Anonymous access, per link. A link works without sign-in only when
+# its owner chose "Anyone with the link" and its switch here is true. All off by default.
 # [access]
-# anonymous_comments = false
+# anonymous_reads    = false  # read links may be opened without signing in
+# anonymous_comments = false  # comment links may be used without signing in
+# anonymous_suggests = false  # reserved: suggest links always need sign-in for now
+# anonymous_edits    = false  # reserved: edit links always need sign-in for now
 
 # Matches the edge network in compose.yaml; do not widen.
 [proxy]
@@ -327,6 +331,7 @@ Caddy obtains a certificate the first time a name is visited, so the first reque
 - It keeps your `.toml` files and `caddy/local.d/`.
 - It refuses to move to an older release.
 - It leaves the previous release's images on disk, about 250 MB per upgrade. `docker image prune` keeps them, because they are still referenced by digest.
+- `[access] anonymous_comments = true` now only lets owners mark comment links "Anyone with the link". Before, it did not let anyone comment without signing in, and existing links still need sign-in. See [Anonymous access](advanced.html#anonymous-access).
 
 Helpers from v0.0.45 and earlier read a digest-pinned kit wrong. With those, `./manage upgrade vX.Y.Z` stops with `the kit pins <digest>, not vX.Y.Z` and changes nothing. Replace the helper once, then upgrade as usual. Later helpers hand the upgrade to the kit's own helper by themselves.
 

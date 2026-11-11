@@ -12,8 +12,7 @@ Share with links, not people. The owner mints a read, comment, suggest or edit l
 | editor | edit the source; accept or reject suggestions; delete any comment |
 | owner | share, destroy |
 
-- Every link needs a sign-in. A reader, commenter, suggester or editor signs in with GitHub or Google the first time they open the link, and the browser keeps the key after that.
-- A suggest or edit link works only for accounts that the deployment's `publishers` setting admits. For any other account it acts as a comment link. See [Sign-in](host/simple.html#sign-in).
+- Each link has a "Who can use it" setting. "People who sign in" is the default: a reader, commenter, suggester or editor signs in with GitHub or Google the first time they open the link, and the browser keeps the key after that. "Anyone with the link" needs no sign-in, but only if the host allows it. The host turns this on for read and comment links, and an edit or suggest link always needs sign-in.- A suggest or edit link works only for accounts that the deployment's `publishers` setting admits. For any other account it acts as a comment link. See [Sign-in](host/simple.html#sign-in).
 - In a suggest link, track changes is always on and cannot be switched off. The editor enforces this, not the server, so someone with a modified browser could edit directly. Every edit is still attributed to its author and can be restored from History. The Share panel shows this warning.
 - The key is in the link's fragment, so it reaches no server log and no `Referer` header.
 - A document can have several links for each role. Give each a name. Only the owner sees the names.
