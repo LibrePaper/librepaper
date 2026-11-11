@@ -2700,14 +2700,17 @@
   // point opens the same dialog on the category it is about.
   let settingsOpen = $state(untrack(() => initialSettings === "tools"));
   let settingsCategory = $state(untrack(() => initialSettings || "general"));
+  // An entry to scroll to once Settings shows, such as a section's id.
+  let settingsEntry = $state("");
   let saveTemplateDialog = $state(null);
 
-  async function openSettings(category = "general") {
+  async function openSettings(category = "general", entry = "") {
     // The editor category carries the shortcut table, and the table greys what
     // the source cannot currently do, so the editor is asked before the page
     // that shows the answer is drawn.
     refreshEditAvailability();
     settingsCategory = category;
+    settingsEntry = entry;
     try { await lazy.settings.load(); } catch { lazyFailed(); return; }
     settingsOpen = true;
   }
@@ -3806,6 +3809,7 @@
   // thing the menu already calls, so a command cannot drift from the menu item
   // that names it. Nothing new is implemented in this function.
   async function runCommand(id) {
+    if (id === "report-problem") return openSettings("general", "diagnostics-report");
     if (id === "word-count") return openWordCount();
     if (EDIT_COMMANDS.includes(id)) return chooseEditCommand(id);
     if (id === "palette") { refreshEditAvailability(); try { await lazy.commandPalette.load(); } catch { lazyFailed(); return; } commandPalette = true; return; }
@@ -4629,7 +4633,7 @@
 <!-- The preferences dialog is shared by the navbar menu and sidebar button. -->
 {#if lazy.settings.component}
   {@const SettingsDialog = lazy.settings.component}
-  <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory}
+  <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory} bind:entry={settingsEntry}
                   remoteConnected={connected} remoteNote={connectionNote}
                   {keys} onkeys={setKeys}
                   {completion} oncompletion={setCompletion} {brackets} onbrackets={setBrackets} {latexAssist} onlatexassist={setLatexAssist} {proofing} onproofing={setProofing} {dialect} ondialect={setDialect} {check} oncheck={setCheck}

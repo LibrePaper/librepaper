@@ -1270,32 +1270,77 @@ async fn copy_diagnostics(app: &AppHandle) -> Result<(), String> {
         .map_err(|err| err.to_string())
 }
 
-// The standard macOS menu, with Settings in the app menu and LibrePaper's
-// own entries in Help. Windows and Linux windows keep no menu bar: the same
-// actions are in Settings and on the keyboard.
+// The macOS menu bar holds only the app menu, Edit and Window. Edit stays
+// because macOS needs its items for the clipboard and undo shortcuts to reach
+// the page. Everything else is in the page's own menu bar, so the two bars do
+// not repeat each other. Windows and Linux windows keep no menu bar: the same
+// actions are in the page and on the keyboard.
 #[cfg(target_os = "macos")]
 fn menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, HELP_SUBMENU_ID};
-    let menu = Menu::default(app)?;
-    let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
-    if let Some(first) = menu
-        .items()?
-        .first()
-        .and_then(|item| item.as_submenu().cloned())
-    {
-        first.insert_items(&[&PredefinedMenuItem::separator(app)?, &settings], 1)?;
-    }
-    if let Some(help) = menu
-        .get(HELP_SUBMENU_ID)
-        .and_then(|item| item.as_submenu().cloned())
-    {
-        help.append_items(&[
-            &MenuItem::with_id(app, "diagnostics", "Copy Diagnostics", true, None::<&str>)?,
-            &MenuItem::with_id(app, "report", "Report a Problem…", true, None::<&str>)?,
+    use tauri::menu::{
+        AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu, WINDOW_SUBMENU_ID,
+    };
+    let pkg_info = app.package_info();
+    let config = app.config();
+    let about_metadata = AboutMetadata {
+        name: Some(pkg_info.name.clone()),
+        version: Some(pkg_info.version.to_string()),
+        copyright: config.bundle.copyright.clone(),
+        authors: config.bundle.publisher.clone().map(|p| vec![p]),
+        ..Default::default()
+    };
+
+    let app_menu = Submenu::with_items(
+        app,
+        pkg_info.name.clone(),
+        true,
+        &[
+            &PredefinedMenuItem::about(app, None, Some(about_metadata))?,
             &MenuItem::with_id(app, "updates", "Check for Updates…", true, None::<&str>)?,
-        ])?;
-    }
-    Ok(menu)
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::services(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::show_all(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::quit(app, None)?,
+        ],
+    )?;
+
+    let edit_menu = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+
+    // The id makes macOS treat this as the Window menu.
+    let window_menu = Submenu::with_id_and_items(
+        app,
+        WINDOW_SUBMENU_ID,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            &PredefinedMenuItem::fullscreen(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+        ],
+    )?;
+
+    Menu::with_items(app, &[&app_menu, &edit_menu, &window_menu])
 }
 
 #[cfg(target_os = "macos")]
@@ -1305,27 +1350,6 @@ fn menu_event(app: &AppHandle, id: &str) {
             if let Some(window) = focused_window(app) {
                 let _ = window
                     .eval("window.dispatchEvent(new CustomEvent(\"librepaper:open-settings\"))");
-            }
-        }
-        "diagnostics" => {
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                match copy_diagnostics(&app).await {
-                    Ok(()) => crate::notice::show(
-                        &app,
-                        "Diagnostics copied. Paste them into a bug report.",
-                        4000,
-                    ),
-                    Err(err) => crate::notice::show(&app, &err, 6000),
-                }
-            });
-        }
-        "report" => {
-            if let Err(err) = app.opener().open_url(
-                "https://github.com/LibrePaper/librepaper/issues",
-                None::<&str>,
-            ) {
-                shell_log::write(&format!("could not open the browser: {err}"));
             }
         }
         "updates" => crate::updater::check_now(app.clone()),
