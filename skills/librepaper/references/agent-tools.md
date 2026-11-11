@@ -50,14 +50,14 @@ Create or reply to comments, resolve threads, label versions. Required: `action`
 Propose replacements for captured ranges. Required: `view_id`, `operation`, `patches`.
 
 - `patches[]`: `{range_id, replacement, find?}`, 1 to 100. `replacement` is at most 60000 characters. `find` is at most 8192 characters and must be a unique exact substring within the range. A larger change should be split into several patches.
-- `publish`: `"suggestions"` lands at once as pending tracked changes for an editor to accept or reject (Edit role). `"private"` keeps a candidate without changing the document.
+- `publish`: `"suggestions"` lands at once as pending tracked changes for an editor to accept or reject (Suggest role or higher). `"private"` keeps a candidate without changing the document.
 - `batch`: `"atomic"` or `"independent"`. Independent only with `publish: "private"`. A published batch is all-or-nothing.
 - `validation`: `"source"` or `"compile"` (with `path` of the file to render).
 - `dependencies`: extra `range_id`s the patch relies on.
 
 ## document_withdraw
 
-Withdraw your own pending tracked changes. Edit role. Required: `operation`, `change_ids`.
+Withdraw your own pending tracked changes. Suggest role or higher. Required: `operation`, `change_ids`.
 
 - `change_ids[]`: the ids that `document_propose` returned in `effects` as `[{"kind":"change","id":"..."}]`.
 - Only your own pending changes. Changes by others, or already accepted or rejected, are refused.

@@ -11,7 +11,7 @@ The steps below (1 to 4) are the MCP route that keeps the token out of the chat,
 
 ## 1. Get a token
 
-In LibrePaper, open the project, then the Agent panel (the robot icon in the sidebar), then the Agent tab, and click New token. Pick a permission (Read, Comment or Edit) and an expiry. You can also name the token (it defaults to "Agent"; comments appear under it), and set an hourly comment limit. Click Create token. Open "Other connection methods" and click the copy icon next to Token for the bare `lpt_...` string. The owner can copy the token again from its row: the copy icon there copies the connection instructions, which include the token.
+In LibrePaper, open the project, then the Agent panel (the robot icon in the sidebar), then the Agent tab, and click New token. Pick a permission (Read, Comment, Suggest or Edit) and an expiry. You can also name the token (it defaults to "Agent"; comments appear under it), and set an hourly comment limit. Click Create token. Open "Other connection methods" and click the copy icon next to Token for the bare `lpt_...` string. The owner can copy the token again from its row: the copy icon there copies the connection instructions, which include the token.
 
 ## 2. Install the `librepaper` command
 
