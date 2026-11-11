@@ -94,6 +94,7 @@ fn projection_wire(
     let librepaper_document::document::projection::Projected {
         projection,
         mut texts,
+        retained,
     } = projected;
     texts.retain(|path, _| {
         projection
@@ -112,6 +113,7 @@ fn projection_wire(
         source_format: source_format.to_string(),
         files: projection.files,
         texts,
+        retained,
     };
     serde_json::to_value(snapshot).expect("a snapshot serializes")
 }
@@ -1389,5 +1391,43 @@ mod head_digest_tests {
             head_digest(&plain.encode()).unwrap(),
             head_digest(&with_zero.encode()).unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod retained_wire_tests {
+    use super::*;
+
+    fn wire(retained: &[(&str, &str)]) -> Value {
+        let projected = librepaper_document::document::projection::Projected {
+            retained: retained
+                .iter()
+                .map(|(path, body)| (path.to_string(), body.to_string()))
+                .collect(),
+            ..Default::default()
+        };
+        projection_wire(
+            MomentMetadata {
+                sha: "label-1",
+                at: "",
+                by: "",
+                label: None,
+                reason: "",
+            },
+            "store",
+            "markdown",
+            projected,
+        )
+    }
+
+    #[test]
+    fn the_history_response_carries_retained_texts() {
+        let body = wire(&[("analysis.R", "x <- 1")]);
+        assert_eq!(body["retained"]["analysis.R"], "x <- 1");
+    }
+
+    #[test]
+    fn the_history_response_omits_retained_when_there_are_none() {
+        assert!(wire(&[]).get("retained").is_none());
     }
 }

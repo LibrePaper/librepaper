@@ -162,6 +162,17 @@ async fn fetch_live_project(
         }
         files.push((relative, bytes));
     }
+    // Texts the allow list would refuse today still belong to the project.
+    // They carry no digest to check; one whose path cannot be written locally
+    // is skipped rather than failing the whole export.
+    for (path, body) in &snapshot.retained {
+        if snapshot.tree.files.contains_key(path) {
+            continue;
+        }
+        if let Ok(relative) = output_path(path) {
+            files.push((relative, body.as_bytes().to_vec()));
+        }
+    }
     Ok(files)
 }
 
