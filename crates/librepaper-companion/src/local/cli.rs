@@ -156,7 +156,10 @@ async fn start_foreground(port: u16) {
         .join("local")
         .join("workspaces");
     let runner: Arc<dyn Runner> =
-        Arc::new(NativeRunner::with_hosted_workspaces(workspaces.clone()));
+        Arc::new(NativeRunner::with_hosted_workspaces(
+            workspaces.clone(),
+            crate::local::bindings::BindingStore::run_dirs_home(&state_home),
+        ));
     // The credential is written to a private file before the first request
     // is served, so `endpoint` can read it as soon as `health` answers.
     let service = LocalService::with_hosted_workspaces(

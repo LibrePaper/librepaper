@@ -29,6 +29,29 @@ pub struct ProjectBinding {
     pub origin: String,
     pub project: String,
     pub root: PathBuf,
+    /// The folder the person's own code runs in, when they chose one and it
+    /// still exists. Quarto runs with it as its working directory.
+    pub run_dir: Option<PathBuf>,
+}
+
+/// What the page is told about a project's Run directory.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunDirStatus {
+    /// The stored folder, canonical at the time it was chosen. `None` when
+    /// none is set.
+    pub path: Option<PathBuf>,
+    /// Whether `path` is still a directory.
+    pub exists: bool,
+    /// The default location, never created by asking for it.
+    pub suggested: PathBuf,
+}
+
+/// What a run-directory record holds.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RunDirRecord {
+    origin: String,
+    project: String,
+    root: PathBuf,
 }
 
 /// The one binding id a job may name: a document the serving deployment
@@ -41,6 +64,8 @@ pub struct BindingStore {
     /// Where hosted workspaces live, one directory per deployment and
     /// project slug.
     hosted: PathBuf,
+    /// Where run-directory records live, one JSON file per origin and project.
+    run_dirs: PathBuf,
 }
 
 impl BindingStore {
@@ -48,7 +73,89 @@ impl BindingStore {
     /// copy of the shared tree, written from the job's uploads before each
     /// render.
     pub fn new(hosted: PathBuf) -> Self {
-        Self { hosted }
+        let run_dirs = hosted.join("run-directories");
+        Self { hosted, run_dirs }
+    }
+
+    /// As `new`, with run-directory records kept under `run_dirs`.
+    pub fn with_run_dirs(hosted: PathBuf, run_dirs: PathBuf) -> Self {
+        Self { hosted, run_dirs }
+    }
+
+    /// Where run-directory records live under a state home.
+    pub fn run_dirs_home(state_home: &Path) -> PathBuf {
+        state_home
+            .join("librepaper")
+            .join("local")
+            .join("run-directories")
+    }
+
+    fn run_dir_record(&self, origin: &str, project: &str) -> PathBuf {
+        let key = format!("{}\n{}", super::store::normalize_origin(origin), project);
+        let name = librepaper_base::digest::Digest::of(key.as_bytes()).prefix(32);
+        self.run_dirs.join(format!("{name}.json"))
+    }
+
+    /// The stored Run directory of a project, if it still canonicalizes to a
+    /// directory.
+    fn live_run_dir(&self, origin: &str, project: &str) -> Option<PathBuf> {
+        let record: RunDirRecord =
+            super::store::read_json(&self.run_dir_record(origin, project))?;
+        let root = std::fs::canonicalize(record.root).ok()?;
+        root.is_dir().then_some(root)
+    }
+
+    /// `<home>/LibrePaper/<project>`: where the Run directory goes when the
+    /// person takes the default.
+    pub fn default_run_dir(project: &str) -> PathBuf {
+        use etcetera::base_strategy::{BaseStrategy, Xdg};
+        let home = Xdg::new()
+            .map(|strategy| strategy.home_dir().to_path_buf())
+            .unwrap_or_default();
+        home.join("LibrePaper").join(project)
+    }
+
+    pub fn run_dir_status(&self, origin: &str, project: &str) -> RunDirStatus {
+        let suggested = Self::default_run_dir(project);
+        let stored: Option<RunDirRecord> =
+            super::store::read_json(&self.run_dir_record(origin, project));
+        match stored {
+            None => RunDirStatus {
+                path: None,
+                exists: false,
+                suggested,
+            },
+            Some(record) => {
+                let exists = std::fs::canonicalize(&record.root)
+                    .map(|root| root.is_dir())
+                    .unwrap_or(false);
+                RunDirStatus {
+                    path: Some(record.root),
+                    exists,
+                    suggested,
+                }
+            }
+        }
+    }
+
+    /// Stores `root` as the project's Run directory. It must be a directory.
+    pub fn set_run_dir(&self, origin: &str, project: &str, root: &Path) -> Result<(), String> {
+        let project = super::store::valid_project(project)
+            .ok_or_else(|| "that project name is not valid".to_string())?;
+        let root = std::fs::canonicalize(root)
+            .map_err(|error| format!("could not open that folder: {error}"))?;
+        if !root.is_dir() {
+            return Err("that is not a folder".into());
+        }
+        std::fs::create_dir_all(&self.run_dirs)
+            .map_err(|error| format!("could not store the folder: {error}"))?;
+        let record = RunDirRecord {
+            origin: super::store::normalize_origin(origin),
+            project: project.clone(),
+            root,
+        };
+        super::store::write_private_json(&self.run_dir_record(origin, &project), &record)
+            .map_err(|error| format!("could not store the folder: {error}"))
     }
 
     fn hosted_binding(&self, origin: &str, project: &str) -> Option<ProjectBinding> {
@@ -67,6 +174,7 @@ impl BindingStore {
             origin,
             project: project.to_string(),
             root,
+            run_dir: self.live_run_dir(&origin, project),
         })
     }
 
@@ -171,5 +279,75 @@ mod validation_tests {
                 "../paper.qmd"
             )
             .is_err());
+    }
+
+    #[test]
+    fn a_run_directory_round_trips_and_is_offered_on_the_binding() {
+        let hosted = tempfile::tempdir().unwrap();
+        let records = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let store = BindingStore::with_run_dirs(hosted.path().into(), records.path().into());
+        let origin = "https://example.test";
+        let none = store.run_dir_status(origin, "paper");
+        assert_eq!(none.path, None);
+        assert!(!none.exists);
+        assert!(none.suggested.ends_with("LibrePaper/paper"));
+        store.set_run_dir(origin, "paper", folder.path()).unwrap();
+        let canonical = std::fs::canonicalize(folder.path()).unwrap();
+        let status = store.run_dir_status(origin, "paper");
+        assert_eq!(status.path, Some(canonical.clone()));
+        assert!(status.exists);
+        let binding = store.get_scoped(HOSTED_BINDING, origin, "paper").unwrap();
+        assert_eq!(binding.run_dir, Some(canonical));
+    }
+
+    #[test]
+    fn a_record_whose_folder_was_deleted_gives_no_run_dir() {
+        let hosted = tempfile::tempdir().unwrap();
+        let records = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let folder = parent.path().join("code");
+        std::fs::create_dir(&folder).unwrap();
+        let store = BindingStore::with_run_dirs(hosted.path().into(), records.path().into());
+        let origin = "https://example.test";
+        store.set_run_dir(origin, "paper", &folder).unwrap();
+        std::fs::remove_dir(&folder).unwrap();
+        let status = store.run_dir_status(origin, "paper");
+        assert!(status.path.is_some());
+        assert!(!status.exists);
+        let binding = store.get_scoped(HOSTED_BINDING, origin, "paper").unwrap();
+        assert_eq!(binding.run_dir, None);
+    }
+
+    #[test]
+    fn two_origins_with_the_same_slug_do_not_share_a_run_directory() {
+        let hosted = tempfile::tempdir().unwrap();
+        let records = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let store = BindingStore::with_run_dirs(hosted.path().into(), records.path().into());
+        store
+            .set_run_dir("https://one.test", "paper", folder.path())
+            .unwrap();
+        assert!(store.run_dir_status("https://one.test", "paper").path.is_some());
+        assert!(store.run_dir_status("https://two.test", "paper").path.is_none());
+        // Two spellings of one origin share a record.
+        assert!(store.run_dir_status("HTTPS://One.test/", "paper").path.is_some());
+    }
+
+    #[test]
+    fn an_invalid_project_or_a_file_is_refused() {
+        let hosted = tempfile::tempdir().unwrap();
+        let records = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let store = BindingStore::with_run_dirs(hosted.path().into(), records.path().into());
+        assert!(store
+            .set_run_dir("https://example.test", "../escape", folder.path())
+            .is_err());
+        assert!(store
+            .set_run_dir("https://example.test", "", folder.path())
+            .is_err());
+        let file = folder.path().join("a.txt");
+        std::fs::write(&file, "x").unwrap();
+        assert!(store.set_run_dir("https://example.test", "paper", &file).is_err());
     }
 }
