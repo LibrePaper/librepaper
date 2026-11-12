@@ -428,11 +428,11 @@ pub async fn push(
         }
     }
 
-    // An older server refuses the `rename` key it does not know. That push
-    // is sent once more as the delete and the create it was before, with a
-    // new request key, since the refused one was never recorded.
+    // An older server cannot parse the `rename` key and answers the body as
+    // malformed. That push is sent once more as the delete and the create it
+    // was before, with a new request key, since the refused one was never
+    // recorded.
     let mut pair_renames = true;
-    let renamed = find_renames(&state.files, &found, &changes).len();
     loop {
         let plan = plan_change(&state.files, &found, &changes, &bases, pair_renames);
         if plan.is_empty() {
@@ -481,6 +481,7 @@ pub async fn push(
         // by the next push. When the save fails nothing has been sent.
         state.pending = Some(pending.clone());
         store.save(&state)?;
+        let renamed = plan.rename.len();
         match settle_pending(client, store, &mut state, &pending, renamed).await {
             Err(error) if pair_renames && !plan.rename.is_empty() && refuses_rename(&error) => {
                 state.pending = None;
@@ -492,13 +493,14 @@ pub async fn push(
     }
 }
 
-/// Whether a refusal is an older server's answer to a `rename` it does not
-/// know: its input refuses unknown fields, and the message names the key.
+/// Whether a refusal is an older server's answer to a body it could not
+/// parse. An older server parses the body into a struct without the `rename`
+/// key, and any parse error is answered as "the change is malformed". A
+/// current server never calls a well-formed body malformed, and the caller
+/// retries only a plan that carried renames.
 fn refuses_rename(error: &Error) -> bool {
-    matches!(error, Error::Http { status, detail }
-        if (400..500).contains(status)
-            && detail.contains("unknown field")
-            && detail.contains("rename"))
+    matches!(error, Error::Http { status: 400, detail }
+        if detail.contains("the change is malformed"))
 }
 
 /// Sends an asset the project does not hold yet.
@@ -1295,7 +1297,7 @@ mod tests {
         server.script(vec![
             Answer::Reply(
                 400,
-                json!({"error": "unknown field `rename`, expected one of `operation`, `change`, `sync`"}),
+                json!({"error": "the change is malformed"}),
             ),
             accepted("l1", 1),
         ]);
@@ -1309,8 +1311,9 @@ mod tests {
 
         let client = server.client();
         let outcome = push(&client, dir.path(), &store, &options(None)).await;
+        // The retry sent a delete and a create, so both count.
         assert!(
-            matches!(&outcome, Ok(PushOutcome::Pushed { files: 1, .. })),
+            matches!(&outcome, Ok(PushOutcome::Pushed { files: 2, .. })),
             "{outcome:?}"
         );
         let posted = server.posted();
@@ -1327,6 +1330,26 @@ mod tests {
         let state = store.load().unwrap().unwrap();
         assert!(state.pending.is_none());
         assert!(state.files.contains_key("b.tex") && !state.files.contains_key("a.tex"));
+    }
+
+    #[tokio::test]
+    async fn an_accepted_rename_is_one_file_in_the_summary() {
+        let server = Fake::start().await;
+        server.script(vec![accepted("l1", 1)]);
+        let Some((dir, _git, store)) = on_main(server.link(), Some("main")) else {
+            return;
+        };
+        let mut state = store.load().unwrap().unwrap();
+        state.files = BTreeMap::from([("a.tex".to_string(), record(Kind::Text, b"one\n"))]);
+        store.save(&state).unwrap();
+        std::fs::rename(dir.path().join("a.tex"), dir.path().join("b.tex")).unwrap();
+
+        let outcome = push(&server.client(), dir.path(), &store, &options(None)).await;
+        assert!(
+            matches!(&outcome, Ok(PushOutcome::Pushed { files: 1, .. })),
+            "{outcome:?}"
+        );
+        assert_eq!(server.posted().len(), 1);
     }
 
     /// A store that reads one state and cannot write.
