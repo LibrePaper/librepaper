@@ -320,6 +320,7 @@
   "changes_accepting": "承諾中…",
   "changes_all_changes": "すべての変更",
   "changes_author_you": "{author}（自分）",
+  "changes_clear_selection": "クリア",
   "changes_confirm_accept_all": [
     {
       "declarations": [
@@ -439,7 +440,6 @@
   "changes_rejecting": "却下中…",
   "changes_review_label": "変更の確認",
   "changes_run": "実行{id}",
-  "changes_select": "選択",
   "changes_select_addition": "{who}による追加を選択",
   "changes_select_deletion": "{who}による削除を選択",
   "changes_select_replacement": "{who}による置換を選択",
