@@ -1,15 +1,15 @@
 <script>
-  import { onMount } from "svelte";
   import { leaf, pageVariant } from "../../lib/reader/run-directory.js";
   import { m } from "../../lib/paraglide/messages.js";
+  import { storageBytes } from "../../lib/quota-preferences.js";
   import Icon from "../Icon.svelte";
 
-  // The Run directory page, shown over the preview: when the button beside Run
+  // The body of the Run directory dialog: opened when the button beside Run
   // code is clicked, and on its own while a Quarto document that runs its code
-  // on this computer has no usable folder, so nothing can render yet. It reads
-  // and acts through the same state as that button. `blocking` is true in the
-  // second case, where the page cannot be dismissed.
-  let { directory: rd, title = "", blocking = false, onclose = () => {} } = $props();
+  // on this computer has no usable folder. It reads and acts through the same
+  // state as that button. The dialog supplies the heading, Escape and focus.
+  // The share section shows only when `onshare` is given.
+  let { directory: rd, title = "", onclose = () => {}, share = true, onshare = undefined, shareStatus = { kind: "idle" }, pdfOutput = false } = $props();
 
   const status = $derived(rd.status);
   const busy = $derived(rd.busy);
@@ -21,15 +21,18 @@
   const label = $derived(variant === "current" ? leaf(shownPath) : title || (shownPath ? leaf(shownPath) : ""));
   const caption = $derived(variant === "current" ? m.rundirectorycontrol_current_caption() : m.rundirectorycontrol_suggested_caption());
 
-  let primary = $state(null);
-  onMount(() => { if (!blocking) primary?.focus(); });
-
-  function onkeydown(event) {
-    if (event.key === "Escape" && !blocking) {
-      event.stopPropagation();
-      onclose();
+  // Shared results: the line under the checkbox, if there is anything to say.
+  const shareLine = $derived.by(() => {
+    if (!share) return "";
+    if (pdfOutput) return m.rundirectorycontrol_html_only();
+    if (shareStatus.kind === "shared") return m.rundirectorycontrol_shared({ size: storageBytes(shareStatus.bytes ?? 0) });
+    if (shareStatus.kind === "failed") {
+      if (shareStatus.reason === "storage") return m.rundirectorycontrol_not_shared_full();
+      if (shareStatus.reason === "unmatched") return m.rundirectorycontrol_not_shared_unmatched();
+      return m.rundirectorycontrol_not_shared_failed();
     }
-  }
+    return "";
+  });
 
   async function use() {
     if (variant === "current") return onclose();
@@ -42,11 +45,8 @@
   }
 </script>
 
-<svelte:window {onkeydown} />
-
 <div class="rd-page" role="group" aria-label={m.rundirectorycontrol_label()}>
   <span class="rd-page-icon"><Icon name={variant === "missing" ? "triangle-alert" : "folder"} size="30" /></span>
-  <h2 class="rd-page-title">{m.rundirectorycontrol_prompt_title()}</h2>
   <p class="rd-page-text">
     {variant === "missing" ? m.rundirectorycontrol_missing({ path: rd.shorten(status.path) }) : m.rundirectorycontrol_prompt_text()}
   </p>
@@ -62,29 +62,37 @@
   {/if}
   <div class="rd-page-actions">
     {#if canUse}
-      <button type="button" class="btn btn-sm lp-control-brand" bind:this={primary} disabled={Boolean(busy)} onclick={use}>
+      <button type="button" class="btn btn-sm lp-control-brand" disabled={Boolean(busy)} onclick={use}>
         {m.rundirectorycontrol_use_this()}
       </button>
       <button type="button" class="btn btn-sm lp-control-neutral" disabled={Boolean(busy)} onclick={choose}>
         {busy === "choose" ? m.common_choosing() : m.rundirectorycontrol_choose_another()}
       </button>
     {:else}
-      <button type="button" class="btn btn-sm lp-control-brand" bind:this={primary} disabled={Boolean(busy)} onclick={choose}>
+      <button type="button" class="btn btn-sm lp-control-brand" disabled={Boolean(busy)} onclick={choose}>
         {busy === "choose" ? m.common_choosing() : m.rundirectorycontrol_choose_a_folder()}
       </button>
     {/if}
   </div>
   {#if rd.error}<p class="rd-page-error" role="alert">{rd.error}</p>{/if}
+  {#if onshare}
+    <div class="rd-share-section">
+      <label class="rd-share">
+        <input type="checkbox" checked={share} onchange={(event) => onshare(event.currentTarget.checked)} />
+        <span>{m.rundirectorycontrol_share_results()}</span>
+      </label>
+      <p class="rd-share-hint">{m.rundirectorycontrol_share_hint()}</p>
+      {#if shareLine}<p class="rd-share-hint" role="status">{shareLine}</p>{/if}
+    </div>
+  {/if}
 </div>
 
 <style>
   .rd-page {
     box-sizing: border-box; display: flex; flex-direction: column; align-items: center;
-    gap: calc(var(--spacing) * 3); width: 100%; max-width: 26rem; min-width: 0;
-    padding: calc(var(--spacing) * 4); text-align: center;
+    gap: calc(var(--spacing) * 3); width: 100%; min-width: 0; text-align: center;
   }
   .rd-page-icon { display: inline-flex; color: var(--color-text-secondary); }
-  .rd-page-title { margin: 0; font-size: var(--text-xl); font-weight: 600; line-height: 1.3; color: var(--color-text); }
   .rd-page-text { margin: 0; font-size: var(--text-sm); color: var(--color-text-secondary); overflow-wrap: anywhere; }
   .rd-info {
     box-sizing: border-box; display: flex; align-items: center; gap: calc(var(--spacing) * 3);
@@ -100,4 +108,7 @@
   .rd-page-actions { display: flex; flex-direction: column; align-items: stretch; gap: calc(var(--spacing) * 2); width: 100%; }
   .rd-page-actions :global(.btn) { width: 100%; justify-content: center; }
   .rd-page-error { margin: 0; font-size: var(--text-sm); color: var(--color-danger, var(--color-text)); }
+  .rd-share-section { display: flex; flex-direction: column; gap: calc(var(--spacing) * 1); width: 100%; text-align: left; }
+  .rd-share { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 2); font-size: var(--text-sm); color: var(--color-text); cursor: pointer; }
+  .rd-share-hint { margin: 0; font-size: var(--text-xs); color: var(--color-text-secondary); }
 </style>

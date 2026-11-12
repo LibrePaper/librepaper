@@ -451,7 +451,7 @@
       void paintPreview();
     }
   }
-  // The chip beside Run code and the prompt in the preview share this state.
+  // The chip beside Run code and the Run directory dialog share this state.
   const runDir = createRunDirectory(SLUG, setRunDirectory);
 
   async function setLatexOutput(format) {
@@ -2228,9 +2228,16 @@
   const runDirectoryPage = $derived(runDirectoryBlocked || runDirPageOpen);
   function openRunDirPage() {
     runDirPageOpen = true;
-    // The page is drawn over the preview, so the preview is brought into view.
-    if (compact) arrangement.showMobileView("document");
-    else if (arrangement.state.layout === "source") arrangement.state.layout = "split";
+  }
+  function closeRunDirPage() {
+    runDirPageOpen = false;
+  }
+  // Dismissing the dialog while it blocks a render turns Run code off, since
+  // nothing can run without a folder.
+  function dismissRunDir() {
+    const blocked = runDirectoryBlocked;
+    runDirPageOpen = false;
+    if (blocked && localExecution) toggleLocalExecution();
   }
   const latexOutput = $derived(buildSettings.state.latexOutput);
   const typstOutput = $derived(buildSettings.state.typstOutput);
@@ -4121,7 +4128,7 @@
       <span class="bar-toggle-label">{m.readerd_run_code()}</span>
     </label>
     {#if localExecution && sourceFormat === "quarto"}
-      <RunDirectoryControl directory={runDir} onopen={openRunDirPage} {...shareProps} />
+      <RunDirectoryControl directory={runDir} onopen={openRunDirPage} />
     {/if}
   {/if}
 {/snippet}
@@ -4143,7 +4150,7 @@
 <!-- The phone has no tools in its header, so the Run directory is asked for
      here while Run code is on. -->
 {#if runStripShown}
-  <div class="run-directory-strip" bind:offsetHeight={runStripMeasured}><RunDirectoryControl directory={runDir} onopen={openRunDirPage} {...shareProps} /></div>
+  <div class="run-directory-strip" bind:offsetHeight={runStripMeasured}><RunDirectoryControl directory={runDir} onopen={openRunDirPage} /></div>
 {/if}
 
 <Nav {me} phoneMenu phoneShell={compact} phoneBare={tabsShown} hidden={barHidden && !compact}>
@@ -4543,7 +4550,7 @@
     </section>
   <!-- The Run directory page takes the pane while it is open; the failure
        comes back when it closes. -->
-  {:else if shown.document && failedBeforeRender && !runDirectoryPage}
+  {:else if shown.document && failedBeforeRender}
     <section class="latexpane">
       <div class="notyet">
         <h2 class="h4">{m.readerd_could_not_render()}</h2>
@@ -4575,7 +4582,7 @@
         {/if}
       </div>
     </section>
-  {:else if shown.document && noCompiler && !runDirectoryPage}
+  {:else if shown.document && noCompiler}
     <section class="latexpane">
       <div class="notyet">
         <h2 class="h4">{m.readerd_not_rendered()}</h2>
@@ -4623,9 +4630,6 @@
   {#snippet waitingCover()}
     <PreviewWaiting stage={waitStage} progress={waitProgress} />
   {/snippet}
-  {#snippet runDirectoryCover()}
-    <RunDirectoryPrompt directory={runDir} title={doc.title} blocking={runDirectoryBlocked} onclose={() => runDirPageOpen = false} />
-  {/snippet}
   {#snippet emptyCover()}
     <p class="lp-text-secondary text-sm">{m.readerd_document_empty()}</p>
   {/snippet}
@@ -4637,10 +4641,10 @@
            src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
            controls={previewControls}
            notice={previewChip ? previewNotice : undefined}
-           cover={runDirectoryPage ? runDirectoryCover : painted.state.empty ? emptyCover : waitingUp ? waitingCover : undefined}
+           cover={painted.state.empty ? emptyCover : waitingUp ? waitingCover : undefined}
            busy={previewBusy && !waitingUp}
            progress={!waitingUp ? waitProgress : null}
-           away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || (!runDirectoryPage && (noCompiler || failedBeforeRender)) || Boolean(projection.state.unreadable) || Boolean(previewCard)} />
+           away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || (noCompiler || failedBeforeRender) || Boolean(projection.state.unreadable) || Boolean(previewCard)} />
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
        so the split can be seen moving without the iframe reflowing on every
@@ -4752,6 +4756,12 @@
     {@const MathPalette = lazy.math.component}
     <MathPalette bind:this={mathPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={closePalette} oncancel={(context) => editor?.releaseInsertContext?.(context)} />
   {/if}
+</Modal>
+
+<!-- The Run directory: opened from the chip beside Run code, and on its own
+     while a render waits for a folder. -->
+<Modal open={runDirectoryPage} title={m.rundirectorycontrol_prompt_title()} onclose={dismissRunDir} sheet>
+  <RunDirectoryPrompt directory={runDir} title={doc.title} onclose={closeRunDirPage} {...shareProps} />
 </Modal>
 
 <!-- Word counts for the open file, read on open and as the text changes. -->

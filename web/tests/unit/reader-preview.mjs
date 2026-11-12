@@ -137,11 +137,12 @@ assert.match(previewSource, /framePreview\.clear\?\.\(\);[\s\S]*?onEmpty\(\);/);
 // cover of the Reader's, which works over the PDF viewer too, since that frame
 // ignores an html message.
 assert.match(readerSource, /!failedBeforeRender && !painted\.state\.empty/);
-assert.match(readerSource, /cover=\{runDirectoryPage \? runDirectoryCover : painted\.state\.empty \? emptyCover : waitingUp \? waitingCover : undefined\}/);
-// While the Run directory page is open it takes the preview pane; a failed
-// render or a missing compiler does not stay beside it as a second pane.
-assert.match(readerSource, /\{:else if shown\.document && failedBeforeRender && !runDirectoryPage\}/);
-assert.match(readerSource, /\{:else if shown\.document && noCompiler && !runDirectoryPage\}/);
+assert.match(readerSource, /cover=\{painted\.state\.empty \? emptyCover : waitingUp \? waitingCover : undefined\}/);
+// The Run directory is a dialog over the page, not a pane in the preview.
+assert.doesNotMatch(readerSource, /runDirectoryCover/);
+assert.match(readerSource, /\{:else if shown\.document && failedBeforeRender\}/);
+assert.match(readerSource, /\{:else if shown\.document && noCompiler\}/);
+assert.match(readerSource, /<Modal open=\{runDirectoryPage\}[^>]*>\s*<RunDirectoryPrompt [^>]*\{\.\.\.shareProps\}/);
 assert.match(readerSource, /onEmpty: \(\) => \{\s*painted\.reset\(\{ empty: true \}\);\s*renderStatus\.resetFailure\(\);\s*\}/);
 assert.doesNotMatch(previewSource, /This document is empty/);
 assert.doesNotMatch(readerSource, /project-folder|ProjectFolderSetting/);

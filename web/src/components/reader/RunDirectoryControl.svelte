@@ -1,29 +1,16 @@
 <script>
   import { leaf } from "../../lib/reader/run-directory.js";
   import { m } from "../../lib/paraglide/messages.js";
-  import { storageBytes } from "../../lib/quota-preferences.js";
   import Icon from "../Icon.svelte";
 
   // The folder a Quarto document's code runs in on this computer, shown beside
   // the Run code switch while that is on. Clicking it opens the Run directory
-  // page in the preview; the state is shared with that page.
-  let { directory: rd, onopen, share = true, onshare = undefined, shareStatus = { kind: "idle" }, pdfOutput = false } = $props();
+  // dialog; the state is shared with that page.
+  let { directory: rd, onopen } = $props();
 
   const status = $derived(rd.status);
   const usable = $derived(rd.usable);
   const error = $derived(rd.error);
-  // Shared results: the line under the checkbox, if there is anything to say.
-  const shareLine = $derived.by(() => {
-    if (!share) return "";
-    if (pdfOutput) return m.rundirectorycontrol_html_only();
-    if (shareStatus.kind === "shared") return m.rundirectorycontrol_shared({ size: storageBytes(shareStatus.bytes ?? 0) });
-    if (shareStatus.kind === "failed") {
-      if (shareStatus.reason === "storage") return m.rundirectorycontrol_not_shared_full();
-      if (shareStatus.reason === "unmatched") return m.rundirectorycontrol_not_shared_unmatched();
-      return m.rundirectorycontrol_not_shared_failed();
-    }
-    return "";
-  });
 </script>
 
 {#if rd.loaded}
@@ -46,13 +33,6 @@
     {:else if error}
       <span class="rd-error" role="alert">{error}</span>
     {/if}
-    {#if onshare}
-      <label class="rd-share" data-tip={m.rundirectorycontrol_share_hint()}>
-        <input type="checkbox" checked={share} onchange={(event) => onshare(event.currentTarget.checked)} />
-        <span>{m.rundirectorycontrol_share_results()}</span>
-      </label>
-      {#if shareLine}<span class="rd-share-status" role="status">{shareLine}</span>{/if}
-    {/if}
   </div>
 {/if}
 
@@ -72,8 +52,5 @@
   .rd-chip.rd-missing { color: var(--color-warning-text); border-color: var(--color-warning-solid); }
   .rd-icon { display: inline-flex; flex: none; }
   .rd-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .run-directory { gap: calc(var(--spacing) * 2); flex-wrap: wrap; }
-  .rd-share { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1.5); color: var(--color-text-secondary); cursor: pointer; }
-  .rd-share-status { color: var(--color-text-secondary); }
   .rd-error { margin: 0; color: var(--color-danger, var(--color-text)); }
 </style>
