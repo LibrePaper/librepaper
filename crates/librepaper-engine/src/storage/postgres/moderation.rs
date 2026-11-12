@@ -145,9 +145,11 @@ pub struct ModerationOverview {
     pub more: ModerationMore,
 }
 
-/// Per-owner bytes: the same five sources `usage_bytes` charges each owner.
+/// Per-owner bytes: the same six sources `usage_bytes` charges each owner.
 const OWNER_USAGE: &str = "SELECT owner_id, COALESCE(sum(bytes),0)::bigint AS bytes FROM (
                  SELECT d.owner_id, x.byte_length AS bytes FROM document_archives x
+                   JOIN documents d ON d.id=x.document_id
+                 UNION ALL SELECT d.owner_id, x.byte_length FROM document_results x
                    JOIN documents d ON d.id=x.document_id
                  UNION ALL SELECT d.owner_id, x.byte_length FROM document_assets x
                    JOIN documents d ON d.id=x.document_id

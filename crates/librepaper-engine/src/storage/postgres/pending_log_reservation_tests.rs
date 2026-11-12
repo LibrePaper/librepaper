@@ -645,6 +645,14 @@ async fn usage_bytes_matches_the_sums_it_replaced() {
             .unwrap(),
         77
     );
+    drop(conn);
+
+    // The operator's account list charges each owner the same bytes.
+    let accounts = catalog.all_accounts().await.unwrap();
+    for (owner, expected) in [(owners[0], 115_i64), (owners[1], 1100)] {
+        let row = accounts.iter().find(|a| a.id == owner).unwrap();
+        assert_eq!(row.bytes, expected, "moderation usage for {owner}");
+    }
 }
 
 /// A reservation that cannot get the storage-usage lock gives up after a
