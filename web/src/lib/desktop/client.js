@@ -575,9 +575,6 @@ export const chooseRunDirectory = (project) => runDirectoryCall("POST", "run-dir
 /** Use the folder the desktop app suggests, creating it. @param {string} project */
 export const useDefaultRunDirectory = (project) => runDirectoryCall("POST", "run-directory/default", project);
 
-/** Show the Run directory in the system file manager. @param {string} project */
-export const openRunDirectory = (project) => runDirectoryCall("POST", "run-directory/open", project);
-
 /** Change the command that renders one output. The desktop app shows the
  * whole command in its own dialog and refuses with 403 when the person
  * cancels. @param {string} key @param {{ command: string[], result: string }} record */

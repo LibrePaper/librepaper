@@ -33,9 +33,8 @@ const port = 19000 + Math.floor(Math.random() * 1000);
 
 const source = `
 import ${JSON.stringify(join(root, "web/src/styles/app.css"))};
-import { tick, createRawSnippet, mount } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
+import { tick, createRawSnippet } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import Files from ${JSON.stringify(join(root, "web/src/components/reader/Files.svelte"))};
-import RunDirectoryRow from ${JSON.stringify(join(root, "web/src/components/reader/RunDirectoryRow.svelte"))};
 import Collaboration from ${JSON.stringify(join(root, "web/src/components/reader/Collaboration.svelte"))};
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/reader/Diagnostics.svelte"))};
 import Share from ${JSON.stringify(join(root, "web/src/components/reader/Share.svelte"))};
@@ -49,10 +48,8 @@ const rules = { extensions: [".tex", ".md", ".qmd"], text_extensions: [".tex", "
 const main = session.addText("main.tex", "main");
 const child = session.addText("chapters/one.tex", "chapter");
 session.addFolder("empty", rules);
-const runDir = { usable: true, status: { path: '/home/ada/Dropbox/harvest' }, busy: '', error: '', opened: 0, open() { this.opened += 1; } };
-const footer = createRawSnippet(() => ({ render: () => '<div class="footer-host"></div>', setup: (node) => { mount(RunDirectoryRow, { target: node, props: { directory: runDir, offered: true } }); } }));
 const component = createClassComponent({ component: Files, target: document.body, props: {
-  files: session.list(), folders: session.folders(), rules, mayEdit: true, open: main, preview: "main.tex", locked: "", footer,
+  files: session.list(), folders: session.folders(), rules, mayEdit: true, open: main, preview: "main.tex", locked: "",
   onadd: (path) => session.addText(path), onmkdir: (path) => session.addFolder(path, rules),
   onrelocate: (...args) => session.relocate(args[0], args[1], rules, args[2]),
   ondelete: (entries) => session.removeEntries(entries),
@@ -112,15 +109,6 @@ window.filesCheck = async () => {
   }
   check(!button('Rename selected item') && !button('Move selected items'), 'no redundant selection toolbar');
   check(!document.querySelector('[aria-label="Main file"]'), 'no favorite-looking star');
-  // The footer under the tree names the Run directory and opens it.
-  const footerBox = document.querySelector('.explorer-footer');
-  check(footerBox, 'the footer is mounted under the tree');
-  check(footerBox.textContent.includes('On this computer') && footerBox.textContent.includes('harvest'), 'the footer names the Run directory');
-  check(footerBox.getBoundingClientRect().top >= document.querySelector('.explorer-scroll').getBoundingClientRect().bottom, 'the footer sits under the file tree');
-  const openFolder = [...footerBox.querySelectorAll('button')].find((node) => node.textContent.trim() === 'Open folder');
-  check(openFolder, 'the footer offers Open folder');
-  openFolder.click(); await flush();
-  check(runDir.opened === 1, 'Open folder calls the Run directory');
   row('main.tex').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); await flush();
   await name('Rename main.tex', 'renamed-main.tex');
   check(session.paths.get(main) === 'renamed-main.tex', 'double click renames a file');

@@ -19,9 +19,7 @@
     onopen, onadd, onmkdir, onrelocate, ondelete, onduplicate, onfigure, ontext, ondownload, ondownloaditem,
     previewable = () => false, onlock = undefined, onunlock = undefined,
     // The demo cannot store files on the server, so uploads are greyed out.
-    demo = false,
-    // What sits under the tree, such as where a Quarto project's scripts live.
-    footer = undefined } = $props();
+    demo = false } = $props();
 
   let selected = $state([]);
   let expanded = $state([]);
@@ -348,7 +346,6 @@
     </TreeView.Tree>
   </TreeView>
   </div>
-  {#if footer}<div class="explorer-footer">{@render footer()}</div>{/if}
 </div>
 
 <!-- A row is the same shape whether it opens or not, but a folder's chevron
@@ -486,7 +483,6 @@
      sections, and it reads here as a hole above the first file. */
   .filelist > :global(.panel-actions) { margin-bottom: calc(var(--spacing) * 1.5); }
   .explorer-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
-  .explorer-footer { flex: none; padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3); border-top: 1px solid var(--color-border); }
   /* Pushed to the far end by the name, which takes the free width. */
   .explorer-preview { display: flex; flex: none; align-items: center; justify-content: center; width: calc(var(--spacing) * 7); height: calc(var(--spacing) * 7); margin-inline-end: calc(var(--spacing) * -1.5); padding: 0; border: 0; border-radius: var(--radius-base); background: none; color: var(--color-text-secondary); }
   button.explorer-preview { color: var(--color-text-muted); opacity: 0.45; cursor: pointer; }

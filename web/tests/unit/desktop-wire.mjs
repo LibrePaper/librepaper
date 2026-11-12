@@ -176,12 +176,10 @@ test("the Run directory calls use their method, path, body and since", async () 
   assert.deepEqual(await client.runDirectory("paper"), status);
   await client.chooseRunDirectory("paper");
   await client.useDefaultRunDirectory("paper");
-  await client.openRunDirectory("paper");
   assert.deepEqual(sent.map((entry) => [entry.method, entry.url.slice(BASE.length), entry.body]), [
     ["GET", "librepaper/local/run-directory?project=paper", undefined],
     ["POST", "librepaper/local/run-directory/choose", { project: "paper" }],
     ["POST", "librepaper/local/run-directory/default", { project: "paper" }],
-    ["POST", "librepaper/local/run-directory/open", { project: "paper" }],
   ]);
   // An app older than 3.2.0 is refused before anything is sent.
   const older = { base: BASE, version: "3.1.0", protocol: { oldest: 3, current: "3.1.0" } };

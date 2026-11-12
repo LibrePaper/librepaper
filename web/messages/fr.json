@@ -2991,9 +2991,5 @@
   "preview_render_run_directory_not_linked": "{path} dans votre dossier d’exécution n’a pas pu être rendu accessible à Quarto.",
   "preview_render_run_directory_missing_file": "Le code cherche des fichiers dans votre dossier d’exécution : {path}.",
   "common_scripts_stay_local": "Vos scripts et données restent sur votre ordinateur. Quarto les exécute depuis votre dossier d’exécution.",
-  "rundirectoryrow_caption": "Sur cet ordinateur",
-  "rundirectoryrow_open": "Ouvrir le dossier",
-  "rundirectoryrow_choose_with_run_code": "Vos scripts et données restent sur votre ordinateur, dans le dossier d’exécution que vous choisissez avec « Exécuter le code ».",
-  "rundirectoryrow_needs_desktop": "Vos scripts et données restent sur votre ordinateur. L’application de bureau les exécute.",
   "preview_render_run_directory_project_only": "{path} se trouve dans LibrePaper, mais le code lit les fichiers de votre dossier d’exécution. Copiez-le dans votre dossier d’exécution."
 }

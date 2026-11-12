@@ -2976,9 +2976,5 @@
   "preview_render_run_directory_not_linked": "运行文件夹中的 {path} 无法提供给 Quarto。",
   "preview_render_run_directory_missing_file": "代码会在您的运行文件夹中查找文件：{path}。",
   "common_scripts_stay_local": "脚本和数据保存在你的电脑上。Quarto 会从你的运行文件夹中运行它们。",
-  "rundirectoryrow_caption": "在这台电脑上",
-  "rundirectoryrow_open": "打开文件夹",
-  "rundirectoryrow_choose_with_run_code": "脚本和数据保存在你的电脑上，位于你用“运行代码”选择的运行文件夹中。",
-  "rundirectoryrow_needs_desktop": "脚本和数据保存在你的电脑上。桌面应用负责运行它们。",
   "preview_render_run_directory_project_only": "{path} 在 LibrePaper 中，但代码从你的运行文件夹读取文件。请将它复制到运行文件夹。"
 }

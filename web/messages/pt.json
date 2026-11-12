@@ -2991,9 +2991,5 @@
   "preview_render_run_directory_not_linked": "Não foi possível disponibilizar {path}, da sua pasta de execução, ao Quarto.",
   "preview_render_run_directory_missing_file": "O código procura arquivos na sua pasta de execução: {path}.",
   "common_scripts_stay_local": "Os scripts e os dados ficam no seu computador. O Quarto os executa a partir da sua pasta de execução.",
-  "rundirectoryrow_caption": "Neste computador",
-  "rundirectoryrow_open": "Abrir pasta",
-  "rundirectoryrow_choose_with_run_code": "Os scripts e os dados ficam no seu computador, na pasta de execução escolhida com “Executar código”.",
-  "rundirectoryrow_needs_desktop": "Os scripts e os dados ficam no seu computador. O aplicativo de desktop os executa.",
   "preview_render_run_directory_project_only": "{path} está no LibrePaper, mas o código lê os arquivos da sua pasta de execução. Copie-o para a sua pasta de execução."
 }

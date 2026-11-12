@@ -68,7 +68,5 @@ export function createRunDirectory(project, onchange = () => {}) {
     },
     choose: () => act("choose", desktopClient.chooseRunDirectory),
     useDefault: () => act("default", desktopClient.useDefaultRunDirectory),
-    /** Show the folder in the system file manager. */
-    open: () => act("open", desktopClient.openRunDirectory),
   };
 }
