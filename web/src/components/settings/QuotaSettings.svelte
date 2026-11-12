@@ -7,7 +7,7 @@
   import Modal from "../Modal.svelte";
   import IconButton from "../IconButton.svelte";
   import SettingRow from "./SettingRow.svelte";
-  import { loadStorageStatus, storageBytes, trimHistory } from "../../lib/quota-preferences.js";
+  import { deleteSharedResults, loadStorageStatus, storageBytes, trimHistory } from "../../lib/quota-preferences.js";
   import { SHELL_HEADERS } from "../../lib/api.js";
   import { m } from "../../lib/paraglide/messages.js";
 
@@ -16,6 +16,7 @@
   let error = $state("");
   let trimErrors = $state({});
   let deleteTemplateErrors = $state({});
+  let resultsErrors = $state({});
   let alive = true;
   let generation = 0;
 
@@ -27,6 +28,9 @@
   let deleteTemplateOpen = $state(false);
   let deleteTemplateTarget = $state(null);
   let deleteTemplatePending = $state(false);
+  let deleteResultsOpen = $state(false);
+  let deleteResultsTarget = $state(null);
+  let deleteResultsPending = $state(false);
 
   const usage = $derived(snapshot?.usage);
   const documents = $derived(usage?.documents ?? []);
@@ -46,11 +50,12 @@
   );
 
   const nameOf = (doc) => doc.title || doc.slug;
-  const totalOf = (doc) => doc.figureBytes + doc.archiveBytes + doc.historyBytes;
+  const totalOf = (doc) => doc.figureBytes + doc.archiveBytes + doc.historyBytes + (doc.resultsBytes ?? 0);
   const partsOf = (doc) => [
     { key: "figure", name: m.quotasettings_part_figures(), bytes: doc.figureBytes },
     { key: "versions", name: m.quotasettings_part_versions(), bytes: doc.archiveBytes },
     { key: "history", name: m.common_history(), bytes: doc.historyBytes },
+    { key: "results", name: m.quotasettings_part_results(), bytes: doc.resultsBytes ?? 0 },
   ];
   const labelOf = (parts) =>
     parts.filter((p) => p.bytes > 0).map((p) => m.quotasettings_part_label({ name: p.name, size: storageBytes(p.bytes) })).join(", ") || m.quotasettings_empty();
@@ -58,8 +63,13 @@
   // The account bar is drawn against the quota, so what is left of it is the
   // free space; each document's bar is its own composition, always full.
   const totalParts = $derived(partsOf(documents.reduce(
-    (sum, d) => ({ figureBytes: sum.figureBytes + d.figureBytes, archiveBytes: sum.archiveBytes + d.archiveBytes, historyBytes: sum.historyBytes + d.historyBytes }),
-    { figureBytes: 0, archiveBytes: 0, historyBytes: 0 },
+    (sum, d) => ({
+      figureBytes: sum.figureBytes + d.figureBytes,
+      archiveBytes: sum.archiveBytes + d.archiveBytes,
+      historyBytes: sum.historyBytes + d.historyBytes,
+      resultsBytes: sum.resultsBytes + (d.resultsBytes ?? 0),
+    }),
+    { figureBytes: 0, archiveBytes: 0, historyBytes: 0, resultsBytes: 0 },
   )));
   const totalUsed = $derived(totalParts.reduce((sum, p) => sum + p.bytes, 0));
   const quotaBase = $derived(usage?.hardQuotaBytes > 0 ? Math.max(usage.hardQuotaBytes, totalUsed) : totalUsed || 1);
@@ -133,6 +143,31 @@
     }
   }
 
+  function openDeleteResultsDialog(doc) {
+    deleteResultsTarget = { title: nameOf(doc), slug: doc.slug };
+    deleteResultsOpen = true;
+  }
+
+  async function confirmDeleteResults() {
+    const slug = deleteResultsTarget?.slug;
+    if (!slug) return;
+    deleteResultsPending = true;
+    resultsErrors = { ...resultsErrors, [slug]: "" };
+    try {
+      await deleteSharedResults(slug);
+      // Only the shared results go. The document's own history and versions
+      // are untouched, so only this row's results figure moves.
+      const doc = snapshot?.usage?.documents?.find((d) => d.slug === slug);
+      if (doc) doc.resultsBytes = 0;
+      void reload();
+    } catch (cause) {
+      if (alive) resultsErrors = { ...resultsErrors, [slug]: cause.message || m.quotasettings_delete_results_failed() };
+    } finally {
+      deleteResultsPending = false;
+      deleteResultsOpen = false;
+    }
+  }
+
   async function reload() {
     const job = ++generation;
     loading = true;
@@ -182,6 +217,7 @@
         <span><i class="swatch figure"></i>{m.quotasettings_part_figures()}</span>
         <span><i class="swatch versions"></i>{m.quotasettings_part_versions()}</span>
         <span><i class="swatch history"></i>{m.common_history()}</span>
+        <span><i class="swatch results"></i>{m.quotasettings_part_results()}</span>
       </div>
       <div class="toolbar-controls">
         <input type="search" class="input input-sm" placeholder={m.quotasettings_filter_placeholder()}
@@ -204,6 +240,7 @@
                 {#if doc.template}<span class="badge lp-tone-neutral">{m.common_template()}</span>{/if}
               </div>
               {#if trimErrors[doc.slug]}<div class="trim-error">{trimErrors[doc.slug]}</div>{/if}
+              {#if resultsErrors[doc.slug]}<div class="trim-error">{resultsErrors[doc.slug]}</div>{/if}
               {#if deleteTemplateErrors[doc.slug]}<div class="trim-error">{deleteTemplateErrors[doc.slug]}</div>{/if}
             </div>
             <div role="cell" class="doc-storage">
@@ -214,6 +251,11 @@
               <IconButton icon="history" title={m.quotasettings_trim_history()} label={m.quotasettings_trim_history_for({ name: nameOf(doc) })}
                           size="btn-icon-sm" disabled={doc.historyBytes === 0}
                           onclick={() => openTrimDialog(doc)} />
+              {#if doc.resultsBytes > 0}
+                <IconButton icon="table" title={m.quotasettings_delete_results()} label={m.quotasettings_delete_results_for({ name: nameOf(doc) })}
+                            size="btn-icon-sm"
+                            onclick={() => openDeleteResultsDialog(doc)} />
+              {/if}
               {#if doc.template}
                 <IconButton icon="trash" title={m.quotasettings_delete_template()} label={m.quotasettings_delete_template_for({ name: nameOf(doc) })}
                             size="btn-icon-sm"
@@ -243,6 +285,13 @@
   {/if}
 </Modal>
 
+<Modal bind:open={deleteResultsOpen} title={m.quotasettings_delete_results_title()}
+       confirm={{ label: deleteResultsPending ? m.quotasettings_deleting() : m.common_delete(), tone: "error", disabled: deleteResultsPending, onclick: confirmDeleteResults }}>
+  {#if deleteResultsTarget}
+    <p>{m.quotasettings_delete_results_body()}</p>
+  {/if}
+</Modal>
+
 <Modal bind:open={deleteTemplateOpen} title={m.quotasettings_delete_template_title()}
        confirm={{ label: deleteTemplatePending ? m.quotasettings_deleting() : m.common_delete(), tone: "error", disabled: deleteTemplatePending, onclick: confirmDeleteTemplate }}>
   {#if deleteTemplateTarget}
@@ -259,6 +308,7 @@
   .figure { background: var(--oi-blue); }
   .versions { background: var(--oi-orange); }
   .history { background: var(--oi-bluish-green); }
+  .results { background: var(--oi-reddish-purple); }
 
   .storage-toolbar { display: flex; justify-content: space-between; align-items: center; gap: calc(var(--spacing) * 2); flex-wrap: wrap; }
   .legend { display: flex; gap: calc(var(--spacing) * 3); font-size: 0.75rem; color: var(--color-text-secondary); }

@@ -102,6 +102,14 @@ While a file differs between the project and the repository, LibrePaper tells yo
 | A file already in your Run directory | Your computer | Markdown and code can both use it, while **Run code** is on. Coauthors need their own copy, through Dropbox or Git. |
 | A plot your code draws in a cell | The preview, on your computer | It appears in your preview. There is no file to manage. |
 
+## Share results
+
+Share results works for Quarto documents rendered to HTML. Next to **Run code**, it is on by default. While it is on, each time you run code on your computer, LibrePaper keeps the output of your last run: tables, figures and printed values. It shows that output under each code cell in the browser draft, so collaborators who lack your data can still read the results.
+
+- Each run replaces the shared results. Output from a cell whose code has changed since is shown faded, until the next run.
+- Values written inline in the text, such as `r mean(x)`, are not shared yet.
+- Shared results count against the storage of the document's owner. To delete them, go to **Settings → Storage**. To stop sharing, turn off **Share results**.
+
 ## Common hurdles
 
 **A file is not found.** Code looks in your Run directory. Check that the file is there and that the path is relative to it.
