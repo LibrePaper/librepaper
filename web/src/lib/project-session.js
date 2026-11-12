@@ -38,7 +38,7 @@ import { personSeed } from "./presence-colour.js";
 // Loro is in use here is the one those modules then see.
 setLoroClasses({ Cursor, LoroMap });
 
-/** @typedef {{ name?: string, color?: string, tab?: string, file?: string, peer?: string, anchor?: Uint8Array, head?: Uint8Array }} PresenceState */
+/** @typedef {{ name?: string, color?: string, tab?: string, account?: string, file?: string, peer?: string, anchor?: Uint8Array, head?: Uint8Array }} PresenceState */
 /** @typedef {{ type: string, [key: string]: unknown }} SessionMessage */
 /** @typedef {{ local: boolean, pending: number, localPending: number, localError: string, joined: boolean }} SessionState */
 /** @typedef {{ hydrated: () => void, writing: (count?: number) => void, persisted: () => void, failed: (error: Error) => void }} PersistenceEvents */
