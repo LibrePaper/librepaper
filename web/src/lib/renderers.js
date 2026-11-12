@@ -336,7 +336,9 @@ export async function render(tree, title, { manual = false, format: requestedFor
     tree: renderTree(renderable, capturedSettings),
     title,
   }, capturedModules);
-  return module === "citations" ? withHouseStyle(result) : result;
+  // citations.wasm and org.wasm embed the stylesheet of the wasm-helpers they
+  // were built on, which may predate the house style.
+  return module === "citations" || module === "org" ? withHouseStyle(result) : result;
 }
 
 // citations.wasm embeds the stylesheet of the wasm-helpers it was built on,
