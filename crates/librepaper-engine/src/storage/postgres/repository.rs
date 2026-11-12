@@ -291,6 +291,13 @@ impl PostgresCatalog {
         .execute(&mut **tx)
         .await?;
         sqlx::query(
+            "UPDATE document_results SET uploaded_by=NULL,uploader_name='Deleted user'
+             WHERE uploaded_by=$1",
+        )
+        .bind(account_id)
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
             "UPDATE document_peers SET author_account_id=NULL,author_label='Deleted user'
              WHERE author_account_id=$1",
         )
@@ -1625,6 +1632,7 @@ pub struct DocumentStorage {
     pub figure_bytes: i64,
     pub archive_bytes: i64,
     pub history_bytes: i64,
+    pub results_bytes: i64,
 }
 
 impl PostgresCatalog {
@@ -1645,7 +1653,10 @@ impl PostgresCatalog {
                  (COALESCE(
                    (SELECT snapshot_bytes FROM document_snapshots WHERE document_id = d.id AND delete_after IS NULL),
                    0
-                 ) + d.uncompacted_update_bytes + d.chat_bytes)::bigint AS "history_bytes!"
+                 ) + d.uncompacted_update_bytes + d.chat_bytes)::bigint AS "history_bytes!",
+                 COALESCE((
+                   SELECT SUM(byte_length)::bigint FROM document_results WHERE document_id = d.id
+                 ), 0)::bigint AS "results_bytes!"
                FROM documents d
                LEFT JOIN document_assets a ON a.document_id = d.id
                WHERE d.owner_id = $1 AND d.status = 'active'
@@ -1657,7 +1668,8 @@ impl PostgresCatalog {
                    FROM document_archives WHERE document_id = d.id
                  ), 0) +
                  COALESCE((SELECT snapshot_bytes FROM document_snapshots WHERE document_id = d.id AND delete_after IS NULL), 0) +
-                 d.uncompacted_update_bytes + d.chat_bytes
+                 d.uncompacted_update_bytes + d.chat_bytes +
+                 COALESCE((SELECT SUM(byte_length) FROM document_results WHERE document_id = d.id), 0)
                ) DESC, d.title ASC"#,
             owner_id,
         )
