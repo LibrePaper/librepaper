@@ -1,6 +1,6 @@
 <script>
   import { Menu, Switch } from "@skeletonlabs/skeleton-svelte";
-  import { untrack } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import { m } from "../../lib/paraglide/messages.js";
   import ExplorerMenu from "../ExplorerMenu.svelte";
   import Icon from "../Icon.svelte";
@@ -34,6 +34,15 @@
   $effect(() => { scope = ids.length ? "task" : "all"; });
   const idSet = $derived(new Set(ids));
   let feedback = $state("");
+  // A note that something worked fades after a few seconds; an error stays
+  // until the next answer replaces it.
+  let feedbackTimer;
+  function note(text, fade = false) {
+    clearTimeout(feedbackTimer);
+    feedback = text;
+    if (fade && text) feedbackTimer = setTimeout(() => { feedback = ""; }, 4000);
+  }
+  onDestroy(() => clearTimeout(feedbackTimer));
   // Every answerable row carries a checkbox, so several changes can be answered
   // at once without a mode to enter. The bar of verbs takes the place of the
   // header's toolbar while any box is ticked.
@@ -182,7 +191,7 @@
 
   async function decide(item, action) {
     if (!canAnswer(item, action) || deciding.has(item.id)) return;
-    addBusy(item.id); feedback = "";
+    addBusy(item.id); note("");
     const ids = filteredRows.map((row) => row.id); const oldIndex = ids.indexOf(item.id);
     try {
       await decisionPromise(item, action);
@@ -196,7 +205,7 @@
           if (panel instanceof HTMLElement) panel.focus();
         });
       }
-    } catch (error) { feedback = error?.message || (action === "accept" ? m.changes_could_not_accept() : m.changes_could_not_reject()); focusRow(item.id); }
+    } catch (error) { note(error?.message || (action === "accept" ? m.changes_could_not_accept() : m.changes_could_not_reject())); focusRow(item.id); }
     finally { removeBusy(item.id); }
   }
 
@@ -214,16 +223,16 @@
       // swallowed others can split its owner and the order matters.
       if (action === "reject" && onrejectmany) {
         const count = Number(await onrejectmany(captured)) || 0;
-        feedback = m.changes_rejected_count({ count });
+        note(m.changes_rejected_count({ count }), true);
         return;
       }
       const settled = await Promise.allSettled(captured.map((item) => decisionPromise(item, action)));
       const succeeded = settled.filter((entry) => entry.status === "fulfilled").length;
       const failed = settled.length - succeeded;
-      feedback = failed
+      note(failed
         ? (action === "accept" ? m.changes_accepted_some({ succeeded, failed }) : m.changes_rejected_some({ succeeded, failed }))
-        : (action === "accept" ? m.changes_accepted_count({ count: succeeded }) : m.changes_rejected_count({ count: succeeded }));
-    } catch (error) { feedback = error?.message || (action === "accept" ? m.changes_could_not_accept_selected() : m.changes_could_not_reject_selected()); }
+        : (action === "accept" ? m.changes_accepted_count({ count: succeeded }) : m.changes_rejected_count({ count: succeeded })), !failed);
+    } catch (error) { note(error?.message || (action === "accept" ? m.changes_could_not_accept_selected() : m.changes_could_not_reject_selected())); }
     finally { captured.forEach((item) => removeBusy(item.id)); }
   }
   // A bulk verb waits for a confirmation, and the confirm button takes focus
@@ -288,11 +297,13 @@
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div class="panel panel-tabbed changes-panel" role="application" tabindex="0" onkeydown={keydown} aria-label={m.changes_review_label()} aria-keyshortcuts="ArrowDown ArrowUp J K A R">
-  <PanelTabs id="changes" title={m.common_changes()} actions={canReview ? trackingSwitch : undefined}>
-    <!-- The header is one bar: the scope menu with the count, or the selection
-         or confirmation bar while either is open. Nothing else sits above the
+  <PanelTabs id="changes" title={m.common_changes()}>
+    <!-- The header is one bar: the tracking switch on its own line under the
+         tab, then the scope menu with the count, or the selection or
+         confirmation bar while either is open. Nothing else sits above the
          queue, so the first reviewable change is near the top. -->
     <header class="changes-header">
+      {#if canReview}{@render trackingSwitch()}{/if}
       {#if confirming}<div class="confirm-bar" role="alertdialog" aria-labelledby="changes-confirm-text">
         <p class="confirm-text" id="changes-confirm-text">{confirmText(confirming)}</p>
         <div class="bar-buttons">
@@ -379,12 +390,12 @@
      its divider runs full width, and takes the gutter back as padding, so the
      bars share the left edge with the rows. */
   .changes-header { flex: 0 0 auto; display: flex; flex-direction: column; gap: .25rem; margin-inline: calc(var(--panel-padding) * -1); padding: 0 var(--panel-padding) .75rem; border-bottom: 1px solid var(--color-divider); }
-  /* The switch on the title strip ends on the same right edge as the count
-     beneath it. */
-  .changes-panel :global(.panel-tabs-actions) { padding-inline-end: var(--panel-padding); }
   /* The track and thumb are `.switch` in librepaper.css, worn here and in the
-     settings dialog alike; this is only where the word sits beside them. */
-  .changes-panel :global(.tracking-toggle) { display: inline-flex; align-items: center; gap: .5rem; flex: none; min-height: 2rem; color: var(--panel-muted); font-size: var(--panel-font-size); white-space: nowrap; cursor: pointer; }
+     settings dialog alike; this is the word on the left and the switch at the
+     right edge, on its own line under the tab and above the toolbar. The
+     right edge lines up with the count below, both inside the header's
+     padding. */
+  .changes-panel :global(.tracking-toggle) { display: flex; justify-content: space-between; align-items: center; gap: .5rem; min-height: 2rem; color: var(--panel-muted); font-size: var(--panel-font-size); white-space: nowrap; cursor: pointer; }
   .changes-toolbar, .bar-row { display: flex; align-items: center; justify-content: space-between; gap: .5rem; min-width: 0; min-height: 2rem; }
   /* The scope menu's trigger is an outlined control that takes the same hover
      as a row. */
