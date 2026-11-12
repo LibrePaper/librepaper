@@ -2239,6 +2239,7 @@
   "quarto_include_cycle": "Include cycle or depth limit: {normalized}",
   "quarto_include_unauthorized": "Include unavailable or unauthorized: {name}",
   "quarto_include_unavailable": "Include unavailable: {name}",
+  "quarto_output_stale": "The code changed after this output was made.",
   "quarto_yaml_nesting": "unsupported YAML nesting",
   "quarto_yaml_parse_failed": "could not parse YAML front matter",
   "quarto_yaml_unfinished": "unfinished YAML front matter",

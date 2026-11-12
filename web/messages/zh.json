@@ -2224,6 +2224,7 @@
   "quarto_include_cycle": "包含存在循环或超出深度上限：{normalized}",
   "quarto_include_unauthorized": "包含不可用或未授权：{name}",
   "quarto_include_unavailable": "包含不可用：{name}",
+  "quarto_output_stale": "此输出生成后，代码已被修改。",
   "quarto_yaml_nesting": "不支持的 YAML 嵌套",
   "quarto_yaml_parse_failed": "无法解析 YAML 前置元数据",
   "quarto_yaml_unfinished": "YAML 前置元数据未结束",

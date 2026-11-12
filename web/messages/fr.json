@@ -2239,6 +2239,7 @@
   "quarto_include_cycle": "Cycle d’inclusion ou limite de profondeur atteinte : {normalized}",
   "quarto_include_unauthorized": "Inclusion indisponible ou non autorisée : {name}",
   "quarto_include_unavailable": "Inclusion indisponible : {name}",
+  "quarto_output_stale": "Le code a changé après la production de ce résultat.",
   "quarto_yaml_nesting": "imbrication YAML non prise en charge",
   "quarto_yaml_parse_failed": "impossible d’analyser l’en-tête YAML",
   "quarto_yaml_unfinished": "en-tête YAML inachevé",

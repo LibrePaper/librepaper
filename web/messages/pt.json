@@ -2239,6 +2239,7 @@
   "quarto_include_cycle": "Ciclo de inclusão ou limite de profundidade: {normalized}",
   "quarto_include_unauthorized": "Inclusão indisponível ou não autorizada: {name}",
   "quarto_include_unavailable": "Inclusão indisponível: {name}",
+  "quarto_output_stale": "O código mudou depois que esta saída foi gerada.",
   "quarto_yaml_nesting": "aninhamento de YAML não compatível",
   "quarto_yaml_parse_failed": "não foi possível analisar o front matter YAML",
   "quarto_yaml_unfinished": "front matter YAML não finalizado",

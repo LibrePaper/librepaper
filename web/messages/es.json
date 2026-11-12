@@ -2239,6 +2239,7 @@
   "quarto_include_cycle": "Ciclo de inclusión o límite de profundidad: {normalized}",
   "quarto_include_unauthorized": "Inclusión no disponible o no autorizada: {name}",
   "quarto_include_unavailable": "Inclusión no disponible: {name}",
+  "quarto_output_stale": "El código cambió después de generar esta salida.",
   "quarto_yaml_nesting": "anidamiento de YAML no compatible",
   "quarto_yaml_parse_failed": "no se pudieron analizar los metadatos iniciales YAML",
   "quarto_yaml_unfinished": "metadatos iniciales YAML sin terminar",
