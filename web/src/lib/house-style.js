@@ -87,16 +87,6 @@ function quartoThemeScript(attrs, body) {
   return QUARTO_THEME_JS.test(attrs) || QUARTO_THEME_JS.test(body.slice(0, 600));
 }
 
-/**
- * Quarto's page, as the paired app renders it, shown in the house style: the
- * Bootstrap theme and the scripts that only serve it are removed, the house
- * stylesheet takes the place of the first of them, and the root takes the
- * class `lp-quarto` for the Quarto adapter rules. Only the preview takes this
- * copy; the stored page and exports keep the render as it came.
- * @param {string} html
- * @param {string} css the house stylesheet
- * @returns {string}
- */
 // Quarto's page put in the house order and wording: the contents follow the
 // title block (Quarto lays them out as a sidebar, which the house page has
 // not), and a caption's "Figure 1: " becomes the house caption label.
@@ -115,6 +105,16 @@ function quartoMarkup(html) {
   );
 }
 
+/**
+ * Quarto's page, as the paired app renders it, shown in the house style: the
+ * Bootstrap theme and the scripts that only serve it are removed, the house
+ * stylesheet takes the place of the first of them, and the root takes the
+ * class `lp-quarto` for the Quarto adapter rules. Only the preview takes this
+ * copy; the stored page and exports keep the render as it came.
+ * @param {string} html
+ * @param {string} css the house stylesheet
+ * @returns {string}
+ */
 export function quartoWithHouseStyle(html, css) {
   if (!css) return html;
   const stripped = html
