@@ -81,6 +81,67 @@ assert.ok(cycleDraft.diagnostics.some((diagnostic) => diagnostic.generated && di
 const staleBundleDraft = composeDraft(source, { bundle: { cells: [{ id: "paper.qmd#plot", outputs: [{ kind: "text", text: "stale result" }] }] } }).markdown;
 assert.match(staleBundleDraft, /```\{r #plot\}\nplot\(2\)\n```/);
 assert.doesNotMatch(staleBundleDraft, /stale result/);
+// Shared results: outputs saved from a local run appear under their cells.
+const resultsSource = [
+  "---", "title: Shared", "---", "",
+  "```{r}", "#| label: first", "a <- 1", "```", "",
+  "Between.", "",
+  "```{r}", "#| label: second", "b <- 2", "```", "",
+  "```{r}", "#| label: hidden", "#| include: false", "c <- 3", "```", "",
+].join("\n");
+const resultsParsed = parseQuarto(resultsSource, { path: "paper.qmd" });
+const resultsPrints = {};
+for (const cell of resultsParsed.cells) resultsPrints[cell.id] = { sha256: await cellFingerprint(cell), ambiguous: false };
+const [firstPrint, secondPrint] = resultsParsed.cells.map((cell) => resultsPrints[cell.id].sha256);
+const outputLine = (markdown, text) => markdown.split("\n").find((line) => line.includes(text));
+const freshDraft = composeDraft(resultsSource, {
+  path: "paper.qmd", cellFingerprints: resultsPrints,
+  results: { cells: [{ fingerprint: secondPrint, label: "second", html: "<p>TWO</p>" }, { fingerprint: firstPrint, label: "first", html: "<p>ONE</p>" }] },
+});
+assert.equal(outputLine(freshDraft.markdown, "ONE"), '<div class="lp-cell-output"><p>ONE</p></div>');
+assert.ok(freshDraft.markdown.indexOf("b <- 2") < freshDraft.markdown.indexOf("TWO"));
+assert.ok(freshDraft.markdown.indexOf("a <- 1") < freshDraft.markdown.indexOf("ONE"));
+assert.ok(freshDraft.markdown.indexOf("ONE") < freshDraft.markdown.indexOf("Between."), "output follows its own cell, not the next one");
+assert.ok(freshDraft.markdown.indexOf("Between.") < freshDraft.markdown.indexOf("TWO"));
+assert.doesNotMatch(freshDraft.markdown, /lp-cell-output-stale/);
+const outputAt = freshDraft.markdown.split("\n").findIndex((line) => line.includes("ONE"));
+assert.equal(freshDraft.lineMap[outputAt], null, "generated output lines have no source line");
+assert.equal(freshDraft.markdown.split("\n")[outputAt - 1], "");
+assert.equal(freshDraft.markdown.split("\n")[outputAt + 1], "");
+// The cell with include: false never gets output, even by position.
+assert.doesNotMatch(composeDraft(resultsSource, {
+  path: "paper.qmd", cellFingerprints: resultsPrints,
+  results: { cells: [{ fingerprint: "0".repeat(64), label: "hidden", html: "<p>HIDDEN</p>" }] },
+}).markdown, /HIDDEN/);
+// Changed code, same label: stale output.
+const staleDraft = composeDraft(resultsSource, {
+  path: "paper.qmd", cellFingerprints: resultsPrints,
+  results: { cells: [{ fingerprint: "1".repeat(64), label: "first", html: "<p>OLD</p>" }, { fingerprint: secondPrint, label: "second", html: "<p>TWO</p>" }, { fingerprint: "2".repeat(64), label: "other", html: "<p>EXTRA</p>" }] },
+});
+assert.match(outputLine(staleDraft.markdown, "OLD"), /^<div class="lp-cell-output lp-cell-output-stale" title="[^"]+"><p>OLD<\/p><\/div>$/);
+assert.equal(outputLine(staleDraft.markdown, "TWO"), '<div class="lp-cell-output"><p>TWO</p></div>');
+// Same count, no label match: positional, stale.
+const positional = composeDraft(resultsSource, {
+  path: "paper.qmd", cellFingerprints: resultsPrints,
+  results: { cells: [{ fingerprint: "3".repeat(64), label: null, html: "<p>P1</p>" }, { fingerprint: "4".repeat(64), label: null, html: "<p>P2</p>" }] },
+});
+assert.match(outputLine(positional.markdown, "P1"), /lp-cell-output-stale/);
+assert.match(outputLine(positional.markdown, "P2"), /lp-cell-output-stale/);
+// Different count, no label: nothing.
+const unmatched = composeDraft(resultsSource, {
+  path: "paper.qmd", cellFingerprints: resultsPrints,
+  results: { cells: [{ fingerprint: "3".repeat(64), label: null, html: "<p>LOST</p>" }] },
+});
+assert.doesNotMatch(unmatched.markdown, /LOST|lp-cell-output/);
+// The note appears once, after the generated title block, escaped.
+const noted = composeDraft(resultsSource, { path: "paper.qmd", results: { cells: [], note: "Output from <Ada>'s run" } }).markdown;
+assert.equal(noted.split("lp-results-note").length - 1, 1);
+assert.match(noted, /<p class="lp-results-note">Output from &lt;Ada&gt;&#39;s run<\/p>/);
+assert.ok(noted.indexOf("</header>") < noted.indexOf("lp-results-note"));
+assert.match(composeDraft("Plain.\n", { results: { cells: [], note: "N" } }).markdown, /^\n?<p class="lp-results-note">N<\/p>/);
+assert.equal(composeDraft(resultsSource, { path: "paper.qmd", results: { cells: [], note: "" } }).markdown, composeDraft(resultsSource, { path: "paper.qmd" }).markdown);
+const treeWithResults = await virtualTree({ main: "paper.qmd", texts: { "paper.qmd": resultsSource } }, { results: { cells: [{ fingerprint: firstPrint, label: "first", html: "<p>VT</p>" }] } });
+assert.match(treeWithResults.texts["paper.md"], /<div class="lp-cell-output"><p>VT<\/p><\/div>/);
 const dialect = [
   "---", "title: Draft title", "authors:", "  - name: Ada Lovelace", "date: 1843", "abstract: A short abstract", "---", "",
   "::: {.callout-note #intro}", "See @fig-trend.", ":::", "",
