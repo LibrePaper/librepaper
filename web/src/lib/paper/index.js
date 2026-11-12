@@ -1,10 +1,12 @@
-// The paper visual layer for a Markdown or Org file: each top-level block that the
-// selection is not in is drawn as the HTML the preview renderer produces for
-// it, styled with the preview page's own CSS. The block holding the selection
-// shows its Markdown or Org source. The text stays the document; only the drawing differs.
+// The visual mode of Markdown, Quarto, Org and Typst files (LaTeX keeps lib/visual-markup).
+// Each top-level block that the selection is not in is drawn as the HTML the
+// renderer produces for it, styled with the preview page's own CSS. The block
+// holding the selection shows its source. The text stays the document; only
+// the drawing differs.
 //
-// Prototype limits: overlays (comments, tracked changes, spellcheck, remote
-// cursors) do not draw inside rendered blocks yet.
+// Overlays (comments, tracked changes, authorship, lint underlines, remote
+// carets) cannot reach inside a widget, so overlays.js paints copies into the
+// rendered DOM.
 import { Prec, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, keymap, ViewPlugin, WidgetType } from "@codemirror/view";
 import { isExternal, resolveImagePath } from "../visual-markup/markup.ts";
@@ -14,6 +16,7 @@ import { typeset, untypeset } from "../math.js";
 import { currentPaperRenderer, loadPaperRenderer } from "./renderer.js";
 import { paperFormat } from "./formats.js";
 import { paperStylesheet } from "./style.js";
+import { paperOverlays } from "./overlays.js";
 
 const refreshPaper = StateEffect.define();
 
@@ -85,9 +88,11 @@ function touches(ranges, block) {
   return ranges.some((range) => range.from <= block.to && range.to >= block.from);
 }
 
-function build(state, path, imageUrl, adapter) {
+function build(state, path, imageUrl, adapter, project) {
   const renderer = currentPaperRenderer(adapter.module);
   if (!renderer) return { decorations: Decoration.none, rendered: [] };
+  // A renderer that compiles in the project (Typst) is told which one before it draws.
+  if (project && renderer.setProject) renderer.setProject(project());
   const text = state.doc.toString();
   // The whole document rendered at once when the format can; null falls back to drawing each block alone.
   let whole = null;
@@ -127,16 +132,16 @@ function build(state, path, imageUrl, adapter) {
   return { decorations: Decoration.set(marks), rendered };
 }
 
-function paperField(path, imageUrl, adapter) {
+function paperField(path, imageUrl, adapter, project) {
   return StateField.define({
-    create: (state) => build(state, path, imageUrl, adapter),
+    create: (state) => build(state, path, imageUrl, adapter, project),
     update(value, transaction) {
       if (
         transaction.docChanged ||
         transaction.selection ||
         transaction.effects.some((effect) => effect.is(refreshPaper))
       ) {
-        return build(transaction.state, path, imageUrl, adapter);
+        return build(transaction.state, path, imageUrl, adapter, project);
       }
       return value;
     },
@@ -145,9 +150,27 @@ function paperField(path, imageUrl, adapter) {
 }
 
 // Loads the renderer and the format's syntax tree once per view, injects the page CSS once per document, and redraws.
-function loaderFor(adapter) {
+function loaderFor(adapter, project) {
   return ViewPlugin.define((view) => {
-    const plugin = { destroyed: false, destroy() { plugin.destroyed = true; } };
+    // The images and packages the project needs arrive after the first draw; each arrival redraws.
+    const prepare = () => {
+      const renderer = currentPaperRenderer(adapter.module);
+      if (!project || !renderer || !adapter.prepare) return;
+      try {
+        adapter.prepare(view.state.doc.toString(), renderer, project(), () => {
+          if (!plugin.destroyed) view.dispatch({ effects: refreshPaper.of(null) });
+        });
+      } catch {
+        // The view keeps showing source for what cannot be prepared.
+      }
+    };
+    const plugin = {
+      destroyed: false,
+      destroy() { plugin.destroyed = true; },
+      update(update) {
+        if (update.docChanged) prepare();
+      },
+    };
     // The page stylesheet is always the Markdown renderer's: it is the house
     // style every format shares, whichever renderer draws this file.
     const house = adapter.module === "markdown" ? null : loadPaperRenderer("markdown").catch(() => null);
@@ -168,6 +191,7 @@ function loaderFor(adapter) {
           style.textContent = renderer.mathCss;
           document.head.appendChild(style);
         }
+        prepare();
         view.dispatch({ effects: refreshPaper.of(null) });
       })
       .catch(() => {});
@@ -205,14 +229,18 @@ function stepInto(field, direction) {
 /// The paper visual layer for a Markdown or Org file. `format` names the file's format ("markdown" or "org").
 /// `path` returns the open file's project path (no leading slash).
 /// `imageUrl(path)` resolves a project path to a URL for an <img>, or null; it may be async.
+/// `project()` returns `{ main, texts, assets, assetUrl }` for a format that compiles in the project (Typst):
+/// `main` the open file's path, `texts` every project text by path, `assets` each asset path to a version,
+/// `assetUrl(path)` a fetchable URL for an asset or null.
 /// `dark` puts `lp-dark` on the editor, which the house stylesheet answers.
-export function paperVisual({ format = "markdown", path = () => "", imageUrl = null, dark = false } = {}) {
+export function paperVisual({ format = "markdown", path = () => "", imageUrl = null, dark = false, project = null } = {}) {
   const adapter = paperFormat(format);
   if (!adapter) return [];
-  const field = paperField(path, imageUrl, adapter);
+  const field = paperField(path, imageUrl, adapter, project);
   return [
     field,
-    loaderFor(adapter),
+    loaderFor(adapter, project),
+    paperOverlays(field),
     EditorView.editorAttributes.of({
       class: dark ? "cm-lp-visual cm-lp-paper-editor lp-dark" : "cm-lp-visual cm-lp-paper-editor",
     }),
@@ -222,6 +250,15 @@ export function paperVisual({ format = "markdown", path = () => "", imageUrl = n
         if (!(target instanceof Element)) return false;
         const div = target.closest(".cm-lp-paper");
         if (!div) return false;
+        // A painted comment or tracked change answers a click as it does in the source:
+        // the same click reaches the editor's handlers. The caret stays out of the block,
+        // so the block stays drawn.
+        const painted = target.closest("[data-lp-overlay][data-comment-id], [data-lp-overlay][data-change]");
+        if (painted && div.contains(painted)) {
+          event.preventDefault();
+          painted.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: event.clientX, clientY: event.clientY, detail: 1 }));
+          return true;
+        }
         let pos;
         try {
           pos = view.posAtDOM(div);

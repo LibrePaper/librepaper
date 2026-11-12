@@ -44,6 +44,10 @@ export function paperStylesheet(pageCss) {
   // line breaks between rendered tags into blank lines.
   return [
     `@scope (.cm-lp-paper) {\n${scoped}
+:scope, .lp-dark :scope {
+  --lp-paper: var(--color-shell);
+  --lp-ink: var(--color-text);
+}
 :scope {
   max-width: none;
   margin: 0;

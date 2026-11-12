@@ -96,6 +96,8 @@ const formats = {
 // (EditorView, EditorState, visualMarkup, applyFormat, formatState), so its
 // source is copied into the entry as it stands. It drives the editor and
 // returns one snapshot per step; the Node side decides what each one must say.
+// visualMarkup draws LaTeX only; Markdown, Org and Typst mount a plain view, as in the paper view, where the
+// toolbar reads the source instead of the layer's tokens.
 async function formatCheck(format, sample) {
   let view = null;
   const mount = () => {

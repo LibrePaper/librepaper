@@ -185,3 +185,18 @@ export function typstBlockSource(text, block, blocks) {
   }
   return preamble + context.refs + counterUpdates(context.numbered, block) + text.slice(block.from, block.to);
 }
+
+/**
+ * Every preamble rule of the document, in order: what each block is compiled
+ * after. Compiled alone, it shows which packages the document imports.
+ * @param {string} text
+ * @param {PaperBlock[]} blocks the result of splitTypstBlocks(text)
+ * @returns {string}
+ */
+export function typstPreamble(text, blocks) {
+  let preamble = "";
+  for (const block of blocks) {
+    if (block.rules) for (const [from, to] of block.rules) preamble += text.slice(from, to) + "\n";
+  }
+  return preamble;
+}

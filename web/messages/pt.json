@@ -1026,8 +1026,6 @@
   "editorsettings_line_height_compact": "Compacta",
   "editorsettings_line_height_normal": "Normal",
   "editorsettings_line_height_wide": "Ampla",
-  "editorsettings_paper_description": "No modo visual, desenha os arquivos Markdown, Quarto e Org com o renderizador e os estilos da pré-visualização. Experimental.",
-  "editorsettings_paper_title": "Visualização em papel",
   "editorsettings_proofing_description_browser": "Seu navegador sublinha palavras com erro ortográfico na prosa, ignorando comandos, código, matemática e chaves de citação. O idioma e o dicionário dele definem o que conta como palavra.",
   "editorsettings_proofing_description_harper": "O Harper verifica a ortografia e a gramática do inglês na prosa. Ele baixa 7 MB na primeira vez e usa cerca de 300 MB de memória enquanto um documento está aberto. Documentos que declaram outro idioma usam a verificação ortográfica do navegador.",
   "editorsettings_proofing_description_off": "Nada é sublinhado.",

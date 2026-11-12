@@ -62,8 +62,25 @@ import { morphChildren } from "./morph.js";
   // Whether the frame set data-theme on the root itself. An attribute the
   // document supplied is never changed.
   let themeSetByFrame = false;
+  // The reader's own surface colours ({ paper, ink }), or null for the house
+  // defaults. They override the house variables on both :root and .lp-dark.
+  let surface = null;
+  function setSurface(next) {
+    const ok = (value) => typeof value === "string" && value.length > 0 && value.length < 200;
+    const wanted = next && ok(next.paper) && ok(next.ink) ? { paper: next.paper, ink: next.ink } : null;
+    if (wanted?.paper === surface?.paper && wanted?.ink === surface?.ink) return;
+    surface = wanted;
+    applyPaper();
+  }
   function applyPaper() {
     const root = document.documentElement;
+    if (surface) {
+      root.style.setProperty("--lp-paper", surface.paper);
+      root.style.setProperty("--lp-ink", surface.ink);
+    } else {
+      root.style.removeProperty("--lp-paper");
+      root.style.removeProperty("--lp-ink");
+    }
     root.classList.toggle("librepaper-dark", paper === "dark");
     // The house stylesheet redefines its colour variables under .lp-dark.
     root.classList.toggle("lp-dark", paper === "dark");
@@ -112,11 +129,17 @@ import { morphChildren } from "./morph.js";
        Quarto page rendered by the paired app. */
     /* Light paper, the default. Its ink is set here too, so a dark reader does
        not hand the body light text on the white page. */
-    html.librepaper-preview:not(.librepaper-dark) { color-scheme: light; background-color: #fff; color: #000; }
+    html.librepaper-preview:not(.librepaper-dark) { color-scheme: light; }
+    html.librepaper-preview:not(.librepaper-dark):not(.librepaper-house) { background-color: #fff; color: #000; }
+    /* House documents sit on the reader's editor surface when the reader sends
+       it (--lp-paper and --lp-ink are then set on the root), and on the house
+       paper otherwise. */
+    html.librepaper-preview.librepaper-house { background-color: var(--lp-paper); color: var(--lp-ink); }
     html.librepaper-preview:not(.librepaper-dark):not(.librepaper-house).librepaper-flow body { color: #000; background: #fff; }
     /* Dark paper. Flow images stay white, so a transparent plot drawn for white
        paper remains readable, and Typst's paged SVG output is pages of paper. */
-    html.librepaper-preview.librepaper-dark { color-scheme: dark; background-color: #1c1f1e; color: #e4e7e5; }
+    html.librepaper-preview.librepaper-dark { color-scheme: dark; }
+    html.librepaper-preview.librepaper-dark:not(.librepaper-house) { background-color: #1c1f1e; color: #e4e7e5; }
     html.librepaper-preview.librepaper-dark:not(.librepaper-house).librepaper-flow body { color: #e4e7e5; background: #1c1f1e; }
     html.librepaper-preview.librepaper-dark:not(.librepaper-house).librepaper-flow img { background-color: #fff; }
     html.librepaper-preview.librepaper-dark svg.typst-doc { background-color: #fff; }
@@ -599,7 +622,10 @@ import { morphChildren } from "./morph.js";
     if (message.type === "reader-ready") publish(true);
     // The reader's theme. `paper` is what the preview is drawn on, which can
     // differ from the mode when the reader has set it separately.
-    if (message.type === "theme") setPaper(message.paper ?? message.mode);
+    if (message.type === "theme") {
+      setPaper(message.paper ?? message.mode);
+      setSurface(message.surface);
+    }
     if (message.type === "highlight") highlight(message.ranges || []);
     // The editor's live preview. The document being previewed is not yet
     // published, so it arrives as HTML over this channel rather than as a

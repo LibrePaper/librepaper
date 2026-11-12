@@ -1026,8 +1026,6 @@
   "editorsettings_line_height_compact": "紧凑",
   "editorsettings_line_height_normal": "正常",
   "editorsettings_line_height_wide": "宽松",
-  "editorsettings_paper_description": "在可视模式下，使用预览的渲染器和样式绘制 Markdown、Quarto 和 Org 文件。实验性功能。",
-  "editorsettings_paper_title": "纸张视图",
   "editorsettings_proofing_description_browser": "浏览器会为正文中拼写错误的单词添加下划线，并跳过命令、代码、数学公式和引用键。哪些算作单词由浏览器的语言和词典决定。",
   "editorsettings_proofing_description_harper": "Harper 检查正文中的英语拼写和语法。首次使用时会下载 7 MB，文档打开期间约占用 300 MB 内存。声明了其他语言的文档会改用浏览器的拼写检查。",
   "editorsettings_proofing_description_off": "不添加任何下划线。",

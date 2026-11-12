@@ -16,7 +16,7 @@
 // this one does not, so every one of them is checked against what is on
 // offer now rather than trusted.
 
-import { EDITOR_BRACKETS, EDITOR_CHECK, EDITOR_COMPLETION, EDITOR_DIALECT, EDITOR_LATEX_ASSIST, EDITOR_PAPER, EDITOR_SPELLCHECK, EDITOR_VISUAL, KEYMAP, SOURCE_SIDE, read, write } from "../storage.js";
+import { EDITOR_BRACKETS, EDITOR_CHECK, EDITOR_COMPLETION, EDITOR_DIALECT, EDITOR_LATEX_ASSIST, EDITOR_SPELLCHECK, EDITOR_VISUAL, KEYMAP, SOURCE_SIDE, read, write } from "../storage.js";
 import { PANES, remember, stored } from "../panes.js";
 
 const KEYMAPS = ["vim", "emacs"];
@@ -48,7 +48,6 @@ export function createPreferences() {
     // Off unless a stored true turns it on, so a first visit opens the source as text.
     visual: read(EDITOR_VISUAL, false) === true,
     // Off unless a stored true turns it on: the paper view is a prototype.
-    paper: read(EDITOR_PAPER, false) === true,
     // The source and the document are kept as a share of what they have
     // between them; the comment column is kept in pixels. Two units because
     // they are two different kinds of pane: half a window stays half when the
@@ -97,10 +96,6 @@ export function createPreferences() {
     setVisual(on) {
       state.visual = Boolean(on);
       write(EDITOR_VISUAL, Boolean(on));
-    },
-    setPaper(on) {
-      state.paper = Boolean(on);
-      write(EDITOR_PAPER, Boolean(on));
     },
     /// What the reader asked a pane to be. What fits is worked out again
     /// every time it is needed: writing the fitted size back would make a
