@@ -110,4 +110,4 @@ assert.match(dialog, /<ToolsSettings \{view\} \{runDirectory\} \{onchooserundire
 assert.match(toolsSettings, /id="tools-run-directory"/);
 assert.match(toolsSettings, /runDirectory\?\.loaded \? runDirectory\.status : null/);
 assert.match(toolsSettings, /onclick=\{\(\) => onchooserundirectory\?\.\(\)\}/);
-assert.match(toolsSettings, /Your Run directory \{path\} is missing\./);
+assert.match(toolsSettings, /m\.rundirectorycontrol_missing\(\{ path: runStatus\.path \}\)/);
