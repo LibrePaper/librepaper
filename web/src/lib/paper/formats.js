@@ -6,7 +6,7 @@
 
 import { blockSource, splitBlocks } from "./blocks.js";
 import { orgBlockSource, splitOrgBlocks } from "./org-blocks.js";
-import { splitTypstBlocks, typstBlockSource } from "./typst-blocks.js";
+import { splitTypstBlocks, typstBlockSource, typstPreamble } from "./typst-blocks.js";
 import { loadOrgSyntax } from "../org-language/module.js";
 import { loadTypstSyntax } from "../typst-language/module.js";
 
@@ -17,6 +17,7 @@ import { loadTypstSyntax } from "../typst-language/module.js";
  *   blockSource: (text: string, block: import("./blocks.js").PaperBlock, blocks: import("./blocks.js").PaperBlock[]) => string,
  *   renderedBlocks?: (text: string, renderer: import("./renderer.js").PaperRenderer, path: string) => import("./blocks.js").PaperBlock[] | null,
  *   ready: () => Promise<void>,
+ *   prepare?: (text: string, renderer: any, project: any, onUpdate: () => void) => void,
  * }} PaperFormat
  */
 
@@ -90,6 +91,12 @@ const formats = {
     splitBlocks: splitTypstBlocks,
     blockSource: typstBlockSource,
     ready: () => loadTypstSyntax().then(() => {}),
+    // Fetches the images and packages the project needs, then asks for a redraw.
+    prepare(text, renderer, project, onUpdate) {
+      const blocks = splitTypstBlocks(text);
+      if (!blocks || !renderer.prepare) return;
+      renderer.prepare({ ...project, texts: { ...project.texts, [project.main]: text } }, typstPreamble(text, blocks), onUpdate);
+    },
   },
 };
 

@@ -85,9 +85,11 @@ function touches(ranges, block) {
   return ranges.some((range) => range.from <= block.to && range.to >= block.from);
 }
 
-function build(state, path, imageUrl, adapter) {
+function build(state, path, imageUrl, adapter, project) {
   const renderer = currentPaperRenderer(adapter.module);
   if (!renderer) return { decorations: Decoration.none, rendered: [] };
+  // A renderer that compiles in the project (Typst) is told which one before it draws.
+  if (project && renderer.setProject) renderer.setProject(project());
   const text = state.doc.toString();
   // The whole document rendered at once when the format can; null falls back to drawing each block alone.
   let whole = null;
@@ -127,16 +129,16 @@ function build(state, path, imageUrl, adapter) {
   return { decorations: Decoration.set(marks), rendered };
 }
 
-function paperField(path, imageUrl, adapter) {
+function paperField(path, imageUrl, adapter, project) {
   return StateField.define({
-    create: (state) => build(state, path, imageUrl, adapter),
+    create: (state) => build(state, path, imageUrl, adapter, project),
     update(value, transaction) {
       if (
         transaction.docChanged ||
         transaction.selection ||
         transaction.effects.some((effect) => effect.is(refreshPaper))
       ) {
-        return build(transaction.state, path, imageUrl, adapter);
+        return build(transaction.state, path, imageUrl, adapter, project);
       }
       return value;
     },
@@ -145,9 +147,27 @@ function paperField(path, imageUrl, adapter) {
 }
 
 // Loads the renderer and the format's syntax tree once per view, injects the page CSS once per document, and redraws.
-function loaderFor(adapter) {
+function loaderFor(adapter, project) {
   return ViewPlugin.define((view) => {
-    const plugin = { destroyed: false, destroy() { plugin.destroyed = true; } };
+    // The images and packages the project needs arrive after the first draw; each arrival redraws.
+    const prepare = () => {
+      const renderer = currentPaperRenderer(adapter.module);
+      if (!project || !renderer || !adapter.prepare) return;
+      try {
+        adapter.prepare(view.state.doc.toString(), renderer, project(), () => {
+          if (!plugin.destroyed) view.dispatch({ effects: refreshPaper.of(null) });
+        });
+      } catch {
+        // The view keeps showing source for what cannot be prepared.
+      }
+    };
+    const plugin = {
+      destroyed: false,
+      destroy() { plugin.destroyed = true; },
+      update(update) {
+        if (update.docChanged) prepare();
+      },
+    };
     // The page stylesheet is always the Markdown renderer's: it is the house
     // style every format shares, whichever renderer draws this file.
     const house = adapter.module === "markdown" ? null : loadPaperRenderer("markdown").catch(() => null);
@@ -168,6 +188,7 @@ function loaderFor(adapter) {
           style.textContent = renderer.mathCss;
           document.head.appendChild(style);
         }
+        prepare();
         view.dispatch({ effects: refreshPaper.of(null) });
       })
       .catch(() => {});
@@ -205,14 +226,17 @@ function stepInto(field, direction) {
 /// The paper visual layer for a Markdown or Org file. `format` names the file's format ("markdown" or "org").
 /// `path` returns the open file's project path (no leading slash).
 /// `imageUrl(path)` resolves a project path to a URL for an <img>, or null; it may be async.
+/// `project()` returns `{ main, texts, assets, assetUrl }` for a format that compiles in the project (Typst):
+/// `main` the open file's path, `texts` every project text by path, `assets` each asset path to a version,
+/// `assetUrl(path)` a fetchable URL for an asset or null.
 /// `dark` puts `lp-dark` on the editor, which the house stylesheet answers.
-export function paperVisual({ format = "markdown", path = () => "", imageUrl = null, dark = false } = {}) {
+export function paperVisual({ format = "markdown", path = () => "", imageUrl = null, dark = false, project = null } = {}) {
   const adapter = paperFormat(format);
   if (!adapter) return [];
-  const field = paperField(path, imageUrl, adapter);
+  const field = paperField(path, imageUrl, adapter, project);
   return [
     field,
-    loaderFor(adapter),
+    loaderFor(adapter, project),
     EditorView.editorAttributes.of({
       class: dark ? "cm-lp-visual cm-lp-paper-editor lp-dark" : "cm-lp-visual cm-lp-paper-editor",
     }),
