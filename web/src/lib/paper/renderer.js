@@ -14,10 +14,10 @@ const decoder = new TextDecoder();
 
 /** @typedef {{ render: (markdown: string) => string, pageCss: string }} PaperRenderer */
 
-/** @type {PaperRenderer | null} */
-let current = null;
-/** @type {Promise<PaperRenderer> | null} */
-let loading = null;
+/** @type {Map<string, PaperRenderer>} the loaded renderer of each module key */
+const current = new Map();
+/** @type {Map<string, Promise<PaperRenderer>>} the load in flight, or done, of each module key */
+const loading = new Map();
 
 /**
  * The whole page the module compiles for `markdown`, or "" when it fails.
@@ -46,14 +46,22 @@ function compilePage(wasm, markdown) {
 /**
  * The inner HTML of the page's body, with the footnotes section taken out:
  * the editor shows a block alone, and the footnotes come from its definitions
- * in the document, not from a list at the end of this one block.
+ * in the document, not from a list at the end of this one block. Org wraps
+ * its content in sections, so the empty ones a block leaves behind go too.
  * @param {string} page
  * @returns {string}
  */
 function bodyOf(page) {
   const match = /<body[^>]*>([\s\S]*)<\/body>/.exec(page);
   if (!match) return "";
-  return match[1].replace(/<section class="footnotes"[^>]*>[\s\S]*?<\/section>/g, "").trim();
+  let body = match[1].replace(/<section class="footnotes"[^>]*>[\s\S]*?<\/section>/g, "");
+  // Nested empty sections empty their parents, so the pass repeats until none is left.
+  let next = body.replace(/<section[^>]*>\s*<\/section>/g, "");
+  while (next !== body) {
+    body = next;
+    next = body.replace(/<section[^>]*>\s*<\/section>/g, "");
+  }
+  return body.trim();
 }
 
 /**
@@ -86,31 +94,36 @@ export async function createPaperRenderer(bytes) {
 }
 
 /**
- * The Markdown renderer, loaded once. A failed load is forgotten, so the next
- * call tries again. Rejects when no module URL is configured.
+ * The renderer of one module, loaded once per key. A failed load is forgotten
+ * for that key, so the next call tries again. Rejects when no module URL is
+ * configured for the key.
+ * @param {string} [key] the module's name in LIBREPAPER_MODULES: "markdown" or "org"
  * @returns {Promise<PaperRenderer>}
  */
-export function loadPaperRenderer() {
-  if (loading) return loading;
-  const url = globalThis.LIBREPAPER_MODULES?.markdown;
-  if (!url) return Promise.reject(new Error("no Markdown renderer URL"));
-  loading = verifiedModuleBytes(url)
+export function loadPaperRenderer(key = "markdown") {
+  const pending = loading.get(key);
+  if (pending) return pending;
+  const url = globalThis.LIBREPAPER_MODULES?.[key];
+  if (!url) return Promise.reject(new Error(`no ${key} renderer URL`));
+  const attempt = verifiedModuleBytes(url)
     .then((bytes) => createPaperRenderer(bytes))
     .then((renderer) => {
-      current = renderer;
+      current.set(key, renderer);
       return renderer;
     }, (error) => {
-      loading = null;
+      loading.delete(key);
       throw error;
     });
-  return loading;
+  loading.set(key, attempt);
+  return attempt;
 }
 
 /**
- * The renderer if it has loaded, else null. Synchronous, so a view can draw
- * at once when the module is already in place.
+ * The renderer of one module if it has loaded, else null. Synchronous, so a
+ * view can draw at once when the module is already in place.
+ * @param {string} [key] "markdown" or "org"
  * @returns {PaperRenderer | null}
  */
-export function currentPaperRenderer() {
-  return current;
+export function currentPaperRenderer(key = "markdown") {
+  return current.get(key) ?? null;
 }
