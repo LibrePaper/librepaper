@@ -2579,6 +2579,7 @@
   "share_loading": "Loading sharing settings…",
   "share_new": "New",
   "share_no_links": "No sharing links yet.",
+  "share_owner_only": "Only the owner of this project can create share links.",
   "share_revoke_link_body": "This link will stop working. People who only have access through this link will lose access.",
   "share_revoke_link_title": "Revoke link?",
   "share_revoke_token_body": "This token will stop working. The agent loses access at once.",

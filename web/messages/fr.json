@@ -2579,6 +2579,7 @@
   "share_loading": "Chargement des paramètres de partage…",
   "share_new": "Nouveau",
   "share_no_links": "Aucun lien de partage pour l’instant.",
+  "share_owner_only": "Seul le propriétaire de ce projet peut créer des liens de partage.",
   "share_revoke_link_body": "Ce lien cessera de fonctionner. Les personnes qui n’ont accès au projet que par ce lien perdront cet accès.",
   "share_revoke_link_title": "Révoquer le lien?",
   "share_revoke_token_body": "Ce jeton cessera de fonctionner. L’agent perd immédiatement l’accès.",

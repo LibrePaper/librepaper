@@ -2564,6 +2564,7 @@
   "share_loading": "共有設定を読み込み中…",
   "share_new": "新規",
   "share_no_links": "共有リンクはまだありません。",
+  "share_owner_only": "このプロジェクトの所有者だけが共有リンクを作成できます。",
   "share_revoke_link_body": "このリンクは使えなくなります。このリンクだけでアクセスしている人は、アクセスできなくなります。",
   "share_revoke_link_title": "リンクを取り消しますか？",
   "share_revoke_token_body": "このトークンは使えなくなります。エージェントはすぐにアクセスできなくなります。",

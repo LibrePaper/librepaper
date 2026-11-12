@@ -2564,6 +2564,7 @@
   "share_loading": "正在加载分享设置…",
   "share_new": "新建",
   "share_no_links": "还没有分享链接。",
+  "share_owner_only": "只有此项目的所有者可以创建分享链接。",
   "share_revoke_link_body": "此链接将失效。仅通过此链接获得访问权限的人将失去访问权限。",
   "share_revoke_link_title": "撤销链接？",
   "share_revoke_token_body": "此令牌将失效，智能体会立即失去访问权限。",

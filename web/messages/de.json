@@ -2579,6 +2579,7 @@
   "share_loading": "Freigabeeinstellungen werden geladen…",
   "share_new": "Neu",
   "share_no_links": "Noch keine Freigabelinks.",
+  "share_owner_only": "Nur der Eigentümer dieses Projekts kann Freigabelinks erstellen.",
   "share_revoke_link_body": "Dieser Link funktioniert dann nicht mehr. Personen, die nur über diesen Link Zugriff haben, verlieren den Zugriff.",
   "share_revoke_link_title": "Link widerrufen?",
   "share_revoke_token_body": "Dieser Token funktioniert dann nicht mehr. Der Agent verliert sofort den Zugriff.",

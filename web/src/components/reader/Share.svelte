@@ -104,6 +104,7 @@
     </div>
   {:else}
     <div class="share-pad">
+      {#if !canShare && !sharing.error}<p class="panel-muted">{m.share_owner_only()}</p>{/if}
       {@render messages()}
       {#if sharing.error && !sharing.sharing}<button class="btn btn-sm lp-control-tonal-brand" onclick={() => sharing.load()}>{m.common_try_again()}</button>{/if}
     </div>

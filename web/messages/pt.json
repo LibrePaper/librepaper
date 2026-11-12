@@ -2579,6 +2579,7 @@
   "share_loading": "Carregando configurações de compartilhamento…",
   "share_new": "Novo",
   "share_no_links": "Ainda não há links de compartilhamento.",
+  "share_owner_only": "Somente o proprietário deste projeto pode criar links de compartilhamento.",
   "share_revoke_link_body": "Este link deixará de funcionar. Quem tem acesso apenas por este link perderá o acesso.",
   "share_revoke_link_title": "Revogar link?",
   "share_revoke_token_body": "Este token deixará de funcionar. O agente perde o acesso imediatamente.",
