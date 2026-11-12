@@ -622,7 +622,10 @@ function renderTable(table, family) {
   const rows = table.rows.map((row) => {
     const cells = row.cells.map((cell) => renderInline(cell, family, false));
     while (cells.length < width) cells.push("");
-    return family === "markdown" ? cells.map((cell) => cell.replace(/\|/g, "\\|")) : cells;
+    // A bar inside a cell would split it: Markdown escapes it, Org has no escape there, so it uses \vert{}.
+    if (family === "markdown") return cells.map((cell) => cell.replace(/\|/g, "\\|"));
+    if (family === "org") return cells.map((cell) => cell.replace(/\|/g, "\\vert{}"));
+    return cells;
   });
   const headed = table.rows[0].header;
   if (family === "latex") {

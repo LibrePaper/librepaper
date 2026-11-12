@@ -1214,16 +1214,22 @@
     return true;
   }
 
-  // Inserts clipboard content the way every paste does: as source for the
-  // file's format (lib/paste-html.js), or as plain text where the caret is in
-  // math or code, or where the person asked for plain text. Dispatched like the
-  // plain paste was, so tracked changes and Loro cursors see it as one.
-  function insertPaste(target, { html, text, plain }) {
+  // Clipboard content as the text to insert: source for the file's format
+  // (lib/paste-html.js), or plain text where the caret is in math or code, or
+  // where the person asked for plain text.
+  function convertPaste(state, { html, text, plain }) {
     const format = formatHere();
-    const { from } = target.state.selection.main;
-    const asPlain = plain || pastesPlainAt(target.state.doc.toString(), from, format);
-    const insert = pasteText({ html, text, format, plain: asPlain });
+    const { from } = state.selection.main;
+    const asPlain = plain || pastesPlainAt(state.doc.toString(), from, format);
+    return pasteText({ html, text, format, plain: asPlain });
+  }
+  // Dispatched like the plain paste was, so tracked changes and Loro cursors
+  // see it as one edit.
+  function dispatchPaste(target, insert) {
     target.dispatch({ ...target.state.replaceSelection(insert), annotations: Transaction.userEvent.of("input.paste"), scrollIntoView: true });
+  }
+  function insertPaste(target, clip) {
+    dispatchPaste(target, convertPaste(target.state, clip));
   }
 
   // The Edit menu's paste reads the clipboard itself, so it can reach the HTML
@@ -1281,7 +1287,8 @@
         throw error;
       }
       if (view !== target || target.state !== state || !editable) throw new Error(m.editor_paste_changed());
-      insertPaste(target, { ...clip, plain: command === "paste-plain" });
+      // With several cursors the clipboard text goes to each one as it is: converted markup per cursor is not worth losing CodeMirror's line-wise paste.
+      insertPaste(target, { ...clip, plain: command === "paste-plain" || state.selection.ranges.length > 1 });
     }
   }
 
@@ -1619,8 +1626,14 @@
               clearTimeout(plainTimer);
               return false;
             }
+            // Several cursors: CodeMirror's own paste spreads the lines over them, which is worth more than converted markup per cursor.
+            if (view.state.selection.ranges.length > 1) return false;
+            const text = event.clipboardData.getData("text/plain");
+            const insert = convertPaste(view.state, { html, text, plain: false });
+            // Nothing to convert (plain text in math or code, or an unknown format): CodeMirror pastes natively, line-wise.
+            if (insert === text) return false;
             event.preventDefault();
-            insertPaste(view, { html, text: event.clipboardData.getData("text/plain"), plain: false });
+            dispatchPaste(view, insert);
             return true;
           },
         }),

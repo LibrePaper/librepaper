@@ -110,12 +110,46 @@ function markdownPlain(text, at) {
     pos = eol + 1;
   }
   if (fence !== null) return true;
-  // Escapes and closed code spans cannot open anything, so they are removed
-  // before the current line is read.
-  const clean = text.slice(pos, at).replace(/\\./g, "").replace(/`[^`]*`/g, "");
-  if (clean.includes("`")) return true; // an unclosed code span
-  if (toggleDisplay(display, clean)) return true;
-  return oddDollars(clean);
+  const { open, prose } = scanInline(text.slice(pos, at));
+  if (open) return true; // the caret is inside a code span
+  if (toggleDisplay(display, prose)) return true;
+  return oddDollars(prose);
+}
+
+// Scans the part of a line before the caret. A backtick run opens a code span
+// that closes at the next run of the same length; a backslash escapes the next
+// character outside code spans. Returns whether a code span is still open at
+// the end, and the prose left once escapes and closed code spans are removed.
+function scanInline(s) {
+  let prose = "";
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] === "\\") {
+      i += 2;
+    } else if (s[i] === "`") {
+      let end = i;
+      while (s[end] === "`") end += 1;
+      const length = end - i;
+      const close = nextBacktickRun(s, end, length);
+      if (close === -1) return { open: true, prose };
+      i = close + length;
+    } else {
+      prose += s[i];
+      i += 1;
+    }
+  }
+  return { open: false, prose };
+}
+
+// Index of the next backtick run of exactly `length` at or after `from`, or -1.
+// Runs of another length are part of the span and do not close it.
+function nextBacktickRun(s, from, length) {
+  const runs = /`+/g;
+  runs.lastIndex = from;
+  for (let match = runs.exec(s); match !== null; match = runs.exec(s)) {
+    if (match[0].length === length) return match.index;
+  }
+  return -1;
 }
 
 // Whether `at` is inside YAML front matter: the document opens with `---` and
