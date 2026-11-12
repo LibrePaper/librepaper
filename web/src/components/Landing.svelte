@@ -42,6 +42,7 @@
   import { tagColour } from "../lib/tag-colours.js";
   import { FORMATS } from "../lib/starter.js";
   import { localProjects } from "../lib/offline-projects.js";
+  import { forgetKey } from "../lib/storage.js";
   import { provide } from "../lib/support/providers.js";
   import * as localBridge from "../lib/desktop/client.js";
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
@@ -143,6 +144,13 @@
   // request pending until the server confirms it so a failed write cannot
   // make the row disappear locally.
   let sharedVisibilityPending = $state(new Set());
+  // What the one confirmation dialog is for: emptying the trash ("purge") or
+  // leaving a project somebody shared ("leave"). Its title and button follow it.
+  let pendingAction = $state("purge");
+  // The shared project waiting for its Leave to be confirmed.
+  let pendingLeave = $state(null);
+  // Leaves still on their way to the server, by slug.
+  let leavePending = $state(new Set());
 
   // Which columns each place has. The table itself is DataTable's; what
   // differs between the places is this list, which is data rather than three
@@ -858,6 +866,7 @@
     confirmText = many
       ? m.landing_purge_many({ count: slugs.length })
       : m.landing_purge_one({ title: docs[0].title });
+    pendingAction = "purge";
     pendingDeletion = slugs;
     confirming = true;
   }
@@ -875,6 +884,45 @@
     }
     if (gone.size) {
       say(m.landing_purged({ count: gone.size }), { id: "landing:purged" });
+    }
+  }
+
+  // Leaving removes your access, so it is confirmed first, in the same dialog
+  // the trash uses.
+  function askLeave(doc) {
+    if (mine(doc) || leavePending.has(doc.slug)) return;
+    confirmText = m.landing_leave_confirm({ title: doc.title });
+    pendingAction = "leave";
+    pendingLeave = doc;
+    confirming = true;
+  }
+
+  function confirmPending() {
+    return pendingAction === "leave" ? reallyLeave(pendingLeave) : reallyPurge();
+  }
+
+  async function reallyLeave(doc) {
+    confirming = false;
+    pendingLeave = null;
+    if (!doc || leavePending.has(doc.slug)) return;
+    leavePending = new Set(leavePending).add(doc.slug);
+    try {
+      const response = await fetch(`/api/documents/${doc.slug}/leave`, { method: "POST", headers: SHELL_HEADERS });
+      if (!response.ok) {
+        const detail = (await response.json().catch(() => ({}))).error;
+        throw new Error(detail || m.landing_leave_failed());
+      }
+      documents = documents.filter((each) => each.slug !== doc.slug);
+      selected = new Set([...selected].filter((slug) => slug !== doc.slug));
+      // Otherwise opening the link from history would quietly rejoin the project.
+      forgetKey(doc.slug);
+      say(m.landing_left_project({ title: doc.title }), { id: "landing:left" });
+    } catch (error) {
+      say(error?.message || m.landing_leave_failed(), { kind: "problem", id: "landing:leave" });
+    } finally {
+      const pending = new Set(leavePending);
+      pending.delete(doc.slug);
+      leavePending = pending;
     }
   }
 
@@ -993,6 +1041,7 @@
       else if (action === "new-tag" || action.startsWith("tag:")) tagChosen(action, [doc]);
       else if (action === "hide-shared") void setSharedVisibility(doc, true);
       else if (action === "show-shared") void setSharedVisibility(doc, false);
+      else if (action === "leave") askLeave(doc);
       else if (action === "trash") askDelete(doc);
       else if (action === "restore") void restore(doc);
       else if (action === "purge") askPurge([doc]);
@@ -1563,6 +1612,11 @@
                       <span class="menuitem-label">{hasTag(doc, "favorites") ? m.landing_favorite_remove() : m.landing_favorite_add()}</span>
                     </Menu.Item>
                     {@render tagItems((tag) => hasTag(doc, tag.id))}
+                    {#if !mine(doc)}
+                      <Menu.Item value="leave" class="menuitem project-action-item" data-project-action="leave" disabled={leavePending.has(doc.slug)}>
+                        <Icon name="log-out" size="1rem" /><span class="menuitem-label">{m.landing_leave_project()}</span>
+                      </Menu.Item>
+                    {/if}
                     {#if mine(doc)}
                       <Menu.Item value="trash" class="menuitem project-action-item" data-project-action="trash">
                         <Icon name="trash" size="1rem" /><span class="menuitem-label">{m.common_move_to_trash()}</span>
@@ -1607,6 +1661,11 @@
                 {#if mine(doc)}
                   <IconButton icon="trash" colour="lp-text-muted lp-hover-error"
                               title={m.common_move_to_trash()} label={m.landing_move_to_trash_aria({ title: doc.title })} onclick={() => askDelete(doc)} />
+                {:else}
+                  <!-- Somebody else's project cannot be thrown away, only left. -->
+                  <IconButton icon="log-out" colour="lp-text-muted lp-hover-error"
+                              title={m.landing_leave_project()} label={m.landing_leave_project_aria({ title: doc.title })}
+                              disabled={leavePending.has(doc.slug)} onclick={() => askLeave(doc)} />
                 {/if}
                 <Menu onSelect={(chosen) => tagChosen(chosen.value, [doc])}
                       positioning={{ placement: "bottom-end", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}>
@@ -1775,9 +1834,9 @@
        confirm={{ label: m.landing_delete_tag(), tone: "error", onclick: reallyDeleteTag, oncancel: () => (tagToDelete = null) }}></Modal>
 
 <Modal bind:open={confirming}
-       title={m.landing_delete_for_good_question()}
+       title={pendingAction === "leave" ? m.landing_leave_project() : m.landing_delete_for_good_question()}
        description={confirmText}
-       confirm={{ label: m.landing_delete_for_good(), tone: "error", onclick: reallyPurge }}></Modal>
+       confirm={{ label: pendingAction === "leave" ? m.landing_leave_confirm_button() : m.landing_delete_for_good(), tone: "error", onclick: confirmPending }}></Modal>
 
 <Toasts />
 

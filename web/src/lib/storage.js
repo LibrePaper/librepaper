@@ -139,6 +139,17 @@ export function keyFor(slug) {
   return key;
 }
 
+/// Forgets the link key this browser holds for a document, in memory and in
+/// storage, so reopening it from history does not quietly rejoin.
+export function forgetKey(slug) {
+  memoryKeys.delete(slug);
+  const keys = read(KEYS, {});
+  if (keys && typeof keys === "object" && slug in keys) {
+    delete keys[slug];
+    write(KEYS, keys);
+  }
+}
+
 /// The link to hand somebody: the one that was shared, key and all, so a link
 /// copied from the reader is the link that was given. The key goes in the path,
 /// as /docs/<slug>/<key>, so chat apps that drop the fragment still keep it.

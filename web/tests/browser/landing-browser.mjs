@@ -232,7 +232,7 @@ try {
   await until("shared projects", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(trigger("shared"))}))`));
   await click(trigger("shared"));
   const sharedActions = await menuActions();
-  assert.deepEqual(sharedActions.sort(), ["favorite", "fork", "hide-shared"], "shared project offers remove, fork and favorite");
+  assert.deepEqual(sharedActions.sort(), ["favorite", "fork", "hide-shared", "leave"], "shared project offers remove, leave, fork and favorite");
   await click('.explorer-menu[data-state="open"] [data-project-action="favorite"]');
   await until("favorite saved", () => tab.evaluate("testCalls.some(call => call.path === '/api/documents/shared/tags/favorites' && call.method === 'PUT')"));
 
