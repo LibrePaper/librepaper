@@ -317,7 +317,8 @@ function blocksFrom(nodes, ctx, st) {
     pending = [];
     if (inl.length) out.push({ type: "para", inl });
   };
-  for (const node of nodes) {
+  for (let index = 0; index < nodes.length; index++) {
+    const node = nodes[index];
     if (typeof node === "string") {
       if (run.length) {
         if (!node.trim()) continue;
@@ -356,7 +357,20 @@ function blocksFrom(nodes, ctx, st) {
       }
     } else if (node.tag === "ul" || node.tag === "ol") {
       flush();
-      const lists = nestEntries(flattenList(node, 0, ctx, st));
+      // LibreOffice writes each nesting level as a sibling list, so the lists that
+      // follow with only whitespace between them are read as one list.
+      const group = [node];
+      for (let next = index + 1; next < nodes.length; next++) {
+        const sibling = nodes[next];
+        if (typeof sibling === "string") {
+          if (sibling.trim()) break;
+          continue;
+        }
+        if (sibling.tag !== "ul" && sibling.tag !== "ol") break;
+        group.push(sibling);
+        index = next;
+      }
+      const lists = nestEntries(group.flatMap((list) => flattenList(list, 0, ctx, st)));
       if (lists.length) {
         st.found = true;
         out.push(...lists);
@@ -408,8 +422,9 @@ const escTypst = (s, lineStart) => {
 };
 
 /// Markdown (and Quarto) escapes its inline markup; a line start also gets heading, quote and list markers escaped.
+/// Pandoc reads "@word" as a citation and "~x~" or "^x^" as sub- and superscript, so those are escaped too.
 const escMarkdown = (s, lineStart) => {
-  let out = s.replace(/[\\*_`[\]<>$]/g, "\\$&");
+  let out = s.replace(/[\\*_`[\]<>$@~^]/g, "\\$&");
   if (lineStart) {
     if (/^[#>+-]/.test(s)) out = `\\${out}`;
     else if (/^\d+[.)]/.test(s)) out = out.replace(/^(\d+)([.)])/, "$1\\$2");
@@ -457,9 +472,11 @@ function renderCode(s, family) {
 }
 
 /// A link. Text equal to the URL gets the bare form, which each format has.
+/// A trailing slash is ignored on either side, since LibreOffice drops it from the text.
 function renderLink(tok, family) {
   const href = tok.href;
-  const bare = tokensText(tok.inl).trim() === href;
+  const noSlash = (s) => s.replace(/\/$/, "");
+  const bare = noSlash(tokensText(tok.inl).trim()) === noSlash(href);
   const inner = renderInline(tok.inl, family, false);
   if (family === "latex") {
     const url = href.replace(/%/g, "\\%").replace(/#/g, "\\#");
