@@ -4466,7 +4466,9 @@
         {/if}
       </div>
     </section>
-  {:else if shown.document && failedBeforeRender}
+  <!-- The Run directory page takes the pane while it is open; the failure
+       comes back when it closes. -->
+  {:else if shown.document && failedBeforeRender && !runDirectoryPage}
     <section class="latexpane">
       <div class="notyet">
         <h2 class="h4">{m.readerd_could_not_render()}</h2>
@@ -4498,7 +4500,7 @@
         {/if}
       </div>
     </section>
-  {:else if shown.document && noCompiler}
+  {:else if shown.document && noCompiler && !runDirectoryPage}
     <section class="latexpane">
       <div class="notyet">
         <h2 class="h4">{m.readerd_not_rendered()}</h2>
