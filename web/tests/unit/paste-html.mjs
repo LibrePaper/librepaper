@@ -359,5 +359,6 @@ test("a bare link whose URL ends in a slash is still bare", () => {
 });
 
 test("Markdown escapes @, ~ and ^ so Pandoc does not read citations or sub- and superscript", () => {
-  assert.equal(source("<p>@ref ~5m x^2</p>", "markdown"), "\\@ref \\~5m x\\^2");
+  // Bold, so the paste counts as formatted and is converted rather than pasted plain.
+  assert.equal(source("<p><b>See</b> @ref ~5m x^2</p>", "markdown"), "**See** \\@ref \\~5m x\\^2");
 });
