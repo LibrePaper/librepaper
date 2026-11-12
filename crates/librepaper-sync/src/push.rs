@@ -105,7 +105,7 @@ impl Plan<'_> {
 /// which is a rename on disk. A file that was also edited has another hash
 /// and stays a delete and a create. Each path pairs once, and a deleted path
 /// takes the first unpaired match in sorted order. Returns `(from, to)`.
-fn pair_renames(
+fn find_renames(
     recorded: &BTreeMap<String, FileRecord>,
     found: &Scan,
     changes: &LocalChanges,
@@ -153,7 +153,7 @@ fn plan_change<'a>(
     // A rename names the file by path only: the server checks its hash
     // through the deleted file's recorded state, not a dependency here.
     let renames = if pair_renames_too {
-        pair_renames(recorded, found, changes)
+        find_renames(recorded, found, changes)
     } else {
         Vec::new()
     };
@@ -272,12 +272,14 @@ async fn send(client: &Client, slug: &str, body: &Value) -> Result<Sent, Error> 
 /// Posts the request a pending push holds and settles the state by what the
 /// server said. Only the effects saved with the request are applied. A
 /// refusal clears the attempt and leaves the baseline where it was; an error
-/// keeps the attempt, key and effects, for the next push.
+/// keeps the attempt, key and effects, for the next push. `renamed` is how
+/// many of the files are renames, which the summary counts once.
 async fn settle_pending(
     client: &Client,
     store: &dyn StateStore,
     state: &mut State,
     pending: &PendingPush,
+    renamed: usize,
 ) -> Result<PushOutcome, Error> {
     let slug = state.link.slug.clone();
     match send(client, &slug, &pending.request).await? {
@@ -316,7 +318,7 @@ async fn settle_pending(
                 label_sha: sha,
                 sequence,
                 files: (pending.upsert_files.len() + pending.deleted_paths.len())
-                    .saturating_sub(renames_in(pending)),
+                    .saturating_sub(renamed),
             })
         }
     }
@@ -360,7 +362,8 @@ pub async fn push(
         if pending.actor != client.actor() {
             return Err(Error::PendingActor);
         }
-        match settle_pending(client, store, &mut state, &pending).await? {
+        let resumed = renames_in(&pending);
+        match settle_pending(client, store, &mut state, &pending, resumed).await? {
             outcome @ PushOutcome::Pushed { .. } => settled = Some(outcome),
             refused => return Ok(refused),
         }
@@ -425,52 +428,77 @@ pub async fn push(
         }
     }
 
-    let plan = plan_change(&state.files, &found, &changes, &bases, true);
-    if plan.is_empty() {
-        return Ok(settled.unwrap_or(PushOutcome::Nothing));
+    // An older server refuses the `rename` key it does not know. That push
+    // is sent once more as the delete and the create it was before, with a
+    // new request key, since the refused one was never recorded.
+    let mut pair_renames = true;
+    let renamed = find_renames(&state.files, &found, &changes).len();
+    loop {
+        let plan = plan_change(&state.files, &found, &changes, &bases, pair_renames);
+        if plan.is_empty() {
+            return Ok(settled.unwrap_or(PushOutcome::Nothing));
+        }
+        for (path, file) in &plan.uploads {
+            upload(client, &slug, path, file).await?;
+        }
+        let mut sync = json!({"provider": "cli", "message": options.message});
+        if let Some(author) = options
+            .author
+            .as_deref()
+            .map(str::trim)
+            .filter(|author| !author.is_empty())
+        {
+            sync["author"] = json!(author);
+        }
+        let request_key = librepaper_base::util::new_request_key();
+        let request = plan.body(&request_key, sync);
+        let upsert_files = changes
+            .added
+            .iter()
+            .chain(&changes.changed)
+            .map(|path| {
+                let file = &found.files[path];
+                (
+                    path.clone(),
+                    FileRecord {
+                        kind: file.kind,
+                        sha: file.sha.clone(),
+                    },
+                )
+            })
+            .collect();
+        let pending = PendingPush {
+            request_key,
+            actor: client.actor(),
+            request,
+            upsert_files,
+            deleted_paths: changes.deleted.clone(),
+            commit: source_commit
+                .clone()
+                .or_else(|| git.as_ref().and_then(|git| git.rev("HEAD"))),
+        };
+        // Saved before the post, so an answer that never arrives can be settled
+        // by the next push. When the save fails nothing has been sent.
+        state.pending = Some(pending.clone());
+        store.save(&state)?;
+        match settle_pending(client, store, &mut state, &pending, renamed).await {
+            Err(error) if pair_renames && !plan.rename.is_empty() && refuses_rename(&error) => {
+                state.pending = None;
+                store.save(&state)?;
+                pair_renames = false;
+            }
+            outcome => return outcome,
+        }
     }
-    for (path, file) in &plan.uploads {
-        upload(client, &slug, path, file).await?;
-    }
-    let mut sync = json!({"provider": "cli", "message": options.message});
-    if let Some(author) = options
-        .author
-        .as_deref()
-        .map(str::trim)
-        .filter(|author| !author.is_empty())
-    {
-        sync["author"] = json!(author);
-    }
-    let request_key = librepaper_base::util::new_request_key();
-    let request = plan.body(&request_key, sync);
-    let upsert_files = changes
-        .added
-        .iter()
-        .chain(&changes.changed)
-        .map(|path| {
-            let file = &found.files[path];
-            (
-                path.clone(),
-                FileRecord {
-                    kind: file.kind,
-                    sha: file.sha.clone(),
-                },
-            )
-        })
-        .collect();
-    let pending = PendingPush {
-        request_key,
-        actor: client.actor(),
-        request,
-        upsert_files,
-        deleted_paths: changes.deleted.clone(),
-        commit: source_commit.or_else(|| git.as_ref().and_then(|git| git.rev("HEAD"))),
-    };
-    // Saved before the post, so an answer that never arrives can be settled
-    // by the next push. When the save fails nothing has been sent.
-    state.pending = Some(pending.clone());
-    store.save(&state)?;
-    settle_pending(client, store, &mut state, &pending).await
+}
+
+/// Whether a refusal is an older server's answer to a `rename` it does not
+/// know: its input refuses unknown fields, and the message names the key.
+fn refuses_rename(error: &Error) -> bool {
+    matches!(error, Error::Http { status, detail }
+        if (400..500).contains(status)
+            && detail.contains("unknown field")
+            && detail.contains("rename"))
 }
 
 /// Sends an asset the project does not hold yet.
@@ -1259,6 +1287,46 @@ mod tests {
         assert_eq!(posted[0]["operation"], pending.request_key.as_str());
         assert_eq!(posted[1], posted[0]);
         assert!(store.load().unwrap().unwrap().pending.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_server_that_refuses_the_rename_key_gets_the_push_once_more_without_it() {
+        let server = Fake::start().await;
+        server.script(vec![
+            Answer::Reply(
+                400,
+                json!({"error": "unknown field `rename`, expected one of `operation`, `change`, `sync`"}),
+            ),
+            accepted("l1", 1),
+        ]);
+        let Some((dir, _git, store)) = on_main(server.link(), Some("main")) else {
+            return;
+        };
+        let mut state = store.load().unwrap().unwrap();
+        state.files = BTreeMap::from([("a.tex".to_string(), record(Kind::Text, b"one\n"))]);
+        store.save(&state).unwrap();
+        std::fs::rename(dir.path().join("a.tex"), dir.path().join("b.tex")).unwrap();
+
+        let client = server.client();
+        let outcome = push(&client, dir.path(), &store, &options(None)).await;
+        assert!(
+            matches!(&outcome, Ok(PushOutcome::Pushed { files: 1, .. })),
+            "{outcome:?}"
+        );
+        let posted = server.posted();
+        assert_eq!(posted.len(), 2);
+        assert_eq!(
+            posted[0]["change"]["rename"],
+            json!([{"from": "a.tex", "to": "b.tex"}])
+        );
+        assert!(posted[1]["change"].get("rename").is_none());
+        assert_eq!(posted[1]["change"]["create"][0]["path"], "b.tex");
+        assert_eq!(posted[1]["change"]["delete"][0]["path"], "a.tex");
+        assert_ne!(posted[1]["operation"], posted[0]["operation"]);
+
+        let state = store.load().unwrap().unwrap();
+        assert!(state.pending.is_none());
+        assert!(state.files.contains_key("b.tex") && !state.files.contains_key("a.tex"));
     }
 
     /// A store that reads one state and cannot write.
