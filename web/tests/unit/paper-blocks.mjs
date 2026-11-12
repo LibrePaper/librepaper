@@ -52,7 +52,7 @@ import { blockSource, splitBlocks } from "../../src/lib/paper/blocks.js";
   const text = "# A\n\nB";
   const blocks = splitBlocks(text);
   assert.equal(blocks.length, 2);
-  assert.equal(blocks[1].from, 4);
+  assert.equal(blocks[1].from, 5);
   assert.equal(blocks[1].to, text.length);
 }
 

@@ -132,8 +132,10 @@ function paperField(path, imageUrl) {
 
 // Loads the renderer once per view, injects the page CSS once per document, and redraws.
 const loader = ViewPlugin.define((view) => {
+  const plugin = { destroyed: false, destroy() { plugin.destroyed = true; } };
   loadPaperRenderer()
     .then((renderer) => {
+      if (plugin.destroyed) return;
       if (!document.head.querySelector("style[data-librepaper-paper]")) {
         const style = document.createElement("style");
         style.setAttribute("data-librepaper-paper", "");
@@ -143,7 +145,7 @@ const loader = ViewPlugin.define((view) => {
       view.dispatch({ effects: refreshPaper.of(null) });
     })
     .catch(() => {});
-  return {};
+  return plugin;
 });
 
 function stepInto(field, direction) {
@@ -152,6 +154,9 @@ function stepInto(field, direction) {
     if (selection.ranges.length !== 1 || !selection.main.empty) return false;
     const { doc } = view.state;
     const line = doc.lineAt(selection.main.head);
+    // Inside a wrapped line, the default motion moves between its rows.
+    const moved = view.moveVertically(selection.main, direction > 0);
+    if (moved.head >= line.from && moved.head <= line.to && moved.head !== selection.main.head) return false;
     const rendered = view.state.field(field).rendered;
     if (direction > 0) {
       if (line.number >= doc.lines) return false;
