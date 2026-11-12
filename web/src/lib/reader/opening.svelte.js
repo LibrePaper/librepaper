@@ -228,7 +228,9 @@ export function createOpening({
         return;
       }
       // Rendering follows the durable source format. Generated-result identity
-      // is deliberately absent: a reader compiles this source on demand.
+      // is deliberately absent: a reader compiles this source on demand. The
+      // output of a collaborator's local run is not an identity of this source;
+      // it is a separate, opt-out upload (shared results) fetched on its own.
       // An empty project has no format; the first file added gives it one.
       const format = document_.source_format ||
         (document_.execution_engine === "quarto" ? "quarto" : "");
