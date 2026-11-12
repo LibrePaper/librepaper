@@ -273,6 +273,7 @@
   import { applyFormat, formatState } from "../lib/visual-markup/formatting.js";
   import { documentFacts } from "../lib/visual-markup/facts.js";
   import { markdownFacts } from "../lib/visual-markup/markdown-facts.js";
+  import { paperVisual } from "../lib/paper/index.js";
   import { typstFacts } from "../lib/visual-markup/typst-facts.js";
   import { orgFacts } from "../lib/visual-markup/org-facts.js";
   import { m } from "../lib/paraglide/messages.js";
@@ -295,7 +296,7 @@
     tracking = false, me = { who: "", author: "" }, selectedChange = null,
     // A suggester's typing is always tracked: tracking starts on and cannot be stopped.
     suggestOnly = false,
-    visual = false, imageUrl = null,
+    visual = false, paper = false, imageUrl = null,
     analyze = analyzeBibliography,
     onchange, oncaret, onfilechange, onbibliography, onsave, onquit, oncomment, onchangeselect,
     // Called with the caret's formatting (formatState) while visual mode is on.
@@ -1746,7 +1747,11 @@
 
   // The visual layer for a file, or nothing where it draws no such format. The
   // colours depend on the page's mode, so this is read again on a theme change.
+  // With the paper setting on, a Markdown file is drawn by the paper layer instead. .qmd stays on the existing layer.
   function visualOn(on, path) {
+    if (on && untrack(() => paper) && /\.(md|markdown)$/i.test(path)) {
+      return paperVisual({ path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark" });
+    }
     return on ? visualMarkup(formatOf(path), { path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark", openInclude: (name) => openIncluded(path, name) }) : [];
   }
   // The source-code chrome for a file. It is dropped only where the visual layer draws the file,
@@ -2131,6 +2136,7 @@
   // The visual layer switch works the same way, and redraws nothing else.
   $effect(() => {
     void visual;
+    void paper;
     if (view) untrack(() => syncVisual(view));
   });
 
