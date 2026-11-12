@@ -13,7 +13,7 @@ A directory is held as four maps in one CRDT document:
 | `assets` | path | digest of bytes |
 | `meta` | engine, markers | document settings |
 
-Text is stored under an opaque id. Paths are separate entries pointing at ids. Renames move strings in `paths` without touching text. Comments name files by id, so renames don't orphan reviews. Figure bytes sit in the object store under their digest. Identical uploads are stored once. The editable source is authoritative. Comment ranges are translated to source when made.
+Text is stored under an opaque id. Paths are separate entries pointing at ids. Renames move strings in `paths` without touching text. Comments name files by id, so renames don't orphan reviews. Agents rename through `document_files` and sync pushes send renames, so they keep the id too. Figure bytes sit in the object store under their digest. Identical uploads are stored once. The editable source is authoritative. Comment ranges are translated to source when made.
 
 The CRDT is a single Rust library linked natively on the server and compiled to WebAssembly in the browser. Every offset counts UTF-16 code units, as browsers do. Cursors use Unicode code points. Server diffs use code points. Browser diffs use UTF-16. Diff information never crosses the network. Each side computes from its own state. Both are pinned by tests.
 

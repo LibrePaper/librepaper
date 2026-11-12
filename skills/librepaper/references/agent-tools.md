@@ -69,12 +69,13 @@ Apply a private candidate as a direct, untracked edit. Only when the user explic
 
 ## document_files
 
-Create or delete text files, untracked, Edit role. Required: `operation`, plus at least one of:
+Create, rename or delete text files, untracked, Edit role. Required: `operation`, plus at least one of:
 
 - `create[]`: `{path, text}`, up to 100 entries. `text` is at most 262144 characters. For a whole new file, use this tool rather than a propose patch.
+- `rename[]`: `{from, to}`, up to 100 entries. The file keeps its identity, so its comments and tracked changes stay attached. Rename a file rather than deleting it and creating another. `to` must be free, and a renamed path cannot also appear in another operation of the same call.
 - `delete[]`: `{path}`, up to 100 entries.
 
-Optional `base_tree`, `consistency`. A created file shows up only in a later `document_read`. Binary files cannot be added.
+Optional `base_tree`, `consistency`. A created or renamed file shows up only in a later `document_read`. Binary files cannot be added.
 
 ## document_result
 

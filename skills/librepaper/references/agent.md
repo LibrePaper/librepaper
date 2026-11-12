@@ -113,7 +113,7 @@ Start with one `document_read` that combines queries: `{"kind":"manifest"}` to l
 | Review, respond to a thread | `document_comment` create or reply on a `range_id` | Comment |
 | Proofread, tighten, rewrite | `document_propose` with `publish: "suggestions"`: tracked changes an editor accepts or rejects | Suggest |
 | Direct edit, no tracking | `document_propose` with `publish: "private"`, then `document_apply` on the candidate | Edit, and the user said "edit directly" |
-| New or deleted text file | `document_files` (untracked) | Edit, and the user asked for it |
+| New, renamed or deleted text file | `document_files` (untracked). Rename (`lp rename`) rather than delete and create, so comments stay attached | Edit, and the user asked for it |
 
 - A request to proofread or rewrite is not permission for untracked edits. Default to tracked suggestions.
 - With Comment access you cannot change text. With Suggest access you can only propose tracked changes. Say so and suggest the owner issue a Suggest token, or an Edit token for direct edits.

@@ -11,6 +11,7 @@ Usage:
   lp suggest <path> --find TEXT --replace TEXT
   lp insert <path> (--after TEXT | --before TEXT | --end) --text TEXT
   lp create <path> --text TEXT
+  lp rename <from> <to>        move a file; its comments stay attached
   lp withdraw <change_id> [<change_id> ...]
                                withdraw your own pending tracked changes
   lp call <tool> [json|-]      call a tool with the given arguments
@@ -559,6 +560,15 @@ def cmd_create(rest):
     send_write("document_files", {"create": [{"path": args.path, "text": text}]}, state)
 
 
+def cmd_rename(rest):
+    parser = argparse.ArgumentParser(prog="lp rename")
+    parser.add_argument("source", metavar="from")
+    parser.add_argument("target", metavar="to")
+    args = parser.parse_args(rest)
+    state = fresh_state()
+    send_write("document_files", {"rename": [{"from": args.source, "to": args.target}]}, state)
+
+
 def cmd_withdraw(rest):
     parser = argparse.ArgumentParser(prog="lp withdraw")
     parser.add_argument("change_ids", nargs="+", metavar="change_id")
@@ -635,6 +645,7 @@ def connect(rest):
         lines.append(f"  {RUN} --project {slug} withdraw <change_id> [<change_id> ...]")
     if perms.get("apply"):
         lines.append(f"  {RUN} --project {slug} create <path> --text '<content>'")
+        lines.append(f"  {RUN} --project {slug} rename <from> <to>")
     if len(lines) > 4:
         lines.append("Long text: pass --text-file - (or --replace-file, --body-file) and pipe it on stdin.")
     if perms.get("suggest"):
@@ -733,6 +744,8 @@ def dispatch(command, rest):
         cmd_insert(rest)
     elif command == "create":
         cmd_create(rest)
+    elif command == "rename":
+        cmd_rename(rest)
     elif command == "withdraw":
         cmd_withdraw(rest)
     elif command in ("call", "write"):
