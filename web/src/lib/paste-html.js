@@ -386,6 +386,16 @@ function blocksFrom(nodes, ctx, st) {
     if (SKIP.has(node.tag)) continue;
     const previousCode = code;
     code = null;
+    // A blank paragraph between code paragraphs is a blank line of the code:
+    // Word writes one as a paragraph holding a monospace non-breaking space.
+    if (previousCode && node.tag === "p") {
+      const blank = node.children.flatMap((kid) => inlinesOf(kid, applyStyle(node, ctx), { found: false }));
+      if (blank.every((tok) => tok.kind === "br" || (tok.kind === "text" && !tok.s.replace(/\u00a0/g, " ").trim()))) {
+        previousCode.lines.push("");
+        code = previousCode;
+        continue;
+      }
+    }
     if (node.tag === "p" && /mso-list:\s*l\d/i.test(node.attrs.style ?? "")) {
       if (!run.length) flush();
       run.push(listEntry(node, ctx, st));
@@ -629,7 +639,12 @@ function bulletLines(list, indent, family) {
 function renderTable(table, family) {
   const width = Math.max(...table.rows.map((row) => row.cells.length));
   const rows = table.rows.map((row) => {
-    const cells = row.cells.map((cell) => renderInline(cell, family, false));
+    // Org shows \vert{} literally inside ~code~, so a bar in inline code splits
+    // the code around it and the bar itself is written outside, as \vert{}.
+    const splitBars = (cell) => cell.flatMap((tok) => (tok.kind === "text" && tok.c && tok.s.includes("|")
+      ? tok.s.split("|").flatMap((part, index) => [...(index ? [plainText("|")] : []), ...(part ? [{ ...tok, s: part }] : [])])
+      : [tok]));
+    const cells = row.cells.map((cell) => renderInline(family === "org" ? splitBars(cell) : cell, family, false));
     while (cells.length < width) cells.push("");
     // A bar inside a cell would split it: Markdown escapes it, Org has no escape there, so it uses \vert{}.
     if (family === "markdown") return cells.map((cell) => cell.replace(/\|/g, "\\|"));

@@ -428,3 +428,15 @@ test("a monospace span inside an explicit code tag stays inline code", () => {
   const html = '<p><code><span style="font-family:monospace">x_y</span></code></p><p><i>z</i></p>';
   assert.equal(source(html, "markdown"), "`x_y`\n\n*z*");
 });
+
+test("a blank monospace paragraph inside Word code stays a blank line of one block", () => {
+  const mono = (text) => `<p><span style="font-family:Consolas">${text}</span></p>`;
+  assert.equal(source(mono("a = 1") + mono("&nbsp;") + mono("b = 2") + "<p>After</p>", "markdown"), "```\na = 1\n\nb = 2\n```\n\nAfter");
+});
+
+test("a bar in inline code inside an Org table cell is written outside the code", () => {
+  const out = source("<table><tr><th>h</th><th>k</th></tr><tr><td><code>a|b</code></td><td>2</td></tr></table>", "org");
+  const row = out.split("\n")[2];
+  assert.equal(row, "| ~a~\\vert{}~b~ | 2 |");
+  assert.equal(row.split("|").length, out.split("\n")[0].split("|").length);
+});
