@@ -55,6 +55,10 @@
     account = {},
     remoteConnected = false,
     remoteNote = "",
+    // The Run directory of the open document, while Run code is on, and how
+    // to ask for another.
+    runDirectory = undefined,
+    onchooserundirectory = undefined,
   } = $props();
 
   const view = createMachineView();
@@ -158,7 +162,7 @@
           {#if row("storage-account")}<QuotaSettings />{/if}
           {#if row("account-erase")}<AccountSettings {account} />{/if}
         {:else if shown.id === "tools"}
-          <ToolsSettings {view} />
+          <ToolsSettings {view} {runDirectory} {onchooserundirectory} />
         {/if}
       {/if}
     </div>

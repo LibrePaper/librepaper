@@ -86,7 +86,11 @@ assert.match(readerSource, /let localExecution = \$state\(false\)/);
 assert.doesNotMatch(readerSource, /granted\(|local-execution\.js|localExecutionConsent/);
 // Turning the switch changes who renders, so a chosen Run directory is
 // forgotten, what was in flight stops and the pane is drawn again.
-assert.match(readerSource, /function toggleLocalExecution\(\) \{\s*localExecution = !localExecution;\s*if \(localExecution\) runDirectory = "";\s*stopRendering\(\);\s*void paintPreview\(\);/);
+assert.match(readerSource, /function toggleLocalExecution\(\) \{\s*localExecution = !localExecution;\s*if \(localExecution\) runDirectory = "";\s*(?:\/\/[^\n]*\n\s*)*if \(localExecution && sourceFormat === "quarto"\) runDirPageOpen = true;\s*stopRendering\(\);\s*void paintPreview\(\);/);
+// Switching Run code on opens the Run directory dialog. The navbar and the
+// phone strip no longer show the folder; Settings > Tools does.
+assert.doesNotMatch(readerSource, /RunDirectoryControl|run-directory-strip|runStrip/);
+assert.match(readerSource, /<SettingsDialog [^>]*runDirectory=\{runDir\} onchooserundirectory=\{openRunDirPage\}/);
 // Nothing resets a stored choice of this computer when a document opens, and
 // there is no live preview left to start or stop.
 assert.doesNotMatch(readerSource, /setQuartoPreviewMode|setTypstPreviewMode|startLocalExecution|stopLocalExecution|createLocalPreview/);

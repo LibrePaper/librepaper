@@ -2840,6 +2840,8 @@
   "toolssettings_minutes": "{minutes} min {seconds} s",
   "toolssettings_not_checked": "Non vérifié",
   "toolssettings_rescan": "Réanalyser",
+  "toolssettings_run_directory_change": "Changer",
+  "toolssettings_run_directory_none": "Aucun dossier choisi pour l’instant.",
   "toolssettings_running": "en cours",
   "toolssettings_scan_complete": "Analyse des outils terminée.",
   "toolssettings_scanning": "Analyse…",

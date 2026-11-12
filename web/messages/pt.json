@@ -2840,6 +2840,8 @@
   "toolssettings_minutes": "{minutes} min {seconds} s",
   "toolssettings_not_checked": "Não verificado",
   "toolssettings_rescan": "Verificar novamente",
+  "toolssettings_run_directory_change": "Alterar",
+  "toolssettings_run_directory_none": "Nenhuma pasta escolhida ainda.",
   "toolssettings_running": "em execução",
   "toolssettings_scan_complete": "Verificação de ferramentas concluída.",
   "toolssettings_scanning": "Verificando…",
