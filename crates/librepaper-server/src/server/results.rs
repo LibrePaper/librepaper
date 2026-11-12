@@ -50,7 +50,11 @@ fn validate(record: &ResultsRecord) -> Result<(), &'static str> {
         if !hex {
             return Err("a cell fingerprint must be 64 lowercase hex characters");
         }
-        if cell.label.as_ref().is_some_and(|l| l.len() > MAX_LABEL_BYTES) {
+        if cell
+            .label
+            .as_ref()
+            .is_some_and(|l| l.len() > MAX_LABEL_BYTES)
+        {
             return Err("a cell label is too long");
         }
     }
@@ -121,12 +125,7 @@ impl Server {
                         match self
                             .store
                             .catalog
-                            .put_results(
-                                document_id,
-                                &body,
-                                viewer.account_id(),
-                                name.display(),
-                            )
+                            .put_results(document_id, &body, viewer.account_id(), name.display())
                             .await
                         {
                             Ok(done) => write_json(

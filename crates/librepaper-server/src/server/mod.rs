@@ -92,9 +92,9 @@ mod pages;
 mod quota;
 mod refusal;
 mod reply;
-mod results;
 #[cfg(test)]
 mod restore_http_tests;
+mod results;
 #[cfg(test)]
 mod results_http_tests;
 #[cfg(test)]

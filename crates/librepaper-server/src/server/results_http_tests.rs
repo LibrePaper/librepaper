@@ -97,7 +97,10 @@ async fn serve(deployment: Deployment) -> Served {
 
 impl Served {
     fn url(&self) -> String {
-        format!("{}/api/documents/{}/results", self.base, self.deployment_slug)
+        format!(
+            "{}/api/documents/{}/results",
+            self.base, self.deployment_slug
+        )
     }
 
     async fn call(&self, method: &str, authorization: &str, body: Option<String>) -> (u16, Value) {
@@ -200,9 +203,7 @@ async fn the_owner_puts_and_gets_a_record() {
     let (status, _) = served.call("GET", &owner, None).await;
     assert_eq!(status, 404, "no record yet");
 
-    let (status, put) = served
-        .call("PUT", &owner, Some(record().to_string()))
-        .await;
+    let (status, put) = served.call("PUT", &owner, Some(record().to_string())).await;
     assert_eq!(status, 200, "{put}");
     assert!(put["bytes"].as_i64().unwrap() > 0);
     assert!(put["updatedAt"].is_string());
@@ -229,9 +230,7 @@ async fn a_reader_can_get_but_not_put_or_delete() {
     let owner = served.owner.clone();
     let reader = served.bearer_with(Role::Reader).await;
 
-    let (status, _) = served
-        .call("PUT", &owner, Some(record().to_string()))
-        .await;
+    let (status, _) = served.call("PUT", &owner, Some(record().to_string())).await;
     assert_eq!(status, 200);
 
     let (status, got) = served.call("GET", &reader, None).await;
@@ -304,9 +303,7 @@ async fn delete_reports_the_freed_bytes_and_the_record_is_gone() {
     assert_eq!(status, 200);
     assert_eq!(deleted["bytes"], 0, "nothing to free");
 
-    let (_, put) = served
-        .call("PUT", &owner, Some(record().to_string()))
-        .await;
+    let (_, put) = served.call("PUT", &owner, Some(record().to_string())).await;
     let (status, deleted) = served.call("DELETE", &owner, None).await;
     assert_eq!(status, 200);
     assert_eq!(deleted["bytes"], put["bytes"]);
@@ -336,9 +333,7 @@ async fn the_storage_status_counts_shared_results() {
     let slug = served.deployment_slug.clone();
     assert_eq!(entry(&before, &slug)["resultsBytes"], 0);
 
-    let (_, put) = served
-        .call("PUT", &owner, Some(record().to_string()))
-        .await;
+    let (_, put) = served.call("PUT", &owner, Some(record().to_string())).await;
     let bytes = put["bytes"].as_i64().unwrap();
     let after = served.storage().await;
     assert_eq!(entry(&after, &slug)["resultsBytes"], bytes);
