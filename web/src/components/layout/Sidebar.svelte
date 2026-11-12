@@ -100,7 +100,7 @@
 <style>
   .sidebar { flex-direction: row; }
   .sidebar.collapsed { flex: 0 0 var(--librepaper-activity); }
-  .sidebar-activity { display: flex; flex: none; flex-direction: column; align-items: center; gap: var(--spacing); width: var(--librepaper-activity); min-height: 0; padding-block: calc(var(--spacing) * 3); border-right: 1px solid var(--color-pane-edge); }
+  .sidebar-activity { display: flex; flex: none; flex-direction: column; align-items: center; gap: var(--spacing); width: var(--librepaper-activity); min-height: 0; padding-block: calc(var(--spacing) * 3); border-right: 1px solid var(--color-border-strong); }
   .activity-bottom { display: flex; flex: none; flex-direction: column; align-items: center; gap: var(--spacing); margin-top: auto; }
   /* Eight panels and four workspace controls are taller than a short window,
      and the column clips what it cannot fit -- so the panels scroll and the
@@ -122,7 +122,7 @@
   .panel-slot[hidden] { display: none; }
   @media (max-width: 767px) {
     .sidebar, .sidebar.collapsed { flex-direction: column; }
-    .sidebar-activity { display: flex; order: 1; width: 100%; padding-block: var(--spacing); border-right: 0; border-top: 1px solid var(--color-pane-edge); }
+    .sidebar-activity { display: flex; order: 1; width: 100%; padding-block: var(--spacing); border-right: 0; border-top: 1px solid var(--color-border-strong); }
     .sidebar-activity .activity-sections { display: none; }
     .activity-bottom { flex-direction: row; }
     .activity-sections { flex-direction: row; }

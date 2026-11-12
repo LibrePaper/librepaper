@@ -252,7 +252,7 @@
     max-height: 85dvh;
     padding: 0;
     padding-bottom: env(safe-area-inset-bottom);
-    border-top: 1px solid var(--color-pane-edge);
+    border-top: 1px solid var(--color-border-strong);
     border-radius: 16px 16px 0 0;
     background: var(--color-raised);
   }

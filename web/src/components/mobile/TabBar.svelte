@@ -97,7 +97,7 @@
     height: calc(3.5rem + env(safe-area-inset-bottom));
     padding-bottom: env(safe-area-inset-bottom);
     padding-inline: env(safe-area-inset-left) env(safe-area-inset-right);
-    border-top: 1px solid var(--color-pane-edge);
+    border-top: 1px solid var(--color-border-strong);
     background: var(--color-shell);
   }
 

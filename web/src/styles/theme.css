@@ -53,7 +53,6 @@
 
 	/* Separators, borders, and row states */
 	--color-divider: var(--neutral-6);
-	--color-pane-edge: var(--neutral-8);
 	--color-border: var(--neutral-7);
 	--color-border-strong: var(--neutral-8);
 	--color-row-hover: var(--neutral-4);
@@ -65,12 +64,9 @@
 	/* Text and interaction */
 	--color-text: var(--neutral-12);
 	--color-text-secondary: var(--neutral-11);
-	--color-text-muted: var(--neutral-11);
 	--color-text-inverse: #ffffff;
-	--color-line-number: var(--neutral-11);
 	--color-link: var(--color-brand);
 	--color-focus: var(--color-link);
-	--color-disabled-bg: var(--neutral-3);
 	--color-disabled-text: var(--neutral-9);
 
 	/* Source syntax colors are Okabe-Ito hues, darkened to 4.5:1 on the light
@@ -106,19 +102,19 @@
 	--color-success-border: #8cd3c0;
 	--color-success-text: #007a59;
 	--color-success-solid: #008762;
-	--color-success-on-solid: #ffffff;
 
 	--color-warning-bg: #fcf2db;
 	--color-warning-border: #f4d48c;
 	--color-warning-text: #926500;
 	--color-warning-solid: #e69f00;
-	--color-warning-on-solid: #1a211e;
 
 	--color-error-bg: #f9e8db;
 	--color-error-border: #ecb78c;
 	--color-error-text: #af4d00;
 	--color-error-solid: #c35600;
-	--color-error-on-solid: #ffffff;
+
+	/* Text on the success and error solids. The warning solid never carries text. */
+	--color-on-solid: #ffffff;
 
 	/* Narrow compatibility values for Skeleton base and form styles. */
 	--color-primary-500: var(--color-brand);
@@ -156,7 +152,7 @@
 	--panel-meta-size: var(--text-xs);
 	--panel-padding: calc(var(--spacing) * 4);
 	--panel-section-gap: calc(var(--spacing) * 6);
-	--panel-muted: var(--color-text-muted);
+	--panel-muted: var(--color-text-secondary);
 	--font-editor: "JetBrains Mono", "IBM Plex Mono", "Geist Mono", ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 
 	/* Workspace bar, spacing, and corners */
@@ -207,7 +203,6 @@
 	--color-tonal-hover: color-mix(in srgb, var(--color-row-selected) 90%, black);
 	--color-tonal-pressed: color-mix(in srgb, var(--color-row-selected) 80%, black);
 	--color-subtle: var(--neutral-4);
-	--color-disabled-bg: var(--neutral-4);
 
 	/* A muted pine, the light brand's hue lightened for a dark ground. */
 	--color-link: #83b5a1;
@@ -237,19 +232,17 @@
 	--color-success-border: #0a624a;
 	--color-success-text: #1ca982;
 	--color-success-solid: #009e73;
-	--color-success-on-solid: var(--neutral-1);
 
 	--color-warning-bg: #403413;
 	--color-warning-border: #89630b;
 	--color-warning-text: #e69f00;
 	--color-warning-solid: #e69f00;
-	--color-warning-on-solid: var(--neutral-1);
 
 	--color-error-bg: #3d2713;
 	--color-error-border: #803f0b;
 	--color-error-text: #e88b51;
 	--color-error-solid: #d55e00;
-	--color-error-on-solid: var(--neutral-1);
+	--color-on-solid: var(--neutral-1);
 }
 
 /* Project tag colours. These reference the Okabe-Ito hues above. The keys are

@@ -162,7 +162,7 @@
   .agent-panel :global([role="tabpanel"]:not(.agent-builtin-pane)) { overflow-y: auto; gap: calc(var(--spacing) * 2); }
   .agent-panel :global([role="tabpanel"]:not(.agent-builtin-pane)) > :global(*) { flex-shrink: 0; }
   .agent-panel :global(.agent-builtin-pane) { display: flex; flex: 1 1 0; min-height: 0; flex-direction: column; overflow: hidden; }
-  .share-copy-fallback { border: 0; background: transparent; resize: none; color: var(--color-text-muted); font-size: var(--panel-meta-size); }
+  .share-copy-fallback { border: 0; background: transparent; resize: none; color: var(--color-text-secondary); font-size: var(--panel-meta-size); }
   /* The tasks are a list of two-line rows: the name, then the instruction in
      muted type, with a copy button at the right and, where the desktop app can
      run the task, a Run button beside it. Only the buttons are live. */

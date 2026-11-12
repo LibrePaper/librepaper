@@ -24,7 +24,7 @@ body > nav {
   z-index: 10;
   height: var(--librepaper-bar);
   padding-inline: --spacing(4);
-  border-bottom: 1px solid var(--color-pane-edge);
+  border-bottom: 1px solid var(--color-border-strong);
   background: color-mix(in srgb, var(--color-shell) 94%, transparent);
   backdrop-filter: blur(12px);
 }
@@ -91,7 +91,7 @@ main.workspace .rail-item:last-child { margin-top: calc(var(--spacing) * 3); }
      editor past the pane. */
   grid-template-rows: minmax(0, 1fr);
   grid-template-columns: minmax(0, 1fr);
-  border-right: 1px solid var(--color-pane-edge);
+  border-right: 1px solid var(--color-border-strong);
 }
 
 /* ------------------------------------------------------------- the files */
@@ -319,7 +319,7 @@ body:has(.explorer-menu[data-state="open"]) .viewport iframe {
   flex-direction: column;
   min-width: 0;
   overflow: hidden;
-  border-right: 1px solid var(--color-pane-edge);
+  border-right: 1px solid var(--color-border-strong);
 }
 .panel {
   flex: 1 1 auto;
@@ -608,7 +608,7 @@ main.reader.source-right .viewport {
 main.reader.source-right .editorpane {
   order: 3;
   border-right: 0;
-  border-left: 1px solid var(--color-pane-edge);
+  border-left: 1px solid var(--color-border-strong);
 }
 
 /* ------------------------------------------------------------------- grips */
@@ -713,7 +713,7 @@ main.reader.source-right .editorpane {
   background: var(--color-shell);
   border: 0;
   padding-left: --spacing(3);
-  color: var(--color-line-number);
+  color: var(--color-text-secondary);
 }
 .cm-editor .cm-lineNumbers .cm-gutterElement {
   padding-inline: --spacing(2);
@@ -1331,7 +1331,7 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .settings-body > * { max-width: 900px; }
 .settings-body { min-height: 0; overflow-y: auto; padding-right: --spacing(2); overscroll-behavior: contain; }
 .settings :is(button.switch, input, select, textarea):disabled {
-  background: var(--color-disabled-bg);
+  background: var(--color-subtle);
   color: var(--color-disabled-text);
   border-color: var(--color-border);
   cursor: not-allowed;
@@ -1555,9 +1555,9 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .lp-control-brand { background: var(--color-brand); color: var(--color-on-brand); border-color: var(--color-brand); }
 .lp-control-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-brand-hover); }
 .lp-control-brand:active:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-brand-pressed); }
-.lp-control-danger { background: var(--color-error-solid); color: var(--color-error-on-solid); border-color: var(--color-error-solid); }
+.lp-control-danger { background: var(--color-error-solid); color: var(--color-on-solid); border-color: var(--color-error-solid); }
 .lp-control-danger:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { filter: brightness(.94); }
-.lp-control-success { background: var(--color-success-solid); color: var(--color-success-on-solid); border-color: var(--color-success-solid); }
+.lp-control-success { background: var(--color-success-solid); color: var(--color-on-solid); border-color: var(--color-success-solid); }
 .lp-control-success:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { filter: brightness(.94); }
 .lp-control-neutral { background: var(--color-subtle); color: var(--color-text); border-color: var(--color-border); }
 .lp-control-neutral:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-hover); }
@@ -1578,7 +1578,7 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 [data-quiet-focus]:focus-visible { outline: none; }
 :where(.lp-control-brand, .lp-control-danger, .lp-control-success, .lp-control-neutral, .lp-control-tonal, .lp-control-tonal-brand):disabled,
 :where(.lp-control-brand, .lp-control-danger, .lp-control-success, .lp-control-neutral, .lp-control-tonal, .lp-control-tonal-brand)[aria-disabled="true"] {
-  background: var(--color-disabled-bg);
+  background: var(--color-subtle);
   color: var(--color-disabled-text);
   border-color: var(--color-border);
   cursor: not-allowed;
@@ -1588,7 +1588,7 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .lp-tone-error { color: var(--color-error-text); background: var(--color-error-bg); border: 1px solid var(--color-error-border); }
 .lp-tone-neutral { color: var(--color-text-secondary); background: var(--color-subtle); border: 1px solid var(--color-border); }
 .lp-text-secondary { color: var(--color-text-secondary); }
-.lp-text-muted { color: var(--color-text-muted); }
+.lp-text-muted { color: var(--color-text-secondary); }
 .lp-text-error { color: var(--color-error-text); }
 .lp-text-warning { color: var(--color-warning-text); }
 .lp-hover-brand:hover { color: var(--color-link); }
