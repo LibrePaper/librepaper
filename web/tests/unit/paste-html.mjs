@@ -373,8 +373,9 @@ test("a monospace font on a span is inline code, in Markdown and LaTeX", () => {
 
 test("the first font family decides: quoted monospace is code, Aptos and a later monospace are not", () => {
   assert.equal(source("<p>Run <span style=\"font-family:'Courier New'\">ls</span> now</p>", "markdown"), "Run `ls` now");
-  assert.equal(source('<p>Run <span style="font-family:Aptos">ls</span> now</p>', "markdown"), "Run ls now");
-  assert.equal(source('<p>Run <span style="font-family: Arial, monospace">ls</span> now</p>', "markdown"), "Run ls now");
+  // Not code, so nothing is formatted and the paste falls back to plain text.
+  assert.equal(source('<p>Run <span style="font-family:Aptos">ls</span> now</p>', "markdown"), null);
+  assert.equal(source('<p>Run <span style="font-family: Arial, monospace">ls</span> now</p>', "markdown"), null);
 });
 
 test("a Google Docs code paragraph with a line break is one fenced block", () => {
@@ -394,4 +395,9 @@ test("a paragraph with code and prose stays a paragraph with inline code", () =>
 
 test("entities in text decode to the characters a browser shows", () => {
   assert.equal(source("<p><b>x</b> &ldquo;q&rdquo; caf&eacute;</p>", "markdown"), "**x** “q” café");
+});
+
+test("a monospace font on a list item does not make its text code (Google Docs bullet glyph)", () => {
+  const html = '<ul><li style="font-family:\'Courier New\',monospace"><p><span style="font-family:Aptos">Check the <b>depth</b></span></p></li></ul>';
+  assert.equal(source(html, "markdown"), "- Check the **depth**");
 });

@@ -8,7 +8,7 @@
 import { markupFamily } from "./editing-shortcuts.js";
 
 /** @typedef {{ tag: string, attrs: Record<string, string>, children: Array<Element | string> }} Element */
-/** @typedef {{ kind: "text", s: string, b: boolean, i: boolean, c: boolean } | { kind: "link", href: string, inl: Inline[] } | { kind: "br" }} Inline */
+/** @typedef {{ kind: "text", s: string, b: boolean, i: boolean, c: boolean, m?: boolean } | { kind: "link", href: string, inl: Inline[] } | { kind: "br" }} Inline */
 /** @typedef {"latex" | "typst" | "markdown" | "org"} Family */
 
 /// Dropped with their content: none of it is prose a reader should see as source.
@@ -83,7 +83,15 @@ function applyStyle(el, ctx) {
   if (fontStyle !== undefined) i = /^(italic|oblique)/.test(fontStyle);
   else if (el.tag === "i" || el.tag === "em" || el.tag === "cite") i = true;
   const mono = fontFamily !== undefined && isMonoFamily(fontFamily);
-  return { b, i, c: ctx.c || CODE_TAGS.has(el.tag) || mono, noBold: ctx.noBold };
+  // `m` remembers code marked only by font, which is how word processors write
+  // code blocks. A later non-monospace font ends it, as the style wins for bold:
+  // Google Docs puts Courier New on a <li> for its "o" bullet and Aptos on the text.
+  let c = ctx.c;
+  let m = Boolean(ctx.m);
+  if (mono) [c, m] = [true, true];
+  else if (fontFamily !== undefined && m) [c, m] = [false, false];
+  if (CODE_TAGS.has(el.tag)) c = true;
+  return { b, i, c, m, noBold: ctx.noBold };
 }
 
 const plainText = (s) => ({ kind: "text", s, b: false, i: false, c: false });
@@ -108,7 +116,7 @@ const containsBlock = (node) => typeof node !== "string" && (BLOCKS.has(node.tag
 function inlinesOf(node, ctx, st) {
   if (typeof node === "string") {
     if ((ctx.b || ctx.i || ctx.c) && node.trim()) st.found = true;
-    return [{ kind: "text", s: node, b: ctx.b, i: ctx.i, c: ctx.c }];
+    return [{ kind: "text", s: node, b: ctx.b, i: ctx.i, c: ctx.c, m: Boolean(ctx.m) }];
   }
   if (SKIP.has(node.tag)) return [];
   if (node.tag === "br") return [{ kind: "br" }];
@@ -272,7 +280,8 @@ function cellInline(td, ctx, st) {
         item.children.forEach(visit);
       }
     } else if (block.type === "quote") block.blocks.forEach(visit);
-    else if (block.type === "pre") parts.push([plainText(block.text)]);
+    // A cell written in a monospace font keeps its code markup, on one line.
+    else if (block.type === "pre") parts.push([{ kind: "text", s: block.text.replace(/\n/g, " "), b: false, i: false, c: true }]);
   };
   blocksFrom(td.children, applyStyle(td, ctx), st).forEach(visit);
   const joined = [];
@@ -308,10 +317,11 @@ function tableBlock(el, ctx, st) {
 const preText = (el) => textRaw(el).replace(/^\n/, "").replace(/\n+$/, "");
 
 /// A paragraph is code when it has code text and every other token is whitespace
-/// or a line break, with no links. Google Docs and Word write code blocks this way.
+/// or a line break, with no links. Google Docs and Word write code blocks this way,
+/// in a monospace font; a web page's lone <code> stays inline, since pages use <pre>.
 const isCodeParagraph = (inl) =>
-  inl.some((tok) => tok.kind === "text" && tok.c && tok.s.trim()) &&
-  inl.every((tok) => tok.kind === "br" || (tok.kind === "text" && (tok.c || !tok.s.trim())));
+  inl.some((tok) => tok.kind === "text" && tok.m && tok.s.trim()) &&
+  inl.every((tok) => tok.kind === "br" || (tok.kind === "text" && (tok.m || !tok.s.trim())));
 
 /// The lines of a code paragraph, from its raw tokens, so that spaces are kept.
 /// Each line loses its trailing whitespace.
