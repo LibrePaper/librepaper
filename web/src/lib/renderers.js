@@ -31,7 +31,7 @@ import { snapshotDigest } from "./projection-digest.js";
 
 import { rendererRequest } from "./renderer-client.js";
 import { m } from "./paraglide/messages.js";
-import { houseStyleCss, latexmlWithHouseStyle, typstWithHouseStyle } from "./house-style.js";
+import { houseStyleCss, latexmlWithHouseStyle, quartoWithHouseStyle, typstWithHouseStyle } from "./house-style.js";
 
 /// This browser's identity for a render tree -- `{ main, texts, digests }`
 /// -- used only as a transient cache key: whether a local build's job
@@ -183,6 +183,13 @@ function localDiagnostics(format, result, tree) {
   return [];
 }
 
+// The page of a local HTML render. A Quarto page is shown in the house style;
+// `artifact` stays the render as it came, for whatever saves or exports it.
+async function localHtml(format, artifact) {
+  const html = new TextDecoder().decode(artifact);
+  return format === "quarto" ? quartoWithHouseStyle(html, await houseStyleCss()) : html;
+}
+
 /// Renders a document into the page a save would store, and says what the
 /// compiler had to say about it.
 ///
@@ -223,7 +230,9 @@ export async function render(tree, title, { manual = false, format: requestedFor
       notices: result.notices || [],
       artifact: result.artifact,
       artifactKind: output,
-      html: output === "html" && result.artifact ? new TextDecoder().decode(result.artifact) : null,
+      html: output === "html" && result.artifact ? await localHtml(format, result.artifact) : null,
+      // The render as it came, for an export; `html` is the preview's copy.
+      exportHtml: output === "html" && result.artifact ? new TextDecoder().decode(result.artifact) : null,
       pdf: output === "pdf" ? result.artifact : null,
       synctex: result.synctex,
       diagnostics: [
