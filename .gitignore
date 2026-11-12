@@ -74,3 +74,6 @@ desktop/gen/
 desktop/binaries/
 # Paraglide 3 caches the loaded catalogue here and no longer ignores it itself.
 web/project.inlang/cache/
+
+# LibreOffice lock files
+.~lock.*#

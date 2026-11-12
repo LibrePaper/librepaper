@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Saves the system clipboard's HTML and plain text as a paste fixture.
 //
-// Usage:
-//   node web/tools/paste-capture.mjs <name> [--app "Google Docs"] [--browser "Chrome 142"] [--note "..."] [--force]
+// Usage (run from any directory, using the script's full path):
+//   node /path/to/checkout/web/tools/paste-capture.mjs <name> [--app "Google Docs"] [--browser "Chrome 142"] [--note "..."] [--force]
 //
-// Writes web/tests/fixtures/paste/captured/<name>.{html,txt,json}. The captures
-// are real clipboards and are never edited by hand. See
-// web/tests/fixtures/paste/README.md for the procedure.
+// Writes web/tests/fixtures/paste/captured/<name>.{html,txt,json} in the
+// checkout the script lives in. The captures are real clipboards and are never
+// edited by hand. See web/tests/fixtures/paste/README.md for the procedure.
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -65,6 +65,18 @@ export function decodeUtf8(buffer) {
   return new TextDecoder("utf-8").decode(hasBom ? buffer.subarray(3) : buffer);
 }
 
+// Clipboard types can carry local paths and machine details, for example
+// LibreOffice's object descriptor has displayname="file:///home/...". Keep only
+// the MIME type before the first ";", number the LibreOffice internal ids so
+// they do not vary between captures, and drop duplicates.
+export function cleanTypes(types) {
+  const cleaned = types.map((type) => {
+    const mime = type.split(";")[0];
+    return mime.replace(/internal-id-\d+$/, "internal-id-N");
+  });
+  return [...new Set(cleaned)];
+}
+
 export function buildMetadata(info, now = new Date()) {
   return {
     name: info.name,
@@ -73,7 +85,7 @@ export function buildMetadata(info, now = new Date()) {
     note: info.note ?? null,
     platform: info.platform,
     session: info.session,
-    types: [...info.types],
+    types: cleanTypes(info.types),
     capturedAt: now.toISOString().slice(0, 10),
     htmlBytes: info.htmlBytes,
     textBytes: info.textBytes,
@@ -212,11 +224,15 @@ function main(argv) {
   console.log(`wrote ${files.txt}`);
   console.log(`wrote ${files.json}`);
   console.log("");
+  // The command uses the absolute web directory, so it works from any checkout's cwd.
+  const webDir = join(here, "..");
   console.log("Next, write the expected outputs and review them:");
-  console.log("  cd web && UPDATE_PASTE_GOLDENS=1 node --test --experimental-transform-types tests/unit/paste-captured.mjs");
+  console.log(
+    `  cd ${webDir} && UPDATE_PASTE_GOLDENS=1 node --test --experimental-transform-types tests/unit/paste-captured.mjs`,
+  );
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     main(process.argv.slice(2));
   } catch (error) {

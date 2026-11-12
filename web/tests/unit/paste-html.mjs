@@ -44,7 +44,7 @@ const GOOGLE_LATEX = lines(
 const GOOGLE_MARKDOWN = lines(
   "# Quarterly notes",
   "",
-  "**Revenue** rose to \\$150,000 in Q3, about ~40% of the *forecast*. Details [here](https://example.com/report).",
+  "**Revenue** rose to \\$150,000 in Q3, about \\~40% of the *forecast*. Details [here](https://example.com/report).",
   "",
   "**Net margin** was flat.",
   "",
@@ -57,7 +57,7 @@ const GOOGLE_MARKDOWN = lines(
   "| --- | --- |",
   "| EMEA | R&D 1.2M |",
   "",
-  "Use R&D, snake\\_case, {braces}, C:\\\\path, x^2, #1 and @ref.",
+  "Use R&D, snake\\_case, {braces}, C:\\\\path, x\\^2, #1 and \\@ref.",
   "",
   "It’s done — ok now.",
 );
@@ -146,7 +146,7 @@ const BROWSER_MARKDOWN = lines(
   "Line one\\",
   "Line two with a span and an image.",
   "",
-  "Prices: \\$150,000, ~40%, #1, R&D, snake\\_case, {braces}, C:\\\\path, x^2, @ref.",
+  "Prices: \\$150,000, \\~40%, #1, R&D, snake\\_case, {braces}, C:\\\\path, x\\^2, \\@ref.",
 );
 
 test("browser fixture converts to exact LaTeX", () => {
@@ -322,4 +322,43 @@ test("Markdown escapes line-start markers and keeps Unicode", () => {
 test("Word list markers and Symbol bullets never reach the output", () => {
   const html = "<p class=MsoListParagraphCxSpFirst style='mso-list:l0 level1 lfo1'><span style='font-family:Symbol'>·<span>&nbsp;&nbsp; </span></span>Only item</p>";
   assert.equal(source(html, "markdown"), "- Only item");
+});
+
+/* ------------------------------------------- LibreOffice lists and links */
+
+// LibreOffice writes each nesting level as a sibling list, with an empty wrapper for the sub-list.
+const LIBRE_NESTED = '<ol><li><p>A</p></li><li><p>B</p></li><li><p>C</p></li></ol><ul><ul><li><p>sub one</p></li><li><p>sub two</p></li></ul></ul><ol start="4"><li><p>D</p></li><li><p>E</p></li></ol>';
+const LIBRE_WRAPPED = '<ul><li><p>Field work</p></li></ul><ol><ol><li><p>Collect</p><ol><li><p>Label</p></li></ol></li><li><p>Survey</p></li></ol></ol><ul><li><p>Lab work</p></li></ul>';
+
+test("LibreOffice sibling lists nest, and numbering continues, in Markdown", () => {
+  assert.equal(source(LIBRE_NESTED, "markdown"), lines("1. A", "2. B", "3. C", "   - sub one", "   - sub two", "4. D", "5. E"));
+});
+
+test("LibreOffice sibling lists nest in LaTeX as one enumerate", () => {
+  assert.equal(
+    source(LIBRE_NESTED, "latex"),
+    lines("\\begin{enumerate}", "  \\item A", "  \\item B", "  \\item C", "  \\begin{itemize}", "    \\item sub one", "    \\item sub two", "  \\end{itemize}", "  \\item D", "  \\item E", "\\end{enumerate}"),
+  );
+});
+
+test("LibreOffice sibling lists nest in Typst", () => {
+  assert.equal(source(LIBRE_NESTED, "typst"), lines("+ A", "+ B", "+ C", "  - sub one", "  - sub two", "+ D", "+ E"));
+});
+
+test("a numbered sub-list under a bullet keeps the bullet list going", () => {
+  assert.equal(source(LIBRE_WRAPPED, "markdown"), lines("- Field work", "  1. Collect", "     1. Label", "  2. Survey", "- Lab work"));
+});
+
+test("a paragraph between two lists keeps them separate", () => {
+  assert.equal(source("<ul><li><p>a</p></li></ul><p>between</p><ul><li><p>b</p></li></ul>", "markdown"), lines("- a", "", "between", "", "- b"));
+});
+
+test("a bare link whose URL ends in a slash is still bare", () => {
+  assert.equal(source('<p><a href="https://example.org/">https://example.org</a></p><p><i>x</i></p>', "markdown"), "<https://example.org/>\n\n*x*");
+  assert.equal(source('<p><a href="https://example.org/">https://example.org</a></p><p><i>x</i></p>', "latex"), "\\url{https://example.org/}\n\n\\emph{x}");
+});
+
+test("Markdown escapes @, ~ and ^ so Pandoc does not read citations or sub- and superscript", () => {
+  // Bold, so the paste counts as formatted and is converted rather than pasted plain.
+  assert.equal(source("<p><b>See</b> @ref ~5m x^2</p>", "markdown"), "**See** \\@ref \\~5m x\\^2");
 });
