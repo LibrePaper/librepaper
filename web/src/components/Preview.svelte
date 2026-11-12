@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { mode, onMode, paperMode, onPaper } from "../lib/theme.js";
+  import { mode, onMode, onPalette, paperMode, onPaper } from "../lib/theme.js";
   import { createFrameMessageReceiver } from "../lib/frame-messages.js";
   import { m } from "../lib/paraglide/messages.js";
   // The document, on its own origin, in a frame.
@@ -53,6 +53,7 @@
     observer.observe(viewport);
     const stopMode = onMode(() => sendTheme());
     const stopPaper = onPaper(() => sendTheme());
+    const stopPalette = onPalette(() => sendTheme());
     const standard = () => document.fullscreenElement === frame;
     const current = () => standard() || /** @type {any} */ (document).webkitFullscreenElement === frame;
     let presenting = false;
@@ -69,6 +70,7 @@
       document.removeEventListener("webkitfullscreenchange", changed);
       stopMode();
       stopPaper();
+      stopPalette();
       window.removeEventListener("message", receiver.receive);
       receiver.dispose();
       observer.disconnect();
@@ -97,7 +99,22 @@
   /// The theme as the frame should show it: the mode, and the paper the
   /// preview is drawn on. Sent when either changes and once the frame loads.
   function sendTheme() {
-    return tell({ type: "theme", mode: mode(), paper: paperMode() });
+    return tell({ type: "theme", mode: mode(), paper: paperMode(), surface: editorSurface() });
+  }
+
+  /// The editor's surface (background and text) as resolved colours, read from
+  /// the theme tokens the editor itself uses, so the preview sits on the same
+  /// ground in every palette. Null when the preview paper stays light in a dark
+  /// app: the frame then keeps the house light paper.
+  function editorSurface() {
+    if (mode() === "dark" && paperMode() === "light") return null;
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:absolute;visibility:hidden;pointer-events:none;background-color:var(--color-shell);color:var(--color-text)";
+    document.body.append(probe);
+    const style = getComputedStyle(probe);
+    const surface = { paper: style.backgroundColor, ink: style.color };
+    probe.remove();
+    return surface;
   }
 
   /// Presentation mode. A message carries no user activation, so the frame
