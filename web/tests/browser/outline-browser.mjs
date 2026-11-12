@@ -342,14 +342,13 @@ try {
   await openFiles();
   await until("paper.typ lock eye", () => tab.evaluate(`Boolean(document.querySelector('.explorer-row[title="paper.typ"] button[aria-label="Lock preview on paper.typ"]'))`), 5000);
   await click('.explorer-row[title="paper.typ"] button.explorer-preview');
-  await until("the lock chip names paper.typ", () => tab.evaluate(`document.querySelector('.notice-chip')?.textContent.includes("Locked: paper.typ") === true`), 5000);
+  await until("the eye is solid on paper.typ", () => tab.evaluate(`Boolean(document.querySelector('.explorer-row[title="paper.typ"] button[aria-label="Unlock the preview"]'))`), 5000);
   assert.equal(await tab.evaluate(`window.editorState().text.includes("Typst")`), false, "the eye does not open paper.typ in the source");
-  assert.equal(await tab.evaluate(`Boolean(document.querySelector('.explorer-row[title="paper.typ"] button[aria-label="Unlock the preview"]'))`), true, "the eye is solid on the locked file and unlocks");
   // The source moves and the lock stays.
   await openFile("a-main.html");
-  assert.equal(await tab.evaluate(`document.querySelector('.notice-chip')?.textContent.includes("Locked: paper.typ") === true`), true, "opening another file leaves the lock where it is");
+  assert.equal(await tab.evaluate(`Boolean(document.querySelector('.explorer-row[title="paper.typ"] button[aria-label="Unlock the preview"]')) === true`), true, "opening another file leaves the lock where it is");
   await click('.explorer-row[title="paper.typ"] button[aria-label="Unlock the preview"]');
-  await until("the lock is released", () => tab.evaluate(`!document.querySelector('.notice-chip')`), 5000);
+  await until("the lock is released", () => tab.evaluate(`!document.querySelector('button[aria-label="Unlock the preview"]')`), 5000);
   await openFile("notes.md");
 
   // On a phone the outline is a workspace tab, and choosing a heading reveals
@@ -361,7 +360,7 @@ try {
   await mobileNav("Files");
   await until("chapter.qmd preview eye", () => visible('.explorer-row[title="chapter.qmd"] button.explorer-preview'), 5000);
   await click('.explorer-row[title="chapter.qmd"] button.explorer-preview');
-  await until("the eye locks chapter.qmd on a phone", () => tab.evaluate(`document.querySelector('.notice-chip')?.textContent.includes("Locked: chapter.qmd") === true`), 5000);
+  await until("the eye locks chapter.qmd on a phone", () => tab.evaluate("document.querySelector('main.reader')?.classList.contains('mobile-document')"), 5000);
   await flush();
   assert.equal(await tab.evaluate("document.querySelector('main.reader')?.classList.contains('mobile-document')"), true, "the eye on a phone shows the preview");
   await openFile("notes.md");

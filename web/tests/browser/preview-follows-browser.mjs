@@ -140,19 +140,22 @@ try {
   assert.ok((await cardText()).includes("Lock the preview on a file with the eye in Files"), "the card says how to keep a page here");
   assert.equal(await chip(), "", "the card has no chip");
 
-  // The eye locks the preview without opening the file.
+  // The eye locks the preview without opening the file, and no chip says so:
+  // the solid eye on the row is the whole notice.
   await click(`${row("summary.md")} button[aria-label="Lock preview on summary.md"]`);
-  await until("the lock chip", async () => (await chip()).startsWith("Locked: summary.md"), 10000);
-  assert.equal(await exists(`${row("summary.md")} button[aria-label="Unlock the preview"]`), true, "the locked row shows the solid eye");
+  await until("the solid eye on the locked row", () => exists(`${row("summary.md")} button[aria-label="Unlock the preview"]`), 10000);
+  await until("the preview on the locked file", async () => (await shownRow()) === "summary.md", 10000);
+  assert.equal(await chip(), "", "a locked preview has no chip");
   assert.equal(await b.evaluate(`document.querySelector('.explorer-row[data-selected]')?.getAttribute('title')`), "refs.bib", "locking leaves the open file alone");
 
   // The source can move and the preview stays.
   await openFile("chapters/intro.md");
   await flush();
-  assert.ok((await chip()).startsWith("Locked: summary.md"), "the preview stays on the locked file");
+  assert.equal(await shownRow(), "summary.md", "the preview stays on the locked file");
+  assert.equal(await chip(), "", "still no chip under the lock");
 
-  // Closing the chip unlocks, and the preview follows the open file again.
-  await click('.notice-chip button[aria-label="Unlock the preview"]');
+  // The solid eye unlocks, and the preview follows the open file again.
+  await click(`${row("summary.md")} button[aria-label="Unlock the preview"]`);
   await until("the shown-inside chip again", async () => (await chip()) === "intro.md, shown inside report.md", 10000);
   assert.equal(await exists('button[aria-label="Unlock the preview"]'), false, "nothing is locked any more");
   assert.deepEqual(await b.evaluate('window.testErrors'), [], "the page reports no errors");

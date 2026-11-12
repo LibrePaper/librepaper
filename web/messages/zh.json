@@ -2422,7 +2422,6 @@
   "readerd_html_preview_kind": "HTML 预览",
   "readerd_layout_switch": "布局：{current}。切换为 {next}",
   "readerd_lock_preview_hint": "在“文件”中用眼睛图标将预览锁定在某个文件上，即可在编辑此文件时保留那一页。",
-  "readerd_locked_path": "已锁定：{path}",
   "readerd_new_file": "新建文件…",
   "readerd_new_folder": "新建文件夹…",
   "readerd_not_rendered": "未渲染",

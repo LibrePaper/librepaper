@@ -2437,7 +2437,6 @@
   "readerd_html_preview_kind": "HTML preview",
   "readerd_layout_switch": "Layout: {current}. Switch to {next}",
   "readerd_lock_preview_hint": "Lock the preview on a file with the eye in Files to keep a page here while you edit this one.",
-  "readerd_locked_path": "Locked: {path}",
   "readerd_new_file": "New file…",
   "readerd_new_folder": "New folder…",
   "readerd_not_rendered": "Not rendered",

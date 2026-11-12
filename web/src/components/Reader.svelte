@@ -3343,8 +3343,10 @@
   const formatBarVisible = $derived(formatBarShown && (!compact || keyboardOpen));
   // The row stands at the top of the source pane, above the editor it formats: not over a comparison or a figure.
   const formatBarInPane = $derived(formatBarVisible && !comparing && !shownFigure && Boolean(Editor) && sourceBound);
-  // Why the pane shows what it shows, when it is not simply the open file.
-  const previewChip = $derived(Boolean(previewPath) && (previewReason === "locked" || (previewReason === "inside" && toolbarPath)));
+  // Says which file the pane shows when the open file is drawn inside the
+  // file that includes it. A locked preview has no chip: the solid eye in
+  // Files says it.
+  const previewChip = $derived(Boolean(previewPath) && previewReason === "inside" && Boolean(toolbarPath));
   // What the card says when the open file has nothing the preview could draw.
   // Empty when there is no card.
   const previewCard = $derived.by(() => {
@@ -4550,14 +4552,7 @@
     <p class="lp-text-secondary text-sm">{m.readerd_document_empty()}</p>
   {/snippet}
   {#snippet previewNotice()}
-    {#if previewReason === "locked"}
-      <span class="notice-chip">
-        <span>{m.readerd_locked_path({ path: previewPath })}</span>
-        <button type="button" aria-label={m.common_unlock_the_preview()} title={m.common_unlock_the_preview()} onclick={unlockPreview}><Icon name="x" /></button>
-      </span>
-    {:else}
-      <span class="notice-chip"><span>{m.readerd_shown_inside({ name: basename(toolbarPath), path: previewPath })}</span></span>
-    {/if}
+    <span class="notice-chip"><span>{m.readerd_shown_inside({ name: basename(toolbarPath), path: previewPath })}</span></span>
   {/snippet}
   <Preview bind:this={preview} id="reader-document" role={compact && modeSwitchShown ? "tabpanel" : undefined}
            labelledby={compact && modeSwitchShown ? "mode-tab-document" : undefined}

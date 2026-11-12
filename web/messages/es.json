@@ -2437,7 +2437,6 @@
   "readerd_html_preview_kind": "vista previa HTML",
   "readerd_layout_switch": "Diseño: {current}. Cambiar a {next}",
   "readerd_lock_preview_hint": "Bloquee la vista previa en un archivo con el ojo en Archivos para mantener una página aquí mientras edita este.",
-  "readerd_locked_path": "Bloqueado: {path}",
   "readerd_new_file": "Nuevo archivo…",
   "readerd_new_folder": "Nueva carpeta…",
   "readerd_not_rendered": "No compilado",

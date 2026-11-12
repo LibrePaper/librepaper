@@ -22,11 +22,10 @@
   // all. What is being previewed is said in the Files pane, by the eye beside
   // the file, rather than spelled out again here.
   //
-  // `notice` is a chip saying why the pane shows what it shows: the file is
-  // locked, or is drawn inside the file that includes it. It sits in its own
-  // slim band under the controls rather than over the frame, for the same
-  // reason the controls do: nothing may cover a page, least of all at phone
-  // width.
+  // `notice` is a chip naming the file the pane shows when the open file is
+  // drawn inside the file that includes it. It sits in its own slim band under
+  // the controls rather than over the frame, for the same reason the controls
+  // do: nothing may cover a page, least of all at phone width.
   //
   // A thin progress line along the top edge signals a render under way without
   // covering the document, and nothing shows for renders under the
@@ -191,17 +190,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .notice-band :global(.notice-chip button) {
-    display: inline-flex;
-    flex: none;
-    align-items: center;
-    padding: 0;
-    border: 0;
-    background: none;
-    color: inherit;
-    cursor: pointer;
   }
 
   .render-line {

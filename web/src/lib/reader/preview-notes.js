@@ -11,7 +11,7 @@ import { m } from "../paraglide/messages.js";
  * Produce a note for the open file when the preview is not drawing it itself.
  * `target` is the resolved preview target: the file drawn and why. A file with
  * nothing to draw says so, and a file drawn inside its includer says where.
- * A locked preview says nothing, since the lock is shown by the pane itself.
+ * A locked preview says nothing, since the eye in Files shows the lock.
  * @param {{ openPath: string | null, openIsText: boolean, target: { path: string | null, reason: string } }} options
  * @returns {PreviewNote[]}
  */

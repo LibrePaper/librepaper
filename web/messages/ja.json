@@ -2422,7 +2422,6 @@
   "readerd_html_preview_kind": "HTMLプレビュー",
   "readerd_layout_switch": "レイアウト：{current}。{next}に切り替え",
   "readerd_lock_preview_hint": "ファイルパネルの目のアイコンでプレビューをファイルにロックすると、別のファイルを編集している間もそのページを表示したままにできます。",
-  "readerd_locked_path": "ロック中：{path}",
   "readerd_new_file": "新規ファイル…",
   "readerd_new_folder": "新しいフォルダー…",
   "readerd_not_rendered": "未レンダリング",

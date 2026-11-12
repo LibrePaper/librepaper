@@ -2437,7 +2437,6 @@
   "readerd_html_preview_kind": "aperçu HTML",
   "readerd_layout_switch": "Disposition : {current}. Passer à {next}",
   "readerd_lock_preview_hint": "Verrouillez l’aperçu sur un fichier avec l’œil dans Fichiers pour garder une page ici pendant que vous modifiez celui-ci.",
-  "readerd_locked_path": "Verrouillé : {path}",
   "readerd_new_file": "Nouveau fichier…",
   "readerd_new_folder": "Nouveau dossier…",
   "readerd_not_rendered": "Non compilé",

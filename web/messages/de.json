@@ -2437,7 +2437,6 @@
   "readerd_html_preview_kind": "HTML-Vorschau",
   "readerd_layout_switch": "Layout: {current}. Wechseln zu {next}",
   "readerd_lock_preview_hint": "Fixieren Sie die Vorschau mit dem Auge unter Dateien auf einer Datei, um dort eine Seite zu behalten, während Sie diese bearbeiten.",
-  "readerd_locked_path": "Fixiert: {path}",
   "readerd_new_file": "Neue Datei…",
   "readerd_new_folder": "Neuer Ordner…",
   "readerd_not_rendered": "Nicht gerendert",
