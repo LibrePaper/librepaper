@@ -25,6 +25,16 @@ const renderer = await createPaperRenderer(bytes);
   assert.doesNotMatch(html, /footnotes/);
 }
 
+// The Org module renders the same way: its sections come out as HTML, and no
+// empty section is left in the block.
+{
+  const orgRenderer = await createPaperRenderer(readFileSync(new URL("../../wasm/org.wasm", import.meta.url)));
+  const html = orgRenderer.render("* Heading\n\nSome *bold* text.");
+  assert.match(html, /<h1/);
+  assert.match(html, /<b>bold<\/b>/);
+  assert.doesNotMatch(html, /<section><\/section>/);
+}
+
 // A repeat render of the same source gives the same HTML.
 {
   assert.equal(renderer.render("# Same"), renderer.render("# Same"));

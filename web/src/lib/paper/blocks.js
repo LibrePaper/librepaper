@@ -18,7 +18,7 @@ const definitionsByBlocks = new WeakMap();
  * @param {string} text
  * @param {number} at
  */
-function lineStart(text, at) {
+export function lineStart(text, at) {
   let i = at;
   while (i > 0 && text[i - 1] !== "\n" && text[i - 1] !== "\r") i--;
   return i;
@@ -29,7 +29,7 @@ function lineStart(text, at) {
  * @param {string} text
  * @param {number} at
  */
-function lineEnd(text, at) {
+export function lineEnd(text, at) {
   let i = at;
   while (i < text.length && text[i] !== "\n" && text[i] !== "\r") i++;
   return i;
