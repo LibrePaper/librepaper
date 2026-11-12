@@ -2283,6 +2283,7 @@
     const date = Number.isNaN(when.getTime()) ? "" : new Intl.DateTimeFormat(locale(), { dateStyle: "medium", timeStyle: "short" }).format(when);
     return {
       cells: record.cells,
+      path: String(record.path || ""),
       updatedAt: String(record.updatedAt || ""),
       note: m.readerd_results_note({ name: record.uploaderName || "", date }),
     };
@@ -2292,7 +2293,9 @@
   async function shareRun({ html, source }) {
     try {
       const split = await splitResults(html, source.texts?.[source.main] ?? "", { path: source.main });
-      if (readerDisposed) return;
+      // Sharing may have been turned off, or edit access lost, while the run
+      // was being split: the choice at upload time is the one that counts.
+      if (readerDisposed || !shareResults || !mayEdit || !localExecution) return;
       if (!split.ok) {
         // A document without code cells has nothing to share and nothing to complain about.
         sharedResults.skip(split.reason === "no-cells" ? "none" : "unmatched");

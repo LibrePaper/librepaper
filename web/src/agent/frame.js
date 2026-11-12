@@ -119,6 +119,13 @@ import { morphChildren } from "./morph.js";
        the paper's ink on a faint chip, whatever colours the document gave it. */
     html.librepaper-preview.librepaper-dark.librepaper-flow :is(pre, div.sourceCode) { background-color: #f2f4f7; color: #1a1d21; }
     html.librepaper-preview.librepaper-dark.librepaper-flow :not(pre) > code { background-color: rgb(255 255 255 / 0.1); color: inherit; }
+    /* Shared Quarto results: the saved output of a collaborator's run under
+       each code cell of the draft. Output whose code changed since is faded
+       and marked on its left, so it never passes for current output. */
+    html.librepaper-preview .lp-cell-output { margin: 0.5em 0 1em; }
+    html.librepaper-preview .lp-cell-output img { max-width: 100%; height: auto; }
+    html.librepaper-preview .lp-cell-output-stale { opacity: 0.5; border-left: 3px dashed currentColor; padding-left: 0.75em; }
+    html.librepaper-preview .lp-results-note { font-size: 0.85em; opacity: 0.7; }
   `;
   const previewStyle = document.createElement("style");
   previewStyle.dataset.librepaperPreview = "canvas";

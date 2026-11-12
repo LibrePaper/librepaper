@@ -39,3 +39,23 @@ test("a full storage answers failed with the storage reason", async () => {
     assert.deepEqual(await shared.upload(record), { kind: "failed", reason: "storage" });
   });
 });
+
+test("a record replaced by someone else is uploaded again; this tab's own echo is not", async () => {
+  let stored = "";
+  let next = 0;
+  await withFetch(async (_path, options) => {
+    if (options?.method === "PUT") { stored = `t${++next}`; return new Response(JSON.stringify({ bytes: 120, updatedAt: stored }), { status: 200 }); }
+    return new Response(JSON.stringify({ ...record, updatedAt: stored }), { status: 200 });
+  }, async (calls) => {
+    const puts = () => calls.filter((call) => call.options?.method === "PUT").length;
+    const shared = createSharedResults("paper", () => ({}));
+    await shared.upload(record);
+    await shared.refresh();
+    await shared.upload(record);
+    assert.equal(puts(), 1, "its own upload coming back keeps the dedupe");
+    stored = "collaborator";
+    await shared.refresh();
+    await shared.upload(record);
+    assert.equal(puts(), 2, "after a collaborator's upload the same output goes up again");
+  });
+});

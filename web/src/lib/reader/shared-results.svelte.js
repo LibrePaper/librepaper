@@ -51,10 +51,14 @@ export function createSharedResults(slug, headers = () => authHeaders("")) {
     status: { kind: "idle" },
   });
   let uploadedHash = "";
+  let uploadedAt = "";
 
   async function refresh() {
     const next = await fetchResults(slug, headers());
     state.record = next;
+    // Someone else's upload, or a delete, replaced what this tab sent: the
+    // next run uploads even when its output equals this tab's last one.
+    if ((next?.updatedAt ?? "") !== uploadedAt) uploadedHash = "";
     return next;
   }
 
@@ -66,6 +70,7 @@ export function createSharedResults(slug, headers = () => authHeaders("")) {
       const result = await putResults(slug, record, { ...headers(), "content-type": "application/json" });
       if (result.ok) {
         uploadedHash = hash;
+        uploadedAt = result.updatedAt;
         state.status = { kind: "shared", bytes: result.bytes };
       } else {
         state.status = { kind: "failed", reason: "status" in result && result.status === 413 ? "storage" : "network" };
@@ -86,6 +91,6 @@ export function createSharedResults(slug, headers = () => authHeaders("")) {
     refresh,
     upload,
     skip,
-    reset() { uploadedHash = ""; state.status = { kind: "idle" }; },
+    reset() { uploadedHash = ""; uploadedAt = ""; state.status = { kind: "idle" }; },
   };
 }

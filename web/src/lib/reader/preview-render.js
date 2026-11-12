@@ -24,7 +24,7 @@ import { m } from "../paraglide/messages.js";
 // arguments now, and the guards are gone with them.
 
 /** @typedef {ReturnType<ReturnType<typeof import("../project-session.js").createProjectSession>["tree"]> & { main?: string, assets?: Record<string, Uint8Array>, urls?: Record<string, string>, quartoResults?: { cells: unknown[], note?: string } | null }} PreviewTree */
-/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, runDirectoryReady?: boolean, runDirectory?: string, shareResults?: boolean, quartoResults?: { cells: unknown[], note?: string, updatedAt?: string } | null, latexContinuous?: boolean, projectDigest?: string }} PreviewFacts */
+/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, runDirectoryReady?: boolean, runDirectory?: string, shareResults?: boolean, quartoResults?: { cells: unknown[], note?: string, path?: string, updatedAt?: string } | null, latexContinuous?: boolean, projectDigest?: string }} PreviewFacts */
 /** @typedef {Awaited<ReturnType<typeof import("../renderers.js").render>>} PreviewResult */
 /** @typedef {ReturnType<typeof import("./render-status.svelte.js").createRenderStatus>} PreviewStatus */
 /** @typedef {ReturnType<typeof import("./render-coordinator.js").createRenderCoordinator>} PreviewCoordinator */
@@ -157,7 +157,8 @@ export function createPreviewRenderer({
     const format = renderers.previewFormatOf(source.main);
     // The saved output of a collaborator's run, for the draft to show under
     // its code cells. Set on every render so a stale one never lingers.
-    source.quartoResults = format === "quarto" && start.quartoResults
+    // Only the file the results were made from gets them.
+    source.quartoResults = format === "quarto" && start.quartoResults && start.quartoResults.path === source.main
       ? { cells: start.quartoResults.cells, note: start.quartoResults.note }
       : null;
     debug("preview: tree", source.main, format, Object.keys(source.texts || {}).length);
