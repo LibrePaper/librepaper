@@ -60,3 +60,12 @@ assert.equal(latexmlWithHouseStyle("<head><style data-latexml-css>a{}</style></h
   assert.ok(out.indexOf('id="title-block-header"') < out.indexOf('id="TOC"'), out);
   assert.ok(out.includes('<span class="caption-label">Figure 1.</span> A plot'), out);
 }
+
+// An older embedded stylesheet is replaced by the house one; a house page is left alone.
+{
+  const { pageWithHouseStyle } = await import("../../src/lib/house-style.js");
+  const old = "<html><head><style>body{max-width:46rem}</style></head><body><p>x</p></body></html>";
+  const out = pageWithHouseStyle(old, ":root{--lp-ink:#000}");
+  assert.ok(out.includes("--lp-ink") && !out.includes("46rem"), out);
+  assert.equal(pageWithHouseStyle(out, ":root{--lp-ink:#111}"), out);
+}

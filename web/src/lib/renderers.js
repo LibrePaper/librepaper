@@ -31,7 +31,7 @@ import { snapshotDigest } from "./projection-digest.js";
 
 import { rendererRequest } from "./renderer-client.js";
 import { m } from "./paraglide/messages.js";
-import { houseStyleCss, latexmlWithHouseStyle, quartoWithHouseStyle, typstWithHouseStyle } from "./house-style.js";
+import { houseStyleCss, latexmlWithHouseStyle, pageWithHouseStyle, quartoWithHouseStyle, typstWithHouseStyle } from "./house-style.js";
 
 /// This browser's identity for a render tree -- `{ main, texts, digests }`
 /// -- used only as a transient cache key: whether a local build's job
@@ -332,10 +332,25 @@ export async function render(tree, title, { manual = false, format: requestedFor
   }
   const module = format === "markdown" && needsBibliography({ source }) ? "citations" : format;
   const renderable = format === "org" ? expandOrgIncludes(tree) : tree;
-  return request(module, "render", {
+  const result = await request(module, "render", {
     tree: renderTree(renderable, capturedSettings),
     title,
   }, capturedModules);
+  return module === "citations" ? withHouseStyle(result) : result;
+}
+
+// citations.wasm embeds the stylesheet of the wasm-helpers it was built on,
+// which may be older than the house style: the page gets the current one.
+async function withHouseStyle(result) {
+  if (!result?.html) return result;
+  return { ...result, html: pageWithHouseStyle(String(result.html), await houseStyleCss()) };
+}
+
+// Quarto cross references (@fig-x, @tbl-x, …) look like citations to
+// needsBibliography; they are the dialect's, not the bibliography's.
+const QUARTO_CROSSREF = /@(?:fig|tbl|sec|eq|lst|thm|lem|cor|prp|cnj|def|exm|exr|sol|rem)-[\p{L}\p{N}_:.-]*/gu;
+function quartoNeedsBibliography(source) {
+  return needsBibliography({ source: String(source ?? "").replace(QUARTO_CROSSREF, "") });
 }
 
 // The Markdown module renders a Quarto document itself: the .qmd is the main
@@ -345,14 +360,14 @@ export async function render(tree, title, { manual = false, format: requestedFor
 async function renderQuarto(tree, title, moduleUrls, settings, source) {
   const sidecar = await quarto.quartoSidecar(source, { path: tree.main, results: tree.quartoResults ?? null });
   const withSidecar = { ...tree, texts: { ...tree.texts, [quarto.QUARTO_SIDECAR]: JSON.stringify(sidecar) } };
-  if (needsBibliography({ source })) {
+  if (quartoNeedsBibliography(source)) {
     const drafted = await quartoDraft(withSidecar, 0, moduleUrls, settings);
     const result = await request("citations", "render", {
       tree: renderTree(draftTree(tree, drafted.markdown), settings),
       title,
     }, moduleUrls);
     const mapped = quarto.mapDraftDiagnostics(result?.diagnostics || [], drafted.line_map, tree.main);
-    return { ...result, diagnostics: [...quarto.translateQuartoDiagnostics(drafted.diagnostics), ...mapped] };
+    return withHouseStyle({ ...result, diagnostics: [...quarto.translateQuartoDiagnostics(drafted.diagnostics), ...mapped] });
   }
   const result = await request("markdown", "render", { tree: renderTree(withSidecar, settings), title }, moduleUrls);
   return result ? { ...result, diagnostics: quarto.translateQuartoDiagnostics(result.diagnostics) } : result;
@@ -580,7 +595,7 @@ export function warm(format, source = "") {
   const loading = [request(format === "quarto" ? "markdown" : format, "warm")];
   // A document with citations renders in citations.wasm, so it starts at the
   // same time as the Markdown module rather than at the first render.
-  if ((format === "markdown" || format === "quarto") && needsBibliography({ source })) {
+  if ((format === "markdown" && needsBibliography({ source })) || (format === "quarto" && quartoNeedsBibliography(source))) {
     loading.push(request("citations", "warm"));
   }
   return Promise.all(loading.map((load) => load.then(() => {}, () => {}))).then(() => {});

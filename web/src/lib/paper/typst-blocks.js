@@ -8,7 +8,7 @@ import { typstTree } from "../source-trees.js";
 import { typstFacts } from "../visual-markup/typst-facts.js";
 import { lineEnd, lineStart } from "./blocks.js";
 
-/** @typedef {{ from: number, to: number, kind: string, render: boolean }} PaperBlock */
+/** @typedef {{ from: number, to: number, kind: string, render: boolean, rules?: [number, number][] }} PaperBlock */
 
 /** @type {{ text: string, blocks: PaperBlock[] } | null} the last split, by its text */
 let last = null;
@@ -35,10 +35,16 @@ export function splitTypstBlocks(text) {
   if (!tree) return null;
   /** @type {PaperBlock[]} */
   const blocks = [];
-  /** @param {number} from @param {number} to @param {string} kind @param {boolean} render @param {boolean} [trivia] */
-  const emit = (from, to, kind, render, trivia = false) => {
+  /** @param {number} from @param {number} to @param {string} kind @param {boolean} render @param {boolean} [trivia] @param {[number, number]} [rule] */
+  const emit = (from, to, kind, render, trivia = false, rule = undefined) => {
     from = lineStart(text, from);
     to = lineEnd(text, to);
+    // A preamble rule keeps its exact range: other text on its line is not
+    // part of the setup that every block replays.
+    const previousBlock = blocks.at(-1);
+    if (rule && previousBlock && from <= previousBlock.to) {
+      (previousBlock.rules ??= []).push(rule);
+    }
     const previous = blocks.at(-1);
     // Two blocks on one line cannot both be shown as whole lines, so they become one.
     // A merged block stays source if either part does, except that a label
@@ -48,7 +54,7 @@ export function splitTypstBlocks(text) {
       if (!trivia) previous.render = previous.render && render;
       return;
     }
-    blocks.push({ from, to, kind, render });
+    blocks.push(rule ? { from, to, kind, render, rules: [rule] } : { from, to, kind, render });
   };
 
   // The run of markup being collected: from its first non-space child to its last.
@@ -73,7 +79,7 @@ export function splitTypstBlocks(text) {
     if (name === "Hash" && node.nextSibling && PREAMBLE.has(node.nextSibling.name)) {
       flush();
       const rule = node.nextSibling;
-      emit(node.from, rule.to, rule.name, false);
+      emit(node.from, rule.to, rule.name, false, false, [node.from, rule.to]);
       node = rule;
       continue;
     }
@@ -175,7 +181,7 @@ export function typstBlockSource(text, block, blocks) {
   let preamble = "";
   for (const other of blocks) {
     if (other.from >= block.from) break;
-    if (!other.render && other.kind !== "Comment") preamble += text.slice(other.from, other.to) + "\n";
+    if (other.rules) for (const [from, to] of other.rules) preamble += text.slice(from, to) + "\n";
   }
   return preamble + context.refs + counterUpdates(context.numbered, block) + text.slice(block.from, block.to);
 }

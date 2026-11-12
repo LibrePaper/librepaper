@@ -34,6 +34,16 @@ if (!existsSync(syntaxWasm)) {
     "",
   ].join("\n");
 
+  // Only the rule itself is replayed: text sharing its line is not repeated in later blocks.
+  {
+    const shared = "#set text(size: 11pt) Hello\n\nWorld.\n";
+    const blocks = splitTypstBlocks(shared);
+    const last = blocks.at(-1);
+    const source = typstBlockSource(shared, last, blocks);
+    assert.ok(source.includes("#set text(size: 11pt)"), source);
+    assert.equal(source.split("Hello").length - 1, 0, source);
+  }
+
   // Preamble rules and comments stay as source; everything else is drawn, on whole lines.
   {
     const blocks = splitTypstBlocks(text);
