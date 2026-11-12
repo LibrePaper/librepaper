@@ -46,6 +46,14 @@ test("markdown: inline code and inline math on the current line", () => {
   assert.equal(at("Cost $x$ and text|", "markdown"), false);
 });
 
+test("markdown: backtick runs open and close only with a run of the same length", () => {
+  assert.equal(at("Use ``co|de`` here", "markdown"), true);
+  assert.equal(at("Use ``code`` he|re", "markdown"), false);
+  assert.equal(at("a `x` and ``y|", "markdown"), true);
+  assert.equal(at("Use `a` b|", "markdown"), false);
+  assert.equal(at("Use \\`x| here", "markdown"), false);
+});
+
 test("markdown: display math and front matter", () => {
   assert.equal(at("$$\nx|\n$$", "markdown"), true);
   assert.equal(at("$$\na\n$$\nText|", "markdown"), false);

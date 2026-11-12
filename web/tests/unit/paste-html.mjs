@@ -290,7 +290,14 @@ test("a table in every format", () => {
   assert.equal(source(html, "latex"), "\\begin{tabular}{l l}\nK & V \\\\\n\\hline\na|b & 2 \\\\\n\\end{tabular}");
   assert.equal(source(html, "typst"), "#table(\n  columns: 2,\n  table.header([K], [V]),\n  [a|b], [2],\n)");
   assert.equal(source(html, "markdown"), "| K | V |\n| --- | --- |\n| a\\|b | 2 |");
-  assert.equal(source(html, "org"), "| K | V |\n|---+---|\n| a|b | 2 |");
+  assert.equal(source(html, "org"), "| K | V |\n|---+---|\n| a\\vert{}b | 2 |");
+});
+
+test("an Org table cell with a bar keeps its column count", () => {
+  const html = "<table><tr><th>K</th><th>V</th></tr><tr><td>a|b</td><td>2</td></tr></table>";
+  const [header, , row] = source(html, "org").split("\n");
+  assert.ok(row.includes("a\\vert{}b"), row);
+  assert.equal(row.split("|").length, header.split("|").length);
 });
 
 test("inline code takes a longer fence when it holds backticks", () => {
