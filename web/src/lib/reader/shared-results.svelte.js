@@ -7,7 +7,11 @@ import { sha256 } from "../results-hash.js";
 
 const endpoint = (slug) => `/api/documents/${encodeURIComponent(slug)}/results`;
 
-/** The record, or null when there is none (or it cannot be read). */
+/**
+ * The record, or null when there is none (or it cannot be read).
+ * @param {string} slug
+ * @param {Record<string, string>} [headers]
+ */
 export async function fetchResults(slug, headers = authHeaders("")) {
   try {
     const response = await fetch(endpoint(slug), { headers });
@@ -17,7 +21,12 @@ export async function fetchResults(slug, headers = authHeaders("")) {
   } catch { return null; }
 }
 
-/** @returns {Promise<{ok: true, bytes: number, updatedAt: string} | {ok: false, status: number, error: string}>} */
+/**
+ * @param {string} slug
+ * @param {unknown} record
+ * @param {Record<string, string>} [headers]
+ * @returns {Promise<{ok: true, bytes: number, updatedAt: string} | {ok: false, status: number, error: string}>}
+ */
 export async function putResults(slug, record, headers = authHeaders("", "application/json")) {
   try {
     const response = await fetch(endpoint(slug), { method: "PUT", headers, body: JSON.stringify(record) });
@@ -59,7 +68,7 @@ export function createSharedResults(slug, headers = () => authHeaders("")) {
         uploadedHash = hash;
         state.status = { kind: "shared", bytes: result.bytes };
       } else {
-        state.status = { kind: "failed", reason: result.status === 413 ? "storage" : "network" };
+        state.status = { kind: "failed", reason: "status" in result && result.status === 413 ? "storage" : "network" };
       }
     } catch {
       state.status = { kind: "failed", reason: "network" };

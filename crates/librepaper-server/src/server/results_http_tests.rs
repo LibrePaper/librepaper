@@ -241,9 +241,10 @@ async fn a_reader_can_get_but_not_put_or_delete() {
     let (status, _) = served
         .call("PUT", &reader, Some(record().to_string()))
         .await;
-    assert_eq!(status, 403, "a reader cannot replace the record");
+    // Lacking the rung is refused as not found, like every authorize::<Edit> route.
+    assert_eq!(status, 404, "a reader cannot replace the record");
     let (status, _) = served.call("DELETE", &reader, None).await;
-    assert_eq!(status, 403, "a reader cannot delete the record");
+    assert_eq!(status, 404, "a reader cannot delete the record");
 
     let (status, _) = served.call("GET", &owner, None).await;
     assert_eq!(status, 200, "the record survived");
