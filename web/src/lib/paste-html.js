@@ -8,7 +8,7 @@
 import { markupFamily } from "./editing-shortcuts.js";
 
 /** @typedef {{ tag: string, attrs: Record<string, string>, children: Array<Element | string> }} Element */
-/** @typedef {{ kind: "text", s: string, b: boolean, i: boolean, c: boolean } | { kind: "link", href: string, inl: Inline[] } | { kind: "br" }} Inline */
+/** @typedef {{ kind: "text", s: string, b: boolean, i: boolean, c: boolean, m?: boolean } | { kind: "link", href: string, inl: Inline[] } | { kind: "br" }} Inline */
 /** @typedef {"latex" | "typst" | "markdown" | "org"} Family */
 
 /// Dropped with their content: none of it is prose a reader should see as source.
@@ -62,12 +62,19 @@ const styleValue = (style, name) => {
   return match ? match[1].trim().toLowerCase() : undefined;
 };
 
+/// Font families that mark code. Word and Google Docs mark code only by font.
+const MONO_FAMILIES = new Set(["consolas", "courier new", "courier", "menlo", "monaco", "lucida console", "source code pro", "roboto mono", "fira code", "fira mono", "jetbrains mono", "dejavu sans mono", "liberation mono", "inconsolata", "cascadia code", "cascadia mono", "sf mono", "ibm plex mono", "ubuntu mono", "noto sans mono", "andale mono", "monospace"]);
+
+/// Whether a font-family value starts with a monospace family. Only the first family counts.
+const isMonoFamily = (value) => MONO_FAMILIES.has(value.split(",")[0].trim().replace(/^["']|["']$/g, "").trim());
+
 /// The emphasis an element gives its content. Its style wins over its tag, so
 /// Google Docs' `<b style="font-weight:normal">` wrapper is not bold.
 function applyStyle(el, ctx) {
   const style = el.attrs.style ?? "";
   const weight = styleValue(style, "font-weight");
   const fontStyle = styleValue(style, "font-style");
+  const fontFamily = styleValue(style, "font-family");
   let b = ctx.b;
   if (weight !== undefined) b = /^(bold|bolder|[6-9]00)$/.test(weight);
   else if (el.tag === "b" || el.tag === "strong") b = true;
@@ -75,7 +82,16 @@ function applyStyle(el, ctx) {
   let i = ctx.i;
   if (fontStyle !== undefined) i = /^(italic|oblique)/.test(fontStyle);
   else if (el.tag === "i" || el.tag === "em" || el.tag === "cite") i = true;
-  return { b, i, c: ctx.c || CODE_TAGS.has(el.tag), noBold: ctx.noBold };
+  const mono = fontFamily !== undefined && isMonoFamily(fontFamily);
+  // `m` remembers code marked only by font, which is how word processors write
+  // code blocks. A later non-monospace font ends it, as the style wins for bold:
+  // Google Docs puts Courier New on a <li> for its "o" bullet and Aptos on the text.
+  let c = ctx.c;
+  let m = Boolean(ctx.m);
+  if (mono) [c, m] = [true, true];
+  else if (fontFamily !== undefined && m) [c, m] = [false, false];
+  if (CODE_TAGS.has(el.tag)) c = true;
+  return { b, i, c, m, noBold: ctx.noBold };
 }
 
 const plainText = (s) => ({ kind: "text", s, b: false, i: false, c: false });
@@ -100,7 +116,7 @@ const containsBlock = (node) => typeof node !== "string" && (BLOCKS.has(node.tag
 function inlinesOf(node, ctx, st) {
   if (typeof node === "string") {
     if ((ctx.b || ctx.i || ctx.c) && node.trim()) st.found = true;
-    return [{ kind: "text", s: node, b: ctx.b, i: ctx.i, c: ctx.c }];
+    return [{ kind: "text", s: node, b: ctx.b, i: ctx.i, c: ctx.c, m: Boolean(ctx.m) }];
   }
   if (SKIP.has(node.tag)) return [];
   if (node.tag === "br") return [{ kind: "br" }];
@@ -264,7 +280,8 @@ function cellInline(td, ctx, st) {
         item.children.forEach(visit);
       }
     } else if (block.type === "quote") block.blocks.forEach(visit);
-    else if (block.type === "pre") parts.push([plainText(block.text)]);
+    // A cell written in a monospace font keeps its code markup, on one line.
+    else if (block.type === "pre") parts.push([{ kind: "text", s: block.text.replace(/\n/g, " "), b: false, i: false, c: true }]);
   };
   blocksFrom(td.children, applyStyle(td, ctx), st).forEach(visit);
   const joined = [];
@@ -299,12 +316,41 @@ function tableBlock(el, ctx, st) {
 /// Verbatim text of a <pre>, without the first line break a browser drops.
 const preText = (el) => textRaw(el).replace(/^\n/, "").replace(/\n+$/, "");
 
+/// A paragraph is code when it has code text and every other token is whitespace
+/// or a line break, with no links. Google Docs and Word write code blocks this way,
+/// in a monospace font; a web page's lone <code> stays inline, since pages use <pre>.
+const isCodeParagraph = (inl) =>
+  inl.some((tok) => tok.kind === "text" && tok.m && tok.s.trim()) &&
+  inl.every((tok) => tok.kind === "br" || (tok.kind === "text" && (tok.m || !tok.s.trim())));
+
+/// The lines of a code paragraph, from its raw tokens, so that spaces are kept.
+/// Each line loses its trailing whitespace.
+const codeLines = (inl) => {
+  let text = "";
+  for (const tok of inl) {
+    if (tok.kind === "br") text += "\n";
+    else if (tok.kind === "text") text += tok.s.replace(/ /g, " ");
+  }
+  return text.split("\n").map((line) => line.replace(/\s+$/, ""));
+};
+
+/// Drops the empty lines at the start and end of a code block.
+const trimBlankEdges = (lines) => {
+  let start = 0;
+  let end = lines.length;
+  while (start < end && !lines[start]) start++;
+  while (end > start && !lines[end - 1]) end--;
+  return lines.slice(start, end);
+};
+
 /// Converts children to blocks. Inline runs become paragraphs; Word list
-/// paragraphs in a row become one list.
+/// paragraphs in a row become one list; code paragraphs in a row become one pre block.
 function blocksFrom(nodes, ctx, st) {
   const out = [];
   let pending = [];
   let run = [];
+  // The pre block that the code paragraphs just before this node extend, with their lines.
+  let code = null;
   const flushRun = () => {
     if (!run.length) return;
     out.push(...nestEntries(run));
@@ -317,8 +363,10 @@ function blocksFrom(nodes, ctx, st) {
     pending = [];
     if (inl.length) out.push({ type: "para", inl });
   };
-  for (const node of nodes) {
+  for (let index = 0; index < nodes.length; index++) {
+    const node = nodes[index];
     if (typeof node === "string") {
+      if (node.trim()) code = null;
       if (run.length) {
         if (!node.trim()) continue;
         flushRun();
@@ -327,6 +375,8 @@ function blocksFrom(nodes, ctx, st) {
       continue;
     }
     if (SKIP.has(node.tag)) continue;
+    const previousCode = code;
+    code = null;
     if (node.tag === "p" && /mso-list:\s*l\d/i.test(node.attrs.style ?? "")) {
       if (!run.length) flush();
       run.push(listEntry(node, ctx, st));
@@ -344,7 +394,18 @@ function blocksFrom(nodes, ctx, st) {
       out.push(...blocksFrom(node.children, inner, st));
     } else if (node.tag === "p" || node.tag === "li") {
       flush();
-      const inl = normalize(node.children.flatMap((kid) => inlinesOf(kid, inner, st)));
+      const raw = node.children.flatMap((kid) => inlinesOf(kid, inner, st));
+      if (node.tag === "p" && isCodeParagraph(raw)) {
+        const lines = previousCode ? previousCode.lines : [];
+        lines.push(...codeLines(raw));
+        const block = previousCode ? previousCode.block : { type: "pre", text: "" };
+        if (!previousCode) out.push(block);
+        block.text = trimBlankEdges(lines).join("\n");
+        st.found = true;
+        code = { block, lines };
+        continue;
+      }
+      const inl = normalize(raw);
       if (inl.length) out.push({ type: "para", inl });
     } else if (HEADING.test(node.tag)) {
       flush();
@@ -356,7 +417,20 @@ function blocksFrom(nodes, ctx, st) {
       }
     } else if (node.tag === "ul" || node.tag === "ol") {
       flush();
-      const lists = nestEntries(flattenList(node, 0, ctx, st));
+      // LibreOffice writes each nesting level as a sibling list, so the lists that
+      // follow with only whitespace between them are read as one list.
+      const group = [node];
+      for (let next = index + 1; next < nodes.length; next++) {
+        const sibling = nodes[next];
+        if (typeof sibling === "string") {
+          if (sibling.trim()) break;
+          continue;
+        }
+        if (sibling.tag !== "ul" && sibling.tag !== "ol") break;
+        group.push(sibling);
+        index = next;
+      }
+      const lists = nestEntries(group.flatMap((list) => flattenList(list, 0, ctx, st)));
       if (lists.length) {
         st.found = true;
         out.push(...lists);
@@ -408,8 +482,9 @@ const escTypst = (s, lineStart) => {
 };
 
 /// Markdown (and Quarto) escapes its inline markup; a line start also gets heading, quote and list markers escaped.
+/// Pandoc reads "@word" as a citation and "~x~" or "^x^" as sub- and superscript, so those are escaped too.
 const escMarkdown = (s, lineStart) => {
-  let out = s.replace(/[\\*_`[\]<>$]/g, "\\$&");
+  let out = s.replace(/[\\*_`[\]<>$@~^]/g, "\\$&");
   if (lineStart) {
     if (/^[#>+-]/.test(s)) out = `\\${out}`;
     else if (/^\d+[.)]/.test(s)) out = out.replace(/^(\d+)([.)])/, "$1\\$2");
@@ -457,9 +532,11 @@ function renderCode(s, family) {
 }
 
 /// A link. Text equal to the URL gets the bare form, which each format has.
+/// A trailing slash is ignored on either side, since LibreOffice drops it from the text.
 function renderLink(tok, family) {
   const href = tok.href;
-  const bare = tokensText(tok.inl).trim() === href;
+  const noSlash = (s) => s.replace(/\/$/, "");
+  const bare = noSlash(tokensText(tok.inl).trim()) === noSlash(href);
   const inner = renderInline(tok.inl, family, false);
   if (family === "latex") {
     const url = href.replace(/%/g, "\\%").replace(/#/g, "\\#");

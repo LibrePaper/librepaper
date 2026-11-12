@@ -26,10 +26,12 @@ lowercase with hyphens, for example `google-docs-chrome`.
 3. Open `source/sample.odt` in LibreOffice Writer.
 4. Open `source/sample.html` in a browser (the `web-page` capture).
 5. In each document, select all (Ctrl+A, or Cmd+A on macOS) and copy.
-6. Run the script right after copying, from the repository root:
+6. Run the script right after copying. It can be run from any directory, as
+   long as you give the full path to the script. Captures always land in the
+   checkout the script lives in, under `web/tests/fixtures/paste/captured/`:
 
    ```sh
-   node web/tools/paste-capture.mjs google-docs-chrome --app "Google Docs" --browser "Chrome 142"
+   node /path/to/librepaper/web/tools/paste-capture.mjs google-docs-chrome --app "Google Docs" --browser "Chrome 142"
    ```
 
    Use `--note "..."` for anything unusual, such as a dialog you dismissed.
@@ -38,9 +40,10 @@ lowercase with hyphens, for example `google-docs-chrome`.
 
 Desktop Word must be captured on Windows or macOS, because Word does not run on
 Linux. The macOS path of the script reads the clipboard with `osascript` and
-`pbpaste`, so `node web/tools/paste-capture.mjs word-desktop-mac --app "Word"`
-works from a Mac terminal. The capture's `platform` and `session` fields in the
-`.json` record which machine made it.
+`pbpaste`, so, from a Mac terminal,
+`node /path/to/librepaper/web/tools/paste-capture.mjs word-desktop-mac --app "Word"`
+works. The capture's `platform` and `session` fields in the `.json` record
+which machine made it.
 
 On Linux, the script uses `wl-paste` on Wayland (`WAYLAND_DISPLAY` set) and
 `xclip` on X11.
@@ -52,8 +55,9 @@ Each capture gets expected outputs next to it, as
 converter's current output:
 
 ```sh
-cd web && UPDATE_PASTE_GOLDENS=1 node --test --experimental-transform-types tests/unit/paste-captured.mjs
+cd /path/to/librepaper/web && UPDATE_PASTE_GOLDENS=1 node --test --experimental-transform-types tests/unit/paste-captured.mjs
 ```
 
-Then review the new files with `git diff` before committing. A golden that
+The capture script prints this command with the absolute path of the checkout
+it ran from, so you can copy it as is. Then review the new files with `git diff` before committing. A golden that
 looks wrong is a converter bug to fix, not a golden to accept.

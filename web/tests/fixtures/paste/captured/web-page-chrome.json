@@ -1,0 +1,20 @@
+{
+  "name": "web-page-chrome",
+  "app": null,
+  "browser": "Chrome 155.0.8059.84 ",
+  "note": null,
+  "platform": "linux",
+  "session": "wayland",
+  "types": [
+    "text/plain",
+    "UTF8_STRING",
+    "chromium/x-internal-source-rfh-token",
+    "TEXT",
+    "chromium/x-source-url",
+    "STRING",
+    "text/html"
+  ],
+  "capturedAt": "2026-11-12",
+  "htmlBytes": 16908,
+  "textBytes": 2647
+}
