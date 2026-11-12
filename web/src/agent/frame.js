@@ -124,6 +124,16 @@ import { morphChildren } from "./morph.js";
        and marked on its left, so it never passes for current output. */
     html.librepaper-preview .lp-cell-output { margin: 0.5em 0 1em; }
     html.librepaper-preview .lp-cell-output img { max-width: 100%; height: auto; }
+    html.librepaper-preview .lp-cell-output pre,
+    html.librepaper-preview.librepaper-flow .lp-cell-output pre,
+    html.librepaper-preview .lp-cell-output pre code,
+    html.librepaper-preview.librepaper-dark.librepaper-flow .lp-cell-output pre { background: none; border: 0; box-shadow: none; border-radius: 0; padding: 0; margin: 0.25em 0; }
+    html.librepaper-preview.librepaper-dark.librepaper-flow .lp-cell-output :is(pre, pre code) { background: transparent; color: inherit; }
+    html.librepaper-preview .lp-cell-output table { border-collapse: collapse; }
+    html.librepaper-preview .lp-cell-output :is(th, td) { padding: 0.25em 0.6em; border-bottom: 1px solid rgb(127 127 127 / 0.35); }
+    html.librepaper-preview .lp-cell-output thead th { font-weight: bold; border-bottom: 1px solid rgb(127 127 127 / 0.8); }
+    html.librepaper-preview .lp-cell-output :is(figure, figcaption) { text-align: center; }
+    html.librepaper-preview .lp-cell-output figcaption { font-size: 0.85em; opacity: 0.7; }
     html.librepaper-preview .lp-cell-output-stale { opacity: 0.5; border-left: 3px dashed currentColor; padding-left: 0.75em; }
     html.librepaper-preview .lp-results-note { font-size: 0.85em; opacity: 0.7; }
   `;

@@ -127,6 +127,25 @@ const positional = composeDraft(resultsSource, {
 });
 assert.match(outputLine(positional.markdown, "P1"), /lp-cell-output-stale/);
 assert.match(outputLine(positional.markdown, "P2"), /lp-cell-output-stale/);
+// A cell with output shows Quarto-style: code only, no fence line or `#|` options.
+const styledDraft = freshDraft.markdown.split("\n");
+assert.ok(styledDraft.includes("```r"));
+// Only cells with output change; the include: false cell keeps its verbatim source.
+assert.ok(!styledDraft.includes("#| label: first") && !styledDraft.includes("#| label: second"));
+assert.equal(freshDraft.lineMap[styledDraft.indexOf("a <- 1")], resultsParsed.cells[0].startLine + 2);
+assert.equal(freshDraft.lineMap[styledDraft.indexOf("```r")], null);
+// A cell without output keeps the verbatim rendering.
+const bareDraft = composeDraft(resultsSource, { path: "paper.qmd" }).markdown;
+assert.match(bareDraft, /^#\| label: first$/m);
+assert.match(bareDraft, /\{r\}/);
+const echoSource = (front, opt) => ["---", "title: E", ...front, "---", "", "```{r}", "#| label: only", ...opt, "shown_code()", "```", ""].join("\n");
+const echoDraft = (front, opt) => composeDraft(echoSource(front, opt), { path: "e.qmd", results: { cells: [{ fingerprint: "9".repeat(64), label: "only", html: "<p>OUT</p>" }] } }).markdown;
+assert.match(echoDraft([], []), /shown_code\(\)/);
+const hidden = echoDraft([], ["#| echo: false"]);
+assert.doesNotMatch(hidden, /shown_code/);
+assert.match(hidden, /OUT/);
+assert.doesNotMatch(echoDraft(["execute:", "  echo: false"], []), /shown_code/);
+assert.match(echoDraft(["execute:", "  echo: false"], ["#| echo: true"]), /shown_code/);
 // Different count, no label: nothing.
 const unmatched = composeDraft(resultsSource, {
   path: "paper.qmd", cellFingerprints: resultsPrints,
