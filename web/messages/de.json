@@ -1026,6 +1026,8 @@
   "editorsettings_line_height_compact": "Kompakt",
   "editorsettings_line_height_normal": "Normal",
   "editorsettings_line_height_wide": "Weit",
+  "editorsettings_paper_description": "Im visuellen Modus Markdown-Dateien mit dem Renderer und den Stilen der Vorschau darstellen. Experimentell.",
+  "editorsettings_paper_title": "Papieransicht für Markdown",
   "editorsettings_proofing_description_browser": "Ihr Browser unterstreicht falsch geschriebene Wörter im Fließtext und überspringt Befehle, Code, Formeln und Zitierschlüssel. Seine Sprache und sein Wörterbuch bestimmen, was als Wort gilt.",
   "editorsettings_proofing_description_harper": "Harper prüft englische Rechtschreibung und Grammatik im Fließtext. Beim ersten Mal werden 7 MB heruntergeladen, und bei geöffnetem Dokument werden etwa 300 MB Arbeitsspeicher belegt. Dokumente in einer anderen Sprache werden stattdessen mit der Rechtschreibprüfung des Browsers geprüft.",
   "editorsettings_proofing_description_off": "Nichts wird unterstrichen.",

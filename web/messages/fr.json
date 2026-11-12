@@ -1026,6 +1026,8 @@
   "editorsettings_line_height_compact": "Compact",
   "editorsettings_line_height_normal": "Normal",
   "editorsettings_line_height_wide": "Large",
+  "editorsettings_paper_description": "En mode visuel, dessine les fichiers Markdown avec le moteur de rendu et les styles de l’aperçu. Expérimental.",
+  "editorsettings_paper_title": "Vue papier pour Markdown",
   "editorsettings_proofing_description_browser": "Votre navigateur souligne les mots mal orthographiés dans le texte, en ignorant les commandes, le code, les formules et les clés de citation. Sa langue et son dictionnaire déterminent ce qui compte comme un mot.",
   "editorsettings_proofing_description_harper": "Harper vérifie l’orthographe et la grammaire anglaises dans le texte. Il télécharge 7 Mo la première fois et utilise environ 300 Mo de mémoire pendant qu’un document est ouvert. Les documents qui déclarent une autre langue utilisent plutôt le correcteur orthographique du navigateur.",
   "editorsettings_proofing_description_off": "Rien n’est souligné.",
