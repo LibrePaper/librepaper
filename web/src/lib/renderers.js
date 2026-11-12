@@ -291,36 +291,85 @@ export async function render(tree, title, { manual = false, format: requestedFor
       ok,
     };
   }
-  // Labels may be Svelte proxies, which cannot cross a worker boundary.
-  // Send only the compiler inputs, copied into ordinary maps.
-  const quartoTree = format === "quarto" ? await quarto.virtualTree(tree, {
-    expandIncludes: tree.texts || {},
-    results: tree.quartoResults ?? null,
-  }) : tree;
   const capturedSettings = configuration && Object.prototype.hasOwnProperty.call(configuration, "settings")
-    ? configuration.settings : quartoTree.settings;
+    ? configuration.settings : tree.settings;
   // Markdown and Quarto reach a PDF through Pandoc and Typst: Pandoc writes
   // a Typst source beside the document and the Typst renderer compiles it.
   // Quarto's own diagnostics describe the HTML path and are not mapped here.
   if ((format === "markdown" || format === "quarto") && buildPreferences?.output === "pdf") {
-    const pandocInput = format === "quarto" ? quarto.pandocDraft(quartoTree, source) : quartoTree;
+    let pandocInput = tree;
+    if (format === "quarto") {
+      const drafted = await quartoDraft(tree, 1, capturedModules, capturedSettings).catch((error) => ({ error }));
+      if (drafted.error) return quartoFailure(drafted.error, tree, title);
+      pandocInput = draftTree(tree, drafted.markdown);
+    }
     const typstSource = await typstTree(pandocInput, { from: "markdown" });
     return renderTypst(typstSource, title, "pdf", capturedModules, capturedSettings);
   }
-  const module = (format === "markdown" || format === "quarto") && needsBibliography({ source }) ? "citations" : format === "quarto" ? "markdown" : format;
-  if (format === "typst") return renderTypst(quartoTree, title, requestedFormat, capturedModules, capturedSettings);
+  if (format === "typst") return renderTypst(tree, title, requestedFormat, capturedModules, capturedSettings);
   // The Org renderer does not follow #+INCLUDE, so the included text goes in first.
-  if (format === "org") await orgTreeReady(quartoTree.texts?.[quartoTree.main] ?? "");
-  const renderable = format === "org" ? expandOrgIncludes(quartoTree) : quartoTree;
+  if (format === "org") await orgTreeReady(tree.texts?.[tree.main] ?? "");
+  if (format === "quarto") {
+    try {
+      return await renderQuarto(tree, title, capturedModules, capturedSettings, source);
+    } catch (error) {
+      return quartoFailure(error, tree, title);
+    }
+  }
+  const module = format === "markdown" && needsBibliography({ source }) ? "citations" : format;
+  const renderable = format === "org" ? expandOrgIncludes(tree) : tree;
   return request(module, "render", {
     tree: renderTree(renderable, capturedSettings),
     title,
-  }, capturedModules).then((result) => {
-    if (format === "quarto" && result) {
-      return { ...result, diagnostics: quarto.mapQuartoDiagnostics(result.diagnostics || [], quartoTree) };
-    }
-    return result;
-  });
+  }, capturedModules);
+}
+
+// The Markdown module renders a Quarto document itself: the .qmd is the main
+// file and the saved outputs reach it in a file beside the sources. Only a
+// document with a bibliography still goes through citations.wasm, which does
+// not know Quarto, so that one is given the module's draft as plain Markdown.
+async function renderQuarto(tree, title, moduleUrls, settings, source) {
+  const sidecar = await quarto.quartoSidecar(source, { path: tree.main, results: tree.quartoResults ?? null });
+  const withSidecar = { ...tree, texts: { ...tree.texts, [quarto.QUARTO_SIDECAR]: JSON.stringify(sidecar) } };
+  if (needsBibliography({ source })) {
+    const drafted = await quartoDraft(withSidecar, 0, moduleUrls, settings);
+    const result = await request("citations", "render", {
+      tree: renderTree(draftTree(tree, drafted.markdown), settings),
+      title,
+    }, moduleUrls);
+    const mapped = quarto.mapDraftDiagnostics(result?.diagnostics || [], drafted.line_map, tree.main);
+    return { ...result, diagnostics: [...quarto.translateQuartoDiagnostics(drafted.diagnostics), ...mapped] };
+  }
+  const result = await request("markdown", "render", { tree: renderTree(withSidecar, settings), title }, moduleUrls);
+  return result ? { ...result, diagnostics: quarto.translateQuartoDiagnostics(result.diagnostics) } : result;
+}
+
+// The module's Quarto draft of a tree, as Markdown with its line map.
+function quartoDraft(tree, forPandoc, moduleUrls, settings) {
+  return request("markdown", "draft", { tree: renderTree(tree, settings), forPandoc }, moduleUrls).then((drafted) => ({
+    ...drafted,
+    diagnostics: drafted.diagnostics || [],
+  }));
+}
+
+// The draft stands in for the .qmd, as a Markdown file beside it.
+function draftTree(tree, markdown) {
+  let main = tree.main.replace(/\.qmd$/i, ".md");
+  while (Object.hasOwn(tree.texts || {}, main)) main = main.replace(/\.md$/, "-draft.md");
+  const texts = { ...tree.texts, [main]: markdown };
+  delete texts[tree.main];
+  return { ...tree, main, texts };
+}
+
+// A Quarto document the module cannot draft (an older module, or a failure
+// inside it) is shown as its source, with the reason beside it.
+async function quartoFailure(error, tree, title) {
+  const message = error?.message || String(error);
+  return {
+    html: await textPage(tree.texts?.[tree.main] ?? "", tree.main, title || tree.main),
+    pdf: null,
+    diagnostics: [{ severity: "error", message, hints: [], file: tree.main, line: 0, column: 0, end_line: 0, end_column: 0 }],
+  };
 }
 
 // Labels may be Svelte proxies, which cannot cross a worker boundary.

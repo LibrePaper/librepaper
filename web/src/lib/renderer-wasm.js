@@ -9,7 +9,7 @@ const REQUIRED_EXPORTS = [
 ];
 
 /** @typedef {(...args: number[]) => number} RendererFunction */
-/** @typedef {WebAssembly.Exports & {memory: WebAssembly.Memory, alloc: RendererFunction, dealloc: RendererFunction, compile: RendererFunction, compile_html?: RendererFunction, output_ptr: RendererFunction, ok: RendererFunction, output_kind: RendererFunction, diagnostics: RendererFunction, diagnostics_ptr: RendererFunction, failure_page: RendererFunction, title_of: RendererFunction, add_file: RendererFunction, clear_files: RendererFunction, set_main: RendererFunction, set_asset_url: RendererFunction, set_today: RendererFunction, word_diff: RendererFunction, bibliography?: RendererFunction, complete?: RendererFunction, needs?: RendererFunction, needs_ptr?: RendererFunction}} RendererWasm */
+/** @typedef {WebAssembly.Exports & {memory: WebAssembly.Memory, alloc: RendererFunction, dealloc: RendererFunction, compile: RendererFunction, compile_html?: RendererFunction, output_ptr: RendererFunction, ok: RendererFunction, output_kind: RendererFunction, diagnostics: RendererFunction, diagnostics_ptr: RendererFunction, failure_page: RendererFunction, title_of: RendererFunction, add_file: RendererFunction, clear_files: RendererFunction, set_main: RendererFunction, set_asset_url: RendererFunction, set_today: RendererFunction, word_diff: RendererFunction, bibliography?: RendererFunction, complete?: RendererFunction, draft?: RendererFunction, needs?: RendererFunction, needs_ptr?: RendererFunction}} RendererWasm */
 
 /** @param {RendererWasm} wasm @param {string} name @returns {RendererFunction} */
 function functionExport(wasm, name) {
@@ -96,26 +96,28 @@ export function load(url) {
 // which is how a figure reaches the compiler. The module's memory can be
 // replaced when it grows, so a view of it is taken after every call that might
 // have grown it, never held across one.
-/** @param {RendererWasm} wasm @param {string} name @param {...(string|Uint8Array)} strings */
+/** @param {RendererWasm} wasm @param {string} name @param {...(string|Uint8Array|number)} strings */
 export function call(wasm, name, ...strings) {
   const encoder = new TextEncoder();
   const written = [];
   try {
     for (const value of strings) {
+      // A number is a plain argument (a flag), passed as it is.
+      if (typeof value === "number") { written.push({ plain: value }); continue; }
       const bytes = typeof value === "string" ? encoder.encode(value) : value;
       const pointer = wasm.alloc(bytes.length);
       written.push({ pointer, length: bytes.length });
       new Uint8Array(wasm.memory.buffer, pointer, bytes.length).set(bytes);
     }
   } catch (error) {
-    for (const { pointer, length } of written) wasm.dealloc(pointer, length);
+    for (const { pointer, length } of written) if (pointer !== undefined) wasm.dealloc(pointer, length);
     throw error;
   }
   let length;
   try {
-    length = functionExport(wasm, name)(...written.flatMap(({ pointer, length }) => [pointer, length]));
+    length = functionExport(wasm, name)(...written.flatMap((entry) => "plain" in entry ? [entry.plain] : [entry.pointer, entry.length]));
   } finally {
-    for (const { pointer, length } of written) wasm.dealloc(pointer, length);
+    for (const { pointer, length } of written) if (pointer !== undefined) wasm.dealloc(pointer, length);
   }
   // Copy the output before reading any other ABI channel. A diagnostics call
   // or a later compile may grow/replace WASM memory; retaining a view here

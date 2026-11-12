@@ -28,6 +28,18 @@ function complete(wasm, { tree, path = "", source = "", offset = 0, explicit = f
   return text ? JSON.parse(text) : null;
 }
 
+// The Quarto draft as Markdown, from a module that has the dialect. One built
+// before it has no `draft` export, which the caller treats as a failure to
+// fall back from.
+function draft(wasm, tree, forPandoc) {
+  if (typeof wasm.draft !== "function") throw new Error("this renderer module has no Quarto support");
+  handOver(wasm, tree);
+  const { bytes, diagnostics } = call(wasm, "draft", tree.texts?.[tree.main] ?? "", forPandoc ? 1 : 0);
+  const text = new TextDecoder().decode(bytes);
+  const parsed = text ? JSON.parse(text) : { markdown: "", line_map: [] };
+  return { markdown: parsed.markdown ?? "", line_map: parsed.line_map ?? [], diagnostics };
+}
+
 async function render(wasm, tree, title, format) {
   const { bytes, text, kind, ok, diagnostics } = await renderResolving(wasm, tree, title, fetched, { format });
   if (ok && format === "html" && kind === "html") return { html: text, diagnostics };
@@ -61,6 +73,7 @@ rendererScope.onmessage = ({ data: { id, url, operation, args } }) => {
         const raw = call(wasm, "word_diff", args.old, args.new).text;
         result = JSON.parse(raw || "[]");
       }
+      else if (operation === "draft") result = draft(wasm, args.tree, Boolean(args.forPandoc));
       else if (operation === "complete") result = complete(wasm, args);
       else if (operation === "failure") result = call(wasm, "failure_page", args.title).text;
       else if (operation !== "warm") throw new Error(`Unknown renderer operation: ${operation}`);

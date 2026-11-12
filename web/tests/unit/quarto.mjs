@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { cellFingerprint, composeDraft, contextId, contextFingerprint, escapeHtml, mapQuartoDiagnostics, pandocDraft, parseQuarto, virtualTree } from "../../src/lib/engines/quarto.js";
+import { QUARTO_SIDECAR, cellFingerprint, contextId, contextFingerprint, mapDraftDiagnostics, parseQuarto, quartoSidecar, translateQuartoDiagnostics } from "../../src/lib/engines/quarto.js";
 import { formatOf, outputKind } from "../../src/lib/renderers.js";
 
 const source = [
@@ -27,13 +27,6 @@ const longCell = "````{r}\n#| label: long\nplot(1)\n```\n````\n";
 assert.equal(parseQuarto(longCell, { path: "paper.qmd" }).cells.length, 1, "a long executable fence closes only at its own length");
 const knitrComma = parseQuarto("```{r,echo=FALSE}\nhidden_one()\n```\n```{r, echo=FALSE}\nhidden_two()\n```\n```{r , echo=FALSE}\nhidden_three()\n```\n", { path: "paper.qmd" });
 assert.deepEqual(knitrComma.cells.map((cell) => [cell.language, cell.options.echo]), [["r", false], ["r", false], ["r", false]]);
-// The draft never guesses at echo/include/eval semantics: with no saved
-// output it shows the whole cell verbatim, fence lines included, wrapped in
-// an outer fence longer than any fence run already inside the cell text.
-const echoFalseDraft = composeDraft("```{r,echo=FALSE}\nhidden_one()\n```\n").markdown;
-assert.match(echoFalseDraft, /hidden_one/);
-assert.match(echoFalseDraft, /```\{r,echo=FALSE\}/);
-assert.match(echoFalseDraft, /^~~~\n/);
 const paritySource = [
   "---", "title: Parity", "---", "", "A {{< include appendix.qmd >}} value.", "",
   "```r", "plot(x)", "```", "", "```{r #fig-a echo=false}", "#| fig-cap: A", "x <- 1", "plot(x)", "```", "",
@@ -60,28 +53,6 @@ assert.deepEqual(await Promise.all(nativeFixture.cells.map(cellFingerprint)), [
   "600c7d96666f2aee6b4c25d3149512ae4fce781ddf7cc5a23bfdb985afed813c",
 ]);
 assert.equal(await contextFingerprint(nativeFixture, { main: "paper.qmd", format: "" }), "36b939c9c7c5ab978b58d7dca0299aeea9bded225822c0851f6261f8bddac126");
-assert.match(composeDraft(source, { expandIncludes: { "hidden.qmd": "DO NOT INSERT" } }).markdown, /\{\{< include hidden\.qmd >\}\}/);
-const includeDraft = composeDraft("Before {{< include outer.qmd >}} after.", {
-  expandIncludes: {
-    "outer.qmd": "Outer {{< include inner.qmd >}}\n\n```{r}\n{{< include secret.qmd >}}\n```",
-    "inner.qmd": "Inner text",
-    "secret.qmd": "SECRET",
-  },
-});
-assert.match(includeDraft.markdown, /Outer Inner text/);
-assert.match(includeDraft.markdown, /\{\{< include secret\.qmd >\}\}/, "include directives inside included code stay opaque");
-const cycleDraft = composeDraft("{{< include a.qmd >}}", {
-  expandIncludes: { "a.qmd": "A {{< include b.qmd >}}", "b.qmd": "B {{< include a.qmd >}}" },
-  maxIncludeDepth: 4,
-});
-assert.match(cycleDraft.markdown, /Include cycle or depth limit/);
-assert.ok(cycleDraft.diagnostics.some((diagnostic) => diagnostic.generated && diagnostic.line === 0));
-// A previous computation bundle never changes the source draft. Ambiguous
-// cells and all other executable cells remain visible as source.
-const staleBundleDraft = composeDraft(source, { bundle: { cells: [{ id: "paper.qmd#plot", outputs: [{ kind: "text", text: "stale result" }] }] } }).markdown;
-assert.match(staleBundleDraft, /```\{r #plot\}\nplot\(2\)\n```/);
-assert.doesNotMatch(staleBundleDraft, /stale result/);
-// Shared results: outputs saved from a local run appear under their cells.
 const resultsSource = [
   "---", "title: Shared", "---", "",
   "```{r}", "#| label: first", "a <- 1", "```", "",
@@ -93,93 +64,6 @@ const resultsParsed = parseQuarto(resultsSource, { path: "paper.qmd" });
 const resultsPrints = {};
 for (const cell of resultsParsed.cells) resultsPrints[cell.id] = { sha256: await cellFingerprint(cell), ambiguous: false };
 const [firstPrint, secondPrint] = resultsParsed.cells.map((cell) => resultsPrints[cell.id].sha256);
-const outputLine = (markdown, text) => markdown.split("\n").find((line) => line.includes(text));
-const freshDraft = composeDraft(resultsSource, {
-  path: "paper.qmd", cellFingerprints: resultsPrints,
-  results: { cells: [{ fingerprint: secondPrint, label: "second", html: "<p>TWO</p>" }, { fingerprint: firstPrint, label: "first", html: "<p>ONE</p>" }] },
-});
-assert.equal(outputLine(freshDraft.markdown, "ONE"), '<div class="lp-cell-output"><p>ONE</p></div>');
-assert.ok(freshDraft.markdown.indexOf("b <- 2") < freshDraft.markdown.indexOf("TWO"));
-assert.ok(freshDraft.markdown.indexOf("a <- 1") < freshDraft.markdown.indexOf("ONE"));
-assert.ok(freshDraft.markdown.indexOf("ONE") < freshDraft.markdown.indexOf("Between."), "output follows its own cell, not the next one");
-assert.ok(freshDraft.markdown.indexOf("Between.") < freshDraft.markdown.indexOf("TWO"));
-assert.doesNotMatch(freshDraft.markdown, /lp-cell-output-stale/);
-const outputAt = freshDraft.markdown.split("\n").findIndex((line) => line.includes("ONE"));
-assert.equal(freshDraft.lineMap[outputAt], null, "generated output lines have no source line");
-assert.equal(freshDraft.markdown.split("\n")[outputAt - 1], "");
-assert.equal(freshDraft.markdown.split("\n")[outputAt + 1], "");
-// The cell with include: false never gets output, even by position.
-assert.doesNotMatch(composeDraft(resultsSource, {
-  path: "paper.qmd", cellFingerprints: resultsPrints,
-  results: { cells: [{ fingerprint: "0".repeat(64), label: "hidden", html: "<p>HIDDEN</p>" }] },
-}).markdown, /HIDDEN/);
-// Changed code, same label: stale output.
-const staleDraft = composeDraft(resultsSource, {
-  path: "paper.qmd", cellFingerprints: resultsPrints,
-  results: { cells: [{ fingerprint: "1".repeat(64), label: "first", html: "<p>OLD</p>" }, { fingerprint: secondPrint, label: "second", html: "<p>TWO</p>" }, { fingerprint: "2".repeat(64), label: "other", html: "<p>EXTRA</p>" }] },
-});
-assert.match(outputLine(staleDraft.markdown, "OLD"), /^<div class="lp-cell-output lp-cell-output-stale" title="[^"]+"><p>OLD<\/p><\/div>$/);
-assert.equal(outputLine(staleDraft.markdown, "TWO"), '<div class="lp-cell-output"><p>TWO</p></div>');
-// Same count, no label match: positional, stale.
-const positional = composeDraft(resultsSource, {
-  path: "paper.qmd", cellFingerprints: resultsPrints,
-  results: { cells: [{ fingerprint: "3".repeat(64), label: null, html: "<p>P1</p>" }, { fingerprint: "4".repeat(64), label: null, html: "<p>P2</p>" }] },
-});
-assert.match(outputLine(positional.markdown, "P1"), /lp-cell-output-stale/);
-assert.match(outputLine(positional.markdown, "P2"), /lp-cell-output-stale/);
-// A cell with output shows Quarto-style: code only, no fence line or `#|` options.
-const styledDraft = freshDraft.markdown.split("\n");
-assert.ok(styledDraft.includes("```r"));
-// Only cells with output change; the include: false cell keeps its verbatim source.
-assert.ok(!styledDraft.includes("#| label: first") && !styledDraft.includes("#| label: second"));
-assert.equal(freshDraft.lineMap[styledDraft.indexOf("a <- 1")], resultsParsed.cells[0].startLine + 2);
-assert.equal(freshDraft.lineMap[styledDraft.indexOf("```r")], null);
-// A cell without output keeps the verbatim rendering.
-const bareDraft = composeDraft(resultsSource, { path: "paper.qmd" }).markdown;
-assert.match(bareDraft, /^#\| label: first$/m);
-assert.match(bareDraft, /\{r\}/);
-const echoSource = (front, opt) => ["---", "title: E", ...front, "---", "", "```{r}", "#| label: only", ...opt, "shown_code()", "```", ""].join("\n");
-const echoDraft = (front, opt) => composeDraft(echoSource(front, opt), { path: "e.qmd", results: { cells: [{ fingerprint: "9".repeat(64), label: "only", html: "<p>OUT</p>" }] } }).markdown;
-assert.match(echoDraft([], []), /shown_code\(\)/);
-const hidden = echoDraft([], ["#| echo: false"]);
-assert.doesNotMatch(hidden, /shown_code/);
-assert.match(hidden, /OUT/);
-assert.doesNotMatch(echoDraft(["execute:", "  echo: false"], []), /shown_code/);
-assert.match(echoDraft(["execute:", "  echo: false"], ["#| echo: true"]), /shown_code/);
-// Different count, no label: nothing.
-const unmatched = composeDraft(resultsSource, {
-  path: "paper.qmd", cellFingerprints: resultsPrints,
-  results: { cells: [{ fingerprint: "3".repeat(64), label: null, html: "<p>LOST</p>" }] },
-});
-assert.doesNotMatch(unmatched.markdown, /LOST|lp-cell-output/);
-// The note appears once, after the generated title block, escaped.
-const noted = composeDraft(resultsSource, { path: "paper.qmd", results: { cells: [], note: "Output from <Ada>'s run" } }).markdown;
-assert.equal(noted.split("lp-results-note").length - 1, 1);
-assert.match(noted, /<p class="lp-results-note">Output from &lt;Ada&gt;&#39;s run<\/p>/);
-assert.ok(noted.indexOf("</header>") < noted.indexOf("lp-results-note"));
-assert.match(composeDraft("Plain.\n", { results: { cells: [], note: "N" } }).markdown, /^\n?<p class="lp-results-note">N<\/p>/);
-assert.equal(composeDraft(resultsSource, { path: "paper.qmd", results: { cells: [], note: "" } }).markdown, composeDraft(resultsSource, { path: "paper.qmd" }).markdown);
-const treeWithResults = await virtualTree({ main: "paper.qmd", texts: { "paper.qmd": resultsSource } }, { results: { cells: [{ fingerprint: firstPrint, label: "first", html: "<p>VT</p>" }] } });
-assert.match(treeWithResults.texts["paper.md"], /<div class="lp-cell-output"><p>VT<\/p><\/div>/);
-const dialect = [
-  "---", "title: Draft title", "authors:", "  - name: Ada Lovelace", "date: 1843", "abstract: A short abstract", "---", "",
-  "::: {.callout-note #intro}", "See @fig-trend.", ":::", "",
-  "```{r #fig-trend}", "#| fig-cap: Trend", "plot(1)", "```",
-].join("\n");
-const dialectDraft = composeDraft(dialect).markdown;
-assert.match(dialectDraft, /quarto-title-block/);
-// Fenced divs are never interpreted: the complete construct is wrapped in a
-// code fence so its body cannot be partially rendered as Markdown or HTML.
-assert.match(dialectDraft, /^```\n::: \{\.callout-note #intro\}/m);
-assert.match(dialectDraft, /^::: \{\.callout-note #intro\}$/m);
-assert.match(dialectDraft, /^:::$/m);
-assert.doesNotMatch(dialectDraft, /quarto-callout/);
-assert.match(dialectDraft, /See @fig-trend\./, "cross-references inside literal constructs remain source text");
-// The browser draft preserves executable cells as source text. Figure
-// anchors are supplied by Quarto's authoritative Quarto render.
-assert.match(dialectDraft, /plot\(1\)/);
-assert.doesNotMatch(dialectDraft, /quarto-cached-output/);
-assert.doesNotMatch(dialectDraft, /\n---\n/);
 const nestedDialect = [
   "::: {.callout-note #note}", "Outer", "::: {.callout-warning #inner}", "Inner", ":::", ":::", "",
   "::: {.columns}", "::: {.column}", "Column", ":::", ":::", "",
@@ -190,37 +74,11 @@ const nestedDialect = [
 ].join("\n");
 const nestedParsed = parseQuarto(nestedDialect, { path: "paper.qmd" });
 assert.equal(nestedParsed.divs.find((div) => div.id === "inner").depth, 1);
-const nestedDraft = composeDraft(nestedDialect, { path: "paper.qmd" }).markdown;
-// All fenced div source carries through inside literal blocks, including
-// nested constructs; no callout/columns/tabset wrapper markup is generated.
-for (const fenceLine of [
-  "::: {.callout-note #note}", "::: {.callout-warning #inner}",
-  "::: {.columns}", "::: {.column}", "::: {.panel-tabset}",
-  "::: {#fig-one}", "::: {#tbl-one}",
-]) assert.match(nestedDraft, new RegExp(`^${fenceLine.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
-assert.doesNotMatch(nestedDraft, /quarto-callout|quarto-columns|quarto-column\b|quarto-tabset|data-quarto-tabset/);
-// Crossref resolution still works: it is independent of div rendering and
-// reads figure/table numbering straight from the parsed div labels.
-assert.match(nestedDraft, /href="#fig-one">Figure 1/);
-assert.match(nestedDraft, /href="#tbl-one">Table 1/);
-const compactCallout = composeDraft(":::{.callout-note}\nCompact note.\n:::\n").markdown;
-assert.equal(compactCallout, "```\n:::{.callout-note}\nCompact note.\n:::\n```\n", "a compact div is one literal source block");
-const htmlInCallout = composeDraft("::: {.callout-note}\n<div>\n  first\n  second\n</div>\n:::\n").markdown;
-assert.match(htmlInCallout, /^```\n::: \{\.callout-note\}\n<div>\n  first\n  second\n<\/div>\n:::\n```/);
-const shortcodeDraft = composeDraft("Before {{< video clip.mp4 >}} after\n").markdown;
-assert.equal(shortcodeDraft, "```\nBefore {{< video clip.mp4 >}} after\n```\n");
-const unfinishedDivDraft = composeDraft("::: {.callout-note}\nStill typing\n  indented").markdown;
-assert.equal(unfinishedDivDraft, "```\n::: {.callout-note}\nStill typing\n  indented\n```");
 const nestedAuthors = parseQuarto([
   "---", "authors:", "  - name: Ada Lovelace", "    affiliation: Analytical Engine", "  - name: Grace Hopper", "    affiliation: Navy", "---", "", "Text",
 ].join("\n"), { path: "paper.qmd" });
 assert.equal(nestedAuthors.diagnostics.length, 0, "nested author metadata should not make freshness unknown");
 assert.deepEqual(nestedAuthors.metadata.authors.map((author) => author.name), ["Ada Lovelace", "Grace Hopper"]);
-const unauthorizedInclude = composeDraft("{{< include ../secret.qmd >}}", {
-  expandIncludes: { "../secret.qmd": "must never appear", "safe.qmd": "safe" },
-});
-assert.doesNotMatch(unauthorizedInclude.markdown, /must never appear/);
-assert.match(unauthorizedInclude.markdown, /Include unavailable/);
 const inlineSource = "Value: `r 1 + 1`.";
 const inlineParsed = parseQuarto(inlineSource, { path: "paper.qmd" });
 const inline = inlineParsed.inlineRecords[0];
@@ -228,50 +86,59 @@ const multiInline = parseQuarto("`r 1 + 1`\n`r 2 + 2`", { path: "paper.qmd" }).i
 assert.deepEqual(multiInline.map((item) => item.id), ["paper.qmd#inline-1-0", "paper.qmd#inline-2-0"]);
 const duplicateInlineSource = "Values: `r 1 + 1`, `r 1 + 1`.";
 const duplicateInline = parseQuarto(duplicateInlineSource, { path: "paper.qmd" }).inlineRecords;
-const inlineDraft = composeDraft(inlineSource, {
-  path: "paper.qmd", inlineValues: duplicateInline.map((item) => ({ ...item, value: "2" })),
-});
-assert.match(inlineDraft.markdown, /`r 1 \+ 1`/);
-assert.doesNotMatch(inlineDraft.markdown, /quarto-inline-value/);
-const mappedTree = await virtualTree({ main: "main.qmd", texts: { "main.qmd": "---\ntitle: Map\n---\n\nProse line\n\n```{r}\nplot(1)\n```\n" } });
-const mappedDiagnostics = mapQuartoDiagnostics([
-  { severity: "error", message: "prose", file: "main.md", line: 3, column: 1 },
-  { severity: "error", message: "generated", file: "main.md", line: 1, column: 1 },
-], mappedTree);
-assert.equal(mappedDiagnostics[0].file, "main.qmd");
-assert.ok(mappedDiagnostics[0].line > 0);
-assert.equal(mappedDiagnostics[1].line, 0);
-assert.equal(mappedDiagnostics[1].generated, true);
 const incomplete = "---\ntitle: Still editing\n\n# Intro\n\nText";
-assert.match(composeDraft(incomplete).markdown, /Still editing/);
 assert.equal(parseQuarto(incomplete).diagnostics[0].severity, "warning");
-assert.equal(escapeHtml('<img src="x">'), '&lt;img src=&quot;x&quot;&gt;');
 assert.equal(await contextId({ format: "html", profiles: ["default"], parameters: { seed: 1 } }), await contextId({ format: "html", profiles: ["default"], parameters: { seed: 1 } }));
 assert.notEqual(await contextId({ format: "html", parameters: { seed: 1 } }), await contextId({ format: "html", parameters: { seed: "1" } }), "parameter scalar types remain part of the selection identity");
 assert.notEqual(await contextId({ format: "html" }), await contextId({ format: "pdf" }));
 assert.equal((await contextFingerprint(parsed, { main: "paper.qmd" })).length, 64);
+// The sidecar the Markdown module reads beside a .qmd: saved outputs placed by
+// the 1-based line of their cell's opening fence.
+const strings = { output_stale: "S", include_unavailable: "U {name}", include_cycle: "C {normalized}", abstract: "A" };
+assert.equal(QUARTO_SIDECAR, ".librepaper/quarto.json");
+const fresh = await quartoSidecar(resultsSource, {
+  path: "paper.qmd", strings,
+  results: { note: " Ada's run ", cells: [{ fingerprint: secondPrint, label: "second", html: "<p>TWO</p>\n" }, { fingerprint: firstPrint, label: "first", html: "<p>ONE</p>" }] },
+});
+assert.deepEqual(fresh.outputs, [
+  { line: 5, html: "<p>ONE</p>", stale: false },
+  { line: 12, html: "<p>TWO</p> ", stale: false },
+]);
+assert.equal(fresh.note, "Ada's run");
+assert.deepEqual(fresh.strings, strings);
+// Changed code, same label: stale. The include: false cell never gets output.
+const stale = await quartoSidecar(resultsSource, {
+  path: "paper.qmd", strings,
+  results: { cells: [{ fingerprint: "1".repeat(64), label: "first", html: "<p>OLD</p>" }, { fingerprint: secondPrint, label: "second", html: "<p>TWO</p>" }, { fingerprint: "2".repeat(64), label: "hidden", html: "<p>HIDDEN</p>" }] },
+});
+assert.deepEqual(stale.outputs.map((o) => [o.line, o.stale]), [[5, true], [12, false]]);
+// Same count, no label: positional and stale. Different count: nothing.
+const positional = await quartoSidecar(resultsSource, { path: "paper.qmd", strings, results: { cells: [{ fingerprint: "3".repeat(64), label: null, html: "a" }, { fingerprint: "4".repeat(64), label: null, html: "b" }] } });
+assert.deepEqual(positional.outputs.map((o) => o.stale), [true, true]);
+assert.deepEqual((await quartoSidecar(resultsSource, { path: "paper.qmd", strings, results: { cells: [{ fingerprint: "3".repeat(64), label: null, html: "x" }] } })).outputs, []);
+// Without saved results the file still carries the strings, with the real catalogue by default.
+const bare = await quartoSidecar("Plain.\n");
+assert.deepEqual(bare.outputs, []);
+assert.equal(bare.note, "");
+assert.equal(bare.strings.include_unavailable, "Include unavailable: {name}");
+assert.equal(bare.strings.include_cycle, "Include cycle or depth limit: {normalized}");
 
-const original = "```{r}\nplot(x)\n```\n";
-const inserted = "```{r}\nother()\n```\n" + original;
-const movedDraft = await virtualTree({ main:"main.qmd", texts:{"main.qmd":inserted,"main.md":"Desktop source"} });
-assert.equal(movedDraft.texts["main.md"], "Desktop source");
-// Every executable cell stays in the transient source draft.
-assert.match(movedDraft.quarto.markdown, /```\{r\}\nother\(\)\n```/);
-assert.match(movedDraft.quarto.markdown, /plot\(x\)/);
-console.log("quarto: parser, source-only draft and identity scenarios passed");
-assert.doesNotMatch(composeDraft("{{< include hidden.qmd >}}", {expandIncludes:{"hidden.qmd":"```{r}\n#| include: false\nsecret_hidden_code()\n```\nVisible prose"}}).markdown, /secret_hidden_code/);
+// Diagnostics named by a catalogue key are translated from their hints.
+const translated = translateQuartoDiagnostics([
+  { severity: "warning", message: "quarto_include_unauthorized", hints: ["name=../secret.qmd"], file: "", line: 3, column: 1 },
+  { severity: "error", message: "quarto_cell_label_duplicate", hints: ["label=fig-a"], file: "", line: 9, column: 1 },
+  { severity: "error", message: "unterminated string", hints: ["h"], file: "", line: 1, column: 1 },
+]);
+assert.equal(translated[0].message, "Include unavailable or unauthorized: ../secret.qmd");
+assert.equal(translated[0].line, 3);
+assert.equal(translated[1].message, "duplicate cell label fig-a");
+assert.equal(translated[2].message, "unterminated string");
 
-// A Quarto PDF hands Pandoc the original front matter, not the title block.
-{
-  const front = "---\ntitle: Cited\nbibliography: refs.bib\ncsl: apa.csl\n---\n";
-  const qmd = `${front}\nSee @key.\n\n{{< include part.qmd >}}\n`;
-  const tree = { main: "main.qmd", texts: { "main.qmd": qmd, "part.qmd": "Included words." } };
-  const virtual = await virtualTree(tree, { expandIncludes: tree.texts });
-  assert.match(virtual.texts[virtual.main], /quarto-title-block/);
-  const draft = pandocDraft(virtual, qmd);
-  const text = draft.texts[draft.main];
-  assert.ok(text.startsWith(front));
-  assert.match(text, /Included words\./);
-  assert.doesNotMatch(text, /quarto-title-block/);
-  assert.equal(draft.main, virtual.main);
-}
+// A diagnostic from the citations module is put back on qmd lines; generated lines stay unplaced.
+const mapped = mapDraftDiagnostics([
+  { severity: "error", message: "prose", file: "main.md", line: 3, column: 1 },
+  { severity: "error", message: "generated", file: "main.md", line: 2, column: 1 },
+], [1, null, 7], "main.qmd");
+assert.deepEqual([mapped[0].file, mapped[0].line, mapped[0].generated], ["main.qmd", 7, false]);
+assert.deepEqual([mapped[1].line, mapped[1].generated], [0, true]);
+console.log("quarto: parser, sidecar, diagnostics and identity scenarios passed");
