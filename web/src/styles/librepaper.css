@@ -1531,6 +1531,26 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 }
 .lp-tip .tip-key[hidden] { display: none; }
 
+/* The cards the editor shows over a citation, a label, a formula or a flagged
+   word sit in CodeMirror's own tooltip frame, which is a grey bordered box in
+   the editor's typeface. The frame takes the look of the tooltip above
+   instead, so every small overlay is the same card. The text cards take its
+   type size too; a formula keeps the size it was typeset at. */
+.cm-editor .cm-tooltip.cm-tooltip-hover,
+.cm-editor .cm-tooltip:has(> .cm-harper-card) {
+  border: 0;
+  border-radius: var(--radius-container);
+  background: var(--color-subtle);
+  color: var(--color-text);
+  box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  font-family: var(--typo-base--font-family);
+}
+.cm-editor .cm-tooltip-hover .cm-tooltip-section:not(:first-child) { border-top-color: var(--color-border); }
+.cm-editor :is(.cm-citation-card, .cm-harper-card, .cm-index-hover) { font-size: var(--text-xs); line-height: var(--text-xs--line-height); }
+.cm-editor .cm-index-hover { padding: calc(var(--spacing) * 1) calc(var(--spacing) * 2); }
+/* The formula's own frame would be a box inside the card. */
+.cm-editor .cm-lv-math-tooltip { border: 0; background: none; }
+
 /* Shared control and status classes used by application components. */
 .lp-control-brand { background: var(--color-brand); color: var(--color-on-brand); border-color: var(--color-brand); }
 .lp-control-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-brand-hover); }
