@@ -419,7 +419,7 @@ try {
       titleHeight: box('.changes-panel .panel-tabs-row').height,
       toolbarHeight: box('.changes-toolbar').height,
       scopeLeft: box('.scope-trigger').left,
-      rowLeft: box('.change-row .row-main').left,
+      rowLeft: box('.change-row > :first-child').left,
       toggleRight: box('.tracking-toggle').right,
       endRight: box('.toolbar-end').right,
     };
